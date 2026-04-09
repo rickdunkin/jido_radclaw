@@ -1,10 +1,10 @@
 import Config
 
 # --- Forge Docker Sandbox ---
-# Set FORGE_SPRITE_CLIENT=docker_sandbox to use Docker Sandboxes instead of
-# the default Fake (local temp directory) sprite client.
-if System.get_env("FORGE_SPRITE_CLIENT") == "docker_sandbox" do
-  config :jido_claw, :forge_sprite_client, JidoClaw.Forge.SpriteClient.DockerSandbox
+# Set FORGE_SANDBOX=docker to use Docker Sandboxes instead of
+# the default Local (local temp directory) sandbox.
+if System.get_env("FORGE_SANDBOX") == "docker" do
+  config :jido_claw, :forge_sandbox, JidoClaw.Forge.Sandbox.Docker
 
   config :jido_claw, :forge_docker_sandbox,
     workspace_base: System.get_env("FORGE_WORKSPACE_BASE", "/tmp/jidoclaw_forge"),

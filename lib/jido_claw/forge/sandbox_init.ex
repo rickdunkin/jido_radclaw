@@ -3,7 +3,7 @@ defmodule JidoClaw.Forge.SandboxInit do
   Boot-time task that validates the `sbx` CLI is available and cleans up
   any orphaned Forge sandboxes from previous runs.
 
-  Started in the supervision tree only when the DockerSandbox sprite client
+  Started in the supervision tree only when the Docker sandbox
   is configured. Runs once and exits (restart: :temporary).
   """
 
@@ -24,7 +24,7 @@ defmodule JidoClaw.Forge.SandboxInit do
       nil ->
         Logger.error(
           "[Forge.SandboxInit] sbx CLI not found on PATH. " <>
-            "Docker Sandbox sprite client will not work. " <>
+            "Docker Sandbox will not work. " <>
             "Install Docker Desktop >= 4.40 and run 'sbx login'."
         )
 

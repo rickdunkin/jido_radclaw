@@ -23,7 +23,7 @@ defmodule JidoClaw.Forge.Error do
     def message(%{message: msg}), do: msg
   end
 
-  defmodule SpriteError do
+  defmodule SandboxError do
     defexception [:message, :session_id, :operation, :reason]
     @impl true
     def message(%{message: msg}), do: msg
@@ -35,6 +35,6 @@ defmodule JidoClaw.Forge.Error do
   def classify(%ExecSessionError{reason: :rate_limited}), do: {:exec_failed, :retry}
   def classify(%ExecSessionError{}), do: {:exec_failed, :checkpoint_restore}
   def classify(%TimeoutError{}), do: {:timeout, :retry}
-  def classify(%SpriteError{}), do: {:exec_failed, :checkpoint_restore}
+  def classify(%SandboxError{}), do: {:exec_failed, :checkpoint_restore}
   def classify(_), do: {:unknown, :terminal}
 end

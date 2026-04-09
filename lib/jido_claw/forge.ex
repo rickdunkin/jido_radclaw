@@ -1,5 +1,5 @@
 defmodule JidoClaw.Forge do
-  alias JidoClaw.Forge.{Manager, SpriteSession}
+  alias JidoClaw.Forge.{Manager, Harness}
 
   defmodule SessionHandle do
     defstruct [:session_id, :pid]
@@ -22,14 +22,14 @@ defmodule JidoClaw.Forge do
 
   def list_sessions, do: Manager.list_sessions()
 
-  def status(session_id), do: SpriteSession.status(session_id)
+  def status(session_id), do: Harness.status(session_id)
 
   def run_iteration(session_id, opts \\ []) do
-    SpriteSession.run_iteration(session_id, opts)
+    Harness.run_iteration(session_id, opts)
   end
 
   def exec(session_id, command, opts \\ []) do
-    SpriteSession.exec(session_id, command, opts)
+    Harness.exec(session_id, command, opts)
   end
 
   def cmd(%SessionHandle{session_id: sid}, command, args, opts \\ []) when is_list(args) do
@@ -39,7 +39,7 @@ defmodule JidoClaw.Forge do
   end
 
   def apply_input(session_id, input) do
-    SpriteSession.apply_input(session_id, input)
+    Harness.apply_input(session_id, input)
   end
 
   def run_loop(session_id, opts \\ []) do

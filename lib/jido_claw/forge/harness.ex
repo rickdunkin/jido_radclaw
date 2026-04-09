@@ -1,16 +1,16 @@
-defmodule JidoClaw.Forge.SpriteSession do
+defmodule JidoClaw.Forge.Harness do
   use GenServer, restart: :temporary
   require Logger
 
-  alias JidoClaw.Forge.{SpriteClient, Bootstrap, PubSub}
+  alias JidoClaw.Forge.{Sandbox, Bootstrap, PubSub}
 
   @registry JidoClaw.Forge.SessionRegistry
 
   defstruct [
-    :session_id, :spec, :sprite_id, :client, :runner, :runner_state,
+    :session_id, :spec, :sandbox_id, :client, :runner, :runner_state,
     state: :starting, iteration: 0, output_sequence: 0,
     started_at: nil, last_activity: nil,
-    resume_checkpoint_id: nil, sprite_client_module: nil
+    resume_checkpoint_id: nil, sandbox_module: nil
   ]
 
   def start_link({session_id, spec, _opts}) do
@@ -48,7 +48,7 @@ defmodule JidoClaw.Forge.SpriteSession do
       spec: spec,
       started_at: DateTime.utc_now(),
       last_activity: DateTime.utc_now(),
-      sprite_client_module: resolve_client(Map.get(spec, :sprite_client, :default))
+      sandbox_module: resolve_client(Map.get(spec, :sandbox, :default))
     }
 
     send(self(), :provision)
@@ -57,14 +57,14 @@ defmodule JidoClaw.Forge.SpriteSession do
 
   @impl true
   def handle_info(:provision, state) do
-    sprite_spec =
+    sandbox_spec =
       state.spec
-      |> Map.get(:sprite_spec, %{})
+      |> Map.get(:sandbox_spec, %{})
       |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
 
-    case state.sprite_client_module.create(sprite_spec) do
-      {:ok, client, sprite_id} ->
-        new_state = %{state | client: client, sprite_id: sprite_id, state: :bootstrapping}
+    case state.sandbox_module.create(sandbox_spec) do
+      {:ok, client, sandbox_id} ->
+        new_state = %{state | client: client, sandbox_id: sandbox_id, state: :bootstrapping}
 
         if state.resume_checkpoint_id do
           send(self(), :init_runner)
@@ -75,7 +75,7 @@ defmodule JidoClaw.Forge.SpriteSession do
         {:noreply, new_state}
 
       {:error, reason} ->
-        Logger.error("[Forge.SpriteSession] Provision failed for #{state.session_id}: #{inspect(reason)}")
+        Logger.error("[Forge.Harness] Provision failed for #{state.session_id}: #{inspect(reason)}")
         {:stop, {:provision_failed, reason}, state}
     end
   end
@@ -84,7 +84,7 @@ defmodule JidoClaw.Forge.SpriteSession do
   def handle_info(:bootstrap, state) do
     env = Map.get(state.spec, :env, %{})
     if map_size(env) > 0 do
-      SpriteClient.inject_env(state.client, env)
+      Sandbox.inject_env(state.client, env)
     end
 
     bootstrap_steps = Map.get(state.spec, :bootstrap_steps, [])
@@ -96,7 +96,7 @@ defmodule JidoClaw.Forge.SpriteSession do
         {:noreply, new_state}
 
       {:error, step, reason} ->
-        Logger.error("[Forge.SpriteSession] Bootstrap failed at step #{inspect(step)}: #{inspect(reason)}")
+        Logger.error("[Forge.Harness] Bootstrap failed at step #{inspect(step)}: #{inspect(reason)}")
         {:stop, {:bootstrap_failed, reason}, state}
     end
   end
@@ -118,7 +118,7 @@ defmodule JidoClaw.Forge.SpriteSession do
         {:noreply, new_state}
 
       {:error, reason} ->
-        Logger.error("[Forge.SpriteSession] Runner init failed: #{inspect(reason)}")
+        Logger.error("[Forge.Harness] Runner init failed: #{inspect(reason)}")
         {:stop, {:runner_init_failed, reason}, state}
     end
   end
@@ -127,9 +127,10 @@ defmodule JidoClaw.Forge.SpriteSession do
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
     new_state = %{state | state: :running, iteration: state.iteration + 1, last_activity: DateTime.utc_now()}
 
+    session_pid = self()
     Task.start(fn ->
       result = state.runner.run_iteration(state.client, state.runner_state, opts)
-      GenServer.cast(self(), {:iteration_complete, result, from, new_state.iteration})
+      GenServer.cast(session_pid, {:iteration_complete, result, from, new_state.iteration})
     end)
 
     {:noreply, new_state}
@@ -142,7 +143,7 @@ defmodule JidoClaw.Forge.SpriteSession do
 
   @impl true
   def handle_call({:exec, command, opts}, _from, %{state: :ready} = state) do
-    result = SpriteClient.exec(state.client, command, opts)
+    result = Sandbox.exec(state.client, command, opts)
     new_state = %{state | last_activity: DateTime.utc_now()}
     {:reply, {:ok, result}, new_state}
   end
@@ -180,7 +181,7 @@ defmodule JidoClaw.Forge.SpriteSession do
       state: state.state,
       iteration: state.iteration,
       runner: state.runner,
-      sprite_id: state.sprite_id,
+      sandbox_id: state.sandbox_id,
       started_at: state.started_at,
       last_activity: state.last_activity
     }
@@ -210,6 +211,14 @@ defmodule JidoClaw.Forge.SpriteSession do
         %{state | state: :ready}
     end
 
+    # Merge runner state from metadata if the runner returned updated state
+    new_state = case result.metadata do
+      %{state: updated_runner_state} ->
+        %{new_state | runner_state: updated_runner_state}
+      _ ->
+        new_state
+    end
+
     GenServer.reply(from, {:ok, result})
     {:noreply, new_state}
   end
@@ -229,8 +238,8 @@ defmodule JidoClaw.Forge.SpriteSession do
       state.runner.terminate(state.client, reason)
     end
 
-    if state.client && state.sprite_id do
-      SpriteClient.destroy(state.client, state.sprite_id)
+    if state.client && state.sandbox_id do
+      Sandbox.destroy(state.client, state.sandbox_id)
     end
 
     :ok
@@ -242,8 +251,8 @@ defmodule JidoClaw.Forge.SpriteSession do
   defp resolve_runner(:custom), do: JidoClaw.Forge.Runners.Custom
   defp resolve_runner(module) when is_atom(module), do: module
 
-  defp resolve_client(:default), do: SpriteClient
-  defp resolve_client(:fake), do: JidoClaw.Forge.SpriteClient.Fake
-  defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.SpriteClient.DockerSandbox
+  defp resolve_client(:default), do: Sandbox
+  defp resolve_client(:fake), do: JidoClaw.Forge.Sandbox.Local
+  defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module
 end

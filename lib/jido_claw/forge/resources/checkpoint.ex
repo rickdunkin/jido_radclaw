@@ -14,7 +14,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
 
     create :create do
       primary? true
-      accept [:name, :sprites_checkpoint_id, :exec_session_sequence, :runner_state_snapshot, :session_id, :metadata]
+      accept [:name, :sandbox_checkpoint_id, :exec_session_sequence, :runner_state_snapshot, :session_id, :metadata]
     end
 
     read :latest_for_session do
@@ -32,7 +32,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
       public? true
     end
 
-    attribute :sprites_checkpoint_id, :string do
+    attribute :sandbox_checkpoint_id, :string do
       allow_nil? true
       public? true
     end

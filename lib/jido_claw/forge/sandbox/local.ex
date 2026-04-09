@@ -1,8 +1,8 @@
-defmodule JidoClaw.Forge.SpriteClient.Fake do
+defmodule JidoClaw.Forge.Sandbox.Local do
   use Agent
-  @behaviour JidoClaw.Forge.SpriteClient.Behaviour
+  @behaviour JidoClaw.Forge.Sandbox.Behaviour
 
-  defstruct [:agent_pid]
+  defstruct [:agent_pid, :sandbox_id]
 
   def start_link(_opts \\ []) do
     Agent.start_link(fn -> %{} end, name: __MODULE__)
@@ -10,8 +10,8 @@ defmodule JidoClaw.Forge.SpriteClient.Fake do
 
   @impl true
   def create(spec) do
-    sprite_id = "fake_#{:erlang.unique_integer([:positive])}"
-    dir = Path.join(System.tmp_dir!(), "forge_sprite_#{sprite_id}")
+    sandbox_id = "fake_#{:erlang.unique_integer([:positive])}"
+    dir = Path.join(System.tmp_dir!(), "forge_sandbox_#{sandbox_id}")
     File.mkdir_p!(dir)
 
     agent_pid = case Process.whereis(__MODULE__) do
@@ -22,23 +22,23 @@ defmodule JidoClaw.Forge.SpriteClient.Fake do
     end
 
     Agent.update(agent_pid, fn state ->
-      Map.put(state, sprite_id, %{dir: dir, env: Map.get(spec, "env", %{})})
+      Map.put(state, sandbox_id, %{dir: dir, env: Map.get(spec, "env", %{})})
     end)
 
-    client = %__MODULE__{agent_pid: agent_pid}
-    {:ok, client, sprite_id}
+    client = %__MODULE__{agent_pid: agent_pid, sandbox_id: sandbox_id}
+    {:ok, client, sandbox_id}
   end
 
   @impl true
-  def exec(%__MODULE__{agent_pid: pid} = _client, command, _opts) do
-    sprites = Agent.get(pid, & &1)
-    {_id, sprite} = Enum.at(sprites, 0) || {nil, %{dir: System.tmp_dir!(), env: %{}}}
+  def exec(%__MODULE__{agent_pid: pid, sandbox_id: sid} = _client, command, _opts) do
+    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+      %{dir: System.tmp_dir!(), env: %{}}
 
-    env = Enum.map(sprite.env, fn {k, v} -> {to_string(k), to_string(v)} end)
+    env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
 
     try do
       {output, code} = System.cmd("sh", ["-c", command],
-        cd: sprite.dir,
+        cd: sandbox.dir,
         env: env,
         stderr_to_stdout: true
       )
@@ -74,22 +74,22 @@ defmodule JidoClaw.Forge.SpriteClient.Fake do
   end
 
   @impl true
-  def write_file(%__MODULE__{agent_pid: pid}, path, content) do
-    sprites = Agent.get(pid, & &1)
-    {_id, sprite} = Enum.at(sprites, 0) || {nil, %{dir: System.tmp_dir!()}}
+  def write_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path, content) do
+    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+      %{dir: System.tmp_dir!()}
 
-    full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sprite.dir, path)
+    full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sandbox.dir, path)
     File.mkdir_p!(Path.dirname(full_path))
     File.write!(full_path, content)
     :ok
   end
 
   @impl true
-  def read_file(%__MODULE__{agent_pid: pid}, path) do
-    sprites = Agent.get(pid, & &1)
-    {_id, sprite} = Enum.at(sprites, 0) || {nil, %{dir: System.tmp_dir!()}}
+  def read_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path) do
+    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+      %{dir: System.tmp_dir!()}
 
-    full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sprite.dir, path)
+    full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sandbox.dir, path)
     case File.read(full_path) do
       {:ok, content} -> {:ok, content}
       {:error, reason} -> {:error, reason}
@@ -97,28 +97,27 @@ defmodule JidoClaw.Forge.SpriteClient.Fake do
   end
 
   @impl true
-  def inject_env(%__MODULE__{agent_pid: pid}, env) do
-    sprites = Agent.get(pid, & &1)
-    {id, _sprite} = Enum.at(sprites, 0) || {nil, nil}
+  def inject_env(%__MODULE__{agent_pid: pid, sandbox_id: sid}, env) do
+    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end)
 
-    if id do
+    if sandbox do
       Agent.update(pid, fn state ->
-        update_in(state, [id, :env], fn existing ->
+        update_in(state, [sid, :env], fn existing ->
           merged = Map.merge(existing || %{}, env)
           Map.new(merged, fn {k, v} -> {to_string(k), to_string(v)} end)
         end)
       end)
       :ok
     else
-      {:error, :no_sprite}
+      {:error, :no_sandbox}
     end
   end
 
   @impl true
-  def destroy(%__MODULE__{agent_pid: pid}, sprite_id) do
-    sprite = Agent.get(pid, fn state -> Map.get(state, sprite_id) end)
-    if sprite, do: File.rm_rf(sprite.dir)
-    Agent.update(pid, fn state -> Map.delete(state, sprite_id) end)
+  def destroy(%__MODULE__{agent_pid: pid}, sandbox_id) do
+    sandbox = Agent.get(pid, fn state -> Map.get(state, sandbox_id) end)
+    if sandbox, do: File.rm_rf(sandbox.dir)
+    Agent.update(pid, fn state -> Map.delete(state, sandbox_id) end)
     :ok
   end
 

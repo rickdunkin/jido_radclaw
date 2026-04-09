@@ -14,7 +14,21 @@ defmodule JidoClaw.Forge.Resources.Session do
 
     create :create do
       primary? true
-      accept [:name, :runner_type, :runner_config, :spec, :metadata]
+      accept [:name, :runner_type, :runner_config, :spec, :metadata, :started_at]
+    end
+
+    create :start do
+      accept [:name, :runner_type, :runner_config, :spec, :metadata, :started_at]
+
+      upsert? true
+      upsert_identity :unique_name
+      upsert_fields [:runner_type, :runner_config, :spec, :started_at, :phase, :completed_at, :last_error, :execution_count, :last_activity_at]
+
+      change set_attribute(:phase, :created)
+      change set_attribute(:completed_at, nil)
+      change set_attribute(:last_error, nil)
+      change set_attribute(:execution_count, 0)
+      change set_attribute(:last_activity_at, nil)
     end
 
     update :update_phase do
@@ -82,7 +96,7 @@ defmodule JidoClaw.Forge.Resources.Session do
       default %{}
     end
 
-    attribute :sprite_id, :string do
+    attribute :sandbox_id, :string do
       allow_nil? true
       public? true
     end
@@ -120,6 +134,10 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     timestamps()
+  end
+
+  identities do
+    identity :unique_name, [:name]
   end
 
   relationships do

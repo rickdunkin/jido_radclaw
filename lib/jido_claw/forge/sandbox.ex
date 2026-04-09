@@ -1,4 +1,4 @@
-defmodule JidoClaw.Forge.SpriteClient do
+defmodule JidoClaw.Forge.Sandbox do
   def create(spec) do
     impl().create(spec)
   end
@@ -35,14 +35,14 @@ defmodule JidoClaw.Forge.SpriteClient do
     impl_for(client).inject_env(client, env)
   end
 
-  def destroy(client, sprite_id) do
-    impl_for(client).destroy(client, sprite_id)
+  def destroy(client, sandbox_id) do
+    impl_for(client).destroy(client, sandbox_id)
   end
 
   def impl_module, do: impl()
 
   defp impl do
-    Application.get_env(:jido_claw, :forge_sprite_client, JidoClaw.Forge.SpriteClient.Fake)
+    Application.get_env(:jido_claw, :forge_sandbox, JidoClaw.Forge.Sandbox.Local)
   end
 
   defp impl_for(client) do

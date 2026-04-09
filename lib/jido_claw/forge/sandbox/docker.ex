@@ -1,29 +1,29 @@
-defmodule JidoClaw.Forge.SpriteClient.DockerSandbox do
+defmodule JidoClaw.Forge.Sandbox.Docker do
   @moduledoc """
-  SpriteClient implementation using Docker Sandboxes (`sbx` CLI) for
+  Sandbox implementation using Docker Sandboxes (`sbx` CLI) for
   OS-level isolation. Each Forge session gets its own microVM with a
   dedicated Docker daemon, filesystem, and network.
 
   Requires Docker Desktop >= 4.40 with `sbx` CLI installed and authenticated.
   """
 
-  @behaviour JidoClaw.Forge.SpriteClient.Behaviour
+  @behaviour JidoClaw.Forge.Sandbox.Behaviour
   require Logger
 
-  defstruct [:sandbox_name, :workspace_dir, :sprite_id]
+  defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
 
   @impl true
   @spec create(map()) ::
           {:error, {:sbx_create_failed, pos_integer(), any()}}
           | {:ok,
-             %JidoClaw.Forge.SpriteClient.DockerSandbox{
+             %JidoClaw.Forge.Sandbox.Docker{
                sandbox_name: <<_::48, _::_*8>>,
-               sprite_id: binary(),
+               sandbox_id: binary(),
                workspace_dir: binary()
              }, binary()}
   def create(spec) do
-    sprite_id = "#{:erlang.unique_integer([:positive])}"
-    sandbox_name = "forge-#{sprite_id}"
+    sandbox_id = "#{:erlang.unique_integer([:positive])}"
+    sandbox_name = "forge-#{sandbox_id}"
     workspace_dir = Path.join(workspace_base(), sandbox_name)
     File.mkdir_p!(workspace_dir)
 
@@ -35,14 +35,14 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandbox do
         client = %__MODULE__{
           sandbox_name: sandbox_name,
           workspace_dir: workspace_dir,
-          sprite_id: sprite_id
+          sandbox_id: sandbox_id
         }
 
         # Inject OneCLI proxy env if configured
-        onecli_env = onecli_env(sprite_id)
+        onecli_env = onecli_env(sandbox_id)
         if map_size(onecli_env) > 0, do: inject_env(client, onecli_env)
 
-        {:ok, client, sprite_id}
+        {:ok, client, sandbox_id}
 
       {error_output, code} ->
         File.rm_rf(workspace_dir)
@@ -133,7 +133,7 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandbox do
   end
 
   @impl true
-  def destroy(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, _sprite_id) do
+  def destroy(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, _sandbox_id) do
     case System.cmd("sbx", ["rm", "--force", sandbox_name], stderr_to_stdout: true) do
       {_output, 0} ->
         :ok
@@ -262,12 +262,12 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandbox do
     Application.get_env(:jido_claw, :onecli, [])
   end
 
-  defp onecli_env(sprite_id) do
+  defp onecli_env(sandbox_id) do
     config = onecli_config()
 
     if Keyword.get(config, :enabled, false) do
       gateway_url = Keyword.get(config, :gateway_url)
-      token = resolve_agent_token(sprite_id, config)
+      token = resolve_agent_token(sandbox_id, config)
 
       env = %{
         "HTTP_PROXY" => gateway_url,
@@ -298,7 +298,7 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandbox do
     end
   end
 
-  defp resolve_agent_token(_sprite_id, config) do
+  defp resolve_agent_token(_sandbox_id, config) do
     case Keyword.get(config, :agent_tokens, []) do
       [] -> nil
       tokens -> Enum.random(tokens)

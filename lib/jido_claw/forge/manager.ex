@@ -3,7 +3,7 @@ defmodule JidoClaw.Forge.Manager do
   require Logger
 
   @registry JidoClaw.Forge.SessionRegistry
-  @supervisor JidoClaw.Forge.SpriteSupervisor
+  @supervisor JidoClaw.Forge.HarnessSupervisor
 
   defstruct sessions: MapSet.new(),
             session_runners: %{},
@@ -62,7 +62,7 @@ defmodule JidoClaw.Forge.Manager do
             {:reply, {:error, :already_exists}, state}
 
           [] ->
-            child_spec = {JidoClaw.Forge.SpriteSession, {session_id, spec, []}}
+            child_spec = {JidoClaw.Forge.Harness, {session_id, spec, []}}
             case DynamicSupervisor.start_child(@supervisor, child_spec) do
               {:ok, pid} ->
                 Process.monitor(pid)
@@ -88,6 +88,9 @@ defmodule JidoClaw.Forge.Manager do
   def handle_call({:stop_session, session_id, reason}, _from, state) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] ->
+        # Persist cancelled phase before terminating so recovery can distinguish
+        # graceful stops from crashes
+        JidoClaw.Forge.Persistence.update_session_phase(session_id, :cancelled)
         DynamicSupervisor.terminate_child(@supervisor, pid)
         new_state = decrement_session(state, session_id)
         JidoClaw.Forge.PubSub.broadcast_session_event({:session_stopped, session_id, reason})

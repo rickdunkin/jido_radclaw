@@ -66,10 +66,10 @@ defmodule JidoClaw.Application do
 
       # Forge sandbox execution engine
       {Registry, keys: :unique, name: JidoClaw.Forge.SessionRegistry},
-      {DynamicSupervisor, name: JidoClaw.Forge.SpriteSupervisor, strategy: :one_for_one},
+      {DynamicSupervisor, name: JidoClaw.Forge.HarnessSupervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: JidoClaw.Forge.ExecSessionSupervisor, strategy: :one_for_one},
       JidoClaw.Forge.Manager
-    ] ++ forge_sprite_children() ++ [
+    ] ++ forge_sandbox_children() ++ [
 
       # PubSub for real-time events
       {Phoenix.PubSub, name: JidoClaw.PubSub},
@@ -140,14 +140,14 @@ defmodule JidoClaw.Application do
     Application.get_env(:jido_claw, :project_dir, File.cwd!())
   end
 
-  # -- Forge sprite client: conditional on config --
-  defp forge_sprite_children do
-    case Application.get_env(:jido_claw, :forge_sprite_client) do
-      JidoClaw.Forge.SpriteClient.DockerSandbox ->
+  # -- Forge sandbox: conditional on config --
+  defp forge_sandbox_children do
+    case Application.get_env(:jido_claw, :forge_sandbox) do
+      JidoClaw.Forge.Sandbox.Docker ->
         [JidoClaw.Forge.SandboxInit]
 
       _ ->
-        [JidoClaw.Forge.SpriteClient.Fake]
+        [JidoClaw.Forge.Sandbox.Local]
     end
   end
 

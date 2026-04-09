@@ -1,6 +1,6 @@
 defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @behaviour JidoClaw.Forge.Runner
-  alias JidoClaw.Forge.{Runner, SpriteClient}
+  alias JidoClaw.Forge.{Runner, Sandbox}
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
 
@@ -18,7 +18,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
     dirs = ["#{@forge_home}/session", "#{@forge_home}/templates", "#{@forge_home}/.claude"]
     for dir <- dirs do
-      SpriteClient.exec(client, "mkdir -p #{dir}", [])
+      Sandbox.exec(client, "mkdir -p #{dir}", [])
     end
 
     # Sync user-level ~/.claude config into sandbox HOME (not workspace)
@@ -26,11 +26,11 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
     # Ensure dangerously-skip-permissions settings are in place
     settings = Jason.encode!(%{permissions: %{allow: ["*"]}})
-    SpriteClient.write_file(client, "#{@forge_home}/.claude/settings.json", settings)
+    Sandbox.write_file(client, "#{@forge_home}/.claude/settings.json", settings)
 
     if prompt != "" do
       redacted = PromptRedaction.redact(prompt)
-      SpriteClient.write_file(client, "#{@forge_home}/session/context.md", redacted)
+      Sandbox.write_file(client, "#{@forge_home}/session/context.md", redacted)
     end
 
     {:ok, %{model: model, prompt: prompt, iteration: 0, session_name: session_name}}
@@ -52,7 +52,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     run_opts = [timeout: 300_000]
     run_opts = if state.session_name, do: [{:name, state.session_name} | run_opts], else: run_opts
 
-    case SpriteClient.run(client, "claude", args, run_opts) do
+    case Sandbox.run(client, "claude", args, run_opts) do
       {output, 0} -> parse_output(output)
       {output, _code} -> {:ok, Runner.error("claude cli failed", output)}
     end
@@ -60,7 +60,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
   @impl true
   def apply_input(client, input, _state) do
-    SpriteClient.write_file(client, "#{@forge_home}/session/response.json",
+    Sandbox.write_file(client, "#{@forge_home}/session/response.json",
       Jason.encode!(%{response: input}))
     :ok
   end
@@ -110,7 +110,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     case File.read(source) do
       {:ok, content} ->
         encoded = Base.encode64(content)
-        SpriteClient.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
+        Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
 
       {:error, reason} ->
         Logger.debug("[ClaudeCode] Skipping #{source}: #{reason}")
@@ -118,7 +118,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   end
 
   defp sync_dir(client, source_dir, dest_dir) do
-    SpriteClient.exec(client, "mkdir -p #{dest_dir}", [])
+    Sandbox.exec(client, "mkdir -p #{dest_dir}", [])
 
     case File.ls(source_dir) do
       {:ok, entries} ->

@@ -1,6 +1,6 @@
 defmodule JidoClaw.Forge.Runners.Workflow do
   @behaviour JidoClaw.Forge.Runner
-  alias JidoClaw.Forge.{Runner, SpriteClient}
+  alias JidoClaw.Forge.{Runner, Sandbox}
   require Logger
 
   @impl true
@@ -35,7 +35,7 @@ defmodule JidoClaw.Forge.Runners.Workflow do
     command = interpolate(Map.get(step, "command", ""), state.step_results)
     step_id = Map.get(step, "id", "step_#{state.current_step}")
 
-    case SpriteClient.exec(client, command, []) do
+    case Sandbox.exec(client, command, []) do
       {output, 0} ->
         new_results = Map.put(state.step_results, step_id, %{output: output, exit_code: 0})
         new_state = %{state | current_step: state.current_step + 1, step_results: new_results}

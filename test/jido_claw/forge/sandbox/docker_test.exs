@@ -1,25 +1,25 @@
-defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
+defmodule JidoClaw.Forge.Sandbox.DockerTest do
   use ExUnit.Case, async: true
 
-  alias JidoClaw.Forge.SpriteClient.DockerSandbox
+  alias JidoClaw.Forge.Sandbox.Docker
 
   describe "struct" do
     test "has expected fields" do
-      client = %DockerSandbox{
+      client = %Docker{
         sandbox_name: "forge-123",
         workspace_dir: "/tmp/jidoclaw_forge/forge-123",
-        sprite_id: "123"
+        sandbox_id: "123"
       }
 
       assert client.sandbox_name == "forge-123"
       assert client.workspace_dir == "/tmp/jidoclaw_forge/forge-123"
-      assert client.sprite_id == "123"
+      assert client.sandbox_id == "123"
     end
   end
 
   describe "impl_module/0" do
     test "returns the module itself" do
-      assert DockerSandbox.impl_module() == DockerSandbox
+      assert Docker.impl_module() == Docker
     end
   end
 
@@ -28,10 +28,10 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
       dir = Path.join(System.tmp_dir!(), "docker_sandbox_test_#{:erlang.unique_integer([:positive])}")
       File.mkdir_p!(dir)
 
-      client = %DockerSandbox{
+      client = %Docker{
         sandbox_name: "forge-test",
         workspace_dir: dir,
-        sprite_id: "test"
+        sandbox_id: "test"
       }
 
       on_exit(fn -> File.rm_rf(dir) end)
@@ -40,24 +40,24 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
     end
 
     test "writes and reads a file with relative path", %{client: client, dir: dir} do
-      assert :ok = DockerSandbox.write_file(client, "hello.txt", "world")
-      assert {:ok, "world"} = DockerSandbox.read_file(client, "hello.txt")
+      assert :ok = Docker.write_file(client, "hello.txt", "world")
+      assert {:ok, "world"} = Docker.read_file(client, "hello.txt")
       assert File.read!(Path.join(dir, "hello.txt")) == "world"
     end
 
     test "writes and reads a file with absolute path", %{client: client, dir: dir} do
       abs_path = Path.join(dir, "subdir/abs.txt")
-      assert :ok = DockerSandbox.write_file(client, abs_path, "absolute")
-      assert {:ok, "absolute"} = DockerSandbox.read_file(client, abs_path)
+      assert :ok = Docker.write_file(client, abs_path, "absolute")
+      assert {:ok, "absolute"} = Docker.read_file(client, abs_path)
     end
 
     test "creates parent directories for nested paths", %{client: client, dir: dir} do
-      assert :ok = DockerSandbox.write_file(client, "deep/nested/file.txt", "nested")
+      assert :ok = Docker.write_file(client, "deep/nested/file.txt", "nested")
       assert File.read!(Path.join(dir, "deep/nested/file.txt")) == "nested"
     end
 
     test "read_file returns error for missing file", %{client: client} do
-      assert {:error, :enoent} = DockerSandbox.read_file(client, "nonexistent.txt")
+      assert {:error, :enoent} = Docker.read_file(client, "nonexistent.txt")
     end
   end
 
@@ -66,10 +66,10 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
       dir = Path.join(System.tmp_dir!(), "docker_sandbox_env_#{:erlang.unique_integer([:positive])}")
       File.mkdir_p!(dir)
 
-      client = %DockerSandbox{
+      client = %Docker{
         sandbox_name: "forge-env-test",
         workspace_dir: dir,
-        sprite_id: "env-test"
+        sandbox_id: "env-test"
       }
 
       on_exit(fn -> File.rm_rf(dir) end)
@@ -78,7 +78,7 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
     end
 
     test "writes env vars in K=V format", %{client: client, dir: dir} do
-      assert :ok = DockerSandbox.inject_env(client, %{"FOO" => "bar", "BAZ" => "qux"})
+      assert :ok = Docker.inject_env(client, %{"FOO" => "bar", "BAZ" => "qux"})
 
       content = File.read!(Path.join(dir, ".forge_env"))
       lines = String.split(content, "\n", trim: true)
@@ -90,7 +90,7 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
     test "merges with existing env file", %{client: client, dir: dir} do
       File.write!(Path.join(dir, ".forge_env"), "EXISTING=value\n")
 
-      assert :ok = DockerSandbox.inject_env(client, %{"NEW" => "added"})
+      assert :ok = Docker.inject_env(client, %{"NEW" => "added"})
 
       content = File.read!(Path.join(dir, ".forge_env"))
       lines = String.split(content, "\n", trim: true)
@@ -100,7 +100,7 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
     end
 
     test "converts keys and values to strings", %{client: client, dir: dir} do
-      assert :ok = DockerSandbox.inject_env(client, %{count: 42})
+      assert :ok = Docker.inject_env(client, %{count: 42})
 
       content = File.read!(Path.join(dir, ".forge_env"))
       assert content =~ "count=42"
@@ -115,8 +115,8 @@ defmodule JidoClaw.Forge.SpriteClient.DockerSandboxTest do
       # This tests the error path — sbx is unlikely to be on PATH in CI
       spec = %{runner: :shell}
 
-      case DockerSandbox.create(spec) do
-        {:ok, _client, _sprite_id} ->
+      case Docker.create(spec) do
+        {:ok, _client, _sandbox_id} ->
           # sbx is available — clean up
           :ok
 

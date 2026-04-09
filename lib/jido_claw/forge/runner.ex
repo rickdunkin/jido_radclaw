@@ -1,5 +1,5 @@
 defmodule JidoClaw.Forge.Runner do
-  @type sprite_client :: struct()
+  @type sandbox :: struct()
   @type config :: map()
   @type state :: map()
   @type opts :: keyword()
@@ -17,12 +17,12 @@ defmodule JidoClaw.Forge.Runner do
           metadata: map()
         }
 
-  @callback init(sprite_client(), config()) :: :ok | {:error, term()}
-  @callback run_iteration(sprite_client(), state(), opts()) ::
+  @callback init(sandbox(), config()) :: :ok | {:error, term()}
+  @callback run_iteration(sandbox(), state(), opts()) ::
               {:ok, iteration_result()} | {:error, term()}
-  @callback apply_input(sprite_client(), input(), state()) :: :ok | {:error, term()}
+  @callback apply_input(sandbox(), input(), state()) :: :ok | {:error, term()}
   @callback handle_output(chunk(), stream(), state()) :: {:ok, events(), state()}
-  @callback terminate(sprite_client(), term()) :: :ok
+  @callback terminate(sandbox(), term()) :: :ok
 
   @optional_callbacks [handle_output: 3, terminate: 2]
 

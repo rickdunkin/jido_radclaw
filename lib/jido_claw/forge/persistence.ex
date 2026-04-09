@@ -18,7 +18,7 @@ defmodule JidoClaw.Forge.Persistence do
           runner_config: Map.get(spec, :runner_config, %{}),
           spec: redact_map(spec),
           started_at: DateTime.utc_now()
-        }, authorize?: false)
+        }, action: :start, authorize?: false)
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
       end
@@ -30,13 +30,22 @@ defmodule JidoClaw.Forge.Persistence do
       try do
         session = find_session(session_id)
         if session do
-          Ash.create!(JidoClaw.Forge.Resources.ExecSession, %{
+          # Two-step flow: create with :start, then update with :complete
+          exec_session = Ash.create!(JidoClaw.Forge.Resources.ExecSession, %{
             session_id: session.id,
             sequence: sequence,
-            command: "iteration",
+            command: "iteration"
+          }, authorize?: false)
+
+          result_status = if exit_code == 0, do: :completed, else: :failed
+
+          exec_session
+          |> Ash.Changeset.for_update(:complete, %{
+            result_status: result_status,
             output: truncate(Patterns.redact(output || ""), 10_000),
             exit_code: exit_code
-          }, authorize?: false)
+          })
+          |> Ash.update!(authorize?: false)
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record execution: #{inspect(e)}")
@@ -57,6 +66,21 @@ defmodule JidoClaw.Forge.Persistence do
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to log event: #{inspect(e)}")
+      end
+    end
+  end
+
+  def update_session_phase(session_id, phase) do
+    if enabled?() do
+      try do
+        session = find_session(session_id)
+        if session do
+          session
+          |> Ash.Changeset.for_update(:update_phase, %{phase: phase})
+          |> Ash.update!(authorize?: false)
+        end
+      rescue
+        e -> Logger.warning("[Forge.Persistence] Failed to update session phase: #{inspect(e)}")
       end
     end
   end
