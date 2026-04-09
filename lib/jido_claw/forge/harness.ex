@@ -2,7 +2,7 @@ defmodule JidoClaw.Forge.Harness do
   use GenServer, restart: :temporary
   require Logger
 
-  alias JidoClaw.Forge.{Sandbox, Bootstrap, PubSub}
+  alias JidoClaw.Forge.{Sandbox, Bootstrap, Persistence, PubSub}
 
   @registry JidoClaw.Forge.SessionRegistry
 
@@ -51,12 +51,18 @@ defmodule JidoClaw.Forge.Harness do
       sandbox_module: resolve_client(Map.get(spec, :sandbox, :default))
     }
 
+    persist(fn -> Persistence.record_session_started(session_id, spec) end)
+    persist(fn -> log_event(state, "session.started") end)
+
     send(self(), :provision)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:provision, state) do
+    persist(fn -> log_event(state, "sandbox.provisioning") end)
+    persist(fn -> update_phase(state, :provisioning) end)
+
     sandbox_spec =
       state.spec
       |> Map.get(:sandbox_spec, %{})
@@ -65,6 +71,9 @@ defmodule JidoClaw.Forge.Harness do
     case state.sandbox_module.create(sandbox_spec) do
       {:ok, client, sandbox_id} ->
         new_state = %{state | client: client, sandbox_id: sandbox_id, state: :bootstrapping}
+
+        persist(fn -> log_event(new_state, "sandbox.provisioned", %{sandbox_id: sandbox_id}) end)
+        persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
 
         if state.resume_checkpoint_id do
           send(self(), :init_runner)
@@ -75,6 +84,7 @@ defmodule JidoClaw.Forge.Harness do
         {:noreply, new_state}
 
       {:error, reason} ->
+        persist(fn -> log_event(state, "sandbox.provision_failed", %{reason: inspect(reason)}) end)
         Logger.error("[Forge.Harness] Provision failed for #{state.session_id}: #{inspect(reason)}")
         {:stop, {:provision_failed, reason}, state}
     end
@@ -82,6 +92,9 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_info(:bootstrap, state) do
+    persist(fn -> log_event(state, "bootstrap.started") end)
+    persist(fn -> update_phase(state, :bootstrapping) end)
+
     env = Map.get(state.spec, :env, %{})
     if map_size(env) > 0 do
       Sandbox.inject_env(state.client, env)
@@ -91,11 +104,13 @@ defmodule JidoClaw.Forge.Harness do
 
     case Bootstrap.execute(state.client, bootstrap_steps) do
       :ok ->
+        persist(fn -> log_event(state, "bootstrap.completed") end)
         new_state = %{state | state: :initializing}
         send(self(), :init_runner)
         {:noreply, new_state}
 
       {:error, step, reason} ->
+        persist(fn -> log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)}) end)
         Logger.error("[Forge.Harness] Bootstrap failed at step #{inspect(step)}: #{inspect(reason)}")
         {:stop, {:bootstrap_failed, reason}, state}
     end
@@ -109,15 +124,20 @@ defmodule JidoClaw.Forge.Harness do
     case runner_module.init(state.client, runner_config) do
       :ok ->
         new_state = %{state | runner: runner_module, runner_state: runner_config, state: :ready}
+        persist(fn -> log_event(new_state, "runner.ready") end)
+        persist(fn -> update_phase(new_state, :ready) end)
         PubSub.broadcast(state.session_id, {:ready, state.session_id})
         {:noreply, new_state}
 
       {:ok, runner_state} ->
         new_state = %{state | runner: runner_module, runner_state: runner_state, state: :ready}
+        persist(fn -> log_event(new_state, "runner.ready") end)
+        persist(fn -> update_phase(new_state, :ready) end)
         PubSub.broadcast(state.session_id, {:ready, state.session_id})
         {:noreply, new_state}
 
       {:error, reason} ->
+        persist(fn -> log_event(state, "runner.init_failed", %{reason: inspect(reason)}) end)
         Logger.error("[Forge.Harness] Runner init failed: #{inspect(reason)}")
         {:stop, {:runner_init_failed, reason}, state}
     end
@@ -126,6 +146,9 @@ defmodule JidoClaw.Forge.Harness do
   @impl true
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
     new_state = %{state | state: :running, iteration: state.iteration + 1, last_activity: DateTime.utc_now()}
+
+    persist(fn -> log_event(new_state, "iteration.started", %{iteration: new_state.iteration}) end)
+    persist(fn -> update_phase(new_state, :running) end)
 
     session_pid = self()
     Task.start(fn ->
@@ -143,7 +166,9 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_call({:exec, command, opts}, _from, %{state: :ready} = state) do
+    persist(fn -> log_event(state, "exec.started", %{command: command}) end)
     result = Sandbox.exec(state.client, command, opts)
+    persist(fn -> log_event(state, "exec.completed", %{command: command}) end)
     new_state = %{state | last_activity: DateTime.utc_now()}
     {:reply, {:ok, result}, new_state}
   end
@@ -155,13 +180,17 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_call({:apply_input, input}, _from, %{state: :needs_input} = state) do
+    persist(fn -> log_event(state, "input.received") end)
+
     case state.runner.apply_input(state.client, input, state.runner_state) do
       :ok ->
         new_state = %{state | state: :ready, last_activity: DateTime.utc_now()}
+        persist(fn -> update_phase(new_state, :ready) end)
         {:reply, :ok, new_state}
 
       {:ok, new_runner_state} ->
         new_state = %{state | state: :ready, runner_state: new_runner_state, last_activity: DateTime.utc_now()}
+        persist(fn -> update_phase(new_state, :ready) end)
         {:reply, :ok, new_state}
 
       {:error, reason} ->
@@ -219,12 +248,33 @@ defmodule JidoClaw.Forge.Harness do
         new_state
     end
 
+    persist(fn ->
+      log_event(new_state, "iteration.completed", %{
+        iteration: state.iteration,
+        status: result.status,
+        output_sequence: new_state.output_sequence
+      })
+    end)
+
+    persist(fn ->
+      Persistence.record_execution_complete(
+        state.session_id,
+        Map.get(result, :output, ""),
+        Map.get(result, :exit_code, 0),
+        state.iteration
+      )
+    end)
+
+    persist(fn -> update_phase(new_state, new_state.state) end)
+
     GenServer.reply(from, {:ok, result})
     {:noreply, new_state}
   end
 
   @impl true
   def handle_cast({:iteration_complete, {:error, reason}, from, _iteration}, state) do
+    persist(fn -> log_event(state, "iteration.failed", %{reason: inspect(reason)}) end)
+    persist(fn -> update_phase(state, :ready) end)
     PubSub.broadcast(state.session_id, {:error, %{reason: reason}})
     GenServer.reply(from, {:error, reason})
     {:noreply, %{state | state: :ready}}
@@ -232,6 +282,21 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def terminate(reason, state) do
+    persist(fn -> log_event(state, "session.stopped", %{reason: inspect(reason)}) end)
+
+    # Only update phase if not already in a terminal state (e.g. Manager sets
+    # :cancelled before terminating the child — don't overwrite that).
+    persist(fn ->
+      case Persistence.find_session(state.session_id) do
+        %{phase: phase} when phase in [:cancelled, :completed, :failed] ->
+          :ok
+
+        _ ->
+          terminal_phase = if reason in [:normal, :shutdown], do: :completed, else: :failed
+          update_phase(state, terminal_phase)
+      end
+    end)
+
     PubSub.broadcast(state.session_id, {:stopped, reason})
 
     if state.runner && function_exported?(state.runner, :terminate, 2) do
@@ -243,6 +308,23 @@ defmodule JidoClaw.Forge.Harness do
     end
 
     :ok
+  end
+
+  # Persistence helpers — fire-and-forget, never crash the Harness
+  defp log_event(state, event_type, data \\ %{}) do
+    Persistence.log_event(state.session_id, event_type, data, state.iteration)
+  end
+
+  defp update_phase(state, phase) do
+    Persistence.update_session_phase(state.session_id, phase)
+  end
+
+  defp persist(fun) do
+    try do
+      fun.()
+    rescue
+      e -> Logger.warning("[Forge.Harness] Persistence error: #{inspect(e)}")
+    end
   end
 
   defp resolve_runner(:shell), do: JidoClaw.Forge.Runners.Shell

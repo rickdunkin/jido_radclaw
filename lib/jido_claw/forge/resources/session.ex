@@ -59,6 +59,13 @@ defmodule JidoClaw.Forge.Resources.Session do
       change set_attribute(:last_activity_at, &DateTime.utc_now/0)
     end
 
+    update :set_sandbox_id do
+      accept []
+      argument :sandbox_id, :string, allow_nil?: false
+      change set_attribute(:sandbox_id, arg(:sandbox_id))
+      change set_attribute(:last_activity_at, &DateTime.utc_now/0)
+    end
+
     read :list_active do
       filter expr(phase in [:created, :provisioning, :bootstrapping, :ready, :running, :needs_input, :resuming])
     end

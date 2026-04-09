@@ -7,6 +7,10 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
   postgres do
     table "forge_checkpoints"
     repo JidoClaw.Repo
+
+    custom_indexes do
+      index [:session_id, :created_at]
+    end
   end
 
   actions do
