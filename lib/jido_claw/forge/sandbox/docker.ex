@@ -154,7 +154,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   # --- Private ---
 
-  defp build_create_args(sandbox_name, agent_type, workspace_dir, _spec) do
+  defp build_create_args(sandbox_name, agent_type, workspace_dir, spec) do
     args = ["create", "--name", sandbox_name]
 
     # Add OneCLI CA cert mount if configured
@@ -162,6 +162,9 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
     # Add any extra mounts from config
     args = add_extra_mounts(args)
+
+    # Add resource-declared mounts from spec
+    args = add_spec_mounts(args, spec)
 
     args ++ [agent_type, workspace_dir]
   end
@@ -329,6 +332,14 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   defp add_extra_mounts(args) do
     mounts = config() |> Keyword.get(:extra_mounts, [])
+
+    Enum.reduce(mounts, args, fn {host_path, container_path, mode}, acc ->
+      acc ++ ["--mount", "#{host_path}:#{container_path}:#{mode}"]
+    end)
+  end
+
+  defp add_spec_mounts(args, spec) do
+    mounts = Map.get(spec, :extra_mounts, [])
 
     Enum.reduce(mounts, args, fn {host_path, container_path, mode}, acc ->
       acc ++ ["--mount", "#{host_path}:#{container_path}:#{mode}"]

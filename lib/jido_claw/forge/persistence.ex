@@ -184,11 +184,21 @@ defmodule JidoClaw.Forge.Persistence do
     Map.new(map, fn
       {k, v} when is_binary(v) -> {k, Patterns.redact(v)}
       {k, v} when is_map(v) -> {k, redact_map(v)}
+      {k, v} when is_list(v) -> {k, redact_list(v)}
       pair -> pair
     end)
   end
 
   defp redact_map(other), do: other
+
+  defp redact_list(list) when is_list(list) do
+    Enum.map(list, fn
+      v when is_map(v) -> redact_map(v)
+      v when is_binary(v) -> Patterns.redact(v)
+      v when is_list(v) -> redact_list(v)
+      v -> v
+    end)
+  end
 
   defp truncate(str, max) when byte_size(str) > max do
     binary_part(str, byte_size(str) - max, max)

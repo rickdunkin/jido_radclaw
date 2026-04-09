@@ -2,7 +2,7 @@ defmodule JidoClaw.Forge.Harness do
   use GenServer, restart: :temporary
   require Logger
 
-  alias JidoClaw.Forge.{Sandbox, Bootstrap, Persistence, PubSub}
+  alias JidoClaw.Forge.{Sandbox, Bootstrap, Persistence, PubSub, ResourceProvisioner}
 
   @registry JidoClaw.Forge.SessionRegistry
 
@@ -43,19 +43,28 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def init({session_id, spec}) do
-    state = %__MODULE__{
-      session_id: session_id,
-      spec: spec,
-      started_at: DateTime.utc_now(),
-      last_activity: DateTime.utc_now(),
-      sandbox_module: resolve_client(Map.get(spec, :sandbox, :default))
-    }
+    resources = Map.get(spec, :resources, [])
 
-    persist(fn -> Persistence.record_session_started(session_id, spec) end)
-    persist(fn -> log_event(state, "session.started") end)
+    case ResourceProvisioner.validate_resources(resources) do
+      :ok ->
+        state = %__MODULE__{
+          session_id: session_id,
+          spec: spec,
+          started_at: DateTime.utc_now(),
+          last_activity: DateTime.utc_now(),
+          sandbox_module: resolve_client(Map.get(spec, :sandbox, :default))
+        }
 
-    send(self(), :provision)
-    {:ok, state}
+        persist(fn -> Persistence.record_session_started(session_id, spec) end)
+        persist(fn -> log_event(state, "session.started") end)
+
+        send(self(), :provision)
+        {:ok, state}
+
+      {:error, reasons} ->
+        Logger.error("[Forge.Harness] Resource validation failed for #{session_id}: #{inspect(reasons)}")
+        {:stop, {:resource_validation_failed, reasons}}
+    end
   end
 
   @impl true
@@ -63,10 +72,14 @@ defmodule JidoClaw.Forge.Harness do
     persist(fn -> log_event(state, "sandbox.provisioning") end)
     persist(fn -> update_phase(state, :provisioning) end)
 
+    resources = Map.get(state.spec, :resources, [])
+    resource_mounts = ResourceProvisioner.file_mount_specs(resources)
+
     sandbox_spec =
       state.spec
       |> Map.get(:sandbox_spec, %{})
       |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
+      |> merge_resource_mounts(resource_mounts)
 
     case state.sandbox_module.create(sandbox_spec) do
       {:ok, client, sandbox_id} ->
@@ -100,14 +113,21 @@ defmodule JidoClaw.Forge.Harness do
       Sandbox.inject_env(state.client, env)
     end
 
-    bootstrap_steps = Map.get(state.spec, :bootstrap_steps, [])
+    # Provision declarative resources (git repos, env vars, secrets)
+    # File mounts are already handled at sandbox creation time.
+    resources = Map.get(state.spec, :resources, [])
 
-    case Bootstrap.execute(state.client, bootstrap_steps) do
-      :ok ->
-        persist(fn -> log_event(state, "bootstrap.completed") end)
-        new_state = %{state | state: :initializing}
-        send(self(), :init_runner)
-        {:noreply, new_state}
+    with :ok <- ResourceProvisioner.provision_all(state.client, resources),
+         :ok <- run_bootstrap_steps(state) do
+      persist(fn -> log_event(state, "bootstrap.completed") end)
+      new_state = %{state | state: :initializing}
+      send(self(), :init_runner)
+      {:noreply, new_state}
+    else
+      {:error, resource, reason} when is_map(resource) ->
+        persist(fn -> log_event(state, "resource.provision_failed", %{resource: inspect(resource), reason: inspect(reason)}) end)
+        Logger.error("[Forge.Harness] Resource provisioning failed: #{inspect(reason)}")
+        {:stop, {:resource_provision_failed, reason}, state}
 
       {:error, step, reason} ->
         persist(fn -> log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)}) end)
@@ -265,6 +285,13 @@ defmodule JidoClaw.Forge.Harness do
       )
     end)
 
+    persist(fn ->
+      Persistence.save_checkpoint(state.session_id, state.iteration, new_state.runner_state, %{
+        resources: Map.get(state.spec, :resources, []),
+        bootstrap_steps: Map.get(state.spec, :bootstrap_steps, [])
+      })
+    end)
+
     persist(fn -> update_phase(new_state, new_state.state) end)
 
     GenServer.reply(from, {:ok, result})
@@ -337,4 +364,16 @@ defmodule JidoClaw.Forge.Harness do
   defp resolve_client(:fake), do: JidoClaw.Forge.Sandbox.Local
   defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module
+
+  defp merge_resource_mounts(sandbox_spec, []), do: sandbox_spec
+
+  defp merge_resource_mounts(sandbox_spec, mounts) do
+    existing = Map.get(sandbox_spec, :extra_mounts, [])
+    Map.put(sandbox_spec, :extra_mounts, existing ++ mounts)
+  end
+
+  defp run_bootstrap_steps(state) do
+    bootstrap_steps = Map.get(state.spec, :bootstrap_steps, [])
+    Bootstrap.execute(state.client, bootstrap_steps)
+  end
 end
