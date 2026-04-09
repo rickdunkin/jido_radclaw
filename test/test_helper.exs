@@ -1,1 +1,1 @@
-ExUnit.start()
+ExUnit.start(exclude: [:docker_sandbox])

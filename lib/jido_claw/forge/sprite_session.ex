@@ -57,9 +57,12 @@ defmodule JidoClaw.Forge.SpriteSession do
 
   @impl true
   def handle_info(:provision, state) do
-    sprite_spec = Map.get(state.spec, :sprite_spec, %{})
+    sprite_spec =
+      state.spec
+      |> Map.get(:sprite_spec, %{})
+      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
 
-    case SpriteClient.create(sprite_spec) do
+    case state.sprite_client_module.create(sprite_spec) do
       {:ok, client, sprite_id} ->
         new_state = %{state | client: client, sprite_id: sprite_id, state: :bootstrapping}
 
@@ -241,6 +244,6 @@ defmodule JidoClaw.Forge.SpriteSession do
 
   defp resolve_client(:default), do: SpriteClient
   defp resolve_client(:fake), do: JidoClaw.Forge.SpriteClient.Fake
-  defp resolve_client(:live), do: JidoClaw.Forge.SpriteClient.Live
+  defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.SpriteClient.DockerSandbox
   defp resolve_client(module) when is_atom(module), do: module
 end

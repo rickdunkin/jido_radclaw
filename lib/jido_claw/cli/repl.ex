@@ -66,6 +66,29 @@ defmodule JidoClaw.CLI.Repl do
         IO.puts("")
     end
 
+    # Check Discord status — gateway connection is async, so poll briefly
+    if System.get_env("DISCORD_BOT_TOKEN") do
+      case Process.whereis(Nostrum.ConsumerGroup) do
+        nil ->
+          IO.puts("  \e[31m✗\e[0m  Discord bot failed to start")
+          IO.puts("")
+
+        _pid ->
+          bot_user = poll_discord_ready(10, 500)
+
+          case bot_user do
+            %{username: name} ->
+              IO.puts("  \e[32m✓\e[0m  Discord bot online as \e[1m#{name}\e[0m")
+              IO.puts("")
+
+            nil ->
+              IO.puts("  \e[31m✗\e[0m  Discord bot failed to connect")
+              IO.puts("  \e[2m   Check your DISCORD_BOT_TOKEN and that privileged intents are enabled\e[0m")
+              IO.puts("")
+          end
+      end
+    end
+
     # Start agent
     case JidoClaw.Jido.start_agent(Agent, id: "main") do
       {:ok, pid} ->
@@ -305,6 +328,25 @@ defmodule JidoClaw.CLI.Repl do
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
   defp format_elapsed(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   defp format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
+
+  defp poll_discord_ready(0, _interval), do: nil
+
+  defp poll_discord_ready(attempts, interval) do
+    case Code.ensure_loaded(Nostrum.Cache.Me) do
+      {:module, _} ->
+        case Nostrum.Cache.Me.get() do
+          nil ->
+            Process.sleep(interval)
+            poll_discord_ready(attempts - 1, interval)
+
+          user ->
+            user
+        end
+
+      _ ->
+        nil
+    end
+  end
 
   defp model_name(model) do
     case String.split(model, ":", parts: 2) do

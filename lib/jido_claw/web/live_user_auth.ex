@@ -28,15 +28,14 @@ defmodule JidoClaw.Web.LiveUserAuth do
   end
 
   defp assign_current_user(socket, session) do
-    case session["user_token"] do
-      nil ->
-        assign(socket, :current_user, nil)
-
-      token ->
-        case AshAuthentication.subject_to_user(token, JidoClaw.Accounts.User, JidoClaw.Accounts) do
-          {:ok, user} -> assign(socket, :current_user, user)
-          _ -> assign(socket, :current_user, nil)
-        end
+    case AshAuthentication.Plug.Helpers.authenticate_resource_from_session(
+           JidoClaw.Accounts.User,
+           session,
+           :jido_claw,
+           []
+         ) do
+      {:ok, user} -> assign(socket, :current_user, user)
+      :error -> assign(socket, :current_user, nil)
     end
   end
 end

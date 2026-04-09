@@ -3,7 +3,7 @@ defmodule JidoClaw.Web.SignInLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, page_title: "Sign In", email: "", password: "", error: nil)}
+    {:ok, assign(socket, page_title: "Sign In", email: "", password: "", error: nil, trigger_action: false)}
   end
 
   @impl true
@@ -17,7 +17,14 @@ defmodule JidoClaw.Web.SignInLive do
           <%= @error %>
         </div>
 
-        <form phx-submit="sign_in" style="display: flex; flex-direction: column; gap: 1rem;">
+        <form
+          phx-submit="sign_in"
+          phx-trigger-action={@trigger_action}
+          action="/auth/sign-in"
+          method="post"
+          style="display: flex; flex-direction: column; gap: 1rem;"
+        >
+          <input type="hidden" name="_csrf_token" value={Phoenix.Controller.get_csrf_token()} />
           <div>
             <label style="display: block; color: var(--muted); font-size: 0.875rem; margin-bottom: 0.25rem;">Email</label>
             <input type="email" name="email" value={@email} phx-change="validate" required />
@@ -39,7 +46,11 @@ defmodule JidoClaw.Web.SignInLive do
   end
 
   @impl true
-  def handle_event("sign_in", %{"email" => _email, "password" => _password}, socket) do
-    {:noreply, assign(socket, error: "Authentication not yet wired — use API key auth")}
+  def handle_event("sign_in", %{"email" => email, "password" => _password}, socket) do
+    if String.trim(email) == "" do
+      {:noreply, assign(socket, error: "Email is required")}
+    else
+      {:noreply, assign(socket, trigger_action: true)}
+    end
   end
 end

@@ -1,6 +1,6 @@
 #!/bin/bash
-# JidoClaw installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/agentjido/jido_claw/main/install.sh | bash
+# JidoCRADlaw installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/rickdunkin/jido_radclaw/main/install.sh | bash
 
 set -e
 
@@ -25,7 +25,7 @@ die()  { printf "${RED}✗${RESET}  %s\n" "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 JIDO_HOME="${JIDO_HOME:-$HOME/.jido}"
 JIDO_BIN="${JIDO_BIN:-$HOME/.local/bin}"
-JIDO_REPO="https://github.com/agentjido/jido_claw.git"
+JIDO_REPO="https://github.com/rickdunkin/jido_radclaw.git"
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -36,7 +36,7 @@ ARCH="$(uname -m)"
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
-printf "\n${BOLD}${CYAN}JidoClaw${RESET} — Elixir/OTP AI Agent Platform\n"
+printf "\n${BOLD}${CYAN}JidoRADClaw${RESET} — Elixir/OTP AI Agent Platform\n"
 printf "${DIM}  OS: ${OS} ${ARCH}${RESET}\n\n"
 
 # ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ ok "Erlang ${_otp:-OTP detected}"
 # 3. Clone or update source
 # ---------------------------------------------------------------------------
 printf "\n"
-info "Setting up JidoClaw source at ${BOLD}$JIDO_HOME${RESET}..."
+info "Setting up JidoRADClaw source at ${BOLD}$JIDO_HOME${RESET}..."
 
 if [ -d "$JIDO_HOME/.git" ]; then
   info "Existing installation found — pulling latest changes..."
@@ -217,7 +217,7 @@ mix deps.get
 ok "Dependencies installed"
 
 # Compile everything
-info "Compiling JidoClaw + dependencies..."
+info "Compiling JidoRADClaw + dependencies..."
 mix compile
 ok "Build complete"
 
@@ -279,8 +279,8 @@ esac
 # 7. Success
 # ---------------------------------------------------------------------------
 printf "\n"
-printf "  ${BOLD}${GREEN}JidoClaw installed!${RESET}\n\n"
+printf "  ${BOLD}${GREEN}JidoRADClaw installed!${RESET}\n\n"
 printf "  ${BOLD}Run:${RESET}  ${CYAN}jido${RESET}\n"
 printf "  ${DIM}First run launches the setup wizard — pick your LLM provider,${RESET}\n"
 printf "  ${DIM}paste your API key, choose a model, and you're in.${RESET}\n\n"
-printf "  ${DIM}Update anytime:${RESET}  curl -fsSL https://raw.githubusercontent.com/agentjido/jido_claw/main/install.sh | bash\n\n"
+printf "  ${DIM}Update anytime:${RESET}  curl -fsSL https://raw.githubusercontent.com/rickdunkin/jido_radclaw/main/install.sh | bash\n\n"

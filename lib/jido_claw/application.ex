@@ -14,21 +14,37 @@ defmodule JidoClaw.Application do
     ReqLLM.Providers.register(JidoClaw.Providers.Ollama)
 
     children =
-      core_children() ++
-        platform_children() ++
-        gateway_children() ++
-        cluster_children() ++
+      List.flatten([
+        core_children(),
+        platform_children(),
+        gateway_children(),
+        cluster_children(),
         mcp_children()
+      ])
 
     opts = [strategy: :one_for_one, name: JidoClaw.Supervisor]
     result = Supervisor.start_link(children, opts)
 
     # Start Nostrum (Discord) only when token is configured — it's runtime: false
-    # so it won't auto-start, we start it manually after .env is loaded
-    if System.get_env("DISCORD_BOT_TOKEN") do
+    # so it won't auto-start, we start it manually after .env is loaded.
+    # Config must be applied here at runtime because config.exs evaluates at
+    # compile time before .env is available.
+    # Nostrum must start FIRST (initializes the ConsumerGroup :pg scope),
+    # then the consumer joins the group. Shard sessions wait 5s for consumers.
+    if discord_token = System.get_env("DISCORD_BOT_TOKEN") do
+      Application.put_env(:nostrum, :token, discord_token)
+      Application.put_env(:nostrum, :gateway_intents, :all)
+      Application.put_env(:nostrum, :num_shards, :auto)
+
       case Application.ensure_all_started(:nostrum) do
-        {:ok, _} -> Logger.info("[JidoClaw] Discord adapter started")
-        {:error, reason} -> Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
+        {:ok, _} ->
+          case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
+            {:ok, _} -> Logger.warning("[JidoClaw] Discord adapter started")
+            {:error, reason} -> Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
+          end
+
+        {:error, reason} ->
+          Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
       end
     end
 
@@ -52,8 +68,8 @@ defmodule JidoClaw.Application do
       {Registry, keys: :unique, name: JidoClaw.Forge.SessionRegistry},
       {DynamicSupervisor, name: JidoClaw.Forge.SpriteSupervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: JidoClaw.Forge.ExecSessionSupervisor, strategy: :one_for_one},
-      JidoClaw.Forge.Manager,
-      JidoClaw.Forge.SpriteClient.Fake,
+      JidoClaw.Forge.Manager
+    ] ++ forge_sprite_children() ++ [
 
       # PubSub for real-time events
       {Phoenix.PubSub, name: JidoClaw.PubSub},
@@ -122,6 +138,17 @@ defmodule JidoClaw.Application do
 
   defp project_dir do
     Application.get_env(:jido_claw, :project_dir, File.cwd!())
+  end
+
+  # -- Forge sprite client: conditional on config --
+  defp forge_sprite_children do
+    case Application.get_env(:jido_claw, :forge_sprite_client) do
+      JidoClaw.Forge.SpriteClient.DockerSandbox ->
+        [JidoClaw.Forge.SandboxInit]
+
+      _ ->
+        [JidoClaw.Forge.SpriteClient.Fake]
+    end
   end
 
   # -- Platform: no extra children needed --

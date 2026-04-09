@@ -11,6 +11,18 @@ defmodule JidoClaw.Forge.SpriteClient do
     impl_for(client).spawn(client, command, args, opts)
   end
 
+  def run(client, agent_type, args, opts \\ []) do
+    mod = impl_for(client)
+
+    if function_exported?(mod, :run, 4) do
+      mod.run(client, agent_type, args, opts)
+    else
+      # Fallback to exec for clients that don't implement run
+      command = Enum.join([agent_type | args], " ")
+      mod.exec(client, command, opts)
+    end
+  end
+
   def write_file(client, path, content) do
     impl_for(client).write_file(client, path, content)
   end

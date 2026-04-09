@@ -112,7 +112,7 @@ defmodule JidoClaw.Accounts.User do
 
     create :register_with_password do
       description "Register a new user with email and password."
-      argument :email, :ci_string, allow_nil?: false
+      accept [:email]
       argument :password, :string, allow_nil?: false, sensitive?: true
       argument :password_confirmation, :string, allow_nil?: false, sensitive?: true
       validate AshAuthentication.Strategy.Password.PasswordConfirmationValidation

@@ -32,11 +32,28 @@ defmodule JidoClaw do
     # Save user message
     JidoClaw.Session.Worker.add_message(tenant_id, session_id, :user, message)
 
-    # Route to Jido agent
-    case JidoClaw.Jido.start_agent(JidoClaw.Agent, id: session_id) do
-      {:ok, agent_pid} ->
+    # Route to Jido agent — reuse existing agent or start a new one
+    agent_pid =
+      case Jido.whereis(JidoClaw.Jido, session_id) do
+        nil ->
+          case JidoClaw.Jido.start_agent(JidoClaw.Agent, id: session_id) do
+            {:ok, pid} -> pid
+            {:error, {:already_started, pid}} -> pid
+            {:error, {:already_registered, pid}} -> pid
+            {:error, reason} -> {:error, reason}
+          end
+
+        pid ->
+          pid
+      end
+
+    case agent_pid do
+      {:error, reason} ->
+        {:error, reason}
+
+      pid when is_pid(pid) ->
         try do
-          result = JidoClaw.Agent.ask_sync(agent_pid, message,
+          result = JidoClaw.Agent.ask_sync(pid, message,
             timeout: 120_000,
             tool_context: %{project_dir: File.cwd!()}
           )
@@ -67,32 +84,6 @@ defmodule JidoClaw do
         catch
           :exit, reason -> {:error, inspect(reason)}
         end
-
-      {:error, {:already_started, pid}} ->
-        # Agent already running, send message directly
-        try do
-          case JidoClaw.Agent.ask_sync(pid, message,
-                 timeout: 120_000,
-                 tool_context: %{project_dir: File.cwd!()}) do
-            {:ok, answer} when is_binary(answer) ->
-              JidoClaw.Session.Worker.add_message(tenant_id, session_id, :assistant, answer)
-              {:ok, answer}
-
-            {:ok, other} ->
-              text = inspect(other)
-              {:ok, text}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-        rescue
-          e -> {:error, Exception.message(e)}
-        catch
-          :exit, reason -> {:error, inspect(reason)}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

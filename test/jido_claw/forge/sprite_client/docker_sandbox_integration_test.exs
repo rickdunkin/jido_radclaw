@@ -1,0 +1,111 @@
+defmodule JidoClaw.Forge.SpriteClient.DockerSandboxIntegrationTest do
+  use ExUnit.Case
+
+  @moduletag :docker_sandbox
+
+  alias JidoClaw.Forge.SpriteClient.DockerSandbox
+
+  setup_all do
+    case System.cmd("sbx", ["version"], stderr_to_stdout: true) do
+      {_version, 0} -> :ok
+      _ -> raise ExUnit.DocTest.Error, "sbx CLI not available — skipping Docker Sandbox integration tests"
+    end
+  end
+
+  setup do
+    # Each test gets a fresh sandbox
+    spec = %{runner: :shell}
+
+    case DockerSandbox.create(spec) do
+      {:ok, client, sprite_id} ->
+        on_exit(fn -> DockerSandbox.destroy(client, sprite_id) end)
+        %{client: client, sprite_id: sprite_id}
+
+      {:error, reason} ->
+        raise "Failed to create sandbox: #{inspect(reason)}"
+    end
+  end
+
+  describe "full lifecycle" do
+    test "create, exec, and destroy", %{client: client} do
+      {output, 0} = DockerSandbox.exec(client, "echo hello", [])
+      assert String.trim(output) == "hello"
+    end
+
+    test "exec returns non-zero exit code on failure", %{client: client} do
+      {_output, code} = DockerSandbox.exec(client, "exit 42", [])
+      assert code == 42
+    end
+
+    test "exec runs shell commands", %{client: client} do
+      {output, 0} = DockerSandbox.exec(client, "echo $((2 + 3))", [])
+      assert String.trim(output) == "5"
+    end
+  end
+
+  describe "file operations" do
+    test "write_file and read_file round-trip", %{client: client} do
+      content = "integration test content #{System.unique_integer()}"
+      assert :ok = DockerSandbox.write_file(client, "test.txt", content)
+      assert {:ok, ^content} = DockerSandbox.read_file(client, "test.txt")
+    end
+
+    test "files are visible inside sandbox via exec", %{client: client} do
+      DockerSandbox.write_file(client, "visible.txt", "from host")
+      {output, 0} = DockerSandbox.exec(client, "cat #{client.workspace_dir}/visible.txt", [])
+      assert String.trim(output) == "from host"
+    end
+  end
+
+  describe "environment injection" do
+    test "inject_env makes vars available in exec", %{client: client} do
+      assert :ok = DockerSandbox.inject_env(client, %{"TEST_VAR" => "hello_world"})
+      {output, 0} = DockerSandbox.exec(client, "echo $TEST_VAR", [])
+      assert String.trim(output) == "hello_world"
+    end
+
+    test "inject_env merges multiple calls", %{client: client} do
+      assert :ok = DockerSandbox.inject_env(client, %{"VAR_A" => "a"})
+      assert :ok = DockerSandbox.inject_env(client, %{"VAR_B" => "b"})
+      {output, 0} = DockerSandbox.exec(client, "echo $VAR_A $VAR_B", [])
+      assert String.trim(output) == "a b"
+    end
+  end
+
+  describe "timeout handling" do
+    test "exec with timeout returns 124 on timeout", %{client: client} do
+      {output, code} = DockerSandbox.exec(client, "sleep 30", timeout: 1_000)
+      assert code == 124
+      assert output =~ "timeout"
+    end
+  end
+
+  describe "destroy idempotency" do
+    test "destroy on already-destroyed sandbox does not crash", %{client: client, sprite_id: sprite_id} do
+      assert :ok = DockerSandbox.destroy(client, sprite_id)
+      # Second destroy should also return :ok (sandbox already gone)
+      assert :ok = DockerSandbox.destroy(client, sprite_id)
+    end
+  end
+
+  describe "spawn" do
+    test "spawn returns a port", %{client: client} do
+      assert {:ok, port} = DockerSandbox.spawn(client, "echo", ["spawn_test"], [])
+      assert is_port(port)
+
+      # Collect output
+      receive do
+        {^port, {:data, data}} -> assert data =~ "spawn_test"
+      after
+        5_000 -> flunk("Timed out waiting for port output")
+      end
+
+      # Wait for exit
+      receive do
+        {^port, {:exit_status, 0}} -> :ok
+      after
+        5_000 -> flunk("Timed out waiting for port exit")
+      end
+    end
+  end
+end

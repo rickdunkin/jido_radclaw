@@ -49,6 +49,24 @@ defmodule JidoClaw.Forge.SpriteClient.Fake do
   end
 
   @impl true
+  def run(%__MODULE__{} = client, agent_type, args, _opts) do
+    case System.find_executable(agent_type) do
+      nil ->
+        {"#{agent_type}: command not found", 127}
+
+      executable ->
+        # Split args on "--" to get only the passthrough args
+        passthrough =
+          case Enum.split_while(args, &(&1 != "--")) do
+            {_before, ["--" | rest]} -> rest
+            {all, []} -> all
+          end
+
+        exec(client, "#{executable} #{Enum.join(passthrough, " ")}", [])
+    end
+  end
+
+  @impl true
   def spawn(%__MODULE__{} = _client, command, args, _opts) do
     port = Port.open({:spawn_executable, System.find_executable(command)},
       [:binary, :exit_status, args: args])

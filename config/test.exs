@@ -4,8 +4,8 @@ config :jido_claw, mode: :cli
 config :logger, level: :warning
 
 config :jido_claw, JidoClaw.Repo,
-  username: "postgres",
-  password: "postgres",
+  username: "rhl",
+  password: "",
   hostname: "localhost",
   database: "jido_claw_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox
