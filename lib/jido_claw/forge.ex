@@ -1,5 +1,5 @@
 defmodule JidoClaw.Forge do
-  alias JidoClaw.Forge.{Manager, Harness}
+  alias JidoClaw.Forge.{Manager, Harness, Persistence}
 
   defmodule SessionHandle do
     defstruct [:session_id, :pid]
@@ -13,6 +13,21 @@ defmodule JidoClaw.Forge do
     case Manager.get_session(session_id) do
       {:ok, pid} -> {:ok, %SessionHandle{session_id: session_id, pid: pid}}
       error -> error
+    end
+  end
+
+  def wake(session_id) do
+    with db_session when not is_nil(db_session) <- Persistence.find_session(session_id),
+         true <- db_session.phase not in [:completed, :cancelled],
+         checkpoint when not is_nil(checkpoint) <- Persistence.latest_checkpoint(session_id) do
+      spec =
+        db_session.spec
+        |> Map.put(:resume_checkpoint_id, checkpoint.id)
+
+      Manager.start_session(session_id, spec)
+    else
+      nil -> {:error, :no_checkpoint}
+      false -> {:error, :session_terminal}
     end
   end
 

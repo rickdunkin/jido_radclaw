@@ -47,18 +47,30 @@ defmodule JidoClaw.Forge.Harness do
 
     case ResourceProvisioner.validate_resources(resources) do
       :ok ->
+        resume_checkpoint_id = Map.get(spec, :resume_checkpoint_id)
+
         state = %__MODULE__{
           session_id: session_id,
           spec: spec,
           started_at: DateTime.utc_now(),
           last_activity: DateTime.utc_now(),
-          sandbox_module: resolve_client(Map.get(spec, :sandbox, :default))
+          sandbox_module: resolve_client(Map.get(spec, :sandbox, :default)),
+          resume_checkpoint_id: resume_checkpoint_id
         }
 
         persist(fn -> Persistence.record_session_started(session_id, spec) end)
         persist(fn -> log_event(state, "session.started") end)
 
-        send(self(), :provision)
+        case resume_checkpoint_id do
+          nil ->
+            send(self(), :provision)
+
+          checkpoint_id ->
+            persist(fn -> log_event(state, "session.recovering", %{checkpoint_id: checkpoint_id}) end)
+            persist(fn -> update_phase(state, :resuming) end)
+            send(self(), {:recover, checkpoint_id})
+        end
+
         {:ok, state}
 
       {:error, reasons} ->
@@ -160,6 +172,31 @@ defmodule JidoClaw.Forge.Harness do
         persist(fn -> log_event(state, "runner.init_failed", %{reason: inspect(reason)}) end)
         Logger.error("[Forge.Harness] Runner init failed: #{inspect(reason)}")
         {:stop, {:runner_init_failed, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:recover, checkpoint_id}, state) do
+    persist(fn -> log_event(state, "recovery.started", %{checkpoint_id: checkpoint_id}) end)
+
+    with checkpoint when not is_nil(checkpoint) <- load_checkpoint(checkpoint_id),
+         {:ok, state} <- recover_provision(state),
+         {:ok, state} <- recover_bootstrap(state),
+         {:ok, state} <- recover_runner(state, checkpoint) do
+      persist(fn -> log_event(state, "recovery.completed") end)
+      persist(fn -> update_phase(state, :ready) end)
+      PubSub.broadcast(state.session_id, {:ready, state.session_id})
+      {:noreply, state}
+    else
+      nil ->
+        persist(fn -> log_event(state, "recovery.failed", %{reason: "checkpoint_not_found"}) end)
+        Logger.error("[Forge.Harness] Recovery failed for #{state.session_id}: checkpoint #{checkpoint_id} not found")
+        {:stop, {:recovery_failed, :checkpoint_not_found}, state}
+
+      {:error, reason} ->
+        persist(fn -> log_event(state, "recovery.failed", %{reason: inspect(reason)}) end)
+        Logger.error("[Forge.Harness] Recovery failed for #{state.session_id}: #{inspect(reason)}")
+        {:stop, {:recovery_failed, reason}, state}
     end
   end
 
@@ -286,9 +323,11 @@ defmodule JidoClaw.Forge.Harness do
     end)
 
     persist(fn ->
-      Persistence.save_checkpoint(state.session_id, state.iteration, new_state.runner_state, %{
+      snapshot = serialize_runner_state(state.runner, new_state.runner_state)
+      Persistence.save_checkpoint(state.session_id, state.iteration, snapshot, %{
         resources: Map.get(state.spec, :resources, []),
-        bootstrap_steps: Map.get(state.spec, :bootstrap_steps, [])
+        bootstrap_steps: Map.get(state.spec, :bootstrap_steps, []),
+        output_sequence: new_state.output_sequence
       })
     end)
 
@@ -319,7 +358,12 @@ defmodule JidoClaw.Forge.Harness do
           :ok
 
         _ ->
-          terminal_phase = if reason in [:normal, :shutdown], do: :completed, else: :failed
+          # Only :normal means the session genuinely finished its work.
+          # :shutdown and {:shutdown, _} may be external kills (e.g.
+          # Process.exit(pid, :shutdown)) that should remain recoverable,
+          # so mark them :failed. Manager.stop_session already sets
+          # :cancelled before terminating — that's handled above.
+          terminal_phase = if reason == :normal, do: :completed, else: :failed
           update_phase(state, terminal_phase)
       end
     end)
@@ -335,6 +379,107 @@ defmodule JidoClaw.Forge.Harness do
     end
 
     :ok
+  end
+
+  # Recovery helpers
+
+  defp load_checkpoint(checkpoint_id) do
+    try do
+      JidoClaw.Forge.Resources.Checkpoint
+      |> Ash.get!(checkpoint_id, authorize?: false)
+    rescue
+      _ -> nil
+    end
+  end
+
+  defp recover_provision(state) do
+    resources = Map.get(state.spec, :resources, [])
+    resource_mounts = ResourceProvisioner.file_mount_specs(resources)
+
+    sandbox_spec =
+      state.spec
+      |> Map.get(:sandbox_spec, %{})
+      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
+      |> merge_resource_mounts(resource_mounts)
+
+    case state.sandbox_module.create(sandbox_spec) do
+      {:ok, client, sandbox_id} ->
+        new_state = %{state | client: client, sandbox_id: sandbox_id, state: :bootstrapping}
+        persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
+        {:ok, new_state}
+
+      {:error, reason} ->
+        {:error, {:provision_failed, reason}}
+    end
+  end
+
+  defp recover_bootstrap(state) do
+    env = Map.get(state.spec, :env, %{})
+    if map_size(env) > 0 do
+      Sandbox.inject_env(state.client, env)
+    end
+
+    resources = Map.get(state.spec, :resources, [])
+
+    with :ok <- ResourceProvisioner.provision_all(state.client, resources),
+         :ok <- run_bootstrap_steps(state) do
+      {:ok, %{state | state: :initializing}}
+    else
+      {:error, _resource_or_step, reason} -> {:error, {:bootstrap_failed, reason}}
+      {:error, reason} -> {:error, {:bootstrap_failed, reason}}
+    end
+  end
+
+  defp recover_runner(state, checkpoint) do
+    runner_module = resolve_runner(Map.get(state.spec, :runner, :shell))
+    runner_config = Map.get(state.spec, :runner_config, %{})
+
+    case runner_module.init(state.client, runner_config) do
+      init_result when init_result == :ok or is_tuple(init_result) ->
+        base_runner_state = case init_result do
+          :ok -> runner_config
+          {:ok, rs} -> rs
+        end
+
+        # Overlay checkpoint state using restore_state callback if available,
+        # otherwise merge the snapshot directly
+        snapshot = checkpoint.runner_state_snapshot || %{}
+
+        runner_state =
+          if function_exported?(runner_module, :restore_state, 2) do
+            case runner_module.restore_state(base_runner_state, snapshot) do
+              {:ok, restored} -> restored
+              {:error, _} -> Map.merge(base_runner_state, snapshot)
+            end
+          else
+            Map.merge(base_runner_state, snapshot)
+          end
+
+        checkpoint_metadata = checkpoint.metadata || %{}
+
+        new_state = %{state |
+          runner: runner_module,
+          runner_state: runner_state,
+          state: :ready,
+          iteration: checkpoint.exec_session_sequence || 0,
+          output_sequence: Map.get(checkpoint_metadata, "output_sequence") ||
+                           Map.get(checkpoint_metadata, :output_sequence) ||
+                           checkpoint.exec_session_sequence || 0
+        }
+
+        {:ok, new_state}
+
+      {:error, reason} ->
+        {:error, {:runner_init_failed, reason}}
+    end
+  end
+
+  defp serialize_runner_state(runner_module, runner_state) do
+    if runner_module && function_exported?(runner_module, :serialize_state, 1) do
+      runner_module.serialize_state(runner_state)
+    else
+      runner_state
+    end
   end
 
   # Persistence helpers — fire-and-forget, never crash the Harness

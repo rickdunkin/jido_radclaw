@@ -5,9 +5,12 @@ defmodule JidoClaw.Forge.Manager do
   @registry JidoClaw.Forge.SessionRegistry
   @supervisor JidoClaw.Forge.HarnessSupervisor
 
+  @max_recovery_attempts 3
+
   defstruct sessions: MapSet.new(),
             session_runners: %{},
             runner_counts: %{},
+            recovery_attempts: %{},
             max_sessions: 50,
             max_per_runner: %{claude_code: 10, shell: 20, workflow: 10}
 
@@ -113,7 +116,63 @@ defmodule JidoClaw.Forge.Manager do
     end)
 
     new_state = Enum.reduce(dead, state, &decrement_session(&2, &1))
+
+    # Always schedule recovery checks for dead sessions. The DB phase is the
+    # authority on whether recovery is appropriate — Manager.stop_session already
+    # sets :cancelled before terminating, so recoverable?/1 will reject those.
+    # This avoids the ambiguity of :shutdown (could be user-initiated cancel or
+    # external kill like Process.exit(pid, :shutdown)).
+    Enum.each(dead, fn session_id ->
+      send(self(), {:attempt_recovery, session_id})
+    end)
+
     {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:attempt_recovery, session_id}, state) do
+    attempts = Map.get(state.recovery_attempts, session_id, 0)
+
+    if attempts < @max_recovery_attempts && recoverable?(session_id) do
+      Logger.info("[Forge.Manager] Attempting recovery for #{session_id} (attempt #{attempts + 1}/#{@max_recovery_attempts})")
+      JidoClaw.Forge.PubSub.broadcast_session_event({:session_recovering, session_id})
+
+      new_attempts = Map.put(state.recovery_attempts, session_id, attempts + 1)
+
+      # Spawn a Task so Forge.wake -> Manager.start_session doesn't deadlock
+      # (start_session does GenServer.call back to this process)
+      Task.start(fn ->
+        case JidoClaw.Forge.wake(session_id) do
+          {:ok, _handle} ->
+            Logger.info("[Forge.Manager] Recovery succeeded for #{session_id}")
+
+          {:error, reason} ->
+            Logger.warning("[Forge.Manager] Recovery failed for #{session_id}: #{inspect(reason)}")
+        end
+      end)
+
+      {:noreply, %{state | recovery_attempts: new_attempts}}
+    else
+      if attempts >= @max_recovery_attempts do
+        Logger.warning("[Forge.Manager] Recovery exhausted for #{session_id} after #{attempts} attempts")
+        JidoClaw.Forge.PubSub.broadcast_session_event({:session_recovery_exhausted, session_id})
+      end
+
+      {:noreply, state}
+    end
+  end
+
+  defp recoverable?(session_id) do
+    try do
+      db_session = JidoClaw.Forge.Persistence.find_session(session_id)
+      checkpoint = JidoClaw.Forge.Persistence.latest_checkpoint(session_id)
+
+      db_session != nil &&
+        checkpoint != nil &&
+        db_session.phase in [:running, :ready, :needs_input, :resuming, :failed]
+    rescue
+      _ -> false
+    end
   end
 
   defp decrement_session(state, session_id) do

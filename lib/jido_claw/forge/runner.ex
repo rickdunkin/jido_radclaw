@@ -23,8 +23,10 @@ defmodule JidoClaw.Forge.Runner do
   @callback apply_input(sandbox(), input(), state()) :: :ok | {:error, term()}
   @callback handle_output(chunk(), stream(), state()) :: {:ok, events(), state()}
   @callback terminate(sandbox(), term()) :: :ok
+  @callback serialize_state(state()) :: map()
+  @callback restore_state(config(), snapshot :: map()) :: {:ok, state()} | {:error, term()}
 
-  @optional_callbacks [handle_output: 3, terminate: 2]
+  @optional_callbacks [handle_output: 3, terminate: 2, serialize_state: 1, restore_state: 2]
 
   def continue(output), do: %{status: :continue, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
   def done(output), do: %{status: :done, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
