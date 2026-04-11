@@ -10,7 +10,8 @@ defmodule JidoClaw.Forge.Harness do
     :session_id, :spec, :sandbox_id, :client, :runner, :runner_state,
     state: :starting, iteration: 0, output_sequence: 0,
     started_at: nil, last_activity: nil,
-    resume_checkpoint_id: nil, sandbox_module: nil
+    resume_checkpoint_id: nil, sandbox_module: nil,
+    sandbox_status: :none
   ]
 
   def start_link({session_id, spec, _opts}) do
@@ -61,15 +62,25 @@ defmodule JidoClaw.Forge.Harness do
         persist(fn -> Persistence.record_session_started(session_id, spec) end)
         persist(fn -> log_event(state, "session.started") end)
 
-        case resume_checkpoint_id do
-          nil ->
-            send(self(), :provision)
+        state =
+          case resume_checkpoint_id do
+            nil ->
+              if Map.get(spec, :deferred_provision, false) do
+                persist(fn -> log_event(state, "provision.deferred") end)
+                persist(fn -> update_phase(state, :ready) end)
+                PubSub.broadcast(state.session_id, {:ready, state.session_id})
+                %{state | state: :ready}
+              else
+                send(self(), :provision)
+                state
+              end
 
-          checkpoint_id ->
-            persist(fn -> log_event(state, "session.recovering", %{checkpoint_id: checkpoint_id}) end)
-            persist(fn -> update_phase(state, :resuming) end)
-            send(self(), {:recover, checkpoint_id})
-        end
+            checkpoint_id ->
+              persist(fn -> log_event(state, "session.recovering", %{checkpoint_id: checkpoint_id}) end)
+              persist(fn -> update_phase(state, :resuming) end)
+              send(self(), {:recover, checkpoint_id})
+              state
+          end
 
         {:ok, state}
 
@@ -81,6 +92,7 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_info(:provision, state) do
+    state = %{state | sandbox_status: :provisioning}
     persist(fn -> log_event(state, "sandbox.provisioning") end)
     persist(fn -> update_phase(state, :provisioning) end)
 
@@ -155,14 +167,14 @@ defmodule JidoClaw.Forge.Harness do
 
     case runner_module.init(state.client, runner_config) do
       :ok ->
-        new_state = %{state | runner: runner_module, runner_state: runner_config, state: :ready}
+        new_state = %{state | runner: runner_module, runner_state: runner_config, state: :ready, sandbox_status: :ready}
         persist(fn -> log_event(new_state, "runner.ready") end)
         persist(fn -> update_phase(new_state, :ready) end)
         PubSub.broadcast(state.session_id, {:ready, state.session_id})
         {:noreply, new_state}
 
       {:ok, runner_state} ->
-        new_state = %{state | runner: runner_module, runner_state: runner_state, state: :ready}
+        new_state = %{state | runner: runner_module, runner_state: runner_state, state: :ready, sandbox_status: :ready}
         persist(fn -> log_event(new_state, "runner.ready") end)
         persist(fn -> update_phase(new_state, :ready) end)
         PubSub.broadcast(state.session_id, {:ready, state.session_id})
@@ -183,6 +195,7 @@ defmodule JidoClaw.Forge.Harness do
          {:ok, state} <- recover_provision(state),
          {:ok, state} <- recover_bootstrap(state),
          {:ok, state} <- recover_runner(state, checkpoint) do
+      state = %{state | sandbox_status: :ready}
       persist(fn -> log_event(state, "recovery.completed") end)
       persist(fn -> update_phase(state, :ready) end)
       PubSub.broadcast(state.session_id, {:ready, state.session_id})
@@ -202,18 +215,24 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
-    new_state = %{state | state: :running, iteration: state.iteration + 1, last_activity: DateTime.utc_now()}
+    case ensure_sandbox(state) do
+      {:ok, state} ->
+        new_state = %{state | state: :running, iteration: state.iteration + 1, last_activity: DateTime.utc_now()}
 
-    persist(fn -> log_event(new_state, "iteration.started", %{iteration: new_state.iteration}) end)
-    persist(fn -> update_phase(new_state, :running) end)
+        persist(fn -> log_event(new_state, "iteration.started", %{iteration: new_state.iteration}) end)
+        persist(fn -> update_phase(new_state, :running) end)
 
-    session_pid = self()
-    Task.start(fn ->
-      result = state.runner.run_iteration(state.client, state.runner_state, opts)
-      GenServer.cast(session_pid, {:iteration_complete, result, from, new_state.iteration})
-    end)
+        session_pid = self()
+        Task.start(fn ->
+          result = state.runner.run_iteration(state.client, state.runner_state, opts)
+          GenServer.cast(session_pid, {:iteration_complete, result, from, new_state.iteration})
+        end)
 
-    {:noreply, new_state}
+        {:noreply, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, {:provision_failed, reason}}, state}
+    end
   end
 
   @impl true
@@ -223,11 +242,17 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_call({:exec, command, opts}, _from, %{state: :ready} = state) do
-    persist(fn -> log_event(state, "exec.started", %{command: command}) end)
-    result = Sandbox.exec(state.client, command, opts)
-    persist(fn -> log_event(state, "exec.completed", %{command: command}) end)
-    new_state = %{state | last_activity: DateTime.utc_now()}
-    {:reply, {:ok, result}, new_state}
+    case ensure_sandbox(state) do
+      {:ok, state} ->
+        persist(fn -> log_event(state, "exec.started", %{command: command}) end)
+        result = Sandbox.exec(state.client, command, opts)
+        persist(fn -> log_event(state, "exec.completed", %{command: command}) end)
+        new_state = %{state | last_activity: DateTime.utc_now()}
+        {:reply, {:ok, result}, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, {:provision_failed, reason}}, state}
+    end
   end
 
   @impl true
@@ -268,6 +293,7 @@ defmodule JidoClaw.Forge.Harness do
       iteration: state.iteration,
       runner: state.runner,
       sandbox_id: state.sandbox_id,
+      sandbox_status: state.sandbox_status,
       started_at: state.started_at,
       last_activity: state.last_activity
     }
@@ -471,6 +497,120 @@ defmodule JidoClaw.Forge.Harness do
 
       {:error, reason} ->
         {:error, {:runner_init_failed, reason}}
+    end
+  end
+
+  # Lazy provisioning helpers
+
+  defp ensure_sandbox(%{client: nil} = state), do: provision_sync(state)
+  defp ensure_sandbox(state), do: {:ok, state}
+
+  defp provision_sync(state) do
+    state = %{state | sandbox_status: :provisioning}
+    persist(fn -> log_event(state, "sandbox.provisioning") end)
+    persist(fn -> update_phase(state, :provisioning) end)
+
+    case provision_sandbox_sync(state) do
+      {:ok, provisioned} ->
+        case bootstrap_and_init_sync(provisioned) do
+          {:ok, _state} = ok ->
+            ok
+
+          {:error, reason} ->
+            destroy_sandbox(provisioned)
+            persist(fn -> update_phase(state, :ready) end)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        persist(fn -> update_phase(state, :ready) end)
+        {:error, reason}
+    end
+  end
+
+  defp provision_sandbox_sync(state) do
+    resources = Map.get(state.spec, :resources, [])
+    resource_mounts = ResourceProvisioner.file_mount_specs(resources)
+
+    sandbox_spec =
+      state.spec
+      |> Map.get(:sandbox_spec, %{})
+      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
+      |> merge_resource_mounts(resource_mounts)
+
+    case state.sandbox_module.create(sandbox_spec) do
+      {:ok, client, sandbox_id} ->
+        new_state = %{state | client: client, sandbox_id: sandbox_id, state: :bootstrapping}
+        persist(fn -> log_event(new_state, "sandbox.provisioned", %{sandbox_id: sandbox_id}) end)
+        persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
+        {:ok, new_state}
+
+      {:error, reason} ->
+        persist(fn -> log_event(state, "sandbox.provision_failed", %{reason: inspect(reason)}) end)
+        {:error, {:sandbox_creation_failed, reason}}
+    end
+  end
+
+  defp bootstrap_and_init_sync(state) do
+    with {:ok, state} <- bootstrap_sync(state),
+         {:ok, state} <- init_runner_sync(state) do
+      state = %{state | sandbox_status: :ready}
+      persist(fn -> log_event(state, "runner.ready") end)
+      persist(fn -> update_phase(state, :ready) end)
+      {:ok, state}
+    end
+  end
+
+  defp bootstrap_sync(state) do
+    persist(fn -> log_event(state, "bootstrap.started") end)
+    persist(fn -> update_phase(state, :bootstrapping) end)
+
+    env = Map.get(state.spec, :env, %{})
+    if map_size(env) > 0 do
+      Sandbox.inject_env(state.client, env)
+    end
+
+    resources = Map.get(state.spec, :resources, [])
+
+    with :ok <- ResourceProvisioner.provision_all(state.client, resources),
+         :ok <- run_bootstrap_steps(state) do
+      persist(fn -> log_event(state, "bootstrap.completed") end)
+      {:ok, %{state | state: :initializing}}
+    else
+      {:error, resource, reason} when is_map(resource) ->
+        persist(fn -> log_event(state, "resource.provision_failed", %{resource: inspect(resource), reason: inspect(reason)}) end)
+        {:error, {:resource_provision_failed, reason}}
+
+      {:error, step, reason} ->
+        persist(fn -> log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)}) end)
+        {:error, {:bootstrap_failed, reason}}
+
+      {:error, reason} ->
+        persist(fn -> log_event(state, "bootstrap.failed", %{reason: inspect(reason)}) end)
+        {:error, {:bootstrap_failed, reason}}
+    end
+  end
+
+  defp init_runner_sync(state) do
+    runner_module = resolve_runner(Map.get(state.spec, :runner, :shell))
+    runner_config = Map.get(state.spec, :runner_config, %{})
+
+    case runner_module.init(state.client, runner_config) do
+      :ok ->
+        {:ok, %{state | runner: runner_module, runner_state: runner_config, state: :ready}}
+
+      {:ok, runner_state} ->
+        {:ok, %{state | runner: runner_module, runner_state: runner_state, state: :ready}}
+
+      {:error, reason} ->
+        persist(fn -> log_event(state, "runner.init_failed", %{reason: inspect(reason)}) end)
+        {:error, {:runner_init_failed, reason}}
+    end
+  end
+
+  defp destroy_sandbox(state) do
+    if state.client && state.sandbox_id do
+      Sandbox.destroy(state.client, state.sandbox_id)
     end
   end
 
