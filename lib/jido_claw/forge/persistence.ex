@@ -25,7 +25,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
-  def record_execution_complete(session_id, output, exit_code, sequence) do
+  def record_execution_complete(session_id, output, exit_code, sequence, runner_status \\ nil) do
     if enabled?() do
       try do
         session = find_session(session_id)
@@ -37,7 +37,10 @@ defmodule JidoClaw.Forge.Persistence do
             command: "iteration"
           }, authorize?: false)
 
-          result_status = if exit_code == 0, do: :completed, else: :failed
+          result_status = case runner_status do
+            :error -> :failed
+            _ -> if exit_code == 0, do: :completed, else: :failed
+          end
 
           exec_session
           |> Ash.Changeset.for_update(:complete, %{
@@ -167,6 +170,53 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  def context_for_resume(session_id) do
+    if enabled?() do
+      try do
+        session = find_session(session_id)
+
+        if session do
+          checkpoint = latest_checkpoint(session_id)
+
+          events_since =
+            case checkpoint do
+              %{created_at: ts} ->
+                get_events(session_id, after_timestamp: ts)
+
+              _ ->
+                get_events(session_id)
+            end
+
+          all_events = get_events(session_id)
+
+          last_output = latest_exec_output(session)
+
+          error_events =
+            Enum.filter(all_events, fn e ->
+              String.contains?(e.event_type, "failed") or
+                iteration_error?(e)
+            end)
+
+          iteration_count =
+            Enum.count(all_events, &(&1.event_type == "iteration.completed"))
+
+          %{
+            session: session,
+            last_checkpoint: checkpoint,
+            events_since_checkpoint: events_since,
+            iteration_count: iteration_count,
+            last_output: last_output,
+            error_history: error_events
+          }
+        end
+      rescue
+        e ->
+          Logger.warning("[Forge.Persistence] Failed to build context_for_resume: #{inspect(e)}")
+          nil
+      end
+    end
+  end
+
   def find_session(session_id) do
     try do
       JidoClaw.Forge.Resources.Session
@@ -205,4 +255,25 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   defp truncate(str, _max), do: str
+
+  defp latest_exec_output(session) do
+    JidoClaw.Forge.Resources.ExecSession
+    |> Ash.Query.filter(session_id == ^session.id)
+    |> Ash.Query.sort(sequence: :desc)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(authorize?: false)
+    |> case do
+      [exec] -> %{output: exec.output, exit_code: exec.exit_code, status: exec.status, sequence: exec.sequence}
+      [] -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp iteration_error?(%{event_type: "iteration.completed", data: data}) do
+    status = Map.get(data, "status") || Map.get(data, :status)
+    status in [:error, "error"]
+  end
+
+  defp iteration_error?(_), do: false
 end

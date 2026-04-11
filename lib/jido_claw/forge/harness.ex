@@ -344,7 +344,8 @@ defmodule JidoClaw.Forge.Harness do
         state.session_id,
         Map.get(result, :output, ""),
         Map.get(result, :exit_code, 0),
-        state.iteration
+        state.iteration,
+        result.status
       )
     end)
 

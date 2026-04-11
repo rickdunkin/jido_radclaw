@@ -4,6 +4,8 @@ defmodule JidoClaw.Forge.Resources.Event do
     domain: JidoClaw.Forge.Domain,
     data_layer: AshPostgres.DataLayer
 
+  require Ash.Query
+
   postgres do
     table "forge_events"
     repo JidoClaw.Repo
