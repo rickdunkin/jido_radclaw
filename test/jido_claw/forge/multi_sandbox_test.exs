@@ -254,6 +254,8 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       ForgePubSub.subscribe(sid)
       marker_path = "/tmp/init_check_#{sid}"
 
+      on_exit(fn -> File.rm(marker_path) end)
+
       spec = %{
         runner: :shell,
         sandbox: :fake,

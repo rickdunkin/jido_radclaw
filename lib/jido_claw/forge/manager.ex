@@ -37,6 +37,29 @@ defmodule JidoClaw.Forge.Manager do
     end
   end
 
+  @doc """
+  Cluster-aware session lookup. Tries local Registry first, then falls back
+  to :pg process groups for cross-node discovery when clustering is enabled.
+  """
+  def get_session_cluster(session_id) do
+    case Registry.lookup(@registry, session_id) do
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        if Application.get_env(:jido_claw, :cluster_enabled, false) do
+          case :pg.get_members(:jido_claw, {:forge_session, session_id}) do
+            [pid | _] -> {:ok, pid}
+            [] -> {:error, :not_found}
+          end
+        else
+          {:error, :not_found}
+        end
+    end
+  catch
+    _, _ -> {:error, :not_found}
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -65,23 +88,30 @@ defmodule JidoClaw.Forge.Manager do
             {:reply, {:error, :already_exists}, state}
 
           [] ->
-            child_spec = {JidoClaw.Forge.Harness, {session_id, spec, []}}
-            case DynamicSupervisor.start_child(@supervisor, child_spec) do
-              {:ok, pid} ->
-                Process.monitor(pid)
-                handle = %{session_id: session_id, pid: pid}
+            if cluster_session_exists?(session_id) do
+              {:reply, {:error, :already_exists}, state}
+            else
+              child_spec = {JidoClaw.Forge.Harness, {session_id, spec, []}}
+              case DynamicSupervisor.start_child(@supervisor, child_spec) do
+                {:ok, pid} ->
+                  Process.monitor(pid)
+                  handle = %{session_id: session_id, pid: pid}
 
-                new_state = %{state |
-                  sessions: MapSet.put(state.sessions, session_id),
-                  session_runners: Map.put(state.session_runners, session_id, runner_type),
-                  runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
-                }
+                  new_state = %{state |
+                    sessions: MapSet.put(state.sessions, session_id),
+                    session_runners: Map.put(state.session_runners, session_id, runner_type),
+                    runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
+                  }
 
-                JidoClaw.Forge.PubSub.broadcast_session_event({:session_started, session_id})
-                {:reply, {:ok, handle}, new_state}
+                  JidoClaw.Forge.PubSub.broadcast_session_event({:session_started, session_id})
+                  {:reply, {:ok, handle}, new_state}
 
-              {:error, reason} ->
-                {:reply, {:error, reason}, state}
+                {:error, :already_claimed} ->
+                  {:reply, {:error, :already_exists}, state}
+
+                {:error, reason} ->
+                  {:reply, {:error, reason}, state}
+              end
             end
         end
     end
@@ -173,6 +203,19 @@ defmodule JidoClaw.Forge.Manager do
     rescue
       _ -> false
     end
+  end
+
+  defp cluster_session_exists?(session_id) do
+    if Application.get_env(:jido_claw, :cluster_enabled, false) do
+      case :pg.get_members(:jido_claw, {:forge_session, session_id}) do
+        [_ | _] -> true
+        [] -> false
+      end
+    else
+      false
+    end
+  catch
+    _, _ -> false
   end
 
   defp decrement_session(state, session_id) do

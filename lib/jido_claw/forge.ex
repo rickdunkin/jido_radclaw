@@ -10,7 +10,7 @@ defmodule JidoClaw.Forge do
   end
 
   def get_handle(session_id) do
-    case Manager.get_session(session_id) do
+    case Manager.get_session_cluster(session_id) do
       {:ok, pid} -> {:ok, %SessionHandle{session_id: session_id, pid: pid}}
       error -> error
     end

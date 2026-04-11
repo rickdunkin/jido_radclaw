@@ -25,6 +25,98 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @terminal_phases [:completed, :cancelled, :failed]
+  # Phases left by a crashed process — reclaimable during recovery.
+  # Excludes :created (means another node just claimed it in this cycle).
+  @recoverable_phases [:running, :ready, :needs_input, :provisioning, :bootstrapping, :resuming]
+
+  @doc """
+  Atomically claim ownership of a session_id across the cluster.
+
+  Uses a PostgreSQL advisory lock (`pg_advisory_xact_lock`) inside a
+  transaction to serialize all claim attempts for the same session_id.
+  This makes every path — new names, terminal reuse, and recovery —
+  fully atomic across nodes.
+
+  Options:
+    - `recovery: true` — allows claiming a session whose DB row is in
+      an active phase (the process crashed, leaving stale state).
+      Without this flag, active-phase rows are rejected as a safety net.
+
+  Returns `:ok` or `{:error, :already_claimed}`.
+  When persistence is disabled (tests), returns `:ok` unconditionally.
+  """
+  def claim_session(session_id, spec, opts \\ []) do
+    if enabled?() do
+      recovery? = Keyword.get(opts, :recovery, false)
+      attrs = session_attrs(session_id, spec)
+
+      Ash.transaction(JidoClaw.Forge.Resources.Session, fn ->
+        # Advisory lock serializes all claim attempts for this session_id
+        # across every node connected to the same database.
+        JidoClaw.Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [session_id])
+
+        case find_session(session_id) do
+          nil ->
+            # No existing row — create fresh
+            claim_create(attrs)
+
+          %{phase: phase} when phase in @terminal_phases ->
+            # Terminal session — reuse the name via upsert (preserves row
+            # ID so FK relationships to events/checkpoints are maintained)
+            claim_upsert(attrs)
+
+          %{phase: phase} when recovery? and phase in @recoverable_phases ->
+            # Recovery: stale active phase from a crashed process.
+            # The advisory lock prevents two recovery attempts from both
+            # succeeding. :created is excluded — it means another node
+            # just claimed in this cycle.
+            claim_upsert(attrs)
+
+          %{} ->
+            # Either a fresh start seeing an active row, or recovery
+            # seeing :created (another node just claimed). Reject.
+            Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, :already_claimed)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, :already_claimed} -> {:error, :already_claimed}
+        {:error, _} -> {:error, :already_claimed}
+      end
+    else
+      :ok
+    end
+  rescue
+    e ->
+      Logger.warning("[Forge.Persistence] claim_session failed: #{inspect(e)}")
+      {:error, :already_claimed}
+  end
+
+  defp claim_create(attrs) do
+    case Ash.create(JidoClaw.Forge.Resources.Session, attrs, action: :create, authorize?: false) do
+      {:ok, _} -> :ok
+      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:create_failed, e})
+    end
+  end
+
+  defp claim_upsert(attrs) do
+    case Ash.create(JidoClaw.Forge.Resources.Session, attrs, action: :start, authorize?: false) do
+      {:ok, _} -> :ok
+      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:upsert_failed, e})
+    end
+  end
+
+  defp session_attrs(session_id, spec) do
+    %{
+      name: session_id,
+      runner_type: to_string(Map.get(spec, :runner, :shell)),
+      runner_config: Map.get(spec, :runner_config, %{}),
+      spec: redact_map(spec),
+      started_at: DateTime.utc_now()
+    }
+  end
+
   def record_execution_complete(session_id, output, exit_code, sequence, runner_status \\ nil) do
     if enabled?() do
       try do

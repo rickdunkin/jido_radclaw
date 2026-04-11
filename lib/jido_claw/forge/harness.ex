@@ -47,8 +47,15 @@ defmodule JidoClaw.Forge.Harness do
 
   defp call(session_id, msg) do
     case Registry.lookup(@registry, session_id) do
-      [{pid, _}] -> GenServer.call(pid, msg, 300_000)
-      [] -> {:error, :not_found}
+      [{pid, _}] ->
+        GenServer.call(pid, msg, 300_000)
+
+      [] ->
+        # Local Registry miss — try cluster-wide :pg lookup for remote sessions
+        case cluster_lookup(session_id) do
+          {:ok, pid} -> GenServer.call(pid, msg, 300_000)
+          :error -> {:error, :not_found}
+        end
     end
   end
 
@@ -60,39 +67,55 @@ defmodule JidoClaw.Forge.Harness do
       :ok ->
         resume_checkpoint_id = Map.get(spec, :resume_checkpoint_id)
 
-        state = %__MODULE__{
-          session_id: session_id,
-          spec: spec,
-          started_at: DateTime.utc_now(),
-          last_activity: DateTime.utc_now(),
-          sandbox_module: resolve_client(Map.get(spec, :sandbox, :default)),
-          resume_checkpoint_id: resume_checkpoint_id
-        }
+        # Claim session ownership atomically in the DB via advisory lock.
+        # Both fresh starts and recovery go through this path — the lock
+        # serializes all claim attempts for the same session_id cluster-wide.
+        with :ok <- maybe_claim_session(session_id, spec, resume_checkpoint_id) do
+          state = %__MODULE__{
+            session_id: session_id,
+            spec: spec,
+            started_at: DateTime.utc_now(),
+            last_activity: DateTime.utc_now(),
+            sandbox_module: resolve_client(Map.get(spec, :sandbox, :default)),
+            resume_checkpoint_id: resume_checkpoint_id
+          }
 
-        persist(fn -> Persistence.record_session_started(session_id, spec) end)
-        persist(fn -> log_event(state, "session.started") end)
+          persist(fn -> log_event(state, "session.started") end)
 
-        state =
-          case resume_checkpoint_id do
-            nil ->
-              if Map.get(spec, :deferred_provision, false) do
-                persist(fn -> log_event(state, "provision.deferred") end)
-                persist(fn -> update_phase(state, :ready) end)
-                PubSub.broadcast(state.session_id, {:ready, state.session_id})
-                %{state | state: :ready}
-              else
-                send(self(), :provision)
+          state =
+            case resume_checkpoint_id do
+              nil ->
+                if Map.get(spec, :deferred_provision, false) do
+                  persist(fn -> log_event(state, "provision.deferred") end)
+                  persist(fn -> update_phase(state, :ready) end)
+                  PubSub.broadcast(state.session_id, {:ready, state.session_id})
+                  %{state | state: :ready}
+                else
+                  send(self(), :provision)
+                  state
+                end
+
+              checkpoint_id ->
+                persist(fn -> log_event(state, "session.recovering", %{checkpoint_id: checkpoint_id}) end)
+                persist(fn -> update_phase(state, :resuming) end)
+                send(self(), {:recover, checkpoint_id})
                 state
-              end
+            end
 
-            checkpoint_id ->
-              persist(fn -> log_event(state, "session.recovering", %{checkpoint_id: checkpoint_id}) end)
-              persist(fn -> update_phase(state, :resuming) end)
-              send(self(), {:recover, checkpoint_id})
-              state
-          end
+          # Join :pg group for cluster-wide session discovery.
+          # Only after a successful claim — failed claims must not appear in :pg.
+          maybe_pg_join(session_id)
 
-        {:ok, state}
+          {:ok, state}
+        else
+          {:error, :already_claimed} ->
+            Logger.warning("[Forge.Harness] Session #{session_id} already claimed by another node")
+            {:stop, :already_claimed}
+
+          {:error, reason} ->
+            Logger.error("[Forge.Harness] Session claim failed for #{session_id}: #{inspect(reason)}")
+            {:stop, {:claim_failed, reason}}
+        end
 
       {:error, reasons} ->
         Logger.error("[Forge.Harness] Resource validation failed for #{session_id}: #{inspect(reasons)}")
@@ -974,5 +997,39 @@ defmodule JidoClaw.Forge.Harness do
   defp run_bootstrap_steps(state, client \\ nil) do
     bootstrap_steps = Map.get(state.spec, :bootstrap_steps, [])
     Bootstrap.execute(client || default_client(state), bootstrap_steps)
+  end
+
+  # Session claim — atomic ownership via advisory lock + unique constraint.
+  # Both fresh starts and recovery must go through the claim to prevent
+  # duplicate owners across the cluster.
+  defp maybe_claim_session(session_id, spec, nil = _fresh_start) do
+    Persistence.claim_session(session_id, spec)
+  end
+
+  defp maybe_claim_session(session_id, spec, _resume_checkpoint_id) do
+    Persistence.claim_session(session_id, spec, recovery: true)
+  end
+
+  # Clustering helpers — :pg group membership for cross-node session discovery
+
+  defp maybe_pg_join(session_id) do
+    if Application.get_env(:jido_claw, :cluster_enabled, false) do
+      :pg.join(:jido_claw, {:forge_session, session_id}, self())
+    end
+  catch
+    _, _ -> :ok
+  end
+
+  defp cluster_lookup(session_id) do
+    if Application.get_env(:jido_claw, :cluster_enabled, false) do
+      case :pg.get_members(:jido_claw, {:forge_session, session_id}) do
+        [pid | _] -> {:ok, pid}
+        [] -> :error
+      end
+    else
+      :error
+    end
+  catch
+    _, _ -> :error
   end
 end
