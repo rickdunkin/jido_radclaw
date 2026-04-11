@@ -57,6 +57,14 @@ defmodule JidoClaw.Forge do
     Harness.apply_input(session_id, input)
   end
 
+  def attach_sandbox(session_id, name, sandbox_spec) when is_atom(name) and is_map(sandbox_spec) do
+    Harness.attach_sandbox(session_id, name, sandbox_spec)
+  end
+
+  def detach_sandbox(session_id, name) when is_atom(name) do
+    Harness.detach_sandbox(session_id, name)
+  end
+
   def run_loop(session_id, opts \\ []) do
     max = Keyword.get(opts, :max_iterations, 50)
     do_run_loop(session_id, opts, 0, max)
