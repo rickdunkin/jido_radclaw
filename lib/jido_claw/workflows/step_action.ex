@@ -19,22 +19,42 @@ defmodule JidoClaw.Workflows.StepAction do
   require Logger
 
   @impl true
-  def run(params, _context) do
+  def run(params, context) do
     template_name = params.template
     task = params.task
     project_dir = Map.get(params, :project_dir, File.cwd!())
+    step_name = Map.get(params, :name, template_name)
 
     with {:ok, template} <- JidoClaw.Agent.Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
+         workspace_id = Map.get(context, :workspace_id, "wf_#{tag}"),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
       try do
         case template.module.ask_sync(pid, task,
                timeout: 180_000,
-               tool_context: %{project_dir: project_dir}
+               tool_context: %{project_dir: project_dir, workspace_id: workspace_id}
              ) do
-          {:ok, result} -> {:ok, %{template: template_name, result: extract_result(result)}}
-          {:error, reason} -> {:error, "Step #{template_name} failed: #{inspect(reason)}"}
-          other -> {:ok, %{template: template_name, result: inspect(other)}}
+          {:ok, result} ->
+            text = extract_result(result)
+
+            {:ok,
+             %JidoClaw.Workflows.StepResult{
+               name: step_name,
+               template: template_name,
+               result: text,
+               artifacts: extract_artifacts(text)
+             }}
+
+          {:error, reason} ->
+            {:error, "Step #{template_name} failed: #{inspect(reason)}"}
+
+          other ->
+            {:ok,
+             %JidoClaw.Workflows.StepResult{
+               name: step_name,
+               template: template_name,
+               result: inspect(other)
+             }}
         end
       rescue
         e -> {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
@@ -45,6 +65,54 @@ defmodule JidoClaw.Workflows.StepAction do
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
     end
   end
+
+  @doc """
+  Append an ARTIFACTS output contract to the task prompt when the step
+  has a `produces` block. Without this instruction, agents won't emit
+  the fenced block that `extract_artifacts/1` looks for.
+  """
+  @spec inject_produces_instruction(String.t(), map() | nil) :: String.t()
+  def inject_produces_instruction(task, nil), do: task
+  def inject_produces_instruction(task, produces) when map_size(produces) == 0, do: task
+
+  def inject_produces_instruction(task, _produces) do
+    task <>
+      "\n\n" <>
+      """
+      If you discover runtime details (URLs, ports, generated file paths) that differ from the
+      expected configuration, report them using this format at the end of your response:
+
+      ARTIFACTS:
+      url: <actual URL>
+      port: <actual port>
+      files: <comma-separated file paths>
+      """
+  end
+
+  @doc """
+  Extract key-value pairs from a fenced ARTIFACTS: block in agent output.
+
+  Returns an empty map if no block is found.
+  """
+  @spec extract_artifacts(String.t()) :: map()
+  def extract_artifacts(text) when is_binary(text) do
+    case Regex.run(~r/ARTIFACTS:\n((?:.+\n?)+)/i, text) do
+      [_, block] ->
+        block
+        |> String.split("\n", trim: true)
+        |> Enum.reduce(%{}, fn line, acc ->
+          case String.split(line, ":", parts: 2) do
+            [key, value] -> Map.put(acc, String.trim(key), String.trim(value))
+            _ -> acc
+          end
+        end)
+
+      nil ->
+        %{}
+    end
+  end
+
+  def extract_artifacts(_), do: %{}
 
   defp extract_result(%{last_answer: answer}) when is_binary(answer), do: answer
   defp extract_result(%{answer: answer}) when is_binary(answer), do: answer

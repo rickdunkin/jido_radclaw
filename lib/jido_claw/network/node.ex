@@ -275,7 +275,9 @@ defmodule JidoClaw.Network.Node do
       Logger.debug("[Network.Node] Stored shared solution #{solution.id} from #{from}")
     else
       false ->
-        Logger.warning("[Network.Node] Dropped share message with invalid signature from #{message["from"]}")
+        Logger.warning(
+          "[Network.Node] Dropped share message with invalid signature from #{message["from"]}"
+        )
 
       {:error, reason} ->
         Logger.debug("[Network.Node] Could not store shared solution: #{inspect(reason)}")
@@ -288,7 +290,8 @@ defmodule JidoClaw.Network.Node do
   end
 
   defp handle_solution_requested(message, state) do
-    with %{"payload" => %{"description" => description}, "id" => request_id, "from" => from} <- message do
+    with %{"payload" => %{"description" => description}, "id" => request_id, "from" => from} <-
+           message do
       opts_raw = get_in(message, ["payload", "opts"]) || %{}
       opts = Enum.map(opts_raw, fn {k, v} -> {String.to_existing_atom(k), v} end)
 

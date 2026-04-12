@@ -158,6 +158,7 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
       on_exit(fn ->
         Application.put_env(:jido_claw, :cluster_enabled, false)
+
         if Process.alive?(pg_pid) do
           Process.exit(pg_pid, :normal)
         end
@@ -263,6 +264,7 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
       on_exit(fn ->
         Application.put_env(:jido_claw, :cluster_enabled, false)
+
         if Process.alive?(pg_pid) do
           Process.exit(pg_pid, :normal)
         end
@@ -345,6 +347,7 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
       on_exit(fn ->
         Application.put_env(:jido_claw, :cluster_enabled, false)
+
         if Process.alive?(pg_pid) do
           Process.exit(pg_pid, :normal)
         end
@@ -490,7 +493,8 @@ defmodule JidoClaw.Forge.ClusteringTest do
                JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
 
       # A recovery claim should succeed — the crashed process left stale state
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
+      assert :ok =
+               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
 
       # Verify the session was reset to :created
       session = JidoClaw.Forge.Persistence.find_session(sid)
@@ -504,7 +508,8 @@ defmodule JidoClaw.Forge.ClusteringTest do
       JidoClaw.Forge.Persistence.update_session_phase(sid, :failed)
 
       # First recovery claim succeeds (resets to :created)
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
+      assert :ok =
+               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
 
       # Second recovery claim sees :created (active) — rejected
       assert {:error, :already_claimed} =

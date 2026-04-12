@@ -39,8 +39,11 @@ defmodule JidoClaw.Application do
       case Application.ensure_all_started(:nostrum) do
         {:ok, _} ->
           case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
-            {:ok, _} -> Logger.warning("[JidoClaw] Discord adapter started")
-            {:error, reason} -> Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
+            {:ok, _} ->
+              Logger.warning("[JidoClaw] Discord adapter started")
+
+            {:error, reason} ->
+              Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
           end
 
         {:error, reason} ->
@@ -69,71 +72,72 @@ defmodule JidoClaw.Application do
       {DynamicSupervisor, name: JidoClaw.Forge.HarnessSupervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: JidoClaw.Forge.ExecSessionSupervisor, strategy: :one_for_one},
       JidoClaw.Forge.Manager
-    ] ++ forge_sandbox_children() ++ [
+    ] ++
+      forge_sandbox_children() ++
+      [
+        # PubSub for real-time events
+        {Phoenix.PubSub, name: JidoClaw.PubSub},
 
-      # PubSub for real-time events
-      {Phoenix.PubSub, name: JidoClaw.PubSub},
+        # Orchestration workflow feed
+        JidoClaw.Orchestration.RunSummaryFeed,
 
-      # Orchestration workflow feed
-      JidoClaw.Orchestration.RunSummaryFeed,
+        # Code Server runtime management
+        {Registry, keys: :unique, name: JidoClaw.CodeServer.RuntimeRegistry},
+        {DynamicSupervisor, name: JidoClaw.CodeServer.RuntimeSupervisor, strategy: :one_for_one},
 
-      # Code Server runtime management
-      {Registry, keys: :unique, name: JidoClaw.CodeServer.RuntimeRegistry},
-      {DynamicSupervisor, name: JidoClaw.CodeServer.RuntimeSupervisor, strategy: :one_for_one},
+        # Finch HTTP pools
+        {Finch, name: JidoClaw.Finch},
 
-      # Finch HTTP pools
-      {Finch, name: JidoClaw.Finch},
+        # Signal bus
+        {Jido.Signal.Bus, name: JidoClaw.SignalBus},
 
-      # Signal bus
-      {Jido.Signal.Bus, name: JidoClaw.SignalBus},
+        # Telemetry
+        JidoClaw.Telemetry,
 
-      # Telemetry
-      JidoClaw.Telemetry,
+        # Stats
+        JidoClaw.Stats,
 
-      # Stats
-      JidoClaw.Stats,
+        # Background process tracking
+        JidoClaw.BackgroundProcess.Registry,
 
-      # Background process tracking
-      JidoClaw.BackgroundProcess.Registry,
+        # Tool approval
+        JidoClaw.Tools.Approval,
 
-      # Tool approval
-      JidoClaw.Tools.Approval,
+        # Global session supervisor (fallback for non-tenant sessions)
+        {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},
 
-      # Global session supervisor (fallback for non-tenant sessions)
-      {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},
+        # Jido agent runtime
+        JidoClaw.Jido,
 
-      # Jido agent runtime
-      JidoClaw.Jido,
+        # Messaging runtime (rooms, agents, bridges — powered by jido_messaging)
+        JidoClaw.Messaging,
 
-      # Messaging runtime (rooms, agents, bridges — powered by jido_messaging)
-      JidoClaw.Messaging,
+        # Multi-tenancy
+        JidoClaw.Tenant.Supervisor,
+        JidoClaw.Tenant.Manager,
 
-      # Multi-tenancy
-      JidoClaw.Tenant.Supervisor,
-      JidoClaw.Tenant.Manager,
+        # Solutions engine
+        {JidoClaw.Solutions.Store, [project_dir: project_dir()]},
+        {JidoClaw.Solutions.Reputation, [project_dir: project_dir()]},
 
-      # Solutions engine
-      {JidoClaw.Solutions.Store, [project_dir: project_dir()]},
-      {JidoClaw.Solutions.Reputation, [project_dir: project_dir()]},
+        # Persistent memory
+        {JidoClaw.Memory, [project_dir: project_dir()]},
 
-      # Persistent memory
-      {JidoClaw.Memory, [project_dir: project_dir()]},
+        # Cached skill registry
+        {JidoClaw.Skills, [project_dir: project_dir()]},
 
-      # Cached skill registry
-      {JidoClaw.Skills, [project_dir: project_dir()]},
+        # Network
+        {JidoClaw.Network.Supervisor, [project_dir: project_dir()]},
 
-      # Network
-      {JidoClaw.Network.Supervisor, [project_dir: project_dir()]},
+        # Agent tracking (per-agent stats for swarm display)
+        JidoClaw.AgentTracker,
 
-      # Agent tracking (per-agent stats for swarm display)
-      JidoClaw.AgentTracker,
+        # Display coordinator (spinner, status bar, swarm box)
+        JidoClaw.Display,
 
-      # Display coordinator (spinner, status bar, swarm box)
-      JidoClaw.Display,
-
-      # Shell session manager (jido_shell + Host backend for real command execution)
-      JidoClaw.Shell.SessionManager
-    ]
+        # Shell session manager (jido_shell + Host backend for real command execution)
+        JidoClaw.Shell.SessionManager
+      ]
   end
 
   defp project_dir do
@@ -218,8 +222,12 @@ defmodule JidoClaw.Application do
       line = String.trim(line)
 
       cond do
-        line == "" -> :skip
-        String.starts_with?(line, "#") -> :skip
+        line == "" ->
+          :skip
+
+        String.starts_with?(line, "#") ->
+          :skip
+
         true ->
           case String.split(line, "=", parts: 2) do
             [key, value] ->

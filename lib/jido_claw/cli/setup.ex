@@ -18,8 +18,12 @@ defmodule JidoClaw.CLI.Setup do
     path = config_path(project_dir)
 
     cond do
-      Application.get_env(:jido_claw, :force_setup, false) -> true
-      not File.exists?(path) -> true
+      Application.get_env(:jido_claw, :force_setup, false) ->
+        true
+
+      not File.exists?(path) ->
+        true
+
       true ->
         case YamlElixir.read_from_file(path) do
           {:ok, config} when is_map(config) -> not Map.has_key?(config, "provider")
@@ -111,7 +115,10 @@ defmodule JidoClaw.CLI.Setup do
       if key != "" do
         System.put_env(env_var, key)
         IO.puts("  \e[32m✓\e[0m  Key set for this session")
-        IO.puts("  \e[2m   Add export #{env_var}=... to your shell profile for persistence.\e[0m\n")
+
+        IO.puts(
+          "  \e[2m   Add export #{env_var}=... to your shell profile for persistence.\e[0m\n"
+        )
       else
         IO.puts("  \e[33m⚠\e[0m  No key set. You'll need to set #{env_var} before use.\n")
       end
@@ -132,10 +139,12 @@ defmodule JidoClaw.CLI.Setup do
       |> Enum.with_index(1)
       |> Enum.each(fn {model, idx} ->
         # Show just the model part after provider:
-        display = case String.split(model, ":", parts: 2) do
-          [_, name] -> name
-          _ -> model
-        end
+        display =
+          case String.split(model, ":", parts: 2) do
+            [_, name] -> name
+            _ -> model
+          end
+
         desc = Config.model_description(model)
         desc_part = if desc != "", do: " \e[2m— #{desc}\e[0m", else: ""
         IO.puts("    \e[36m#{idx}.\e[0m #{display}#{desc_part}")
@@ -144,10 +153,13 @@ defmodule JidoClaw.CLI.Setup do
       IO.puts("")
       choice = prompt_choice("  Model", 1..length(models), 1)
       model = Enum.at(models, choice - 1)
-      display = case String.split(model, ":", parts: 2) do
-        [_, name] -> name
-        _ -> model
-      end
+
+      display =
+        case String.split(model, ":", parts: 2) do
+          [_, name] -> name
+          _ -> model
+        end
+
       IO.puts("  \e[32m✓\e[0m  #{display}\n")
       model
     end

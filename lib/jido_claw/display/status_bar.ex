@@ -14,17 +14,20 @@ defmodule JidoClaw.Display.StatusBar do
     context_window = display_state.context_window || 131_072
 
     # Sum tokens across all agents
-    total_tokens = tracker_state.agents
+    total_tokens =
+      tracker_state.agents
       |> Enum.reduce(0, fn {_id, agent}, acc -> acc + agent.tokens end)
 
     pct = if context_window > 0, do: round(total_tokens / context_window * 100), else: 0
     pct = min(pct, 100)
 
-    child_count = tracker_state.agents
+    child_count =
+      tracker_state.agents
       |> Enum.count(fn {id, _} -> id != "main" end)
 
     elapsed = elapsed_string(tracker_state)
-    cost = "$0.00"  # TODO: wire Config.estimated_cost
+    # TODO: wire Config.estimated_cost
+    cost = "$0.00"
 
     # Build segments from left (required) to right (optional)
     segments = [
@@ -42,7 +45,8 @@ defmodule JidoClaw.Display.StatusBar do
 
   defp build_bar(segments, width) do
     sep = " \e[2m│\e[0m "
-    sep_len = 3  # " │ " visible chars
+    # " │ " visible chars
+    sep_len = 3
 
     # Always include required segments
     {required, optional} = Enum.split_with(segments, fn {type, _} -> type == :required end)
@@ -79,10 +83,12 @@ defmodule JidoClaw.Display.StatusBar do
 
   @doc "Format a token count for display (e.g. 24100 → 24.1K)"
   def format_tokens(n) when n < 1000, do: "#{n}"
+
   def format_tokens(n) when n < 1_000_000 do
     k = Float.round(n / 1000, 1)
     if k == trunc(k), do: "#{trunc(k)}K", else: "#{k}K"
   end
+
   def format_tokens(n), do: "#{Float.round(n / 1_000_000, 1)}M"
 
   @doc "Render a progress bar: [██████░░░░]"
@@ -92,18 +98,24 @@ defmodule JidoClaw.Display.StatusBar do
 
     bar = String.duplicate("█", filled) <> String.duplicate("░", empty)
 
-    color = cond do
-      pct >= 90 -> "\e[31m"  # red
-      pct >= 70 -> "\e[33m"  # yellow
-      true -> "\e[32m"       # green
-    end
+    color =
+      cond do
+        # red
+        pct >= 90 -> "\e[31m"
+        # yellow
+        pct >= 70 -> "\e[33m"
+        # green
+        true -> "\e[32m"
+      end
 
     "#{color}[#{bar}]\e[0m"
   end
 
   defp elapsed_string(tracker_state) do
     case get_in(tracker_state, [:agents, "main"]) do
-      nil -> "0s"
+      nil ->
+        "0s"
+
       main ->
         elapsed_ms = System.monotonic_time(:millisecond) - main.started_at
         format_elapsed(div(elapsed_ms, 1000))

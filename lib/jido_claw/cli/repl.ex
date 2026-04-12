@@ -83,7 +83,11 @@ defmodule JidoClaw.CLI.Repl do
 
             nil ->
               IO.puts("  \e[31m✗\e[0m  Discord bot failed to connect")
-              IO.puts("  \e[2m   Check your DISCORD_BOT_TOKEN and that privileged intents are enabled\e[0m")
+
+              IO.puts(
+                "  \e[2m   Check your DISCORD_BOT_TOKEN and that privileged intents are enabled\e[0m"
+              )
+
               IO.puts("")
           end
       end
@@ -94,8 +98,11 @@ defmodule JidoClaw.CLI.Repl do
       {:ok, pid} ->
         # Inject the dynamic system prompt
         system_prompt = Prompt.build(project_dir)
+
         case Jido.AI.set_system_prompt(pid, system_prompt) do
-          {:ok, _} -> :ok
+          {:ok, _} ->
+            :ok
+
           {:error, reason} ->
             IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
         end
@@ -110,10 +117,13 @@ defmodule JidoClaw.CLI.Repl do
 
         # Register main agent with tracker and configure display
         AgentTracker.register("main", pid, nil, nil)
-        context_window = case Config.model_info(config) do
-          {:ok, %{limits: %{context_window: cw}}} -> cw
-          _ -> 131_072
-        end
+
+        context_window =
+          case Config.model_info(config) do
+            {:ok, %{limits: %{context_window: cw}}} -> cw
+            _ -> 131_072
+          end
+
         Display.configure(model_name(model), Config.provider_label(config), context_window)
 
         # Load persistent cron jobs
@@ -326,7 +336,10 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
-  defp format_elapsed(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
+  defp format_elapsed(seconds) when seconds < 3600,
+    do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
   defp format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
 
   defp poll_discord_ready(0, _interval), do: nil

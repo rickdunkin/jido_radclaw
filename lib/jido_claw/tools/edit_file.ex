@@ -1,10 +1,15 @@
 defmodule JidoClaw.Tools.EditFile do
   use Jido.Action,
     name: "edit_file",
-    description: "Edit a file by replacing an exact string match. The old_string must be unique in the file. Read the file first to get the exact text.",
+    description:
+      "Edit a file by replacing an exact string match. The old_string must be unique in the file. Read the file first to get the exact text.",
     schema: [
       path: [type: :string, required: true, doc: "File path to edit"],
-      old_string: [type: :string, required: true, doc: "Exact text to find (must be unique in file)"],
+      old_string: [
+        type: :string,
+        required: true,
+        doc: "Exact text to find (must be unique in file)"
+      ],
       new_string: [type: :string, required: true, doc: "Replacement text"]
     ]
 
@@ -16,10 +21,12 @@ defmodule JidoClaw.Tools.EditFile do
 
         cond do
           occurrences == 0 ->
-            {:error, "old_string not found in #{path}. Read the file first to get the exact text."}
+            {:error,
+             "old_string not found in #{path}. Read the file first to get the exact text."}
 
           occurrences > 1 ->
-            {:error, "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
+            {:error,
+             "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
 
           true ->
             new_content = String.replace(content, old_str, new_str, global: false)
@@ -42,8 +49,8 @@ defmodule JidoClaw.Tools.EditFile do
   end
 
   defp build_diff(old_str, new_str) do
-    old_lines = String.split(old_str, "\n") |> Enum.map(&("- #{&1}"))
-    new_lines = String.split(new_str, "\n") |> Enum.map(&("+ #{&1}"))
+    old_lines = String.split(old_str, "\n") |> Enum.map(&"- #{&1}")
+    new_lines = String.split(new_str, "\n") |> Enum.map(&"+ #{&1}")
     Enum.join(old_lines ++ new_lines, "\n")
   end
 end

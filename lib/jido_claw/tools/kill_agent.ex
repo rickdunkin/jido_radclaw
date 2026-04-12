@@ -3,7 +3,11 @@ defmodule JidoClaw.Tools.KillAgent do
     name: "kill_agent",
     description: "Stop a running child agent. Use 'all' as agent_id to stop all child agents.",
     schema: [
-      agent_id: [type: :string, required: true, doc: "The agent ID to stop, or 'all' to stop all agents"]
+      agent_id: [
+        type: :string,
+        required: true,
+        doc: "The agent ID to stop, or 'all' to stop all agents"
+      ]
     ]
 
   @impl true
@@ -23,8 +27,10 @@ defmodule JidoClaw.Tools.KillAgent do
     case JidoClaw.Jido.stop_agent(params.agent_id) do
       :ok ->
         {:ok, %{agent_id: params.agent_id, status: "stopped"}}
+
       {:error, :not_found} ->
         {:error, "Agent '#{params.agent_id}' not found."}
+
       {:error, reason} ->
         {:error, "Failed to stop agent: #{inspect(reason)}"}
     end

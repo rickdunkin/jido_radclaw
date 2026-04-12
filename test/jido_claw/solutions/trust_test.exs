@@ -188,9 +188,7 @@ defmodule JidoClaw.Solutions.TrustTest do
 
     test "should add 0.15 for non-empty verification" do
       score =
-        Trust.completeness_score(
-          Map.put(minimal_solution(), :verification, %{status: "passed"})
-        )
+        Trust.completeness_score(Map.put(minimal_solution(), :verification, %{status: "passed"}))
 
       assert_in_delta score, 0.45, 0.000_01
     end

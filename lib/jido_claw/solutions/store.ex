@@ -123,7 +123,10 @@ defmodule JidoClaw.Solutions.Store do
       :ets.insert(@table, {solution.id, solution})
     end)
 
-    Logger.debug("[Solutions.Store] Loaded #{length(disk_solutions)} solutions from #{project_dir}")
+    Logger.debug(
+      "[Solutions.Store] Loaded #{length(disk_solutions)} solutions from #{project_dir}"
+    )
+
     {:ok, %__MODULE__{project_dir: project_dir}}
   end
 
@@ -132,7 +135,12 @@ defmodule JidoClaw.Solutions.Store do
     solution = Solution.new(attrs)
     :ets.insert(@table, {solution.id, solution})
     persist_to_disk(state.project_dir)
-    JidoClaw.SignalBus.emit("jido_claw.solution.stored", %{id: solution.id, language: solution.language})
+
+    JidoClaw.SignalBus.emit("jido_claw.solution.stored", %{
+      id: solution.id,
+      language: solution.language
+    })
+
     {:reply, {:ok, solution}, state}
   end
 

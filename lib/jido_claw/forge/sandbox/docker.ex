@@ -63,7 +63,12 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   @impl true
-  def run(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, agent_type, args, opts) do
+  def run(
+        %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
+        agent_type,
+        args,
+        opts
+      ) do
     name = Keyword.get(opts, :name, sandbox_name)
     sbx_args = build_run_args(name, agent_type, workspace_dir, args)
     timeout = Keyword.get(opts, :timeout)

@@ -177,7 +177,8 @@ defmodule JidoClaw.VFS.Resolver do
   # -- Filesystem Builders ----------------------------------------------------
 
   defp github_filesystem(owner, repo, ref) do
-    token = System.get_env("GITHUB_TOKEN") || Application.get_env(:jido_vfs, :github, [])[:access_token]
+    token =
+      System.get_env("GITHUB_TOKEN") || Application.get_env(:jido_vfs, :github, [])[:access_token]
 
     auth =
       if token do

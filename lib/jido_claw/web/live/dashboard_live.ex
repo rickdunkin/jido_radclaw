@@ -8,12 +8,13 @@ defmodule JidoClaw.Web.DashboardLive do
       JidoClaw.Orchestration.RunPubSub.subscribe_all()
     end
 
-    {:ok, assign(socket,
-      page_title: "Dashboard",
-      forge_sessions: length(JidoClaw.Forge.list_sessions()),
-      workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary(),
-      uptime: get_uptime()
-    )}
+    {:ok,
+     assign(socket,
+       page_title: "Dashboard",
+       forge_sessions: length(JidoClaw.Forge.list_sessions()),
+       workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary(),
+       uptime: get_uptime()
+     )}
   end
 
   @impl true
@@ -56,15 +57,18 @@ defmodule JidoClaw.Web.DashboardLive do
 
   @impl true
   def handle_info(_msg, socket) do
-    {:noreply, assign(socket,
-      forge_sessions: length(JidoClaw.Forge.list_sessions()),
-      workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary()
-    )}
+    {:noreply,
+     assign(socket,
+       forge_sessions: length(JidoClaw.Forge.list_sessions()),
+       workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary()
+     )}
   end
 
   defp get_uptime do
     case Application.get_env(:jido_claw, :started_at) do
-      nil -> "N/A"
+      nil ->
+        "N/A"
+
       started ->
         seconds = System.monotonic_time(:second) - started
         hours = div(seconds, 3600)

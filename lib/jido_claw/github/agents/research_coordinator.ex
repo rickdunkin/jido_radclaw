@@ -11,12 +11,13 @@ defmodule JidoClaw.GitHub.Agents.ResearchCoordinator do
 
     results = Task.await_many(tasks, 60_000)
 
-    {:ok, %{
-      code_search: Enum.at(results, 0),
-      reproduction: Enum.at(results, 1),
-      root_cause: Enum.at(results, 2),
-      related_prs: Enum.at(results, 3)
-    }}
+    {:ok,
+     %{
+       code_search: Enum.at(results, 0),
+       reproduction: Enum.at(results, 1),
+       root_cause: Enum.at(results, 2),
+       related_prs: Enum.at(results, 3)
+     }}
   rescue
     e ->
       Logger.error("[ResearchCoordinator] Failed: #{inspect(e)}")
@@ -32,8 +33,12 @@ defmodule JidoClaw.GitHub.Agents.ResearchCoordinator do
   end
 
   defp root_cause_analysis(event, triage) do
-    %{hypothesis: "Needs investigation", confidence: 0.3,
-      classification: triage.classification, issue: event.issue.number}
+    %{
+      hypothesis: "Needs investigation",
+      confidence: 0.3,
+      classification: triage.classification,
+      issue: event.issue.number
+    }
   end
 
   defp pr_search(event) do

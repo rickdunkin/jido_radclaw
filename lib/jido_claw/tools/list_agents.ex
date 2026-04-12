@@ -11,10 +11,11 @@ defmodule JidoClaw.Tools.ListAgents do
     if agents == [] do
       {:ok, %{agents: "No child agents running.", count: 0}}
     else
-      lines = Enum.map(agents, fn {id, pid} ->
-        status = if Process.alive?(pid), do: "running", else: "stopped"
-        "#{id} | #{status} | pid=#{inspect(pid)}"
-      end)
+      lines =
+        Enum.map(agents, fn {id, pid} ->
+          status = if Process.alive?(pid), do: "running", else: "stopped"
+          "#{id} | #{status} | pid=#{inspect(pid)}"
+        end)
 
       {:ok, %{agents: Enum.join(lines, "\n"), count: length(agents)}}
     end

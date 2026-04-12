@@ -100,6 +100,11 @@ defmodule JidoClaw.JidoMd do
     - **Max iterations**: 25
     - **Use for**: Large-scale refactoring, code restructuring, renaming across files, extracting modules
 
+    ### `verifier`
+    - **Tools**: read_file, search_code, git_diff, git_status, run_command, list_directory
+    - **Max iterations**: 20
+    - **Use for**: Interactive verification — running tests, starting servers, hitting endpoints, checking build output. Emits VERDICT: PASS or VERDICT: FAIL.
+
     ---
 
     ## Skills

@@ -22,6 +22,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       Phase 2: [synthesize]              — sequential (waits for phase 1)
   """
 
+  alias JidoClaw.Workflows.{ContextBuilder, StepResult}
   require Logger
 
   @step_timeout_ms 300_000
@@ -29,8 +30,8 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   @doc """
   Execute a skill using DAG-based parallel phase execution.
 
-  Returns `{:ok, results}` where results is a list of `{step_name_or_template, result_text}`
-  tuples in dependency-resolved order, or `{:error, reason}`.
+  Returns `{:ok, results}` where results is a list of `%StepResult{}`
+  structs in dependency-resolved order, or `{:error, reason}`.
   """
   @spec run(JidoClaw.Skills.t(), String.t(), String.t()) :: {:ok, list()} | {:error, term()}
   def run(skill, extra_context \\ "", project_dir \\ File.cwd!()) do
@@ -40,6 +41,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       {:error, "Skill '#{skill.name}' has no steps"}
     else
       with {:ok, named_steps} <- assign_step_names(steps),
+           :ok <- validate_no_cycles(named_steps),
            {:ok, phases} <- compute_phases(named_steps) do
         execute_phases(phases, named_steps, extra_context, project_dir)
       end
@@ -50,8 +52,9 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   # Step normalisation
   # ---------------------------------------------------------------------------
 
-  # Assign a unique atom name to each step. Uses the `name` field from YAML
-  # if present, otherwise generates :step_1, :step_2, ...
+  # Assign a unique string name to each step. Uses the `name` field from YAML
+  # if present, otherwise generates "step_1", "step_2", ...
+  # All names are kept as strings to avoid atom table leaks from user YAML.
   defp assign_step_names(steps) do
     named =
       steps
@@ -59,31 +62,87 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       |> Enum.map(fn {step, idx} ->
         name =
           case Map.get(step, "name") || Map.get(step, :name) do
-            nil -> :"step_#{idx}"
-            n when is_binary(n) -> String.to_atom(n)
-            n when is_atom(n) -> n
+            nil -> "step_#{idx}"
+            n when is_binary(n) -> n
+            n when is_atom(n) -> Atom.to_string(n)
           end
 
         deps =
           case Map.get(step, "depends_on") || Map.get(step, :depends_on) do
             nil -> []
-            deps when is_list(deps) -> Enum.map(deps, &to_atom_dep/1)
-            dep -> [to_atom_dep(dep)]
+            deps when is_list(deps) -> Enum.map(deps, &to_string/1)
+            dep -> [to_string(dep)]
           end
+
+        produces = normalize_yaml_map(step, "produces")
+        consumes = normalize_yaml_list(step, "consumes")
 
         %{
           name: name,
           template: Map.get(step, "template") || Map.get(step, :template),
           task: Map.get(step, "task") || Map.get(step, :task),
-          depends_on: deps
+          role: Map.get(step, "role") || Map.get(step, :role),
+          depends_on: deps,
+          produces: produces,
+          consumes: consumes
         }
       end)
 
     {:ok, named}
   end
 
-  defp to_atom_dep(dep) when is_atom(dep), do: dep
-  defp to_atom_dep(dep) when is_binary(dep), do: String.to_atom(dep)
+  defp normalize_yaml_map(step, key) do
+    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+      v when is_map(v) -> v
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp normalize_yaml_list(step, key) do
+    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+      v when is_list(v) -> Enum.map(v, &to_string/1)
+      _ -> []
+    end
+  rescue
+    ArgumentError -> []
+  end
+
+  # ---------------------------------------------------------------------------
+  # Cycle detection
+  # ---------------------------------------------------------------------------
+
+  defp validate_no_cycles(named_steps) do
+    step_map = Map.new(named_steps, &{&1.name, &1})
+
+    Enum.reduce_while(named_steps, :ok, fn step, :ok ->
+      case detect_cycle(step.name, step_map, []) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp detect_cycle(name, step_map, path) do
+    if name in path do
+      cycle = Enum.reverse([name | path]) |> Enum.join(" -> ")
+      {:error, "Cyclic dependency detected: #{cycle}"}
+    else
+      step = Map.get(step_map, name)
+
+      if step do
+        Enum.reduce_while(step.depends_on, :ok, fn dep, :ok ->
+          case detect_cycle(dep, step_map, [name | path]) do
+            :ok -> {:cont, :ok}
+            {:error, _} = err -> {:halt, err}
+          end
+        end)
+      else
+        :ok
+      end
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Topological sort / phase computation
@@ -170,7 +229,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     Enum.reduce_while(phases, {:ok, []}, fn phase_names, {:ok, acc_results} ->
       phase_steps = Enum.map(phase_names, &Map.fetch!(step_map, &1))
 
-      case execute_phase(phase_steps, acc_results, extra_context, project_dir) do
+      case execute_phase(phase_steps, acc_results, named_steps, extra_context, project_dir) do
         {:ok, phase_results} ->
           {:cont, {:ok, acc_results ++ phase_results}}
 
@@ -180,7 +239,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end)
   end
 
-  defp execute_phase(steps, prior_results, extra_context, project_dir) do
+  defp execute_phase(steps, prior_results, named_steps, extra_context, project_dir) do
     concurrency = max(1, length(steps))
 
     print_phase_banner(steps)
@@ -188,7 +247,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     results =
       steps
       |> Task.async_stream(
-        fn step -> execute_step(step, prior_results, extra_context, project_dir) end,
+        fn step -> execute_step(step, prior_results, named_steps, extra_context, project_dir) end,
         max_concurrency: concurrency,
         timeout: @step_timeout_ms,
         on_timeout: :kill_task
@@ -206,31 +265,33 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end
   end
 
-  defp execute_step(step, prior_results, extra_context, project_dir) do
+  defp execute_step(step, prior_results, named_steps, extra_context, project_dir) do
     template_name = step.template
     task = step.task
 
-    full_task =
-      if extra_context != "" do
-        "#{task}\n\nAdditional context: #{extra_context}"
-      else
-        task
-      end
+    # Build context from dependency results
+    dep_context = ContextBuilder.format_for_deps(prior_results, step.depends_on)
+    artifact_context = ContextBuilder.format_artifact_context(step, named_steps, prior_results)
+
+    # Inject ARTIFACTS output contract if step has produces
+    task = JidoClaw.Workflows.StepAction.inject_produces_instruction(task, step.produces)
+
+    full_task = ContextBuilder.build_task(task, extra_context, dep_context, artifact_context)
 
     IO.puts(
       "  \e[2m  [parallel] #{step.name} (#{template_name}) — #{String.slice(task, 0, 55)}...\e[0m"
     )
 
-    params = %{template: template_name, task: full_task, project_dir: project_dir}
-
-    # Prior results are available in context for dependent steps.
-    # StepAction doesn't consume them directly, but they could be injected
-    # into the task prompt in a future iteration.
-    _ = prior_results
+    params = %{
+      template: template_name,
+      task: full_task,
+      project_dir: project_dir,
+      name: step.name
+    }
 
     case JidoClaw.Workflows.StepAction.run(params, %{}) do
-      {:ok, step_result} ->
-        {:ok, {step.name, step_result.result}}
+      {:ok, %StepResult{} = step_result} ->
+        {:ok, step_result}
 
       {:error, reason} ->
         Logger.warning("[PlanWorkflow] Step #{step.name} (#{template_name}) failed: #{reason}")

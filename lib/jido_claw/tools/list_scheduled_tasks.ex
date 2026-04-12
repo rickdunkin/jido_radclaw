@@ -5,7 +5,8 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
 
   use Jido.Action,
     name: "list_scheduled_tasks",
-    description: "List all scheduled recurring tasks with their status, schedule, next run time, and failure count.",
+    description:
+      "List all scheduled recurring tasks with their status, schedule, next run time, and failure count.",
     schema: []
 
   @impl true

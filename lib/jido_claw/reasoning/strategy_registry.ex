@@ -5,37 +5,44 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
     "react" => %{
       module: Jido.AI.Reasoning.ReAct,
       atom: :react,
-      description: "Reason + Act loop: alternates between reasoning and tool use. Best for multi-step tasks requiring external information."
+      description:
+        "Reason + Act loop: alternates between reasoning and tool use. Best for multi-step tasks requiring external information."
     },
     "cot" => %{
       module: Jido.AI.Reasoning.ChainOfThought,
       atom: :cot,
-      description: "Chain of Thought: step-by-step reasoning before answering. Best for logical and mathematical problems."
+      description:
+        "Chain of Thought: step-by-step reasoning before answering. Best for logical and mathematical problems."
     },
     "cod" => %{
       module: Jido.AI.Reasoning.ChainOfDraft,
       atom: :cod,
-      description: "Chain of Draft: concise step-by-step reasoning with minimal token usage. Good for structured analysis."
+      description:
+        "Chain of Draft: concise step-by-step reasoning with minimal token usage. Good for structured analysis."
     },
     "tot" => %{
       module: Jido.AI.Reasoning.TreeOfThoughts,
       atom: :tot,
-      description: "Tree of Thoughts: explores multiple reasoning branches. Best for complex planning and creative problem-solving."
+      description:
+        "Tree of Thoughts: explores multiple reasoning branches. Best for complex planning and creative problem-solving."
     },
     "got" => %{
       module: Jido.AI.Reasoning.GraphOfThoughts,
       atom: :got,
-      description: "Graph of Thoughts: non-linear reasoning with concept connections. Best for complex interconnected problems."
+      description:
+        "Graph of Thoughts: non-linear reasoning with concept connections. Best for complex interconnected problems."
     },
     "aot" => %{
       module: Jido.AI.Reasoning.AlgorithmOfThoughts,
       atom: :aot,
-      description: "Algorithm of Thoughts: structured algorithmic search with in-context examples. Best for optimization and search problems."
+      description:
+        "Algorithm of Thoughts: structured algorithmic search with in-context examples. Best for optimization and search problems."
     },
     "trm" => %{
       module: Jido.AI.Reasoning.TRM,
       atom: :trm,
-      description: "Tiny Recursive Model: recursive decomposition with supervision. Best for hierarchical problems."
+      description:
+        "Tiny Recursive Model: recursive decomposition with supervision. Best for hierarchical problems."
     },
     "adaptive" => %{
       module: Jido.AI.Reasoning.Adaptive,

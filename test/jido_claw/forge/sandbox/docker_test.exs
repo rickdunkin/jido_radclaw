@@ -25,7 +25,9 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
 
   describe "write_file/3 and read_file/2" do
     setup do
-      dir = Path.join(System.tmp_dir!(), "docker_sandbox_test_#{:erlang.unique_integer([:positive])}")
+      dir =
+        Path.join(System.tmp_dir!(), "docker_sandbox_test_#{:erlang.unique_integer([:positive])}")
+
       File.mkdir_p!(dir)
 
       client = %Docker{
@@ -63,7 +65,9 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
 
   describe "inject_env/2" do
     setup do
-      dir = Path.join(System.tmp_dir!(), "docker_sandbox_env_#{:erlang.unique_integer([:positive])}")
+      dir =
+        Path.join(System.tmp_dir!(), "docker_sandbox_env_#{:erlang.unique_integer([:positive])}")
+
       File.mkdir_p!(dir)
 
       client = %Docker{
@@ -116,9 +120,9 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
       spec = %{runner: :shell}
 
       case Docker.create(spec) do
-        {:ok, _client, _sandbox_id} ->
-          # sbx is available — clean up
-          :ok
+        {:ok, client, sandbox_id} ->
+          # sbx is available — clean up the sandbox we just created
+          Docker.destroy(client, sandbox_id)
 
         {:error, {:sbx_create_failed, code, _output}} ->
           assert is_integer(code)

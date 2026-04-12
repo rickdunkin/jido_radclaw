@@ -44,7 +44,12 @@ defmodule JidoClaw.Tools.SendToAgent do
           end
         end)
 
-        {:ok, %{agent_id: params.agent_id, status: "message_sent", message: "Message sent to agent '#{params.agent_id}'"}}
+        {:ok,
+         %{
+           agent_id: params.agent_id,
+           status: "message_sent",
+           message: "Message sent to agent '#{params.agent_id}'"
+         }}
     end
   end
 end

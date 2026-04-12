@@ -6,6 +6,11 @@ defmodule JidoClaw.Tools.RunSkill do
   transitions wired as step_1 -> step_2 -> ... -> done. Errors transition
   to :failed. The workflow is built dynamically from the cached YAML
   skill definition at runtime.
+
+  Supports three execution modes:
+  - `:sequential` — steps run one after another via SkillWorkflow FSM
+  - `:dag` — steps with `depends_on` run in parallel phases via PlanWorkflow
+  - `:iterative` — generator-evaluator loop via IterativeWorkflow
   """
 
   use Jido.Action,
@@ -25,6 +30,8 @@ defmodule JidoClaw.Tools.RunSkill do
       ]
     ]
 
+  alias JidoClaw.Workflows.StepResult
+
   @impl true
   def run(params, context) do
     skill_name = params.skill
@@ -37,10 +44,15 @@ defmodule JidoClaw.Tools.RunSkill do
 
       {:ok, skill} ->
         {mode, executor} =
-          if JidoClaw.Skills.has_dag_steps?(skill) do
-            {"DAG", &JidoClaw.Workflows.PlanWorkflow.run/3}
-          else
-            {"sequential", &JidoClaw.Workflows.SkillWorkflow.run/3}
+          case JidoClaw.Skills.execution_mode(skill) do
+            :iterative ->
+              {"iterative", &JidoClaw.Workflows.IterativeWorkflow.run/3}
+
+            :dag ->
+              {"DAG", &JidoClaw.Workflows.PlanWorkflow.run/3}
+
+            :sequential ->
+              {"sequential", &JidoClaw.Workflows.SkillWorkflow.run/3}
           end
 
         IO.puts(
@@ -57,9 +69,21 @@ defmodule JidoClaw.Tools.RunSkill do
     end
   end
 
-  defp build_result(skill, results) do
+  @doc false
+  def build_result(skill, results) do
+    # Convert %StepResult{} structs to {label, text} tuples at the boundary
+    tuples =
+      Enum.map(results, fn
+        %StepResult{name: name, template: template, result: result} ->
+          label = name || template
+          {label, result}
+
+        {label, result} ->
+          {label, result}
+      end)
+
     steps_output =
-      results
+      tuples
       |> Enum.with_index(1)
       |> Enum.map(fn {{step_name, result}, idx} ->
         "## Step #{idx}: #{step_name}\n\n#{result}"
@@ -68,11 +92,11 @@ defmodule JidoClaw.Tools.RunSkill do
 
     %{
       skill: skill.name,
-      steps_completed: length(results),
+      steps_completed: length(tuples),
       synthesis_prompt: skill.synthesis,
       results: steps_output,
       message:
-        "Skill '#{skill.name}' completed #{length(results)} steps. " <>
+        "Skill '#{skill.name}' completed #{length(tuples)} steps. " <>
           "Synthesis directive: #{skill.synthesis}\n\n#{steps_output}"
     }
   end

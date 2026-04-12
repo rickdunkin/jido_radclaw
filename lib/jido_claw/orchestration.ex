@@ -4,12 +4,12 @@ defmodule JidoClaw.Orchestration do
     extensions: [AshAdmin.Domain]
 
   admin do
-    show? true
+    show?(true)
   end
 
   resources do
-    resource JidoClaw.Orchestration.WorkflowRun
-    resource JidoClaw.Orchestration.WorkflowStep
-    resource JidoClaw.Orchestration.ApprovalGate
+    resource(JidoClaw.Orchestration.WorkflowRun)
+    resource(JidoClaw.Orchestration.WorkflowStep)
+    resource(JidoClaw.Orchestration.ApprovalGate)
   end
 end

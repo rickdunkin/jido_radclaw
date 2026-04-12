@@ -66,21 +66,25 @@ defmodule JidoClaw.Web.ChatController do
       {:ok, response} ->
         chunk_id = "chatcmpl-#{:erlang.unique_integer([:positive])}"
 
-        data = Jason.encode!(%{
-          id: chunk_id,
-          object: "chat.completion.chunk",
-          created: System.system_time(:second),
-          choices: [%{index: 0, delta: %{role: "assistant", content: response}, finish_reason: nil}]
-        })
+        data =
+          Jason.encode!(%{
+            id: chunk_id,
+            object: "chat.completion.chunk",
+            created: System.system_time(:second),
+            choices: [
+              %{index: 0, delta: %{role: "assistant", content: response}, finish_reason: nil}
+            ]
+          })
 
         chunk(conn, "data: #{data}\n\n")
 
-        done = Jason.encode!(%{
-          id: chunk_id,
-          object: "chat.completion.chunk",
-          created: System.system_time(:second),
-          choices: [%{index: 0, delta: %{}, finish_reason: "stop"}]
-        })
+        done =
+          Jason.encode!(%{
+            id: chunk_id,
+            object: "chat.completion.chunk",
+            created: System.system_time(:second),
+            choices: [%{index: 0, delta: %{}, finish_reason: "stop"}]
+          })
 
         chunk(conn, "data: #{done}\n\n")
         chunk(conn, "data: [DONE]\n\n")

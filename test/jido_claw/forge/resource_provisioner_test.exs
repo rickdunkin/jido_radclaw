@@ -40,7 +40,11 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
     test "stops on first failure", %{client: client} do
       resources = [
-        %{type: :git_repo, source: "https://nonexistent.invalid/repo.git", mount_path: "/tmp/nope"},
+        %{
+          type: :git_repo,
+          source: "https://nonexistent.invalid/repo.git",
+          mount_path: "/tmp/nope"
+        },
         %{type: :env_vars, values: %{"SHOULD_NOT" => "reach"}}
       ]
 
@@ -63,7 +67,8 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
   describe "provision/2 for :env_vars" do
     test "injects env vars", %{client: client} do
-      assert :ok = ResourceProvisioner.provision(client, %{type: :env_vars, values: %{"KEY" => "val"}})
+      assert :ok =
+               ResourceProvisioner.provision(client, %{type: :env_vars, values: %{"KEY" => "val"}})
     end
 
     test "returns :ok for empty values", %{client: client} do
@@ -86,15 +91,17 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
     test "returns :ok with empty result when no resolver configured", %{client: client} do
       original = Application.get_env(:jido_claw, :secret_resolver)
       Application.delete_env(:jido_claw, :secret_resolver)
+
       on_exit(fn ->
         if original, do: Application.put_env(:jido_claw, :secret_resolver, original)
       end)
 
-      assert :ok = ResourceProvisioner.provision(client, %{
-               type: :secrets,
-               vault_keys: ["api_key"],
-               env_prefix: "SECRET_"
-             })
+      assert :ok =
+               ResourceProvisioner.provision(client, %{
+                 type: :secrets,
+                 vault_keys: ["api_key"],
+                 env_prefix: "SECRET_"
+               })
     end
 
     test "resolves and injects secrets via function resolver", %{client: client} do
@@ -105,11 +112,12 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
       Application.put_env(:jido_claw, :secret_resolver, resolver)
       on_exit(fn -> Application.delete_env(:jido_claw, :secret_resolver) end)
 
-      assert :ok = ResourceProvisioner.provision(client, %{
-               type: :secrets,
-               vault_keys: ["db_pass"],
-               env_prefix: "SECRET_"
-             })
+      assert :ok =
+               ResourceProvisioner.provision(client, %{
+                 type: :secrets,
+                 vault_keys: ["db_pass"],
+                 env_prefix: "SECRET_"
+               })
 
       {output, 0} = Local.exec(client, "echo $SECRET_DB_PASS", [])
       assert String.trim(output) == "resolved_db_pass"
@@ -125,13 +133,14 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
       Application.put_env(:jido_claw, :secret_resolver, resolver)
       on_exit(fn -> Application.delete_env(:jido_claw, :secret_resolver) end)
 
-      assert :ok = ResourceProvisioner.provision(client, %{
-               type: :secrets,
-               env_map: %{
-                 "DATABASE_URL" => "database_url",
-                 "OPENAI_API_KEY" => "openai_api_key"
-               }
-             })
+      assert :ok =
+               ResourceProvisioner.provision(client, %{
+                 type: :secrets,
+                 env_map: %{
+                   "DATABASE_URL" => "database_url",
+                   "OPENAI_API_KEY" => "openai_api_key"
+                 }
+               })
 
       {output, 0} = Local.exec(client, "echo $DATABASE_URL", [])
       assert String.trim(output) == "resolved_database_url"

@@ -5,8 +5,7 @@ defmodule JidoClaw.Tools.NetworkShare do
 
   use Jido.Action,
     name: "network_share",
-    description:
-      "Share a solution with the agent network for other agents to discover and use.",
+    description: "Share a solution with the agent network for other agents to discover and use.",
     schema: [
       solution_id: [
         type: :string,
@@ -22,10 +21,12 @@ defmodule JidoClaw.Tools.NetworkShare do
         {:ok, %{solution_id: params.solution_id, status: "shared"}}
 
       {:error, :not_connected} ->
-        {:ok, %{solution_id: params.solution_id, status: "not_shared", reason: "network not connected"}}
+        {:ok,
+         %{solution_id: params.solution_id, status: "not_shared", reason: "network not connected"}}
 
       {:error, :not_running} ->
-        {:ok, %{solution_id: params.solution_id, status: "not_shared", reason: "network not running"}}
+        {:ok,
+         %{solution_id: params.solution_id, status: "not_shared", reason: "network not running"}}
 
       {:error, reason} ->
         {:error, reason}

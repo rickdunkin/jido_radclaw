@@ -104,7 +104,8 @@ defmodule JidoClaw.Tools.SearchCodeTest do
       content = Enum.map_join(1..20, "\n", &"match line #{&1}")
       write(dir, "many_matches.txt", content)
 
-      assert {:ok, result} = SearchCode.run(%{pattern: "match line", path: dir, max_results: 5}, %{})
+      assert {:ok, result} =
+               SearchCode.run(%{pattern: "match line", path: dir, max_results: 5}, %{})
 
       lines =
         result.matches
@@ -118,7 +119,8 @@ defmodule JidoClaw.Tools.SearchCodeTest do
     test "should not add truncation note when results fit within max_results", %{dir: dir} do
       write(dir, "few.txt", "one match\n")
 
-      assert {:ok, result} = SearchCode.run(%{pattern: "one match", path: dir, max_results: 50}, %{})
+      assert {:ok, result} =
+               SearchCode.run(%{pattern: "one match", path: dir, max_results: 50}, %{})
 
       refute result.matches =~ "truncated"
     end

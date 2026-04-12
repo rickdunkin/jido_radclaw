@@ -1,10 +1,15 @@
 defmodule JidoClaw.Tools.GitCommit do
   use Jido.Action,
     name: "git_commit",
-    description: "Stage specific files and create a git commit. Always use git_status first to see what changed.",
+    description:
+      "Stage specific files and create a git commit. Always use git_status first to see what changed.",
     schema: [
       message: [type: :string, required: true, doc: "Commit message"],
-      files: [type: {:list, :string}, required: true, doc: "List of file paths to stage and commit"]
+      files: [
+        type: {:list, :string},
+        required: true,
+        doc: "List of file paths to stage and commit"
+      ]
     ]
 
   @impl true

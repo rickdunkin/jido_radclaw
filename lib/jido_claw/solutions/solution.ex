@@ -204,22 +204,26 @@ defmodule JidoClaw.Solutions.Solution do
   defp coerce_tags(_), do: []
 
   defp coerce_map(map) when is_map(map), do: map
+
   defp coerce_map(json) when is_binary(json) do
     case Jason.decode(json) do
       {:ok, map} when is_map(map) -> map
       _ -> %{}
     end
   end
+
   defp coerce_map(_), do: %{}
 
   defp coerce_float(v) when is_float(v), do: v
   defp coerce_float(v) when is_integer(v), do: v / 1
+
   defp coerce_float(v) when is_binary(v) do
     case Float.parse(v) do
       {f, _} -> f
       :error -> 0.0
     end
   end
+
   defp coerce_float(_), do: 0.0
 
   defp coerce_sharing(:local), do: :local
@@ -233,5 +237,6 @@ defmodule JidoClaw.Solutions.Solution do
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
+
   defp stringify_keys(other), do: other
 end

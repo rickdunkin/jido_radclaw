@@ -4,7 +4,8 @@ defmodule JidoClaw.CodeServer.Runtime do
 
   def start_link(project_path) do
     GenServer.start_link(__MODULE__, project_path,
-      name: {:via, Registry, {JidoClaw.CodeServer.RuntimeRegistry, project_path}})
+      name: {:via, Registry, {JidoClaw.CodeServer.RuntimeRegistry, project_path}}
+    )
   end
 
   @impl true

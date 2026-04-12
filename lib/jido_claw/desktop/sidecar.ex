@@ -21,7 +21,9 @@ defmodule JidoClaw.Desktop.Sidecar do
       port = port()
       Logger.info("[Desktop] Running as sidecar on port #{port}")
 
-      Application.put_env(:jido_claw, JidoClaw.Web.Endpoint,
+      Application.put_env(
+        :jido_claw,
+        JidoClaw.Web.Endpoint,
         Keyword.merge(
           Application.get_env(:jido_claw, JidoClaw.Web.Endpoint, []),
           http: [port: port],

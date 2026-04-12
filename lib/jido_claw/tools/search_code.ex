@@ -1,7 +1,8 @@
 defmodule JidoClaw.Tools.SearchCode do
   use Jido.Action,
     name: "search_code",
-    description: "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers.",
+    description:
+      "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers.",
     schema: [
       pattern: [type: :string, required: true, doc: "Search pattern (regex supported)"],
       path: [type: :string, default: ".", doc: "Directory to search in"],
@@ -30,7 +31,12 @@ defmodule JidoClaw.Tools.SearchCode do
         truncated = Enum.take(lines, max_results)
         total = length(lines)
         content = Enum.join(truncated, "\n")
-        note = if total > max_results, do: "\n(#{total - max_results} more matches truncated)", else: ""
+
+        note =
+          if total > max_results,
+            do: "\n(#{total - max_results} more matches truncated)",
+            else: ""
+
         {:ok, %{matches: content <> note, total_matches: total}}
 
       {_, 1} ->

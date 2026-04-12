@@ -8,13 +8,13 @@ defmodule JidoClaw.GitHub.IssueCommentClient do
     url = "#{@github_api}/repos/#{repo_full_name}/issues/#{issue_number}/comments"
 
     case Req.post(url,
-      json: %{body: body},
-      headers: [
-        {"authorization", "Bearer #{token}"},
-        {"accept", "application/vnd.github+json"},
-        {"x-github-api-version", "2022-11-28"}
-      ]
-    ) do
+           json: %{body: body},
+           headers: [
+             {"authorization", "Bearer #{token}"},
+             {"accept", "application/vnd.github+json"},
+             {"x-github-api-version", "2022-11-28"}
+           ]
+         ) do
       {:ok, %{status: 201}} ->
         Logger.info("[GitHub] Posted comment on #{repo_full_name}##{issue_number}")
         :ok

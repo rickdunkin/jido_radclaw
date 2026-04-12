@@ -51,21 +51,30 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
 
       errors =
         if Regex.match?(@sensitive_key_pattern, key_str) do
-          ["env_vars key #{inspect(key)} looks sensitive — use a :secrets resource instead" | errors]
+          [
+            "env_vars key #{inspect(key)} looks sensitive — use a :secrets resource instead"
+            | errors
+          ]
         else
           errors
         end
 
       errors =
         if value_str != Patterns.redact(value_str) do
-          ["env_vars value for #{inspect(key)} looks like a secret — use a :secrets resource instead" | errors]
+          [
+            "env_vars value for #{inspect(key)} looks like a secret — use a :secrets resource instead"
+            | errors
+          ]
         else
           errors
         end
 
       errors =
         if Regex.match?(@credentialed_url_pattern, value_str) do
-          ["env_vars value for #{inspect(key)} contains embedded credentials — use a :secrets resource instead" | errors]
+          [
+            "env_vars value for #{inspect(key)} contains embedded credentials — use a :secrets resource instead"
+            | errors
+          ]
         else
           errors
         end
@@ -198,9 +207,10 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
 
     case resolve_secrets(vault_keys) do
       {:ok, resolved} ->
-        env = Map.new(resolved, fn {key, value} ->
-          {"#{env_prefix}#{String.upcase(key)}", value}
-        end)
+        env =
+          Map.new(resolved, fn {key, value} ->
+            {"#{env_prefix}#{String.upcase(key)}", value}
+          end)
 
         if map_size(env) > 0 do
           Sandbox.inject_env(client, env)
@@ -237,7 +247,10 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
   defp resolve_secrets(vault_keys) do
     case Application.get_env(:jido_claw, :secret_resolver) do
       nil ->
-        Logger.warning("[ResourceProvisioner] No :secret_resolver configured, skipping #{length(vault_keys)} keys")
+        Logger.warning(
+          "[ResourceProvisioner] No :secret_resolver configured, skipping #{length(vault_keys)} keys"
+        )
+
         {:ok, %{}}
 
       resolver when is_function(resolver, 1) ->

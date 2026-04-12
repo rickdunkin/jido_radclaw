@@ -11,6 +11,7 @@ defmodule JidoClaw.Telemetry do
     children = [
       {:telemetry_poller, measurements: periodic_measurements(), period: 10_000}
     ]
+
     Supervisor.init(children, strategy: :one_for_one)
   end
 
@@ -72,13 +73,18 @@ defmodule JidoClaw.Telemetry do
         nil -> 0
         _pid -> JidoClaw.Tenant.Manager.count()
       end
+
     :telemetry.execute([:jido_claw, :tenant, :count], %{count: count}, %{})
   end
 
   # -- Emit helpers --
 
   def emit_session_start(metadata) do
-    :telemetry.execute([:jido_claw, :session, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:jido_claw, :session, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
   end
 
   def emit_session_stop(metadata, duration) do
@@ -90,7 +96,11 @@ defmodule JidoClaw.Telemetry do
   end
 
   def emit_provider_request_start(metadata) do
-    :telemetry.execute([:jido_claw, :provider, :request, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:jido_claw, :provider, :request, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
   end
 
   def emit_provider_request_stop(metadata, duration) do
@@ -98,15 +108,27 @@ defmodule JidoClaw.Telemetry do
   end
 
   def emit_provider_exception(metadata, kind) do
-    :telemetry.execute([:jido_claw, :provider, :request, :exception], %{count: 1}, Map.put(metadata, :kind, kind))
+    :telemetry.execute(
+      [:jido_claw, :provider, :request, :exception],
+      %{count: 1},
+      Map.put(metadata, :kind, kind)
+    )
   end
 
   def emit_provider_tokens(metadata, count, type) do
-    :telemetry.execute([:jido_claw, :provider, :tokens], %{total: count}, Map.put(metadata, :type, type))
+    :telemetry.execute(
+      [:jido_claw, :provider, :tokens],
+      %{total: count},
+      Map.put(metadata, :type, type)
+    )
   end
 
   def emit_tool_start(metadata) do
-    :telemetry.execute([:jido_claw, :tool, :execute, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:jido_claw, :tool, :execute, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
   end
 
   def emit_tool_stop(metadata, duration) do
@@ -114,11 +136,19 @@ defmodule JidoClaw.Telemetry do
   end
 
   def emit_tool_exception(metadata, kind) do
-    :telemetry.execute([:jido_claw, :tool, :execute, :exception], %{count: 1}, Map.put(metadata, :kind, kind))
+    :telemetry.execute(
+      [:jido_claw, :tool, :execute, :exception],
+      %{count: 1},
+      Map.put(metadata, :kind, kind)
+    )
   end
 
   def emit_cron_start(metadata) do
-    :telemetry.execute([:jido_claw, :cron, :job, :start], %{system_time: System.system_time()}, metadata)
+    :telemetry.execute(
+      [:jido_claw, :cron, :job, :start],
+      %{system_time: System.system_time()},
+      metadata
+    )
   end
 
   def emit_cron_stop(metadata, duration) do
@@ -126,7 +156,11 @@ defmodule JidoClaw.Telemetry do
   end
 
   def emit_cron_exception(metadata, kind) do
-    :telemetry.execute([:jido_claw, :cron, :job, :exception], %{count: 1}, Map.put(metadata, :kind, kind))
+    :telemetry.execute(
+      [:jido_claw, :cron, :job, :exception],
+      %{count: 1},
+      Map.put(metadata, :kind, kind)
+    )
   end
 
   def emit_tenant_create(metadata) do

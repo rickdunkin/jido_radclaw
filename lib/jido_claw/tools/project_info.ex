@@ -1,7 +1,8 @@
 defmodule JidoClaw.Tools.ProjectInfo do
   use Jido.Action,
     name: "project_info",
-    description: "Get information about the current project: type, structure, git status, and key files.",
+    description:
+      "Get information about the current project: type, structure, git status, and key files.",
     schema: []
 
   @impl true
@@ -46,13 +47,14 @@ defmodule JidoClaw.Tools.ProjectInfo do
 
     has_jido_md = File.exists?(Path.join([cwd, ".jido", "JIDO.md"]))
 
-    {:ok, %{
-      cwd: cwd,
-      project_type: project_type,
-      git_branch: git_branch,
-      git_dirty: git_dirty,
-      top_level_files: top_level_files,
-      has_jido_md: has_jido_md
-    }}
+    {:ok,
+     %{
+       cwd: cwd,
+       project_type: project_type,
+       git_branch: git_branch,
+       git_dirty: git_dirty,
+       top_level_files: top_level_files,
+       has_jido_md: has_jido_md
+     }}
   end
 end

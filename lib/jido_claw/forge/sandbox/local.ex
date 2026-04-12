@@ -14,12 +14,15 @@ defmodule JidoClaw.Forge.Sandbox.Local do
     dir = Path.join(System.tmp_dir!(), "forge_sandbox_#{sandbox_id}")
     File.mkdir_p!(dir)
 
-    agent_pid = case Process.whereis(__MODULE__) do
-      nil ->
-        {:ok, pid} = Agent.start_link(fn -> %{} end)
-        pid
-      pid -> pid
-    end
+    agent_pid =
+      case Process.whereis(__MODULE__) do
+        nil ->
+          {:ok, pid} = Agent.start_link(fn -> %{} end)
+          pid
+
+        pid ->
+          pid
+      end
 
     Agent.update(agent_pid, fn state ->
       Map.put(state, sandbox_id, %{dir: dir, env: Map.get(spec, "env", %{})})
@@ -31,17 +34,20 @@ defmodule JidoClaw.Forge.Sandbox.Local do
 
   @impl true
   def exec(%__MODULE__{agent_pid: pid, sandbox_id: sid} = _client, command, _opts) do
-    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
-      %{dir: System.tmp_dir!(), env: %{}}
+    sandbox =
+      Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+        %{dir: System.tmp_dir!(), env: %{}}
 
     env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
 
     try do
-      {output, code} = System.cmd("sh", ["-c", command],
-        cd: sandbox.dir,
-        env: env,
-        stderr_to_stdout: true
-      )
+      {output, code} =
+        System.cmd("sh", ["-c", command],
+          cd: sandbox.dir,
+          env: env,
+          stderr_to_stdout: true
+        )
+
       {output, code}
     rescue
       e -> {Exception.message(e), 1}
@@ -68,15 +74,20 @@ defmodule JidoClaw.Forge.Sandbox.Local do
 
   @impl true
   def spawn(%__MODULE__{} = _client, command, args, _opts) do
-    port = Port.open({:spawn_executable, System.find_executable(command)},
-      [:binary, :exit_status, args: args])
+    port =
+      Port.open(
+        {:spawn_executable, System.find_executable(command)},
+        [:binary, :exit_status, args: args]
+      )
+
     {:ok, port}
   end
 
   @impl true
   def write_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path, content) do
-    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
-      %{dir: System.tmp_dir!()}
+    sandbox =
+      Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+        %{dir: System.tmp_dir!()}
 
     full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sandbox.dir, path)
     File.mkdir_p!(Path.dirname(full_path))
@@ -86,10 +97,12 @@ defmodule JidoClaw.Forge.Sandbox.Local do
 
   @impl true
   def read_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path) do
-    sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end) ||
-      %{dir: System.tmp_dir!()}
+    sandbox =
+      Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+        %{dir: System.tmp_dir!()}
 
     full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sandbox.dir, path)
+
     case File.read(full_path) do
       {:ok, content} -> {:ok, content}
       {:error, reason} -> {:error, reason}
@@ -107,6 +120,7 @@ defmodule JidoClaw.Forge.Sandbox.Local do
           Map.new(merged, fn {k, v} -> {to_string(k), to_string(v)} end)
         end)
       end)
+
       :ok
     else
       {:error, :no_sandbox}

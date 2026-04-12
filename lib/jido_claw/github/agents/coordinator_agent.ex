@@ -4,7 +4,9 @@ defmodule JidoClaw.GitHub.Agents.CoordinatorAgent do
   alias JidoClaw.GitHub.Agents.{TriageAgent, ResearchCoordinator, PullRequestCoordinator}
 
   def run(event) do
-    Logger.info("[CoordinatorAgent] Starting pipeline for #{event.repo.full_name}##{event.issue.number}")
+    Logger.info(
+      "[CoordinatorAgent] Starting pipeline for #{event.repo.full_name}##{event.issue.number}"
+    )
 
     with {:ok, triage} <- TriageAgent.classify(event.issue),
          {:ok, research} <- ResearchCoordinator.research(event, triage),

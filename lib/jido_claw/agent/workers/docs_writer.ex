@@ -1,7 +1,8 @@
 defmodule JidoClaw.Agent.Workers.DocsWriter do
   use Jido.AI.Agent,
     name: "jido_claw_docs_writer",
-    description: "Writes documentation, module docs, function specs, and inline comments. Reads existing code and writes updated files.",
+    description:
+      "Writes documentation, module docs, function specs, and inline comments. Reads existing code and writes updated files.",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,

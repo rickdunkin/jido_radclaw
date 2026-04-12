@@ -20,7 +20,8 @@ defmodule JidoClaw.Agent.PromptTest do
 
     # Memory and Skills are managed by the Application supervision tree.
     # Clear Memory's four ETS tables between tests to prevent state leakage.
-    for table <- ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
+    for table <-
+          ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
       if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
     end
 
@@ -219,7 +220,7 @@ defmodule JidoClaw.Agent.PromptTest do
   end
 
   describe "available templates" do
-    test "should mention all 6 agent templates" do
+    test "should mention all 7 agent templates" do
       dir = System.tmp_dir!()
       prompt = Prompt.build(dir)
 
@@ -229,6 +230,7 @@ defmodule JidoClaw.Agent.PromptTest do
       assert prompt =~ "docs_writer"
       assert prompt =~ "researcher"
       assert prompt =~ "refactorer"
+      assert prompt =~ "verifier"
     end
   end
 
@@ -236,7 +238,11 @@ defmodule JidoClaw.Agent.PromptTest do
     test "should include JIDO.md content when the file exists", %{dir: dir} do
       jido_dir = Path.join(dir, ".jido")
       File.mkdir_p!(jido_dir)
-      File.write!(Path.join(jido_dir, "JIDO.md"), "# Custom Instructions\nAlways write tests first.")
+
+      File.write!(
+        Path.join(jido_dir, "JIDO.md"),
+        "# Custom Instructions\nAlways write tests first."
+      )
 
       prompt = Prompt.build(dir)
 

@@ -4,13 +4,13 @@ defmodule JidoClaw.Forge.Domain do
     extensions: [AshAdmin.Domain]
 
   admin do
-    show? true
+    show?(true)
   end
 
   resources do
-    resource JidoClaw.Forge.Resources.Session
-    resource JidoClaw.Forge.Resources.ExecSession
-    resource JidoClaw.Forge.Resources.Checkpoint
-    resource JidoClaw.Forge.Resources.Event
+    resource(JidoClaw.Forge.Resources.Session)
+    resource(JidoClaw.Forge.Resources.ExecSession)
+    resource(JidoClaw.Forge.Resources.Checkpoint)
+    resource(JidoClaw.Forge.Resources.Event)
   end
 end

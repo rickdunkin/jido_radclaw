@@ -41,7 +41,7 @@ defmodule JidoClaw.Skills do
   use GenServer
   require Logger
 
-  defstruct [:name, :description, :steps, :synthesis]
+  defstruct [:name, :description, :steps, :synthesis, :mode, :max_iterations]
 
   @default_skills %{
     "full_review.yaml" => """
@@ -161,6 +161,29 @@ defmodule JidoClaw.Skills do
         task: "Write onboarding guide: Quick Start, Architecture, Codebase Map, Key Files, Common Tasks, Conventions"
         depends_on: [explore]
     synthesis: "Present complete onboarding documentation with a First Day Checklist at the top"
+    """,
+    "iterative_feature.yaml" => """
+    name: iterative_feature
+    description: Implement a feature with iterative refinement — generate, verify, repeat until passing
+    mode: iterative
+    max_iterations: 5
+    steps:
+      - name: implement
+        role: generator
+        template: coder
+        task: "Implement the feature following existing project patterns, with proper error handling and tests"
+        produces:
+          type: elixir_module
+          verification_criteria:
+            - "All tests pass"
+            - "No compiler warnings"
+            - "mix format clean"
+      - name: verify
+        role: evaluator
+        template: verifier
+        task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. End with VERDICT: PASS or VERDICT: FAIL with specific issues to fix."
+        consumes: [implement]
+    synthesis: "Present the final implementation after iterative refinement with verification results"
     """
   }
 
@@ -196,26 +219,21 @@ defmodule JidoClaw.Skills do
     GenServer.call(__MODULE__, :reload)
   end
 
-  @doc "Copy default skills to .jido/skills/ if the directory is empty or missing."
+  @doc """
+  Ensure default skills exist in .jido/skills/.
+
+  Backfills any missing default skill files without overwriting user edits.
+  Creates the directory if it doesn't exist.
+  """
   @spec ensure_defaults(String.t()) :: :ok
   def ensure_defaults(project_dir) do
     dir = skills_dir(project_dir)
+    File.mkdir_p!(dir)
 
-    needs_copy =
-      case File.ls(dir) do
-        {:ok, files} -> Enum.empty?(Enum.filter(files, &String.ends_with?(&1, ".yaml")))
-        {:error, :enoent} -> true
-        {:error, _} -> false
-      end
-
-    if needs_copy do
-      File.mkdir_p!(dir)
-
-      Enum.each(@default_skills, fn {filename, content} ->
-        path = Path.join(dir, filename)
-        unless File.exists?(path), do: File.write!(path, content)
-      end)
-    end
+    Enum.each(@default_skills, fn {filename, content} ->
+      path = Path.join(dir, filename)
+      unless File.exists?(path), do: File.write!(path, content)
+    end)
 
     :ok
   end
@@ -230,6 +248,19 @@ defmodule JidoClaw.Skills do
       Map.has_key?(step, "depends_on") or Map.has_key?(step, :depends_on) or
         Map.has_key?(step, "name") or Map.has_key?(step, :name)
     end)
+  end
+
+  @doc """
+  Determine the execution mode for a skill.
+
+  Returns `:iterative` for skills with `mode: "iterative"`, `:dag` for skills
+  with DAG step annotations, and `:sequential` otherwise.
+  """
+  @spec execution_mode(%__MODULE__{}) :: :iterative | :dag | :sequential
+  def execution_mode(%__MODULE__{mode: "iterative"}), do: :iterative
+
+  def execution_mode(%__MODULE__{} = skill) do
+    if has_dag_steps?(skill), do: :dag, else: :sequential
   end
 
   # Backwards-compatible API (accepts project_dir but ignores it — uses cache)
@@ -304,7 +335,9 @@ defmodule JidoClaw.Skills do
           name: Map.get(data, "name", Path.basename(path, ".yaml")),
           description: Map.get(data, "description", ""),
           steps: Map.get(data, "steps", []),
-          synthesis: Map.get(data, "synthesis", "")
+          synthesis: Map.get(data, "synthesis", ""),
+          mode: Map.get(data, "mode"),
+          max_iterations: Map.get(data, "max_iterations")
         }
 
         [skill]

@@ -15,6 +15,7 @@ defmodule JidoClaw.Desktop.PortFinder do
       {:ok, socket} ->
         :gen_tcp.close(socket)
         true
+
       {:error, _} ->
         false
     end

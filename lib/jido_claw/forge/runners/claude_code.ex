@@ -17,6 +17,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     session_name = Map.get(config, :session_name)
 
     dirs = ["#{@forge_home}/session", "#{@forge_home}/templates", "#{@forge_home}/.claude"]
+
     for dir <- dirs do
       Sandbox.exec(client, "mkdir -p #{dir}", [])
     end
@@ -43,11 +44,17 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     model = state.model
 
     args =
-      ["-p", redacted_prompt,
-       "--model", model,
-       "--dangerously-skip-permissions",
-       "--output-format", "stream-json",
-       "--max-turns", "200"]
+      [
+        "-p",
+        redacted_prompt,
+        "--model",
+        model,
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "stream-json",
+        "--max-turns",
+        "200"
+      ]
 
     run_opts = [timeout: 300_000]
     run_opts = if state.session_name, do: [{:name, state.session_name} | run_opts], else: run_opts
@@ -60,14 +67,20 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
   @impl true
   def apply_input(client, input, _state) do
-    Sandbox.write_file(client, "#{@forge_home}/session/response.json",
-      Jason.encode!(%{response: input}))
+    Sandbox.write_file(
+      client,
+      "#{@forge_home}/session/response.json",
+      Jason.encode!(%{response: input})
+    )
+
     :ok
   end
 
   defp parse_output(output) do
     lines = String.split(output, "\n", trim: true)
-    last_result = lines
+
+    last_result =
+      lines
       |> Enum.filter(&String.starts_with?(&1, "{"))
       |> Enum.reduce(nil, fn line, _acc ->
         case Jason.decode(line) do

@@ -7,8 +7,12 @@ defmodule JidoClaw.Forge.Sandbox.DockerIntegrationTest do
 
   setup_all do
     case System.cmd("sbx", ["version"], stderr_to_stdout: true) do
-      {_version, 0} -> :ok
-      _ -> raise ExUnit.DocTest.Error, "sbx CLI not available — skipping Docker Sandbox integration tests"
+      {_version, 0} ->
+        :ok
+
+      _ ->
+        raise ExUnit.DocTest.Error,
+              "sbx CLI not available — skipping Docker Sandbox integration tests"
     end
   end
 
@@ -81,7 +85,10 @@ defmodule JidoClaw.Forge.Sandbox.DockerIntegrationTest do
   end
 
   describe "destroy idempotency" do
-    test "destroy on already-destroyed sandbox does not crash", %{client: client, sandbox_id: sandbox_id} do
+    test "destroy on already-destroyed sandbox does not crash", %{
+      client: client,
+      sandbox_id: sandbox_id
+    } do
       assert :ok = Docker.destroy(client, sandbox_id)
       # Second destroy should also return :ok (sandbox already gone)
       assert :ok = Docker.destroy(client, sandbox_id)

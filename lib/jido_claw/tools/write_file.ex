@@ -11,9 +11,14 @@ defmodule JidoClaw.Tools.WriteFile do
 
   use Jido.Action,
     name: "write_file",
-    description: "Create or overwrite a file. Creates parent directories if needed. Supports github://, s3://, git:// URIs.",
+    description:
+      "Create or overwrite a file. Creates parent directories if needed. Supports github://, s3://, git:// URIs.",
     schema: [
-      path: [type: :string, required: true, doc: "File path to write, or remote URI (github://, s3://, git://)"],
+      path: [
+        type: :string,
+        required: true,
+        doc: "File path to write, or remote URI (github://, s3://, git://)"
+      ],
       content: [type: :string, required: true, doc: "File content"]
     ]
 

@@ -20,6 +20,7 @@ defmodule JidoClaw.Tools.NetworkStatus do
       """
       |> String.trim()
 
-    {:ok, %{status: formatted, connected: status.status == :connected, peer_count: status.peer_count}}
+    {:ok,
+     %{status: formatted, connected: status.status == :connected, peer_count: status.peer_count}}
   end
 end

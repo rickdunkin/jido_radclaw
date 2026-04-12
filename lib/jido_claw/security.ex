@@ -4,10 +4,10 @@ defmodule JidoClaw.Security do
     extensions: [AshAdmin.Domain]
 
   admin do
-    show? true
+    show?(true)
   end
 
   resources do
-    resource JidoClaw.Security.SecretRef
+    resource(JidoClaw.Security.SecretRef)
   end
 end

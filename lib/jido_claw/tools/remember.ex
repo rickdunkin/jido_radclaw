@@ -14,7 +14,8 @@ defmodule JidoClaw.Tools.Remember do
       key: [
         type: :string,
         required: true,
-        doc: "Short identifier/topic for this memory (e.g. 'db_schema', 'preferred_style', 'api_base_url')"
+        doc:
+          "Short identifier/topic for this memory (e.g. 'db_schema', 'preferred_style', 'api_base_url')"
       ],
       content: [
         type: :string,

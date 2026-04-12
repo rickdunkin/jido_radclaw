@@ -18,7 +18,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest.InputRunner do
   end
 
   def run_iteration(client, %{asked: true} = _state, _opts) do
-    {output, _} = JidoClaw.Forge.Sandbox.exec(client, "cat input_received.txt 2>/dev/null || echo none", [])
+    {output, _} =
+      JidoClaw.Forge.Sandbox.exec(client, "cat input_received.txt 2>/dev/null || echo none", [])
+
     {:ok, JidoClaw.Forge.Runner.done(output)}
   end
 
@@ -118,28 +120,43 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(env_sid, spec)
       assert_receive {:ready, ^env_sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          Forge.stop_session(env_sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
       # Attach secondary — should inherit session env
       {:ok, _} = Forge.attach_sandbox(env_sid, :with_env, %{sandbox: :fake})
 
       {:ok, {output, 0}} = Forge.exec(env_sid, "echo $TEST_FORGE_VAR", sandbox: :with_env)
       assert String.trim(output) == "from_session"
-
-      Forge.stop_session(env_sid)
     end
   end
 
   describe "detach_sandbox/2" do
     test "detaches and cleans up a non-default sandbox", %{session_id: sid} do
-      {:ok, result} = Forge.attach_sandbox(sid, :temp, %{sandbox: :fake})
-      sandbox_id = result.sandbox_id
+      {:ok, _result} = Forge.attach_sandbox(sid, :temp, %{sandbox: :fake})
 
-      # Write a file so we can verify cleanup
-      {:ok, {_, 0}} = Forge.exec(sid, "echo marker > /tmp/detach_test_#{sandbox_id}", sandbox: :temp)
+      # Get the sandbox's working directory so we can verify filesystem cleanup
+      {:ok, {dir, 0}} = Forge.exec(sid, "pwd", sandbox: :temp)
+      dir = String.trim(dir)
+
+      # Write a marker file inside the sandbox dir to prove it has state
+      {:ok, {_, 0}} = Forge.exec(sid, "echo marker > cleanup_test.txt", sandbox: :temp)
+      assert File.exists?(Path.join(dir, "cleanup_test.txt"))
 
       assert :ok = Forge.detach_sandbox(sid, :temp)
 
       {:ok, status} = Forge.status(sid)
       refute :temp in status.sandboxes
+
+      # Verify the sandbox directory and its contents were cleaned up by destroy
+      refute File.exists?(dir), "detached sandbox dir should be cleaned up"
     end
 
     test "returns error for non-existent sandbox name", %{session_id: sid} do
@@ -164,8 +181,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # Verify sandboxes have different working directories
       {:ok, {default_dir, 0}} = Forge.exec(sid, "pwd")
       {:ok, {isolated_dir, 0}} = Forge.exec(sid, "pwd", sandbox: :isolated)
+
       assert String.trim(default_dir) != String.trim(isolated_dir),
-        "sandboxes must have distinct dirs, got #{String.trim(default_dir)} for both"
+             "sandboxes must have distinct dirs, got #{String.trim(default_dir)} for both"
 
       # Write a file to the default sandbox using a relative path (sandbox working dir)
       {:ok, {_, 0}} = Forge.exec(sid, "echo default_content > isolation_test.txt")
@@ -189,7 +207,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.attach_sandbox(sid, :runner_target, %{sandbox: :fake})
 
       # Shell runner: run_iteration uses command from opts
-      {:ok, result} = Forge.run_iteration(sid, command: "echo targeted_output", sandbox: :runner_target)
+      {:ok, result} =
+        Forge.run_iteration(sid, command: "echo targeted_output", sandbox: :runner_target)
+
       assert result.status == :done
       assert result.output =~ "targeted_output"
     end
@@ -200,8 +220,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # Verify sandboxes have different working directories
       {:ok, {default_dir, 0}} = Forge.exec(sid, "pwd")
       {:ok, {other_dir, 0}} = Forge.exec(sid, "pwd", sandbox: :other)
+
       assert String.trim(default_dir) != String.trim(other_dir),
-        "sandboxes must have distinct dirs"
+             "sandboxes must have distinct dirs"
 
       # Write a file only in the :other sandbox
       {:ok, {_, 0}} = Forge.exec(sid, "echo other_data > marker.txt", sandbox: :other)
@@ -254,7 +275,17 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       ForgePubSub.subscribe(sid)
       marker_path = "/tmp/init_check_#{sid}"
 
-      on_exit(fn -> File.rm(marker_path) end)
+      on_exit(fn ->
+        File.rm(marker_path)
+
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
       spec = %{
         runner: :shell,
@@ -274,8 +305,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # (bootstrap_steps create it at an absolute path for easy verification)
       {:ok, {output, 0}} = Forge.exec(sid, "cat #{marker_path}", sandbox: :init_test)
       assert String.trim(output) == "bootstrap_marker"
-
-      Forge.stop_session(sid)
     end
   end
 
@@ -299,13 +328,22 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+
+        File.rm_rf(mount_source)
+      end)
+
       # Attach succeeds and sandbox is functional despite file_mount resources
       {:ok, _} = Forge.attach_sandbox(sid, :mounted, %{sandbox: :fake})
       {:ok, {output, 0}} = Forge.exec(sid, "echo mount_works", sandbox: :mounted)
       assert String.trim(output) == "mount_works"
-
-      Forge.stop_session(sid)
-      File.rm_rf!(mount_source)
     end
   end
 
@@ -322,6 +360,16 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
 
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
+
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
       # Session is ready but no sandbox provisioned yet
       {:ok, status} = Forge.status(sid)
@@ -344,8 +392,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # Exec also works on both
       {:ok, {output, 0}} = Forge.exec(sid, "echo exec_early", sandbox: :early_bird)
       assert String.trim(output) == "exec_early"
-
-      Forge.stop_session(sid)
     end
 
     test "targeted exec on attached sandbox does NOT provision the default", _context do
@@ -361,6 +407,16 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
       {:ok, _} = Forge.attach_sandbox(sid, :standalone, %{sandbox: :fake})
 
       # Exec targeting :standalone should NOT provision the default
@@ -371,8 +427,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, status} = Forge.status(sid)
       refute :default in status.sandboxes
       assert :standalone in status.sandboxes
-
-      Forge.stop_session(sid)
     end
 
     test "targeted run_iteration on attached sandbox does NOT provision the default", _context do
@@ -388,6 +442,16 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
       {:ok, _} = Forge.attach_sandbox(sid, :targeted, %{sandbox: :fake})
 
       # run_iteration targeting :targeted should NOT provision the default
@@ -398,8 +462,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, status} = Forge.status(sid)
       refute :default in status.sandboxes
       assert :targeted in status.sandboxes
-
-      Forge.stop_session(sid)
     end
   end
 
@@ -415,6 +477,16 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
 
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
+
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
       {:ok, _} = Forge.attach_sandbox(sid, :input_target, %{sandbox: :fake})
 
@@ -433,8 +505,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # Default sandbox should NOT have the input file
       {:ok, {output, code}} = Forge.exec(sid, "cat input_received.txt 2>&1")
       assert code != 0 || output =~ "No such file"
-
-      Forge.stop_session(sid)
     end
 
     test "apply_input works on default sandbox for untargeted iterations", _context do
@@ -449,6 +519,16 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
       # Untargeted run_iteration triggers :needs_input on default
       {:ok, result} = Forge.run_iteration(sid)
       assert result.status == :needs_input
@@ -460,8 +540,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, result} = Forge.run_iteration(sid)
       assert result.status == :done
       assert result.output =~ "Bob"
-
-      Forge.stop_session(sid)
     end
 
     test "detach_sandbox is refused while that sandbox is awaiting input", _context do
@@ -476,6 +554,25 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.start_session(sid, spec)
       assert_receive {:ready, ^sid}, @timeout
 
+      on_exit(fn ->
+        try do
+          # Resolve any pending input so the session can be stopped cleanly
+          Forge.apply_input(sid, "resolved")
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+
+        try do
+          Forge.stop_session(sid)
+        rescue
+          _ -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
       {:ok, _} = Forge.attach_sandbox(sid, :will_ask, %{sandbox: :fake})
 
       # Trigger :needs_input on :will_ask
@@ -489,10 +586,6 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # But detaching a different sandbox is fine
       {:ok, _} = Forge.attach_sandbox(sid, :bystander, %{sandbox: :fake})
       assert :ok = Forge.detach_sandbox(sid, :bystander)
-
-      # Resolve the input so the session can be stopped cleanly
-      Forge.apply_input(sid, "resolved")
-      Forge.stop_session(sid)
     end
   end
 
@@ -522,8 +615,11 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # entry.spec stores original caller spec (without runtime tuples).
       # build_sandbox_spec recomputes mounts at create time.
       extra = %{worker: %{sandbox: :fake}}
+
       JidoClaw.Forge.Persistence.save_checkpoint(session_id, 1, %{}, %{
-        resources: [%{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}],
+        resources: [
+          %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
+        ],
         bootstrap_steps: [],
         output_sequence: 1,
         extra_sandboxes: extra
@@ -542,6 +638,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
 
       # Save a checkpoint with extra_sandboxes metadata
       extra = %{worker: %{sandbox: :fake}, gpu: %{sandbox: :docker_sandbox}}
+
       JidoClaw.Forge.Persistence.save_checkpoint(session_id, 1, %{}, %{
         resources: [],
         bootstrap_steps: [],

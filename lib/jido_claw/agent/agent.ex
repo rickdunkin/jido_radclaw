@@ -1,7 +1,8 @@
 defmodule JidoClaw.Agent do
   use Jido.AI.Agent,
     name: "jido_claw",
-    description: "Terminal-based AI coding agent with swarm orchestration. Reads, writes, edits files, runs commands, manages git, and spawns child agents for parallel work.",
+    description:
+      "Terminal-based AI coding agent with swarm orchestration. Reads, writes, edits files, runs commands, manages git, and spawns child agents for parallel work.",
     tools: [
       # Core tools (10)
       JidoClaw.Tools.ReadFile,

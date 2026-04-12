@@ -25,7 +25,9 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
 
   defp extract_api_key(conn) do
     case get_req_header(conn, "authorization") do
-      ["Bearer " <> key] -> {:ok, key}
+      ["Bearer " <> key] ->
+        {:ok, key}
+
       _ ->
         case get_req_header(conn, "x-api-key") do
           [key] when byte_size(key) > 0 -> {:ok, key}

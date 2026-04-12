@@ -91,6 +91,7 @@ defmodule JidoClaw.Cron.Worker do
   def handle_info(:check_stuck, state) do
     if state.last_run && state.status == :running do
       elapsed = DateTime.diff(DateTime.utc_now(), state.last_run, :millisecond)
+
       if elapsed > @stuck_threshold_ms do
         Logger.warning("[Cron] Job #{state.id} appears stuck (#{elapsed}ms)")
         {:noreply, %{state | status: :stuck}}
@@ -133,7 +134,10 @@ defmodule JidoClaw.Cron.Worker do
 
       {:error, reason} ->
         new_count = state.failure_count + 1
-        Logger.warning("[Cron] Job #{state.id} failed (#{new_count}/#{@max_failures}): #{inspect(reason)}")
+
+        Logger.warning(
+          "[Cron] Job #{state.id} failed (#{new_count}/#{@max_failures}): #{inspect(reason)}"
+        )
 
         new_status = if new_count >= @max_failures, do: :disabled, else: state.status
 
@@ -141,7 +145,13 @@ defmodule JidoClaw.Cron.Worker do
           Logger.error("[Cron] Job #{state.id} auto-disabled after #{@max_failures} failures")
         end
 
-        %{state | last_run: DateTime.utc_now(), last_result: {:error, reason}, failure_count: new_count, status: new_status}
+        %{
+          state
+          | last_run: DateTime.utc_now(),
+            last_result: {:error, reason},
+            failure_count: new_count,
+            status: new_status
+        }
     end
   end
 

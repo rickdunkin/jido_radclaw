@@ -21,7 +21,8 @@ defmodule JidoClaw.Tools.RememberTest do
     # Clear the four ETS tables used by Jido.Memory.Store.ETS (base: :jido_claw_memory).
     # Memory is owned by the Application supervision tree — clear tables directly
     # rather than stopping/restarting the GenServer.
-    for table <- ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
+    for table <-
+          ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
       if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
     end
 
@@ -55,14 +56,20 @@ defmodule JidoClaw.Tools.RememberTest do
 
     test "should accept 'pattern' as type" do
       assert {:ok, result} =
-               Remember.run(%{key: "pattern_key", content: "always read before edit", type: "pattern"}, %{})
+               Remember.run(
+                 %{key: "pattern_key", content: "always read before edit", type: "pattern"},
+                 %{}
+               )
 
       assert result.type == "pattern"
     end
 
     test "should accept 'preference' as type" do
       assert {:ok, result} =
-               Remember.run(%{key: "pref_key", content: "prefer short functions", type: "preference"}, %{})
+               Remember.run(
+                 %{key: "pref_key", content: "prefer short functions", type: "preference"},
+                 %{}
+               )
 
       assert result.type == "preference"
     end

@@ -38,13 +38,13 @@ defmodule JidoClaw.Config do
   }
 
   @strategy_descriptions %{
-    "react"    => "Reason + Act loop (default) — multi-step tasks with tool use",
-    "cot"      => "Chain of Thought — logical/mathematical step-by-step reasoning",
-    "cod"      => "Chain of Draft — concise reasoning with minimal tokens",
-    "tot"      => "Tree of Thoughts — branching exploration for complex planning",
-    "got"      => "Graph of Thoughts — non-linear concept-connected reasoning",
-    "aot"      => "Algorithm of Thoughts — algorithmic search with examples",
-    "trm"      => "Tiny Recursive Model — hierarchical recursive decomposition",
+    "react" => "Reason + Act loop (default) — multi-step tasks with tool use",
+    "cot" => "Chain of Thought — logical/mathematical step-by-step reasoning",
+    "cod" => "Chain of Draft — concise reasoning with minimal tokens",
+    "tot" => "Tree of Thoughts — branching exploration for complex planning",
+    "got" => "Graph of Thoughts — non-linear concept-connected reasoning",
+    "aot" => "Algorithm of Thoughts — algorithmic search with examples",
+    "trm" => "Tiny Recursive Model — hierarchical recursive decomposition",
     "adaptive" => "Adaptive — auto-selects best strategy per prompt"
   }
 
@@ -78,7 +78,9 @@ defmodule JidoClaw.Config do
     case provider(config) do
       "ollama" ->
         case api_key(config) do
-          nil -> config
+          nil ->
+            config
+
           _key ->
             if get_in(user_config, ["providers", "ollama", "base_url"]) do
               config
@@ -117,6 +119,7 @@ defmodule JidoClaw.Config do
 
   def api_key(config) do
     env_var = api_key_env(config)
+
     case System.get_env(env_var) do
       nil -> nil
       "" -> nil
@@ -133,6 +136,7 @@ defmodule JidoClaw.Config do
   @doc "Returns the provider display name for boot sequence."
   def provider_label(config) do
     prov = provider(config)
+
     case prov do
       "ollama" -> if cloud?(config), do: "ollama cloud", else: "ollama"
       other -> other
@@ -190,7 +194,9 @@ defmodule JidoClaw.Config do
 
   defp check_api_key(config, url) do
     case api_key(config) do
-      nil -> {:error, :unauthorized}
+      nil ->
+        {:error, :unauthorized}
+
       key ->
         headers = [{~c"Authorization", String.to_charlist("Bearer #{key}")}]
 
@@ -226,68 +232,116 @@ defmodule JidoClaw.Config do
     case provider_key do
       "ollama" ->
         [
-          "ollama:qwen3.5:35b",               # 35B, 128K ctx
-          "ollama:qwen3-coder-next:latest",   # 128K ctx, code-focused
-          "ollama:qwen3-next:80b",            # 80B, 128K ctx
-          "ollama:nemotron-3-super:latest",   # 120B MoE (12B active), 256K ctx
-          "ollama:devstral-small-2:24b",      # 24B, 128K ctx, code-focused
-          "ollama:nemotron-cascade-2:30b",    # 30B MoE (3B active), 128K ctx
-          "ollama:qwen3.5:27b",               # 27B, 128K ctx
-          "ollama:glm-4.7-flash:latest",      # 128K ctx
-          "ollama:qwen3:32b"                  # 32B, 128K ctx
+          # 35B, 128K ctx
+          "ollama:qwen3.5:35b",
+          # 128K ctx, code-focused
+          "ollama:qwen3-coder-next:latest",
+          # 80B, 128K ctx
+          "ollama:qwen3-next:80b",
+          # 120B MoE (12B active), 256K ctx
+          "ollama:nemotron-3-super:latest",
+          # 24B, 128K ctx, code-focused
+          "ollama:devstral-small-2:24b",
+          # 30B MoE (3B active), 128K ctx
+          "ollama:nemotron-cascade-2:30b",
+          # 27B, 128K ctx
+          "ollama:qwen3.5:27b",
+          # 128K ctx
+          "ollama:glm-4.7-flash:latest",
+          # 32B, 128K ctx
+          "ollama:qwen3:32b"
         ]
+
       "ollama_cloud" ->
         [
-          "ollama:nemotron-3-super:cloud",    # 120B MoE (12B active), 256K ctx — RECOMMENDED
-          "ollama:qwen3-coder:480b",          # 480B, 256K ctx — massive code model
-          "ollama:deepseek-v3.1:671b",        # 671B, 128K ctx
-          "ollama:qwen3.5:72b",               # 72B, 128K ctx
-          "ollama:llama4-maverick:latest",     # MoE, 1M ctx
-          "ollama:qwen3-next:80b",            # 80B, 128K ctx
-          "ollama:qwen3-coder-next:latest",   # 128K ctx
-          "ollama:kimi-k2.5:latest",          # 128K ctx
-          "ollama:nemotron-cascade-2:30b"     # 30B MoE (3B active), 128K ctx
+          # 120B MoE (12B active), 256K ctx — RECOMMENDED
+          "ollama:nemotron-3-super:cloud",
+          # 480B, 256K ctx — massive code model
+          "ollama:qwen3-coder:480b",
+          # 671B, 128K ctx
+          "ollama:deepseek-v3.1:671b",
+          # 72B, 128K ctx
+          "ollama:qwen3.5:72b",
+          # MoE, 1M ctx
+          "ollama:llama4-maverick:latest",
+          # 80B, 128K ctx
+          "ollama:qwen3-next:80b",
+          # 128K ctx
+          "ollama:qwen3-coder-next:latest",
+          # 128K ctx
+          "ollama:kimi-k2.5:latest",
+          # 30B MoE (3B active), 128K ctx
+          "ollama:nemotron-cascade-2:30b"
         ]
+
       "anthropic" ->
         [
-          "anthropic:claude-sonnet-4-20250514",   # 200K ctx
-          "anthropic:claude-opus-4-6",            # 200K ctx
-          "anthropic:claude-haiku-4-5-20251001"   # 200K ctx
+          # 200K ctx
+          "anthropic:claude-sonnet-4-20250514",
+          # 200K ctx
+          "anthropic:claude-opus-4-6",
+          # 200K ctx
+          "anthropic:claude-haiku-4-5-20251001"
         ]
+
       "openai" ->
         [
-          "openai:gpt-4.1",          # 1M ctx
-          "openai:gpt-4.1-mini",     # 1M ctx
-          "openai:o3",               # 200K ctx, reasoning
-          "openai:o4-mini",          # 200K ctx, reasoning
-          "openai:gpt-4.1-nano"      # 1M ctx
+          # 1M ctx
+          "openai:gpt-4.1",
+          # 1M ctx
+          "openai:gpt-4.1-mini",
+          # 200K ctx, reasoning
+          "openai:o3",
+          # 200K ctx, reasoning
+          "openai:o4-mini",
+          # 1M ctx
+          "openai:gpt-4.1-nano"
         ]
+
       "google" ->
         [
-          "google:gemini-2.5-flash",    # 1M ctx
-          "google:gemini-2.5-pro",      # 1M ctx
-          "google:gemini-2.0-flash"     # 1M ctx
+          # 1M ctx
+          "google:gemini-2.5-flash",
+          # 1M ctx
+          "google:gemini-2.5-pro",
+          # 1M ctx
+          "google:gemini-2.0-flash"
         ]
+
       "groq" ->
         [
-          "groq:llama-3.3-70b-versatile",           # 128K ctx
-          "groq:deepseek-r1-distill-llama-70b",     # 128K ctx
-          "groq:llama-4-scout-17b-16e-instruct"     # 128K ctx
+          # 128K ctx
+          "groq:llama-3.3-70b-versatile",
+          # 128K ctx
+          "groq:deepseek-r1-distill-llama-70b",
+          # 128K ctx
+          "groq:llama-4-scout-17b-16e-instruct"
         ]
+
       "xai" ->
         [
-          "xai:grok-3",        # 131K ctx
-          "xai:grok-3-mini"    # 131K ctx
+          # 131K ctx
+          "xai:grok-3",
+          # 131K ctx
+          "xai:grok-3-mini"
         ]
+
       "openrouter" ->
         [
-          "openrouter:anthropic/claude-sonnet-4",     # 200K ctx
-          "openrouter:anthropic/claude-opus-4",       # 200K ctx
-          "openrouter:openai/gpt-4.1",                # 1M ctx
-          "openrouter:google/gemini-2.5-pro",         # 1M ctx
-          "openrouter:deepseek/deepseek-r1",          # 128K ctx
-          "openrouter:meta-llama/llama-4-maverick"    # 1M ctx
+          # 200K ctx
+          "openrouter:anthropic/claude-sonnet-4",
+          # 200K ctx
+          "openrouter:anthropic/claude-opus-4",
+          # 1M ctx
+          "openrouter:openai/gpt-4.1",
+          # 1M ctx
+          "openrouter:google/gemini-2.5-pro",
+          # 128K ctx
+          "openrouter:deepseek/deepseek-r1",
+          # 1M ctx
+          "openrouter:meta-llama/llama-4-maverick"
         ]
+
       _ ->
         []
     end

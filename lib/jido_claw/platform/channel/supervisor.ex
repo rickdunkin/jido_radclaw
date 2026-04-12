@@ -19,8 +19,11 @@ defmodule JidoClaw.Channel.Supervisor do
 
   def list_channels(tenant_id) do
     sup = JidoClaw.Tenant.InstanceSupervisor.channel_sup(tenant_id)
+
     case GenServer.whereis(sup) do
-      nil -> []
+      nil ->
+        []
+
       _pid ->
         DynamicSupervisor.which_children(sup)
         |> Enum.map(fn {_, pid, _, _} ->

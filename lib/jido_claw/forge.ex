@@ -57,7 +57,8 @@ defmodule JidoClaw.Forge do
     Harness.apply_input(session_id, input)
   end
 
-  def attach_sandbox(session_id, name, sandbox_spec) when is_atom(name) and is_map(sandbox_spec) do
+  def attach_sandbox(session_id, name, sandbox_spec)
+      when is_atom(name) and is_map(sandbox_spec) do
     Harness.attach_sandbox(session_id, name, sandbox_spec)
   end
 

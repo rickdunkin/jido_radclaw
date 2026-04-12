@@ -21,7 +21,8 @@ defmodule JidoClaw.Tools.RecallTest do
 
     # Clear the four ETS tables used by Jido.Memory.Store.ETS (base: :jido_claw_memory).
     # Memory is owned by the Application supervision tree — clear tables directly.
-    for table <- ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
+    for table <-
+          ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
       if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
     end
 

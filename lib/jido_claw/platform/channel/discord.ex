@@ -14,6 +14,7 @@ defmodule JidoClaw.Channel.Discord do
       channel_ids: Map.get(config, :channel_ids, []),
       connected: false
     }
+
     {:ok, state}
   end
 
@@ -41,6 +42,7 @@ defmodule JidoClaw.Channel.Discord do
 
     # Route to agent session
     session_id = "discord_#{normalized.channel_id}"
+
     case JidoClaw.chat("default", session_id, normalized.text) do
       {:ok, response} ->
         send_message(normalized.channel_id, response, state)

@@ -69,7 +69,10 @@ defmodule JidoClaw.Network.ProtocolTest do
 
       assert is_binary(id)
       # UUID format: 8-4-4-4-12 hex characters separated by dashes
-      assert String.match?(id, ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      assert String.match?(
+               id,
+               ~r/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/
+             )
     end
 
     test "should produce a unique id for each call", %{identity: identity} do
@@ -196,7 +199,10 @@ defmodule JidoClaw.Network.ProtocolTest do
   # ---------------------------------------------------------------------------
 
   describe "verify_message/2" do
-    test "should return true for a message with a valid signature", %{identity: identity, pub: pub} do
+    test "should return true for a message with a valid signature", %{
+      identity: identity,
+      pub: pub
+    } do
       message = Protocol.encode(:share, %{"solution" => "use GenServer"}, identity)
 
       assert Protocol.verify_message(message, pub) == true

@@ -62,10 +62,13 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
 
     test "rejects env_vars with sensitive key names" do
       resources = [
-        %{type: :env_vars, values: %{
-          "DB_PASSWORD" => "hunter2",
-          "NODE_ENV" => "production"
-        }}
+        %{
+          type: :env_vars,
+          values: %{
+            "DB_PASSWORD" => "hunter2",
+            "NODE_ENV" => "production"
+          }
+        }
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
@@ -76,11 +79,14 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
 
     test "rejects multiple sensitive keys with individual errors" do
       resources = [
-        %{type: :env_vars, values: %{
-          "SECRET_KEY_BASE" => "abc",
-          "AUTH_TOKEN" => "xyz",
-          "PORT" => "3000"
-        }}
+        %{
+          type: :env_vars,
+          values: %{
+            "SECRET_KEY_BASE" => "abc",
+            "AUTH_TOKEN" => "xyz",
+            "PORT" => "3000"
+          }
+        }
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
@@ -104,9 +110,12 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
 
     test "rejects env_vars with credentialed URLs" do
       resources = [
-        %{type: :env_vars, values: %{
-          "REPO_URL" => "postgres://admin:s3cret@db.example.com/mydb"
-        }}
+        %{
+          type: :env_vars,
+          values: %{
+            "REPO_URL" => "postgres://admin:s3cret@db.example.com/mydb"
+          }
+        }
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
@@ -147,7 +156,9 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
     end
 
     test "rejects :env_vars with non-map :values" do
-      assert {:error, reasons} = ResourceProvisioner.validate_resources([%{type: :env_vars, values: "not a map"}])
+      assert {:error, reasons} =
+               ResourceProvisioner.validate_resources([%{type: :env_vars, values: "not a map"}])
+
       assert hd(reasons) =~ ":values"
     end
 
@@ -171,15 +182,22 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
     end
 
     test "rejects :secrets with empty :env_map and no :vault_keys" do
-      assert {:error, _} = ResourceProvisioner.validate_resources([%{type: :secrets, env_map: %{}}])
+      assert {:error, _} =
+               ResourceProvisioner.validate_resources([%{type: :secrets, env_map: %{}}])
     end
 
     test "accepts :git_repo with only :source" do
-      assert :ok = ResourceProvisioner.validate_resources([%{type: :git_repo, source: "https://example.com/repo"}])
+      assert :ok =
+               ResourceProvisioner.validate_resources([
+                 %{type: :git_repo, source: "https://example.com/repo"}
+               ])
     end
 
     test "accepts :file_mount with :source and :mount_path" do
-      assert :ok = ResourceProvisioner.validate_resources([%{type: :file_mount, source: "/a", mount_path: "/b"}])
+      assert :ok =
+               ResourceProvisioner.validate_resources([
+                 %{type: :file_mount, source: "/a", mount_path: "/b"}
+               ])
     end
   end
 end

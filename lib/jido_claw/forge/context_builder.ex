@@ -113,7 +113,9 @@ defmodule JidoClaw.Forge.ContextBuilder do
     seq = Map.get(data, :sequence)
 
     lines = ["## Progress", "#{n} iteration(s) completed."]
-    lines = if seq, do: lines ++ ["Last execution: iteration #{seq}, status: #{status}."], else: lines
+
+    lines =
+      if seq, do: lines ++ ["Last execution: iteration #{seq}, status: #{status}."], else: lines
 
     lines =
       if output && output != "" do

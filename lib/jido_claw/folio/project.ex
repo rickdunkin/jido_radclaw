@@ -5,78 +5,78 @@ defmodule JidoClaw.Folio.Project do
     data_layer: AshPostgres.DataLayer
 
   postgres do
-    table "folio_projects"
-    repo JidoClaw.Repo
+    table("folio_projects")
+    repo(JidoClaw.Repo)
   end
 
   actions do
-    defaults [:read, :destroy]
+    defaults([:read, :destroy])
 
     create :create do
-      primary? true
-      accept [:name, :outcome, :notes, :user_id]
-      change set_attribute(:status, :active)
+      primary?(true)
+      accept([:name, :outcome, :notes, :user_id])
+      change(set_attribute(:status, :active))
     end
 
     update :complete do
-      accept []
-      change set_attribute(:status, :completed)
-      change set_attribute(:completed_at, &DateTime.utc_now/0)
+      accept([])
+      change(set_attribute(:status, :completed))
+      change(set_attribute(:completed_at, &DateTime.utc_now/0))
     end
 
     update :defer do
-      accept []
-      change set_attribute(:status, :someday)
+      accept([])
+      change(set_attribute(:status, :someday))
     end
 
     update :reactivate do
-      accept []
-      change set_attribute(:status, :active)
+      accept([])
+      change(set_attribute(:status, :active))
     end
 
     read :active do
-      filter expr(status == :active)
+      filter(expr(status == :active))
     end
 
     read :by_user do
-      argument :user_id, :uuid, allow_nil?: false
-      filter expr(user_id == ^arg(:user_id))
+      argument(:user_id, :uuid, allow_nil?: false)
+      filter(expr(user_id == ^arg(:user_id)))
     end
   end
 
   attributes do
-    uuid_primary_key :id
+    uuid_primary_key(:id)
 
     attribute :name, :string do
-      allow_nil? false
-      public? true
+      allow_nil?(false)
+      public?(true)
     end
 
     attribute :outcome, :string do
-      allow_nil? true
-      public? true
+      allow_nil?(true)
+      public?(true)
     end
 
     attribute :notes, :string do
-      allow_nil? true
-      public? true
+      allow_nil?(true)
+      public?(true)
     end
 
     attribute :status, :atom do
-      allow_nil? false
-      public? true
-      default :active
-      constraints one_of: [:active, :someday, :completed]
+      allow_nil?(false)
+      public?(true)
+      default(:active)
+      constraints(one_of: [:active, :someday, :completed])
     end
 
     attribute :user_id, :uuid do
-      allow_nil? true
-      public? true
+      allow_nil?(true)
+      public?(true)
     end
 
     attribute :completed_at, :utc_datetime_usec do
-      allow_nil? true
-      public? true
+      allow_nil?(true)
+      public?(true)
     end
 
     timestamps()
@@ -84,7 +84,7 @@ defmodule JidoClaw.Folio.Project do
 
   relationships do
     has_many :actions, JidoClaw.Folio.Action do
-      destination_attribute :project_id
+      destination_attribute(:project_id)
     end
   end
 end

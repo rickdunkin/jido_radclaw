@@ -11,9 +11,14 @@ defmodule JidoClaw.Tools.ReadFile do
 
   use Jido.Action,
     name: "read_file",
-    description: "Read file contents. Always read a file before editing it. Returns numbered lines. Supports github://, s3://, git:// URIs.",
+    description:
+      "Read file contents. Always read a file before editing it. Returns numbered lines. Supports github://, s3://, git:// URIs.",
     schema: [
-      path: [type: :string, required: true, doc: "Absolute or relative file path, or remote URI (github://, s3://, git://)"],
+      path: [
+        type: :string,
+        required: true,
+        doc: "Absolute or relative file path, or remote URI (github://, s3://, git://)"
+      ],
       offset: [type: :integer, default: 0, doc: "Start line (0-indexed)"],
       limit: [type: :integer, default: 2000, doc: "Max lines to read"]
     ]
@@ -35,7 +40,9 @@ defmodule JidoClaw.Tools.ReadFile do
           |> Enum.with_index(1)
           |> Enum.drop(offset)
           |> Enum.take(limit)
-          |> Enum.map(fn {line, n} -> "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}" end)
+          |> Enum.map(fn {line, n} ->
+            "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
+          end)
           |> Enum.join("\n")
 
         {:ok, %{path: path, content: numbered, total_lines: total}}

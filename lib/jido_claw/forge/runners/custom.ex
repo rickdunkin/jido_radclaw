@@ -10,6 +10,7 @@ defmodule JidoClaw.Forge.Runners.Custom do
   @impl true
   def run_iteration(client, state, opts) do
     run_fn = Map.get(state, :run_fn)
+
     if run_fn do
       run_fn.(client, state, opts)
     else

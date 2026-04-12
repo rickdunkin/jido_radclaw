@@ -42,6 +42,12 @@ defmodule JidoClaw.Agent.Templates do
       description: "Refactors code with full tool access",
       model: :fast,
       max_iterations: 25
+    },
+    "verifier" => %{
+      module: JidoClaw.Agent.Workers.Verifier,
+      description: "Interactive verification — reads code, runs tests/commands, emits VERDICT",
+      model: :fast,
+      max_iterations: 20
     }
   }
 

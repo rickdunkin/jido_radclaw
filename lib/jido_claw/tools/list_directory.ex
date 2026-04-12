@@ -13,9 +13,14 @@ defmodule JidoClaw.Tools.ListDirectory do
 
   use Jido.Action,
     name: "list_directory",
-    description: "List files and directories at a path. Returns file names with type indicators. Supports github://, s3://, git:// URIs.",
+    description:
+      "List files and directories at a path. Returns file names with type indicators. Supports github://, s3://, git:// URIs.",
     schema: [
-      path: [type: :string, default: ".", doc: "Directory path to list, or remote URI (github://, s3://, git://)"],
+      path: [
+        type: :string,
+        default: ".",
+        doc: "Directory path to list, or remote URI (github://, s3://, git://)"
+      ],
       pattern: [type: :string, doc: "Optional glob pattern for local paths (e.g. '**/*.ex')"],
       max_results: [type: :integer, default: 200, doc: "Max entries to return"]
     ]
@@ -49,7 +54,12 @@ defmodule JidoClaw.Tools.ListDirectory do
         truncated = Enum.take(list, max_results)
         total = length(list)
         content = Enum.join(truncated, "\n")
-        note = if total > max_results, do: "\n(#{total - max_results} more entries truncated)", else: ""
+
+        note =
+          if total > max_results,
+            do: "\n(#{total - max_results} more entries truncated)",
+            else: ""
+
         {:ok, %{path: path, entries: content <> note, total: total}}
     end
   end

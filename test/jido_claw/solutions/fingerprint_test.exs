@@ -184,7 +184,9 @@ defmodule JidoClaw.Solutions.FingerprintTest do
   describe "extract_target/1" do
     test "should detect \"authentication\" target" do
       assert Fingerprint.extract_target("implement JWT token login") == "authentication"
-      assert Fingerprint.extract_target("handle logout and credential refresh") == "authentication"
+
+      assert Fingerprint.extract_target("handle logout and credential refresh") ==
+               "authentication"
     end
 
     test "should detect \"routing\" target" do

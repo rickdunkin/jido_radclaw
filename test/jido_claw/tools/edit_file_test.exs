@@ -17,7 +17,8 @@ defmodule JidoClaw.Tools.EditFileTest do
       path = Path.join(dir, "edit_me.txt")
       File.write!(path, "foo bar baz")
 
-      assert {:ok, result} = EditFile.run(%{path: path, old_string: "bar", new_string: "qux"}, %{})
+      assert {:ok, result} =
+               EditFile.run(%{path: path, old_string: "bar", new_string: "qux"}, %{})
 
       assert result.path == path
       assert result.status == "edited"

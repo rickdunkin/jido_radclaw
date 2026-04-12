@@ -89,7 +89,8 @@ defmodule JidoClaw.Cluster do
             strategy: Cluster.Strategy.Kubernetes,
             config: [
               mode: :dns,
-              kubernetes_node_basename: Application.get_env(:jido_claw, :k8s_node_basename, "jidoclaw"),
+              kubernetes_node_basename:
+                Application.get_env(:jido_claw, :k8s_node_basename, "jidoclaw"),
               kubernetes_selector: Application.get_env(:jido_claw, :k8s_selector, "app=jidoclaw"),
               kubernetes_namespace: Application.get_env(:jido_claw, :k8s_namespace, "default"),
               polling_interval: 5_000

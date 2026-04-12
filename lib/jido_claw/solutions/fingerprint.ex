@@ -201,7 +201,10 @@ defmodule JidoClaw.Solutions.Fingerprint do
     else
       domain_score = if a.domain == b.domain and not is_nil(a.domain), do: 0.20, else: 0.0
       target_score = if a.target == b.target and not is_nil(a.target), do: 0.15, else: 0.0
-      error_class_score = if a.error_class == b.error_class and not is_nil(a.error_class), do: 0.10, else: 0.0
+
+      error_class_score =
+        if a.error_class == b.error_class and not is_nil(a.error_class), do: 0.10, else: 0.0
+
       ecosystem_score = 0.25 * jaccard(a.ecosystem, b.ecosystem)
       terms_score = 0.30 * jaccard(a.search_terms, b.search_terms)
 

@@ -7,32 +7,32 @@ defmodule JidoClaw.Forge.Resources.Event do
   require Ash.Query
 
   postgres do
-    table "forge_events"
-    repo JidoClaw.Repo
+    table("forge_events")
+    repo(JidoClaw.Repo)
 
     custom_indexes do
-      index [:session_id, :timestamp]
+      index([:session_id, :timestamp])
     end
   end
 
   actions do
-    defaults [:read, :destroy]
+    defaults([:read, :destroy])
 
     create :create do
-      primary? true
-      accept [:event_type, :data, :exec_session_sequence, :session_id]
+      primary?(true)
+      accept([:event_type, :data, :exec_session_sequence, :session_id])
     end
 
     read :for_session do
-      argument :session_id, :uuid, allow_nil?: false
-      argument :after, :utc_datetime_usec
-      argument :event_types, {:array, :string}
-      argument :limit, :integer
-      argument :after_sequence, :integer
+      argument(:session_id, :uuid, allow_nil?: false)
+      argument(:after, :utc_datetime_usec)
+      argument(:event_types, {:array, :string})
+      argument(:limit, :integer)
+      argument(:after_sequence, :integer)
 
-      filter expr(session_id == ^arg(:session_id))
+      filter(expr(session_id == ^arg(:session_id)))
 
-      prepare fn query, _context ->
+      prepare(fn query, _context ->
         query
         |> then(fn q ->
           case Ash.Query.get_argument(q, :after) do
@@ -60,36 +60,36 @@ defmodule JidoClaw.Forge.Resources.Event do
           end
         end)
         |> Ash.Query.sort(timestamp: :asc)
-      end
+      end)
     end
   end
 
   attributes do
-    uuid_primary_key :id
+    uuid_primary_key(:id)
 
     attribute :event_type, :string do
-      allow_nil? false
-      public? true
+      allow_nil?(false)
+      public?(true)
     end
 
     attribute :data, :map do
-      allow_nil? true
-      public? true
-      default %{}
+      allow_nil?(true)
+      public?(true)
+      default(%{})
     end
 
     attribute :exec_session_sequence, :integer do
-      allow_nil? true
-      public? true
+      allow_nil?(true)
+      public?(true)
     end
 
-    create_timestamp :timestamp
+    create_timestamp(:timestamp)
   end
 
   relationships do
     belongs_to :session, JidoClaw.Forge.Resources.Session do
-      allow_nil? false
-      public? true
+      allow_nil?(false)
+      public?(true)
     end
   end
 end

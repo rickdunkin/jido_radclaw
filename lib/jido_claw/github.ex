@@ -4,10 +4,10 @@ defmodule JidoClaw.GitHub do
     extensions: [AshAdmin.Domain]
 
   admin do
-    show? true
+    show?(true)
   end
 
   resources do
-    resource JidoClaw.GitHub.IssueAnalysis
+    resource(JidoClaw.GitHub.IssueAnalysis)
   end
 end

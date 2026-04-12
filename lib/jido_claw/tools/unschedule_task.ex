@@ -5,7 +5,8 @@ defmodule JidoClaw.Tools.UnscheduleTask do
 
   use Jido.Action,
     name: "unschedule_task",
-    description: "Remove a scheduled recurring task by its ID. Use list_scheduled_tasks first to see available job IDs.",
+    description:
+      "Remove a scheduled recurring task by its ID. Use list_scheduled_tasks first to see available job IDs.",
     schema: [
       id: [type: :string, required: true, doc: "The job ID to remove"]
     ]

@@ -28,9 +28,46 @@ defmodule JidoClaw.Forge.Runner do
 
   @optional_callbacks [handle_output: 3, terminate: 2, serialize_state: 1, restore_state: 2]
 
-  def continue(output), do: %{status: :continue, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
-  def done(output), do: %{status: :done, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
-  def needs_input(question, output \\ nil), do: %{status: :needs_input, output: output, summary: nil, question: question, error: nil, metadata: %{}}
-  def blocked(output), do: %{status: :blocked, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
-  def error(reason, output \\ nil), do: %{status: :error, output: output, summary: nil, question: nil, error: reason, metadata: %{}}
+  def continue(output),
+    do: %{
+      status: :continue,
+      output: output,
+      summary: nil,
+      question: nil,
+      error: nil,
+      metadata: %{}
+    }
+
+  def done(output),
+    do: %{status: :done, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
+
+  def needs_input(question, output \\ nil),
+    do: %{
+      status: :needs_input,
+      output: output,
+      summary: nil,
+      question: question,
+      error: nil,
+      metadata: %{}
+    }
+
+  def blocked(output),
+    do: %{
+      status: :blocked,
+      output: output,
+      summary: nil,
+      question: nil,
+      error: nil,
+      metadata: %{}
+    }
+
+  def error(reason, output \\ nil),
+    do: %{
+      status: :error,
+      output: output,
+      summary: nil,
+      question: nil,
+      error: reason,
+      metadata: %{}
+    }
 end

@@ -104,7 +104,12 @@ defmodule JidoClaw.AgentTracker do
   end
 
   @doc false
-  def handle_telemetry_event([:jido, :ai, :tool, :execute, :start], _measurements, metadata, _config) do
+  def handle_telemetry_event(
+        [:jido, :ai, :tool, :execute, :start],
+        _measurements,
+        metadata,
+        _config
+      ) do
     agent_id = metadata[:agent_id]
     tool_name = metadata[:tool_name]
 
@@ -113,7 +118,12 @@ defmodule JidoClaw.AgentTracker do
     end
   end
 
-  def handle_telemetry_event([:jido, :ai, :tool, :execute, :stop], _measurements, metadata, _config) do
+  def handle_telemetry_event(
+        [:jido, :ai, :tool, :execute, :stop],
+        _measurements,
+        metadata,
+        _config
+      ) do
     agent_id = metadata[:agent_id]
     tool_name = metadata[:tool_name]
 
@@ -152,33 +162,34 @@ defmodule JidoClaw.AgentTracker do
   end
 
   def handle_cast({:track_tool, agent_id, tool_name}, state) do
-    state = update_agent(state, agent_id, fn entry ->
-      %{entry |
-        tool_calls: entry.tool_calls + 1,
-        tool_names: MapSet.put(entry.tool_names, tool_name),
-        last_tool: tool_name
-      }
-    end)
+    state =
+      update_agent(state, agent_id, fn entry ->
+        %{
+          entry
+          | tool_calls: entry.tool_calls + 1,
+            tool_names: MapSet.put(entry.tool_names, tool_name),
+            last_tool: tool_name
+        }
+      end)
 
     notify_display({:agent_tool, agent_id, tool_name})
     {:noreply, state}
   end
 
   def handle_cast({:track_tokens, agent_id, count}, state) do
-    state = update_agent(state, agent_id, fn entry ->
-      %{entry | tokens: entry.tokens + count}
-    end)
+    state =
+      update_agent(state, agent_id, fn entry ->
+        %{entry | tokens: entry.tokens + count}
+      end)
 
     {:noreply, state}
   end
 
   def handle_cast({:mark_complete, id, status}, state) do
-    state = update_agent(state, id, fn entry ->
-      %{entry |
-        status: status,
-        finished_at: System.monotonic_time(:millisecond)
-      }
-    end)
+    state =
+      update_agent(state, id, fn entry ->
+        %{entry | status: status, finished_at: System.monotonic_time(:millisecond)}
+      end)
 
     notify_display({:agent_completed, id, status})
     {:noreply, state}
@@ -198,8 +209,10 @@ defmodule JidoClaw.AgentTracker do
   end
 
   def handle_call(:child_count, _from, state) do
-    count = state.agents
+    count =
+      state.agents
       |> Enum.count(fn {id, _} -> id != "main" end)
+
     {:reply, count, state}
   end
 
@@ -213,13 +226,15 @@ defmodule JidoClaw.AgentTracker do
       {agent_id, monitors} ->
         state = %{state | monitors: monitors}
 
-        state = update_agent(state, agent_id, fn entry ->
-          %{entry |
-            status: :error,
-            finished_at: System.monotonic_time(:millisecond),
-            error: inspect(reason)
-          }
-        end)
+        state =
+          update_agent(state, agent_id, fn entry ->
+            %{
+              entry
+              | status: :error,
+                finished_at: System.monotonic_time(:millisecond),
+                error: inspect(reason)
+            }
+          end)
 
         notify_display({:agent_completed, agent_id, :error})
         {:noreply, state}

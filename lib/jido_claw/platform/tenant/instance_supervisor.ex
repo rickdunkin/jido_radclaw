@@ -14,6 +14,7 @@ defmodule JidoClaw.Tenant.InstanceSupervisor do
 
   def stop_instance(tenant_id) do
     name = via(tenant_id)
+
     case GenServer.whereis(name) do
       nil -> :ok
       pid -> DynamicSupervisor.terminate_child(JidoClaw.Tenant.Supervisor, pid)
@@ -41,8 +42,12 @@ defmodule JidoClaw.Tenant.InstanceSupervisor do
 
   defp via(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:instance, tenant_id}}}
 
-  def session_sup(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:session_sup, tenant_id}}}
-  def channel_sup(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:channel_sup, tenant_id}}}
+  def session_sup(tenant_id),
+    do: {:via, Registry, {JidoClaw.TenantRegistry, {:session_sup, tenant_id}}}
+
+  def channel_sup(tenant_id),
+    do: {:via, Registry, {JidoClaw.TenantRegistry, {:channel_sup, tenant_id}}}
+
   def cron_sup(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:cron_sup, tenant_id}}}
   def tool_sup(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:tool_sup, tenant_id}}}
 end

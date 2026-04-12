@@ -9,19 +9,27 @@ defmodule JidoClaw.Tools.RunCommand do
 
   use Jido.Action,
     name: "run_command",
-    description: "Execute a shell command and return its output. Use for running tests, builds, scripts, etc.",
+    description:
+      "Execute a shell command and return its output. Use for running tests, builds, scripts, etc.",
     schema: [
       command: [type: :string, required: true, doc: "The command to execute (passed to sh -c)"],
       timeout: [type: :integer, default: 30_000, doc: "Timeout in milliseconds"],
-      workspace_id: [type: :string, default: "default", doc: "Session workspace for persistent shell state"]
+      workspace_id: [
+        type: :string,
+        default: "default",
+        doc: "Session workspace for persistent shell state"
+      ]
     ]
 
   @max_output_chars 10_000
 
   @impl true
-  def run(%{command: command} = params, _context) do
+  def run(%{command: command} = params, context) do
     timeout = Map.get(params, :timeout, 30_000)
-    workspace_id = Map.get(params, :workspace_id, "default")
+
+    workspace_id =
+      get_in(context, [:tool_context, :workspace_id]) ||
+        Map.get(params, :workspace_id, "default")
 
     if session_manager_available?() do
       JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout)

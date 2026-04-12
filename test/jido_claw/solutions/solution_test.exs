@@ -168,9 +168,7 @@ defmodule JidoClaw.Solutions.SolutionTest do
 
     test "should stringify atom keys inside verification map" do
       s =
-        Solution.new(
-          Map.put(valid_attrs(), :verification, %{tests_passed: true, lint: "ok"})
-        )
+        Solution.new(Map.put(valid_attrs(), :verification, %{tests_passed: true, lint: "ok"}))
 
       m = Solution.to_map(s)
 

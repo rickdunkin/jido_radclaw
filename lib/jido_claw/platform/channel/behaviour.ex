@@ -7,12 +7,12 @@ defmodule JidoClaw.Channel.Behaviour do
   @type config :: map()
   @type state :: map()
   @type message :: %{
-    text: String.t(),
-    author_id: String.t(),
-    channel_id: String.t(),
-    platform: atom(),
-    metadata: map()
-  }
+          text: String.t(),
+          author_id: String.t(),
+          channel_id: String.t(),
+          platform: atom(),
+          metadata: map()
+        }
 
   @callback init(config()) :: {:ok, state()} | {:error, term()}
   @callback connect(state()) :: {:ok, state()} | {:error, term()}

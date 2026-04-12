@@ -12,10 +12,13 @@ defmodule JidoClaw.Tools.GitDiff do
     staged = Map.get(params, :staged, false)
 
     args = ["diff"] ++ if(staged, do: ["--cached"], else: [])
-    args = args ++ case Map.get(params, :path) do
-      nil -> []
-      p -> ["--", p]
-    end
+
+    args =
+      args ++
+        case Map.get(params, :path) do
+          nil -> []
+          p -> ["--", p]
+        end
 
     case System.cmd("git", args, stderr_to_stdout: true) do
       {output, 0} ->

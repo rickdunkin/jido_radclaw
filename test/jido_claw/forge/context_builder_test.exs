@@ -30,7 +30,11 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "collapses consecutive same-type events" do
       events =
         for i <- 1..5 do
-          %{event_type: "iteration.completed", timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i), data: %{}}
+          %{
+            event_type: "iteration.completed",
+            timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i),
+            data: %{}
+          }
         end
 
       result = ContextBuilder.summarize_events(events)
@@ -41,7 +45,11 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
 
     test "includes data when include_data: true" do
       events = [
-        %{event_type: "sandbox.provisioned", timestamp: ~U[2026-04-10 10:00:01Z], data: %{sandbox_id: "sbx-123"}}
+        %{
+          event_type: "sandbox.provisioned",
+          timestamp: ~U[2026-04-10 10:00:01Z],
+          data: %{sandbox_id: "sbx-123"}
+        }
       ]
 
       without_data = ContextBuilder.summarize_events(events, include_data: false)
@@ -54,7 +62,11 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "truncates to max_tokens budget" do
       events =
         for i <- 1..200 do
-          %{event_type: "event.type.#{i}", timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i), data: %{}}
+          %{
+            event_type: "event.type.#{i}",
+            timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i),
+            data: %{}
+          }
         end
 
       result = ContextBuilder.summarize_events(events, max_tokens: 100)
@@ -74,7 +86,13 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
 
       Persistence.record_session_started(sid, %{runner: :shell})
       Persistence.log_event(sid, "sandbox.provisioned", %{sandbox_id: "sbx-1"})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
+
       Persistence.record_execution_complete(sid, "hello world", 0, 1, :done)
 
       ctx = Persistence.context_for_resume(sid)
@@ -92,7 +110,12 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       sid = "ctx-cp-#{System.unique_integer([:positive])}"
 
       Persistence.record_session_started(sid, %{runner: :shell})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
 
       # Save checkpoint — events after this should be in events_since_checkpoint
       Persistence.save_checkpoint(sid, 1, %{step: 1}, %{})
@@ -100,7 +123,11 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       # Small delay so timestamp is strictly after checkpoint
       Process.sleep(10)
 
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 2, status: :done, output_sequence: 2})
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 2,
+        status: :done,
+        output_sequence: 2
+      })
 
       ctx = Persistence.context_for_resume(sid)
 
@@ -151,7 +178,13 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       sid = "prompt-test-#{System.unique_integer([:positive])}"
 
       Persistence.record_session_started(sid, %{runner: :shell})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
+
       Persistence.record_execution_complete(sid, "iteration output here", 0, 1, :done)
 
       assert {:ok, prompt} = ContextBuilder.build_resume_prompt(sid)
@@ -167,7 +200,13 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       sid = "prompt-cp-#{System.unique_integer([:positive])}"
 
       Persistence.record_session_started(sid, %{runner: :workflow})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
+
       Persistence.save_checkpoint(sid, 1, %{current_step: 1}, %{})
 
       assert {:ok, prompt} = ContextBuilder.build_resume_prompt(sid)
@@ -225,7 +264,12 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       sid = "prompt-big-#{System.unique_integer([:positive])}"
 
       Persistence.record_session_started(sid, %{runner: :shell})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
 
       big_output = String.duplicate("x", 10_000)
       Persistence.record_execution_complete(sid, big_output, 0, 1, :done)
@@ -244,7 +288,12 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       max_tokens = 200
 
       Persistence.record_session_started(sid, %{runner: :shell})
-      Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :done, output_sequence: 1})
+
+      Persistence.log_event(sid, "iteration.completed", %{
+        iteration: 1,
+        status: :done,
+        output_sequence: 1
+      })
 
       # Large output that would blow the budget on its own
       Persistence.record_execution_complete(sid, String.duplicate("o", 10_000), 0, 1, :done)

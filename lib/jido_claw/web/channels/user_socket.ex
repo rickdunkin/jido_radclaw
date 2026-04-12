@@ -1,7 +1,7 @@
 defmodule JidoClaw.Web.UserSocket do
   use Phoenix.Socket
 
-  channel "rpc:*", JidoClaw.Web.RpcChannel
+  channel("rpc:*", JidoClaw.Web.RpcChannel)
 
   @impl true
   def connect(params, socket, _connect_info) do

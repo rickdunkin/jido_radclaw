@@ -104,11 +104,7 @@ defmodule JidoClaw.Display do
 
   @impl true
   def handle_cast({:configure, model, provider, context_window}, state) do
-    {:noreply, %{state |
-      model: model,
-      provider: provider,
-      context_window: context_window
-    }}
+    {:noreply, %{state | model: model, provider: provider, context_window: context_window}}
   end
 
   def handle_cast(:start_thinking, state) do
@@ -125,13 +121,14 @@ defmodule JidoClaw.Display do
 
   def handle_cast({:tool_start, agent_id, tool_name, args}, state) do
     # Stop thinking spinner if active (first tool call)
-    state = if state.thinking do
-      if state.spinner_ref, do: Process.cancel_timer(state.spinner_ref)
-      IO.write("\e[2K\r")
-      %{state | thinking: false, spinner_ref: nil}
-    else
-      state
-    end
+    state =
+      if state.thinking do
+        if state.spinner_ref, do: Process.cancel_timer(state.spinner_ref)
+        IO.write("\e[2K\r")
+        %{state | thinking: false, spinner_ref: nil}
+      else
+        state
+      end
 
     case state.mode do
       :single ->
@@ -167,12 +164,15 @@ defmodule JidoClaw.Display do
 
   def handle_cast(:reset_mode, state) do
     if state.swarm_header_timer, do: Process.cancel_timer(state.swarm_header_timer)
-    {:noreply, %{state |
-      mode: :single,
-      swarm_lines_rendered: 0,
-      swarm_header_rendered: false,
-      swarm_header_timer: nil
-    }}
+
+    {:noreply,
+     %{
+       state
+       | mode: :single,
+         swarm_lines_rendered: 0,
+         swarm_header_rendered: false,
+         swarm_header_timer: nil
+     }}
   end
 
   @impl true
@@ -210,42 +210,48 @@ defmodule JidoClaw.Display do
 
   # -- AgentTracker notifications --
   def handle_info({:agent_registered, id, _entry}, state) when id != "main" do
-    state = if state.mode != :swarm do
-      # Enter swarm mode — stop spinner, schedule debounced header render
-      state = if state.thinking do
-        if state.spinner_ref, do: Process.cancel_timer(state.spinner_ref)
-        IO.write("\e[2K\r")
-        %{state | thinking: false, spinner_ref: nil}
-      else
-        state
-      end
+    state =
+      if state.mode != :swarm do
+        # Enter swarm mode — stop spinner, schedule debounced header render
+        state =
+          if state.thinking do
+            if state.spinner_ref, do: Process.cancel_timer(state.spinner_ref)
+            IO.write("\e[2K\r")
+            %{state | thinking: false, spinner_ref: nil}
+          else
+            state
+          end
 
-      ref = Process.send_after(self(), :status_bar_tick, @status_bar_interval)
-      timer = Process.send_after(self(), :render_swarm_header, @swarm_header_debounce)
-
-      %{state |
-        mode: :swarm,
-        status_bar_ref: ref,
-        swarm_header_timer: timer,
-        swarm_header_rendered: false,
-        swarm_lines_rendered: 0
-      }
-    else
-      # Already in swarm mode — reset the debounce timer if header not yet rendered
-      if not state.swarm_header_rendered and state.swarm_header_timer do
-        Process.cancel_timer(state.swarm_header_timer)
+        ref = Process.send_after(self(), :status_bar_tick, @status_bar_interval)
         timer = Process.send_after(self(), :render_swarm_header, @swarm_header_debounce)
-        %{state | swarm_header_timer: timer}
+
+        %{
+          state
+          | mode: :swarm,
+            status_bar_ref: ref,
+            swarm_header_timer: timer,
+            swarm_header_rendered: false,
+            swarm_lines_rendered: 0
+        }
       else
-        state
+        # Already in swarm mode — reset the debounce timer if header not yet rendered
+        if not state.swarm_header_rendered and state.swarm_header_timer do
+          Process.cancel_timer(state.swarm_header_timer)
+          timer = Process.send_after(self(), :render_swarm_header, @swarm_header_debounce)
+          %{state | swarm_header_timer: timer}
+        else
+          state
+        end
       end
-    end
 
     # If header already rendered, append agent line immediately
     if state.swarm_header_rendered do
       tracker_state = JidoClaw.AgentTracker.get_state()
+
       case Map.get(tracker_state.agents, id) do
-        nil -> {:noreply, state}
+        nil ->
+          {:noreply, state}
+
         entry ->
           IO.puts(SwarmBox.render_agent_line(entry))
           {:noreply, %{state | swarm_lines_rendered: state.swarm_lines_rendered + 1}}
@@ -270,13 +276,16 @@ defmodule JidoClaw.Display do
     agents_output = SwarmBox.render_agents(tracker_state.agents, tracker_state.order)
     if agents_output != "", do: IO.puts(agents_output)
 
-    children_count = tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end) |> length()
+    children_count =
+      tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end) |> length()
 
-    {:noreply, %{state |
-      swarm_header_rendered: true,
-      swarm_header_timer: nil,
-      swarm_lines_rendered: children_count
-    }}
+    {:noreply,
+     %{
+       state
+       | swarm_header_rendered: true,
+         swarm_header_timer: nil,
+         swarm_lines_rendered: children_count
+     }}
   end
 
   def handle_info({:agent_completed, id, _status}, state) when id != "main" do
@@ -323,6 +332,7 @@ defmodule JidoClaw.Display do
   # Rich tool result previews — show file changes, diffs, content snippets
   defp render_tool_result_preview("edit_file", %{diff: diff, path: path}) when is_binary(diff) do
     IO.puts("    \e[2m#{Path.basename(path)}\e[0m")
+
     diff
     |> String.split("\n")
     |> Enum.take(12)
@@ -386,7 +396,9 @@ defmodule JidoClaw.Display do
       done = Enum.count(children, fn {_, a} -> a.status == :done end)
       total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
 
-      status = "\e[2m  [swarm: #{done}/#{length(children)} done · #{StatusBar.format_tokens(total_tokens)} tokens]\e[0m"
+      status =
+        "\e[2m  [swarm: #{done}/#{length(children)} done · #{StatusBar.format_tokens(total_tokens)} tokens]\e[0m"
+
       IO.write("\e[2K\r#{status}")
     end
   end
@@ -419,7 +431,9 @@ defmodule JidoClaw.Display do
 
   defp detect_terminal_width do
     case :io.columns() do
-      {:ok, cols} -> cols
+      {:ok, cols} ->
+        cols
+
       _ ->
         case System.cmd("tput", ["cols"], stderr_to_stdout: true) do
           {output, 0} ->
@@ -427,7 +441,9 @@ defmodule JidoClaw.Display do
               {cols, _} -> cols
               :error -> 120
             end
-          _ -> 120
+
+          _ ->
+            120
         end
     end
   end

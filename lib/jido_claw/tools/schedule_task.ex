@@ -15,10 +15,27 @@ defmodule JidoClaw.Tools.ScheduleTask do
     Ask the user for the task description and schedule before calling this tool.
     """,
     schema: [
-      id: [type: :string, required: false, doc: "Unique job ID. Auto-generated from task if omitted."],
-      task: [type: :string, required: true, doc: "What the agent should do when the job fires (natural language instruction)"],
-      schedule: [type: :string, required: true, doc: "Cron expression (e.g., '0 9 * * *') or interval (e.g., 'every 1h')"],
-      mode: [type: :string, required: false, doc: "Execution mode: 'main' (shared session, default) or 'isolated' (separate session per run)"]
+      id: [
+        type: :string,
+        required: false,
+        doc: "Unique job ID. Auto-generated from task if omitted."
+      ],
+      task: [
+        type: :string,
+        required: true,
+        doc: "What the agent should do when the job fires (natural language instruction)"
+      ],
+      schedule: [
+        type: :string,
+        required: true,
+        doc: "Cron expression (e.g., '0 9 * * *') or interval (e.g., 'every 1h')"
+      ],
+      mode: [
+        type: :string,
+        required: false,
+        doc:
+          "Execution mode: 'main' (shared session, default) or 'isolated' (separate session per run)"
+      ]
     ]
 
   require Logger

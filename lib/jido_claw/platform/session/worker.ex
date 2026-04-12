@@ -87,13 +87,15 @@ defmodule JidoClaw.Session.Worker do
       timestamp: System.system_time(:millisecond)
     }
 
-    new_state = %{state |
-      messages: state.messages ++ [message],
-      last_active: DateTime.utc_now()
-    }
+    new_state = %{state | messages: state.messages ++ [message], last_active: DateTime.utc_now()}
 
     append_to_jsonl(state.tenant_id, state.id, message)
-    JidoClaw.Telemetry.emit_session_message(%{tenant_id: state.tenant_id, session_id: state.id, role: role})
+
+    JidoClaw.Telemetry.emit_session_message(%{
+      tenant_id: state.tenant_id,
+      session_id: state.id,
+      role: role
+    })
 
     {:noreply, new_state, @idle_timeout}
   end
@@ -113,6 +115,7 @@ defmodule JidoClaw.Session.Worker do
       last_active: state.last_active,
       status: state.status
     }
+
     {:reply, info, state, @idle_timeout}
   end
 
@@ -142,7 +145,12 @@ defmodule JidoClaw.Session.Worker do
   @impl true
   def terminate(_reason, state) do
     duration = DateTime.diff(DateTime.utc_now(), state.created_at, :millisecond)
-    JidoClaw.Telemetry.emit_session_stop(%{tenant_id: state.tenant_id, session_id: state.id}, duration)
+
+    JidoClaw.Telemetry.emit_session_stop(
+      %{tenant_id: state.tenant_id, session_id: state.id},
+      duration
+    )
+
     :ok
   end
 

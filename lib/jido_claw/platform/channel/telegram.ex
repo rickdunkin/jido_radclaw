@@ -17,6 +17,7 @@ defmodule JidoClaw.Channel.Telegram do
       poll_interval: Map.get(config, :poll_interval, 1_000),
       connected: false
     }
+
     {:ok, state}
   end
 
@@ -62,19 +63,28 @@ defmodule JidoClaw.Channel.Telegram do
   def send_message(chat_id, content, state) do
     url = "#{@base_url}#{state.bot_token}/sendMessage"
 
-    body = Jason.encode!(%{
-      chat_id: chat_id,
-      text: content,
-      parse_mode: "Markdown"
-    })
+    body =
+      Jason.encode!(%{
+        chat_id: chat_id,
+        text: content,
+        parse_mode: "Markdown"
+      })
 
     headers = [{~c"content-type", ~c"application/json"}]
 
-    case :httpc.request(:post, {String.to_charlist(url), headers, ~c"application/json", String.to_charlist(body)}, [{:timeout, 10_000}], []) do
-      {:ok, {{_, 200, _}, _, _}} -> :ok
+    case :httpc.request(
+           :post,
+           {String.to_charlist(url), headers, ~c"application/json", String.to_charlist(body)},
+           [{:timeout, 10_000}],
+           []
+         ) do
+      {:ok, {{_, 200, _}, _, _}} ->
+        :ok
+
       {:ok, {{_, code, _}, _, resp}} ->
         Logger.warning("[Telegram] Send failed (#{code}): #{resp}")
         {:error, {:http, code}}
+
       {:error, reason} ->
         Logger.warning("[Telegram] Send failed: #{inspect(reason)}")
         {:error, reason}

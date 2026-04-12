@@ -9,7 +9,8 @@ defmodule JidoClaw.Tools.Reason do
 
   use Jido.Action,
     name: "reason",
-    description: "Apply a structured reasoning strategy to analyze a complex problem. Use for architectural decisions, debugging complex issues, or multi-step planning.",
+    description:
+      "Apply a structured reasoning strategy to analyze a complex problem. Use for architectural decisions, debugging complex issues, or multi-step planning.",
     schema: [
       strategy: [
         type: :string,

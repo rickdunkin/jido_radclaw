@@ -17,6 +17,7 @@ defmodule JidoClaw.Solutions.MatcherTest do
     case GenServer.whereis(Store) do
       nil ->
         {:ok, _} = start_supervised({Store, [project_dir: System.tmp_dir!()]})
+
       _pid ->
         :ok
     end
@@ -100,7 +101,8 @@ defmodule JidoClaw.Solutions.MatcherTest do
     test "should return fuzzy matches for related problems" do
       # Combined score = fp_score * 0.6 + trust_score * 0.4. Seeded solutions
       # have trust_score 0.0, so use a low threshold to capture fuzzy hits.
-      results = Matcher.find_solutions("stateful process with GenServer in Elixir", threshold: 0.0)
+      results =
+        Matcher.find_solutions("stateful process with GenServer in Elixir", threshold: 0.0)
 
       assert length(results) > 0
 
@@ -229,7 +231,11 @@ defmodule JidoClaw.Solutions.MatcherTest do
     end
 
     test "should return > 0.0 when terms match the document" do
-      score = Matcher.text_relevance(["genserver", "state"], "use genserver for stateful state management")
+      score =
+        Matcher.text_relevance(
+          ["genserver", "state"],
+          "use genserver for stateful state management"
+        )
 
       assert score > 0.0
     end

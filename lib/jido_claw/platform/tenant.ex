@@ -4,12 +4,12 @@ defmodule JidoClaw.Tenant do
   @type status :: :active | :suspended | :terminating
 
   @type t :: %__MODULE__{
-    id: String.t(),
-    name: String.t(),
-    status: status(),
-    config: map(),
-    created_at: DateTime.t()
-  }
+          id: String.t(),
+          name: String.t(),
+          status: status(),
+          config: map(),
+          created_at: DateTime.t()
+        }
 
   defstruct [
     :id,

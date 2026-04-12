@@ -88,8 +88,11 @@ defmodule JidoClaw.Cron.Scheduler do
 
   def unschedule(tenant_id, job_id) do
     name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
+
     case GenServer.whereis(name) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       pid ->
         sup = JidoClaw.Tenant.InstanceSupervisor.cron_sup(tenant_id)
         DynamicSupervisor.terminate_child(sup, pid)
@@ -98,8 +101,11 @@ defmodule JidoClaw.Cron.Scheduler do
 
   def list_jobs(tenant_id) do
     sup = JidoClaw.Tenant.InstanceSupervisor.cron_sup(tenant_id)
+
     case GenServer.whereis(sup) do
-      nil -> []
+      nil ->
+        []
+
       _pid ->
         DynamicSupervisor.which_children(sup)
         |> Enum.map(fn {_, pid, _, _} ->

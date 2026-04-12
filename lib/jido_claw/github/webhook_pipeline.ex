@@ -15,7 +15,6 @@ defmodule JidoClaw.GitHub.WebhookPipeline do
          action <- Map.get(payload, "action"),
          full_event <- "#{event}.#{action}",
          true <- full_event in @supported_events do
-
       Logger.info("[GitHub.WebhookPipeline] Processing #{full_event} delivery=#{delivery_id}")
       route_event(full_event, payload, delivery_id)
     else
@@ -49,6 +48,7 @@ defmodule JidoClaw.GitHub.WebhookPipeline do
 
   defp extract_issue(payload) do
     issue = Map.get(payload, "issue", %{})
+
     %{
       number: Map.get(issue, "number"),
       title: Map.get(issue, "title"),
@@ -60,6 +60,7 @@ defmodule JidoClaw.GitHub.WebhookPipeline do
 
   defp extract_repo(payload) do
     repo = Map.get(payload, "repository", %{})
+
     %{
       full_name: Map.get(repo, "full_name"),
       default_branch: Map.get(repo, "default_branch", "main")

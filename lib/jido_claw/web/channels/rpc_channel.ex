@@ -13,8 +13,12 @@ defmodule JidoClaw.Web.RpcChannel do
 
   @impl true
   def handle_in("gateway.status", _payload, socket) do
-    uptime = System.monotonic_time(:second) - Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
-    sessions = Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]) |> length()
+    uptime =
+      System.monotonic_time(:second) -
+        Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
+
+    sessions =
+      Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]) |> length()
 
     {:reply, {:ok, %{uptime: uptime, sessions: sessions, node: to_string(Node.self())}}, socket}
   end
@@ -32,14 +36,22 @@ defmodule JidoClaw.Web.RpcChannel do
     {:reply, {:ok, %{sessions: sessions}}, socket}
   end
 
-  def handle_in("sessions.create", %{"tenant_id" => tenant_id, "session_id" => session_id}, socket) do
+  def handle_in(
+        "sessions.create",
+        %{"tenant_id" => tenant_id, "session_id" => session_id},
+        socket
+      ) do
     case JidoClaw.Session.Supervisor.start_session(tenant_id, session_id) do
       {:ok, _pid} -> {:reply, {:ok, %{session_id: session_id}}, socket}
       {:error, reason} -> {:reply, {:error, %{reason: inspect(reason)}}, socket}
     end
   end
 
-  def handle_in("sessions.sendMessage", %{"tenant_id" => tenant_id, "session_id" => session_id, "content" => content}, socket) do
+  def handle_in(
+        "sessions.sendMessage",
+        %{"tenant_id" => tenant_id, "session_id" => session_id, "content" => content},
+        socket
+      ) do
     case JidoClaw.chat(tenant_id, session_id, content) do
       {:ok, response} ->
         push(socket, "session.response", %{session_id: session_id, content: response})

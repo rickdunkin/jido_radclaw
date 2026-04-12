@@ -146,22 +146,34 @@ defmodule JidoClaw.Solutions.StoreTest do
 
   describe "search/2" do
     test "should find solutions matching query text" do
-      Store.store_solution(solution_attrs(%{solution_content: "use GenServer for state management", language: "elixir"}))
+      Store.store_solution(
+        solution_attrs(%{
+          solution_content: "use GenServer for state management",
+          language: "elixir"
+        })
+      )
 
       results = Store.search("GenServer")
       assert length(results) >= 1
     end
 
     test "should return empty list when nothing matches" do
-      Store.store_solution(solution_attrs(%{solution_content: "def hello, do: :world", language: "elixir"}))
+      Store.store_solution(
+        solution_attrs(%{solution_content: "def hello, do: :world", language: "elixir"})
+      )
 
       results = Store.search("zzz_no_match_xyz_qrs")
       assert results == []
     end
 
     test "should filter by language when option provided" do
-      Store.store_solution(solution_attrs(%{solution_content: "def elixir_fn, do: :ok", language: "elixir"}))
-      Store.store_solution(solution_attrs(%{solution_content: "def python_fn", language: "python"}))
+      Store.store_solution(
+        solution_attrs(%{solution_content: "def elixir_fn, do: :ok", language: "elixir"})
+      )
+
+      Store.store_solution(
+        solution_attrs(%{solution_content: "def python_fn", language: "python"})
+      )
 
       results = Store.search("def", language: "elixir")
       assert Enum.all?(results, fn s -> s.language == "elixir" end)
@@ -169,8 +181,17 @@ defmodule JidoClaw.Solutions.StoreTest do
     end
 
     test "should filter by framework when option provided" do
-      Store.store_solution(solution_attrs(%{solution_content: "plug router", language: "elixir", framework: "phoenix"}))
-      Store.store_solution(solution_attrs(%{solution_content: "plug handler", language: "elixir", framework: "plug"}))
+      Store.store_solution(
+        solution_attrs(%{
+          solution_content: "plug router",
+          language: "elixir",
+          framework: "phoenix"
+        })
+      )
+
+      Store.store_solution(
+        solution_attrs(%{solution_content: "plug handler", language: "elixir", framework: "plug"})
+      )
 
       results = Store.search("plug", framework: "phoenix")
       assert Enum.all?(results, fn s -> s.framework == "phoenix" end)
@@ -178,7 +199,9 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should respect limit option" do
       for i <- 1..5 do
-        Store.store_solution(solution_attrs(%{solution_content: "shared content pattern #{i}", language: "elixir"}))
+        Store.store_solution(
+          solution_attrs(%{solution_content: "shared content pattern #{i}", language: "elixir"})
+        )
       end
 
       results = Store.search("pattern", limit: 2)
@@ -187,9 +210,18 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should rank results by relevance" do
       # High relevance: multiple token hits
-      Store.store_solution(solution_attrs(%{solution_content: "GenServer handle_call handle_cast", language: "elixir", tags: ["genserver", "otp"]}))
+      Store.store_solution(
+        solution_attrs(%{
+          solution_content: "GenServer handle_call handle_cast",
+          language: "elixir",
+          tags: ["genserver", "otp"]
+        })
+      )
+
       # Lower relevance: single hit
-      Store.store_solution(solution_attrs(%{solution_content: "GenServer intro", language: "python"}))
+      Store.store_solution(
+        solution_attrs(%{solution_content: "GenServer intro", language: "python"})
+      )
 
       results = Store.search("GenServer handle_call otp")
 
@@ -254,8 +286,15 @@ defmodule JidoClaw.Solutions.StoreTest do
     end
 
     test "should not affect other solutions" do
-      {:ok, keep} = Store.store_solution(solution_attrs(%{solution_content: "keep this one", language: "elixir"}))
-      {:ok, remove} = Store.store_solution(solution_attrs(%{solution_content: "remove this one", language: "python"}))
+      {:ok, keep} =
+        Store.store_solution(
+          solution_attrs(%{solution_content: "keep this one", language: "elixir"})
+        )
+
+      {:ok, remove} =
+        Store.store_solution(
+          solution_attrs(%{solution_content: "remove this one", language: "python"})
+        )
 
       Store.delete(remove.id)
 
@@ -271,7 +310,10 @@ defmodule JidoClaw.Solutions.StoreTest do
   describe "stats/0" do
     test "should return total count" do
       Store.store_solution(solution_attrs(%{language: "elixir"}))
-      Store.store_solution(solution_attrs(%{solution_content: "other content", language: "python"}))
+
+      Store.store_solution(
+        solution_attrs(%{solution_content: "other content", language: "python"})
+      )
 
       stats = Store.stats()
       assert stats.total == 2
@@ -279,7 +321,11 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should group by language" do
       Store.store_solution(solution_attrs(%{language: "elixir"}))
-      Store.store_solution(solution_attrs(%{solution_content: "other content", language: "python"}))
+
+      Store.store_solution(
+        solution_attrs(%{solution_content: "other content", language: "python"})
+      )
+
       Store.store_solution(solution_attrs(%{solution_content: "yet another", language: "elixir"}))
 
       stats = Store.stats()
@@ -289,8 +335,18 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should group by framework" do
       Store.store_solution(solution_attrs(%{language: "elixir", framework: "phoenix"}))
-      Store.store_solution(solution_attrs(%{solution_content: "other content", language: "elixir", framework: "phoenix"}))
-      Store.store_solution(solution_attrs(%{solution_content: "yet another", language: "elixir", framework: "plug"}))
+
+      Store.store_solution(
+        solution_attrs(%{
+          solution_content: "other content",
+          language: "elixir",
+          framework: "phoenix"
+        })
+      )
+
+      Store.store_solution(
+        solution_attrs(%{solution_content: "yet another", language: "elixir", framework: "plug"})
+      )
 
       stats = Store.stats()
       assert stats.by_framework["phoenix"] == 2
@@ -320,7 +376,9 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should respect limit option" do
       for i <- 1..5 do
-        Store.store_solution(solution_attrs(%{solution_content: "content #{i}", language: "elixir"}))
+        Store.store_solution(
+          solution_attrs(%{solution_content: "content #{i}", language: "elixir"})
+        )
       end
 
       results = Store.all(limit: 3)
@@ -329,7 +387,10 @@ defmodule JidoClaw.Solutions.StoreTest do
 
     test "should respect offset option" do
       for i <- 1..5 do
-        Store.store_solution(solution_attrs(%{solution_content: "content #{i}", language: "elixir"}))
+        Store.store_solution(
+          solution_attrs(%{solution_content: "content #{i}", language: "elixir"})
+        )
+
         # Ensure distinct inserted_at timestamps for deterministic ordering
         Process.sleep(2)
       end
@@ -360,7 +421,10 @@ defmodule JidoClaw.Solutions.StoreTest do
     end
 
     test "should reload solutions from disk on restart", %{tmp_dir: tmp_dir} do
-      {:ok, stored} = Store.store_solution(solution_attrs(%{solution_content: "survived restart", language: "elixir"}))
+      {:ok, stored} =
+        Store.store_solution(
+          solution_attrs(%{solution_content: "survived restart", language: "elixir"})
+        )
 
       # Stop the supervised Store process (test-owned)
       stop_supervised!(Store)

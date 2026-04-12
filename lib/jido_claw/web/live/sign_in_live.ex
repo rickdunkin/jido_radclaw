@@ -3,7 +3,14 @@ defmodule JidoClaw.Web.SignInLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, page_title: "Sign In", email: "", password: "", error: nil, trigger_action: false)}
+    {:ok,
+     assign(socket,
+       page_title: "Sign In",
+       email: "",
+       password: "",
+       error: nil,
+       trigger_action: false
+     )}
   end
 
   @impl true

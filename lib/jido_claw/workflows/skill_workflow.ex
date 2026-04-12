@@ -13,6 +13,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
 
   alias Jido.Composer.Workflow.Machine
   alias Jido.Composer.Node.ActionNode
+  alias JidoClaw.Workflows.{ContextBuilder, StepResult}
   require Logger
 
   @doc """
@@ -21,7 +22,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
   Takes a `%JidoClaw.Skills{}` struct and optional context, builds an FSM,
   and runs each step sequentially through the Machine.
 
-  Returns `{:ok, results}` with a list of `{template_name, result_text}` tuples,
+  Returns `{:ok, results}` with a list of `%StepResult{}` structs,
   or `{:error, reason}` if any step fails.
   """
   @spec run(JidoClaw.Skills.t(), String.t(), String.t()) :: {:ok, list()} | {:error, term()}
@@ -57,12 +58,13 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
         |> Map.put({:_, :error}, :failed)
 
       # Create FSM
-      machine = Machine.new(
-        initial: :step_1,
-        nodes: nodes,
-        transitions: transitions,
-        terminal_states: [:done, :failed]
-      )
+      machine =
+        Machine.new(
+          initial: :step_1,
+          nodes: nodes,
+          transitions: transitions,
+          terminal_states: [:done, :failed]
+        )
 
       # Execute steps sequentially through the FSM
       execute_machine(machine, steps, extra_context, project_dir)
@@ -89,27 +91,33 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
 
       template_name = Map.get(step, "template") || Map.get(step, :template)
       task = Map.get(step, "task") || Map.get(step, :task)
+      step_name = Map.get(step, "name") || Map.get(step, :name) || template_name
 
-      full_task =
-        if extra_context != "" do
-          "#{task}\n\nAdditional context: #{extra_context}"
-        else
-          task
-        end
+      # Build context from all preceding step results
+      preceding_context = ContextBuilder.format_preceding_all(results)
 
-      IO.puts("  \e[2m  step #{step_idx}: #{template_name} — #{String.slice(task, 0, 60)}...\e[0m")
+      full_task = ContextBuilder.build_task(task, extra_context, preceding_context, "")
+
+      IO.puts(
+        "  \e[2m  step #{step_idx}: #{template_name} — #{String.slice(task, 0, 60)}...\e[0m"
+      )
 
       # Execute the step action
-      params = %{template: template_name, task: full_task, project_dir: project_dir}
+      params = %{
+        template: template_name,
+        task: full_task,
+        project_dir: project_dir,
+        name: step_name
+      }
 
       case JidoClaw.Workflows.StepAction.run(params, %{}) do
-        {:ok, step_result} ->
+        {:ok, %StepResult{} = step_result} ->
           # Apply result to machine context and transition to next state
           machine = Machine.apply_result(machine, step_result)
 
           case Machine.transition(machine, :ok) do
             {:ok, machine} ->
-              results = [{template_name, step_result.result} | results]
+              results = [step_result | results]
               execute_loop(machine, steps, extra_context, project_dir, results)
 
             {:error, reason} ->

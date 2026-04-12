@@ -17,9 +17,16 @@ defmodule JidoClaw.Display.SwarmBox do
     tokens_str = StatusBar.format_tokens(total_tokens)
 
     status_parts = []
-    status_parts = if running > 0, do: status_parts ++ ["\e[33m#{running} running\e[0m"], else: status_parts
-    status_parts = if done > 0, do: status_parts ++ ["\e[32m#{done} done\e[0m"], else: status_parts
-    status_parts = if errored > 0, do: status_parts ++ ["\e[31m#{errored} error\e[0m"], else: status_parts
+
+    status_parts =
+      if running > 0, do: status_parts ++ ["\e[33m#{running} running\e[0m"], else: status_parts
+
+    status_parts =
+      if done > 0, do: status_parts ++ ["\e[32m#{done} done\e[0m"], else: status_parts
+
+    status_parts =
+      if errored > 0, do: status_parts ++ ["\e[31m#{errored} error\e[0m"], else: status_parts
+
     status_str = Enum.join(status_parts, "  ")
 
     inner_width = max(width - 4, 40)
@@ -43,7 +50,8 @@ defmodule JidoClaw.Display.SwarmBox do
     status_str = status_label(agent.status)
     tokens_str = StatusBar.format_tokens(agent.tokens)
 
-    tools_list = agent.tool_names
+    tools_list =
+      agent.tool_names
       |> MapSet.to_list()
       |> Enum.take(5)
       |> Enum.join(", ")
@@ -75,7 +83,10 @@ defmodule JidoClaw.Display.SwarmBox do
     total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
     total_tools = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tool_calls end)
 
-    status = if errored > 0, do: "\e[33m#{done} done, #{errored} failed\e[0m", else: "\e[32mall #{done} done\e[0m"
+    status =
+      if errored > 0,
+        do: "\e[33m#{done} done, #{errored} failed\e[0m",
+        else: "\e[32mall #{done} done\e[0m"
 
     "\n  \e[36m⚡\e[0m Swarm complete: #{status} · #{StatusBar.format_tokens(total_tokens)} tokens · #{total_tools} tool calls\n"
   end

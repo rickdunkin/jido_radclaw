@@ -3,10 +3,10 @@ defmodule JidoClaw.Agent.TemplatesTest do
 
   alias JidoClaw.Agent.Templates
 
-  @valid_names ~w[coder test_runner reviewer docs_writer researcher refactorer]
+  @valid_names ~w[coder test_runner reviewer docs_writer researcher refactorer verifier]
 
   describe "get/1 with valid template names" do
-    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer] do
+    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer verifier] do
       test "should return {:ok, template} for '#{name}'" do
         assert {:ok, template} = Templates.get(unquote(name))
         assert is_map(template)
@@ -80,6 +80,14 @@ defmodule JidoClaw.Agent.TemplatesTest do
     test "refactorer uses WorkerRefactorer module" do
       assert {:ok, %{module: JidoClaw.Agent.Workers.Refactorer}} = Templates.get("refactorer")
     end
+
+    test "verifier uses WorkerVerifier module" do
+      assert {:ok, %{module: JidoClaw.Agent.Workers.Verifier}} = Templates.get("verifier")
+    end
+
+    test "verifier template has max_iterations of 20" do
+      assert {:ok, %{max_iterations: 20}} = Templates.get("verifier")
+    end
   end
 
   describe "get/1 with invalid template names" do
@@ -116,8 +124,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 6 templates" do
-      assert map_size(Templates.list()) == 6
+    test "should contain all 7 templates" do
+      assert map_size(Templates.list()) == 7
     end
 
     test "should have all expected template names as keys" do
@@ -144,11 +152,11 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 6 names" do
-      assert length(Templates.names()) == 6
+    test "should return exactly 7 names" do
+      assert length(Templates.names()) == 7
     end
 
-    test "should include all 6 expected template names" do
+    test "should include all 7 expected template names" do
       names = Templates.names()
 
       for expected <- @valid_names do
@@ -164,7 +172,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
   end
 
   describe "exists?/1" do
-    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer] do
+    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer verifier] do
       test "should return true for valid name '#{name}'" do
         assert Templates.exists?(unquote(name)) == true
       end

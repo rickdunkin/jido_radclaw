@@ -47,8 +47,14 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[33m⚙\e[0m  cwd         \e[1m#{state.cwd}\e[0m")
     IO.puts("  \e[33m⚙\e[0m  messages    \e[1m#{live.messages}\e[0m")
     IO.puts("  \e[33m⚙\e[0m  tool calls  \e[1m#{live.tool_calls}\e[0m")
-    IO.puts("  \e[33m⚙\e[0m  tokens      \e[1m#{JidoClaw.Display.StatusBar.format_tokens(live.tokens)}\e[0m")
-    IO.puts("  \e[33m⚙\e[0m  agents      \e[1m#{running} running / #{live.agents_spawned} total\e[0m")
+
+    IO.puts(
+      "  \e[33m⚙\e[0m  tokens      \e[1m#{JidoClaw.Display.StatusBar.format_tokens(live.tokens)}\e[0m"
+    )
+
+    IO.puts(
+      "  \e[33m⚙\e[0m  agents      \e[1m#{running} running / #{live.agents_spawned} total\e[0m"
+    )
 
     elapsed = System.monotonic_time(:second) - state.started_at
     IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{format_elapsed(elapsed)}\e[0m")
@@ -101,7 +107,11 @@ defmodule JidoClaw.CLI.Commands do
 
     IO.puts("")
     IO.puts("  \e[2mSwitch: /model <provider:model>\e[0m")
-    IO.puts("  \e[2mAll providers: ollama, ollama_cloud, anthropic, openai, google, groq, xai, openrouter\e[0m")
+
+    IO.puts(
+      "  \e[2mAll providers: ollama, ollama_cloud, anthropic, openai, google, groq, xai, openrouter\e[0m"
+    )
+
     IO.puts("")
     {:ok, state}
   end
@@ -232,7 +242,11 @@ defmodule JidoClaw.CLI.Commands do
     end
 
     IO.puts("")
-    IO.puts("  \e[2mCommands: /memory search <q>  /memory save <key> <content>  /memory forget <key>\e[0m")
+
+    IO.puts(
+      "  \e[2mCommands: /memory search <q>  /memory save <key> <content>  /memory forget <key>\e[0m"
+    )
+
     IO.puts("")
     {:ok, state}
   end
@@ -270,12 +284,14 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[33m⚙\e[0m  stored      \e[1m#{Map.get(stats, :total, 0)}\e[0m")
 
     by_lang = Map.get(stats, :by_language, %{})
+
     if map_size(by_lang) > 0 do
       langs = Enum.map_join(by_lang, ", ", fn {lang, n} -> "#{lang}: #{n}" end)
       IO.puts("  \e[33m⚙\e[0m  languages   \e[1m#{langs}\e[0m")
     end
 
     by_fw = Map.get(stats, :by_framework, %{})
+
     if map_size(by_fw) > 0 do
       fws = Enum.map_join(by_fw, ", ", fn {fw, n} -> "#{fw}: #{n}" end)
       IO.puts("  \e[33m⚙\e[0m  frameworks  \e[1m#{fws}\e[0m")
@@ -365,7 +381,11 @@ defmodule JidoClaw.CLI.Commands do
 
     if mode in [:gateway, :both] do
       IO.puts("  \e[33m⚙\e[0m  health      \e[1mhttp://localhost:#{port}/health\e[0m")
-      IO.puts("  \e[33m⚙\e[0m  api         \e[1mhttp://localhost:#{port}/v1/chat/completions\e[0m")
+
+      IO.puts(
+        "  \e[33m⚙\e[0m  api         \e[1mhttp://localhost:#{port}/v1/chat/completions\e[0m"
+      )
+
       IO.puts("  \e[33m⚙\e[0m  dashboard   \e[1mhttp://localhost:#{port}/dashboard\e[0m")
       IO.puts("  \e[33m⚙\e[0m  websocket   \e[1mws://localhost:#{port}/ws\e[0m")
     else
@@ -441,7 +461,11 @@ defmodule JidoClaw.CLI.Commands do
       :error ->
         IO.puts("")
         IO.puts("  \e[33mUsage:\e[0m /cron add <id> \"<schedule>\" <task description>")
-        IO.puts("  \e[2mExample: /cron add daily-tests \"0 9 * * *\" Run mix test and report results\e[0m")
+
+        IO.puts(
+          "  \e[2mExample: /cron add daily-tests \"0 9 * * *\" Run mix test and report results\e[0m"
+        )
+
         IO.puts("")
         {:ok, state}
     end
@@ -485,12 +509,13 @@ defmodule JidoClaw.CLI.Commands do
       IO.puts("  \e[2mNo scheduled jobs. Use /cron add or ask the agent to schedule one.\e[0m")
     else
       Enum.each(jobs, fn job ->
-        status_icon = case job.status do
-          :active -> "\e[32m●\e[0m"
-          :disabled -> "\e[31m✗\e[0m"
-          :stuck -> "\e[33m⚠\e[0m"
-          _ -> "\e[2m○\e[0m"
-        end
+        status_icon =
+          case job.status do
+            :active -> "\e[32m●\e[0m"
+            :disabled -> "\e[31m✗\e[0m"
+            :stuck -> "\e[33m⚠\e[0m"
+            _ -> "\e[2m○\e[0m"
+          end
 
         schedule_str = format_cron_schedule(job.schedule)
         next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
@@ -501,7 +526,11 @@ defmodule JidoClaw.CLI.Commands do
     end
 
     IO.puts("")
-    IO.puts("  \e[2mCommands: /cron add | /cron remove <id> | /cron trigger <id> | /cron disable <id>\e[0m")
+
+    IO.puts(
+      "  \e[2mCommands: /cron add | /cron remove <id> | /cron trigger <id> | /cron disable <id>\e[0m"
+    )
+
     IO.puts("")
     {:ok, state}
   end
@@ -555,7 +584,11 @@ defmodule JidoClaw.CLI.Commands do
       {:ok, Map.put(state, :strategy, name)}
     else
       IO.puts("  \e[31m✗\e[0m  Unknown strategy: \e[1m#{name}\e[0m")
-      IO.puts("  \e[2mAvailable: #{JidoClaw.Reasoning.StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")}\e[0m")
+
+      IO.puts(
+        "  \e[2mAvailable: #{JidoClaw.Reasoning.StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")}\e[0m"
+      )
+
       {:ok, state}
     end
   end
@@ -574,7 +607,10 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
-  defp format_elapsed(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
+  defp format_elapsed(seconds) when seconds < 3600,
+    do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
   defp format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
 
   defp terminal_cols do
@@ -595,7 +631,10 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp format_cron_schedule({:cron, expr}), do: "cron: #{expr}"
-  defp format_cron_schedule({:every, ms}) when ms >= 86_400_000, do: "every #{div(ms, 86_400_000)}d"
+
+  defp format_cron_schedule({:every, ms}) when ms >= 86_400_000,
+    do: "every #{div(ms, 86_400_000)}d"
+
   defp format_cron_schedule({:every, ms}) when ms >= 3_600_000, do: "every #{div(ms, 3_600_000)}h"
   defp format_cron_schedule({:every, ms}) when ms >= 60_000, do: "every #{div(ms, 60_000)}m"
   defp format_cron_schedule({:every, ms}), do: "every #{div(ms, 1000)}s"

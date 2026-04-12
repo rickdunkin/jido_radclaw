@@ -23,6 +23,7 @@ defmodule JidoClaw.Channel.Worker do
           adapter_state: adapter_state,
           config: config
         }
+
         # Auto-connect
         send(self(), :connect)
         {:ok, state}
@@ -40,6 +41,7 @@ defmodule JidoClaw.Channel.Worker do
       status: state.status,
       platform: state.adapter |> Module.split() |> List.last() |> String.downcase()
     }
+
     {:reply, info, state}
   end
 
@@ -62,7 +64,11 @@ defmodule JidoClaw.Channel.Worker do
 
     case state.adapter.handle_inbound(raw_message, state.adapter_state) do
       {:reply, _response, new_adapter_state} ->
-        JidoClaw.Telemetry.emit_channel_outbound(%{adapter: state.adapter, tenant_id: state.tenant_id})
+        JidoClaw.Telemetry.emit_channel_outbound(%{
+          adapter: state.adapter,
+          tenant_id: state.tenant_id
+        })
+
         {:noreply, %{state | adapter_state: new_adapter_state}}
 
       {:noreply, new_adapter_state} ->

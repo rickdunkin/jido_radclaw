@@ -4,12 +4,12 @@ defmodule JidoClaw.Folio do
     extensions: [AshAdmin.Domain]
 
   admin do
-    show? true
+    show?(true)
   end
 
   resources do
-    resource JidoClaw.Folio.InboxItem
-    resource JidoClaw.Folio.Action
-    resource JidoClaw.Folio.Project
+    resource(JidoClaw.Folio.InboxItem)
+    resource(JidoClaw.Folio.Action)
+    resource(JidoClaw.Folio.Project)
   end
 end

@@ -21,8 +21,13 @@ defmodule JidoClaw.CodeServer do
   def send_user_message(project_path, conv_id, message, opts \\ []) do
     with {:ok, _pid} <- ensure_project_runtime(project_path) do
       Logger.debug("[CodeServer] Message to #{conv_id}: #{String.slice(message, 0, 100)}")
-      Phoenix.PubSub.broadcast(JidoClaw.PubSub, "code_server:#{project_path}:#{conv_id}",
-        {:user_message, message, opts})
+
+      Phoenix.PubSub.broadcast(
+        JidoClaw.PubSub,
+        "code_server:#{project_path}:#{conv_id}",
+        {:user_message, message, opts}
+      )
+
       :ok
     end
   end
@@ -34,13 +39,18 @@ defmodule JidoClaw.CodeServer do
 
   @doc "Stop a conversation."
   def stop_conversation(project_path, conv_id) do
-    Phoenix.PubSub.broadcast(JidoClaw.PubSub, "code_server:#{project_path}:#{conv_id}",
-      {:stop_conversation, conv_id})
+    Phoenix.PubSub.broadcast(
+      JidoClaw.PubSub,
+      "code_server:#{project_path}:#{conv_id}",
+      {:stop_conversation, conv_id}
+    )
+
     :ok
   end
 
   defp start_runtime(project_path) do
     spec = {JidoClaw.CodeServer.Runtime, project_path}
+
     case DynamicSupervisor.start_child(JidoClaw.CodeServer.RuntimeSupervisor, spec) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}

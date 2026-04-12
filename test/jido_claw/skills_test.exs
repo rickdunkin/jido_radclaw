@@ -4,8 +4,8 @@ defmodule JidoClaw.SkillsTest do
 
   alias JidoClaw.Skills
 
-  @default_skill_names ~w[full_review refactor_safe explore_codebase security_audit implement_feature debug_issue onboard_dev]
-  @default_filenames ~w[full_review.yaml refactor_safe.yaml explore_codebase.yaml security_audit.yaml implement_feature.yaml debug_issue.yaml onboard_dev.yaml]
+  @default_skill_names ~w[full_review refactor_safe explore_codebase security_audit implement_feature debug_issue onboard_dev iterative_feature]
+  @default_filenames ~w[full_review.yaml refactor_safe.yaml explore_codebase.yaml security_audit.yaml implement_feature.yaml debug_issue.yaml onboard_dev.yaml iterative_feature.yaml]
 
   setup do
     dir = Path.join(System.tmp_dir!(), "jido_skills_#{System.unique_integer([:positive])}")
@@ -35,6 +35,7 @@ defmodule JidoClaw.SkillsTest do
     on_exit(fn ->
       # Stop our test instance and let the supervisor restart the real one
       if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+
       if app_sup && Process.alive?(app_sup) do
         Supervisor.restart_child(app_sup, JidoClaw.Skills)
       end
@@ -76,7 +77,9 @@ defmodule JidoClaw.SkillsTest do
       skills_dir = Path.join([dir, ".jido", "skills"])
       File.mkdir_p!(skills_dir)
 
-      custom_content = "name: full_review\ndescription: custom override\nsteps: []\nsynthesis: custom\n"
+      custom_content =
+        "name: full_review\ndescription: custom override\nsteps: []\nsynthesis: custom\n"
+
       path = Path.join(skills_dir, "full_review.yaml")
       File.write!(path, custom_content)
 
@@ -86,20 +89,23 @@ defmodule JidoClaw.SkillsTest do
       assert File.read!(path) == custom_content
     end
 
-    test "should not copy defaults when YAML files already exist", %{dir: dir} do
+    test "should backfill missing defaults alongside existing custom skills", %{dir: dir} do
       skills_dir = Path.join([dir, ".jido", "skills"])
       File.mkdir_p!(skills_dir)
 
-      # Write a placeholder so the directory is non-empty with .yaml
+      # Write a custom skill so the directory is non-empty
       File.write!(Path.join(skills_dir, "custom.yaml"), "name: custom\nsteps: []\n")
 
       Skills.ensure_defaults(dir)
 
-      # Default files should NOT be written since yaml already exists
+      # Default files SHOULD be written — backfill missing without overwriting
       for filename <- @default_filenames do
-        refute File.exists?(Path.join(skills_dir, filename)),
-               "Should not write #{filename} when yaml files already exist"
+        assert File.exists?(Path.join(skills_dir, filename)),
+               "Expected backfilled default skill file: #{filename}"
       end
+
+      # Custom file should still exist untouched
+      assert File.exists?(Path.join(skills_dir, "custom.yaml"))
     end
 
     test "should be idempotent — calling twice does not error", %{dir: dir} do

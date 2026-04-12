@@ -53,10 +53,11 @@ defmodule JidoClaw do
 
       pid when is_pid(pid) ->
         try do
-          result = JidoClaw.Agent.ask_sync(pid, message,
-            timeout: 120_000,
-            tool_context: %{project_dir: File.cwd!()}
-          )
+          result =
+            JidoClaw.Agent.ask_sync(pid, message,
+              timeout: 120_000,
+              tool_context: %{project_dir: File.cwd!()}
+            )
 
           case result do
             {:ok, answer} when is_binary(answer) ->

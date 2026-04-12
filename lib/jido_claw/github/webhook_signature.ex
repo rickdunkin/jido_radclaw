@@ -4,9 +4,12 @@ defmodule JidoClaw.GitHub.WebhookSignature do
 
   def verify(payload, "sha256=" <> hex_digest) when byte_size(hex_digest) == 64 do
     case get_webhook_secret() do
-      nil -> {:error, :missing_webhook_secret}
+      nil ->
+        {:error, :missing_webhook_secret}
+
       secret ->
         expected = :crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower)
+
         if Plug.Crypto.secure_compare(expected, String.downcase(hex_digest)) do
           :ok
         else

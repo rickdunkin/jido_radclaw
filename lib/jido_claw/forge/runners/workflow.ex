@@ -56,10 +56,11 @@ defmodule JidoClaw.Forge.Runners.Workflow do
     then_target = Map.get(step, "then")
     else_target = Map.get(step, "else")
 
-    matched = Enum.all?(check, fn {step_id, expected} ->
-      result = Map.get(state.step_results, step_id, %{})
-      to_string(Map.get(result, :output, "")) =~ to_string(expected)
-    end)
+    matched =
+      Enum.all?(check, fn {step_id, expected} ->
+        result = Map.get(state.step_results, step_id, %{})
+        to_string(Map.get(result, :output, "")) =~ to_string(expected)
+      end)
 
     target = if matched, do: then_target, else: else_target
 

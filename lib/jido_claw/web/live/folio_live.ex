@@ -7,13 +7,14 @@ defmodule JidoClaw.Web.FolioLive do
     actions = Ash.read!(JidoClaw.Folio.Action, action: :next_actions, authorize?: false)
     projects = Ash.read!(JidoClaw.Folio.Project, action: :active, authorize?: false)
 
-    {:ok, assign(socket,
-      page_title: "Folio",
-      tab: :inbox,
-      inbox: inbox,
-      actions: actions,
-      projects: projects
-    )}
+    {:ok,
+     assign(socket,
+       page_title: "Folio",
+       tab: :inbox,
+       inbox: inbox,
+       actions: actions,
+       projects: projects
+     )}
   end
 
   @impl true

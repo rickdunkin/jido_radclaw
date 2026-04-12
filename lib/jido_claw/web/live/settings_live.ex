@@ -3,11 +3,12 @@ defmodule JidoClaw.Web.SettingsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket,
-      page_title: "Settings",
-      mode: Application.get_env(:jido_claw, :mode, :both),
-      gateway_port: Application.get_env(:jido_claw, :gateway_port, 4000)
-    )}
+    {:ok,
+     assign(socket,
+       page_title: "Settings",
+       mode: Application.get_env(:jido_claw, :mode, :both),
+       gateway_port: Application.get_env(:jido_claw, :gateway_port, 4000)
+     )}
   end
 
   @impl true

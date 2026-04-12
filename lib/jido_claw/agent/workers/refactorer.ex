@@ -1,7 +1,8 @@
 defmodule JidoClaw.Agent.Workers.Refactorer do
   use Jido.AI.Agent,
     name: "jido_claw_refactorer",
-    description: "Refactors code for improved structure, readability, and performance. Full tool access for comprehensive codebase restructuring.",
+    description:
+      "Refactors code for improved structure, readability, and performance. Full tool access for comprehensive codebase restructuring.",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,

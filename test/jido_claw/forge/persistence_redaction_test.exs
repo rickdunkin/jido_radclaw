@@ -22,6 +22,7 @@ defmodule JidoClaw.Forge.PersistenceRedactionTest do
 
       # Strings that match redaction patterns should be redacted
       assert env_entry["values"]["API_KEY"] == Patterns.redact("sk-abc123")
+
       # Non-secret strings pass through the redactor (may or may not be changed depending on patterns)
       assert is_binary(git_entry["source"])
     end

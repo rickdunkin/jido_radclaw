@@ -2,7 +2,9 @@ defmodule JidoClaw.Web.HealthController do
   use Phoenix.Controller, formats: [:json]
 
   def index(conn, _params) do
-    uptime = System.monotonic_time(:second) - Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
+    uptime =
+      System.monotonic_time(:second) -
+        Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
 
     session_count =
       case Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]) do

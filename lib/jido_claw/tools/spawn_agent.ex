@@ -1,11 +1,25 @@
 defmodule JidoClaw.Tools.SpawnAgent do
   use Jido.Action,
     name: "spawn_agent",
-    description: "Spawn a child agent from a template to work on a task. Available templates: coder, test_runner, reviewer, docs_writer, researcher, refactorer. The child agent works independently and results can be collected with get_agent_result.",
+    description:
+      "Spawn a child agent from a template to work on a task. Available templates: coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier. The child agent works independently and results can be collected with get_agent_result.",
     schema: [
-      template: [type: :string, required: true, doc: "Agent template name (coder, test_runner, reviewer, docs_writer, researcher, refactorer)"],
-      task: [type: :string, required: true, doc: "The task description for the child agent to work on"],
-      tag: [type: :string, required: false, doc: "Optional unique ID for this agent (auto-generated if not provided)"]
+      template: [
+        type: :string,
+        required: true,
+        doc:
+          "Agent template name (coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier)"
+      ],
+      task: [
+        type: :string,
+        required: true,
+        doc: "The task description for the child agent to work on"
+      ],
+      tag: [
+        type: :string,
+        required: false,
+        doc: "Optional unique ID for this agent (auto-generated if not provided)"
+      ]
     ]
 
   @impl true
@@ -40,13 +54,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
               end
             end)
 
-            {:ok, %{
-              agent_id: tag,
-              template: template_name,
-              description: template.description,
-              status: "spawned",
-              message: "Agent '#{tag}' spawned with template '#{template_name}'. Use get_agent_result to collect the result when done."
-            }}
+            {:ok,
+             %{
+               agent_id: tag,
+               template: template_name,
+               description: template.description,
+               status: "spawned",
+               message:
+                 "Agent '#{tag}' spawned with template '#{template_name}'. Use get_agent_result to collect the result when done."
+             }}
 
           {:error, reason} ->
             {:error, "Failed to spawn agent: #{inspect(reason)}"}

@@ -12,13 +12,18 @@ defmodule JidoClaw.Forge.Persistence do
   def record_session_started(session_id, spec) do
     if enabled?() do
       try do
-        Ash.create!(JidoClaw.Forge.Resources.Session, %{
-          name: session_id,
-          runner_type: to_string(Map.get(spec, :runner, :shell)),
-          runner_config: Map.get(spec, :runner_config, %{}),
-          spec: redact_map(spec),
-          started_at: DateTime.utc_now()
-        }, action: :start, authorize?: false)
+        Ash.create!(
+          JidoClaw.Forge.Resources.Session,
+          %{
+            name: session_id,
+            runner_type: to_string(Map.get(spec, :runner, :shell)),
+            runner_config: Map.get(spec, :runner_config, %{}),
+            spec: redact_map(spec),
+            started_at: DateTime.utc_now()
+          },
+          action: :start,
+          authorize?: false
+        )
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
       end
@@ -121,18 +126,25 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           # Two-step flow: create with :start, then update with :complete
-          exec_session = Ash.create!(JidoClaw.Forge.Resources.ExecSession, %{
-            session_id: session.id,
-            sequence: sequence,
-            command: "iteration"
-          }, authorize?: false)
+          exec_session =
+            Ash.create!(
+              JidoClaw.Forge.Resources.ExecSession,
+              %{
+                session_id: session.id,
+                sequence: sequence,
+                command: "iteration"
+              },
+              authorize?: false
+            )
 
-          result_status = case runner_status do
-            :error -> :failed
-            _ -> if exit_code == 0, do: :completed, else: :failed
-          end
+          result_status =
+            case runner_status do
+              :error -> :failed
+              _ -> if exit_code == 0, do: :completed, else: :failed
+            end
 
           exec_session
           |> Ash.Changeset.for_update(:complete, %{
@@ -152,6 +164,7 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           attrs = %{
             session_id: session.id,
@@ -159,7 +172,10 @@ defmodule JidoClaw.Forge.Persistence do
             data: redact_map(data)
           }
 
-          attrs = if exec_session_sequence, do: Map.put(attrs, :exec_session_sequence, exec_session_sequence), else: attrs
+          attrs =
+            if exec_session_sequence,
+              do: Map.put(attrs, :exec_session_sequence, exec_session_sequence),
+              else: attrs
 
           Ash.create!(JidoClaw.Forge.Resources.Event, attrs, authorize?: false)
         end
@@ -173,6 +189,7 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           session
           |> Ash.Changeset.for_update(:update_phase, %{phase: phase})
@@ -188,6 +205,7 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           session
           |> Ash.Changeset.for_update(:set_sandbox_id, %{sandbox_id: sandbox_id})
@@ -203,13 +221,18 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
-          Ash.create!(JidoClaw.Forge.Resources.Checkpoint, %{
-            session_id: session.id,
-            exec_session_sequence: sequence,
-            runner_state_snapshot: runner_state_snapshot,
-            metadata: metadata
-          }, authorize?: false)
+          Ash.create!(
+            JidoClaw.Forge.Resources.Checkpoint,
+            %{
+              session_id: session.id,
+              exec_session_sequence: sequence,
+              runner_state_snapshot: runner_state_snapshot,
+              metadata: metadata
+            },
+            authorize?: false
+          )
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to save checkpoint: #{inspect(e)}")
@@ -221,6 +244,7 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           JidoClaw.Forge.Resources.Checkpoint
           |> Ash.Query.for_read(:latest_for_session, %{session_id: session.id})
@@ -239,11 +263,23 @@ defmodule JidoClaw.Forge.Persistence do
     if enabled?() do
       try do
         session = find_session(session_id)
+
         if session do
           args = %{session_id: session.id}
-          args = if opts[:after_timestamp], do: Map.put(args, :after, opts[:after_timestamp]), else: args
-          args = if opts[:after_sequence], do: Map.put(args, :after_sequence, opts[:after_sequence]), else: args
-          args = if opts[:event_types], do: Map.put(args, :event_types, opts[:event_types]), else: args
+
+          args =
+            if opts[:after_timestamp],
+              do: Map.put(args, :after, opts[:after_timestamp]),
+              else: args
+
+          args =
+            if opts[:after_sequence],
+              do: Map.put(args, :after_sequence, opts[:after_sequence]),
+              else: args
+
+          args =
+            if opts[:event_types], do: Map.put(args, :event_types, opts[:event_types]), else: args
+
           args = if opts[:limit], do: Map.put(args, :limit, opts[:limit]), else: args
 
           JidoClaw.Forge.Resources.Event
@@ -355,8 +391,16 @@ defmodule JidoClaw.Forge.Persistence do
     |> Ash.Query.limit(1)
     |> Ash.read!(authorize?: false)
     |> case do
-      [exec] -> %{output: exec.output, exit_code: exec.exit_code, status: exec.status, sequence: exec.sequence}
-      [] -> nil
+      [exec] ->
+        %{
+          output: exec.output,
+          exit_code: exec.exit_code,
+          status: exec.status,
+          sequence: exec.sequence
+        }
+
+      [] ->
+        nil
     end
   rescue
     _ -> nil

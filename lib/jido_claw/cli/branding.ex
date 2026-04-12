@@ -55,7 +55,10 @@ defmodule JidoClaw.CLI.Branding do
     IO.write("\e[2J\e[H")
     IO.puts(logo())
 
-    animate_line("  \e[2mv#{JidoClaw.version()} · elixir #{System.version()} · otp #{:erlang.system_info(:otp_release)}\e[0m")
+    animate_line(
+      "  \e[2mv#{JidoClaw.version()} · elixir #{System.version()} · otp #{:erlang.system_info(:otp_release)}\e[0m"
+    )
+
     :timer.sleep(80)
 
     IO.puts("")
@@ -89,11 +92,14 @@ defmodule JidoClaw.CLI.Branding do
 
     # Show memory size if exists
     memory_path = Path.join([project_dir, ".jido", "memory.json"])
+
     if File.exists?(memory_path) do
       case File.stat(memory_path) do
         {:ok, %{size: size}} when size > 0 ->
           animate_line("  \e[32m✓\e[0m  memory      \e[2m#{format_bytes(size)}\e[0m")
-        _ -> :ok
+
+        _ ->
+          :ok
       end
     end
 
@@ -204,7 +210,14 @@ defmodule JidoClaw.CLI.Branding do
     tokens_str = JidoClaw.Display.StatusBar.format_tokens(tokens)
 
     parts =
-      ["#{messages} msgs", "#{tool_calls} tools", "#{agents_spawned} agents", "#{tokens_str} tokens", elapsed, cost_part]
+      [
+        "#{messages} msgs",
+        "#{tool_calls} tools",
+        "#{agents_spawned} agents",
+        "#{tokens_str} tokens",
+        elapsed,
+        cost_part
+      ]
       |> Enum.reject(&is_nil/1)
 
     summary = Enum.join(parts, " · ")
@@ -234,7 +247,11 @@ defmodule JidoClaw.CLI.Branding do
     params_str =
       params
       |> Enum.map(fn {k, v} ->
-        v_str = if is_binary(v) and String.length(v) > 60, do: String.slice(v, 0, 57) <> "...", else: inspect(v)
+        v_str =
+          if is_binary(v) and String.length(v) > 60,
+            do: String.slice(v, 0, 57) <> "...",
+            else: inspect(v)
+
         "#{k}=#{v_str}"
       end)
       |> Enum.join(", ")
