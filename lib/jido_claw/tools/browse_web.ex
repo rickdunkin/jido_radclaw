@@ -29,10 +29,10 @@ defmodule JidoClaw.Tools.BrowseWeb do
   # ---------------------------------------------------------------------------
 
   defp do_browse(url, action) do
-    case JidoBrowser.start_session() do
+    case Jido.Browser.start_session() do
       {:ok, session} ->
         result = execute(session, url, action)
-        JidoBrowser.end_session(session)
+        Jido.Browser.end_session(session)
         result
 
       {:error, reason} ->
@@ -48,7 +48,7 @@ defmodule JidoClaw.Tools.BrowseWeb do
   end
 
   defp execute(session, url, action) do
-    with {:ok, session, _nav} <- JidoBrowser.navigate(session, url) do
+    with {:ok, session, _nav} <- Jido.Browser.navigate(session, url) do
       case action do
         "get_content" ->
           get_content(session, url)
@@ -69,7 +69,7 @@ defmodule JidoClaw.Tools.BrowseWeb do
   end
 
   defp get_content(session, url) do
-    case JidoBrowser.extract_content(session, format: :markdown) do
+    case Jido.Browser.extract_content(session, format: :markdown) do
       {:ok, _session, %{content: content}} ->
         truncated = truncate(content)
 
@@ -95,7 +95,7 @@ defmodule JidoClaw.Tools.BrowseWeb do
       .slice(0, 100)
     """
 
-    case JidoBrowser.evaluate(session, js) do
+    case Jido.Browser.evaluate(session, js) do
       {:ok, _session, %{result: links}} when is_list(links) ->
         {:ok, %{url: url, action: "extract_links", links: links, count: length(links)}}
 
@@ -108,7 +108,7 @@ defmodule JidoClaw.Tools.BrowseWeb do
   end
 
   defp take_screenshot(session, url) do
-    case JidoBrowser.screenshot(session) do
+    case Jido.Browser.screenshot(session) do
       {:ok, _session, %{bytes: bytes}} ->
         encoded = Base.encode64(bytes)
 

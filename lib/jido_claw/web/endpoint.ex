@@ -8,6 +8,10 @@ defmodule JidoClaw.Web.Endpoint do
     same_site: "Lax"
   ]
 
+  if Mix.env() == :dev do
+    plug Tidewave
+  end
+
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]]
 

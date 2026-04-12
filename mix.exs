@@ -9,17 +9,19 @@ defmodule JidoClaw.MixProject do
       version: @version,
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
+      consolidate_protocols: Mix.env() != :dev,
       deps: deps(),
       escript: escript(),
       compilers: Mix.compilers(),
-      aliases: aliases()
+      aliases: aliases(),
+      usage_rules: usage_rules()
     ]
   end
 
   def application do
     [
       extra_applications: [:logger, :inets, :ssl, :runtime_tools],
-      mod: {JidoClaw.Application, []},
+      mod: {JidoClaw.Application, []}
       # Nostrum is started conditionally — see channel_children() in application.ex
     ]
   end
@@ -32,8 +34,49 @@ defmodule JidoClaw.MixProject do
     ]
   end
 
+  defp usage_rules do
+    # Example for those using claude.
+    [
+      file: "AGENTS.md",
+      # rules to include directly in AGENTS.md
+      # :usage_rules itself provides rules for search_docs, docs, etc.
+      # use a regex to match multiple deps, or atoms/strings for specific ones
+      usage_rules: [:usage_rules],
+      # or use skills
+      skills: [
+        location: ".agents/skills",
+        deps: [:req],
+        # build skills that combine multiple usage rules
+        build: [
+          "ash-framework": [
+            # The description tells people how to use this skill.
+            description:
+              "Use this skill working with Ash Framework or any of its extensions. Always consult this when making any domain changes, features or fixes.",
+            # Include all Ash dependencies
+            usage_rules: [:ash, ~r/^ash_/]
+          ],
+          "phoenix-framework": [
+            description:
+              "Use this skill working with Phoenix Framework. Consult this when working with the web layer, controllers, views, liveviews etc.",
+            # Include all Phoenix dependencies
+            usage_rules: [:phoenix, ~r/^phoenix_/]
+          ],
+          "jido-framework": [
+            description:
+              "Use this skill working with Jido Framework. Consult this when working with the agent layer, agents, prompts, templates, workers etc.",
+            # Include all Jido dependencies
+            usage_rules: [:jido, ~r/^jido_/]
+          ]
+        ]
+      ]
+    ]
+  end
+
   defp deps do
     [
+      {:usage_rules, "~> 1.0", only: [:dev]},
+      {:tidewave, "~> 0.5", only: :dev},
+      {:igniter, "~> 0.5", only: [:dev, :test]},
       # Jido framework (agent engine) — overrides for cross-repo compatibility
       {:jido, "~> 2.1", override: true},
       {:jido_ai, "~> 2.0", override: true},
@@ -45,7 +88,7 @@ defmodule JidoClaw.MixProject do
       {:jido_signal, "~> 2.0", override: true},
       {:jido_mcp, github: "agentjido/jido_mcp", branch: "main"},
       {:jido_memory, github: "agentjido/jido_memory", branch: "main"},
-      {:jido_browser, "~> 0.8"},
+      {:jido_browser, "~> 2.0"},
       {:jido_skill, github: "agentjido/jido_skill", branch: "main"},
       {:jido_composer, "~> 0.3"},
       {:jido_messaging, github: "agentjido/jido_messaging", branch: "main"},
@@ -65,6 +108,7 @@ defmodule JidoClaw.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
 
       # Telemetry
+      {:certifi, "~> 2.15", override: true},
       {:telemetry, "~> 1.2", override: true},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},

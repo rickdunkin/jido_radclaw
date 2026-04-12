@@ -1,0 +1,48 @@
+{
+  "skill_name": "update-elixir-deps",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "update all my deps",
+      "expected_output": "Runs mix hex.outdated, applies safe updates, confirms before breaking changes, verifies compilation and tests, provides summary",
+      "files": [],
+      "assertions": [
+        {"id": "ran_hex_outdated", "text": "Ran mix hex.outdated to assess dependency state before making changes"},
+        {"id": "classified_deps", "text": "Classified dependencies as safe vs breaking"},
+        {"id": "applied_safe_updates", "text": "Applied safe updates via mix deps.update"},
+        {"id": "confirmation_checkpoint", "text": "Noted or presented breaking changes to the user before applying them"},
+        {"id": "ran_verification", "text": "Ran verification commands (compile, format, test)"},
+        {"id": "provided_summary", "text": "Provided a summary with version numbers"}
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "I need to update my Elixir dependencies. Some might have breaking changes — check the changelogs and fix anything that breaks.",
+      "expected_output": "Runs mix hex.outdated, applies safe updates, looks up changelogs for breaking changes on hexdocs, applies code fixes, verifies each breaking update individually",
+      "files": [],
+      "assertions": [
+        {"id": "ran_hex_outdated", "text": "Ran mix hex.outdated to assess dependency state"},
+        {"id": "classified_deps", "text": "Classified dependencies as safe vs breaking"},
+        {"id": "applied_safe_updates", "text": "Applied safe updates via mix deps.update"},
+        {"id": "looked_up_changelogs", "text": "Looked up changelogs on hexdocs.pm for breaking deps"},
+        {"id": "handled_breaking_individually", "text": "Processed breaking changes one at a time with verification between each"},
+        {"id": "ran_verification", "text": "Ran verification commands (compile, format, test)"},
+        {"id": "provided_summary", "text": "Provided a summary with version numbers"}
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Run mix hex.outdated and tell me what needs updating, then go ahead and update everything",
+      "expected_output": "Presents outdated deps assessment first, classifies safe vs breaking, then proceeds with updates after showing the user what will change",
+      "files": [],
+      "assertions": [
+        {"id": "ran_hex_outdated", "text": "Ran mix hex.outdated to assess dependency state"},
+        {"id": "assessment_before_action", "text": "Presented the full assessment to the user before making changes"},
+        {"id": "classified_deps", "text": "Classified dependencies as safe vs breaking"},
+        {"id": "applied_safe_updates", "text": "Applied safe updates via mix deps.update"},
+        {"id": "ran_verification", "text": "Ran verification commands (compile, format, test)"},
+        {"id": "provided_summary", "text": "Provided a summary with version numbers"}
+      ]
+    }
+  ]
+}

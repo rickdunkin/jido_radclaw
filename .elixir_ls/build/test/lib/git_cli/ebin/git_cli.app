@@ -1,0 +1,1 @@
+{application,git_cli,[{modules,['Elixir.Git','Elixir.Git.Error','Elixir.Git.Repository']},{optional_applications,[]},{applications,[kernel,stdlib,elixir,logger]},{description,"A simple interface to Git CLI"},{registered,[]},{vsn,"0.3.0"}]}.
