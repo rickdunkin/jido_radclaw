@@ -100,6 +100,8 @@ defmodule JidoClaw.Web.SetupLive do
   @impl true
   def handle_event("step", %{"step" => step}, socket) do
     {:noreply, assign(socket, step: String.to_existing_atom(step))}
+  rescue
+    ArgumentError -> {:noreply, socket}
   end
 
   @impl true

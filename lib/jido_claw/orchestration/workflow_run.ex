@@ -9,6 +9,18 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:start)
+    define(:await_approval)
+    define(:resume)
+    define(:complete)
+    define(:fail)
+    define(:cancel)
+    define(:list_active)
+    define(:list_by_project, action: :by_project)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -20,23 +32,27 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
     update :start do
       accept([])
+      validate(attribute_equals(:status, :pending))
       change(set_attribute(:status, :running))
       change(set_attribute(:started_at, &DateTime.utc_now/0))
     end
 
     update :await_approval do
       accept([])
+      validate(attribute_equals(:status, :running))
       change(set_attribute(:status, :awaiting_approval))
     end
 
     update :resume do
       accept([])
+      validate(attribute_equals(:status, :awaiting_approval))
       change(set_attribute(:status, :running))
     end
 
     update :complete do
       accept([])
       argument(:result, :map)
+      validate(attribute_equals(:status, :running))
       change(set_attribute(:status, :completed))
       change(set_attribute(:result, arg(:result)))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
@@ -45,6 +61,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     update :fail do
       accept([])
       argument(:error, :string)
+      validate(attribute_in(:status, [:running, :awaiting_approval]))
       change(set_attribute(:status, :failed))
       change(set_attribute(:error, arg(:error)))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
@@ -52,6 +69,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
     update :cancel do
       accept([])
+      validate(negate(attribute_in(:status, [:completed, :failed, :cancelled])))
       change(set_attribute(:status, :cancelled))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
     end
@@ -140,6 +158,16 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
   end
 
   relationships do
+    belongs_to(:user, JidoClaw.Accounts.User,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
+
+    belongs_to(:project, JidoClaw.Projects.Project,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
+
     has_many(:steps, JidoClaw.Orchestration.WorkflowStep)
     has_many(:approval_gates, JidoClaw.Orchestration.ApprovalGate)
   end

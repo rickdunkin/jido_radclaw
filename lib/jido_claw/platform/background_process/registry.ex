@@ -187,6 +187,26 @@ defmodule JidoClaw.BackgroundProcess.Registry do
     {:noreply, %{state | processes: cleaned}}
   end
 
+  @impl true
+  def terminate(_reason, state) do
+    Enum.each(state.processes, fn {id, %{port_or_pid: port_or_pid, status: status}} ->
+      if status in [:running, :terminating] do
+        try do
+          case port_or_pid do
+            port when is_port(port) -> Port.close(port)
+            pid when is_pid(pid) -> Process.exit(pid, :shutdown)
+          end
+        catch
+          _, _ -> :ok
+        end
+
+        Logger.debug("[BackgroundProcess.Registry] Killed process #{id} during shutdown")
+      end
+    end)
+
+    :ok
+  end
+
   defp schedule_cleanup do
     Process.send_after(self(), :cleanup, @cleanup_interval)
   end

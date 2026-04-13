@@ -9,6 +9,14 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:start)
+    define(:complete)
+    define(:fail)
+    define(:skip)
+  end
+
   actions do
     defaults([:read, :destroy])
 

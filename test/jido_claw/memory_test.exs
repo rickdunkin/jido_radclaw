@@ -33,16 +33,16 @@ defmodule JidoClaw.MemoryTest do
       if pid = Process.whereis(JidoClaw.Memory), do: Process.exit(pid, :kill)
     end
 
+    # Wipe ETS tables before starting the test instance. The app-managed Memory
+    # may have loaded project memories during a prior on_exit restart, and those
+    # rows survive process termination when the tables aren't process-owned.
+    clear_ets_tables(@ets_tables)
+
     {:ok, mem_pid} =
       GenServer.start_link(JidoClaw.Memory, [project_dir: tmp_dir], name: JidoClaw.Memory)
 
     on_exit(fn ->
-      # Clear ETS rows so the next test starts with an empty store.
-      Enum.each(@ets_tables, fn table ->
-        if :ets.whereis(table) != :undefined do
-          :ets.delete_all_objects(table)
-        end
-      end)
+      clear_ets_tables(@ets_tables)
 
       if Process.alive?(mem_pid), do: GenServer.stop(mem_pid, :normal, 5000)
 
@@ -393,5 +393,17 @@ defmodule JidoClaw.MemoryTest do
       GenServer.stop(mem_pid, :normal, 5000)
       assert [] = JidoClaw.Memory.all()
     end
+  end
+
+  defp clear_ets_tables(tables) do
+    Enum.each(tables, fn table ->
+      try do
+        if :ets.whereis(table) != :undefined do
+          :ets.delete_all_objects(table)
+        end
+      catch
+        :error, :badarg -> :ok
+      end
+    end)
   end
 end

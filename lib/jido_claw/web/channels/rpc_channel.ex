@@ -38,9 +38,11 @@ defmodule JidoClaw.Web.RpcChannel do
 
   def handle_in(
         "sessions.create",
-        %{"tenant_id" => tenant_id, "session_id" => session_id},
+        %{"session_id" => session_id},
         socket
       ) do
+    tenant_id = tenant_for(socket)
+
     case JidoClaw.Session.Supervisor.start_session(tenant_id, session_id) do
       {:ok, _pid} -> {:reply, {:ok, %{session_id: session_id}}, socket}
       {:error, reason} -> {:reply, {:error, %{reason: inspect(reason)}}, socket}
@@ -49,9 +51,11 @@ defmodule JidoClaw.Web.RpcChannel do
 
   def handle_in(
         "sessions.sendMessage",
-        %{"tenant_id" => tenant_id, "session_id" => session_id, "content" => content},
+        %{"session_id" => session_id, "content" => content},
         socket
       ) do
+    tenant_id = tenant_for(socket)
+
     case JidoClaw.chat(tenant_id, session_id, content) do
       {:ok, response} ->
         push(socket, "session.response", %{session_id: session_id, content: response})
@@ -65,4 +69,9 @@ defmodule JidoClaw.Web.RpcChannel do
   def handle_in(method, _payload, socket) do
     {:reply, {:error, %{reason: "unknown method: #{method}"}}, socket}
   end
+
+  # Derive tenant from the authenticated user to preserve per-user isolation
+  # without trusting client-supplied params. A real user-to-tenant model is
+  # a follow-up; until then the user's ID acts as the tenant namespace.
+  defp tenant_for(socket), do: to_string(socket.assigns.current_user.id)
 end

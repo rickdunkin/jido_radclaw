@@ -207,12 +207,12 @@ defmodule JidoClaw.Forge.ContextBuilder do
         new_size = size + byte_size(line) + 1
 
         if new_size > max_chars do
-          {:halt, {acc ++ ["... (#{length(lines) - length(acc)} more events)"], new_size}}
+          {:halt, {["... (#{length(lines) - length(acc)} more events)" | acc], new_size}}
         else
-          {:cont, {acc ++ [line], new_size}}
+          {:cont, {[line | acc], new_size}}
         end
       end)
 
-    Enum.join(taken, "\n")
+    taken |> Enum.reverse() |> Enum.join("\n")
   end
 end

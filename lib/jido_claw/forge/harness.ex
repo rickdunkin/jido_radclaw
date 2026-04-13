@@ -350,7 +350,7 @@ defmodule JidoClaw.Forge.Harness do
         target_sandbox = Keyword.get(opts, :sandbox, state.default_client)
         session_pid = self()
 
-        Task.start(fn ->
+        Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
           result = state.runner.run_iteration(client, state.runner_state, opts)
 
           GenServer.cast(
@@ -756,50 +756,75 @@ defmodule JidoClaw.Forge.Harness do
         %{}
 
     Enum.reduce_while(extra, {:ok, state}, fn {name, spec}, {:ok, acc_state} ->
-      name = if is_binary(name), do: String.to_atom(name), else: name
-      spec = atomize_spec_keys(spec)
-      sandbox_module = resolve_client(Map.get(spec, :sandbox, :default))
-      create_spec = build_sandbox_spec(acc_state, spec)
-
-      case sandbox_module.create(create_spec) do
-        {:ok, client, sandbox_id} ->
-          case bootstrap_client(acc_state, client) do
-            :ok ->
-              # Store the original spec (JSON-safe) for future checkpoints
-              entry = %{client: client, sandbox_id: sandbox_id, spec: spec}
-              new_state = %{acc_state | clients: Map.put(acc_state.clients, name, entry)}
-
-              persist(fn ->
-                log_event(new_state, "sandbox.recovered", %{name: name, sandbox_id: sandbox_id})
-              end)
-
-              {:cont, {:ok, new_state}}
-
-            {:error, reason} ->
-              try do
-                Sandbox.destroy(client, sandbox_id)
-              rescue
-                _ -> :ok
-              end
-
-              Logger.warning(
-                "[Forge.Harness] Failed to bootstrap recovered sandbox #{name}: #{inspect(reason)}"
-              )
-
-              {:cont, {:ok, acc_state}}
+      name =
+        if is_binary(name) do
+          try do
+            String.to_existing_atom(name)
+          rescue
+            ArgumentError -> nil
           end
+        else
+          name
+        end
 
-        {:error, reason} ->
-          Logger.warning("[Forge.Harness] Failed to recreate sandbox #{name}: #{inspect(reason)}")
-          {:cont, {:ok, acc_state}}
+      if is_nil(name) do
+        Logger.warning("[Forge.Harness] Skipping unknown sandbox name during recovery")
+        {:cont, {:ok, acc_state}}
+      else
+        spec = atomize_spec_keys(spec)
+        sandbox_module = resolve_client(Map.get(spec, :sandbox, :default))
+        create_spec = build_sandbox_spec(acc_state, spec)
+
+        case sandbox_module.create(create_spec) do
+          {:ok, client, sandbox_id} ->
+            case bootstrap_client(acc_state, client) do
+              :ok ->
+                # Store the original spec (JSON-safe) for future checkpoints
+                entry = %{client: client, sandbox_id: sandbox_id, spec: spec}
+                new_state = %{acc_state | clients: Map.put(acc_state.clients, name, entry)}
+
+                persist(fn ->
+                  log_event(new_state, "sandbox.recovered", %{name: name, sandbox_id: sandbox_id})
+                end)
+
+                {:cont, {:ok, new_state}}
+
+              {:error, reason} ->
+                try do
+                  Sandbox.destroy(client, sandbox_id)
+                rescue
+                  _ -> :ok
+                end
+
+                Logger.warning(
+                  "[Forge.Harness] Failed to bootstrap recovered sandbox #{name}: #{inspect(reason)}"
+                )
+
+                {:cont, {:ok, acc_state}}
+            end
+
+          {:error, reason} ->
+            Logger.warning(
+              "[Forge.Harness] Failed to recreate sandbox #{name}: #{inspect(reason)}"
+            )
+
+            {:cont, {:ok, acc_state}}
+        end
       end
     end)
   end
 
   defp atomize_spec_keys(spec) when is_map(spec) do
     Map.new(spec, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), v}
-      pair -> pair
+      {k, v} when is_binary(k) ->
+        try do
+          {String.to_existing_atom(k), v}
+        rescue
+          ArgumentError -> {k, v}
+        end
+
+      pair ->
+        pair
     end)
   end
 

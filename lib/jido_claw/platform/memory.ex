@@ -15,6 +15,14 @@ defmodule JidoClaw.Memory do
   @store_opts [table: :jido_claw_memory]
   @namespace "jido_claw"
 
+  @valid_memory_types %{
+    "fact" => :fact,
+    "pattern" => :pattern,
+    "decision" => :decision,
+    "preference" => :preference,
+    "context" => :context
+  }
+
   defstruct project_dir: nil
 
   # ---------------------------------------------------------------------------
@@ -72,12 +80,14 @@ defmodule JidoClaw.Memory do
   @impl true
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
+    {:ok, %__MODULE__{project_dir: project_dir}, {:continue, :load}}
+  end
 
-    # Initialize jido_memory's ETS store
+  @impl true
+  def handle_continue(:load, state) do
     @store.ensure_ready(@store_opts)
 
-    # Load persisted memories from disk into ETS
-    disk_memories = load_from_disk(project_dir)
+    disk_memories = load_from_disk(state.project_dir)
 
     Enum.each(disk_memories, fn {_key, entry} ->
       record = entry_to_record(entry)
@@ -88,8 +98,8 @@ defmodule JidoClaw.Memory do
       end
     end)
 
-    Logger.debug("[Memory] Loaded #{map_size(disk_memories)} memories from #{project_dir}")
-    {:ok, %__MODULE__{project_dir: project_dir}}
+    Logger.debug("[Memory] Loaded #{map_size(disk_memories)} memories from #{state.project_dir}")
+    {:noreply, state}
   end
 
   @impl true
@@ -100,7 +110,7 @@ defmodule JidoClaw.Memory do
       id: key,
       namespace: @namespace,
       class: type_to_class(type),
-      kind: String.to_atom(type),
+      kind: Map.get(@valid_memory_types, type, :fact),
       text: content,
       content: %{key: key, type: type},
       tags: [type, "memory"],
@@ -213,7 +223,7 @@ defmodule JidoClaw.Memory do
       id: key,
       namespace: @namespace,
       class: type_to_class(type),
-      kind: String.to_atom(type),
+      kind: Map.get(@valid_memory_types, type, :fact),
       text: content,
       content: %{key: key, type: type},
       tags: [type, "memory"],
@@ -307,6 +317,12 @@ defmodule JidoClaw.Memory do
       _ ->
         %{}
     end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    persist_to_disk(state.project_dir)
+    :ok
   end
 
   defp memory_path(project_dir), do: Path.join([project_dir, ".jido", "memory.json"])

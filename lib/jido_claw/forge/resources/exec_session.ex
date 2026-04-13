@@ -9,6 +9,11 @@ defmodule JidoClaw.Forge.Resources.ExecSession do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:start)
+    define(:complete)
+  end
+
   actions do
     defaults([:read, :destroy])
 

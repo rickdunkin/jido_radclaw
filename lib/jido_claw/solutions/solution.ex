@@ -186,18 +186,15 @@ defmodule JidoClaw.Solutions.Solution do
 
   defp utc_now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
 
+  @known_keys ~w(id problem_signature solution_content language framework
+    runtime agent_id tags verification trust_score sharing inserted_at updated_at)a
+              |> Map.new(fn atom -> {Atom.to_string(atom), atom} end)
+
   defp normalize_keys(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
-      {k, v} -> {k, v}
+      {k, v} when is_atom(k) -> {k, v}
+      {k, v} when is_binary(k) -> {Map.get(@known_keys, k, k), v}
     end)
-  rescue
-    # String.to_existing_atom raises for unknown atoms — fall back to string keys as atoms
-    ArgumentError ->
-      Map.new(map, fn
-        {k, v} when is_binary(k) -> {String.to_atom(k), v}
-        {k, v} -> {k, v}
-      end)
   end
 
   defp coerce_tags(tags) when is_list(tags), do: Enum.map(tags, &to_string/1)

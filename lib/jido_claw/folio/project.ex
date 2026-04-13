@@ -9,6 +9,15 @@ defmodule JidoClaw.Folio.Project do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:complete)
+    define(:defer)
+    define(:reactivate)
+    define(:list_active, action: :active)
+    define(:list_by_user, action: :by_user)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -83,6 +92,11 @@ defmodule JidoClaw.Folio.Project do
   end
 
   relationships do
+    belongs_to(:user, JidoClaw.Accounts.User,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
+
     has_many :actions, JidoClaw.Folio.Action do
       destination_attribute(:project_id)
     end

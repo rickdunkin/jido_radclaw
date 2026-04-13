@@ -16,6 +16,13 @@ defmodule JidoClaw.Security.SecretRef do
     attributes([:encrypted_value])
   end
 
+  code_interface do
+    define(:create)
+    define(:update)
+    define(:get_by_name, action: :by_name)
+    define(:list_by_category, action: :by_category)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -74,6 +81,13 @@ defmodule JidoClaw.Security.SecretRef do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to(:user, JidoClaw.Accounts.User,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
   end
 
   identities do

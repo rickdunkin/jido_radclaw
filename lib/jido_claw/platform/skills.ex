@@ -277,9 +277,14 @@ defmodule JidoClaw.Skills do
   @impl true
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
-    skills = load_from_disk(project_dir)
-    Logger.debug("[Skills] Cached #{length(skills)} skills from #{skills_dir(project_dir)}")
-    {:ok, %{project_dir: project_dir, skills: skills}}
+    {:ok, %{project_dir: project_dir, skills: []}, {:continue, :load}}
+  end
+
+  @impl true
+  def handle_continue(:load, state) do
+    skills = load_from_disk(state.project_dir)
+    Logger.debug("[Skills] Cached #{length(skills)} skills from #{skills_dir(state.project_dir)}")
+    {:noreply, %{state | skills: skills}}
   end
 
   @impl true

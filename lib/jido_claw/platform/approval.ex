@@ -1,4 +1,4 @@
-defmodule JidoClaw.Tools.Approval do
+defmodule JidoClaw.Platform.Approval do
   @moduledoc """
   Configurable tool approval workflow.
   Modes: :off (no approval), :on_miss (check allowlist), :always (always require).
@@ -120,6 +120,16 @@ defmodule JidoClaw.Tools.Approval do
         Logger.warning("[Approval] Request #{request_id} timed out, auto-denied")
         {:noreply, %{state | pending: new_pending}}
     end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    Enum.each(state.pending, fn {_id, %{from: from, timer: timer}} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, {:error, :shutting_down})
+    end)
+
+    :ok
   end
 
   # -- Private --

@@ -9,6 +9,13 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:approve)
+    define(:reject)
+    define(:list_pending_for_run, action: :pending_for_run)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -88,6 +95,12 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
   end
 
   relationships do
+    belongs_to(:requester, JidoClaw.Accounts.User,
+      source_attribute: :requested_by_id,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
+
     belongs_to :workflow_run, JidoClaw.Orchestration.WorkflowRun do
       allow_nil?(false)
       public?(true)

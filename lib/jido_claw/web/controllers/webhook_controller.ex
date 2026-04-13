@@ -3,7 +3,7 @@ defmodule JidoClaw.Web.WebhookController do
   require Logger
 
   def github(conn, _params) do
-    {:ok, raw_body, conn} = Plug.Conn.read_body(conn)
+    {:ok, raw_body} = JidoClaw.Web.CacheBodyReader.raw_body(conn)
 
     case JidoClaw.GitHub.WebhookPipeline.process(conn, raw_body) do
       {:ok, _} ->

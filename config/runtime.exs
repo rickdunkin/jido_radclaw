@@ -44,8 +44,11 @@ if config_env() == :prod do
       pool_size: String.to_integer(System.get_env("POOL_SIZE", "10"))
   end
 
+  host = System.get_env("PHX_HOST", "localhost")
+
   if secret_key_base = System.get_env("SECRET_KEY_BASE") do
     config :jido_claw, JidoClaw.Web.Endpoint,
-      secret_key_base: secret_key_base
+      secret_key_base: secret_key_base,
+      check_origin: ["https://#{host}", "http://#{host}"]
   end
 end

@@ -9,7 +9,10 @@ defmodule JidoClaw.Web.ChatController do
   def create(conn, %{"messages" => messages} = params) do
     stream = Map.get(params, "stream", false)
     model = Map.get(params, "model", "default")
-    tenant_id = get_req_header(conn, "x-tenant-id") |> List.first() || "default"
+    # Derive tenant from the authenticated user to preserve per-user isolation
+    # without trusting client-supplied headers. A real user-to-tenant model is
+    # a follow-up; until then the user's ID acts as the tenant namespace.
+    tenant_id = to_string(conn.assigns.current_user.id)
 
     if stream do
       stream_response(conn, tenant_id, model, messages)

@@ -15,6 +15,11 @@ defmodule JidoClaw.Forge.Resources.Event do
     end
   end
 
+  code_interface do
+    define(:create)
+    define(:list_for_session, action: :for_session)
+  end
+
   actions do
     defaults([:read, :destroy])
 

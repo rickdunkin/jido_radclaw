@@ -9,6 +9,14 @@ defmodule JidoClaw.Folio.InboxItem do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:capture)
+    define(:process)
+    define(:discard)
+    define(:list_unprocessed, action: :unprocessed)
+    define(:list_by_user, action: :by_user)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -21,10 +29,13 @@ defmodule JidoClaw.Folio.InboxItem do
     update :process do
       accept([])
 
+      # outcome is reserved for future routing logic (e.g., dispatching to action, project, reference lists)
       argument(:outcome, :atom,
         allow_nil?: false,
         constraints: [one_of: [:action, :project, :reference, :someday, :trash]]
       )
+
+      validate(attribute_equals(:status, :inbox))
 
       change(set_attribute(:status, :processed))
       change(set_attribute(:processed_at, &DateTime.utc_now/0))
@@ -83,5 +94,12 @@ defmodule JidoClaw.Folio.InboxItem do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to(:user, JidoClaw.Accounts.User,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
   end
 end

@@ -9,6 +9,13 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:update_status)
+    define(:list_by_repo, action: :by_repo)
+    define(:get_by_issue, action: :by_issue)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -30,7 +37,12 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
 
     update :update_status do
       accept([])
-      argument(:status, :string, allow_nil?: false)
+
+      argument(:status, :atom,
+        allow_nil?: false,
+        constraints: [one_of: [:pending, :triaged, :researched, :pr_created, :closed]]
+      )
+
       change(set_attribute(:status, arg(:status)))
     end
 
@@ -72,10 +84,11 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
       public?(true)
     end
 
-    attribute :status, :string do
+    attribute :status, :atom do
       allow_nil?(false)
       public?(true)
-      default("pending")
+      default(:pending)
+      constraints(one_of: [:pending, :triaged, :researched, :pr_created, :closed])
     end
 
     attribute :triage_data, :map do
@@ -102,5 +115,12 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to(:project, JidoClaw.Projects.Project,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
   end
 end

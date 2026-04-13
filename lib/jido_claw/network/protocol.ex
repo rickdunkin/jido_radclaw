@@ -200,8 +200,8 @@ defmodule JidoClaw.Network.Protocol do
   defp fetch_string(map, key) do
     case Map.fetch(map, key) do
       {:ok, v} when is_binary(v) -> {:ok, v}
-      :error -> {:error, String.to_atom("missing_#{key}")}
-      _ -> {:error, String.to_atom("invalid_#{key}")}
+      :error -> {:error, {:missing, key}}
+      _ -> {:error, {:invalid, key}}
     end
   end
 
@@ -209,7 +209,7 @@ defmodule JidoClaw.Network.Protocol do
     case Map.fetch(map, key) do
       {:ok, v} when is_map(v) -> {:ok, v}
       :error -> {:ok, %{}}
-      _ -> {:error, String.to_atom("invalid_#{key}")}
+      _ -> {:error, {:invalid, key}}
     end
   end
 end

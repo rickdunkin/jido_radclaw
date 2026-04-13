@@ -82,16 +82,13 @@ defmodule JidoClaw.Tools.ScheduleTask do
              }}
 
           {:error, reason} ->
-            {:ok, %{result: "Failed to schedule task: #{inspect(reason)}"}}
+            {:error, "Failed to schedule task: #{inspect(reason)}"}
         end
 
       {:error, reason} ->
-        {:ok,
-         %{
-           result:
-             "Invalid schedule '#{schedule_str}': #{reason}\n" <>
-               "Use a cron expression (e.g., '0 9 * * *') or interval (e.g., 'every 1h', 'every 30m')."
-         }}
+        {:error,
+         "Invalid schedule '#{schedule_str}': #{reason}\n" <>
+           "Use a cron expression (e.g., '0 9 * * *') or interval (e.g., 'every 1h', 'every 30m')."}
     end
   end
 

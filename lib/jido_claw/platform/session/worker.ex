@@ -41,7 +41,7 @@ defmodule JidoClaw.Session.Worker do
 
   def add_message(tenant_id, session_id, role, content) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
-    GenServer.cast(name, {:add_message, role, content})
+    GenServer.call(name, {:add_message, role, content})
   end
 
   def get_messages(tenant_id, session_id) do
@@ -65,29 +65,35 @@ defmodule JidoClaw.Session.Worker do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     session_id = Keyword.fetch!(opts, :session_id)
 
-    messages = load_from_jsonl(tenant_id, session_id)
-
     state = %__MODULE__{
       id: session_id,
       tenant_id: tenant_id,
       created_at: DateTime.utc_now(),
       last_active: DateTime.utc_now(),
-      messages: messages
+      messages: []
     }
 
     JidoClaw.Telemetry.emit_session_start(%{tenant_id: tenant_id, session_id: session_id})
-    {:ok, state, @idle_timeout}
+    {:ok, state, {:continue, :load}}
   end
 
   @impl true
-  def handle_cast({:add_message, role, content}, state) do
+  def handle_continue(:load, state) do
+    # Reverse so in-memory order is newest-first, matching the prepend-on-write convention.
+    # get_messages/0 reverses back to chronological for callers.
+    messages = state.tenant_id |> load_from_jsonl(state.id) |> Enum.reverse()
+    {:noreply, %{state | messages: messages}, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:add_message, role, content}, _from, state) do
     message = %{
       role: to_string(role),
       content: content,
       timestamp: System.system_time(:millisecond)
     }
 
-    new_state = %{state | messages: state.messages ++ [message], last_active: DateTime.utc_now()}
+    new_state = %{state | messages: [message | state.messages], last_active: DateTime.utc_now()}
 
     append_to_jsonl(state.tenant_id, state.id, message)
 
@@ -97,12 +103,12 @@ defmodule JidoClaw.Session.Worker do
       role: role
     })
 
-    {:noreply, new_state, @idle_timeout}
+    {:reply, :ok, new_state, @idle_timeout}
   end
 
   @impl true
   def handle_call(:get_messages, _from, state) do
-    {:reply, state.messages, state, @idle_timeout}
+    {:reply, Enum.reverse(state.messages), state, @idle_timeout}
   end
 
   def handle_call(:get_info, _from, state) do

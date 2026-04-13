@@ -9,6 +9,17 @@ defmodule JidoClaw.Forge.Resources.Session do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:start)
+    define(:update_phase)
+    define(:mark_failed)
+    define(:complete)
+    define(:cancel)
+    define(:set_sandbox_id)
+    define(:list_active)
+  end
+
   actions do
     defaults([:read, :destroy])
 

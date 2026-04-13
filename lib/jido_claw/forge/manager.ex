@@ -179,7 +179,7 @@ defmodule JidoClaw.Forge.Manager do
 
       # Spawn a Task so Forge.wake -> Manager.start_session doesn't deadlock
       # (start_session does GenServer.call back to this process)
-      Task.start(fn ->
+      Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
         case JidoClaw.Forge.wake(session_id) do
           {:ok, _handle} ->
             Logger.info("[Forge.Manager] Recovery succeeded for #{session_id}")

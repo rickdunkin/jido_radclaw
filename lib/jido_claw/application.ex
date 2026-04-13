@@ -22,7 +22,7 @@ defmodule JidoClaw.Application do
         mcp_children()
       ])
 
-    opts = [strategy: :one_for_one, name: JidoClaw.Supervisor]
+    opts = [strategy: :rest_for_one, name: JidoClaw.Supervisor, max_restarts: 10, max_seconds: 30]
     result = Supervisor.start_link(children, opts)
 
     # Start Nostrum (Discord) only when token is configured — it's runtime: false
@@ -56,16 +56,25 @@ defmodule JidoClaw.Application do
 
   # -- Core: always started --
   defp core_children do
-    [
-      # Registries
+    infra_children = [
       {Registry, keys: :unique, name: JidoClaw.SessionRegistry},
       {Registry, keys: :unique, name: JidoClaw.TenantRegistry},
-
-      # Database
+      {Task.Supervisor, name: JidoClaw.TaskSupervisor},
       JidoClaw.Repo,
-
-      # Encryption vault
       JidoClaw.Security.Vault,
+      {Phoenix.PubSub, name: JidoClaw.PubSub},
+      {Jido.Signal.Bus, name: JidoClaw.SignalBus}
+    ]
+
+    [
+      # Infrastructure (nested supervisor — if these crash, rest_for_one restarts dependents)
+      %{
+        id: JidoClaw.InfraSupervisor,
+        start:
+          {Supervisor, :start_link,
+           [infra_children, [strategy: :one_for_one, name: JidoClaw.InfraSupervisor]]},
+        type: :supervisor
+      },
 
       # Forge sandbox execution engine
       {Registry, keys: :unique, name: JidoClaw.Forge.SessionRegistry},
@@ -75,9 +84,6 @@ defmodule JidoClaw.Application do
     ] ++
       forge_sandbox_children() ++
       [
-        # PubSub for real-time events
-        {Phoenix.PubSub, name: JidoClaw.PubSub},
-
         # Orchestration workflow feed
         JidoClaw.Orchestration.RunSummaryFeed,
 
@@ -87,9 +93,6 @@ defmodule JidoClaw.Application do
 
         # Finch HTTP pools
         {Finch, name: JidoClaw.Finch},
-
-        # Signal bus
-        {Jido.Signal.Bus, name: JidoClaw.SignalBus},
 
         # Telemetry
         JidoClaw.Telemetry,
@@ -101,7 +104,7 @@ defmodule JidoClaw.Application do
         JidoClaw.BackgroundProcess.Registry,
 
         # Tool approval
-        JidoClaw.Tools.Approval,
+        JidoClaw.Platform.Approval,
 
         # Global session supervisor (fallback for non-tenant sessions)
         {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},

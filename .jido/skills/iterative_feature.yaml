@@ -1,0 +1,21 @@
+name: iterative_feature
+description: Implement a feature with iterative refinement — generate, verify, repeat until passing
+mode: iterative
+max_iterations: 5
+steps:
+  - name: implement
+    role: generator
+    template: coder
+    task: "Implement the feature following existing project patterns, with proper error handling and tests"
+    produces:
+      type: elixir_module
+      verification_criteria:
+        - "All tests pass"
+        - "No compiler warnings"
+        - "mix format clean"
+  - name: verify
+    role: evaluator
+    template: verifier
+    task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. End with VERDICT: PASS or VERDICT: FAIL with specific issues to fix."
+    consumes: [implement]
+synthesis: "Present the final implementation after iterative refinement with verification results"

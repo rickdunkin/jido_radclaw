@@ -3,7 +3,12 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    runs = Ash.read!(JidoClaw.Orchestration.WorkflowRun, authorize?: false)
+    runs =
+      Ash.read!(JidoClaw.Orchestration.WorkflowRun,
+        actor: socket.assigns.current_user,
+        authorize?: false
+      )
+
     {:ok, assign(socket, page_title: "Workflows", runs: runs)}
   end
 

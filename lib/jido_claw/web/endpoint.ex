@@ -14,7 +14,7 @@ defmodule JidoClaw.Web.Endpoint do
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
 
-  socket("/ws", JidoClaw.Web.UserSocket, websocket: true)
+  socket("/ws", JidoClaw.Web.UserSocket, websocket: [connect_info: [session: @session_options]])
 
   plug(Plug.Static,
     at: "/",
@@ -29,7 +29,8 @@ defmodule JidoClaw.Web.Endpoint do
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    body_reader: {JidoClaw.Web.CacheBodyReader, :read_body, []}
   )
 
   plug(Plug.MethodOverride)

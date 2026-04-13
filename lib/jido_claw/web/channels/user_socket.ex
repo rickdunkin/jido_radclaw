@@ -4,11 +4,20 @@ defmodule JidoClaw.Web.UserSocket do
   channel("rpc:*", JidoClaw.Web.RpcChannel)
 
   @impl true
-  def connect(params, socket, _connect_info) do
-    device_id = Map.get(params, "deviceId", "anonymous")
-    {:ok, assign(socket, :device_id, device_id)}
+  def connect(_params, socket, connect_info) do
+    session = connect_info[:session] || %{}
+
+    case AshAuthentication.Plug.Helpers.authenticate_resource_from_session(
+           JidoClaw.Accounts.User,
+           session,
+           :jido_claw,
+           []
+         ) do
+      {:ok, user} -> {:ok, assign(socket, :current_user, user)}
+      :error -> {:error, :unauthorized}
+    end
   end
 
   @impl true
-  def id(socket), do: "user_socket:#{socket.assigns.device_id}"
+  def id(socket), do: "user_socket:#{socket.assigns.current_user.id}"
 end

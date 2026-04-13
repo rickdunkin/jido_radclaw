@@ -36,7 +36,7 @@ defmodule JidoClaw.AgentTracker do
 
   @doc "Register an agent for tracking. Monitors the pid for crash detection."
   def register(id, pid, template, task \\ nil) do
-    GenServer.cast(__MODULE__, {:register, id, pid, template, task})
+    GenServer.call(__MODULE__, {:register, id, pid, template, task})
   end
 
   @doc "Record a tool call for an agent."
@@ -80,12 +80,14 @@ defmodule JidoClaw.AgentTracker do
 
   @impl true
   def init(_opts) do
-    # Subscribe to signals for tool and agent events
+    {:ok, %{agents: %{}, order: [], monitors: %{}}, {:continue, :setup}}
+  end
+
+  @impl true
+  def handle_continue(:setup, state) do
     JidoClaw.SignalBus.subscribe("jido_claw.tool.*")
     JidoClaw.SignalBus.subscribe("jido_claw.agent.*")
 
-    # Attach telemetry handlers to capture child agent tool calls
-    # The Jido framework emits [:jido, :ai, :tool, :execute, :start/:stop] with agent_id in metadata
     :telemetry.attach(
       "agent-tracker-tool-stop",
       [:jido, :ai, :tool, :execute, :stop],
@@ -100,7 +102,7 @@ defmodule JidoClaw.AgentTracker do
       nil
     )
 
-    {:ok, %{agents: %{}, order: [], monitors: %{}}}
+    {:noreply, state}
   end
 
   @doc false
@@ -136,7 +138,7 @@ defmodule JidoClaw.AgentTracker do
   def handle_telemetry_event(_, _, _, _), do: :ok
 
   @impl true
-  def handle_cast({:register, id, pid, template, task}, state) do
+  def handle_call({:register, id, pid, template, task}, _from, state) do
     entry = %AgentEntry{
       id: id,
       pid: pid,
@@ -145,22 +147,37 @@ defmodule JidoClaw.AgentTracker do
       started_at: System.monotonic_time(:millisecond)
     }
 
-    # Monitor the process for crash detection
     ref = Process.monitor(pid)
 
     state = %{
       state
       | agents: Map.put(state.agents, id, entry),
-        order: state.order ++ [id],
+        order: [id | state.order],
         monitors: Map.put(state.monitors, ref, id)
     }
 
-    # Notify Display if it's running
     notify_display({:agent_registered, id, entry})
 
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
+  def handle_call(:get_state, _from, state) do
+    {:reply, %{agents: state.agents, order: Enum.reverse(state.order)}, state}
+  end
+
+  def handle_call({:get_agent, id}, _from, state) do
+    {:reply, Map.get(state.agents, id), state}
+  end
+
+  def handle_call(:child_count, _from, state) do
+    count =
+      state.agents
+      |> Enum.count(fn {id, _} -> id != "main" end)
+
+    {:reply, count, state}
+  end
+
+  @impl true
   def handle_cast({:track_tool, agent_id, tool_name}, state) do
     state =
       update_agent(state, agent_id, fn entry ->
@@ -197,23 +214,6 @@ defmodule JidoClaw.AgentTracker do
 
   def handle_cast(:reset, _state) do
     {:noreply, %{agents: %{}, order: [], monitors: %{}}}
-  end
-
-  @impl true
-  def handle_call(:get_state, _from, state) do
-    {:reply, %{agents: state.agents, order: state.order}, state}
-  end
-
-  def handle_call({:get_agent, id}, _from, state) do
-    {:reply, Map.get(state.agents, id), state}
-  end
-
-  def handle_call(:child_count, _from, state) do
-    count =
-      state.agents
-      |> Enum.count(fn {id, _} -> id != "main" end)
-
-    {:reply, count, state}
   end
 
   # Process crash detection
@@ -255,6 +255,13 @@ defmodule JidoClaw.AgentTracker do
       nil -> state
       entry -> %{state | agents: Map.put(state.agents, agent_id, fun.(entry))}
     end
+  end
+
+  @impl true
+  def terminate(_reason, _state) do
+    :telemetry.detach("agent-tracker-tool-stop")
+    :telemetry.detach("agent-tracker-tool-start")
+    :ok
   end
 
   defp notify_display(message) do

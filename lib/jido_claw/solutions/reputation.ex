@@ -117,12 +117,15 @@ defmodule JidoClaw.Solutions.Reputation do
   @impl true
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
+    {:ok, %__MODULE__{project_dir: project_dir}, {:continue, :load}}
+  end
 
+  @impl true
+  def handle_continue(:load, state) do
     ensure_table()
-    load_from_disk(project_dir)
-
-    Logger.debug("[Reputation] Initialised from #{project_dir}")
-    {:ok, %__MODULE__{project_dir: project_dir}}
+    load_from_disk(state.project_dir)
+    Logger.debug("[Reputation] Initialised from #{state.project_dir}")
+    {:noreply, state}
   end
 
   @impl true
@@ -347,6 +350,12 @@ defmodule JidoClaw.Solutions.Reputation do
   end
 
   defp coerce_float(_), do: 0.5
+
+  @impl true
+  def terminate(_reason, state) do
+    persist_to_disk(state.project_dir)
+    :ok
+  end
 
   defp reputation_path(project_dir), do: Path.join([project_dir, ".jido", "reputation.json"])
 end

@@ -3,9 +3,15 @@ defmodule JidoClaw.Web.FolioLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    inbox = Ash.read!(JidoClaw.Folio.InboxItem, action: :unprocessed, authorize?: false)
-    actions = Ash.read!(JidoClaw.Folio.Action, action: :next_actions, authorize?: false)
-    projects = Ash.read!(JidoClaw.Folio.Project, action: :active, authorize?: false)
+    actor = socket.assigns.current_user
+
+    inbox =
+      Ash.read!(JidoClaw.Folio.InboxItem, action: :unprocessed, actor: actor, authorize?: false)
+
+    actions =
+      Ash.read!(JidoClaw.Folio.Action, action: :next_actions, actor: actor, authorize?: false)
+
+    projects = Ash.read!(JidoClaw.Folio.Project, action: :active, actor: actor, authorize?: false)
 
     {:ok,
      assign(socket,
@@ -80,5 +86,7 @@ defmodule JidoClaw.Web.FolioLive do
   @impl true
   def handle_event("tab", %{"tab" => tab}, socket) do
     {:noreply, assign(socket, tab: String.to_existing_atom(tab))}
+  rescue
+    ArgumentError -> {:noreply, socket}
   end
 end

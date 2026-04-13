@@ -3,7 +3,9 @@ defmodule JidoClaw.Web.ProjectsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    projects = Ash.read!(JidoClaw.Projects.Project, authorize?: false)
+    projects =
+      Ash.read!(JidoClaw.Projects.Project, actor: socket.assigns.current_user, authorize?: false)
+
     {:ok, assign(socket, page_title: "Projects", projects: projects)}
   end
 

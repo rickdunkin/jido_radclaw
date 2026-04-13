@@ -111,23 +111,27 @@ defmodule JidoClaw.Solutions.Store do
   @impl true
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
+    {:ok, %__MODULE__{project_dir: project_dir}, {:continue, :load}}
+  end
 
+  @impl true
+  def handle_continue(:load, state) do
     case :ets.whereis(@table) do
       :undefined -> :ets.new(@table, [:set, :public, :named_table])
       _ -> :ets.delete_all_objects(@table)
     end
 
-    disk_solutions = load_from_disk(project_dir)
+    disk_solutions = load_from_disk(state.project_dir)
 
     Enum.each(disk_solutions, fn solution ->
       :ets.insert(@table, {solution.id, solution})
     end)
 
     Logger.debug(
-      "[Solutions.Store] Loaded #{length(disk_solutions)} solutions from #{project_dir}"
+      "[Solutions.Store] Loaded #{length(disk_solutions)} solutions from #{state.project_dir}"
     )
 
-    {:ok, %__MODULE__{project_dir: project_dir}}
+    {:noreply, state}
   end
 
   @impl true
@@ -353,6 +357,12 @@ defmodule JidoClaw.Solutions.Store do
       _ ->
         []
     end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    persist_to_disk(state.project_dir)
+    :ok
   end
 
   defp solutions_path(project_dir), do: Path.join([project_dir, ".jido", "solutions.json"])

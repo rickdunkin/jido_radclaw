@@ -27,10 +27,14 @@ defmodule JidoClaw.Heartbeat do
       started_at: DateTime.utc_now()
     }
 
-    # Write immediately on boot
-    write_heartbeat(state)
     schedule_tick()
-    {:ok, state}
+    {:ok, state, {:continue, :write}}
+  end
+
+  @impl true
+  def handle_continue(:write, state) do
+    write_heartbeat(state)
+    {:noreply, state}
   end
 
   @impl true
@@ -55,14 +59,18 @@ defmodule JidoClaw.Heartbeat do
       try do
         JidoClaw.Stats.get()
       rescue
-        _ -> %{messages: 0, tokens: 0, tool_calls: 0, agents_spawned: 0}
+        e in [RuntimeError, ErlangError, ArgumentError] ->
+          Logger.debug("[Heartbeat] Stats unavailable: #{Exception.message(e)}")
+          %{messages: 0, tokens: 0, tool_calls: 0, agents_spawned: 0}
       end
 
     cron_count =
       try do
         length(JidoClaw.Cron.Scheduler.list_jobs("default"))
       rescue
-        _ -> 0
+        e in [RuntimeError, ErlangError, ArgumentError] ->
+          Logger.debug("[Heartbeat] Cron count unavailable: #{Exception.message(e)}")
+          0
       end
 
     memory_mb = div(:erlang.memory(:total), 1_048_576)

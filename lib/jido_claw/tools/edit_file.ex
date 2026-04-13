@@ -30,10 +30,15 @@ defmodule JidoClaw.Tools.EditFile do
 
           true ->
             new_content = String.replace(content, old_str, new_str, global: false)
-            File.write!(path, new_content)
 
-            diff = build_diff(old_str, new_str)
-            {:ok, %{path: path, diff: diff, status: "edited"}}
+            case File.write(path, new_content) do
+              :ok ->
+                diff = build_diff(old_str, new_str)
+                {:ok, %{path: path, diff: diff, status: "edited"}}
+
+              {:error, reason} ->
+                {:error, "Failed to write #{path}: #{inspect(reason)}"}
+            end
         end
 
       {:error, reason} ->

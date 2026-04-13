@@ -31,8 +31,6 @@ defmodule JidoClaw.Web do
       use Phoenix.LiveView,
         layout: {JidoClaw.Web.Layouts, :app}
 
-      on_mount({JidoClaw.Web.LiveUserAuth, :live_user_optional})
-
       import JidoClaw.Web.CoreComponents
       unquote(html_helpers())
     end

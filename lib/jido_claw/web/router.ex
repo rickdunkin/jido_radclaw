@@ -8,6 +8,10 @@ defmodule JidoClaw.Web.Router do
     plug(:accepts, ["json"])
   end
 
+  pipeline :api_auth do
+    plug(JidoClaw.Web.Plugs.ApiKeyAuth)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -17,16 +21,27 @@ defmodule JidoClaw.Web.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :require_browser_auth do
+    plug(JidoClaw.Web.Plugs.RequireAuth)
+  end
+
+  # Admin panel (requires browser auth)
   scope "/" do
-    pipe_through(:browser)
+    pipe_through([:browser, :require_browser_auth])
     ash_admin("/admin")
   end
 
-  # API routes
+  # Unauthenticated API routes
   scope "/", JidoClaw.Web do
     pipe_through(:api)
 
     get("/health", HealthController, :index)
+  end
+
+  # Authenticated API routes
+  scope "/", JidoClaw.Web do
+    pipe_through([:api, :api_auth])
+
     post("/v1/chat/completions", ChatController, :create)
   end
 
@@ -41,7 +56,7 @@ defmodule JidoClaw.Web.Router do
     pipe_through(:browser)
 
     post("/sign-in", AuthController, :sign_in)
-    get("/sign-out", AuthController, :sign_out)
+    delete("/sign-out", AuthController, :sign_out)
   end
 
   # Public LiveView routes (no auth)
@@ -74,12 +89,14 @@ defmodule JidoClaw.Web.Router do
   end
 
   # Phoenix LiveDashboard (dev only)
-  scope "/" do
-    pipe_through(:browser)
+  if Mix.env() == :dev do
+    scope "/" do
+      pipe_through([:browser, :require_browser_auth])
 
-    live_dashboard("/live-dashboard",
-      metrics: JidoClaw.Telemetry,
-      ecto_repos: []
-    )
+      live_dashboard("/live-dashboard",
+        metrics: JidoClaw.Telemetry,
+        ecto_repos: []
+      )
+    end
   end
 end

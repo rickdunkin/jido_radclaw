@@ -9,6 +9,18 @@ defmodule JidoClaw.Folio.Action do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create)
+    define(:complete)
+    define(:defer)
+    define(:wait)
+    define(:list_next_actions, action: :next_actions)
+    define(:list_waiting, action: :waiting)
+    define(:list_by_context, action: :by_context)
+    define(:list_by_project, action: :by_project)
+    define(:list_by_user, action: :by_user)
+  end
+
   actions do
     defaults([:read, :destroy])
 
@@ -133,5 +145,17 @@ defmodule JidoClaw.Folio.Action do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to(:user, JidoClaw.Accounts.User,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
+
+    belongs_to(:project, JidoClaw.Folio.Project,
+      define_attribute?: false,
+      attribute_writable?: true
+    )
   end
 end
