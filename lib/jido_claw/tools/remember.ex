@@ -10,6 +10,13 @@ defmodule JidoClaw.Tools.Remember do
       "Save a fact, pattern, decision, or preference to persistent memory. " <>
         "Memories persist across sessions. Use this to record project conventions, " <>
         "architectural decisions, user preferences, and recurring patterns you discover.",
+    category: "memory",
+    tags: ["memory", "write"],
+    output_schema: [
+      key: [type: :string, required: true],
+      type: [type: :string, required: true],
+      status: [type: :string, required: true]
+    ],
     schema: [
       key: [
         type: :string,

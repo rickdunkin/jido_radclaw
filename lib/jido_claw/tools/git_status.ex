@@ -2,6 +2,12 @@ defmodule JidoClaw.Tools.GitStatus do
   use Jido.Action,
     name: "git_status",
     description: "Show git repository status. Returns modified, staged, and untracked files.",
+    category: "git",
+    tags: ["vcs", "read"],
+    output_schema: [
+      status: [type: :string, required: true],
+      branch: [type: :string, required: true]
+    ],
     schema: []
 
   @impl true

@@ -14,6 +14,11 @@ defmodule JidoClaw.Tools.ScheduleTask do
     or interval strings ('every 1h', 'every 30m', 'every 1d').
     Ask the user for the task description and schedule before calling this tool.
     """,
+    category: "scheduling",
+    tags: ["scheduling", "write"],
+    output_schema: [
+      result: [type: :string, required: true]
+    ],
     schema: [
       id: [
         type: :string,

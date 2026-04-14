@@ -3,6 +3,16 @@ defmodule JidoClaw.Tools.ProjectInfo do
     name: "project_info",
     description:
       "Get information about the current project: type, structure, git status, and key files.",
+    category: "project",
+    tags: ["project", "read"],
+    output_schema: [
+      cwd: [type: :string, required: true],
+      project_type: [type: :string, required: true],
+      git_branch: [type: :string, required: true],
+      git_dirty: [type: :boolean, required: true],
+      top_level_files: [type: :string, required: true],
+      has_jido_md: [type: :boolean, required: true]
+    ],
     schema: []
 
   @impl true

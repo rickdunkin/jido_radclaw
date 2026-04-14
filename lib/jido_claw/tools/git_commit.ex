@@ -3,6 +3,12 @@ defmodule JidoClaw.Tools.GitCommit do
     name: "git_commit",
     description:
       "Stage specific files and create a git commit. Always use git_status first to see what changed.",
+    category: "git",
+    tags: ["vcs", "write"],
+    output_schema: [
+      output: [type: :string, required: true],
+      status: [type: :string, required: true]
+    ],
     schema: [
       message: [type: :string, required: true, doc: "Commit message"],
       files: [

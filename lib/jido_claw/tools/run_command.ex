@@ -11,6 +11,12 @@ defmodule JidoClaw.Tools.RunCommand do
     name: "run_command",
     description:
       "Execute a shell command and return its output. Use for running tests, builds, scripts, etc.",
+    category: "shell",
+    tags: ["shell", "exec"],
+    output_schema: [
+      output: [type: :string, required: true],
+      exit_code: [type: :integer, required: true]
+    ],
     schema: [
       command: [type: :string, required: true, doc: "The command to execute (passed to sh -c)"],
       timeout: [type: :integer, default: 30_000, doc: "Timeout in milliseconds"],

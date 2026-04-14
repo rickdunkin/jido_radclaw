@@ -13,6 +13,13 @@ defmodule JidoClaw.Tools.ReadFile do
     name: "read_file",
     description:
       "Read file contents. Always read a file before editing it. Returns numbered lines. Supports github://, s3://, git:// URIs.",
+    category: "filesystem",
+    tags: ["io", "read"],
+    output_schema: [
+      path: [type: :string, required: true],
+      content: [type: :string, required: true],
+      total_lines: [type: :integer, required: true]
+    ],
     schema: [
       path: [
         type: :string,

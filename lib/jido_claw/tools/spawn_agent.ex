@@ -3,6 +3,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
     name: "spawn_agent",
     description:
       "Spawn a child agent from a template to work on a task. Available templates: coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier. The child agent works independently and results can be collected with get_agent_result.",
+    category: "swarm",
+    tags: ["swarm", "write"],
+    output_schema: [
+      agent_id: [type: :string, required: true],
+      template: [type: :string, required: true],
+      description: [type: :string, required: true],
+      status: [type: :string, required: true],
+      message: [type: :string, required: true]
+    ],
     schema: [
       template: [
         type: :string,

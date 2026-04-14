@@ -7,6 +7,11 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
     name: "list_scheduled_tasks",
     description:
       "List all scheduled recurring tasks with their status, schedule, next run time, and failure count.",
+    category: "scheduling",
+    tags: ["scheduling", "read"],
+    output_schema: [
+      result: [type: :string, required: true]
+    ],
     schema: []
 
   @impl true

@@ -2,6 +2,14 @@ defmodule JidoClaw.Tools.KillAgent do
   use Jido.Action,
     name: "kill_agent",
     description: "Stop a running child agent. Use 'all' as agent_id to stop all child agents.",
+    category: "swarm",
+    tags: ["swarm", "write"],
+    output_schema: [
+      agent_id: [type: :string],
+      status: [type: :string],
+      stopped: [type: :integer],
+      message: [type: :string]
+    ],
     schema: [
       agent_id: [
         type: :string,

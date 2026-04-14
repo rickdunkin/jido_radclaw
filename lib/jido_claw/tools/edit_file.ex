@@ -3,6 +3,13 @@ defmodule JidoClaw.Tools.EditFile do
     name: "edit_file",
     description:
       "Edit a file by replacing an exact string match. The old_string must be unique in the file. Read the file first to get the exact text.",
+    category: "filesystem",
+    tags: ["io", "write"],
+    output_schema: [
+      path: [type: :string, required: true],
+      diff: [type: :string, required: true],
+      status: [type: :string, required: true]
+    ],
     schema: [
       path: [type: :string, required: true, doc: "File path to edit"],
       old_string: [

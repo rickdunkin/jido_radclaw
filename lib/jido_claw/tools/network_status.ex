@@ -6,6 +6,13 @@ defmodule JidoClaw.Tools.NetworkStatus do
   use Jido.Action,
     name: "network_status",
     description: "Check the agent network connection status and peer count.",
+    category: "solutions",
+    tags: ["solutions", "read"],
+    output_schema: [
+      status: [type: :string, required: true],
+      connected: [type: :boolean, required: true],
+      peer_count: [type: :integer, required: true]
+    ],
     schema: []
 
   @impl true

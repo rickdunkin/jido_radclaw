@@ -17,6 +17,15 @@ defmodule JidoClaw.Tools.RunSkill do
     name: "run_skill",
     description:
       "Run a named multi-step skill that orchestrates multiple agents via a Workflow FSM. Each step spawns an agent, waits for completion, then transitions to the next step. Use /skills to list available skills.",
+    category: "skills",
+    tags: ["skills", "exec"],
+    output_schema: [
+      skill: [type: :string, required: true],
+      steps_completed: [type: :integer, required: true],
+      synthesis_prompt: [type: :string],
+      results: [type: :string, required: true],
+      message: [type: :string, required: true]
+    ],
     schema: [
       skill: [
         type: :string,
@@ -43,21 +52,17 @@ defmodule JidoClaw.Tools.RunSkill do
         {:error, reason}
 
       {:ok, skill} ->
-        {mode, executor} =
+        executor =
           case JidoClaw.Skills.execution_mode(skill) do
             :iterative ->
-              {"iterative", &JidoClaw.Workflows.IterativeWorkflow.run/3}
+              &JidoClaw.Workflows.IterativeWorkflow.run/3
 
             :dag ->
-              {"DAG", &JidoClaw.Workflows.PlanWorkflow.run/3}
+              &JidoClaw.Workflows.PlanWorkflow.run/3
 
             :sequential ->
-              {"sequential", &JidoClaw.Workflows.SkillWorkflow.run/3}
+              &JidoClaw.Workflows.SkillWorkflow.run/3
           end
-
-        IO.puts(
-          "  \e[33m▸\e[0m \e[1mRunning skill:\e[0m #{skill.name} (#{length(skill.steps)} steps, #{mode})"
-        )
 
         case executor.(skill, extra_context, project_dir) do
           {:ok, results} ->

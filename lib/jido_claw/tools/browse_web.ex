@@ -3,6 +3,20 @@ defmodule JidoClaw.Tools.BrowseWeb do
     name: "browse_web",
     description:
       "Fetch and read web pages using a headless browser. Supports content extraction, screenshot capture, and link extraction.",
+    category: "browser",
+    tags: ["browser", "read"],
+    output_schema: [
+      url: [type: :string, required: true],
+      action: [type: :string, required: true],
+      content: [type: :string],
+      truncated: [type: :boolean],
+      links: [type: {:list, :map}],
+      count: [type: :integer],
+      format: [type: :string],
+      base64: [type: :string],
+      size_bytes: [type: :integer],
+      raw: [type: :string]
+    ],
     schema: [
       url: [
         type: :string,

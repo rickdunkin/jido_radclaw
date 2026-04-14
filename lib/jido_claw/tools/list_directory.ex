@@ -15,6 +15,13 @@ defmodule JidoClaw.Tools.ListDirectory do
     name: "list_directory",
     description:
       "List files and directories at a path. Returns file names with type indicators. Supports github://, s3://, git:// URIs.",
+    category: "filesystem",
+    tags: ["io", "read"],
+    output_schema: [
+      path: [type: :string, required: true],
+      entries: [type: :string, required: true],
+      total: [type: :integer, required: true]
+    ],
     schema: [
       path: [
         type: :string,

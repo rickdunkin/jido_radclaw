@@ -13,6 +13,12 @@ defmodule JidoClaw.Tools.WriteFile do
     name: "write_file",
     description:
       "Create or overwrite a file. Creates parent directories if needed. Supports github://, s3://, git:// URIs.",
+    category: "filesystem",
+    tags: ["io", "write"],
+    output_schema: [
+      path: [type: :string, required: true],
+      lines_written: [type: :integer, required: true]
+    ],
     schema: [
       path: [
         type: :string,

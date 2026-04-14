@@ -1,10 +1,13 @@
 defmodule JidoClaw.Web.Endpoint do
   use Phoenix.Endpoint, otp_app: :jido_claw
 
+  # NOTE: signing_salt intentionally differs from the LiveView salt in
+  # config/config.exs ("jidoclaw_lv"). Changing this value invalidates all
+  # existing browser session cookies — users will be logged out on deploy.
   @session_options [
     store: :cookie,
     key: "_jido_claw_key",
-    signing_salt: "jidoclaw_lv",
+    signing_salt: "jidoclaw_session",
     same_site: "Lax"
   ]
 

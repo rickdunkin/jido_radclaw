@@ -2,6 +2,13 @@ defmodule JidoClaw.Tools.SendToAgent do
   use Jido.Action,
     name: "send_to_agent",
     description: "Send a follow-up message to a running child agent.",
+    category: "swarm",
+    tags: ["swarm", "write"],
+    output_schema: [
+      agent_id: [type: :string, required: true],
+      status: [type: :string, required: true],
+      message: [type: :string, required: true]
+    ],
     schema: [
       agent_id: [type: :string, required: true, doc: "The agent ID to send to"],
       message: [type: :string, required: true, doc: "The message to send"]

@@ -11,6 +11,15 @@ defmodule JidoClaw.Tools.Reason do
     name: "reason",
     description:
       "Apply a structured reasoning strategy to analyze a complex problem. Use for architectural decisions, debugging complex issues, or multi-step planning.",
+    category: "reasoning",
+    tags: ["reasoning", "exec"],
+    output_schema: [
+      strategy: [type: :string, required: true],
+      output: [type: :string, required: true],
+      note: [type: :string],
+      status: [type: :atom],
+      usage: [type: :map]
+    ],
     schema: [
       strategy: [
         type: :string,

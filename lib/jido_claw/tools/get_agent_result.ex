@@ -3,6 +3,15 @@ defmodule JidoClaw.Tools.GetAgentResult do
     name: "get_agent_result",
     description:
       "Wait for a spawned child agent to finish its task and return the result. Use this after spawn_agent to collect the output.",
+    category: "swarm",
+    tags: ["swarm", "read"],
+    output_schema: [
+      agent_id: [type: :string, required: true],
+      status: [type: :string, required: true],
+      result: [type: :string],
+      message: [type: :string],
+      error: [type: :string]
+    ],
     schema: [
       agent_id: [type: :string, required: true, doc: "The agent ID returned by spawn_agent"],
       timeout: [type: :integer, required: false, doc: "Max wait time in ms (default: 60000)"]

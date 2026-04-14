@@ -55,14 +55,45 @@ defmodule JidoClaw.Web.DashboardLive do
     """
   end
 
+  # Forge session events
   @impl true
-  def handle_info(_msg, socket) do
-    {:noreply,
-     assign(socket,
-       forge_sessions: length(JidoClaw.Forge.list_sessions()),
-       workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary()
-     )}
+  def handle_info({:session_started, _id}, socket) do
+    {:noreply, assign(socket, forge_sessions: length(JidoClaw.Forge.list_sessions()))}
   end
+
+  @impl true
+  def handle_info({:session_recovering, _id}, socket) do
+    {:noreply, assign(socket, forge_sessions: length(JidoClaw.Forge.list_sessions()))}
+  end
+
+  @impl true
+  def handle_info({:session_recovery_exhausted, _id}, socket) do
+    {:noreply, assign(socket, forge_sessions: length(JidoClaw.Forge.list_sessions()))}
+  end
+
+  @impl true
+  def handle_info({:session_stopped, _id, _reason}, socket) do
+    {:noreply, assign(socket, forge_sessions: length(JidoClaw.Forge.list_sessions()))}
+  end
+
+  # Run events (RunPubSub — not yet broadcast, but matches the intended contract)
+  @impl true
+  def handle_info({:run_started, _id, _info}, socket) do
+    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+  end
+
+  @impl true
+  def handle_info({:run_completed, _id, _info}, socket) do
+    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+  end
+
+  @impl true
+  def handle_info({:run_failed, _id, _info}, socket) do
+    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+  end
+
+  @impl true
+  def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp get_uptime do
     case Application.get_env(:jido_claw, :started_at) do

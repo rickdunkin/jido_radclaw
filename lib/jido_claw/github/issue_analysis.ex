@@ -117,6 +117,10 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     timestamps()
   end
 
+  identities do
+    identity(:unique_issue_per_repo, [:repo_full_name, :issue_number])
+  end
+
   relationships do
     belongs_to(:project, JidoClaw.Projects.Project,
       define_attribute?: false,

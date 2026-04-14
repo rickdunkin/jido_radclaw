@@ -9,6 +9,12 @@ defmodule JidoClaw.Tools.FindSolution do
     description:
       "Search for previously stored solutions matching a problem description. " <>
         "Returns ranked results by relevance and trust score.",
+    category: "solutions",
+    tags: ["solutions", "read"],
+    output_schema: [
+      results: [type: :string, required: true],
+      count: [type: :integer, required: true]
+    ],
     schema: [
       problem_description: [
         type: :string,

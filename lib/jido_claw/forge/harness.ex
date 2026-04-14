@@ -348,6 +348,7 @@ defmodule JidoClaw.Forge.Harness do
         persist(fn -> update_phase(new_state, :running) end)
 
         target_sandbox = Keyword.get(opts, :sandbox, state.default_client)
+        iteration_started_at = DateTime.utc_now()
         session_pid = self()
 
         Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
@@ -355,7 +356,8 @@ defmodule JidoClaw.Forge.Harness do
 
           GenServer.cast(
             session_pid,
-            {:iteration_complete, result, from, new_state.iteration, target_sandbox}
+            {:iteration_complete, result, from, new_state.iteration, target_sandbox,
+             iteration_started_at}
           )
         end)
 
@@ -524,7 +526,11 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   @impl true
-  def handle_cast({:iteration_complete, {:ok, result}, from, _iteration, target_sandbox}, state) do
+  def handle_cast(
+        {:iteration_complete, {:ok, result}, from, _iteration, target_sandbox,
+         iteration_started_at},
+        state
+      ) do
     new_state =
       case result.status do
         :needs_input ->
@@ -579,7 +585,8 @@ defmodule JidoClaw.Forge.Harness do
         Map.get(result, :output, ""),
         Map.get(result, :exit_code, 0),
         state.iteration,
-        result.status
+        result.status,
+        iteration_started_at
       )
     end)
 
@@ -593,7 +600,8 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_cast(
-        {:iteration_complete, {:error, reason}, from, _iteration, _target_sandbox},
+        {:iteration_complete, {:error, reason}, from, _iteration, _target_sandbox,
+         _iteration_started_at},
         state
       ) do
     persist(fn -> log_event(state, "iteration.failed", %{reason: inspect(reason)}) end)

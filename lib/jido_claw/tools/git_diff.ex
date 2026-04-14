@@ -2,6 +2,11 @@ defmodule JidoClaw.Tools.GitDiff do
   use Jido.Action,
     name: "git_diff",
     description: "Show git diff output. Can show staged or unstaged changes.",
+    category: "git",
+    tags: ["vcs", "read"],
+    output_schema: [
+      diff: [type: :string, required: true]
+    ],
     schema: [
       staged: [type: :boolean, default: false, doc: "Show staged changes (--cached)"],
       path: [type: :string, doc: "Optional file path to limit diff"]
@@ -23,7 +28,7 @@ defmodule JidoClaw.Tools.GitDiff do
     case System.cmd("git", args, stderr_to_stdout: true) do
       {output, 0} ->
         truncated =
-          if String.length(output) > 15_000 do
+          if byte_size(output) > 15_000 do
             String.slice(output, 0, 15_000) <> "\n... (diff truncated)"
           else
             output

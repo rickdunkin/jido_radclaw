@@ -10,7 +10,6 @@ defmodule JidoClaw.Forge.Resources.Session do
   end
 
   code_interface do
-    define(:create)
     define(:start)
     define(:update_phase)
     define(:mark_failed)
@@ -23,12 +22,8 @@ defmodule JidoClaw.Forge.Resources.Session do
   actions do
     defaults([:read, :destroy])
 
-    create :create do
-      primary?(true)
-      accept([:name, :runner_type, :runner_config, :spec, :metadata, :started_at])
-    end
-
     create :start do
+      primary?(true)
       accept([:name, :runner_type, :runner_config, :spec, :metadata, :started_at])
 
       upsert?(true)

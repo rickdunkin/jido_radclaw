@@ -7,7 +7,8 @@ defmodule JidoClaw.Web.SettingsLive do
      assign(socket,
        page_title: "Settings",
        mode: Application.get_env(:jido_claw, :mode, :both),
-       gateway_port: Application.get_env(:jido_claw, :gateway_port, 4000)
+       gateway_port: Application.get_env(:jido_claw, :gateway_port, 4000),
+       ash_domain_count: length(Application.get_env(:jido_claw, :ash_domains, []))
      )}
   end
 
@@ -31,7 +32,7 @@ defmodule JidoClaw.Web.SettingsLive do
             </div>
             <div style="display: flex; justify-content: space-between;">
               <span style="color: var(--muted);">Ash Domains</span>
-              <span><%= length(Application.get_env(:jido_claw, :ash_domains, [])) %></span>
+              <span><%= @ash_domain_count %></span>
             </div>
           </div>
         </div>

@@ -63,20 +63,21 @@ defmodule JidoClaw.Forge.Persistence do
 
         case find_session(session_id) do
           nil ->
-            # No existing row — create fresh
-            claim_create(attrs)
+            # No existing row — create fresh (upsert just inserts when
+            # no matching row exists, so :start is safe for both paths)
+            claim_via_start(attrs)
 
           %{phase: phase} when phase in @terminal_phases ->
             # Terminal session — reuse the name via upsert (preserves row
             # ID so FK relationships to events/checkpoints are maintained)
-            claim_upsert(attrs)
+            claim_via_start(attrs)
 
           %{phase: phase} when recovery? and phase in @recoverable_phases ->
             # Recovery: stale active phase from a crashed process.
             # The advisory lock prevents two recovery attempts from both
             # succeeding. :created is excluded — it means another node
             # just claimed in this cycle.
-            claim_upsert(attrs)
+            claim_via_start(attrs)
 
           %{} ->
             # Either a fresh start seeing an active row, or recovery
@@ -98,17 +99,10 @@ defmodule JidoClaw.Forge.Persistence do
       {:error, :already_claimed}
   end
 
-  defp claim_create(attrs) do
-    case Ash.create(JidoClaw.Forge.Resources.Session, attrs, action: :create, authorize?: false) do
-      {:ok, _} -> :ok
-      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:create_failed, e})
-    end
-  end
-
-  defp claim_upsert(attrs) do
+  defp claim_via_start(attrs) do
     case Ash.create(JidoClaw.Forge.Resources.Session, attrs, action: :start, authorize?: false) do
       {:ok, _} -> :ok
-      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:upsert_failed, e})
+      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:start_failed, e})
     end
   end
 
@@ -122,23 +116,32 @@ defmodule JidoClaw.Forge.Persistence do
     }
   end
 
-  def record_execution_complete(session_id, output, exit_code, sequence, runner_status \\ nil) do
+  def record_execution_complete(
+        session_id,
+        output,
+        exit_code,
+        sequence,
+        runner_status \\ nil,
+        started_at \\ nil
+      ) do
     if enabled?() do
       try do
         session = find_session(session_id)
 
         if session do
           # Two-step flow: create with :start, then update with :complete
-          exec_session =
-            Ash.create!(
-              JidoClaw.Forge.Resources.ExecSession,
-              %{
-                session_id: session.id,
-                sequence: sequence,
-                command: "iteration"
-              },
-              authorize?: false
-            )
+          start_attrs = %{
+            session_id: session.id,
+            sequence: sequence,
+            command: "iteration"
+          }
+
+          start_attrs =
+            if started_at,
+              do: Map.put(start_attrs, :started_at, started_at),
+              else: start_attrs
+
+          exec_session = Ash.create!(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false)
 
           result_status =
             case runner_status do
@@ -146,11 +149,14 @@ defmodule JidoClaw.Forge.Persistence do
               _ -> if exit_code == 0, do: :completed, else: :failed
             end
 
+          raw_output_bytes = byte_size(output || "")
+
           exec_session
           |> Ash.Changeset.for_update(:complete, %{
             result_status: result_status,
             output: truncate(Patterns.redact(output || ""), 10_000),
-            exit_code: exit_code
+            exit_code: exit_code,
+            raw_output_bytes: raw_output_bytes
           })
           |> Ash.update!(authorize?: false)
         end

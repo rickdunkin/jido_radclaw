@@ -3,6 +3,12 @@ defmodule JidoClaw.Tools.SearchCode do
     name: "search_code",
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers.",
+    category: "filesystem",
+    tags: ["io", "read"],
+    output_schema: [
+      matches: [type: :string, required: true],
+      total_matches: [type: :integer, required: true]
+    ],
     schema: [
       pattern: [type: :string, required: true, doc: "Search pattern (regex supported)"],
       path: [type: :string, default: ".", doc: "Directory to search in"],

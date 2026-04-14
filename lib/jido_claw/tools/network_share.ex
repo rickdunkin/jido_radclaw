@@ -6,6 +6,13 @@ defmodule JidoClaw.Tools.NetworkShare do
   use Jido.Action,
     name: "network_share",
     description: "Share a solution with the agent network for other agents to discover and use.",
+    category: "solutions",
+    tags: ["solutions", "write"],
+    output_schema: [
+      solution_id: [type: :string, required: true],
+      status: [type: :string, required: true],
+      reason: [type: :string]
+    ],
     schema: [
       solution_id: [
         type: :string,

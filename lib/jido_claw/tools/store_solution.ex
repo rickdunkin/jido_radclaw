@@ -10,6 +10,13 @@ defmodule JidoClaw.Tools.StoreSolution do
     description:
       "Store a verified coding solution for future reuse. " <>
         "Solutions are indexed by problem fingerprint and searchable by language, framework, and content.",
+    category: "solutions",
+    tags: ["solutions", "write"],
+    output_schema: [
+      id: [type: :string, required: true],
+      signature: [type: :string, required: true],
+      status: [type: :string, required: true]
+    ],
     schema: [
       problem_description: [
         type: :string,

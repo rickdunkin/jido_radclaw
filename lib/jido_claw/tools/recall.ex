@@ -10,6 +10,12 @@ defmodule JidoClaw.Tools.Recall do
       "Search persistent memory for past facts, patterns, decisions, and preferences. " <>
         "Use this at the start of a session or task to check what you already know about " <>
         "the project — conventions, decisions, and context from previous sessions.",
+    category: "memory",
+    tags: ["memory", "read"],
+    output_schema: [
+      results: [type: :string, required: true],
+      count: [type: :integer, required: true]
+    ],
     schema: [
       query: [
         type: :string,

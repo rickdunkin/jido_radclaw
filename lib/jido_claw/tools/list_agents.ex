@@ -2,6 +2,12 @@ defmodule JidoClaw.Tools.ListAgents do
   use Jido.Action,
     name: "list_agents",
     description: "List all running child agents with their status, template, and basic info.",
+    category: "swarm",
+    tags: ["swarm", "read"],
+    output_schema: [
+      agents: [type: :string, required: true],
+      count: [type: :integer, required: true]
+    ],
     schema: []
 
   @impl true
