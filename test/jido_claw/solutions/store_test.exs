@@ -409,6 +409,79 @@ defmodule JidoClaw.Solutions.StoreTest do
   end
 
   # ---------------------------------------------------------------------------
+  # update_verification_and_trust/3
+  # ---------------------------------------------------------------------------
+
+  describe "update_verification_and_trust/3" do
+    test "should update both verification and trust_score" do
+      {:ok, stored} = Store.store_solution(solution_attrs())
+
+      verification = %{"status" => "semi_formal", "confidence" => 0.9, "verdict" => "PASS"}
+
+      assert {:ok, updated} = Store.update_verification_and_trust(stored.id, verification)
+      assert updated.verification == verification
+      assert is_float(updated.trust_score)
+      assert updated.trust_score > 0.0
+      assert updated.updated_at != stored.updated_at
+    end
+
+    test "should recompute trust_score from new verification" do
+      {:ok, stored} = Store.store_solution(solution_attrs())
+
+      # Low confidence
+      low_verification = %{"status" => "semi_formal", "confidence" => 0.1}
+      {:ok, low_updated} = Store.update_verification_and_trust(stored.id, low_verification)
+
+      # Reset and try high confidence
+      high_verification = %{"status" => "semi_formal", "confidence" => 0.95}
+      {:ok, high_updated} = Store.update_verification_and_trust(stored.id, high_verification)
+
+      assert high_updated.trust_score > low_updated.trust_score
+    end
+
+    test "should return :not_found for missing id" do
+      assert :not_found = Store.update_verification_and_trust("nonexistent-id", %{})
+    end
+
+    test "should return {:error, :not_running} when server is down" do
+      stop_supervised!(Store)
+
+      assert {:error, :not_running} =
+               Store.update_verification_and_trust("any-id", %{"status" => "semi_formal"})
+    end
+
+    test "should accept trust_opts for score computation" do
+      {:ok, stored} = Store.store_solution(solution_attrs())
+
+      verification = %{"status" => "semi_formal", "confidence" => 0.9}
+
+      {:ok, low_rep} =
+        Store.update_verification_and_trust(stored.id, verification, agent_reputation: 0.0)
+
+      {:ok, high_rep} =
+        Store.update_verification_and_trust(stored.id, verification, agent_reputation: 1.0)
+
+      # The difference should be the reputation weight (0.15)
+      assert_in_delta high_rep.trust_score - low_rep.trust_score, 0.15, 0.01
+    end
+
+    test "should persist updated solution to disk", %{tmp_dir: tmp_dir} do
+      {:ok, stored} = Store.store_solution(solution_attrs())
+
+      verification = %{"status" => "semi_formal", "confidence" => 0.85}
+      {:ok, _updated} = Store.update_verification_and_trust(stored.id, verification)
+
+      path = Path.join(tmp_dir, ".jido/solutions.json")
+      assert File.exists?(path)
+
+      {:ok, json} = File.read(path)
+      {:ok, data} = Jason.decode(json)
+
+      assert data[stored.id]["verification"]["status"] == "semi_formal"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Disk persistence
   # ---------------------------------------------------------------------------
 

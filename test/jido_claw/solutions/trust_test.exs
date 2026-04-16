@@ -145,6 +145,69 @@ defmodule JidoClaw.Solutions.TrustTest do
     test "should return 0.3 for unknown status" do
       assert Trust.verification_score(%{verification: %{status: "pending"}}) == 0.3
     end
+
+    test "should return confidence * 0.85 for semi_formal with atom keys" do
+      score =
+        Trust.verification_score(%{
+          verification: %{status: "semi_formal", confidence: 0.92}
+        })
+
+      assert_in_delta score, 0.92 * 0.85, 0.000_01
+    end
+
+    test "should return confidence * 0.85 for semi_formal with string keys" do
+      score =
+        Trust.verification_score(%{
+          verification: %{"status" => "semi_formal", "confidence" => 0.92}
+        })
+
+      assert_in_delta score, 0.92 * 0.85, 0.000_01
+    end
+
+    test "should return 0.0 for semi_formal with confidence 0.0" do
+      score =
+        Trust.verification_score(%{
+          verification: %{status: "semi_formal", confidence: 0.0}
+        })
+
+      assert score == 0.0
+    end
+
+    test "should return 0.85 for semi_formal with confidence 1.0" do
+      score =
+        Trust.verification_score(%{
+          verification: %{status: "semi_formal", confidence: 1.0}
+        })
+
+      assert_in_delta score, 0.85, 0.000_01
+    end
+
+    test "should return confidence * 0.85 for semi_formal with confidence 0.5" do
+      score =
+        Trust.verification_score(%{
+          verification: %{"status" => "semi_formal", "confidence" => 0.5}
+        })
+
+      assert_in_delta score, 0.5 * 0.85, 0.000_01
+    end
+
+    test "should fall through to catch-all 0.3 when semi_formal confidence is out of range" do
+      score =
+        Trust.verification_score(%{
+          verification: %{status: "semi_formal", confidence: 1.5}
+        })
+
+      assert score == 0.3
+    end
+
+    test "should fall through to catch-all 0.3 when semi_formal confidence is negative" do
+      score =
+        Trust.verification_score(%{
+          verification: %{status: "semi_formal", confidence: -0.1}
+        })
+
+      assert score == 0.3
+    end
   end
 
   # ---------------------------------------------------------------------------

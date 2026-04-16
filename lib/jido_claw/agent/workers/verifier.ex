@@ -12,7 +12,8 @@ defmodule JidoClaw.Agent.Workers.Verifier do
       JidoClaw.Tools.GitDiff,
       JidoClaw.Tools.GitStatus,
       JidoClaw.Tools.RunCommand,
-      JidoClaw.Tools.ListDirectory
+      JidoClaw.Tools.ListDirectory,
+      JidoClaw.Tools.VerifyCertificate
     ],
     model: :fast,
     max_iterations: 20,

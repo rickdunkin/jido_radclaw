@@ -33,8 +33,9 @@ defmodule JidoClaw.Agent do
       JidoClaw.Tools.NetworkStatus,
       # Browser tools (1)
       JidoClaw.Tools.BrowseWeb,
-      # Reasoning tools (1)
+      # Reasoning tools (2)
       JidoClaw.Tools.Reason,
+      JidoClaw.Tools.VerifyCertificate,
       # Scheduling tools (3)
       JidoClaw.Tools.ScheduleTask,
       JidoClaw.Tools.UnscheduleTask,

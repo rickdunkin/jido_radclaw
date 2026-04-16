@@ -59,7 +59,7 @@ The `cwd` must be the absolute path to the JidoClaw project directory (where `mi
 
 ## Architecture
 
-JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework ecosystem. It provides a CLI REPL with ~30 tools, swarm orchestration, sandboxed code execution (Forge), a Phoenix LiveView web dashboard, and multi-provider LLM support.
+JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework ecosystem. It provides a CLI REPL with ~31 tools, swarm orchestration, sandboxed code execution (Forge), a Phoenix LiveView web dashboard, and multi-provider LLM support.
 
 ### Supervision Tree
 
@@ -90,12 +90,13 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 | `agent/`         | Main agent, prompt builder, templates, workers    |
 | `cli/`           | REPL, commands, branding, setup, formatter        |
 | `forge/`         | Sandboxed execution (runners, sandbox backends)   |
-| `tools/`         | All 30+ Jido.Action tool modules                  |
+| `tools/`         | All 31+ Jido.Action tool modules                  |
 | `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess |
+| `reasoning/`     | Strategy registry, certificate templates          |
 | `security/`      | Encryption vault, secret redaction                |
 | `web/`           | Phoenix endpoint, controllers, LiveView           |
 | `orchestration/` | Persistent workflow state machine                 |
-| `solutions/`     | Solution fingerprinting, trust scoring            |
+| `solutions/`     | Solution fingerprinting, trust scoring, semi-formal verification |
 
 ### Data Layer
 
@@ -110,6 +111,8 @@ Ash Framework 3.0 + PostgreSQL. Resources in `lib/jido_claw/accounts/` and `lib/
 ### `.jido/` Directory
 
 Project-level config directory. `config.yaml`, `memory.json`, `sessions/` are git-ignored. `agents/` and `skills/` YAML definitions are committed.
+
+**`system_prompt.md`** is created from `priv/defaults/system_prompt.md` during setup but is not auto-synced afterward. When tools or skills are added to the defaults, manually copy the updated default to `.jido/system_prompt.md`.
 
 ## Code Style
 

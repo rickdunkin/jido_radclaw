@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (30 tools)
+## Tool Catalog (31 tools)
 
 ### File Operations (4 tools)
 
@@ -88,7 +88,7 @@ Agent templates and their exact tool access:
 | `refactorer` | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Large-scale restructuring,       |
 |              | run_command, git_status, git_diff, git_commit, project_info           |                | renames, module reorganization   |
 | `verifier`   | read_file, search_code, git_diff, git_status, run_command,            | 20             | Interactive verification,        |
-|              | list_directory                                                         |                | VERDICT: PASS/FAIL evaluation    |
+|              | list_directory, verify_certificate                                     |                | VERDICT: PASS/FAIL evaluation    |
 
 **list_agents** — List all currently running child agents with their status.
 - Use to check if previously spawned agents have finished.
@@ -144,6 +144,16 @@ Default skills (always available):
   Steps: `coder` ⟳ `verifier` (up to 5 iterations)
   Use when: building a feature that needs verified correctness — the verifier runs tests
   and checks quality, looping back to the coder until VERDICT: PASS.
+
+**`verified_feature`** — Implement with semi-formal pre-verification certificates.
+  Steps: `coder` ⟳ `verifier` with `verify_certificate` (up to 5 iterations)
+  Use when: building a feature that needs rigorous verification with structured confidence scores.
+  The verifier gathers evidence (reads files, searches code, checks diffs, runs compile) then
+  produces a certificate with a confidence-scored verdict.
+
+**`sfr_review`** — Code review with semi-formal reasoning certificate.
+  Steps: `verifier` (scope via git_diff/git_status) → `verifier` with `verify_certificate`
+  Use when: reviewing changes with structured invariant checking and confidence-scored verdicts.
 
 Creating custom skills with DAG parallelism — YAML format:
 ```yaml
@@ -255,6 +265,19 @@ Use `reason` when facing:
 - Performance optimization → `aot`
 - Planning a multi-phase implementation → `tot`
 - Quick structured analysis → `cod`
+
+### Verification (1 tool)
+
+**verify_certificate** — Verify code using semi-formal reasoning certificates.
+- Parameters: `code` (required), `specification` (required), `evidence` (optional — gathered analysis from prior file reads, searches, and diffs), `certificate_type` (optional: `patch_verification`, `code_review`, `fault_localization`, `code_qa`; default `patch_verification`), `solution_id` (optional — updates the solution's verification and trust score).
+- Produces a structured certificate with `verdict`, `confidence` (0.0–1.0), and detailed payload.
+- Use this AFTER gathering evidence (read files, search code, run compile, check git diff) to produce a rigorous verification.
+- When `solution_id` is provided, the solution's verification status is updated to `semi_formal` and trust score is recomputed.
+- Certificate types:
+  - `patch_verification` — verify a code patch is correct (test claims, comparison outcomes, counterexamples)
+  - `code_review` — review for invariant violations (invariant traces, edge cases)
+  - `fault_localization` — locate root cause of failures (premises, code path traces, divergence claims)
+  - `code_qa` — comprehensive quality analysis (function traces, data flow, semantic properties)
 
 ### Browser (1 tool)
 

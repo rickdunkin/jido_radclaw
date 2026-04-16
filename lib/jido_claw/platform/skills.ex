@@ -184,6 +184,66 @@ defmodule JidoClaw.Skills do
         task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. End with VERDICT: PASS or VERDICT: FAIL with specific issues to fix."
         consumes: [implement]
     synthesis: "Present the final implementation after iterative refinement with verification results"
+    """,
+    "verified_feature.yaml" => """
+    name: verified_feature
+    description: Implement a feature with semi-formal pre-verification
+    mode: iterative
+    max_iterations: 5
+    steps:
+      - name: implement
+        role: generator
+        template: coder
+        task: "Implement the feature following existing project patterns"
+        produces:
+          type: elixir_module
+      - name: pre_verify
+        role: evaluator
+        template: verifier
+        task: |
+          Verify the implementation through structured analysis:
+          1. Read the implementation code and any files it touches
+          2. Search for related tests, modules, and dependencies
+          3. Check git diff for the full scope of changes
+          4. Run: mix compile --warnings-as-errors
+          5. Run: mix test
+          6. Run: mix format --check-formatted
+          7. Collect all findings from steps 1-6 as evidence text
+          8. Call verify_certificate with:
+             - code: the implementation
+             - specification: the original task description
+             - evidence: your collected findings from steps 1-6
+          If ALL of the following hold, emit VERDICT: PASS:
+            - mix compile passes
+            - mix test passes
+            - mix format --check-formatted passes
+            - certificate confidence >= 0.8 and verdict PASS
+          Otherwise emit VERDICT: FAIL with specific issues.
+        consumes: [implement]
+    synthesis: "Present the final implementation with verification certificate"
+    """,
+    "sfr_review.yaml" => """
+    name: sfr_review
+    description: Code review with semi-formal reasoning certificate
+    steps:
+      - name: analyze_scope
+        template: verifier
+        task: "Run git_diff and git_status to identify all changed files. For each changed file, read it and search for tests that cover it. Summarize what each file does and what tests exist for it."
+      - name: certificate_review
+        template: verifier
+        task: |
+          Review all changes identified in the scope analysis:
+          1. Read each changed file and its related modules
+          2. Search for tests covering the changed code
+          3. Run: mix compile --warnings-as-errors
+          4. Collect all findings as evidence text
+          5. Call verify_certificate with certificate_type "code_review":
+             - code: the git diff of all changes
+             - specification: what the changes intend to accomplish (from scope analysis)
+             - evidence: your collected findings
+          Report the certificate verdict and any issues found.
+        depends_on: [analyze_scope]
+    synthesis: "Present code review findings with semi-formal certificate and confidence scores"
     """
   }
 

@@ -4,8 +4,8 @@ defmodule JidoClaw.SkillsTest do
 
   alias JidoClaw.Skills
 
-  @default_skill_names ~w[full_review refactor_safe explore_codebase security_audit implement_feature debug_issue onboard_dev iterative_feature]
-  @default_filenames ~w[full_review.yaml refactor_safe.yaml explore_codebase.yaml security_audit.yaml implement_feature.yaml debug_issue.yaml onboard_dev.yaml iterative_feature.yaml]
+  @default_skill_names ~w[full_review refactor_safe explore_codebase security_audit implement_feature debug_issue onboard_dev iterative_feature verified_feature sfr_review]
+  @default_filenames ~w[full_review.yaml refactor_safe.yaml explore_codebase.yaml security_audit.yaml implement_feature.yaml debug_issue.yaml onboard_dev.yaml iterative_feature.yaml verified_feature.yaml sfr_review.yaml]
 
   setup do
     dir = Path.join(System.tmp_dir!(), "jido_skills_#{System.unique_integer([:positive])}")

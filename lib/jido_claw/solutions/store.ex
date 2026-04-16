@@ -80,6 +80,27 @@ defmodule JidoClaw.Solutions.Store do
     end
   end
 
+  @doc """
+  Atomically update verification and recompute trust score for a solution.
+
+  Returns `{:ok, updated_solution}` on success, `:not_found` if the solution
+  doesn't exist, or `{:error, :not_running}` if the store is not running.
+  """
+  @spec update_verification_and_trust(String.t(), map(), keyword()) ::
+          {:ok, Solution.t()} | :not_found | {:error, :not_running}
+  def update_verification_and_trust(id, verification_map, trust_opts \\ []) do
+    case GenServer.whereis(__MODULE__) do
+      nil ->
+        {:error, :not_running}
+
+      _pid ->
+        GenServer.call(
+          __MODULE__,
+          {:update_verification_and_trust, id, verification_map, trust_opts}
+        )
+    end
+  end
+
   @doc "Remove solution by id. Returns :ok."
   def delete(id) do
     case GenServer.whereis(__MODULE__) do
@@ -226,6 +247,29 @@ defmodule JidoClaw.Solutions.Store do
     end
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:update_verification_and_trust, id, verification_map, trust_opts},
+        _from,
+        state
+      ) do
+    result =
+      case :ets.lookup(@table, id) do
+        [{^id, solution}] ->
+          updated = %{solution | verification: verification_map}
+          score = JidoClaw.Solutions.Trust.compute(updated, trust_opts)
+          updated = %{updated | trust_score: score, updated_at: utc_now_iso()}
+          :ets.insert(@table, {id, updated})
+          persist_to_disk(state.project_dir)
+          {:ok, updated}
+
+        [] ->
+          :not_found
+      end
+
+    {:reply, result, state}
   end
 
   @impl true

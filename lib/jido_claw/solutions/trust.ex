@@ -151,6 +151,14 @@ defmodule JidoClaw.Solutions.Trust do
   defp score_verification(%{"status" => "partial", "passed" => n, "total" => t}),
     do: n / max(t, 1)
 
+  defp score_verification(%{status: "semi_formal", confidence: c})
+       when is_number(c) and c >= 0.0 and c <= 1.0,
+       do: c * 0.85
+
+  defp score_verification(%{"status" => "semi_formal", "confidence" => c})
+       when is_number(c) and c >= 0.0 and c <= 1.0,
+       do: c * 0.85
+
   defp score_verification(_), do: 0.3
 
   # ---------------------------------------------------------------------------

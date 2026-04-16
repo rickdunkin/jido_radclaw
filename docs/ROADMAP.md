@@ -59,9 +59,53 @@ Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) inte
 
 ---
 
-## v0.3 — Memory & Solutions Database Migration
+## v0.3 — VFS Integration for File Tools
 
-**Status: In Progress**
+**Status: Planned**
+
+Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `WriteFile`, `ListDirectory`) can work through the unified VFS layer. Enables:
+
+- Same shell session handles both file ops and command execution
+- Multi-mount workspaces:
+  ```
+  /project   → Jido.VFS.Adapter.Local (real filesystem)
+  /scratch   → Jido.VFS.Adapter.InMemory (temp workspace)
+  /upstream  → Jido.VFS.Adapter.GitHub (upstream repo)
+  /artifacts → Jido.VFS.Adapter.S3 (build outputs)
+  ```
+- Agent can `cat /project/mix.exs` and `cat /upstream/mix.exs` in the same workflow
+- VFS-aware diffing across adapters
+
+---
+
+## v0.4 — Reasoning & Strategy Improvements
+
+**Status: Planned**
+
+- Strategy auto-selection based on task complexity analysis
+- Strategy composition (e.g., CoT for planning + ReAct for execution)
+- Strategy performance tracking (which strategies work best for which task types)
+- User-defined strategy configurations in `.jido/strategies/`
+- Auto-sync `.jido/system_prompt.md` from `priv/defaults/system_prompt.md` on startup when the default has changed (e.g. hash comparison, version stamp). Currently the runtime prompt is created once during setup and never updated, so new tools and skills require a manual copy of the default.
+
+---
+
+## v0.5 — Advanced Shell Integration
+
+**Status: Planned**
+
+Build on the jido_shell `BackendHost` foundation:
+
+- **Custom command registry**: Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) as jido_shell commands, accessible from the persistent session
+- **SSH backend support**: Remote command execution on dev/staging servers via `Backend.SSH`
+- **Streaming output to display**: Wire jido_shell transport events directly into Display for real-time output rendering during long-running commands
+- **Environment profiles**: Named env var sets (dev, staging, prod) that can be switched per session
+
+---
+
+## v0.6 — Memory & Solutions Database Migration
+
+**Status: Planned**
 
 ### Why
 
@@ -113,26 +157,7 @@ persistence:
 
 ---
 
-## v0.4 — VFS Integration for File Tools
-
-**Status: Planned**
-
-Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `WriteFile`, `ListDirectory`) can work through the unified VFS layer. Enables:
-
-- Same shell session handles both file ops and command execution
-- Multi-mount workspaces:
-  ```
-  /project   → Jido.VFS.Adapter.Local (real filesystem)
-  /scratch   → Jido.VFS.Adapter.InMemory (temp workspace)
-  /upstream  → Jido.VFS.Adapter.GitHub (upstream repo)
-  /artifacts → Jido.VFS.Adapter.S3 (build outputs)
-  ```
-- Agent can `cat /project/mix.exs` and `cat /upstream/mix.exs` in the same workflow
-- VFS-aware diffing across adapters
-
----
-
-## v0.5 — Burrito Packaging
+## v0.7 — Burrito Packaging
 
 **Status: Planned**
 
@@ -155,30 +180,6 @@ releases: [
 - Cross-compile for macOS arm64/x86_64, Linux x86_64
 - Self-contained — no Elixir/Erlang installation required
 - Auto-update mechanism via GitHub releases
-
----
-
-## v0.6 — Advanced Shell Integration
-
-**Status: Planned**
-
-Build on the jido_shell `BackendHost` foundation:
-
-- **Custom command registry**: Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) as jido_shell commands, accessible from the persistent session
-- **SSH backend support**: Remote command execution on dev/staging servers via `Backend.SSH`
-- **Streaming output to display**: Wire jido_shell transport events directly into Display for real-time output rendering during long-running commands
-- **Environment profiles**: Named env var sets (dev, staging, prod) that can be switched per session
-
----
-
-## v0.7 — Reasoning & Strategy Improvements
-
-**Status: Planned**
-
-- Strategy auto-selection based on task complexity analysis
-- Strategy composition (e.g., CoT for planning + ReAct for execution)
-- Strategy performance tracking (which strategies work best for which task types)
-- User-defined strategy configurations in `.jido/strategies/`
 
 ---
 
@@ -210,7 +211,7 @@ Note: Agent state recovery and session metadata are already in PostgreSQL via Fo
 ## Build Order
 
 ```
-v0.2 (done) → v0.2.5 (done) → v0.3 (memory/solutions DB) → v0.4 (VFS) → v0.5 (Burrito) → v0.6 (Shell) → v0.7 (Reasoning)
+v0.2 (done) → v0.2.5 (done) → v0.3 (VFS) → v0.4 (Reasoning) → v0.5 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
 ```
 
-v0.3 memory/solutions migration is gated on actual need — don't migrate the remaining file-based stores until the current approach is a proven bottleneck.
+v0.6 memory/solutions migration is gated on actual need — don't migrate the remaining file-based stores until the current approach is a proven bottleneck.

@@ -1,0 +1,35 @@
+name: verified_feature
+description: Implement a feature with semi-formal pre-verification
+mode: iterative
+max_iterations: 5
+steps:
+  - name: implement
+    role: generator
+    template: coder
+    task: "Implement the feature following existing project patterns"
+    produces:
+      type: elixir_module
+  - name: pre_verify
+    role: evaluator
+    template: verifier
+    task: |
+      Verify the implementation through structured analysis:
+      1. Read the implementation code and any files it touches
+      2. Search for related tests, modules, and dependencies
+      3. Check git diff for the full scope of changes
+      4. Run: mix compile --warnings-as-errors
+      5. Run: mix test
+      6. Run: mix format --check-formatted
+      7. Collect all findings from steps 1-6 as evidence text
+      8. Call verify_certificate with:
+         - code: the implementation
+         - specification: the original task description
+         - evidence: your collected findings from steps 1-6
+      If ALL of the following hold, emit VERDICT: PASS:
+        - mix compile passes
+        - mix test passes
+        - mix format --check-formatted passes
+        - certificate confidence >= 0.8 and verdict PASS
+      Otherwise emit VERDICT: FAIL with specific issues.
+    consumes: [implement]
+synthesis: "Present the final implementation with verification certificate"

@@ -1,0 +1,21 @@
+name: sfr_review
+description: Code review with semi-formal reasoning certificate
+steps:
+  - name: analyze_scope
+    template: verifier
+    task: "Run git_diff and git_status to identify all changed files. For each changed file, read it and search for tests that cover it. Summarize what each file does and what tests exist for it."
+  - name: certificate_review
+    template: verifier
+    task: |
+      Review all changes identified in the scope analysis:
+      1. Read each changed file and its related modules
+      2. Search for tests covering the changed code
+      3. Run: mix compile --warnings-as-errors
+      4. Collect all findings as evidence text
+      5. Call verify_certificate with certificate_type "code_review":
+         - code: the git diff of all changes
+         - specification: what the changes intend to accomplish (from scope analysis)
+         - evidence: your collected findings
+      Report the certificate verdict and any issues found.
+    depends_on: [analyze_scope]
+synthesis: "Present code review findings with semi-formal certificate and confidence scores"
