@@ -2,7 +2,7 @@
 
 ## Overview
 
-JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework. It provides a multi-interface, multi-tenant, multi-provider agent runtime with swarm orchestration, persistent memory, DAG-based skill workflows, structured reasoning strategies, VFS-backed file operations, persistent shell sessions, and full observability.
+JidoClaw is an AI agent orchestration platform built on Elixir/OTP, the Jido framework, and Ash Framework 3.0. It provides a multi-interface, multi-tenant, multi-provider agent runtime with swarm orchestration, sandboxed code execution (Forge), persistent memory, DAG-based skill workflows, structured reasoning strategies, VFS-backed file operations, persistent shell sessions, database-backed accounts and projects, and full observability.
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -14,7 +14,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
                          │          │          │           │
                     ┌────▼──────────▼──────────▼───────────▼──────┐
                     │           JidoClaw.Agent (Main)              │
-                    │   24 tools · ReAct loop · swarm spawn       │
+                    │   27 tools · ReAct loop · swarm spawn       │
                     ├─────────────────────────────────────────────┤
                     │       Reasoning Strategies (jido_ai)        │
                     │   ReAct · CoT · CoD · ToT · GoT · AoT ·    │
@@ -25,75 +25,110 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
                     │   Groq · xAI · OpenRouter                   │
                     ├─────────────────────────────────────────────┤
                     │           Infrastructure                     │
-                    │   jido_shell · jido_vfs · jido_signal        │
+                    │   Ash · Forge · jido_shell · jido_vfs ·      │
+                    │   jido_signal · Cloak Vault                  │
                     └─────────────────────────────────────────────┘
 ```
 
 ## Supervision Tree
 
 ```
-JidoClaw.Supervisor (one_for_one)
+JidoClaw.Supervisor (rest_for_one)
 │
-├── Infrastructure
+├── InfraSupervisor (one_for_one, nested)
 │   ├── Registry (SessionRegistry)         — unique session lookup
 │   ├── Registry (TenantRegistry)          — unique tenant lookup
+│   ├── Task.Supervisor (TaskSupervisor)   — general async tasks
+│   ├── JidoClaw.Repo                      — Ash/Ecto database connection
+│   ├── JidoClaw.Security.Vault            — Cloak encryption vault
 │   ├── Phoenix.PubSub (JidoClaw.PubSub)   — real-time event fanout
-│   ├── Finch (JidoClaw.Finch)             — HTTP connection pools
 │   └── Jido.Signal.Bus (JidoClaw.SignalBus) — jido_claw.* event routing
 │
+├── Forge Engine (sandboxed execution)
+│   ├── Registry (Forge.SessionRegistry)   — forge session lookup
+│   ├── DynamicSupervisor (Forge.HarnessSupervisor) — harness processes
+│   ├── DynamicSupervisor (Forge.ExecSessionSupervisor) — exec sessions
+│   ├── JidoClaw.Forge.Manager             — forge lifecycle
+│   └── Forge.SandboxInit OR Forge.Sandbox.Local — sandbox backend (conditional)
+│
+├── Orchestration
+│   └── JidoClaw.Orchestration.RunSummaryFeed — workflow event streaming
+│
+├── Code Server
+│   ├── Registry (CodeServer.RuntimeRegistry) — runtime lookup
+│   └── DynamicSupervisor (CodeServer.RuntimeSupervisor) — runtime processes
+│
 ├── Core Services
+│   ├── Finch (JidoClaw.Finch)             — HTTP connection pools
 │   ├── JidoClaw.Telemetry                 — 20+ metric definitions
 │   ├── JidoClaw.Stats                     — session counters (GenServer)
-│   ├── JidoClaw.AgentTracker              — per-agent stat accumulator
-│   ├── JidoClaw.Display                   — terminal display coordinator
 │   ├── JidoClaw.BackgroundProcess.Registry — OS process tracking
-│   ├── JidoClaw.Tools.Approval            — tool approval workflow
+│   ├── JidoClaw.Platform.Approval         — tool approval workflow
 │   ├── DynamicSupervisor (SessionSupervisor) — global session fallback
 │   ├── JidoClaw.Jido                      — Jido agent runtime
+│   ├── JidoClaw.Messaging                 — room-based messaging runtime
+│   │   ├── RoomSupervisor                 — per-room GenServers
+│   │   ├── AgentSupervisor                — per-room agent runners
+│   │   └── Registries (Rooms, Agents, Bridges)
+│   ├── JidoClaw.Tenant.Supervisor         — per-tenant subtree factory
+│   ├── JidoClaw.Tenant.Manager            — tenant lifecycle (GenServer)
+│   ├── JidoClaw.Solutions.Store           — fingerprint-based caching
+│   ├── JidoClaw.Solutions.Reputation      — solution trust scoring
+│   ├── JidoClaw.Memory                    — ETS + JSON memory (GenServer)
+│   ├── JidoClaw.Skills                    — cached YAML skill registry (GenServer)
+│   ├── JidoClaw.Network.Supervisor        — agent-to-agent networking
+│   ├── JidoClaw.AgentTracker              — per-agent stat accumulator
+│   ├── JidoClaw.Display                   — terminal display coordinator
 │   └── JidoClaw.Shell.SessionManager      — persistent shell sessions (jido_shell)
 │
-├── Messaging (jido_messaging)
-│   └── JidoClaw.Messaging                — room-based messaging runtime
-│       ├── RoomSupervisor                 — per-room GenServers
-│       ├── AgentSupervisor                — per-room agent runners
-│       └── Registries (Rooms, Agents, Bridges)
-│
-├── Multi-Tenancy
-│   ├── JidoClaw.Tenant.Supervisor        — per-tenant subtree factory
-│   │   └── Per tenant (DynamicSupervisor):
-│   │       ├── Session.Supervisor         — tenant's session workers
-│   │       ├── Channel.Supervisor         — tenant's channel adapters
-│   │       ├── Cron.Supervisor           — tenant's scheduled jobs
-│   │       └── Tool.Supervisor           — tenant's tool execution
-│   └── JidoClaw.Tenant.Manager           — tenant lifecycle (GenServer)
-│
-├── Solutions Engine
-│   ├── JidoClaw.Solutions.Store          — fingerprint-based caching
-│   └── JidoClaw.Solutions.Reputation     — solution trust scoring
-│
-├── Persistent State
-│   ├── JidoClaw.Memory                   — ETS + JSON memory (GenServer)
-│   └── JidoClaw.Skills                   — cached YAML skill registry (GenServer)
-│
-├── Network
-│   └── JidoClaw.Network.Supervisor       — agent-to-agent networking
-│
 ├── Web Gateway (conditional: mode in [:gateway, :both])
-│   └── JidoClaw.Web.Endpoint            — Phoenix HTTP/WS
-│       ├── HealthController              — GET /health
-│       ├── ChatController                — POST /v1/chat/completions
-│       ├── UserSocket → RpcChannel       — ws://localhost:4000/ws
-│       └── LiveDashboard                 — /dashboard
+│   └── JidoClaw.Web.Endpoint             — Phoenix HTTP/WS/LiveView
 │
 ├── Clustering (conditional: cluster_enabled = true)
 │   ├── :pg (process groups)
 │   └── Cluster.Supervisor (libcluster)
 │
-└── MCP Server (conditional: serve_mode = :mcp)
-    └── Jido.MCP.Server (stdio transport)
+├── MCP Server (conditional: serve_mode = :mcp)
+│   └── Jido.MCP.Server (stdio transport)
+│
+└── Discord (dynamic, started post-boot when DISCORD_BOT_TOKEN is set)
+    ├── Nostrum (Discord gateway)
+    └── JidoClaw.Channel.DiscordConsumer
 ```
 
-## Tool Architecture (24 tools)
+## Data Layer
+
+JidoClaw uses Ash Framework 3.0 with PostgreSQL (via `ash_postgres`) for persistent structured data. The database is separate from the ETS/JSON stores used for memory, solutions, and skills.
+
+```
+JidoClaw.Repo (AshPostgres.Repo)
+│
+├── JidoClaw.Accounts (Ash Domain)
+│   ├── User                — AshAuthentication-managed users
+│   ├── Token               — auth tokens (magic links, password resets)
+│   └── ApiKey              — API key authentication for REST/WS
+│
+├── JidoClaw.Folio (Ash Domain)
+│   ├── Project             — user projects (name, outcome, notes, status)
+│   ├── Action              — actions within projects
+│   └── InboxItem           — inbox system
+│
+├── JidoClaw.Security (Ash Domain)
+│   └── SecretRef           — encrypted secret references (Cloak Vault)
+│
+├── JidoClaw.Orchestration (Ash Domain)
+│   ├── WorkflowRun         — persistent workflow execution state
+│   ├── WorkflowStep        — individual step within a run
+│   └── ApprovalGate        — human-in-the-loop approval points
+│
+└── JidoClaw.Forge (Ash Domain)
+    ├── Session             — forge execution sessions
+    ├── ExecSession         — exec session tracking
+    ├── Checkpoint          — execution checkpoints
+    └── Event               — forge events
+```
+
+## Tool Architecture (27 tools)
 
 ```
 JidoClaw.Agent
@@ -125,6 +160,8 @@ JidoClaw.Agent
 │   └── Strategies: react, cot, cod, tot, got, aot, trm, adaptive
 │   └── Delegates to Jido.AI.Actions.Reasoning.RunStrategy
 │
+├── Scheduling (3)        — ScheduleTask, UnscheduleTask, ListScheduledTasks
+│
 └── Browser (1)           — BrowseWeb
 ```
 
@@ -146,6 +183,86 @@ User controls via:
   /strategy <name>    — switch active strategy
   /strategies         — list all strategies
   reason tool         — invoke specific strategy per-call
+```
+
+## Forge Engine (Sandboxed Execution)
+
+```
+JidoClaw.Forge
+│
+├── Manager (GenServer)
+│   ├── Harness lifecycle (create, start, stop, destroy)
+│   ├── Session tracking via Forge.SessionRegistry
+│   └── Coordinates with sandbox backend
+│
+├── Harness
+│   ├── Execution context for sandboxed runs
+│   ├── Resource provisioning (ContextBuilder, ResourceProvisioner)
+│   └── Step-by-step execution (StepHandler)
+│
+├── Sandbox Backends
+│   ├── Forge.Sandbox.Local    — local OS process isolation (default)
+│   └── Forge.Sandbox.Docker   — Docker container isolation (optional)
+│
+├── Runners
+│   ├── Shell       — shell command execution
+│   ├── Workflow    — multi-step workflow execution
+│   ├── ClaudeCode  — Claude Code subprocess
+│   └── Custom      — user-defined runners
+│
+├── Resources (Ash-backed)
+│   ├── Session      — forge session state
+│   ├── ExecSession  — exec session tracking
+│   ├── Checkpoint   — execution snapshots for resume
+│   └── Event        — forge event log
+│
+├── Persistence      — checkpoint/resume across restarts
+├── Bootstrap        — initial setup for forge environments
+└── PubSub           — forge-specific event fanout
+```
+
+## Orchestration
+
+```
+JidoClaw.Orchestration
+│
+├── WorkflowRun (Ash Resource)
+│   ├── Persistent state machine for multi-step workflows
+│   └── Tracks: status, steps, results, timestamps
+│
+├── WorkflowStep (Ash Resource)
+│   ├── Individual step within a workflow run
+│   └── Tracks: step name, status, input, output
+│
+├── ApprovalGate (Ash Resource)
+│   ├── Human-in-the-loop approval points
+│   └── Blocks workflow execution until approved/rejected
+│
+├── RunPubSub
+│   └── PubSub coordination for workflow state changes
+│
+└── RunSummaryFeed (GenServer, started in supervision tree)
+    └── Streams workflow events for display/logging
+```
+
+## Security
+
+```
+JidoClaw.Security
+│
+├── Vault (Cloak.Vault)
+│   ├── AES-GCM encryption for secrets at rest
+│   └── Key derivation from environment
+│
+├── SecretRef (Ash Resource)
+│   └── Encrypted reference to secrets stored in database
+│
+└── Redaction Pipeline
+    ├── Patterns          — regex patterns for sensitive data (API keys, tokens, passwords)
+    ├── LogRedactor       — strips secrets from log output
+    ├── PromptRedaction   — strips secrets from LLM prompts
+    ├── ChannelRedaction  — strips secrets from channel messages (Discord, etc.)
+    └── UIRedaction       — strips secrets from terminal/LiveView display
 ```
 
 ## VFS Architecture
@@ -250,6 +367,7 @@ JidoClaw.Repl.loop/1
                  │   │               ├── spawn_agent (creates OTP process)
                  │   │               ├── run_skill → PlanWorkflow (DAG) or SkillWorkflow (FSM)
                  │   │               ├── reason → RunStrategy (cot/tot/adaptive/...)
+                 │   │               ├── schedule_task, unschedule_task, list_scheduled_tasks
                  │   │               └── remember, recall (persistent memory)
                  │   │
                  │   └── Feed result back to LLM ──▶ Loop
@@ -270,12 +388,33 @@ Phoenix.Router
   │
   ├── GET /health ──▶ HealthController ──▶ 200 OK
   │
-  └── POST /v1/chat/completions ──▶ ChatController
-       │
-       ├── Find/create session
-       ├── Route to JidoClaw.Agent
-       ├── Stream or wait for response
-       └── Return OpenAI-compatible JSON
+  ├── POST /v1/chat/completions ──▶ ChatController (API key auth)
+  │     ├── Find/create session
+  │     ├── Route to JidoClaw.Agent
+  │     ├── Stream or wait for response
+  │     └── Return OpenAI-compatible JSON
+  │
+  ├── POST /webhooks/github ──▶ WebhookController (HMAC verified)
+  │
+  ├── /auth/* ──▶ AuthController (sign-in, sign-out)
+  │
+  ├── LiveView (authenticated)
+  │   ├── /              — DashboardLive
+  │   ├── /dashboard     — DashboardLive
+  │   ├── /forge         — ForgeLive
+  │   ├── /workflows     — WorkflowsLive
+  │   ├── /agents        — AgentsLive
+  │   ├── /projects      — ProjectsLive
+  │   ├── /settings      — SettingsLive
+  │   └── /folio         — FolioLive
+  │
+  ├── LiveView (public)
+  │   ├── /sign-in       — SignInLive
+  │   └── /setup         — SetupLive
+  │
+  ├── /admin ──▶ AshAdmin (requires auth)
+  │
+  └── /live-dashboard ──▶ Phoenix LiveDashboard (dev only)
 ```
 
 ### Swarm Flow
@@ -339,7 +478,7 @@ JidoClaw.Solutions
 └── Reputation (GenServer + ETS + JSON)
     ├── Per-agent reputation tracking
     ├── Records: accepted, rejected, shared solutions
-    └── Persistence: .jido/reputation.json
+    └── Persistence: .jido/reputation.json (created on first use)
 ```
 
 ## Network Architecture
@@ -363,7 +502,19 @@ JidoClaw.Network
     ├── generate_keypair/0 → {public_key, private_key}
     ├── sign/2, verify/3, sign_solution/2, verify_solution/3
     ├── derive_agent_id/1 → "jido_" <> first_7_base64_chars
-    └── Persistence: .jido/identity.json (0o600 perms)
+    └── Persistence: .jido/identity.json (0o600 perms, created on first use)
+```
+
+## GitHub Integration
+
+```
+JidoClaw.GitHub
+│
+├── WebhookPipeline       — processes incoming GitHub webhook events
+├── WebhookSignature      — HMAC signature verification
+├── IssueAnalysis         — AI-powered issue analysis
+├── IssueCommentClient    — posts analysis results back to GitHub
+└── Agents/               — specialized agents for GitHub tasks
 ```
 
 ## Provider Architecture
@@ -445,24 +596,55 @@ JidoClaw.Config
 | `/gateway` | Gateway status |
 | `/tenants` | List tenants |
 | `/cron` | List cron jobs |
+| `/cron add` | Add a cron job |
+| `/cron remove` | Remove a cron job |
+| `/cron trigger` | Manually trigger a job |
+| `/cron disable` | Disable a job |
 | `/channels` | List channel adapters |
 
-## Signal Namespace
+## Events
 
-All internal events use the `jido_claw.*` namespace:
+JidoClaw uses two distinct event systems. Do not conflate them.
+
+### Jido Signals (via SignalBus.emit)
+
+Routed through `Jido.Signal.Bus` (JidoClaw.SignalBus). Subscribers receive events in-process. Used for internal coordination between subsystems.
 
 | Signal | Emitted By | Purpose |
 |--------|-----------|---------|
-| `jido_claw.tool.start` | Display | Tool execution starting |
 | `jido_claw.tool.complete` | Stats | Tool execution finished |
 | `jido_claw.agent.spawned` | Stats | Child agent created |
-| `jido_claw.agent.completed` | SpawnAgent | Child agent finished |
 | `jido_claw.memory.saved` | Memory | Memory entry persisted |
-| `jido_claw.session.*` | Telemetry | Session lifecycle |
-| `jido_claw.provider.*` | Telemetry | LLM request lifecycle |
-| `jido_claw.tenant.*` | Telemetry | Tenant creation/removal |
-| `jido_claw.cron.*` | Telemetry | Cron job execution |
-| `jido_claw.channel.*` | Telemetry | Channel message events |
+| `jido_claw.solution.stored` | Solutions.Store | Solution cached |
+| `jido_claw.solution.deleted` | Solutions.Store | Solution removed |
+| `jido_claw.reputation.updated` | Solutions.Reputation | Agent reputation changed |
+| `jido_claw.network.connected` | Network.Node | Joined peer network |
+| `jido_claw.network.disconnected` | Network.Node | Left peer network |
+| `jido_claw.network.solution_shared` | Network.Node | Solution broadcast to peers |
+
+### Telemetry Metrics (via :telemetry.execute)
+
+Standard Erlang telemetry for metrics, dashboards, and observability. Consumed by `JidoClaw.Telemetry` metric definitions and Phoenix LiveDashboard.
+
+| Event | Purpose |
+|-------|---------|
+| `[:jido_claw, :session, :start]` | Session created |
+| `[:jido_claw, :session, :stop]` | Session ended (with duration) |
+| `[:jido_claw, :session, :message]` | Message sent in session |
+| `[:jido_claw, :provider, :request, :start]` | LLM request started |
+| `[:jido_claw, :provider, :request, :stop]` | LLM request completed (with duration) |
+| `[:jido_claw, :provider, :request, :error]` | LLM request failed |
+| `[:jido_claw, :tool, :execute, :start]` | Tool execution started |
+| `[:jido_claw, :tool, :execute, :stop]` | Tool execution completed (with duration) |
+| `[:jido_claw, :tool, :execute, :error]` | Tool execution failed |
+| `[:jido_claw, :cron, :job, :start]` | Cron job started |
+| `[:jido_claw, :cron, :job, :stop]` | Cron job completed (with duration) |
+| `[:jido_claw, :cron, :job, :error]` | Cron job failed |
+| `[:jido_claw, :tenant, :create]` | Tenant created |
+| `[:jido_claw, :tenant, :destroy]` | Tenant destroyed |
+| `[:jido_claw, :tenant, :count]` | Tenant count gauge |
+| `[:jido_claw, :channel, :message, :inbound]` | Channel message received |
+| `[:jido_claw, :channel, :message, :outbound]` | Channel message sent |
 
 ## Display System
 
@@ -509,19 +691,29 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 ```
 .jido/
 ├── JIDO.md              # Self-knowledge (auto-generated, injected into system prompt)
-├── config.yaml          # User config (provider, model, strategy, timeouts)
-├── identity.json        # Ed25519 keypair (0o600 permissions)
-├── memory.json          # Persistent memory
-├── solutions.json       # Solution fingerprint cache
-├── reputation.json      # Agent reputation data
-├── sessions/            # JSONL session logs
-├── agents/              # Custom agent definitions (YAML)
-├── skills/              # Multi-step workflows (YAML, supports DAG depends_on)
+├── config.yaml          # User config (provider, model, strategy, timeouts) [gitignored]
+├── system_prompt.md     # Rendered system prompt snapshot
+├── heartbeat.md         # Agent heartbeat state [gitignored]
+├── memory.json          # Persistent memory [gitignored]
+├── solutions.json       # Solution fingerprint cache [gitignored]
+├── cron.yaml            # Cron job definitions [gitignored]
+├── identity.json        # Ed25519 keypair, 0o600 perms (created on first network use)
+├── reputation.json      # Agent reputation data (created on first use)
+├── sessions/            # JSONL session logs [gitignored]
+├── agents/              # Custom agent definitions (YAML, committed)
+│   ├── api_designer.yaml
+│   ├── architect.yaml
+│   ├── bug_hunter.yaml
+│   ├── onboarder.yaml
+│   ├── performance_analyst.yaml
+│   └── security_auditor.yaml
+├── skills/              # Multi-step workflows (YAML, supports DAG depends_on, committed)
 │   ├── full_review.yaml
 │   ├── refactor_safe.yaml
 │   ├── explore_codebase.yaml
 │   ├── security_audit.yaml
 │   ├── implement_feature.yaml
+│   ├── iterative_feature.yaml
 │   ├── debug_issue.yaml
 │   └── onboard_dev.yaml
 └── .gitignore
@@ -531,18 +723,24 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 
 ```
 1. Application.start
-   ├── Load .env file (if present)
+   ├── Load .env file (if present — project root or .jido/.env)
+   ├── Record boot time for uptime tracking
    ├── Register Ollama provider in ReqLLM
-   └── Start supervision tree:
-       ├── Infrastructure (Registries, PubSub, Finch, SignalBus)
-       ├── Core services (Telemetry, Stats, Display, AgentTracker, Shell.SessionManager)
+   └── Start supervision tree (rest_for_one):
+       ├── InfraSupervisor (Registries, TaskSupervisor, Repo, Vault, PubSub, SignalBus)
+       ├── Forge engine (SessionRegistry, HarnessSupervisor, ExecSessionSupervisor, Manager, Sandbox)
+       ├── Orchestration (RunSummaryFeed)
+       ├── Code Server (RuntimeRegistry, RuntimeSupervisor)
+       ├── Finch HTTP pools
+       ├── Core services (Telemetry, Stats, Approval, Jido, Shell.SessionManager, etc.)
        ├── Messaging runtime (JidoClaw.Messaging)
-       ├── Agent runtime (JidoClaw.Jido)
        ├── Tenancy (Supervisor + Manager → creates "default" tenant)
        ├── Solutions engine (Store + Reputation)
        ├── Memory GenServer (loads .jido/memory.json into ETS)
        ├── Skills GenServer (parses .jido/skills/*.yaml, caches in state)
-       └── Network supervisor
+       ├── Network supervisor
+       ├── AgentTracker + Display
+       └── Discord (dynamic post-boot if DISCORD_BOT_TOKEN is set)
 
 2. Repl.start (CLI mode)
    ├── Check Setup.needed? → run wizard if first time
@@ -560,7 +758,43 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 
 3. Web.Endpoint (gateway mode)
    └── Phoenix starts on configured port (default: 4000)
+       ├── LiveView routes (dashboard, forge, workflows, agents, projects, settings, folio)
+       ├── API routes (health, chat completions, webhooks)
+       ├── Auth routes (sign-in, sign-out)
+       ├── AshAdmin panel (/admin)
+       └── LiveDashboard (/live-dashboard, dev only)
 ```
+
+## Module Namespace Convention
+
+`JidoClaw.<Subsystem>.<Module>` — key subsystems:
+
+| Directory        | Purpose                                              |
+| ---------------- | ---------------------------------------------------- |
+| `accounts/`      | Ash domain: User, Token, ApiKey (AshAuthentication)  |
+| `agent/`         | Main agent, prompt builder, templates, workers       |
+| `cli/`           | REPL, commands, branding, setup, formatter           |
+| `code_server/`   | Runtime management for code execution                |
+| `core/`          | SignalBus, Stats, Telemetry                          |
+| `desktop/`       | Desktop sidecar (port finder)                        |
+| `display/`       | Terminal display coordinator                         |
+| `folio/`         | Ash domain: Project, Action, InboxItem               |
+| `forge/`         | Sandboxed execution (runners, sandbox backends)      |
+| `github/`        | Webhook pipeline, issue analysis, comment client     |
+| `network/`       | Agent-to-agent networking (Ed25519, PubSub peers)    |
+| `orchestration/` | Persistent workflow state machine (Ash-backed)       |
+| `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess    |
+| `projects/`      | Project context                                      |
+| `providers/`     | Custom LLM provider implementations (Ollama)         |
+| `reasoning/`     | Strategy registry (maps names to jido_ai modules)    |
+| `security/`      | Cloak Vault, SecretRef, redaction pipeline            |
+| `setup/`         | First-run setup wizard                               |
+| `shell/`         | Persistent shell session manager (jido_shell)        |
+| `solutions/`     | Solution fingerprinting, trust scoring, reputation   |
+| `tools/`         | All 27 Jido.Action tool modules                      |
+| `vfs/`           | VFS path resolver (GitHub, S3, Git, local)           |
+| `web/`           | Phoenix endpoint, controllers, LiveView, auth        |
+| `workflows/`     | Workflow execution (plan, skill, iterative, context)  |
 
 ## Technology Stack
 
@@ -570,9 +804,15 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 | Agent framework | Jido 2.1+ | Agent lifecycle, actions, signals, composition |
 | AI runtime | jido_ai 2.0+ | LLM orchestration, 8 reasoning strategies |
 | LLM abstraction | req_llm 1.6+ | Multi-provider support (7 providers) |
+| Data framework | Ash 3.0+ | Declarative resources, domains, authentication |
+| Database | PostgreSQL + ash_postgres | Persistent structured data |
+| Auth | ash_authentication | Token-based auth, magic links, password resets |
+| Encryption | Cloak + bcrypt_elixir | At-rest encryption, password hashing |
 | Shell runtime | jido_shell | Persistent shell sessions, command chaining |
 | Filesystem | jido_vfs | VFS abstraction (GitHub, S3, Git, local) |
-| HTTP server | Phoenix 1.7+ / Bandit | REST API, WebSocket, LiveDashboard |
+| HTTP server | Phoenix 1.7+ / Bandit | REST API, WebSocket, LiveView, LiveDashboard |
+| LiveView | phoenix_live_view 1.0+ | Real-time web UI (9 LiveView modules) |
+| Admin | ash_admin | Auto-generated admin panel |
 | PubSub | Phoenix.PubSub | Real-time event fanout |
 | HTTP client | Finch | Connection pooling for LLM API calls |
 | Configuration | yaml_elixir | YAML parsing for .jido/ configs |
@@ -584,7 +824,8 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 | Display | AgentTracker + Display GenServers | Per-agent stats, swarm visualization |
 | Messaging | jido_messaging | Room-based messaging, agent bridges |
 | Workflows | jido_composer 0.3+ | FSM-based skill orchestration |
-| Browser | jido_browser 0.8+ | Headless browser automation |
+| Browser | jido_browser 2.0+ | Headless browser automation |
+| Graphs | libgraph (custom fork) | DAG computation for skill phases |
 
 ## Jido Ecosystem Dependencies
 
@@ -592,13 +833,13 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 |-----------|---------|-----------------|
 | **jido** | ~> 2.1 | Core agent runtime, DynamicSupervisor, agent lifecycle |
 | **jido_ai** | ~> 2.0 | LLM orchestration, 8 reasoning strategies, `ask_sync` |
-| **jido_action** | ~> 2.0 | All 24 tools are `Jido.Action` modules |
+| **jido_action** | ~> 2.0 | All 27 tools are `Jido.Action` modules |
 | **jido_signal** | ~> 2.0 | Event bus for `jido_claw.*` signals |
 | **jido_shell** | main | Persistent shell sessions for RunCommand tool |
 | **jido_vfs** | main | VFS abstraction for file tools (GitHub, S3, Git) |
 | **jido_memory** | main | ETS store backend for persistent memory |
 | **jido_mcp** | main | MCP server for Claude Code / Cursor integration |
-| **jido_browser** | ~> 0.8 | `browse_web` tool |
+| **jido_browser** | ~> 2.0 | `browse_web` tool |
 | **jido_composer** | ~> 0.3 | Workflow FSM for sequential skill orchestration |
 | **jido_messaging** | main | Room-based messaging runtime |
 | **jido_skill** | main | Skill metadata discoverability |

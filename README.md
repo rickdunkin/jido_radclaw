@@ -6,11 +6,13 @@
 [![GitHub issues](https://img.shields.io/github/issues/robertohluna/jido_claw)](https://github.com/robertohluna/jido_claw/issues)
 [![GitHub tag](https://img.shields.io/github/v/tag/robertohluna/jido_claw?label=version)](https://github.com/robertohluna/jido_claw/tags)
 [![Tests](https://img.shields.io/github/actions/workflow/status/robertohluna/jido_claw/ci.yml?label=tests)](https://github.com/robertohluna/jido_claw/actions)
-[![30 Tools](https://img.shields.io/badge/tools-30-orange)](docs/ARCHITECTURE.md)
+[![27 Tools](https://img.shields.io/badge/tools-27-orange)](docs/ARCHITECTURE.md)
 [![8 Providers](https://img.shields.io/badge/providers-8-blue)](docs/ARCHITECTURE.md)
-[![7 Skills](https://img.shields.io/badge/skills-7-green)](docs/ARCHITECTURE.md)
+[![8 Skills](https://img.shields.io/badge/skills-8-green)](docs/ARCHITECTURE.md)
 
 > Full-stack AI agent platform built on the Jido framework for Elixir/OTP — CLI, web dashboard, sandbox execution, workflow orchestration, GitHub automation, and desktop app
+
+> **Fork note:** This project is a local fork of the original [JidoClaw by Roberto Luna](https://github.com/robertohluna/jido_claw), maintained independently.
 
 ```
      ██╗██╗██████╗  ██████╗  ██████╗██╗      █████╗ ██╗    ██╗
@@ -28,14 +30,14 @@ JidoClaw is a full-stack AI agent orchestration platform built natively on the [
 
 | Layer | What It Does |
 |-------|-------------|
-| **CLI REPL** | Interactive terminal agent with 30 tools, swarm orchestration, live display |
+| **CLI REPL** | Interactive terminal agent with 27 tools, swarm orchestration, live display |
 | **Web Dashboard** | LiveView UI — dashboard, forge terminal, workflows, agents, projects, settings, GTD |
 | **Forge** | Sandboxed code execution engine with 4 runner types (shell, claude_code, workflow, custom) |
 | **Orchestration** | Persistent workflow engine with state machine, approval gates, retry lineage |
 | **GitHub Bot** | Hierarchical multi-agent pipeline — triage → parallel research → PR generation |
 | **Folio GTD** | Getting Things Done task management — inbox capture, context/energy tracking |
 | **Security** | AES-256-GCM encryption at rest, multi-layer secret redaction (logs, prompts, UI, PubSub) |
-| **Desktop App** | Tauri + Burrito packaging — native binary with embedded Phoenix server |
+| **Desktop App** | Tauri packaging — native shell with embedded Phoenix server |
 | **Data Layer** | Ash Framework 3.0 + PostgreSQL — resources, authentication, admin panel |
 
 ## Why JidoClaw?
@@ -45,12 +47,12 @@ JidoClaw is a full-stack AI agent orchestration platform built natively on the [
 - **Multi-interface**: CLI REPL, REST API (OpenAI-compatible), WebSocket RPC, Discord, Telegram
 - **Multi-provider**: Ollama (local + cloud), Anthropic, OpenAI, Google, Groq, xAI, OpenRouter — 8 providers, 35+ models
 - **Multi-tenant**: Per-tenant supervision trees isolate resources and prevent cascading failures across teams
-- **Sandboxed execution**: Forge runs code in isolated sprite containers with session lifecycle, concurrency limits, and streaming output
+- **Sandboxed execution**: Forge runs code in isolated sandboxes with session lifecycle, concurrency limits, and streaming output
 - **Workflow orchestration**: Persistent state machine with approval gates — human-in-the-loop for critical operations
 - **GitHub automation**: Hierarchical agent pipeline processes issues end-to-end — triage, research, patch, PR
 - **Security-first**: Encrypted secrets at rest, redaction filters on every output channel, API key authentication
 - **Swarm orchestration**: The LLM decides when to spawn child agents — `spawn_agent`, `list_agents`, `send_to_agent`, `kill_agent` are first-class tools
-- **30 built-in tools**: File ops, git, shell, code search, memory, solution caching, network sharing, swarm management, AI reasoning, cron scheduling
+- **27 built-in tools**: File ops, git, shell, code search, memory, solution caching, network sharing, swarm management, AI reasoning, cron scheduling
 - **8 reasoning strategies**: ReAct, Chain-of-Thought, Chain-of-Draft, Tree-of-Thought, Graph-of-Thought, Atom-of-Thought, TRM, Adaptive — switchable per-session via `/strategy`
 - **Virtual filesystem**: `github://`, `s3://`, `git://` URI schemes for transparent remote file access alongside local paths
 - **Persistent shell sessions**: jido_shell-backed sessions preserve working directory and env vars across commands per workspace
@@ -166,9 +168,9 @@ The web dashboard is available at `http://localhost:4000`. On first launch, the 
   ⚙  provider    ollama cloud
   ⚙  model       nemotron-3-super:cloud
   ⚙  strategy    react
-  ⚙  tools       30 loaded
-  ⚙  templates   6 agent types
-  ✓  skills      7 loaded
+  ⚙  tools       27 loaded
+  ⚙  templates   7 agent types
+  ✓  skills      8 loaded
   ✓  agents      6 custom
   ✓  JIDO.md     loaded
   ✓  memory      12.4KB
@@ -213,7 +215,7 @@ AshAdmin is mounted at `/admin` — browse and manage all resources through a we
 
 ## Forge — Sandbox Execution Engine
 
-Forge is a generic parallel sandbox execution engine that runs code in isolated sprite containers.
+Forge is a generic parallel sandbox execution engine that runs code in isolated sandboxes.
 
 ### Runner Types
 
@@ -263,12 +265,12 @@ JidoClaw.Forge.create_checkpoint(handle, "before-deploy")
 })
 ```
 
-### Sprite Client
+### Sandbox Backend
 
-Forge abstracts container management through a SpriteClient behaviour with 8 callbacks (`create/1`, `exec/3`, `spawn/4`, `write_file/3`, `read_file/2`, `inject_env/2`, `destroy/2`):
+Forge abstracts sandbox management through a `Sandbox.Behaviour` with 7 callbacks (`create/1`, `exec/3`, `spawn/4`, `write_file/3`, `read_file/2`, `inject_env/2`, `destroy/2`) plus 2 optional (`run/4`, `impl_module/0`):
 
-- **Live**: Real sprite containers (via [sprites-ex](https://github.com/mikehostetler/sprites-ex)) for production
-- **Fake**: Agent-backed, temp directory + `System.cmd` for dev/test — no containers needed
+- **Docker**: OS-level isolation via Docker Desktop microVMs (`sbx` CLI) for production
+- **Local**: Temp directory + `System.cmd` for dev/test — no containers needed
 
 ### Streaming
 
@@ -426,12 +428,11 @@ Session-based auth with `on_mount` hooks:
 
 ## Desktop App
 
-JidoClaw can be packaged as a native desktop application using Tauri (frontend shell) + Burrito (Elixir binary packaging).
+JidoClaw can be packaged as a native desktop application using Tauri as a frontend shell wrapping the embedded Phoenix server.
 
 ### How It Works
 
-1. Burrito compiles JidoClaw into a self-contained native binary
-2. On launch, the sidecar detects `BURRITO_TARGET` or `JIDOCLAW_DESKTOP=true`
+1. The desktop sidecar detects `JIDOCLAW_DESKTOP=true`
 3. An available port is found via `:gen_tcp.listen(0, ...)`
 4. Phoenix starts as an embedded server with `check_origin: false`
 5. Tauri opens a webview pointing at `localhost:{port}`
@@ -511,19 +512,26 @@ JidoClaw.Supervisor
 ├── Registry (SessionRegistry, TenantRegistry)
 ├── Phoenix.PubSub
 ├── Finch (HTTP pools)
-├── Jido.Signal.Bus (jido_claw.* events)
-├── JidoClaw.Telemetry (20+ metrics)
-├── JidoClaw.Stats (session counters)
-├── JidoClaw.BackgroundProcess.Registry
-├── JidoClaw.Tool.Approval
-├── JidoClaw.Messaging (jido_messaging runtime — rooms, agents, bridges)
+├── Core
+│   ├── Jido.Signal.Bus (jido_claw.* events)
+│   ├── JidoClaw.Core.Telemetry (20+ metrics)
+│   ├── JidoClaw.Core.Stats (session counters)
+│   ├── JidoClaw.Core.Config (.jido/config.yaml loader)
+│   └── JidoClaw.Core.Cluster (libcluster + :pg, optional)
+│
+├── Platform
+│   ├── JidoClaw.Platform.Memory (persistent memory — ETS-backed, supervised)
+│   ├── JidoClaw.Platform.Skills (cached skill registry — GenServer, parsed once at boot)
+│   ├── JidoClaw.Platform.Messaging (jido_messaging runtime — rooms, agents, bridges)
+│   ├── JidoClaw.Platform.Approval (tool approval system)
+│   └── JidoClaw.Platform.BackgroundProcess.Registry
 │
 ├── Forge Engine
 │   ├── Registry (SessionRegistry)
-│   ├── SpriteSupervisor (DynamicSupervisor)
+│   ├── HarnessSupervisor (DynamicSupervisor)
 │   ├── ExecSessionSupervisor (DynamicSupervisor)
 │   ├── Forge.Manager (GenServer — concurrency control)
-│   └── SpriteClient.Fake (dev/test sprite stub)
+│   └── Sandbox.Local or Sandbox.Docker (configurable)
 │
 ├── Orchestration
 │   └── RunSummaryFeed (GenServer — workflow status aggregator)
@@ -534,6 +542,8 @@ JidoClaw.Supervisor
 │
 ├── JidoClaw.SessionSupervisor (DynamicSupervisor)
 ├── JidoClaw.Jido (agent runtime)
+├── JidoClaw.AgentTracker (per-agent stats)
+├── JidoClaw.Display (live terminal display)
 ├── JidoClaw.Tenant.Supervisor
 │   └── per tenant:
 │       ├── Session.Supervisor (DynamicSupervisor)
@@ -542,12 +552,10 @@ JidoClaw.Supervisor
 │       └── Tool.Supervisor (Task.Supervisor)
 ├── JidoClaw.Tenant.Manager
 ├── JidoClaw.Solutions.Store + Reputation
-├── JidoClaw.Memory (persistent memory — ETS-backed, supervised)
-├── JidoClaw.Skills (cached skill registry — GenServer, parsed once at boot)
 ├── JidoClaw.Shell.SessionManager (persistent shell sessions per workspace)
 ├── JidoClaw.Network.Supervisor
 ├── JidoClaw.Web.Endpoint (Phoenix — port 4000)
-└── Cluster.Supervisor (libcluster, optional)
+└── JidoClaw.Core.MCP (MCP server, optional — stdio transport)
 ```
 
 ### Ash Domains
@@ -568,14 +576,17 @@ JidoClaw.Supervisor
 |---------|------|---------|---------------|
 | `JidoClaw.Repo` | Ecto.Repo | PostgreSQL connection pool | Application |
 | `JidoClaw.Security.Vault` | Cloak.Vault | AES-256-GCM encryption key management | Application |
-| `JidoClaw.Memory` | GenServer | Persistent cross-session memory (ETS + JSON file) | Application |
-| `JidoClaw.Skills` | GenServer | Cached skill registry — parses YAML once at boot, serves from state | Application |
+| `JidoClaw.Platform.Memory` | GenServer | Persistent cross-session memory (ETS + JSON file) | Application |
+| `JidoClaw.Platform.Skills` | GenServer | Cached skill registry — parses YAML once at boot, serves from state | Application |
 | `JidoClaw.Shell.SessionManager` | GenServer | Persistent shell sessions per workspace (jido_shell-backed) | Application |
-| `JidoClaw.Messaging` | Supervisor | jido_messaging runtime (rooms, agents, bridges) | Application |
+| `JidoClaw.Platform.Messaging` | Supervisor | jido_messaging runtime (rooms, agents, bridges) | Application |
 | `JidoClaw.Forge.Manager` | GenServer | Session registry, concurrency limits (50 total) | Application |
-| `JidoClaw.Forge.SpriteSession` | GenServer | Per-session state machine (per session) | SpriteSupervisor |
+| `JidoClaw.Forge.Harness` | GenServer | Per-session state machine (per session) | HarnessSupervisor |
 | `JidoClaw.Orchestration.RunSummaryFeed` | GenServer | Workflow run status aggregator (50-entry ring buffer) | Application |
 | `JidoClaw.CodeServer.Runtime` | GenServer | Per-project conversation runtime | RuntimeSupervisor |
+| `JidoClaw.AgentTracker` | GenServer | Per-agent stats: tokens, cost, tool calls, status | Application |
+| `JidoClaw.Display` | GenServer | Live terminal display (spinner, tool calls, swarm box) | Application |
+| `JidoClaw.Core.Stats` | GenServer | Session-level statistics (messages, tokens, tool calls) | Application |
 | `Session.Worker` | GenServer | Per-session state, message history, agent binding with crash monitoring | Tenant Session.Supervisor |
 
 ### Session–Agent Binding
@@ -593,7 +604,7 @@ Session.Worker ──monitor──> Agent PID
 
 ### Skill Workflow Engine
 
-Skills support two execution modes, selected automatically based on whether steps declare `depends_on`:
+Skills support three execution modes, selected automatically based on step annotations:
 
 **Sequential (FSM)** — Steps without `depends_on` run through `jido_composer`'s workflow FSM:
 
@@ -612,13 +623,15 @@ Phase 2: [run_tests, review]  ← both depend on implement, run in parallel
 Phase 3: [synthesize]         ← depends on run_tests + review
 ```
 
+**Iterative** — Steps with `role: generator` and `role: evaluator` run in a refinement loop up to `max_iterations`. The generator produces output, the evaluator verifies it (emitting `VERDICT: PASS` or `VERDICT: FAIL`), and the loop repeats until passing or exhausted.
+
 Each step spawns a templated agent, runs `ask_sync/2`, and collects the result. The DAG executor validates all dependency references at plan time and fails fast on cycles or missing refs.
 
 ## Interfaces
 
 ### CLI REPL
 
-Interactive terminal agent with 30 tools and swarm orchestration.
+Interactive terminal agent with 27 tools and swarm orchestration.
 
 ```
 jidoclaw> explain the authentication flow in this codebase
@@ -682,7 +695,7 @@ Connect to `ws://localhost:4000/ws` and join `rpc:lobby`:
 
 Real-time metrics at `http://localhost:4000/live-dashboard` — session counts, provider latency, tool execution, VM stats.
 
-## Tools (30)
+## Tools (27)
 
 | Category | Tools |
 |----------|-------|
@@ -714,6 +727,7 @@ Agent spawning is a first-class tool — the LLM calls `spawn_agent` when it dec
 | `docs_writer` | Read + write | 15 | Documentation |
 | `researcher` | Read-only | 15 | Codebase analysis |
 | `refactorer` | Full R/W + commands | 25 | Refactoring |
+| `verifier` | Read + commands | 20 | Verification, test execution |
 
 ### Custom Agents (`.jido/agents/`)
 
@@ -749,6 +763,7 @@ Multi-step orchestrated workflows:
 | `implement_feature` | **DAG** | research → implement → test + review (parallel) → synthesize | Full feature lifecycle |
 | `debug_issue` | Sequential | researcher → test_runner → coder → test_runner | Systematic debugging |
 | `onboard_dev` | Sequential | researcher → docs_writer | New developer onboarding |
+| `iterative_feature` | **Iterative** | implement → verify (loop, max 5) | Implement + verify in refinement loop |
 
 Live swarm panel during execution:
 
@@ -769,11 +784,11 @@ JidoClaw supports 8 AI reasoning strategies from `jido_ai`, switchable per-sessi
 |----------|--------|----------|
 | **`react`** (default) | `Jido.AI.Reasoning.ReAct` | Tool-using agents — observe, think, act loop |
 | `cot` | `Jido.AI.Reasoning.ChainOfThought` | Step-by-step logical reasoning |
-| `cod` | `Jido.AI.Reasoning.ChainOfDraft` | Iterative draft refinement |
-| `tot` | `Jido.AI.Reasoning.TreeOfThought` | Branching exploration of solution paths |
-| `got` | `Jido.AI.Reasoning.GraphOfThought` | Non-linear reasoning with cross-connections |
-| `aot` | `Jido.AI.Reasoning.AtomOfThought` | Atomic decomposition of complex problems |
-| `trm` | `Jido.AI.Reasoning.TRM` | Task-oriented reasoning with planning |
+| `cod` | `Jido.AI.Reasoning.ChainOfDraft` | Concise step-by-step reasoning with minimal tokens |
+| `tot` | `Jido.AI.Reasoning.TreeOfThoughts` | Branching exploration of solution paths |
+| `got` | `Jido.AI.Reasoning.GraphOfThoughts` | Non-linear reasoning with cross-connections |
+| `aot` | `Jido.AI.Reasoning.AlgorithmOfThoughts` | Structured algorithmic search with in-context examples |
+| `trm` | `Jido.AI.Reasoning.TRM` | Recursive decomposition with supervision |
 | `adaptive` | `Jido.AI.Reasoning.Adaptive` | Auto-selects strategy based on task type |
 
 The `reason` tool exposes these strategies to the agent itself — it can invoke deeper reasoning mid-task:
@@ -971,6 +986,7 @@ model: "openrouter:anthropic/claude-sonnet-4"
 │   ├── explore_codebase.yaml
 │   ├── security_audit.yaml
 │   ├── implement_feature.yaml
+│   ├── iterative_feature.yaml
 │   ├── debug_issue.yaml
 │   └── onboard_dev.yaml
 ├── memory.json          # Persistent memory (git-ignored)
@@ -999,14 +1015,20 @@ model: "openrouter:anthropic/claude-sonnet-4"
 lib/jido_claw/
 ├── application.ex              # OTP supervision tree
 ├── repo.ex                     # AshPostgres.Repo
-├── memory.ex                   # Persistent memory GenServer (ETS + JSON, supervised)
-├── skills.ex                   # Cached skill registry GenServer (parsed once at boot)
+├── agent.ex                    # Top-level agent facade
+├── agent_tracker.ex            # Per-agent stats tracking (tokens, cost, tool calls)
+├── display.ex                  # Live terminal display GenServer
+├── heartbeat.ex                # .jido/heartbeat.md updater (60s interval)
+├── jido.ex                     # Jido agent runtime entry point
 ├── accounts.ex                 # Ash.Domain — users, auth, API keys
 ├── accounts/
 │   ├── user.ex                 # User resource (password + magic link auth)
 │   ├── token.ex                # AshAuthentication token resource
 │   ├── api_key.ex              # API key resource
-│   └── secrets.ex              # Auth secret provider
+│   ├── secrets.ex              # Auth secret provider
+│   ├── checks/
+│   │   └── registration_allowed.ex
+│   └── senders/                # Email senders (magic link, confirmation, password reset)
 ├── projects.ex                 # Ash.Domain — project registry
 ├── projects/
 │   └── project.ex              # Project resource
@@ -1020,46 +1042,49 @@ lib/jido_claw/
 │       ├── prompt_redaction.ex # LLM prompt sanitizer
 │       ├── channel_redaction.ex # PubSub message filter
 │       └── ui_redaction.ex     # Display output filter
+├── core/                       # Infrastructure and platform services
+│   ├── cluster.ex              # libcluster + :pg process groups
+│   ├── config.ex               # .jido/config.yaml loader
+│   ├── mcp_server.ex           # MCP server (jido_mcp, stdio transport)
+│   ├── signal_bus.ex           # Jido.Signal.Bus integration (jido_claw.* events)
+│   ├── stats.ex                # Session-level statistics GenServer
+│   └── telemetry.ex            # Telemetry supervisor (sessions, providers, requests)
 ├── forge.ex                    # Forge facade (start_session, exec, run_loop, resume, cancel, checkpoint)
 ├── forge/
 │   ├── manager.ex              # Concurrency control GenServer (50 total, per-runner limits)
-│   ├── sprite_session.ex       # Per-session state machine GenServer
+│   ├── harness.ex              # Per-session state machine GenServer
 │   ├── runner.ex               # Runner behaviour (init, run_iteration, apply_input, handle_output, terminate)
 │   ├── runners/
 │   │   ├── shell.ex            # Shell command execution
 │   │   ├── claude_code.ex      # Claude CLI with stream-json output
 │   │   ├── workflow.ex         # Data-driven step engine with {{var}} interpolation
 │   │   └── custom.ex           # User-defined function runner
-│   ├── sprite_client.ex        # Container abstraction dispatcher
-│   ├── sprite_client/
-│   │   ├── behaviour.ex        # 8 callbacks (create, exec, spawn, write_file, read_file, inject_env, destroy)
-│   │   ├── live.ex             # Real sprite containers
-│   │   └── fake.ex             # Agent-backed dev/test stub
+│   ├── sandbox.ex              # Sandbox abstraction dispatcher
+│   ├── sandbox/
+│   │   ├── behaviour.ex        # 7 required + 2 optional callbacks
+│   │   ├── docker.ex           # Docker Desktop microVM sandbox (sbx CLI)
+│   │   └── local.ex            # Temp directory sandbox for dev/test
+│   ├── sandbox_init.ex         # Docker sandbox initialization
 │   ├── domain.ex               # Ash.Domain — session audit
 │   ├── resources/
 │   │   ├── session.ex          # forge_sessions table (10-state phase enum)
 │   │   ├── exec_session.ex     # forge_exec_sessions table
 │   │   ├── checkpoint.ex       # forge_checkpoints table
 │   │   └── event.ex            # forge_events table
-│   ├── bootstrap.ex            # Sprite initialization steps
+│   ├── bootstrap.ex            # Sandbox initialization steps
+│   ├── context_builder.ex      # Execution context assembly
+│   ├── resource_provisioner.ex # Resource provisioning for sessions
 │   ├── persistence.ex          # Fire-and-forget Ash persistence
 │   ├── pubsub.ex               # Redaction-gated PubSub
-│   ├── streaming/
-│   │   └── chunk_coalescer.ex  # 50ms coalescing, 64KB buffer, 1MB max
 │   ├── step_handler.ex         # Behaviour for :call workflow steps
-│   └── error.ex                # 5 typed exceptions with classify/1
+│   └── error.ex                # Typed exceptions with classify/1
 ├── orchestration.ex            # Ash.Domain — workflows
 ├── orchestration/
 │   ├── workflow_run.ex         # AshStateMachine (6 states, retry lineage)
 │   ├── workflow_step.ex        # Step status, output, timing (5 states)
 │   ├── approval_gate.ex        # Approver, decision, timestamp
 │   ├── run_pubsub.ex           # Workflow event broadcasting
-│   ├── run_summary_feed.ex     # Status aggregator GenServer (50-entry ring buffer)
-│   └── step_handlers/
-│       ├── behaviour.ex        # Step handler behaviour
-│       ├── commit_and_pr.ex    # Git commit + PR creation
-│       ├── forge_exec.ex       # Delegates to Forge
-│       └── agent_task.ex       # Delegates to Jido agent
+│   └── run_summary_feed.ex     # Status aggregator GenServer (50-entry ring buffer)
 ├── github.ex                   # Ash.Domain — issue analysis
 ├── github/
 │   ├── issue_analysis.ex       # github_issue_analyses table
@@ -1084,46 +1109,94 @@ lib/jido_claw/
 │   ├── credential_validator.ex # Validates API keys + Ollama local
 │   └── wizard.ex               # Setup orchestrator (computes ready?)
 ├── desktop/
-│   ├── sidecar.ex              # Burrito/Tauri detection, endpoint reconfiguration
+│   ├── sidecar.ex              # Tauri detection, endpoint reconfiguration
 │   └── port_finder.ex          # Available port detection via gen_tcp
+├── display/
+│   ├── status_bar.ex           # Persistent top-line status bar
+│   └── swarm_box.ex            # Live swarm agent tree display
 ├── agent/
-│   ├── agent.ex                # Main Jido agent (30 tools)
+│   ├── agent.ex                # Main Jido agent (27 tools)
 │   ├── identity.ex             # Agent identity
 │   ├── prompt.ex               # System prompt builder
-│   └── templates.ex            # Agent template registry (6 types)
+│   ├── templates.ex            # Agent template registry (7 types)
+│   └── workers/
+│       ├── coder.ex            # Full R/W + commands (25 iterations)
+│       ├── test_runner.ex      # Read + run_command (15 iterations)
+│       ├── reviewer.ex         # Read + git (15 iterations)
+│       ├── docs_writer.ex      # Read + write (15 iterations)
+│       ├── researcher.ex       # Read-only (15 iterations)
+│       ├── refactorer.ex       # Full R/W + commands (25 iterations)
+│       └── verifier.ex         # Read + commands (20 iterations)
 ├── cli/
 │   ├── branding.ex             # ASCII art, boot sequence, spinner
 │   ├── commands.ex             # Slash command router
+│   ├── formatter.ex            # Response formatting
 │   ├── main.ex                 # Escript entry point
-│   └── repl.ex                 # Interactive REPL loop
+│   ├── repl.ex                 # Interactive REPL loop
+│   └── setup.ex                # CLI setup flow
 ├── platform/
+│   ├── memory.ex               # Persistent memory GenServer (ETS + JSON, supervised)
+│   ├── skills.ex               # Cached skill registry GenServer (parsed once at boot)
 │   ├── messaging.ex            # jido_messaging runtime (rooms, agents, bridges)
+│   ├── jido_md.ex              # JIDO.md self-knowledge generator
+│   ├── approval.ex             # Tool approval system
+│   ├── session.ex              # Session facade
 │   ├── session/
+│   │   ├── supervisor.ex       # DynamicSupervisor for session workers
 │   │   └── worker.ex           # GenServer-per-session + agent binding + crash monitoring
-│   ├── channel/                # Platform adapters (Discord, Telegram)
-│   ├── cron/                   # Per-agent scheduling
-│   └── tenant/                 # Multi-tenant supervision
-├── network/                    # Agent-to-agent networking
+│   ├── tenant.ex               # Tenant facade
+│   ├── tenant/
+│   │   ├── supervisor.ex       # Per-tenant supervision subtree
+│   │   ├── manager.ex          # Tenant lifecycle management
+│   │   └── instance_supervisor.ex # Per-tenant instance supervision
+│   ├── channel/
+│   │   ├── behaviour.ex        # Channel adapter behaviour (5 callbacks)
+│   │   ├── discord.ex          # Discord adapter
+│   │   ├── discord_consumer.ex # Discord event consumer
+│   │   ├── telegram.ex         # Telegram adapter
+│   │   ├── supervisor.ex       # Channel DynamicSupervisor
+│   │   └── worker.ex           # Per-channel worker
+│   ├── cron/
+│   │   ├── scheduler.ex        # Cron scheduling engine
+│   │   ├── worker.ex           # Per-job worker
+│   │   └── persistence.ex      # .jido/cron.yaml persistence
+│   └── background_process/
+│       └── registry.ex         # OS process tracking + output buffer
+├── network/
+│   ├── node.ex                 # Network node representation
+│   ├── protocol.ex             # Agent-to-agent protocol
+│   └── supervisor.ex           # Network supervision
 ├── reasoning/
 │   └── strategy_registry.ex    # Maps 8 strategy names to Jido.AI.Reasoning.* modules
 ├── shell/
-│   └── session_manager.ex      # Persistent shell sessions per workspace (jido_shell)
+│   ├── session_manager.ex      # Persistent shell sessions per workspace (jido_shell)
+│   └── backend_host.ex         # Shell backend hosting
 ├── vfs/
 │   └── resolver.ex             # VFS path routing (github://, s3://, git://, local)
-├── tools/                      # 30 tool implementations (including reason, browse)
+├── tools/                      # 27 tool implementations (including reason, browse)
 ├── workflows/
 │   ├── skill_workflow.ex       # jido_composer FSM engine for sequential skills
 │   ├── plan_workflow.ex        # DAG executor for parallel skill phases
-│   └── step_action.ex          # Jido.Action wrapping agent spawn + ask_sync
-├── solutions/                  # Solution fingerprinting + reputation
-├── background_process/         # OS process tracking + output buffer
-├── providers/                  # LLM provider abstraction (Ollama)
-├── tool/                       # Tool approval system
+│   ├── iterative_workflow.ex   # Iterative refinement loop (implement → verify)
+│   ├── step_action.ex          # Jido.Action wrapping agent spawn + ask_sync
+│   ├── context_builder.ex      # Workflow context assembly
+│   └── step_result.ex          # Step result types
+├── solutions/
+│   ├── store.ex                # Solution fingerprint cache
+│   ├── fingerprint.ex          # Content fingerprinting
+│   ├── matcher.ex              # Solution matching
+│   ├── reputation.ex           # Solution trust scoring
+│   ├── solution.ex             # Solution data structure
+│   └── trust.ex                # Trust computation
+├── providers/
+│   └── ollama.ex               # Ollama provider abstraction
 └── web/
     ├── endpoint.ex             # Phoenix endpoint
     ├── router.ex               # API + webhook + LiveView routes
     ├── web.ex                  # Phoenix web module macros
     ├── live_user_auth.ex       # LiveView on_mount auth hooks
+    ├── cache_body_reader.ex    # Request body caching for webhook verification
+    ├── error_json.ex           # JSON error rendering
     ├── components/
     │   ├── core_components.ex  # flash_group, button, stat_card, status_badge
     │   ├── layouts.ex          # App + root layouts
@@ -1143,10 +1216,14 @@ lib/jido_claw/
     ├── controllers/
     │   ├── health_controller.ex # Health check
     │   ├── chat_controller.ex   # OpenAI-compatible chat
+    │   ├── auth_controller.ex   # Authentication controller
     │   └── webhook_controller.ex # GitHub webhook handler
-    ├── channels/               # WebSocket RPC
+    ├── channels/
+    │   ├── user_socket.ex      # WebSocket entry point
+    │   └── rpc_channel.ex      # RPC channel handler
     └── plugs/
-        └── api_key_auth.ex     # Bearer/x-api-key authentication
+        ├── api_key_auth.ex     # Bearer/x-api-key authentication
+        └── require_auth.ex     # Session auth enforcement
 ```
 
 ## Dependencies
@@ -1155,7 +1232,7 @@ lib/jido_claw/
 |----------|---------|---------|
 | Data layer | `ash`, `ash_postgres`, `ash_authentication`, `ash_authentication_phoenix` | Resource framework, PostgreSQL, auth |
 | Data extensions | `ash_admin`, `ash_json_api`, `ash_paper_trail`, `ash_archival` | Admin panel, JSON:API, audit trail, soft delete |
-| Data types | `ash_cloak`, `ash_state_machine`, `ash_typescript` | Encryption, state machines, TypeScript types |
+| Data types | `ash_cloak`, `ash_state_machine` | Encryption, state machines |
 | Database | `ecto_sql`, `postgrex` | PostgreSQL adapter |
 | Encryption | `cloak` | AES-256-GCM encryption at rest |
 | Agent engine | `jido` | OTP supervisor, agent lifecycle |
@@ -1178,7 +1255,7 @@ lib/jido_claw/
 | Data | `jason`, `yaml_elixir` | Serialization |
 | HTTP | `finch` | LLM API calls |
 | Discord | `nostrum` (optional) | Discord bot adapter |
-| Desktop | `burrito` | Native binary packaging |
+| Desktop | Tauri | Native desktop shell (Burrito packaging planned) |
 
 ## v0.5.0 — Full-Stack Platform
 
@@ -1189,12 +1266,12 @@ This release transforms JidoClaw from a CLI-only agent platform into a full-stac
 | **Data layer** | ETS + JSON files only | Ash Framework 3.0 + PostgreSQL (7 domains, 15+ resources) |
 | **Authentication** | None | Password + Magic Link via AshAuthentication, API key auth |
 | **Security** | No encryption | AES-256-GCM encrypted secrets, 4-layer redaction (logs, prompts, PubSub, UI) |
-| **Sandbox execution** | None | Forge engine — 4 runner types, 50 concurrent sessions, sprite containers |
+| **Sandbox execution** | None | Forge engine — 4 runner types, 50 concurrent sessions, Docker/local sandboxes |
 | **Workflows** | Skills only (ephemeral) | Persistent state machine with approval gates, retry lineage |
 | **GitHub automation** | None | Hierarchical agent pipeline — triage → 4 parallel research → PR with quality gate |
 | **Task management** | None | Folio GTD — inbox, actions with context/energy, projects |
 | **Web UI** | LiveDashboard only | 8 LiveView pages — dashboard, forge terminal, workflows, agents, projects, settings, GTD, setup |
-| **Desktop** | CLI only | Tauri + Burrito native app with embedded Phoenix server |
+| **Desktop** | CLI only | Tauri native app with embedded Phoenix server |
 | **Admin** | None | AshAdmin at `/admin` for all resources |
 
 ## v0.4.0 — Reasoning, VFS, Shell, DAG Skills
@@ -1205,7 +1282,7 @@ This release transforms JidoClaw from a CLI-only agent platform into a full-stac
 | **VFS** | Local filesystem only | `github://`, `s3://`, `git://` URI routing via `jido_vfs` adapters |
 | **Shell** | Stateless `System.cmd` per call | Persistent `jido_shell` sessions per workspace (cwd + env preserved) |
 | **DAG skills** | Sequential FSM only | `depends_on` annotations → topological sort → parallel phases via `Task.async_stream` |
-| **Tool count** | 27 tools | 30 tools (consolidated, added `reason` + `browse`) |
+| **Tool count** | 27 tools | 27 tools (consolidated, added `reason` + `browse`) |
 
 ### v0.3.0 OTP Architecture
 
@@ -1248,7 +1325,7 @@ The full cycle from user input to displayed response:
 
 2. REACT LOOP (inside jido_ai — iterates until done)
    ┌──────────────────────────────────────────────────────────────┐
-   │  LLM call with 30 tool schemas          [agent.ex:5-36]    │
+   │  LLM call with 27 tool schemas          [agent.ex:5-36]    │
    │    ↓                                                        │
    │  Parse response ── has tool_calls? ─── NO ──→ DONE (text)  │
    │    │ YES                                                    │
@@ -1279,7 +1356,7 @@ The full cycle from user input to displayed response:
    ├─ spawn_agent  → start_agent + spawn(ask_sync) → return immediately
    ├─ run_skill    → SkillWorkflow FSM (see below)
    ├─ remember     → Memory.remember (ETS + JSON)
-   └─ ...30 total, each returns {:ok, result} to the loop
+   └─ ...27 total, each returns {:ok, result} to the loop
 
 5. SKILL WORKFLOW (when LLM calls run_skill tool)
    RunSkill.run/2                            [run_skill.ex:29]
@@ -1366,7 +1443,7 @@ The Jido ecosystem:
 | [jido_skill](https://github.com/agentjido/jido_skill) | Multi-step skill definitions and orchestration |
 | [jido_composer](https://github.com/agentjido/jido_composer) | Agent composition and workflow orchestration |
 | [jido_messaging](https://github.com/agentjido/jido_messaging) | Inter-agent message routing |
-| [jido_cluster](https://github.com/agentjido/jido_cluster) | Distributed BEAM clustering for multi-node agent systems |
+| [jido_cluster](https://github.com/agentjido/jido_cluster) | Distributed BEAM clustering for multi-node agent systems (not yet integrated) |
 
 Jido's design philosophy: agents are immutable data structures with a single command function (`cmd/2`). State changes are pure data transformations, side effects are described as directives executed by the OTP runtime. Inspired by Elm/Redux — predictable, testable, composable.
 

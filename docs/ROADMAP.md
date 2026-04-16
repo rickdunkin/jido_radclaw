@@ -1,16 +1,16 @@
 # JidoClaw Roadmap
 
-## Current State: v0.2-alpha
+## Current State: v0.3.0
 
-Single-agent and swarm runtime working. 24 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode.
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode.
 
-Shell sessions now use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
+Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
 ---
 
 ## v0.2 — Stabilization & Polish
 
-**Status: In Progress**
+**Status: Complete**
 
 - [x] Codebase reorganization (cli/, agent/, core/, platform/, tools/)
 - [x] System prompt externalized to `.jido/system_prompt.md`
@@ -18,73 +18,91 @@ Shell sessions now use jido_shell with a custom `BackendHost` for real host comm
 - [x] Swarm runtime (spawn_agent, list_agents, get_agent_result, send_to_agent, kill_agent)
 - [x] Skills system (YAML-defined, DAG + sequential workflows)
 - [x] Live swarm display (AgentTracker + Display GenServers)
-- [ ] Full test suite green (RunCommand passing, others TBD)
-- [ ] Session persistence end-to-end verification
-- [ ] MCP server mode validation with Claude Code
+- [x] Full test suite green (772 tests, 0 failures)
+- [x] Session persistence end-to-end verification (DB-backed session claims, advisory locks, checkpoint/resume)
+- [x] Scheduling tools (schedule_task, unschedule_task, list_scheduled_tasks)
+- [ ] MCP server mode validation with Claude Code (server works, live validation pending)
 
 ---
 
-## v0.3 — jido_ecto + Persistent Storage
+## v0.2.5 — Ash Framework + Phoenix Web Dashboard
 
-**Status: Planned**
+**Status: Complete**
+
+This milestone was not in the original roadmap but was delivered between v0.2 and v0.3.
+
+### Ash Framework 3.0 Integration
+
+Replaced the planned `jido_ecto` approach with `ash_postgres` directly. 12 migrations, 16+ Ash resources across 7 domains:
+
+| Domain | Resources |
+|---|---|
+| Accounts | User, Token, ApiKey |
+| Folio | Project, Action, InboxItem |
+| Forge | Session, Event, Checkpoint, ExecSession |
+| GitHub | IssueAnalysis |
+| Orchestration | WorkflowRun, WorkflowStep, ApprovalGate |
+| Projects | Project |
+| Security | SecretRef |
+
+### Phoenix LiveView Web Dashboard
+
+Full-stack web application with:
+- 8+ LiveViews: Dashboard, Forge, Setup, Workflows, Sign-in, Folio, Agents, Settings, Projects
+- Authentication via `ash_authentication` + `ash_authentication_phoenix`
+- Admin UI via `ash_admin`
+- Router, endpoint, layouts, error handling
+
+### What Remained File-Based
+
+Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) intentionally kept on ETS + JSON for CLI simplicity.
+
+---
+
+## v0.3 — Memory & Solutions Database Migration
+
+**Status: In Progress**
 
 ### Why
 
-Current persistence is ETS + JSON files. Works for single-node CLI usage but doesn't scale to:
-- Multi-tenant server deployments with data isolation
-- Solution repositories with thousands of entries needing search
-- Agent state recovery across restarts
-- Audit trails for compliance
+Application metadata (users, sessions, forge, orchestration) is already in PostgreSQL via Ash. Two subsystems remain on ETS + JSON files:
 
-### Integration Plan
+- **Memory** (`JidoClaw.Memory`): ETS + `.jido/memory.json`
+- **Solutions Store** (`JidoClaw.Solutions.Store`): ETS + `.jido/solutions.json`
 
-**Dependency:** `{:jido_ecto, github: "agentjido/jido_ecto"}`
+This works for single-node CLI usage but doesn't scale for search, multi-tenancy, or audit requirements.
 
-#### Phase 1: Memory Backend Swap
+### Phase 1: Memory Backend Swap
 
-Replace `JidoClaw.Memory` (ETS + `.jido/memory.json`) with jido_ecto-backed storage.
+Replace `JidoClaw.Memory` (ETS + `.jido/memory.json`) with Ash resource-backed storage.
 
 ```
 Before: Memory GenServer → ETS table → JSON file
-After:  Memory GenServer → Jido.Ecto.Repo → PostgreSQL/SQLite
+After:  Memory GenServer → Ash Resource → PostgreSQL
 ```
 
-- Migrate memory schema to Ecto changesets
+- Migrate memory schema to Ash resources with Ecto changesets
 - Full-text search via PostgreSQL FTS (replaces naive string matching)
 - Cross-session memory with timestamps and types
 
-#### Phase 2: Solutions Store Migration
+### Phase 2: Solutions Store Migration
 
-Replace `JidoClaw.Solutions.Store` (ETS + `.jido/solutions.json`) with database-backed store.
+Replace `JidoClaw.Solutions.Store` (ETS + `.jido/solutions.json`) with Ash resource-backed store.
 
 - Solution fingerprint indexing via composite indexes
 - BM25-style search as a SQL query instead of in-memory scan
 - Reputation ledger with atomic increments
 - Trust score history (trending, not just current value)
 
-#### Phase 3: Session & Agent State Persistence
+### Phase 3: Remaining Persistence Gaps
 
-- Session history in database (replace JSONL files)
-- Agent checkpoint/resume across restarts
+- Session message history in database (replace JSONL files — session metadata is already in `forge_sessions`)
 - Append-only audit log of all tool calls and decisions
-
-#### Phase 4: Multi-Tenant Data Isolation
-
-- Per-tenant database schemas or row-level security
-- Tenant-scoped queries via Ecto query composition
-- Migration management per tenant
-
-### Decision Criteria
-
-Migrate when ANY of these become true:
-- Solution store exceeds 10K entries
-- Multi-tenant deployment with 100+ concurrent tenants
-- Compliance requires immutable audit trails
-- Cluster deployment needs shared state across nodes
+- Multi-tenant data isolation (per-tenant schemas or row-level security)
 
 ### Fallback
 
-Keep JSON file persistence as the default for CLI-only usage. jido_ecto becomes opt-in for server deployments via config:
+Keep JSON file persistence as the default for CLI-only usage. Database persistence is opt-in for server deployments via config:
 
 ```yaml
 # .jido/config.yaml
@@ -166,24 +184,24 @@ Build on the jido_shell `BackendHost` foundation:
 
 ## Future Considerations
 
-### jido_ecto Specific Opportunities
+### Remaining File-to-Database Migration Opportunities
 
-| Capability | Current | With jido_ecto |
+| Capability | Current | With Ash/PostgreSQL |
 |---|---|---|
 | Memory persistence | JSON file, FTS via string matching | PostgreSQL FTS, indexed queries |
 | Solution search | In-memory Jaccard + BM25 | SQL-based BM25, composite indexes |
 | Multi-tenant isolation | Process-level (ETS per tenant) | Database-level (schemas/RLS) |
 | Audit trail | None (telemetry is volatile) | Append-only event log |
-| Agent state recovery | No persistence | Checkpoint/resume via Ecto |
 | Reputation tracking | JSON file | Atomic DB operations, history |
 | Cluster coordination | `:pg` only | Shared DB state, distributed locks |
-| Session history | JSONL files | Structured DB with search |
+| Session message history | JSONL files | Structured DB with search |
+
+Note: Agent state recovery and session metadata are already in PostgreSQL via Forge resources.
 
 ### Other Jido Ecosystem Libraries to Watch
 
 | Library | Status | Potential Use |
 |---|---|---|
-| **jido_ecto** | Beta | Persistent storage backend (see v0.3 above) |
 | **jido_discovery** | TBD | Agent/service discovery in distributed deployments |
 | **jido_workflow** | TBD | Advanced workflow patterns beyond current Composer FSM |
 
@@ -192,9 +210,7 @@ Build on the jido_shell `BackendHost` foundation:
 ## Build Order
 
 ```
-v0.2 (current) → v0.3 (jido_ecto) → v0.4 (VFS) → v0.5 (Burrito) → v0.6 (Shell) → v0.7 (Reasoning)
-                          ↑
-                  Gate: scale requirements met
+v0.2 (done) → v0.2.5 (done) → v0.3 (memory/solutions DB) → v0.4 (VFS) → v0.5 (Burrito) → v0.6 (Shell) → v0.7 (Reasoning)
 ```
 
-v0.3 is gated on actual need — don't add database complexity until the file-based approach is a proven bottleneck.
+v0.3 memory/solutions migration is gated on actual need — don't migrate the remaining file-based stores until the current approach is a proven bottleneck.

@@ -134,7 +134,7 @@ defmodule JidoClaw.MixProject do
       {:ash_json_api, "~> 1.0"},
       {:ash_authentication, "~> 4.0"},
       {:ash_authentication_phoenix, "~> 2.0"},
-      {:ash_admin, "~> 0.13"},
+      {:ash_admin, "~> 1.0"},
       {:ash_archival, "~> 2.0"},
       {:ash_paper_trail, "~> 0.5"},
       {:ash_cloak, "~> 0.2"},
