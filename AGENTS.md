@@ -33,6 +33,30 @@ Always use Tidewave's tools for evaluating code, querying the database, etc.
 Use `get_docs` to access documentation and the `get_source_location` tool to
 find module/function definitions.
 
+### MCP Server Mode
+
+JidoClaw exposes 15 tools over MCP stdio transport for use with Claude Code, Cursor, and other MCP-compatible editors. To add it to a project, create or edit `.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "jidoclaw": {
+      "command": "mix",
+      "args": ["jidoclaw", "--mcp"],
+      "cwd": "/absolute/path/to/jido_radclaw"
+    }
+  }
+}
+```
+
+The `cwd` must be the absolute path to the JidoClaw project directory (where `mix.exs` lives). The server requires PostgreSQL to be running and `mix ecto.setup` to have been run at least once.
+
+**Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`.
+
+**Known limitations** (anubis_mcp 0.17.1 — patched in `lib/jido_claw/core/`):
+- Runtime patches override `Anubis.Server.Transport.STDIO` and `Anubis.Server.Handlers.Tools` to fix response delivery, schema validation, and argument key conversion. Remove once `jido_mcp` upgrades to `anubis_mcp ~> 1.0`.
+- One startup warning from `anubis_mcp` may appear on stdout before the first JSON-RPC message. MCP clients ignore non-JSON lines.
+
 ## Architecture
 
 JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework ecosystem. It provides a CLI REPL with ~30 tools, swarm orchestration, sandboxed code execution (Forge), a Phoenix LiveView web dashboard, and multi-provider LLM support.
@@ -44,8 +68,8 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 - **Core**: Registries, Repo, Vault, Forge engine, PubSub, SignalBus, Telemetry, agent runtime (`JidoClaw.Jido`), Memory, Skills, Shell sessions, Display, AgentTracker
 - **Gateway**: `JidoClaw.Web.Endpoint` (Phoenix) - started when mode is `:gateway` or `:both`
 - **Cluster**: libcluster + `:pg` - started when `:cluster_enabled` is true
-- **MCP**: Jido MCP server over stdio - started when `:serve_mode` is `:mcp`
-- **Discord**: Nostrum started dynamically only when `DISCORD_BOT_TOKEN` is set
+- **MCP**: Jido MCP server over stdio - started when `:serve_mode` is `:mcp` (Gateway and Discord are skipped in this mode)
+- **Discord**: Nostrum started dynamically only when `DISCORD_BOT_TOKEN` is set and `:skip_discord` is not true
 
 ### Key Patterns
 

@@ -21,7 +21,7 @@ Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge
 - [x] Full test suite green (772 tests, 0 failures)
 - [x] Session persistence end-to-end verification (DB-backed session claims, advisory locks, checkpoint/resume)
 - [x] Scheduling tools (schedule_task, unschedule_task, list_scheduled_tasks)
-- [ ] MCP server mode validation with Claude Code (server works, live validation pending)
+- [x] MCP server mode validation with Claude Code (validated — patched anubis_mcp 0.17.1 stdio transport + tools handler)
 
 ---
 

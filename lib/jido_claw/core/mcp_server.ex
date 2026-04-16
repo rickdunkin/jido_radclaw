@@ -35,4 +35,5 @@ defmodule JidoClaw.MCPServer do
         JidoClaw.Tools.NetworkStatus
       ]
     }
+
 end

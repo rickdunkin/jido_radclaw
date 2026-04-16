@@ -4,6 +4,11 @@ defmodule JidoClaw.Application do
 
   @impl true
   def start(_type, _args) do
+    # In MCP mode, stdout is reserved for JSON-RPC — redirect all logging to stderr.
+    if Application.get_env(:jido_claw, :serve_mode) == :mcp do
+      redirect_logger_to_stderr()
+    end
+
     # Load .env file if present (project root or cwd)
     load_dotenv()
 
@@ -31,6 +36,8 @@ defmodule JidoClaw.Application do
     # compile time before .env is available.
     # Nostrum must start FIRST (initializes the ConsumerGroup :pg scope),
     # then the consumer joins the group. Shard sessions wait 5s for consumers.
+    # Skipped in MCP mode — Discord would pollute stdio.
+    unless Application.get_env(:jido_claw, :skip_discord) do
     if discord_token = System.get_env("DISCORD_BOT_TOKEN") do
       Application.put_env(:nostrum, :token, discord_token)
       Application.put_env(:nostrum, :gateway_intents, :all)
@@ -49,6 +56,7 @@ defmodule JidoClaw.Application do
         {:error, reason} ->
           Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
       end
+    end
     end
 
     result
@@ -246,6 +254,17 @@ defmodule JidoClaw.Application do
           end
       end
     end)
+  end
+
+  @doc false
+  def redirect_logger_to_stderr do
+    :logger.remove_handler(:default)
+
+    :logger.add_handler(:default, :logger_std_h, %{
+      config: %{type: :standard_error},
+      level: :all,
+      filter_default: :log
+    })
   end
 
   defp strip_quotes(value) do

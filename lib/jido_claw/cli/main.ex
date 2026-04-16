@@ -35,6 +35,9 @@ defmodule JidoClaw.CLI.Main do
 
   defp start_mcp do
     Application.put_env(:jido_claw, :serve_mode, :mcp)
+    # Skip Phoenix endpoint and Discord in MCP mode — stdio must stay clean.
+    Application.put_env(:jido_claw, :mode, :cli)
+    Application.put_env(:jido_claw, :skip_discord, true)
     Application.ensure_all_started(:jido_claw)
     # Block forever — the MCPServer GenServer owns the stdin loop.
     Process.sleep(:infinity)
