@@ -46,25 +46,41 @@ defmodule JidoClaw.Tools.RunSkill do
     skill_name = params.skill
     extra_context = Map.get(params, :context, "")
     project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
 
     case JidoClaw.Skills.get(skill_name, project_dir) do
       {:error, reason} ->
         {:error, reason}
 
       {:ok, skill} ->
-        executor =
+        result =
           case JidoClaw.Skills.execution_mode(skill) do
             :iterative ->
-              &JidoClaw.Workflows.IterativeWorkflow.run/3
+              JidoClaw.Workflows.IterativeWorkflow.run(
+                skill,
+                extra_context,
+                project_dir,
+                workspace_id: workspace_id
+              )
 
             :dag ->
-              &JidoClaw.Workflows.PlanWorkflow.run/3
+              JidoClaw.Workflows.PlanWorkflow.run(
+                skill,
+                extra_context,
+                project_dir,
+                workspace_id: workspace_id
+              )
 
             :sequential ->
-              &JidoClaw.Workflows.SkillWorkflow.run/3
+              JidoClaw.Workflows.SkillWorkflow.run(
+                skill,
+                extra_context,
+                project_dir,
+                workspace_id: workspace_id
+              )
           end
 
-        case executor.(skill, extra_context, project_dir) do
+        case result do
           {:ok, results} ->
             {:ok, build_result(skill, results)}
 

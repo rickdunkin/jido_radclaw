@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.3.0
+## Current State: v0.4.0-dev
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode.
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, and unified VFS across file tools and shell (v0.3 shipped).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -61,20 +61,22 @@ Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) inte
 
 ## v0.3 — VFS Integration for File Tools
 
-**Status: Planned**
+**Status: Complete**
 
-Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `WriteFile`, `ListDirectory`) can work through the unified VFS layer. Enables:
+Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `WriteFile`, `EditFile`, `ListDirectory`) and shell commands share a single mount-point namespace. Delivered:
 
-- Same shell session handles both file ops and command execution
-- Multi-mount workspaces:
-  ```
-  /project   → Jido.VFS.Adapter.Local (real filesystem)
-  /scratch   → Jido.VFS.Adapter.InMemory (temp workspace)
-  /upstream  → Jido.VFS.Adapter.GitHub (upstream repo)
-  /artifacts → Jido.VFS.Adapter.S3 (build outputs)
-  ```
-- Agent can `cat /project/mix.exs` and `cat /upstream/mix.exs` in the same workflow
-- VFS-aware diffing across adapters
+- Per-workspace `JidoClaw.VFS.Workspace` GenServer owning the mount table (default `/project` mount + config-declared extras from `.jido/config.yaml`'s `vfs.mounts` key).
+- Dual-session `SessionManager`: a `BackendHost` session for real host commands (`git`, `mix`, pipes, redirects) plus a `Jido.Shell.Backend.Local` VFS session for the sandbox built-ins (`cat`, `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `echo`, `write`, `env`, `bash`). A command classifier routes automatically; `run_command force: :host | :vfs` overrides it.
+- `JidoClaw.VFS.Resolver` gains a `:workspace_id` option; file tools thread `workspace_id` through `tool_context` so absolute paths under a workspace mount flow through `Jido.Shell.VFS` and paths outside any mount fall back to `File.*`.
+- Config-driven mounts for `/scratch`, `/upstream`, `/artifacts`, … with adapter-option translation (Local, InMemory, GitHub, S3, Git). Default `/project` is fail-fast; extras are fail-soft (warn and continue).
+- Agent can `cat /project/mix.exs` and `cat /upstream/mix.exs` in the same workflow. Workspace + shell state now persist across multi-step skills and spawned sub-agents.
+
+### Out of scope (deferred)
+
+- `SearchCode` remote support.
+- GitHub/S3 writes from the shell command surface.
+- VFS-aware diffing across adapters.
+- Persisting the mount table across node restarts (→ v0.6).
 
 ---
 

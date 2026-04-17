@@ -25,10 +25,12 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
   Returns `{:ok, results}` with a list of `%StepResult{}` structs,
   or `{:error, reason}` if any step fails.
   """
-  @spec run(JidoClaw.Skills.t(), String.t(), String.t()) :: {:ok, list()} | {:error, term()}
-  def run(skill, extra_context \\ "", project_dir \\ File.cwd!()) do
+  @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
+          {:ok, list()} | {:error, term()}
+  def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
     steps = skill.steps
     step_count = length(steps)
+    workspace_id = Keyword.get(opts, :workspace_id)
 
     if step_count == 0 do
       {:error, "Skill '#{skill.name}' has no steps"}
@@ -67,17 +69,17 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
         )
 
       # Execute steps sequentially through the FSM
-      execute_machine(machine, steps, extra_context, project_dir)
+      execute_machine(machine, steps, extra_context, project_dir, workspace_id)
     end
   end
 
   # Walk the FSM: at each non-terminal state, run the corresponding step's action,
   # apply the result, and transition.
-  defp execute_machine(machine, steps, extra_context, project_dir) do
-    execute_loop(machine, steps, extra_context, project_dir, [])
+  defp execute_machine(machine, steps, extra_context, project_dir, workspace_id) do
+    execute_loop(machine, steps, extra_context, project_dir, workspace_id, [])
   end
 
-  defp execute_loop(machine, steps, extra_context, project_dir, results) do
+  defp execute_loop(machine, steps, extra_context, project_dir, workspace_id, results) do
     if Machine.terminal?(machine) do
       if machine.status == :done do
         {:ok, Enum.reverse(results)}
@@ -103,12 +105,14 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
       )
 
       # Execute the step action
-      params = %{
-        template: template_name,
-        task: full_task,
-        project_dir: project_dir,
-        name: step_name
-      }
+      params =
+        %{
+          template: template_name,
+          task: full_task,
+          project_dir: project_dir,
+          name: step_name
+        }
+        |> maybe_put(:workspace_id, workspace_id)
 
       case JidoClaw.Workflows.StepAction.run(params, %{}) do
         {:ok, %StepResult{} = step_result} ->
@@ -118,7 +122,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
           case Machine.transition(machine, :ok) do
             {:ok, machine} ->
               results = [step_result | results]
-              execute_loop(machine, steps, extra_context, project_dir, results)
+              execute_loop(machine, steps, extra_context, project_dir, workspace_id, results)
 
             {:error, reason} ->
               {:error, "Transition failed after step #{step_idx}: #{inspect(reason)}"}
@@ -130,6 +134,9 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
       end
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp state_to_index(state) do
     state

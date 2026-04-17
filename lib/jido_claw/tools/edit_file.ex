@@ -20,9 +20,15 @@ defmodule JidoClaw.Tools.EditFile do
       new_string: [type: :string, required: true, doc: "Replacement text"]
     ]
 
+  alias JidoClaw.VFS.Resolver
+
   @impl true
-  def run(%{path: path, old_string: old_str, new_string: new_str}, _context) do
-    case File.read(path) do
+  def run(%{path: path, old_string: old_str, new_string: new_str}, context) do
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+    opts = [workspace_id: workspace_id, project_dir: project_dir]
+
+    case Resolver.read(path, opts) do
       {:ok, content} ->
         occurrences = count_occurrences(content, old_str)
 
@@ -38,7 +44,7 @@ defmodule JidoClaw.Tools.EditFile do
           true ->
             new_content = String.replace(content, old_str, new_str, global: false)
 
-            case File.write(path, new_content) do
+            case Resolver.write(path, new_content, opts) do
               :ok ->
                 diff = build_diff(old_str, new_str)
                 {:ok, %{path: path, diff: diff, status: "edited"}}

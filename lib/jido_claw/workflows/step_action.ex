@@ -13,7 +13,12 @@ defmodule JidoClaw.Workflows.StepAction do
     schema: [
       template: [type: :string, required: true, doc: "Agent template name (e.g. coder, reviewer)"],
       task: [type: :string, required: true, doc: "Task prompt for the agent"],
-      project_dir: [type: :string, required: false, doc: "Project directory for tool context"]
+      project_dir: [type: :string, required: false, doc: "Project directory for tool context"],
+      workspace_id: [
+        type: :string,
+        required: false,
+        doc: "Workspace ID for shared VFS/shell state across steps"
+      ]
     ]
 
   require Logger
@@ -27,7 +32,7 @@ defmodule JidoClaw.Workflows.StepAction do
 
     with {:ok, template} <- JidoClaw.Agent.Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
-         workspace_id = Map.get(context, :workspace_id, "wf_#{tag}"),
+         workspace_id = resolve_workspace_id(params, context, tag),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
       try do
         case template.module.ask_sync(pid, task,
@@ -113,6 +118,17 @@ defmodule JidoClaw.Workflows.StepAction do
   end
 
   def extract_artifacts(_), do: %{}
+
+  # Prefer the workspace_id passed in by the caller (workflow driver or parent
+  # agent) so every step in a skill/plan shares one VFS + shell session. Fall
+  # back to a per-step ID only when the caller didn't thread one through —
+  # existing tests and ad-hoc StepAction.run/2 callers rely on that path.
+  defp resolve_workspace_id(params, context, tag) do
+    Map.get(params, :workspace_id) ||
+      Map.get(context, :workspace_id) ||
+      get_in(context, [:tool_context, :workspace_id]) ||
+      "wf_#{tag}"
+  end
 
   defp extract_result(%{last_answer: answer}) when is_binary(answer), do: answer
   defp extract_result(%{answer: answer}) when is_binary(answer), do: answer

@@ -18,12 +18,32 @@ defmodule JidoClaw.Tools.RunCommand do
       exit_code: [type: :integer, required: true]
     ],
     schema: [
-      command: [type: :string, required: true, doc: "The command to execute (passed to sh -c)"],
+      command: [
+        type: :string,
+        required: true,
+        doc: """
+        The command to execute. Simple sandbox-native programs with mount-prefixed
+        absolute paths (e.g. `cat /project/mix.exs`, `cd /project && cat mix.exs`)
+        are routed to a VFS-aware sandbox session. Commands with pipes/redirects,
+        non-allowlisted commands, or host paths are routed to the host shell
+        (`sh -c`) unchanged.
+        """
+      ],
       timeout: [type: :integer, default: 30_000, doc: "Timeout in milliseconds"],
       workspace_id: [
         type: :string,
         default: "default",
         doc: "Session workspace for persistent shell state"
+      ],
+      force: [
+        type: {:in, [:host, :vfs, nil]},
+        required: false,
+        doc: """
+        Override the automatic host/VFS classifier. `:host` forces sh -c;
+        `:vfs` forces the jido_shell sandbox (useful for bare `ls`/`pwd` that
+        should observe the VFS session's cwd, or commands with literal shell
+        metachars in quoted args).
+        """
       ]
     ]
 
@@ -37,8 +57,13 @@ defmodule JidoClaw.Tools.RunCommand do
       get_in(context, [:tool_context, :workspace_id]) ||
         Map.get(params, :workspace_id, "default")
 
+    project_dir =
+      get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+
+    opts = [project_dir: project_dir, force: Map.get(params, :force)]
+
     if session_manager_available?() do
-      JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout)
+      JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout, opts)
     else
       run_with_system_cmd(command, timeout)
     end

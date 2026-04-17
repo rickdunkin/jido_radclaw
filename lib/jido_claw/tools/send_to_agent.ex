@@ -29,6 +29,8 @@ defmodule JidoClaw.Tools.SendToAgent do
           |> List.first()
 
         project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+        workspace_id = get_in(context, [:tool_context, :workspace_id])
+        child_tool_context = child_tool_context(project_dir, workspace_id)
 
         # Send async via the agent module's ask
         spawn(fn ->
@@ -37,7 +39,7 @@ defmodule JidoClaw.Tools.SendToAgent do
               {:ok, template} ->
                 template.module.ask_sync(pid, params.message,
                   timeout: 120_000,
-                  tool_context: %{project_dir: project_dir}
+                  tool_context: child_tool_context
                 )
 
               {:error, _} ->
@@ -59,4 +61,9 @@ defmodule JidoClaw.Tools.SendToAgent do
          }}
     end
   end
+
+  defp child_tool_context(project_dir, nil), do: %{project_dir: project_dir}
+
+  defp child_tool_context(project_dir, workspace_id),
+    do: %{project_dir: project_dir, workspace_id: workspace_id}
 end

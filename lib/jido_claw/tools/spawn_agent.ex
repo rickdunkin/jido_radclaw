@@ -37,8 +37,10 @@ defmodule JidoClaw.Tools.SpawnAgent do
     task = params.task
     tag = Map.get(params, :tag) || "#{template_name}_#{:erlang.unique_integer([:positive])}"
 
-    # Get project_dir from tool context if available
+    # Propagate parent's project_dir and workspace_id so the child shares
+    # the VFS mount table and host session state.
     project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
 
     case JidoClaw.Agent.Templates.get(template_name) do
       {:ok, template} ->
@@ -47,12 +49,14 @@ defmodule JidoClaw.Tools.SpawnAgent do
             # Register with AgentTracker for live swarm display
             JidoClaw.AgentTracker.register(tag, pid, template_name, task)
 
+            child_tool_context = child_tool_context(project_dir, workspace_id)
+
             # Send task async - don't block the main agent
             spawn(fn ->
               try do
                 template.module.ask_sync(pid, task,
                   timeout: 120_000,
-                  tool_context: %{project_dir: project_dir}
+                  tool_context: child_tool_context
                 )
 
                 JidoClaw.AgentTracker.mark_complete(tag, :done)
@@ -81,4 +85,9 @@ defmodule JidoClaw.Tools.SpawnAgent do
         {:error, reason}
     end
   end
+
+  defp child_tool_context(project_dir, nil), do: %{project_dir: project_dir}
+
+  defp child_tool_context(project_dir, workspace_id),
+    do: %{project_dir: project_dir, workspace_id: workspace_id}
 end

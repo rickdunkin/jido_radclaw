@@ -31,8 +31,11 @@ defmodule JidoClaw.Tools.WriteFile do
   alias JidoClaw.VFS.Resolver
 
   @impl true
-  def run(%{path: path, content: content}, _context) do
-    case Resolver.write(path, content) do
+  def run(%{path: path, content: content}, context) do
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+
+    case Resolver.write(path, content, workspace_id: workspace_id, project_dir: project_dir) do
       :ok ->
         lines = content |> String.split("\n") |> length()
         {:ok, %{path: path, lines_written: lines}}

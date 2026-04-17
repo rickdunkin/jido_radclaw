@@ -37,10 +37,18 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
   Returns `{:ok, [%StepResult{}, %StepResult{}]}` — exactly two entries:
   the final generator result and the final evaluator result.
+
+  Options:
+    * `:workspace_id` — threaded to every generator and evaluator step so
+      they share the caller's VFS + shell session. When omitted,
+      `StepAction.resolve_workspace_id/3` falls back to a per-step id
+      (legacy behavior, used by unit tests and ad-hoc callers).
   """
-  @spec run(JidoClaw.Skills.t(), String.t(), String.t()) :: {:ok, list()} | {:error, term()}
-  def run(skill, extra_context \\ "", project_dir \\ File.cwd!()) do
+  @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
+          {:ok, list()} | {:error, term()}
+  def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
     max_iter = skill.max_iterations || @default_max_iterations
+    workspace_id = Keyword.get(opts, :workspace_id)
 
     case extract_roles(skill) do
       {:ok, generator, evaluator} ->
@@ -49,12 +57,36 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
             "generator=#{generator.name}, evaluator=#{evaluator.name}, max=#{max_iter}"
         )
 
-        iterate(generator, evaluator, extra_context, project_dir, max_iter, 1, nil)
+        iterate(
+          generator,
+          evaluator,
+          extra_context,
+          project_dir,
+          workspace_id,
+          max_iter,
+          1,
+          nil
+        )
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  @doc false
+  @spec build_step_params(map(), String.t(), String.t(), String.t() | nil) :: map()
+  def build_step_params(step, task, project_dir, workspace_id) do
+    %{
+      template: step.template,
+      task: task,
+      project_dir: project_dir,
+      name: step.name
+    }
+    |> maybe_put(:workspace_id, workspace_id)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc """
   Extract generator and evaluator steps from a skill by `role` field.
@@ -122,7 +154,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   # Private
   # ---------------------------------------------------------------------------
 
-  # The 7th argument is `{last_gen_result, last_eval_result}` — a tuple carrying
+  # The last argument is `{last_gen_result, last_eval_result}` — a tuple carrying
   # the most recent outputs from both sides so the max-iteration cap can return
   # the correct generator result rather than the evaluator feedback.
   defp iterate(
@@ -130,6 +162,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
          _evaluator,
          _extra_context,
          _project_dir,
+         _workspace_id,
          max_iter,
          iteration,
          {last_gen_result, last_eval_result}
@@ -144,6 +177,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
          evaluator,
          extra_context,
          project_dir,
+         workspace_id,
          max_iter,
          iteration,
          last_pair
@@ -172,12 +206,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
     IO.puts("  \e[2m  [generate] #{generator.name} (#{generator.template})\e[0m")
 
-    gen_params = %{
-      template: generator.template,
-      task: gen_context,
-      project_dir: project_dir,
-      name: generator.name
-    }
+    gen_params = build_step_params(generator, gen_context, project_dir, workspace_id)
 
     case StepAction.run(gen_params, %{}) do
       {:ok, %StepResult{} = gen_result} ->
@@ -201,12 +230,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
         IO.puts("  \e[2m  [evaluate] #{evaluator.name} (#{evaluator.template})\e[0m")
 
-        eval_params = %{
-          template: evaluator.template,
-          task: eval_context,
-          project_dir: project_dir,
-          name: evaluator.name
-        }
+        eval_params = build_step_params(evaluator, eval_context, project_dir, workspace_id)
 
         case StepAction.run(eval_params, %{}) do
           {:ok, %StepResult{} = eval_result} ->
@@ -223,6 +247,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
                   evaluator,
                   extra_context,
                   project_dir,
+                  workspace_id,
                   max_iter,
                   iteration + 1,
                   {gen_result, eval_result}

@@ -136,6 +136,50 @@ defmodule JidoClaw.Workflows.IterativeWorkflowTest do
     end
   end
 
+  describe "build_step_params/4" do
+    test "includes :workspace_id when a non-nil binary is passed" do
+      step = %{template: "coder", name: "implement"}
+
+      params = IterativeWorkflow.build_step_params(step, "task text", "/tmp/proj", "ws-abc")
+
+      assert params == %{
+               template: "coder",
+               task: "task text",
+               project_dir: "/tmp/proj",
+               name: "implement",
+               workspace_id: "ws-abc"
+             }
+    end
+
+    test "omits :workspace_id when nil so StepAction fallbacks still apply" do
+      step = %{template: "coder", name: "implement"}
+
+      params = IterativeWorkflow.build_step_params(step, "task text", "/tmp/proj", nil)
+
+      refute Map.has_key?(params, :workspace_id)
+
+      assert params == %{
+               template: "coder",
+               task: "task text",
+               project_dir: "/tmp/proj",
+               name: "implement"
+             }
+    end
+
+    test "populates template, task, project_dir, name from step + args" do
+      step = %{template: "verifier", name: "verify"}
+
+      params =
+        IterativeWorkflow.build_step_params(step, "run the tests", "/work/dir", "ws-xyz")
+
+      assert params.template == "verifier"
+      assert params.task == "run the tests"
+      assert params.project_dir == "/work/dir"
+      assert params.name == "verify"
+      assert params.workspace_id == "ws-xyz"
+    end
+  end
+
   describe "cap_result/2 (max-iteration return payload)" do
     test "returns generator result in first slot, not evaluator feedback" do
       gen = %JidoClaw.Workflows.StepResult{

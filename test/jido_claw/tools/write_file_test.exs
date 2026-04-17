@@ -4,6 +4,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
   use ExUnit.Case
 
   alias JidoClaw.Tools.WriteFile
+  alias JidoClaw.VFS.Workspace
 
   setup do
     dir = Path.join(System.tmp_dir!(), "jido_write_file_#{System.unique_integer([:positive])}")
@@ -68,6 +69,63 @@ defmodule JidoClaw.Tools.WriteFileTest do
 
       assert File.read!(path) == ""
       assert result.lines_written == 1
+    end
+  end
+
+  describe "run/2 with workspace_id (VFS path)" do
+    test "writes through a mounted VFS filesystem" do
+      workspace_id = "test-writefile-vfs-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_write_file_vfs_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      {:ok, _} = Workspace.ensure_started(workspace_id, tmp)
+      :ok = Workspace.mount(workspace_id, "/scratch", :in_memory, %{})
+
+      on_exit(fn ->
+        _ = Workspace.teardown(workspace_id)
+        File.rm_rf!(tmp)
+      end)
+
+      assert {:ok, result} =
+               WriteFile.run(
+                 %{path: "/scratch/note.txt", content: "vfs-write"},
+                 %{tool_context: %{workspace_id: workspace_id, project_dir: tmp}}
+               )
+
+      assert result.path == "/scratch/note.txt"
+      assert {:ok, "vfs-write"} = Jido.Shell.VFS.read_file(workspace_id, "/scratch/note.txt")
+    end
+
+    test "auto-bootstraps VFS when tool_context carries workspace_id + project_dir" do
+      ws = "ws-writefile-autoboot-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_write_file_autoboot_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+
+      on_exit(fn ->
+        _ = Workspace.teardown(ws)
+        File.rm_rf!(tmp)
+      end)
+
+      assert Registry.lookup(JidoClaw.VFS.WorkspaceRegistry, ws) == []
+
+      assert {:ok, _result} =
+               WriteFile.run(
+                 %{path: "/project/written.txt", content: "hello-vfs"},
+                 %{tool_context: %{workspace_id: ws, project_dir: tmp}}
+               )
+
+      assert File.read!(Path.join(tmp, "written.txt")) == "hello-vfs"
     end
   end
 end

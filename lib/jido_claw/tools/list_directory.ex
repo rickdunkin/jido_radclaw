@@ -35,22 +35,39 @@ defmodule JidoClaw.Tools.ListDirectory do
   alias JidoClaw.VFS.Resolver
 
   @impl true
-  def run(params, _context) do
+  def run(params, context) do
     path = Map.get(params, :path, ".")
     max_results = Map.get(params, :max_results, 200)
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+    ws_opts = [workspace_id: workspace_id, project_dir: project_dir]
 
     entries =
-      if Resolver.remote?(path) do
-        # Remote paths: delegate entirely to VFS resolver (no glob support)
-        case Resolver.ls(path) do
-          {:ok, names} ->
-            Enum.map(names, fn name -> "entry  #{name}" end)
+      cond do
+        Resolver.remote?(path) ->
+          # Remote URI paths: delegate entirely to VFS resolver (no glob support)
+          case Resolver.ls(path) do
+            {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
+            {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
+          end
 
-          {:error, reason} ->
-            {:error, "Cannot list #{path}: #{inspect(reason)}"}
-        end
-      else
-        list_local(path, Map.get(params, :pattern))
+        true ->
+          # Bootstrap the workspace first so we never mask a bootstrap
+          # failure by falling through to `list_local/2`.
+          case Resolver.ensure_workspace_ready(path, ws_opts) do
+            :ok ->
+              if Resolver.under_workspace_mount?(path, ws_opts) do
+                case Resolver.ls(path, ws_opts) do
+                  {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
+                  {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
+                end
+              else
+                list_local(path, Map.get(params, :pattern))
+              end
+
+            {:error, reason} ->
+              {:error, "Cannot list #{path}: #{inspect(reason)}"}
+          end
       end
 
     case entries do

@@ -1,7 +1,8 @@
 defmodule JidoClaw.Tools.ListDirectoryTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.ListDirectory
+  alias JidoClaw.VFS.Workspace
 
   setup do
     dir = Path.join(System.tmp_dir!(), "jido_list_dir_#{System.unique_integer([:positive])}")
@@ -138,6 +139,86 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       assert {:error, message} = ListDirectory.run(%{path: file_path}, %{})
 
       assert message =~ "Cannot list"
+    end
+  end
+
+  describe "run/2 with workspace_id (VFS path)" do
+    test "lists entries from a mounted VFS filesystem" do
+      workspace_id = "test-listdir-vfs-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_list_dir_vfs_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "one.txt"), "1")
+      File.write!(Path.join(tmp, "two.txt"), "2")
+
+      {:ok, _} = Workspace.ensure_started(workspace_id, tmp)
+
+      on_exit(fn ->
+        _ = Workspace.teardown(workspace_id)
+        File.rm_rf!(tmp)
+      end)
+
+      assert {:ok, result} =
+               ListDirectory.run(
+                 %{path: "/project"},
+                 %{tool_context: %{workspace_id: workspace_id, project_dir: tmp}}
+               )
+
+      assert result.entries =~ "one.txt"
+      assert result.entries =~ "two.txt"
+    end
+
+    test "auto-bootstraps VFS when tool_context carries workspace_id + project_dir" do
+      ws = "ws-listdir-autoboot-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_list_dir_autoboot_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "alpha.txt"), "a")
+      File.write!(Path.join(tmp, "beta.txt"), "b")
+
+      on_exit(fn ->
+        _ = Workspace.teardown(ws)
+        File.rm_rf!(tmp)
+      end)
+
+      assert Registry.lookup(JidoClaw.VFS.WorkspaceRegistry, ws) == []
+
+      assert {:ok, result} =
+               ListDirectory.run(
+                 %{path: "/project"},
+                 %{tool_context: %{workspace_id: ws, project_dir: tmp}}
+               )
+
+      assert result.entries =~ "alpha.txt"
+      assert result.entries =~ "beta.txt"
+    end
+
+    test "surfaces bootstrap failure instead of silently falling through to local" do
+      # Regression: under_workspace_mount?/2 used to convert every bootstrap
+      # error into `false`, letting ListDirectory fall through to File.ls/1
+      # and hiding the real failure. It must now surface the
+      # :workspace_bootstrap_failed error.
+      ws = "ws-listdir-boot-fail-#{System.unique_integer([:positive])}"
+      on_exit(fn -> _ = Workspace.teardown(ws) end)
+
+      assert {:error, message} =
+               ListDirectory.run(
+                 %{path: "/project/anything"},
+                 %{tool_context: %{workspace_id: ws, project_dir: ""}}
+               )
+
+      assert message =~ "Cannot list /project/anything"
+      assert message =~ "workspace_bootstrap_failed"
     end
   end
 end

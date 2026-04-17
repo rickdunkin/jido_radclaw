@@ -33,9 +33,11 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   Returns `{:ok, results}` where results is a list of `%StepResult{}`
   structs in dependency-resolved order, or `{:error, reason}`.
   """
-  @spec run(JidoClaw.Skills.t(), String.t(), String.t()) :: {:ok, list()} | {:error, term()}
-  def run(skill, extra_context \\ "", project_dir \\ File.cwd!()) do
+  @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
+          {:ok, list()} | {:error, term()}
+  def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
     steps = skill.steps
+    workspace_id = Keyword.get(opts, :workspace_id)
 
     if Enum.empty?(steps) do
       {:error, "Skill '#{skill.name}' has no steps"}
@@ -43,7 +45,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       with {:ok, named_steps} <- assign_step_names(steps),
            :ok <- validate_no_cycles(named_steps),
            {:ok, phases} <- compute_phases(named_steps) do
-        execute_phases(phases, named_steps, extra_context, project_dir)
+        execute_phases(phases, named_steps, extra_context, project_dir, workspace_id)
       end
     end
   end
@@ -223,13 +225,20 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   # Phase execution
   # ---------------------------------------------------------------------------
 
-  defp execute_phases(phases, named_steps, extra_context, project_dir) do
+  defp execute_phases(phases, named_steps, extra_context, project_dir, workspace_id) do
     step_map = Map.new(named_steps, &{&1.name, &1})
 
     Enum.reduce_while(phases, {:ok, []}, fn phase_names, {:ok, acc_results} ->
       phase_steps = Enum.map(phase_names, &Map.fetch!(step_map, &1))
 
-      case execute_phase(phase_steps, acc_results, named_steps, extra_context, project_dir) do
+      case execute_phase(
+             phase_steps,
+             acc_results,
+             named_steps,
+             extra_context,
+             project_dir,
+             workspace_id
+           ) do
         {:ok, phase_results} ->
           {:cont, {:ok, acc_results ++ phase_results}}
 
@@ -239,7 +248,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end)
   end
 
-  defp execute_phase(steps, prior_results, named_steps, extra_context, project_dir) do
+  defp execute_phase(steps, prior_results, named_steps, extra_context, project_dir, workspace_id) do
     concurrency = max(1, length(steps))
 
     print_phase_banner(steps)
@@ -247,7 +256,16 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     results =
       steps
       |> Task.async_stream(
-        fn step -> execute_step(step, prior_results, named_steps, extra_context, project_dir) end,
+        fn step ->
+          execute_step(
+            step,
+            prior_results,
+            named_steps,
+            extra_context,
+            project_dir,
+            workspace_id
+          )
+        end,
         max_concurrency: concurrency,
         timeout: @step_timeout_ms,
         on_timeout: :kill_task
@@ -265,7 +283,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end
   end
 
-  defp execute_step(step, prior_results, named_steps, extra_context, project_dir) do
+  defp execute_step(step, prior_results, named_steps, extra_context, project_dir, workspace_id) do
     template_name = step.template
     task = step.task
 
@@ -282,12 +300,14 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       "  \e[2m  [parallel] #{step.name} (#{template_name}) — #{String.slice(task, 0, 55)}...\e[0m"
     )
 
-    params = %{
-      template: template_name,
-      task: full_task,
-      project_dir: project_dir,
-      name: step.name
-    }
+    params =
+      %{
+        template: template_name,
+        task: full_task,
+        project_dir: project_dir,
+        name: step.name
+      }
+      |> maybe_put(:workspace_id, workspace_id)
 
     case JidoClaw.Workflows.StepAction.run(params, %{}) do
       {:ok, %StepResult{} = step_result} ->
@@ -298,6 +318,9 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
         {:error, "Step #{step.name} (#{template_name}) failed: #{reason}"}
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp print_phase_banner(steps) do
     names = Enum.map_join(steps, ", ", & &1.name)

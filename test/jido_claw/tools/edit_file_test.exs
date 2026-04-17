@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.EditFileTest do
   use ExUnit.Case
 
   alias JidoClaw.Tools.EditFile
+  alias JidoClaw.VFS.Workspace
 
   setup do
     dir = Path.join(System.tmp_dir!(), "jido_edit_file_#{System.unique_integer([:positive])}")
@@ -105,6 +106,66 @@ defmodule JidoClaw.Tools.EditFileTest do
                EditFile.run(%{path: path, old_string: "hello", new_string: "hi"}, %{})
 
       assert message =~ "2 times"
+    end
+  end
+
+  describe "run/2 with workspace_id (VFS path)" do
+    test "edits a file through a mounted VFS filesystem" do
+      workspace_id = "test-editfile-vfs-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_edit_file_vfs_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      {:ok, _} = Workspace.ensure_started(workspace_id, tmp)
+      :ok = Workspace.mount(workspace_id, "/scratch", :in_memory, %{})
+      :ok = Jido.Shell.VFS.write_file(workspace_id, "/scratch/doc.txt", "foo bar baz")
+
+      on_exit(fn ->
+        _ = Workspace.teardown(workspace_id)
+        File.rm_rf!(tmp)
+      end)
+
+      assert {:ok, result} =
+               EditFile.run(
+                 %{path: "/scratch/doc.txt", old_string: "bar", new_string: "qux"},
+                 %{tool_context: %{workspace_id: workspace_id, project_dir: tmp}}
+               )
+
+      assert result.status == "edited"
+      assert {:ok, "foo qux baz"} = Jido.Shell.VFS.read_file(workspace_id, "/scratch/doc.txt")
+    end
+
+    test "auto-bootstraps VFS when tool_context carries workspace_id + project_dir" do
+      ws = "ws-editfile-autoboot-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_edit_file_autoboot_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "edit_target.txt"), "foo bar baz")
+
+      on_exit(fn ->
+        _ = Workspace.teardown(ws)
+        File.rm_rf!(tmp)
+      end)
+
+      assert Registry.lookup(JidoClaw.VFS.WorkspaceRegistry, ws) == []
+
+      assert {:ok, result} =
+               EditFile.run(
+                 %{path: "/project/edit_target.txt", old_string: "bar", new_string: "qux"},
+                 %{tool_context: %{workspace_id: ws, project_dir: tmp}}
+               )
+
+      assert result.status == "edited"
+      assert File.read!(Path.join(tmp, "edit_target.txt")) == "foo qux baz"
     end
   end
 end

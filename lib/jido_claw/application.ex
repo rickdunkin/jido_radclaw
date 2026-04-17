@@ -38,25 +38,25 @@ defmodule JidoClaw.Application do
     # then the consumer joins the group. Shard sessions wait 5s for consumers.
     # Skipped in MCP mode — Discord would pollute stdio.
     unless Application.get_env(:jido_claw, :skip_discord) do
-    if discord_token = System.get_env("DISCORD_BOT_TOKEN") do
-      Application.put_env(:nostrum, :token, discord_token)
-      Application.put_env(:nostrum, :gateway_intents, :all)
-      Application.put_env(:nostrum, :num_shards, :auto)
+      if discord_token = System.get_env("DISCORD_BOT_TOKEN") do
+        Application.put_env(:nostrum, :token, discord_token)
+        Application.put_env(:nostrum, :gateway_intents, :all)
+        Application.put_env(:nostrum, :num_shards, :auto)
 
-      case Application.ensure_all_started(:nostrum) do
-        {:ok, _} ->
-          case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
-            {:ok, _} ->
-              Logger.warning("[JidoClaw] Discord adapter started")
+        case Application.ensure_all_started(:nostrum) do
+          {:ok, _} ->
+            case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
+              {:ok, _} ->
+                Logger.warning("[JidoClaw] Discord adapter started")
 
-            {:error, reason} ->
-              Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
-          end
+              {:error, reason} ->
+                Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
+            end
 
-        {:error, reason} ->
-          Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
+          {:error, reason} ->
+            Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
+        end
       end
-    end
     end
 
     result
@@ -145,6 +145,11 @@ defmodule JidoClaw.Application do
 
         # Display coordinator (spinner, status bar, swarm box)
         JidoClaw.Display,
+
+        # VFS workspace registry + supervisor (must start BEFORE SessionManager so
+        # SessionManager.start_new_session/3 can call Workspace.ensure_started/2).
+        {Registry, keys: :unique, name: JidoClaw.VFS.WorkspaceRegistry},
+        JidoClaw.VFS.WorkspaceSupervisor,
 
         # Shell session manager (jido_shell + Host backend for real command execution)
         JidoClaw.Shell.SessionManager

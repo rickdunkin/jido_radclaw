@@ -193,7 +193,7 @@ defmodule JidoClaw.CLI.Repl do
 
     case Agent.ask(state.agent_pid, message,
            timeout: 120_000,
-           tool_context: %{project_dir: state.cwd}
+           tool_context: %{project_dir: state.cwd, workspace_id: state.session_id}
          ) do
       {:ok, handle} ->
         result = poll_with_tool_display(handle, state.agent_pid, MapSet.new())

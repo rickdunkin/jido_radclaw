@@ -33,11 +33,13 @@ defmodule JidoClaw.Tools.ReadFile do
   alias JidoClaw.VFS.Resolver
 
   @impl true
-  def run(%{path: path} = params, _context) do
+  def run(%{path: path} = params, context) do
     offset = Map.get(params, :offset, 0)
     limit = Map.get(params, :limit, 2000)
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
 
-    case Resolver.read(path) do
+    case Resolver.read(path, workspace_id: workspace_id, project_dir: project_dir) do
       {:ok, content} ->
         lines = String.split(content, "\n")
         total = length(lines)
