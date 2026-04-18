@@ -3,8 +3,7 @@ defmodule JidoClaw.CLI.Repl do
   The main REPL loop: reads input, routes to agent or commands, displays output.
   """
 
-  alias JidoClaw.{Agent, AgentTracker, Config, Display, JidoMd, Session, Session.Worker, Stats}
-  alias JidoClaw.Agent.Prompt
+  alias JidoClaw.{Agent, AgentTracker, Config, Display, Session, Session.Worker, Startup, Stats}
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
 
   defstruct [
@@ -41,10 +40,28 @@ defmodule JidoClaw.CLI.Repl do
       gateway: mode in [:gateway, :both]
     )
 
-    # Ensure JIDO.md, system prompt, and default skills
-    JidoMd.ensure(project_dir)
-    Prompt.ensure(project_dir)
-    JidoClaw.Skills.ensure_defaults(project_dir)
+    # Ensure JIDO.md, system prompt, and default skills; reconcile prompt sync.
+    prompt_sync =
+      case Startup.ensure_project_state(project_dir) do
+        {:ok, result} ->
+          Keyword.fetch!(result, :prompt_sync)
+
+        {:error, reason} ->
+          IO.puts(
+            "  \e[33m⚠\e[0m  prompt sync failed: \e[1m#{inspect(reason)}\e[0m \e[2m— continuing with existing .jido/ state\e[0m"
+          )
+
+          IO.puts("")
+          :noop
+      end
+
+    if prompt_sync == :sidecar_written do
+      IO.puts(
+        "  \e[33m↻\e[0m  prompt      \e[1mupgrade available\e[0m \e[2m— review .jido/system_prompt.md.default, then /upgrade-prompt\e[0m"
+      )
+
+      IO.puts("")
+    end
 
     # Check provider connectivity
     provider_name = Config.provider_label(config)
@@ -96,11 +113,8 @@ defmodule JidoClaw.CLI.Repl do
     # Start agent
     case JidoClaw.Jido.start_agent(Agent, id: "main") do
       {:ok, pid} ->
-        # Inject the dynamic system prompt
-        system_prompt = Prompt.build(project_dir)
-
-        case Jido.AI.set_system_prompt(pid, system_prompt) do
-          {:ok, _} ->
+        case Startup.inject_system_prompt(pid, project_dir) do
+          :ok ->
             :ok
 
           {:error, reason} ->

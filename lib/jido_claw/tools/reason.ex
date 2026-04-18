@@ -33,7 +33,7 @@ defmodule JidoClaw.Tools.Reason do
       ]
     ]
 
-  alias JidoClaw.Reasoning.StrategyRegistry
+  alias JidoClaw.Reasoning.{StrategyRegistry, Telemetry}
 
   @impl true
   def run(params, context) do
@@ -72,8 +72,10 @@ defmodule JidoClaw.Tools.Reason do
      }}
   end
 
-  defp run_strategy(strategy_name, prompt, _context) do
+  defp run_strategy(strategy_name, prompt, context) do
     {:ok, strategy_atom} = StrategyRegistry.atom_for(strategy_name)
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir])
 
     run_params = %{
       strategy: strategy_atom,
@@ -81,7 +83,17 @@ defmodule JidoClaw.Tools.Reason do
       timeout: 60_000
     }
 
-    case Jido.AI.Actions.Reasoning.RunStrategy.run(run_params, %{}) do
+    Telemetry.with_outcome(
+      strategy_name,
+      prompt,
+      [
+        execution_kind: :strategy_run,
+        workspace_id: workspace_id,
+        project_dir: project_dir
+      ],
+      fn -> Jido.AI.Actions.Reasoning.RunStrategy.run(run_params, %{}) end
+    )
+    |> case do
       {:ok, result} ->
         {:ok,
          %{

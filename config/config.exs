@@ -188,7 +188,8 @@ config :jido_claw, JidoClaw.Web.Endpoint,
   http: [port: 4000],
   url: [host: "localhost"],
   server: true,
-  secret_key_base: "jidoclaw_dev_secret_key_base_at_least_64_bytes_long_for_signing_and_encryption_purposes",
+  secret_key_base:
+    "jidoclaw_dev_secret_key_base_at_least_64_bytes_long_for_signing_and_encryption_purposes",
   render_errors: [formats: [json: JidoClaw.Web.ErrorJSON]],
   pubsub_server: JidoClaw.PubSub,
   live_view: [signing_salt: "jidoclaw_lv"],
@@ -216,7 +217,8 @@ config :jido_claw,
     JidoClaw.Forge.Domain,
     JidoClaw.Orchestration,
     JidoClaw.GitHub,
-    JidoClaw.Folio
+    JidoClaw.Folio,
+    JidoClaw.Reasoning.Domain
   ],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
 

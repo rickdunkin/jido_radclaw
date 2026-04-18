@@ -601,6 +601,74 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/classify " <> prompt, state) do
+    alias JidoClaw.Reasoning.Classifier
+
+    prompt = String.trim(prompt)
+
+    if prompt == "" do
+      IO.puts("  \e[31mUsage:\e[0m /classify <prompt>")
+      {:ok, state}
+    else
+      {:ok, strategy, confidence, profile} = Classifier.recommend_for(prompt)
+
+      JidoClaw.SignalBus.emit("jido_claw.reasoning.classified", %{
+        task_type: profile.task_type,
+        complexity: profile.complexity,
+        recommended_strategy: strategy,
+        confidence: confidence
+      })
+
+      IO.puts("")
+      IO.puts("  \e[1mClassification\e[0m")
+      IO.puts("  \e[33m⚙\e[0m  task_type   \e[1m#{profile.task_type}\e[0m")
+      IO.puts("  \e[33m⚙\e[0m  complexity  \e[1m#{profile.complexity}\e[0m")
+      IO.puts("  \e[33m⚙\e[0m  domain      \e[1m#{profile.domain || "—"}\e[0m")
+      IO.puts("  \e[33m⚙\e[0m  target      \e[1m#{profile.target || "—"}\e[0m")
+      IO.puts("  \e[33m⚙\e[0m  word_count  \e[1m#{profile.word_count}\e[0m")
+      IO.puts("")
+      IO.puts("  \e[1mRecommendation\e[0m")
+      IO.puts("  \e[32m▸\e[0m  strategy    \e[1m#{strategy}\e[0m")
+      IO.puts("  \e[32m▸\e[0m  confidence  \e[1m#{Float.round(confidence, 2)}\e[0m")
+      IO.puts("")
+      {:ok, state}
+    end
+  end
+
+  def handle("/classify", state) do
+    IO.puts("  Usage: /classify <prompt>")
+
+    IO.puts(
+      "  \e[2mPrints the task profile and recommended reasoning strategy (no execution).\e[0m"
+    )
+
+    {:ok, state}
+  end
+
+  def handle("/upgrade-prompt", state) do
+    alias JidoClaw.Agent.Prompt
+
+    case Prompt.upgrade(state.cwd) do
+      {:ok, %{backup: backup}} ->
+        IO.puts("  \e[32m✓\e[0m  Upgraded .jido/system_prompt.md to the new default")
+        IO.puts("  \e[2m   Previous version saved to #{Path.basename(backup)}\e[0m")
+        {:ok, state}
+
+      {:error, :no_sidecar} ->
+        IO.puts("  \e[33m⚠\e[0m  No pending upgrade — .jido/system_prompt.md.default not found")
+
+        IO.puts(
+          "  \e[2m   A sidecar appears only when the bundled default differs from your local copy.\e[0m"
+        )
+
+        {:ok, state}
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  Upgrade failed: #{inspect(reason)}")
+        {:ok, state}
+    end
+  end
+
   def handle("/" <> unknown, state) do
     IO.puts("  \e[31mUnknown command: /#{unknown}\e[0m  (try /help)")
     {:ok, state}

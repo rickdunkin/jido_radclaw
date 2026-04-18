@@ -1,6 +1,6 @@
 # JidoClaw Roadmap
 
-## Current State: v0.4.0-dev
+## Current State: v0.4.1
 
 Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, and unified VFS across file tools and shell (v0.3 shipped).
 
@@ -82,13 +82,52 @@ Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `Wr
 
 ## v0.4 — Reasoning & Strategy Improvements
 
+**Status: In Progress**
+
+Three sub-phases, each independently shippable. 0.4.1 complete; 0.4.2 and 0.4.3 planned.
+
+### v0.4.1 — Reasoning Foundations
+
+**Status: Complete**
+
+Three foundations for downstream auto-selection and performance-guided routing. Delivered:
+
+- **System prompt auto-sync.** New `JidoClaw.Startup` module unifies `.jido/` bootstrap and system-prompt injection across all four agent entry points (REPL, `JidoClaw.chat/3`, `mix jidoclaw --mcp`, `jido --mcp` escript). `Prompt.sync/1` reconciles on-disk `.jido/system_prompt.md` against the bundled default via SHA comparison, stamped in sidecar `.jido/.system_prompt.sync` (metadata lives outside the prompt body so it never reaches the LLM). When the bundled default diverges from an edited user prompt, `.jido/system_prompt.md.default` is written alongside for review and `/upgrade-prompt` promotes it in place (with `.bak`). Entry points parse `project_dir` from argv *before* `app.start`/`ensure_all_started` so app-managed services (`Memory`, `Skills`, `Solutions.Store`, `Network.Supervisor`) initialize against the correct directory.
+- **Heuristic classifier.** `JidoClaw.Reasoning.Classifier` builds a `TaskProfile` from prompt text — 7 task types (`planning`, `debugging`, `refactoring`, `exploration`, `verification`, `qa`, `open_ended`) and 4 complexity buckets (`simple`/`moderate`/`complex`/`highly_complex`) — via keyword bucketing + structural signals (error-signal terms, code blocks, numbered enumeration, multi-file mentions, constraint markers). `recommend/2` scores strategies against the registry's new `prefers` metadata, with position-weighted task-type match + complexity match + signal bonuses. `/classify <prompt>` REPL command emits `jido_claw.reasoning.classified`. `adaptive` is excluded from recommendations in 0.4.1 pending end-to-end wiring.
+- **Strategy performance tracking.** New `JidoClaw.Reasoning.Domain` + `reasoning_outcomes` Ash resource with four typed enums (`ExecutionKind`, `TaskType`, `Complexity`, `OutcomeStatus`) and denormalized profile snapshot for single-scan aggregation. `Telemetry.with_outcome/4` wraps strategy calls, emits `[:jido_claw, :reasoning, :strategy, :start|:stop]` telemetry, persists an outcome row asynchronously via `Task.Supervisor`, and publishes `jido_claw.reasoning.classified` (when classifying internally) + `jido_claw.reasoning.outcome_recorded` signals. `Reason.run_strategy/3`'s non-react branch is wrapped; the react clause is a structured-prompt template and stays unwrapped. `Statistics` aggregation scaffold ready for 0.4.3's feedback loop. `verify_certificate` telemetry wrap is deferred to 0.4.2.
+
+### Out of scope (deferred)
+
+- User-defined strategies (`.jido/strategies/` YAML) → 0.4.2
+- Pipeline composition + `RunPipeline` → 0.4.2
+- `verify_certificate` telemetry wrap with `:certificate_verification` kind → 0.4.2
+- `AutoReason` tool + `Reason strategy: "auto"` → 0.4.3
+- `Statistics.best_strategies_for/2` feeding `Classifier.recommend/2` history → 0.4.3
+- `/strategies stats` CLI surface → 0.4.3
+- LLM tie-breaker for close-scoring heuristic candidates → 0.4.3
+- Re-enable `adaptive` in classifier recommendations → 0.4.3
+- Thread `forge_session_id` / `agent_id` through `tool_context`; backfill `reasoning_outcomes` columns → 0.4.3
+- Wire `/strategy` state into `handle_message/2` (pre-existing disconnect) → 0.4.3
+
+### v0.4.2 — User Strategies & Pipeline Composition
+
 **Status: Planned**
 
-- Strategy auto-selection based on task complexity analysis
-- Strategy composition (e.g., CoT for planning + ReAct for execution)
-- Strategy performance tracking (which strategies work best for which task types)
-- User-defined strategy configurations in `.jido/strategies/`
-- Auto-sync `.jido/system_prompt.md` from `priv/defaults/system_prompt.md` on startup when the default has changed (e.g. hash comparison, version stamp). Currently the runtime prompt is created once during setup and never updated, so new tools and skills require a manual copy of the default.
+- User-defined strategy YAML in `.jido/strategies/` (overlays on built-ins and brand-new named strategies)
+- Pipeline composition (e.g., CoT for planning → ReAct for execution) via `RunPipeline`; `base_strategy`/`pipeline_name`/`pipeline_stage` columns in `reasoning_outcomes` already reserved
+- Wrap `verify_certificate` in telemetry with `execution_kind: :certificate_verification`
+
+### v0.4.3 — Auto-selection & Feedback
+
+**Status: Planned**
+
+- `AutoReason` tool + `Reason strategy: "auto"` wiring
+- `Classifier.recommend/2` consumes `Statistics.best_strategies_for/2` history via `opts[:history]` (accepted but ignored today)
+- `/strategies stats` CLI surface backed by `Statistics.summary/0`
+- LLM tie-breaker for close-scoring heuristic candidates
+- Re-enable `adaptive` in classifier recommendations
+- Thread `forge_session_id` / `agent_id` through `tool_context`
+- Wire `/strategy state.strategy` into `handle_message/2`
 
 ---
 

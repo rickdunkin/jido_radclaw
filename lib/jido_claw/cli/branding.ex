@@ -153,6 +153,10 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m    /strategies      List reasoning strategies        \e[36m│\e[0m
     \e[36m│\e[0m    /strategy        Show active strategy             \e[36m│\e[0m
     \e[36m│\e[0m    /strategy <n>    Switch reasoning strategy        \e[36m│\e[0m
+    \e[36m│\e[0m    /classify <p>    Profile a prompt, suggest strat   \e[36m│\e[0m
+    \e[36m│\e[0m                                                   \e[36m│\e[0m
+    \e[36m│\e[0m  \e[1mPrompt\e[0m                                          \e[36m│\e[0m
+    \e[36m│\e[0m    /upgrade-prompt  Apply pending prompt upgrade     \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mSwarm\e[0m                                           \e[36m│\e[0m
     \e[36m│\e[0m    /agents          Show running agents             \e[36m│\e[0m
