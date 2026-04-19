@@ -10,6 +10,15 @@ defmodule JidoClaw.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :dev,
+      # Intentionally redefining Anubis.Server.Transport.STDIO and
+      # Anubis.Server.Handlers.Tools from anubis_mcp 0.17.1 — see
+      # lib/jido_claw/core/anubis_*_patch.ex. Silences the resulting
+      # "redefining module" warnings globally so `--warnings-as-errors`
+      # stays green. Trade-off: accidental shadow of an existing module
+      # anywhere else won't warn either; mitigation is code review on new
+      # defmodule statements. Remove this line when the patches are
+      # removed (jido_mcp upgrade to anubis_mcp ~> 1.0).
+      elixirc_options: [ignore_module_conflict: true],
       deps: deps(),
       escript: escript(),
       compilers: Mix.compilers(),

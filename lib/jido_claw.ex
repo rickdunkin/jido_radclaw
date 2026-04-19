@@ -56,7 +56,11 @@ defmodule JidoClaw do
     result =
       JidoClaw.Agent.ask_sync(pid, message,
         timeout: 120_000,
-        tool_context: %{project_dir: project_dir, workspace_id: session_id}
+        tool_context: %{
+          project_dir: project_dir,
+          workspace_id: session_id,
+          agent_id: session_id
+        }
       )
 
     case result do

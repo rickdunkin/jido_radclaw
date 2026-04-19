@@ -102,6 +102,36 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       assert msg =~ "resolves to react"
     end
 
+    test "rejects a stage with strategy: 'auto'" do
+      assert {:error, msg} =
+               RunPipeline.run(
+                 %{
+                   pipeline_name: "p",
+                   prompt: "x",
+                   stages: [%{"strategy" => "auto"}]
+                 },
+                 %{reasoning_runner: OkRunner}
+               )
+
+      assert msg =~ "auto"
+      assert msg =~ "selector"
+    end
+
+    test "rejects a stage with strategy: 'adaptive'" do
+      assert {:error, msg} =
+               RunPipeline.run(
+                 %{
+                   pipeline_name: "p",
+                   prompt: "x",
+                   stages: [%{"strategy" => "adaptive"}]
+                 },
+                 %{reasoning_runner: OkRunner}
+               )
+
+      assert msg =~ "adaptive"
+      assert msg =~ "selector"
+    end
+
     test "rejects stage with non-string strategy key" do
       assert {:error, msg} =
                RunPipeline.run(

@@ -8,12 +8,19 @@ defmodule JidoClaw.Reasoning.Classifier do
   emission happens at call sites (e.g., the `/classify` handler) so this
   module stays safe to call from hot paths.
 
-  `opts[:history]` is accepted but unused in 0.4.1; 0.4.3 will feed aggregated
-  `Statistics` data into the recommendation.
+  History-aware selection is layered on via `opts[:history]` — shape matches
+  `JidoClaw.Reasoning.Statistics.best_strategies_for/2`. When a strategy
+  appears in history with enough samples (`@min_history_samples`), its
+  `success_rate` is folded additively into the heuristic score.
   """
 
   alias JidoClaw.Reasoning.{StrategyRegistry, TaskProfile}
   alias JidoClaw.Solutions.Fingerprint
+
+  # History boost: additive weight of success_rate on final score; only applies
+  # when a strategy has at least @min_history_samples observations.
+  @history_weight 0.3
+  @min_history_samples 5
 
   # Keyword buckets — hits are counted per bucket and fed into task_type voting.
   @task_keywords %{
@@ -88,34 +95,90 @@ defmodule JidoClaw.Reasoning.Classifier do
   end
 
   @doc """
-  Recommend a strategy for a profile. Returns `{:ok, strategy_name, confidence}`
-  or `{:error, :no_recommendation}` when no strategy in the registry prefers
-  the profile's task type.
+  Recommend a strategy for a profile.
 
-  `adaptive` is excluded in 0.4.1 — it relies on `Jido.AI.Reasoning.Adaptive`
-  which isn't fully wired end-to-end in the agent loop yet. 0.4.3 re-enables it.
+  Default return: `{:ok, strategy_name, confidence}` for the top pick, or
+  `{:ok, "cot", 0.25}` when nothing scores (soft fallback).
+
+  With `return: :ranked`: `{:ok, [{name, score}, ...]}` sorted by score
+  (desc) then name (asc). Used by `AutoSelect` to inspect gap between top-2
+  without re-scoring.
+
+  ## Options
+
+    * `:history` — list of `%{strategy, success_rate, avg_duration_ms, samples}`
+      from `Statistics.best_strategies_for/2`. Strategies with
+      `samples >= @min_history_samples` get `success_rate * @history_weight`
+      added to their heuristic score.
+    * `:exclude` — list of strategy names to drop from the candidate set.
+      Name-based exclusion; user aliases with a matching name are dropped but
+      aliases pointing at an excluded *base* still slip through. Use
+      `:exclude_bases` for base-level filtering. Default `[]`.
+    * `:exclude_bases` — list of base atoms (e.g. `[:react, :adaptive]`) to
+      drop. Any candidate whose resolved base (via `StrategyRegistry.atom_for/1`)
+      is in this list is removed. This covers user aliases whose `base:`
+      points at an excluded strategy. `AutoSelect` uses
+      `exclude_bases: [:react, :adaptive]` to keep the structured-prompt
+      react scaffold out of the auto pool (react writes `:react_stub` rows
+      which history queries ignore, so it can't win fairly) and to prevent
+      adaptive-based aliases from reintroducing nested selection. Default
+      `[]`.
+    * `:return` — `:default` (the 3-tuple) or `:ranked` (the list). Default
+      `:default`.
+
+  ## Why adaptive is excluded
+
+  The built-in `"adaptive"` row is always filtered from recommendations.
+  Reachable via `reason(strategy: "auto" | "adaptive")`, but
+  `Jido.AI.Reasoning.Adaptive` runs its own internal selection — letting
+  the classifier pick it means two selectors compete for the same decision.
+  Callers that want to exclude *aliases* pointing at adaptive (or react)
+  should pass `exclude_bases: [:adaptive]` (or `[:react, :adaptive]`).
   """
   @spec recommend(TaskProfile.t(), keyword()) ::
-          {:ok, String.t(), float()} | {:error, :no_recommendation}
-  def recommend(%TaskProfile{} = profile, _opts \\ []) do
-    # opts[:history] reserved for 0.4.3; ignored today.
+          {:ok, String.t(), float()}
+          | {:ok, [{String.t(), float()}]}
+          | {:error, :no_recommendation}
+  def recommend(%TaskProfile{} = profile, opts \\ []) do
+    history = Keyword.get(opts, :history, [])
+    exclude = Keyword.get(opts, :exclude, [])
+    exclude_bases = Keyword.get(opts, :exclude_bases, [])
+    return_shape = Keyword.get(opts, :return, :default)
+
+    history_map = index_history(history)
+
+    # adaptive is reachable via reason(strategy: "auto" | "adaptive") — the
+    # classifier never picks it; Adaptive runs its own inner selection.
     candidates =
       StrategyRegistry.list()
       |> Enum.reject(&(&1.name == "adaptive"))
+      |> Enum.reject(&(&1.name in exclude))
+      |> Enum.reject(&base_excluded?(&1.name, exclude_bases))
       |> Enum.map(fn %{name: name} ->
         prefers = StrategyRegistry.prefers_for(name) || %{task_types: [], complexity: []}
-        {name, score_candidate(prefers, profile)}
+        heuristic = score_candidate(prefers, profile)
+        boost = history_boost(history_map, name)
+        {name, heuristic + boost}
       end)
-      |> Enum.reject(fn {_name, score} -> score == 0.0 end)
-      |> Enum.sort_by(fn {name, score} -> {-score, name} end)
 
-    case candidates do
-      [{name, score} | _] ->
-        confidence = min(1.0, score)
-        {:ok, name, confidence}
+    case return_shape do
+      :ranked ->
+        ranked =
+          candidates
+          |> Enum.sort_by(fn {name, score} -> {-score, name} end)
 
-      [] ->
-        {:ok, "cot", 0.25}
+        {:ok, ranked}
+
+      _ ->
+        case candidates
+             |> Enum.reject(fn {_name, score} -> score == 0.0 end)
+             |> Enum.sort_by(fn {name, score} -> {-score, name} end) do
+          [{name, score} | _] ->
+            {:ok, name, min(1.0, score)}
+
+          [] ->
+            {:ok, "cot", 0.25}
+        end
     end
   end
 
@@ -128,6 +191,19 @@ defmodule JidoClaw.Reasoning.Classifier do
     profile = profile(prompt, opts)
     {:ok, strategy, confidence} = recommend(profile, opts)
     {:ok, strategy, confidence, profile}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private — base-level exclusion
+  # ---------------------------------------------------------------------------
+
+  defp base_excluded?(_name, []), do: false
+
+  defp base_excluded?(name, exclude_bases) do
+    case StrategyRegistry.atom_for(name) do
+      {:ok, atom} -> atom in exclude_bases
+      _ -> false
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -244,6 +320,32 @@ defmodule JidoClaw.Reasoning.Classifier do
     case Map.get(prefers, :task_types, []) do
       [^task_type | _] -> true
       _ -> false
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private — history scoring
+  # ---------------------------------------------------------------------------
+
+  defp index_history(history) when is_list(history) do
+    Enum.reduce(history, %{}, fn entry, acc ->
+      case entry do
+        %{strategy: name} = row when is_binary(name) -> Map.put(acc, name, row)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp index_history(_), do: %{}
+
+  defp history_boost(history_map, name) do
+    case Map.get(history_map, name) do
+      %{samples: samples, success_rate: sr}
+      when is_integer(samples) and samples >= @min_history_samples and is_number(sr) ->
+        sr * @history_weight
+
+      _ ->
+        0.0
     end
   end
 end

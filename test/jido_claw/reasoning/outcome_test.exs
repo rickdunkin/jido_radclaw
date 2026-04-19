@@ -61,6 +61,26 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
     test "requires strategy, execution_kind, task_type, complexity, status, started_at, prompt_length" do
       assert {:error, _} = Outcome.record(%{strategy: "cot"})
     end
+
+    test "persists agent_id and forge_session_key" do
+      now = DateTime.utc_now()
+
+      attrs = %{
+        strategy: "cot",
+        execution_kind: :strategy_run,
+        task_type: :qa,
+        complexity: :simple,
+        prompt_length: 10,
+        status: :ok,
+        started_at: now,
+        agent_id: "main",
+        forge_session_key: "forge-abc123"
+      }
+
+      assert {:ok, row} = Outcome.record(attrs)
+      assert row.agent_id == "main"
+      assert row.forge_session_key == "forge-abc123"
+    end
   end
 
   describe "list_by_task_type/2" do

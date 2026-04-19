@@ -38,20 +38,21 @@ defmodule JidoClaw.Config do
   }
 
   @strategy_descriptions %{
-    "react" => "Reason + Act loop (default) — multi-step tasks with tool use",
+    "auto" => "Auto — history-aware selection (recommended default)",
+    "react" => "Reason + Act loop — multi-step tasks with tool use",
     "cot" => "Chain of Thought — logical/mathematical step-by-step reasoning",
     "cod" => "Chain of Draft — concise reasoning with minimal tokens",
     "tot" => "Tree of Thoughts — branching exploration for complex planning",
     "got" => "Graph of Thoughts — non-linear concept-connected reasoning",
     "aot" => "Algorithm of Thoughts — algorithmic search with examples",
     "trm" => "Tiny Recursive Model — hierarchical recursive decomposition",
-    "adaptive" => "Adaptive — auto-selects best strategy per prompt"
+    "adaptive" => "Deprecated — alias for auto"
   }
 
   @defaults %{
     "provider" => "ollama",
     "model" => "ollama:nemotron-3-super:cloud",
-    "strategy" => "react",
+    "strategy" => "auto",
     "max_iterations" => 25,
     "timeout" => 120_000,
     "providers" => @providers

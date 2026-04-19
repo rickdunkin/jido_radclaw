@@ -5,14 +5,19 @@ defmodule JidoClaw.CLI.Repl do
 
   alias JidoClaw.{Agent, AgentTracker, Config, Display, Session, Session.Worker, Startup, Stats}
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
+  alias JidoClaw.Reasoning.StrategyRegistry
 
   defstruct [
     :agent_pid,
+    :agent_id,
     :config,
     :cwd,
     :model,
     :session_id,
     :started_at,
+    # strategy is populated at REPL init from Config.strategy/1 — not
+    # defaulted here so we don't silently shadow .jido/config.yaml.
+    :strategy,
     stats: %{messages: 0, tokens: 0}
   ]
 
@@ -30,15 +35,30 @@ defmodule JidoClaw.CLI.Repl do
     # Override jido_ai model aliases so :fast resolves to user's configured model
     Application.put_env(:jido_ai, :model_aliases, %{fast: model, capable: model})
 
+    # Resolve the configured strategy against the registry so typos / stale
+    # entries in .jido/config.yaml fall back to "auto" instead of silently
+    # propagating into every agent turn via prepare_user_message/2.
+    configured_strategy = Config.strategy(config)
+    strategy = resolve_strategy(configured_strategy)
+
     # Boot sequence
     mode = Application.get_env(:jido_claw, :mode, :both)
 
     Branding.boot_sequence(project_dir,
       provider: Config.provider_label(config),
       model: model_name(model),
+      strategy: strategy,
       tools_count: length(JidoClaw.Agent.tool_modules()),
       gateway: mode in [:gateway, :both]
     )
+
+    if strategy != configured_strategy do
+      IO.puts(
+        "  \e[33m⚠\e[0m  strategy    \e[1m#{configured_strategy}\e[0m is not a known strategy \e[2m— falling back to \e[1mauto\e[0m\e[2m. Check .jido/config.yaml.\e[0m"
+      )
+
+      IO.puts("")
+    end
 
     # Ensure JIDO.md, system prompt, and default skills; reconcile prompt sync.
     prompt_sync =
@@ -151,11 +171,13 @@ defmodule JidoClaw.CLI.Repl do
 
         state = %__MODULE__{
           agent_pid: pid,
+          agent_id: "main",
           config: config,
           cwd: project_dir,
           model: model,
           session_id: session_id,
-          started_at: System.monotonic_time(:second)
+          started_at: System.monotonic_time(:second),
+          strategy: strategy
         }
 
         loop(state)
@@ -196,7 +218,9 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp handle_message(message, state) do
-    # Route through Session.Worker GenServer (telemetry + JSONL persistence)
+    # Route through Session.Worker GenServer (telemetry + JSONL persistence).
+    # Save the *raw* message here so session history captures what the user
+    # typed, not the hinted variant seen by the agent.
     Worker.add_message("default", state.session_id, :user, message)
     Stats.track_message(:user)
 
@@ -205,9 +229,15 @@ defmodule JidoClaw.CLI.Repl do
     Display.exit_input_mode()
     Display.start_thinking()
 
-    case Agent.ask(state.agent_pid, message,
+    prepared = prepare_user_message(message, state.strategy)
+
+    case Agent.ask(state.agent_pid, prepared,
            timeout: 120_000,
-           tool_context: %{project_dir: state.cwd, workspace_id: state.session_id}
+           tool_context: %{
+             project_dir: state.cwd,
+             workspace_id: state.session_id,
+             agent_id: state.agent_id
+           }
          ) do
       {:ok, handle} ->
         result = poll_with_tool_display(handle, state.agent_pid, MapSet.new())
@@ -322,6 +352,42 @@ defmodule JidoClaw.CLI.Repl do
   defp extract_text(%{answer: answer}) when is_binary(answer), do: answer
   defp extract_text(%{last_answer: answer}) when is_binary(answer), do: answer
   defp extract_text(other), do: inspect(other)
+
+  @doc false
+  # Normalize an arbitrary strategy name (from .jido/config.yaml or a typo)
+  # against the registry. "auto" is always valid (selector, not a registry
+  # entry); anything else must be a known built-in or user alias. Unknown
+  # values fall back to "auto" so the agent-facing hint can never inject a
+  # nonexistent strategy into the prompt.
+  def resolve_strategy("auto"), do: "auto"
+
+  def resolve_strategy(name) when is_binary(name) do
+    if StrategyRegistry.valid?(name), do: name, else: "auto"
+  end
+
+  def resolve_strategy(_), do: "auto"
+
+  @doc false
+  # Prepend a reasoning-preference hint to the agent-facing message when the
+  # REPL has a non-react strategy active. react is the agent's native loop —
+  # no hint needed. auto gets a hint pointing at reason(strategy: "auto")
+  # so history-aware selection kicks in for complex queries. Any other
+  # concrete strategy (cot/tot/etc.) names itself in the hint so the agent
+  # invokes reason(strategy: "<name>") on queries that benefit.
+  #
+  # Public (via @doc false) so the REPL test suite can assert on the string
+  # without needing to drive the full handle_message flow.
+  def prepare_user_message(message, "react"), do: message
+
+  def prepare_user_message(message, "auto") do
+    "[Reasoning preference: auto — invoke reason(strategy: \"auto\") for queries that benefit from structured reasoning; history-aware selection will pick a concrete strategy.]\n\n" <>
+      message
+  end
+
+  def prepare_user_message(message, strategy) when is_binary(strategy) do
+    "[Reasoning preference: #{strategy} — invoke reason(strategy: \"#{strategy}\") for queries that benefit from structured reasoning.]\n\n" <>
+      message
+  end
 
   defp update_stats(state) do
     Stats.track_message(:assistant)

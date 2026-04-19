@@ -100,7 +100,7 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
       module: Jido.AI.Reasoning.Adaptive,
       atom: :adaptive,
       description:
-        "Adaptive: automatically selects the best strategy based on prompt complexity.",
+        "Deprecated — alias for 'auto'. Selects a strategy automatically based on history and heuristics.",
       prefers: %{task_types: [], complexity: []}
     }
   }

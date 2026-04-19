@@ -141,7 +141,8 @@ defmodule JidoClaw.Forge.Persistence do
               do: Map.put(start_attrs, :started_at, started_at),
               else: start_attrs
 
-          exec_session = Ash.create!(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false)
+          exec_session =
+            Ash.create!(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false)
 
           result_status =
             case runner_status do

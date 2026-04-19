@@ -3,9 +3,12 @@ defmodule JidoClaw.Tools.Reason do
   Applies a structured reasoning strategy to analyze a complex problem.
 
   Delegates to `Jido.AI.Actions.Reasoning.RunStrategy`, which runs an isolated
-  runner agent for the requested strategy. Supports react (ReAct), cot, cod,
-  tot, got, aot, trm, and adaptive strategies — plus any user-defined alias
-  declared in `.jido/strategies/*.yaml` that resolves to one of those built-ins.
+  runner agent for the requested strategy. Supports `auto` (history-aware
+  selection — the recommended default), react, cot, cod, tot, got, aot, trm,
+  and user-defined aliases declared in `.jido/strategies/*.yaml`.
+
+  `adaptive` is accepted for backwards compatibility and is silently
+  normalized to `auto` at the tool boundary. Prefer `auto` in new code.
   """
 
   use Jido.Action,
@@ -25,7 +28,8 @@ defmodule JidoClaw.Tools.Reason do
       strategy: [
         type: :string,
         required: true,
-        doc: "Strategy: react, cot, cod, tot, got, aot, trm, adaptive, or a user-defined alias"
+        doc:
+          "Strategy: auto (recommended — history-aware selection), react, cot, cod, tot, got, aot, trm, adaptive (deprecated — alias for auto), or a user-defined alias"
       ],
       prompt: [
         type: :string,
@@ -34,21 +38,66 @@ defmodule JidoClaw.Tools.Reason do
       ]
     ]
 
-  alias JidoClaw.Reasoning.{StrategyRegistry, Telemetry}
+  alias JidoClaw.Reasoning.{AutoSelect, StrategyRegistry, Telemetry}
 
   @impl true
   def run(params, context) do
     strategy_name = params.strategy
     prompt = params.prompt
 
-    case StrategyRegistry.valid?(strategy_name) do
-      false ->
-        valid = StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")
-        {:error, "Unknown strategy '#{strategy_name}'. Valid strategies: #{valid}"}
+    cond do
+      strategy_name in ["auto", "adaptive"] ->
+        run_auto(prompt, context)
+
+      StrategyRegistry.valid?(strategy_name) ->
+        run_strategy(strategy_name, prompt, context)
 
       true ->
-        run_strategy(strategy_name, prompt, context)
+        valid = StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")
+        {:error, "Unknown strategy '#{strategy_name}'. Valid strategies: #{valid}"}
     end
+  end
+
+  # Auto path: history-aware selection resolves to a concrete strategy, then
+  # delegates to the normal runner path with the chosen strategy. The outcome
+  # row stores the *base* name (cot/tot/etc., never "auto"/"adaptive" and
+  # never a user alias) so `Statistics.best_strategies_for/2` learns on a
+  # stable vocabulary. When AutoSelect picks a user alias whose base differs
+  # from the alias name, `metadata.alias_name` preserves the alias so
+  # diagnostics stay lossless.
+  defp run_auto(prompt, context) do
+    {:ok, concrete_strategy, _confidence, profile, diagnostics} =
+      AutoSelect.select(prompt)
+
+    {:ok, base_atom} = StrategyRegistry.atom_for(concrete_strategy)
+    base_name = Atom.to_string(base_atom)
+    runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
+
+    run_params = %{
+      strategy: base_atom,
+      prompt: prompt,
+      timeout: 60_000
+    }
+
+    metadata =
+      if concrete_strategy != base_name do
+        Map.put(diagnostics, :alias_name, concrete_strategy)
+      else
+        diagnostics
+      end
+
+    opts =
+      base_telemetry_opts(context,
+        execution_kind: :strategy_run,
+        base_strategy: base_name,
+        profile: profile,
+        metadata: metadata
+      )
+
+    Telemetry.with_outcome(base_name, prompt, opts, fn ->
+      runner.run(run_params, %{})
+    end)
+    |> format_runner_result(base_name)
   end
 
   # Dispatches on the *resolved base* of the strategy. User aliases whose base
@@ -71,18 +120,16 @@ defmodule JidoClaw.Tools.Reason do
   # in Telemetry.with_outcome/4 keeps the row coherent: strategy is the
   # user-facing name, base_strategy is "react".
   defp run_react(strategy_name, prompt, context) do
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir])
+    opts =
+      base_telemetry_opts(context,
+        execution_kind: :react_stub,
+        base_strategy: "react"
+      )
 
     Telemetry.with_outcome(
       strategy_name,
       prompt,
-      [
-        execution_kind: :react_stub,
-        base_strategy: "react",
-        workspace_id: workspace_id,
-        project_dir: project_dir
-      ],
+      opts,
       fn -> {:ok, react_payload(strategy_name, prompt)} end
     )
   end
@@ -108,8 +155,6 @@ defmodule JidoClaw.Tools.Reason do
   end
 
   defp run_runner_strategy(strategy_name, base_atom, base_name, prompt, context) do
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir])
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
     run_params = %{
@@ -118,30 +163,47 @@ defmodule JidoClaw.Tools.Reason do
       timeout: 60_000
     }
 
+    opts =
+      base_telemetry_opts(context,
+        execution_kind: :strategy_run,
+        base_strategy: base_name
+      )
+
     Telemetry.with_outcome(
       strategy_name,
       prompt,
-      [
-        execution_kind: :strategy_run,
-        base_strategy: base_name,
-        workspace_id: workspace_id,
-        project_dir: project_dir
-      ],
+      opts,
       fn -> runner.run(run_params, %{}) end
     )
-    |> case do
-      {:ok, result} ->
-        {:ok,
-         %{
-           strategy: strategy_name,
-           output: extract_output(result),
-           status: Map.get(result, :status),
-           usage: Map.get(result, :usage, %{})
-         }}
+    |> format_runner_result(strategy_name)
+  end
 
-      {:error, reason} ->
-        {:error, format_error(strategy_name, reason)}
-    end
+  # Pull workspace_id / project_dir / agent_id / forge_session_key from
+  # tool_context (all nil-safe) and fold in any extra keyword opts.
+  defp base_telemetry_opts(context, extra) do
+    tool_context = Map.get(context, :tool_context, %{}) || %{}
+
+    [
+      workspace_id: Map.get(tool_context, :workspace_id),
+      project_dir: Map.get(tool_context, :project_dir),
+      agent_id: Map.get(tool_context, :agent_id),
+      forge_session_key: Map.get(tool_context, :forge_session_key)
+    ]
+    |> Keyword.merge(extra)
+  end
+
+  defp format_runner_result({:ok, result}, strategy_name) do
+    {:ok,
+     %{
+       strategy: strategy_name,
+       output: extract_output(result),
+       status: Map.get(result, :status),
+       usage: Map.get(result, :usage, %{})
+     }}
+  end
+
+  defp format_runner_result({:error, reason}, strategy_name) do
+    {:error, format_error(strategy_name, reason)}
   end
 
   defp extract_output(%{output: output}) when is_binary(output) and output != "", do: output

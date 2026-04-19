@@ -22,6 +22,8 @@ defmodule JidoClaw.Reasoning.Telemetry do
           execution_kind: atom(),
           workspace_id: String.t() | nil,
           project_dir: String.t() | nil,
+          agent_id: String.t() | nil,
+          forge_session_key: String.t() | nil,
           profile: TaskProfile.t() | nil,
           base_strategy: String.t() | nil,
           pipeline_name: String.t() | nil,
@@ -187,6 +189,8 @@ defmodule JidoClaw.Reasoning.Telemetry do
       certificate_confidence: Keyword.get(opts, :certificate_confidence, extracted_confidence),
       workspace_id: Keyword.get(opts, :workspace_id),
       project_dir: Keyword.get(opts, :project_dir),
+      agent_id: Keyword.get(opts, :agent_id),
+      forge_session_key: Keyword.get(opts, :forge_session_key),
       # Caller-supplied metadata wins on key collision.
       metadata: Map.merge(%{}, caller_metadata),
       started_at: started_at,

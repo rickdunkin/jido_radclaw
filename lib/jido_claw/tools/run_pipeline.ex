@@ -82,8 +82,11 @@ defmodule JidoClaw.Tools.RunPipeline do
     prompt = params.prompt
     raw_stages = params.stages
 
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir])
+    tool_context = Map.get(context, :tool_context, %{}) || %{}
+    workspace_id = Map.get(tool_context, :workspace_id)
+    project_dir = Map.get(tool_context, :project_dir)
+    agent_id = Map.get(tool_context, :agent_id)
+    forge_session_key = Map.get(tool_context, :forge_session_key)
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
     with {:ok, stages} <- normalize_stages(raw_stages),
@@ -91,7 +94,9 @@ defmodule JidoClaw.Tools.RunPipeline do
       execute(pipeline_name, prompt, stages,
         runner: runner,
         workspace_id: workspace_id,
-        project_dir: project_dir
+        project_dir: project_dir,
+        agent_id: agent_id,
+        forge_session_key: forge_session_key
       )
     end
   end
@@ -171,6 +176,10 @@ defmodule JidoClaw.Tools.RunPipeline do
 
   defp validate_stage(%{strategy: strategy}, idx) do
     cond do
+      strategy in ["auto", "adaptive"] ->
+        {:error,
+         "stage #{idx}: strategy '#{strategy}' is a selector, not a concrete strategy. Pipelines chain concrete strategies (cot, tot, …) — pick one per stage."}
+
       not StrategyRegistry.valid?(strategy) ->
         {:error, "stage #{idx}: unknown strategy '#{strategy}'"}
 
@@ -199,6 +208,8 @@ defmodule JidoClaw.Tools.RunPipeline do
     runner = Keyword.fetch!(wrap_opts, :runner)
     workspace_id = Keyword.get(wrap_opts, :workspace_id)
     project_dir = Keyword.get(wrap_opts, :project_dir)
+    agent_id = Keyword.get(wrap_opts, :agent_id)
+    forge_session_key = Keyword.get(wrap_opts, :forge_session_key)
 
     result =
       stages
@@ -218,6 +229,8 @@ defmodule JidoClaw.Tools.RunPipeline do
             pipeline_stage: pad_stage(idx, total),
             workspace_id: workspace_id,
             project_dir: project_dir,
+            agent_id: agent_id,
+            forge_session_key: forge_session_key,
             metadata: %{stage_index: idx, stage_total: total}
           ]
 

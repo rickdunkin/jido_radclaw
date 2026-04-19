@@ -555,13 +555,65 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/strategies stats", state) do
+    %{strategies: strategies, task_types: task_types} =
+      JidoClaw.Reasoning.Statistics.summary()
+
+    IO.puts("")
+    IO.puts("  \e[1mStrategy Statistics\e[0m")
+    IO.puts("")
+
+    if strategies == [] do
+      IO.puts("  \e[2mNo reasoning outcomes recorded yet.\e[0m")
+    else
+      Enum.each(strategies, fn %{
+                                 strategy: name,
+                                 samples: n,
+                                 success_rate: sr,
+                                 avg_duration_ms: dur
+                               } ->
+        pct = Float.round(sr * 100, 1)
+        dur_ms = Float.round(dur, 0) |> trunc()
+
+        IO.puts("  \e[32m▸\e[0m \e[1m#{name}\e[0m")
+
+        IO.puts("    \e[2msamples=#{n}  success=#{pct}%  avg=#{dur_ms}ms\e[0m")
+      end)
+    end
+
+    IO.puts("")
+    IO.puts("  \e[1mBy Task Type\e[0m")
+    IO.puts("")
+
+    if task_types == [] do
+      IO.puts("  \e[2mNo task-type data yet.\e[0m")
+    else
+      Enum.each(task_types, fn %{task_type: tt, samples: n, success_rate: sr} ->
+        pct = Float.round(sr * 100, 1)
+        IO.puts("  \e[33m▸\e[0m \e[1m#{tt}\e[0m  \e[2msamples=#{n}  success=#{pct}%\e[0m")
+      end)
+    end
+
+    IO.puts("")
+    {:ok, state}
+  end
+
   def handle("/strategies", state) do
     strategies = JidoClaw.Reasoning.StrategyRegistry.list()
-    current = Map.get(state, :strategy, "react")
+    current = state.strategy
 
     IO.puts("")
     IO.puts("  \e[1mReasoning Strategies\e[0m")
     IO.puts("")
+
+    # auto is a selector verb, not a registry entry — inject it at the top
+    # of the list so /strategies leads with the recommended default.
+    auto_active = if current == "auto", do: " \e[32m← active\e[0m", else: ""
+    IO.puts("  \e[33m▸\e[0m \e[1mauto\e[0m#{auto_active}")
+
+    IO.puts(
+      "    \e[2mAutomatic selection — picks the best strategy per prompt (history + heuristics)\e[0m"
+    )
 
     Enum.each(strategies, fn %{name: name, description: desc} = entry ->
       active = if name == current, do: " \e[32m← active\e[0m", else: ""
@@ -571,7 +623,7 @@ defmodule JidoClaw.CLI.Commands do
     end)
 
     IO.puts("")
-    IO.puts("  \e[2mSwitch: /strategy <name>\e[0m")
+    IO.puts("  \e[2mSwitch: /strategy <name>  ·  Stats: /strategies stats\e[0m")
     IO.puts("")
     {:ok, state}
   end
@@ -579,24 +631,26 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/strategy " <> name_str, state) do
     name = String.trim(name_str)
 
-    if JidoClaw.Reasoning.StrategyRegistry.valid?(name) do
-      IO.puts("  \e[32m✓\e[0m  Switched reasoning strategy to \e[1m#{name}\e[0m")
-      IO.puts("  \e[2m(Takes effect on next query)\e[0m")
-      {:ok, Map.put(state, :strategy, name)}
+    if name == "auto" or JidoClaw.Reasoning.StrategyRegistry.valid?(name) do
+      IO.puts("  \e[32m✓\e[0m  Reasoning preference set to \e[1m#{name}\e[0m")
+      IO.puts("  \e[2m(The agent will see this preference on the next query)\e[0m")
+      {:ok, %{state | strategy: name}}
     else
       IO.puts("  \e[31m✗\e[0m  Unknown strategy: \e[1m#{name}\e[0m")
 
-      IO.puts(
-        "  \e[2mAvailable: #{JidoClaw.Reasoning.StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")}\e[0m"
-      )
+      available =
+        ["auto" | JidoClaw.Reasoning.StrategyRegistry.list() |> Enum.map(& &1.name)]
+        |> Enum.join(", ")
+
+      IO.puts("  \e[2mAvailable: #{available}\e[0m")
 
       {:ok, state}
     end
   end
 
   def handle("/strategy", state) do
-    current = Map.get(state, :strategy, "react")
-    IO.puts("  Current strategy: \e[1m#{current}\e[0m")
+    current = state.strategy
+    IO.puts("  Current preference: \e[1m#{current}\e[0m")
     IO.puts("  Usage: /strategy <name>")
     IO.puts("  \e[2mSee /strategies for all available strategies\e[0m")
     {:ok, state}

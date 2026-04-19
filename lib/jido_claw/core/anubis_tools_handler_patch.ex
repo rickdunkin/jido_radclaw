@@ -8,7 +8,10 @@
 # through unvalidated. Jido.Exec.run validates arguments internally, so
 # skipping Peri validation is safe.
 #
-# Remove this file once jido_mcp upgrades to anubis_mcp ~> 1.0.
+# Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
+# in mix.exs to suppress the "redefining module" warning this intentionally
+# triggers. Remove both that flag and this file once jido_mcp upgrades to
+# anubis_mcp ~> 1.0.
 defmodule Anubis.Server.Handlers.Tools do
   @moduledoc false
 

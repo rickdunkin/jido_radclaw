@@ -9,7 +9,10 @@
 # Both are fixed in anubis_mcp >= 1.0.0, but jido_mcp pins ~> 0.17.0.
 # This module redefines the transport to apply the fixes.
 #
-# Remove this file once jido_mcp upgrades to anubis_mcp ~> 1.0.
+# Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
+# in mix.exs to suppress the "redefining module" warning this intentionally
+# triggers. Remove both that flag and this file once jido_mcp upgrades to
+# anubis_mcp ~> 1.0.
 defmodule Anubis.Server.Transport.STDIO do
   @moduledoc """
   STDIO transport implementation for MCP servers.
@@ -119,8 +122,7 @@ defmodule Anubis.Server.Transport.STDIO do
 
   defschema(:parse_options, [
     {:server,
-     {:required,
-      {:oneof, [{:custom, &Anubis.genserver_name/1}, :pid, {:tuple, [:atom, :any]}]}}},
+     {:required, {:oneof, [{:custom, &Anubis.genserver_name/1}, :pid, {:tuple, [:atom, :any]}]}}},
     {:name, {:custom, &Anubis.genserver_name/1}},
     {:registry, {:atom, {:default, Anubis.Server.Registry}}},
     {:request_timeout, {:integer, {:default, to_timeout(second: 30)}}}

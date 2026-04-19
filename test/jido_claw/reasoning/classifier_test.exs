@@ -140,11 +140,58 @@ defmodule JidoClaw.Reasoning.ClassifierTest do
       end
     end
 
-    test "accepts but ignores opts[:history] in 0.4.1" do
+    test "history boost applies above @min_history_samples threshold" do
       profile = Classifier.profile("What is a GenServer?")
-      without = Classifier.recommend(profile)
-      with_hist = Classifier.recommend(profile, history: %{foo: :bar})
-      assert without == with_hist
+      {:ok, _baseline_name, baseline_conf} = Classifier.recommend(profile)
+
+      history = [
+        %{strategy: "cot", success_rate: 1.0, avg_duration_ms: 100.0, samples: 50}
+      ]
+
+      {:ok, "cot", boosted_conf} = Classifier.recommend(profile, history: history)
+      # Additive boost must not exceed 1.0, but should meet-or-exceed baseline.
+      assert boosted_conf >= baseline_conf
+    end
+
+    test "history is ignored below @min_history_samples threshold" do
+      profile = Classifier.profile("What is a GenServer?")
+      {:ok, _, baseline_conf} = Classifier.recommend(profile)
+
+      history = [
+        %{strategy: "cot", success_rate: 1.0, avg_duration_ms: 100.0, samples: 2}
+      ]
+
+      {:ok, "cot", conf} = Classifier.recommend(profile, history: history)
+      # Below threshold — no boost, confidence matches baseline.
+      assert_in_delta conf, baseline_conf, 0.0001
+    end
+
+    test "opts[:exclude] drops named strategies from the candidate set" do
+      profile = Classifier.profile("Fix the traceback crashing on login")
+      # Baseline chooses react for debugging.
+      assert {:ok, "react", _} = Classifier.recommend(profile)
+      # With react excluded, another strategy must be picked.
+      assert {:ok, other, _} = Classifier.recommend(profile, exclude: ["react"])
+      refute other == "react"
+      refute other == "adaptive"
+    end
+
+    test "return: :ranked returns a {name, score} list sorted by score desc" do
+      profile = Classifier.profile("Plan a migration")
+
+      {:ok, ranked} = Classifier.recommend(profile, return: :ranked)
+      assert is_list(ranked)
+      assert length(ranked) >= 2
+      scores = Enum.map(ranked, fn {_n, s} -> s end)
+      assert scores == Enum.sort(scores, :desc)
+      # adaptive is still filtered out.
+      refute Enum.any?(ranked, fn {n, _} -> n == "adaptive" end)
+    end
+
+    test "return: :ranked respects :exclude" do
+      profile = Classifier.profile("Fix a bug")
+      {:ok, ranked} = Classifier.recommend(profile, return: :ranked, exclude: ["react"])
+      refute Enum.any?(ranked, fn {n, _} -> n == "react" end)
     end
 
     test "falls back to cot when no candidate scores" do

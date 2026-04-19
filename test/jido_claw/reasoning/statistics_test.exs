@@ -71,4 +71,54 @@ defmodule JidoClaw.Reasoning.StatisticsTest do
       assert Statistics.best_strategies_for(:debugging) == []
     end
   end
+
+  describe "summary/0" do
+    test "enriches per-strategy rows with success_rate and avg_duration_ms" do
+      insert(%{strategy: "cot", task_type: :qa, status: :ok, duration_ms: 100})
+      insert(%{strategy: "cot", task_type: :qa, status: :ok, duration_ms: 300})
+      insert(%{strategy: "tot", task_type: :planning, status: :error, duration_ms: 200})
+      insert(%{strategy: "tot", task_type: :planning, status: :ok, duration_ms: 400})
+
+      summary = Statistics.summary()
+
+      cot = Enum.find(summary.strategies, &(&1.strategy == "cot"))
+      assert cot.samples == 2
+      assert cot.success_rate == 1.0
+      assert_in_delta cot.avg_duration_ms, 200.0, 0.01
+
+      tot = Enum.find(summary.strategies, &(&1.strategy == "tot"))
+      assert tot.samples == 2
+      assert tot.success_rate == 0.5
+    end
+
+    test "orders strategies by success_rate desc then samples desc" do
+      insert(%{strategy: "cot", task_type: :qa, status: :ok})
+      insert(%{strategy: "tot", task_type: :qa, status: :error})
+
+      summary = Statistics.summary()
+
+      [first | _] = summary.strategies
+      assert first.strategy == "cot"
+    end
+
+    test "includes per-task-type rows with success_rate" do
+      insert(%{strategy: "cot", task_type: :qa, status: :ok})
+      insert(%{strategy: "cot", task_type: :qa, status: :ok})
+      insert(%{strategy: "cot", task_type: :planning, status: :error})
+
+      summary = Statistics.summary()
+
+      qa = Enum.find(summary.task_types, &(&1.task_type == "qa"))
+      assert qa.samples == 2
+      assert qa.success_rate == 1.0
+
+      plan = Enum.find(summary.task_types, &(&1.task_type == "planning"))
+      assert plan.samples == 1
+      assert plan.success_rate == 0.0
+    end
+
+    test "returns empty lists when no rows" do
+      assert %{strategies: [], task_types: []} = Statistics.summary()
+    end
+  end
 end

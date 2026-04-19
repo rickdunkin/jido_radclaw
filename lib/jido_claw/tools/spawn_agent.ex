@@ -41,6 +41,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
     # the VFS mount table and host session state.
     project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
     workspace_id = get_in(context, [:tool_context, :workspace_id])
+    forge_session_key = get_in(context, [:tool_context, :forge_session_key])
 
     case JidoClaw.Agent.Templates.get(template_name) do
       {:ok, template} ->
@@ -49,7 +50,8 @@ defmodule JidoClaw.Tools.SpawnAgent do
             # Register with AgentTracker for live swarm display
             JidoClaw.AgentTracker.register(tag, pid, template_name, task)
 
-            child_tool_context = child_tool_context(project_dir, workspace_id)
+            child_tool_context =
+              child_tool_context(project_dir, workspace_id, tag, forge_session_key)
 
             # Send task async - don't block the main agent
             spawn(fn ->
@@ -86,8 +88,12 @@ defmodule JidoClaw.Tools.SpawnAgent do
     end
   end
 
-  defp child_tool_context(project_dir, nil), do: %{project_dir: project_dir}
+  defp child_tool_context(project_dir, workspace_id, agent_id, forge_session_key) do
+    %{project_dir: project_dir, agent_id: agent_id}
+    |> maybe_put(:workspace_id, workspace_id)
+    |> maybe_put(:forge_session_key, forge_session_key)
+  end
 
-  defp child_tool_context(project_dir, workspace_id),
-    do: %{project_dir: project_dir, workspace_id: workspace_id}
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

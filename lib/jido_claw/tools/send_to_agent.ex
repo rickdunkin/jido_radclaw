@@ -30,7 +30,10 @@ defmodule JidoClaw.Tools.SendToAgent do
 
         project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
         workspace_id = get_in(context, [:tool_context, :workspace_id])
-        child_tool_context = child_tool_context(project_dir, workspace_id)
+        forge_session_key = get_in(context, [:tool_context, :forge_session_key])
+
+        child_tool_context =
+          child_tool_context(project_dir, workspace_id, params.agent_id, forge_session_key)
 
         # Send async via the agent module's ask
         spawn(fn ->
@@ -43,8 +46,13 @@ defmodule JidoClaw.Tools.SendToAgent do
                 )
 
               {:error, _} ->
-                # Fallback: use the main agent module
-                JidoClaw.Agent.ask_sync(pid, params.message, timeout: 120_000)
+                # Fallback: use the main agent module with the same
+                # tool_context so follow-up messages on child agents don't
+                # silently lose attribution.
+                JidoClaw.Agent.ask_sync(pid, params.message,
+                  timeout: 120_000,
+                  tool_context: child_tool_context
+                )
             end
           rescue
             _ -> :ok
@@ -62,8 +70,12 @@ defmodule JidoClaw.Tools.SendToAgent do
     end
   end
 
-  defp child_tool_context(project_dir, nil), do: %{project_dir: project_dir}
+  defp child_tool_context(project_dir, workspace_id, agent_id, forge_session_key) do
+    %{project_dir: project_dir, agent_id: agent_id}
+    |> maybe_put(:workspace_id, workspace_id)
+    |> maybe_put(:forge_session_key, forge_session_key)
+  end
 
-  defp child_tool_context(project_dir, workspace_id),
-    do: %{project_dir: project_dir, workspace_id: workspace_id}
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

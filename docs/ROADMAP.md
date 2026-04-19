@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.4.2
+## Current State: v0.4.3
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, and unified VFS across file tools and shell (v0.3 shipped).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), and history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -84,7 +84,7 @@ Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `Wr
 
 **Status: In Progress**
 
-Four sub-phases, each independently shippable. 0.4.1 and 0.4.2 complete; 0.4.3 and 0.4.4 planned.
+Four sub-phases, each independently shippable. 0.4.1, 0.4.2, and 0.4.3 complete; 0.4.4 planned.
 
 ### v0.4.1 — Reasoning Foundations
 
@@ -121,33 +121,42 @@ Metadata-aliased user strategies plus sequential pipeline composition, with tele
 
 ### Out of scope (deferred)
 
-- YAML-defined pipeline compositions (inline stages only in 0.4.2) → 0.4.3
-- `max_context_bytes` cap for `accumulate` context mode (unbounded today; token-budget footgun on long pipelines) → 0.4.3 if users hit it
-- Custom prompt templates in user strategies → revisit in 0.4.3 if demand surfaces
+- YAML-defined pipeline compositions (inline stages only in 0.4.2) → 0.4.4
+- `max_context_bytes` cap for `accumulate` context mode (unbounded today; token-budget footgun on long pipelines) → 0.4.4 if users hit it
+- Custom prompt templates in user strategies → revisit in 0.4.4 if demand surfaces
 
 ### v0.4.3 — Auto-selection & Feedback
 
-**Status: Planned**
+**Status: Complete**
 
-Closes the feedback loop opened by 0.4.1's telemetry + classifier work: make `strategy: "auto"` a real choice, and let accumulated `reasoning_outcomes` data steer future runs.
+Closes the feedback loop opened by 0.4.1's telemetry + classifier work: `strategy: "auto"` becomes a real, learnable choice, and accumulated `reasoning_outcomes` data steers future runs. Delivered:
 
-- `AutoReason` tool + `Reason strategy: "auto"` wiring
-- `Classifier.recommend/2` consumes `Statistics.best_strategies_for/2` history via `opts[:history]` (accepted but ignored today)
-- `/strategies stats` CLI surface backed by `Statistics.summary/0`
-- LLM tie-breaker for close-scoring heuristic candidates
-- Re-enable `adaptive` in classifier recommendations
-- Thread `forge_session_id` / `agent_id` through `tool_context`; backfill the `reasoning_outcomes` columns so outcomes attribute to their originating session/agent
+- **History-aware auto-selection.** New `JidoClaw.Reasoning.AutoSelect` module is the single entry point behind `reason(strategy: "auto")`. Profiles the prompt via `Classifier`, queries `Statistics.best_strategies_for/2` for a recent-window history (30-day, `:strategy_run` only) with all-time fallback when the recent window is sparse (either/or, not merged), and folds aggregated success-rate into the heuristic score via `opts[:history]`. The outcome row stores the **base** strategy name (cot/tot/etc., never "auto"/"adaptive" and never a user alias) so `Statistics` learns on a stable vocabulary; `metadata.alias_name` preserves the alias when one wins for lossless diagnostics; `metadata.selection_mode = "auto"` flags the row. `adaptive` is repositioned as a deprecated alias for `auto` (silently normalized at the tool boundary) rather than re-enabled in the candidate pool — `Jido.AI.Reasoning.Adaptive` runs its own inner selection, and letting the classifier pick it would produce two selectors competing for the same decision.
+- **LLM tie-breaker.** New `JidoClaw.Reasoning.LLMTiebreaker` fires when the top two heuristic candidates score within 0.05 of each other. Cap of 3 candidates in the tie-breaker prompt to keep token cost bounded. Tie-breaker failures fall back to the heuristic top pick without surfacing the error; test hooks (`tiebreak_module:`, `llm_tiebreak: false`, `history: [...]`, `skip_history: true`) allow deterministic substitution in unit tests.
+- **Base-level alias exclusion.** `Classifier.recommend/2` gains an `:exclude_bases` option (list of atoms); `AutoSelect` passes `[:react, :adaptive]` so user aliases whose `base:` resolves to react or adaptive can't slip into the auto pool. Prevents a `react`-based alias from crashing `Jido.AI.Actions.Reasoning.RunStrategy` (`:react` isn't a valid enum value there) and an `adaptive`-based alias from silently reintroducing the nested selector the rest of 0.4.3 is built to eliminate.
+- **REPL `/strategy` now influences chat turns.** Project-wide default shifts from `"react"` to `"auto"`. The REPL struct gains a `:strategy` field populated at init from `Config.strategy(config)`, normalized through `Repl.resolve_strategy/1` (unknown values fall back to `"auto"` with a boot-time warning pointing at `.jido/config.yaml`). `handle_message/2` prepends a one-line reasoning-preference hint to the agent-facing message — but not to the JSONL session history, so history stays clean — nudging the model toward `reason(strategy: "<name>")` on queries that benefit while keeping the agent's native ReAct loop intact. `/strategy <name>` updates the state struct through the same validator; the command's copy was softened to "Reasoning preference" (from "Switched reasoning strategy") to honor hint-not-dispatch semantics honestly.
+- **`/strategies stats` CLI surface.** Backed by `Statistics.summary/0`, prints per-strategy and per-task-type aggregates (sample count, success rate, average duration) so users can inspect what `auto` is learning.
+- **Tool-context attribution.** Migration `add_session_agent_to_reasoning_outcomes` adds the columns; `Reason.base_telemetry_opts/2` threads `workspace_id`, `project_dir`, `agent_id`, and `forge_session_key` from `tool_context` into every outcome row so rows attribute to their originating session/agent.
+- **Strict compile green.** `mix.exs` sets `elixirc_options: [ignore_module_conflict: true]` to silence the intentional redefinitions in `lib/jido_claw/core/anubis_*_patch.ex`. Header comments on both patch files cross-reference the flag. Temporary — remove alongside the patches when `jido_mcp` upgrades to `anubis_mcp ~> 1.0`.
+- **System prompt parity.** Both the bundled default (`priv/defaults/system_prompt.md`) and the active project copy (`.jido/system_prompt.md`) now lead the strategy table with `auto`, drop the `adaptive` advertisement (still accepted as a deprecated alias; just no longer recommended), and swap residual `adaptive` recommendations throughout the decision framework and quick-reference table to `auto`.
+
+### Out of scope (deferred)
+
+- YAML-defined pipeline compositions (inline stages are still the only form) → 0.4.4
+- `max_context_bytes` cap for `accumulate` context mode → 0.4.4
+- Custom prompt templates in user strategies → 0.4.4
+- Collapse the four duplicated `with_user_strategy/2` helpers in the test suite into a shared module → 0.4.4 cleanup
 
 ### v0.4.4 — Pipeline & Strategy Polish
 
 **Status: Planned**
 
-Absorbs the 0.4.2 deferrals (YAML pipelines, `accumulate` token-budget cap, custom prompt templates) plus the pre-existing `/strategy` state disconnect that doesn't belong in the auto-selection story.
+Absorbs the remaining 0.4.2 deferrals (YAML pipelines, `accumulate` token-budget cap, custom prompt templates) plus test-helper cleanup surfaced during 0.4.3.
 
 - YAML-defined pipeline compositions (inline stages are the only form today)
 - `max_context_bytes` cap for `accumulate` context mode — prevents the unbounded-growth footgun on long pipelines
 - Custom prompt templates in user strategies (elevate beyond metadata-only overlays)
-- Wire `/strategy state.strategy` into `handle_message/2` (pre-existing disconnect surfaced during 0.4.1)
+- Collapse the four `with_user_strategy/2` test helpers (classifier, reason, auto_select, and any future addition) into a shared `JidoClaw.Reasoning.StrategyTestHelper` module
 
 ---
 

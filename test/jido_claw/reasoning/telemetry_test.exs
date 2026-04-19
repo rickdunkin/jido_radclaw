@@ -79,6 +79,40 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
              end)
     end
 
+    test "persists agent_id and forge_session_key when supplied in opts" do
+      Telemetry.with_outcome(
+        "cot",
+        "a prompt with agent attribution",
+        [
+          execution_kind: :strategy_run,
+          agent_id: "main",
+          forge_session_key: "forge-xyz"
+        ],
+        fn -> {:ok, %{}} end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended)
+
+      assert Enum.any?(rows, fn r ->
+               r.agent_id == "main" and r.forge_session_key == "forge-xyz"
+             end)
+    end
+
+    test "agent_id and forge_session_key default to nil when absent from opts" do
+      Telemetry.with_outcome(
+        "cot",
+        "a prompt without agent attribution",
+        [execution_kind: :strategy_run, workspace_id: "ws-no-agent"],
+        fn -> {:ok, %{}} end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended)
+      row = Enum.find(rows, fn r -> r.workspace_id == "ws-no-agent" end)
+      assert row
+      assert row.agent_id == nil
+      assert row.forge_session_key == nil
+    end
+
     test "persists status :error when fun returns {:error, _}" do
       Telemetry.with_outcome(
         "cot",

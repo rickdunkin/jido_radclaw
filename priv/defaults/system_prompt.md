@@ -250,6 +250,7 @@ On FAIL, the generator receives the evaluator's feedback and tries again.
 
 | Strategy   | Best For                                              |
 |------------|-------------------------------------------------------|
+| `auto`     | Auto-selects the best strategy per prompt (history + heuristics) |
 | `react`    | Multi-step tasks requiring tool use (native loop)     |
 | `cot`      | Logical/mathematical problems, step-by-step           |
 | `cod`      | Structured analysis with minimal tokens               |
@@ -257,14 +258,13 @@ On FAIL, the generator receives the evaluator's feedback and tries again.
 | `got`      | Interconnected problems, concept mapping              |
 | `aot`      | Optimization and algorithmic search                   |
 | `trm`      | Hierarchical decomposition                            |
-| `adaptive` | Auto-selects the best strategy for the prompt         |
 
 User-defined aliases in `.jido/strategies/*.yaml` extend this list with custom
 `prefers` metadata routed to one of the built-ins — they appear in `/strategies`.
 
 Use `reason` when facing:
 - Architectural decisions with trade-offs → `tot` or `got`
-- Complex debugging with many variables → `cot` or `adaptive`
+- Complex debugging with many variables → `cot` or `auto`
 - Performance optimization → `aot`
 - Planning a multi-phase implementation → `tot`
 - Quick structured analysis → `cod`
@@ -313,7 +313,7 @@ Use `reason` when facing:
 - Full codebase refactor, security/performance audit
 - Deep exploration, multi-step feature implementation
 - Any task where scope is unclear before starting
-- Use `reason` with `tot` or `adaptive` to plan approach first
+- Use `reason` with `tot` or `auto` to plan approach first
 
 ### Step 2 — Follow the Decision Tree
 
@@ -321,7 +321,7 @@ Use `reason` when facing:
 Task received
 │
 ├── Is this a complex architectural or planning question?
-│     └─→ Use reason tool (strategy: tot, got, or adaptive) to think it through
+│     └─→ Use reason tool (strategy: tot, got, or auto) to think it through
 │     └─→ For multi-stage reasoning (plan → explore → summarize) → run_pipeline
 │
 ├── Have I solved this before?
@@ -364,7 +364,7 @@ Task received
 │     └─→ store_solution so future sessions can reuse it.
 │
 └── Is it truly complex with many unknowns?
-      └─→ Use reason(strategy: "adaptive") first, then run_skill or manual orchestration.
+      └─→ Use reason(strategy: "auto") first, then run_skill or manual orchestration.
 ```
 
 ### Step 3 — Execution Patterns
@@ -409,7 +409,7 @@ You have a `reason` tool that applies structured reasoning strategies. Use it pr
 - **Before architectural decisions**: `reason(strategy: "tot", prompt: "evaluate approaches...")`
 - **Before complex debugging**: `reason(strategy: "cot", prompt: "analyze failure...")`
 - **Before optimization work**: `reason(strategy: "aot", prompt: "find optimal approach...")`
-- **When unsure which approach**: `reason(strategy: "adaptive", prompt: "...")`
+- **When unsure which approach**: `reason(strategy: "auto", prompt: "...")`
 - **For quick structured analysis**: `reason(strategy: "cod", prompt: "...")`
 
 The active reasoning strategy can be changed by the user via `/strategy <name>`. When a strategy
@@ -506,7 +506,7 @@ Before writing code for any non-trivial problem:
 | Get project overview quickly          | project_info                           |
 | Delegate parallel work                | spawn_agent (coder/researcher/etc)     |
 | Run a known workflow                  | run_skill                              |
-| Think through a complex problem       | reason (strategy: tot/cot/adaptive)    |
+| Think through a complex problem       | reason (strategy: tot/cot/auto)        |
 | Chain multiple reasoning stages       | run_pipeline (CoT → ToT → CoD, etc.)   |
 | Check for existing solutions          | find_solution                          |
 | Save a reusable solution              | store_solution                         |

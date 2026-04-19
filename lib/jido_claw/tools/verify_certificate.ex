@@ -116,14 +116,19 @@ defmodule JidoClaw.Tools.VerifyCertificate do
 
   defp run_reasoning(prompt, context) do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir])
+    tool_context = Map.get(context, :tool_context, %{}) || %{}
+    workspace_id = Map.get(tool_context, :workspace_id)
+    project_dir = Map.get(tool_context, :project_dir)
+    agent_id = Map.get(tool_context, :agent_id)
+    forge_session_key = Map.get(tool_context, :forge_session_key)
 
     opts = [
       execution_kind: :certificate_verification,
       base_strategy: "cot",
       workspace_id: workspace_id,
-      project_dir: project_dir
+      project_dir: project_dir,
+      agent_id: agent_id,
+      forge_session_key: forge_session_key
     ]
 
     run_params = %{

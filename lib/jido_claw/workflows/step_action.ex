@@ -37,7 +37,11 @@ defmodule JidoClaw.Workflows.StepAction do
       try do
         case template.module.ask_sync(pid, task,
                timeout: 180_000,
-               tool_context: %{project_dir: project_dir, workspace_id: workspace_id}
+               tool_context: %{
+                 project_dir: project_dir,
+                 workspace_id: workspace_id,
+                 agent_id: tag
+               }
              ) do
           {:ok, result} ->
             text = extract_result(result)

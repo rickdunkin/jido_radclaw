@@ -79,17 +79,20 @@ defmodule JidoClaw.Web.DashboardLive do
   # Run events (RunPubSub — not yet broadcast, but matches the intended contract)
   @impl true
   def handle_info({:run_started, _id, _info}, socket) do
-    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply,
+     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
   end
 
   @impl true
   def handle_info({:run_completed, _id, _info}, socket) do
-    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply,
+     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
   end
 
   @impl true
   def handle_info({:run_failed, _id, _info}, socket) do
-    {:noreply, assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply,
+     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
   end
 
   @impl true

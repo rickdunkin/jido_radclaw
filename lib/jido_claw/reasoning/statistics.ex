@@ -71,7 +71,15 @@ defmodule JidoClaw.Reasoning.Statistics do
 
   @doc """
   Cross-task summary of strategy usage. Returns per-strategy and per-task-type
-  rollups for dashboard-style consumers.
+  rollups for dashboard-style consumers (e.g. the `/strategies stats` REPL
+  command).
+
+  Per-strategy rows:
+    `%{strategy, samples, success_rate, avg_duration_ms}`, sorted by
+    `success_rate desc, samples desc`.
+
+  Per-task-type rows:
+    `%{task_type, samples, success_rate}`, sorted by `samples desc`.
   """
   @spec summary(keyword()) :: %{strategies: [map()], task_types: [map()]}
   def summary(opts \\ []) do
@@ -83,7 +91,8 @@ defmodule JidoClaw.Reasoning.Statistics do
         select: %{
           strategy: o.strategy,
           samples: count(o.id),
-          ok_count: fragment("SUM(CASE WHEN ? = 'ok' THEN 1 ELSE 0 END)", o.status)
+          ok_count: fragment("SUM(CASE WHEN ? = 'ok' THEN 1 ELSE 0 END)", o.status),
+          avg_duration_ms: avg(o.duration_ms)
         }
       )
       |> maybe_filter_execution_kind(execution_kind)
@@ -93,16 +102,46 @@ defmodule JidoClaw.Reasoning.Statistics do
         group_by: o.task_type,
         select: %{
           task_type: o.task_type,
-          samples: count(o.id)
+          samples: count(o.id),
+          ok_count: fragment("SUM(CASE WHEN ? = 'ok' THEN 1 ELSE 0 END)", o.status)
         }
       )
       |> maybe_filter_execution_kind(execution_kind)
 
-    %{
-      strategies: JidoClaw.Repo.all(strategies_query),
-      task_types: JidoClaw.Repo.all(task_types_query)
-    }
+    strategies =
+      JidoClaw.Repo.all(strategies_query)
+      |> Enum.map(fn row ->
+        samples = row.samples
+        ok = row.ok_count || 0
+
+        %{
+          strategy: row.strategy,
+          samples: samples,
+          success_rate: success_rate(ok, samples),
+          avg_duration_ms: avg_to_float(row.avg_duration_ms)
+        }
+      end)
+      |> Enum.sort_by(fn %{success_rate: sr, samples: n} -> {-sr, -n} end)
+
+    task_types =
+      JidoClaw.Repo.all(task_types_query)
+      |> Enum.map(fn row ->
+        samples = row.samples
+        ok = row.ok_count || 0
+
+        %{
+          task_type: row.task_type,
+          samples: samples,
+          success_rate: success_rate(ok, samples)
+        }
+      end)
+      |> Enum.sort_by(fn %{samples: n} -> -n end)
+
+    %{strategies: strategies, task_types: task_types}
   end
+
+  defp success_rate(_ok, 0), do: 0.0
+  defp success_rate(ok, samples), do: ok / samples * 1.0
 
   # ---------------------------------------------------------------------------
   # Private

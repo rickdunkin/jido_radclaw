@@ -14,11 +14,13 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
   the DB column + codegen snapshot land now without a runtime producer; 0.4.2
   wires `verify_certificate.ex` into the same telemetry wrap.
 
-  ## Deferred columns (0.4.3)
+  ## Attribution columns (0.4.3)
 
-  `forge_session_id :uuid` and `agent_id :string` require plumbing the IDs
-  through `tool_context`; they are intentionally absent in 0.4.1 so the
-  column set reflects what we can actually populate today.
+  `agent_id :string` carries the runtime agent identity (e.g. `"main"` or
+  a session id for API-driven calls). `forge_session_key :string` carries
+  the runtime forge session key — a string per `forge/persistence.ex:18`,
+  not a UUID FK. A nullable UUID FK can be added later once Forge threads
+  its DB UUID through `tool_context` directly.
   """
 
   use Ash.Resource,
@@ -38,6 +40,8 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       index([:workspace_id, :started_at])
       index([:status, :task_type])
       index([:pipeline_name, :pipeline_stage])
+      index([:forge_session_key])
+      index([:agent_id, :started_at])
     end
   end
 
@@ -75,6 +79,8 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
         :certificate_confidence,
         :workspace_id,
         :project_dir,
+        :agent_id,
+        :forge_session_key,
         :metadata,
         :started_at,
         :completed_at
@@ -187,6 +193,16 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
     end
 
     attribute :project_dir, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :agent_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :forge_session_key, :string do
       allow_nil?(true)
       public?(true)
     end
