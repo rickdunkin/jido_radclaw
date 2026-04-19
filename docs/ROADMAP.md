@@ -1,6 +1,6 @@
 # JidoClaw Roadmap
 
-## Current State: v0.4.1
+## Current State: v0.4.2
 
 Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, and unified VFS across file tools and shell (v0.3 shipped).
 
@@ -84,7 +84,7 @@ Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `Wr
 
 **Status: In Progress**
 
-Three sub-phases, each independently shippable. 0.4.1 complete; 0.4.2 and 0.4.3 planned.
+Four sub-phases, each independently shippable. 0.4.1 and 0.4.2 complete; 0.4.3 and 0.4.4 planned.
 
 ### v0.4.1 — Reasoning Foundations
 
@@ -111,25 +111,43 @@ Three foundations for downstream auto-selection and performance-guided routing. 
 
 ### v0.4.2 — User Strategies & Pipeline Composition
 
-**Status: Planned**
+**Status: Complete**
 
-- User-defined strategy YAML in `.jido/strategies/` as **named aliases with custom `prefers`/`description`/`display_name` metadata routed to one of the 8 built-in reasoning modules via a required `base` field**. Metadata-only overlays — custom prompt templates (which live in `deps/jido_ai/`) are out of scope; 0.4.3 may revisit.
-- Pipeline composition (e.g., CoT for planning → ToT for exploration) via `RunPipeline`; chains **non-react strategies only** — any stage whose strategy resolves (alias-aware) to `react` fail-fasts with a pointer to the agent's native ReAct loop. The current `Reason` react path is a structured-prompt stub, not a real ReAct execution, so routing it mid-pipeline would emit a stub prompt as stage output. Callers wanting "plan then act" should invoke `run_pipeline` for the planning chain and let the agent's native loop act on the final output. `base_strategy`/`pipeline_name`/`pipeline_stage` columns in `reasoning_outcomes` already reserved.
-- Wrap `verify_certificate` in telemetry with `execution_kind: :certificate_verification`; populate `certificate_verdict`/`certificate_confidence`.
-- Wrap `Reason`'s react branch with `execution_kind: :react_stub` so alias→react dispatch still produces a telemetry row (coherent `base_strategy` accounting).
-- Fix `Telemetry.extract_tokens/1` to match `jido_ai`'s `:input_tokens`/`:output_tokens` keys and to capture tokens on `{:error, %{usage: _}}` partial-failure paths.
+Metadata-aliased user strategies plus sequential pipeline composition, with telemetry coverage extended across react-stub and certificate-verification execution kinds. Delivered:
+
+- **User-defined strategy aliases.** New `JidoClaw.Reasoning.StrategyStore` GenServer loads `.jido/strategies/*.yaml` on boot. Each file declares a named alias with a required `base` field routing to one of the 8 built-in reasoning modules (`react`, `cot`, `cod`, `tot`, `got`, `aot`, `trm`, `adaptive`) plus optional `display_name`/`description`/`prefers.task_types`/`prefers.complexity` metadata. Validation is lenient — unknown `base`, built-in name collisions, malformed YAML, and unknown task-type/complexity values all warn-and-skip instead of crashing; built-ins always win on name collision, and user-vs-user collisions resolve deterministically to the lexicographically-first filename (files are sorted before parsing so ordering is reproducible across filesystems). `StrategyRegistry.atom_for/1` resolves alias → base atom transparently for downstream dispatch; `valid?/1` accepts both built-ins and user aliases. Metadata-only overlays — custom prompt templates live in `deps/jido_ai/` and stay out of scope.
+- **Pipeline composition.** New `JidoClaw.Tools.RunPipeline` tool chains non-react strategies sequentially, feeding each stage's output into the next. Stages accept `strategy` (required; alias-aware), `context_mode` (`"previous"` default or `"accumulate"`), and `prompt_override` (wins unconditionally when present). Fail-fast: any stage whose strategy resolves (alias-aware) to `:react` errors with a pointer to the agent's native ReAct loop, since the current `Reason` react path is a structured-prompt stub. Each stage writes a `reasoning_outcomes` row via `Telemetry.with_outcome/4` with `execution_kind: :pipeline_run`, zero-padded `pipeline_stage` (e.g., `"001/003"` for correct text sort), `pipeline_name`, `base_strategy` set to the resolved built-in, and `metadata.stage_index`/`stage_total` integers for numeric consumers. Usage counters merge across stages; mid-pipeline errors persist earlier rows normally and the failing stage row is written with `status: :error`.
+- **Telemetry coverage completion.** `verify_certificate` wraps its CoT call with `execution_kind: :certificate_verification`, populating `certificate_verdict`/`certificate_confidence` on the outcome row. `Reason`'s react branch now wraps with `execution_kind: :react_stub` so alias→react dispatch still produces a telemetry row with coherent `base_strategy` accounting (the underlying call remains a structured-prompt scaffold). `Telemetry.extract_tokens/1` reads `:input_tokens`/`:output_tokens` first (jido_ai's canonical keys per `deps/jido_ai/lib/jido_ai/actions/helpers.ex`) with `:prompt_tokens`/`:completion_tokens` fallback for legacy providers, and captures tokens on `{:error, %{usage: _}}` partial-failure paths in addition to `{:ok, _}` results. `ExecutionKind` enum now values: `:strategy_run`, `:react_stub`, `:certificate_verification`, `:pipeline_run`.
+
+### Out of scope (deferred)
+
+- YAML-defined pipeline compositions (inline stages only in 0.4.2) → 0.4.3
+- `max_context_bytes` cap for `accumulate` context mode (unbounded today; token-budget footgun on long pipelines) → 0.4.3 if users hit it
+- Custom prompt templates in user strategies → revisit in 0.4.3 if demand surfaces
 
 ### v0.4.3 — Auto-selection & Feedback
 
 **Status: Planned**
+
+Closes the feedback loop opened by 0.4.1's telemetry + classifier work: make `strategy: "auto"` a real choice, and let accumulated `reasoning_outcomes` data steer future runs.
 
 - `AutoReason` tool + `Reason strategy: "auto"` wiring
 - `Classifier.recommend/2` consumes `Statistics.best_strategies_for/2` history via `opts[:history]` (accepted but ignored today)
 - `/strategies stats` CLI surface backed by `Statistics.summary/0`
 - LLM tie-breaker for close-scoring heuristic candidates
 - Re-enable `adaptive` in classifier recommendations
-- Thread `forge_session_id` / `agent_id` through `tool_context`
-- Wire `/strategy state.strategy` into `handle_message/2`
+- Thread `forge_session_id` / `agent_id` through `tool_context`; backfill the `reasoning_outcomes` columns so outcomes attribute to their originating session/agent
+
+### v0.4.4 — Pipeline & Strategy Polish
+
+**Status: Planned**
+
+Absorbs the 0.4.2 deferrals (YAML pipelines, `accumulate` token-budget cap, custom prompt templates) plus the pre-existing `/strategy` state disconnect that doesn't belong in the auto-selection story.
+
+- YAML-defined pipeline compositions (inline stages are the only form today)
+- `max_context_bytes` cap for `accumulate` context mode — prevents the unbounded-growth footgun on long pipelines
+- Custom prompt templates in user strategies (elevate beyond metadata-only overlays)
+- Wire `/strategy state.strategy` into `handle_message/2` (pre-existing disconnect surfaced during 0.4.1)
 
 ---
 
