@@ -1,5 +1,8 @@
 defmodule JidoClaw.Reasoning.ClassifierTest do
-  use ExUnit.Case, async: true
+  # async: false — StrategyRegistry reads from StrategyStore (a named
+  # GenServer) so tests that add user strategies would race parallel cases
+  # reading built-ins.
+  use ExUnit.Case, async: false
 
   alias JidoClaw.Reasoning.{Classifier, TaskProfile}
 
@@ -162,6 +165,63 @@ defmodule JidoClaw.Reasoning.ClassifierTest do
       }
 
       assert {:ok, "cot", _} = Classifier.recommend(profile)
+    end
+
+    test "a user alias with matching prefers is considered by the classifier" do
+      with_user_strategy(
+        """
+        name: deep_debug
+        base: react
+        display_name: "Deep Debug"
+        description: "Aggressive debugging"
+        prefers:
+          task_types: [debugging]
+          complexity: [complex, highly_complex]
+        """,
+        fn ->
+          profile = %TaskProfile{
+            prompt_length: 200,
+            word_count: 40,
+            domain: nil,
+            target: nil,
+            task_type: :debugging,
+            complexity: :highly_complex,
+            has_code_block: true,
+            has_constraints: 2,
+            has_enumeration: false,
+            mentions_multiple_files: false,
+            error_signal: true,
+            keyword_buckets: %{debugging: 3}
+          }
+
+          {:ok, strategy, _confidence} = Classifier.recommend(profile)
+          # React and deep_debug tie on debugging primary + highly_complex
+          # match; deterministic sort is by -score then by name asc, so
+          # "deep_debug" (d < r) wins the tie and proves the alias is in
+          # the candidate set.
+          assert strategy == "deep_debug"
+        end
+      )
+    end
+  end
+
+  # Write a YAML file into the live project's .jido/strategies/, reload, and
+  # clean up afterwards. Requires StrategyStore to be running (it's in the
+  # application supervision tree for the test env).
+  defp with_user_strategy(yaml, fun) do
+    project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
+    dir = Path.join([project_dir, ".jido", "strategies"])
+    File.mkdir_p!(dir)
+
+    path = Path.join(dir, "classifier_test_alias_#{System.unique_integer([:positive])}.yaml")
+    File.write!(path, yaml)
+
+    try do
+      JidoClaw.Reasoning.StrategyStore.reload()
+      fun.()
+    after
+      File.rm(path)
+      JidoClaw.Reasoning.StrategyStore.reload()
     end
   end
 

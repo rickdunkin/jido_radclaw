@@ -37,6 +37,7 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       index([:execution_kind, :task_type])
       index([:workspace_id, :started_at])
       index([:status, :task_type])
+      index([:pipeline_name, :pipeline_stage])
     end
   end
 

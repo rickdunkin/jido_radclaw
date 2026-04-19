@@ -28,8 +28,23 @@ defmodule JidoClaw.Startup do
     with :ok <- safe_bootstrap(:jido_md, fn -> JidoClaw.JidoMd.ensure(project_dir) end),
          :ok <- safe_bootstrap(:prompt_ensure, fn -> Prompt.ensure(project_dir) end),
          :ok <- safe_bootstrap(:skills, fn -> JidoClaw.Skills.ensure_defaults(project_dir) end),
+         :ok <- safe_bootstrap(:strategies, fn -> ensure_strategies_dir(project_dir) end),
          {:ok, result} <- Prompt.sync(project_dir) do
       {:ok, prompt_sync: result}
+    end
+  end
+
+  # Application.start fires before ensure_project_state/1, so StrategyStore's
+  # initial load may see an empty or nonexistent `.jido/strategies/` dir. After
+  # ensuring the directory exists, reload if the store is already supervised.
+  # The whereis guard keeps bare callers (e.g. tests calling ensure_project_state/1
+  # without starting the app) from crashing.
+  defp ensure_strategies_dir(project_dir) do
+    File.mkdir_p!(Path.join([project_dir, ".jido", "strategies"]))
+
+    case Process.whereis(JidoClaw.Reasoning.StrategyStore) do
+      nil -> :ok
+      _pid -> JidoClaw.Reasoning.StrategyStore.reload()
     end
   end
 

@@ -33,8 +33,9 @@ defmodule JidoClaw.Agent do
       JidoClaw.Tools.NetworkStatus,
       # Browser tools (1)
       JidoClaw.Tools.BrowseWeb,
-      # Reasoning tools (2)
+      # Reasoning tools (3)
       JidoClaw.Tools.Reason,
+      JidoClaw.Tools.RunPipeline,
       JidoClaw.Tools.VerifyCertificate,
       # Scheduling tools (3)
       JidoClaw.Tools.ScheduleTask,
@@ -45,4 +46,10 @@ defmodule JidoClaw.Agent do
     max_iterations: 25,
     streaming: true,
     tool_timeout_ms: 30_000
+
+  @doc "Canonical tool module list. Derived from the `tools:` option above via `strategy_opts/0`; REPL banner + branding call this for accurate counts."
+  @spec tool_modules() :: [module()]
+  def tool_modules do
+    strategy_opts() |> Keyword.fetch!(:tools)
+  end
 end

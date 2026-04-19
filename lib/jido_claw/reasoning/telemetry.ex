@@ -25,7 +25,10 @@ defmodule JidoClaw.Reasoning.Telemetry do
           profile: TaskProfile.t() | nil,
           base_strategy: String.t() | nil,
           pipeline_name: String.t() | nil,
-          pipeline_stage: String.t() | nil
+          pipeline_stage: String.t() | nil,
+          certificate_verdict: String.t() | nil,
+          certificate_confidence: float() | nil,
+          metadata: map()
         ]
 
   @doc """
@@ -162,6 +165,8 @@ defmodule JidoClaw.Reasoning.Telemetry do
          opts
        ) do
     {tokens_in, tokens_out} = extract_tokens(result)
+    {extracted_verdict, extracted_confidence} = extract_certificate_fields(result)
+    caller_metadata = Keyword.get(opts, :metadata, %{})
 
     attrs = %{
       strategy: strategy,
@@ -178,9 +183,12 @@ defmodule JidoClaw.Reasoning.Telemetry do
       duration_ms: duration_ms,
       tokens_in: tokens_in,
       tokens_out: tokens_out,
+      certificate_verdict: Keyword.get(opts, :certificate_verdict, extracted_verdict),
+      certificate_confidence: Keyword.get(opts, :certificate_confidence, extracted_confidence),
       workspace_id: Keyword.get(opts, :workspace_id),
       project_dir: Keyword.get(opts, :project_dir),
-      metadata: %{},
+      # Caller-supplied metadata wins on key collision.
+      metadata: Map.merge(%{}, caller_metadata),
       started_at: started_at,
       completed_at: completed_at
     }
@@ -216,12 +224,28 @@ defmodule JidoClaw.Reasoning.Telemetry do
       :error
   end
 
-  defp extract_tokens({:ok, %{usage: usage}}) when is_map(usage) do
+  defp extract_tokens({:ok, %{usage: usage}}) when is_map(usage), do: tokens_from_usage(usage)
+  defp extract_tokens({:error, %{usage: usage}}) when is_map(usage), do: tokens_from_usage(usage)
+  defp extract_tokens(_), do: {nil, nil}
+
+  # jido_ai's extract_usage populates :input_tokens / :output_tokens (see
+  # deps/jido_ai/lib/jido_ai/actions/helpers.ex). Legacy providers may still
+  # emit :prompt_tokens / :completion_tokens, so try both.
+  defp tokens_from_usage(usage) do
     {
-      Map.get(usage, :prompt_tokens) || Map.get(usage, "prompt_tokens"),
-      Map.get(usage, :completion_tokens) || Map.get(usage, "completion_tokens")
+      Map.get(usage, :input_tokens) || Map.get(usage, "input_tokens") ||
+        Map.get(usage, :prompt_tokens) || Map.get(usage, "prompt_tokens"),
+      Map.get(usage, :output_tokens) || Map.get(usage, "output_tokens") ||
+        Map.get(usage, :completion_tokens) || Map.get(usage, "completion_tokens")
     }
   end
 
-  defp extract_tokens(_), do: {nil, nil}
+  defp extract_certificate_fields({:ok, map}) when is_map(map) do
+    {
+      Map.get(map, :certificate_verdict),
+      Map.get(map, :certificate_confidence)
+    }
+  end
+
+  defp extract_certificate_fields(_), do: {nil, nil}
 end

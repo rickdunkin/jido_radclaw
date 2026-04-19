@@ -113,9 +113,11 @@ Three foundations for downstream auto-selection and performance-guided routing. 
 
 **Status: Planned**
 
-- User-defined strategy YAML in `.jido/strategies/` (overlays on built-ins and brand-new named strategies)
-- Pipeline composition (e.g., CoT for planning → ReAct for execution) via `RunPipeline`; `base_strategy`/`pipeline_name`/`pipeline_stage` columns in `reasoning_outcomes` already reserved
-- Wrap `verify_certificate` in telemetry with `execution_kind: :certificate_verification`
+- User-defined strategy YAML in `.jido/strategies/` as **named aliases with custom `prefers`/`description`/`display_name` metadata routed to one of the 8 built-in reasoning modules via a required `base` field**. Metadata-only overlays — custom prompt templates (which live in `deps/jido_ai/`) are out of scope; 0.4.3 may revisit.
+- Pipeline composition (e.g., CoT for planning → ToT for exploration) via `RunPipeline`; chains **non-react strategies only** — any stage whose strategy resolves (alias-aware) to `react` fail-fasts with a pointer to the agent's native ReAct loop. The current `Reason` react path is a structured-prompt stub, not a real ReAct execution, so routing it mid-pipeline would emit a stub prompt as stage output. Callers wanting "plan then act" should invoke `run_pipeline` for the planning chain and let the agent's native loop act on the final output. `base_strategy`/`pipeline_name`/`pipeline_stage` columns in `reasoning_outcomes` already reserved.
+- Wrap `verify_certificate` in telemetry with `execution_kind: :certificate_verification`; populate `certificate_verdict`/`certificate_confidence`.
+- Wrap `Reason`'s react branch with `execution_kind: :react_stub` so alias→react dispatch still produces a telemetry row (coherent `base_strategy` accounting).
+- Fix `Telemetry.extract_tokens/1` to match `jido_ai`'s `:input_tokens`/`:output_tokens` keys and to capture tokens on `{:error, %{usage: _}}` partial-failure paths.
 
 ### v0.4.3 — Auto-selection & Feedback
 

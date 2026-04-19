@@ -4,7 +4,8 @@ defmodule JidoClaw.Tools.Reason do
 
   Delegates to `Jido.AI.Actions.Reasoning.RunStrategy`, which runs an isolated
   runner agent for the requested strategy. Supports react (ReAct), cot, cod,
-  tot, got, aot, trm, and adaptive strategies.
+  tot, got, aot, trm, and adaptive strategies — plus any user-defined alias
+  declared in `.jido/strategies/*.yaml` that resolves to one of those built-ins.
   """
 
   use Jido.Action,
@@ -24,7 +25,7 @@ defmodule JidoClaw.Tools.Reason do
       strategy: [
         type: :string,
         required: true,
-        doc: "Strategy: react, cot, cod, tot, got, aot, trm, adaptive"
+        doc: "Strategy: react, cot, cod, tot, got, aot, trm, adaptive, or a user-defined alias"
       ],
       prompt: [
         type: :string,
@@ -50,35 +51,69 @@ defmodule JidoClaw.Tools.Reason do
     end
   end
 
-  defp run_strategy("react", prompt, _context) do
-    # ReAct is the agent's native loop — format result as a structured reasoning prompt
-    {:ok,
-     %{
-       strategy: "react",
-       output: """
-       [ReAct Reasoning Mode]
+  # Dispatches on the *resolved base* of the strategy. User aliases whose base
+  # is `react` take the react branch with their user-facing name preserved in
+  # the output; non-react bases run through RunStrategy with base_strategy set
+  # to the resolved built-in.
+  defp run_strategy(strategy_name, prompt, context) do
+    {:ok, base_atom} = StrategyRegistry.atom_for(strategy_name)
+    base_name = Atom.to_string(base_atom)
 
-       Applying Reason + Act strategy to: #{prompt}
-
-       Think step by step:
-       1. What do I know about this problem?
-       2. What information do I need to gather (tools to call)?
-       3. What is my reasoning at each step?
-       4. What is my final conclusion?
-
-       Begin reasoning now.
-       """,
-       note: "ReAct is the agent's native reasoning loop. This prompt structures the approach."
-     }}
+    if base_name == "react" do
+      run_react(strategy_name, prompt, context)
+    else
+      run_runner_strategy(strategy_name, base_atom, base_name, prompt, context)
+    end
   end
 
-  defp run_strategy(strategy_name, prompt, context) do
-    {:ok, strategy_atom} = StrategyRegistry.atom_for(strategy_name)
+  # The react branch returns a structured prompt template — ReAct is the
+  # agent's native loop, so this tool just hands back a scaffold. Wrapping it
+  # in Telemetry.with_outcome/4 keeps the row coherent: strategy is the
+  # user-facing name, base_strategy is "react".
+  defp run_react(strategy_name, prompt, context) do
     workspace_id = get_in(context, [:tool_context, :workspace_id])
     project_dir = get_in(context, [:tool_context, :project_dir])
 
+    Telemetry.with_outcome(
+      strategy_name,
+      prompt,
+      [
+        execution_kind: :react_stub,
+        base_strategy: "react",
+        workspace_id: workspace_id,
+        project_dir: project_dir
+      ],
+      fn -> {:ok, react_payload(strategy_name, prompt)} end
+    )
+  end
+
+  defp react_payload(strategy_name, prompt) do
+    %{
+      strategy: strategy_name,
+      output: """
+      [ReAct Reasoning Mode]
+
+      Applying Reason + Act strategy to: #{prompt}
+
+      Think step by step:
+      1. What do I know about this problem?
+      2. What information do I need to gather (tools to call)?
+      3. What is my reasoning at each step?
+      4. What is my final conclusion?
+
+      Begin reasoning now.
+      """,
+      note: "ReAct is the agent's native reasoning loop. This prompt structures the approach."
+    }
+  end
+
+  defp run_runner_strategy(strategy_name, base_atom, base_name, prompt, context) do
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir])
+    runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
+
     run_params = %{
-      strategy: strategy_atom,
+      strategy: base_atom,
       prompt: prompt,
       timeout: 60_000
     }
@@ -88,10 +123,11 @@ defmodule JidoClaw.Tools.Reason do
       prompt,
       [
         execution_kind: :strategy_run,
+        base_strategy: base_name,
         workspace_id: workspace_id,
         project_dir: project_dir
       ],
-      fn -> Jido.AI.Actions.Reasoning.RunStrategy.run(run_params, %{}) end
+      fn -> runner.run(run_params, %{}) end
     )
     |> case do
       {:ok, result} ->

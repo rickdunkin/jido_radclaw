@@ -114,7 +114,8 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
           fn -> {:ok, %{}} end
         )
 
-        assert_receive {:signal, %Jido.Signal{type: "jido_claw.reasoning.classified", data: data}},
+        assert_receive {:signal,
+                        %Jido.Signal{type: "jido_claw.reasoning.classified", data: data}},
                        500
 
         assert data.task_type == :qa
@@ -125,6 +126,105 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       after
         JidoClaw.SignalBus.unsubscribe(sub_id)
       end
+    end
+
+    test "persists certificate fields when fun returns them" do
+      Telemetry.with_outcome(
+        "cot",
+        "certificate prompt alpha",
+        [execution_kind: :certificate_verification, base_strategy: "cot"],
+        fn ->
+          {:ok,
+           %{
+             output: "ok",
+             certificate_verdict: "PASS",
+             certificate_confidence: 0.91
+           }}
+        end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended, :certificate_verification)
+      row = Enum.find(rows, fn r -> r.strategy == "cot" and r.base_strategy == "cot" end)
+      assert row
+      assert row.certificate_verdict == "PASS"
+      assert row.certificate_confidence == 0.91
+    end
+
+    test "opts override fun-returned certificate fields" do
+      Telemetry.with_outcome(
+        "cot",
+        "certificate prompt beta",
+        [
+          execution_kind: :certificate_verification,
+          base_strategy: "cot",
+          certificate_verdict: "FAIL",
+          certificate_confidence: 0.2
+        ],
+        fn ->
+          {:ok,
+           %{
+             certificate_verdict: "PASS",
+             certificate_confidence: 0.99
+           }}
+        end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended, :certificate_verification)
+      row = Enum.find(rows, fn r -> r.certificate_verdict == "FAIL" end)
+      assert row
+      assert row.certificate_confidence == 0.2
+    end
+
+    test "captures tokens from :input_tokens / :output_tokens keys (jido_ai shape)" do
+      Telemetry.with_outcome(
+        "cot",
+        "token capture prompt",
+        [execution_kind: :strategy_run],
+        fn -> {:ok, %{usage: %{input_tokens: 123, output_tokens: 45, total_tokens: 168}}} end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended)
+      row = Enum.find(rows, fn r -> r.tokens_in == 123 and r.tokens_out == 45 end)
+      assert row
+    end
+
+    test "captures tokens on {:error, %{usage: _}} partial-failure paths" do
+      Telemetry.with_outcome(
+        "cot",
+        "a neutral placeholder prompt for tokens three",
+        [execution_kind: :strategy_run],
+        fn ->
+          {:error, %{reason: :bad, usage: %{input_tokens: 77, output_tokens: 8}}}
+        end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended)
+      row = Enum.find(rows, fn r -> r.tokens_in == 77 and r.tokens_out == 8 end)
+      assert row
+      assert row.status == :error
+    end
+
+    test "merges caller-supplied metadata into persisted row" do
+      Telemetry.with_outcome(
+        "cot",
+        "a neutral metadata placeholder",
+        [
+          execution_kind: :pipeline_run,
+          metadata: %{stage_index: 2, stage_total: 4, extra: "hello"}
+        ],
+        fn -> {:ok, %{}} end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended, :pipeline_run)
+
+      row =
+        Enum.find(rows, fn r ->
+          md = r.metadata
+          (Map.get(md, "extra") || Map.get(md, :extra)) == "hello"
+        end)
+
+      assert row
+      assert (Map.get(row.metadata, "stage_index") || Map.get(row.metadata, :stage_index)) == 2
     end
 
     test "skips the classified signal when caller pre-supplies :profile" do

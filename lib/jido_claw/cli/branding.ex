@@ -45,7 +45,7 @@ defmodule JidoClaw.CLI.Branding do
     model = opts[:model] || "nemotron-3-super:cloud"
     strategy = opts[:strategy] || "react"
     project_type = detect_type(project_dir)
-    tools_count = opts[:tools_count] || 30
+    tools_count = opts[:tools_count] || length(JidoClaw.Agent.tool_modules())
     gateway = opts[:gateway] || false
 
     # Count skills and agents from .jido/

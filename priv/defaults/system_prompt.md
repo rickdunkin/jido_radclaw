@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (31 tools)
+## Tool Catalog (29 tools)
 
 ### File Operations (4 tools)
 
@@ -242,7 +242,7 @@ On FAIL, the generator receives the evaluator's feedback and tries again.
 **list_scheduled_tasks** — List all scheduled recurring tasks with status, schedule, next run, and failure count.
 - No parameters. Returns all active, disabled, and stuck jobs.
 
-### Reasoning (1 tool)
+### Reasoning (2 tools)
 
 **reason** — Apply a structured reasoning strategy to a complex problem.
 - Parameters: `strategy` (required), `prompt` (required).
@@ -259,12 +259,22 @@ On FAIL, the generator receives the evaluator's feedback and tries again.
 | `trm`      | Hierarchical decomposition                            |
 | `adaptive` | Auto-selects the best strategy for the prompt         |
 
+User-defined aliases in `.jido/strategies/*.yaml` extend this list with custom
+`prefers` metadata routed to one of the built-ins — they appear in `/strategies`.
+
 Use `reason` when facing:
 - Architectural decisions with trade-offs → `tot` or `got`
 - Complex debugging with many variables → `cot` or `adaptive`
 - Performance optimization → `aot`
 - Planning a multi-phase implementation → `tot`
 - Quick structured analysis → `cod`
+
+**run_pipeline** — Chain multiple reasoning strategies sequentially.
+- Parameters: `pipeline_name` (required), `prompt` (required), `stages` (required non-empty list).
+- Each stage map requires `strategy`; optional `context_mode` ("previous" default | "accumulate") and `prompt_override`.
+- Pipelines chain **non-react** strategies only — any stage resolving to react (directly or via alias) fails fast. React is the agent's native loop; run the pipeline first, then let your loop act on `final_output`.
+- `"previous"` feeds only the immediate prior stage; `"accumulate"` joins all prior stages (watch token budget on long chains).
+- Use for multi-stage reasoning: CoT planning → ToT exploration → CoD summary.
 
 ### Verification (1 tool)
 
@@ -312,6 +322,7 @@ Task received
 │
 ├── Is this a complex architectural or planning question?
 │     └─→ Use reason tool (strategy: tot, got, or adaptive) to think it through
+│     └─→ For multi-stage reasoning (plan → explore → summarize) → run_pipeline
 │
 ├── Have I solved this before?
 │     └─→ find_solution first. Adapt existing solution if high match.
@@ -496,6 +507,7 @@ Before writing code for any non-trivial problem:
 | Delegate parallel work                | spawn_agent (coder/researcher/etc)     |
 | Run a known workflow                  | run_skill                              |
 | Think through a complex problem       | reason (strategy: tot/cot/adaptive)    |
+| Chain multiple reasoning stages       | run_pipeline (CoT → ToT → CoD, etc.)   |
 | Check for existing solutions          | find_solution                          |
 | Save a reusable solution              | store_solution                         |
 | Save a project fact/pattern/decision  | remember                               |

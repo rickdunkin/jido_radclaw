@@ -1,9 +1,9 @@
 defmodule JidoClaw.Tools.VerifyCertificateTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.VerifyCertificate
   alias JidoClaw.Solutions.Store
-  alias JidoClaw.Reasoning.Certificates
+  alias JidoClaw.Reasoning.{Certificates, Resources.Outcome}
 
   @ets_table :jido_claw_solutions
 
@@ -100,6 +100,10 @@ defmodule JidoClaw.Tools.VerifyCertificateTest do
   end
 
   setup do
+    # VerifyCertificate.run/2 now writes a reasoning_outcomes row via telemetry,
+    # so every test must own the sandbox checkout or rows leak across tests.
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+
     tmp_dir =
       Path.join(
         System.tmp_dir!(),
@@ -323,6 +327,128 @@ defmodule JidoClaw.Tools.VerifyCertificateTest do
       assert {:ok, result} = VerifyCertificate.run(params, context)
       assert result.trust_score == nil
       assert result.persistence_error == nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Reasoning telemetry integration
+  # ---------------------------------------------------------------------------
+
+  defmodule UsageStubRunner do
+    @moduledoc false
+
+    def run(_params, _context) do
+      cert = %{
+        "type" => "patch_verification",
+        "verdict" => "PASS",
+        "confidence" => 0.77,
+        "payload" => %{
+          "test_claims" => [],
+          "comparison_outcome" => [],
+          "counterexample" => nil,
+          "formal_conclusion" => "ok"
+        }
+      }
+
+      {:ok,
+       %{
+         output: "```certificate\n#{Jason.encode!(cert)}\n```",
+         usage: %{input_tokens: 150, output_tokens: 30, total_tokens: 180}
+       }}
+    end
+  end
+
+  defmodule NoCertWithUsageRunner do
+    @moduledoc false
+
+    def run(_params, _context) do
+      {:ok,
+       %{
+         output: "no cert block here",
+         usage: %{input_tokens: 42, output_tokens: 5}
+       }}
+    end
+  end
+
+  defmodule FailWithUsageRunner do
+    @moduledoc false
+
+    # Mirrors the map-shaped error payload Jido.AI.Actions.Reasoning.RunStrategy
+    # returns on non-recoverable runner failure (run_strategy.ex:263-285).
+    def run(_params, _context) do
+      {:error,
+       %{
+         strategy: :cot,
+         status: :failure,
+         output: nil,
+         usage: %{input_tokens: 77, output_tokens: 11},
+         diagnostics: %{}
+       }}
+    end
+  end
+
+  describe "reasoning telemetry integration" do
+    defp find_cert_row(verdict, confidence) do
+      # The cert template prompt contains multiple task-keyword hits (verify,
+      # debug-ish terms, etc.); scan all task_type buckets to locate the row.
+      [:debugging, :verification, :qa, :planning, :refactoring, :exploration, :open_ended]
+      |> Enum.flat_map(fn tt ->
+        {:ok, rows} = Outcome.list_by_task_type(tt, :certificate_verification)
+        rows
+      end)
+      |> Enum.find(fn r ->
+        r.certificate_verdict == verdict and r.certificate_confidence == confidence
+      end)
+    end
+
+    defp find_cert_row_by_tokens(tokens_in, tokens_out) do
+      [:debugging, :verification, :qa, :planning, :refactoring, :exploration, :open_ended]
+      |> Enum.flat_map(fn tt ->
+        {:ok, rows} = Outcome.list_by_task_type(tt, :certificate_verification)
+        rows
+      end)
+      |> Enum.find(fn r -> r.tokens_in == tokens_in and r.tokens_out == tokens_out end)
+    end
+
+    test "writes one reasoning_outcomes row per cert run with execution_kind=:certificate_verification" do
+      params = %{code: "def add(a,b), do: a+b", specification: "Adds two numbers"}
+      context = %{reasoning_runner: UsageStubRunner}
+
+      assert {:ok, result} = VerifyCertificate.run(params, context)
+      assert result.verdict == "PASS"
+
+      row = find_cert_row("PASS", 0.77)
+      assert row
+      assert row.strategy == "cot"
+      assert row.base_strategy == "cot"
+      assert row.execution_kind == :certificate_verification
+      assert row.tokens_in == 150
+      assert row.tokens_out == 30
+    end
+
+    test "persists error-side token usage on parse failure" do
+      params = %{code: "code", specification: "spec"}
+      context = %{reasoning_runner: NoCertWithUsageRunner}
+
+      assert {:error, msg} = VerifyCertificate.run(params, context)
+      assert msg =~ "did not contain a certificate block"
+
+      row = find_cert_row_by_tokens(42, 5)
+      assert row
+      assert row.status == :error
+    end
+
+    test "persists runner-error token usage on map-shaped runner failure" do
+      params = %{code: "code", specification: "spec"}
+      context = %{reasoning_runner: FailWithUsageRunner}
+
+      assert {:error, msg} = VerifyCertificate.run(params, context)
+      assert msg =~ "Reasoning strategy failed"
+
+      row = find_cert_row_by_tokens(77, 11)
+      assert row
+      assert row.status == :error
+      assert row.execution_kind == :certificate_verification
     end
   end
 end

@@ -36,7 +36,7 @@ defmodule JidoClaw.CLI.Repl do
     Branding.boot_sequence(project_dir,
       provider: Config.provider_label(config),
       model: model_name(model),
-      tools_count: 30,
+      tools_count: length(JidoClaw.Agent.tool_modules()),
       gateway: mode in [:gateway, :both]
     )
 

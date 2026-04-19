@@ -563,9 +563,10 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[1mReasoning Strategies\e[0m")
     IO.puts("")
 
-    Enum.each(strategies, fn %{name: name, description: desc} ->
+    Enum.each(strategies, fn %{name: name, description: desc} = entry ->
       active = if name == current, do: " \e[32m← active\e[0m", else: ""
-      IO.puts("  \e[33m▸\e[0m \e[1m#{name}\e[0m#{active}")
+      label = strategy_label(entry)
+      IO.puts("  \e[33m▸\e[0m \e[1m#{label}\e[0m#{active}")
       IO.puts("    \e[2m#{desc}\e[0m")
     end)
 
@@ -726,4 +727,11 @@ defmodule JidoClaw.CLI.Commands do
   defp cron_unit_ms("h"), do: 3_600_000
   defp cron_unit_ms("d"), do: 86_400_000
   defp cron_unit_ms(_), do: 60_000
+
+  defp strategy_label(%{name: name, display_name: display})
+       when is_binary(display) and display != "" do
+    "#{display} (#{name})"
+  end
+
+  defp strategy_label(%{name: name}), do: name
 end

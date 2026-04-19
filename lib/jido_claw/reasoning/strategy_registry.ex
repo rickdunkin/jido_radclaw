@@ -2,10 +2,27 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
   @moduledoc """
   Maps strategy names to jido_ai reasoning modules.
 
-  Each entry carries a `:prefers` map used by `JidoClaw.Reasoning.Classifier`
-  to recommend strategies based on the profile of an incoming prompt. The
-  preferences are heuristic — the classifier's scoring keeps recommendations
-  soft so unseen combinations still produce a candidate.
+  Each built-in entry carries a `:prefers` map used by
+  `JidoClaw.Reasoning.Classifier` to recommend strategies based on the profile
+  of an incoming prompt. The preferences are heuristic — the classifier's
+  scoring keeps recommendations soft so unseen combinations still produce a
+  candidate.
+
+  User-defined aliases loaded from `.jido/strategies/*.yaml` overlay on top
+  of the built-ins via `JidoClaw.Reasoning.StrategyStore`. Built-ins always
+  win on name collision (see `StrategyStore.validate/1`).
+
+  ## Alias resolution
+
+    * `plugin_for/1` — returns the base strategy's module. React always
+      returns `{:ok, Jido.AI.Reasoning.ReAct}` (both for direct `"react"` and
+      react-based aliases). `Reason.run_strategy/3` routes react via the
+      user-facing name, so no caller depends on `nil`.
+    * `atom_for/1` — returns the base atom (e.g. `:cot` for a cot-aliased
+      user strategy). Callers that care about the user-facing name should
+      read it from their own call site.
+    * `prefers_for/1` — returns the user-supplied `prefers` map for aliases
+      (the whole point of metadata overlays).
   """
 
   @strategies %{
@@ -88,47 +105,120 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
     }
   }
 
-  @doc "Returns the strategy module for a given name, or nil for react (handled natively by the agent)."
-  @spec plugin_for(String.t()) :: {:ok, module() | nil} | {:error, :unknown_strategy}
+  alias JidoClaw.Reasoning.StrategyStore
+
+  @doc "Returns the strategy module for a given name."
+  @spec plugin_for(String.t()) :: {:ok, module()} | {:error, :unknown_strategy}
   def plugin_for(name) when is_binary(name) do
-    case Map.get(@strategies, name) do
-      nil -> {:error, :unknown_strategy}
-      %{module: module} -> {:ok, module}
+    cond do
+      builtin = Map.get(@strategies, name) ->
+        {:ok, builtin.module}
+
+      entry = user_strategy(name) ->
+        plugin_for(entry.base)
+
+      true ->
+        {:error, :unknown_strategy}
     end
   end
 
-  @doc "Returns the atom identifier for a strategy name."
+  @doc "Returns the atom identifier for a strategy name. Aliases return their base's atom."
   @spec atom_for(String.t()) :: {:ok, atom()} | {:error, :unknown_strategy}
   def atom_for(name) when is_binary(name) do
-    case Map.get(@strategies, name) do
-      nil -> {:error, :unknown_strategy}
-      %{atom: atom} -> {:ok, atom}
+    cond do
+      builtin = Map.get(@strategies, name) ->
+        {:ok, builtin.atom}
+
+      entry = user_strategy(name) ->
+        atom_for(entry.base)
+
+      true ->
+        {:error, :unknown_strategy}
     end
   end
 
-  @doc "Lists all available strategies with name and description."
-  @spec list() :: [%{name: String.t(), description: String.t()}]
+  @doc """
+  Lists all available strategies with name and description.
+
+  Built-ins merged with user aliases, sorted by name. User entries include a
+  `:display_name` field when provided; built-ins set it to `nil` so callers can
+  branch uniformly.
+  """
+  @spec list() :: [%{name: String.t(), description: String.t(), display_name: String.t() | nil}]
   def list do
-    @strategies
-    |> Enum.map(fn {name, %{description: desc}} -> %{name: name, description: desc} end)
+    builtins =
+      Enum.map(@strategies, fn {name, %{description: desc}} ->
+        %{name: name, description: desc, display_name: nil}
+      end)
+
+    users =
+      user_all()
+      |> Enum.map(fn entry ->
+        %{name: entry.name, description: entry.description, display_name: entry.display_name}
+      end)
+
+    (builtins ++ users)
     |> Enum.sort_by(& &1.name)
   end
 
-  @doc "Returns true if the strategy name is valid."
+  @doc "Returns true if the strategy name is known (built-in or user alias)."
   @spec valid?(String.t()) :: boolean()
-  def valid?(name), do: Map.has_key?(@strategies, name)
+  def valid?(name) when is_binary(name) do
+    Map.has_key?(@strategies, name) or user_strategy(name) != nil
+  end
 
   @doc """
-  Returns the `prefers` map for a strategy, or `nil` when unknown.
+  Returns the `prefers` map for a strategy, or `nil` when unknown. User aliases
+  return their own `prefers` (the whole point of metadata overlays).
 
   Consumed by `JidoClaw.Reasoning.Classifier.recommend/2`.
   """
   @spec prefers_for(String.t()) ::
           %{task_types: [atom()], complexity: [atom()]} | nil
   def prefers_for(name) when is_binary(name) do
-    case Map.get(@strategies, name) do
-      nil -> nil
-      %{prefers: prefers} -> prefers
+    cond do
+      builtin = Map.get(@strategies, name) -> builtin.prefers
+      entry = user_strategy(name) -> entry.prefers
+      true -> nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Private — user strategy lookup with exit-safety
+  # ---------------------------------------------------------------------------
+
+  # GenServer.call/2 on a non-started named process *exits* the caller — a
+  # `rescue` block won't catch that. Wrap the call in a :exit catch and fall
+  # back to nil so the registry still resolves built-ins even when
+  # StrategyStore isn't supervised (tests, minimal boot paths).
+  defp user_strategy(name) do
+    case GenServer.whereis(StrategyStore) do
+      nil ->
+        nil
+
+      _pid ->
+        try do
+          case StrategyStore.get(name) do
+            {:ok, entry} -> entry
+            _ -> nil
+          end
+        catch
+          :exit, _ -> nil
+        end
+    end
+  end
+
+  defp user_all do
+    case GenServer.whereis(StrategyStore) do
+      nil ->
+        []
+
+      _pid ->
+        try do
+          StrategyStore.all()
+        catch
+          :exit, _ -> []
+        end
     end
   end
 end

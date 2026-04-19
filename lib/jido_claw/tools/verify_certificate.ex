@@ -51,7 +51,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       ]
     ]
 
-  alias JidoClaw.Reasoning.Certificates
+  alias JidoClaw.Reasoning.{Certificates, Telemetry}
   alias JidoClaw.Solutions.Store
 
   @impl true
@@ -69,8 +69,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
              specification: specification,
              evidence: evidence
            }),
-         {:ok, output_str} <- run_reasoning(prompt, context),
-         {:ok, certificate} <- Certificates.parse_certificate(output_str) do
+         {:ok, %{certificate: certificate}} <- run_reasoning(prompt, context) do
       verdict = Map.get(certificate, "verdict", "UNKNOWN")
       confidence = Map.get(certificate, "confidence", 0.0)
 
@@ -117,6 +116,15 @@ defmodule JidoClaw.Tools.VerifyCertificate do
 
   defp run_reasoning(prompt, context) do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
+    workspace_id = get_in(context, [:tool_context, :workspace_id])
+    project_dir = get_in(context, [:tool_context, :project_dir])
+
+    opts = [
+      execution_kind: :certificate_verification,
+      base_strategy: "cot",
+      workspace_id: workspace_id,
+      project_dir: project_dir
+    ]
 
     run_params = %{
       strategy: :cot,
@@ -124,12 +132,54 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       timeout: 60_000
     }
 
-    case runner.run(run_params, %{}) do
-      {:ok, result} ->
-        {:ok, extract_output(result)}
+    Telemetry.with_outcome("cot", prompt, opts, fn ->
+      execute_cert(runner, run_params)
+    end)
+    |> case do
+      {:ok, %{certificate: _} = payload} ->
+        {:ok, payload}
+
+      {:error, %{reason: reason}} ->
+        {:error, reason}
 
       {:error, reason} ->
-        {:error, "Reasoning strategy failed: #{inspect(reason)}"}
+        {:error, reason}
+    end
+  end
+
+  # Returns {:ok, %{output, certificate, certificate_verdict, certificate_confidence, usage}}
+  # or {:error, %{reason, usage}} so Telemetry.with_outcome can capture tokens on
+  # both success and parse-failure paths.
+  defp execute_cert(runner, run_params) do
+    case runner.run(run_params, %{}) do
+      {:ok, result} ->
+        output_str = extract_output(result)
+        usage = Map.get(result, :usage, %{})
+
+        case Certificates.parse_certificate(output_str) do
+          {:ok, certificate} ->
+            {:ok,
+             %{
+               output: output_str,
+               certificate: certificate,
+               certificate_verdict: Map.get(certificate, "verdict"),
+               certificate_confidence: Map.get(certificate, "confidence"),
+               usage: usage
+             }}
+
+          {:error, reason} ->
+            {:error, %{reason: reason, usage: usage}}
+        end
+
+      {:error, reason} ->
+        usage =
+          if is_map(reason) do
+            Map.get(reason, :usage) || Map.get(reason, "usage") || %{}
+          else
+            %{}
+          end
+
+        {:error, %{reason: "Reasoning strategy failed: #{inspect(reason)}", usage: usage}}
     end
   end
 
