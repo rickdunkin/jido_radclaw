@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.4.3
+## Current State: v0.4.7
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), and history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), and `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -82,9 +82,9 @@ Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `Wr
 
 ## v0.4 — Reasoning & Strategy Improvements
 
-**Status: In Progress**
+**Status: Complete**
 
-Four sub-phases, each independently shippable. 0.4.1, 0.4.2, and 0.4.3 complete; 0.4.4 planned.
+Originally planned as four sub-phases. The fourth was split into four point releases (v0.4.4–v0.4.7) during 0.4.4 planning, each independently reviewable and revertible. v0.4.1 through v0.4.7 complete.
 
 ### v0.4.1 — Reasoning Foundations
 
@@ -147,16 +147,54 @@ Closes the feedback loop opened by 0.4.1's telemetry + classifier work: `strateg
 - Custom prompt templates in user strategies → 0.4.4
 - Collapse the four duplicated `with_user_strategy/2` helpers in the test suite into a shared module → 0.4.4 cleanup
 
-### v0.4.4 — Pipeline & Strategy Polish
+### v0.4.4 — `StrategyTestHelper`
 
-**Status: Planned**
+**Status: Complete**
 
-Absorbs the remaining 0.4.2 deferrals (YAML pipelines, `accumulate` token-budget cap, custom prompt templates) plus test-helper cleanup surfaced during 0.4.3.
+Collapses five duplicated `with_user_strategy/2` helpers into a shared `test/support/` module so every subsequent 0.4.x release adds call sites to one place, not five. Delivered:
 
-- YAML-defined pipeline compositions (inline stages are the only form today)
-- `max_context_bytes` cap for `accumulate` context mode — prevents the unbounded-growth footgun on long pipelines
-- Custom prompt templates in user strategies (elevate beyond metadata-only overlays)
-- Collapse the four `with_user_strategy/2` test helpers (classifier, reason, auto_select, and any future addition) into a shared `JidoClaw.Reasoning.StrategyTestHelper` module
+- **`JidoClaw.Reasoning.StrategyTestHelper`** — new shared module exporting `with_user_strategy/2` (write YAML to `.jido/strategies/`, reload the supervised `StrategyStore`, run the body, clean up on exit). Module doc calls out the `async: false` invariant — the store is a named singleton and parallel tests would race its state. A sibling `with_user_pipeline/2` helper lands alongside `PipelineStore` in v0.4.6 (adding it now would depend on a module that doesn't exist yet).
+- **`mix.exs` `elixirc_paths/1`** — branches `test/support/` into `:test` only, so `test/support/` never compiles under `:prod`/`:dev`.
+- **Five call-site refactors** — `test/jido_claw/reasoning/{classifier,auto_select,strategy_registry}_test.exs` and `test/jido_claw/tools/{reason,run_pipeline}_test.exs` all drop their inline `defp with_user_strategy/2` and pick up `import JidoClaw.Reasoning.StrategyTestHelper`. No behavior change — the refactor preserves exact semantics.
+
+### v0.4.5 — Custom Prompt Templates
+
+**Status: Complete**
+
+Elevates user strategies beyond the metadata-only overlays v0.4.2 shipped so aliases can carry their own `system`/`generation`/`evaluation` prompts (plus `connection`/`aggregation` for GoT) and not just tuned `prefers` metadata. Delivered:
+
+- **`prompts:` key in `.jido/strategies/*.yaml`.** Optional top-level map whose sub-keys (`system`, `generation`, `evaluation`, `connection`, `aggregation`) are validated at load time against a per-base accepted-key matrix sourced from `Jido.AI.Actions.Reasoning.RunStrategy`'s `@strategy_state_keys` (`deps/jido_ai/lib/jido_ai/actions/reasoning/run_strategy.ex:108-133`). The matrix: `cot`/`cod` accept `system`; `tot` accepts `generation`+`evaluation`; `got` accepts `generation`+`connection`+`aggregation`; `trm`/`aot`/`react`/`adaptive` accept none (hard-reject if any known key appears).
+- **5 KB per-field cap** aligned with `Jido.AI.Validation.@max_prompt_length`. Oversized or non-string values → whole-file skip with a warning. Empty strings → drop-the-key ("unset"). Unknown sub-keys (e.g. typo `sytem`) → warn-and-drop that key; file kept if others are valid.
+- **`StrategyRegistry.prompts_for/1`** returns the raw prompts map (atom-keyed); **`run_strategy_params_for/1`** returns a map keyed by RunStrategy schema names (`:system_prompt`, `:generation_prompt`, etc.) ready to merge into runner params.
+- **`Reason.run_runner_strategy/5`, `Reason.run_auto/2`, `RunPipeline.run_stage/4`** all merge `run_strategy_params_for(strategy_name)` into their `run_params` before calling the runner. Prompts travel with the alias; built-ins and aliases without `prompts:` pass no extra keys (runner falls back to compile-time defaults).
+
+### v0.4.6 — YAML-Defined Pipeline Compositions
+
+**Status: Complete**
+
+Users declare reusable pipelines in `.jido/pipelines/*.yaml`. `RunPipeline` gains a `pipeline_ref` parameter; inline `stages` still works and wins when both supplied. Delivered:
+
+- **`JidoClaw.Reasoning.PipelineValidator`** — extracts `normalize_stage/1`/`normalize_stages/1` and `validate_stage/2`/`validate_stages/1`/`resolves_to_react?/1` out of `RunPipeline` as public functions so YAML and inline callers share one normalize+validate pair. Error-message strings preserved for grep-based consumer compatibility.
+- **`JidoClaw.Reasoning.PipelineStore`** — new GenServer mirroring `StrategyStore` (loading, lenient per-file error handling, lexicographic dedup, exit-safe lookup). Started under `core_children/0` next to `StrategyStore`. Pipeline struct carries `name`, `description`, `stages` (already normalized at load time).
+- **`RunPipeline.run/2`** branches by `is_list(params[:stages])` — robust to whether `Jido.Action` leaves absent optional keys as key-absent or nil-valued. Inline stages wins unconditionally over `pipeline_ref` (inline empty/malformed fails on the inline path; never silently falls through). Caller-supplied `pipeline_name` always wins over YAML `name` for telemetry correlation. Stages loaded from YAML are re-validated at invocation time (catches a strategy that was deleted between load and run).
+- **`StrategyTestHelper.with_user_pipeline/2`** — mirror of `with_user_strategy/2` targeting `.jido/pipelines/` and `PipelineStore.reload/0`.
+- **`Startup.ensure_pipelines_dir/1`** — creates `.jido/pipelines/` alongside `.jido/strategies/` at boot.
+
+### v0.4.7 — `max_context_bytes` Cap
+
+**Status: Complete**
+
+Bounds the composed-prompt size in `accumulate` mode. Drops oldest whole stages (never mid-body truncation). Fails fast if even the newest prior-stage output alone exceeds the cap. Delivered:
+
+- **`max_context_bytes`** accepted at two levels:
+  - Top-level `RunPipeline` tool param (pipeline-wide default).
+  - Per-stage key (overrides the pipeline-wide value for that stage).
+  - YAML-declared pipelines carry top-level + per-stage `max_context_bytes`; the invocation-time param wins when both are supplied.
+- **`compose_and_cap/5`** returns `{:ok, final_prompt, cap_meta}` on success and `{:error, reason, classification_prompt, cap_meta}` on failure. The classification prompt is the irreducible would-be request (`initial + newest-prior-stage + elision_notice`), driving an accurate `prompt_length` on the failing-stage outcome row.
+- **Cap failures routed back through `Telemetry.with_outcome/4`** with `fn -> {:error, reason} end` so the full lifecycle fires (start/stop telemetry, `jido_claw.reasoning.classified` signal, persisted `:error` row). No new Telemetry API.
+- **Elision notice bytes pre-reserved in the budget** — the notice (`[N earlier stage outputs elided to fit max_context_bytes]`) is appended AFTER dropping but its size counts against the cap, so `byte_size(final_prompt) <= cap` holds exactly once drops occurred.
+- **Outcome-row metadata keys** (all in `reasoning_outcomes.metadata` JSONB; no schema changes): `accumulated_context_bytes_pre_cap`, `accumulated_context_bytes_post_cap` (success only), `dropped_stage_indexes`, and on failure `failure_reason`.
+- **`previous` mode + any cap → one-line warning at run start, continue uncapped** (caps only make sense in accumulate mode).
 
 ---
 
@@ -281,7 +319,9 @@ Note: Agent state recovery and session metadata are already in PostgreSQL via Fo
 ## Build Order
 
 ```
-v0.2 (done) → v0.2.5 (done) → v0.3 (VFS) → v0.4 (Reasoning) → v0.5 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
+v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
 ```
+
+The v0.4.x cadence was intentional: each point release shipped one focused change to the reasoning subsystem, keeping every PR independently reviewable and revertible.
 
 v0.6 memory/solutions migration is gated on actual need — don't migrate the remaining file-based stores until the current approach is a proven bottleneck.

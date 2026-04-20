@@ -4,6 +4,8 @@ defmodule JidoClaw.Reasoning.ClassifierTest do
   # reading built-ins.
   use ExUnit.Case, async: false
 
+  import JidoClaw.Reasoning.StrategyTestHelper
+
   alias JidoClaw.Reasoning.{Classifier, TaskProfile}
 
   describe "profile/2" do
@@ -249,26 +251,6 @@ defmodule JidoClaw.Reasoning.ClassifierTest do
           assert strategy == "deep_debug"
         end
       )
-    end
-  end
-
-  # Write a YAML file into the live project's .jido/strategies/, reload, and
-  # clean up afterwards. Requires StrategyStore to be running (it's in the
-  # application supervision tree for the test env).
-  defp with_user_strategy(yaml, fun) do
-    project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
-    dir = Path.join([project_dir, ".jido", "strategies"])
-    File.mkdir_p!(dir)
-
-    path = Path.join(dir, "classifier_test_alias_#{System.unique_integer([:positive])}.yaml")
-    File.write!(path, yaml)
-
-    try do
-      JidoClaw.Reasoning.StrategyStore.reload()
-      fun.()
-    after
-      File.rm(path)
-      JidoClaw.Reasoning.StrategyStore.reload()
     end
   end
 

@@ -29,6 +29,7 @@ defmodule JidoClaw.Startup do
          :ok <- safe_bootstrap(:prompt_ensure, fn -> Prompt.ensure(project_dir) end),
          :ok <- safe_bootstrap(:skills, fn -> JidoClaw.Skills.ensure_defaults(project_dir) end),
          :ok <- safe_bootstrap(:strategies, fn -> ensure_strategies_dir(project_dir) end),
+         :ok <- safe_bootstrap(:pipelines, fn -> ensure_pipelines_dir(project_dir) end),
          {:ok, result} <- Prompt.sync(project_dir) do
       {:ok, prompt_sync: result}
     end
@@ -45,6 +46,15 @@ defmodule JidoClaw.Startup do
     case Process.whereis(JidoClaw.Reasoning.StrategyStore) do
       nil -> :ok
       _pid -> JidoClaw.Reasoning.StrategyStore.reload()
+    end
+  end
+
+  defp ensure_pipelines_dir(project_dir) do
+    File.mkdir_p!(Path.join([project_dir, ".jido", "pipelines"]))
+
+    case Process.whereis(JidoClaw.Reasoning.PipelineStore) do
+      nil -> :ok
+      _pid -> JidoClaw.Reasoning.PipelineStore.reload()
     end
   end
 

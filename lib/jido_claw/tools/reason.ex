@@ -73,11 +73,9 @@ defmodule JidoClaw.Tools.Reason do
     base_name = Atom.to_string(base_atom)
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
-    run_params = %{
-      strategy: base_atom,
-      prompt: prompt,
-      timeout: 60_000
-    }
+    run_params =
+      %{strategy: base_atom, prompt: prompt, timeout: 60_000}
+      |> Map.merge(StrategyRegistry.run_strategy_params_for(concrete_strategy))
 
     metadata =
       if concrete_strategy != base_name do
@@ -157,11 +155,9 @@ defmodule JidoClaw.Tools.Reason do
   defp run_runner_strategy(strategy_name, base_atom, base_name, prompt, context) do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
-    run_params = %{
-      strategy: base_atom,
-      prompt: prompt,
-      timeout: 60_000
-    }
+    run_params =
+      %{strategy: base_atom, prompt: prompt, timeout: 60_000}
+      |> Map.merge(StrategyRegistry.run_strategy_params_for(strategy_name))
 
     opts =
       base_telemetry_opts(context,

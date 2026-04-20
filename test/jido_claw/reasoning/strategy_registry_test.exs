@@ -4,32 +4,9 @@ defmodule JidoClaw.Reasoning.StrategyRegistryTest do
   # other's state.
   use ExUnit.Case, async: false
 
+  import JidoClaw.Reasoning.StrategyTestHelper
+
   alias JidoClaw.Reasoning.StrategyRegistry
-
-  # Convenience: write a YAML into the live project's .jido/strategies/ and
-  # reload the registry. The path is deterministic so we can remove it on
-  # exit. Requires StrategyStore to be running (supervised by the app).
-  defp with_user_strategy(yaml, fun) do
-    project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
-    dir = Path.join([project_dir, ".jido", "strategies"])
-    File.mkdir_p!(dir)
-
-    path =
-      Path.join(
-        dir,
-        "strategy_registry_test_alias_#{System.unique_integer([:positive])}.yaml"
-      )
-
-    File.write!(path, yaml)
-
-    try do
-      JidoClaw.Reasoning.StrategyStore.reload()
-      fun.()
-    after
-      File.rm(path)
-      JidoClaw.Reasoning.StrategyStore.reload()
-    end
-  end
 
   describe "built-in resolution" do
     test "plugin_for/1 returns the built-in module" do

@@ -1,7 +1,7 @@
 defmodule JidoClaw.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.7"
 
   def project do
     [
@@ -10,6 +10,7 @@ defmodule JidoClaw.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :dev,
+      elixirc_paths: elixirc_paths(Mix.env()),
       # Intentionally redefining Anubis.Server.Transport.STDIO and
       # Anubis.Server.Handlers.Tools from anubis_mcp 0.17.1 — see
       # lib/jido_claw/core/anubis_*_patch.ex. Silences the resulting
@@ -26,6 +27,9 @@ defmodule JidoClaw.MixProject do
       usage_rules: usage_rules()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [

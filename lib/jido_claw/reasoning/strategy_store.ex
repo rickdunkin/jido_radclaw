@@ -3,10 +3,10 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   Cached registry of user-defined reasoning strategies loaded from
   `.jido/strategies/*.yaml`.
 
-  Strategies are **metadata-only overlays**: each YAML file declares a named
-  alias that routes to one of the 8 built-in reasoning modules via a required
-  `base` field. Custom prompt templates (which live in `deps/jido_ai/`) are
-  out of scope — 0.4.2 intentionally limits user entries to metadata.
+  Each YAML file declares a named alias that routes to one of the 8 built-in
+  reasoning modules via a required `base` field. Aliases overlay
+  `prefers` metadata and optional custom prompt templates on top of the
+  built-in they target.
 
   YAML schema:
 
@@ -17,12 +17,38 @@ defmodule JidoClaw.Reasoning.StrategyStore do
       prefers:
         task_types: [debugging]
         complexity: [complex, highly_complex]
+      prompts:                      # optional; per-base whitelist, see below
+        system: "You are a rigorous mathematician"
 
-  Validation is **lenient**: unknown `base` values, collisions with built-ins,
-  and malformed YAML are logged as warnings and skipped — they never crash the
-  process. Built-ins always win on name collision. On user-vs-user collision
-  the lexicographically-first filename wins (files are sorted before parsing
-  so ordering is reproducible across environments).
+  ## Prompts whitelist
+
+  `prompts:` is validated against a per-base accepted-key matrix drawn from
+  `Jido.AI.Actions.Reasoning.RunStrategy`'s `@strategy_state_keys` (source of
+  truth: `deps/jido_ai/lib/jido_ai/actions/reasoning/run_strategy.ex:108-133`):
+
+  | base     | accepted keys                                    |
+  | -------- | ------------------------------------------------ |
+  | cot, cod | `system`                                         |
+  | tot      | `generation`, `evaluation`                       |
+  | got      | `generation`, `connection`, `aggregation`        |
+  | trm, aot, react, adaptive | (none — any known key → skip)   |
+
+  Each value must be a non-empty string ≤ 5 KB (aligned with
+  `Jido.AI.Validation.@max_prompt_length`). Empty strings are dropped as
+  "unset." Known sub-keys (`system`/`generation`/`evaluation`/`connection`/
+  `aggregation`) that aren't accepted on this base → **whole file skipped**
+  with a warning. Non-string values or oversized values → whole file
+  skipped. Unknown sub-keys (e.g. typo `sytem`) → warn-and-drop that key;
+  file kept if others are valid.
+
+  ## Lenient skipping
+
+  Unknown `base` values, collisions with built-ins, malformed YAML, and
+  prompts-whitelist violations are all logged as warnings and the offending
+  file is skipped. The process never crashes. Built-ins always win on name
+  collision. On user-vs-user collision the lexicographically-first filename
+  wins (files are sorted before parsing so ordering is reproducible across
+  environments).
   """
 
   use GenServer
@@ -30,17 +56,41 @@ defmodule JidoClaw.Reasoning.StrategyStore do
 
   alias JidoClaw.Reasoning.{Complexity, TaskType}
 
-  defstruct [:name, :base, :description, :prefers, :display_name]
+  defstruct [:name, :base, :description, :prefers, :display_name, :prompts]
 
   @type t :: %__MODULE__{
           name: String.t(),
           base: String.t(),
           description: String.t(),
           prefers: %{task_types: [atom()], complexity: [atom()]},
-          display_name: String.t() | nil
+          display_name: String.t() | nil,
+          prompts: %{optional(atom()) => binary()}
         }
 
   @builtin_strategies ~w(react cot cod tot got aot trm adaptive)
+
+  # Per-base accepted `prompts:` keys. Source of truth:
+  # `deps/jido_ai/lib/jido_ai/actions/reasoning/run_strategy.ex:108-133`
+  # (`@strategy_state_keys`). `react` bypasses RunStrategy entirely (Reason's
+  # react branch is a structured-prompt stub) and thus accepts no custom
+  # templates either.
+  @prompt_keys_by_base %{
+    "react" => [],
+    "cot" => [:system],
+    "cod" => [:system],
+    "tot" => [:generation, :evaluation],
+    "got" => [:generation, :connection, :aggregation],
+    "aot" => [],
+    "trm" => [],
+    "adaptive" => []
+  }
+
+  @known_prompt_keys [:system, :generation, :evaluation, :connection, :aggregation]
+
+  # 5 KB per field. Aligned with `Jido.AI.Validation.@max_prompt_length`
+  # (`deps/jido_ai/lib/jido_ai/validation.ex:13`) — user strategies stay
+  # consistent with upstream.
+  @max_prompt_bytes 5_000
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -169,14 +219,16 @@ defmodule JidoClaw.Reasoning.StrategyStore do
     with {:ok, name} <- fetch_name(data),
          :ok <- refuse_builtin_collision(name),
          {:ok, base} <- fetch_base(data),
-         prefers <- parse_prefers(Map.get(data, "prefers")) do
+         prefers <- parse_prefers(Map.get(data, "prefers")),
+         {:ok, prompts} <- parse_prompts(Map.get(data, "prompts"), base) do
       {:ok,
        %__MODULE__{
          name: name,
          base: base,
          description: Map.get(data, "description", ""),
          prefers: prefers,
-         display_name: stringish(Map.get(data, "display_name"))
+         display_name: stringish(Map.get(data, "display_name")),
+         prompts: prompts
        }}
     end
   end
@@ -232,6 +284,70 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   end
 
   defp parse_prefers(_), do: %{task_types: [], complexity: []}
+
+  defp parse_prompts(nil, _base), do: {:ok, %{}}
+
+  defp parse_prompts(prompts, base) when is_map(prompts) do
+    accepted = Map.fetch!(@prompt_keys_by_base, base)
+
+    Enum.reduce_while(prompts, {:ok, %{}}, fn {raw_key, raw_value}, {:ok, acc} ->
+      case classify_prompt_entry(raw_key, raw_value, base, accepted) do
+        {:keep, atom_key, value} -> {:cont, {:ok, Map.put(acc, atom_key, value)}}
+        :drop -> {:cont, {:ok, acc}}
+        {:reject, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp parse_prompts(other, _base),
+    do: {:error, "prompts must be a mapping (got: #{inspect(other)})"}
+
+  # Returns one of:
+  #   {:keep, atom_key, value}   — valid accepted prompt for this base
+  #   :drop                      — unknown sub-key or empty string (warn on unknown)
+  #   {:reject, reason}          — whole-file skip (known-but-unsupported, oversize, non-string)
+  defp classify_prompt_entry(raw_key, value, base, accepted) do
+    atom_key = known_prompt_key(raw_key)
+
+    cond do
+      is_nil(atom_key) ->
+        Logger.warning(
+          "[StrategyStore] Unknown prompt key #{inspect(raw_key)} — dropping (known: #{known_prompt_key_list()})"
+        )
+
+        :drop
+
+      atom_key not in accepted ->
+        {:reject, "prompts.#{atom_key} not supported on base '#{base}'"}
+
+      is_binary(value) and byte_size(value) > @max_prompt_bytes ->
+        {:reject,
+         "prompts.#{atom_key} exceeds #{@max_prompt_bytes}-byte limit (#{byte_size(value)} bytes)"}
+
+      is_binary(value) and value == "" ->
+        :drop
+
+      is_binary(value) ->
+        {:keep, atom_key, value}
+
+      true ->
+        {:reject, "prompts.#{atom_key} must be a non-empty string (got: #{inspect(value)})"}
+    end
+  end
+
+  defp known_prompt_key(k) when is_atom(k) do
+    if k in @known_prompt_keys, do: k, else: nil
+  end
+
+  defp known_prompt_key(k) when is_binary(k) do
+    Enum.find(@known_prompt_keys, fn atom -> Atom.to_string(atom) == k end)
+  end
+
+  defp known_prompt_key(_), do: nil
+
+  defp known_prompt_key_list do
+    @known_prompt_keys |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+  end
 
   # Never `String.to_atom/1` on user input — match against the known enum
   # values instead. Unknown strings are silently dropped.

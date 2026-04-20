@@ -184,4 +184,212 @@ defmodule JidoClaw.Reasoning.StrategyStoreTest do
       assert call(pid, :all) == []
     end
   end
+
+  describe "prompts whitelist" do
+    test "cot accepts a system prompt", %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "mathy.yaml", """
+      name: mathy
+      base: cot
+      prompts:
+        system: "You are a rigorous mathematician"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{system: "You are a rigorous mathematician"}
+    end
+
+    test "cod accepts a system prompt", %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "short.yaml", """
+      name: short
+      base: cod
+      prompts:
+        system: "Be terse"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{system: "Be terse"}
+    end
+
+    test "tot accepts generation + evaluation prompts",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "explorer.yaml", """
+      name: explorer
+      base: tot
+      prompts:
+        generation: "Propose diverse branches"
+        evaluation: "Rate each branch for soundness"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+
+      assert entry.prompts == %{
+               generation: "Propose diverse branches",
+               evaluation: "Rate each branch for soundness"
+             }
+    end
+
+    test "got accepts generation + connection + aggregation prompts",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "grapher.yaml", """
+      name: grapher
+      base: got
+      prompts:
+        generation: "Seed nodes"
+        connection: "Connect related nodes"
+        aggregation: "Synthesize the final answer"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+
+      assert entry.prompts == %{
+               generation: "Seed nodes",
+               connection: "Connect related nodes",
+               aggregation: "Synthesize the final answer"
+             }
+    end
+
+    test "absent prompts: block yields empty map", %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "plain.yaml", """
+      name: plain
+      base: cot
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{}
+    end
+
+    test "tot rejects a system prompt — whole file skipped",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "bad_tot.yaml", """
+      name: bad_tot
+      base: tot
+      prompts:
+        system: "Not accepted on tot"
+      """)
+
+      pid = start_store(tmp)
+      assert call(pid, :all) == []
+    end
+
+    test "got rejects an evaluation prompt — whole file skipped",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "bad_got.yaml", """
+      name: bad_got
+      base: got
+      prompts:
+        evaluation: "Not accepted on got"
+      """)
+
+      pid = start_store(tmp)
+      assert call(pid, :all) == []
+    end
+
+    for base <- ["trm", "aot", "react", "adaptive"] do
+      test "base #{base} rejects any known prompt key", %{tmp_dir: tmp, strategies_dir: dir} do
+        write_yaml(dir, "bad_#{unquote(base)}.yaml", """
+        name: bad_#{unquote(base)}
+        base: #{unquote(base)}
+        prompts:
+          system: "Not accepted on #{unquote(base)}"
+        """)
+
+        pid = start_store(tmp)
+        assert call(pid, :all) == []
+      end
+    end
+
+    test "oversized prompt (>5 KB) — whole file skipped",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      oversize = String.duplicate("a", 5_001)
+
+      write_yaml(dir, "oversize.yaml", """
+      name: oversize
+      base: cot
+      prompts:
+        system: "#{oversize}"
+      """)
+
+      pid = start_store(tmp)
+      assert call(pid, :all) == []
+    end
+
+    test "unknown sub-key is dropped with a warning; siblings kept",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "typo.yaml", """
+      name: typo
+      base: cot
+      prompts:
+        sytem: "typo'd — should be dropped"
+        system: "correct entry kept"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{system: "correct entry kept"}
+    end
+
+    test "non-String.Chars prompt key is skipped leniently (does not crash the store)",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      # YAML explicit-key syntax (`? KEY : VALUE`) lets the key be a non-scalar
+      # term. YamlElixir returns it as a term that does not implement
+      # String.Chars, so pre-fix the warning interpolation would raise.
+      # This test asserts the store survives and siblings are preserved.
+      write_yaml(dir, "weird_key.yaml", """
+      name: weird_key
+      base: cot
+      prompts:
+        ? nested: key
+        : "some value"
+        system: "kept"
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{system: "kept"}
+    end
+
+    test "empty-string value is treated as unset (dropped)",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "empty.yaml", """
+      name: empty
+      base: cot
+      prompts:
+        system: ""
+      """)
+
+      pid = start_store(tmp)
+      [entry] = call(pid, :all)
+      assert entry.prompts == %{}
+    end
+
+    test "non-string value — whole file skipped",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "nonstring.yaml", """
+      name: nonstring
+      base: cot
+      prompts:
+        system: 42
+      """)
+
+      pid = start_store(tmp)
+      assert call(pid, :all) == []
+    end
+
+    test "non-map prompts: value — whole file skipped",
+         %{tmp_dir: tmp, strategies_dir: dir} do
+      write_yaml(dir, "nonmap.yaml", """
+      name: nonmap
+      base: cot
+      prompts: "oops"
+      """)
+
+      pid = start_store(tmp)
+      assert call(pid, :all) == []
+    end
+  end
 end

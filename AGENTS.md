@@ -92,7 +92,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 | `forge/`         | Sandboxed execution (runners, sandbox backends)   |
 | `tools/`         | All 31+ Jido.Action tool modules                  |
 | `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess |
-| `reasoning/`     | Strategy registry, certificate templates          |
+| `reasoning/`     | Strategy + pipeline stores, classifier, telemetry, certificate templates |
 | `security/`      | Encryption vault, secret redaction                |
 | `web/`           | Phoenix endpoint, controllers, LiveView           |
 | `orchestration/` | Persistent workflow state machine                 |
@@ -110,7 +110,7 @@ Ash Framework 3.0 + PostgreSQL. Resources in `lib/jido_claw/accounts/` and `lib/
 
 ### `.jido/` Directory
 
-Project-level config directory. `config.yaml`, `memory.json`, `sessions/` are git-ignored. `agents/` and `skills/` YAML definitions are committed.
+Project-level config directory. `config.yaml`, `memory.json`, `sessions/` are git-ignored. `agents/`, `skills/`, `strategies/`, and `pipelines/` YAML definitions are committed. Schema details live in the module docs for `JidoClaw.Reasoning.StrategyStore` (user strategies + optional prompt templates) and `JidoClaw.Reasoning.PipelineStore` (user pipelines + optional `max_context_bytes`).
 
 **`system_prompt.md`** is created from `priv/defaults/system_prompt.md` during setup but is not auto-synced afterward. When tools or skills are added to the defaults, manually copy the updated default to `.jido/system_prompt.md`.
 

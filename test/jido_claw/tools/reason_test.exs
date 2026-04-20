@@ -3,6 +3,8 @@ defmodule JidoClaw.Tools.ReasonTest do
   # writes rows to reasoning_outcomes.
   use ExUnit.Case, async: false
 
+  import JidoClaw.Reasoning.StrategyTestHelper
+
   alias JidoClaw.Reasoning.Resources.Outcome
   alias JidoClaw.Tools.Reason
 
@@ -25,25 +27,23 @@ defmodule JidoClaw.Tools.ReasonTest do
     end
   end
 
-  # The react branch doesn't invoke RunStrategy at all (it's a structured-
-  # prompt stub), so CotRunner is irrelevant there — no stubbing needed.
+  # Captures the incoming params by inspecting them into :output so tests can
+  # assert on what the runner actually received (including prompt-template
+  # keys merged in from a user alias).
+  defmodule ParamInspectingRunner do
+    @moduledoc false
 
-  defp with_user_strategy(yaml, fun) do
-    project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
-    dir = Path.join([project_dir, ".jido", "strategies"])
-    File.mkdir_p!(dir)
-
-    path = Path.join(dir, "reason_test_alias_#{System.unique_integer([:positive])}.yaml")
-    File.write!(path, yaml)
-
-    try do
-      JidoClaw.Reasoning.StrategyStore.reload()
-      fun.()
-    after
-      File.rm(path)
-      JidoClaw.Reasoning.StrategyStore.reload()
+    def run(params, _context) do
+      {:ok,
+       %{
+         output: inspect(params),
+         usage: %{input_tokens: 0, output_tokens: 0}
+       }}
     end
   end
+
+  # The react branch doesn't invoke RunStrategy at all (it's a structured-
+  # prompt stub), so CotRunner is irrelevant there — no stubbing needed.
 
   defp find_row(filters) do
     [:debugging, :verification, :qa, :planning, :refactoring, :exploration, :open_ended]
@@ -276,6 +276,153 @@ defmodule JidoClaw.Tools.ReasonTest do
         Map.get(row.metadata, "alias_name") || Map.get(row.metadata, :alias_name)
 
       refute alias_name
+    end
+  end
+
+  describe "user alias prompt template threading" do
+    test "cot alias with prompts.system forwards :system_prompt to the runner" do
+      with_user_strategy(
+        """
+        name: mathy
+        base: cot
+        prompts:
+          system: "You are a rigorous mathematician"
+        """,
+        fn ->
+          assert {:ok, result} =
+                   Reason.run(
+                     %{strategy: "mathy", prompt: "prove 2 + 2 = 4"},
+                     %{reasoning_runner: ParamInspectingRunner}
+                   )
+
+          assert result.output =~ "system_prompt:"
+          assert result.output =~ "You are a rigorous mathematician"
+          # Runner still receives the resolved base atom, not the alias.
+          assert result.output =~ "strategy: :cot"
+        end
+      )
+    end
+
+    test "cod alias with prompts.system forwards :system_prompt" do
+      with_user_strategy(
+        """
+        name: short
+        base: cod
+        prompts:
+          system: "Be terse"
+        """,
+        fn ->
+          assert {:ok, result} =
+                   Reason.run(
+                     %{strategy: "short", prompt: "Explain recursion"},
+                     %{reasoning_runner: ParamInspectingRunner}
+                   )
+
+          assert result.output =~ "system_prompt:"
+          assert result.output =~ "Be terse"
+          assert result.output =~ "strategy: :cod"
+        end
+      )
+    end
+
+    test "tot alias forwards :generation_prompt and :evaluation_prompt" do
+      with_user_strategy(
+        """
+        name: explorer
+        base: tot
+        prompts:
+          generation: "Propose diverse branches"
+          evaluation: "Rate each branch for soundness"
+        """,
+        fn ->
+          assert {:ok, result} =
+                   Reason.run(
+                     %{strategy: "explorer", prompt: "Design an auth system"},
+                     %{reasoning_runner: ParamInspectingRunner}
+                   )
+
+          assert result.output =~ "generation_prompt:"
+          assert result.output =~ "Propose diverse branches"
+          assert result.output =~ "evaluation_prompt:"
+          assert result.output =~ "Rate each branch for soundness"
+        end
+      )
+    end
+
+    test "got alias forwards :generation_prompt, :connection_prompt, :aggregation_prompt" do
+      with_user_strategy(
+        """
+        name: grapher
+        base: got
+        prompts:
+          generation: "Seed nodes"
+          connection: "Connect related nodes"
+          aggregation: "Synthesize"
+        """,
+        fn ->
+          assert {:ok, result} =
+                   Reason.run(
+                     %{strategy: "grapher", prompt: "Interrelate these ideas"},
+                     %{reasoning_runner: ParamInspectingRunner}
+                   )
+
+          assert result.output =~ "generation_prompt:"
+          assert result.output =~ "Seed nodes"
+          assert result.output =~ "connection_prompt:"
+          assert result.output =~ "Connect related nodes"
+          assert result.output =~ "aggregation_prompt:"
+          assert result.output =~ "Synthesize"
+        end
+      )
+    end
+
+    test "built-in name (no alias) passes no extra prompt keys" do
+      assert {:ok, result} =
+               Reason.run(
+                 %{strategy: "cot", prompt: "plain built-in"},
+                 %{reasoning_runner: ParamInspectingRunner}
+               )
+
+      refute result.output =~ "system_prompt:"
+      refute result.output =~ "generation_prompt:"
+    end
+
+    test "auto path forwards alias prompts when an alias wins" do
+      with_user_strategy(
+        """
+        name: fast_reviewer
+        base: cot
+        display_name: "Fast Reviewer"
+        prefers:
+          task_types: [qa, verification]
+          complexity: [simple, moderate]
+        prompts:
+          system: "You are a fast, focused reviewer"
+        """,
+        fn ->
+          assert {:ok, result} =
+                   Reason.run(
+                     %{strategy: "auto", prompt: "What is a GenServer?"},
+                     %{reasoning_runner: ParamInspectingRunner}
+                   )
+
+          # Whenever AutoSelect happens to pick the alias, the runner must see
+          # its :system_prompt. When a built-in wins instead, no template is
+          # forwarded. Either outcome is valid — the invariant is "prompts
+          # travel with the alias, not the base."
+          row = find_row(strategy: result.strategy, execution_kind: :strategy_run)
+          assert row
+
+          alias_name =
+            Map.get(row.metadata, "alias_name") || Map.get(row.metadata, :alias_name)
+
+          if alias_name == "fast_reviewer" do
+            assert result.output =~ "You are a fast, focused reviewer"
+          else
+            refute result.output =~ "You are a fast, focused reviewer"
+          end
+        end
+      )
     end
   end
 end

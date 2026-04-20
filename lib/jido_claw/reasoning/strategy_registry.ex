@@ -183,6 +183,58 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
     end
   end
 
+  @doc """
+  Returns the user-declared `prompts` map for a strategy name, or `nil` when
+  the name is a built-in or unknown. Aliases without a `prompts:` block in
+  their YAML return `%{}`.
+
+  Atom keys are the user-facing names (`:system`, `:generation`,
+  `:evaluation`, `:connection`, `:aggregation`). Use `run_strategy_params_for/1`
+  to get a map keyed by `RunStrategy` schema names ready to merge into
+  runner params.
+  """
+  @spec prompts_for(String.t()) ::
+          %{
+            optional(:system | :generation | :evaluation | :connection | :aggregation) => binary()
+          }
+          | nil
+  def prompts_for(name) when is_binary(name) do
+    cond do
+      Map.has_key?(@strategies, name) -> nil
+      entry = user_strategy(name) -> entry.prompts
+      true -> nil
+    end
+  end
+
+  @doc """
+  Returns a map of `Jido.AI.Actions.Reasoning.RunStrategy`-compatible prompt
+  params for a strategy name. Built-ins and aliases without a `prompts:`
+  block both return `%{}`.
+
+  Keys are the RunStrategy schema names (`:system_prompt`,
+  `:generation_prompt`, etc.); values are the alias's prompt bodies. Callers
+  merge this into their existing `run_params` — absent prompts don't add the
+  key, so the runner falls back to compile-time defaults.
+  """
+  @spec run_strategy_params_for(String.t()) :: map()
+  def run_strategy_params_for(name) when is_binary(name) do
+    case prompts_for(name) do
+      prompts when is_map(prompts) -> to_run_strategy_keys(prompts)
+      _ -> %{}
+    end
+  end
+
+  defp to_run_strategy_keys(prompts) do
+    Enum.reduce(prompts, %{}, fn
+      {:system, v}, acc -> Map.put(acc, :system_prompt, v)
+      {:generation, v}, acc -> Map.put(acc, :generation_prompt, v)
+      {:evaluation, v}, acc -> Map.put(acc, :evaluation_prompt, v)
+      {:connection, v}, acc -> Map.put(acc, :connection_prompt, v)
+      {:aggregation, v}, acc -> Map.put(acc, :aggregation_prompt, v)
+      _, acc -> acc
+    end)
+  end
+
   # ---------------------------------------------------------------------------
   # Private — user strategy lookup with exit-safety
   # ---------------------------------------------------------------------------

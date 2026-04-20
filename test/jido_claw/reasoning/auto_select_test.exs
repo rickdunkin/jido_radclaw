@@ -3,6 +3,8 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
   # Classifier reads from the supervised StrategyStore.
   use ExUnit.Case, async: false
 
+  import JidoClaw.Reasoning.StrategyTestHelper
+
   alias JidoClaw.Reasoning.{AutoSelect, Resources.Outcome, TaskProfile}
 
   setup do
@@ -302,26 +304,6 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
           assert Enum.any?(diag.alternatives, fn {name, _} -> name == "fast_reviewer" end)
         end
       )
-    end
-  end
-
-  # Writes a YAML into the live project's .jido/strategies/, reloads the
-  # supervised StrategyStore, runs `fun`, and cleans up afterwards. Same
-  # pattern used by classifier_test.exs and reason_test.exs.
-  defp with_user_strategy(yaml, fun) do
-    project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
-    dir = Path.join([project_dir, ".jido", "strategies"])
-    File.mkdir_p!(dir)
-
-    path = Path.join(dir, "auto_select_test_alias_#{System.unique_integer([:positive])}.yaml")
-    File.write!(path, yaml)
-
-    try do
-      JidoClaw.Reasoning.StrategyStore.reload()
-      fun.()
-    after
-      File.rm(path)
-      JidoClaw.Reasoning.StrategyStore.reload()
     end
   end
 end

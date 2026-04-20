@@ -140,6 +140,9 @@ defmodule JidoClaw.Application do
         # Cached user-defined reasoning strategies (.jido/strategies/*.yaml)
         {JidoClaw.Reasoning.StrategyStore, [project_dir: project_dir()]},
 
+        # Cached user-defined pipelines (.jido/pipelines/*.yaml)
+        {JidoClaw.Reasoning.PipelineStore, [project_dir: project_dir()]},
+
         # Network
         {JidoClaw.Network.Supervisor, [project_dir: project_dir()]},
 

@@ -280,4 +280,135 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # max_context_bytes cap-failure lifecycle (v0.4.7)
+  # ---------------------------------------------------------------------------
+
+  describe "cap-failure lifecycle via RunPipeline" do
+    # A 5 KB-body runner — stage 2's prior output exceeds the tiny cap, so
+    # the composer returns the error-tuple and the loop routes it back
+    # through with_outcome/4 with `fn -> {:error, reason} end`.
+    defmodule BigBodyRunner do
+      @moduledoc false
+      @body String.duplicate("a", 5_000)
+      def run(%{prompt: _}, _ctx) do
+        {:ok, %{output: @body, usage: %{input_tokens: 0, output_tokens: 0}}}
+      end
+    end
+
+    test "cap-failure stage still fires start + stop telemetry with status: :error" do
+      ref = make_ref()
+      test_pid = self()
+
+      handler_id = "telemetry-cap-fail-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:jido_claw, :reasoning, :strategy, :start],
+          [:jido_claw, :reasoning, :strategy, :stop]
+        ],
+        fn event, measurements, metadata, _ ->
+          send(test_pid, {ref, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      try do
+        assert {:error, _msg} =
+                 JidoClaw.Tools.RunPipeline.run(
+                   %{
+                     pipeline_name: "cap_fail_tel_#{System.unique_integer([:positive])}",
+                     prompt: "INITIAL",
+                     max_context_bytes: 2000,
+                     stages: [
+                       %{"strategy" => "cot", "context_mode" => "accumulate"},
+                       %{"strategy" => "tot", "context_mode" => "accumulate"}
+                     ]
+                   },
+                   %{reasoning_runner: BigBodyRunner}
+                 )
+
+        # Stage 1 produces an :ok lifecycle; stage 2 is the cap-failure.
+        # Flush stage 1's events, then verify stage 2's start + stop fire
+        # and stop carries status: :error.
+        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :start], _, %{strategy: "cot"}}
+
+        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :stop], _,
+                        %{strategy: "cot", status: :ok}}
+
+        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :start], _,
+                        %{strategy: "tot"} = start_meta}
+
+        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :stop], _,
+                        %{strategy: "tot", status: :error} = stop_meta}
+
+        # start event metadata includes prompt_length driven by the
+        # classification prompt (irreducible would-be request).
+        assert is_integer(start_meta.prompt_length)
+        assert start_meta.prompt_length > 0
+
+        _ = stop_meta
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "cap-failure emits jido_claw.reasoning.classified with the irreducible prompt's profile" do
+      {:ok, sub_id} = JidoClaw.SignalBus.subscribe("jido_claw.reasoning.classified")
+
+      try do
+        assert {:error, _msg} =
+                 JidoClaw.Tools.RunPipeline.run(
+                   %{
+                     pipeline_name: "cap_classified_#{System.unique_integer([:positive])}",
+                     prompt: "INITIAL",
+                     max_context_bytes: 2000,
+                     stages: [
+                       %{"strategy" => "cot", "context_mode" => "accumulate"},
+                       %{"strategy" => "tot", "context_mode" => "accumulate"}
+                     ]
+                   },
+                   %{reasoning_runner: BigBodyRunner}
+                 )
+
+        # The first classified signal is for stage 1; flush it.
+        assert_receive {:signal,
+                        %Jido.Signal{
+                          type: "jido_claw.reasoning.classified",
+                          data: %{executed_strategy: "cot"}
+                        }},
+                       500
+
+        # Stage 2's cap-failure classified signal MUST still fire — this is
+        # the key assertion: the failing stage routes through with_outcome/4,
+        # which classifies and emits. The data reflects the irreducible
+        # would-be request (initial + newest-stage + notice), NOT "" and NOT
+        # the pre-cap full string.
+        assert_receive {:signal,
+                        %Jido.Signal{
+                          type: "jido_claw.reasoning.classified",
+                          data: %{executed_strategy: "tot"} = data
+                        }},
+                       500
+
+        # The classified signal's task_type and recommended_strategy come from
+        # profiling the irreducible classification prompt. We don't pin the
+        # exact task_type (depends on the prompt content) — just that the
+        # classifier ran on a non-empty prompt.
+        assert data.task_type in [
+                 :debugging,
+                 :verification,
+                 :qa,
+                 :planning,
+                 :refactoring,
+                 :exploration,
+                 :open_ended
+               ]
+      after
+        JidoClaw.SignalBus.unsubscribe(sub_id)
+      end
+    end
+  end
 end
