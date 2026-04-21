@@ -656,6 +656,17 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/profile " <> rest, state) do
+    case String.split(String.trim(rest), " ", parts: 2) do
+      ["list"] -> list_profiles(state)
+      ["current"] -> print_profile_current(state)
+      ["switch", name] -> switch_profile(state, String.trim(name))
+      _ -> print_profile_usage(state)
+    end
+  end
+
+  def handle("/profile", state), do: print_profile_current(state)
+
   def handle("/classify " <> prompt, state) do
     alias JidoClaw.Reasoning.Classifier
 
@@ -788,4 +799,93 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp strategy_label(%{name: name}), do: name
+
+  # -- Profile helpers --
+
+  defp list_profiles(state) do
+    alias JidoClaw.Shell.ProfileManager
+
+    current = ProfileManager.current(state.session_id)
+    names = ProfileManager.list()
+
+    IO.puts("")
+    IO.puts("  \e[1mEnvironment Profiles\e[0m")
+    IO.puts("")
+
+    Enum.each(names, fn name ->
+      active = if name == current, do: " \e[32m← active\e[0m", else: ""
+
+      {key_count, label} =
+        case ProfileManager.get(name) do
+          {:ok, env} -> {map_size(env), if(name == "default", do: "base", else: "override")}
+          {:error, _} -> {0, "—"}
+        end
+
+      IO.puts("  \e[33m▸\e[0m \e[1m#{name}\e[0m#{active}  \e[2m#{key_count} keys (#{label})\e[0m")
+    end)
+
+    IO.puts("")
+    IO.puts("  \e[2mSwitch: /profile switch <name>  ·  Show: /profile current\e[0m")
+    IO.puts("")
+    {:ok, state}
+  end
+
+  defp print_profile_current(state) do
+    alias JidoClaw.Shell.ProfileManager
+    alias JidoClaw.Security.Redaction.Env, as: EnvRedaction
+
+    current = ProfileManager.current(state.session_id)
+    env = ProfileManager.active_env(state.session_id)
+
+    IO.puts("")
+    IO.puts("  \e[1mActive Profile\e[0m  \e[1m#{current}\e[0m")
+    IO.puts("")
+
+    cond do
+      map_size(env) == 0 ->
+        IO.puts("  \e[2mNo variables in this profile.\e[0m")
+
+      true ->
+        env
+        |> Enum.sort()
+        |> Enum.each(fn {k, v} ->
+          redacted = EnvRedaction.redact_value(k, v)
+          IO.puts("  \e[33m⚙\e[0m  \e[1m#{k}\e[0m=#{redacted}")
+        end)
+    end
+
+    IO.puts("")
+    IO.puts("  \e[2mUsage: /profile list  ·  /profile switch <name>\e[0m")
+    IO.puts("")
+    {:ok, state}
+  end
+
+  defp switch_profile(state, name) do
+    alias JidoClaw.Shell.ProfileManager
+
+    case ProfileManager.switch(state.session_id, name) do
+      {:ok, ^name} ->
+        IO.puts("  \e[32m✓\e[0m  Switched to profile \e[1m#{name}\e[0m")
+        IO.puts("  \e[2m(New shell commands will use the profile's env)\e[0m")
+        JidoClaw.Display.set_profile(name)
+        {:ok, %{state | profile: name}}
+
+      {:error, :unknown_profile} ->
+        IO.puts("  \e[31m✗\e[0m  Unknown profile: \e[1m#{name}\e[0m")
+
+        available = ProfileManager.list() |> Enum.join(", ")
+
+        IO.puts("  \e[2mAvailable: #{available}\e[0m")
+        {:ok, state}
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  Switch failed: \e[1m#{inspect(reason)}\e[0m")
+        {:ok, state}
+    end
+  end
+
+  defp print_profile_usage(state) do
+    IO.puts("  Usage: /profile [list | current | switch <name>]")
+    {:ok, state}
+  end
 end

@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.4.7
+## Current State: v0.5.2
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), and `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), and per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -214,20 +214,24 @@ Scoping note: `Jido.Shell.Backend.SSH` is already fully implemented in `deps/jid
 Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) as jido_shell commands, accessible from the persistent session.
 
 - **Extensibility hook in `Jido.Shell.Command.Registry`.** The upstream registry is a static hard-coded map of 14 built-ins (`deps/jido_shell/lib/jido_shell/command/registry.ex`). Delivered as a runtime patch at `lib/jido_claw/core/jido_shell_registry_patch.ex` that redefines the registry to union `:extra_commands` with the built-ins (built-ins win on name collision). Delete the patch when `jido_shell` ships a release with a compatible `:extra_commands` hook and we upgrade the dep.
-- **JidoClaw command module** at `lib/jido_claw/shell/commands/jido.ex` — single `Jido.Shell.Command` module exposing `jido status` (agents, forge sessions, uptime), `jido memory search <query>`, and `jido solutions find <fingerprint>` as sub-commands. Profile output in `jido status` is deferred to v0.5.2 alongside `ProfileManager`.
+- **JidoClaw command module** at `lib/jido_claw/shell/commands/jido.ex` — single `Jido.Shell.Command` module exposing `jido status` (agents, forge sessions, uptime, active profile), `jido memory search <query>`, and `jido solutions find <fingerprint>` as sub-commands. Active-profile output in `jido status` was delivered in v0.5.2 alongside `ProfileManager` — the command threads `state.workspace_id` into the status snapshot so each shell session sees its own active profile.
 - **Registration via compile-time config** — `config :jido_shell, :extra_commands, %{"jido" => JidoClaw.Shell.Commands.Jido}` in `config/config.exs`. Resolved before `SessionManager` boots, so the classifier sees the full extension set on the first command it routes.
 
 ### v0.5.2 — Environment Profiles
 
-**Status: Planned**
+**Status: Complete**
 
-Named env var sets (dev, staging, prod) that can be switched per session.
+Named env var sets (dev, staging, prod) switchable per workspace session. Delivered:
 
-- **`profiles:` key in `.jido/config.yaml`** — map of name → env var map. Profile env merges over the session's base env on activation.
-- **`JidoClaw.Shell.ProfileManager` GenServer** — loads profiles at boot, tracks the active profile per session, emits `jido_claw.shell.profile_switched` signal.
-- **REPL `/profile` command** — `/profile list`, `/profile switch <name>`, `/profile current`. Updates `Shell.Session.State.env` via `SessionManager` and broadcasts the change.
-- **Secret redaction** — values matching the existing `JidoClaw.Security` redaction patterns (`*_KEY`, `*_TOKEN`, `*_SECRET`) are masked in logs and `/profile current` output.
-- **Display indicator** — when the active profile is anything other than the default, surface it in the status bar so it's obvious you're talking to staging/prod.
+- **`profiles:` key in `.jido/config.yaml`** — map of name → env var map. Values are string-coerced (integers tolerated); non-string-non-integer values rejected per-key with a warn-and-skip. The magic name `"default"` within `profiles:` is first-class: it defines the baseline every profile inherits from, is always switchable (even absent from YAML), and `list/0` pins it first. There is no separate `active_profile:` config key.
+- **`JidoClaw.Shell.ProfileManager` GenServer** — singleton keyed by workspace, loaded from `.jido/config.yaml` at boot. Owns `profiles`, `default_env`, and `active_by_workspace: %{workspace_id => profile_name}`. `switch/2` doesn't require a live shell session — new sessions inherit the recorded active profile at lazy-start via `SessionManager.start_new_session/3`. Registered *before* `Shell.SessionManager` under `:rest_for_one` so a SessionManager crash doesn't wipe `active_by_workspace`. Emits `jido_claw.shell.profile_switched` with `%{workspace_id, from, to, key_count, reason}` on every real switch; redundant switches (same name) short-circuit with no signal.
+- **Drop+merge at the session boundary.** Profile switch preserves ad hoc `env VAR=value` mutations: `keys_to_drop = keys_owned_by(A) -- keys_owned_by(B)`, `new_state_env = state.env |> Map.drop(keys_to_drop) |> Map.merge(new_overlay)`. Only keys owned by the old profile and not by the new one are dropped; ad-hoc-only keys survive.
+- **`SessionManager.update_env/3`** — atomic across both host + VFS sessions with host rollback on VFS failure. `{:error, :vfs_update_failed, :ok | :stuck, reason}` reports rollback status. No-op returning `:ok` when no sessions exist for the workspace, so `switch/2` still succeeds and records intent before any shell command.
+- **`Jido.Shell.ShellSession.update_env/2` + `ShellSessionServer` handler** — added as runtime patches at `lib/jido_claw/core/jido_shell_session_*_patch.ex` (same pattern as `jido_shell_registry_patch.ex` from v0.5.1). No session rebuild on switch — rebuild would lose history, cancel in-flight commands, and silently break cwd. Delete both patches when `jido_shell` ships a compatible `update_env/2` and we upgrade the dep.
+- **REPL `/profile` command** — `/profile list`, `/profile current`, `/profile switch <name>`, bare `/profile` (alias for current). `/profile switch` updates `Display.set_profile/1` and the REPL struct's new `:profile` field; `/profile current` redacts values via `Security.Redaction.Env`.
+- **`JidoClaw.Security.Redaction.Env`** — key-name-based redactor complementing `Redaction.Patterns`. Masks values for keys ending in `_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|_PAT` (case-insensitive), specific names (`AWS_SECRET_*`, `AWS_SESSION_TOKEN`, `DATABASE_URL`, `DB_URL`), and connection URLs (`scheme://user:pass@host/db` → `scheme://user:[REDACTED]@host/db`). Falls through to `Patterns.redact/1` for embedded API keys. Documented false negatives: `SESSION_ID`, `USER_ID`, `CLIENT_ID` not masked — over-redacting identifiers is worse than under-redacting for a dev tool.
+- **Reload fallback.** `reload/0` computes transitions against the old state before replacing it so removed-profile keys remain computable. Workspaces whose active profile was removed fall back to `"default"` with a `reason: "profile_removed"` signal and a warning log. Best-effort per workspace: a failed transition doesn't block the others.
+- **Display indicator.** `Display.StatusBar.profile_segment/1` renders a yellow `⚑ <name>` segment when the active profile ≠ default; returns `nil` otherwise so the bar stays unchanged for non-profile users.
 
 ### v0.5.3 — SSH Backend Support
 

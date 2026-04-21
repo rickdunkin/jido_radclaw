@@ -58,6 +58,31 @@ defmodule JidoClaw.CLI.PresentersTest do
       assert Enum.any?(lines, &String.contains?(&1, "sessions unavailable: db down"))
       refute Enum.any?(lines, &String.contains?(&1, "active session"))
     end
+
+    test "renders 'profile     default' header line when :profile is omitted" do
+      snapshot = %{
+        tracker: %{agents: %{"main" => %{status: :running}}, order: ["main"]},
+        sessions: {:ok, []},
+        stats: %{agents_spawned: 0, uptime_seconds: 0}
+      }
+
+      lines = Presenters.status_lines(snapshot)
+
+      assert "  profile     default" in lines
+    end
+
+    test "renders the provided :profile in the header" do
+      snapshot = %{
+        tracker: %{agents: %{"main" => %{status: :running}}, order: ["main"]},
+        sessions: {:ok, []},
+        stats: %{agents_spawned: 0, uptime_seconds: 0},
+        profile: "staging"
+      }
+
+      lines = Presenters.status_lines(snapshot)
+
+      assert "  profile     staging" in lines
+    end
   end
 
   describe "memory_search_lines/2" do

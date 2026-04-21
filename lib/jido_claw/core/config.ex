@@ -105,6 +105,20 @@ defmodule JidoClaw.Config do
   def max_iterations(config), do: Map.get(config, "max_iterations", @defaults["max_iterations"])
   def timeout(config), do: Map.get(config, "timeout", @defaults["timeout"])
 
+  @doc """
+  Returns the raw `profiles:` map from config (name → env var map).
+
+  Profile value coercion and validation happen in
+  `JidoClaw.Shell.ProfileManager` — this accessor returns whatever is in
+  the YAML so the manager can apply its own warn-and-skip logic.
+  """
+  def profiles(config) do
+    case Map.get(config, "profiles") do
+      map when is_map(map) -> map
+      _ -> %{}
+    end
+  end
+
   @doc "Returns all available strategy names with descriptions."
   def strategy_descriptions, do: @strategy_descriptions
 

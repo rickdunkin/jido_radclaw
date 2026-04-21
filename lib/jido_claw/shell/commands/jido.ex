@@ -33,6 +33,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
   @behaviour Jido.Shell.Command
 
   alias JidoClaw.CLI.Presenters
+  alias JidoClaw.Shell.ProfileManager
 
   @impl true
   def name, do: "jido"
@@ -50,7 +51,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
   @impl true
   def run(_state, %{args: []}, emit), do: emit_usage_ok(emit)
   def run(_state, %{args: ["help"]}, emit), do: emit_usage_ok(emit)
-  def run(_state, %{args: ["status"]}, emit), do: emit_status(emit)
+  def run(state, %{args: ["status"]}, emit), do: emit_status(state, emit)
 
   def run(_state, %{args: ["memory", "search"]}, emit),
     do: emit_missing(:memory_search_query, "query", emit)
@@ -73,11 +74,12 @@ defmodule JidoClaw.Shell.Commands.Jido do
     {:ok, nil}
   end
 
-  defp emit_status(emit) do
+  defp emit_status(state, emit) do
     snapshot = %{
       tracker: JidoClaw.AgentTracker.get_state(),
       sessions: fetch_active_sessions(),
-      stats: JidoClaw.Stats.get()
+      stats: JidoClaw.Stats.get(),
+      profile: active_profile(state)
     }
 
     snapshot
@@ -137,6 +139,24 @@ defmodule JidoClaw.Shell.Commands.Jido do
   rescue
     e -> {:error, Exception.message(e)}
   end
+
+  # Thread the session's workspace_id into the status snapshot so we
+  # show the profile active for *this* shell session (multi-workspace
+  # safe by construction). Falls back to `"default"` when the state
+  # shape isn't what we expect, so status still renders on malformed
+  # invocations rather than crashing the session.
+  defp active_profile(state) do
+    case workspace_id_from_state(state) do
+      nil -> "default"
+      ws -> ProfileManager.current(ws)
+    end
+  end
+
+  defp workspace_id_from_state(%Jido.Shell.ShellSession.State{workspace_id: ws})
+       when is_binary(ws),
+       do: ws
+
+  defp workspace_id_from_state(_), do: nil
 
   defp usage_lines do
     [

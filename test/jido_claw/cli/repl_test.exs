@@ -26,6 +26,37 @@ defmodule JidoClaw.CLI.ReplTest do
     end
   end
 
+  describe "resolve_profile/1" do
+    test "returns 'default' when ProfileManager has no recorded switch" do
+      assert Repl.resolve_profile("unknown-workspace-#{System.unique_integer([:positive])}") ==
+               "default"
+    end
+
+    test "returns 'default' for a non-binary input (defensive)" do
+      assert Repl.resolve_profile(nil) == "default"
+      assert Repl.resolve_profile(:atom) == "default"
+    end
+
+    test "reflects the ProfileManager-tracked active name after a switch" do
+      ws = "repl-resolve-profile-#{System.unique_integer([:positive])}"
+
+      :ok =
+        JidoClaw.Shell.ProfileManager.replace_profiles_for_test(%{
+          "default" => %{},
+          "staging" => %{"K" => "v"}
+        })
+
+      try do
+        assert Repl.resolve_profile(ws) == "default"
+        assert {:ok, "staging"} = JidoClaw.Shell.ProfileManager.switch(ws, "staging")
+        assert Repl.resolve_profile(ws) == "staging"
+      after
+        :ok = JidoClaw.Shell.ProfileManager.replace_profiles_for_test(%{})
+        :ok = JidoClaw.Shell.ProfileManager.clear_active_for_test()
+      end
+    end
+  end
+
   describe "prepare_user_message/2" do
     test "react returns the message unchanged (react is the agent's native loop)" do
       assert Repl.prepare_user_message("Explain GenServer", "react") == "Explain GenServer"

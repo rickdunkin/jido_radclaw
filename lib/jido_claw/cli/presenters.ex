@@ -31,22 +31,29 @@ defmodule JidoClaw.CLI.Presenters do
       `"sessions unavailable: <reason>"` line.
     * `:stats`    — `JidoClaw.Stats.get/0` snapshot. `:uptime_seconds`
       and `:agents_spawned` are read from here rather than recomputed.
+    * `:profile`  — optional active profile name for the session this
+      status is being emitted for. Defaults to `"default"` when
+      absent so callers that don't have per-session plumbing aren't
+      forced to pass it.
   """
   @spec status_lines(%{
-          tracker: %{agents: map(), order: list()},
-          sessions: {:ok, list()} | {:error, term()},
-          stats: map()
+          :tracker => %{agents: map(), order: list()},
+          :sessions => {:ok, list()} | {:error, term()},
+          :stats => map(),
+          optional(:profile) => String.t()
         }) :: [String.t()]
-  def status_lines(%{tracker: tracker, sessions: sessions, stats: stats}) do
+  def status_lines(%{tracker: tracker, sessions: sessions, stats: stats} = snapshot) do
     children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
     running = Enum.count(children, fn {_, a} -> a.status == :running end)
     spawned = Map.get(stats, :agents_spawned, 0)
     uptime = Map.get(stats, :uptime_seconds, 0)
+    profile = Map.get(snapshot, :profile, "default")
 
     header = [
       "JidoClaw Status",
       "  agents      #{running} running / #{spawned} spawned",
-      "  uptime      #{format_elapsed(uptime)}"
+      "  uptime      #{format_elapsed(uptime)}",
+      "  profile     #{profile}"
     ]
 
     header ++ session_lines(sessions)

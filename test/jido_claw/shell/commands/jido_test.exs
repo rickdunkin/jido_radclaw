@@ -209,4 +209,59 @@ defmodule JidoClaw.Shell.Commands.JidoTest do
       assert {:ok, %{args: ["status"]}} = Zoi.parse(schema, %{args: ["status"]})
     end
   end
+
+  # Fix 4: `jido status` must surface the active profile for the
+  # session it runs in. The command reads workspace_id off the
+  # `%Jido.Shell.ShellSession.State{}` passed as the first arg, then
+  # asks ProfileManager for that workspace's current profile.
+  describe "status — active profile line" do
+    alias JidoClaw.Shell.ProfileManager
+
+    setup do
+      :ok =
+        ProfileManager.replace_profiles_for_test(%{
+          "default" => %{"BASE" => "v"},
+          "staging" => %{"STAGING_KEY" => "s"}
+        })
+
+      on_exit(fn ->
+        :ok = ProfileManager.replace_profiles_for_test(%{})
+        :ok = ProfileManager.clear_active_for_test()
+      end)
+
+      :ok
+    end
+
+    test "shows 'profile     default' for a fresh workspace" do
+      {emit, read} = collecting_emit()
+      ws = "jido-status-default-#{System.unique_integer([:positive])}"
+      {:ok, state} = Jido.Shell.ShellSession.State.new(%{id: ws <> ":host", workspace_id: ws})
+
+      assert {:ok, nil} = Command.run(state, %{args: ["status"]}, emit)
+
+      assert read.() =~ "profile     default"
+    end
+
+    test "reflects the active profile for the session's workspace_id" do
+      ws = "jido-status-staging-#{System.unique_integer([:positive])}"
+      assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
+
+      {emit, read} = collecting_emit()
+      {:ok, state} = Jido.Shell.ShellSession.State.new(%{id: ws <> ":host", workspace_id: ws})
+
+      assert {:ok, nil} = Command.run(state, %{args: ["status"]}, emit)
+
+      assert read.() =~ "profile     staging"
+    end
+
+    test "falls back to 'default' when state shape is unexpected" do
+      # Passing `nil` (legacy call sites) mustn't crash — the command
+      # renders with the default label.
+      {emit, read} = collecting_emit()
+
+      assert {:ok, nil} = Command.run(nil, %{args: ["status"]}, emit)
+
+      assert read.() =~ "profile     default"
+    end
+  end
 end

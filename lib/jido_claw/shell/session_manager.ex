@@ -101,6 +101,46 @@ defmodule JidoClaw.Shell.SessionManager do
     GenServer.call(__MODULE__, {:drop_sessions, workspace_id})
   end
 
+  @doc """
+  Drop `keys_to_drop` and merge `new_overlay` into both the host and
+  VFS session's `state.env` for `workspace_id`. Atomic across both
+  sessions — on VFS failure after host has succeeded, host is rolled
+  back to its pre-call env.
+
+  Returns `:ok` (possibly a no-op when no sessions exist).
+  """
+  @spec update_env(String.t(), [String.t()], map()) ::
+          :ok
+          | {:error, :host_update_failed, term()}
+          | {:error, :vfs_update_failed, :ok | :stuck, term()}
+  def update_env(workspace_id, keys_to_drop, new_overlay)
+      when is_binary(workspace_id) and is_list(keys_to_drop) and is_map(new_overlay) do
+    do_update_env(workspace_id, keys_to_drop, new_overlay, [])
+  end
+
+  @doc false
+  # Internal test-injection seam: `:host_writer` and `:vfs_writer` opts
+  # default to `&Jido.Shell.ShellSession.update_env/2`; tests override
+  # the VFS writer to induce a post-host failure and assert rollback.
+  @spec do_update_env(String.t(), [String.t()], map(), keyword()) ::
+          :ok
+          | {:error, :host_update_failed, term()}
+          | {:error, :vfs_update_failed, :ok | :stuck, term()}
+  def do_update_env(workspace_id, keys_to_drop, new_overlay, opts) do
+    GenServer.call(
+      __MODULE__,
+      {:update_env, workspace_id, keys_to_drop, new_overlay, opts}
+    )
+  end
+
+  @doc false
+  # Test seam — reads the host session's `state.env` for inspection in
+  # rollback tests. Returns `{:ok, env}` | `{:error, :no_session}`.
+  @spec __host_env_for_test__(String.t()) :: {:ok, map()} | {:error, term()}
+  def __host_env_for_test__(workspace_id) do
+    GenServer.call(__MODULE__, {:host_env_for_test, workspace_id})
+  end
+
   # -- Server Callbacks -------------------------------------------------------
 
   @impl true
@@ -174,6 +214,27 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, :ok, %{state | sessions: new_sessions}}
   end
 
+  @impl true
+  def handle_call(
+        {:update_env, workspace_id, keys_to_drop, new_overlay, opts},
+        _from,
+        state
+      ) do
+    reply = do_update_env_impl(workspace_id, keys_to_drop, new_overlay, opts, state)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:host_env_for_test, workspace_id}, _from, state) do
+    reply =
+      case Map.get(state.sessions, workspace_id) do
+        %{host: host_id} -> read_env(host_id)
+        nil -> {:error, :no_session}
+      end
+
+    {:reply, reply, state}
+  end
+
   # Silently ignore stale session events that arrive outside collect loops
   @impl true
   def handle_info({:jido_shell_session, _session_id, _event}, state) do
@@ -228,9 +289,11 @@ defmodule JidoClaw.Shell.SessionManager do
   end
 
   defp start_new_session(workspace_id, project_dir, state) do
+    initial_env = profile_env(workspace_id)
+
     with {:ok, _ws_pid} <- JidoClaw.VFS.Workspace.ensure_started(workspace_id, project_dir),
-         {:ok, host_id} <- start_host_session(workspace_id, project_dir),
-         {:ok, vfs_id} <- start_vfs_session(workspace_id, host_id) do
+         {:ok, host_id} <- start_host_session(workspace_id, project_dir, initial_env),
+         {:ok, vfs_id} <- start_vfs_session(workspace_id, host_id, initial_env) do
       entry = %{host: host_id, vfs: vfs_id, project_dir: project_dir}
       new_state = %{state | sessions: Map.put(state.sessions, workspace_id, entry)}
       Logger.debug("[SessionManager] Started dual sessions for #{workspace_id}")
@@ -247,18 +310,51 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
-  defp start_host_session(workspace_id, project_dir) do
+  # Read the ProfileManager-owned ETS mirror directly to avoid a
+  # SessionManager → ProfileManager GenServer call. Without this, the
+  # PM → SM → PM path (PM.switch calls SM.update_env while SM.run
+  # calls PM.active_env for a fresh session) forms a mutual-call
+  # cycle that can deadlock both sides. Falls back to %{} when the
+  # table isn't present — e.g. isolated unit tests that start SM
+  # standalone, or a test PM started without `ets_mirror: true`.
+  #
+  # Tuple shape is `{key, profile_name, env}` so PM.current/1 can read
+  # the same rows without a GenServer hop; we only need the env here.
+  defp profile_env(workspace_id) do
+    table = JidoClaw.Shell.ProfileManager.ets_table()
+
+    case :ets.whereis(table) do
+      :undefined ->
+        %{}
+
+      _ref ->
+        case :ets.lookup(table, workspace_id) do
+          [{^workspace_id, _name, overlay}] ->
+            overlay
+
+          [] ->
+            case :ets.lookup(table, :__default__) do
+              [{:__default__, _name, env}] -> env
+              [] -> %{}
+            end
+        end
+    end
+  end
+
+  defp start_host_session(workspace_id, project_dir, env) do
     ShellSession.start(workspace_id,
       session_id: workspace_id <> ":host",
       cwd: project_dir,
+      env: env,
       backend: {JidoClaw.Shell.BackendHost, %{}}
     )
   end
 
-  defp start_vfs_session(workspace_id, host_id_for_cleanup) do
+  defp start_vfs_session(workspace_id, host_id_for_cleanup, env) do
     case ShellSession.start(workspace_id,
            session_id: workspace_id <> ":vfs",
            cwd: "/project",
+           env: env,
            backend: {Jido.Shell.Backend.Local, %{}}
          ) do
       {:ok, session_id} ->
@@ -267,6 +363,63 @@ defmodule JidoClaw.Shell.SessionManager do
       {:error, _} = error ->
         _ = ShellSession.stop(host_id_for_cleanup)
         error
+    end
+  end
+
+  # -- update_env flow -------------------------------------------------------
+
+  defp do_update_env_impl(workspace_id, keys_to_drop, new_overlay, opts, state) do
+    host_writer = Keyword.get(opts, :host_writer, &ShellSession.update_env/2)
+    vfs_writer = Keyword.get(opts, :vfs_writer, &ShellSession.update_env/2)
+
+    case Map.get(state.sessions, workspace_id) do
+      nil ->
+        :ok
+
+      %{host: host_id, vfs: vfs_id} ->
+        with {:ok, host_pre} <- read_env(host_id),
+             {:ok, vfs_pre} <- read_env(vfs_id) do
+          host_new = apply_drop_merge(host_pre, keys_to_drop, new_overlay)
+          vfs_new = apply_drop_merge(vfs_pre, keys_to_drop, new_overlay)
+
+          case host_writer.(host_id, host_new) do
+            {:ok, _} ->
+              case vfs_writer.(vfs_id, vfs_new) do
+                {:ok, _} ->
+                  :ok
+
+                {:error, reason} ->
+                  # Host already mutated; roll back to host_pre.
+                  rollback = rollback_host(host_writer, host_id, host_pre)
+                  {:error, :vfs_update_failed, rollback, reason}
+              end
+
+            {:error, reason} ->
+              {:error, :host_update_failed, reason}
+          end
+        else
+          {:error, reason} -> {:error, :host_update_failed, reason}
+        end
+    end
+  end
+
+  defp read_env(session_id) do
+    case ShellSessionServer.get_state(session_id) do
+      {:ok, %{env: env}} -> {:ok, env}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp apply_drop_merge(env, keys_to_drop, overlay) do
+    env
+    |> Map.drop(keys_to_drop)
+    |> Map.merge(overlay)
+  end
+
+  defp rollback_host(writer, host_id, host_pre) do
+    case writer.(host_id, host_pre) do
+      {:ok, _} -> :ok
+      {:error, _} -> :stuck
     end
   end
 

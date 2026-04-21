@@ -18,6 +18,10 @@ defmodule JidoClaw.CLI.Repl do
     # strategy is populated at REPL init from Config.strategy/1 — not
     # defaulted here so we don't silently shadow .jido/config.yaml.
     :strategy,
+    # profile reflects the ProfileManager-tracked active name for this
+    # workspace. Populated at boot via resolve_profile/1; updated by
+    # /profile switch.
+    :profile,
     stats: %{messages: 0, tokens: 0}
   ]
 
@@ -160,6 +164,9 @@ defmodule JidoClaw.CLI.Repl do
 
         Display.configure(model_name(model), Config.provider_label(config), context_window)
 
+        profile = resolve_profile(session_id)
+        Display.set_profile(profile)
+
         # Load persistent cron jobs
         case JidoClaw.Cron.Scheduler.load_persistent_jobs("default", project_dir) do
           {:ok, 0} -> :ok
@@ -177,7 +184,8 @@ defmodule JidoClaw.CLI.Repl do
           model: model,
           session_id: session_id,
           started_at: System.monotonic_time(:second),
-          strategy: strategy
+          strategy: strategy,
+          profile: profile
         }
 
         loop(state)
@@ -366,6 +374,23 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   def resolve_strategy(_), do: "auto"
+
+  @doc false
+  # Returns the ProfileManager-tracked active profile for a workspace,
+  # defaulting to "default" when ProfileManager isn't running (e.g.
+  # under test harnesses that don't boot the full supervision tree) or
+  # the workspace has no recorded switch. Mirrors resolve_strategy/1's
+  # "never crash, always produce a reasonable default" contract.
+  def resolve_profile(workspace_id) when is_binary(workspace_id) do
+    case Process.whereis(JidoClaw.Shell.ProfileManager) do
+      nil -> "default"
+      _pid -> JidoClaw.Shell.ProfileManager.current(workspace_id)
+    end
+  catch
+    :exit, _ -> "default"
+  end
+
+  def resolve_profile(_), do: "default"
 
   @doc false
   # Prepend a reasoning-preference hint to the agent-facing message when the

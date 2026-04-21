@@ -36,7 +36,11 @@ defmodule JidoClaw.Display do
     terminal_width: 120,
     swarm_lines_rendered: 0,
     swarm_header_rendered: false,
-    input_mode: false
+    input_mode: false,
+    # Profile name surfaced in the status bar. profile != default_profile
+    # triggers the yellow `⚑ <name>` segment (see StatusBar.profile_segment/1).
+    profile: "default",
+    default_profile: "default"
   ]
 
   # ---------------------------------------------------------------------------
@@ -50,6 +54,14 @@ defmodule JidoClaw.Display do
   @doc "Configure the display with model/provider info (called at REPL boot)."
   def configure(model, provider, context_window \\ 131_072) do
     GenServer.cast(__MODULE__, {:configure, model, provider, context_window})
+  end
+
+  @doc """
+  Update the active profile name surfaced in the status bar. Called at
+  REPL boot and after every `/profile switch`.
+  """
+  def set_profile(profile) when is_binary(profile) do
+    GenServer.cast(__MODULE__, {:set_profile, profile})
   end
 
   @doc "Start the thinking spinner (kaomoji animation)."
@@ -105,6 +117,10 @@ defmodule JidoClaw.Display do
   @impl true
   def handle_cast({:configure, model, provider, context_window}, state) do
     {:noreply, %{state | model: model, provider: provider, context_window: context_window}}
+  end
+
+  def handle_cast({:set_profile, profile}, state) do
+    {:noreply, %{state | profile: profile}}
   end
 
   def handle_cast(:start_thinking, state) do

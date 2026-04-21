@@ -157,6 +157,15 @@ defmodule JidoClaw.Application do
         {Registry, keys: :unique, name: JidoClaw.VFS.WorkspaceRegistry},
         JidoClaw.VFS.WorkspaceSupervisor,
 
+        # Profile manager — must start BEFORE SessionManager so
+        # SessionManager.start_new_session/3 can read the active env, and
+        # so a SessionManager crash under :rest_for_one doesn't wipe the
+        # active-by-workspace map. `ets_mirror: true` enables the
+        # read-only table SessionManager uses to avoid a GenServer
+        # call into ProfileManager on the session-bootstrap path —
+        # breaking the PM ↔ SM mutual-call cycle.
+        {JidoClaw.Shell.ProfileManager, [project_dir: project_dir(), ets_mirror: true]},
+
         # Shell session manager (jido_shell + Host backend for real command execution)
         JidoClaw.Shell.SessionManager
       ]

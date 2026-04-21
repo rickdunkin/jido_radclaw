@@ -30,18 +30,33 @@ defmodule JidoClaw.Display.StatusBar do
     cost = "$0.00"
 
     # Build segments from left (required) to right (optional)
-    segments = [
-      {:required, " \e[36m⚕\e[0m #{model}"},
-      {:required, provider},
-      {:required, "#{format_tokens(total_tokens)}/#{format_tokens(context_window)}"},
-      {:optional, "#{progress_bar(pct, 10)} #{pct}%"},
-      {:optional, cost},
-      {:optional, elapsed},
-      {:optional, "#{child_count} agents"}
-    ]
+    segments =
+      [
+        {:required, " \e[36m⚕\e[0m #{model}"},
+        {:required, provider},
+        {:required, "#{format_tokens(total_tokens)}/#{format_tokens(context_window)}"},
+        profile_segment(display_state),
+        {:optional, "#{progress_bar(pct, 10)} #{pct}%"},
+        {:optional, cost},
+        {:optional, elapsed},
+        {:optional, "#{child_count} agents"}
+      ]
+      |> Enum.reject(&is_nil/1)
 
     build_bar(segments, width)
   end
+
+  @doc """
+  Profile segment — yellow `⚑ <name>` when the active profile differs
+  from the default, `nil` otherwise so the bar stays unchanged for
+  non-profile users.
+  """
+  def profile_segment(%{profile: profile, default_profile: default})
+      when is_binary(profile) and profile != default do
+    {:optional, " \e[33m⚑ #{profile}\e[0m"}
+  end
+
+  def profile_segment(_), do: nil
 
   defp build_bar(segments, width) do
     sep = " \e[2m│\e[0m "
