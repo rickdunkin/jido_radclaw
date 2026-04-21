@@ -152,6 +152,14 @@ config :llm_db,
 config :req_llm,
   custom_providers: [JidoClaw.Providers.Ollama]
 
+# Extra commands loaded by the patched Jido.Shell.Command.Registry
+# (see lib/jido_claw/core/jido_shell_registry_patch.ex). Compile-time
+# config is resolved before SessionManager boots, so the classifier
+# sees the full extension set on the first command it routes.
+config :jido_shell, :extra_commands, %{
+  "jido" => JidoClaw.Shell.Commands.Jido
+}
+
 # Model aliases — these get overridden by .jido/config.yaml at boot time
 config :jido_ai,
   model_aliases: %{

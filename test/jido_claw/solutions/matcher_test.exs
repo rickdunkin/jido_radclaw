@@ -9,22 +9,56 @@ defmodule JidoClaw.Solutions.MatcherTest do
   @ets_table :jido_claw_solutions
 
   # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
+
+  defp ensure_signal_bus do
+    case Jido.Signal.Bus.start_link(name: JidoClaw.SignalBus) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Setup
   # ---------------------------------------------------------------------------
 
   setup do
-    # Ensure Store is running (may not be started in test env)
-    case GenServer.whereis(Store) do
-      nil ->
-        {:ok, _} = start_supervised({Store, [project_dir: System.tmp_dir!()]})
+    # The application supervisor starts Store as part of core_children with
+    # `project_dir: File.cwd!()`, so seed writes would land in the repo's
+    # `.jido/solutions.json`. Take ownership in the test supervisor with a
+    # per-test tmp dir (matches test/jido_claw/solutions/store_test.exs:40-81).
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "jido_claw_matcher_test_#{System.unique_integer([:positive])}"
+      )
 
-      _pid ->
-        :ok
-    end
+    File.mkdir_p!(tmp_dir)
+
+    # Store.store_solution/1 emits `jido_claw.solution.stored` via
+    # JidoClaw.SignalBus.emit/2, so the bus must be up before seeding.
+    ensure_signal_bus()
+
+    Supervisor.terminate_child(JidoClaw.Supervisor, Store)
+    Supervisor.delete_child(JidoClaw.Supervisor, Store)
 
     if :ets.whereis(@ets_table) != :undefined do
       :ets.delete_all_objects(@ets_table)
     end
+
+    start_supervised!({Store, project_dir: tmp_dir})
+
+    on_exit(fn ->
+      if :ets.whereis(@ets_table) != :undefined do
+        :ets.delete_all_objects(@ets_table)
+      end
+
+      File.rm_rf!(tmp_dir)
+
+      project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
+      _ = Supervisor.start_child(JidoClaw.Supervisor, {Store, project_dir: project_dir})
+    end)
 
     # Seed three solutions with distinct languages, frameworks, and tags.
     {:ok, _} =
@@ -50,12 +84,6 @@ defmodule JidoClaw.Solutions.MatcherTest do
         framework: "phoenix",
         tags: ["ecto", "transaction", "database"]
       })
-
-    on_exit(fn ->
-      if :ets.whereis(@ets_table) != :undefined do
-        :ets.delete_all_objects(@ets_table)
-      end
-    end)
 
     :ok
   end

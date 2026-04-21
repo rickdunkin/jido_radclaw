@@ -289,22 +289,46 @@ defmodule JidoClaw.Shell.SessionManager do
 
   @doc false
   def classify(command, workspace_id) do
+    # v0.5.1: `check_allowlist_or_extension/1` admits registry-extension
+    # commands and `help`, and `check_extension_only_or_paths_mount/2`
+    # short-circuits when the whole program is extension/help (no workspace
+    # paths to validate). Baseline sandbox commands still flow through the
+    # existing absolute-path mount check.
     with {:ok, parsed} <- Jido.Shell.Command.Parser.parse_program(command),
-         :ok <- check_allowlist(parsed),
+         :ok <- check_allowlist_or_extension(parsed),
          :ok <- check_no_metachars(command),
-         :ok <- check_all_absolute_paths_mount(parsed, workspace_id) do
+         :ok <- check_extension_only_or_paths_mount(parsed, workspace_id) do
       :vfs
     else
       _ -> :host
     end
   end
 
-  defp check_allowlist(parsed) do
-    if Enum.all?(parsed, fn %{command: cmd} -> cmd in @sandbox_allowlist end) do
+  defp check_allowlist_or_extension(parsed) do
+    # Re-read extras on every call: test suites (and any future runtime
+    # extender) mutate `:extra_commands` with `put_env`, so a cached
+    # snapshot would go stale.
+    extension_names = extension_command_names()
+    allowed = MapSet.union(MapSet.new(@sandbox_allowlist), extension_names)
+
+    if Enum.all?(parsed, fn %{command: cmd} -> MapSet.member?(allowed, cmd) end) do
       :ok
     else
       :fallback_to_host
     end
+  end
+
+  defp extension_command_names do
+    # Use `Registry.extra_commands/0` (extras minus built-in-shadowed keys)
+    # so a consumer that registers under a built-in name — which
+    # `Registry.commands/0` correctly overrides with the built-in — does
+    # not cause the classifier to skip the absolute-path mount check for
+    # that now-built-in-backed command. `help` is added explicitly because
+    # it's a built-in that doesn't touch workspace paths.
+    Jido.Shell.Command.Registry.extra_commands()
+    |> Map.keys()
+    |> MapSet.new()
+    |> MapSet.put("help")
   end
 
   defp check_no_metachars(command) do
@@ -325,6 +349,19 @@ defmodule JidoClaw.Shell.SessionManager do
           {:cont, :ok}
       end
     end)
+  end
+
+  # v0.5.1: if every parsed command is an extension or `help`, skip the
+  # absolute-path mount check — those commands don't touch the workspace
+  # filesystem, so there are no paths to validate.
+  defp check_extension_only_or_paths_mount(parsed, workspace_id) do
+    extension_names = extension_command_names()
+
+    if Enum.all?(parsed, fn %{command: cmd} -> MapSet.member?(extension_names, cmd) end) do
+      :ok
+    else
+      check_all_absolute_paths_mount(parsed, workspace_id)
+    end
   end
 
   defp check_all_absolute_paths_mount(parsed, workspace_id) do

@@ -35,19 +35,20 @@ This milestone was not in the original roadmap but was delivered between v0.2 an
 
 Replaced the planned `jido_ecto` approach with `ash_postgres` directly. 12 migrations, 16+ Ash resources across 7 domains:
 
-| Domain | Resources |
-|---|---|
-| Accounts | User, Token, ApiKey |
-| Folio | Project, Action, InboxItem |
-| Forge | Session, Event, Checkpoint, ExecSession |
-| GitHub | IssueAnalysis |
+| Domain        | Resources                               |
+| ------------- | --------------------------------------- |
+| Accounts      | User, Token, ApiKey                     |
+| Folio         | Project, Action, InboxItem              |
+| Forge         | Session, Event, Checkpoint, ExecSession |
+| GitHub        | IssueAnalysis                           |
 | Orchestration | WorkflowRun, WorkflowStep, ApprovalGate |
-| Projects | Project |
-| Security | SecretRef |
+| Projects      | Project                                 |
+| Security      | SecretRef                               |
 
 ### Phoenix LiveView Web Dashboard
 
 Full-stack web application with:
+
 - 8+ LiveViews: Dashboard, Forge, Setup, Workflows, Sign-in, Folio, Agents, Settings, Projects
 - Authentication via `ash_authentication` + `ash_authentication_phoenix`
 - Admin UI via `ash_admin`
@@ -92,7 +93,7 @@ Originally planned as four sub-phases. The fourth was split into four point rele
 
 Three foundations for downstream auto-selection and performance-guided routing. Delivered:
 
-- **System prompt auto-sync.** New `JidoClaw.Startup` module unifies `.jido/` bootstrap and system-prompt injection across all four agent entry points (REPL, `JidoClaw.chat/3`, `mix jidoclaw --mcp`, `jido --mcp` escript). `Prompt.sync/1` reconciles on-disk `.jido/system_prompt.md` against the bundled default via SHA comparison, stamped in sidecar `.jido/.system_prompt.sync` (metadata lives outside the prompt body so it never reaches the LLM). When the bundled default diverges from an edited user prompt, `.jido/system_prompt.md.default` is written alongside for review and `/upgrade-prompt` promotes it in place (with `.bak`). Entry points parse `project_dir` from argv *before* `app.start`/`ensure_all_started` so app-managed services (`Memory`, `Skills`, `Solutions.Store`, `Network.Supervisor`) initialize against the correct directory.
+- **System prompt auto-sync.** New `JidoClaw.Startup` module unifies `.jido/` bootstrap and system-prompt injection across all four agent entry points (REPL, `JidoClaw.chat/3`, `mix jidoclaw --mcp`, `jido --mcp` escript). `Prompt.sync/1` reconciles on-disk `.jido/system_prompt.md` against the bundled default via SHA comparison, stamped in sidecar `.jido/.system_prompt.sync` (metadata lives outside the prompt body so it never reaches the LLM). When the bundled default diverges from an edited user prompt, `.jido/system_prompt.md.default` is written alongside for review and `/upgrade-prompt` promotes it in place (with `.bak`). Entry points parse `project_dir` from argv _before_ `app.start`/`ensure_all_started` so app-managed services (`Memory`, `Skills`, `Solutions.Store`, `Network.Supervisor`) initialize against the correct directory.
 - **Heuristic classifier.** `JidoClaw.Reasoning.Classifier` builds a `TaskProfile` from prompt text — 7 task types (`planning`, `debugging`, `refactoring`, `exploration`, `verification`, `qa`, `open_ended`) and 4 complexity buckets (`simple`/`moderate`/`complex`/`highly_complex`) — via keyword bucketing + structural signals (error-signal terms, code blocks, numbered enumeration, multi-file mentions, constraint markers). `recommend/2` scores strategies against the registry's new `prefers` metadata, with position-weighted task-type match + complexity match + signal bonuses. `/classify <prompt>` REPL command emits `jido_claw.reasoning.classified`. `adaptive` is excluded from recommendations in 0.4.1 pending end-to-end wiring.
 - **Strategy performance tracking.** New `JidoClaw.Reasoning.Domain` + `reasoning_outcomes` Ash resource with four typed enums (`ExecutionKind`, `TaskType`, `Complexity`, `OutcomeStatus`) and denormalized profile snapshot for single-scan aggregation. `Telemetry.with_outcome/4` wraps strategy calls, emits `[:jido_claw, :reasoning, :strategy, :start|:stop]` telemetry, persists an outcome row asynchronously via `Task.Supervisor`, and publishes `jido_claw.reasoning.classified` (when classifying internally) + `jido_claw.reasoning.outcome_recorded` signals. `Reason.run_strategy/3`'s non-react branch is wrapped; the react clause is a structured-prompt template and stays unwrapped. `Statistics` aggregation scaffold ready for 0.4.3's feedback loop. `verify_certificate` telemetry wrap is deferred to 0.4.2.
 
@@ -117,7 +118,7 @@ Metadata-aliased user strategies plus sequential pipeline composition, with tele
 
 - **User-defined strategy aliases.** New `JidoClaw.Reasoning.StrategyStore` GenServer loads `.jido/strategies/*.yaml` on boot. Each file declares a named alias with a required `base` field routing to one of the 8 built-in reasoning modules (`react`, `cot`, `cod`, `tot`, `got`, `aot`, `trm`, `adaptive`) plus optional `display_name`/`description`/`prefers.task_types`/`prefers.complexity` metadata. Validation is lenient — unknown `base`, built-in name collisions, malformed YAML, and unknown task-type/complexity values all warn-and-skip instead of crashing; built-ins always win on name collision, and user-vs-user collisions resolve deterministically to the lexicographically-first filename (files are sorted before parsing so ordering is reproducible across filesystems). `StrategyRegistry.atom_for/1` resolves alias → base atom transparently for downstream dispatch; `valid?/1` accepts both built-ins and user aliases. Metadata-only overlays — custom prompt templates live in `deps/jido_ai/` and stay out of scope.
 - **Pipeline composition.** New `JidoClaw.Tools.RunPipeline` tool chains non-react strategies sequentially, feeding each stage's output into the next. Stages accept `strategy` (required; alias-aware), `context_mode` (`"previous"` default or `"accumulate"`), and `prompt_override` (wins unconditionally when present). Fail-fast: any stage whose strategy resolves (alias-aware) to `:react` errors with a pointer to the agent's native ReAct loop, since the current `Reason` react path is a structured-prompt stub. Each stage writes a `reasoning_outcomes` row via `Telemetry.with_outcome/4` with `execution_kind: :pipeline_run`, zero-padded `pipeline_stage` (e.g., `"001/003"` for correct text sort), `pipeline_name`, `base_strategy` set to the resolved built-in, and `metadata.stage_index`/`stage_total` integers for numeric consumers. Usage counters merge across stages; mid-pipeline errors persist earlier rows normally and the failing stage row is written with `status: :error`.
-- **Telemetry coverage completion.** `verify_certificate` wraps its CoT call with `execution_kind: :certificate_verification`, populating `certificate_verdict`/`certificate_confidence` on the outcome row. `Reason`'s react branch now wraps with `execution_kind: :react_stub` so alias→react dispatch still produces a telemetry row with coherent `base_strategy` accounting (the underlying call remains a structured-prompt scaffold). `Telemetry.extract_tokens/1` reads `:input_tokens`/`:output_tokens` first (jido_ai's canonical keys per `deps/jido_ai/lib/jido_ai/actions/helpers.ex`) with `:prompt_tokens`/`:completion_tokens` fallback for legacy providers, and captures tokens on `{:error, %{usage: _}}` partial-failure paths in addition to `{:ok, _}` results. `ExecutionKind` enum now values: `:strategy_run`, `:react_stub`, `:certificate_verification`, `:pipeline_run`.
+- **Telemetry coverage completion.** `verify_certificate` wraps its CoT call with `execution_kind: :certificate_verification`, populating `certificate_verdict`/`certificate_confidence` on the outcome row. `Reason`'s react branch now wraps with `execution_kind: :react_stub` so alias→react dispatch still produces a telemetry row with coherent `base_strategy` accounting (the underlying call remains a structured-prompt scaffold). `Telemetry.extract_tokens/1` reads `:input_tokens`/`:output_tokens` first (`jido_ai`'s canonical keys per `deps/jido_ai/lib/jido_ai/actions/helpers.ex`) with `:prompt_tokens`/`:completion_tokens` fallback for legacy providers, and captures tokens on `{:error, %{usage: _}}` partial-failure paths in addition to`{:ok, _}`results.`ExecutionKind`enum now values:`:strategy_run`, `:react_stub`, `:certificate_verification`, `:pipeline_run`.
 
 ### Out of scope (deferred)
 
@@ -200,14 +201,64 @@ Bounds the composed-prompt size in `accumulate` mode. Drops oldest whole stages 
 
 ## v0.5 — Advanced Shell Integration
 
+**Status: In Progress**
+
+Build on the jido_shell `BackendHost` foundation. Split into four point releases mirroring the v0.4.x cadence — each touches a different subsystem (registry → config → session → display) and is independently reviewable and revertible. No blocking dependencies between them; natural order is 1→2→3→4 so later items benefit from earlier ones, but any can ship in isolation.
+
+Scoping note: `Jido.Shell.Backend.SSH` is already fully implemented in `deps/jido_shell/lib/jido_shell/backend/ssh.ex` (~446 LOC), and transport events already broadcast to subscribed pids. v0.5 is mostly JidoClaw-side wiring, not new protocol work.
+
+### v0.5.1 — Custom Command Registry
+
+**Status: Complete**
+
+Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) as jido_shell commands, accessible from the persistent session.
+
+- **Extensibility hook in `Jido.Shell.Command.Registry`.** The upstream registry is a static hard-coded map of 14 built-ins (`deps/jido_shell/lib/jido_shell/command/registry.ex`). Delivered as a runtime patch at `lib/jido_claw/core/jido_shell_registry_patch.ex` that redefines the registry to union `:extra_commands` with the built-ins (built-ins win on name collision). Delete the patch when `jido_shell` ships a release with a compatible `:extra_commands` hook and we upgrade the dep.
+- **JidoClaw command module** at `lib/jido_claw/shell/commands/jido.ex` — single `Jido.Shell.Command` module exposing `jido status` (agents, forge sessions, uptime), `jido memory search <query>`, and `jido solutions find <fingerprint>` as sub-commands. Profile output in `jido status` is deferred to v0.5.2 alongside `ProfileManager`.
+- **Registration via compile-time config** — `config :jido_shell, :extra_commands, %{"jido" => JidoClaw.Shell.Commands.Jido}` in `config/config.exs`. Resolved before `SessionManager` boots, so the classifier sees the full extension set on the first command it routes.
+
+### v0.5.2 — Environment Profiles
+
 **Status: Planned**
 
-Build on the jido_shell `BackendHost` foundation:
+Named env var sets (dev, staging, prod) that can be switched per session.
 
-- **Custom command registry**: Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) as jido_shell commands, accessible from the persistent session
-- **SSH backend support**: Remote command execution on dev/staging servers via `Backend.SSH`
-- **Streaming output to display**: Wire jido_shell transport events directly into Display for real-time output rendering during long-running commands
-- **Environment profiles**: Named env var sets (dev, staging, prod) that can be switched per session
+- **`profiles:` key in `.jido/config.yaml`** — map of name → env var map. Profile env merges over the session's base env on activation.
+- **`JidoClaw.Shell.ProfileManager` GenServer** — loads profiles at boot, tracks the active profile per session, emits `jido_claw.shell.profile_switched` signal.
+- **REPL `/profile` command** — `/profile list`, `/profile switch <name>`, `/profile current`. Updates `Shell.Session.State.env` via `SessionManager` and broadcasts the change.
+- **Secret redaction** — values matching the existing `JidoClaw.Security` redaction patterns (`*_KEY`, `*_TOKEN`, `*_SECRET`) are masked in logs and `/profile current` output.
+- **Display indicator** — when the active profile is anything other than the default, surface it in the status bar so it's obvious you're talking to staging/prod.
+
+### v0.5.3 — SSH Backend Support
+
+**Status: Planned**
+
+Remote command execution on dev/staging servers via the existing `Jido.Shell.Backend.SSH`. Work is pure JidoClaw-side wiring; the backend is already complete in `deps/jido_shell/`.
+
+- **`servers:` key in `.jido/config.yaml`** — declared SSH targets (`name`, `host`, `user`, `key_path`/`password`, `cwd`, `env`, `shell`). Key paths resolve relative to `project_dir` unless absolute.
+- **`SessionManager` bootstrap extension** — on session start, if the config declares servers, spin up `Backend.SSH` sessions alongside the existing host + VFS sessions. Lazy-start is acceptable (first `run_command backend: :ssh, server: "staging"` brings the session up).
+- **`run_command` override** — new `backend: :ssh, server: <name>` option. Classifier is not extended; SSH is an explicit opt-in.
+- **Error handling** — connection timeouts, key-auth failures, and mid-command disconnects surface as structured errors with a clear "SSH to <name> failed: <reason>" message.
+- **Profile integration (if v0.5.2 has shipped)** — SSH sessions respect the active profile's env, so `/profile switch staging` + `run_command backend: :ssh, server: "web01"` runs with staging env on the remote. Degrades gracefully when v0.5.2 isn't in place.
+
+### Out of scope (deferred)
+
+- Key management UI / secret-store integration for SSH credentials (users place keys on disk, config points at them).
+- SSH jump-host / bastion chains.
+- Interactive/TTY-allocating sessions (`ssh -t`) — command-mode only.
+- Automatic reconnect on dropped sessions → revisit if users hit it.
+
+### v0.5.4 — Streaming Output to Display
+
+**Status: Planned**
+
+Wire jido_shell transport events directly into `JidoClaw.Display` for real-time output rendering during long-running commands.
+
+- **`stream_to_display: true` param on `RunCommand`.** When set, Display subscribes to the underlying `Jido.Shell.ShellSessionServer` transport before the command runs and unsubscribes on `:exit_status`/`:error`.
+- **`Display.handle_cast({:shell_output, ...}, state)`** — renders chunks in real-time (not swarm-box throttled). Label includes `agent_id` + originating tool so concurrent streams from multiple agents stay distinguishable.
+- **OutputLimiter cap bump for streaming mode** — default 50KB is fine for captured output but too small for live-streamed commands. Raise to 10MB when `stream_to_display` is on; error out (not silent truncation) if exceeded.
+- **Backpressure** — each chunk is a cast to Display. On sustained high-volume output (e.g., `tail -f`) the GenServer queue could build; mitigate with a periodic flush watermark and warn-and-drop-oldest policy with a one-line notice if the watermark is hit.
+- **Works for host, VFS, and SSH (if v0.5.3 has shipped) sessions uniformly** — transport events are backend-agnostic, so the same wiring covers all three.
 
 ---
 
@@ -259,8 +310,8 @@ Keep JSON file persistence as the default for CLI-only usage. Database persisten
 ```yaml
 # .jido/config.yaml
 persistence:
-  backend: ecto  # or "file" (default)
-  database_url: "postgres://..."
+  backend: ecto # or "file" (default)
+  database_url: 'postgres://...'
 ```
 
 ---
@@ -295,31 +346,31 @@ releases: [
 
 ### Remaining File-to-Database Migration Opportunities
 
-| Capability | Current | With Ash/PostgreSQL |
-|---|---|---|
-| Memory persistence | JSON file, FTS via string matching | PostgreSQL FTS, indexed queries |
-| Solution search | In-memory Jaccard + BM25 | SQL-based BM25, composite indexes |
-| Multi-tenant isolation | Process-level (ETS per tenant) | Database-level (schemas/RLS) |
-| Audit trail | None (telemetry is volatile) | Append-only event log |
-| Reputation tracking | JSON file | Atomic DB operations, history |
-| Cluster coordination | `:pg` only | Shared DB state, distributed locks |
-| Session message history | JSONL files | Structured DB with search |
+| Capability              | Current                            | With Ash/PostgreSQL                |
+| ----------------------- | ---------------------------------- | ---------------------------------- |
+| Memory persistence      | JSON file, FTS via string matching | PostgreSQL FTS, indexed queries    |
+| Solution search         | In-memory Jaccard + BM25           | SQL-based BM25, composite indexes  |
+| Multi-tenant isolation  | Process-level (ETS per tenant)     | Database-level (schemas/RLS)       |
+| Audit trail             | None (telemetry is volatile)       | Append-only event log              |
+| Reputation tracking     | JSON file                          | Atomic DB operations, history      |
+| Cluster coordination    | `:pg` only                         | Shared DB state, distributed locks |
+| Session message history | JSONL files                        | Structured DB with search          |
 
 Note: Agent state recovery and session metadata are already in PostgreSQL via Forge resources.
 
 ### Other Jido Ecosystem Libraries to Watch
 
-| Library | Status | Potential Use |
-|---|---|---|
-| **jido_discovery** | TBD | Agent/service discovery in distributed deployments |
-| **jido_workflow** | TBD | Advanced workflow patterns beyond current Composer FSM |
+| Library            | Status | Potential Use                                          |
+| ------------------ | ------ | ------------------------------------------------------ |
+| **jido_discovery** | TBD    | Agent/service discovery in distributed deployments     |
+| **jido_workflow**  | TBD    | Advanced workflow patterns beyond current Composer FSM |
 
 ---
 
 ## Build Order
 
 ```
-v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
+v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5.1..v0.5.4 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
 ```
 
 The v0.4.x cadence was intentional: each point release shipped one focused change to the reasoning subsystem, keeping every PR independently reviewable and revertible.
