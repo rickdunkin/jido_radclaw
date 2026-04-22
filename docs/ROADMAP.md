@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.5.2
+## Current State: v0.5.3
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), and per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), and remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -235,22 +235,30 @@ Named env var sets (dev, staging, prod) switchable per workspace session. Delive
 
 ### v0.5.3 — SSH Backend Support
 
-**Status: Planned**
+**Status: Complete**
 
-Remote command execution on dev/staging servers via the existing `Jido.Shell.Backend.SSH`. Work is pure JidoClaw-side wiring; the backend is already complete in `deps/jido_shell/`.
+Remote command execution on dev/staging servers via the existing `Jido.Shell.Backend.SSH`. Work is pure JidoClaw-side wiring; the backend is already complete in `deps/jido_shell/`. Delivered:
 
-- **`servers:` key in `.jido/config.yaml`** — declared SSH targets (`name`, `host`, `user`, `key_path`/`password`, `cwd`, `env`, `shell`). Key paths resolve relative to `project_dir` unless absolute.
-- **`SessionManager` bootstrap extension** — on session start, if the config declares servers, spin up `Backend.SSH` sessions alongside the existing host + VFS sessions. Lazy-start is acceptable (first `run_command backend: :ssh, server: "staging"` brings the session up).
-- **`run_command` override** — new `backend: :ssh, server: <name>` option. Classifier is not extended; SSH is an explicit opt-in.
-- **Error handling** — connection timeouts, key-auth failures, and mid-command disconnects surface as structured errors with a clear "SSH to <name> failed: <reason>" message.
-- **Profile integration (if v0.5.2 has shipped)** — SSH sessions respect the active profile's env, so `/profile switch staging` + `run_command backend: :ssh, server: "web01"` runs with staging env on the remote. Degrades gracefully when v0.5.2 isn't in place.
+- **`servers:` key in `.jido/config.yaml`** — declared SSH targets (`name`, `host`, `user`, `port`, `key_path` / `password_env`, `cwd`, `env`, `shell`, `connect_timeout`). Parsed by `JidoClaw.Shell.ServerRegistry` with per-entry warn-and-skip validation. Key paths resolve relative to `project_dir` unless absolute or `~`-prefixed. Passwords come from env vars via `password_env:` (empty env vars treated as missing).
+- **`SessionManager` SSH session cache** — ssh sessions keyed by `{workspace_id, server_name}` alongside the existing host + VFS sessions. Lazy-connect on the first `run_command backend: "ssh", server: "staging"`; reuse thereafter. Connect failures are not cached, so the next call retries.
+- **`run_command` override** — new `backend: "host" | "vfs" | "ssh"` string-typed schema param (Nimble enum-safe; the module's `on_before_validate_params/1` coerces legacy atom callers to strings, and `run/2` converts back to an internal atom via explicit case). `backend: "ssh"` requires the `server` param and refuses to fall back to `System.cmd` when `SessionManager` is unavailable. Classifier is not extended — SSH is always an explicit opt-in.
+- **Structured errors** — `JidoClaw.Shell.SSHError.format/2` maps connect refused/nxdomain/timeout/ehostunreach, authentication rejection, key-read failures, command timeouts, output-limit-exceeded, and missing-env-var into user-facing `SSH to <name> failed: <reason>` strings with host/port/user/path interpolated from the server entry.
+- **Profile integration** — SSH sessions respect the active profile's env. On `/profile switch`, the SessionManager recomputes effective env as `server.env |> Map.merge(profile_env)` and pushes it via `ShellSession.update_env/2` — server-declared vars survive the switch; an SSH write failure evicts the cached session (no rollback of host/VFS) so the next command reconnects with fresh env.
+- **Reload diff** — `ServerRegistry.reload/0` returns `{added, changed, removed}` without touching SessionManager (avoids a SR↔SM deadlock on the routing hot path); the caller invokes `SessionManager.invalidate_ssh_sessions/1` explicitly.
+- **Call timeout budgeting** — when `backend: :ssh`, the `GenServer.call` timeout includes the server's `connect_timeout` so a slow handshake doesn't trip the outer call before the backend can return its own `start_failed` error.
 
 ### Out of scope (deferred)
 
-- Key management UI / secret-store integration for SSH credentials (users place keys on disk, config points at them).
+- **Passphrase-protected private keys** — requires an upstream jido_shell hook. v0.5.3 supports unencrypted `key_path`, `password_env`, and fall-through to the user's ssh-agent / default key discovery. Point `key_path` at an encrypted key and the connect surfaces as an authentication or connection failure; the user's recourse is to add the key to `ssh-agent` and leave `key_path` unset.
+- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1.
+- `jido status` SSH session count segment → v0.5.3.1.
+- Automatic reconnect on dropped sessions → revisit if users hit it.
+- Classifier extension for SSH (auto-route based on path prefix) — SSH stays explicit.
+- Consolidate `force:` → `backend:` in RunCommand and remove the legacy alias → v0.5.4.
 - SSH jump-host / bastion chains.
 - Interactive/TTY-allocating sessions (`ssh -t`) — command-mode only.
-- Automatic reconnect on dropped sessions → revisit if users hit it.
+- Key management UI / secret-store integration for SSH credentials (users place keys on disk, config points at them).
+- Streaming SSH output to `Display` → v0.5.4.
 
 ### v0.5.4 — Streaming Output to Display
 

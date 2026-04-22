@@ -166,6 +166,12 @@ defmodule JidoClaw.Application do
         # breaking the PM ↔ SM mutual-call cycle.
         {JidoClaw.Shell.ProfileManager, [project_dir: project_dir(), ets_mirror: true]},
 
+        # SSH server registry — parses `.jido/config.yaml` servers: list.
+        # Must start BEFORE SessionManager so SSH routing lookups can
+        # resolve; under :rest_for_one, a registry crash restarts
+        # SessionManager too, clearing any stale SSH session cache.
+        {JidoClaw.Shell.ServerRegistry, [project_dir: project_dir()]},
+
         # Shell session manager (jido_shell + Host backend for real command execution)
         JidoClaw.Shell.SessionManager
       ]

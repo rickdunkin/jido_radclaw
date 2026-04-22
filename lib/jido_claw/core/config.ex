@@ -119,6 +119,20 @@ defmodule JidoClaw.Config do
     end
   end
 
+  @doc """
+  Returns the raw `servers:` list from config (list of per-server maps).
+
+  Entry-level validation and coercion happen in
+  `JidoClaw.Shell.ServerRegistry` — this accessor returns whatever is in
+  the YAML so the registry can apply its own warn-and-skip logic.
+  """
+  def servers(config) do
+    case Map.get(config, "servers") do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
   @doc "Returns all available strategy names with descriptions."
   def strategy_descriptions, do: @strategy_descriptions
 

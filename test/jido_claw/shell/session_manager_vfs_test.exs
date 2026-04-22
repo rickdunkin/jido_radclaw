@@ -141,6 +141,52 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       assert out =~ "README.md"
       assert out =~ "mix.exs"
     end
+
+    test "backend: :vfs overrides the classifier for bare pwd", %{workspace_id: ws, tmp: tmp} do
+      # Bare `pwd` classifies to host; `backend: :vfs` flips that. The VFS
+      # session's cwd is the workspace mount point `/project`.
+      assert {:ok, %{output: out, exit_code: 0}} =
+               SessionManager.run(ws, "pwd", 5_000, project_dir: tmp, backend: :vfs)
+
+      assert String.trim(out) == "/project"
+    end
+
+    test "backend: :host overrides the classifier for a VFS-classified command", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # `cat /project/mix.exs` classifies to VFS (/project is mounted to tmp).
+      # Forcing `backend: :host` should route to the host session, where
+      # `/project/mix.exs` is not a real path — cat fails with a non-zero
+      # exit code and "No such file or directory" stderr.
+      #
+      # If the override were silently ignored, the command would hit VFS
+      # and succeed with the mix.exs contents instead.
+      assert {:ok, %{output: out, exit_code: code}} =
+               SessionManager.run(ws, "cat /project/mix.exs", 5_000,
+                 project_dir: tmp,
+                 backend: :host
+               )
+
+      assert code != 0
+      refute out =~ "mix.exs contents"
+      # cat's stderr text varies across OSes ("No such file or directory"
+      # on GNU/BSD) — just assert the file contents aren't there, which
+      # is the real regression signal.
+    end
+
+    test "force: :host wins over backend: :vfs on conflict", %{workspace_id: ws, tmp: tmp} do
+      # Legacy `:force` keeps priority over the newer `:backend` override.
+      assert {:ok, %{output: out, exit_code: 0}} =
+               SessionManager.run(ws, "pwd", 5_000,
+                 project_dir: tmp,
+                 force: :host,
+                 backend: :vfs
+               )
+
+      assert String.ends_with?(String.trim(out), tmp)
+      refute String.trim(out) == "/project"
+    end
   end
 
   describe "session lifecycle" do

@@ -2,7 +2,9 @@ defmodule JidoClaw.Shell.SessionManager do
   @moduledoc """
   Manages persistent shell sessions backed by jido_shell.
 
-  Each workspace holds **two** sessions sharing the same VFS mount table:
+  Each workspace holds **two** local sessions sharing the same VFS
+  mount table, plus zero-or-more **SSH** sessions keyed by server
+  name:
 
     * A **host** session using `JidoClaw.Shell.BackendHost`, cwd = project_dir.
       Executes real `sh -c` invocations (git, mix, pipes, redirects, …) —
@@ -13,8 +15,14 @@ defmodule JidoClaw.Shell.SessionManager do
       `mkdir`, `rm`, `cp`, `echo`, `write`, `env`, `bash`) and resolves all
       paths through `Jido.Shell.VFS` with the workspace's mount table.
 
-  `run/4` classifies each command and routes to the appropriate session.
-  The caller can force routing with `force: :host | :vfs` in opts.
+    * **SSH** sessions using `Jido.Shell.Backend.SSH`, one per
+      `{workspace_id, server_name}`. Lazily created on first
+      `run/4` with `backend: :ssh, server: <name>`. Never
+      auto-selected by the classifier — SSH is always explicit.
+
+  `run/4` classifies each command and routes to the appropriate
+  session. The caller can force routing with `force: :host | :vfs`
+  in opts, or request SSH via `backend: :ssh, server: <name>`.
   """
 
   use GenServer
@@ -23,9 +31,22 @@ defmodule JidoClaw.Shell.SessionManager do
   alias Jido.Shell.ShellSession
   alias Jido.Shell.ShellSessionServer
   alias Jido.Shell.VFS.MountTable
+  alias JidoClaw.Shell.ServerRegistry
+  alias JidoClaw.Shell.ServerRegistry.ServerEntry
+  alias JidoClaw.Shell.SSHError
 
   @default_timeout 30_000
   @max_output_chars 10_000
+  @default_connect_timeout 10_000
+
+  # Mailbox safety valve for streaming SSH output. Separate from
+  # `@max_output_chars` (the 10 KB post-hoc display-truncation cap):
+  # chatty-but-finite commands still complete and truncate gracefully;
+  # only genuinely runaway streams trip this limit and abort. The SSH
+  # backend reads `:output_limit` from exec_opts and emits
+  # `%Jido.Shell.Error{code: {:command, :output_limit_exceeded}}` when
+  # exceeded, which the collector loop routes through `SSHError.format/2`.
+  @max_ssh_output_bytes 1_000_000
 
   @sandbox_allowlist ~w(cat ls cd pwd mkdir rm cp echo write env bash)
 
@@ -41,7 +62,7 @@ defmodule JidoClaw.Shell.SessionManager do
   # token-embedded `;` means the parser produced multiple clean commands.
   @embedded_forcing_chars ["|", ">", "<", "`", "$(", "${", "&"]
 
-  defstruct sessions: %{}
+  defstruct sessions: %{}, ssh_sessions: %{}
 
   # -- Client API -------------------------------------------------------------
 
@@ -57,19 +78,70 @@ defmodule JidoClaw.Shell.SessionManager do
     * `:project_dir` - required for dual-session bootstrap. `run/3` defaults to
       `File.cwd!/0` for legacy callers.
     * `:force` - `:host | :vfs | nil` — bypass the classifier. Defaults to nil.
+    * `:backend` - `:host | :vfs | :ssh | nil` — routing override. `:ssh`
+      requires `:server` and bypasses the classifier.
+    * `:server` - server name from `.jido/config.yaml` (required when
+      `backend: :ssh`).
 
   Returns `{:ok, %{output: String.t(), exit_code: integer()}}` or `{:error, reason}`.
+
+  The outer `GenServer.call/3` timeout budget is `timeout + 5_000` for
+  host/VFS. For SSH the budget includes the server entry's
+  `connect_timeout` (default 10s) so a slow-connecting host doesn't
+  blow up the call before the backend has a chance to return its own
+  start_failed error.
   """
   @spec run(String.t(), String.t(), non_neg_integer(), keyword()) ::
           {:ok, %{output: String.t(), exit_code: non_neg_integer()}} | {:error, term()}
   def run(workspace_id, command, timeout \\ @default_timeout, opts \\ []) do
     opts = Keyword.put_new_lazy(opts, :project_dir, &File.cwd!/0)
+    call_timeout = timeout + call_timeout_extra(opts)
 
     GenServer.call(
       __MODULE__,
       {:run, workspace_id, command, timeout, opts},
-      timeout + 5_000
+      call_timeout
     )
+  end
+
+  # Budget on top of `timeout` for the outer GenServer call. SSH adds
+  # the server's connect_timeout so a slow handshake doesn't time out
+  # the caller before the backend can return `start_failed`. Reads the
+  # registry on the caller side so the SessionManager handle_call
+  # never blocks on ServerRegistry during routing.
+  defp call_timeout_extra(opts) do
+    case Keyword.get(opts, :backend) do
+      :ssh ->
+        server = Keyword.get(opts, :server)
+        ssh_call_timeout_extra(server)
+
+      _ ->
+        5_000
+    end
+  end
+
+  defp ssh_call_timeout_extra(server) when is_binary(server) do
+    case server_connect_timeout(server) do
+      {:ok, connect_timeout} -> connect_timeout + 5_000
+      :unknown -> @default_connect_timeout + 5_000
+    end
+  end
+
+  defp ssh_call_timeout_extra(_), do: @default_connect_timeout + 5_000
+
+  defp server_connect_timeout(server) do
+    case Process.whereis(ServerRegistry) do
+      nil ->
+        :unknown
+
+      _pid ->
+        case ServerRegistry.get(server) do
+          {:ok, %ServerEntry{connect_timeout: timeout}} -> {:ok, timeout}
+          {:error, _} -> :unknown
+        end
+    end
+  catch
+    :exit, _ -> :unknown
   end
 
   @doc "Return the current working directory for a workspace session (host cwd)."
@@ -141,6 +213,18 @@ defmodule JidoClaw.Shell.SessionManager do
     GenServer.call(__MODULE__, {:host_env_for_test, workspace_id})
   end
 
+  @doc """
+  Invalidate cached SSH sessions for the given server names across all
+  workspaces. Typically called by `ServerRegistry.reload/0` callers
+  after a config reload surfaces added/changed/removed server entries.
+
+  Silently no-ops for server names without a cached session.
+  """
+  @spec invalidate_ssh_sessions([String.t()]) :: :ok
+  def invalidate_ssh_sessions(names) when is_list(names) do
+    GenServer.call(__MODULE__, {:invalidate_ssh_sessions, names})
+  end
+
   # -- Server Callbacks -------------------------------------------------------
 
   @impl true
@@ -152,15 +236,12 @@ defmodule JidoClaw.Shell.SessionManager do
   def handle_call({:run, workspace_id, command, timeout, opts}, _from, state) do
     project_dir = Keyword.fetch!(opts, :project_dir)
 
-    case ensure_session(workspace_id, project_dir, state) do
-      {:ok, entry, new_state} ->
-        target = resolve_target(command, workspace_id, opts)
-        session_id = Map.fetch!(entry, target)
-        result = execute_command(session_id, command, timeout)
-        {:reply, result, new_state}
+    case Keyword.get(opts, :backend) do
+      :ssh ->
+        handle_ssh_run(workspace_id, command, timeout, opts, project_dir, state)
 
-      {:error, reason, new_state} ->
-        {:reply, {:error, "Shell session could not be started: #{inspect(reason)}"}, new_state}
+      _ ->
+        handle_local_run(workspace_id, command, timeout, opts, project_dir, state)
     end
   end
 
@@ -183,6 +264,9 @@ defmodule JidoClaw.Shell.SessionManager do
 
   @impl true
   def handle_call({:stop_session, workspace_id}, _from, state) do
+    had_local? = Map.has_key?(state.sessions, workspace_id)
+    had_ssh_only? = not had_local? and workspace_has_ssh?(state.ssh_sessions, workspace_id)
+
     new_sessions =
       case Map.pop(state.sessions, workspace_id) do
         {nil, sessions} ->
@@ -195,7 +279,16 @@ defmodule JidoClaw.Shell.SessionManager do
           sessions
       end
 
-    {:reply, :ok, %{state | sessions: new_sessions}}
+    new_ssh = stop_all_ssh_for_workspace(state.ssh_sessions, workspace_id)
+
+    # SSH-only workspace: still tear down the VFS workspace if the
+    # caller implicitly created one (e.g. a later host session). The
+    # teardown is a no-op for unknown workspaces.
+    if had_ssh_only? do
+      _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+    end
+
+    {:reply, :ok, %{state | sessions: new_sessions, ssh_sessions: new_ssh}}
   end
 
   @impl true
@@ -211,7 +304,26 @@ defmodule JidoClaw.Shell.SessionManager do
           sessions
       end
 
-    {:reply, :ok, %{state | sessions: new_sessions}}
+    new_ssh = stop_all_ssh_for_workspace(state.ssh_sessions, workspace_id)
+
+    {:reply, :ok, %{state | sessions: new_sessions, ssh_sessions: new_ssh}}
+  end
+
+  @impl true
+  def handle_call({:invalidate_ssh_sessions, names}, _from, state) do
+    targets = MapSet.new(names)
+
+    new_ssh =
+      Enum.reduce(state.ssh_sessions, %{}, fn {{_ws, server} = key, entry}, acc ->
+        if MapSet.member?(targets, server) do
+          _ = ShellSession.stop(entry.session_id)
+          acc
+        else
+          Map.put(acc, key, entry)
+        end
+      end)
+
+    {:reply, :ok, %{state | ssh_sessions: new_ssh}}
   end
 
   @impl true
@@ -220,8 +332,8 @@ defmodule JidoClaw.Shell.SessionManager do
         _from,
         state
       ) do
-    reply = do_update_env_impl(workspace_id, keys_to_drop, new_overlay, opts, state)
-    {:reply, reply, state}
+    {reply, new_state} = do_update_env_impl(workspace_id, keys_to_drop, new_overlay, opts, state)
+    {:reply, reply, new_state}
   end
 
   @impl true
@@ -244,6 +356,40 @@ defmodule JidoClaw.Shell.SessionManager do
   @impl true
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     {:noreply, state}
+  end
+
+  # -- run/4 dispatch --------------------------------------------------------
+
+  defp handle_local_run(workspace_id, command, timeout, opts, project_dir, state) do
+    case ensure_session(workspace_id, project_dir, state) do
+      {:ok, entry, new_state} ->
+        target = resolve_target(command, workspace_id, opts)
+        session_id = Map.fetch!(entry, target)
+        result = execute_command(session_id, command, timeout)
+        {:reply, result, new_state}
+
+      {:error, reason, new_state} ->
+        {:reply, {:error, "Shell session could not be started: #{inspect(reason)}"}, new_state}
+    end
+  end
+
+  defp handle_ssh_run(workspace_id, command, timeout, opts, project_dir, state) do
+    server = Keyword.get(opts, :server)
+
+    cond do
+      not is_binary(server) or server == "" ->
+        {:reply, {:error, "SSH requires :server option"}, state}
+
+      true ->
+        case ensure_ssh_session(workspace_id, server, project_dir, state) do
+          {:ok, session_id, entry, new_state} ->
+            result = execute_ssh_command(session_id, command, timeout, entry)
+            {:reply, result, new_state}
+
+          {:error, message, new_state} ->
+            {:reply, {:error, message}, new_state}
+        end
+    end
   end
 
   # -- Session lifecycle ------------------------------------------------------
@@ -366,41 +512,260 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
+  # -- SSH session lifecycle -------------------------------------------------
+
+  # Fast path: existing session, same project_dir, still alive.
+  # Otherwise: look up the server entry, resolve secrets + key path,
+  # compose effective env, start a fresh SSH session. All error
+  # branches render through `SSHError.format/2` so callers see a
+  # user-facing string, never a raw `%Jido.Shell.Error{}`.
+  defp ensure_ssh_session(workspace_id, server_name, project_dir, state) do
+    key = {workspace_id, server_name}
+
+    case Map.get(state.ssh_sessions, key) do
+      %{
+        session_id: session_id,
+        project_dir: ^project_dir,
+        server_entry: entry
+      } ->
+        if session_alive?(session_id) do
+          {:ok, session_id, entry, state}
+        else
+          _ = ShellSession.stop(session_id)
+          cleared = %{state | ssh_sessions: Map.delete(state.ssh_sessions, key)}
+          build_ssh_session(workspace_id, server_name, project_dir, cleared)
+        end
+
+      %{session_id: session_id, project_dir: existing_dir} ->
+        Logger.debug(
+          "[SessionManager] SSH project_dir drift for #{workspace_id}/#{server_name}: " <>
+            "#{existing_dir} -> #{project_dir}; rebuilding"
+        )
+
+        _ = ShellSession.stop(session_id)
+        cleared = %{state | ssh_sessions: Map.delete(state.ssh_sessions, key)}
+        build_ssh_session(workspace_id, server_name, project_dir, cleared)
+
+      nil ->
+        build_ssh_session(workspace_id, server_name, project_dir, state)
+    end
+  end
+
+  defp build_ssh_session(workspace_id, server_name, project_dir, state) do
+    with {:ok, entry} <- lookup_server(server_name),
+         {:ok, _secrets} <- resolve_server_secrets(entry),
+         effective_env = Map.merge(entry.env, profile_env(workspace_id)),
+         {:ok, ssh_config} <- ServerRegistry.build_ssh_config(entry, project_dir, effective_env),
+         session_id = ssh_session_id(workspace_id, server_name),
+         {:ok, session_id} <- start_ssh_session(workspace_id, session_id, entry, ssh_config) do
+      cache_entry = %{
+        session_id: session_id,
+        server_entry: entry,
+        project_dir: project_dir
+      }
+
+      new_state = %{
+        state
+        | ssh_sessions: Map.put(state.ssh_sessions, {workspace_id, server_name}, cache_entry)
+      }
+
+      {:ok, session_id, entry, new_state}
+    else
+      {:error, :server_not_found} ->
+        {:error, "SSH server '#{server_name}' not declared in .jido/config.yaml", state}
+
+      {:error, {:missing_env, _} = reason} ->
+        fake_entry = fake_entry_for_error(server_name)
+        {:error, SSHError.format(reason, fake_entry), state}
+
+      {:error, %Jido.Shell.Error{} = err, entry} ->
+        {:error, SSHError.format(err, entry), state}
+
+      {:error, %Jido.Shell.Error{} = err} ->
+        {:error, SSHError.format(err, fake_entry_for_error(server_name)), state}
+
+      {:error, reason} ->
+        {:error, "SSH session start failed: #{inspect(reason)}", state}
+    end
+  end
+
+  defp lookup_server(server_name) do
+    case ServerRegistry.get(server_name) do
+      {:ok, entry} -> {:ok, entry}
+      {:error, :not_found} -> {:error, :server_not_found}
+    end
+  catch
+    :exit, _ -> {:error, :server_not_found}
+  end
+
+  defp resolve_server_secrets(entry) do
+    case ServerRegistry.resolve_secrets(entry) do
+      {:ok, secrets} -> {:ok, secrets}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp start_ssh_session(workspace_id, session_id, entry, ssh_config) do
+    case ShellSession.start(workspace_id,
+           session_id: session_id,
+           cwd: entry.cwd,
+           env: Map.get(ssh_config, :env, %{}),
+           backend: {Jido.Shell.Backend.SSH, ssh_config}
+         ) do
+      {:ok, sid} ->
+        {:ok, sid}
+
+      {:error, {:shutdown, %Jido.Shell.Error{} = err}} ->
+        {:error, err, entry}
+
+      {:error, %Jido.Shell.Error{} = err} ->
+        {:error, err, entry}
+
+      {:error, {:already_started, _}} ->
+        # A previous collapse left the session alive — reuse it.
+        {:ok, session_id}
+
+      {:error, reason} ->
+        {:error, "SSH session start failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp ssh_session_id(workspace_id, server_name) do
+    workspace_id <> ":ssh:" <> server_name
+  end
+
+  # Used only when we hit an error *before* we have a real ServerEntry
+  # to interpolate — `{:missing_env, var}` happens during secret
+  # resolution, but the error message only needs the name, so a stub
+  # entry is fine.
+  defp fake_entry_for_error(server_name) do
+    %ServerEntry{
+      name: server_name,
+      host: "",
+      user: "",
+      port: 0,
+      auth_kind: :default,
+      cwd: "/",
+      env: %{},
+      shell: "sh",
+      connect_timeout: @default_connect_timeout
+    }
+  end
+
+  defp stop_all_ssh_for_workspace(ssh_sessions, workspace_id) do
+    Enum.reduce(ssh_sessions, %{}, fn {{ws, _server} = key, entry}, acc ->
+      if ws == workspace_id do
+        _ = ShellSession.stop(entry.session_id)
+        acc
+      else
+        Map.put(acc, key, entry)
+      end
+    end)
+  end
+
+  defp workspace_has_ssh?(ssh_sessions, workspace_id) do
+    Enum.any?(ssh_sessions, fn {{ws, _}, _} -> ws == workspace_id end)
+  end
+
   # -- update_env flow -------------------------------------------------------
 
+  # Handles host+VFS atomic drop+merge (existing behavior) **and** SSH
+  # full-env replace (new in v0.5.3). Returns `{reply, new_state}`.
+  # SSH writes run best-effort: a failure evicts that session from
+  # the cache and logs a warning, never rolls the host+VFS update
+  # back (which has already succeeded).
+  #
+  # SSH-only workspaces (no host+VFS): host/VFS step is skipped
+  # entirely and we only apply SSH env updates.
   defp do_update_env_impl(workspace_id, keys_to_drop, new_overlay, opts, state) do
     host_writer = Keyword.get(opts, :host_writer, &ShellSession.update_env/2)
     vfs_writer = Keyword.get(opts, :vfs_writer, &ShellSession.update_env/2)
+    ssh_writer = Keyword.get(opts, :ssh_writer, &ShellSession.update_env/2)
+
+    has_ssh = Enum.any?(state.ssh_sessions, fn {{ws, _}, _} -> ws == workspace_id end)
 
     case Map.get(state.sessions, workspace_id) do
+      nil when not has_ssh ->
+        {:ok, state}
+
       nil ->
-        :ok
+        # SSH-only workspace — no host/VFS to update.
+        new_state = apply_ssh_env_update(workspace_id, new_overlay, ssh_writer, state)
+        {:ok, new_state}
 
       %{host: host_id, vfs: vfs_id} ->
-        with {:ok, host_pre} <- read_env(host_id),
-             {:ok, vfs_pre} <- read_env(vfs_id) do
-          host_new = apply_drop_merge(host_pre, keys_to_drop, new_overlay)
-          vfs_new = apply_drop_merge(vfs_pre, keys_to_drop, new_overlay)
+        case apply_host_vfs_update(
+               host_id,
+               vfs_id,
+               keys_to_drop,
+               new_overlay,
+               host_writer,
+               vfs_writer
+             ) do
+          :ok ->
+            new_state = apply_ssh_env_update(workspace_id, new_overlay, ssh_writer, state)
+            {:ok, new_state}
 
-          case host_writer.(host_id, host_new) do
-            {:ok, _} ->
-              case vfs_writer.(vfs_id, vfs_new) do
-                {:ok, _} ->
-                  :ok
-
-                {:error, reason} ->
-                  # Host already mutated; roll back to host_pre.
-                  rollback = rollback_host(host_writer, host_id, host_pre)
-                  {:error, :vfs_update_failed, rollback, reason}
-              end
-
-            {:error, reason} ->
-              {:error, :host_update_failed, reason}
-          end
-        else
-          {:error, reason} -> {:error, :host_update_failed, reason}
+          other ->
+            # Host/VFS failed (or rolled back) — leave SSH sessions alone.
+            {other, state}
         end
     end
+  end
+
+  defp apply_host_vfs_update(host_id, vfs_id, keys_to_drop, new_overlay, host_writer, vfs_writer) do
+    with {:ok, host_pre} <- read_env(host_id),
+         {:ok, vfs_pre} <- read_env(vfs_id) do
+      host_new = apply_drop_merge(host_pre, keys_to_drop, new_overlay)
+      vfs_new = apply_drop_merge(vfs_pre, keys_to_drop, new_overlay)
+
+      case host_writer.(host_id, host_new) do
+        {:ok, _} ->
+          case vfs_writer.(vfs_id, vfs_new) do
+            {:ok, _} ->
+              :ok
+
+            {:error, reason} ->
+              rollback = rollback_host(host_writer, host_id, host_pre)
+              {:error, :vfs_update_failed, rollback, reason}
+          end
+
+        {:error, reason} ->
+          {:error, :host_update_failed, reason}
+      end
+    else
+      {:error, reason} -> {:error, :host_update_failed, reason}
+    end
+  end
+
+  # `new_overlay` is the fully composed target profile env (default +
+  # active profile overrides) — *not* a delta. For SSH we recompose
+  # effective env from scratch: server-declared vars overlaid with
+  # the new profile env. Full-env replace (no drop+merge) because we
+  # can always recompute the target deterministically — dropping
+  # server-declared vars that overlap with the old profile would
+  # violate the "server invariants survive a profile switch" guarantee.
+  defp apply_ssh_env_update(workspace_id, new_overlay, ssh_writer, state) do
+    entries_for_workspace =
+      Enum.filter(state.ssh_sessions, fn {{ws, _}, _} -> ws == workspace_id end)
+
+    Enum.reduce(entries_for_workspace, state, fn {{_ws, server} = key, entry}, acc ->
+      effective_env = Map.merge(entry.server_entry.env, new_overlay)
+
+      case ssh_writer.(entry.session_id, effective_env) do
+        {:ok, _} ->
+          acc
+
+        {:error, reason} ->
+          Logger.warning(
+            "[SessionManager] SSH env update failed for #{workspace_id}/#{server}: " <>
+              "#{inspect(reason)} — evicting cache entry"
+          )
+
+          _ = ShellSession.stop(entry.session_id)
+          %{acc | ssh_sessions: Map.delete(acc.ssh_sessions, key)}
+      end
+    end)
   end
 
   defp read_env(session_id) do
@@ -433,10 +798,15 @@ defmodule JidoClaw.Shell.SessionManager do
   # -- Classifier -------------------------------------------------------------
 
   defp resolve_target(command, workspace_id, opts) do
-    case Keyword.get(opts, :force) do
-      :host -> :host
-      :vfs -> :vfs
-      _ -> classify(command, workspace_id)
+    cond do
+      Keyword.get(opts, :force) in [:host, :vfs] ->
+        Keyword.fetch!(opts, :force)
+
+      Keyword.get(opts, :backend) in [:host, :vfs] ->
+        Keyword.fetch!(opts, :backend)
+
+      true ->
+        classify(command, workspace_id)
     end
   end
 
@@ -605,6 +975,97 @@ defmodule JidoClaw.Shell.SessionManager do
         # Ignore lifecycle events (command_started, cwd_changed)
         {:jido_shell_session, ^session_id, _other} ->
           do_collect(session_id, deadline, acc, exit_code)
+      after
+        remaining ->
+          {:timeout, finalize_output(acc)}
+      end
+    end
+  end
+
+  # SSH-specific execute path: subscribe, run, collect, unsubscribe.
+  # Uses `do_collect_ssh/5` which preserves remote non-zero exit codes
+  # (a normal success-but-failed outcome, unlike host/VFS where
+  # `{:command, :exit_code}` is treated as opaque error) and routes
+  # timeouts/output-limit-exceeded through `SSHError.format/2`.
+  defp execute_ssh_command(session_id, command, timeout, entry) do
+    case ShellSessionServer.subscribe(session_id, self()) do
+      {:ok, :subscribed} -> :ok
+      {:error, reason} -> throw({:subscribe_failed, reason})
+    end
+
+    drain_events(session_id)
+
+    result =
+      case ShellSessionServer.run_command(session_id, command,
+             output_limit: @max_ssh_output_bytes
+           ) do
+        {:ok, :accepted} ->
+          case collect_ssh_output(session_id, timeout, entry) do
+            {:timeout, _partial} ->
+              _ = ShellSessionServer.cancel(session_id)
+              drain_events(session_id)
+              {:error, "SSH to #{entry.name} command timed out after #{timeout}ms"}
+
+            other ->
+              other
+          end
+
+        {:error, reason} ->
+          {:error, SSHError.format(reason, entry)}
+      end
+
+    _ = ShellSessionServer.unsubscribe(session_id, self())
+    result
+  catch
+    {:subscribe_failed, reason} ->
+      {:error, "Could not subscribe to SSH session: #{inspect(reason)}"}
+  end
+
+  defp collect_ssh_output(session_id, timeout, entry) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_collect_ssh(session_id, deadline, [], 0, entry)
+  end
+
+  defp do_collect_ssh(session_id, deadline, acc, exit_code, entry) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining <= 0 do
+      {:timeout, finalize_output(acc)}
+    else
+      receive do
+        {:jido_shell_session, ^session_id, {:output, chunk}} ->
+          do_collect_ssh(session_id, deadline, [chunk | acc], exit_code, entry)
+
+        {:jido_shell_session, ^session_id, {:exit_status, code}} ->
+          do_collect_ssh(session_id, deadline, acc, code, entry)
+
+        {:jido_shell_session, ^session_id, :command_done} ->
+          {:ok, %{output: finalize_output(acc), exit_code: exit_code}}
+
+        # Remote non-zero exit — surfaced by the SSH backend as an
+        # Error struct but semantically a successful command completion
+        # with a non-zero code. Preserve the code so the caller sees
+        # `{:ok, %{exit_code: <n>}}` instead of a terminal error.
+        {:jido_shell_session, ^session_id,
+         {:error, %Jido.Shell.Error{code: {:command, :exit_code}, context: %{code: code}}}} ->
+          {:ok, %{output: finalize_output(acc), exit_code: code}}
+
+        # Timeout / output_limit_exceeded / start_failed / other
+        # command errors — terminal failure; format via SSHError.
+        {:jido_shell_session, ^session_id, {:error, %Jido.Shell.Error{} = error}} ->
+          {:error, SSHError.format(error, entry)}
+
+        {:jido_shell_session, ^session_id, {:error, reason}} ->
+          {:error, SSHError.format(reason, entry)}
+
+        {:jido_shell_session, ^session_id, :command_cancelled} ->
+          {:error, "Command was cancelled"}
+
+        {:jido_shell_session, ^session_id, {:command_crashed, reason}} ->
+          {:error, "Command crashed: #{inspect(reason)}"}
+
+        {:jido_shell_session, ^session_id, _other} ->
+          do_collect_ssh(session_id, deadline, acc, exit_code, entry)
       after
         remaining ->
           {:timeout, finalize_output(acc)}
