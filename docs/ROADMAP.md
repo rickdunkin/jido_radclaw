@@ -21,7 +21,7 @@ Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge
 - [x] Full test suite green (772 tests, 0 failures)
 - [x] Session persistence end-to-end verification (DB-backed session claims, advisory locks, checkpoint/resume)
 - [x] Scheduling tools (schedule_task, unschedule_task, list_scheduled_tasks)
-- [x] MCP server mode validation with Claude Code (validated — patched anubis_mcp 0.17.1 stdio transport + tools handler)
+- [x] MCP server mode validation with Claude Code (validated — anubis_mcp 1.1.1 with a schema-validation shim for jido_mcp's JSON-Schema tool descriptors)
 
 ---
 
@@ -138,7 +138,7 @@ Closes the feedback loop opened by 0.4.1's telemetry + classifier work: `strateg
 - **REPL `/strategy` now influences chat turns.** Project-wide default shifts from `"react"` to `"auto"`. The REPL struct gains a `:strategy` field populated at init from `Config.strategy(config)`, normalized through `Repl.resolve_strategy/1` (unknown values fall back to `"auto"` with a boot-time warning pointing at `.jido/config.yaml`). `handle_message/2` prepends a one-line reasoning-preference hint to the agent-facing message — but not to the JSONL session history, so history stays clean — nudging the model toward `reason(strategy: "<name>")` on queries that benefit while keeping the agent's native ReAct loop intact. `/strategy <name>` updates the state struct through the same validator; the command's copy was softened to "Reasoning preference" (from "Switched reasoning strategy") to honor hint-not-dispatch semantics honestly.
 - **`/strategies stats` CLI surface.** Backed by `Statistics.summary/0`, prints per-strategy and per-task-type aggregates (sample count, success rate, average duration) so users can inspect what `auto` is learning.
 - **Tool-context attribution.** Migration `add_session_agent_to_reasoning_outcomes` adds the columns; `Reason.base_telemetry_opts/2` threads `workspace_id`, `project_dir`, `agent_id`, and `forge_session_key` from `tool_context` into every outcome row so rows attribute to their originating session/agent.
-- **Strict compile green.** `mix.exs` sets `elixirc_options: [ignore_module_conflict: true]` to silence the intentional redefinitions in `lib/jido_claw/core/anubis_*_patch.ex`. Header comments on both patch files cross-reference the flag. Temporary — remove alongside the patches when `jido_mcp` upgrades to `anubis_mcp ~> 1.0`.
+- **Strict compile green.** `mix.exs` sets `elixirc_options: [ignore_module_conflict: true]` to silence the intentional redefinitions in `lib/jido_claw/core/` (the `Anubis.Server.Handlers.Tools` schema-validation shim and the three `Jido.Shell.*` extensions). Header comments on each patch file cross-reference the flag.
 - **System prompt parity.** Both the bundled default (`priv/defaults/system_prompt.md`) and the active project copy (`.jido/system_prompt.md`) now lead the strategy table with `auto`, drop the `adaptive` advertisement (still accepted as a deprecated alias; just no longer recommended), and swap residual `adaptive` recommendations throughout the decision framework and quick-reference table to `auto`.
 
 ### Out of scope (deferred)

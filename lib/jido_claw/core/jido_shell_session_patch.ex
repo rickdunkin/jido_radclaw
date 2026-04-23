@@ -8,8 +8,9 @@
 # point that mirrors the existing `start/2`, `stop/1`, `lookup/1` shape.
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
-# in mix.exs to suppress the "redefining module" warning this intentionally
-# triggers.
+# declared in mix.exs to suppress the "redefining module" warning this
+# intentionally triggers — see the comment there for the full patch
+# inventory this flag covers.
 #
 # ## Removal trigger
 #

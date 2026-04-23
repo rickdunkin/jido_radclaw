@@ -1,17 +1,24 @@
-# Patch for anubis_mcp 0.17.1 — Anubis.Server.Handlers.Tools
+# Patch for anubis_mcp 1.1.1 — Anubis.Server.Handlers.Tools
 #
-# jido_mcp registers tool schemas as JSON Schema, but anubis_mcp 0.17.1
-# converts them to Peri format incorrectly. Peri.validate/2 crashes with
-# FunctionClauseError when tool arguments are present.
+# jido_mcp registers tool schemas as JSON Schema, but Anubis.Server.Handlers.Tools
+# routes them through Peri.validate/2 before dispatching. Peri crashes with
+# FunctionClauseError on the JSON-Schema shape (string keys, no Peri-native
+# types), so tool calls never reach handle_tool_call/3.
 #
-# This patch wraps validate_params to rescue the crash and pass arguments
-# through unvalidated. Jido.Exec.run validates arguments internally, so
-# skipping Peri validation is safe.
+# This patch is a port of anubis_mcp 1.1.1's handler with two surgical changes:
+#   1. validate_params/3 has a `rescue` clause that returns {:ok, params} on
+#      any Peri crash. Jido.Exec.run validates arguments internally, so skipping
+#      Peri validation is safe.
+#   2. atomize_known_keys/1 converts known string keys to atoms before calling
+#      server.handle_tool_call/3, because MCP JSON arrives with string keys but
+#      Jido actions pattern-match on atom keys. Unknown keys stay as strings
+#      (String.to_existing_atom/1, so no user-controlled atom creation).
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
 # in mix.exs to suppress the "redefining module" warning this intentionally
-# triggers. Remove both that flag and this file once jido_mcp upgrades to
-# anubis_mcp ~> 1.0.
+# triggers. Remove once jido_mcp either emits Peri-compatible schemas or no
+# longer registers JSON-Schema-shaped descriptors on Anubis's pre-dispatch
+# Peri validation path.
 defmodule Anubis.Server.Handlers.Tools do
   @moduledoc false
 
@@ -26,7 +33,7 @@ defmodule Anubis.Server.Handlers.Tools do
           {:reply, map(), Frame.t()} | {:error, Error.t(), Frame.t()}
   def handle_list(request, frame, server_module) do
     tools = Handlers.get_server_tools(server_module, frame)
-    limit = frame.private[:pagination_limit]
+    limit = frame.pagination_limit
     {tools, cursor} = Handlers.maybe_paginate(request, tools, limit)
 
     {:reply,
@@ -71,13 +78,9 @@ defmodule Anubis.Server.Handlers.Tools do
   # FIX: Rescue Peri crashes from JSON Schema / Peri format mismatch.
   # Pass arguments through unvalidated — Jido.Exec.run validates internally.
   defp validate_params(params, %Tool{} = tool, frame) do
-    case tool.validate_input.(params) do
-      {:ok, validated} ->
-        {:ok, validated}
-
-      {:error, errors} ->
-        message = Schema.format_errors(errors)
-        {:error, Error.protocol(:invalid_params, %{message: message}), frame}
+    with {:error, errors} <- tool.validate_input.(params) do
+      message = Schema.format_errors(errors)
+      {:error, Error.protocol(:invalid_params, %{message: message}), frame}
     end
   rescue
     _error -> {:ok, params}

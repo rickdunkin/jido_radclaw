@@ -11,14 +11,22 @@ defmodule JidoClaw.MixProject do
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :dev,
       elixirc_paths: elixirc_paths(Mix.env()),
-      # Intentionally redefining Anubis.Server.Transport.STDIO and
-      # Anubis.Server.Handlers.Tools from anubis_mcp 0.17.1 — see
-      # lib/jido_claw/core/anubis_*_patch.ex. Silences the resulting
-      # "redefining module" warnings globally so `--warnings-as-errors`
-      # stays green. Trade-off: accidental shadow of an existing module
-      # anywhere else won't warn either; mitigation is code review on new
-      # defmodule statements. Remove this line when the patches are
-      # removed (jido_mcp upgrade to anubis_mcp ~> 1.0).
+      # Intentionally redefining four upstream modules — silences the
+      # resulting "redefining module" warnings globally so
+      # `--warnings-as-errors` stays green:
+      #   - lib/jido_claw/core/anubis_tools_handler_patch.ex
+      #     (Anubis.Server.Handlers.Tools — rescues Peri crash on jido_mcp
+      #     JSON Schema, atomizes arguments for Jido actions)
+      #   - lib/jido_claw/core/jido_shell_registry_patch.ex
+      #     (Jido.Shell.Command.Registry — :extra_commands hook)
+      #   - lib/jido_claw/core/jido_shell_session_patch.ex
+      #     (Jido.Shell.ShellSession — public update_env/2 wrapper)
+      #   - lib/jido_claw/core/jido_shell_session_server_patch.ex
+      #     (Jido.Shell.ShellSessionServer — :update_env call handler)
+      # Trade-off: accidental shadow of an existing module anywhere else
+      # won't warn either; mitigation is code review on new defmodule
+      # statements. Remove this line once all four patches above are
+      # retired (upstream fixes or forks).
       elixirc_options: [ignore_module_conflict: true],
       deps: deps(),
       escript: escript(),

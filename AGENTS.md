@@ -53,9 +53,8 @@ The `cwd` must be the absolute path to the JidoClaw project directory (where `mi
 
 **Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`.
 
-**Known limitations** (anubis_mcp 0.17.1 — patched in `lib/jido_claw/core/`):
-- Runtime patches override `Anubis.Server.Transport.STDIO` and `Anubis.Server.Handlers.Tools` to fix response delivery, schema validation, and argument key conversion. Remove once `jido_mcp` upgrades to `anubis_mcp ~> 1.0`.
-- One startup warning from `anubis_mcp` may appear on stdout before the first JSON-RPC message. MCP clients ignore non-JSON lines.
+**Known limitations** (anubis_mcp 1.1.1 — patched in `lib/jido_claw/core/`):
+- Runtime patch overrides `Anubis.Server.Handlers.Tools` to rescue a Peri validation crash caused by jido_mcp's JSON-Schema-shaped tool schemas, and to atomize known string argument keys before dispatching to Jido actions. Remove once `jido_mcp` either emits Peri-compatible schemas or no longer routes those descriptors through Anubis's pre-dispatch Peri validation path.
 
 ## Architecture
 

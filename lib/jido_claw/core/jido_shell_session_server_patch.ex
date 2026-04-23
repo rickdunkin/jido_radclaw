@@ -16,9 +16,9 @@
 # low-level mutator.
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
-# in mix.exs to suppress the "redefining module" warning this intentionally
-# triggers — the flag is already in place for the anubis_mcp + registry
-# patches.
+# declared in mix.exs to suppress the "redefining module" warning this
+# intentionally triggers — see the comment there for the full patch
+# inventory this flag covers.
 #
 # ## Removal trigger
 #

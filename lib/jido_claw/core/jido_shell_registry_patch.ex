@@ -13,8 +13,9 @@
 # the first argument to `Map.merge/2` and the built-ins override it.
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
-# in mix.exs to suppress the "redefining module" warning this intentionally
-# triggers — the flag is already in place for the anubis_mcp patches.
+# declared in mix.exs to suppress the "redefining module" warning this
+# intentionally triggers — see the comment there for the full patch
+# inventory this flag covers.
 #
 # ## Usage
 #

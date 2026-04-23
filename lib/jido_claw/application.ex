@@ -226,7 +226,12 @@ defmodule JidoClaw.Application do
   # -- MCP server (powered by jido_mcp) --
   defp mcp_children do
     case Application.get_env(:jido_claw, :serve_mode) do
-      :mcp -> Jido.MCP.Server.server_children(JidoClaw.MCPServer, transport: :stdio)
+      # Bypass Jido.MCP.Server.server_children/2 — upstream still prepends
+      # Anubis.Server.Registry to the child list, which was a process in
+      # anubis 0.17 but is a behaviour in 1.1. The server's generated
+      # child_spec/1 calls Anubis.Server.Supervisor.start_link, which starts
+      # the registry internally.
+      :mcp -> [{JidoClaw.MCPServer, [transport: :stdio]}]
       _ -> []
     end
   end
