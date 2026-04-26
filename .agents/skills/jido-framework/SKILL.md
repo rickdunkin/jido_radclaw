@@ -11,14 +11,11 @@ metadata:
 - [jido](references/jido.md)
 - [jido_action](references/jido_action.md)
 - [jido_ai](references/jido_ai.md)
-- [jido_browser](references/jido_browser.md)
 - [jido_composer](references/jido_composer.md)
-- [jido_mcp](references/jido_mcp.md)
 - [jido_memory](references/jido_memory.md)
 - [jido_messaging](references/jido_messaging.md)
 - [jido_shell](references/jido_shell.md)
 - [jido_signal](references/jido_signal.md)
-- [jido_skill](references/jido_skill.md)
 - [jido_vfs](references/jido_vfs.md)
 
 ## Searching Documentation

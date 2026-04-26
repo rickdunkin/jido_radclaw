@@ -13,10 +13,6 @@ metadata:
 - [html](references/html.md)
 - [liveview](references/liveview.md)
 - [phoenix](references/phoenix.md)
-- [phoenix_html](references/phoenix_html.md)
-- [phoenix_live_dashboard](references/phoenix_live_dashboard.md)
-- [phoenix_live_view](references/phoenix_live_view.md)
-- [phoenix_pubsub](references/phoenix_pubsub.md)
 
 ## Searching Documentation
 
