@@ -53,7 +53,7 @@ defmodule JidoClaw.Shell.ProfileManagerDeadlockTest do
       # Bootstrap a session first so the switch has a live env to
       # update (otherwise update_env is a no-op on missing session).
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
 
@@ -73,7 +73,7 @@ defmodule JidoClaw.Shell.ProfileManagerDeadlockTest do
         # and still a comfortable margin over real VFS/host bootstrap.
         task =
           Task.async(fn ->
-            SessionManager.run(fresh_ws, "true", 5_000, project_dir: tmp, force: :host)
+            SessionManager.run(fresh_ws, "true", 5_000, project_dir: tmp, backend: :host)
           end)
 
         case Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill) do
@@ -116,7 +116,7 @@ defmodule JidoClaw.Shell.ProfileManagerDeadlockTest do
     } do
       # Bootstrap sessions then switch so the mirror has a real row.
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
 
@@ -126,7 +126,7 @@ defmodule JidoClaw.Shell.ProfileManagerDeadlockTest do
       try do
         task =
           Task.async(fn ->
-            SessionManager.run(ws, "jido status", 5_000, project_dir: tmp, force: :vfs)
+            SessionManager.run(ws, "jido status", 5_000, project_dir: tmp, backend: :vfs)
           end)
 
         case Task.yield(task, 3_000) || Task.shutdown(task, :brutal_kill) do

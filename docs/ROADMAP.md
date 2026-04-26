@@ -1,8 +1,8 @@
 # JidoClaw Roadmap
 
-## Current State: v0.5.3
+## Current State: v0.5.4
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), and remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), and real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
@@ -67,7 +67,7 @@ Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) inte
 Mount the project directory into jido_shell's VFS so file tools (`ReadFile`, `WriteFile`, `EditFile`, `ListDirectory`) and shell commands share a single mount-point namespace. Delivered:
 
 - Per-workspace `JidoClaw.VFS.Workspace` GenServer owning the mount table (default `/project` mount + config-declared extras from `.jido/config.yaml`'s `vfs.mounts` key).
-- Dual-session `SessionManager`: a `BackendHost` session for real host commands (`git`, `mix`, pipes, redirects) plus a `Jido.Shell.Backend.Local` VFS session for the sandbox built-ins (`cat`, `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `echo`, `write`, `env`, `bash`). A command classifier routes automatically; `run_command force: :host | :vfs` overrides it.
+- Dual-session `SessionManager`: a `BackendHost` session for real host commands (`git`, `mix`, pipes, redirects) plus a `Jido.Shell.Backend.Local` VFS session for the sandbox built-ins (`cat`, `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `echo`, `write`, `env`, `bash`). A command classifier routes automatically; `run_command backend: "host" | "vfs"` overrides it.
 - `JidoClaw.VFS.Resolver` gains a `:workspace_id` option; file tools thread `workspace_id` through `tool_context` so absolute paths under a workspace mount flow through `Jido.Shell.VFS` and paths outside any mount fall back to `File.*`.
 - Config-driven mounts for `/scratch`, `/upstream`, `/artifacts`, … with adapter-option translation (Local, InMemory, GitHub, S3, Git). Default `/project` is fail-fast; extras are fail-soft (warn and continue).
 - Agent can `cat /project/mix.exs` and `cat /upstream/mix.exs` in the same workflow. Workspace + shell state now persist across multi-step skills and spawned sub-agents.
@@ -254,23 +254,42 @@ Remote command execution on dev/staging servers via the existing `Jido.Shell.Bac
 - `jido status` SSH session count segment → v0.5.3.1.
 - Automatic reconnect on dropped sessions → revisit if users hit it.
 - Classifier extension for SSH (auto-route based on path prefix) — SSH stays explicit.
-- Consolidate `force:` → `backend:` in RunCommand and remove the legacy alias → v0.5.4.
+- Consolidate `force:` → `backend:` in RunCommand and remove the legacy alias → v0.5.4 (delivered).
 - SSH jump-host / bastion chains.
 - Interactive/TTY-allocating sessions (`ssh -t`) — command-mode only.
 - Key management UI / secret-store integration for SSH credentials (users place keys on disk, config points at them).
-- Streaming SSH output to `Display` → v0.5.4.
+- Streaming SSH output to `Display` → v0.5.4 (delivered).
 
-### v0.5.4 — Streaming Output to Display
+### v0.5.4 — Streaming Output to Display + `force:` → `backend:` Consolidation
 
-**Status: Planned**
+**Status: Complete**
 
-Wire jido_shell transport events directly into `JidoClaw.Display` for real-time output rendering during long-running commands.
+Wires `jido_shell` transport events directly into `JidoClaw.Display` for real-time output rendering during long-running commands, and clears the two items v0.5.3 explicitly deferred (`force:` consolidation + streaming SSH output). Delivered:
 
-- **`stream_to_display: true` param on `RunCommand`.** When set, Display subscribes to the underlying `Jido.Shell.ShellSessionServer` transport before the command runs and unsubscribes on `:exit_status`/`:error`.
-- **`Display.handle_cast({:shell_output, ...}, state)`** — renders chunks in real-time (not swarm-box throttled). Label includes `agent_id` + originating tool so concurrent streams from multiple agents stay distinguishable.
-- **OutputLimiter cap bump for streaming mode** — default 50KB is fine for captured output but too small for live-streamed commands. Raise to 10MB when `stream_to_display` is on; error out (not silent truncation) if exceeded.
-- **Backpressure** — each chunk is a cast to Display. On sustained high-volume output (e.g., `tail -f`) the GenServer queue could build; mitigate with a periodic flush watermark and warn-and-drop-oldest policy with a one-line notice if the watermark is hit.
-- **Works for host, VFS, and SSH (if v0.5.3 has shipped) sessions uniformly** — transport events are backend-agnostic, so the same wiring covers all three.
+- **`force:` → `backend:` consolidation.** Hard-removed `force:` from `RunCommand`'s schema and from `SessionManager.resolve_target/3`; precedence is now simply `backend: :ssh` (with `server`) > `backend: :host` > `backend: :vfs` > classifier-routed default. Tests migrated type-aware: `RunCommand` callers use the string-typed `backend: "host"` (public tool API), and direct `SessionManager` callers use the atom-typed `backend: :host`. The legacy-alias parity test and the `force:`-vs-`backend:` precedence test were deleted (their assertions are no longer meaningful). Acceptance gate: `grep -rn "force:" lib/ test/` returns zero matches.
+- **`stream_to_display: true` param on `RunCommand`.** Schema-level boolean, default `false`. Two early-exit guards before the streaming path is wired up: (1) under MCP `serve_mode` the flag is silently dropped so Display's raw ANSI writes don't corrupt JSON-RPC framing on stdio; (2) when `SessionManager` is unregistered the System.cmd fallback ignores streaming entirely (there are no shell-session events for Display to subscribe to). `agent_id` resolves from `tool_context` (defaulting to `"main"`) and is forwarded alongside `tool_name: "run_command"` to `SessionManager`.
+- **Stream lifecycle owned end-to-end inside `SessionManager`.** Both `handle_local_run/6` and `handle_ssh_run/6` wrap their inner execution in `with_optional_stream/3`, which: resolves the final `session_id`, calls `Display.start_stream/3` (synchronous so the entry is registered before the first transport event can land), subscribes the Display pid to `Jido.Shell.ShellSessionServer`, runs the command + collector, and in a `try/after` block always unsubscribes Display + casts `Display.end_stream/1`. Handles the case where `Display.start_stream/3` returns `{:error, :stream_still_draining}` (next streaming command after a back-to-back persistent-session reuse) by transparently falling through to non-streaming mode for that command. Captured-result return is preserved.
+- **Display streaming state.** New `streaming_sessions: %{session_id => entry}` map keyed by the resolved jido_shell session id (`<workspace>:host`, `:vfs`, or `:ssh:<server>`). Each entry tracks `agent_id`, `tool_name`, `bytes_streamed`, `line_buffer`, `dropped_warned?`, plus a `done?`/`end_requested?` flag pair: terminal events flip `done?`; `end_stream/1` flips `end_requested?`; the entry is reaped only once both are true. The pair makes ordering edge-cases between the unsubscribe and the cast safe without depending on Erlang FIFO subtleties.
+- **Per-event handlers in `Display`.** `{:command_started, line}` prints a banner (`[<agent_id>] <tool_name>: $ <line>`) and clears any pending kaomoji spinner; `{:output, chunk}` writes raw bytes via `IO.binwrite/1` (single-stream mode preserves CR/ANSI naturally for progress bars; multi-stream mode prefixes complete lines with `[<agent_id>] ` and buffers partial-line tails up to a 64 KB cap before emit-and-reset); `:command_done` flushes any partial line; `{:error, %Jido.Shell.Error{code: {:command, :exit_code}, context: %{code: n}}}` renders dim `[exit n]` (matching SessionManager's `{:ok, %{exit_code: n}}` re-route); other `{:error, _}` shapes render red `! <Exception.message(err)>`; `:command_cancelled` renders dim `[cancelled]`; `{:command_crashed, reason}` renders red `[backend crashed: <inspect reason>]`. Stragglers for a removed `session_id` hit the catch-all and drop silently.
+- **OutputLimiter cap rewrite in `BackendHost`.** Replaced the fixed `@max_output_bytes` constant with `max_output_bytes/1` (50 KB non-streaming, 10 MB streaming, with a test-only override knob). Overflow semantics shifted from `{:ok, :output_truncated}` (silent in-band truncation marker) to `{:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}, context: %{emitted_bytes:, max_output_bytes:}}}` via `Jido.Shell.Backend.OutputLimiter.check/3` — same shape SSH and Local emit. Over-limit chunks are no longer emitted. Existing callers passing explicit `:output_limit` still win (e.g. SessionManager's per-SSH-command cap).
+- **Three-cap streaming awareness in `SessionManager`.** Backend emission cap (50 KB → 10 MB), SSH `output_limit:` (1 MB → 10 MB), and Local/VFS `execution_context.limits.max_output_bytes` (unset → 10 MB) all flip on the new `streaming?` flag. The agent-facing capture echo stays small: `finalize_output/2` returns a 50 KB streaming preview (vs. 10 KB non-streaming) with an explicit `... (output truncated; full output streamed live)` note so the model context can't be blown out by a multi-MB build log. Live-render fidelity is full up to the per-cap ceiling.
+- **Backpressure (warn-and-drop-oldest).** Display's `{:output, _}` handler peeks at its own `:message_queue_len`; over a 1000-message watermark it does a selective `receive` to drain up to 500 pending output chunks for the affected stream (no other event types) and emits a one-shot yellow `[<agent_id>] [output dropped to keep up — captured result is preview only]` line per stream. The captured-output cap is unchanged; this only adjusts what renders live.
+- **StatusBar streaming segment.** New cyan `⟲ streaming` (or `⟲ streaming (n)` for multiple concurrent streams) optional segment between progress and cost. Drops via the existing `trim_optional/4` on narrow terminals, so non-streaming UX is unchanged.
+- **Drive-by: `throttled_swarm_render` state-threading fix.** The throttle gate was reading `last_render` without ever writing it back, leaving the gate permanently open. `throttled_swarm_render/1` now returns `{updated_state, :ok | :throttled}` and bumps `last_render` on the rendered branch; `render_swarm_update/1` returns updated state; both call sites (`:agent_completed`, `:status_bar_tick`) thread state through.
+
+### Out of scope (deferred)
+
+Items still deferred from v0.5.3 — flagged here for visibility, not picked up by v0.5.4:
+
+- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1.
+- `jido status` SSH session count segment → v0.5.3.1.
+- Automatic reconnect on dropped SSH sessions — revisit if users hit it.
+- Classifier extension for SSH (auto-route based on path prefix) — SSH stays explicit.
+- Passphrase-protected SSH private keys — requires upstream `jido_shell` hook.
+- SSH jump-host / bastion chains.
+- Interactive/TTY-allocating sessions (`ssh -t`) — command-mode only.
+- Key management UI / secret-store integration for SSH credentials.
+- **Truly concurrent multi-agent streaming.** `SessionManager.run/4` is a `GenServer.call` that synchronously runs the command inside the SessionManager process, so two agents calling `run_command` serialize globally. v0.5.4's streaming code is correct under this constraint; lifting the serialization to allow truly interleaved live chunks from simultaneous commands is a separate milestone.
 
 ---
 

@@ -122,17 +122,69 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
   # -- Error paths -----------------------------------------------------------
 
   describe "output limit" do
-    test "output larger than cap aborts with SSH-formatted error", %{workspace_id: ws, tmp: tmp} do
-      assert {:error, message} =
+    test "output larger than cap aborts with structured error", %{workspace_id: ws, tmp: tmp} do
+      assert {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}}} =
                SessionManager.run(ws, "__fake_output_overflow__", 5_000,
                  project_dir: tmp,
                  backend: :ssh,
                  server: "staging"
                )
-
-      assert message =~ "SSH to staging"
-      assert message =~ "output limit exceeded"
     end
+
+    test "SSH :output_limit_exceeded preserves captured preview in error.context",
+         %{workspace_id: ws, tmp: tmp} do
+      # Capture Display IO so the streamed x's don't dump to stdout —
+      # `stream_to_display: true` writes via Display's group leader.
+      capture_display_io(fn ->
+        response =
+          SessionManager.run(
+            ws,
+            "echo __fake_streaming_overflow__",
+            10_000,
+            project_dir: tmp,
+            backend: :ssh,
+            server: "staging",
+            stream_to_display: true,
+            agent_id: "main",
+            tool_name: "run_command"
+          )
+
+        send(self(), {:response, response})
+      end)
+
+      assert_received {:response, response}
+
+      assert {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}, context: ctx}} =
+               response
+
+      assert is_binary(ctx.preview)
+      assert byte_size(ctx.preview) > 0
+      assert byte_size(ctx.preview) <= 50_000 + 100
+
+      # Ensure no Display registration leaks across tests.
+      JidoClaw.Display.abort_stream(ws <> ":ssh:staging")
+    end
+  end
+
+  # Display writes via IO.write on its own group leader; redirect it
+  # to the calling process's gl so capture_io can swallow the streamed
+  # output. async: false on this suite makes the temporary redirect safe.
+  defp capture_display_io(fun) do
+    ExUnit.CaptureIO.capture_io(fn ->
+      display_pid =
+        GenServer.whereis(JidoClaw.Display) || flunk("Display singleton not running")
+
+      original_gl = Process.info(display_pid, :group_leader) |> elem(1)
+      Process.group_leader(display_pid, Process.group_leader())
+
+      try do
+        fun.()
+        # Ensure all pending casts to Display have flushed.
+        _ = :sys.get_state(JidoClaw.Display)
+      after
+        Process.group_leader(display_pid, original_gl)
+      end
+    end)
   end
 
   describe "connection errors" do
@@ -344,7 +396,7 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
       tmp: tmp
     } do
       # Bootstrap host + SSH.
-      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       {:ok, _} =
         SessionManager.run(ws, "echo ok", 5_000,

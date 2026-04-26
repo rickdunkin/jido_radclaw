@@ -120,7 +120,7 @@ defmodule JidoClaw.VFS.WorkspaceTest do
       end)
 
       # Bootstrap the workspace + both shell sessions via SessionManager
-      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: dir_a, force: :host)
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: dir_a, backend: :host)
       assert {:ok, ^dir_a} = SessionManager.cwd(ws, :host)
 
       log =
@@ -188,7 +188,7 @@ defmodule JidoClaw.VFS.WorkspaceTest do
         ExUnit.CaptureLog.capture_log(fn ->
           # This used to crash with "process attempted to call itself".
           assert {:ok, _} =
-                   SessionManager.run(ws, "true", 5_000, project_dir: dir_b, force: :host)
+                   SessionManager.run(ws, "true", 5_000, project_dir: dir_b, backend: :host)
         end)
 
       assert log =~ "project_dir drift"

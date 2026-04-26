@@ -48,7 +48,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{output: out, exit_code: 0}} =
                SessionManager.run(ws, "echo $JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :host
+                 backend: :host
                )
 
       assert String.trim(out) == "base"
@@ -60,14 +60,14 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
     } do
       # Bootstrap host session before switching so live-update path runs.
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
 
       assert {:ok, %{output: out}} =
                SessionManager.run(ws, "echo $JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :host
+                 backend: :host
                )
 
       assert String.trim(out) == "staging-value"
@@ -83,7 +83,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{output: out, exit_code: 0}} =
                SessionManager.run(ws, "env JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert out =~ "JIDO_SMOKE=base"
@@ -94,7 +94,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, _} =
                SessionManager.run(ws, "env JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
@@ -102,7 +102,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{output: out}} =
                SessionManager.run(ws, "env JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert out =~ "JIDO_SMOKE=staging-value"
@@ -118,7 +118,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{exit_code: 0}} =
                SessionManager.run(ws, "env ADHOC=kept", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
@@ -126,7 +126,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{output: out}} =
                SessionManager.run(ws, "env ADHOC", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert out =~ "ADHOC=kept"
@@ -135,7 +135,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       assert {:ok, %{output: smoke_out}} =
                SessionManager.run(ws, "env JIDO_SMOKE", 5_000,
                  project_dir: tmp,
-                 force: :vfs
+                 backend: :vfs
                )
 
       assert smoke_out =~ "JIDO_SMOKE=staging-value"
@@ -149,7 +149,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
     } do
       # Bootstrap sessions first
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       # Snapshot host env before update
       {:ok, pre_host} = SessionManager.__host_env_for_test__(ws)
@@ -183,7 +183,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
     } do
       # Bootstrap sessions so switch runs the live-update path.
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
 
@@ -198,7 +198,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       tmp: tmp
     } do
       assert {:ok, _} =
-               SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+               SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
 

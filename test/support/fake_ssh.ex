@@ -113,6 +113,18 @@ defmodule JidoClaw.Test.FakeSSH do
         send(caller, {:ssh_cm, conn, {:eof, channel_id}})
         send(caller, {:ssh_cm, conn, {:closed, channel_id}})
 
+      String.contains?(command_str, "__fake_streaming_overflow__") ->
+        # Multiple chunks emitted as :output (each within cap), then a chunk
+        # that pushes past the cap. With test override = 100 KB streaming cap,
+        # 4 × 30 KB chunks fit (120 KB cumulative — last chunk rejected).
+        for _ <- 1..4 do
+          send(caller, {:ssh_cm, conn, {:data, channel_id, 0, String.duplicate("x", 30_000)}})
+        end
+
+        send(caller, {:ssh_cm, conn, {:exit_status, channel_id, 0}})
+        send(caller, {:ssh_cm, conn, {:eof, channel_id}})
+        send(caller, {:ssh_cm, conn, {:closed, channel_id}})
+
       String.contains?(command_str, "__fake_output_overflow__") ->
         # Single chunk larger than SessionManager's @max_ssh_output_bytes
         # (1_000_000). The backend's OutputLimiter rejects the chunk and

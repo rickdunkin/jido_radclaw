@@ -16,8 +16,9 @@ defmodule JidoClaw.Shell.BackendHost do
 
   @behaviour Jido.Shell.Backend
 
+  alias Jido.Shell.Backend.OutputLimiter
+
   @default_task_supervisor Jido.Shell.CommandTaskSupervisor
-  @max_output_bytes 50_000
 
   # -- Backend callbacks ------------------------------------------------------
 
@@ -44,7 +45,10 @@ defmodule JidoClaw.Shell.BackendHost do
     cwd = Keyword.get(exec_opts, :dir, state.cwd)
     env = Keyword.get(exec_opts, :env, state.env)
     timeout = Keyword.get(exec_opts, :timeout, 30_000)
-    output_limit = Keyword.get(exec_opts, :output_limit, @max_output_bytes)
+    # Explicit `:output_limit` always wins (e.g. SessionManager's SSH
+    # cap) so the streaming-aware default doesn't shadow callers that
+    # already know what they want.
+    output_limit = Keyword.get(exec_opts, :output_limit, max_output_bytes(exec_opts))
 
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
            run_command(state.session_pid, line, cwd, env, timeout, output_limit)
@@ -54,6 +58,20 @@ defmodule JidoClaw.Shell.BackendHost do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc false
+  # Visible for testing. The streaming branch honors the test-only
+  # config override so overflow tests don't have to generate megabytes
+  # of output. Non-streaming is fixed at 50 KB to keep existing
+  # overflow-test expectations stable.
+  def max_output_bytes(opts) do
+    if Keyword.get(opts, :streaming, false) do
+      Application.get_env(:jido_claw, :test_streaming_max_output_bytes_override) ||
+        10_000_000
+    else
+      50_000
     end
   end
 
@@ -126,18 +144,17 @@ defmodule JidoClaw.Shell.BackendHost do
   defp collect_port_output(port, session_pid, timeout, output_limit, bytes_sent) do
     receive do
       {^port, {:data, chunk}} ->
-        new_bytes = bytes_sent + byte_size(chunk)
+        case OutputLimiter.check(byte_size(chunk), bytes_sent, output_limit) do
+          {:ok, new_total} ->
+            send(session_pid, {:command_event, {:output, chunk}})
+            collect_port_output(port, session_pid, timeout, output_limit, new_total)
 
-        if output_limit && new_bytes > output_limit do
-          # Send what we have, then truncation notice
-          send(session_pid, {:command_event, {:output, chunk}})
-          send(session_pid, {:command_event, {:output, "\n... (output truncated)"}})
-          # Kill the port and drain
-          catch_port_close(port)
-          {:ok, :output_truncated}
-        else
-          send(session_pid, {:command_event, {:output, chunk}})
-          collect_port_output(port, session_pid, timeout, output_limit, new_bytes)
+          {:limit_exceeded, %Jido.Shell.Error{} = error} ->
+            # Don't emit the over-limit chunk (matches SSH/Local
+            # behavior). The error context already carries the byte
+            # accounting (`emitted_bytes`, `max_output_bytes`).
+            catch_port_close(port)
+            {:error, error}
         end
 
       {^port, {:exit_status, exit_code}} ->

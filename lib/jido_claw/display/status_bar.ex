@@ -37,6 +37,7 @@ defmodule JidoClaw.Display.StatusBar do
         {:required, "#{format_tokens(total_tokens)}/#{format_tokens(context_window)}"},
         profile_segment(display_state),
         {:optional, "#{progress_bar(pct, 10)} #{pct}%"},
+        streaming_segment(display_state),
         {:optional, cost},
         {:optional, elapsed},
         {:optional, "#{child_count} agents"}
@@ -45,6 +46,21 @@ defmodule JidoClaw.Display.StatusBar do
 
     build_bar(segments, width)
   end
+
+  @doc """
+  Streaming-shell-output segment — cyan `⟲ streaming` (with active
+  count when more than one stream is live). `nil` when no streams
+  are active so non-streaming UX is unchanged.
+  """
+  def streaming_segment(%{streaming_sessions: %{} = sessions}) do
+    case map_size(sessions) do
+      0 -> nil
+      1 -> {:optional, " \e[36m⟲\e[0m streaming"}
+      n -> {:optional, " \e[36m⟲\e[0m streaming (#{n})"}
+    end
+  end
+
+  def streaming_segment(_), do: nil
 
   @doc """
   Profile segment — yellow `⚑ <name>` when the active profile differs

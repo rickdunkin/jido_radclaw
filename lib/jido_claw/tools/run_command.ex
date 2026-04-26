@@ -16,8 +16,6 @@ defmodule JidoClaw.Tools.RunCommand do
       through SessionManager.
     * `backend: "ssh"` + `server: <name>` — routes to the SSH session
       for the declared server. Never falls back to local execution.
-
-  The legacy `force: :host | :vfs` param still works unchanged.
   """
 
   use Jido.Action,
@@ -53,16 +51,6 @@ defmodule JidoClaw.Tools.RunCommand do
         default: "default",
         doc: "Session workspace for persistent shell state"
       ],
-      force: [
-        type: {:in, [:host, :vfs, nil]},
-        required: false,
-        doc: """
-        Override the automatic host/VFS classifier. `:host` forces sh -c;
-        `:vfs` forces the jido_shell sandbox (useful for bare `ls`/`pwd` that
-        should observe the VFS session's cwd, or commands with literal shell
-        metachars in quoted args).
-        """
-      ],
       backend: [
         type: {:in, ["host", "vfs", "ssh"]},
         required: false,
@@ -73,6 +61,16 @@ defmodule JidoClaw.Tools.RunCommand do
         type: :string,
         required: false,
         doc: "SSH server name from `.jido/config.yaml` (required when `backend: \"ssh\"`)."
+      ],
+      stream_to_display: [
+        type: :boolean,
+        default: false,
+        doc: """
+        When true, stream output chunks to `JidoClaw.Display` in real time
+        instead of only returning the captured output at the end. Silently
+        ignored under MCP serve_mode (stdio framing) and when the
+        SessionManager is unavailable.
+        """
       ]
     ]
 
@@ -99,9 +97,21 @@ defmodule JidoClaw.Tools.RunCommand do
 
     backend = coerce_backend(Map.get(params, :backend))
     server = Map.get(params, :server)
+    agent_id = get_in(context, [:tool_context, :agent_id]) || "main"
+    stream_to_display? = streaming_requested?(params)
 
     with :ok <- validate_backend_server(backend, server) do
-      dispatch(command, timeout, workspace_id, project_dir, backend, server, params)
+      dispatch(
+        command,
+        timeout,
+        workspace_id,
+        project_dir,
+        backend,
+        server,
+        params,
+        stream_to_display?,
+        agent_id
+      )
     end
   end
 
@@ -114,29 +124,79 @@ defmodule JidoClaw.Tools.RunCommand do
 
   defp validate_backend_server(_, _), do: :ok
 
-  defp dispatch(command, timeout, workspace_id, project_dir, :ssh, server, _params) do
+  defp dispatch(
+         command,
+         timeout,
+         workspace_id,
+         project_dir,
+         :ssh,
+         server,
+         _params,
+         stream?,
+         agent_id
+       ) do
     if session_manager_available?() do
-      opts = [project_dir: project_dir, backend: :ssh, server: server]
+      opts =
+        [project_dir: project_dir, backend: :ssh, server: server]
+        |> maybe_put_streaming(stream?, agent_id)
+
       JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout, opts)
     else
       {:error, "SSH requires SessionManager; SessionManager is not running"}
     end
   end
 
-  defp dispatch(command, timeout, workspace_id, project_dir, backend, _server, params) do
+  defp dispatch(
+         command,
+         timeout,
+         workspace_id,
+         project_dir,
+         backend,
+         _server,
+         _params,
+         stream?,
+         agent_id
+       ) do
     opts =
-      [project_dir: project_dir, force: Map.get(params, :force)]
+      [project_dir: project_dir]
       |> maybe_put(:backend, backend)
+      |> maybe_put_streaming(stream?, agent_id)
 
     if session_manager_available?() do
       JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout, opts)
     else
+      # System.cmd fallback gate: ignore stream_to_display: entirely —
+      # without SessionManager there are no shell session events for
+      # Display to subscribe to.
       run_with_system_cmd(command, timeout)
     end
   end
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  # Drop streaming opts under MCP serve_mode (stdio JSON-RPC) — Display
+  # writes raw ANSI to stdout and would corrupt the framing.
+  defp maybe_put_streaming(opts, false, _agent_id), do: opts
+
+  defp maybe_put_streaming(opts, true, agent_id) do
+    if Application.get_env(:jido_claw, :serve_mode) == :mcp do
+      require Logger
+      Logger.debug("[RunCommand] dropping stream_to_display: under MCP serve_mode")
+      opts
+    else
+      Keyword.merge(opts,
+        stream_to_display: true,
+        agent_id: agent_id,
+        tool_name: "run_command"
+      )
+    end
+  end
+
+  defp streaming_requested?(params) do
+    Map.get(params, :stream_to_display) == true or
+      Map.get(params, "stream_to_display") == true
+  end
 
   # Legacy-atom coercion for NimbleOptions. Turns `:host`/`:vfs`/`:ssh`
   # into their string equivalents so the `{:in, [...]}` schema

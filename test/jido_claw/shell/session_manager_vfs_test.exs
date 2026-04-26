@@ -117,7 +117,7 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       assert out =~ "git version"
     end
 
-    test "force: :host sends a sandbox-allowlisted command to host anyway", %{
+    test "backend: :host sends a sandbox-allowlisted command to host anyway", %{
       workspace_id: ws,
       tmp: tmp
     } do
@@ -125,18 +125,18 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       assert {:ok, %{output: out, exit_code: 0}} =
                SessionManager.run(ws, "cat README.md", 5_000,
                  project_dir: tmp,
-                 force: :host
+                 backend: :host
                )
 
       assert out =~ "from /project"
     end
 
-    test "force: :vfs drives the VFS session for a command that classifier would punt to host",
+    test "backend: :vfs drives the VFS session for a command that classifier would punt to host",
          %{workspace_id: ws, tmp: tmp} do
-      # Bare `ls` classifies to host. With force: :vfs it hits the sandbox
+      # Bare `ls` classifies to host. With backend: :vfs it hits the sandbox
       # session whose cwd is /project — ls should return the file names.
       assert {:ok, %{output: out, exit_code: 0}} =
-               SessionManager.run(ws, "ls", 5_000, project_dir: tmp, force: :vfs)
+               SessionManager.run(ws, "ls", 5_000, project_dir: tmp, backend: :vfs)
 
       assert out =~ "README.md"
       assert out =~ "mix.exs"
@@ -174,25 +174,12 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       # on GNU/BSD) — just assert the file contents aren't there, which
       # is the real regression signal.
     end
-
-    test "force: :host wins over backend: :vfs on conflict", %{workspace_id: ws, tmp: tmp} do
-      # Legacy `:force` keeps priority over the newer `:backend` override.
-      assert {:ok, %{output: out, exit_code: 0}} =
-               SessionManager.run(ws, "pwd", 5_000,
-                 project_dir: tmp,
-                 force: :host,
-                 backend: :vfs
-               )
-
-      assert String.ends_with?(String.trim(out), tmp)
-      refute String.trim(out) == "/project"
-    end
   end
 
   describe "session lifecycle" do
     test "host and VFS sessions start with distinct cwds", %{workspace_id: ws, tmp: tmp} do
       # Trigger session bootstrap
-      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       assert {:ok, host_cwd} = SessionManager.cwd(ws, :host)
       assert {:ok, vfs_cwd} = SessionManager.cwd(ws, :vfs)
@@ -205,7 +192,7 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       workspace_id: ws,
       tmp: tmp
     } do
-      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
 
       tmp2 =
         Path.join(
@@ -219,7 +206,7 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp2, force: :host)
+          {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp2, backend: :host)
         end)
 
       assert log =~ "project_dir drift"
@@ -230,7 +217,7 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
       workspace_id: ws,
       tmp: tmp
     } do
-      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, force: :host)
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
       assert Workspace.mounts(ws) != []
 
       :ok = SessionManager.stop_session(ws)

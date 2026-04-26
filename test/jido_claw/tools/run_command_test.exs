@@ -69,6 +69,20 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
       refute result.output =~ "truncated"
     end
+
+    test "truncated output stays valid UTF-8 when cap cuts a multibyte codepoint" do
+      # Non-streaming cap is 10_000 bytes. '€' is 3 bytes:
+      # 10_000 / 3 = 3333 remainder 1 → cap falls inside the 3334th '€'.
+      # A naive `binary_part/3` cut would yield invalid UTF-8 and break
+      # JSON encoding for the tool result; truncate_utf8 must drop the
+      # partial codepoint.
+      command = ~s|python3 -c "import sys; sys.stdout.write('€' * 5000)"|
+
+      assert {:ok, result} = RunCommand.run(%{command: command}, %{})
+
+      assert result.output =~ "output truncated"
+      assert String.valid?(result.output)
+    end
   end
 
   describe "run/2 timeout" do
@@ -223,13 +237,6 @@ defmodule JidoClaw.Tools.RunCommandTest do
       assert result.exit_code == 0
       assert result.output =~ "mix.exs contents"
     end
-
-    test "legacy force: :host still works" do
-      assert {:ok, result} =
-               RunCommand.run(%{command: "echo forced", force: :host}, %{})
-
-      assert String.trim(result.output) == "forced"
-    end
   end
 
   describe "run/2 SSH fallback refusal" do
@@ -264,6 +271,172 @@ defmodule JidoClaw.Tools.RunCommandTest do
       try do
         assert {:ok, result} = RunCommand.run(%{command: "echo ok"}, %{})
         assert String.trim(result.output) == "ok"
+      after
+        Process.register(pid, JidoClaw.Shell.SessionManager)
+      end
+    end
+  end
+
+  describe "stream_to_display: roundtrip" do
+    setup do
+      workspace_id = "rc-stream-#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        _ = SessionManager.stop_session(workspace_id)
+        # Best-effort: streams use the persistent host session_id, so
+        # if the test died mid-stream the entry could still be live.
+        _ = JidoClaw.Display.end_stream(workspace_id <> ":host")
+      end)
+
+      {:ok, workspace_id: workspace_id}
+    end
+
+    # Display writes via IO.write on its own group leader; redirect
+    # it to the calling process's gl so capture_io can see it.
+    # async: false on the suite makes this safe.
+    defp capture_streaming(fun) do
+      ExUnit.CaptureIO.capture_io(fn ->
+        display_pid =
+          GenServer.whereis(JidoClaw.Display) || flunk("Display singleton not running")
+
+        original_gl = Process.info(display_pid, :group_leader) |> elem(1)
+        Process.group_leader(display_pid, Process.group_leader())
+
+        try do
+          fun.()
+          # Ensure all pending casts to Display have flushed.
+          _ = :sys.get_state(JidoClaw.Display)
+        after
+          Process.group_leader(display_pid, original_gl)
+        end
+      end)
+    end
+
+    test "renders chunks in real time and returns a captured preview", %{workspace_id: ws} do
+      io =
+        capture_streaming(fn ->
+          {:ok, result} =
+            RunCommand.run(
+              %{
+                command: "for i in $(seq 1 50); do echo line_$i; done",
+                stream_to_display: true,
+                workspace_id: ws,
+                timeout: 10_000
+              },
+              %{}
+            )
+
+          # Captured-output return is a preview — small for a 50-line
+          # stream, but the assertion is on the structural shape.
+          assert is_binary(result.output)
+          send(self(), {:exit_code, result.exit_code})
+        end)
+
+      assert_received {:exit_code, 0}
+
+      # Display rendered the lines live. Spot-check first/last; checking
+      # all 50 individually is overkill (and noisy).
+      assert io =~ "line_1"
+      assert io =~ "line_50"
+
+      # Stream banner from {:command_started, line} event.
+      assert io =~ "[main] run_command:"
+    end
+
+    test "cap overflow returns {:error, %Jido.Shell.Error{}} with proper context", %{
+      workspace_id: ws
+    } do
+      # Test config sets :test_streaming_max_output_bytes_override = 100_000.
+      # Generate ~150 KB of output: 1500 lines of 100 chars each.
+      command = "for i in $(seq 1 1500); do printf '%0100d\\n' $i; done"
+
+      _io =
+        capture_streaming(fn ->
+          response =
+            RunCommand.run(
+              %{
+                command: command,
+                stream_to_display: true,
+                workspace_id: ws,
+                timeout: 10_000
+              },
+              %{}
+            )
+
+          send(self(), {:response, response})
+        end)
+
+      assert_received {:response, response}
+
+      assert {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}, context: ctx}} =
+               response
+
+      assert is_integer(ctx.emitted_bytes)
+      assert is_integer(ctx.max_output_bytes)
+      assert ctx.max_output_bytes == 100_000
+
+      assert is_binary(ctx.preview)
+      # Command emits zero-padded sequence numbers; first lines must be in preview.
+      assert ctx.preview =~ "0000000000000000001"
+      # Preview is bounded — finalize_output streaming cap is 50 KB.
+      assert byte_size(ctx.preview) <= 50_000 + 100
+      # Preview must always be valid UTF-8 — JSON/tool-result encoding
+      # would break otherwise. ASCII content here, but the assertion
+      # also guards future multibyte regressions.
+      assert String.valid?(ctx.preview)
+    end
+
+    test "MCP serve_mode silently drops stream_to_display:", %{workspace_id: ws} do
+      Application.put_env(:jido_claw, :serve_mode, :mcp)
+
+      try do
+        io =
+          capture_streaming(fn ->
+            {:ok, result} =
+              RunCommand.run(
+                %{
+                  command: "echo mcp_check",
+                  stream_to_display: true,
+                  workspace_id: ws,
+                  timeout: 5_000
+                },
+                %{}
+              )
+
+            send(self(), {:result, result})
+          end)
+
+        # No Display interaction (no streaming banner).
+        refute io =~ "[main] run_command:"
+
+        # Captured output still returns to the agent normally.
+        assert_received {:result, %{output: out, exit_code: 0}}
+        assert String.trim(out) == "mcp_check"
+      after
+        Application.delete_env(:jido_claw, :serve_mode)
+      end
+    end
+
+    test "System.cmd fallback ignores stream_to_display: entirely" do
+      pid = Process.whereis(JidoClaw.Shell.SessionManager)
+      Process.unregister(JidoClaw.Shell.SessionManager)
+
+      try do
+        io =
+          capture_streaming(fn ->
+            {:ok, result} =
+              RunCommand.run(
+                %{command: "echo fallback_ok", stream_to_display: true, timeout: 5_000},
+                %{}
+              )
+
+            send(self(), {:result, result})
+          end)
+
+        # System.cmd path doesn't touch Display.
+        refute io =~ "[main] run_command:"
+        assert_received {:result, %{output: out, exit_code: 0}}
+        assert String.trim(out) == "fallback_ok"
       after
         Process.register(pid, JidoClaw.Shell.SessionManager)
       end
