@@ -56,7 +56,10 @@ defmodule JidoClaw.CLI.PresentersTest do
       lines = Presenters.status_lines(snapshot)
 
       assert Enum.any?(lines, &String.contains?(&1, "sessions unavailable: db down"))
-      refute Enum.any?(lines, &String.contains?(&1, "active session"))
+
+      refute Enum.any?(lines, fn line ->
+               String.contains?(line, "forge") and String.contains?(line, "active session")
+             end)
     end
 
     test "renders 'profile     default' header line when :profile is omitted" do
@@ -82,6 +85,31 @@ defmodule JidoClaw.CLI.PresentersTest do
       lines = Presenters.status_lines(snapshot)
 
       assert "  profile     staging" in lines
+    end
+
+    test "renders the provided :ssh_sessions count line" do
+      snapshot = %{
+        tracker: %{agents: %{"main" => %{status: :running}}, order: ["main"]},
+        sessions: {:ok, []},
+        stats: %{agents_spawned: 0, uptime_seconds: 0},
+        ssh_sessions: 3
+      }
+
+      lines = Presenters.status_lines(snapshot)
+
+      assert "  ssh         3 active session(s)" in lines
+    end
+
+    test "defaults :ssh_sessions to 0 when key is omitted (back-compat)" do
+      snapshot = %{
+        tracker: %{agents: %{"main" => %{status: :running}}, order: ["main"]},
+        sessions: {:ok, []},
+        stats: %{agents_spawned: 0, uptime_seconds: 0}
+      }
+
+      lines = Presenters.status_lines(snapshot)
+
+      assert "  ssh         0 active session(s)" in lines
     end
   end
 

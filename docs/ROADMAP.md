@@ -2,9 +2,11 @@
 
 ## Current State: v0.5.4
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), and real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4).
+Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4), and `/servers` REPL command + workspace-scoped `jido status` SSH session count + bounded auto-reconnect on dropped SSH sessions (v0.5.3.1, post-v0.5.4 follow-up).
 
 Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
+
+Deferred items not yet scheduled into a release are tracked in [`docs/BACKLOG.md`](BACKLOG.md).
 
 ---
 
@@ -224,7 +226,7 @@ Register JidoClaw-specific commands (e.g., `jido status`, `jido memory search`) 
 Named env var sets (dev, staging, prod) switchable per workspace session. Delivered:
 
 - **`profiles:` key in `.jido/config.yaml`** — map of name → env var map. Values are string-coerced (integers tolerated); non-string-non-integer values rejected per-key with a warn-and-skip. The magic name `"default"` within `profiles:` is first-class: it defines the baseline every profile inherits from, is always switchable (even absent from YAML), and `list/0` pins it first. There is no separate `active_profile:` config key.
-- **`JidoClaw.Shell.ProfileManager` GenServer** — singleton keyed by workspace, loaded from `.jido/config.yaml` at boot. Owns `profiles`, `default_env`, and `active_by_workspace: %{workspace_id => profile_name}`. `switch/2` doesn't require a live shell session — new sessions inherit the recorded active profile at lazy-start via `SessionManager.start_new_session/3`. Registered *before* `Shell.SessionManager` under `:rest_for_one` so a SessionManager crash doesn't wipe `active_by_workspace`. Emits `jido_claw.shell.profile_switched` with `%{workspace_id, from, to, key_count, reason}` on every real switch; redundant switches (same name) short-circuit with no signal.
+- **`JidoClaw.Shell.ProfileManager` GenServer** — singleton keyed by workspace, loaded from `.jido/config.yaml` at boot. Owns `profiles`, `default_env`, and `active_by_workspace: %{workspace_id => profile_name}`. `switch/2` doesn't require a live shell session — new sessions inherit the recorded active profile at lazy-start via `SessionManager.start_new_session/3`. Registered _before_ `Shell.SessionManager` under `:rest_for_one` so a SessionManager crash doesn't wipe `active_by_workspace`. Emits `jido_claw.shell.profile_switched` with `%{workspace_id, from, to, key_count, reason}` on every real switch; redundant switches (same name) short-circuit with no signal.
 - **Drop+merge at the session boundary.** Profile switch preserves ad hoc `env VAR=value` mutations: `keys_to_drop = keys_owned_by(A) -- keys_owned_by(B)`, `new_state_env = state.env |> Map.drop(keys_to_drop) |> Map.merge(new_overlay)`. Only keys owned by the old profile and not by the new one are dropped; ad-hoc-only keys survive.
 - **`SessionManager.update_env/3`** — atomic across both host + VFS sessions with host rollback on VFS failure. `{:error, :vfs_update_failed, :ok | :stuck, reason}` reports rollback status. No-op returning `:ok` when no sessions exist for the workspace, so `switch/2` still succeeds and records intent before any shell command.
 - **`Jido.Shell.ShellSession.update_env/2` + `ShellSessionServer` handler** — added as runtime patches at `lib/jido_claw/core/jido_shell_session_*_patch.ex` (same pattern as `jido_shell_registry_patch.ex` from v0.5.1). No session rebuild on switch — rebuild would lose history, cancel in-flight commands, and silently break cwd. Delete both patches when `jido_shell` ships a compatible `update_env/2` and we upgrade the dep.
@@ -250,15 +252,36 @@ Remote command execution on dev/staging servers via the existing `Jido.Shell.Bac
 ### Out of scope (deferred)
 
 - **Passphrase-protected private keys** — requires an upstream jido_shell hook. v0.5.3 supports unencrypted `key_path`, `password_env`, and fall-through to the user's ssh-agent / default key discovery. Point `key_path` at an encrypted key and the connect surfaces as an authentication or connection failure; the user's recourse is to add the key to `ssh-agent` and leave `key_path` unset.
-- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1.
-- `jido status` SSH session count segment → v0.5.3.1.
-- Automatic reconnect on dropped sessions → revisit if users hit it.
+- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1 (delivered).
+- `jido status` SSH session count segment → v0.5.3.1 (delivered).
+- Automatic reconnect on dropped sessions → v0.5.3.1 (delivered).
 - Classifier extension for SSH (auto-route based on path prefix) — SSH stays explicit.
 - Consolidate `force:` → `backend:` in RunCommand and remove the legacy alias → v0.5.4 (delivered).
 - SSH jump-host / bastion chains.
 - Interactive/TTY-allocating sessions (`ssh -t`) — command-mode only.
 - Key management UI / secret-store integration for SSH credentials (users place keys on disk, config points at them).
 - Streaming SSH output to `Display` → v0.5.4 (delivered).
+
+### v0.5.3.1 — `/servers` REPL, `jido status` SSH Segment, Auto-Reconnect
+
+**Status: Complete**
+
+Picks up the three actionable items v0.5.3 deferred — bundled because they share the same touch surface (`SessionManager` SSH cache + `ServerRegistry`). Sequenced after v0.5.4 chronologically; the version number reflects the source milestone the items follow up on. Delivered:
+
+- **`/servers` REPL command.** Mirrors the `/profile` pattern in `lib/jido_claw/cli/commands.ex`. Sub-commands: bare `/servers` (alias for `list`), `list`, `current` (alias for `list`), and `test <name>` (one-off connectivity check via `SessionManager.run/4` with `backend: :ssh, server: name` and a small `echo ok` — reuses the existing `SSHError`-formatted failure path, no new dispatch). Each declared server renders as one row: name, `user@host:port`, `auth_kind`, status, env-var count. Status is computed without opening a connection — `:default` renders `unchecked` (honest "we didn't check, you'll find out when you try"), `:password` renders `ok` / `missing_env` via `ServerRegistry.resolve_secrets/1`, and `:key_path` renders `ok` / `missing_key` / `unreadable_key` via `File.read/1` (probing without rendering contents — distinguishes `:enoent` from `:eacces`/`:eisdir`/etc., matching what the SSH backend ultimately does). ANSI is scoped to the bullet, name, and status cells; column widths are computed from the raw values and padding is applied before color wrapping so the table stays aligned. `Branding.help_text/0` gets a new "Servers" entry between Platform and the closing border.
+- **`jido status` SSH session count segment.** New public `SessionManager.count_active_ssh_sessions/1` accessor — workspace-scoped, not global, so a status query inside a `staging` shell session reports only that session's SSH count (matches the rest of the per-workspace status surface). The accessor reads from a protected ETS mirror (`@ssh_sessions_ets`) rather than `GenServer.call`, mirroring the `ProfileManager.current/1` deadlock-avoidance pattern: `jido status` runs through `ShellSessionServer` while `SessionManager.handle_call({:run, ...})` is still in `collect_output/2`, so a GenServer-call back into SessionManager would deadlock. All `state.ssh_sessions` mutations funnel through a `put_ssh_sessions/2` helper that keeps the ETS mirror in sync with the in-memory map. Renders as `  ssh         <n> active session(s)` directly after the `profile` line in `Presenters.status_lines/1`, using the existing 12-character label-column convention. "Active" here means "cached" (matches the existing `forge` semantics — neither filters by liveness).
+- **Bounded auto-reconnect on dropped SSH sessions.** `run_ssh_with_retry/8` recursion replaces inline dispatch in `handle_ssh_run/6`; one bounded retry on transport drop. Classification via `transport_drop?/1` uses a narrow positive allowlist (`:exec_failed`, `{:channel_open_failed, _}`, `:closed`, `:noproc`); explicitly excludes `{:ssh_connect, _}` reasons because the upstream `Jido.Shell.Backend.SSH.ensure_connected/1` already reconnects internally on a dead conn — adding a user-side retry on top would just double the wait without adding signal. The retry path preserves raw `%Jido.Shell.Error{}` structs end-to-end for classification (one new clause in `execute_ssh_command/6`'s synchronous-rejection branch and one in `do_collect_ssh/6`'s receive loop, both narrowed to `{:command, :start_failed | :crashed}`); `format_if_retry_raw_error/2` formats only at the boundary, narrow enough that the existing `:output_limit_exceeded` raw-error contract relied on by `RunCommand` for `context.preview` stays intact. `compute_call_timeout/2` rewrite budgets `2 × (timeout + connect_timeout) + 5_000` for the worst-case two-attempt path (the previous `timeout + connect_timeout + 5_000` budget would have been clipped). `__transport_drop_for_test__/1` thin wrapper exposes the classification logic for unit testing without making `transport_drop?/1` part of the public surface — same `@doc false`-with-`__*_for_test__` convention as the existing `__host_env_for_test__/1` seam.
+
+### Out of scope (deferred)
+
+- **Classifier extension for SSH** (auto-route based on path prefix) — SSH stays explicit.
+- **Passphrase-protected SSH private keys** — needs upstream `jido_shell` hook.
+- **SSH jump-host / bastion chains.**
+- **Interactive/TTY-allocating sessions (`ssh -t`).**
+- **Key management UI / secret-store integration.**
+- **`/servers <name>` detail view** (full env, full config dump) — kept separate to keep the milestone tight.
+- **`Process.monitor`-based reactive eviction** of dropped sessions — bounded retry is sufficient for the realistic failure mode (transport drop between commands).
+- **Active "ping" probe for `/servers list`** (would open a connection per row); the third column intentionally only validates static credential state.
 
 ### v0.5.4 — Streaming Output to Display + `force:` → `backend:` Consolidation
 
@@ -281,9 +304,9 @@ Wires `jido_shell` transport events directly into `JidoClaw.Display` for real-ti
 
 Items still deferred from v0.5.3 — flagged here for visibility, not picked up by v0.5.4:
 
-- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1.
-- `jido status` SSH session count segment → v0.5.3.1.
-- Automatic reconnect on dropped SSH sessions — revisit if users hit it.
+- `/servers` REPL command (list, test connectivity, show auth mode) → v0.5.3.1 (delivered).
+- `jido status` SSH session count segment → v0.5.3.1 (delivered).
+- Automatic reconnect on dropped SSH sessions → v0.5.3.1 (delivered).
 - Classifier extension for SSH (auto-route based on path prefix) — SSH stays explicit.
 - Passphrase-protected SSH private keys — requires upstream `jido_shell` hook.
 - SSH jump-host / bastion chains.
@@ -401,7 +424,7 @@ Note: Agent state recovery and session metadata are already in PostgreSQL via Fo
 ## Build Order
 
 ```
-v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5.1..v0.5.4 (Shell) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
+v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5.1..v0.5.4 (Shell, done) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
 ```
 
 The v0.4.x cadence was intentional: each point release shipped one focused change to the reasoning subsystem, keeping every PR independently reviewable and revertible.

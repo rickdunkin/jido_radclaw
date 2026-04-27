@@ -599,6 +599,350 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
     end
   end
 
+  # -- count_active_ssh_sessions/1 -------------------------------------------
+
+  describe "count_active_ssh_sessions/1" do
+    test "returns 0 when no sessions cached for the workspace", %{workspace_id: ws} do
+      assert 0 = SessionManager.count_active_ssh_sessions(ws)
+    end
+
+    test "increments after a successful SSH run, scoped to workspace", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      assert {:ok, _} =
+               SessionManager.run(ws, "echo cached", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      assert 1 = SessionManager.count_active_ssh_sessions(ws)
+
+      other_ws = "sm-ssh-other-#{System.unique_integer([:positive])}"
+      assert 0 = SessionManager.count_active_ssh_sessions(other_ws)
+    end
+
+    test "drops back to 0 after invalidate_ssh_sessions/1", %{workspace_id: ws, tmp: tmp} do
+      {:ok, _} =
+        SessionManager.run(ws, "echo one", 5_000,
+          project_dir: tmp,
+          backend: :ssh,
+          server: "staging"
+        )
+
+      assert 1 = SessionManager.count_active_ssh_sessions(ws)
+
+      :ok = SessionManager.invalidate_ssh_sessions(["staging"])
+
+      assert 0 = SessionManager.count_active_ssh_sessions(ws)
+    end
+
+    test "counts independently for two distinct workspaces", %{tmp: tmp} do
+      ws_a = "sm-ssh-a-#{System.unique_integer([:positive])}"
+      ws_b = "sm-ssh-b-#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        SessionManager.stop_session(ws_a)
+        SessionManager.stop_session(ws_b)
+        Workspace.teardown(ws_a)
+        Workspace.teardown(ws_b)
+      end)
+
+      {:ok, _} =
+        SessionManager.run(ws_a, "echo a", 5_000,
+          project_dir: tmp,
+          backend: :ssh,
+          server: "staging"
+        )
+
+      {:ok, _} =
+        SessionManager.run(ws_b, "echo b", 5_000,
+          project_dir: tmp,
+          backend: :ssh,
+          server: "staging"
+        )
+
+      assert 1 = SessionManager.count_active_ssh_sessions(ws_a)
+      assert 1 = SessionManager.count_active_ssh_sessions(ws_b)
+    end
+  end
+
+  # -- Bounded auto-reconnect on transport drops -----------------------------
+
+  describe "bounded retry on SSH transport drop" do
+    test "retries once on :exec_failed and surfaces the recovered result", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # First exec fails (`:failure` → `:exec_failed`); retry rebuilds the
+      # session via a new connect, second exec succeeds.
+      FakeSSH.set_mode(:exec_failure_once)
+
+      assert {:ok, %{output: output, exit_code: 0}} =
+               SessionManager.run(ws, "echo recovered", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      assert output =~ "ok"
+
+      # Two connect events: initial + retry's rebuild.
+      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+
+      # Two exec events: failed first attempt, successful retry.
+      assert_receive {:fake_ssh, {:exec, _, _, _}}
+      assert_receive {:fake_ssh, {:exec, _, _, _}}
+    end
+
+    test "retries once on :channel_open_failed and surfaces the recovered result", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      FakeSSH.set_mode(:session_channel_error_once)
+
+      assert {:ok, %{exit_code: 0}} =
+               SessionManager.run(ws, "echo recovered", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      # Initial connect + retry rebuild's connect = two connects.
+      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+
+      # Only the retry attempt reaches exec — the first attempt failed
+      # at session_channel before exec was called.
+      assert_receive {:fake_ssh, {:exec, _, _, _}}
+      refute_received {:fake_ssh, {:exec, _, _, _}}
+    end
+
+    test "no retry on auth failure surfaced through backend's internal reconnect", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # 1. Establish session in :normal mode.
+      assert {:ok, _} =
+               SessionManager.run(ws, "echo cached", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      assert_receive {:fake_ssh, {:connect, _, _, _, conn_pid}}
+      drain_fake_ssh_messages()
+
+      # 2. Kill the underlying conn so the backend's `ensure_connected/1`
+      #    triggers an internal reconnect. The ShellSession process is
+      #    still alive, so the SessionManager-side self-heal at
+      #    ensure_ssh_session/4 does NOT fire.
+      Process.exit(conn_pid, :kill)
+      refute Process.alive?(conn_pid)
+
+      # 3. Flip FakeSSH to fail the backend's internal reconnect with auth.
+      FakeSSH.set_mode(:connect_auth_error)
+
+      # 4. Next run hits the backend's reconnect, which fails — auth
+      #    is NOT in the retry allowlist, so `transport_drop?/1` returns
+      #    false and our retry logic does not re-attempt. Final result
+      #    is the formatted auth-failed message.
+      assert {:error, message} =
+               SessionManager.run(ws, "echo after-death", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      assert message =~ "authentication rejected"
+    end
+
+    test "retry bounded at 1 — exec_failed permanently still returns one error", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      FakeSSH.set_mode(:exec_failure)
+
+      assert {:error, message} =
+               SessionManager.run(ws, "echo never", 5_000,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+
+      # The backend formats :exec_failed as a generic shell error message.
+      assert is_binary(message)
+
+      # Exactly two attempts: initial + one retry.
+      assert_receive {:fake_ssh, {:exec, _, _, _}}
+      assert_receive {:fake_ssh, {:exec, _, _, _}}
+      refute_received {:fake_ssh, {:exec, _, _, _}}, 50
+    end
+  end
+
+  # -- Pure unit tests for transport_drop? -----------------------------------
+
+  describe "transport_drop?/1 (via __transport_drop_for_test__)" do
+    alias Jido.Shell.Error
+
+    test "true for {:command, :start_failed} with reason: :exec_failed" do
+      err = %Error{code: {:command, :start_failed}, context: %{reason: :exec_failed}}
+      assert SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "true for {:command, :start_failed} with reason: {:channel_open_failed, _}" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:channel_open_failed, :foo}}
+      }
+
+      assert SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "true for {:command, :start_failed} with reason: :closed" do
+      err = %Error{code: {:command, :start_failed}, context: %{reason: :closed}}
+      assert SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "true for {:command, :start_failed} with reason: :noproc" do
+      err = %Error{code: {:command, :start_failed}, context: %{reason: :noproc}}
+      assert SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for ssh_connect auth failure" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :authentication_failed}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for ssh_connect econnrefused" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :econnrefused}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for ssh_connect timeout" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :timeout}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for ssh_connect ehostunreach" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :ehostunreach}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for ssh_connect nxdomain" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :nxdomain}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for missing_config" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:missing_config, :host}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "false for key_read_failed" do
+      err = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:key_read_failed, :enoent}}
+      }
+
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "double-wrapped %Error{} reason recurses on inner reason" do
+      inner = %Error{code: {:command, :start_failed}, context: %{reason: :exec_failed}}
+      outer = %Error{code: {:command, :start_failed}, context: %{reason: inner}}
+      assert SessionManager.__transport_drop_for_test__({:error, outer})
+    end
+
+    test "double-wrapped %Error{} where inner is auth → still false" do
+      inner = %Error{
+        code: {:command, :start_failed},
+        context: %{reason: {:ssh_connect, :authentication_failed}}
+      }
+
+      outer = %Error{code: {:command, :start_failed}, context: %{reason: inner}}
+      refute SessionManager.__transport_drop_for_test__({:error, outer})
+    end
+
+    test "{:command, :crashed} with retryable inner reason is true" do
+      err = %Error{code: {:command, :crashed}, context: %{reason: :closed}}
+      assert SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "{:command, :timeout} is not a transport drop" do
+      err = %Error{code: {:command, :timeout}, context: %{}}
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "{:command, :exit_code} is not a transport drop" do
+      err = %Error{code: {:command, :exit_code}, context: %{code: 1}}
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "{:command, :output_limit_exceeded} is not a transport drop" do
+      err = %Error{code: {:command, :output_limit_exceeded}, context: %{}}
+      refute SessionManager.__transport_drop_for_test__({:error, err})
+    end
+
+    test "successful tuple is not a transport drop" do
+      refute SessionManager.__transport_drop_for_test__({:ok, %{output: "x", exit_code: 0}})
+    end
+
+    test "already-formatted string error is not a transport drop" do
+      refute SessionManager.__transport_drop_for_test__({:error, "SSH to staging failed: ..."})
+    end
+  end
+
+  # -- Outer call timeout adequacy under retry -------------------------------
+
+  describe "outer GenServer.call timeout under retry" do
+    test "single retry returns within budget rather than hitting outer timeout", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # FakeSSH connect/exec are nearly instantaneous. With a 200ms
+      # command timeout and 100ms connect_timeout, the budget is
+      # 2 × (200 + 100) + 5_000 = 5_600ms. A regression that under-
+      # budgets the call would surface as a GenServer timeout exit.
+      fast_entry = %ServerEntry{@staging | connect_timeout: 100}
+      ServerRegistry.replace_servers_for_test(%{"staging" => fast_entry})
+      FakeSSH.set_mode(:exec_failure_once)
+
+      assert {:ok, %{exit_code: 0}} =
+               SessionManager.run(ws, "echo recovered", 200,
+                 project_dir: tmp,
+                 backend: :ssh,
+                 server: "staging"
+               )
+    end
+  end
+
   defp drain_fake_ssh_messages do
     receive do
       {:fake_ssh, _} -> drain_fake_ssh_messages()

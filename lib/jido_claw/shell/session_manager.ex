@@ -56,6 +56,16 @@ defmodule JidoClaw.Shell.SessionManager do
   # cap-overflow tests don't have to generate megabytes.
   @streaming_ssh_output_bytes 10_000_000
 
+  # Protected ETS mirror of `state.ssh_sessions` keys (read-only for
+  # external callers; writes funnel through `sync_ssh_sessions_ets/1`).
+  # Lets callers running *inside* a SessionManager-blocked context (e.g.,
+  # `jido status` running through `ShellSessionServer` while
+  # `SessionManager.handle_call({:run, ...})` is still in
+  # `collect_output/2`) read the live SSH session count without a
+  # GenServer round-trip — same pattern as
+  # `ProfileManager.ets_table()` for the active-profile mirror.
+  @ssh_sessions_ets :jido_claw_ssh_sessions_active
+
   @sandbox_allowlist ~w(cat ls cd pwd mkdir rm cp echo write env bash)
 
   # Token-level shell metacharacters that the jido_shell parser doesn't model.
@@ -102,7 +112,7 @@ defmodule JidoClaw.Shell.SessionManager do
           {:ok, %{output: String.t(), exit_code: non_neg_integer()}} | {:error, term()}
   def run(workspace_id, command, timeout \\ @default_timeout, opts \\ []) do
     opts = Keyword.put_new_lazy(opts, :project_dir, &File.cwd!/0)
-    call_timeout = timeout + call_timeout_extra(opts)
+    call_timeout = compute_call_timeout(timeout, opts)
 
     GenServer.call(
       __MODULE__,
@@ -111,30 +121,37 @@ defmodule JidoClaw.Shell.SessionManager do
     )
   end
 
-  # Budget on top of `timeout` for the outer GenServer call. SSH adds
-  # the server's connect_timeout so a slow handshake doesn't time out
-  # the caller before the backend can return `start_failed`. Reads the
-  # registry on the caller side so the SessionManager handle_call
-  # never blocks on ServerRegistry during routing.
-  defp call_timeout_extra(opts) do
+  # Outer GenServer.call timeout budget. SSH worst-case is two attempts
+  # (one bounded retry on transport drop), each costing up to
+  # `command_timeout + connect_timeout`, plus eviction slack:
+  #
+  #     attempt 1: ensure_ssh_session (≤ connect_timeout) + execute (≤ timeout)
+  #     attempt 2: ensure_ssh_session (≤ connect_timeout) + execute (≤ timeout)
+  #
+  # so the caller-side budget is `2 × (timeout + connect_timeout) + slack`.
+  defp compute_call_timeout(timeout, opts) do
     case Keyword.get(opts, :backend) do
       :ssh ->
-        server = Keyword.get(opts, :server)
-        ssh_call_timeout_extra(server)
+        connect = ssh_connect_timeout_lookup(opts)
+        2 * (timeout + connect) + 5_000
 
       _ ->
-        5_000
+        timeout + 5_000
     end
   end
 
-  defp ssh_call_timeout_extra(server) when is_binary(server) do
-    case server_connect_timeout(server) do
-      {:ok, connect_timeout} -> connect_timeout + 5_000
-      :unknown -> @default_connect_timeout + 5_000
+  defp ssh_connect_timeout_lookup(opts) do
+    case Keyword.get(opts, :server) do
+      server when is_binary(server) ->
+        case server_connect_timeout(server) do
+          {:ok, connect_timeout} -> connect_timeout
+          :unknown -> @default_connect_timeout
+        end
+
+      _ ->
+        @default_connect_timeout
     end
   end
-
-  defp ssh_call_timeout_extra(_), do: @default_connect_timeout + 5_000
 
   defp server_connect_timeout(server) do
     case Process.whereis(ServerRegistry) do
@@ -150,6 +167,37 @@ defmodule JidoClaw.Shell.SessionManager do
   catch
     :exit, _ -> :unknown
   end
+
+  @doc """
+  Return the count of cached SSH sessions for `workspace_id`.
+
+  Counts entries in the `ssh_sessions` cache whose key matches
+  `{workspace_id, _}`. \"Active\" here means \"cached\" — matches the
+  semantics of the `jido status` forge-session count, which doesn't
+  filter by liveness either.
+
+  Reads the ETS mirror directly so callers running inside a
+  `SessionManager`-blocked context (e.g. `jido status` running through
+  `ShellSessionServer` while `SessionManager.handle_call({:run, ...})`
+  is still in `collect_output/2`) cannot deadlock on the GenServer.
+  Mirrors the `ProfileManager.current/1` convention.
+  """
+  @spec count_active_ssh_sessions(String.t()) :: non_neg_integer()
+  def count_active_ssh_sessions(workspace_id) when is_binary(workspace_id) do
+    case :ets.whereis(@ssh_sessions_ets) do
+      :undefined ->
+        0
+
+      _ref ->
+        :ets.select_count(@ssh_sessions_ets, [
+          {{{workspace_id, :_}}, [], [true]}
+        ])
+    end
+  end
+
+  @doc false
+  @spec ssh_sessions_ets() :: atom()
+  def ssh_sessions_ets, do: @ssh_sessions_ets
 
   @doc "Return the current working directory for a workspace session (host cwd)."
   @spec cwd(String.t()) :: {:ok, String.t()} | {:error, :no_session}
@@ -236,7 +284,41 @@ defmodule JidoClaw.Shell.SessionManager do
 
   @impl true
   def init(_opts) do
+    ensure_ssh_sessions_ets()
     {:ok, %__MODULE__{}}
+  end
+
+  defp ensure_ssh_sessions_ets do
+    case :ets.whereis(@ssh_sessions_ets) do
+      :undefined ->
+        :ets.new(@ssh_sessions_ets, [:named_table, :protected, :set, read_concurrency: true])
+
+      _ref ->
+        :ok
+    end
+  end
+
+  # Centralized state mutation: keeps the ETS mirror in sync with the
+  # `ssh_sessions` map. Any call site that produces a new
+  # `state.ssh_sessions` value funnels through here.
+  defp put_ssh_sessions(state, new_map) do
+    sync_ssh_sessions_ets(new_map)
+    %{state | ssh_sessions: new_map}
+  end
+
+  defp sync_ssh_sessions_ets(new_map) do
+    ensure_ssh_sessions_ets()
+
+    current_keys =
+      :ets.tab2list(@ssh_sessions_ets)
+      |> Enum.map(fn {key} -> key end)
+      |> MapSet.new()
+
+    new_keys = new_map |> Map.keys() |> MapSet.new()
+
+    Enum.each(MapSet.difference(current_keys, new_keys), &:ets.delete(@ssh_sessions_ets, &1))
+    Enum.each(MapSet.difference(new_keys, current_keys), &:ets.insert(@ssh_sessions_ets, {&1}))
+    :ok
   end
 
   @impl true
@@ -295,7 +377,8 @@ defmodule JidoClaw.Shell.SessionManager do
       _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
     end
 
-    {:reply, :ok, %{state | sessions: new_sessions, ssh_sessions: new_ssh}}
+    new_state = put_ssh_sessions(%{state | sessions: new_sessions}, new_ssh)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -313,7 +396,8 @@ defmodule JidoClaw.Shell.SessionManager do
 
     new_ssh = stop_all_ssh_for_workspace(state.ssh_sessions, workspace_id)
 
-    {:reply, :ok, %{state | sessions: new_sessions, ssh_sessions: new_ssh}}
+    new_state = put_ssh_sessions(%{state | sessions: new_sessions}, new_ssh)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -330,7 +414,8 @@ defmodule JidoClaw.Shell.SessionManager do
         end
       end)
 
-    {:reply, :ok, %{state | ssh_sessions: new_ssh}}
+    new_state = put_ssh_sessions(state, new_ssh)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -395,18 +480,58 @@ defmodule JidoClaw.Shell.SessionManager do
         {:reply, {:error, "SSH requires :server option"}, state}
 
       true ->
-        case ensure_ssh_session(workspace_id, server, project_dir, state) do
-          {:ok, session_id, entry, new_state} ->
-            result =
-              with_optional_stream(session_id, opts, fn streaming? ->
-                execute_ssh_command(session_id, command, timeout, entry, streaming?, opts)
-              end)
+        run_ssh_with_retry(workspace_id, server, command, timeout, opts, project_dir, state, 1)
+    end
+  end
 
-            {:reply, result, new_state}
+  # Bounded retry for transport drops: one extra attempt after evicting
+  # the dead cache entry. Anything not classified by `transport_drop?/1`
+  # passes through unchanged (formatted error or success).
+  defp run_ssh_with_retry(
+         workspace_id,
+         server,
+         command,
+         timeout,
+         opts,
+         project_dir,
+         state,
+         retries_left
+       ) do
+    case ensure_ssh_session(workspace_id, server, project_dir, state) do
+      {:ok, session_id, entry, new_state} ->
+        raw =
+          with_optional_stream(session_id, opts, fn streaming? ->
+            execute_ssh_command(session_id, command, timeout, entry, streaming?, opts)
+          end)
 
-          {:error, message, new_state} ->
-            {:reply, {:error, message}, new_state}
+        cond do
+          retries_left > 0 and transport_drop?(raw) ->
+            Logger.debug(
+              "[SessionManager] SSH transport drop on #{workspace_id}/#{server}, retrying once"
+            )
+
+            evicted = evict_ssh_session(workspace_id, server, new_state)
+
+            # IMPORTANT: return the recursive call's tuple as-is — the
+            # retry's state (post-eviction, possibly with a fresh cache
+            # entry from the rebuild) is the authoritative one.
+            run_ssh_with_retry(
+              workspace_id,
+              server,
+              command,
+              timeout,
+              opts,
+              project_dir,
+              evicted,
+              retries_left - 1
+            )
+
+          true ->
+            {:reply, format_if_retry_raw_error(raw, entry), new_state}
         end
+
+      {:error, message, new_state} ->
+        {:reply, {:error, message}, new_state}
     end
   end
 
@@ -614,7 +739,7 @@ defmodule JidoClaw.Shell.SessionManager do
           {:ok, session_id, entry, state}
         else
           _ = ShellSession.stop(session_id)
-          cleared = %{state | ssh_sessions: Map.delete(state.ssh_sessions, key)}
+          cleared = put_ssh_sessions(state, Map.delete(state.ssh_sessions, key))
           build_ssh_session(workspace_id, server_name, project_dir, cleared)
         end
 
@@ -625,7 +750,7 @@ defmodule JidoClaw.Shell.SessionManager do
         )
 
         _ = ShellSession.stop(session_id)
-        cleared = %{state | ssh_sessions: Map.delete(state.ssh_sessions, key)}
+        cleared = put_ssh_sessions(state, Map.delete(state.ssh_sessions, key))
         build_ssh_session(workspace_id, server_name, project_dir, cleared)
 
       nil ->
@@ -646,10 +771,11 @@ defmodule JidoClaw.Shell.SessionManager do
         project_dir: project_dir
       }
 
-      new_state = %{
-        state
-        | ssh_sessions: Map.put(state.ssh_sessions, {workspace_id, server_name}, cache_entry)
-      }
+      new_state =
+        put_ssh_sessions(
+          state,
+          Map.put(state.ssh_sessions, {workspace_id, server_name}, cache_entry)
+        )
 
       {:ok, session_id, entry, new_state}
     else
@@ -733,6 +859,69 @@ defmodule JidoClaw.Shell.SessionManager do
       connect_timeout: @default_connect_timeout
     }
   end
+
+  # -- Retry classification --------------------------------------------------
+
+  # Narrow positive allowlist: transport drops where the cached
+  # ShellSession process is alive but the SSH channel/exec layer is
+  # dead. Connect-time failures are explicitly excluded — the upstream
+  # SSH backend reconnects internally when `Process.alive?(state.conn)`
+  # is false (see `Jido.Shell.Backend.SSH.ensure_connected/1`), so a
+  # second user-side reconnect just doubles the wait without adding
+  # signal.
+  defp transport_drop?({:error, %Jido.Shell.Error{code: {:command, code}, context: ctx}})
+       when code in [:start_failed, :crashed] do
+    retryable_reason?(get_in(ctx, [:reason]))
+  end
+
+  defp transport_drop?(_), do: false
+
+  # ShellSessionServer.do_run_command/3 wraps a backend %Error{} in
+  # another :start_failed; recurse so classification matches the inner
+  # error's reason. Mirrors the unwrap at `ssh_error.ex:47`.
+  defp retryable_reason?(%Jido.Shell.Error{} = inner),
+    do: transport_drop?({:error, inner})
+
+  defp retryable_reason?(:exec_failed), do: true
+  defp retryable_reason?({:channel_open_failed, _}), do: true
+  defp retryable_reason?(:closed), do: true
+  defp retryable_reason?(:noproc), do: true
+
+  # Explicitly NOT retried: {:ssh_connect, _} (backend already
+  # reconnects internally on dead conn), {:missing_config, _},
+  # {:key_read_failed, _}, anything else.
+  defp retryable_reason?(_), do: false
+
+  # Format only the raw-error codes the retry path opted into
+  # preserving. `:output_limit_exceeded` stays raw end-to-end (RunCommand
+  # depends on it for `context.preview`); narrow this clause to the
+  # specific codes the milestone introduced.
+  defp format_if_retry_raw_error(
+         {:error, %Jido.Shell.Error{code: {:command, code}} = err},
+         entry
+       )
+       when code in [:start_failed, :crashed] do
+    {:error, SSHError.format(err, entry)}
+  end
+
+  defp format_if_retry_raw_error(other, _entry), do: other
+
+  defp evict_ssh_session(workspace_id, server_name, state) do
+    key = {workspace_id, server_name}
+
+    case Map.get(state.ssh_sessions, key) do
+      %{session_id: sid} ->
+        _ = ShellSession.stop(sid)
+        put_ssh_sessions(state, Map.delete(state.ssh_sessions, key))
+
+      nil ->
+        state
+    end
+  end
+
+  @doc false
+  @spec __transport_drop_for_test__(term()) :: boolean()
+  def __transport_drop_for_test__(result), do: transport_drop?(result)
 
   defp stop_all_ssh_for_workspace(ssh_sessions, workspace_id) do
     Enum.reduce(ssh_sessions, %{}, fn {{ws, _server} = key, entry}, acc ->
@@ -845,7 +1034,7 @@ defmodule JidoClaw.Shell.SessionManager do
           )
 
           _ = ShellSession.stop(entry.session_id)
-          %{acc | ssh_sessions: Map.delete(acc.ssh_sessions, key)}
+          put_ssh_sessions(acc, Map.delete(acc.ssh_sessions, key))
       end
     end)
   end
@@ -1123,6 +1312,15 @@ defmodule JidoClaw.Shell.SessionManager do
               other
           end
 
+        {:error, %Jido.Shell.Error{code: {:command, code}} = err}
+        when code in [:start_failed, :crashed] ->
+          # Preserve raw struct so the retry path in
+          # `run_ssh_with_retry/8` can classify the failure via
+          # `transport_drop?/1`. `format_if_retry_raw_error/2` formats
+          # at the boundary if the retry path opts not to retry.
+          if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+          {:error, err}
+
         {:error, reason} ->
           # Run rejected — no events will fire. Force-drop the
           # Display registration so it doesn't leak; the outer
@@ -1184,8 +1382,16 @@ defmodule JidoClaw.Shell.SessionManager do
           new_context = Map.put(error.context || %{}, :preview, preview)
           {:error, %{error | context: new_context}}
 
-        # Timeout / start_failed / other command errors — terminal
-        # failure; format via SSHError.
+        # Preserve raw struct for transport-drop classification by the
+        # retry path. Format-at-boundary semantics live in
+        # `format_if_retry_raw_error/2`; the retry decides whether to
+        # surface a formatted message or rebuild the session.
+        {:jido_shell_session, ^session_id,
+         {:error, %Jido.Shell.Error{code: {:command, code}} = error}}
+        when code in [:start_failed, :crashed] ->
+          {:error, error}
+
+        # Timeout / other command errors — terminal failure; format via SSHError.
         {:jido_shell_session, ^session_id, {:error, %Jido.Shell.Error{} = error}} ->
           {:error, SSHError.format(error, entry)}
 

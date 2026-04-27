@@ -51,6 +51,15 @@ defmodule JidoClaw.Test.FakeSSH do
       :session_channel_error ->
         {:error, :session_channel_failed}
 
+      :session_channel_error_once ->
+        if take_first_call(:session_channel) do
+          {:error, :session_channel_failed}
+        else
+          channel_id = :erlang.unique_integer([:positive])
+          notify({:session_channel, conn, channel_id})
+          {:ok, channel_id}
+        end
+
       _ ->
         channel_id = :erlang.unique_integer([:positive])
         notify({:session_channel, conn, channel_id})
@@ -69,6 +78,14 @@ defmodule JidoClaw.Test.FakeSSH do
     case mode() do
       :exec_failure ->
         :failure
+
+      :exec_failure_once ->
+        if take_first_call(:exec) do
+          :failure
+        else
+          script_response(caller, conn, channel_id, command_str)
+          :success
+        end
 
       :exec_error ->
         {:error, :exec_rejected}
@@ -166,12 +183,34 @@ defmodule JidoClaw.Test.FakeSSH do
   @doc "Set the FakeSSH behavioral mode for the current test."
   def set_mode(mode) when is_atom(mode) do
     :persistent_term.put({__MODULE__, :mode}, mode)
+    :persistent_term.erase({__MODULE__, :first_call, :exec})
+    :persistent_term.erase({__MODULE__, :first_call, :session_channel})
     :ok
   end
 
-  def clear_mode, do: :persistent_term.erase({__MODULE__, :mode})
+  def clear_mode do
+    :persistent_term.erase({__MODULE__, :mode})
+    :persistent_term.erase({__MODULE__, :first_call, :exec})
+    :persistent_term.erase({__MODULE__, :first_call, :session_channel})
+    :ok
+  end
 
   defp mode, do: :persistent_term.get({__MODULE__, :mode}, :normal)
+
+  # First-call tracker for "*_once" modes: returns true exactly once
+  # per `tag`, then false on subsequent calls until cleared.
+  defp take_first_call(tag) do
+    key = {__MODULE__, :first_call, tag}
+
+    case :persistent_term.get(key, :unconsumed) do
+      :unconsumed ->
+        :persistent_term.put(key, :consumed)
+        true
+
+      :consumed ->
+        false
+    end
+  end
 
   defp notify(event) do
     case :persistent_term.get({__MODULE__, :test_pid}, nil) do

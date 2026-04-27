@@ -190,6 +190,10 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m    /tenants         List tenants                    \e[36m│\e[0m
     \e[36m│\e[0m    /channels        List channel adapters           \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
+    \e[36m│\e[0m  \e[1mServers\e[0m                                         \e[36m│\e[0m
+    \e[36m│\e[0m    /servers         List declared servers           \e[36m│\e[0m
+    \e[36m│\e[0m    /servers test <n> Connectivity check             \e[36m│\e[0m
+    \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m╰───────────────────────────────────────────────────╯\e[0m
     """
   end

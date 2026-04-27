@@ -667,6 +667,17 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/profile", state), do: print_profile_current(state)
 
+  def handle("/servers " <> rest, state) do
+    case String.split(String.trim(rest), " ", parts: 2) do
+      ["list"] -> list_servers(state)
+      ["current"] -> list_servers(state)
+      ["test", name] -> test_server(state, String.trim(name))
+      _ -> print_servers_usage(state)
+    end
+  end
+
+  def handle("/servers", state), do: list_servers(state)
+
   def handle("/classify " <> prompt, state) do
     alias JidoClaw.Reasoning.Classifier
 
@@ -886,6 +897,157 @@ defmodule JidoClaw.CLI.Commands do
 
   defp print_profile_usage(state) do
     IO.puts("  Usage: /profile [list | current | switch <name>]")
+    {:ok, state}
+  end
+
+  # -- Servers helpers --
+
+  defp list_servers(state) do
+    alias JidoClaw.Shell.ServerRegistry
+
+    rows =
+      ServerRegistry.list()
+      |> Enum.map(fn name ->
+        case ServerRegistry.get(name) do
+          {:ok, entry} -> build_server_row(name, entry, state.cwd)
+          {:error, :not_found} -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    IO.puts("")
+    IO.puts("  \e[1mDeclared Servers\e[0m")
+    IO.puts("")
+
+    cond do
+      rows == [] ->
+        IO.puts("  \e[2mNo servers declared in .jido/config.yaml\e[0m")
+        IO.puts("")
+        {:ok, state}
+
+      true ->
+        name_w = column_width(rows, :name, "name")
+        target_w = column_width(rows, :target, "user@host:port")
+        auth_w = column_width(rows, :auth, "auth")
+        status_w = column_width(rows, :status, "status")
+
+        header =
+          "    " <>
+            String.pad_trailing("name", name_w) <>
+            "  " <>
+            String.pad_trailing("user@host:port", target_w) <>
+            "  " <>
+            String.pad_trailing("auth", auth_w) <>
+            "  " <>
+            String.pad_trailing("status", status_w) <>
+            "  " <> "env"
+
+        IO.puts("  \e[2m#{header}\e[0m")
+
+        Enum.each(rows, fn row ->
+          name_padded = String.pad_trailing(row.name, name_w)
+          target_padded = String.pad_trailing(row.target, target_w)
+          auth_padded = String.pad_trailing(row.auth, auth_w)
+          status_padded = String.pad_trailing(row.status, status_w)
+          colored_name = "\e[1m#{name_padded}\e[0m"
+          colored_status = colorize_server_status(row.status_atom, status_padded)
+
+          IO.puts(
+            "  \e[33m▸\e[0m " <>
+              colored_name <>
+              "  " <>
+              target_padded <>
+              "  " <> auth_padded <> "  " <> colored_status <> "  " <> row.env_label
+          )
+        end)
+
+        IO.puts("")
+        IO.puts("  \e[2mTest: /servers test <name>\e[0m")
+        IO.puts("")
+        {:ok, state}
+    end
+  end
+
+  defp build_server_row(name, entry, project_dir) do
+    target = "#{entry.user}@#{entry.host}:#{entry.port}"
+    auth = Atom.to_string(entry.auth_kind)
+    {status_atom, status_str} = compute_server_status(entry, project_dir)
+    env_count = map_size(entry.env)
+
+    env_label =
+      case env_count do
+        1 -> "1 env var"
+        n -> "#{n} env vars"
+      end
+
+    %{
+      name: name,
+      target: target,
+      auth: auth,
+      status: status_str,
+      status_atom: status_atom,
+      env_label: env_label
+    }
+  end
+
+  defp compute_server_status(%{auth_kind: :default}, _project_dir), do: {:unchecked, "unchecked"}
+
+  defp compute_server_status(%{auth_kind: :password} = entry, _project_dir) do
+    case JidoClaw.Shell.ServerRegistry.resolve_secrets(entry) do
+      {:ok, _} -> {:ok, "ok"}
+      {:error, {:missing_env, _}} -> {:missing_env, "missing_env"}
+    end
+  end
+
+  defp compute_server_status(%{auth_kind: :key_path, key_path: kp}, project_dir) do
+    resolved = JidoClaw.Shell.ServerRegistry.resolve_key_path(kp, project_dir)
+
+    case File.read(resolved) do
+      {:ok, _} -> {:ok, "ok"}
+      {:error, :enoent} -> {:missing_key, "missing_key"}
+      {:error, _} -> {:unreadable_key, "unreadable_key"}
+    end
+  end
+
+  defp colorize_server_status(:ok, padded), do: "\e[32m#{padded}\e[0m"
+
+  defp colorize_server_status(status, padded)
+       when status in [:missing_env, :missing_key, :unreadable_key],
+       do: "\e[31m#{padded}\e[0m"
+
+  defp colorize_server_status(:unchecked, padded), do: "\e[33m#{padded}\e[0m"
+  defp colorize_server_status(_, padded), do: padded
+
+  defp column_width(rows, key, header) do
+    data_max =
+      rows
+      |> Enum.map(&(Map.fetch!(&1, key) |> String.length()))
+      |> Enum.max(fn -> 0 end)
+
+    max(data_max, String.length(header))
+  end
+
+  defp test_server(state, name) do
+    case JidoClaw.Shell.SessionManager.run(
+           state.session_id,
+           "echo ok",
+           5_000,
+           project_dir: state.cwd,
+           backend: :ssh,
+           server: name
+         ) do
+      {:ok, _} ->
+        IO.puts("  \e[32m✓\e[0m  \e[1m#{name}\e[0m reachable")
+        {:ok, state}
+
+      {:error, message} ->
+        IO.puts("  \e[31m✗\e[0m  \e[1m#{name}\e[0m: #{message}")
+        {:ok, state}
+    end
+  end
+
+  defp print_servers_usage(state) do
+    IO.puts("  Usage: /servers [list | current | test <name>]")
     {:ok, state}
   end
 end

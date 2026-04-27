@@ -79,7 +79,8 @@ defmodule JidoClaw.Shell.Commands.Jido do
       tracker: JidoClaw.AgentTracker.get_state(),
       sessions: fetch_active_sessions(),
       stats: JidoClaw.Stats.get(),
-      profile: active_profile(state)
+      profile: active_profile(state),
+      ssh_sessions: ssh_session_count(state)
     }
 
     snapshot
@@ -157,6 +158,25 @@ defmodule JidoClaw.Shell.Commands.Jido do
        do: ws
 
   defp workspace_id_from_state(_), do: nil
+
+  # Defensive: returns 0 if SessionManager is down or the call races a
+  # crash. Process.whereis is the cheap pre-check; the surrounding
+  # `catch :exit, _` handles the noproc/timeout/system-limit shapes
+  # that don't reduce cleanly to a single tuple.
+  defp ssh_session_count(state) do
+    case workspace_id_from_state(state) do
+      nil ->
+        0
+
+      ws ->
+        case Process.whereis(JidoClaw.Shell.SessionManager) do
+          nil -> 0
+          _pid -> JidoClaw.Shell.SessionManager.count_active_ssh_sessions(ws)
+        end
+    end
+  catch
+    :exit, _ -> 0
+  end
 
   defp usage_lines do
     [

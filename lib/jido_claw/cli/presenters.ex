@@ -40,7 +40,8 @@ defmodule JidoClaw.CLI.Presenters do
           :tracker => %{agents: map(), order: list()},
           :sessions => {:ok, list()} | {:error, term()},
           :stats => map(),
-          optional(:profile) => String.t()
+          optional(:profile) => String.t(),
+          optional(:ssh_sessions) => non_neg_integer()
         }) :: [String.t()]
   def status_lines(%{tracker: tracker, sessions: sessions, stats: stats} = snapshot) do
     children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
@@ -48,12 +49,14 @@ defmodule JidoClaw.CLI.Presenters do
     spawned = Map.get(stats, :agents_spawned, 0)
     uptime = Map.get(stats, :uptime_seconds, 0)
     profile = Map.get(snapshot, :profile, "default")
+    ssh_count = Map.get(snapshot, :ssh_sessions, 0)
 
     header = [
       "JidoClaw Status",
       "  agents      #{running} running / #{spawned} spawned",
       "  uptime      #{format_elapsed(uptime)}",
-      "  profile     #{profile}"
+      "  profile     #{profile}",
+      "  ssh         #{ssh_count} active session(s)"
     ]
 
     header ++ session_lines(sessions)
