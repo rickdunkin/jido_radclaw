@@ -38,6 +38,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
     steps = skill.steps
     workspace_id = Keyword.get(opts, :workspace_id)
+    scope_context = Keyword.get(opts, :scope_context, %{})
 
     if Enum.empty?(steps) do
       {:error, "Skill '#{skill.name}' has no steps"}
@@ -45,7 +46,14 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       with {:ok, named_steps} <- assign_step_names(steps),
            :ok <- validate_no_cycles(named_steps),
            {:ok, phases} <- compute_phases(named_steps) do
-        execute_phases(phases, named_steps, extra_context, project_dir, workspace_id)
+        execute_phases(
+          phases,
+          named_steps,
+          extra_context,
+          project_dir,
+          workspace_id,
+          scope_context
+        )
       end
     end
   end
@@ -225,7 +233,14 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   # Phase execution
   # ---------------------------------------------------------------------------
 
-  defp execute_phases(phases, named_steps, extra_context, project_dir, workspace_id) do
+  defp execute_phases(
+         phases,
+         named_steps,
+         extra_context,
+         project_dir,
+         workspace_id,
+         scope_context
+       ) do
     step_map = Map.new(named_steps, &{&1.name, &1})
 
     Enum.reduce_while(phases, {:ok, []}, fn phase_names, {:ok, acc_results} ->
@@ -237,7 +252,8 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
              named_steps,
              extra_context,
              project_dir,
-             workspace_id
+             workspace_id,
+             scope_context
            ) do
         {:ok, phase_results} ->
           {:cont, {:ok, acc_results ++ phase_results}}
@@ -248,7 +264,15 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end)
   end
 
-  defp execute_phase(steps, prior_results, named_steps, extra_context, project_dir, workspace_id) do
+  defp execute_phase(
+         steps,
+         prior_results,
+         named_steps,
+         extra_context,
+         project_dir,
+         workspace_id,
+         scope_context
+       ) do
     concurrency = max(1, length(steps))
 
     print_phase_banner(steps)
@@ -263,7 +287,8 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
             named_steps,
             extra_context,
             project_dir,
-            workspace_id
+            workspace_id,
+            scope_context
           )
         end,
         max_concurrency: concurrency,
@@ -283,7 +308,15 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     end
   end
 
-  defp execute_step(step, prior_results, named_steps, extra_context, project_dir, workspace_id) do
+  defp execute_step(
+         step,
+         prior_results,
+         named_steps,
+         extra_context,
+         project_dir,
+         workspace_id,
+         scope_context
+       ) do
     template_name = step.template
     task = step.task
 
@@ -308,8 +341,9 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
         name: step.name
       }
       |> maybe_put(:workspace_id, workspace_id)
+      |> Map.merge(scope_context)
 
-    case JidoClaw.Workflows.StepAction.run(params, %{}) do
+    case JidoClaw.Workflows.StepAction.run(params, scope_context) do
       {:ok, %StepResult{} = step_result} ->
         {:ok, step_result}
 

@@ -226,7 +226,9 @@ config :jido_claw,
     JidoClaw.Orchestration,
     JidoClaw.GitHub,
     JidoClaw.Folio,
-    JidoClaw.Reasoning.Domain
+    JidoClaw.Reasoning.Domain,
+    JidoClaw.Workspaces,
+    JidoClaw.Conversations
   ],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
 

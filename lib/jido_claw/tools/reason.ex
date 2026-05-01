@@ -174,13 +174,16 @@ defmodule JidoClaw.Tools.Reason do
     |> format_runner_result(strategy_name)
   end
 
-  # Pull workspace_id / project_dir / agent_id / forge_session_key from
-  # tool_context (all nil-safe) and fold in any extra keyword opts.
+  # Pull workspace_id / project_dir / agent_id / forge_session_key /
+  # Phase 0 UUIDs from tool_context (all nil-safe) and fold in any extra
+  # keyword opts.
   defp base_telemetry_opts(context, extra) do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 
     [
       workspace_id: Map.get(tool_context, :workspace_id),
+      workspace_uuid: Map.get(tool_context, :workspace_uuid),
+      session_uuid: Map.get(tool_context, :session_uuid),
       project_dir: Map.get(tool_context, :project_dir),
       agent_id: Map.get(tool_context, :agent_id),
       forge_session_key: Map.get(tool_context, :forge_session_key)

@@ -28,12 +28,8 @@ defmodule JidoClaw.Tools.SendToAgent do
           |> String.split("_")
           |> List.first()
 
-        project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
-        workspace_id = get_in(context, [:tool_context, :workspace_id])
-        forge_session_key = get_in(context, [:tool_context, :forge_session_key])
-
         child_tool_context =
-          child_tool_context(project_dir, workspace_id, params.agent_id, forge_session_key)
+          JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id)
 
         # Send async via the agent module's ask
         spawn(fn ->
@@ -69,13 +65,4 @@ defmodule JidoClaw.Tools.SendToAgent do
          }}
     end
   end
-
-  defp child_tool_context(project_dir, workspace_id, agent_id, forge_session_key) do
-    %{project_dir: project_dir, agent_id: agent_id}
-    |> maybe_put(:workspace_id, workspace_id)
-    |> maybe_put(:forge_session_key, forge_session_key)
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

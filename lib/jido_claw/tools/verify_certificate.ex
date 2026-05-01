@@ -118,6 +118,8 @@ defmodule JidoClaw.Tools.VerifyCertificate do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
     tool_context = Map.get(context, :tool_context, %{}) || %{}
     workspace_id = Map.get(tool_context, :workspace_id)
+    workspace_uuid = Map.get(tool_context, :workspace_uuid)
+    session_uuid = Map.get(tool_context, :session_uuid)
     project_dir = Map.get(tool_context, :project_dir)
     agent_id = Map.get(tool_context, :agent_id)
     forge_session_key = Map.get(tool_context, :forge_session_key)
@@ -126,6 +128,8 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       execution_kind: :certificate_verification,
       base_strategy: "cot",
       workspace_id: workspace_id,
+      workspace_uuid: workspace_uuid,
+      session_uuid: session_uuid,
       project_dir: project_dir,
       agent_id: agent_id,
       forge_session_key: forge_session_key

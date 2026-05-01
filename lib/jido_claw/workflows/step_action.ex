@@ -18,6 +18,26 @@ defmodule JidoClaw.Workflows.StepAction do
         type: :string,
         required: false,
         doc: "Workspace ID for shared VFS/shell state across steps"
+      ],
+      tenant_id: [
+        type: :string,
+        required: false,
+        doc: "Tenant id for downstream FK attribution (Phase 0)"
+      ],
+      session_id: [
+        type: :string,
+        required: false,
+        doc: "Runtime session id for downstream FK attribution (Phase 0)"
+      ],
+      session_uuid: [
+        type: :string,
+        required: false,
+        doc: "Conversations.Session UUID for downstream FK attribution (Phase 0)"
+      ],
+      workspace_uuid: [
+        type: :string,
+        required: false,
+        doc: "Workspaces.Workspace UUID for downstream FK attribution (Phase 0)"
       ]
     ]
 
@@ -27,21 +47,17 @@ defmodule JidoClaw.Workflows.StepAction do
   def run(params, context) do
     template_name = params.template
     task = params.task
-    project_dir = Map.get(params, :project_dir, File.cwd!())
     step_name = Map.get(params, :name, template_name)
 
     with {:ok, template} <- JidoClaw.Agent.Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
-         workspace_id = resolve_workspace_id(params, context, tag),
+         scope = resolve_scope(params, context, tag),
+         tool_context = JidoClaw.ToolContext.build(scope),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
       try do
         case template.module.ask_sync(pid, task,
                timeout: 180_000,
-               tool_context: %{
-                 project_dir: project_dir,
-                 workspace_id: workspace_id,
-                 agent_id: tag
-               }
+               tool_context: tool_context
              ) do
           {:ok, result} ->
             text = extract_result(result)
@@ -123,15 +139,38 @@ defmodule JidoClaw.Workflows.StepAction do
 
   def extract_artifacts(_), do: %{}
 
-  # Prefer the workspace_id passed in by the caller (workflow driver or parent
-  # agent) so every step in a skill/plan shares one VFS + shell session. Fall
-  # back to a per-step ID only when the caller didn't thread one through —
-  # existing tests and ad-hoc StepAction.run/2 callers rely on that path.
-  defp resolve_workspace_id(params, context, tag) do
-    Map.get(params, :workspace_id) ||
-      Map.get(context, :workspace_id) ||
-      get_in(context, [:tool_context, :workspace_id]) ||
-      "wf_#{tag}"
+  @doc false
+  # Resolve the canonical tool_context scope for a step. Source order is
+  # params (workflow driver passed-through scope_context) → context (the
+  # second arg of Jido.Action.run/2) → context.tool_context (parent
+  # agent's threaded scope) → fallback.
+  #
+  # `workspace_id` keeps its existing per-step fallback (`"wf_#{tag}"`)
+  # so unit tests and ad-hoc StepAction.run/2 callers still get a
+  # deterministic VFS key. The new Phase 0 UUIDs fall back to nil; the
+  # downstream resolver/telemetry code handles missing UUIDs gracefully.
+  # `project_dir` flows through the same pick/4 chain so direct
+  # StepAction.run/2 callers that pass a parent `tool_context` (without
+  # also setting `params.project_dir`) inherit the parent's anchor
+  # instead of silently falling back to `File.cwd!()`.
+  def resolve_scope(params, context, tag) do
+    %{
+      tenant_id: pick(params, context, :tenant_id, nil),
+      session_id: pick(params, context, :session_id, nil),
+      session_uuid: pick(params, context, :session_uuid, nil),
+      workspace_id: pick(params, context, :workspace_id, "wf_#{tag}"),
+      workspace_uuid: pick(params, context, :workspace_uuid, nil),
+      project_dir: pick(params, context, :project_dir, File.cwd!()),
+      agent_id: tag
+    }
+  end
+
+  @doc false
+  def pick(params, context, key, fallback) do
+    Map.get(params, key) ||
+      Map.get(context, key) ||
+      get_in(context, [:tool_context, key]) ||
+      fallback
   end
 
   defp extract_result(%{last_answer: answer}) when is_binary(answer), do: answer

@@ -37,23 +37,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
     task = params.task
     tag = Map.get(params, :tag) || "#{template_name}_#{:erlang.unique_integer([:positive])}"
 
-    # Propagate parent's project_dir and workspace_id so the child shares
-    # the VFS mount table and host session state.
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    forge_session_key = get_in(context, [:tool_context, :forge_session_key])
-
     case JidoClaw.Agent.Templates.get(template_name) do
       {:ok, template} ->
         case JidoClaw.Jido.start_agent(template.module, id: tag) do
           {:ok, pid} ->
-            # Register with AgentTracker for live swarm display
             JidoClaw.AgentTracker.register(tag, pid, template_name, task)
 
             child_tool_context =
-              child_tool_context(project_dir, workspace_id, tag, forge_session_key)
+              JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
 
-            # Send task async - don't block the main agent
             spawn(fn ->
               try do
                 template.module.ask_sync(pid, task,
@@ -87,13 +79,4 @@ defmodule JidoClaw.Tools.SpawnAgent do
         {:error, reason}
     end
   end
-
-  defp child_tool_context(project_dir, workspace_id, agent_id, forge_session_key) do
-    %{project_dir: project_dir, agent_id: agent_id}
-    |> maybe_put(:workspace_id, workspace_id)
-    |> maybe_put(:forge_session_key, forge_session_key)
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

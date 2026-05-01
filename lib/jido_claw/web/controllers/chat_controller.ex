@@ -12,12 +12,13 @@ defmodule JidoClaw.Web.ChatController do
     # Derive tenant from the authenticated user to preserve per-user isolation
     # without trusting client-supplied headers. A real user-to-tenant model is
     # a follow-up; until then the user's ID acts as the tenant namespace.
-    tenant_id = to_string(conn.assigns.current_user.id)
+    user_id = conn.assigns.current_user.id
+    tenant_id = to_string(user_id)
 
     if stream do
-      stream_response(conn, tenant_id, model, messages)
+      stream_response(conn, tenant_id, user_id, model, messages)
     else
-      sync_response(conn, tenant_id, model, messages)
+      sync_response(conn, tenant_id, user_id, model, messages)
     end
   end
 
@@ -27,12 +28,16 @@ defmodule JidoClaw.Web.ChatController do
     |> json(%{error: %{message: "messages field is required", type: "invalid_request_error"}})
   end
 
-  defp sync_response(conn, tenant_id, _model, messages) do
+  defp sync_response(conn, tenant_id, user_id, _model, messages) do
     last_message = List.last(messages)
     content = Map.get(last_message, "content", "")
+    session_id = "api_#{:erlang.unique_integer([:positive])}"
 
-    # Route through the default agent session
-    case JidoClaw.chat(tenant_id, "api_#{:erlang.unique_integer([:positive])}", content) do
+    case JidoClaw.chat(tenant_id, session_id, content,
+           kind: :api,
+           external_id: session_id,
+           user_id: user_id
+         ) do
       {:ok, response} ->
         json(conn, %{
           id: "chatcmpl-#{:erlang.unique_integer([:positive])}",
@@ -54,9 +59,10 @@ defmodule JidoClaw.Web.ChatController do
     end
   end
 
-  defp stream_response(conn, tenant_id, _model, messages) do
+  defp stream_response(conn, tenant_id, user_id, _model, messages) do
     last_message = List.last(messages)
     content = Map.get(last_message, "content", "")
+    session_id = "api_stream_#{:erlang.unique_integer([:positive])}"
 
     conn =
       conn
@@ -65,7 +71,11 @@ defmodule JidoClaw.Web.ChatController do
       |> put_resp_header("connection", "keep-alive")
       |> send_chunked(200)
 
-    case JidoClaw.chat(tenant_id, "api_stream_#{:erlang.unique_integer([:positive])}", content) do
+    case JidoClaw.chat(tenant_id, session_id, content,
+           kind: :api,
+           external_id: session_id,
+           user_id: user_id
+         ) do
       {:ok, response} ->
         chunk_id = "chatcmpl-#{:erlang.unique_integer([:positive])}"
 

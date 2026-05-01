@@ -24,6 +24,15 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
 
   Returns `{:ok, results}` with a list of `%StepResult{}` structs,
   or `{:error, reason}` if any step fails.
+
+  ## Options
+
+    * `:workspace_id` — runtime per-step VFS/Shell/Profile key, threaded to
+      every step so they share state across the skill.
+    * `:scope_context` — Phase 0 canonical scope map (tenant_id,
+      session_id, session_uuid, workspace_id, workspace_uuid,
+      project_dir). Threaded to every step's params + context so the
+      child agent's tool_context inherits the parent's scope.
   """
   @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
           {:ok, list()} | {:error, term()}
@@ -31,6 +40,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
     steps = skill.steps
     step_count = length(steps)
     workspace_id = Keyword.get(opts, :workspace_id)
+    scope_context = Keyword.get(opts, :scope_context, %{})
 
     if step_count == 0 do
       {:error, "Skill '#{skill.name}' has no steps"}
@@ -69,17 +79,25 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
         )
 
       # Execute steps sequentially through the FSM
-      execute_machine(machine, steps, extra_context, project_dir, workspace_id)
+      execute_machine(machine, steps, extra_context, project_dir, workspace_id, scope_context)
     end
   end
 
   # Walk the FSM: at each non-terminal state, run the corresponding step's action,
   # apply the result, and transition.
-  defp execute_machine(machine, steps, extra_context, project_dir, workspace_id) do
-    execute_loop(machine, steps, extra_context, project_dir, workspace_id, [])
+  defp execute_machine(machine, steps, extra_context, project_dir, workspace_id, scope_context) do
+    execute_loop(machine, steps, extra_context, project_dir, workspace_id, scope_context, [])
   end
 
-  defp execute_loop(machine, steps, extra_context, project_dir, workspace_id, results) do
+  defp execute_loop(
+         machine,
+         steps,
+         extra_context,
+         project_dir,
+         workspace_id,
+         scope_context,
+         results
+       ) do
     if Machine.terminal?(machine) do
       if machine.status == :done do
         {:ok, Enum.reverse(results)}
@@ -113,8 +131,9 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
           name: step_name
         }
         |> maybe_put(:workspace_id, workspace_id)
+        |> Map.merge(scope_context)
 
-      case JidoClaw.Workflows.StepAction.run(params, %{}) do
+      case JidoClaw.Workflows.StepAction.run(params, scope_context) do
         {:ok, %StepResult{} = step_result} ->
           # Apply result to machine context and transition to next state
           machine = Machine.apply_result(machine, step_result)
@@ -122,7 +141,16 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
           case Machine.transition(machine, :ok) do
             {:ok, machine} ->
               results = [step_result | results]
-              execute_loop(machine, steps, extra_context, project_dir, workspace_id, results)
+
+              execute_loop(
+                machine,
+                steps,
+                extra_context,
+                project_dir,
+                workspace_id,
+                scope_context,
+                results
+              )
 
             {:error, reason} ->
               {:error, "Transition failed after step #{step_idx}: #{inspect(reason)}"}

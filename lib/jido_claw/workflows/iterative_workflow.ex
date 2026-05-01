@@ -41,14 +41,19 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   Options:
     * `:workspace_id` — threaded to every generator and evaluator step so
       they share the caller's VFS + shell session. When omitted,
-      `StepAction.resolve_workspace_id/3` falls back to a per-step id
+      `StepAction.resolve_scope/3` falls back to a per-step id
       (legacy behavior, used by unit tests and ad-hoc callers).
+    * `:scope_context` — Phase 0 canonical scope map (tenant_id,
+      session_id, session_uuid, workspace_id, workspace_uuid,
+      project_dir). Threaded to every step so the child agent's
+      tool_context inherits the parent's scope.
   """
   @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
           {:ok, list()} | {:error, term()}
   def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
     max_iter = skill.max_iterations || @default_max_iterations
     workspace_id = Keyword.get(opts, :workspace_id)
+    scope_context = Keyword.get(opts, :scope_context, %{})
 
     case extract_roles(skill) do
       {:ok, generator, evaluator} ->
@@ -63,6 +68,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
           extra_context,
           project_dir,
           workspace_id,
+          scope_context,
           max_iter,
           1,
           nil
@@ -74,8 +80,8 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   end
 
   @doc false
-  @spec build_step_params(map(), String.t(), String.t(), String.t() | nil) :: map()
-  def build_step_params(step, task, project_dir, workspace_id) do
+  @spec build_step_params(map(), String.t(), String.t(), String.t() | nil, map()) :: map()
+  def build_step_params(step, task, project_dir, workspace_id, scope_context \\ %{}) do
     %{
       template: step.template,
       task: task,
@@ -83,6 +89,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
       name: step.name
     }
     |> maybe_put(:workspace_id, workspace_id)
+    |> Map.merge(scope_context)
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -163,6 +170,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
          _extra_context,
          _project_dir,
          _workspace_id,
+         _scope_context,
          max_iter,
          iteration,
          {last_gen_result, last_eval_result}
@@ -178,6 +186,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
          extra_context,
          project_dir,
          workspace_id,
+         scope_context,
          max_iter,
          iteration,
          last_pair
@@ -206,9 +215,10 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
     IO.puts("  \e[2m  [generate] #{generator.name} (#{generator.template})\e[0m")
 
-    gen_params = build_step_params(generator, gen_context, project_dir, workspace_id)
+    gen_params =
+      build_step_params(generator, gen_context, project_dir, workspace_id, scope_context)
 
-    case StepAction.run(gen_params, %{}) do
+    case StepAction.run(gen_params, scope_context) do
       {:ok, %StepResult{} = gen_result} ->
         # Build evaluator context with generator output + artifact metadata
         eval_dep_context = ContextBuilder.format_all([gen_result])
@@ -230,9 +240,10 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
         IO.puts("  \e[2m  [evaluate] #{evaluator.name} (#{evaluator.template})\e[0m")
 
-        eval_params = build_step_params(evaluator, eval_context, project_dir, workspace_id)
+        eval_params =
+          build_step_params(evaluator, eval_context, project_dir, workspace_id, scope_context)
 
-        case StepAction.run(eval_params, %{}) do
+        case StepAction.run(eval_params, scope_context) do
           {:ok, %StepResult{} = eval_result} ->
             case parse_verdict(eval_result.result) do
               :pass ->
@@ -248,6 +259,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
                   extra_context,
                   project_dir,
                   workspace_id,
+                  scope_context,
                   max_iter,
                   iteration + 1,
                   {gen_result, eval_result}

@@ -42,7 +42,10 @@ defmodule JidoClaw.Channel.Telegram do
     if allowed and text != "" do
       session_id = "telegram_#{chat_id}"
 
-      case JidoClaw.chat("default", session_id, text) do
+      case JidoClaw.chat("default", session_id, text,
+             kind: :telegram,
+             external_id: session_id
+           ) do
         {:ok, response} ->
           send_message(to_string(chat_id), response, state)
           {:reply, response, %{state | offset: update_id + 1}}

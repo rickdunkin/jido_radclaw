@@ -43,7 +43,10 @@ defmodule JidoClaw.Channel.Discord do
     # Route to agent session
     session_id = "discord_#{normalized.channel_id}"
 
-    case JidoClaw.chat("default", session_id, normalized.text) do
+    case JidoClaw.chat("default", session_id, normalized.text,
+           kind: :discord,
+           external_id: session_id
+         ) do
       {:ok, response} ->
         send_message(normalized.channel_id, response, state)
         {:reply, response, state}

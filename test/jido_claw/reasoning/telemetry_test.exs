@@ -98,6 +98,41 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
              end)
     end
 
+    test "persists workspace_uuid and session_uuid when supplied in opts" do
+      {:ok, ws} =
+        JidoClaw.Workspaces.Workspace.register(%{
+          tenant_id: "default",
+          path: "/tmp/tel-fk-#{System.unique_integer([:positive])}",
+          name: "ws"
+        })
+
+      {:ok, session} =
+        JidoClaw.Conversations.Session.start(%{
+          workspace_id: ws.id,
+          tenant_id: "default",
+          kind: :api,
+          external_id: "sess-tel",
+          started_at: DateTime.utc_now()
+        })
+
+      Telemetry.with_outcome(
+        "cot",
+        "neutral telemetry-uuid prompt",
+        [
+          execution_kind: :strategy_run,
+          workspace_uuid: ws.id,
+          session_uuid: session.id
+        ],
+        fn -> {:ok, %{}} end
+      )
+
+      {:ok, rows} = Outcome.list_by_task_type(:open_ended)
+
+      assert Enum.any?(rows, fn r ->
+               r.workspace_uuid == ws.id and r.session_uuid == session.id
+             end)
+    end
+
     test "agent_id and forge_session_key default to nil when absent from opts" do
       Telemetry.with_outcome(
         "cot",

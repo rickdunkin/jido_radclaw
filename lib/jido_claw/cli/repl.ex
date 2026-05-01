@@ -14,6 +14,13 @@ defmodule JidoClaw.CLI.Repl do
     :cwd,
     :model,
     :session_id,
+    # Phase 0 — UUID FK targets resolved at boot from the persisted
+    # Workspace and Session rows; threaded into every tool_context build
+    # so reasoning telemetry (and later Memory/Audit) can attach to real
+    # FK targets instead of opaque strings.
+    :session_uuid,
+    :workspace_uuid,
+    :tenant_id,
     :started_at,
     # strategy is populated at REPL init from Config.strategy/1 — not
     # defaulted here so we don't silently shadow .jido/config.yaml.
@@ -146,12 +153,21 @@ defmodule JidoClaw.CLI.Repl do
         end
 
         session_id = Session.new_session_id()
+        tenant_id = "default"
 
         # Ensure a Session.Worker GenServer is running for this CLI session
-        {:ok, _session_pid} = Session.Supervisor.ensure_session("default", session_id)
+        {:ok, _session_pid} = Session.Supervisor.ensure_session(tenant_id, session_id)
+
+        # Phase 0 — resolve durable Workspace + Session rows so the
+        # tool_context threaded into every Agent.ask carries
+        # workspace_uuid + session_uuid. CLI runs unauthenticated so
+        # user_id is nil; the partial-unique :unique_user_path_cli
+        # identity keeps these rows from colliding with web/RPC rows.
+        {workspace_uuid, session_uuid} =
+          ensure_persisted_session(tenant_id, project_dir, session_id)
 
         # Bind agent process to session for crash tracking
-        Worker.set_agent("default", session_id, pid)
+        Worker.set_agent(tenant_id, session_id, pid)
 
         # Register main agent with tracker and configure display
         AgentTracker.register("main", pid, nil, nil)
@@ -183,6 +199,9 @@ defmodule JidoClaw.CLI.Repl do
           cwd: project_dir,
           model: model,
           session_id: session_id,
+          session_uuid: session_uuid,
+          workspace_uuid: workspace_uuid,
+          tenant_id: tenant_id,
           started_at: System.monotonic_time(:second),
           strategy: strategy,
           profile: profile
@@ -229,7 +248,7 @@ defmodule JidoClaw.CLI.Repl do
     # Route through Session.Worker GenServer (telemetry + JSONL persistence).
     # Save the *raw* message here so session history captures what the user
     # typed, not the hinted variant seen by the agent.
-    Worker.add_message("default", state.session_id, :user, message)
+    Worker.add_message(state.tenant_id, state.session_id, :user, message)
     Stats.track_message(:user)
 
     # Reset display mode and start thinking spinner via Display
@@ -239,13 +258,20 @@ defmodule JidoClaw.CLI.Repl do
 
     prepared = prepare_user_message(message, state.strategy)
 
+    tool_context =
+      JidoClaw.ToolContext.build(%{
+        project_dir: state.cwd,
+        tenant_id: state.tenant_id,
+        session_id: state.session_id,
+        session_uuid: state.session_uuid,
+        workspace_id: state.session_id,
+        workspace_uuid: state.workspace_uuid,
+        agent_id: state.agent_id
+      })
+
     case Agent.ask(state.agent_pid, prepared,
            timeout: 120_000,
-           tool_context: %{
-             project_dir: state.cwd,
-             workspace_id: state.session_id,
-             agent_id: state.agent_id
-           }
+           tool_context: tool_context
          ) do
       {:ok, handle} ->
         result = poll_with_tool_display(handle, state.agent_pid, MapSet.new())
@@ -256,13 +282,13 @@ defmodule JidoClaw.CLI.Repl do
         case result do
           {:ok, answer} when is_binary(answer) ->
             Formatter.print_answer(answer)
-            Worker.add_message("default", state.session_id, :assistant, answer)
+            Worker.add_message(state.tenant_id, state.session_id, :assistant, answer)
             update_stats(state)
 
           {:ok, answer} ->
             text = extract_text(answer)
             Formatter.print_answer(text)
-            Worker.add_message("default", state.session_id, :assistant, text)
+            Worker.add_message(state.tenant_id, state.session_id, :assistant, text)
             update_stats(state)
 
           {:error, reason} ->
@@ -471,5 +497,37 @@ defmodule JidoClaw.CLI.Repl do
       [_, name] -> name
       _ -> model
     end
+  end
+
+  # Resolve durable Workspace + Session rows for the REPL boot. Falls
+  # back to {nil, nil} when the persistence layer is unreachable so the
+  # REPL still starts in degraded mode (e.g. test harness without a
+  # running database) rather than crashing.
+  defp ensure_persisted_session(tenant_id, project_dir, session_id) do
+    with {:ok, workspace} <-
+           JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir),
+         {:ok, session} <-
+           JidoClaw.Conversations.Resolver.ensure_session(
+             tenant_id,
+             workspace.id,
+             :repl,
+             session_id
+           ) do
+      {workspace.id, session.id}
+    else
+      {:error, reason} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  workspace/session persistence failed: \e[1m#{inspect(reason)}\e[0m"
+        )
+
+        {nil, nil}
+    end
+  rescue
+    e ->
+      IO.puts(
+        "  \e[33m⚠\e[0m  workspace/session persistence raised: \e[1m#{Exception.message(e)}\e[0m"
+      )
+
+      {nil, nil}
   end
 end

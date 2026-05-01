@@ -113,11 +113,18 @@ defmodule JidoClaw.Cron.Worker do
       try do
         case state.mode do
           :main ->
-            JidoClaw.chat(state.tenant_id, state.agent_id, state.task)
+            JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
+              kind: :cron,
+              external_id: state.agent_id
+            )
 
           :isolated ->
             session_id = "cron_#{state.id}_#{System.system_time(:second)}"
-            JidoClaw.chat(state.tenant_id, session_id, state.task)
+
+            JidoClaw.chat(state.tenant_id, session_id, state.task,
+              kind: :cron,
+              external_id: session_id
+            )
         end
       rescue
         e ->

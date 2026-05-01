@@ -42,9 +42,31 @@ defmodule JidoClaw.Web.RpcChannel do
         socket
       ) do
     tenant_id = tenant_for(socket)
+    user_id = socket.assigns.current_user.id
+    project_dir = File.cwd!()
 
-    case JidoClaw.Session.Supervisor.start_session(tenant_id, session_id) do
-      {:ok, _pid} -> {:reply, {:ok, %{session_id: session_id}}, socket}
+    # Resolve durable Workspace + Conversation rows BEFORE starting the
+    # runtime Session.Worker. If we started the worker first and a
+    # resolver failed, the client would see an error but a runtime
+    # session would remain registered — and a retry with the same
+    # session_id would then short-circuit on `start_session →
+    # {:already_started, _}`, never reaching the resolvers. By doing
+    # the resolvers first, a retry that hit an already-running worker
+    # is treated as success (Decision: idempotent reuse is fine here
+    # because the durable rows are already in place).
+    with {:ok, workspace} <-
+           JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir, user_id: user_id),
+         {:ok, session} <-
+           JidoClaw.Conversations.Resolver.ensure_session(
+             tenant_id,
+             workspace.id,
+             :web_rpc,
+             session_id,
+             user_id: user_id
+           ),
+         {:ok, _pid} <- ensure_runtime_session(tenant_id, session_id) do
+      {:reply, {:ok, %{session_id: session_id, id: session.id}}, socket}
+    else
       {:error, reason} -> {:reply, {:error, %{reason: inspect(reason)}}, socket}
     end
   end
@@ -55,8 +77,13 @@ defmodule JidoClaw.Web.RpcChannel do
         socket
       ) do
     tenant_id = tenant_for(socket)
+    user_id = socket.assigns.current_user.id
 
-    case JidoClaw.chat(tenant_id, session_id, content) do
+    case JidoClaw.chat(tenant_id, session_id, content,
+           kind: :web_rpc,
+           external_id: session_id,
+           user_id: user_id
+         ) do
       {:ok, response} ->
         push(socket, "session.response", %{session_id: session_id, content: response})
         {:reply, {:ok, %{status: "sent"}}, socket}
@@ -74,4 +101,17 @@ defmodule JidoClaw.Web.RpcChannel do
   # without trusting client-supplied params. A real user-to-tenant model is
   # a follow-up; until then the user's ID acts as the tenant namespace.
   defp tenant_for(socket), do: to_string(socket.assigns.current_user.id)
+
+  # `start_session/2` returns `{:error, {:already_started, pid}}` when a
+  # runtime worker for this `(tenant_id, session_id)` already exists. For
+  # `sessions.create` the durable rows have already been resolved by the
+  # caller, so an already-running worker is the exact post-condition we
+  # want — surface it as `{:ok, pid}` instead of bubbling the error.
+  defp ensure_runtime_session(tenant_id, session_id) do
+    case JidoClaw.Session.Supervisor.start_session(tenant_id, session_id) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, _} = err -> err
+    end
+  end
 end

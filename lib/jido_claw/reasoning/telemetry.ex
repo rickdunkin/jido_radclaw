@@ -21,6 +21,8 @@ defmodule JidoClaw.Reasoning.Telemetry do
   @type opts :: [
           execution_kind: atom(),
           workspace_id: String.t() | nil,
+          workspace_uuid: Ecto.UUID.t() | nil,
+          session_uuid: Ecto.UUID.t() | nil,
           project_dir: String.t() | nil,
           agent_id: String.t() | nil,
           forge_session_key: String.t() | nil,
@@ -188,6 +190,8 @@ defmodule JidoClaw.Reasoning.Telemetry do
       certificate_verdict: Keyword.get(opts, :certificate_verdict, extracted_verdict),
       certificate_confidence: Keyword.get(opts, :certificate_confidence, extracted_confidence),
       workspace_id: Keyword.get(opts, :workspace_id),
+      workspace_uuid: Keyword.get(opts, :workspace_uuid),
+      session_uuid: Keyword.get(opts, :session_uuid),
       project_dir: Keyword.get(opts, :project_dir),
       agent_id: Keyword.get(opts, :agent_id),
       forge_session_key: Keyword.get(opts, :forge_session_key),

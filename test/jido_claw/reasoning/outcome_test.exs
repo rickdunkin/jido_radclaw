@@ -81,6 +81,54 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
       assert row.agent_id == "main"
       assert row.forge_session_key == "forge-abc123"
     end
+
+    test "persists workspace_uuid and session_uuid (Phase 0 sibling FKs)" do
+      {:ok, ws} =
+        JidoClaw.Workspaces.Workspace.register(%{
+          tenant_id: "default",
+          path: "/tmp/outcome-fk-#{System.unique_integer([:positive])}",
+          name: "ws"
+        })
+
+      {:ok, session} =
+        JidoClaw.Conversations.Session.start(%{
+          workspace_id: ws.id,
+          tenant_id: "default",
+          kind: :api,
+          external_id: "sess-fk",
+          started_at: DateTime.utc_now()
+        })
+
+      attrs = %{
+        strategy: "cot",
+        execution_kind: :strategy_run,
+        task_type: :qa,
+        complexity: :simple,
+        prompt_length: 10,
+        status: :ok,
+        started_at: DateTime.utc_now(),
+        workspace_uuid: ws.id,
+        session_uuid: session.id
+      }
+
+      assert {:ok, row} = Outcome.record(attrs)
+      assert row.workspace_uuid == ws.id
+      assert row.session_uuid == session.id
+    end
+  end
+
+  describe "indexes" do
+    test "workspace_uuid and session_uuid indexes exist" do
+      {:ok, %{rows: rows}} =
+        JidoClaw.Repo.query("""
+          SELECT indexname FROM pg_indexes
+          WHERE tablename = 'reasoning_outcomes' AND indexname LIKE '%uuid%'
+        """)
+
+      names = Enum.map(rows, &List.first/1)
+      assert "reasoning_outcomes_workspace_uuid_started_at_index" in names
+      assert "reasoning_outcomes_session_uuid_started_at_index" in names
+    end
   end
 
   describe "list_by_task_type/2" do

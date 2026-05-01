@@ -51,10 +51,24 @@ defmodule JidoClaw.Agent.Templates do
     }
   }
 
-  @doc "Returns the config map for a named template."
+  @doc """
+  Returns the config map for a named template.
+
+  Consults `Application.get_env(:jido_claw, :agent_templates_override, %{})`
+  before the static `@templates` map. The override hook exists for tests
+  that need to register a stub template (see
+  `test/jido_claw/workflows/scope_propagation_test.exs`); production code
+  never sets the override, so the static map is always consulted.
+
+  This asymmetry — `get/1` honours the override but `list/0`, `names/0`,
+  and `exists?/1` do not — is intentional. Listing/existence checks run on
+  startup paths and tests don't depend on them recognising stub templates.
+  """
   @spec get(String.t()) :: {:ok, map()} | {:error, String.t()}
   def get(name) do
-    case Map.get(@templates, name) do
+    override = Application.get_env(:jido_claw, :agent_templates_override, %{})
+
+    case Map.get(override, name) || Map.get(@templates, name) do
       nil -> {:error, "Unknown template '#{name}'. Available: #{Enum.join(names(), ", ")}"}
       template -> {:ok, template}
     end

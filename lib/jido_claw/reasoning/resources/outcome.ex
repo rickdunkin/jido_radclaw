@@ -42,6 +42,8 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       index([:pipeline_name, :pipeline_stage])
       index([:forge_session_key])
       index([:agent_id, :started_at])
+      index([:workspace_uuid, :started_at])
+      index([:session_uuid, :started_at])
     end
   end
 
@@ -78,6 +80,8 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
         :certificate_verdict,
         :certificate_confidence,
         :workspace_id,
+        :workspace_uuid,
+        :session_uuid,
         :project_dir,
         :agent_id,
         :forge_session_key,
@@ -192,6 +196,16 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       public?(true)
     end
 
+    attribute :workspace_uuid, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :session_uuid, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :project_dir, :string do
       allow_nil?(true)
       public?(true)
@@ -221,6 +235,20 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
     attribute :completed_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
+    end
+  end
+
+  relationships do
+    belongs_to :workspace, JidoClaw.Workspaces.Workspace do
+      define_attribute?(false)
+      attribute_writable?(true)
+      source_attribute(:workspace_uuid)
+    end
+
+    belongs_to :session, JidoClaw.Conversations.Session do
+      define_attribute?(false)
+      attribute_writable?(true)
+      source_attribute(:session_uuid)
     end
   end
 end
