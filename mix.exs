@@ -142,6 +142,7 @@ defmodule JidoClaw.MixProject do
 
       # HTTP client
       {:finch, "~> 0.19"},
+      {:req, "~> 0.5"},
 
       # Discord (optional — only starts when DISCORD_BOT_TOKEN is set).
       # Excluded from the test env entirely: nostrum crashes at startup without a

@@ -253,7 +253,19 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/solutions search " <> query, state) do
     q = String.trim(query)
-    results = JidoClaw.Solutions.Store.search(q)
+
+    results =
+      case session_scope(state) do
+        {:ok, tenant_id, workspace_uuid} ->
+          JidoClaw.Solutions.Matcher.find_solutions(q,
+            tenant_id: tenant_id,
+            workspace_id: workspace_uuid,
+            limit: 10
+          )
+
+        :missing ->
+          []
+      end
 
     IO.puts("")
     IO.puts("  \e[1mSolutions Search: #{q}\e[0m")
@@ -264,7 +276,7 @@ defmodule JidoClaw.CLI.Commands do
       IO.puts("  \e[2m#{length(results)} result(s)\e[0m")
       IO.puts("")
 
-      Enum.each(results, fn sol ->
+      Enum.each(results, fn %{solution: sol} ->
         lang = if sol.language, do: " \e[36m[#{sol.language}]\e[0m", else: ""
         preview = sol.solution_content |> String.slice(0, 80) |> String.replace("\n", " ")
         IO.puts("  \e[33m▸\e[0m \e[1m#{sol.id}\e[0m#{lang}")
@@ -277,7 +289,14 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/solutions", state) do
-    stats = JidoClaw.Solutions.Store.stats()
+    stats =
+      case session_scope(state) do
+        {:ok, tenant_id, workspace_uuid} ->
+          JidoClaw.CLI.Commands.SolutionsStats.fetch(tenant_id, workspace_uuid)
+
+        :missing ->
+          %{total: 0, by_language: %{}, by_framework: %{}}
+      end
 
     IO.puts("")
     IO.puts("  \e[1mSolution Store\e[0m")
@@ -667,6 +686,21 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/profile", state), do: print_profile_current(state)
 
+  def handle("/workspace " <> rest, state) do
+    case String.split(String.trim(rest), " ", parts: 2) do
+      ["embedding", policy] ->
+        set_workspace_policy(state, :embedding, String.trim(policy))
+
+      ["consolidation", policy] ->
+        set_workspace_policy(state, :consolidation, String.trim(policy))
+
+      _ ->
+        print_workspace_usage(state)
+    end
+  end
+
+  def handle("/workspace", state), do: print_workspace_usage(state)
+
   def handle("/servers " <> rest, state) do
     case String.split(String.trim(rest), " ", parts: 2) do
       ["list"] -> list_servers(state)
@@ -750,6 +784,18 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[31mUnknown command: /#{unknown}\e[0m  (try /help)")
     {:ok, state}
   end
+
+  # -- Session-scope helper --
+  # Reads tenant_id + workspace_uuid from the REPL state struct (set
+  # during `ensure_persisted_session/3` at REPL start). Returns
+  # `:missing` when persistence wasn't reachable at boot (degraded
+  # mode — see repl.ex:506).
+  defp session_scope(%{tenant_id: tenant_id, workspace_uuid: workspace_uuid})
+       when is_binary(tenant_id) and is_binary(workspace_uuid) do
+    {:ok, tenant_id, workspace_uuid}
+  end
+
+  defp session_scope(_state), do: :missing
 
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
 
@@ -898,6 +944,81 @@ defmodule JidoClaw.CLI.Commands do
   defp print_profile_usage(state) do
     IO.puts("  Usage: /profile [list | current | switch <name>]")
     {:ok, state}
+  end
+
+  # -- Workspace policy helpers --
+
+  defp set_workspace_policy(state, :embedding, policy_str) do
+    apply_workspace_policy(state, :embedding, parse_policy(policy_str), policy_str)
+  end
+
+  defp set_workspace_policy(state, :consolidation, policy_str) do
+    apply_workspace_policy(state, :consolidation, parse_policy(policy_str), policy_str)
+  end
+
+  defp apply_workspace_policy(state, _kind, :error, raw) do
+    IO.puts(
+      "  \e[31m✗\e[0m  '#{raw}' is not a valid policy. Use one of: default, local_only, disabled."
+    )
+
+    {:ok, state}
+  end
+
+  defp apply_workspace_policy(state, kind, {:ok, policy}, _raw) do
+    case state.workspace_uuid do
+      nil ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  workspace persistence isn't available — policy not applied. " <>
+            "Restart the REPL once the database is reachable."
+        )
+
+        {:ok, state}
+
+      uuid when is_binary(uuid) ->
+        with {:ok, workspace} <-
+               Ash.get(JidoClaw.Workspaces.Workspace, uuid, domain: JidoClaw.Workspaces),
+             {:ok, _} <- apply_policy_action(workspace, kind, policy) do
+          IO.puts(
+            "  \e[32m✓\e[0m  workspace #{kind} policy set to \e[1m#{Atom.to_string(policy)}\e[0m"
+          )
+
+          if kind == :embedding do
+            apply_embedding_transition(workspace, policy)
+          end
+
+          {:ok, state}
+        else
+          {:error, reason} ->
+            IO.puts("  \e[31m✗\e[0m  Failed to set workspace policy: #{inspect(reason)}")
+            {:ok, state}
+        end
+    end
+  end
+
+  defp apply_policy_action(workspace, :embedding, policy),
+    do: JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy)
+
+  defp apply_policy_action(workspace, :consolidation, policy),
+    do: JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy)
+
+  defp parse_policy("default"), do: {:ok, :default}
+  defp parse_policy("local_only"), do: {:ok, :local_only}
+  defp parse_policy("disabled"), do: {:ok, :disabled}
+  defp parse_policy(_), do: :error
+
+  defp print_workspace_usage(state) do
+    IO.puts("  Usage:")
+    IO.puts("    /workspace embedding <default|local_only|disabled>")
+    IO.puts("    /workspace consolidation <default|local_only|disabled>")
+    {:ok, state}
+  end
+
+  # Apply the §1.4 row-status fix-up table for embedding policy
+  # transitions. Synchronous bounded UPDATE only; very large
+  # workspaces should consider migrating in batches (deferred to
+  # v0.7+).
+  defp apply_embedding_transition(workspace, new_policy) do
+    JidoClaw.Workspaces.PolicyTransitions.apply_embedding(workspace.id, new_policy)
   end
 
   # -- Servers helpers --

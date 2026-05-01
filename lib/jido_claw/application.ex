@@ -102,6 +102,11 @@ defmodule JidoClaw.Application do
         # Finch HTTP pools
         {Finch, name: JidoClaw.Finch},
 
+        # Embeddings — RatePacer must start AFTER Finch (Voyage HTTP)
+        # and BackfillWorker must start AFTER RatePacer + Repo.
+        JidoClaw.Embeddings.RatePacer,
+        JidoClaw.Embeddings.BackfillWorker,
+
         # Telemetry
         JidoClaw.Telemetry,
 
@@ -127,9 +132,11 @@ defmodule JidoClaw.Application do
         JidoClaw.Tenant.Supervisor,
         JidoClaw.Tenant.Manager,
 
-        # Solutions engine
-        {JidoClaw.Solutions.Store, [project_dir: project_dir()]},
-        {JidoClaw.Solutions.Reputation, [project_dir: project_dir()]},
+        # Solutions engine — Store + Reputation GenServers retired
+        # in v0.6.1; Solutions live in Postgres now (see
+        # JidoClaw.Solutions.Solution and JidoClaw.Solutions.Reputation
+        # resources). Persistence is handled by the new BackfillWorker
+        # added above.
 
         # Persistent memory
         {JidoClaw.Memory, [project_dir: project_dir()]},
@@ -231,8 +238,23 @@ defmodule JidoClaw.Application do
       # anubis 0.17 but is a behaviour in 1.1. The server's generated
       # child_spec/1 calls Anubis.Server.Supervisor.start_link, which starts
       # the registry internally.
-      :mcp -> [{JidoClaw.MCPServer, [transport: :stdio]}]
-      _ -> []
+      :mcp ->
+        [
+          # Resolve the MCP-mode default tool_context BEFORE the MCP
+          # server starts publishing tools. The Solutions tools call
+          # MCPScope.with_default/1 which falls back to the value stashed
+          # at :jido_claw_mcp_default_scope.
+          %{
+            id: JidoClaw.MCPScope.Initializer,
+            start: {JidoClaw.MCPScope.Initializer, :start_link, [[]]},
+            type: :worker,
+            restart: :transient
+          },
+          {JidoClaw.MCPServer, [transport: :stdio]}
+        ]
+
+      _ ->
+        []
     end
   end
 

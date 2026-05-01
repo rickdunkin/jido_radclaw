@@ -45,20 +45,61 @@ defmodule JidoClaw.CLI.Setup do
     # Step 3: Pick model
     model = pick_model(provider_key)
 
-    # Step 4: Build config
-    config_map = build_config(provider_key, model, api_key_env)
+    # Step 4: Workspace policies (embedding + consolidation). These
+    # land in config.yaml; the REPL applies them to the workspace row
+    # in `ensure_persisted_session/3` after the Workspace is registered.
+    embedding_policy = pick_embedding_policy()
+    consolidation_policy = pick_consolidation_policy()
 
-    # Step 5: Test connection
+    # Step 5: Build config
+    config_map =
+      build_config(provider_key, model, api_key_env)
+      |> Map.put("embedding_policy", Atom.to_string(embedding_policy))
+      |> Map.put("consolidation_policy", Atom.to_string(consolidation_policy))
+
+    # Step 6: Test connection
     loaded = Config.deep_merge(Config.load(project_dir), config_map)
     test_connection(loaded, provider_name)
 
-    # Step 6: Save
+    # Step 7: Save
     write_config(project_dir, config_map)
 
     IO.puts("\n  \e[32m✓\e[0m  Configuration saved to #{config_path(project_dir)}")
     IO.puts("  \e[2m   Run /setup anytime to reconfigure.\e[0m\n")
 
     Config.load(project_dir)
+  end
+
+  defp pick_embedding_policy do
+    IO.puts("")
+    IO.puts("  \e[1mEnable Voyage embeddings for this workspace? \e[0m")
+    IO.puts("  \e[2m   [Y]es (default Voyage)  [n]o (disabled)  [l]ocal-only (Ollama)\e[0m")
+    IO.puts("")
+
+    case prompt_input("  Embedding policy [Y/n/l]") do
+      v when v in ["", "y", "Y", "yes"] -> :default
+      v when v in ["n", "N", "no"] -> :disabled
+      v when v in ["l", "L", "local", "local_only"] -> :local_only
+      _ -> :default
+    end
+  end
+
+  defp pick_consolidation_policy do
+    IO.puts("")
+
+    IO.puts(
+      "  \e[1mAllow JidoClaw to send transcripts/memory facts to a frontier consolidator? \e[0m"
+    )
+
+    IO.puts("  \e[2m   [y]es (Voyage/Anthropic)  [N]o (default disabled)  [l]ocal-only\e[0m")
+    IO.puts("")
+
+    case prompt_input("  Consolidation policy [y/N/l]") do
+      v when v in ["", "n", "N", "no"] -> :disabled
+      v when v in ["y", "Y", "yes"] -> :default
+      v when v in ["l", "L", "local", "local_only"] -> :local_only
+      _ -> :disabled
+    end
   end
 
   # ---------------------------------------------------------------------------

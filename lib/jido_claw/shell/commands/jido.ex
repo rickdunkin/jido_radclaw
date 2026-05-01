@@ -21,9 +21,9 @@ defmodule JidoClaw.Shell.Commands.Jido do
       `JidoClaw.Memory.recall/2`. The query is variadic; remaining
       words are joined on whitespace.
     * `solutions find <fingerprint>` — exact signature lookup via
-      `JidoClaw.Solutions.Store.find_by_signature/1`. A `:not_found`
+      `JidoClaw.Solutions.Solution.by_signature/5`. A `:not_found`
       result is reported on stdout with exit 0 — the query was valid,
-      the store just doesn't hold that signature.
+      the corpus just doesn't hold that signature.
 
   Unknown sub-commands and missing required arguments return an exit
   code of 1, print the usage block, and follow up with a human-readable
@@ -102,13 +102,44 @@ defmodule JidoClaw.Shell.Commands.Jido do
   end
 
   defp emit_solution(fingerprint, emit) do
-    result = JidoClaw.Solutions.Store.find_by_signature(fingerprint)
+    # The shell command runs without a tool_context — fall back to the
+    # default tenant (`"default"`) and the cwd-anchored workspace, the
+    # same scope MCP-mode tools use. Multi-tenant shell is out of
+    # scope for v0.6.x.
+    {tenant_id, workspace_uuid} = default_scope()
+
+    result =
+      case JidoClaw.Solutions.Solution.by_signature(
+             fingerprint,
+             workspace_uuid,
+             tenant_id,
+             [:local, :shared, :public],
+             [:public]
+           ) do
+        {:ok, [first | _]} -> {:ok, first}
+        {:ok, []} -> :not_found
+        {:ok, %JidoClaw.Solutions.Solution{} = sol} -> {:ok, sol}
+        _ -> :not_found
+      end
 
     result
     |> Presenters.solution_lines()
     |> Enum.each(&emit_line(emit, &1))
 
     {:ok, nil}
+  end
+
+  defp default_scope do
+    case Application.get_env(:jido_claw, :jido_claw_mcp_default_scope) do
+      %{tenant_id: tid, workspace_uuid: wid} ->
+        {tid, wid}
+
+      _ ->
+        case JidoClaw.Workspaces.Resolver.ensure_workspace("default", File.cwd!()) do
+          {:ok, %{id: wid, tenant_id: tid}} -> {tid, wid}
+          _ -> {"default", nil}
+        end
+    end
   end
 
   # -- Error emitters --------------------------------------------------------

@@ -8,7 +8,7 @@ defmodule JidoClaw.CLI.Presenters do
   `[String.t()]`. No direct reads of globally named processes — fetching
   data is the caller's responsibility. That keeps the module
   unit-testable without standing up `JidoClaw.Memory`,
-  `JidoClaw.AgentTracker`, `JidoClaw.Solutions.Store`, or
+  `JidoClaw.AgentTracker`, `JidoClaw.Solutions.Solution`, or
   `JidoClaw.Stats` fixtures.
 
   The REPL slash commands in `lib/jido_claw/cli/commands.ex`
@@ -104,11 +104,16 @@ defmodule JidoClaw.CLI.Presenters do
       "  framework   #{solution.framework || "—"}",
       "  trust       #{format_trust(solution.trust_score)}",
       "  tags        #{format_tags(solution.tags)}",
-      "  inserted    #{solution.inserted_at || "—"}",
+      "  inserted    #{format_timestamp(solution.inserted_at)}",
       "",
       solution.solution_content || ""
     ]
   end
+
+  defp format_timestamp(nil), do: "—"
+  defp format_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp format_timestamp(other) when is_binary(other), do: other
+  defp format_timestamp(other), do: inspect(other)
 
   # -- Helpers ---------------------------------------------------------------
 

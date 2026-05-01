@@ -228,9 +228,15 @@ config :jido_claw,
     JidoClaw.Folio,
     JidoClaw.Reasoning.Domain,
     JidoClaw.Workspaces,
-    JidoClaw.Conversations
+    JidoClaw.Conversations,
+    JidoClaw.Solutions.Domain,
+    JidoClaw.Embeddings.Domain
   ],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
+
+# Postgrex types module — registers the pgvector extension so Postgrex
+# encodes/decodes :vector columns. Defined at lib/jido_claw/postgrex_types.ex.
+config :jido_claw, JidoClaw.Repo, types: JidoClaw.PostgrexTypes
 
 config :ash,
   allow_forbidden_field_for_relationships_by_default?: true,

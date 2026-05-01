@@ -102,7 +102,7 @@ defmodule JidoClaw.Network.Protocol do
   @doc """
   Build a `:share` message advertising a solution to peers.
 
-  `solution_map` should be the output of `JidoClaw.Solutions.Solution.to_map/1`.
+  `solution_map` should be the output of `JidoClaw.Solutions.NetworkFacade.to_wire/1`.
   """
   @spec share_message(map(), Identity.t()) :: map()
   def share_message(solution_map, %{__struct__: Identity} = identity) do

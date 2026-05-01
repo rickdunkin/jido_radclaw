@@ -52,7 +52,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
     ]
 
   alias JidoClaw.Reasoning.{Certificates, Telemetry}
-  alias JidoClaw.Solutions.Store
+  alias JidoClaw.Solutions.Solution
 
   @impl true
   def run(params, context) do
@@ -211,15 +211,16 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   defp maybe_persist(solution_id, certificate) do
     verification_map = Map.merge(%{"status" => "semi_formal"}, certificate)
 
-    case Store.update_verification_and_trust(solution_id, verification_map) do
-      {:ok, updated} ->
-        {updated.trust_score, nil}
-
-      :not_found ->
+    with {:ok, solution} <- Ash.get(Solution, solution_id, domain: JidoClaw.Solutions.Domain),
+         {:ok, updated} <-
+           Solution.update_verification_and_trust(solution, %{verification: verification_map}) do
+      {updated.trust_score, nil}
+    else
+      {:error, %Ash.Error.Query.NotFound{}} ->
         {nil, "Solution '#{solution_id}' not found"}
 
-      {:error, :not_running} ->
-        {nil, "Solution store is not running"}
+      {:error, reason} ->
+        {nil, "Failed to persist verification: #{inspect(reason)}"}
     end
   end
 end

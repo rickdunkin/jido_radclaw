@@ -20,7 +20,7 @@ defmodule JidoClaw.Network.Node do
   alias JidoClaw.Agent.Identity
   alias JidoClaw.SignalBus
   alias JidoClaw.Network.Protocol
-  alias JidoClaw.Solutions.{Matcher, Solution, Store}
+  alias JidoClaw.Solutions.{Matcher, NetworkFacade}
 
   @pubsub JidoClaw.PubSub
   @topic "jido:network"
@@ -29,6 +29,8 @@ defmodule JidoClaw.Network.Node do
     :agent_id,
     :identity,
     :project_dir,
+    :tenant_id,
+    :workspace_id,
     status: :disconnected,
     peers: MapSet.new(),
     relay_url: nil
@@ -97,7 +99,7 @@ defmodule JidoClaw.Network.Node do
   @doc """
   Broadcast a solution by id to all network peers as a `:share` message.
 
-  Looks up the solution from `JidoClaw.Solutions.Store`. If the solution is not
+  Looks up the solution via `JidoClaw.Solutions.NetworkFacade.find_local/2`. If the solution is not
   found or the node is disconnected, returns `{:error, reason}`.
   """
   @spec broadcast_solution(String.t()) :: :ok | {:error, atom()}
@@ -131,9 +133,22 @@ defmodule JidoClaw.Network.Node do
     project_dir = Keyword.fetch!(opts, :project_dir)
     relay_url = Keyword.get(opts, :relay_url)
 
+    tenant_id =
+      Keyword.get(opts, :tenant_id) || Application.get_env(:jido_claw, :network_tenant) ||
+        "default"
+
+    workspace_id =
+      Keyword.get(opts, :workspace_id) ||
+        case JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir) do
+          {:ok, %{id: id}} -> id
+          _ -> nil
+        end
+
     state = %__MODULE__{
       project_dir: project_dir,
-      relay_url: relay_url
+      relay_url: relay_url,
+      tenant_id: tenant_id,
+      workspace_id: workspace_id
     }
 
     {:ok, state}
@@ -195,9 +210,11 @@ defmodule JidoClaw.Network.Node do
     if state.status != :connected or is_nil(state.identity) do
       {:reply, {:error, :not_connected}, state}
     else
-      case find_solution_by_id(solution_id) do
+      node_state = node_state(state)
+
+      case NetworkFacade.find_local(solution_id, node_state) do
         {:ok, solution} ->
-          solution_map = Solution.to_map(solution)
+          solution_map = NetworkFacade.to_wire(solution)
           message = Protocol.share_message(solution_map, state.identity)
 
           Phoenix.PubSub.broadcast(@pubsub, @topic, {:solution_shared, message})
@@ -271,7 +288,7 @@ defmodule JidoClaw.Network.Node do
   defp handle_solution_shared(message, state) do
     with %{"payload" => payload, "from" => from} <- message,
          true <- valid_or_unverifiable?(message, from),
-         {:ok, solution} <- store_received_solution(payload, from) do
+         {:ok, solution} <- store_received_solution(payload, from, state) do
       Logger.debug("[Network.Node] Stored shared solution #{solution.id} from #{from}")
     else
       false ->
@@ -295,10 +312,19 @@ defmodule JidoClaw.Network.Node do
       opts_raw = get_in(message, ["payload", "opts"]) || %{}
       opts = Enum.map(opts_raw, fn {k, v} -> {String.to_existing_atom(k), v} end)
 
-      solutions = Matcher.find_solutions(description, opts)
+      # Thread the node's tenant + workspace into Matcher so cross-
+      # tenant rows are not exposed via network responses.
+      scope_opts = [
+        tenant_id: state.tenant_id,
+        workspace_id: state.workspace_id,
+        local_visibility: [:local, :shared, :public],
+        cross_workspace_visibility: [:public]
+      ]
+
+      solutions = Matcher.find_solutions(description, opts ++ scope_opts)
 
       if solutions != [] and not is_nil(state.identity) do
-        solution_maps = Enum.map(solutions, fn %{solution: s} -> Solution.to_map(s) end)
+        solution_maps = Enum.map(solutions, fn %{solution: s} -> NetworkFacade.to_wire(s) end)
         response = Protocol.response_message(solution_maps, request_id, state.identity)
 
         Logger.debug(
@@ -316,15 +342,18 @@ defmodule JidoClaw.Network.Node do
   end
 
   defp handle_solution_response(message, state) do
+    node_state = node_state(state)
+
     with %{"payload" => %{"solutions" => solutions, "request_id" => _req_id}, "from" => from} <-
            message,
          true <- is_list(solutions) do
       Enum.each(solutions, fn solution_map ->
         attrs = Map.put(solution_map, "agent_id", from)
 
-        case Store.store_solution(attrs) do
+        case NetworkFacade.store_inbound(attrs, node_state) do
           {:ok, solution} ->
             Logger.debug("[Network.Node] Stored response solution #{solution.id} from #{from}")
+            JidoClaw.Solutions.Reputation.record_share(state.tenant_id, from)
 
           {:error, reason} ->
             Logger.debug("[Network.Node] Could not store response solution: #{inspect(reason)}")
@@ -357,13 +386,21 @@ defmodule JidoClaw.Network.Node do
     true
   end
 
-  defp store_received_solution(payload, from) when is_map(payload) do
+  defp store_received_solution(payload, from, state) when is_map(payload) do
     attrs = Map.put(payload, "agent_id", from)
-    Store.store_solution(attrs)
+
+    case NetworkFacade.store_inbound(attrs, node_state(state)) do
+      {:ok, solution} ->
+        JidoClaw.Solutions.Reputation.record_share(state.tenant_id, from)
+        {:ok, solution}
+
+      other ->
+        other
+    end
   end
 
-  defp find_solution_by_id(id) do
-    Store.find_by_id(id)
+  defp node_state(state) do
+    %{tenant_id: state.tenant_id, workspace_id: state.workspace_id}
   end
 
   defp add_peer(state, %{"from" => from}) when is_binary(from) do

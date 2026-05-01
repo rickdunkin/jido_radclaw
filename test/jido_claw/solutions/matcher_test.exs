@@ -1,300 +1,186 @@
 defmodule JidoClaw.Solutions.MatcherTest do
-  use ExUnit.Case
+  @moduledoc """
+  Regression coverage for `Matcher.find_solutions/2`.
 
-  # NOT async — depends on Store GenServer (named process + named ETS table).
-  # Sequential execution ensures isolation without race conditions.
+  Locks in:
 
-  alias JidoClaw.Solutions.{Fingerprint, Matcher, Store}
+    * Fix 2: threshold filter applies against the SQL `combined_score`,
+      not `trust_score`, so a moderate-relevance row passes when its
+      trust_score is `0.0` (default).
+    * Fix 3: when neither `:embedding_model` nor `:query_embedding` is
+      supplied, the matcher consults the workspace's embedding policy
+      via `PolicyResolver`. `:disabled` workspaces never call the
+      Voyage stub. Missing-workspace fails closed to `:disabled`.
+    * Cross-workspace isolation — a `:local` row in workspace B is
+      not returned to a query against workspace A.
+  """
 
-  @ets_table :jido_claw_solutions
+  use JidoClaw.SolutionsCase, async: false
 
-  # ---------------------------------------------------------------------------
-  # Helpers
-  # ---------------------------------------------------------------------------
+  alias JidoClaw.Solutions.Matcher
 
-  defp ensure_signal_bus do
-    case Jido.Signal.Bus.start_link(name: JidoClaw.SignalBus) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+  defmodule StubResolver do
+    @moduledoc false
+    def resolve(_), do: :default
+
+    def model_for_query(:default),
+      do: %{provider: :voyage, request_model: "voyage-4", stored_model: "voyage-4-large"}
+
+    def model_for_query(:disabled), do: :disabled
+
+    def model_for_query(:local_only),
+      do: %{
+        provider: :local,
+        request_model: "mxbai-embed-large",
+        stored_model: "mxbai-embed-large"
+      }
+  end
+
+  defmodule DisabledResolver do
+    @moduledoc false
+    def resolve(_), do: :disabled
+    def model_for_query(:disabled), do: :disabled
+    def model_for_query(_), do: :disabled
+  end
+
+  defmodule SpyVoyage do
+    @moduledoc false
+    def embed_for_query(_query, _model) do
+      send(self(), {:voyage_called_at, System.unique_integer([:monotonic])})
+      {:error, :should_not_be_called}
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # Setup
-  # ---------------------------------------------------------------------------
+  defmodule NoopRatePacer do
+    @moduledoc false
+    def acquire(_, _), do: :ok
+    def try_admit(_, _), do: :ok
+  end
 
   setup do
-    # The application supervisor starts Store as part of core_children with
-    # `project_dir: File.cwd!()`, so seed writes would land in the repo's
-    # `.jido/solutions.json`. Take ownership in the test supervisor with a
-    # per-test tmp dir (matches test/jido_claw/solutions/store_test.exs:40-81).
-    tmp_dir =
-      Path.join(
-        System.tmp_dir!(),
-        "jido_claw_matcher_test_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(tmp_dir)
-
-    # Store.store_solution/1 emits `jido_claw.solution.stored` via
-    # JidoClaw.SignalBus.emit/2, so the bus must be up before seeding.
-    ensure_signal_bus()
-
-    Supervisor.terminate_child(JidoClaw.Supervisor, Store)
-    Supervisor.delete_child(JidoClaw.Supervisor, Store)
-
-    if :ets.whereis(@ets_table) != :undefined do
-      :ets.delete_all_objects(@ets_table)
-    end
-
-    start_supervised!({Store, project_dir: tmp_dir})
-
-    on_exit(fn ->
-      if :ets.whereis(@ets_table) != :undefined do
-        :ets.delete_all_objects(@ets_table)
-      end
-
-      File.rm_rf!(tmp_dir)
-
-      project_dir = Application.get_env(:jido_claw, :project_dir, File.cwd!())
-      _ = Supervisor.start_child(JidoClaw.Supervisor, {Store, project_dir: project_dir})
-    end)
-
-    # Seed three solutions with distinct languages, frameworks, and tags.
-    {:ok, _} =
-      Store.store_solution(%{
-        solution_content: "Use GenServer for stateful process management",
-        language: "elixir",
-        framework: "otp",
-        tags: ["genserver", "state", "process"]
-      })
-
-    {:ok, _} =
-      Store.store_solution(%{
-        solution_content: "Use React.useState hook for component state",
-        language: "typescript",
-        framework: "react",
-        tags: ["hooks", "state", "component"]
-      })
-
-    {:ok, _} =
-      Store.store_solution(%{
-        solution_content: "Use Ecto.Multi for transactional database operations",
-        language: "elixir",
-        framework: "phoenix",
-        tags: ["ecto", "transaction", "database"]
-      })
-
-    :ok
+    tenant_id = unique_tenant_id()
+    ws = workspace_fixture(tenant_id, embedding_policy: :disabled)
+    {:ok, tenant_id: tenant_id, workspace: ws}
   end
 
-  # ---------------------------------------------------------------------------
-  # find_solutions/2
-  # ---------------------------------------------------------------------------
-
-  describe "find_solutions/2" do
-    test "should return exact match when signature matches" do
-      # Matcher looks up solutions by the signature produced by Fingerprint.generate,
-      # not by Solution.signature (which uses a different separator). We must
-      # pre-compute the fingerprint signature and store the solution with that
-      # exact value so Store.find_by_signature hits.
-      description = "Use Task.async for concurrent work"
-      language = "elixir"
-      framework = "otp"
-
-      fp = Fingerprint.generate(description, language: language, framework: framework)
-
-      {:ok, solution} =
-        Store.store_solution(%{
-          solution_content: description,
-          language: language,
-          framework: framework,
-          problem_signature: fp.signature,
-          tags: ["task", "concurrency"]
-        })
+  describe "threshold against combined_score (Fix 2)" do
+    test "fuzzy hit with default trust_score=0.0 is NOT filtered when combined_score clears the threshold",
+         %{tenant_id: tenant_id, workspace: ws} do
+      _sol = solution_fixture(tenant_id, ws.id, "deploy postgres migration runbook")
 
       results =
-        Matcher.find_solutions(description,
-          language: language,
-          framework: framework
+        Matcher.find_solutions("postgres migration",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          # Lower than default 0.3; the lexical pool weights similarity at
+          # 0.2 so a near-perfect token hit still doesn't reach 0.3 alone.
+          threshold: 0.05,
+          policy_resolver: DisabledResolver
         )
 
-      assert length(results) == 1
-      [%{solution: matched, score: score, match_type: match_type}] = results
-      assert matched.id == solution.id
-      assert score == 1.0
-      assert match_type == :exact
-    end
+      assert length(results) >= 1
 
-    test "should return fuzzy matches for related problems" do
-      # Combined score = fp_score * 0.6 + trust_score * 0.4. Seeded solutions
-      # have trust_score 0.0, so use a low threshold to capture fuzzy hits.
-      results =
-        Matcher.find_solutions("stateful process with GenServer in Elixir", threshold: 0.0)
-
-      assert length(results) > 0
-
-      Enum.each(results, fn result ->
-        assert Map.has_key?(result, :solution)
-        assert Map.has_key?(result, :score)
-        assert Map.has_key?(result, :match_type)
-      end)
-    end
-
-    test "should filter by threshold — high threshold yields fewer results" do
-      low_threshold_results = Matcher.find_solutions("state management", threshold: 0.01)
-      high_threshold_results = Matcher.find_solutions("state management", threshold: 0.95)
-
-      assert length(low_threshold_results) >= length(high_threshold_results)
-    end
-
-    test "should respect the limit option" do
-      results = Matcher.find_solutions("state", threshold: 0.0, limit: 1)
-
-      assert length(results) <= 1
-    end
-
-    test "should return empty list for empty description" do
-      assert [] = Matcher.find_solutions("")
-    end
-
-    test "should return empty list for nil description" do
-      assert [] = Matcher.find_solutions(nil)
-    end
-
-    test "should return results with score and match_type fields" do
-      results = Matcher.find_solutions("database transaction elixir", threshold: 0.0)
-
-      assert length(results) > 0
-
-      Enum.each(results, fn result ->
-        assert is_map(result)
-        assert Map.has_key?(result, :solution)
-        assert Map.has_key?(result, :score)
-        assert Map.has_key?(result, :match_type)
-        assert is_float(result.score)
-        assert result.match_type in [:exact, :fuzzy]
+      Enum.each(results, fn match ->
+        assert match.match_type == :fuzzy
+        assert match.score >= 0.05
+        # The crucial regression: pre-fix, score fell back to
+        # trust_score (0.0) and was filtered out at the default
+        # 0.3 threshold.
+        refute match.score == match.solution.trust_score
       end)
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # rank_solutions/2
-  # ---------------------------------------------------------------------------
+  describe "policy resolution (Fix 3)" do
+    test ":disabled workspaces never call the Voyage embedder",
+         %{tenant_id: tenant_id, workspace: ws} do
+      _sol = solution_fixture(tenant_id, ws.id, "logging telemetry observability")
 
-  describe "rank_solutions/2" do
-    test "should sort by combined score descending" do
-      solutions = Store.all()
-      query_fp = Fingerprint.generate("stateful process management in elixir", language: "elixir")
+      _ =
+        Matcher.find_solutions("logging telemetry",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          policy_resolver: DisabledResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
 
-      ranked = Matcher.rank_solutions(solutions, query_fp)
-
-      scores = Enum.map(ranked, fn {_sol, score} -> score end)
-      assert scores == Enum.sort(scores, :desc)
+      refute_received {:voyage_called_at, _}
     end
 
-    test "should combine fingerprint score and trust score" do
-      # Build two solutions: one with higher trust_score but weaker fp match,
-      # one with lower trust but exact domain match. Verify the ranking changes
-      # when trust scores differ.
-      {:ok, low_trust} =
-        Store.store_solution(%{
-          solution_content: "Use Agent for simple shared state",
-          language: "elixir",
-          framework: "otp",
-          tags: ["agent", "state"],
-          trust_score: 0.0
-        })
+    test "missing workspace fails closed (default PolicyResolver)",
+         %{tenant_id: tenant_id} do
+      missing = Ecto.UUID.generate()
 
-      {:ok, high_trust} =
-        Store.store_solution(%{
-          solution_content: "Use Agent for simple shared state",
-          language: "elixir",
-          framework: "otp",
-          tags: ["agent", "state"],
-          trust_score: 1.0
-        })
+      _ =
+        Matcher.find_solutions("anything",
+          tenant_id: tenant_id,
+          workspace_id: missing,
+          threshold: 0.0,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
 
-      query_fp = Fingerprint.generate("simple shared state agent", language: "elixir")
-      ranked = Matcher.rank_solutions([low_trust, high_trust], query_fp)
-
-      [{top_solution, top_score}, {_bottom_solution, bottom_score}] = ranked
-
-      assert top_solution.id == high_trust.id
-      assert top_score > bottom_score
+      refute_received {:voyage_called_at, _}
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # best_match/2
-  # ---------------------------------------------------------------------------
+  describe "cross-workspace isolation" do
+    test ":local rows in another workspace stay private",
+         %{tenant_id: tenant_id, workspace: ws} do
+      other_ws = workspace_fixture(tenant_id, embedding_policy: :disabled)
 
-  describe "best_match/2" do
-    test "should return single best match" do
-      # Seeded solutions have trust_score 0.0; use a low threshold so a fuzzy
-      # match qualifies and best_match returns a result rather than nil.
-      result = Matcher.best_match("GenServer stateful process elixir otp", threshold: 0.0)
+      _hidden =
+        solution_fixture(tenant_id, other_ws.id, "private build deploy command", sharing: :local)
 
-      assert is_map(result)
-      assert Map.has_key?(result, :solution)
-      assert Map.has_key?(result, :score)
-      assert Map.has_key?(result, :match_type)
+      results =
+        Matcher.find_solutions("private build deploy",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          policy_resolver: DisabledResolver
+        )
+
+      assert results == []
     end
 
-    test "should return nil when no matches found" do
-      # An extremely high threshold ensures nothing qualifies.
-      result = Matcher.best_match("zzz_no_match_xyz_abc_123", threshold: 0.99)
+    test ":public rows in another workspace are visible",
+         %{tenant_id: tenant_id, workspace: ws} do
+      other_ws = workspace_fixture(tenant_id, embedding_policy: :disabled)
 
-      assert is_nil(result)
+      sol =
+        solution_fixture(tenant_id, other_ws.id, "public deploy procedure", sharing: :public)
+
+      results =
+        Matcher.find_solutions("public deploy",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          policy_resolver: DisabledResolver
+        )
+
+      assert Enum.any?(results, fn m -> m.solution.id == sol.id end)
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # text_relevance/2
-  # ---------------------------------------------------------------------------
+  describe "explicit caller-supplied embedding wins" do
+    test "an explicit query_embedding bypasses PolicyResolver entirely",
+         %{tenant_id: tenant_id, workspace: ws} do
+      _sol = solution_fixture(tenant_id, ws.id, "the quick brown fox")
 
-  describe "text_relevance/2" do
-    test "should return 0.0 for empty query terms list" do
-      assert Matcher.text_relevance([], "some document text here") == 0.0
-    end
-
-    test "should return > 0.0 when terms match the document" do
-      score =
-        Matcher.text_relevance(
-          ["genserver", "state"],
-          "use genserver for stateful state management"
+      _ =
+        Matcher.find_solutions("the quick brown fox",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          query_embedding: List.duplicate(0.01, 1024),
+          policy_resolver: DisabledResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
         )
 
-      assert score > 0.0
-    end
-
-    test "should return 0.0 when no terms match the document" do
-      score = Matcher.text_relevance(["zzz", "xyz"], "use genserver for stateful management")
-
-      assert score == 0.0
-    end
-
-    test "should handle non-string document input by returning 0.0" do
-      assert Matcher.text_relevance(["term"], nil) == 0.0
-      assert Matcher.text_relevance(["term"], 42) == 0.0
-      assert Matcher.text_relevance(["term"], :atom) == 0.0
-    end
-
-    test "should handle non-list query terms input by returning 0.0" do
-      assert Matcher.text_relevance(nil, "some document text") == 0.0
-      assert Matcher.text_relevance("not a list", "some document text") == 0.0
-    end
-
-    test "should score proportionally — more matching terms means higher score" do
-      one_term_score = Matcher.text_relevance(["genserver"], "use genserver for state management")
-
-      two_term_score =
-        Matcher.text_relevance(
-          ["genserver", "state"],
-          "use genserver for state management"
-        )
-
-      assert two_term_score >= one_term_score
+      refute_received {:voyage_called_at, _}
     end
   end
 end

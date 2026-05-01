@@ -506,6 +506,7 @@ defmodule JidoClaw.CLI.Repl do
   defp ensure_persisted_session(tenant_id, project_dir, session_id) do
     with {:ok, workspace} <-
            JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir),
+         {:ok, _} <- maybe_apply_workspace_policies(workspace, project_dir),
          {:ok, session} <-
            JidoClaw.Conversations.Resolver.ensure_session(
              tenant_id,
@@ -529,5 +530,78 @@ defmodule JidoClaw.CLI.Repl do
       )
 
       {nil, nil}
+  end
+
+  # Apply embedding/consolidation policies from config.yaml when the
+  # config carries them and the workspace doesn't have a non-:disabled
+  # value set. The "skip if already set non-:disabled and config says
+  # :disabled" rule lets `/workspace embedding` win over the wizard:
+  # users who tuned via REPL command and re-ran the wizard wouldn't
+  # want the wizard to undo their change.
+  defp maybe_apply_workspace_policies(workspace, project_dir) do
+    config_map = JidoClaw.Config.load(project_dir)
+
+    embedding =
+      config_map
+      |> Map.get("embedding_policy")
+      |> normalize_policy()
+
+    consolidation =
+      config_map
+      |> Map.get("consolidation_policy")
+      |> normalize_policy()
+
+    workspace =
+      workspace
+      |> apply_policy_if_needed(:embedding_policy, embedding)
+      |> apply_policy_if_needed(:consolidation_policy, consolidation)
+
+    {:ok, workspace}
+  end
+
+  defp normalize_policy("default"), do: :default
+  defp normalize_policy("local_only"), do: :local_only
+  defp normalize_policy("disabled"), do: :disabled
+  defp normalize_policy(p) when p in [:default, :local_only, :disabled], do: p
+  defp normalize_policy(_), do: nil
+
+  defp apply_policy_if_needed(workspace, _attr, nil), do: workspace
+
+  defp apply_policy_if_needed(workspace, :embedding_policy, new_policy) do
+    cond do
+      workspace.embedding_policy != :disabled and new_policy == :disabled ->
+        # Don't undo a non-:disabled policy when the wizard says
+        # :disabled — the user may have tuned via /workspace embedding.
+        workspace
+
+      workspace.embedding_policy == new_policy ->
+        workspace
+
+      true ->
+        case JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, new_policy) do
+          {:ok, w} ->
+            JidoClaw.Workspaces.PolicyTransitions.apply_embedding(w.id, new_policy)
+            w
+
+          _ ->
+            workspace
+        end
+    end
+  end
+
+  defp apply_policy_if_needed(workspace, :consolidation_policy, new_policy) do
+    cond do
+      workspace.consolidation_policy != :disabled and new_policy == :disabled ->
+        workspace
+
+      workspace.consolidation_policy == new_policy ->
+        workspace
+
+      true ->
+        case JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, new_policy) do
+          {:ok, w} -> w
+          _ -> workspace
+        end
+    end
   end
 end
