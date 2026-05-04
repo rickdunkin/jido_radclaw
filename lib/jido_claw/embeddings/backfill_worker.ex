@@ -288,8 +288,12 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   end
 
   defp on_success(id, vector, model) do
-    encoded = encode_vector(vector)
-
+    # Pass the raw list of floats directly. AshPostgres.Extensions.Vector
+    # encodes lists into pgvector's binary wire format via
+    # `Ash.Vector.new/1`. Pre-encoding to a text representation here
+    # tripped the binary-in-string path of `Ash.Vector.new/1`, which
+    # converts each byte of the string into a separate dimension and
+    # produces "expected 1024 dimensions, not 5121" failures.
     Repo.query!(
       """
       UPDATE solutions
@@ -301,7 +305,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
              embedding_last_error = NULL
        WHERE id = $1
       """,
-      [id, encoded, model]
+      [id, vector, model]
     )
 
     :ok
@@ -370,10 +374,4 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     )
   end
 
-  defp encode_vector(list) when is_list(list) do
-    "[" <>
-      Enum.map_join(list, ",", fn v ->
-        :erlang.float_to_binary(v * 1.0, [:compact, decimals: 8])
-      end) <> "]"
-  end
 end

@@ -1,5 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Coder do
-  use Jido.AI.Agent,
+  use JidoClaw.Agent.Defaults,
     name: "jido_claw_coder",
     description:
       "Full-capability coding agent. Reads, writes, edits files, runs commands, manages git, and searches code.",

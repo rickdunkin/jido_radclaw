@@ -49,18 +49,7 @@ defmodule JidoClaw.Tools.RunSkill do
     project_dir = Map.get(tool_context, :project_dir) || File.cwd!()
     workspace_id = Map.get(tool_context, :workspace_id)
 
-    # Phase 0 — full canonical scope (minus :agent_id, which each step
-    # assigns) gets forwarded into every workflow driver so child agents
-    # inherit the parent's tenant/session/workspace UUIDs.
-    scope_context =
-      Map.take(tool_context, [
-        :tenant_id,
-        :session_id,
-        :session_uuid,
-        :workspace_id,
-        :workspace_uuid,
-        :project_dir
-      ])
+    scope_context = scope_context(tool_context)
 
     case JidoClaw.Skills.get(skill_name, project_dir) do
       {:error, reason} ->
@@ -105,6 +94,22 @@ defmodule JidoClaw.Tools.RunSkill do
             {:error, reason}
         end
     end
+  end
+
+  # Phase 0 — full canonical scope (minus :agent_id, which each step
+  # assigns) gets forwarded into every workflow driver so child agents
+  # inherit the parent's tenant/session/workspace/user UUIDs.
+  @doc false
+  def scope_context(tool_context) when is_map(tool_context) do
+    Map.take(tool_context, [
+      :tenant_id,
+      :session_id,
+      :session_uuid,
+      :workspace_id,
+      :workspace_uuid,
+      :project_dir,
+      :user_id
+    ])
   end
 
   @doc false

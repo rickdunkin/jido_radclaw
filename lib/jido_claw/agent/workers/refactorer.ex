@@ -1,5 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Refactorer do
-  use Jido.AI.Agent,
+  use JidoClaw.Agent.Defaults,
     name: "jido_claw_refactorer",
     description:
       "Refactors code for improved structure, readability, and performance. Full tool access for comprehensive codebase restructuring.",

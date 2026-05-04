@@ -71,7 +71,15 @@ defmodule JidoClaw.Application do
       JidoClaw.Repo,
       JidoClaw.Security.Vault,
       {Phoenix.PubSub, name: JidoClaw.PubSub},
-      {Jido.Signal.Bus, name: JidoClaw.SignalBus}
+      # partition_count: 1 is REQUIRED for the Recorder's flush/1 barrier
+      # to give per-request ordering. The Recorder's "all prior signals
+      # processed" guarantee depends on per-sender FIFO from a single
+      # bus partition. See Conversations.Recorder doc and the §G
+      # acceptance gate "Bus restart resubscribe" / "Assistant ordering".
+      {Jido.Signal.Bus, name: JidoClaw.SignalBus, partition_count: 1},
+      JidoClaw.Conversations.RequestCorrelation.Cache,
+      JidoClaw.Conversations.Recorder,
+      JidoClaw.Conversations.RequestCorrelation.Sweeper
     ]
 
     [

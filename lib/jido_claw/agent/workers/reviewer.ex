@@ -1,5 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Reviewer do
-  use Jido.AI.Agent,
+  use JidoClaw.Agent.Defaults,
     name: "jido_claw_reviewer",
     description:
       "Reviews code changes for bugs, style issues, and correctness. Read-only access with git diff capabilities.",

@@ -103,6 +103,14 @@ defmodule JidoClaw.Workflows.ScopePropagationTest do
 
   describe "SkillWorkflow integration via agent_templates_override" do
     setup do
+      # SkillWorkflow.run/4 spawns workers that call into the chat
+      # dispatcher, which writes a `RequestCorrelation` row. Without our
+      # own shared sandbox owner those worker PIDs can race on a
+      # connection yanked by some other shared-mode test exiting first
+      # — surfacing as a flaky `DBConnection.OwnershipError` only when
+      # this file runs alongside the conversations subtree.
+      sandbox_pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+
       Application.put_env(:jido_claw, :agent_templates_override, %{
         "echo_test" => %{
           module: EchoStub,
@@ -117,6 +125,7 @@ defmodule JidoClaw.Workflows.ScopePropagationTest do
       on_exit(fn ->
         Application.delete_env(:jido_claw, :agent_templates_override)
         Application.delete_env(:jido_claw, :echo_stub_target)
+        Ecto.Adapters.SQL.Sandbox.stop_owner(sandbox_pid)
       end)
 
       :ok

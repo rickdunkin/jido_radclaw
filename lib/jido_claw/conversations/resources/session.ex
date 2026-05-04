@@ -40,6 +40,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:start, action: :start)
     define(:touch, action: :touch)
     define(:close, action: :close)
+    define(:set_next_sequence, action: :set_next_sequence, args: [:next_sequence])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
 
     define(:by_external,
@@ -47,6 +48,8 @@ defmodule JidoClaw.Conversations.Session do
       args: [:tenant_id, :workspace_id, :kind, :external_id],
       get?: true
     )
+
+    define(:by_id, action: :by_id, args: [:id], get?: true)
   end
 
   actions do
@@ -107,6 +110,12 @@ defmodule JidoClaw.Conversations.Session do
       change(set_attribute(:closed_at, &DateTime.utc_now/0))
     end
 
+    update :set_next_sequence do
+      accept([])
+      argument(:next_sequence, :integer, allow_nil?: false)
+      change(set_attribute(:next_sequence, arg(:next_sequence)))
+    end
+
     read :active_for_workspace do
       argument(:workspace_id, :uuid, allow_nil?: false)
       filter(expr(workspace_id == ^arg(:workspace_id) and is_nil(closed_at)))
@@ -125,6 +134,12 @@ defmodule JidoClaw.Conversations.Session do
             kind == ^arg(:kind) and external_id == ^arg(:external_id)
         )
       )
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 

@@ -25,5 +25,7 @@ defmodule JidoClaw.Conversations do
 
   resources do
     resource(JidoClaw.Conversations.Session)
+    resource(JidoClaw.Conversations.Message)
+    resource(JidoClaw.Conversations.RequestCorrelation)
   end
 end

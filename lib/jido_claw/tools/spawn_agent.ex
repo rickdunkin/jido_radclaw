@@ -46,10 +46,13 @@ defmodule JidoClaw.Tools.SpawnAgent do
             child_tool_context =
               JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
 
+            request_id = register_child_correlation(child_tool_context)
+
             spawn(fn ->
               try do
                 template.module.ask_sync(pid, task,
                   timeout: 120_000,
+                  request_id: request_id,
                   tool_context: child_tool_context
                 )
 
@@ -78,5 +81,26 @@ defmodule JidoClaw.Tools.SpawnAgent do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp register_child_correlation(ctx) do
+    request_id = Ecto.UUID.generate()
+
+    case ctx do
+      %{session_uuid: session_uuid, tenant_id: tenant_id} = c
+      when is_binary(session_uuid) and is_binary(tenant_id) ->
+        JidoClaw.register_correlation(
+          request_id,
+          session_uuid,
+          tenant_id,
+          Map.get(c, :workspace_uuid),
+          Map.get(c, :user_id)
+        )
+
+      _ ->
+        :ok
+    end
+
+    request_id
   end
 end

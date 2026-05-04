@@ -1,5 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Verifier do
-  use Jido.AI.Agent,
+  use JidoClaw.Agent.Defaults,
     name: "jido_claw_verifier",
     description: """
     Interactive verification agent combining code review with execution capabilities.

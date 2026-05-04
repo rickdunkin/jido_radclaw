@@ -49,6 +49,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
   """
 
   require Logger
+  require Ash.Query
 
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.SearchEscape
@@ -65,11 +66,11 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     tenant_id = Map.fetch!(args, :tenant_id)
     limit = Map.get(args, :limit, 10)
 
-    embedding =
-      case Map.get(args, :query_embedding) do
-        nil -> nil
-        list when is_list(list) -> encode_vector(list)
-      end
+    # Pass the raw list of floats; AshPostgres.Extensions.Vector encodes
+    # via Ash.Vector.new/1. Pre-encoding to a "[…]" string tripped the
+    # binary-in-string path of Ash.Vector.new which treats each byte as
+    # a separate dimension.
+    embedding = Map.get(args, :query_embedding)
 
     embedding_model = Map.get(args, :embedding_model, "voyage-4-large")
     language = Map.get(args, :language)
@@ -120,8 +121,8 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
         FROM solutions s
        WHERE s.tenant_id = $9
          AND s.deleted_at IS NULL
-         AND ($2 IS NULL OR s.language = $2)
-         AND ($3 IS NULL OR s.framework = $3)
+         AND ($2::text IS NULL OR s.language = $2::text)
+         AND ($3::text IS NULL OR s.framework = $3::text)
          AND s.search_vector @@ websearch_to_tsquery('english', $1)
          AND (
            (s.workspace_id = $8 AND s.sharing::text = ANY($5))
@@ -142,8 +143,8 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
          AND s.embedding IS NOT NULL
          AND s.embedding_model = $11
          AND s.embedding_status = 'ready'
-         AND ($2 IS NULL OR s.language = $2)
-         AND ($3 IS NULL OR s.framework = $3)
+         AND ($2::text IS NULL OR s.language = $2::text)
+         AND ($3::text IS NULL OR s.framework = $3::text)
          AND (
            (s.workspace_id = $8 AND s.sharing::text = ANY($5))
            OR (s.workspace_id <> $8 AND s.sharing::text = ANY($6))
@@ -159,8 +160,8 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
         FROM solutions s
        WHERE s.tenant_id = $9
          AND s.deleted_at IS NULL
-         AND ($2 IS NULL OR s.language = $2)
-         AND ($3 IS NULL OR s.framework = $3)
+         AND ($2::text IS NULL OR s.language = $2::text)
+         AND ($3::text IS NULL OR s.framework = $3::text)
          AND (
            s.lexical_text % $12
            OR s.lexical_text LIKE '%' || $10 || '%' ESCAPE '\\'
@@ -198,13 +199,6 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     """
   end
 
-  defp encode_vector(list) when is_list(list) do
-    "[" <>
-      Enum.map_join(list, ",", fn v ->
-        :erlang.float_to_binary(v * 1.0, [:compact, decimals: 8])
-      end) <> "]"
-  end
-
   defp atoms_to_text_array(atoms) when is_list(atoms) do
     Enum.map(atoms, fn
       a when is_atom(a) -> Atom.to_string(a)
@@ -212,26 +206,45 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     end)
   end
 
+  # Postgrex returns raw column values: UUIDs as 16-byte binaries, text
+  # ENUM columns (`sharing`, `embedding_status`) as strings, etc. Round-
+  # tripping these through `struct/2` would leave callers with structs
+  # whose `id` doesn't match the human-form UUID Ash returned at insert
+  # time and whose atom-typed fields hold strings. Instead, extract the
+  # row IDs and re-materialize through `Ash.read` so the resource layer
+  # casts everything correctly; preserve insertion order via the SQL's
+  # combined_score ranking and zip the score back onto each solution.
   defp load_solutions(cols, rows) do
-    schema_columns = Solution |> Ash.Resource.Info.attributes() |> Enum.map(& &1.name)
-    expected_cols = Enum.map(schema_columns, &Atom.to_string/1)
+    id_index = Enum.find_index(cols, &(&1 == "id"))
+    score_index = Enum.find_index(cols, &(&1 == "combined_score"))
 
-    Enum.map(rows, fn row ->
-      mapped =
-        cols
-        |> Enum.zip(row)
-        |> Enum.into(%{})
+    ranked =
+      rows
+      |> Enum.map(fn row ->
+        raw_id = Enum.at(row, id_index)
+        score = Enum.at(row, score_index) || 0.0
+        {Ecto.UUID.cast!(raw_id), score}
+      end)
 
-      attrs =
-        Enum.reduce(expected_cols, %{}, fn col, acc ->
-          case Map.fetch(mapped, col) do
-            {:ok, val} -> Map.put(acc, String.to_existing_atom(col), val)
-            :error -> acc
+    case ranked do
+      [] ->
+        []
+
+      _ ->
+        ids = Enum.map(ranked, fn {id, _} -> id end)
+
+        loaded =
+          Solution
+          |> Ash.Query.filter(id in ^ids)
+          |> Ash.read!()
+          |> Map.new(fn s -> {s.id, s} end)
+
+        Enum.flat_map(ranked, fn {id, score} ->
+          case Map.fetch(loaded, id) do
+            {:ok, sol} -> [%{solution: sol, combined_score: score}]
+            :error -> []
           end
         end)
-
-      combined_score = Map.get(mapped, "combined_score", 0.0) || 0.0
-      %{solution: struct(Solution, attrs), combined_score: combined_score}
-    end)
+    end
   end
 end

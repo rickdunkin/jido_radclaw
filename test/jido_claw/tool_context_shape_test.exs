@@ -10,6 +10,7 @@ defmodule JidoClaw.ToolContextShapeTest do
     :session_uuid,
     :workspace_id,
     :workspace_uuid,
+    :user_id,
     :agent_id
   ]
 
@@ -22,7 +23,7 @@ defmodule JidoClaw.ToolContextShapeTest do
   ]
 
   describe "ToolContext.build/1" do
-    test "returns a map with all seven canonical keys, defaulting absent ones to nil" do
+    test "returns a map with all canonical keys, defaulting absent ones to nil" do
       ctx = ToolContext.build(%{tenant_id: "default", workspace_uuid: "ws-uuid"})
 
       for key <- @canonical_keys do

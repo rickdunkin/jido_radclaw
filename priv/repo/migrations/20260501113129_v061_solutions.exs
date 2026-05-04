@@ -8,6 +8,52 @@ defmodule JidoClaw.Repo.Migrations.V061Solutions do
   use Ecto.Migration
 
   def up do
+    # IMMUTABLE wrappers for the generated-column expressions. Postgres
+    # requires generation expressions to be IMMUTABLE, but two functions
+    # we need are only STABLE:
+    #
+    #   * `to_tsvector(regconfig, text)` — STABLE because the regconfig
+    #     lookup goes through pg_ts_config.
+    #   * `array_to_string(anyarray, text)` — STABLE because element-cast
+    #     functions can be STABLE for some array types.
+    #
+    # Both are effectively immutable for our usage (fixed 'english' config,
+    # text[] inputs only), so wrapping them in IMMUTABLE SQL functions is
+    # the standard, safe workaround.
+    #
+    # Hand-written via execute/1 because Ecto/AshPostgres migration DSLs
+    # have no DDL for CREATE FUNCTION.
+    execute("""
+    CREATE OR REPLACE FUNCTION solutions_search_vector(
+      p_language text,
+      p_framework text,
+      p_tags text[],
+      p_content text
+    ) RETURNS tsvector AS $$
+      SELECT
+        setweight(to_tsvector('english', coalesce(p_language, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(p_framework, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(array_to_string(p_tags, ' '), '')), 'B') ||
+        setweight(to_tsvector('english', coalesce(p_content, '')), 'C')
+    $$ LANGUAGE SQL IMMUTABLE
+    """)
+
+    execute("""
+    CREATE OR REPLACE FUNCTION solutions_lexical_text(
+      p_language text,
+      p_framework text,
+      p_tags text[],
+      p_content text
+    ) RETURNS text AS $$
+      SELECT lower(
+        coalesce(p_language, '') || ' ' ||
+        coalesce(p_framework, '') || ' ' ||
+        coalesce(array_to_string(p_tags, ' '), '') || ' ' ||
+        coalesce(p_content, '')
+      )
+    $$ LANGUAGE SQL IMMUTABLE
+    """)
+
     create table(:solutions, primary_key: false) do
       add(:id, :uuid, null: false, default: fragment("gen_random_uuid()"), primary_key: true)
       add(:problem_signature, :text, null: false)
@@ -57,9 +103,21 @@ defmodule JidoClaw.Repo.Migrations.V061Solutions do
       add(:embedding_next_attempt_at, :utc_datetime_usec)
       add(:embedding_last_error, :text)
       add(:embedding_model, :text)
-      # search_vector and lexical_text are GENERATED ALWAYS AS … STORED,
-      # added below the create table via execute(). The Ash migration
-      # generator can't yet express GENERATED so they're hand-coded.
+
+      # GENERATED ALWAYS columns — Ecto's `:generated` option emits the
+      # PG clause inline. Hand-edited (AshPostgres won't emit `:generated`
+      # from a resource attribute), but kept declarative within the
+      # `create table` block.
+      add(:search_vector, :tsvector,
+        generated:
+          "ALWAYS AS (solutions_search_vector(language, framework, tags, solution_content)) STORED"
+      )
+
+      add(:lexical_text, :text,
+        generated:
+          "ALWAYS AS (solutions_lexical_text(language, framework, tags, solution_content)) STORED"
+      )
+
       add(:deleted_at, :utc_datetime_usec)
 
       add(:inserted_at, :utc_datetime_usec,
@@ -72,32 +130,6 @@ defmodule JidoClaw.Repo.Migrations.V061Solutions do
         default: fragment("(now() AT TIME ZONE 'utc')")
       )
     end
-
-    # Generated columns — hand-coded because the Ash migration generator
-    # doesn't yet emit GENERATED ALWAYS AS … STORED.
-    execute("""
-    ALTER TABLE solutions
-      ADD COLUMN search_vector tsvector
-        GENERATED ALWAYS AS (
-          setweight(to_tsvector('english', coalesce(language, '')), 'A') ||
-          setweight(to_tsvector('english', coalesce(framework, '')), 'A') ||
-          setweight(to_tsvector('english', coalesce(array_to_string(tags, ' '), '')), 'B') ||
-          setweight(to_tsvector('english', coalesce(solution_content, '')), 'C')
-        ) STORED
-    """)
-
-    execute("""
-    ALTER TABLE solutions
-      ADD COLUMN lexical_text text
-        GENERATED ALWAYS AS (
-          lower(
-            coalesce(language, '') || ' ' ||
-            coalesce(framework, '') || ' ' ||
-            coalesce(array_to_string(tags, ' '), '') || ' ' ||
-            coalesce(solution_content, '')
-          )
-        ) STORED
-    """)
 
     create(index(:solutions, [:search_vector], using: "gin"))
 
@@ -260,5 +292,8 @@ defmodule JidoClaw.Repo.Migrations.V061Solutions do
     drop_if_exists(index(:solutions, [:search_vector]))
 
     drop(table(:solutions))
+
+    execute("DROP FUNCTION IF EXISTS solutions_lexical_text(text, text, text[], text)")
+    execute("DROP FUNCTION IF EXISTS solutions_search_vector(text, text, text[], text)")
   end
 end

@@ -17,6 +17,7 @@ defmodule JidoClaw.ToolContext do
     * `:session_uuid`   — Phase 0 UUID FK target (`Conversations.Session.id`)
     * `:workspace_id`   — runtime per-session VFS/Shell/Profile key (overload)
     * `:workspace_uuid` — Phase 0 UUID FK target (`Workspaces.Workspace.id`)
+    * `:user_id`        — UUID of the authenticated user; nil for CLI/Discord/Telegram
     * `:agent_id`       — runtime agent identity (e.g. `"main"` or a session id)
 
   `:forge_session_key` is preserved through `build/1` and `child/2` when
@@ -32,6 +33,7 @@ defmodule JidoClaw.ToolContext do
     :session_uuid,
     :workspace_id,
     :workspace_uuid,
+    :user_id,
     :agent_id
   ]
 

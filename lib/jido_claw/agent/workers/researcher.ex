@@ -1,5 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Researcher do
-  use Jido.AI.Agent,
+  use JidoClaw.Agent.Defaults,
     name: "jido_claw_researcher",
     description:
       "Explores and analyzes codebase structure, dependencies, and patterns. Read-only access for deep codebase investigation.",

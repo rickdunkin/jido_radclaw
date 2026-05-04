@@ -38,6 +38,11 @@ defmodule JidoClaw.Workflows.StepAction do
         type: :string,
         required: false,
         doc: "Workspaces.Workspace UUID for downstream FK attribution (Phase 0)"
+      ],
+      user_id: [
+        type: :string,
+        required: false,
+        doc: "Authenticated user UUID for downstream FK attribution (Phase 0)"
       ]
     ]
 
@@ -54,9 +59,12 @@ defmodule JidoClaw.Workflows.StepAction do
          scope = resolve_scope(params, context, tag),
          tool_context = JidoClaw.ToolContext.build(scope),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
+      request_id = register_child_correlation(tool_context)
+
       try do
         case template.module.ask_sync(pid, task,
                timeout: 180_000,
+               request_id: request_id,
                tool_context: tool_context
              ) do
           {:ok, result} ->
@@ -160,6 +168,7 @@ defmodule JidoClaw.Workflows.StepAction do
       session_uuid: pick(params, context, :session_uuid, nil),
       workspace_id: pick(params, context, :workspace_id, "wf_#{tag}"),
       workspace_uuid: pick(params, context, :workspace_uuid, nil),
+      user_id: pick(params, context, :user_id, nil),
       project_dir: pick(params, context, :project_dir, File.cwd!()),
       agent_id: tag
     }
@@ -178,4 +187,25 @@ defmodule JidoClaw.Workflows.StepAction do
   defp extract_result(%{text: text}) when is_binary(text), do: text
   defp extract_result(result) when is_binary(result), do: result
   defp extract_result(result), do: inspect(result, limit: :infinity, pretty: true)
+
+  defp register_child_correlation(ctx) do
+    request_id = Ecto.UUID.generate()
+
+    case ctx do
+      %{session_uuid: session_uuid, tenant_id: tenant_id} = c
+      when is_binary(session_uuid) and is_binary(tenant_id) ->
+        JidoClaw.register_correlation(
+          request_id,
+          session_uuid,
+          tenant_id,
+          Map.get(c, :workspace_uuid),
+          Map.get(c, :user_id)
+        )
+
+      _ ->
+        :ok
+    end
+
+    request_id
+  end
 end

@@ -99,6 +99,11 @@ defmodule JidoClaw.Solutions.Solution do
     create :store do
       primary?(true)
 
+      # Embedding fields are accepted so callers (test fixtures, legacy
+      # importers, and any path that already has a precomputed vector)
+      # can supply them up-front. `Changes.ResolveInitialEmbeddingStatus`
+      # respects an explicit `:embedding_status` and only resolves from
+      # workspace policy when the caller didn't provide one.
       accept([
         :problem_signature,
         :solution_content,
@@ -113,7 +118,10 @@ defmodule JidoClaw.Solutions.Solution do
         :workspace_id,
         :session_id,
         :created_by_user_id,
-        :tenant_id
+        :tenant_id,
+        :embedding,
+        :embedding_status,
+        :embedding_model
       ])
 
       change({__MODULE__.Changes.RedactSolutionContent, []})
@@ -138,7 +146,10 @@ defmodule JidoClaw.Solutions.Solution do
         :session_id,
         :created_by_user_id,
         :tenant_id,
-        :deleted_at
+        :deleted_at,
+        :embedding,
+        :embedding_status,
+        :embedding_model
       ])
 
       argument(:id, :uuid, allow_nil?: true)

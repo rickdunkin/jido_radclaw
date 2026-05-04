@@ -1,7 +1,29 @@
 defmodule JidoClaw.Session.Worker do
   @moduledoc """
-  GenServer per session. Manages message history, JSONL persistence,
-  and agent interaction for a single conversation.
+  GenServer per session. Manages message history (Postgres-backed),
+  agent binding, and per-session telemetry for a single conversation.
+
+  ## Persistence
+
+  Phase 2 retired the legacy `.jido/sessions/<tenant>/*.jsonl` writer.
+  Messages now flow through `JidoClaw.Conversations.Message` rows in
+  Postgres, written via `Conversations.Message.append!/1`. The
+  worker's in-memory `state.messages` mirrors the persisted history
+  for fast `get_messages/2` access; on cold start, it hydrates from
+  Postgres via `Message.for_session/1`.
+
+  ## session_uuid lifecycle
+
+  The worker can't write `Conversations.Message` rows until the parent
+  `Conversations.Session` row has been created (UUID FK target). At
+  start, `session_uuid` is `nil`; the dispatcher sets it via
+  `set_session_uuid/3` after `Conversations.Resolver.ensure_session/5`.
+  The setter ALSO hydrates `state.messages` from Postgres synchronously,
+  so subsequent `:get_messages` / `:get_info` calls reflect any prior
+  history immediately.
+
+  Until `set_session_uuid` runs, `add_message/4` returns
+  `{:error, :session_uuid_unset}`.
 
   ## Agent Binding
 
@@ -19,11 +41,14 @@ defmodule JidoClaw.Session.Worker do
   use GenServer
   require Logger
 
+  alias JidoClaw.Conversations.Message
+
   @idle_timeout 300_000
 
   defstruct [
     :id,
     :tenant_id,
+    :session_uuid,
     :agent_pid,
     :agent_ref,
     :created_at,
@@ -39,9 +64,9 @@ defmodule JidoClaw.Session.Worker do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def add_message(tenant_id, session_id, role, content) do
+  def add_message(tenant_id, session_id, role, content, request_id \\ nil) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
-    GenServer.call(name, {:add_message, role, content})
+    GenServer.call(name, {:add_message, role, content, request_id})
   end
 
   def get_messages(tenant_id, session_id) do
@@ -60,14 +85,30 @@ defmodule JidoClaw.Session.Worker do
     GenServer.call(name, {:set_agent, agent_pid})
   end
 
+  @doc """
+  Set the `Conversations.Session` UUID for this worker.
+
+  Idempotent: passing the same UUID twice is a no-op. Calling with a
+  different UUID raises (re-pointing a worker mid-flight is a bug).
+
+  Hydrates `state.messages` from Postgres on first call, so
+  `get_messages/2` reflects pre-existing history immediately.
+  """
+  def set_session_uuid(tenant_id, session_id, session_uuid) when is_binary(session_uuid) do
+    name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
+    GenServer.call(name, {:set_session_uuid, session_uuid})
+  end
+
   @impl true
   def init(opts) do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     session_id = Keyword.fetch!(opts, :session_id)
+    session_uuid = Keyword.get(opts, :session_uuid)
 
     state = %__MODULE__{
       id: session_id,
       tenant_id: tenant_id,
+      session_uuid: session_uuid,
       created_at: DateTime.utc_now(),
       last_active: DateTime.utc_now(),
       messages: []
@@ -78,43 +119,65 @@ defmodule JidoClaw.Session.Worker do
   end
 
   @impl true
+  def handle_continue(:load, %{session_uuid: nil} = state) do
+    # Worker started without a session_uuid — wait for set_session_uuid to
+    # arrive before loading. This is the normal boot path.
+    {:noreply, state, @idle_timeout}
+  end
+
   def handle_continue(:load, state) do
-    # Reverse so in-memory order is newest-first, matching the prepend-on-write convention.
-    # get_messages/0 reverses back to chronological for callers.
-    messages = state.tenant_id |> load_from_jsonl(state.id) |> Enum.reverse()
+    messages = load_messages(state.session_uuid)
     {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
   @impl true
-  def handle_call({:add_message, role, content}, _from, state) do
-    message = %{
-      role: to_string(role),
-      content: content,
-      timestamp: System.system_time(:millisecond)
-    }
+  def handle_call(
+        {:add_message, _role, _content, _request_id},
+        _from,
+        %{session_uuid: nil} = state
+      ) do
+    {:reply, {:error, :session_uuid_unset}, state, @idle_timeout}
+  end
 
-    new_state = %{state | messages: [message | state.messages], last_active: DateTime.utc_now()}
+  def handle_call({:add_message, role, content, request_id}, _from, state) do
+    case Message.append(%{
+           session_id: state.session_uuid,
+           role: role,
+           content: content,
+           request_id: request_id,
+           metadata: %{}
+         }) do
+      {:ok, message} ->
+        new_state = %{
+          state
+          | messages: state.messages ++ to_view(message),
+            last_active: DateTime.utc_now()
+        }
 
-    append_to_jsonl(state.tenant_id, state.id, message)
+        JidoClaw.Telemetry.emit_session_message(%{
+          tenant_id: state.tenant_id,
+          session_id: state.id,
+          role: role
+        })
 
-    JidoClaw.Telemetry.emit_session_message(%{
-      tenant_id: state.tenant_id,
-      session_id: state.id,
-      role: role
-    })
+        {:reply, :ok, new_state, @idle_timeout}
 
-    {:reply, :ok, new_state, @idle_timeout}
+      {:error, reason} ->
+        Logger.warning("[Session] #{state.id} add_message failed: #{inspect(reason)}")
+        {:reply, {:error, reason}, state, @idle_timeout}
+    end
   end
 
   @impl true
   def handle_call(:get_messages, _from, state) do
-    {:reply, Enum.reverse(state.messages), state, @idle_timeout}
+    {:reply, state.messages, state, @idle_timeout}
   end
 
   def handle_call(:get_info, _from, state) do
     info = %{
       id: state.id,
       tenant_id: state.tenant_id,
+      session_uuid: state.session_uuid,
       agent_pid: state.agent_pid,
       message_count: length(state.messages),
       created_at: state.created_at,
@@ -133,6 +196,24 @@ defmodule JidoClaw.Session.Worker do
     ref = Process.monitor(agent_pid)
     new_state = %{state | agent_pid: agent_pid, agent_ref: ref}
     {:reply, :ok, new_state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: nil} = state) do
+    messages = load_messages(uuid)
+    {:reply, :ok, %{state | session_uuid: uuid, messages: messages}, @idle_timeout}
+  end
+
+  def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: uuid} = state) do
+    {:reply, :ok, state, @idle_timeout}
+  end
+
+  def handle_call({:set_session_uuid, other}, _from, state) do
+    Logger.error(
+      "[Session] #{state.id} attempted to re-point session_uuid from #{state.session_uuid} to #{other}"
+    )
+
+    {:reply, {:error, :session_uuid_already_set}, state, @idle_timeout}
   end
 
   @impl true
@@ -160,40 +241,36 @@ defmodule JidoClaw.Session.Worker do
     :ok
   end
 
-  # -- JSONL Persistence --
+  # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
 
-  defp jsonl_dir(tenant_id) do
-    Path.join([File.cwd!(), ".jido", "sessions", tenant_id])
-  end
-
-  defp jsonl_path(tenant_id, session_id) do
-    Path.join(jsonl_dir(tenant_id), "#{session_id}.jsonl")
-  end
-
-  defp load_from_jsonl(tenant_id, session_id) do
-    path = jsonl_path(tenant_id, session_id)
-
-    case File.read(path) do
-      {:ok, content} ->
-        content
-        |> String.split("\n", trim: true)
-        |> Enum.flat_map(fn line ->
-          case Jason.decode(line, keys: :atoms) do
-            {:ok, msg} -> [msg]
-            _ -> []
-          end
-        end)
-
-      {:error, _} ->
-        []
+  defp load_messages(session_uuid) do
+    case Message.for_session(session_uuid) do
+      {:ok, rows} -> Enum.flat_map(rows, &to_view/1)
+      _ -> []
     end
+  rescue
+    e ->
+      Logger.warning("[Session] message hydration raised: #{Exception.message(e)}")
+      []
   end
 
-  defp append_to_jsonl(tenant_id, session_id, message) do
-    dir = jsonl_dir(tenant_id)
-    File.mkdir_p!(dir)
-    path = jsonl_path(tenant_id, session_id)
-    line = Jason.encode!(message) <> "\n"
-    File.write!(path, line, [:append])
+  # Map a Conversations.Message row → the legacy in-memory shape so
+  # JidoClaw.history/2 callers (and the REPL view) keep their existing
+  # `[%{role: String.t(), content: String.t(), timestamp: integer()}]`
+  # contract. Returns `[view]` for chat roles and `[]` for tool/reasoning
+  # rows so the in-memory cache stays chat-only.
+  defp to_view(%{role: role, content: content, inserted_at: inserted_at})
+       when role in [:user, :assistant, :system] do
+    [
+      %{
+        role: Atom.to_string(role),
+        content: content,
+        timestamp: DateTime.to_unix(inserted_at, :millisecond)
+      }
+    ]
   end
+
+  defp to_view(_), do: []
 end

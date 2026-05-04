@@ -3,8 +3,9 @@ defmodule JidoClaw.CLI.Repl do
   The main REPL loop: reads input, routes to agent or commands, displays output.
   """
 
-  alias JidoClaw.{Agent, AgentTracker, Config, Display, Session, Session.Worker, Startup, Stats}
+  alias JidoClaw.{Agent, AgentTracker, Config, Display, Session.Worker, Startup, Stats}
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
+  alias JidoClaw.Conversations.SessionId
   alias JidoClaw.Reasoning.StrategyRegistry
 
   defstruct [
@@ -152,11 +153,11 @@ defmodule JidoClaw.CLI.Repl do
             IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
         end
 
-        session_id = Session.new_session_id()
+        session_id = SessionId.new()
         tenant_id = "default"
 
         # Ensure a Session.Worker GenServer is running for this CLI session
-        {:ok, _session_pid} = Session.Supervisor.ensure_session(tenant_id, session_id)
+        {:ok, _session_pid} = JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id)
 
         # Phase 0 — resolve durable Workspace + Session rows so the
         # tool_context threaded into every Agent.ask carries
@@ -165,6 +166,14 @@ defmodule JidoClaw.CLI.Repl do
         # identity keeps these rows from colliding with web/RPC rows.
         {workspace_uuid, session_uuid} =
           ensure_persisted_session(tenant_id, project_dir, session_id)
+
+        # Phase 2 — wire the Worker to the persisted session UUID so
+        # Worker.add_message can write Conversations.Message rows.
+        # This also hydrates state.messages from Postgres if any prior
+        # rows exist for this session.
+        if session_uuid do
+          Worker.set_session_uuid(tenant_id, session_id, session_uuid)
+        end
 
         # Bind agent process to session for crash tracking
         Worker.set_agent(tenant_id, session_id, pid)
@@ -245,13 +254,26 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp handle_message(message, state) do
-    # Route through Session.Worker GenServer (telemetry + JSONL persistence).
+    request_id = Ecto.UUID.generate()
+
+    # Register correlation BEFORE the user-message append so the
+    # Recorder can resolve scope for any tool signal that fires during
+    # this turn, even if it races ahead of the dispatcher's add_message.
+    if state.session_uuid do
+      JidoClaw.register_correlation(
+        request_id,
+        state.session_uuid,
+        state.tenant_id,
+        state.workspace_uuid,
+        nil
+      )
+    end
+
     # Save the *raw* message here so session history captures what the user
     # typed, not the hinted variant seen by the agent.
-    Worker.add_message(state.tenant_id, state.session_id, :user, message)
+    Worker.add_message(state.tenant_id, state.session_id, :user, message, request_id)
     Stats.track_message(:user)
 
-    # Reset display mode and start thinking spinner via Display
     Display.reset_mode()
     Display.exit_input_mode()
     Display.start_thinking()
@@ -271,24 +293,27 @@ defmodule JidoClaw.CLI.Repl do
 
     case Agent.ask(state.agent_pid, prepared,
            timeout: 120_000,
+           request_id: request_id,
            tool_context: tool_context
          ) do
       {:ok, handle} ->
         result = poll_with_tool_display(handle, state.agent_pid, MapSet.new())
 
-        # Ensure spinner is stopped
         Display.stop_thinking()
+
+        # Barrier: assistant row must come AFTER tool/reasoning rows.
+        _ = JidoClaw.Conversations.Recorder.flush(request_id)
 
         case result do
           {:ok, answer} when is_binary(answer) ->
             Formatter.print_answer(answer)
-            Worker.add_message(state.tenant_id, state.session_id, :assistant, answer)
+            Worker.add_message(state.tenant_id, state.session_id, :assistant, answer, request_id)
             update_stats(state)
 
           {:ok, answer} ->
             text = extract_text(answer)
             Formatter.print_answer(text)
-            Worker.add_message(state.tenant_id, state.session_id, :assistant, text)
+            Worker.add_message(state.tenant_id, state.session_id, :assistant, text, request_id)
             update_stats(state)
 
           {:error, reason} ->

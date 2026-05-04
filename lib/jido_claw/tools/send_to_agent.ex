@@ -31,6 +31,8 @@ defmodule JidoClaw.Tools.SendToAgent do
         child_tool_context =
           JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id)
 
+        request_id = register_child_correlation(child_tool_context)
+
         # Send async via the agent module's ask
         spawn(fn ->
           try do
@@ -38,15 +40,14 @@ defmodule JidoClaw.Tools.SendToAgent do
               {:ok, template} ->
                 template.module.ask_sync(pid, params.message,
                   timeout: 120_000,
+                  request_id: request_id,
                   tool_context: child_tool_context
                 )
 
               {:error, _} ->
-                # Fallback: use the main agent module with the same
-                # tool_context so follow-up messages on child agents don't
-                # silently lose attribution.
                 JidoClaw.Agent.ask_sync(pid, params.message,
                   timeout: 120_000,
+                  request_id: request_id,
                   tool_context: child_tool_context
                 )
             end
@@ -64,5 +65,26 @@ defmodule JidoClaw.Tools.SendToAgent do
            message: "Message sent to agent '#{params.agent_id}'"
          }}
     end
+  end
+
+  defp register_child_correlation(ctx) do
+    request_id = Ecto.UUID.generate()
+
+    case ctx do
+      %{session_uuid: session_uuid, tenant_id: tenant_id} = c
+      when is_binary(session_uuid) and is_binary(tenant_id) ->
+        JidoClaw.register_correlation(
+          request_id,
+          session_uuid,
+          tenant_id,
+          Map.get(c, :workspace_uuid),
+          Map.get(c, :user_id)
+        )
+
+      _ ->
+        :ok
+    end
+
+    request_id
   end
 end
