@@ -1,20 +1,20 @@
 defmodule JidoClaw.Embeddings.BackfillWorker do
   @moduledoc """
-  GenServer that scans the `solutions` table for rows in
-  `embedding_status: :pending` (or expired `:processing`), claims them
-  atomically via `FOR UPDATE SKIP LOCKED`, and dispatches each to
-  Voyage (`:default`), Ollama (`:local_only`), or no-op
+  GenServer that scans the `solutions` and `memory_facts` tables for
+  rows in `embedding_status: :pending` (or expired `:processing`),
+  claims them atomically via `FOR UPDATE SKIP LOCKED`, and dispatches
+  each to Voyage (`:default`), Ollama (`:local_only`), or no-op
   (`:disabled`) per the workspace's `embedding_policy`.
 
   Two trigger paths:
 
     * **Periodic scan** — every `:scan_interval_seconds` (default 30 in
-      dev, 300 in prod). Backstop for missed hints.
-    * **Hint-by-id** — Solution.store / Solution.import_legacy emit a
-      non-blocking `{:hint_pending, id}` message via an
-      `after_transaction` change. The hint handler runs an atomic
-      claim keyed on `id`; zero-row RETURNING means another scan/hint
-      claimed first, becomes a silent no-op.
+      dev, 300 in prod). Backstop for missed hints. Both resources are
+      scanned per tick.
+    * **Hint-by-id** — Solution.store / Solution.import_legacy emit
+      `{:hint_pending, id}`. Memory.Fact.record emits
+      `{:hint_pending_memory_fact, id}`. Each hint runs an atomic
+      claim against the matching table.
 
   Lease expiry: claims set `embedding_next_attempt_at = now() +
   INTERVAL '5 minutes'`. The periodic-scan SQL has a two-branch WHERE:
@@ -53,6 +53,15 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   @default_concurrency 4
 
   @rate_limited_retry_seconds 30
+
+  # Whitelist of (table, content_column) pairs the worker is allowed
+  # to scan + update. Anything outside this list is rejected before
+  # the SQL is built, so the table interpolation can't be turned
+  # into an injection vector.
+  @resources [
+    {:solutions, "solutions", "solution_content"},
+    {:memory_facts, "memory_facts", "content"}
+  ]
 
   defstruct [
     :scan_timer_ref,
@@ -108,7 +117,16 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   end
 
   def handle_info({:hint_pending, id}, state) do
-    case claim_by_id(id, state) do
+    case claim_by_id(:solutions, id, state) do
+      {:ok, row} -> dispatch_async(row, state)
+      :none -> :ok
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:hint_pending_memory_fact, id}, state) do
+    case claim_by_id(:memory_facts, id, state) do
       {:ok, row} -> dispatch_async(row, state)
       :none -> :ok
     end
@@ -135,30 +153,36 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   # ---------------------------------------------------------------------------
 
   defp do_scan(state) do
-    rows = claim_batch(state)
+    Enum.each(@resources, fn {kind, _table, _content_col} ->
+      case claim_batch(kind, state) do
+        [] ->
+          :ok
 
-    if rows != [] do
-      rows
-      |> Task.async_stream(
-        fn row -> dispatch_one(row) end,
-        max_concurrency: state.concurrency,
-        ordered: false,
-        on_timeout: :kill_task,
-        timeout: 60_000
-      )
-      |> Stream.run()
-    end
+        rows ->
+          rows
+          |> Task.async_stream(
+            fn row -> dispatch_one(row) end,
+            max_concurrency: state.concurrency,
+            ordered: false,
+            on_timeout: :kill_task,
+            timeout: 60_000
+          )
+          |> Stream.run()
+      end
+    end)
 
     :ok
   end
 
-  defp claim_batch(state) do
+  defp claim_batch(kind, state) do
+    {^kind, table, content_col} = lookup_resource!(kind)
+
     sql = """
-    UPDATE solutions
+    UPDATE #{table}
        SET embedding_status = 'processing',
            embedding_next_attempt_at = now() + ($1 || ' seconds')::interval
      WHERE id IN (
-       SELECT id FROM solutions
+       SELECT id FROM #{table}
         WHERE (
                 embedding_status = 'pending'
                 OR (embedding_status = 'processing' AND embedding_next_attempt_at <= now())
@@ -169,7 +193,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
         LIMIT $3
         FOR UPDATE SKIP LOCKED
      )
-     RETURNING id, tenant_id, workspace_id, solution_content,
+     RETURNING id, tenant_id, workspace_id, #{content_col} AS content,
                embedding_attempt_count, embedding_model
     """
 
@@ -181,16 +205,23 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
     case Repo.query(sql, params) do
       {:ok, %Postgrex.Result{columns: cols, rows: rows}} ->
-        Enum.map(rows, fn row -> Enum.zip(cols, row) |> Enum.into(%{}) end)
+        Enum.map(rows, fn row ->
+          row
+          |> Enum.zip(cols)
+          |> Enum.into(%{}, fn {v, k} -> {k, v} end)
+          |> Map.put("__resource__", kind)
+        end)
 
       _ ->
         []
     end
   end
 
-  defp claim_by_id(id, state) do
+  defp claim_by_id(kind, id, state) do
+    {^kind, table, content_col} = lookup_resource!(kind)
+
     sql = """
-    UPDATE solutions
+    UPDATE #{table}
        SET embedding_status = 'processing',
            embedding_next_attempt_at = now() + ($2 || ' seconds')::interval
      WHERE id = $1
@@ -198,17 +229,28 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
              embedding_status = 'pending'
              OR (embedding_status = 'processing' AND embedding_next_attempt_at <= now())
            )
-     RETURNING id, tenant_id, workspace_id, solution_content,
+     RETURNING id, tenant_id, workspace_id, #{content_col} AS content,
                embedding_attempt_count, embedding_model
     """
 
     case Repo.query(sql, [Ecto.UUID.dump!(id), Integer.to_string(state.lease_seconds)]) do
       {:ok, %Postgrex.Result{columns: cols, rows: [row]}} ->
-        {:ok, Enum.zip(cols, row) |> Enum.into(%{})}
+        zipped =
+          row
+          |> Enum.zip(cols)
+          |> Enum.into(%{}, fn {v, k} -> {k, v} end)
+          |> Map.put("__resource__", kind)
+
+        {:ok, zipped}
 
       _ ->
         :none
     end
+  end
+
+  defp lookup_resource!(kind) do
+    Enum.find(@resources, fn {k, _, _} -> k == kind end) ||
+      raise "unknown resource discriminator: #{inspect(kind)}"
   end
 
   # ---------------------------------------------------------------------------
@@ -226,20 +268,21 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   defp dispatch_one(row) do
     workspace_id = row["workspace_id"]
-    content = row["solution_content"]
+    content = row["content"]
     id = row["id"]
+    kind = row["__resource__"]
 
     resolver = Application.get_env(:jido_claw, :policy_resolver, PolicyResolver)
 
     case resolver.resolve(workspace_id) do
       :disabled ->
-        transition_to_disabled(id)
+        transition_to_disabled(kind, id)
 
       :local_only ->
-        embed_via_local(id, content)
+        embed_via_local(kind, id, content)
 
       :default ->
-        embed_via_voyage(id, content)
+        embed_via_voyage(kind, id, content)
     end
   rescue
     err ->
@@ -247,9 +290,11 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
       :ok
   end
 
-  defp transition_to_disabled(id) do
+  defp transition_to_disabled(kind, id) do
+    {^kind, table, _} = lookup_resource!(kind)
+
     Repo.query!(
-      "UPDATE solutions SET embedding_status = 'disabled', " <>
+      "UPDATE #{table} SET embedding_status = 'disabled', " <>
         "embedding_attempt_count = 0, embedding_last_error = NULL, " <>
         "embedding_next_attempt_at = NULL WHERE id = $1",
       [id]
@@ -258,7 +303,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     :ok
   end
 
-  defp embed_via_voyage(id, content) do
+  defp embed_via_voyage(kind, id, content) do
     voyage_mod = Application.get_env(:jido_claw, :voyage_module, JidoClaw.Embeddings.Voyage)
     rate_pacer = Application.get_env(:jido_claw, :rate_pacer, JidoClaw.Embeddings.RatePacer)
     stored_model = "voyage-4-large"
@@ -266,15 +311,15 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     with :ok <- rate_pacer.acquire(:voyage, 1),
          :ok <- rate_pacer.try_admit("voyage", 1),
          {:ok, vector} <- voyage_mod.embed_for_storage(content, stored_model) do
-      on_success(id, vector, stored_model)
+      on_success(kind, id, vector, stored_model)
     else
-      {:error, :timeout} -> on_failure(id, :rate_limited_local)
-      {:error, :budget_exhausted} -> on_failure(id, :rate_limited_cluster)
-      {:error, reason} -> on_failure(id, reason)
+      {:error, :timeout} -> on_failure(kind, id, :rate_limited_local)
+      {:error, :budget_exhausted} -> on_failure(kind, id, :rate_limited_cluster)
+      {:error, reason} -> on_failure(kind, id, reason)
     end
   end
 
-  defp embed_via_local(id, content) do
+  defp embed_via_local(kind, id, content) do
     local_mod = Application.get_env(:jido_claw, :local_module, JidoClaw.Embeddings.Local)
 
     model =
@@ -282,21 +327,17 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
         "mxbai-embed-large"
 
     case local_mod.embed_for_storage(content) do
-      {:ok, vector} -> on_success(id, vector, model)
-      {:error, reason} -> on_failure(id, reason)
+      {:ok, vector} -> on_success(kind, id, vector, model)
+      {:error, reason} -> on_failure(kind, id, reason)
     end
   end
 
-  defp on_success(id, vector, model) do
-    # Pass the raw list of floats directly. AshPostgres.Extensions.Vector
-    # encodes lists into pgvector's binary wire format via
-    # `Ash.Vector.new/1`. Pre-encoding to a text representation here
-    # tripped the binary-in-string path of `Ash.Vector.new/1`, which
-    # converts each byte of the string into a separate dimension and
-    # produces "expected 1024 dimensions, not 5121" failures.
+  defp on_success(kind, id, vector, model) do
+    {^kind, table, _} = lookup_resource!(kind)
+
     Repo.query!(
       """
-      UPDATE solutions
+      UPDATE #{table}
          SET embedding = $2::vector,
              embedding_model = $3,
              embedding_status = 'ready',
@@ -311,7 +352,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     :ok
   end
 
-  defp on_failure(id, reason) do
+  defp on_failure(kind, id, reason) do
     err_str =
       case reason do
         {:rate_limited, retry_after} -> "rate_limited: retry_after=#{retry_after}"
@@ -322,27 +363,27 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
     case reason do
       {:rate_limited, retry_after} when is_integer(retry_after) ->
-        # 429 — does NOT increment attempt_count; respects Retry-After.
-        reschedule_without_attempt(id, retry_after, err_str)
+        reschedule_without_attempt(kind, id, retry_after, err_str)
 
       :rate_limited_local ->
-        reschedule_without_attempt(id, @rate_limited_retry_seconds, err_str)
+        reschedule_without_attempt(kind, id, @rate_limited_retry_seconds, err_str)
 
       :rate_limited_cluster ->
-        reschedule_without_attempt(id, @rate_limited_retry_seconds, err_str)
+        reschedule_without_attempt(kind, id, @rate_limited_retry_seconds, err_str)
 
       _ ->
-        # Other failure — exponential backoff capped at 1 hour, fail at cap.
-        backoff_failure(id, err_str)
+        backoff_failure(kind, id, err_str)
     end
 
     :ok
   end
 
-  defp reschedule_without_attempt(id, retry_after, err_str) do
+  defp reschedule_without_attempt(kind, id, retry_after, err_str) do
+    {^kind, table, _} = lookup_resource!(kind)
+
     Repo.query!(
       """
-      UPDATE solutions
+      UPDATE #{table}
          SET embedding_status = 'pending',
              embedding_next_attempt_at = now() + ($2 || ' seconds')::interval,
              embedding_last_error = $3
@@ -354,10 +395,12 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   @max_attempts 8
 
-  defp backoff_failure(id, err_str) do
+  defp backoff_failure(kind, id, err_str) do
+    {^kind, table, _} = lookup_resource!(kind)
+
     Repo.query!(
       """
-      UPDATE solutions
+      UPDATE #{table}
          SET embedding_attempt_count = embedding_attempt_count + 1,
              embedding_last_error = $2,
              embedding_status = CASE
@@ -373,5 +416,4 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
       [id, err_str, @max_attempts]
     )
   end
-
 end

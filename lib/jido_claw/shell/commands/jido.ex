@@ -92,7 +92,9 @@ defmodule JidoClaw.Shell.Commands.Jido do
 
   defp emit_memory(query_words, emit) do
     query = Enum.join(query_words, " ")
-    results = JidoClaw.Memory.recall(query)
+    {tenant_id, workspace_uuid} = default_scope()
+    tool_context = %{tenant_id: tenant_id, workspace_uuid: workspace_uuid}
+    results = JidoClaw.Memory.recall(query, tool_context: tool_context)
 
     query
     |> Presenters.memory_search_lines(results)

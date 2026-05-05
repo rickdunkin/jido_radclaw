@@ -74,7 +74,9 @@ defmodule JidoClaw.Repo.Migrations.V061Solutions do
           name: "solutions_workspace_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
 
       add(
         :session_id,

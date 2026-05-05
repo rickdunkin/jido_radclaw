@@ -108,7 +108,6 @@ defmodule JidoClaw.MixProject do
       # Jido ecosystem — full stack
       {:jido_signal, "~> 2.0", override: true},
       {:jido_mcp, github: "agentjido/jido_mcp", branch: "main"},
-      {:jido_memory, github: "agentjido/jido_memory", branch: "main"},
       {:jido_browser, "~> 2.0"},
       {:jido_skill, github: "agentjido/jido_skill", branch: "main"},
       {:jido_composer, "~> 0.3"},

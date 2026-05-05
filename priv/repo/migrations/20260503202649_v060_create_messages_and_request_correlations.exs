@@ -18,7 +18,9 @@ defmodule JidoClaw.Repo.Migrations.V060CreateMessagesAndRequestCorrelations do
           name: "request_correlations_session_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
 
       add(:tenant_id, :text, null: false)
 
@@ -56,7 +58,9 @@ defmodule JidoClaw.Repo.Migrations.V060CreateMessagesAndRequestCorrelations do
           name: "messages_session_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
 
       add(:tenant_id, :text, null: false)
       add(:request_id, :text)

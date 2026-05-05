@@ -66,12 +66,23 @@ defmodule JidoClaw.Repo.Migrations.SyncResourceSnapshots do
     drop_if_exists(index(:workflow_runs, [:project_id]))
     drop_if_exists(index(:workflow_runs, [:user_id]))
 
-    execute("ALTER TABLE approval_gates DROP CONSTRAINT IF EXISTS approval_gates_requested_by_id_fkey")
+    execute(
+      "ALTER TABLE approval_gates DROP CONSTRAINT IF EXISTS approval_gates_requested_by_id_fkey"
+    )
+
     execute("ALTER TABLE folio_actions DROP CONSTRAINT IF EXISTS folio_actions_user_id_fkey")
     execute("ALTER TABLE folio_actions DROP CONSTRAINT IF EXISTS folio_actions_project_id_fkey")
-    execute("ALTER TABLE folio_inbox_items DROP CONSTRAINT IF EXISTS folio_inbox_items_user_id_fkey")
+
+    execute(
+      "ALTER TABLE folio_inbox_items DROP CONSTRAINT IF EXISTS folio_inbox_items_user_id_fkey"
+    )
+
     execute("ALTER TABLE folio_projects DROP CONSTRAINT IF EXISTS folio_projects_user_id_fkey")
-    execute("ALTER TABLE github_issue_analyses DROP CONSTRAINT IF EXISTS github_issue_analyses_project_id_fkey")
+
+    execute(
+      "ALTER TABLE github_issue_analyses DROP CONSTRAINT IF EXISTS github_issue_analyses_project_id_fkey"
+    )
+
     execute("ALTER TABLE secret_refs DROP CONSTRAINT IF EXISTS secret_refs_user_id_fkey")
     execute("ALTER TABLE workflow_runs DROP CONSTRAINT IF EXISTS workflow_runs_project_id_fkey")
     execute("ALTER TABLE workflow_runs DROP CONSTRAINT IF EXISTS workflow_runs_user_id_fkey")

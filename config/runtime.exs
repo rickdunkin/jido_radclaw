@@ -9,8 +9,7 @@ if System.get_env("FORGE_SANDBOX") == "docker" do
   config :jido_claw, :forge_docker_sandbox,
     workspace_base: System.get_env("FORGE_WORKSPACE_BASE", "/tmp/jidoclaw_forge"),
     default_agent: System.get_env("FORGE_SANDBOX_AGENT", "shell"),
-    default_timeout_ms:
-      String.to_integer(System.get_env("FORGE_SANDBOX_TIMEOUT_MS", "120000"))
+    default_timeout_ms: String.to_integer(System.get_env("FORGE_SANDBOX_TIMEOUT_MS", "120000"))
 end
 
 # --- OneCLI Credential Proxy ---
@@ -19,8 +18,7 @@ end
 if System.get_env("FORGE_ONECLI_ENABLED") == "true" do
   config :jido_claw, :onecli,
     enabled: true,
-    gateway_url:
-      System.get_env("ONECLI_GATEWAY_URL", "http://host.docker.internal:10255"),
+    gateway_url: System.get_env("ONECLI_GATEWAY_URL", "http://host.docker.internal:10255"),
     ca_cert_path: System.get_env("ONECLI_CA_CERT_PATH"),
     agent_tokens:
       System.get_env("ONECLI_AGENT_TOKENS", "")
@@ -33,8 +31,7 @@ if config_env() == :prod do
     config :jido_claw, JidoClaw.Security.Vault,
       ciphers: [
         default:
-          {Cloak.Ciphers.AES.GCM,
-           tag: "AES.GCM.V1", key: Base.decode64!(key), iv_length: 12}
+          {Cloak.Ciphers.AES.GCM, tag: "AES.GCM.V1", key: Base.decode64!(key), iv_length: 12}
       ]
   end
 

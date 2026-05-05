@@ -185,7 +185,8 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/memory search " <> query, state) do
     q = String.trim(query)
-    results = JidoClaw.Memory.recall(q)
+    tc = memory_tool_context(state)
+    results = JidoClaw.Memory.recall(q, tool_context: tc)
 
     IO.puts("")
     IO.puts("  \e[1mMemory Search: #{q}\e[0m")
@@ -206,7 +207,13 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/memory save " <> rest, state) do
     case String.split(String.trim(rest), " ", parts: 2) do
       [key, content] ->
-        JidoClaw.Memory.remember(key, content)
+        tc = memory_tool_context(state)
+
+        JidoClaw.Memory.remember_from_user(
+          %{key: key, content: content, type: "fact"},
+          tc
+        )
+
         IO.puts("  \e[32m✓\e[0m  Saved memory: \e[1m#{key}\e[0m")
 
       _ ->
@@ -216,14 +223,97 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
-  def handle("/memory forget " <> key, state) do
-    JidoClaw.Memory.forget(String.trim(key))
-    IO.puts("  \e[32m✓\e[0m  Forgot: \e[1m#{String.trim(key)}\e[0m")
+  def handle("/memory forget " <> rest, state) do
+    {label, source} = parse_forget_args(String.trim(rest))
+    tc = memory_tool_context(state)
+
+    JidoClaw.Memory.forget(label, tool_context: tc, source: source)
+
+    IO.puts("  \e[32m✓\e[0m  Forgot: \e[1m#{label}\e[0m \e[2m(source: #{source})\e[0m")
+    {:ok, state}
+  end
+
+  def handle("/memory blocks history " <> label, state) do
+    label = String.trim(label)
+
+    case memory_scope(state) do
+      {:ok, scope} ->
+        case JidoClaw.Memory.Block.history_for_label(
+               scope.tenant_id,
+               scope.scope_kind,
+               primary_fk(scope),
+               label
+             ) do
+          {:ok, revisions} ->
+            IO.puts("")
+            IO.puts("  \e[1mBlock History: #{label}\e[0m")
+
+            if revisions == [] do
+              IO.puts("  \e[2mNo history for this label.\e[0m")
+            else
+              Enum.each(revisions, fn block ->
+                ts = format_short_date(block.inserted_at)
+                IO.puts("  \e[33m▸\e[0m \e[1m#{ts}\e[0m \e[2m(#{block.source})\e[0m")
+                IO.puts("    \e[2m#{block.value}\e[0m")
+              end)
+            end
+
+            IO.puts("")
+
+          {:error, err} ->
+            IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
+        end
+
+      _ ->
+        IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
+    end
+
+    {:ok, state}
+  end
+
+  def handle("/memory blocks", state) do
+    case memory_scope(state) do
+      {:ok, scope} ->
+        chain =
+          JidoClaw.Memory.Scope.chain(scope)
+          |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
+
+        case JidoClaw.Memory.Block.for_scope_chain(scope.tenant_id, chain) do
+          {:ok, blocks} ->
+            IO.puts("")
+            IO.puts("  \e[1mScope Blocks\e[0m")
+
+            if blocks == [] do
+              IO.puts("  \e[2mNo blocks for this scope.\e[0m")
+            else
+              IO.puts("  \e[2m#{length(blocks)} block(s)\e[0m")
+              IO.puts("")
+
+              Enum.each(blocks, fn b ->
+                IO.puts(
+                  "  \e[33m▸\e[0m \e[1m#{b.label}\e[0m \e[2m(#{b.scope_kind}, pos=#{b.position})\e[0m"
+                )
+
+                IO.puts("    \e[2m#{b.value}\e[0m")
+              end)
+            end
+
+            IO.puts("")
+
+          {:error, err} ->
+            IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
+        end
+
+      _ ->
+        IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
+    end
+
     {:ok, state}
   end
 
   def handle("/memory", state) do
-    memories = JidoClaw.Memory.list_recent(20)
+    tc = memory_tool_context(state)
+    memories = JidoClaw.Memory.list_recent(tc, 20)
 
     IO.puts("")
     IO.puts("  \e[1mPersistent Memory\e[0m")
@@ -244,7 +334,7 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("")
 
     IO.puts(
-      "  \e[2mCommands: /memory search <q>  /memory save <key> <content>  /memory forget <key>\e[0m"
+      "  \e[2mCommands: /memory blocks  /memory search <q>  /memory save <key> <content>  /memory forget <label> [--source model|user|all]\e[0m"
     )
 
     IO.puts("")
@@ -796,6 +886,54 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp session_scope(_state), do: :missing
+
+  # -- Memory helpers --
+
+  # Builds a tool_context map for Memory calls from REPL state. Empty
+  # map when state is degraded (Memory write paths bail out cleanly).
+  defp memory_tool_context(state) do
+    %{
+      tenant_id: Map.get(state, :tenant_id),
+      user_id: Map.get(state, :user_id),
+      workspace_uuid: Map.get(state, :workspace_uuid),
+      session_uuid: Map.get(state, :session_uuid)
+    }
+  end
+
+  defp memory_scope(state) do
+    JidoClaw.Memory.Scope.resolve(memory_tool_context(state))
+  end
+
+  defp primary_fk(%{scope_kind: :user, user_id: id}), do: id
+  defp primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
+  defp primary_fk(%{scope_kind: :project, project_id: id}), do: id
+  defp primary_fk(%{scope_kind: :session, session_id: id}), do: id
+  defp primary_fk(_), do: nil
+
+  # Parse `<label>` or `<label> --source model|user|all`.
+  defp parse_forget_args(input) do
+    case String.split(input, "--source", parts: 2) do
+      [label] ->
+        {String.trim(label), :user_save}
+
+      [label, source_part] ->
+        source =
+          source_part
+          |> String.trim()
+          |> case do
+            "model" -> :model_remember
+            "user" -> :user_save
+            "all" -> :all
+            _ -> :user_save
+          end
+
+        {String.trim(label), source}
+    end
+  end
+
+  defp format_short_date(%DateTime{} = dt), do: dt |> DateTime.to_iso8601() |> String.slice(0, 10)
+  defp format_short_date(other) when is_binary(other), do: String.slice(other, 0, 10)
+  defp format_short_date(_), do: ""
 
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
 

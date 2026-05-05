@@ -72,17 +72,31 @@ deliberately skipped are documented per phase below.
 ## Phase summary
 
 ```
-v0.6.0  Foundation       Workspace + Conversation.Session resources, FK plumbing
-v0.6.1  Solutions        Migrate Solutions + Reputation to Ash, add FTS + pgvector
-v0.6.2  Conversations    Migrate chat transcripts to Postgres with full fidelity
-v0.6.3  Memory           Multi-tier memory subsystem, consolidator, retrieval API
-v0.6.4  Audit & Tenant   Audit log, real Ash multitenancy, residual file-store cleanup
+v0.6.0   Foundation       Workspace + Conversation.Session resources, FK plumbing
+v0.6.1   Solutions        Migrate Solutions + Reputation to Ash, add FTS + pgvector
+v0.6.2   Conversations    Migrate chat transcripts to Postgres with full fidelity
+v0.6.3a  Memory data      Block/Fact/Episode/Link/ConsolidationRun resources, retrieval, writes
+v0.6.3b  Memory consol.   Scheduled consolidator (Claude Code harness), frozen-snapshot prompt
+v0.6.3c  Memory codex     Codex sibling runner for the consolidator
+v0.6.4   Audit & Tenant   Audit log, real Ash multitenancy, residual file-store cleanup
 ```
 
 Each phase is independently reviewable and ships as its own point
 release; phases must run in order: Phase 1 needs the foundation FKs
-from Phase 0; the consolidator in Phase 3 needs queryable transcripts
-from Phase 2.
+from Phase 0; the consolidator in Phase 3b needs queryable
+transcripts from Phase 2 plus the data-layer resources from 3a;
+3c needs 3b's runner orchestration.
+
+**On Phase 3's split.** The original `phase-3-memory.md` was a
+single 1,902-line spec covering the entire Memory rewrite. During
+implementation planning it was sliced along the consolidator
+boundary into three sub-phases (3a data layer, 3b consolidator +
+frozen-snapshot prompt, 3c Codex runner) so each ships as a
+reviewable PR with `main` release-able in between. The original
+file is preserved as an index pointing at the three sub-phase docs;
+all source-plan section numbering (§3.1, §3.6, §3.13, …) is kept
+verbatim across the splits so cross-phase references in Phase 0 /
+1 / 2 / 4 keep resolving.
 
 **Rollback caveat.** "Independently revertible" is overstated — once a
 phase ships, new traffic writes only to the new Postgres tables (the
@@ -184,7 +198,30 @@ Each phase ships as its own point release; deploy in order.
 - [Phase 0 — Foundation](phase-0-foundation.md): `Workspace` and `Conversation.Session` Ash resources; FK plumbing for tenant + workspace + session.
 - [Phase 1 — Solutions](phase-1-solutions.md): migrate Solutions + Reputation to Ash; FTS + pgvector hybrid retrieval; Reputation wired into `Trust.compute`.
 - [Phase 2 — Conversations](phase-2-conversations.md): JSONL → Postgres; capture tool calls, tool results, reasoning; redaction at write.
-- [Phase 3 — Memory](phase-3-memory.md): multi-scope, bitemporal Block / Fact / Episode / Link / ConsolidationRun; frozen-snapshot system prompt; scheduled consolidator running as a Forge harness session.
+- **Phase 3 — Memory** ([index](phase-3-memory.md)) ships in three
+  sub-releases:
+  - [Phase 3a — Memory: Data Layer & Retrieval](phase-3a-memory-data.md):
+    multi-scope, bitemporal `Block` / `Fact` / `Episode` /
+    `FactEpisode` / `Link` / `ConsolidationRun` resources; hybrid
+    retrieval (FTS + pgvector + trigram via RRF); model and user
+    write paths; tool surface (`Remember`, `Recall`, `Forget`);
+    CLI (`/memory blocks`, `list`, `search`, `save`, `forget`);
+    embedding pipeline; migration + rollback-export tasks; legacy
+    GenServer decommissioning.
+  - [Phase 3b — Memory: Consolidator Runtime & Frozen-Snapshot
+    Prompt](phase-3b-memory-consolidator.md): scheduled
+    consolidator with per-scope advisory locks, watermark
+    resolution, in-memory clustering, Forge harness session via
+    Claude Code with an in-process HTTP scoped MCP server hosting
+    the eleven proposal tools, transactional staged-publish; the
+    frozen-snapshot system prompt rewrite that lets
+    `anthropic_prompt_cache: true` fire across turns;
+    `Cron.Scheduler.start_system_jobs/0`; per-session
+    `sandbox_mode` knob; `/memory consolidate` + `/memory status`
+    CLI.
+  - [Phase 3c — Memory: Codex Sibling Runner](phase-3c-memory-codex.md):
+    `JidoClaw.Forge.Runners.Codex` sibling runner so the
+    consolidator's `harness:` config knob accepts `:codex`.
 - [Phase 4 — Audit & Tenant](phase-4-audit-tenant.md): audit log; real Ash multitenancy; deprecate string-id siblings; cleanup tasks.
 
 ---
@@ -680,18 +717,27 @@ Explicitly not in v0.6:
 ## Build order recap
 
 ```
-v0.6.0  Foundation       Workspace + Conversation.Session resources, FK plumbing
-v0.6.1  Solutions        Migrate Solutions + Reputation; FTS + pgvector;
-                         Reputation wired into Trust.compute
-v0.6.2  Conversations    Migrate chat transcripts; capture tool calls + reasoning;
-                         redaction at write
-v0.6.3  Memory           Block / Fact / Episode / Link / ConsolidationRun resources;
-                         multi-scope, bitemporal, frozen-snapshot prompt;
-                         scheduled consolidator running as a Forge harness session
-                         (Claude Code or Codex, frontier model + xhigh thinking)
-                         with scoped ADD/UPDATE/DELETE/NOOP tool surface
-v0.6.4  Audit & Tenant   Audit log; real Ash multitenancy; deprecate string-id
-                         siblings; cleanup tasks
+v0.6.0   Foundation       Workspace + Conversation.Session resources, FK plumbing
+v0.6.1   Solutions        Migrate Solutions + Reputation; FTS + pgvector;
+                          Reputation wired into Trust.compute
+v0.6.2   Conversations    Migrate chat transcripts; capture tool calls + reasoning;
+                          redaction at write
+v0.6.3a  Memory data      Block / Fact / Episode / FactEpisode / Link /
+                          ConsolidationRun resources; multi-scope + bitemporal;
+                          hybrid retrieval (RRF over FTS + pgvector + trigram);
+                          model + user write paths; CLI; migration; legacy
+                          GenServer decommissioning
+v0.6.3b  Memory consol.   Scheduled consolidator running as a Forge harness
+                          session (Claude Code, frontier model + xhigh thinking)
+                          with an in-process HTTP scoped MCP server exposing the
+                          ADD/UPDATE/DELETE/NOOP/LINK proposal tool surface;
+                          frozen-snapshot system prompt that lets
+                          `anthropic_prompt_cache: true` fire across turns;
+                          `/memory consolidate` + `/memory status` CLI
+v0.6.3c  Memory codex     Codex sibling runner so the consolidator's `harness:`
+                          knob accepts `:codex`; same orchestration as 3b
+v0.6.4   Audit & Tenant   Audit log; real Ash multitenancy; deprecate string-id
+                          siblings; cleanup tasks
 ```
 
 The migration is gated on actual need — don't migrate file-based

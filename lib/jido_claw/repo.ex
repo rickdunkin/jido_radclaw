@@ -4,7 +4,7 @@ defmodule JidoClaw.Repo do
 
   @impl true
   def installed_extensions do
-    ["ash-functions", "citext", "pg_trgm", "vector"]
+    ["ash-functions", "citext", "pg_trgm", "pgcrypto", "vector"]
   end
 
   @impl true

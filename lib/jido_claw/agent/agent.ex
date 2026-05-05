@@ -23,9 +23,10 @@ defmodule JidoClaw.Agent do
       JidoClaw.Tools.KillAgent,
       # Skills tools (1)
       JidoClaw.Tools.RunSkill,
-      # Memory tools (2)
+      # Memory tools (3)
       JidoClaw.Tools.Remember,
       JidoClaw.Tools.Recall,
+      JidoClaw.Tools.Forget,
       # Solutions tools (4)
       JidoClaw.Tools.StoreSolution,
       JidoClaw.Tools.FindSolution,

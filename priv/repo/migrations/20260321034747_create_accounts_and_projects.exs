@@ -95,7 +95,9 @@ defmodule JidoClaw.Repo.Migrations.CreateAccountsAndProjects do
           name: "api_keys_user_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
 
     create(unique_index(:api_keys, [:api_key_hash], name: "api_keys_unique_api_key_hash_index"))

@@ -146,8 +146,10 @@ defmodule JidoClaw.Application do
         # resources). Persistence is handled by the new BackfillWorker
         # added above.
 
-        # Persistent memory
-        {JidoClaw.Memory, [project_dir: project_dir()]},
+        # Persistent memory — v0.6.3 replaces the GenServer + ETS + JSON
+        # store with the Postgres-backed `JidoClaw.Memory.Domain`. No
+        # supervised process: the API at `JidoClaw.Memory` is a thin
+        # module of code-interface calls.
 
         # Cached skill registry
         {JidoClaw.Skills, [project_dir: project_dir()]},

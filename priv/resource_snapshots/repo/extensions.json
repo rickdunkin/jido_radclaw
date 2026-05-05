@@ -4,6 +4,7 @@
     "ash-functions",
     "citext",
     "pg_trgm",
+    "pgcrypto",
     "vector"
   ]
 }

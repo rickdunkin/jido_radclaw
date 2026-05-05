@@ -1,7 +1,17 @@
 defmodule JidoClaw.Tools.Recall do
   @moduledoc """
-  Tool that searches persistent memory for past facts, patterns, decisions,
-  and preferences stored with the remember tool.
+  Search persistent memory for past facts, patterns, decisions, and
+  preferences stored with `remember`.
+
+  v0.6.3 delegates to `JidoClaw.Memory.recall/2`, which routes through
+  `Memory.Retrieval.search/1` (FTS + pgvector + GIN trigram, RRF
+  combined). The lexical-pool path uses GIN trigram on
+  `lexical_text`, which subsumes the v0.5.x substring scanner — any
+  query that matched the old store will still match here.
+
+  Returns the same `[%{key, content, type, created_at, updated_at}]`
+  shape the legacy module produced so the formatter below works
+  unchanged.
   """
 
   use Jido.Action,
@@ -30,9 +40,12 @@ defmodule JidoClaw.Tools.Recall do
     ]
 
   @impl true
-  def run(params, _context) do
+  def run(params, context) do
     limit = Map.get(params, :limit, 10)
-    results = JidoClaw.Memory.recall(params.query, limit: limit)
+    tool_context = Map.get(context, :tool_context, %{})
+
+    results =
+      JidoClaw.Memory.recall(params.query, tool_context: tool_context, limit: limit)
 
     if results == [] do
       {:ok, %{results: "No memories found matching '#{params.query}'", count: 0}}

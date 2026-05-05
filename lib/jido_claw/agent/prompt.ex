@@ -424,7 +424,11 @@ defmodule JidoClaw.Agent.Prompt do
   end
 
   defp load_memories do
-    JidoClaw.Memory.list_recent(20)
+    # v0.6.3a transitional shim — the prompt builder doesn't have a
+    # tool_context yet (no scope), so the legacy "20 most-recent
+    # memories in prompt" is silenced for one release. v0.6.3b's
+    # frozen-snapshot rewrite drives Block-tier rendering instead.
+    []
   end
 
   defp load_jido_md(cwd) do

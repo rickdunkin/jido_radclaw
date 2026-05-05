@@ -230,7 +230,8 @@ config :jido_claw,
     JidoClaw.Workspaces,
     JidoClaw.Conversations,
     JidoClaw.Solutions.Domain,
-    JidoClaw.Embeddings.Domain
+    JidoClaw.Embeddings.Domain,
+    JidoClaw.Memory.Domain
   ],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
 

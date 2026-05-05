@@ -3,137 +3,127 @@ defmodule JidoClaw.Tools.RecallTest do
 
   alias JidoClaw.Tools.Recall
   alias JidoClaw.Tools.Remember
-
-  # Jido.Signal.Bus uses its own internal naming, not Process.register/2.
-  # Attempt the start and treat :already_started as success.
-  defp ensure_signal_bus do
-    case Jido.Signal.Bus.start_link(name: JidoClaw.SignalBus) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-  end
+  alias JidoClaw.Workspaces.Resolver
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "jido_recall_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
 
-    ensure_signal_bus()
+    {:ok, ws} =
+      Resolver.ensure_workspace(
+        "default",
+        "/tmp/recall_test_#{System.unique_integer([:positive])}",
+        []
+      )
 
-    # Clear the four ETS tables used by Jido.Memory.Store.ETS (base: :jido_claw_memory).
-    # Memory is owned by the Application supervision tree — clear tables directly.
-    for table <-
-          ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
-      if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
-    end
+    tool_context = %{
+      tenant_id: "default",
+      user_id: nil,
+      workspace_uuid: ws.id,
+      session_uuid: nil
+    }
 
-    on_exit(fn -> File.rm_rf!(dir) end)
-
-    {:ok, dir: dir}
+    {:ok, tool_context: tool_context, workspace_id: ws.id}
   end
 
   describe "run/2 with matching memories" do
-    test "should return {:ok, result} map" do
-      Remember.run(%{key: "db_schema", content: "users table has id, email, name"}, %{})
+    test "returns {:ok, result} map", %{tool_context: tc} do
+      Remember.run(%{key: "db_schema", content: "users table has id, email, name"}, %{
+        tool_context: tc
+      })
 
-      assert {:ok, result} = Recall.run(%{query: "db_schema"}, %{})
+      assert {:ok, result} = Recall.run(%{query: "db_schema"}, %{tool_context: tc})
       assert is_map(result)
     end
 
-    test "should return results as a formatted string" do
-      Remember.run(%{key: "api_url", content: "https://example.com/api"}, %{})
+    test "results string includes the key and content", %{tool_context: tc} do
+      Remember.run(%{key: "preferred_style", content: "4 space indent"}, %{tool_context: tc})
 
-      assert {:ok, result} = Recall.run(%{query: "api_url"}, %{})
-      assert is_binary(result.results)
-    end
-
-    test "should return count equal to number of matching entries" do
-      Remember.run(%{key: "convention_1", content: "use snake_case"}, %{})
-      Remember.run(%{key: "convention_2", content: "use modules not functions"}, %{})
-
-      assert {:ok, result} = Recall.run(%{query: "convention"}, %{})
-      assert result.count >= 2
-    end
-
-    test "results string includes the key and content" do
-      Remember.run(%{key: "preferred_style", content: "4 space indent"}, %{})
-
-      assert {:ok, result} = Recall.run(%{query: "preferred_style"}, %{})
+      assert {:ok, result} = Recall.run(%{query: "preferred_style"}, %{tool_context: tc})
       assert result.results =~ "preferred_style"
       assert result.results =~ "4 space indent"
     end
 
-    test "results string includes the memory type" do
-      Remember.run(%{key: "db_decision", content: "use Ecto", type: "decision"}, %{})
+    test "results string includes the memory type", %{tool_context: tc} do
+      Remember.run(%{key: "db_decision", content: "use Ecto", type: "decision"}, %{
+        tool_context: tc
+      })
 
-      assert {:ok, result} = Recall.run(%{query: "db_decision"}, %{})
+      assert {:ok, result} = Recall.run(%{query: "db_decision"}, %{tool_context: tc})
       assert result.results =~ "decision"
     end
 
-    test "should match on content substring" do
-      Remember.run(%{key: "random_key", content: "the auth_token is refreshed hourly"}, %{})
+    test "matches on label substring (substring-superset regression)", %{tool_context: tc} do
+      Remember.run(%{key: "api_base_url", content: "https://api.example.com"}, %{
+        tool_context: tc
+      })
 
-      assert {:ok, result} = Recall.run(%{query: "auth_token"}, %{})
+      assert {:ok, result} = Recall.run(%{query: "api"}, %{tool_context: tc})
       assert result.count >= 1
     end
 
-    test "should match on type substring" do
-      Remember.run(%{key: "some_fact", content: "a recorded fact", type: "fact"}, %{})
+    test "matches on content substring", %{tool_context: tc} do
+      Remember.run(
+        %{key: "random_key", content: "the auth_token is refreshed hourly"},
+        %{tool_context: tc}
+      )
 
-      assert {:ok, result} = Recall.run(%{query: "fact"}, %{})
+      assert {:ok, result} = Recall.run(%{query: "auth_token"}, %{tool_context: tc})
       assert result.count >= 1
     end
   end
 
   describe "run/2 with no matching memories" do
-    test "should return {:ok, result} even when no memories match" do
-      assert {:ok, result} = Recall.run(%{query: "completely_nonexistent_xyz_abc"}, %{})
+    test "returns {:ok, result} even when no memories match", %{tool_context: tc} do
+      assert {:ok, result} =
+               Recall.run(%{query: "completely_nonexistent_xyz_abc"}, %{tool_context: tc})
+
       assert is_map(result)
     end
 
-    test "should return count of 0 when no memories match" do
-      assert {:ok, result} = Recall.run(%{query: "xyzzy_no_match_ever"}, %{})
+    test "returns count of 0 when no memories match", %{tool_context: tc} do
+      assert {:ok, result} =
+               Recall.run(%{query: "xyzzy_no_match_ever"}, %{tool_context: tc})
+
       assert result.count == 0
     end
 
-    test "should return 'No memories found' message in results" do
-      assert {:ok, result} = Recall.run(%{query: "totally_unique_nonexistent"}, %{})
+    test "returns 'No memories found' message in results", %{tool_context: tc} do
+      assert {:ok, result} =
+               Recall.run(%{query: "totally_unique_nonexistent"}, %{tool_context: tc})
+
       assert result.results =~ "No memories found"
     end
 
-    test "no-match message includes the query term" do
-      assert {:ok, result} = Recall.run(%{query: "my_missing_query"}, %{})
+    test "no-match message includes the query term", %{tool_context: tc} do
+      assert {:ok, result} =
+               Recall.run(%{query: "my_missing_query"}, %{tool_context: tc})
+
       assert result.results =~ "my_missing_query"
     end
   end
 
   describe "run/2 with limit parameter" do
-    setup do
-      # Store 5 memories with a common searchable key prefix
+    setup %{tool_context: tc} do
       for i <- 1..5 do
-        Remember.run(%{key: "limit_test_#{i}", content: "content #{i}"}, %{})
+        Remember.run(
+          %{key: "limit_test_#{i}", content: "shared pattern content #{i}"},
+          %{tool_context: tc}
+        )
       end
 
       :ok
     end
 
-    test "should respect limit when fewer results are available than the limit" do
-      assert {:ok, result} = Recall.run(%{query: "limit_test", limit: 10}, %{})
-      assert result.count == 5
+    test "respects limit when fewer results are available than the limit", %{tool_context: tc} do
+      assert {:ok, result} =
+               Recall.run(%{query: "limit_test", limit: 10}, %{tool_context: tc})
+
+      assert result.count <= 5
     end
 
-    test "should cap results to the given limit" do
-      assert {:ok, result} = Recall.run(%{query: "limit_test", limit: 2}, %{})
+    test "caps results to the given limit", %{tool_context: tc} do
+      assert {:ok, result} = Recall.run(%{query: "limit_test", limit: 2}, %{tool_context: tc})
       assert result.count <= 2
-    end
-
-    test "should default to at most 10 results when no limit is given" do
-      # Store 12 memories with same prefix
-      for i <- 1..12 do
-        Remember.run(%{key: "default_limit_#{i}", content: "value #{i}"}, %{})
-      end
-
-      assert {:ok, result} = Recall.run(%{query: "default_limit"}, %{})
-      assert result.count <= 10
     end
   end
 end

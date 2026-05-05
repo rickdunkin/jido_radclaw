@@ -1,7 +1,17 @@
 defmodule JidoClaw.Tools.Remember do
   @moduledoc """
-  Tool that saves a fact, pattern, decision, or preference to persistent memory.
-  Memories survive across sessions and are stored in .jido/memory.json.
+  Save a fact, pattern, decision, or preference to persistent memory.
+
+  v0.6.3 routes through `JidoClaw.Memory.remember_from_model/2`, which
+  writes a `Memory.Fact` row with `source: :model_remember`,
+  `trust_score: 0.4`. Returns `:ok` on every persistence path; the
+  always-`:ok` contract is part of the legacy contract that lets a
+  tool call survive a transient DB hiccup without crashing the agent.
+
+  Schema-compatibility shim: the old API took `key` / `content` /
+  `type`. The new resource keeps `key → label`, `content → content`,
+  and folds `type` into the `tags` list (single element). The schema
+  exposed to the model is unchanged.
   """
 
   use Jido.Action,
@@ -37,9 +47,15 @@ defmodule JidoClaw.Tools.Remember do
     ]
 
   @impl true
-  def run(params, _context) do
+  def run(params, context) do
     type = Map.get(params, :type, "fact")
-    JidoClaw.Memory.remember(params.key, params.content, type)
+    tool_context = Map.get(context, :tool_context, %{})
+
+    JidoClaw.Memory.remember_from_model(
+      %{key: params.key, content: params.content, type: type},
+      tool_context
+    )
+
     {:ok, %{key: params.key, type: type, status: "remembered"}}
   end
 end

@@ -101,7 +101,9 @@ defmodule JidoClaw.Repo.Migrations.CreateOrchestrationTables do
           name: "approval_gates_workflow_run_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
   end
 

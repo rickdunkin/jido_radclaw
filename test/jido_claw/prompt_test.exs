@@ -18,13 +18,6 @@ defmodule JidoClaw.Agent.PromptTest do
 
     ensure_signal_bus()
 
-    # Memory and Skills are managed by the Application supervision tree.
-    # Clear Memory's four ETS tables between tests to prevent state leakage.
-    for table <-
-          ~w[jido_claw_memory_records jido_claw_memory_ns_time jido_claw_memory_ns_class_time jido_claw_memory_ns_tag]a do
-      if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
-    end
-
     on_exit(fn -> File.rm_rf!(dir) end)
 
     {:ok, dir: dir}
@@ -262,23 +255,6 @@ defmodule JidoClaw.Agent.PromptTest do
 
       prompt = Prompt.build(dir)
       assert prompt =~ "Project Instructions"
-    end
-  end
-
-  describe "persistent memory integration" do
-    test "should include memory section when memories exist", %{dir: dir} do
-      JidoClaw.Memory.remember("test_convention", "prefer GenServer over Agent", "decision")
-
-      prompt = Prompt.build(dir)
-
-      assert prompt =~ "test_convention"
-      assert prompt =~ "prefer GenServer over Agent"
-    end
-
-    test "should not include memory section when no memories exist", %{dir: dir} do
-      prompt = Prompt.build(dir)
-      # No memories stored — memory section heading should be absent
-      refute prompt =~ "Known Context"
     end
   end
 

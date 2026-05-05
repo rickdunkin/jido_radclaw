@@ -64,7 +64,9 @@ defmodule JidoClaw.Repo.Migrations.CreateForgeTables do
           name: "forge_exec_sessions_session_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
 
     create table(:forge_events, primary_key: false) do
@@ -85,7 +87,9 @@ defmodule JidoClaw.Repo.Migrations.CreateForgeTables do
           name: "forge_events_session_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
 
     create table(:forge_checkpoints, primary_key: false) do
@@ -108,7 +112,9 @@ defmodule JidoClaw.Repo.Migrations.CreateForgeTables do
           name: "forge_checkpoints_session_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
     end
   end
 

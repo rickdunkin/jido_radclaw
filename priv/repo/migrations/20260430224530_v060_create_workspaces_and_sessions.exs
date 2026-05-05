@@ -76,7 +76,9 @@ defmodule JidoClaw.Repo.Migrations.V060CreateWorkspacesAndSessions do
           name: "conversation_sessions_workspace_id_fkey",
           type: :uuid,
           prefix: "public"
-        ), null: false)
+        ),
+        null: false
+      )
 
       add(
         :user_id,
