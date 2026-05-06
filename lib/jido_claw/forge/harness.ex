@@ -1130,6 +1130,7 @@ defmodule JidoClaw.Forge.Harness do
 
   defp resolve_runner(:shell), do: JidoClaw.Forge.Runners.Shell
   defp resolve_runner(:claude_code), do: JidoClaw.Forge.Runners.ClaudeCode
+  defp resolve_runner(:codex), do: JidoClaw.Forge.Runners.Codex
   defp resolve_runner(:workflow), do: JidoClaw.Forge.Runners.Workflow
   defp resolve_runner(:custom), do: JidoClaw.Forge.Runners.Custom
   defp resolve_runner(:fake), do: JidoClaw.Forge.Runners.Fake

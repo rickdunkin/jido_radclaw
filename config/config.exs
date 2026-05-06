@@ -283,13 +283,21 @@ config :jido_claw, JidoClaw.Memory.Consolidator,
   max_messages_per_run: 500,
   max_facts_per_run: 500,
   max_clusters_per_run: 20,
+  # `:harness` accepts `:claude_code | :codex | :fake`. Both CLI
+  # harnesses are functional; pick the one the deployment has
+  # credentials for.
   harness: :claude_code,
   harness_options: [
-    model: "claude-opus-4-7",
-    thinking_effort: "xhigh",
     sandbox_mode: :local,
     timeout_ms: 600_000,
-    max_turns: 60
+    max_turns: 60,
+    claude_code: [
+      model: "claude-opus-4-7",
+      thinking_effort: "xhigh"
+    ],
+    codex: [
+      model: "gpt-5-codex"
+    ]
   ],
   write_skip_rows: true
 

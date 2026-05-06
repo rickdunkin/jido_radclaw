@@ -13,9 +13,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.Conversations.{Message, Session}
-  alias JidoClaw.Memory.{Block, Fact, Link}
+  alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link}
   alias JidoClaw.Memory.Consolidator
   alias JidoClaw.Memory.Consolidator.Clusterer
+  alias JidoClaw.Memory.Consolidator.TestSupport.PromptCapture
   alias JidoClaw.Workspaces.{Resolver, Workspace}
 
   @consolidator_key JidoClaw.Memory.Consolidator
@@ -267,6 +268,220 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.facts_invalidated == 0
       assert run.blocks_written == 0
       assert run.links_added == 0
+    end
+
+    test "runner_config.prompt reaches the runner via state.prompt" do
+      {:ok, _agent} = PromptCapture.start_link()
+      {_ws, scope} = workspace_scope()
+
+      # PromptCapture.run_iteration returns done("") without committing
+      # any proposals, so the run finalises as :failed (max_turns_reached).
+      # The assertion is on the captured prompt, not the run status.
+      _ =
+        Consolidator.run_now(scope,
+          runner_module: PromptCapture,
+          override_min_input_count: true,
+          await_ms: 30_000
+        )
+
+      captured = PromptCapture.last_prompt()
+      assert is_binary(captured)
+      assert captured =~ "memory consolidator"
+      assert captured =~ "workspace (tenant=default"
+      assert captured =~ "list_clusters"
+      assert captured =~ "commit_proposals"
+    end
+
+    test "harness_model column tracks the configured model across consecutive runs" do
+      {_ws, scope} = workspace_scope()
+
+      Application.put_env(:jido_claw, @consolidator_key,
+        enabled: true,
+        min_input_count: 0,
+        write_skip_rows: true,
+        harness: :fake,
+        harness_options: [
+          sandbox_mode: :local,
+          timeout_ms: 30_000,
+          max_turns: 60,
+          fake: [model: "model-A"]
+        ]
+      )
+
+      assert {:ok, run_a} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run_a.harness == :fake
+      assert run_a.harness_model == "model-A"
+
+      Application.put_env(:jido_claw, @consolidator_key,
+        enabled: true,
+        min_input_count: 0,
+        write_skip_rows: true,
+        harness: :fake,
+        harness_options: [
+          sandbox_mode: :local,
+          timeout_ms: 30_000,
+          max_turns: 60,
+          fake: [model: "model-B"]
+        ]
+      )
+
+      assert {:ok, run_b} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run_b.harness == :fake
+      assert run_b.harness_model == "model-B"
+    end
+
+    test "per-call harness override picks the harness's nested model, not the global default's" do
+      empty_codex_home =
+        Path.join(System.tmp_dir!(), "empty_codex_nested_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty_codex_home)
+      prev_codex = Application.get_env(:jido_claw, :codex_home_dir)
+      Application.put_env(:jido_claw, :codex_home_dir, empty_codex_home)
+
+      on_exit(fn ->
+        File.rm_rf(empty_codex_home)
+
+        if prev_codex,
+          do: Application.put_env(:jido_claw, :codex_home_dir, prev_codex),
+          else: Application.delete_env(:jido_claw, :codex_home_dir)
+      end)
+
+      Application.put_env(:jido_claw, @consolidator_key,
+        enabled: true,
+        min_input_count: 0,
+        write_skip_rows: true,
+        harness: :claude_code,
+        harness_options: [
+          sandbox_mode: :local,
+          timeout_ms: 30_000,
+          max_turns: 60,
+          claude_code: [model: "claude-x"],
+          codex: [model: "codex-y"]
+        ]
+      )
+
+      {_ws, scope} = workspace_scope()
+
+      assert {:error, "no_credentials"} =
+               Consolidator.run_now(scope,
+                 harness: :codex,
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      rows = Ash.read!(ConsolidationRun, domain: @memory_domain)
+
+      row =
+        Enum.find(rows, fn r ->
+          r.tenant_id == scope.tenant_id and r.workspace_id == scope.workspace_id and
+            r.harness == :codex
+        end)
+
+      assert row, "expected a ConsolidationRun row with harness=:codex"
+      assert row.harness_model == "codex-y"
+    end
+
+    test ":no_credentials egress writes a failed row with harness=:codex" do
+      empty_codex_home =
+        Path.join(System.tmp_dir!(), "empty_codex_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty_codex_home)
+      prev_codex = Application.get_env(:jido_claw, :codex_home_dir)
+      Application.put_env(:jido_claw, :codex_home_dir, empty_codex_home)
+
+      on_exit(fn ->
+        File.rm_rf(empty_codex_home)
+
+        if prev_codex,
+          do: Application.put_env(:jido_claw, :codex_home_dir, prev_codex),
+          else: Application.delete_env(:jido_claw, :codex_home_dir)
+      end)
+
+      {_ws, scope} = workspace_scope()
+
+      result =
+        Consolidator.run_now(scope,
+          harness: :codex,
+          override_min_input_count: true,
+          await_ms: 30_000
+        )
+
+      assert {:error, "no_credentials"} = result
+
+      rows = Ash.read!(ConsolidationRun, domain: @memory_domain)
+
+      row =
+        Enum.find(rows, fn r ->
+          r.tenant_id == scope.tenant_id and r.workspace_id == scope.workspace_id and
+            r.harness == :codex
+        end)
+
+      assert row, "expected a ConsolidationRun row with harness=:codex"
+      assert row.status == :failed
+      assert row.error == "no_credentials"
+      assert row.harness_model == "gpt-5-codex"
+      refute is_nil(row.forge_session_id), "expected a forge_session_id (init/2 ran)"
+    end
+
+    test "per-run forge_home is created mid-flight and cleaned up after the run" do
+      forge_home =
+        Path.join(System.tmp_dir!(), "forge_home_cleanup_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(forge_home)
+      prev_forge = Application.get_env(:jido_claw, :forge_home)
+      Application.put_env(:jido_claw, :forge_home, forge_home)
+
+      on_exit(fn ->
+        File.rm_rf(forge_home)
+
+        if prev_forge,
+          do: Application.put_env(:jido_claw, :forge_home, prev_forge),
+          else: Application.delete_env(:jido_claw, :forge_home)
+      end)
+
+      test_pid = self()
+
+      spawn_link(fn ->
+        JidoClaw.Forge.PubSub.subscribe_sessions()
+
+        receive do
+          {:session_started, _session_id} ->
+            send(test_pid, {:dirs_at_start, File.ls!(forge_home)})
+        after
+          10_000 -> send(test_pid, :watcher_timeout)
+        end
+      end)
+
+      {_ws, scope} = workspace_scope()
+
+      assert {:ok, run} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run.status == :succeeded
+
+      assert_receive {:dirs_at_start, dirs_at_start}, 5_000
+
+      assert run.forge_session_id in dirs_at_start,
+             "expected per-run forge_home to be created mid-flight"
+
+      # Cleanup ran after the harness fully stopped.
+      refute File.dir?(Path.join(forge_home, run.forge_session_id))
     end
 
     test "Forge session is eventually stopped after every covered exit path" do

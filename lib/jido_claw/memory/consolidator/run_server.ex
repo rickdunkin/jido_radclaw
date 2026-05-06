@@ -55,6 +55,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     :messages,
     :clusters,
     :result,
+    :effective_harness,
+    :effective_harness_model,
+    :run_forge_home,
     awaiters: [],
     staging: nil,
     status: :idle,
@@ -88,8 +91,40 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   @impl true
   def handle_call({:await_and_start, opts}, from, %{status: :idle} = state) do
-    send(self(), :gate)
-    {:noreply, %{state | status: :running, opts: opts, awaiters: [from]}}
+    case resolve_effective_harness(opts) do
+      {:ok, harness} ->
+        send(self(), :gate)
+
+        # `harness_options` is app-env only — there is no per-call
+        # override beyond the harness selector itself. Shared keys
+        # (`:sandbox_mode`, `:timeout_ms`, `:max_turns`) live at the top
+        # level; harness-specific keys (e.g. `:model`,
+        # `:thinking_effort`) live under `:claude_code` / `:codex` /
+        # `:fake`. The cross-harness regression test uses
+        # `Application.put_env` between runs to vary the nested model.
+        effective_harness_model =
+          consolidator_config()
+          |> Keyword.get(:harness_options, [])
+          |> harness_specific_options(harness)
+          |> Keyword.get(:model)
+
+        {:noreply,
+         %{
+           state
+           | status: :running,
+             opts: opts,
+             awaiters: [from],
+             effective_harness: harness,
+             effective_harness_model: effective_harness_model
+         }}
+
+      {:error, reason} ->
+        # Fail fast — no `ConsolidationRun` row is written. The Ash
+        # resource constraint only accepts known harness atoms, so
+        # writing a row with `:unresolved` would fail validation.
+        # Surface the configuration mistake directly to the caller.
+        {:reply, {:error, reason}, state, {:continue, :stop}}
+    end
   end
 
   def handle_call({:await_and_start, _opts}, _from, %{status: :terminal, result: result} = state) do
@@ -284,13 +319,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   def handle_continue(:invoke_harness, state) do
-    case resolved_harness() do
-      {:ok, harness} ->
-        spawn_harness_task(state, harness)
-
-      {:error, reason} ->
-        finalise(state, :failed, reason)
-    end
+    # Harness was resolved at `:await_and_start` time and persisted on
+    # state, so any caller-side configuration mistake is surfaced before
+    # the run holds a lock.
+    spawn_harness_task(state, state.effective_harness)
   end
 
   def handle_continue(:stop, state), do: {:stop, :normal, state}
@@ -303,11 +335,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   # -- internals ---------------------------------------------------------------
 
-  defp resolved_harness do
-    case Keyword.get(consolidator_config(), :harness, :claude_code) do
-      :claude_code -> {:ok, :claude_code}
-      :fake -> {:ok, :fake}
-      :codex -> {:error, "no_runner_configured"}
+  defp resolve_effective_harness(opts) do
+    override = Keyword.get(opts, :harness)
+    global = Keyword.get(consolidator_config(), :harness, :claude_code)
+
+    case override || global do
+      h when h in [:claude_code, :codex, :fake] -> {:ok, h}
       other -> {:error, "unknown_harness:#{inspect(other)}"}
     end
   end
@@ -323,13 +356,40 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     timeout_ms = Keyword.get(harness_options, :timeout_ms, 600_000)
     sandbox_mode = Keyword.get(harness_options, :sandbox_mode, :local)
 
+    base_forge = Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
+    run_forge_home = Path.join(base_forge, forge_session_id)
+    codex_home = Path.join(run_forge_home, ".codex")
+
+    # Pre-create the per-run dir for `:local` mode so the cleanup in
+    # `drive_harness/4` has a stable target even when the runner skips
+    # its own mkdir step (e.g., `:fake`). Docker mode handles cleanup
+    # via container destruction, so we skip the host mkdir there.
+    if sandbox_mode == :local do
+      File.mkdir_p!(run_forge_home)
+    end
+
     runner_config =
       base_runner_config(harness, harness_options)
       |> Map.put(:mcp_config_path, temp_path)
+      |> Map.put(:mcp_server_url, endpoint.url)
+      |> Map.put(:forge_home, run_forge_home)
+      |> Map.put(:codex_home, codex_home)
+      |> Map.put(:prompt, JidoClaw.Memory.Consolidator.Prompt.build(state))
       |> maybe_add_fake_proposals(harness, state.opts)
 
+    # Refine effective_harness_model with whatever runner_config landed
+    # (e.g., harness defaults via `base_runner_config/2`). `:fake`'s
+    # config has no `:model` key, so the fallback to the value already
+    # captured at `:await_and_start` time is what pins the cross-harness
+    # regression test.
+    effective_model =
+      Map.get(runner_config, :model) || state.effective_harness_model
+
+    runner_module = Keyword.get(state.opts, :runner_module)
+    spec_runner = runner_module || harness
+
     spec = %{
-      runner: harness,
+      runner: spec_runner,
       runner_config: runner_config,
       sandbox: sandbox_mode
     }
@@ -351,7 +411,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
          temp_file_path: temp_path,
          forge_session_id: forge_session_id,
          harness_task_ref: task.ref,
-         harness_task_pid: task.pid
+         harness_task_pid: task.pid,
+         run_forge_home: run_forge_home,
+         effective_harness_model: effective_model
      }}
   end
 
@@ -359,30 +421,42 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     # Subscribe before start_session so we can't miss the :ready broadcast
     # if bootstrap completes inside the same scheduler quantum.
     :ok = JidoClaw.Forge.PubSub.subscribe(forge_session_id)
+    run_forge_home = Map.get(spec.runner_config, :forge_home)
 
-    case JidoClaw.Forge.Manager.start_session(forge_session_id, spec) do
-      {:ok, %{pid: pid}} ->
-        try do
-          with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)),
-               result <-
-                 JidoClaw.Forge.Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
-            result
-          else
-            {:error, reason} -> {:error, reason}
+    try do
+      case JidoClaw.Forge.Manager.start_session(forge_session_id, spec) do
+        {:ok, %{pid: pid}} ->
+          try do
+            with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)),
+                 result <-
+                   JidoClaw.Forge.Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
+              result
+            else
+              {:error, reason} -> {:error, reason}
+            end
+          rescue
+            e -> {:error, Exception.message(e)}
+          catch
+            :exit, reason -> {:error, inspect(reason)}
+          after
+            # Ready, timed-out, harness died, run_iteration crashed — every
+            # exit path stops the Forge session. start_session succeeded so
+            # the corresponding stop must always run. Per-run forge dir
+            # cleanup is in the outer `after` so it runs AFTER the harness
+            # has been supervisor-terminated and the CLI process is no
+            # longer writing.
+            maybe_stop_forge_session(forge_session_id)
           end
-        rescue
-          e -> {:error, Exception.message(e)}
-        catch
-          :exit, reason -> {:error, inspect(reason)}
-        after
-          # Ready, timed-out, harness died, run_iteration crashed — every
-          # exit path stops the Forge session. start_session succeeded so
-          # the corresponding stop must always run.
-          maybe_stop_forge_session(forge_session_id)
-        end
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    after
+      # Outer cleanup also catches the start-session-failed path
+      # (`:at_capacity`, `:runner_at_capacity`, `:already_exists`), where
+      # `spawn_harness_task/2` already created the dir but no harness
+      # ever touched it. Best-effort: a missing dir is fine.
+      if run_forge_home, do: File.rm_rf(run_forge_home)
     end
   end
 
@@ -394,6 +468,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         Process.demonitor(ref, [:flush])
         :ok
 
+      {:DOWN, ^ref, :process, _, {:runner_init_failed, init_reason}} ->
+        {:error, runner_init_error_string(init_reason)}
+
       {:DOWN, ^ref, :process, _, reason} ->
         {:error, "harness_died_during_bootstrap: #{inspect(reason)}"}
     after
@@ -402,6 +479,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         {:error, "harness_bootstrap_timeout"}
     end
   end
+
+  defp runner_init_error_string(:no_credentials), do: "no_credentials"
+  defp runner_init_error_string(:runner_unavailable), do: "runner_unavailable"
+
+  defp runner_init_error_string(other),
+    do: "runner_init_failed: #{inspect(other)}"
 
   defp bootstrap_timeout(run_timeout_ms), do: min(run_timeout_ms, 60_000)
 
@@ -416,15 +499,39 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp base_runner_config(:fake, _opts), do: %{fake_proposals: []}
 
   defp base_runner_config(:claude_code, opts) do
+    merged = harness_specific_options(opts, :claude_code)
+
     %{
-      model: Keyword.get(opts, :model, "claude-opus-4-7"),
-      max_turns: Keyword.get(opts, :max_turns, 60),
-      timeout_ms: Keyword.get(opts, :timeout_ms, 600_000),
-      thinking_effort: Keyword.get(opts, :thinking_effort, "xhigh")
+      model: Keyword.get(merged, :model, "claude-opus-4-7"),
+      max_turns: Keyword.get(merged, :max_turns, 60),
+      timeout_ms: Keyword.get(merged, :timeout_ms, 600_000),
+      thinking_effort: Keyword.get(merged, :thinking_effort, "xhigh")
+    }
+  end
+
+  defp base_runner_config(:codex, opts) do
+    merged = harness_specific_options(opts, :codex)
+
+    %{
+      model: Keyword.get(merged, :model, "gpt-5-codex"),
+      max_turns: Keyword.get(merged, :max_turns, 60),
+      timeout_ms: Keyword.get(merged, :timeout_ms, 600_000)
     }
   end
 
   defp base_runner_config(_, _), do: %{}
+
+  # Merge shared `harness_options` keys with the per-harness nested
+  # keyword block. The shared keys (`:sandbox_mode`, `:timeout_ms`,
+  # `:max_turns`) stay at the top level of `:harness_options`;
+  # harness-specific keys live under `:claude_code` / `:codex` / `:fake`
+  # so a per-call `harness:` override picks the right model instead of
+  # leaking the global default's model into the wrong CLI.
+  defp harness_specific_options(harness_options, harness) do
+    shared = Keyword.drop(harness_options, [:claude_code, :codex, :fake])
+    specific = Keyword.get(harness_options, harness, [])
+    Keyword.merge(shared, specific)
+  end
 
   defp maybe_add_fake_proposals(config, :fake, opts) do
     Map.put(config, :fake_proposals, Keyword.get(opts, :fake_proposals, []))
@@ -591,8 +698,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
             finished_at: finished_at,
             status: :succeeded,
             forge_session_id: state.forge_session_id,
-            harness: Keyword.get(consolidator_config(), :harness, :claude_code),
-            harness_model: model_from_config()
+            harness: state.effective_harness,
+            harness_model: state.effective_harness_model
           }
           |> Map.merge(counts)
           |> Map.merge(watermarks)
@@ -966,8 +1073,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       status: status,
       error: error_string,
       forge_session_id: state.forge_session_id,
-      harness: Keyword.get(consolidator_config(), :harness, :claude_code),
-      harness_model: model_from_config()
+      harness: state.effective_harness,
+      harness_model: state.effective_harness_model
     }
 
     case ConsolidationRun.record_run(attrs) do
@@ -1043,12 +1150,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     do: Application.get_env(:jido_claw, JidoClaw.Memory.Consolidator, [])
 
   defp write_skip_rows?, do: Keyword.get(consolidator_config(), :write_skip_rows, true)
-
-  defp model_from_config do
-    consolidator_config()
-    |> Keyword.get(:harness_options, [])
-    |> Keyword.get(:model)
-  end
 
   defp tool_context_from(scope) do
     %{

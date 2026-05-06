@@ -224,6 +224,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   defp sandbox_agent_type(spec) do
     case Map.get(spec, :runner, :shell) do
       :claude_code -> "claude"
+      :codex -> "codex"
       :shell -> "shell"
       _ -> config_default_agent()
     end

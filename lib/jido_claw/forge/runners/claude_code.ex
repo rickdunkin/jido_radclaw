@@ -4,11 +4,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
 
-  @forge_home "/var/local/forge"
-
   # Files/dirs from ~/.claude worth syncing into the sandbox.
   # Excludes logs, telemetry, and other ephemeral data.
   @syncable_entries ~w(settings.json credentials.json skills CLAUDE.md)
+  @auth_file "credentials.json"
 
   @impl true
   def init(client, config) do
@@ -19,36 +18,36 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     timeout_ms = Map.get(config, :timeout_ms, 300_000)
     mcp_config_path = Map.get(config, :mcp_config_path)
     thinking_effort = Map.get(config, :thinking_effort)
+    forge_home = Map.get(config, :forge_home, default_forge_home())
 
-    dirs = ["#{@forge_home}/session", "#{@forge_home}/templates", "#{@forge_home}/.claude"]
+    case sync_host_claude_config(client, forge_home) do
+      :ok ->
+        # Ensure dangerously-skip-permissions settings are in place after the
+        # sync (the sync would have overwritten any existing settings.json).
+        settings = Jason.encode!(%{permissions: %{allow: ["*"]}})
+        Sandbox.write_file(client, "#{forge_home}/.claude/settings.json", settings)
 
-    for dir <- dirs do
-      Sandbox.exec(client, "mkdir -p #{dir}", [])
+        if prompt != "" do
+          redacted = PromptRedaction.redact(prompt)
+          Sandbox.write_file(client, "#{forge_home}/session/context.md", redacted)
+        end
+
+        {:ok,
+         %{
+           model: model,
+           prompt: prompt,
+           iteration: 0,
+           session_name: session_name,
+           max_turns: max_turns,
+           timeout_ms: timeout_ms,
+           mcp_config_path: mcp_config_path,
+           thinking_effort: thinking_effort,
+           forge_home: forge_home
+         }}
+
+      {:error, :no_credentials} = err ->
+        err
     end
-
-    # Sync user-level ~/.claude config into sandbox HOME (not workspace)
-    sync_host_claude_config(client)
-
-    # Ensure dangerously-skip-permissions settings are in place
-    settings = Jason.encode!(%{permissions: %{allow: ["*"]}})
-    Sandbox.write_file(client, "#{@forge_home}/.claude/settings.json", settings)
-
-    if prompt != "" do
-      redacted = PromptRedaction.redact(prompt)
-      Sandbox.write_file(client, "#{@forge_home}/session/context.md", redacted)
-    end
-
-    {:ok,
-     %{
-       model: model,
-       prompt: prompt,
-       iteration: 0,
-       session_name: session_name,
-       max_turns: max_turns,
-       timeout_ms: timeout_ms,
-       mcp_config_path: mcp_config_path,
-       thinking_effort: thinking_effort
-     }}
   end
 
   @impl true
@@ -96,10 +95,12 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   defp append_thinking_effort(args, _), do: args
 
   @impl true
-  def apply_input(client, input, _state) do
+  def apply_input(client, input, state) do
+    forge_home = Map.get(state, :forge_home, default_forge_home())
+
     Sandbox.write_file(
       client,
-      "#{@forge_home}/session/response.json",
+      "#{forge_home}/session/response.json",
       Jason.encode!(%{response: input})
     )
 
@@ -141,26 +142,34 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     {:ok, %{base | metadata: Map.merge(base.metadata, metadata)}}
   end
 
-  defp sync_host_claude_config(client) do
-    host_claude = Path.expand("~/.claude")
+  defp sync_host_claude_config(client, forge_home) do
+    host_claude = host_claude_dir()
+    auth_path = Path.join(host_claude, @auth_file)
 
-    if File.dir?(host_claude) do
-      @syncable_entries
-      |> Enum.each(fn entry ->
-        source = Path.join(host_claude, entry)
-        dest = "#{@forge_home}/.claude/#{entry}"
+    cond do
+      not File.dir?(host_claude) ->
+        {:error, :no_credentials}
 
-        cond do
-          File.regular?(source) ->
-            sync_file(client, source, dest)
+      not File.regular?(auth_path) ->
+        {:error, :no_credentials}
 
-          File.dir?(source) ->
-            sync_dir(client, source, dest)
-
-          true ->
-            :skip
+      true ->
+        for dir <- ["#{forge_home}/session", "#{forge_home}/templates", "#{forge_home}/.claude"] do
+          Sandbox.exec(client, "mkdir -p #{dir}", [])
         end
-      end)
+
+        Enum.each(@syncable_entries, fn entry ->
+          source = Path.join(host_claude, entry)
+          dest = "#{forge_home}/.claude/#{entry}"
+
+          cond do
+            File.regular?(source) -> sync_file(client, source, dest)
+            File.dir?(source) -> sync_dir(client, source, dest)
+            true -> :skip
+          end
+        end)
+
+        :ok
     end
   end
 
@@ -169,6 +178,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
       {:ok, content} ->
         encoded = Base.encode64(content)
         Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
+        # `echo > dest` uses the process umask; `credentials.json` is mode 600
+        # on host, so preserve that posture in the sandbox copy.
+        if Path.basename(dest) == @auth_file,
+          do: Sandbox.exec(client, "chmod 600 #{dest}", [])
 
       {:error, reason} ->
         Logger.debug("[ClaudeCode] Skipping #{source}: #{reason}")
@@ -195,4 +208,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
         Logger.debug("[ClaudeCode] Skipping dir #{source_dir}: #{reason}")
     end
   end
+
+  defp default_forge_home,
+    do: Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
+
+  defp host_claude_dir,
+    do: Application.get_env(:jido_claw, :claude_home_dir, "~/.claude") |> Path.expand()
 end

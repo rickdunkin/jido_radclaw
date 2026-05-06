@@ -21,3 +21,15 @@ config :jido_claw, JidoClaw.Repo,
   hostname: "localhost",
   database: "jido_claw_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox
+
+# Forge defaults to `/var/local/forge`, which is not writable on most
+# CI / dev machines. Per-run consolidator dirs land under this base in
+# 3c, so route tests at a tmp path the runner can mkdir into. Tests
+# that need a specific tmp dir (e.g., the cleanup regression) override
+# via `Application.put_env`.
+config :jido_claw,
+       :forge_home,
+       Path.join(
+         System.tmp_dir!(),
+         "jido_claw_forge_test#{System.get_env("MIX_TEST_PARTITION", "")}"
+       )

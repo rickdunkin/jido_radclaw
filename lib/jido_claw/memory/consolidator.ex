@@ -46,6 +46,10 @@ defmodule JidoClaw.Memory.Consolidator do
       pre-flight (used by `/memory consolidate`).
     * `:fake_proposals` — when `harness: :fake`, the list of
       `{tool_name, args}` tuples the runner will issue.
+    * `:harness` — per-call override for the configured harness
+      (`:claude_code | :codex | :fake`). Defaults to the
+      `:harness` key in app env. Anything model/timeout/sandbox
+      related stays app-env only.
   """
   @spec run_now(map() | keyword() | Scope.scope_record(), keyword()) ::
           {:ok, map()} | {:error, String.t() | term()}
