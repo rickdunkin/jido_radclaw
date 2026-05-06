@@ -67,7 +67,9 @@ defmodule JidoClaw.Application do
     infra_children = [
       {Registry, keys: :unique, name: JidoClaw.SessionRegistry},
       {Registry, keys: :unique, name: JidoClaw.TenantRegistry},
+      {Registry, keys: :unique, name: JidoClaw.Memory.Consolidator.RunRegistry},
       {Task.Supervisor, name: JidoClaw.TaskSupervisor},
+      {Task.Supervisor, name: JidoClaw.Memory.Consolidator.TaskSupervisor},
       JidoClaw.Repo,
       JidoClaw.Security.Vault,
       {Phoenix.PubSub, name: JidoClaw.PubSub},
@@ -139,6 +141,23 @@ defmodule JidoClaw.Application do
         # Multi-tenancy
         JidoClaw.Tenant.Supervisor,
         JidoClaw.Tenant.Manager,
+
+        # Memory consolidator MCP server (always-on, scoped per-run
+        # via the Bandit-fronted Plug.Router). The transport-internal
+        # `start: true` is what Anubis's supervisor reads — a
+        # top-level start option is silently ignored.
+        {JidoClaw.Memory.Consolidator.MCPServer, transport: {:streamable_http, [start: true]}},
+
+        # Boot-time initializer: ensure the "system" tenant and
+        # register platform cron jobs (memory consolidator tick).
+        # Transient so a failure here surfaces loudly without
+        # cascading into the rest of the supervision tree.
+        %{
+          id: JidoClaw.Memory.Consolidator.SystemJobsInitializer,
+          start: {JidoClaw.Memory.Consolidator.SystemJobsInitializer, :start_link, [[]]},
+          type: :worker,
+          restart: :transient
+        },
 
         # Solutions engine — Store + Reputation GenServers retired
         # in v0.6.1; Solutions live in Postgres now (see

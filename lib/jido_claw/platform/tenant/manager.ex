@@ -21,6 +21,16 @@ defmodule JidoClaw.Tenant.Manager do
     GenServer.call(__MODULE__, :list)
   end
 
+  @doc """
+  Idempotently ensure a tenant with the given id exists and is
+  supervised. Used during boot for the `"system"` tenant that owns
+  platform-level cron jobs (e.g. the memory consolidator tick).
+  """
+  @spec ensure_tenant(String.t(), keyword()) :: {:ok, JidoClaw.Tenant.t()} | {:error, term()}
+  def ensure_tenant(id, attrs \\ []) when is_binary(id) do
+    GenServer.call(__MODULE__, {:ensure, id, attrs})
+  end
+
   def suspend_tenant(id) do
     GenServer.call(__MODULE__, {:update_status, id, :suspended})
   end
@@ -71,6 +81,32 @@ defmodule JidoClaw.Tenant.Manager do
   end
 
   @impl true
+  def handle_call({:ensure, id, attrs}, _from, state) do
+    case :ets.lookup(state.table, id) do
+      [{^id, existing}] ->
+        {:reply, {:ok, existing}, state}
+
+      [] ->
+        attrs = Keyword.merge([id: id, name: id], attrs)
+        tenant = JidoClaw.Tenant.new(attrs)
+
+        case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
+          {:ok, _pid} ->
+            :ets.insert(state.table, {tenant.id, tenant})
+            JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
+            Logger.info("[Tenant] Ensured tenant #{tenant.id}")
+            {:reply, {:ok, tenant}, state}
+
+          {:error, {:already_started, _}} ->
+            :ets.insert(state.table, {tenant.id, tenant})
+            {:reply, {:ok, tenant}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
   def handle_call({:create, attrs}, _from, state) do
     tenant = JidoClaw.Tenant.new(attrs)
 

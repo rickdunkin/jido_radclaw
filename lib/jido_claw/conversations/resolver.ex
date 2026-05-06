@@ -18,7 +18,18 @@ defmodule JidoClaw.Conversations.Resolver do
   bump `last_active_at` use the `:touch` action; surfaces that need
   explicit reopen semantics should add a dedicated `:reopen` action
   rather than ever folding `:closed_at` into the upsert field set.
+
+  ## Frozen-snapshot prompt persistence
+
+  When the resolved session is non-`:cron` and has no
+  `metadata["prompt_snapshot"]` yet, build the frozen snapshot from
+  `JidoClaw.Agent.Prompt.build_snapshot/2` and persist it via
+  `:set_prompt_snapshot`. The snapshot is best-effort — failures
+  surface as `Logger.warning` and the session is returned unchanged
+  so an unhealthy Memory subsystem can never block session creation.
   """
+
+  require Logger
 
   alias JidoClaw.Conversations.Session
 
@@ -38,8 +49,50 @@ defmodule JidoClaw.Conversations.Resolver do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
-    Session
-    |> Ash.Changeset.for_create(:start, attrs)
-    |> Ash.create(upsert?: true, upsert_identity: :unique_external)
+    with {:ok, session} <-
+           Session
+           |> Ash.Changeset.for_create(:start, attrs)
+           |> Ash.create(upsert?: true, upsert_identity: :unique_external) do
+      maybe_persist_snapshot(session, opts)
+    end
+  end
+
+  defp maybe_persist_snapshot(%Session{kind: :cron} = s, _opts), do: {:ok, s}
+
+  defp maybe_persist_snapshot(%Session{metadata: %{"prompt_snapshot" => snap}} = s, _opts)
+       when is_binary(snap) and snap != "" do
+    {:ok, s}
+  end
+
+  defp maybe_persist_snapshot(%Session{} = s, opts) do
+    project_dir = Keyword.get(opts, :project_dir, File.cwd!())
+
+    with {:ok, scope} <- JidoClaw.Memory.Scope.resolve(scope_ctx(s)),
+         snap = JidoClaw.Agent.Prompt.build_snapshot(project_dir, scope),
+         {:ok, updated} <- Session.set_prompt_snapshot(s, snap) do
+      {:ok, updated}
+    else
+      {:error, reason} ->
+        Logger.warning("[Conversations.Resolver] snapshot persistence failed: #{inspect(reason)}")
+        {:ok, s}
+
+      _ ->
+        {:ok, s}
+    end
+  rescue
+    e ->
+      Logger.warning("[Conversations.Resolver] snapshot persistence raised: #{inspect(e)}")
+      {:ok, s}
+  end
+
+  # Memory.Scope.resolve/1 expects tool-context shaped keys
+  # (`:workspace_uuid`, `:session_uuid`, etc.), not Session column names.
+  defp scope_ctx(%Session{} = s) do
+    %{
+      tenant_id: s.tenant_id,
+      user_id: s.user_id,
+      workspace_uuid: s.workspace_id,
+      session_uuid: s.id
+    }
   end
 end

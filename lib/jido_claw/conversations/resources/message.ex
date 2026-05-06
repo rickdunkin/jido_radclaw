@@ -95,6 +95,7 @@ defmodule JidoClaw.Conversations.Message do
     define(:since_watermark, action: :since_watermark, args: [:session_id, :watermark])
     define(:by_tool_call, action: :by_tool_call, args: [:session_id, :tool_call_id])
     define(:by_request, action: :by_request, args: [:session_id, :request_id])
+    define(:for_consolidator, action: :for_consolidator)
 
     define(:tool_call_parent,
       action: :tool_call_parent,
@@ -183,6 +184,22 @@ defmodule JidoClaw.Conversations.Message do
       )
 
       prepare(build(limit: 1, sort: [sequence: :asc]))
+    end
+
+    read :for_consolidator do
+      argument(:tenant_id, :string, allow_nil?: false)
+
+      argument(:scope_kind, :atom,
+        allow_nil?: false,
+        constraints: [one_of: [:session]]
+      )
+
+      argument(:scope_fk_id, :uuid, allow_nil?: false)
+      argument(:since_inserted_at, :utc_datetime_usec, allow_nil?: true)
+      argument(:since_id, :uuid, allow_nil?: true)
+      argument(:limit, :integer, allow_nil?: true, default: 500)
+
+      prepare({__MODULE__.Preparations.ForConsolidator, []})
     end
   end
 
@@ -413,6 +430,51 @@ defmodule JidoClaw.Conversations.Message do
             message: "session_not_found"
           )
       end
+    end
+  end
+
+  defmodule Preparations.ForConsolidator do
+    @moduledoc """
+    Watermarked, session-scoped read for the consolidator.
+
+    Returns rows where `(inserted_at, id) > (since_inserted_at,
+    since_id)` so the consolidator can resume from its last published
+    watermark deterministically. When `since_inserted_at` is nil, all
+    rows for the scope are returned.
+
+    Restricted to `scope_kind: :session` — cross-session message
+    consolidation at workspace/user/project tiers is a deliberate
+    extension point, not a 3b deliverable.
+    """
+    use Ash.Resource.Preparation
+    require Ash.Query
+
+    @impl true
+    def prepare(query, _opts, _context) do
+      tenant = Ash.Query.get_argument(query, :tenant_id)
+      fk = Ash.Query.get_argument(query, :scope_fk_id)
+      since_at = Ash.Query.get_argument(query, :since_inserted_at)
+      since_id = Ash.Query.get_argument(query, :since_id)
+      limit = Ash.Query.get_argument(query, :limit)
+
+      query
+      |> Ash.Query.filter(tenant_id == ^tenant and session_id == ^fk)
+      |> apply_since(since_at, since_id)
+      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+      |> Ash.Query.limit(limit)
+    end
+
+    defp apply_since(query, nil, _), do: query
+
+    defp apply_since(query, since_at, nil) do
+      Ash.Query.filter(query, inserted_at > ^since_at)
+    end
+
+    defp apply_since(query, since_at, since_id) do
+      Ash.Query.filter(
+        query,
+        inserted_at > ^since_at or (inserted_at == ^since_at and id > ^since_id)
+      )
     end
   end
 end

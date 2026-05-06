@@ -15,6 +15,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     prompt = Map.get(config, :prompt, "")
     model = Map.get(config, :model, "claude-sonnet-4-20250514")
     session_name = Map.get(config, :session_name)
+    max_turns = Map.get(config, :max_turns, 200)
+    timeout_ms = Map.get(config, :timeout_ms, 300_000)
+    mcp_config_path = Map.get(config, :mcp_config_path)
+    thinking_effort = Map.get(config, :thinking_effort)
 
     dirs = ["#{@forge_home}/session", "#{@forge_home}/templates", "#{@forge_home}/.claude"]
 
@@ -34,7 +38,17 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
       Sandbox.write_file(client, "#{@forge_home}/session/context.md", redacted)
     end
 
-    {:ok, %{model: model, prompt: prompt, iteration: 0, session_name: session_name}}
+    {:ok,
+     %{
+       model: model,
+       prompt: prompt,
+       iteration: 0,
+       session_name: session_name,
+       max_turns: max_turns,
+       timeout_ms: timeout_ms,
+       mcp_config_path: mcp_config_path,
+       thinking_effort: thinking_effort
+     }}
   end
 
   @impl true
@@ -42,6 +56,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     prompt = Keyword.get(opts, :prompt, state.prompt)
     redacted_prompt = PromptRedaction.redact(prompt)
     model = state.model
+    max_turns = Map.get(state, :max_turns) || 200
 
     args =
       [
@@ -53,17 +68,32 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
         "--output-format",
         "stream-json",
         "--max-turns",
-        "200"
+        Integer.to_string(max_turns)
       ]
+      |> append_mcp_config(state)
+      |> append_thinking_effort(state)
 
-    run_opts = [timeout: 300_000]
+    timeout_ms = Keyword.get(opts, :timeout, Map.get(state, :timeout_ms) || 300_000)
+    run_opts = [timeout: timeout_ms]
     run_opts = if state.session_name, do: [{:name, state.session_name} | run_opts], else: run_opts
 
     case Sandbox.run(client, "claude", args, run_opts) do
       {output, 0} -> parse_output(output)
+      {output, :timeout} -> {:ok, Runner.error("harness_timeout", output)}
       {output, _code} -> {:ok, Runner.error("claude cli failed", output)}
     end
   end
+
+  defp append_mcp_config(args, %{mcp_config_path: path}) when is_binary(path) and path != "",
+    do: args ++ ["--mcp-config", path]
+
+  defp append_mcp_config(args, _), do: args
+
+  defp append_thinking_effort(args, %{thinking_effort: effort})
+       when is_binary(effort) and effort != "",
+       do: args ++ ["--effort", effort]
+
+  defp append_thinking_effort(args, _), do: args
 
   @impl true
   def apply_input(client, input, _state) do
@@ -79,21 +109,36 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   defp parse_output(output) do
     lines = String.split(output, "\n", trim: true)
 
-    last_result =
-      lines
-      |> Enum.filter(&String.starts_with?(&1, "{"))
-      |> Enum.reduce(nil, fn line, _acc ->
-        case Jason.decode(line) do
-          {:ok, %{"type" => "result"} = result} -> result
-          _ -> nil
+    {events, last_result} =
+      Enum.reduce(lines, {[], nil}, fn line, {events_acc, result_acc} ->
+        cond do
+          not String.starts_with?(line, "{") ->
+            {events_acc, result_acc}
+
+          true ->
+            case Jason.decode(line) do
+              {:ok, %{"type" => type} = decoded}
+              when type in ["tool_use", "tool_result", "assistant", "system"] ->
+                {[decoded | events_acc], result_acc}
+
+              {:ok, %{"type" => "result"} = result} ->
+                {events_acc, result}
+
+              _ ->
+                {events_acc, result_acc}
+            end
         end
       end)
 
-    case last_result do
-      %{"subtype" => "success"} -> {:ok, Runner.done(output)}
-      %{"subtype" => "error_max_turns"} -> {:ok, Runner.continue(output)}
-      _ -> {:ok, Runner.done(output)}
-    end
+    metadata = %{tool_events: Enum.reverse(events)}
+
+    base =
+      case last_result do
+        %{"subtype" => "error_max_turns"} -> Runner.continue(output)
+        _ -> Runner.done(output)
+      end
+
+    {:ok, %{base | metadata: Map.merge(base.metadata, metadata)}}
   end
 
   defp sync_host_claude_config(client) do

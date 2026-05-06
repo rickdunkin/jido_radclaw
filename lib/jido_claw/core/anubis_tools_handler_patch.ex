@@ -83,7 +83,7 @@ defmodule Anubis.Server.Handlers.Tools do
       {:error, Error.protocol(:invalid_params, %{message: message}), frame}
     end
   rescue
-    _error -> {:ok, params}
+    _ -> {:ok, params}
   end
 
   defp forward_to(server, %Tool{handler: nil} = tool, params, frame) do

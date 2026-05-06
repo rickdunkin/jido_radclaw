@@ -145,14 +145,6 @@ defmodule JidoClaw.CLI.Repl do
     # Start agent
     case JidoClaw.Jido.start_agent(Agent, id: "main") do
       {:ok, pid} ->
-        case Startup.inject_system_prompt(pid, project_dir) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
-        end
-
         session_id = SessionId.new()
         tenant_id = "default"
 
@@ -164,7 +156,7 @@ defmodule JidoClaw.CLI.Repl do
         # workspace_uuid + session_uuid. CLI runs unauthenticated so
         # user_id is nil; the partial-unique :unique_user_path_cli
         # identity keeps these rows from colliding with web/RPC rows.
-        {workspace_uuid, session_uuid} =
+        {workspace_uuid, session_uuid, session_record} =
           ensure_persisted_session(tenant_id, project_dir, session_id)
 
         # Phase 2 — wire the Worker to the persisted session UUID so
@@ -173,6 +165,17 @@ defmodule JidoClaw.CLI.Repl do
         # rows exist for this session.
         if session_uuid do
           Worker.set_session_uuid(tenant_id, session_id, session_uuid)
+        end
+
+        # Inject the system prompt after the Session row exists so the
+        # frozen-snapshot path can read `metadata["prompt_snapshot"]`
+        # and the Anthropic prompt cache stays warm across turns.
+        case Startup.inject_system_prompt(pid, project_dir, session_record) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
         end
 
         # Bind agent process to session for crash tracking
@@ -525,9 +528,9 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   # Resolve durable Workspace + Session rows for the REPL boot. Falls
-  # back to {nil, nil} when the persistence layer is unreachable so the
-  # REPL still starts in degraded mode (e.g. test harness without a
-  # running database) rather than crashing.
+  # back to {nil, nil, nil} when the persistence layer is unreachable
+  # so the REPL still starts in degraded mode (e.g. test harness
+  # without a running database) rather than crashing.
   defp ensure_persisted_session(tenant_id, project_dir, session_id) do
     with {:ok, workspace} <-
            JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir),
@@ -537,16 +540,17 @@ defmodule JidoClaw.CLI.Repl do
              tenant_id,
              workspace.id,
              :repl,
-             session_id
+             session_id,
+             project_dir: project_dir
            ) do
-      {workspace.id, session.id}
+      {workspace.id, session.id, session}
     else
       {:error, reason} ->
         IO.puts(
           "  \e[33m⚠\e[0m  workspace/session persistence failed: \e[1m#{inspect(reason)}\e[0m"
         )
 
-        {nil, nil}
+        {nil, nil, nil}
     end
   rescue
     e ->
@@ -554,7 +558,7 @@ defmodule JidoClaw.CLI.Repl do
         "  \e[33m⚠\e[0m  workspace/session persistence raised: \e[1m#{Exception.message(e)}\e[0m"
       )
 
-      {nil, nil}
+      {nil, nil, nil}
   end
 
   # Apply embedding/consolidation policies from config.yaml when the

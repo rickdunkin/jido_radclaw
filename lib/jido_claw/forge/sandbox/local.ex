@@ -55,12 +55,19 @@ defmodule JidoClaw.Forge.Sandbox.Local do
   end
 
   @impl true
-  def run(%__MODULE__{} = client, agent_type, args, _opts) do
+  def run(%__MODULE__{agent_pid: pid, sandbox_id: sid} = _client, agent_type, args, opts) do
     case System.find_executable(agent_type) do
       nil ->
         {"#{agent_type}: command not found", 127}
 
       executable ->
+        sandbox =
+          Agent.get(pid, fn state -> Map.get(state, sid) end) ||
+            %{dir: System.tmp_dir!(), env: %{}}
+
+        env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
+        timeout = Keyword.get(opts, :timeout, :infinity)
+
         # Split args on "--" to get only the passthrough args
         passthrough =
           case Enum.split_while(args, &(&1 != "--")) do
@@ -68,7 +75,32 @@ defmodule JidoClaw.Forge.Sandbox.Local do
             {all, []} -> all
           end
 
-        exec(client, "#{executable} #{Enum.join(passthrough, " ")}", [])
+        run_with_timeout(executable, passthrough, sandbox.dir, env, timeout)
+    end
+  end
+
+  defp run_with_timeout(executable, args, cwd, env, :infinity) do
+    try do
+      System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
+    rescue
+      e -> {Exception.message(e), 1}
+    end
+  end
+
+  defp run_with_timeout(executable, args, cwd, env, timeout) when is_integer(timeout) do
+    task =
+      Task.async(fn ->
+        try do
+          System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
+        rescue
+          e -> {Exception.message(e), 1}
+        end
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      nil -> {"", :timeout}
+      {:exit, reason} -> {"task exited: #{inspect(reason)}", 1}
     end
   end
 

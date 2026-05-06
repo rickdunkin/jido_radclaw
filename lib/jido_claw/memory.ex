@@ -42,7 +42,7 @@ defmodule JidoClaw.Memory do
   require Logger
   require Ash.Query
 
-  alias JidoClaw.Memory.{Fact, Retrieval, Scope}
+  alias JidoClaw.Memory.{Block, Fact, Retrieval, Scope}
 
   @doc """
   Save a Fact attributable to the model. Returns `:ok` always.
@@ -149,6 +149,59 @@ defmodule JidoClaw.Memory do
   def list_recent(tool_context, limit) when is_map(tool_context) do
     recall("", tool_context: tool_context, limit: limit)
   end
+
+  @doc """
+  Render the active Block-tier rows for a scope chain, deduped by
+  label with the most-specific scope winning.
+
+  Used by the frozen-snapshot prompt builder. Resolved scope records
+  carry every populated ancestor FK; we walk
+  `Memory.Scope.chain/1` (most-specific first) to build the
+  scope-chain query and rank.
+
+  Returns a list ordered most-general → most-specific so the prompt
+  reader sees broad context first, then session-specific overrides.
+  Errors and missing rows surface as `[]` so the prompt builder
+  never crashes.
+  """
+  @spec list_blocks_for_scope_chain(Scope.scope_record()) :: [Block.t()]
+  def list_blocks_for_scope_chain(scope) when is_map(scope) do
+    chain = Scope.chain(scope)
+
+    rank =
+      chain
+      |> Enum.with_index()
+      |> Map.new(fn {{kind, fk}, i} -> {{kind, fk}, i} end)
+
+    chain_maps = Enum.map(chain, fn {kind, fk} -> %{scope_kind: kind, fk_id: fk} end)
+
+    case Block.for_scope_chain(scope.tenant_id, chain_maps) do
+      {:ok, blocks} ->
+        blocks
+        |> Enum.group_by(& &1.label)
+        |> Enum.map(fn {_label, group} ->
+          Enum.min_by(group, fn b ->
+            Map.get(rank, {b.scope_kind, scope_fk_for_block(b)}, 999)
+          end)
+        end)
+        |> Enum.sort_by(
+          fn b -> Map.get(rank, {b.scope_kind, scope_fk_for_block(b)}, 999) end,
+          :desc
+        )
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp scope_fk_for_block(%{scope_kind: :session, session_id: id}), do: id
+  defp scope_fk_for_block(%{scope_kind: :project, project_id: id}), do: id
+  defp scope_fk_for_block(%{scope_kind: :workspace, workspace_id: id}), do: id
+  defp scope_fk_for_block(%{scope_kind: :user, user_id: id}), do: id
 
   # ---------------------------------------------------------------------------
   # Internal write path

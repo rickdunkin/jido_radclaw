@@ -582,6 +582,16 @@ defmodule JidoClaw.Memory.Block do
 
   Wrapped in a single `Ash.transact/3` so the invalidate, the new
   write, and the `BlockRevision` side-row commit atomically.
+
+  > #### Nesting note {: .warning}
+  > This function is called from
+  > `JidoClaw.Memory.Consolidator.RunServer.do_publish/1`, which itself
+  > runs inside `Ash.transact(ConsolidationRun, ...)`. Adding any
+  > `after_transaction` hook to a `Block` action will fire pre-commit
+  > under that nesting and trip Ash's transaction-hooks warning. If
+  > you need post-commit side effects on `Block` writes, follow the
+  > pattern used for `Memory.Fact` (a `:skip_*_hint?` argument on the
+  > action, with the consolidator dispatching after publish).
   """
   @spec revise(prior(), map()) :: {:ok, t()} | {:error, term()}
   def revise(prior_block_or_id, attrs) when is_map(attrs) do

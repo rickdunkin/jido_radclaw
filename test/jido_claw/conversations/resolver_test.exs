@@ -76,7 +76,9 @@ defmodule JidoClaw.Conversations.ResolverTest do
         )
 
       assert first.started_at == first_started
-      assert first.metadata == %{"first" => true}
+      # The resolver also persists `prompt_snapshot` for non-cron sessions —
+      # check the user-supplied keys explicitly rather than full equality.
+      assert Map.get(first.metadata, "first") == true
 
       {:ok, second} =
         ConvResolver.ensure_session(tenant, ws.id, :api, "sess-2",
@@ -87,7 +89,8 @@ defmodule JidoClaw.Conversations.ResolverTest do
       assert second.id == first.id
       # started_at + metadata are preserved because they are NOT in upsert_fields.
       assert second.started_at == first_started
-      assert second.metadata == %{"first" => true}
+      assert Map.get(second.metadata, "first") == true
+      refute Map.has_key?(second.metadata, "second")
     end
   end
 end

@@ -122,4 +122,45 @@ defmodule JidoClaw.Cron.Scheduler do
   def trigger(tenant_id, job_id) do
     JidoClaw.Cron.Worker.trigger(tenant_id, job_id)
   end
+
+  @doc """
+  Schedule platform-owned recurring jobs under the `"system"` tenant.
+
+  Read at boot (after the `"system"` tenant has been ensured). Each
+  job here is `mode: :system_job` and resolves via an `{m, f, a}`
+  call so it bypasses the JidoClaw.chat path. Today the only job is
+  the memory consolidator tick.
+
+  Returns `:ok` regardless — failures Logger.warning out so a dead
+  config can never block app boot.
+  """
+  @spec start_system_jobs() :: :ok
+  def start_system_jobs do
+    config = Application.get_env(:jido_claw, JidoClaw.Memory.Consolidator, [])
+
+    if Keyword.get(config, :enabled, false) do
+      cadence = Keyword.get(config, :cadence, "0 */6 * * *")
+
+      result =
+        schedule("system",
+          id: "memory_consolidator",
+          task: "consolidate",
+          schedule: parse_schedule(cadence),
+          mode: :system_job,
+          mfa: {JidoClaw.Memory.Consolidator, :tick, []}
+        )
+
+      case result do
+        {:ok, _, _} ->
+          Logger.info("[Cron] Scheduled system job memory_consolidator (#{cadence})")
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("[Cron] Failed to schedule memory_consolidator: #{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
+  end
 end

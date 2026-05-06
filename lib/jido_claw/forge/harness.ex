@@ -32,11 +32,13 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   def run_iteration(session_id, opts \\ []) do
-    call(session_id, {:run_iteration, opts})
+    timeout = Keyword.get(opts, :timeout, 300_000)
+    call(session_id, {:run_iteration, opts}, timeout)
   end
 
   def exec(session_id, command, opts \\ []) do
-    call(session_id, {:exec, command, opts})
+    timeout = Keyword.get(opts, :timeout, 300_000)
+    call(session_id, {:exec, command, opts}, timeout)
   end
 
   def apply_input(session_id, input) do
@@ -55,11 +57,11 @@ defmodule JidoClaw.Forge.Harness do
     call(session_id, {:detach_sandbox, name})
   end
 
-  defp call(session_id, msg) do
+  defp call(session_id, msg, timeout \\ 300_000) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] ->
         try do
-          GenServer.call(pid, msg, 300_000)
+          GenServer.call(pid, msg, timeout)
         catch
           # Registry may hold a stale PID briefly after the process terminates
           # (monitor cleanup is async). Treat as not_found.
@@ -71,7 +73,7 @@ defmodule JidoClaw.Forge.Harness do
         case cluster_lookup(session_id) do
           {:ok, pid} ->
             try do
-              GenServer.call(pid, msg, 300_000)
+              GenServer.call(pid, msg, timeout)
             catch
               :exit, {:noproc, _} -> {:error, :not_found}
             end
@@ -1130,9 +1132,11 @@ defmodule JidoClaw.Forge.Harness do
   defp resolve_runner(:claude_code), do: JidoClaw.Forge.Runners.ClaudeCode
   defp resolve_runner(:workflow), do: JidoClaw.Forge.Runners.Workflow
   defp resolve_runner(:custom), do: JidoClaw.Forge.Runners.Custom
+  defp resolve_runner(:fake), do: JidoClaw.Forge.Runners.Fake
   defp resolve_runner(module) when is_atom(module), do: module
 
   defp resolve_client(:default), do: Sandbox
+  defp resolve_client(:local), do: JidoClaw.Forge.Sandbox.Local
   defp resolve_client(:fake), do: JidoClaw.Forge.Sandbox.Local
   defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module

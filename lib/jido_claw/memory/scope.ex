@@ -37,9 +37,10 @@ defmodule JidoClaw.Memory.Scope do
   ## `lock_key/3`
 
   `pg_try_advisory_lock` takes a single bigint. We squash
-  `(tenant_id, scope_kind, fk_id)` into one via `:erlang.phash2/2` and
-  mask to a 63-bit signed bigint range. Collisions are theoretical
-  (~2^63 keyspace) and the worst case is two consolidator runs on
+  `(tenant_id, scope_kind, fk_id)` into a deterministic 64-bit signed
+  integer by SHA-256-hashing the canonical term-binary and reading the
+  first 8 bytes as a signed big-endian int. Collisions are theoretical
+  (~2^64 keyspace) and the worst case is two consolidator runs on
   unrelated scopes serializing — annoying, not incorrect.
   """
 
@@ -55,8 +56,6 @@ defmodule JidoClaw.Memory.Scope do
           project_id: Ecto.UUID.t() | nil,
           session_id: Ecto.UUID.t() | nil
         }
-
-  @max_bigint Bitwise.bsl(1, 63) - 1
 
   @doc """
   Resolve a scope record from a `tool_context` map.
@@ -186,7 +185,7 @@ defmodule JidoClaw.Memory.Scope do
     do: Enum.reject(pairs, fn {kind, _} -> kind in [:session, :project, :workspace] end)
 
   @doc """
-  Compute a deterministic 63-bit signed bigint from
+  Compute a deterministic 64-bit signed bigint from
   `(tenant_id, scope_kind, fk_id)` for `pg_try_advisory_lock`.
 
   Used by the consolidator to acquire a per-scope session-level lock
@@ -197,7 +196,28 @@ defmodule JidoClaw.Memory.Scope do
   @spec lock_key(String.t(), atom(), String.t() | nil) :: integer()
   def lock_key(tenant_id, scope_kind, fk_id)
       when is_binary(tenant_id) and is_atom(scope_kind) do
-    hash = :erlang.phash2({tenant_id, scope_kind, fk_id || ""})
-    Bitwise.band(hash, @max_bigint)
+    bin =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary({tenant_id, scope_kind, fk_id || ""})
+      )
+
+    <<int::signed-64, _::binary>> = bin
+    int
   end
+
+  @doc """
+  Return the FK column value that identifies the scope's primary level.
+
+  Used as the single source of truth for "which FK identifies this
+  scope" — lock-key computation, telemetry metadata, candidate
+  identity, history queries. Resolved scope records from `resolve/1`
+  carry every populated ancestor FK; this picks the right one based
+  on `scope_kind`.
+  """
+  @spec primary_fk(scope_record()) :: Ecto.UUID.t() | nil
+  def primary_fk(%{scope_kind: :session, session_id: id}), do: id
+  def primary_fk(%{scope_kind: :project, project_id: id}), do: id
+  def primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
+  def primary_fk(%{scope_kind: :user, user_id: id}), do: id
 end

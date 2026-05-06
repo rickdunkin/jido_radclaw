@@ -115,4 +115,73 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
 
   defp normalize_result({:ok, _}), do: :ok
   defp normalize_result({:error, reason}), do: {:error, reason}
+
+  # ---------------------------------------------------------------------------
+  # Most-restrictive aggregates for the consolidator's egress gate.
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Aggregate the consolidation policy across every workspace in a
+  tenant that's keyed to the supplied `user_id`.
+
+  Returns the **most-restrictive** policy: `:disabled` < `:local_only`
+  < `:default`. Used by the consolidator's `PolicyResolver` for
+  user-scope runs — a user with one `:disabled` workspace is
+  considered opted out everywhere in that tenant.
+
+  No referencing workspaces → `:disabled` (default-deny).
+  """
+  @spec resolve_consolidation_policy_for_user(String.t(), Ecto.UUID.t()) ::
+          :default | :local_only | :disabled
+  def resolve_consolidation_policy_for_user(tenant_id, user_id),
+    do: aggregate_policy(:user_id, tenant_id, user_id)
+
+  @doc """
+  Aggregate the consolidation policy across every workspace in a
+  tenant that references the supplied `project_id`.
+
+  Returns the most-restrictive policy across referencing workspaces
+  using the same MIN-aggregate shape as the user-scope variant.
+  """
+  @spec resolve_consolidation_policy_for_project(String.t(), Ecto.UUID.t()) ::
+          :default | :local_only | :disabled
+  def resolve_consolidation_policy_for_project(tenant_id, project_id),
+    do: aggregate_policy(:project_id, tenant_id, project_id)
+
+  defp aggregate_policy(:user_id, tenant_id, fk_id),
+    do: run_aggregate("user_id", tenant_id, fk_id)
+
+  defp aggregate_policy(:project_id, tenant_id, fk_id),
+    do: run_aggregate("project_id", tenant_id, fk_id)
+
+  defp run_aggregate(column, tenant_id, fk_id)
+       when column in ["user_id", "project_id"] do
+    table = AshPostgres.DataLayer.Info.table(JidoClaw.Workspaces.Workspace)
+
+    {:ok, %{rows: [[result]]}} =
+      Ecto.Adapters.SQL.query(
+        Repo,
+        """
+        SELECT MIN(CASE consolidation_policy
+                      WHEN 'disabled' THEN 0
+                      WHEN 'local_only' THEN 1
+                      WHEN 'default' THEN 2
+                    END)
+        FROM #{table}
+        WHERE tenant_id = $1 AND #{column} = $2
+        """,
+        [tenant_id, dump_uuid(fk_id)]
+      )
+
+    decode_policy(result)
+  end
+
+  defp dump_uuid(<<_::binary-size(16)>> = raw), do: raw
+  defp dump_uuid(uuid) when is_binary(uuid), do: Ecto.UUID.dump!(uuid)
+  defp dump_uuid(other), do: other
+
+  defp decode_policy(nil), do: :disabled
+  defp decode_policy(0), do: :disabled
+  defp decode_policy(1), do: :local_only
+  defp decode_policy(2), do: :default
 end

@@ -71,10 +71,10 @@ defmodule JidoClaw.Memory.ScopeTest do
   end
 
   describe "lock_key/3" do
-    test "returns a positive bigint within signed 63-bit range" do
+    test "returns a signed 64-bit integer" do
       key = Scope.lock_key("default", :workspace, "abc")
       assert is_integer(key)
-      assert key >= 0
+      assert key >= -Bitwise.bsl(1, 63)
       assert key <= Bitwise.bsl(1, 63) - 1
     end
 
@@ -84,6 +84,32 @@ defmodule JidoClaw.Memory.ScopeTest do
 
     test "differs across tenants" do
       assert Scope.lock_key("t1", :workspace, "fk") != Scope.lock_key("t2", :workspace, "fk")
+    end
+
+    test "differs across scope_kinds" do
+      assert Scope.lock_key("t", :workspace, "fk") != Scope.lock_key("t", :session, "fk")
+    end
+
+    test "uses the SHA-256 64-bit prefix (full bigint range)" do
+      # Sample many keys; if we were still phash2-masked to 27 bits,
+      # we'd never see values above 2^27. Verify we actually use the
+      # full signed-64 range.
+      keys =
+        for i <- 1..1000 do
+          Scope.lock_key("t", :workspace, "fk-#{i}")
+        end
+
+      max_abs = Enum.max(Enum.map(keys, &abs/1))
+      assert max_abs > Bitwise.bsl(1, 32)
+    end
+  end
+
+  describe "primary_fk/1" do
+    test "selects the FK matching scope_kind" do
+      assert Scope.primary_fk(%{scope_kind: :session, session_id: "s"}) == "s"
+      assert Scope.primary_fk(%{scope_kind: :project, project_id: "p"}) == "p"
+      assert Scope.primary_fk(%{scope_kind: :workspace, workspace_id: "w"}) == "w"
+      assert Scope.primary_fk(%{scope_kind: :user, user_id: "u"}) == "u"
     end
   end
 end

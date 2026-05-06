@@ -216,7 +216,10 @@ defmodule JidoClaw.Agent.Prompt do
   # Dynamic section builders
   # ---------------------------------------------------------------------------
 
-  defp environment_section(cwd, project_type, git_branch, skills, agent_count) do
+  # Snapshot variant — skips fields that change between turns/sessions
+  # (active agent count, current git branch) so the prompt cache stays
+  # warm across the whole session lifetime.
+  defp environment_section_snapshot(cwd, project_type, skills) do
     skills_list =
       case skills do
         [] -> "  None loaded (place YAML files in .jido/skills/)"
@@ -228,25 +231,30 @@ defmodule JidoClaw.Agent.Prompt do
 
     - Working directory: #{cwd}
     - Project type:      #{project_type}
-    - Git branch:        #{git_branch}
-    - Active agents:     #{agent_count}
 
     ### Loaded Skills
     #{skills_list}
     """
   end
 
-  defp memories_section([]), do: ""
+  defp blocks_section([]), do: ""
 
-  defp memories_section(memories) do
+  defp blocks_section(blocks) do
     entries =
-      Enum.map_join(memories, "\n", fn mem ->
-        "- [#{mem.type}] **#{mem.key}**: #{mem.content}"
+      Enum.map_join(blocks, "\n\n", fn block ->
+        header =
+          case block.description do
+            nil -> "### #{block.label}"
+            "" -> "### #{block.label}"
+            desc -> "### #{block.label} — #{desc}"
+          end
+
+        header <> "\n" <> block.value
       end)
 
     """
 
-    ## Known Context (from persistent memory)
+    ## Memory Blocks (curated context)
     #{entries}
     """
   end
@@ -271,24 +279,52 @@ defmodule JidoClaw.Agent.Prompt do
   Reads the base prompt from `.jido/system_prompt.md` (or falls back to the
   compiled default), then appends dynamic sections: environment, memories,
   and JIDO.md content. Called once per session start.
+
+  This is a thin wrapper over `build_snapshot/2` with no scope —
+  callers without a resolved scope (e.g. early-boot tests) skip the
+  Block-tier render but still get the rest of the dynamic prompt.
   """
   @spec build(String.t()) :: String.t()
-  def build(project_dir) do
+  def build(project_dir), do: build_snapshot(project_dir, nil)
+
+  @doc """
+  Build a frozen snapshot of the system prompt.
+
+  Drops fields that change between turns or sessions (active-agent
+  count, current git branch) so the prompt cache stays warm across
+  the entire session lifetime. The Block tier is rendered for the
+  supplied scope when one is provided; a `nil` scope renders no
+  Block tier.
+
+  Persisted onto `Conversations.Session.metadata["prompt_snapshot"]`
+  by the resolver at session-create time and injected verbatim on
+  every turn for that session.
+  """
+  @spec build_snapshot(String.t(), JidoClaw.Memory.Scope.scope_record() | nil) :: String.t()
+  def build_snapshot(project_dir, scope) do
     base_prompt = load_base_prompt(project_dir)
 
     cwd = project_dir
     project_type = detect_type(cwd)
-    git_branch = git_branch()
     skills = load_skills(cwd)
-    agent_count = load_agent_count()
-    memories = load_memories()
+    blocks = render_block_tier(scope)
     jido_md = load_jido_md(cwd)
 
     base_prompt <>
       "\n" <>
-      environment_section(cwd, project_type, git_branch, skills, agent_count) <>
-      memories_section(memories) <>
+      environment_section_snapshot(cwd, project_type, skills) <>
+      blocks_section(blocks) <>
       jido_md_section(jido_md)
+  end
+
+  defp render_block_tier(nil), do: []
+
+  defp render_block_tier(scope) do
+    JidoClaw.Memory.list_blocks_for_scope_chain(scope)
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
 
   # ---------------------------------------------------------------------------
@@ -408,29 +444,6 @@ defmodule JidoClaw.Agent.Prompt do
     :exit, _ -> []
   end
 
-  defp load_agent_count do
-    case Process.whereis(JidoClaw.Jido) do
-      nil ->
-        0
-
-      _pid ->
-        case JidoClaw.Jido.list_agents() do
-          {:ok, agents} -> length(agents)
-          _ -> 0
-        end
-    end
-  rescue
-    _ -> 0
-  end
-
-  defp load_memories do
-    # v0.6.3a transitional shim — the prompt builder doesn't have a
-    # tool_context yet (no scope), so the legacy "20 most-recent
-    # memories in prompt" is silenced for one release. v0.6.3b's
-    # frozen-snapshot rewrite drives Block-tier rendering instead.
-    []
-  end
-
   defp load_jido_md(cwd) do
     path = Path.join([cwd, ".jido", "JIDO.md"])
 
@@ -448,13 +461,6 @@ defmodule JidoClaw.Agent.Prompt do
       File.exists?(Path.join(dir, "go.mod")) -> "Go"
       File.exists?(Path.join(dir, "pyproject.toml")) -> "Python"
       true -> "Unknown"
-    end
-  end
-
-  defp git_branch do
-    case System.cmd("git", ["branch", "--show-current"], stderr_to_stdout: true) do
-      {b, 0} -> String.trim(b)
-      _ -> "not a git repo"
     end
   end
 end

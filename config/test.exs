@@ -8,6 +8,13 @@ config :jido_claw, :reasoning_telemetry_sync, true
 config :jido_claw, :test_streaming_max_output_bytes_override, 100_000
 config :logger, level: :warning
 
+# Ecto's SQL.Sandbox wraps every test in a transaction, so any Ash
+# action whose changeset registers `after_transaction` hooks would
+# trip the "ongoing transaction still happening" warning on every
+# test run. Suppress per Ash's documented option #1 for sandbox-mode
+# data layers.
+config :ash, warn_on_transaction_hooks?: false
+
 config :jido_claw, JidoClaw.Repo,
   username: "rhl",
   password: "",

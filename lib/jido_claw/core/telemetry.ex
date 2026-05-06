@@ -42,6 +42,23 @@ defmodule JidoClaw.Telemetry do
       summary("jido_claw.cron.job.duration", unit: {:native, :millisecond}),
       counter("jido_claw.cron.job.exception.total"),
 
+      # Memory consolidator metrics
+      counter("jido_claw.memory.consolidator.run.total",
+        tags: [:tenant_id, :scope_kind, :status, :harness]
+      ),
+      summary("jido_claw.memory.consolidator.run.duration_ms",
+        tags: [:tenant_id, :scope_kind, :status]
+      ),
+      sum("jido_claw.memory.consolidator.run.facts_published",
+        tags: [:tenant_id, :scope_kind]
+      ),
+      sum("jido_claw.memory.consolidator.run.blocks_written",
+        tags: [:tenant_id, :scope_kind]
+      ),
+      counter("jido_claw.memory.consolidator.skipped.total",
+        tags: [:tenant_id, :scope_kind, :reason]
+      ),
+
       # Tenant metrics
       counter("jido_claw.tenant.create.total"),
       counter("jido_claw.tenant.destroy.total"),

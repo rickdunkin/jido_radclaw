@@ -311,6 +311,54 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/memory consolidate" <> _, state) do
+    case memory_scope(state) do
+      {:ok, scope} ->
+        IO.puts("")
+        IO.puts("  \e[2mConsolidating memory for #{scope.scope_kind} scope…\e[0m")
+
+        case JidoClaw.Memory.Consolidator.run_now(scope, override_min_input_count: true) do
+          {:ok, run} ->
+            IO.puts(
+              "  \e[32m✓\e[0m  succeeded — facts_added=#{run.facts_added}, blocks_written=#{run.blocks_written}, blocks_revised=#{run.blocks_revised}"
+            )
+
+          {:error, "scope_busy"} ->
+            IO.puts("  \e[33m⚠\e[0m  consolidation already running for this scope")
+
+          {:error, reason} ->
+            IO.puts("  \e[31m✗\e[0m  consolidation failed: #{reason}")
+        end
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  scope unresolved: #{inspect(reason)}")
+    end
+
+    IO.puts("")
+    {:ok, state}
+  end
+
+  def handle("/memory status" <> _, state) do
+    case memory_scope(state) do
+      {:ok, scope} ->
+        case JidoClaw.Memory.ConsolidationRun.history_for_scope(%{
+               tenant_id: scope.tenant_id,
+               scope_kind: scope.scope_kind,
+               scope_fk_id: JidoClaw.Memory.Scope.primary_fk(scope),
+               limit: 10
+             }) do
+          {:ok, runs} -> render_run_history(runs)
+          runs when is_list(runs) -> render_run_history(runs)
+          {:error, err} -> IO.puts("  \e[31m✗\e[0m  history fetch failed: #{inspect(err)}")
+        end
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  scope unresolved: #{inspect(reason)}")
+    end
+
+    {:ok, state}
+  end
+
   def handle("/memory", state) do
     tc = memory_tool_context(state)
     memories = JidoClaw.Memory.list_recent(tc, 20)
@@ -898,6 +946,36 @@ defmodule JidoClaw.CLI.Commands do
       workspace_uuid: Map.get(state, :workspace_uuid),
       session_uuid: Map.get(state, :session_uuid)
     }
+  end
+
+  defp render_run_history([]) do
+    IO.puts("")
+    IO.puts("  \e[2mNo consolidation runs recorded for this scope.\e[0m")
+    IO.puts("")
+  end
+
+  defp render_run_history(runs) do
+    IO.puts("")
+    IO.puts("  \e[1mConsolidation Runs\e[0m  \e[2m(most recent first)\e[0m")
+    IO.puts("")
+
+    Enum.each(runs, fn run ->
+      icon =
+        case run.status do
+          :succeeded -> "\e[32m✓\e[0m"
+          :skipped -> "\e[33m∅\e[0m"
+          :failed -> "\e[31m✗\e[0m"
+        end
+
+      ts = DateTime.to_iso8601(run.started_at)
+      err = if run.error in [nil, ""], do: "", else: "  \e[2m— #{run.error}\e[0m"
+
+      IO.puts(
+        "  #{icon}  #{ts}  \e[1m#{run.status}\e[0m  facts=#{run.facts_added}/#{run.facts_invalidated}  blocks=#{run.blocks_written}#{err}"
+      )
+    end)
+
+    IO.puts("")
   end
 
   defp memory_scope(state) do

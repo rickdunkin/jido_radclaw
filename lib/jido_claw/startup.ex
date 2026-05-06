@@ -75,20 +75,35 @@ defmodule JidoClaw.Startup do
   @doc """
   Inject the dynamic system prompt onto an agent pid.
 
-  Emits a `[:jido_claw, :agent, :prompt_injected]` telemetry event on success
-  so tests and observers can assert injection happened without depending on
-  an agent-side get-prompt API.
+  When a Session row is supplied and carries a persisted
+  `metadata["prompt_snapshot"]`, that frozen string is injected
+  verbatim — the prompt cache stays warm because the bytes are
+  byte-stable across turns. Otherwise (and for legacy 2-arity
+  callers) the prompt is rebuilt from disk via `Prompt.build/1`.
+
+  Emits a `[:jido_claw, :agent, :prompt_injected]` telemetry event
+  on success so tests and observers can assert injection happened
+  without depending on an agent-side get-prompt API.
   """
   @spec inject_system_prompt(pid(), String.t()) :: :ok | {:error, term()}
-  def inject_system_prompt(pid, project_dir) when is_pid(pid) and is_binary(project_dir) do
-    system_prompt = Prompt.build(project_dir)
+  def inject_system_prompt(pid, project_dir), do: inject_system_prompt(pid, project_dir, nil)
+
+  @spec inject_system_prompt(pid(), String.t(), JidoClaw.Conversations.Session.t() | nil) ::
+          :ok | {:error, term()}
+  def inject_system_prompt(pid, project_dir, session)
+      when is_pid(pid) and is_binary(project_dir) do
+    system_prompt = resolve_prompt(session, project_dir)
 
     case Jido.AI.set_system_prompt(pid, system_prompt) do
       {:ok, _} ->
         :telemetry.execute(
           [:jido_claw, :agent, :prompt_injected],
           %{bytes: byte_size(system_prompt)},
-          %{pid: pid, project_dir: project_dir}
+          %{
+            pid: pid,
+            project_dir: project_dir,
+            source: source_of(session)
+          }
         )
 
         :ok
@@ -97,6 +112,18 @@ defmodule JidoClaw.Startup do
         {:error, reason}
     end
   end
+
+  defp resolve_prompt(%{metadata: %{"prompt_snapshot" => snap}}, _project_dir)
+       when is_binary(snap) and snap != "" do
+    snap
+  end
+
+  defp resolve_prompt(_session, project_dir), do: Prompt.build(project_dir)
+
+  defp source_of(%{metadata: %{"prompt_snapshot" => snap}}) when is_binary(snap) and snap != "",
+    do: :snapshot
+
+  defp source_of(_), do: :live
 
   @doc """
   Parse `project_dir` from argv (the first non-flag argument that resolves to

@@ -71,10 +71,11 @@ defmodule JidoClaw do
         with {:ok, _} <- JidoClaw.Startup.ensure_project_state(project_dir),
              {:ok, _pid} <- JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id),
              {:ok, agent_pid} <- resolve_agent_pid(session_id),
-             :ok <- JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir),
              {:ok, workspace, session} <-
                resolve_persistence(tenant_id, project_dir, session_id, kind, opts),
-             :ok <- JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_id, session.id) do
+             :ok <- JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_id, session.id),
+             :ok <-
+               JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session) do
           run_chat_turn(
             agent_pid,
             tenant_id,
@@ -108,7 +109,8 @@ defmodule JidoClaw do
              kind,
              external_id,
              user_id: user_id,
-             metadata: Keyword.get(opts, :metadata, %{})
+             metadata: Keyword.get(opts, :metadata, %{}),
+             project_dir: project_dir
            ) do
       {:ok, workspace, session}
     end

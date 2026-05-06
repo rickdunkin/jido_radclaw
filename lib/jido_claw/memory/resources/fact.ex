@@ -159,6 +159,12 @@ defmodule JidoClaw.Memory.Fact do
         :embedding_model
       ])
 
+      # Suppresses `HintBackfillWorker` registration so callers nested
+      # inside an outer `Ash.transact` (e.g. the consolidator's publish
+      # path) can dispatch hints themselves after the outer transaction
+      # commits. See `JidoClaw.Memory.Fact.hint_backfill/1`.
+      argument(:skip_backfill_hint?, :boolean, default: false)
+
       change({__MODULE__.Changes.ValidateScopeFk, []})
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({__MODULE__.Changes.RedactContent, []})
@@ -234,6 +240,12 @@ defmodule JidoClaw.Memory.Fact do
       argument(:since_inserted_at, :utc_datetime_usec, allow_nil?: true)
       argument(:since_id, :uuid, allow_nil?: true)
       argument(:limit, :integer, allow_nil?: true, default: 500)
+
+      argument(:sources, {:array, :atom},
+        allow_nil?: false,
+        default: [:model_remember, :user_save, :imported_legacy],
+        constraints: [items: [one_of: @sources]]
+      )
 
       prepare({__MODULE__.Preparations.ForConsolidator, []})
     end
@@ -668,27 +680,20 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.after_transaction(changeset, fn _cs, result ->
-        case result do
-          {:ok, %{embedding_status: :pending, id: id}} ->
-            send_hint_safely(id)
+      if Ash.Changeset.get_argument(changeset, :skip_backfill_hint?) do
+        changeset
+      else
+        Ash.Changeset.after_transaction(changeset, fn _cs, result ->
+          case result do
+            {:ok, %{embedding_status: :pending, id: id}} ->
+              JidoClaw.Memory.Fact.hint_backfill(id)
 
-          _ ->
-            :ok
-        end
+            _ ->
+              :ok
+          end
 
-        result
-      end)
-    end
-
-    defp send_hint_safely(id) do
-      worker = JidoClaw.Embeddings.BackfillWorker
-
-      try do
-        if Process.whereis(worker), do: send(worker, {:hint_pending_memory_fact, id})
-        :ok
-      rescue
-        _ -> :ok
+          result
+        end)
       end
     end
   end
@@ -764,8 +769,11 @@ defmodule JidoClaw.Memory.Fact do
     watermark deterministically. When `since_inserted_at` is nil, all
     rows for the scope are returned.
 
-    Includes `:imported_legacy` rows alongside other sources — the
-    consolidator treats them as eligible for promotion.
+    Filters by the `:sources` argument (default
+    `[:model_remember, :user_save, :imported_legacy]`) so the
+    consolidator only sees rows it's allowed to promote.
+    `:consolidator_promoted` is excluded by default — those are
+    already canonicalised.
     """
     use Ash.Resource.Preparation
     require Ash.Query
@@ -778,10 +786,12 @@ defmodule JidoClaw.Memory.Fact do
       since_at = Ash.Query.get_argument(query, :since_inserted_at)
       since_id = Ash.Query.get_argument(query, :since_id)
       limit = Ash.Query.get_argument(query, :limit)
+      sources = Ash.Query.get_argument(query, :sources)
 
       query
       |> JidoClaw.Memory.Fact.apply_scope_filter(kind, tenant, fk)
       |> JidoClaw.Memory.Fact.apply_since_filter(since_at, since_id)
+      |> JidoClaw.Memory.Fact.apply_sources_filter(sources)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
       |> Ash.Query.limit(limit)
     end
@@ -889,5 +899,30 @@ defmodule JidoClaw.Memory.Fact do
       query,
       inserted_at > ^since_at or (inserted_at == ^since_at and id > ^since_id)
     )
+  end
+
+  @doc false
+  def apply_sources_filter(query, nil), do: query
+  def apply_sources_filter(query, []), do: query
+
+  def apply_sources_filter(query, sources) when is_list(sources) do
+    Ash.Query.filter(query, source in ^sources)
+  end
+
+  @doc """
+  Notify `JidoClaw.Embeddings.BackfillWorker` that the fact row at `id`
+  is ready for embedding. Best-effort send — drops silently if the
+  worker is not running. Used both by the `:record` action's
+  `after_transaction` hook and by callers that suppressed that hook
+  via `skip_backfill_hint?: true` and need to dispatch themselves
+  after their own outer transaction commits.
+  """
+  @spec hint_backfill(String.t()) :: :ok
+  def hint_backfill(id) when is_binary(id) do
+    worker = JidoClaw.Embeddings.BackfillWorker
+    if Process.whereis(worker), do: send(worker, {:hint_pending_memory_fact, id})
+    :ok
+  rescue
+    _ -> :ok
   end
 end

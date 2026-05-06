@@ -262,6 +262,37 @@ config :jido_claw, JidoClaw.Security.Vault,
 
 config :phoenix, :json_library, Jason
 
+# -- Memory consolidator (v0.6.3 phase 3b) --
+#
+# Disabled by default: enable per-deployment via runtime config or
+# `Application.put_env/3` so the harness only fires where its
+# environmental dependencies (frontier model API key, Forge sandbox)
+# are wired up.
+#
+# Pool sizing note: with `max_concurrent_scopes: 4` the Repo pool
+# must accommodate four pinned advisory-lock connections plus the
+# rest of the system's reads/writes. Bump
+# `config :jido_claw, JidoClaw.Repo, pool_size: N` if base sizing
+# is tight (default Ecto pool is 10).
+config :jido_claw, JidoClaw.Memory.Consolidator,
+  enabled: false,
+  cadence: "0 */6 * * *",
+  min_input_count: 10,
+  max_concurrent_scopes: 4,
+  max_candidates_per_tick: 100,
+  max_messages_per_run: 500,
+  max_facts_per_run: 500,
+  max_clusters_per_run: 20,
+  harness: :claude_code,
+  harness_options: [
+    model: "claude-opus-4-7",
+    thinking_effort: "xhigh",
+    sandbox_mode: :local,
+    timeout_ms: 600_000,
+    max_turns: 60
+  ],
+  write_skip_rows: true
+
 # Environment-specific overrides (test.exs, dev.exs, prod.exs).
 # Must be last so env config can override defaults set above.
 import_config "#{config_env()}.exs"

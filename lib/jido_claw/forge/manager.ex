@@ -12,7 +12,7 @@ defmodule JidoClaw.Forge.Manager do
             runner_counts: %{},
             recovery_attempts: %{},
             max_sessions: 50,
-            max_per_runner: %{claude_code: 10, shell: 20, workflow: 10}
+            max_per_runner: %{claude_code: 10, shell: 20, workflow: 10, fake: 10}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -65,7 +65,12 @@ defmodule JidoClaw.Forge.Manager do
     state = %__MODULE__{
       max_sessions: Keyword.get(opts, :max_sessions, 50),
       max_per_runner:
-        Keyword.get(opts, :max_per_runner, %{claude_code: 10, shell: 20, workflow: 10})
+        Keyword.get(opts, :max_per_runner, %{
+          claude_code: 10,
+          shell: 20,
+          workflow: 10,
+          fake: 10
+        })
     }
 
     {:ok, state}

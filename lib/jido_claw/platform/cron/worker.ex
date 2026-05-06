@@ -16,6 +16,7 @@ defmodule JidoClaw.Cron.Worker do
     :schedule,
     :task,
     :mode,
+    :mfa,
     status: :active,
     failure_count: 0,
     last_run: nil,
@@ -53,8 +54,9 @@ defmodule JidoClaw.Cron.Worker do
       tenant_id: Keyword.fetch!(opts, :tenant_id),
       agent_id: Keyword.get(opts, :agent_id, "main"),
       schedule: Keyword.fetch!(opts, :schedule),
-      task: Keyword.fetch!(opts, :task),
+      task: Keyword.get(opts, :task),
       mode: Keyword.get(opts, :mode, :main),
+      mfa: Keyword.get(opts, :mfa),
       created_at: DateTime.utc_now()
     }
 
@@ -125,6 +127,10 @@ defmodule JidoClaw.Cron.Worker do
               kind: :cron,
               external_id: session_id
             )
+
+          :system_job ->
+            {m, f, a} = state.mfa
+            apply(m, f, a)
         end
       rescue
         e ->
@@ -136,6 +142,9 @@ defmodule JidoClaw.Cron.Worker do
     JidoClaw.Telemetry.emit_cron_stop(%{job_id: state.id, tenant_id: state.tenant_id}, duration)
 
     case result do
+      :ok ->
+        %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
+
       {:ok, _} ->
         %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
 
@@ -159,6 +168,11 @@ defmodule JidoClaw.Cron.Worker do
             failure_count: new_count,
             status: new_status
         }
+
+      _other ->
+        # System jobs may return arbitrary terms; treat anything
+        # non-{:error, _} as success for telemetry/back-off.
+        %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
     end
   end
 
