@@ -17,7 +17,7 @@ defmodule JidoClaw.Memory.Consolidator.Prompt do
 
   alias JidoClaw.Memory.Scope
 
-  @link_relations ~w(supports contradicts supersedes duplicates depends_on related)
+  @link_relations ~w(related supports contradicts supersedes elaborates)
 
   @spec build(state :: map()) :: String.t()
   def build(state) do

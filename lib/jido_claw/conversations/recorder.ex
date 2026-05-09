@@ -9,15 +9,35 @@ defmodule JidoClaw.Conversations.Recorder do
     * `ai.tool.result` — write a `:tool_result` row, linked to the
       corresponding `:tool_call` via `parent_message_id`
     * `ai.llm.response` — extract `thinking_content` from the result
-      tuple and write a `:reasoning` row when non-empty
+      tuple and write a `:reasoning` row when non-empty; also learn
+      the `call_id → request_id` mapping so a previously-buffered
+      `ai.usage` telemetry payload can be merged in
+    * `ai.usage` — per-call token / model usage. The directive path
+      emits `ai.usage` BEFORE `ai.llm.response` and without
+      `request_id` in metadata; we buffer such payloads by `call_id`
+      and drain them when the matching `ai.llm.response` arrives. The
+      React path emits `ai.usage` with `request_id` already in
+      metadata and is dispatched immediately.
     * `ai.request.completed` / `ai.request.failed` — terminal signals;
       delete the matching `RequestCorrelation` row + Cache entry; reply
       to any pending `flush(request_id)` calls
 
-  All signals carry a `request_id` (in `signal.data.metadata.request_id`
+  Most signals carry a `request_id` (in `signal.data.metadata.request_id`
   for tool signals, `signal.data.request_id` for terminal signals);
   the Recorder uses it to look up the dispatching scope from the
-  `RequestCorrelation.Cache` (with Postgres fallback).
+  `RequestCorrelation.Cache` (with Postgres fallback). `ai.usage` is
+  the exception — see the buffering note above.
+
+  ## Telemetry handler
+
+  In addition to bus signals, the Recorder attaches a
+  `:telemetry.attach_many/4` handler at boot for
+  `[:jido, :ai, :llm, :complete]` and `[:jido, :ai, :llm, :error]`.
+  These events carry `metadata.request_id` and
+  `measurements.duration_ms` and are the canonical source of
+  per-LLM-call latency. The handler maps `duration_ms → :latency_ms`
+  and merges into the durable `RequestCorrelation` row via
+  `RequestCorrelation.record_telemetry/2`.
 
   ## Flush barrier (`flush/2`)
 
@@ -58,26 +78,40 @@ defmodule JidoClaw.Conversations.Recorder do
   use GenServer
   require Logger
 
-  alias JidoClaw.Conversations.{Message, RequestCorrelation, TranscriptEnvelope}
+  alias JidoClaw.Conversations.{Message, RequestCorrelation, ToolTranscript}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
-  alias JidoClaw.Security.Redaction.Transcript
 
   @topics [
     "ai.tool.started",
     "ai.tool.result",
     "ai.llm.response",
+    "ai.usage",
     "ai.request.completed",
     "ai.request.failed"
   ]
 
   @recent_completed_max 512
+  @call_buffer_max 256
   @retry_after_ms 250
+  @telemetry_handler_id {__MODULE__, :latency}
+  @telemetry_events [
+    [:jido, :ai, :llm, :complete],
+    [:jido, :ai, :llm, :error]
+  ]
 
   defstruct bus_pid: nil,
             subscriptions: [],
             waiters: %{},
             recent_completed: :queue.new(),
-            recent_completed_set: MapSet.new()
+            recent_completed_set: MapSet.new(),
+            # call_id => telemetry_map; populated when `ai.usage` arrives
+            # without a `request_id` and drained when the matching
+            # `ai.llm.response` resolves it.
+            pending_usage: %{},
+            pending_usage_q: :queue.new(),
+            # call_id => request_id; learned from `ai.llm.response`.
+            call_to_request: %{},
+            call_to_request_q: :queue.new()
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -156,11 +190,25 @@ defmodule JidoClaw.Conversations.Recorder do
     end
   end
 
+  @impl true
+  def terminate(_reason, _state) do
+    # Best-effort detach. The defensive detach in `do_setup/1` is the
+    # actual contract — a dirty exit (no terminate/2) cannot leave a
+    # stale handler bound to a dead function reference because
+    # `do_setup/1` always detaches by id before re-attaching.
+    :telemetry.detach(@telemetry_handler_id)
+    :ok
+  catch
+    _, _ -> :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Setup / subscription
   # ---------------------------------------------------------------------------
 
   defp do_setup(state) do
+    attach_latency_handler()
+
     case Jido.Signal.Bus.whereis(JidoClaw.SignalBus) do
       {:ok, bus_pid} ->
         subs = Enum.map(@topics, &subscribe_topic/1)
@@ -180,6 +228,51 @@ defmodule JidoClaw.Conversations.Recorder do
     end
   end
 
+  # Attach a single telemetry handler that captures per-LLM-call
+  # latency from the standard `[:jido, :ai, :llm, :complete]` and
+  # `:error` events. Detach the handler-id first so a prior dirty
+  # boot can't leave stale state bound to a dead function reference.
+  defp attach_latency_handler do
+    :telemetry.detach(@telemetry_handler_id)
+
+    :telemetry.attach_many(
+      @telemetry_handler_id,
+      @telemetry_events,
+      &__MODULE__.handle_telemetry/4,
+      nil
+    )
+  end
+
+  @doc false
+  def handle_telemetry(_event, measurements, metadata, _config) do
+    request_id = Map.get(metadata, :request_id) || Map.get(metadata, "request_id")
+    duration = Map.get(measurements, :duration_ms) || Map.get(measurements, "duration_ms")
+
+    if is_binary(request_id) and is_integer(duration) and duration > 0 do
+      try do
+        case RequestCorrelation.record_telemetry(request_id, %{latency_ms: duration}) do
+          {:ok, _} -> :ok
+          :ok -> :ok
+          {:error, _} -> :ok
+        end
+
+        case Cache.lookup(request_id) do
+          {:ok, scope} when is_map(scope) ->
+            Cache.put(request_id, Map.put(scope, :latency_ms, duration))
+
+          _ ->
+            :ok
+        end
+      rescue
+        _ -> :ok
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Signal dispatch
   # ---------------------------------------------------------------------------
@@ -196,20 +289,174 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp handle_signal(%{type: "ai.llm.response"} = signal, state) do
     safe_handle(fn -> record_reasoning(signal) end, "ai.llm.response")
-    state
+    safe_handle(fn -> record_telemetry(signal) end, "ai.llm.response.telemetry")
+    learn_call_request(signal, state)
+  end
+
+  defp handle_signal(%{type: "ai.usage"} = signal, state) do
+    handle_usage(signal, state)
   end
 
   defp handle_signal(%{type: "ai.request.completed"} = signal, state) do
+    safe_handle(fn -> record_telemetry(signal) end, "ai.request.completed.telemetry")
     request_id = get_in(signal.data, [:request_id]) || signal.data["request_id"]
     finalize_request(request_id, state)
   end
 
   defp handle_signal(%{type: "ai.request.failed"} = signal, state) do
+    safe_handle(fn -> record_telemetry(signal) end, "ai.request.failed.telemetry")
     request_id = get_in(signal.data, [:request_id]) || signal.data["request_id"]
     finalize_request(request_id, state)
   end
 
   defp handle_signal(_, state), do: state
+
+  # ---------------------------------------------------------------------------
+  # ai.usage / call_id correlation
+  # ---------------------------------------------------------------------------
+
+  defp handle_usage(%{data: data}, state) do
+    telemetry = extract_telemetry(data)
+    request_id = metadata_request_id(data) || field(data, :request_id)
+    call_id = field(data, :call_id)
+
+    cond do
+      telemetry == %{} ->
+        state
+
+      is_binary(request_id) ->
+        # React path: request_id already in metadata. Dispatch
+        # immediately.
+        merge_telemetry(request_id, telemetry)
+        state
+
+      is_binary(call_id) and is_binary(Map.get(state.call_to_request, call_id)) ->
+        # `ai.llm.response` already resolved this call_id to a
+        # request_id (out-of-order or strategy-specific orderings).
+        rid = Map.fetch!(state.call_to_request, call_id)
+        merge_telemetry(rid, telemetry)
+        state
+
+      is_binary(call_id) ->
+        # Directive path: `ai.usage` is cast before `ai.llm.response`,
+        # so we don't yet know the request_id. Buffer by call_id and
+        # drain when the matching `ai.llm.response` arrives.
+        buffer_usage(state, call_id, telemetry)
+
+      true ->
+        state
+    end
+  end
+
+  defp learn_call_request(%{data: data}, state) do
+    request_id = metadata_request_id(data) || field(data, :request_id)
+    call_id = field(data, :call_id)
+
+    if is_binary(request_id) and is_binary(call_id) do
+      state
+      |> remember_call_request(call_id, request_id)
+      |> drain_pending_usage(call_id, request_id)
+    else
+      state
+    end
+  end
+
+  defp buffer_usage(state, call_id, telemetry) do
+    # If the call_id already has a buffered payload, merge the new
+    # telemetry on top so token deltas accumulate correctly. This is
+    # rare in practice (usage signals are emitted once per call) but
+    # cheap to handle right.
+    case Map.get(state.pending_usage, call_id) do
+      nil ->
+        pending_usage = Map.put(state.pending_usage, call_id, telemetry)
+        pending_q = :queue.in(call_id, state.pending_usage_q)
+        evict_buffer(%{state | pending_usage: pending_usage, pending_usage_q: pending_q}, :usage)
+
+      existing ->
+        merged = Map.merge(existing, telemetry)
+        %{state | pending_usage: Map.put(state.pending_usage, call_id, merged)}
+    end
+  end
+
+  defp remember_call_request(state, call_id, request_id) do
+    case Map.get(state.call_to_request, call_id) do
+      ^request_id ->
+        state
+
+      _ ->
+        ctr = Map.put(state.call_to_request, call_id, request_id)
+        ctr_q = :queue.in(call_id, state.call_to_request_q)
+        evict_buffer(%{state | call_to_request: ctr, call_to_request_q: ctr_q}, :ctr)
+    end
+  end
+
+  defp drain_pending_usage(state, call_id, request_id) do
+    case Map.pop(state.pending_usage, call_id) do
+      {nil, _} ->
+        state
+
+      {telemetry, rest} ->
+        merge_telemetry(request_id, telemetry)
+        # The queue still references the call_id — let the LRU
+        # eviction path drop it on its next pass; rebuilding the
+        # queue here would be O(n).
+        %{state | pending_usage: rest}
+    end
+  end
+
+  defp merge_telemetry(_request_id, telemetry) when telemetry == %{}, do: :ok
+
+  defp merge_telemetry(request_id, telemetry) when is_binary(request_id) do
+    case RequestCorrelation.record_telemetry(request_id, telemetry) do
+      {:ok, _} -> :ok
+      :ok -> :ok
+      {:error, _} -> :ok
+    end
+
+    case Cache.lookup(request_id) do
+      {:ok, scope} when is_map(scope) ->
+        Cache.put(request_id, Map.merge(scope, telemetry))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp evict_buffer(state, :usage) do
+    if map_size(state.pending_usage) > @call_buffer_max do
+      case :queue.out(state.pending_usage_q) do
+        {{:value, evicted}, q1} ->
+          %{
+            state
+            | pending_usage: Map.delete(state.pending_usage, evicted),
+              pending_usage_q: q1
+          }
+
+        _ ->
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp evict_buffer(state, :ctr) do
+    if map_size(state.call_to_request) > @call_buffer_max do
+      case :queue.out(state.call_to_request_q) do
+        {{:value, evicted}, q1} ->
+          %{
+            state
+            | call_to_request: Map.delete(state.call_to_request, evicted),
+              call_to_request_q: q1
+          }
+
+        _ ->
+          state
+      end
+    else
+      state
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Tool call
@@ -222,9 +469,8 @@ defmodule JidoClaw.Conversations.Recorder do
     arguments = field(data, :arguments)
 
     with {:ok, scope} <- resolve_scope(request_id) do
-      envelope = arguments |> TranscriptEnvelope.normalize() |> Transcript.redact()
-
-      content = "#{tool_name}(#{summarize_args(arguments)})"
+      envelope = ToolTranscript.envelope(arguments)
+      content = ToolTranscript.summarize_args(tool_name, arguments)
 
       attrs = %{
         session_id: scope.session_id,
@@ -253,7 +499,7 @@ defmodule JidoClaw.Conversations.Recorder do
     raw_result = field(data, :result)
 
     with {:ok, scope} <- resolve_scope(request_id) do
-      envelope = raw_result |> TranscriptEnvelope.normalize() |> Transcript.redact()
+      envelope = ToolTranscript.envelope(raw_result)
 
       parent =
         if is_binary(request_id) and is_binary(tool_call_id) do
@@ -265,7 +511,7 @@ defmodule JidoClaw.Conversations.Recorder do
           nil
         end
 
-      content = result_summary(tool_name, raw_result)
+      content = ToolTranscript.result_summary(tool_name, raw_result)
 
       attrs = %{
         session_id: scope.session_id,
@@ -338,21 +584,100 @@ defmodule JidoClaw.Conversations.Recorder do
     safe_handle(
       fn ->
         Cache.delete(request_id)
-
-        case RequestCorrelation.complete(request_id) do
-          :ok -> :ok
-          {:ok, _} -> :ok
-          # Already deleted (idempotent re-emission) — fine.
-          {:error, _} -> :ok
-        end
       end,
       "ai.request.terminal"
     )
 
     state
+    |> clear_resolved_buffers(request_id)
     |> reply_waiters(request_id)
     |> mark_completed(request_id)
   end
+
+  # Drop any `pending_usage` and `call_to_request` entries whose
+  # `call_id` resolved to this `request_id`. Avoids unbounded growth
+  # on orphaned LLM calls — the LRU cap is the floor; this is the
+  # principled cleanup.
+  defp clear_resolved_buffers(state, request_id) do
+    resolved_calls =
+      state.call_to_request
+      |> Enum.filter(fn {_call, rid} -> rid == request_id end)
+      |> Enum.map(fn {call, _} -> call end)
+
+    case resolved_calls do
+      [] ->
+        state
+
+      calls ->
+        ctr = Map.drop(state.call_to_request, calls)
+        pu = Map.drop(state.pending_usage, calls)
+        %{state | call_to_request: ctr, pending_usage: pu}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Telemetry merge into RequestCorrelation
+  # ---------------------------------------------------------------------------
+
+  defp record_telemetry(%{data: data}) do
+    request_id = metadata_request_id(data) || field(data, :request_id)
+    telemetry = extract_telemetry(data)
+
+    cond do
+      not is_binary(request_id) ->
+        :ok
+
+      telemetry == %{} ->
+        :ok
+
+      true ->
+        merge_telemetry(request_id, telemetry)
+    end
+  end
+
+  defp extract_telemetry(data) do
+    metadata = field(data, :metadata) || %{}
+    usage = field(data, :usage) || %{}
+    {result_usage, result_model} = telemetry_from_result(field(data, :result))
+
+    duration_ms = field(metadata, :duration_ms) || field(data, :duration_ms)
+
+    %{}
+    |> maybe_put(:run_id, field(metadata, :run_id) || field(data, :run_id))
+    |> maybe_put(
+      :model,
+      field(metadata, :model) || field(data, :model) || field(usage, :model) || result_model
+    )
+    |> maybe_put(
+      :input_tokens,
+      field(metadata, :input_tokens) ||
+        field(data, :input_tokens) ||
+        field(usage, :input_tokens) ||
+        field(result_usage, :input_tokens)
+    )
+    |> maybe_put(
+      :output_tokens,
+      field(metadata, :output_tokens) ||
+        field(data, :output_tokens) ||
+        field(usage, :output_tokens) ||
+        field(result_usage, :output_tokens)
+    )
+    |> maybe_put(
+      :latency_ms,
+      field(metadata, :latency_ms) || field(data, :latency_ms) || duration_ms
+    )
+  end
+
+  defp telemetry_from_result({:ok, payload, _effects}) when is_map(payload),
+    do: {field(payload, :usage) || %{}, field(payload, :model)}
+
+  defp telemetry_from_result({:ok, payload}) when is_map(payload),
+    do: {field(payload, :usage) || %{}, field(payload, :model)}
+
+  defp telemetry_from_result(_), do: {%{}, nil}
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp reply_waiters(state, request_id) do
     {pending, waiters} = Map.pop(state.waiters, request_id, [])
@@ -485,24 +810,4 @@ defmodule JidoClaw.Conversations.Recorder do
   end
 
   defp field(_, _), do: nil
-
-  defp summarize_args(args) when is_map(args) do
-    args
-    |> Enum.take(3)
-    |> Enum.map_join(", ", fn {k, v} -> "#{k}: #{summarize_value(v)}" end)
-  end
-
-  defp summarize_args(_), do: ""
-
-  defp summarize_value(v) when is_binary(v), do: ~s("#{String.slice(v, 0, 40)}")
-  defp summarize_value(v), do: inspect(v, limit: 5)
-
-  defp result_summary(name, {:ok, _, _}), do: "#{name} → ok"
-  defp result_summary(name, {:ok, _}), do: "#{name} → ok"
-
-  defp result_summary(name, {:error, reason, _}),
-    do: "#{name} → error: #{inspect(reason, limit: 3)}"
-
-  defp result_summary(name, {:error, reason}), do: "#{name} → error: #{inspect(reason, limit: 3)}"
-  defp result_summary(name, _), do: "#{name} → unknown"
 end

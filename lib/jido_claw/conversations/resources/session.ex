@@ -215,7 +215,7 @@ defmodule JidoClaw.Conversations.Session do
     end
 
     attribute :next_sequence, :integer do
-      allow_nil?(true)
+      allow_nil?(false)
       public?(true)
       default(1)
     end

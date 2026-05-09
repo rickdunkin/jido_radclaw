@@ -39,49 +39,41 @@ defmodule JidoClaw.CLI.Setup do
     # Step 1: Pick provider
     {provider_key, provider_name} = pick_provider()
 
-    # Step 2: API key
+    # Step 2: API key (LLM provider)
     api_key_env = configure_api_key(provider_key, provider_name)
 
-    # Step 3: Pick model
+    # Step 3: Voyage credential — required regardless of LLM provider.
+    # The boot guard enforces this on subsequent app starts. Capturing
+    # it here writes the value to `.env` so re-invocations boot
+    # cleanly. Exits with non-zero status when the user declines and
+    # no key is already set.
+    prompt_voyage_key(project_dir)
+
+    # Step 4: Pick model
     model = pick_model(provider_key)
 
-    # Step 4: Workspace policies (embedding + consolidation). These
-    # land in config.yaml; the REPL applies them to the workspace row
-    # in `ensure_persisted_session/3` after the Workspace is registered.
-    embedding_policy = pick_embedding_policy()
+    # Step 5: Workspace policies. The embedding policy is derived
+    # from the (now guaranteed) Voyage key — always `:default`. The
+    # consolidation policy keeps its explicit Y/N prompt.
     consolidation_policy = pick_consolidation_policy()
 
-    # Step 5: Build config
+    # Step 6: Build config
     config_map =
       build_config(provider_key, model, api_key_env)
-      |> Map.put("embedding_policy", Atom.to_string(embedding_policy))
+      |> Map.put("embedding_policy", "default")
       |> Map.put("consolidation_policy", Atom.to_string(consolidation_policy))
 
-    # Step 6: Test connection
+    # Step 7: Test connection
     loaded = Config.deep_merge(Config.load(project_dir), config_map)
     test_connection(loaded, provider_name)
 
-    # Step 7: Save
+    # Step 8: Save
     write_config(project_dir, config_map)
 
     IO.puts("\n  \e[32m✓\e[0m  Configuration saved to #{config_path(project_dir)}")
     IO.puts("  \e[2m   Run /setup anytime to reconfigure.\e[0m\n")
 
     Config.load(project_dir)
-  end
-
-  defp pick_embedding_policy do
-    IO.puts("")
-    IO.puts("  \e[1mEnable Voyage embeddings for this workspace? \e[0m")
-    IO.puts("  \e[2m   [Y]es (default Voyage)  [n]o (disabled)  [l]ocal-only (Ollama)\e[0m")
-    IO.puts("")
-
-    case prompt_input("  Embedding policy [Y/n/l]") do
-      v when v in ["", "y", "Y", "yes"] -> :default
-      v when v in ["n", "N", "no"] -> :disabled
-      v when v in ["l", "L", "local", "local_only"] -> :local_only
-      _ -> :default
-    end
   end
 
   defp pick_consolidation_policy do
@@ -91,14 +83,50 @@ defmodule JidoClaw.CLI.Setup do
       "  \e[1mAllow JidoClaw to send transcripts/memory facts to a frontier consolidator? \e[0m"
     )
 
-    IO.puts("  \e[2m   [y]es (Voyage/Anthropic)  [N]o (default disabled)  [l]ocal-only\e[0m")
+    IO.puts("  \e[2m   [y]es  [N]o (default disabled)\e[0m")
     IO.puts("")
 
-    case prompt_input("  Consolidation policy [y/N/l]") do
+    case prompt_input("  Consolidation policy [y/N]") do
       v when v in ["", "n", "N", "no"] -> :disabled
       v when v in ["y", "Y", "yes"] -> :default
-      v when v in ["l", "L", "local", "local_only"] -> :local_only
       _ -> :disabled
+    end
+  end
+
+  # Capture the Voyage credential. Strict contract: if neither shell
+  # env nor user input supplies the key, exit non-zero. The boot guard
+  # in `JidoClaw.Embeddings.BootGuard` enforces presence on subsequent
+  # app starts.
+  defp prompt_voyage_key(project_dir) do
+    case System.get_env("VOYAGE_API_KEY") do
+      v when is_binary(v) and v != "" ->
+        IO.puts("  \e[32m✓\e[0m  Found VOYAGE_API_KEY in environment\n")
+        :ok
+
+      _ ->
+        IO.puts("")
+        IO.puts("  \e[1mVoyage API Key required\e[0m")
+        IO.puts("  \e[2mEmbedding/retrieval and memory require Voyage.\e[0m")
+        IO.puts("  \e[2m  Set VOYAGE_API_KEY in shell env or paste below.\e[0m")
+        IO.puts("")
+
+        case prompt_input("  Paste your Voyage API key (or press Enter to abort)") do
+          "" ->
+            IO.puts(
+              "  \e[31m✗\e[0m  VOYAGE_API_KEY is required. Either provide it now or " <>
+                "set it in shell env / .env and re-run `mix jidoclaw --setup`. " <>
+                "To run jido_claw without embeddings, set " <>
+                "`config :jido_claw, :embeddings_strict_boot, false` in your config."
+            )
+
+            System.halt(1)
+
+          key ->
+            persist_env_var(project_dir, "VOYAGE_API_KEY", key)
+            System.put_env("VOYAGE_API_KEY", key)
+            IO.puts("  \e[32m✓\e[0m  VOYAGE_API_KEY persisted to .env and current session\n")
+            :ok
+        end
     end
   end
 
@@ -262,6 +290,71 @@ defmodule JidoClaw.CLI.Setup do
 
     yaml = map_to_yaml(config_map)
     File.write!(path, yaml)
+  end
+
+  @doc """
+  Persist `KEY=value` to `<project_dir>/.env`. Updates an existing
+  line in place (preserving order, comments, and blank lines) or
+  appends a new one. Atomic: writes via `<.env>.tmp` + rename.
+  """
+  def persist_env_var(project_dir, key, value)
+      when is_binary(project_dir) and is_binary(key) and is_binary(value) do
+    env_path = Path.join(project_dir, ".env")
+
+    existing =
+      case File.read(env_path) do
+        {:ok, content} -> content
+        _ -> ""
+      end
+
+    new_content = upsert_env_line(existing, key, value)
+
+    tmp = env_path <> ".tmp"
+    File.write!(tmp, new_content)
+    File.rename!(tmp, env_path)
+    :ok
+  end
+
+  defp upsert_env_line(content, key, value) do
+    lines = String.split(content, "\n")
+    prefix = key <> "="
+    serialized = key <> "=" <> serialize_env_value(value)
+
+    {updated, found?} =
+      Enum.map_reduce(lines, false, fn line, found ->
+        if not found and matches_key?(line, prefix) do
+          {serialized, true}
+        else
+          {line, found}
+        end
+      end)
+
+    cond do
+      found? ->
+        Enum.join(updated, "\n")
+
+      content == "" ->
+        serialized <> "\n"
+
+      String.ends_with?(content, "\n") ->
+        content <> serialized <> "\n"
+
+      true ->
+        content <> "\n" <> serialized <> "\n"
+    end
+  end
+
+  defp matches_key?(line, prefix) do
+    trimmed = String.trim_leading(line)
+    String.starts_with?(trimmed, prefix) and not String.starts_with?(trimmed, "#")
+  end
+
+  defp serialize_env_value(value) do
+    if Regex.match?(~r/[\s"'#]/, value) do
+      "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    else
+      value
+    end
   end
 
   defp config_path(project_dir) do

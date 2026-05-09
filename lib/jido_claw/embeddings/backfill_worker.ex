@@ -3,8 +3,8 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   GenServer that scans the `solutions` and `memory_facts` tables for
   rows in `embedding_status: :pending` (or expired `:processing`),
   claims them atomically via `FOR UPDATE SKIP LOCKED`, and dispatches
-  each to Voyage (`:default`), Ollama (`:local_only`), or no-op
-  (`:disabled`) per the workspace's `embedding_policy`.
+  each to Voyage (`:default`) or no-op (`:disabled`) per the
+  workspace's `embedding_policy`.
 
   Two trigger paths:
 
@@ -33,11 +33,11 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   ## Test seam
 
-  Override `:voyage_module`, `:local_module`, `:rate_pacer`, or
-  `:policy_resolver` via `Application.put_env/3` for the application
-  before spawning the GenServer. Defaults resolve to the real
-  modules. We don't take per-call opts because `dispatch_one/1` runs
-  inside a `Task.async_stream` started from the GenServer state.
+  Override `:voyage_module`, `:rate_pacer`, or `:policy_resolver` via
+  `Application.put_env/3` for the application before spawning the
+  GenServer. Defaults resolve to the real modules. We don't take
+  per-call opts because `dispatch_one/1` runs inside a
+  `Task.async_stream` started from the GenServer state.
   """
 
   use GenServer
@@ -194,7 +194,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
         FOR UPDATE SKIP LOCKED
      )
      RETURNING id, tenant_id, workspace_id, #{content_col} AS content,
-               embedding_attempt_count, embedding_model
+               embedding_attempt_count
     """
 
     params = [
@@ -230,7 +230,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
              OR (embedding_status = 'processing' AND embedding_next_attempt_at <= now())
            )
      RETURNING id, tenant_id, workspace_id, #{content_col} AS content,
-               embedding_attempt_count, embedding_model
+               embedding_attempt_count
     """
 
     case Repo.query(sql, [Ecto.UUID.dump!(id), Integer.to_string(state.lease_seconds)]) do
@@ -278,9 +278,6 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
       :disabled ->
         transition_to_disabled(kind, id)
 
-      :local_only ->
-        embed_via_local(kind, id, content)
-
       :default ->
         embed_via_voyage(kind, id, content)
     end
@@ -311,7 +308,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     with :ok <- rate_pacer.acquire(:voyage, 1),
          :ok <- rate_pacer.try_admit("voyage", 1),
          {:ok, vector} <- voyage_mod.embed_for_storage(content, stored_model) do
-      on_success(kind, id, vector, stored_model)
+      on_success(kind, id, vector)
     else
       {:error, :timeout} -> on_failure(kind, id, :rate_limited_local)
       {:error, :budget_exhausted} -> on_failure(kind, id, :rate_limited_cluster)
@@ -319,34 +316,20 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     end
   end
 
-  defp embed_via_local(kind, id, content) do
-    local_mod = Application.get_env(:jido_claw, :local_module, JidoClaw.Embeddings.Local)
-
-    model =
-      Application.get_env(:jido_claw, JidoClaw.Embeddings.Local, [])[:model] ||
-        "mxbai-embed-large"
-
-    case local_mod.embed_for_storage(content) do
-      {:ok, vector} -> on_success(kind, id, vector, model)
-      {:error, reason} -> on_failure(kind, id, reason)
-    end
-  end
-
-  defp on_success(kind, id, vector, model) do
+  defp on_success(kind, id, vector) do
     {^kind, table, _} = lookup_resource!(kind)
 
     Repo.query!(
       """
       UPDATE #{table}
          SET embedding = $2::vector,
-             embedding_model = $3,
              embedding_status = 'ready',
              embedding_attempt_count = 0,
              embedding_next_attempt_at = NULL,
              embedding_last_error = NULL
        WHERE id = $1
       """,
-      [id, vector, model]
+      [id, vector]
     )
 
     :ok

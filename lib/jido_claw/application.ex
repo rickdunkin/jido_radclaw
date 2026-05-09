@@ -12,6 +12,11 @@ defmodule JidoClaw.Application do
     # Load .env file if present (project root or cwd)
     load_dotenv()
 
+    # Boot guard: refuse to start when the only embedding provider's
+    # credential is missing. Bypassed when the `--setup` arm has set
+    # `:first_run_setup_pending` so the wizard can capture the key.
+    JidoClaw.Embeddings.BootGuard.assert_voyage_key_or_raise!()
+
     # Record boot time for uptime tracking
     Application.put_env(:jido_claw, :started_at, System.monotonic_time(:second))
 
@@ -288,22 +293,31 @@ defmodule JidoClaw.Application do
   end
 
   # -- .env file loading --
-  defp load_dotenv do
-    # Check cwd first, then project dir
-    paths = [
-      Path.join(File.cwd!(), ".env"),
-      Path.join([File.cwd!(), ".jido", ".env"])
-    ]
+  @doc false
+  def load_dotenv do
+    project_dir = Application.get_env(:jido_claw, :project_dir) || File.cwd!()
+    cwd = File.cwd!()
 
-    Enum.find_value(paths, fn path ->
+    # Order: most-specific → least-specific. Each parser uses unset-only
+    # writes (parse_dotenv only writes when System.get_env returns nil),
+    # so earlier paths take precedence over later ones.
+    paths =
+      [
+        Path.join([project_dir, ".jido", ".env"]),
+        Path.join(project_dir, ".env"),
+        Path.join([cwd, ".jido", ".env"]),
+        Path.join(cwd, ".env")
+      ]
+      |> Enum.uniq()
+
+    Enum.each(paths, fn path ->
       case File.read(path) do
         {:ok, content} ->
           parse_dotenv(content)
           Logger.debug("[JidoClaw] Loaded env from #{path}")
-          true
 
         _ ->
-          nil
+          :ok
       end
     end)
   end

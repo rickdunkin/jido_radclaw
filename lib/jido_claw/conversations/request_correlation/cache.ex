@@ -25,7 +25,14 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
         session_id: <uuid>,
         tenant_id: <string>,
         workspace_id: <uuid> | nil,
-        user_id: <uuid> | nil
+        user_id: <uuid> | nil,
+        # Optional telemetry merged in by the Recorder when
+        # `ai.llm.response` / `ai.request.completed` lands.
+        run_id: <string> | nil,
+        model: <string> | nil,
+        input_tokens: <integer> | nil,
+        output_tokens: <integer> | nil,
+        latency_ms: <integer> | nil
       }})
   """
 

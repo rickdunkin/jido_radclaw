@@ -15,19 +15,27 @@ defmodule JidoClaw.Tools.NetworkStatus do
     ],
     schema: []
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
-  def run(_params, _context) do
-    status = JidoClaw.Network.Node.status()
+  def run(params, context) do
+    MCPScope.wrap(:network_status, params, context, fn _enriched ->
+      status = JidoClaw.Network.Node.status()
 
-    formatted =
-      """
-      Network Status: #{status.status}
-      Agent ID: #{status.agent_id || "none"}
-      Peers: #{status.peer_count}
-      """
-      |> String.trim()
+      formatted =
+        """
+        Network Status: #{status.status}
+        Agent ID: #{status.agent_id || "none"}
+        Peers: #{status.peer_count}
+        """
+        |> String.trim()
 
-    {:ok,
-     %{status: formatted, connected: status.status == :connected, peer_count: status.peer_count}}
+      {:ok,
+       %{
+         status: formatted,
+         connected: status.status == :connected,
+         peer_count: status.peer_count
+       }}
+    end)
   end
 end

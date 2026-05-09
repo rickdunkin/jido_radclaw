@@ -52,7 +52,7 @@ defmodule JidoClaw.Memory.Consolidator do
       related stays app-env only.
   """
   @spec run_now(map() | keyword() | Scope.scope_record(), keyword()) ::
-          {:ok, map()} | {:error, String.t() | term()}
+          {:ok, map()} | {:error, :scope_busy | String.t() | term()}
   def run_now(scope_or_opts, opts \\ []) do
     with {:ok, scope} <- normalize_scope(scope_or_opts),
          {:ok, pid} <- start_run_server(scope) do

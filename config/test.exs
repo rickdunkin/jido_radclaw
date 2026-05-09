@@ -2,6 +2,10 @@ import Config
 
 config :jido_claw, mode: :cli
 config :jido_claw, :reasoning_telemetry_sync, true
+# Tests don't have VOYAGE_API_KEY set; the per-call defense in
+# `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`
+# at the call site, which is what test fixtures rely on.
+config :jido_claw, :embeddings_strict_boot, false
 # Streaming output cap override: 100 KB for tests so cap-overflow tests
 # don't have to generate megabytes of data. Production default is 10 MB.
 # Honored only on the streaming branch — non-streaming stays at 50 KB.

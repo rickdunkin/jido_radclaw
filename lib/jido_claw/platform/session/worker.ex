@@ -140,13 +140,19 @@ defmodule JidoClaw.Session.Worker do
   end
 
   def handle_call({:add_message, role, content, request_id}, _from, state) do
-    case Message.append(%{
-           session_id: state.session_uuid,
-           role: role,
-           content: content,
-           request_id: request_id,
-           metadata: %{}
-         }) do
+    telemetry = lookup_telemetry(request_id)
+
+    attrs =
+      %{
+        session_id: state.session_uuid,
+        role: role,
+        content: content,
+        request_id: request_id,
+        metadata: %{}
+      }
+      |> Map.merge(telemetry)
+
+    case Message.append(attrs) do
       {:ok, message} ->
         new_state = %{
           state
@@ -273,4 +279,54 @@ defmodule JidoClaw.Session.Worker do
   end
 
   defp to_view(_), do: []
+
+  # Pull telemetry merged into the RequestCorrelation row by the
+  # Recorder. Cache hits cover the in-flight path; the durable lookup
+  # fallback covers the post-finalize path where the cache has been
+  # cleared on `ai.request.completed`.
+  defp lookup_telemetry(nil), do: %{}
+
+  defp lookup_telemetry(request_id) when is_binary(request_id) do
+    cache_lookup =
+      try do
+        JidoClaw.Conversations.RequestCorrelation.Cache.lookup(request_id)
+      rescue
+        _ -> :error
+      end
+
+    case cache_lookup do
+      {:ok, scope} when is_map(scope) ->
+        if has_telemetry?(scope), do: telemetry_subset(scope), else: durable_lookup(request_id)
+
+      _ ->
+        durable_lookup(request_id)
+    end
+  end
+
+  defp lookup_telemetry(_), do: %{}
+
+  defp durable_lookup(request_id) do
+    case JidoClaw.Conversations.RequestCorrelation.lookup(request_id) do
+      {:ok, row} -> telemetry_subset(row)
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp has_telemetry?(map) do
+    Enum.any?([:run_id, :model, :input_tokens, :output_tokens, :latency_ms], fn k ->
+      not is_nil(Map.get(map, k))
+    end)
+  end
+
+  defp telemetry_subset(source) do
+    [:run_id, :model, :input_tokens, :output_tokens, :latency_ms]
+    |> Enum.reduce(%{}, fn k, acc ->
+      case Map.get(source, k) do
+        nil -> acc
+        v -> Map.put(acc, k, v)
+      end
+    end)
+  end
 end

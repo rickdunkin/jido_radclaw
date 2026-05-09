@@ -26,6 +26,18 @@ defmodule Mix.Tasks.Jidoclaw do
     Process.sleep(:infinity)
   end
 
+  def run(["--setup" | args]) do
+    project_dir = JidoClaw.Startup.resolve_project_dir_from_argv(args)
+    Application.put_env(:jido_claw, :project_dir, project_dir)
+    # Bypass the boot guard so the wizard can capture VOYAGE_API_KEY.
+    Application.put_env(:jido_claw, :first_run_setup_pending, true)
+
+    Mix.Task.run("app.start")
+
+    JidoClaw.CLI.Setup.run(project_dir)
+    IO.puts("Setup complete — restart with `mix jidoclaw`.")
+  end
+
   def run(args) do
     project_dir = JidoClaw.Startup.resolve_project_dir_from_argv(args)
     Application.put_env(:jido_claw, :project_dir, project_dir)

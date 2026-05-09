@@ -10,12 +10,11 @@ defmodule JidoClaw.Workspaces.Workspace do
 
   ## Policy attributes
 
-  `embedding_policy` and `consolidation_policy` carry per-workspace toggles
-  for v0.6's later Memory phase. Phase 0 ships them with a `:disabled`
-  default and dedicated `:set_embedding_policy` / `:set_consolidation_policy`
-  update actions; the resolver writes the defaults on initial create and the
-  upsert path is restricted (via `upsert_fields([:updated_at])`) so user-
-  tuned values are preserved across repeat resolver calls.
+  `embedding_policy` and `consolidation_policy` carry per-workspace toggles.
+  Both accept `:default | :disabled`. The resolver writes the defaults on
+  initial create and the upsert path is restricted (via
+  `upsert_fields([:updated_at])`) so user-tuned values are preserved across
+  repeat resolver calls.
   """
 
   use Ash.Resource,
@@ -88,7 +87,7 @@ defmodule JidoClaw.Workspaces.Workspace do
 
       argument(:embedding_policy, :atom,
         allow_nil?: false,
-        constraints: [one_of: [:default, :local_only, :disabled]]
+        constraints: [one_of: [:default, :disabled]]
       )
 
       change(set_attribute(:embedding_policy, arg(:embedding_policy)))
@@ -99,7 +98,7 @@ defmodule JidoClaw.Workspaces.Workspace do
 
       argument(:consolidation_policy, :atom,
         allow_nil?: false,
-        constraints: [one_of: [:default, :local_only, :disabled]]
+        constraints: [one_of: [:default, :disabled]]
       )
 
       change(set_attribute(:consolidation_policy, arg(:consolidation_policy)))
@@ -158,14 +157,14 @@ defmodule JidoClaw.Workspaces.Workspace do
       allow_nil?(false)
       public?(true)
       default(:disabled)
-      constraints(one_of: [:default, :local_only, :disabled])
+      constraints(one_of: [:default, :disabled])
     end
 
     attribute :consolidation_policy, :atom do
       allow_nil?(false)
       public?(true)
       default(:disabled)
-      constraints(one_of: [:default, :local_only, :disabled])
+      constraints(one_of: [:default, :disabled])
     end
 
     attribute :metadata, :map do

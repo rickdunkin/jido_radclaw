@@ -33,9 +33,16 @@ defmodule JidoClaw.Tools.ListDirectory do
     ]
 
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.Tools.MCPScope
 
   @impl true
   def run(params, context) do
+    MCPScope.wrap(:list_directory, params, context, fn enriched ->
+      do_list(params, enriched)
+    end)
+  end
+
+  defp do_list(params, context) do
     path = Map.get(params, :path, ".")
     max_results = Map.get(params, :max_results, 200)
     workspace_id = get_in(context, [:tool_context, :workspace_id])

@@ -5,9 +5,10 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     * `fts_pool` — Postgres FTS via `websearch_to_tsquery` against
       `search_vector`.
     * `ann_pool` — pgvector cosine similarity (`<=>` operator) against
-      `embedding`, scoped by `embedding_model = $11` so the planner
-      picks the partial HNSW index.
-    * `lexical_pool` — `similarity(lexical_text, $12)` plus a
+      `embedding`, predicated on `embedding IS NOT NULL AND
+      embedding_status = 'ready'` so the planner picks the partial
+      HNSW index.
+    * `lexical_pool` — `similarity(lexical_text, $11)` plus a
       LIKE-escaped substring fallback, GIN-indexed via `gin_trgm_ops`.
 
   Each pool emits ranked candidates; the outer `SELECT` UNIONs them
@@ -40,8 +41,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
   | `$8`  | workspace_id (uuid) |
   | `$9`  | tenant_id (text) |
   | `$10` | LIKE-escaped lower-cased query (drives `LIKE` filter only) |
-  | `$11` | embedding model name — selects the partial HNSW index |
-  | `$12` | raw lower-cased query (drives `similarity(...)`) |
+  | `$11` | raw lower-cased query (drives `similarity(...)`) |
 
   Soft-delete predicate `AND deleted_at IS NULL` is repeated in every
   CTE — the resource has no `base_filter`, so each CTE must spell it
@@ -72,7 +72,6 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     # a separate dimension.
     embedding = Map.get(args, :query_embedding)
 
-    embedding_model = Map.get(args, :embedding_model, "voyage-4-large")
     language = Map.get(args, :language)
     framework = Map.get(args, :framework)
 
@@ -96,7 +95,6 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
       Ecto.UUID.dump!(workspace_id),
       tenant_id,
       like_pattern,
-      embedding_model,
       raw_lower
     ]
 
@@ -141,7 +139,6 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
          AND s.deleted_at IS NULL
          AND $4::vector IS NOT NULL
          AND s.embedding IS NOT NULL
-         AND s.embedding_model = $11
          AND s.embedding_status = 'ready'
          AND ($2::text IS NULL OR s.language = $2::text)
          AND ($3::text IS NULL OR s.framework = $3::text)
@@ -156,21 +153,21 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
       SELECT s.id,
              0.0::float AS fts_score,
              0.0::float AS ann_score,
-             similarity(s.lexical_text, $12)::float AS lex_score
+             similarity(s.lexical_text, $11)::float AS lex_score
         FROM solutions s
        WHERE s.tenant_id = $9
          AND s.deleted_at IS NULL
          AND ($2::text IS NULL OR s.language = $2::text)
          AND ($3::text IS NULL OR s.framework = $3::text)
          AND (
-           s.lexical_text % $12
+           s.lexical_text % $11
            OR s.lexical_text LIKE '%' || $10 || '%' ESCAPE '\\'
          )
          AND (
            (s.workspace_id = $8 AND s.sharing::text = ANY($5))
            OR (s.workspace_id <> $8 AND s.sharing::text = ANY($6))
          )
-       ORDER BY similarity(s.lexical_text, $12) DESC
+       ORDER BY similarity(s.lexical_text, $11) DESC
        LIMIT $7 * 4
     ),
     pooled AS (

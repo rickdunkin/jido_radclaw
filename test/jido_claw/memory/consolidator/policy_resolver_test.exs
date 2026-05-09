@@ -55,20 +55,5 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolverTest do
 
       assert {:skip, "consolidation_disabled"} = PolicyResolver.gate(scope)
     end
-
-    test ":local_only policy → consolidation_local_runner_unavailable" do
-      {:ok, ws} = ensure_workspace("local", :local_only)
-
-      scope = %{
-        tenant_id: "default",
-        scope_kind: :workspace,
-        workspace_id: ws.id,
-        user_id: nil,
-        project_id: nil,
-        session_id: nil
-      }
-
-      assert {:skip, "consolidation_local_runner_unavailable"} = PolicyResolver.gate(scope)
-    end
   end
 end

@@ -16,8 +16,6 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolver do
   Effective policy → run decision:
     * `:default`       → `:ok` (run with the configured remote
       harness)
-    * `:local_only`    → `{:skip, "consolidation_local_runner_unavailable"}`
-      (3c will route this to a local runner; today it skips)
     * `:disabled`      → `{:skip, "consolidation_disabled"}`
   """
 
@@ -62,7 +60,6 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolver do
   def gate(_), do: {:skip, "consolidation_disabled"}
 
   defp decide(:default), do: :ok
-  defp decide(:local_only), do: {:skip, "consolidation_local_runner_unavailable"}
   defp decide(:disabled), do: {:skip, "consolidation_disabled"}
   defp decide(_), do: {:skip, "consolidation_disabled"}
 end

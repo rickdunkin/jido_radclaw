@@ -105,7 +105,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       {:ok, stub_voyage: stub_voyage}
     end
 
-    test "explicit embedding_model voyage-4-large produces ANN hits even when FTS+lex miss",
+    test "ANN hits even when FTS+lex miss",
          %{tool_context: tc, stub_voyage: stub} do
       embedding = stub.fixed_embedding()
 
@@ -122,8 +122,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # the workspace policy is :disabled, which is the case here).
       Ash.Changeset.for_update(seeded, :transition_embedding_status, %{
         embedding: embedding,
-        embedding_status: :ready,
-        embedding_model: "voyage-4-large"
+        embedding_status: :ready
       })
       |> Ash.update!()
 
@@ -134,24 +133,11 @@ defmodule JidoClaw.Memory.RetrievalTest do
           "completely-orthogonal-tokens-zzz",
           tool_context: tc,
           limit: 5,
-          embedding_model: "voyage-4-large",
           query_embedding: embedding,
           voyage_module: stub
         )
 
       assert Enum.any?(results, fn r -> r.key == "stripe_for_billing" end)
-
-      # Repeat with the default model (no explicit embedding_model).
-      results_default =
-        Memory.recall(
-          "completely-orthogonal-tokens-zzz",
-          tool_context: tc,
-          limit: 5,
-          query_embedding: embedding,
-          voyage_module: stub
-        )
-
-      assert Enum.any?(results_default, fn r -> r.key == "stripe_for_billing" end)
     end
   end
 
@@ -313,7 +299,6 @@ defmodule JidoClaw.Memory.RetrievalTest do
           scope_chain: [{:session, session_id}, {:workspace, ws.id}],
           query: "diagnostic",
           query_embedding: nil,
-          embedding_model: "voyage-4-large",
           limit: 3,
           dedup: :by_precedence,
           bitemporal: :current_truth
@@ -523,6 +508,299 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       refute Enum.any?(results_outside, fn r -> r.content == "v1" end)
+    end
+  end
+
+  describe "shadowed_by metadata projection" do
+    alias JidoClaw.Memory.Retrieval
+
+    test "lists losing same-label same-scope siblings on the kept row's metadata", %{
+      tool_context: tc
+    } do
+      # Seed three rows at (workspace, "preference") with different
+      # sources. Park the losers' invalid_at one hour in the future so
+      # the active-label partial unique identity has room and the
+      # rows still show up under :current_truth.
+      now = DateTime.utc_now()
+      future = DateTime.add(now, 3600, :second)
+
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "consolidator-content", type: "fact"},
+          tc
+        )
+
+      [%{id: cons_id}] = Ash.read!(Fact)
+
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET source = 'consolidator_promoted', invalid_at = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(cons_id), future]
+      )
+
+      :ok =
+        JidoClaw.Memory.remember_from_model(
+          %{key: "preference", content: "model-content", type: "fact"},
+          tc
+        )
+
+      [%{id: model_id}] =
+        Ash.read!(Fact)
+        |> Enum.filter(fn f -> f.id != cons_id and f.source == :model_remember end)
+
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(model_id), future]
+      )
+
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "user-save-content", type: "fact"},
+          tc
+        )
+
+      [user_save] =
+        Ash.read!(Fact)
+        |> Enum.filter(fn f -> f.id not in [cons_id, model_id] and f.source == :user_save end)
+
+      results =
+        Retrieval.search(tool_context: tc, query: "content", limit: 5, dedup: :by_precedence)
+
+      preference_rows = Enum.filter(results, &(&1.label == "preference"))
+      assert length(preference_rows) == 1
+      [winner] = preference_rows
+      assert winner.id == user_save.id
+
+      shadows = Ash.Resource.get_metadata(winner, :shadowed_by) || []
+      shadow_ids = Enum.map(shadows, & &1.id) |> MapSet.new()
+      assert MapSet.equal?(shadow_ids, MapSet.new([cons_id, model_id]))
+
+      sources = Enum.map(shadows, & &1.source) |> MapSet.new()
+      assert MapSet.equal?(sources, MapSet.new([:consolidator_promoted, :model_remember]))
+
+      Enum.each(shadows, fn s -> assert s.scope_kind == :workspace end)
+
+      # dedup: :none surfaces all three with no shadow metadata.
+      none_results =
+        Retrieval.search(tool_context: tc, query: "content", limit: 5, dedup: :none)
+
+      none_pref = Enum.filter(none_results, &(&1.label == "preference"))
+      assert length(none_pref) == 3
+
+      Enum.each(none_pref, fn fact ->
+        assert is_nil(Ash.Resource.get_metadata(fact, :shadowed_by))
+      end)
+    end
+
+    test "bitemporally-excluded rows are not surfaced as shadows under :current_truth", %{
+      tool_context: tc
+    } do
+      now = DateTime.utc_now()
+      past = DateTime.add(now, -3600, :second)
+      future = DateTime.add(now, 3600, :second)
+
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "loser-content", type: "fact"},
+          tc
+        )
+
+      [%{id: loser_id}] = Ash.read!(Fact)
+
+      # Make the loser invisible to :current_truth via expired_at in
+      # the past, but keep its invalid_at NULL would re-block the
+      # partial unique on the next insert — so park invalid_at in the
+      # future and stamp expired_at: past so bt_predicate filters it
+      # out cleanly.
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = $2, expired_at = $3, source = 'model_remember' WHERE id = $1",
+        [Ecto.UUID.dump!(loser_id), future, past]
+      )
+
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "winner-content", type: "fact"},
+          tc
+        )
+
+      [winner_fact] =
+        Ash.read!(Fact)
+        |> Enum.filter(&(&1.id != loser_id))
+
+      results = Retrieval.search(tool_context: tc, query: "content", limit: 5)
+      preference = Enum.filter(results, &(&1.label == "preference"))
+
+      assert length(preference) == 1
+      [kept] = preference
+      assert kept.id == winner_fact.id
+
+      # `:by_precedence` ALWAYS attaches the `:shadowed_by` metadata
+      # — even when the list is empty — so callers can distinguish
+      # "dedup ran, no shadows" (`[]`) from "dedup did not run"
+      # (`nil`, the `:none` mode case).
+      assert Ash.Resource.get_metadata(kept, :shadowed_by) == []
+
+      # With {:system_at, past} the loser is bitemporally visible but
+      # not yet superseded — it should win the precedence and have no
+      # shadows (the winner row didn't exist yet at past_t).
+      results_past =
+        Retrieval.search(
+          tool_context: tc,
+          query: "content",
+          limit: 5,
+          bitemporal: {:system_at, past}
+        )
+
+      preference_past = Enum.filter(results_past, &(&1.label == "preference"))
+      # The loser was inserted before `past` is computed, so it might
+      # or might not be visible depending on ordering; allow either 0
+      # or 1 row but never the winner.
+      Enum.each(preference_past, fn f -> refute f.id == winner_fact.id end)
+    end
+
+    test "rows that don't match the query are not in the candidate set", %{
+      tool_context: tc
+    } do
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+
+      # Deliberately orthogonal content tokens so the lex pool's
+      # trigram similarity stays under the default 0.3 threshold for
+      # the non-matching row.
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "qqqqqaaaa", type: "fact"},
+          tc
+        )
+
+      [%{id: first_id}] = Ash.read!(Fact)
+
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(first_id), future]
+      )
+
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "zzzzzbbbb", type: "fact"},
+          tc
+        )
+
+      [%{id: other_id}] =
+        Ash.read!(Fact) |> Enum.filter(&(&1.id != first_id))
+
+      results = Retrieval.search(tool_context: tc, query: "qqqqqaaaa", limit: 5)
+      preference = Enum.filter(results, &(&1.label == "preference"))
+
+      # The "zzzzzbbbb" row is at the same scope/label and would win
+      # precedence in a broad scope-only read (no invalid_at). It does
+      # NOT match any pool predicate for the query "qqqqqaaaa": no
+      # FTS hit, no embedding, and trigram similarity below threshold.
+      # Under SQL-derived candidates it never enters the candidate set.
+      assert length(preference) == 1
+      [kept] = preference
+      assert kept.id == first_id
+
+      shadows = Ash.Resource.get_metadata(kept, :shadowed_by) || []
+      shadow_ids = Enum.map(shadows, & &1.id)
+      refute other_id in shadow_ids
+    end
+
+    test "ANN-precedence: precedence winner beats semantic-distance winner; loser surfaces in shadowed_by",
+         %{tool_context: tc} do
+      stub_voyage = Module.concat([__MODULE__, AnnShadowVoyage])
+
+      unless Code.ensure_loaded?(stub_voyage) do
+        Code.compile_quoted(
+          quote do
+            defmodule unquote(stub_voyage) do
+              def embed_for_query(_q, _model), do: {:ok, query_vec()}
+              def query_vec, do: List.duplicate(0.001, 1024)
+            end
+          end
+        )
+      end
+
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+
+      # 1) :user_save row, semantically far from the query.
+      :ok =
+        JidoClaw.Memory.remember_from_user(
+          %{key: "preference", content: "user-save-far-content", type: "fact"},
+          tc
+        )
+
+      [%{id: user_id}] = Ash.read!(Fact)
+
+      far_vec = List.duplicate(0.999, 1024)
+
+      JidoClaw.Memory.Fact
+      |> Ash.get!(user_id)
+      |> Ash.Changeset.for_update(:transition_embedding_status, %{
+        embedding: far_vec,
+        embedding_status: :ready
+      })
+      |> Ash.update!()
+
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(user_id), future]
+      )
+
+      # 2) :model_remember row, semantically close to the query.
+      :ok =
+        JidoClaw.Memory.remember_from_model(
+          %{key: "preference", content: "model-close-content", type: "fact"},
+          tc
+        )
+
+      [%{id: model_id}] =
+        Ash.read!(Fact) |> Enum.filter(&(&1.id != user_id))
+
+      close_vec = stub_voyage.query_vec()
+
+      JidoClaw.Memory.Fact
+      |> Ash.get!(model_id)
+      |> Ash.Changeset.for_update(:transition_embedding_status, %{
+        embedding: close_vec,
+        embedding_status: :ready
+      })
+      |> Ash.update!()
+
+      # First park the model row's invalid_at in the future so the
+      # partial unique active-label index has room when we reactivate
+      # the user row below.
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
+        [Ecto.UUID.dump!(model_id), future]
+      )
+
+      # Restore user row to active so it competes for precedence.
+      JidoClaw.Repo.query!(
+        "UPDATE memory_facts SET invalid_at = NULL WHERE id = $1",
+        [Ecto.UUID.dump!(user_id)]
+      )
+
+      results =
+        Retrieval.search(
+          tool_context: tc,
+          query: "tokens-not-in-either-content",
+          limit: 5,
+          query_embedding: close_vec,
+          voyage_module: stub_voyage
+        )
+
+      preference = Enum.filter(results, &(&1.label == "preference"))
+
+      # Per-pool precedence dedup: ann_pool drops the lower-precedence
+      # closer-distance row before its top-K; user_save survives. With
+      # the wider ann_matches CTE, the model row is still in the
+      # candidate set, so it surfaces in shadowed_by.
+      assert length(preference) == 1
+      [kept] = preference
+      assert kept.id == user_id
+
+      shadows = Ash.Resource.get_metadata(kept, :shadowed_by) || []
+      shadow_ids = Enum.map(shadows, & &1.id)
+      assert model_id in shadow_ids
     end
   end
 

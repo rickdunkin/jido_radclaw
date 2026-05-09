@@ -84,35 +84,39 @@ defmodule JidoClaw.Tools.RunCommand do
     |> then(&{:ok, &1})
   end
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
   def run(%{command: command} = params, context) do
-    timeout = Map.get(params, :timeout, 30_000)
+    MCPScope.wrap(:run_command, params, context, fn enriched ->
+      timeout = Map.get(params, :timeout, 30_000)
 
-    workspace_id =
-      get_in(context, [:tool_context, :workspace_id]) ||
-        Map.get(params, :workspace_id, "default")
+      workspace_id =
+        get_in(enriched, [:tool_context, :workspace_id]) ||
+          Map.get(params, :workspace_id, "default")
 
-    project_dir =
-      get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+      project_dir =
+        get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
 
-    backend = coerce_backend(Map.get(params, :backend))
-    server = Map.get(params, :server)
-    agent_id = get_in(context, [:tool_context, :agent_id]) || "main"
-    stream_to_display? = streaming_requested?(params)
+      backend = coerce_backend(Map.get(params, :backend))
+      server = Map.get(params, :server)
+      agent_id = get_in(enriched, [:tool_context, :agent_id]) || "main"
+      stream_to_display? = streaming_requested?(params)
 
-    with :ok <- validate_backend_server(backend, server) do
-      dispatch(
-        command,
-        timeout,
-        workspace_id,
-        project_dir,
-        backend,
-        server,
-        params,
-        stream_to_display?,
-        agent_id
-      )
-    end
+      with :ok <- validate_backend_server(backend, server) do
+        dispatch(
+          command,
+          timeout,
+          workspace_id,
+          project_dir,
+          backend,
+          server,
+          params,
+          stream_to_display?,
+          agent_id
+        )
+      end
+    end)
   end
 
   # -- Private ----------------------------------------------------------------

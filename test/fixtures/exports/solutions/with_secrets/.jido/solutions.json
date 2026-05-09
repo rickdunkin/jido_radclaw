@@ -1,0 +1,32 @@
+{
+  "33333333-3333-4333-8333-333333333333": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "problem_signature": "leaked-key-in-source",
+    "solution_content": "Set OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz1234567890 in .env.local",
+    "language": "elixir",
+    "framework": null,
+    "runtime": null,
+    "agent_id": "main",
+    "tags": ["security"],
+    "verification": {},
+    "trust_score": 0.6,
+    "sharing": "local",
+    "inserted_at": "2025-09-01T00:00:00Z",
+    "updated_at": "2025-09-01T00:00:00Z"
+  },
+  "44444444-4444-4444-8444-444444444444": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "problem_signature": "pat-handling",
+    "solution_content": "Pass GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 in CI.",
+    "language": "elixir",
+    "framework": null,
+    "runtime": null,
+    "agent_id": "main",
+    "tags": ["security"],
+    "verification": {},
+    "trust_score": 0.5,
+    "sharing": "local",
+    "inserted_at": "2025-09-02T00:00:00Z",
+    "updated_at": "2025-09-02T00:00:00Z"
+  }
+}

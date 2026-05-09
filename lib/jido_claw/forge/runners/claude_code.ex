@@ -110,28 +110,31 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   defp parse_output(output) do
     lines = String.split(output, "\n", trim: true)
 
-    {events, last_result} =
-      Enum.reduce(lines, {[], nil}, fn line, {events_acc, result_acc} ->
+    {events, last_result, turns} =
+      Enum.reduce(lines, {[], nil, 0}, fn line, {events_acc, result_acc, turns_acc} ->
         cond do
           not String.starts_with?(line, "{") ->
-            {events_acc, result_acc}
+            {events_acc, result_acc, turns_acc}
 
           true ->
             case Jason.decode(line) do
+              {:ok, %{"type" => "assistant"} = decoded} ->
+                {[decoded | events_acc], result_acc, turns_acc + 1}
+
               {:ok, %{"type" => type} = decoded}
-              when type in ["tool_use", "tool_result", "assistant", "system"] ->
-                {[decoded | events_acc], result_acc}
+              when type in ["tool_use", "tool_result", "system"] ->
+                {[decoded | events_acc], result_acc, turns_acc}
 
               {:ok, %{"type" => "result"} = result} ->
-                {events_acc, result}
+                {events_acc, result, turns_acc}
 
               _ ->
-                {events_acc, result_acc}
+                {events_acc, result_acc, turns_acc}
             end
         end
       end)
 
-    metadata = %{tool_events: Enum.reverse(events)}
+    metadata = %{tool_events: Enum.reverse(events), turns: turns}
 
     base =
       case last_result do

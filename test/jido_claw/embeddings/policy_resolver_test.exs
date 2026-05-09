@@ -42,11 +42,6 @@ defmodule JidoClaw.Embeddings.PolicyResolverTest do
       assert PolicyResolver.resolve(ws.id) == :disabled
     end
 
-    test ":local_only workspace returns :local_only", %{tenant_id: tenant_id} do
-      ws = workspace_fixture(tenant_id, embedding_policy: :local_only)
-      assert PolicyResolver.resolve(ws.id) == :local_only
-    end
-
     test ":default workspace returns :default", %{tenant_id: tenant_id} do
       ws = workspace_fixture(tenant_id, embedding_policy: :default)
       assert PolicyResolver.resolve(ws.id) == :default
@@ -66,13 +61,6 @@ defmodule JidoClaw.Embeddings.PolicyResolverTest do
                PolicyResolver.model_for_query(:default)
     end
 
-    test ":local_only — Local with shared model on both sides" do
-      assert %{provider: :local, request_model: model, stored_model: model} =
-               PolicyResolver.model_for_query(:local_only)
-
-      assert is_binary(model)
-    end
-
     test ":disabled passes through" do
       assert PolicyResolver.model_for_query(:disabled) == :disabled
     end
@@ -82,13 +70,6 @@ defmodule JidoClaw.Embeddings.PolicyResolverTest do
     test ":default — Voyage uses voyage-4-large for both request and stored" do
       assert %{provider: :voyage, request_model: "voyage-4-large", stored_model: "voyage-4-large"} =
                PolicyResolver.model_for_storage(:default)
-    end
-
-    test ":local_only mirrors local model for both sides" do
-      assert %{provider: :local, request_model: model, stored_model: model} =
-               PolicyResolver.model_for_storage(:local_only)
-
-      assert is_binary(model)
     end
 
     test ":disabled passes through" do

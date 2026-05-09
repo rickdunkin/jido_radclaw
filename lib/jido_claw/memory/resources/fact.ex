@@ -155,8 +155,7 @@ defmodule JidoClaw.Memory.Fact do
         :written_by,
         :valid_at,
         :embedding,
-        :embedding_status,
-        :embedding_model
+        :embedding_status
       ])
 
       # Suppresses `HintBackfillWorker` registration so callers nested
@@ -188,7 +187,6 @@ defmodule JidoClaw.Memory.Fact do
         :written_by,
         :embedding,
         :embedding_status,
-        :embedding_model,
         :import_hash
       ])
 
@@ -254,7 +252,6 @@ defmodule JidoClaw.Memory.Fact do
       accept([
         :embedding,
         :embedding_status,
-        :embedding_model,
         :embedding_attempt_count,
         :embedding_next_attempt_at,
         :embedding_last_error
@@ -383,11 +380,6 @@ defmodule JidoClaw.Memory.Fact do
     end
 
     attribute :embedding_last_error, :string do
-      allow_nil?(true)
-      public?(true)
-    end
-
-    attribute :embedding_model, :string do
       allow_nil?(true)
       public?(true)
     end
@@ -630,7 +622,7 @@ defmodule JidoClaw.Memory.Fact do
         {:ok, %{embedding_policy: :disabled}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
-        {:ok, %{embedding_policy: policy}} when policy in [:default, :local_only] ->
+        {:ok, %{embedding_policy: :default}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :pending)
 
         _ ->

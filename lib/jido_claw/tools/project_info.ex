@@ -15,8 +15,14 @@ defmodule JidoClaw.Tools.ProjectInfo do
     ],
     schema: []
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
-  def run(_params, _context) do
+  def run(params, context) do
+    MCPScope.wrap(:project_info, params, context, fn _enriched -> do_run() end)
+  end
+
+  defp do_run do
     cwd = File.cwd!()
 
     project_type =

@@ -12,32 +12,36 @@ defmodule JidoClaw.Tools.GitDiff do
       path: [type: :string, doc: "Optional file path to limit diff"]
     ]
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
-  def run(params, _context) do
-    staged = Map.get(params, :staged, false)
+  def run(params, context) do
+    MCPScope.wrap(:git_diff, params, context, fn _enriched ->
+      staged = Map.get(params, :staged, false)
 
-    args = ["diff"] ++ if(staged, do: ["--cached"], else: [])
+      args = ["diff"] ++ if(staged, do: ["--cached"], else: [])
 
-    args =
-      args ++
-        case Map.get(params, :path) do
-          nil -> []
-          p -> ["--", p]
-        end
-
-    case System.cmd("git", args, stderr_to_stdout: true) do
-      {output, 0} ->
-        truncated =
-          if byte_size(output) > 15_000 do
-            String.slice(output, 0, 15_000) <> "\n... (diff truncated)"
-          else
-            output
+      args =
+        args ++
+          case Map.get(params, :path) do
+            nil -> []
+            p -> ["--", p]
           end
 
-        {:ok, %{diff: truncated}}
+      case System.cmd("git", args, stderr_to_stdout: true) do
+        {output, 0} ->
+          truncated =
+            if byte_size(output) > 15_000 do
+              String.slice(output, 0, 15_000) <> "\n... (diff truncated)"
+            else
+              output
+            end
 
-      {output, _} ->
-        {:error, "git diff failed: #{String.trim(output)}"}
-    end
+          {:ok, %{diff: truncated}}
+
+        {output, _} ->
+          {:error, "git diff failed: #{String.trim(output)}"}
+      end
+    end)
   end
 end

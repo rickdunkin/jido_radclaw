@@ -188,7 +188,8 @@ config :jido_claw,
   gateway_port: 4000,
   cluster_enabled: false,
   cluster_strategy: :gossip,
-  tool_approval_mode: :off
+  tool_approval_mode: :off,
+  embeddings_strict_boot: true
 
 # Phoenix endpoint
 config :jido_claw, JidoClaw.Web.Endpoint,
@@ -264,18 +265,13 @@ config :phoenix, :json_library, Jason
 
 # -- Memory consolidator (v0.6.3 phase 3b) --
 #
-# Disabled by default: enable per-deployment via runtime config or
-# `Application.put_env/3` so the harness only fires where its
-# environmental dependencies (frontier model API key, Forge sandbox)
-# are wired up.
-#
 # Pool sizing note: with `max_concurrent_scopes: 4` the Repo pool
 # must accommodate four pinned advisory-lock connections plus the
 # rest of the system's reads/writes. Bump
 # `config :jido_claw, JidoClaw.Repo, pool_size: N` if base sizing
 # is tight (default Ecto pool is 10).
 config :jido_claw, JidoClaw.Memory.Consolidator,
-  enabled: false,
+  enabled: true,
   cadence: "0 */6 * * *",
   min_input_count: 10,
   max_concurrent_scopes: 4,

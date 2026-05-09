@@ -72,7 +72,7 @@ defmodule JidoClaw.SolutionsCase do
     * `:language` / `:framework` — default `"elixir"` / `nil`
     * `:embedding_status` — default `:disabled` (no Voyage egress
       needed in regression tests; matcher tests explicitly opt in)
-    * `:embedding_model`, `:embedding` — inject pre-computed vectors
+    * `:embedding` — inject a pre-computed vector
   """
   def solution_fixture(tenant_id, workspace_id, content, opts \\ []) do
     sig =
@@ -92,11 +92,16 @@ defmodule JidoClaw.SolutionsCase do
       tenant_id: tenant_id,
       workspace_id: workspace_id,
       embedding_status: Keyword.get(opts, :embedding_status, :disabled),
-      embedding_model: Keyword.get(opts, :embedding_model),
       tags: Keyword.get(opts, :tags, []),
       verification: Keyword.get(opts, :verification, %{}),
       trust_score: Keyword.get(opts, :trust_score, 0.0)
     }
+
+    attrs =
+      case Keyword.get(opts, :embedding) do
+        nil -> attrs
+        emb -> Map.put(attrs, :embedding, emb)
+      end
 
     {:ok, sol} = Solution.store(attrs)
     sol

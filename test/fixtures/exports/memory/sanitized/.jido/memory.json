@@ -1,0 +1,23 @@
+{
+  "fact-001": {
+    "key": "preferred_lang",
+    "content": "elixir",
+    "type": "fact",
+    "created_at": "2025-09-01T00:00:00Z",
+    "updated_at": "2025-09-01T00:00:00Z"
+  },
+  "fact-002": {
+    "key": "test_runner",
+    "content": "mix test",
+    "type": "fact",
+    "created_at": "2025-09-02T00:00:00Z",
+    "updated_at": "2025-09-02T00:00:00Z"
+  },
+  "fact-003": {
+    "key": "build_tool",
+    "content": "mix",
+    "type": "fact",
+    "created_at": "2025-09-03T00:00:00Z",
+    "updated_at": "2025-09-03T00:00:00Z"
+  }
+}

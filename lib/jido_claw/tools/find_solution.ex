@@ -54,16 +54,17 @@ defmodule JidoClaw.Tools.FindSolution do
 
   @impl true
   def run(params, context) do
-    context = MCPScope.with_default(context)
-    tool_context = Map.get(context, :tool_context, %{})
-    tenant_id = Map.get(tool_context, :tenant_id)
-    workspace_uuid = Map.get(tool_context, :workspace_uuid)
+    MCPScope.wrap(:find_solution, params, context, fn enriched ->
+      tool_context = Map.get(enriched, :tool_context, %{})
+      tenant_id = Map.get(tool_context, :tenant_id)
+      workspace_uuid = Map.get(tool_context, :workspace_uuid)
 
-    cond do
-      is_nil(tenant_id) -> {:error, :missing_scope_tenant}
-      is_nil(workspace_uuid) -> {:error, :missing_scope_workspace}
-      true -> search(params, tenant_id, workspace_uuid)
-    end
+      cond do
+        is_nil(tenant_id) -> {:error, :missing_scope_tenant}
+        is_nil(workspace_uuid) -> {:error, :missing_scope_workspace}
+        true -> search(params, tenant_id, workspace_uuid)
+      end
+    end)
   end
 
   defp search(params, tenant_id, workspace_uuid) do

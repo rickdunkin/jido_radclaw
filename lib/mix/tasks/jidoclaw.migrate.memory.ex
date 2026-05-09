@@ -35,14 +35,18 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
 
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
-  alias JidoClaw.Workspaces.Resolver
+  alias JidoClaw.Workspaces.{Resolver, Workspace}
 
   @impl true
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args, switches: [dry_run: :boolean, project: :string])
 
-    project_dir = Keyword.get(opts, :project) || File.cwd!()
+    # `Resolver.ensure_workspace/3` stores `Path.expand(project_dir)`,
+    # so the dry-run lookup must compare against the same absolute
+    # path. Expanding once up front keeps both code paths consistent
+    # for relative inputs like `--project .`.
+    project_dir = Path.expand(Keyword.get(opts, :project) || File.cwd!())
     dry_run? = Keyword.get(opts, :dry_run, false)
 
     Mix.Task.run("app.start")
@@ -51,15 +55,59 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
 
     if dry_run?, do: Mix.shell().info("(dry-run mode — nothing will be written)")
 
-    {:ok, workspace} = Resolver.ensure_workspace("default", project_dir)
-    Mix.shell().info("workspace_uuid: #{workspace.id} tenant_id: #{workspace.tenant_id}")
+    case resolve_workspace(project_dir, dry_run?) do
+      {:ok, workspace} ->
+        Mix.shell().info("workspace_uuid: #{workspace.id} tenant_id: #{workspace.tenant_id}")
+        run_migration(project_dir, workspace, dry_run?)
 
-    count = migrate_memory(project_dir, workspace, dry_run?)
+      :would_create ->
+        Mix.shell().info(
+          "workspace: not present — would be created at #{project_dir} (tenant_id: default)"
+        )
 
-    Mix.shell().info("\nMigration complete:")
-    Mix.shell().info("  facts imported: #{count}")
+        run_migration(project_dir, nil, dry_run?)
+    end
 
     :ok
+  end
+
+  # Read-only lookup in dry-run; mutating ensure in normal mode. The
+  # dry-run side never calls `Resolver.ensure_workspace/3`, which
+  # upserts on every invocation. `project_dir` MUST already be
+  # absolute — `run/1` expands it before either branch runs so the
+  # dry-run lookup compares apples to apples with the
+  # `Resolver`-stored row.
+  defp resolve_workspace(project_dir, true = _dry_run?) do
+    case Workspace.by_path("default", nil, project_dir) do
+      {:ok, ws} when not is_nil(ws) -> {:ok, ws}
+      _ -> :would_create
+    end
+  rescue
+    _ -> :would_create
+  end
+
+  defp resolve_workspace(project_dir, false) do
+    {:ok, _ws} = Resolver.ensure_workspace("default", project_dir)
+  end
+
+  defp run_migration(project_dir, workspace, dry_run?) do
+    %{inserted: inserted, skipped: skipped, failed: failed} =
+      migrate_memory(project_dir, workspace, dry_run?)
+
+    Mix.shell().info("\nMigration complete:")
+
+    label_prefix = if dry_run?, do: "would insert", else: "inserted"
+
+    skipped_label =
+      if dry_run?, do: "would skip (already present)", else: "skipped (already present)"
+
+    Mix.shell().info("  facts #{label_prefix}: #{inserted}")
+    Mix.shell().info("  facts #{skipped_label}: #{skipped}")
+
+    if failed > 0 do
+      failed_label = if dry_run?, do: "would fail", else: "failed"
+      Mix.shell().info("  facts #{failed_label}: #{failed}")
+    end
   end
 
   defp migrate_memory(project_dir, workspace, dry_run?) do
@@ -76,40 +124,88 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
 
             Mix.shell().info("memory.json: #{length(entries)} entries")
 
-            if dry_run? do
-              length(entries)
-            else
-              Enum.count(entries, fn entry ->
-                attrs = legacy_to_attrs(entry, workspace)
+            cond do
+              dry_run? and is_nil(workspace) ->
+                # Workspace would be created — every entry's
+                # import_hash is unique within a fresh workspace_id, so
+                # all entries would be inserted on a real run.
+                %{inserted: length(entries), skipped: 0, failed: 0}
 
-                case Fact.import_legacy(attrs) do
-                  {:ok, _} ->
-                    true
+              dry_run? ->
+                # Workspace already exists. Compute each entry's
+                # import_hash and predict insert vs skip without
+                # writing.
+                Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
+                  attrs = legacy_to_attrs(entry, workspace)
 
-                  {:error, err} ->
-                    Logger.warning(
-                      "[migrate.memory] import failed for #{inspect(entry["key"])}: " <>
-                        inspect(err)
-                    )
+                  if already_imported?(attrs[:import_hash]) do
+                    Map.update!(acc, :skipped, &(&1 + 1))
+                  else
+                    Map.update!(acc, :inserted, &(&1 + 1))
+                  end
+                end)
 
-                    false
-                end
-              end)
+              true ->
+                Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
+                  attrs = legacy_to_attrs(entry, workspace)
+                  classify_import(entry, attrs, acc)
+                end)
             end
 
           {:error, reason} ->
             Mix.shell().info("memory.json: invalid JSON (#{inspect(reason)})")
-            0
+            %{inserted: 0, skipped: 0, failed: 0}
         end
 
       {:error, :enoent} ->
         Mix.shell().info("memory.json: not present, skipping")
-        0
+        %{inserted: 0, skipped: 0, failed: 0}
 
       {:error, reason} ->
         Mix.shell().info("memory.json: read error (#{inspect(reason)})")
-        0
+        %{inserted: 0, skipped: 0, failed: 0}
     end
+  end
+
+  # Pre-check the partial unique `import_hash` identity so the
+  # task output distinguishes actually-inserted rows from upsert
+  # hits. `Fact.import_legacy` is `upsert?(true)` with
+  # `upsert_fields: []`, so a re-run returns `{:ok, _}` for already-
+  # present rows — counting every `:ok` as "imported" overstates
+  # inserts on a second migration pass.
+  defp classify_import(entry, attrs, acc) do
+    cond do
+      already_imported?(attrs[:import_hash]) ->
+        Map.update!(acc, :skipped, &(&1 + 1))
+
+      true ->
+        case Fact.import_legacy(attrs) do
+          {:ok, _} ->
+            Map.update!(acc, :inserted, &(&1 + 1))
+
+          {:error, err} ->
+            Logger.warning(
+              "[migrate.memory] import failed for #{inspect(entry["key"])}: " <>
+                inspect(err)
+            )
+
+            Map.update!(acc, :failed, &(&1 + 1))
+        end
+    end
+  end
+
+  defp already_imported?(nil), do: false
+
+  defp already_imported?(import_hash) when is_binary(import_hash) do
+    case JidoClaw.Repo.query(
+           "SELECT 1 FROM memory_facts WHERE import_hash = $1 LIMIT 1",
+           [import_hash]
+         ) do
+      {:ok, %Postgrex.Result{rows: [_ | _]}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   defp legacy_to_attrs(entry, workspace) do

@@ -169,6 +169,7 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m    /memory forget   Delete a memory                 \e[36m│\e[0m
     \e[36m│\e[0m    /memory consolidate  Run consolidator now        \e[36m│\e[0m
     \e[36m│\e[0m    /memory status   Show consolidation history     \e[36m│\e[0m
+    \e[36m│\e[0m    /memory blocks edit <label> Edit block in $EDITOR\e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mSolutions\e[0m                                       \e[36m│\e[0m
     \e[36m│\e[0m    /solutions       List solution store stats        \e[36m│\e[0m

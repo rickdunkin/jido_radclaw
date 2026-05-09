@@ -2,23 +2,14 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
   @moduledoc """
   Bulk row-status fix-up after a workspace `embedding_policy` change.
 
-  Maps the §1.4 transition table to bounded synchronous UPDATEs:
-
-    | From       | To           | Effect on Solution rows                                     |
-    |------------|--------------|-------------------------------------------------------------|
-    | :disabled  | :default     | flip `:disabled` rows to `:pending`, clear backoff state    |
-    | :disabled  | :local_only  | flip `:disabled` rows to `:pending`, clear backoff state    |
-    | :default   | :local_only  | NULL `embedding` on `:ready` rows, flip them to `:pending`  |
-    | :local_only| :default     | NULL `embedding` on `:ready` rows, flip them to `:pending`  |
-    | :default   | :disabled    | flip `:pending|:processing|:failed` to `:disabled`          |
-    | :local_only| :disabled    | flip `:pending|:processing|:failed` to `:disabled`          |
-
-  `:ready` rows keep their `embedding` when transitioning into
-  `:disabled` (re-enabling later picks the same vectors back up)
-  unless `purge_existing: true` is passed.
+  `:disabled` rows are flipped to `:pending` and backoff state cleared
+  when the policy moves to `:default`. The reverse direction flips
+  `:pending|:processing|:failed` to `:disabled`. `:ready` rows keep
+  their `embedding` when transitioning into `:disabled` unless
+  `purge_existing: true` is passed.
 
   Deferred to v0.7+: batched/background drain for workspaces with
-  millions of rows. Phase 1 ships synchronous UPDATEs only.
+  millions of rows.
   """
 
   alias JidoClaw.Repo
@@ -34,79 +25,69 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
   @spec apply_embedding(String.t(), atom(), keyword()) :: :ok | {:error, term()}
   def apply_embedding(workspace_id, new_policy, opts \\ [])
 
+  # `BackfillWorker` scans both `solutions` and `memory_facts`, so the
+  # transition has to touch both — otherwise memory facts in the
+  # affected workspace stay `:disabled` after a flip to `:default`,
+  # and `purge_existing: true` leaves their ready embeddings behind.
+  @embedding_tables ["solutions", "memory_facts"]
+
   def apply_embedding(workspace_id, :disabled, opts) do
     purge? = Keyword.get(opts, :purge_existing, false)
+    workspace_uuid = Ecto.UUID.dump!(workspace_id)
 
     Repo.transaction(fn ->
-      Repo.query!(
-        """
-        UPDATE solutions
-           SET embedding_status = 'disabled',
-               embedding_attempt_count = 0,
-               embedding_next_attempt_at = NULL,
-               embedding_last_error = NULL
-         WHERE workspace_id = $1
-           AND embedding_status IN ('pending', 'processing', 'failed')
-        """,
-        [Ecto.UUID.dump!(workspace_id)]
-      )
-
-      if purge? do
+      Enum.each(@embedding_tables, fn table ->
         Repo.query!(
           """
-          UPDATE solutions
-             SET embedding = NULL,
-                 embedding_status = 'disabled',
-                 embedding_model = NULL,
+          UPDATE #{table}
+             SET embedding_status = 'disabled',
                  embedding_attempt_count = 0,
                  embedding_next_attempt_at = NULL,
                  embedding_last_error = NULL
            WHERE workspace_id = $1
-             AND embedding_status = 'ready'
+             AND embedding_status IN ('pending', 'processing', 'failed')
           """,
-          [Ecto.UUID.dump!(workspace_id)]
+          [workspace_uuid]
         )
-      end
+
+        if purge? do
+          Repo.query!(
+            """
+            UPDATE #{table}
+               SET embedding = NULL,
+                   embedding_status = 'disabled',
+                   embedding_attempt_count = 0,
+                   embedding_next_attempt_at = NULL,
+                   embedding_last_error = NULL
+             WHERE workspace_id = $1
+               AND embedding_status = 'ready'
+            """,
+            [workspace_uuid]
+          )
+        end
+      end)
     end)
     |> normalize_result()
   end
 
-  def apply_embedding(workspace_id, policy, _opts) when policy in [:default, :local_only] do
+  def apply_embedding(workspace_id, :default, _opts) do
+    workspace_uuid = Ecto.UUID.dump!(workspace_id)
+
     Repo.transaction(fn ->
-      # 1. Re-enable any :disabled rows.
-      Repo.query!(
-        """
-        UPDATE solutions
-           SET embedding_status = 'pending',
-               embedding_attempt_count = 0,
-               embedding_next_attempt_at = NULL,
-               embedding_last_error = NULL
-         WHERE workspace_id = $1
-           AND embedding_status = 'disabled'
-        """,
-        [Ecto.UUID.dump!(workspace_id)]
-      )
-
-      # 2. NULL embeddings on :ready rows that don't match the target
-      #    model. The target model differs by policy:
-      #      - :default  → "voyage-4-large"
-      #      - :local_only → "mxbai-embed-large"
-      target_model = if policy == :default, do: "voyage-4-large", else: "mxbai-embed-large"
-
-      Repo.query!(
-        """
-        UPDATE solutions
-           SET embedding = NULL,
-               embedding_status = 'pending',
-               embedding_attempt_count = 0,
-               embedding_next_attempt_at = NULL,
-               embedding_last_error = NULL
-         WHERE workspace_id = $1
-           AND embedding_status = 'ready'
-           AND embedding_model IS DISTINCT FROM $2
-        """,
-        [Ecto.UUID.dump!(workspace_id), target_model]
-      )
+      Enum.each(@embedding_tables, fn table ->
+        Repo.query!(
+          """
+          UPDATE #{table}
+             SET embedding_status = 'pending',
+                 embedding_attempt_count = 0,
+                 embedding_next_attempt_at = NULL,
+                 embedding_last_error = NULL
+           WHERE workspace_id = $1
+             AND embedding_status = 'disabled'
+          """,
+          [workspace_uuid]
+        )
+      end)
     end)
     |> normalize_result()
   end
@@ -124,15 +105,15 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
   Aggregate the consolidation policy across every workspace in a
   tenant that's keyed to the supplied `user_id`.
 
-  Returns the **most-restrictive** policy: `:disabled` < `:local_only`
-  < `:default`. Used by the consolidator's `PolicyResolver` for
-  user-scope runs — a user with one `:disabled` workspace is
-  considered opted out everywhere in that tenant.
+  Returns the **most-restrictive** policy: `:disabled` < `:default`.
+  Used by the consolidator's `PolicyResolver` for user-scope runs —
+  a user with one `:disabled` workspace is considered opted out
+  everywhere in that tenant.
 
   No referencing workspaces → `:disabled` (default-deny).
   """
   @spec resolve_consolidation_policy_for_user(String.t(), Ecto.UUID.t()) ::
-          :default | :local_only | :disabled
+          :default | :disabled
   def resolve_consolidation_policy_for_user(tenant_id, user_id),
     do: aggregate_policy(:user_id, tenant_id, user_id)
 
@@ -144,7 +125,7 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
   using the same MIN-aggregate shape as the user-scope variant.
   """
   @spec resolve_consolidation_policy_for_project(String.t(), Ecto.UUID.t()) ::
-          :default | :local_only | :disabled
+          :default | :disabled
   def resolve_consolidation_policy_for_project(tenant_id, project_id),
     do: aggregate_policy(:project_id, tenant_id, project_id)
 
@@ -164,8 +145,7 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
         """
         SELECT MIN(CASE consolidation_policy
                       WHEN 'disabled' THEN 0
-                      WHEN 'local_only' THEN 1
-                      WHEN 'default' THEN 2
+                      WHEN 'default' THEN 1
                     END)
         FROM #{table}
         WHERE tenant_id = $1 AND #{column} = $2
@@ -182,6 +162,5 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
 
   defp decode_policy(nil), do: :disabled
   defp decode_policy(0), do: :disabled
-  defp decode_policy(1), do: :local_only
-  defp decode_policy(2), do: :default
+  defp decode_policy(1), do: :default
 end

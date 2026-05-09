@@ -49,7 +49,7 @@ defmodule JidoClaw.Memory.Consolidator.PromptTest do
       assert out =~ tool, "expected prompt to mention #{tool}"
     end
 
-    for relation <- ~w(supports contradicts supersedes duplicates depends_on related) do
+    for relation <- ~w(related supports contradicts supersedes elaborates) do
       assert out =~ relation, "expected prompt to mention link relation #{relation}"
     end
   end

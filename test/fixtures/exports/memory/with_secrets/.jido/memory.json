@@ -1,0 +1,23 @@
+{
+  "fact-001": {
+    "key": "openai_creds",
+    "content": "use sk-abcdefghijklmnopqrstuvwxyz1234567890",
+    "type": "fact",
+    "created_at": "2025-09-01T00:00:00Z",
+    "updated_at": "2025-09-01T00:00:00Z"
+  },
+  "fact-002": {
+    "key": "github_token",
+    "content": "auth uses ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+    "type": "fact",
+    "created_at": "2025-09-02T00:00:00Z",
+    "updated_at": "2025-09-02T00:00:00Z"
+  },
+  "fact-003": {
+    "key": "preferred_lang",
+    "content": "elixir",
+    "type": "fact",
+    "created_at": "2025-09-03T00:00:00Z",
+    "updated_at": "2025-09-03T00:00:00Z"
+  }
+}

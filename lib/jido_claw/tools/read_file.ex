@@ -31,33 +31,36 @@ defmodule JidoClaw.Tools.ReadFile do
     ]
 
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.Tools.MCPScope
 
   @impl true
   def run(%{path: path} = params, context) do
-    offset = Map.get(params, :offset, 0)
-    limit = Map.get(params, :limit, 2000)
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
+    MCPScope.wrap(:read_file, params, context, fn enriched ->
+      offset = Map.get(params, :offset, 0)
+      limit = Map.get(params, :limit, 2000)
+      workspace_id = get_in(enriched, [:tool_context, :workspace_id])
+      project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
 
-    case Resolver.read(path, workspace_id: workspace_id, project_dir: project_dir) do
-      {:ok, content} ->
-        lines = String.split(content, "\n")
-        total = length(lines)
+      case Resolver.read(path, workspace_id: workspace_id, project_dir: project_dir) do
+        {:ok, content} ->
+          lines = String.split(content, "\n")
+          total = length(lines)
 
-        numbered =
-          lines
-          |> Enum.with_index(1)
-          |> Enum.drop(offset)
-          |> Enum.take(limit)
-          |> Enum.map(fn {line, n} ->
-            "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
-          end)
-          |> Enum.join("\n")
+          numbered =
+            lines
+            |> Enum.with_index(1)
+            |> Enum.drop(offset)
+            |> Enum.take(limit)
+            |> Enum.map(fn {line, n} ->
+              "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
+            end)
+            |> Enum.join("\n")
 
-        {:ok, %{path: path, content: numbered, total_lines: total}}
+          {:ok, %{path: path, content: numbered, total_lines: total}}
 
-      {:error, reason} ->
-        {:error, "Cannot read #{path}: #{inspect(reason)}"}
-    end
+        {:error, reason} ->
+          {:error, "Cannot read #{path}: #{inspect(reason)}"}
+      end
+    end)
   end
 end

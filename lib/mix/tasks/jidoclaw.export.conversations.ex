@@ -46,6 +46,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   use Mix.Task
 
   alias JidoClaw.Conversations.{Message, Session}
+  alias JidoClaw.Export.Canonical
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
   @impl true
@@ -146,23 +147,27 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   end
 
   defp write_jsonl(path, rows) do
-    rows
-    |> Enum.filter(&(&1.role in [:user, :assistant]))
-    |> Enum.map(fn row ->
-      Jason.encode!(%{
-        role: Atom.to_string(row.role),
-        content: row.content,
-        timestamp: DateTime.to_unix(row.inserted_at, :millisecond)
-      })
-    end)
-    |> Enum.intersperse("\n")
-    |> Kernel.++(["\n"])
-    |> then(&File.write!(path, &1))
+    sorted = Enum.sort_by(rows, & &1.sequence)
+
+    records =
+      sorted
+      |> Enum.filter(&(&1.role in [:user, :assistant]))
+      |> Enum.map(fn row ->
+        %{
+          role: Atom.to_string(row.role),
+          content: row.content,
+          timestamp: DateTime.to_unix(row.inserted_at, :millisecond)
+        }
+      end)
+
+    File.write!(path, Canonical.to_jsonl(records))
   end
 
   defp write_manifest(path, rows) do
+    sorted = Enum.sort_by(rows, & &1.sequence)
+
     dropped =
-      rows
+      sorted
       |> Enum.filter(&(&1.role in [:tool_call, :tool_result, :reasoning, :system]))
       |> Enum.map(fn row -> %{sequence: row.sequence, role: Atom.to_string(row.role)} end)
 
@@ -172,19 +177,18 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
       dropped: dropped
     }
 
-    File.write!(path <> ".export-manifest.json", Jason.encode!(manifest, pretty: true))
+    File.write!(path <> ".export-manifest.json", Canonical.encode!(manifest))
   end
 
   defp write_redaction_manifest(path, rows) do
+    sorted = Enum.sort_by(rows, & &1.sequence)
+
     redactions =
-      rows
+      sorted
       |> Enum.filter(&(&1.role in [:user, :assistant]))
       |> Enum.flat_map(fn row -> redactions_in(row) end)
 
-    File.write!(
-      path <> ".redaction-manifest.json",
-      Jason.encode!(%{redactions: redactions}, pretty: true)
-    )
+    File.write!(path <> ".redaction-manifest.json", Canonical.encode!(%{redactions: redactions}))
   end
 
   defp redactions_in(%{content: nil}), do: []

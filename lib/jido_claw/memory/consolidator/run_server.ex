@@ -38,7 +38,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   @registry JidoClaw.Memory.Consolidator.RunRegistry
 
-  @link_relations ~w(supports contradicts supersedes duplicates depends_on related)
+  @link_relations ~w(related supports contradicts supersedes elaborates)
   @link_relations_atoms Enum.map(@link_relations, &String.to_atom/1)
 
   defstruct [
@@ -61,7 +61,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     awaiters: [],
     staging: nil,
     status: :idle,
-    started_at: nil
+    started_at: nil,
+    harness_turns: 0
   ]
 
   @doc "Start a per-run server idle. Pid is registered under the run_id."
@@ -247,11 +248,14 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       {:ok, %{status: :error, error: err}} ->
         finalise(state, :failed, error_string_for(err))
 
-      {:ok, _result_map} ->
+      {:ok, result_map} ->
         # The harness ran. The model is expected to have called
         # `commit_proposals` (which already triggered `:publish`).
         # If it didn't, treat the run as failed with the canonical
         # max-turns error.
+        turns = result_map[:metadata][:turns] || 0
+        state = %{state | harness_turns: turns}
+
         if Staging.total(state.staging) == 0 do
           finalise(state, :failed, "max_turns_reached")
         else
@@ -282,7 +286,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         {:noreply, %{state | lock_owner_pid: pid}, {:continue, :load_inputs}}
 
       :busy ->
-        finalise(state, :skipped, "scope_busy")
+        finalise(state, :skipped, :scope_busy)
 
       {:error, reason} ->
         finalise(state, :failed, to_string(reason))
@@ -1017,13 +1021,20 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   # -- finalisation -----------------------------------------------------------
 
-  defp finalise(state, status, error_string) do
-    run_or_nil = maybe_write_run_row(state, status, error_string)
+  defp finalise(state, status, reason) do
+    persisted_reason =
+      cond do
+        is_atom(reason) -> Atom.to_string(reason)
+        is_binary(reason) -> reason
+        true -> inspect(reason)
+      end
+
+    run_or_nil = maybe_write_run_row(state, status, persisted_reason)
 
     reply =
       case {status, run_or_nil} do
         {:succeeded, {:ok, run}} -> {:ok, run}
-        _ -> {:error, error_string}
+        _ -> {:error, reason}
       end
 
     do_finalise(state, reply)
@@ -1102,7 +1113,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     measurements =
       %{
         duration_ms: duration_ms,
-        harness_turns: 0,
+        harness_turns: state.harness_turns,
         messages_loaded: run.messages_processed || 0,
         messages_published: run.messages_processed || 0,
         facts_loaded: run.facts_processed || 0,

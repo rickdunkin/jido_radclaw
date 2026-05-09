@@ -6,7 +6,8 @@ defmodule JidoClaw.Solutions.Solution do
   +JSONL `Solutions.Store` GenServer. Persisted to Postgres with:
 
     * full-text `tsvector` (Postgres FTS, GIN-indexed)
-    * `embedding` (pgvector, 1024-d, partial HNSW per `embedding_model`)
+    * `embedding` (pgvector, 1024-d, partial HNSW on
+      `embedding IS NOT NULL AND embedding_status = 'ready'`)
     * `lexical_text` for trigram similarity (GIN-indexed via
       `gin_trgm_ops`)
 
@@ -17,10 +18,10 @@ defmodule JidoClaw.Solutions.Solution do
   resource-level `base_filter`. Reason: `:with_deleted` reads need to
   see deleted rows, and a `base_filter` would force them to bypass via
   `unrestrict/1`, which adds friction. Per-action filter is explicit
-  and testable. Hybrid retrieval is implemented by
-  `JidoClaw.Solutions.HybridSearchSql.run/1` (called directly by the
-  Matcher), and its CTE SQL repeats `AND deleted_at IS NULL` in every
-  pool — same predicate, hand-coded.
+  and testable. Hybrid retrieval is implemented by the manual-read
+  `:search` action (which delegates to
+  `JidoClaw.Solutions.HybridSearchSql.run/1`), whose CTE SQL repeats
+  `AND deleted_at IS NULL` in every pool — same predicate, hand-coded.
 
   ## Cross-tenant FK invariant
 
@@ -86,6 +87,7 @@ defmodule JidoClaw.Solutions.Solution do
     define(:soft_delete, action: :soft_delete)
     define(:transition_embedding_status, action: :transition_embedding_status)
     define(:with_deleted, action: :with_deleted)
+    define(:search, action: :search)
   end
 
   actions do
@@ -120,8 +122,7 @@ defmodule JidoClaw.Solutions.Solution do
         :created_by_user_id,
         :tenant_id,
         :embedding,
-        :embedding_status,
-        :embedding_model
+        :embedding_status
       ])
 
       change({__MODULE__.Changes.RedactSolutionContent, []})
@@ -148,8 +149,7 @@ defmodule JidoClaw.Solutions.Solution do
         :tenant_id,
         :deleted_at,
         :embedding,
-        :embedding_status,
-        :embedding_model
+        :embedding_status
       ])
 
       argument(:id, :uuid, allow_nil?: true)
@@ -222,13 +222,29 @@ defmodule JidoClaw.Solutions.Solution do
       accept([
         :embedding,
         :embedding_status,
-        :embedding_model,
         :embedding_attempt_count,
         :embedding_next_attempt_at,
         :embedding_last_error
       ])
 
       require_atomic?(false)
+    end
+
+    read :search do
+      manual(JidoClaw.Solutions.Reads.HybridSearch)
+
+      argument(:query, :string, allow_nil?: false)
+      argument(:query_embedding, {:array, :float}, allow_nil?: true)
+      argument(:language, :string)
+      argument(:framework, :string)
+      argument(:limit, :integer, default: 10)
+      argument(:threshold, :float, default: 0.0)
+      argument(:workspace_id, :uuid, allow_nil?: false)
+      argument(:tenant_id, :string, allow_nil?: false)
+
+      argument(:local_visibility, {:array, :atom}, default: [:local, :shared, :public])
+
+      argument(:cross_workspace_visibility, {:array, :atom}, default: [:public])
     end
   end
 
@@ -337,11 +353,6 @@ defmodule JidoClaw.Solutions.Solution do
     end
 
     attribute :embedding_last_error, :string do
-      allow_nil?(true)
-      public?(true)
-    end
-
-    attribute :embedding_model, :string do
       allow_nil?(true)
       public?(true)
     end
@@ -540,7 +551,7 @@ defmodule JidoClaw.Solutions.Solution do
         {:ok, %{embedding_policy: :disabled}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
-        {:ok, %{embedding_policy: policy}} when policy in [:default, :local_only] ->
+        {:ok, %{embedding_policy: :default}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :pending)
 
         _ ->

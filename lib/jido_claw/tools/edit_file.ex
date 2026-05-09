@@ -21,42 +21,45 @@ defmodule JidoClaw.Tools.EditFile do
     ]
 
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.Tools.MCPScope
 
   @impl true
-  def run(%{path: path, old_string: old_str, new_string: new_str}, context) do
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
-    opts = [workspace_id: workspace_id, project_dir: project_dir]
+  def run(%{path: path, old_string: old_str, new_string: new_str} = params, context) do
+    MCPScope.wrap(:edit_file, params, context, fn enriched ->
+      workspace_id = get_in(enriched, [:tool_context, :workspace_id])
+      project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
+      opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-    case Resolver.read(path, opts) do
-      {:ok, content} ->
-        occurrences = count_occurrences(content, old_str)
+      case Resolver.read(path, opts) do
+        {:ok, content} ->
+          occurrences = count_occurrences(content, old_str)
 
-        cond do
-          occurrences == 0 ->
-            {:error,
-             "old_string not found in #{path}. Read the file first to get the exact text."}
+          cond do
+            occurrences == 0 ->
+              {:error,
+               "old_string not found in #{path}. Read the file first to get the exact text."}
 
-          occurrences > 1 ->
-            {:error,
-             "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
+            occurrences > 1 ->
+              {:error,
+               "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
 
-          true ->
-            new_content = String.replace(content, old_str, new_str, global: false)
+            true ->
+              new_content = String.replace(content, old_str, new_str, global: false)
 
-            case Resolver.write(path, new_content, opts) do
-              :ok ->
-                diff = build_diff(old_str, new_str)
-                {:ok, %{path: path, diff: diff, status: "edited"}}
+              case Resolver.write(path, new_content, opts) do
+                :ok ->
+                  diff = build_diff(old_str, new_str)
+                  {:ok, %{path: path, diff: diff, status: "edited"}}
 
-              {:error, reason} ->
-                {:error, "Failed to write #{path}: #{inspect(reason)}"}
-            end
-        end
+                {:error, reason} ->
+                  {:error, "Failed to write #{path}: #{inspect(reason)}"}
+              end
+          end
 
-      {:error, reason} ->
-        {:error, "Cannot read #{path}: #{inspect(reason)}"}
-    end
+        {:error, reason} ->
+          {:error, "Cannot read #{path}: #{inspect(reason)}"}
+      end
+    end)
   end
 
   defp count_occurrences(content, pattern) do

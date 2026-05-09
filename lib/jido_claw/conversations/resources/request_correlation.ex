@@ -18,6 +18,24 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   before the crash. Persisting to Postgres means the Recorder's
   fallback `lookup` path can rehydrate the cache from the durable row.
 
+  ## Lifecycle
+
+  Rows are registered at request start and stay alive until their
+  TTL expires. Terminal signals (`ai.request.completed` /
+  `ai.request.failed`) clear the in-memory `Cache` entry but
+  intentionally leave the durable row alive so downstream readers
+  (notably `Session.Worker.add_message`) can fetch the merged
+  scope+telemetry tuple after the cache is cleared.
+
+  ## Telemetry merge
+
+  The Recorder writes per-request telemetry (`run_id`, `model`,
+  `input_tokens`, `output_tokens`, `latency_ms`) into the row via
+  `:record_telemetry` when the corresponding `ai.llm.response` /
+  `ai.request.completed` signal lands, **before** clearing the
+  cache. `Session.Worker.add_message` reads the row by `request_id`
+  to merge those fields into the `messages` row it appends.
+
   ## TTL semantics
 
   `expires_at` defaults to `DateTime.utc_now() + 600s` when the
@@ -63,6 +81,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     define(:complete, action: :complete, get_by: [:request_id])
     define(:expired, action: :expired)
     define(:lookup, action: :lookup, args: [:request_id], get?: true)
+    define(:record_telemetry, action: :record_telemetry, get_by: [:request_id])
   end
 
   actions do
@@ -77,10 +96,20 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
         :tenant_id,
         :workspace_id,
         :user_id,
-        :expires_at
+        :expires_at,
+        :run_id,
+        :model,
+        :input_tokens,
+        :output_tokens,
+        :latency_ms
       ])
 
       change({__MODULE__.Changes.ValidateCrossTenantFk, []})
+    end
+
+    update :record_telemetry do
+      accept([:run_id, :model, :input_tokens, :output_tokens, :latency_ms])
+      require_atomic?(false)
     end
 
     destroy :complete do
@@ -144,6 +173,33 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
       public?(true)
       writable?(true)
       default(fn -> DateTime.add(DateTime.utc_now(), 600, :second) end)
+    end
+
+    # Telemetry merged into the row by the Recorder when
+    # `ai.llm.response` / `ai.request.completed` lands.
+    attribute :run_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :model, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :input_tokens, :integer do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :output_tokens, :integer do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :latency_ms, :integer do
+      allow_nil?(true)
+      public?(true)
     end
   end
 

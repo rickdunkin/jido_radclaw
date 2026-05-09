@@ -5,8 +5,8 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     * `fts_pool`     — Postgres FTS via `websearch_to_tsquery` against
       the generated `search_vector` (label / content / tags weighted).
     * `ann_pool`     — pgvector cosine similarity against `embedding`,
-      scoped by `embedding_model = $X` so the planner picks the matching
-      partial HNSW index.
+      predicated on `embedding IS NOT NULL AND embedding_status =
+      'ready'` so the planner picks the matching partial HNSW index.
     * `lexical_pool` — `similarity(lexical_text, $X)` plus an
       ESCAPE-protected `LIKE` substring fallback, GIN-trigram-indexed.
 
@@ -88,7 +88,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     scope_chain = Map.fetch!(args, :scope_chain)
     query_text = Map.get(args, :query, "")
     embedding = Map.get(args, :query_embedding)
-    embedding_model = Map.get(args, :embedding_model, "voyage-4-large")
     limit = Map.get(args, :limit, 10)
     dedup = Map.get(args, :dedup, :by_precedence)
     bitemporal = Map.get(args, :bitemporal, :current_truth)
@@ -110,7 +109,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         static_params = [
           query_text,
           embedding,
-          embedding_model,
           like_pattern,
           raw_lower,
           limit
@@ -119,7 +117,16 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         params = [tenant_id] ++ scope_fragment.params ++ bt_fragment.params ++ static_params
 
         static_offsets = compute_static_offsets(bt_fragment.next)
-        sql = build_sql(scope_fragment.sql, bt_fragment.sql, dedup, query_text, embedding, static_offsets)
+
+        sql =
+          build_sql(
+            scope_fragment.sql,
+            bt_fragment.sql,
+            dedup,
+            query_text,
+            embedding,
+            static_offsets
+          )
 
         case Repo.query(sql, params) do
           {:ok, %Postgrex.Result{columns: cols, rows: rows}} ->
@@ -288,15 +295,14 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   end
 
   # Map the static tail params to their $N ordinals. Tail order is fixed:
-  # query_text, embedding, embedding_model, like_pattern, raw_lower, limit.
+  # query_text, embedding, like_pattern, raw_lower, limit.
   defp compute_static_offsets(base) do
     %{
       query: "$#{base}",
       embedding: "$#{base + 1}",
-      embedding_model: "$#{base + 2}",
-      like_pattern: "$#{base + 3}",
-      raw_lower: "$#{base + 4}",
-      limit: "$#{base + 5}"
+      like_pattern: "$#{base + 2}",
+      raw_lower: "$#{base + 3}",
+      limit: "$#{base + 4}"
     }
   end
 
@@ -305,9 +311,12 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     ann_pool = ann_pool_sql(scope_clause, bt_predicate, embedding, off, dedup)
     lex_pool = lexical_pool_sql(scope_clause, bt_predicate, query_text, off, dedup)
 
+    candidates_block =
+      candidates_block_sql(scope_clause, bt_predicate, query_text, embedding, off, dedup)
+
     pooled =
       """
-      WITH
+      WITH#{candidates_block}
       #{fts_pool},
       #{ann_pool},
       #{lex_pool},
@@ -331,7 +340,136 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
     final_select = final_select_sql(dedup, off)
 
-    pooled <> ", " <> final_select
+    join_final(pooled, final_select, dedup)
+  end
+
+  # `:by_precedence` — `final_select` opens with the `deduped` CTE,
+  # so it joins to `pooled`'s WITH list with a comma.
+  # `:none` — `final_select` is a bare `SELECT`, so the WITH list ends
+  # and the SELECT follows it directly.
+  defp join_final(pooled, final_select, :by_precedence), do: pooled <> ", " <> final_select
+  defp join_final(pooled, final_select, :none), do: pooled <> "\n" <> final_select
+
+  # Candidates CTE for shadow projection. Built only when
+  # `dedup: :by_precedence` because `:none` callers explicitly opted
+  # out of dedup and the result rows have no `shadowed_by` column.
+  #
+  # The matches CTEs deliberately mirror — but do not refactor —
+  # the existing pool predicates. They expose the broader match set
+  # without per-pool dedup so `candidates` can rank ALL candidates by
+  # precedence, including the lower-precedence siblings each pool's
+  # dedup dropped.
+  defp candidates_block_sql(_scope_clause, _bt_predicate, _query_text, _embedding, _off, :none),
+    do: ""
+
+  defp candidates_block_sql(
+         scope_clause,
+         bt_predicate,
+         query_text,
+         embedding,
+         off,
+         :by_precedence
+       ) do
+    fts_m = fts_matches_sql(scope_clause, bt_predicate, query_text, off)
+    ann_m = ann_matches_sql(scope_clause, bt_predicate, embedding, off)
+    lex_m = lex_matches_sql(scope_clause, bt_predicate, query_text, off)
+    candidates = candidates_cte_sql()
+
+    "\n#{fts_m},\n#{ann_m},\n#{lex_m},\n#{candidates},"
+  end
+
+  defp fts_matches_sql(_scope_clause, _bt_predicate, "", _off) do
+    "fts_matches AS (SELECT NULL::uuid AS id WHERE FALSE)"
+  end
+
+  defp fts_matches_sql(scope_clause, bt_predicate, _query_text, off) do
+    """
+    fts_matches AS (
+      SELECT id
+        FROM memory_facts
+       WHERE tenant_id = $1
+         AND #{scope_clause}
+         AND #{bt_predicate}
+         AND search_vector @@ websearch_to_tsquery('english', #{off.query})
+    )
+    """
+  end
+
+  defp ann_matches_sql(_scope_clause, _bt_predicate, nil, off) do
+    # Anchor the embedding param so the planner can type-infer it
+    # (matches the existing ann_pool stub behavior).
+    "ann_matches AS (SELECT NULL::uuid AS id WHERE FALSE OR #{off.embedding}::vector IS NULL)"
+  end
+
+  defp ann_matches_sql(scope_clause, bt_predicate, _embedding, off) do
+    # ANN has no semantic threshold. "All matches" is really "every
+    # ready-embedded row in scope" — unbounded on large tenants. We
+    # use a pragmatic top-K = N*8 as a bounded diagnostic candidate
+    # set: wider than ann_pool's N*4 so we surface lower-precedence
+    # siblings the pool dropped, but capped to keep the query
+    # predictable. This is honestly an approximation of "all
+    # candidates", not a mirror of ann_pool's actual scan.
+    """
+    ann_matches AS (
+      SELECT id
+        FROM memory_facts
+       WHERE tenant_id = $1
+         AND #{scope_clause}
+         AND #{bt_predicate}
+         AND #{off.embedding}::vector IS NOT NULL
+         AND embedding IS NOT NULL
+         AND embedding_status = 'ready'
+       ORDER BY (embedding <=> #{off.embedding}::vector) ASC
+       LIMIT #{off.limit} * 8
+    )
+    """
+  end
+
+  defp lex_matches_sql(_scope_clause, _bt_predicate, "", _off) do
+    "lex_matches AS (SELECT NULL::uuid AS id WHERE FALSE)"
+  end
+
+  defp lex_matches_sql(scope_clause, bt_predicate, _query_text, off) do
+    """
+    lex_matches AS (
+      SELECT id
+        FROM memory_facts
+       WHERE tenant_id = $1
+         AND #{scope_clause}
+         AND #{bt_predicate}
+         AND (
+           lexical_text % #{off.raw_lower}
+           OR lexical_text LIKE '%' || #{off.like_pattern} || '%' ESCAPE '\\'
+         )
+    )
+    """
+  end
+
+  defp candidates_cte_sql do
+    """
+    candidates AS (
+      SELECT mf.id,
+             mf.label,
+             mf.scope_kind,
+             mf.source,
+             COALESCE(mf.label, mf.id::text) AS partition_key,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(mf.label, mf.id::text)
+               ORDER BY #{scope_rank_case()} ASC,
+                        #{source_rank_case()} ASC,
+                        mf.valid_at DESC,
+                        mf.id DESC
+             ) AS prec_rank
+        FROM memory_facts mf
+       WHERE mf.id IN (
+         SELECT id FROM fts_matches
+         UNION
+         SELECT id FROM ann_matches
+         UNION
+         SELECT id FROM lex_matches
+       )
+    )
+    """
   end
 
   # Per-pool precedence dedup is the bug fix the reviewer flagged: with
@@ -349,7 +487,8 @@ defmodule JidoClaw.Memory.HybridSearchSql do
       PARTITION BY COALESCE(label, id::text)
       ORDER BY #{scope_rank_case()} ASC,
                #{source_rank_case()} ASC,
-               valid_at DESC
+               valid_at DESC,
+               id DESC
     ) AS precedence_row
     """
   end
@@ -409,15 +548,14 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   end
 
   defp ann_pool_sql(_scope_clause, _bt, nil, off, _dedup) do
-    # Even when no embedding is supplied, reference the embedding +
-    # embedding_model parameters so Postgres can type-infer the
-    # parameters (which show up in the bind list regardless). Without
-    # this anchor, planner emits "could not determine data type of
-    # parameter $N".
+    # Even when no embedding is supplied, reference the embedding
+    # parameter so Postgres can type-infer it (it shows up in the bind
+    # list regardless). Without this anchor, planner emits "could not
+    # determine data type of parameter $N".
     """
     ann_pool AS (
       SELECT NULL::uuid AS id, NULL::int AS fts_rank, NULL::int AS ann_rank, NULL::int AS lex_rank
-       WHERE FALSE OR #{off.embedding}::vector IS NULL OR #{off.embedding_model}::text IS NULL
+       WHERE FALSE OR #{off.embedding}::vector IS NULL
     )
     """
   end
@@ -441,7 +579,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
                  AND #{bt_predicate}
                  AND #{off.embedding}::vector IS NOT NULL
                  AND embedding IS NOT NULL
-                 AND embedding_model = #{off.embedding_model}
                  AND embedding_status = 'ready'
             ) per_row
            WHERE precedence_row = 1
@@ -465,7 +602,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
          AND #{bt_predicate}
          AND #{off.embedding}::vector IS NOT NULL
          AND embedding IS NOT NULL
-         AND embedding_model = #{off.embedding_model}
          AND embedding_status = 'ready'
        ORDER BY ann_rank ASC
        LIMIT #{off.limit} * 4
@@ -568,19 +704,37 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     """
     deduped AS (
       SELECT mf.*, r.combined_score,
+             COALESCE(mf.label, mf.id::text) AS partition_key,
              ROW_NUMBER() OVER (
                PARTITION BY COALESCE(mf.label, mf.id::text)
                ORDER BY #{scope_rank_case()} ASC,
                         #{source_rank_case()} ASC,
-                        mf.valid_at DESC
+                        mf.valid_at DESC,
+                        mf.id DESC
              ) AS row_num
         FROM ranked r
         JOIN memory_facts mf ON mf.id = r.id
     )
-    SELECT *
-      FROM deduped
+    SELECT d.*,
+           (
+             SELECT COALESCE(
+               jsonb_agg(
+                 jsonb_build_object(
+                   'id', c.id::text,
+                   'scope_kind', c.scope_kind::text,
+                   'source', c.source::text
+                 )
+                 ORDER BY c.prec_rank
+               ),
+               '[]'::jsonb
+             )
+             FROM candidates c
+             WHERE c.partition_key = d.partition_key
+               AND c.id <> d.id
+           ) AS shadowed_by
+      FROM deduped d
      WHERE row_num = 1
-     ORDER BY combined_score DESC, valid_at DESC, inserted_at DESC
+     ORDER BY combined_score DESC, valid_at DESC, inserted_at DESC, id DESC
      LIMIT #{off.limit}
     """
   end
@@ -606,13 +760,26 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
     id_index = Enum.find_index(cols, &(&1 == "id"))
     score_index = Enum.find_index(cols, &(&1 == "combined_score"))
+    shadow_index = Enum.find_index(cols, &(&1 == "shadowed_by"))
 
-    ranked =
-      Enum.map(rows, fn row ->
+    {ranked, shadows_by_id} =
+      Enum.reduce(rows, {[], %{}}, fn row, {ranked_acc, shadows_acc} ->
         raw_id = Enum.at(row, id_index)
         score = Enum.at(row, score_index) || 0.0
-        {Ecto.UUID.cast!(raw_id), score}
+        id = Ecto.UUID.cast!(raw_id)
+
+        shadows_acc =
+          if shadow_index do
+            shadows = decode_shadowed_by(Enum.at(row, shadow_index))
+            Map.put(shadows_acc, id, shadows)
+          else
+            shadows_acc
+          end
+
+        {[{id, score} | ranked_acc], shadows_acc}
       end)
+
+    ranked = Enum.reverse(ranked)
 
     case ranked do
       [] ->
@@ -627,12 +794,65 @@ defmodule JidoClaw.Memory.HybridSearchSql do
           |> Ash.read!()
           |> Map.new(fn f -> {f.id, f} end)
 
+        # `shadow_index` non-nil means the SQL projected a
+        # `shadowed_by` column (i.e. `:by_precedence` ran). In that
+        # mode we ALWAYS attach the metadata key — even if the list
+        # is empty — so callers can distinguish "dedup computed, no
+        # losers" (`[]`) from "no dedup ran" (`nil`, `:none` mode).
+        attach? = not is_nil(shadow_index)
+
         Enum.flat_map(ranked, fn {id, score} ->
           case Map.fetch(loaded, id) do
-            {:ok, fact} -> [%{fact: fact, combined_score: score}]
-            :error -> []
+            {:ok, fact} ->
+              fact =
+                if attach? do
+                  attach_shadows(fact, Map.get(shadows_by_id, id, []))
+                else
+                  fact
+                end
+
+              [%{fact: fact, combined_score: score}]
+
+            :error ->
+              []
           end
         end)
     end
+  end
+
+  defp decode_shadowed_by(nil), do: []
+
+  defp decode_shadowed_by(list) when is_list(list) do
+    Enum.flat_map(list, fn entry ->
+      case entry do
+        %{"id" => id, "scope_kind" => sk, "source" => src} ->
+          [
+            %{
+              id: id,
+              scope_kind: safe_existing_atom(sk),
+              source: safe_existing_atom(src)
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp decode_shadowed_by(_), do: []
+
+  defp safe_existing_atom(nil), do: nil
+
+  defp safe_existing_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp safe_existing_atom(value) when is_atom(value), do: value
+
+  defp attach_shadows(fact, shadows) when is_list(shadows) do
+    Ash.Resource.put_metadata(fact, :shadowed_by, shadows)
   end
 end

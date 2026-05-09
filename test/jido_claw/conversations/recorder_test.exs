@@ -1,7 +1,7 @@
 defmodule JidoClaw.Conversations.RecorderTest do
   use ExUnit.Case, async: false
 
-  alias JidoClaw.Conversations.{Message, Recorder, Session}
+  alias JidoClaw.Conversations.{Message, Recorder, RequestCorrelation, Session}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Workspaces.Workspace
 
@@ -151,6 +151,184 @@ defmodule JidoClaw.Conversations.RecorderTest do
     end
   end
 
+  describe "telemetry capture" do
+    test "full-turn happy path populates model/tokens/latency/run_id on the assistant message" do
+      %{tenant_id: tenant, session: session} = seed_session("telemetry-full")
+
+      request_id = "req-tel-#{System.unique_integer([:positive])}"
+      call_id = "call-#{System.unique_integer([:positive])}"
+      run_id = "run-#{System.unique_integer([:positive])}"
+
+      :ok = JidoClaw.register_correlation(request_id, session.id, tenant, nil, nil)
+      start_session_worker(tenant, session.id)
+
+      # Directive shape: ai.usage carries `call_id` + tokens but NOT
+      # request_id (mirrors `Signal.Usage.new!/1` from llm_generate.ex).
+      emit_signal("ai.usage", %{
+        call_id: call_id,
+        model: "anthropic/claude-test",
+        input_tokens: 1234,
+        output_tokens: 567,
+        total_tokens: 1801,
+        metadata: %{}
+      })
+
+      # ai.llm.response carries the request_id and the same call_id, so
+      # the recorder learns the mapping and drains the buffered usage.
+      emit_signal("ai.llm.response", %{
+        call_id: call_id,
+        result: {:ok, %{}, []},
+        metadata: %{request_id: request_id, run_id: run_id}
+      })
+
+      # Standard jido_ai telemetry event: the canonical latency surface.
+      :telemetry.execute(
+        [:jido, :ai, :llm, :complete],
+        %{duration_ms: 250},
+        %{request_id: request_id}
+      )
+
+      finalize_and_flush(request_id)
+
+      :ok =
+        JidoClaw.Session.Worker.add_message(
+          tenant,
+          session.id,
+          :assistant,
+          "ok",
+          request_id
+        )
+
+      {:ok, rows} = Message.for_session(session.id)
+      [assistant] = Enum.filter(rows, &(&1.role == :assistant))
+
+      assert assistant.model == "anthropic/claude-test"
+      assert assistant.input_tokens == 1234
+      assert assistant.output_tokens == 567
+      assert assistant.run_id == run_id
+      assert assistant.latency_ms == 250
+    end
+
+    test "ai.usage carrying request_id (React path) merges before finalize clears the cache" do
+      %{tenant_id: tenant, session: session} = seed_session("telemetry-react")
+
+      request_id = "req-react-#{System.unique_integer([:positive])}"
+      :ok = JidoClaw.register_correlation(request_id, session.id, tenant, nil, nil)
+
+      emit_signal("ai.usage", %{
+        call_id: "call-r-#{System.unique_integer([:positive])}",
+        model: "openai/gpt-test",
+        input_tokens: 50,
+        output_tokens: 25,
+        total_tokens: 75,
+        metadata: %{request_id: request_id, run_id: "react-run-1"}
+      })
+
+      finalize_and_flush(request_id)
+
+      {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert row.model == "openai/gpt-test"
+      assert row.input_tokens == 50
+      assert row.output_tokens == 25
+      assert row.run_id == "react-run-1"
+
+      # Cache cleared on finalize.
+      assert Cache.lookup(request_id) == :error
+    end
+
+    test "cache hit with no telemetry falls through to durable RequestCorrelation" do
+      %{tenant_id: tenant, session: session} = seed_session("telemetry-fallback")
+
+      request_id = "req-fallback-#{System.unique_integer([:positive])}"
+      :ok = JidoClaw.register_correlation(request_id, session.id, tenant, nil, nil)
+      start_session_worker(tenant, session.id)
+
+      # Update the durable row with telemetry (simulates a prior successful
+      # merge), then overwrite the cache to a scope-only entry to force
+      # the durable lookup path.
+      {:ok, _} =
+        RequestCorrelation.record_telemetry(request_id, %{
+          model: "model-from-durable",
+          input_tokens: 7,
+          output_tokens: 3,
+          run_id: "durable-run",
+          latency_ms: 9
+        })
+
+      Cache.put(request_id, %{
+        session_id: session.id,
+        tenant_id: tenant,
+        workspace_id: nil,
+        user_id: nil
+      })
+
+      :ok =
+        JidoClaw.Session.Worker.add_message(
+          tenant,
+          session.id,
+          :assistant,
+          "x",
+          request_id
+        )
+
+      {:ok, rows} = Message.for_session(session.id)
+      [assistant] = Enum.filter(rows, &(&1.role == :assistant))
+
+      assert assistant.model == "model-from-durable"
+      assert assistant.input_tokens == 7
+      assert assistant.output_tokens == 3
+      assert assistant.run_id == "durable-run"
+      assert assistant.latency_ms == 9
+    end
+
+    test "ai.usage without request_id buffers by call_id and drains on ai.llm.response" do
+      %{tenant_id: tenant, session: session} = seed_session("telemetry-buffer")
+
+      request_id = "req-buf-#{System.unique_integer([:positive])}"
+      call_id = "c-#{System.unique_integer([:positive])}"
+      :ok = JidoClaw.register_correlation(request_id, session.id, tenant, nil, nil)
+
+      emit_signal("ai.usage", %{
+        call_id: call_id,
+        model: "buffered-model",
+        input_tokens: 11,
+        output_tokens: 22,
+        total_tokens: 33,
+        metadata: %{}
+      })
+
+      emit_signal("ai.llm.response", %{
+        call_id: call_id,
+        result: {:ok, %{}, []},
+        metadata: %{request_id: request_id, run_id: "buffer-run"}
+      })
+
+      finalize_and_flush(request_id)
+
+      {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert row.model == "buffered-model"
+      assert row.input_tokens == 11
+      assert row.output_tokens == 22
+      assert row.run_id == "buffer-run"
+    end
+
+    test "telemetry handler captures latency_ms from [:jido,:ai,:llm,:complete] in isolation" do
+      %{tenant_id: tenant, session: session} = seed_session("telemetry-latency")
+
+      request_id = "req-lat-#{System.unique_integer([:positive])}"
+      :ok = JidoClaw.register_correlation(request_id, session.id, tenant, nil, nil)
+
+      :telemetry.execute(
+        [:jido, :ai, :llm, :complete],
+        %{duration_ms: 250},
+        %{request_id: request_id}
+      )
+
+      {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert row.latency_ms == 250
+    end
+  end
+
   describe "scope resolution via Postgres fallback" do
     test "Recorder rehydrates scope from RequestCorrelation when ETS cache misses" do
       %{tenant_id: tenant, session: session} = seed_session("durable")
@@ -243,6 +421,17 @@ defmodule JidoClaw.Conversations.RecorderTest do
       )
 
     Jido.Signal.Bus.publish(JidoClaw.SignalBus, [signal])
+  end
+
+  defp emit_signal(type, data) do
+    {:ok, signal} = Jido.Signal.new(type, data, source: "/test")
+    Jido.Signal.Bus.publish(JidoClaw.SignalBus, [signal])
+  end
+
+  defp start_session_worker(tenant_id, session_uuid) do
+    {:ok, _pid} = JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_uuid)
+    :ok = JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_uuid, session_uuid)
+    :ok
   end
 
   defp finalize_and_flush(request_id) do

@@ -172,24 +172,24 @@ defmodule JidoClaw.Forge.Runners.Codex do
   defp parse_output(output) do
     lines = String.split(output, "\n", trim: true)
 
-    {events, terminal} =
-      Enum.reduce(lines, {[], nil}, fn line, {events_acc, terminal_acc} ->
+    {events, terminal, turns} =
+      Enum.reduce(lines, {[], nil, 0}, fn line, {events_acc, terminal_acc, turns_acc} ->
         cond do
           not String.starts_with?(line, "{") ->
-            {events_acc, terminal_acc}
+            {events_acc, terminal_acc, turns_acc}
 
           true ->
             case Jason.decode(line) do
               {:ok, decoded} ->
-                handle_event(decoded, events_acc, terminal_acc)
+                handle_event(decoded, events_acc, terminal_acc, turns_acc)
 
               _ ->
-                {events_acc, terminal_acc}
+                {events_acc, terminal_acc, turns_acc}
             end
         end
       end)
 
-    metadata = %{tool_events: Enum.reverse(events)}
+    metadata = %{tool_events: Enum.reverse(events), turns: turns}
 
     case terminal do
       {:done, usage} ->
@@ -213,34 +213,35 @@ defmodule JidoClaw.Forge.Runners.Codex do
   # ---- Codex JSONL → ClaudeCode-shape mapping ----
 
   # thread.started / turn.started → drop (system noise)
-  defp handle_event(%{"type" => "thread.started"}, events, terminal),
-    do: {events, terminal}
+  defp handle_event(%{"type" => "thread.started"}, events, terminal, turns),
+    do: {events, terminal, turns}
 
-  defp handle_event(%{"type" => "turn.started"}, events, terminal),
-    do: {events, terminal}
+  defp handle_event(%{"type" => "turn.started"}, events, terminal, turns),
+    do: {events, terminal, turns}
 
-  # turn.completed → terminal :done; usage stashed into metadata.usage
-  defp handle_event(%{"type" => "turn.completed"} = ev, events, _terminal) do
-    {events, {:done, Map.get(ev, "usage")}}
+  # turn.completed → terminal :done; usage stashed into metadata.usage; turns += 1
+  defp handle_event(%{"type" => "turn.completed"} = ev, events, _terminal, turns) do
+    {events, {:done, Map.get(ev, "usage")}, turns + 1}
   end
 
   # turn.failed → terminal :error with error.message
-  defp handle_event(%{"type" => "turn.failed"} = ev, events, _terminal) do
+  defp handle_event(%{"type" => "turn.failed"} = ev, events, _terminal, turns) do
     msg = get_in(ev, ["error", "message"]) || "turn_failed"
-    {events, {:error, msg}}
+    {events, {:error, msg}, turns}
   end
 
   # top-level error → terminal :error
-  defp handle_event(%{"type" => "error"} = ev, events, _terminal) do
+  defp handle_event(%{"type" => "error"} = ev, events, _terminal, turns) do
     msg = Map.get(ev, "message") || "error"
-    {events, {:error, msg}}
+    {events, {:error, msg}, turns}
   end
 
   # item.started — currently only mcp_tool_call carries forward.
   defp handle_event(
          %{"type" => "item.started", "item" => %{"type" => "mcp_tool_call"} = item},
          events,
-         terminal
+         terminal,
+         turns
        ) do
     decoded = %{
       "type" => "tool_use",
@@ -250,18 +251,19 @@ defmodule JidoClaw.Forge.Runners.Codex do
       "id" => Map.get(item, "id")
     }
 
-    {[decoded | events], terminal}
+    {[decoded | events], terminal, turns}
   end
 
-  defp handle_event(%{"type" => "item.started"}, events, terminal),
-    do: {events, terminal}
+  defp handle_event(%{"type" => "item.started"}, events, terminal, turns),
+    do: {events, terminal, turns}
 
   # item.completed — mcp_tool_call → tool_result; agent_message → assistant;
   # reasoning → reasoning. Other subtypes are dropped.
   defp handle_event(
          %{"type" => "item.completed", "item" => %{"type" => "mcp_tool_call"} = item},
          events,
-         terminal
+         terminal,
+         turns
        ) do
     content = get_in(item, ["result", "content"]) || get_in(item, ["error", "message"])
     is_error = Map.get(item, "status") == "failed"
@@ -273,34 +275,36 @@ defmodule JidoClaw.Forge.Runners.Codex do
       "is_error" => is_error
     }
 
-    {[decoded | events], terminal}
+    {[decoded | events], terminal, turns}
   end
 
   defp handle_event(
          %{"type" => "item.completed", "item" => %{"type" => "agent_message"} = item},
          events,
-         terminal
+         terminal,
+         turns
        ) do
     decoded = %{"type" => "assistant", "text" => Map.get(item, "text")}
-    {[decoded | events], terminal}
+    {[decoded | events], terminal, turns}
   end
 
   defp handle_event(
          %{"type" => "item.completed", "item" => %{"type" => "reasoning"} = item},
          events,
-         terminal
+         terminal,
+         turns
        ) do
     decoded = %{"type" => "reasoning", "text" => Map.get(item, "text")}
-    {[decoded | events], terminal}
+    {[decoded | events], terminal, turns}
   end
 
-  defp handle_event(%{"type" => "item.completed"}, events, terminal),
-    do: {events, terminal}
+  defp handle_event(%{"type" => "item.completed"}, events, terminal, turns),
+    do: {events, terminal, turns}
 
-  defp handle_event(%{"type" => "item.updated"}, events, terminal),
-    do: {events, terminal}
+  defp handle_event(%{"type" => "item.updated"}, events, terminal, turns),
+    do: {events, terminal, turns}
 
-  defp handle_event(_, events, terminal), do: {events, terminal}
+  defp handle_event(_, events, terminal, turns), do: {events, terminal, turns}
 
   defp sync_file(client, source, dest) do
     case File.read(source) do

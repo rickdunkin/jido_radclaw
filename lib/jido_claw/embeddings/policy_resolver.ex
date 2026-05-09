@@ -7,24 +7,23 @@ defmodule JidoClaw.Embeddings.PolicyResolver do
   Two responsibilities:
 
     * `resolve/1` — read the workspace row's `embedding_policy` and
-      return one of `:default | :local_only | :disabled`. **Fails
-      closed** to `:disabled` when the workspace is missing,
-      unreadable, or has a malformed policy value. Anything that
-      cannot be confidently mapped to `:default` or `:local_only`
-      blocks Voyage egress.
+      return one of `:default | :disabled`. **Fails closed** to
+      `:disabled` when the workspace is missing, unreadable, or has
+      a malformed policy value. Anything that cannot be confidently
+      mapped to `:default` blocks Voyage egress.
     * `model_for_query/1` — translate the policy atom into a concrete
       `%{provider, request_model, stored_model}` shape (or
       `:disabled`). Distinct request and stored models matter for
       Voyage: query calls hit `voyage-4` but the embedding column
       stores rows under `voyage-4-large`, and the partial HNSW index
-      filters on the stored name.
+      filters on the `embedding_status = 'ready'` predicate.
   """
 
   alias JidoClaw.Repo
 
-  @type policy :: :default | :local_only | :disabled
+  @type policy :: :default | :disabled
   @type provider_spec :: %{
-          provider: :voyage | :local,
+          provider: :voyage,
           request_model: String.t(),
           stored_model: String.t()
         }
@@ -54,27 +53,16 @@ defmodule JidoClaw.Embeddings.PolicyResolver do
     %{provider: :voyage, request_model: "voyage-4", stored_model: "voyage-4-large"}
   end
 
-  def model_for_query(:local_only) do
-    model = default_local_model()
-    %{provider: :local, request_model: model, stored_model: model}
-  end
-
   def model_for_query(:disabled), do: :disabled
 
   @doc """
   Translate a resolved policy into the shape needed by the
   storage-side embedding call. Voyage uses `voyage-4-large` for both
-  request and stored model; the local provider uses the configured
-  model for both.
+  request and stored model.
   """
   @spec model_for_storage(policy()) :: provider_spec() | :disabled
   def model_for_storage(:default) do
     %{provider: :voyage, request_model: "voyage-4-large", stored_model: "voyage-4-large"}
-  end
-
-  def model_for_storage(:local_only) do
-    model = default_local_model()
-    %{provider: :local, request_model: model, stored_model: model}
   end
 
   def model_for_storage(:disabled), do: :disabled
@@ -84,15 +72,8 @@ defmodule JidoClaw.Embeddings.PolicyResolver do
   defp normalize_workspace_id(_), do: :error
 
   defp coerce("disabled"), do: :disabled
-  defp coerce("local_only"), do: :local_only
   defp coerce("default"), do: :default
   defp coerce(:disabled), do: :disabled
-  defp coerce(:local_only), do: :local_only
   defp coerce(:default), do: :default
   defp coerce(_), do: :disabled
-
-  defp default_local_model do
-    Application.get_env(:jido_claw, JidoClaw.Embeddings.Local, [])[:model] ||
-      "mxbai-embed-large"
-  end
 end

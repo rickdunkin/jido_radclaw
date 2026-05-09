@@ -29,6 +29,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
 
   use Mix.Task
 
+  alias JidoClaw.Export.Canonical
   alias JidoClaw.Repo
   alias JidoClaw.Workspaces.Resolver
 
@@ -55,18 +56,23 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
 
     payload =
       rows
+      |> Enum.sort_by(& &1[:id])
       |> Enum.map(fn row ->
         {row[:id], to_legacy_shape(row)}
       end)
       |> Enum.into(%{})
 
     File.mkdir_p!(Path.dirname(out_path))
-    File.write!(out_path, Jason.encode!(payload, pretty: true))
+    File.write!(out_path, Canonical.encode!(payload))
 
     if manifest_path do
-      manifest = Enum.map(rows, &redaction_manifest/1)
+      manifest =
+        rows
+        |> Enum.sort_by(& &1[:id])
+        |> Enum.map(&redaction_manifest/1)
+
       File.mkdir_p!(Path.dirname(manifest_path))
-      File.write!(manifest_path, Jason.encode!(manifest, pretty: true))
+      File.write!(manifest_path, Canonical.encode!(manifest))
       Mix.shell().info("Manifest written to #{manifest_path}")
     end
 

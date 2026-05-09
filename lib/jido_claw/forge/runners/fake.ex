@@ -11,6 +11,11 @@ defmodule JidoClaw.Forge.Runners.Fake do
   args}` tuples. The runner sends one `tools/call` per proposal in
   order, then a final `commit_proposals` call, then closes the
   session.
+
+  Tests can pin a specific `harness_turns` value by supplying
+  `runner_config.fake_turns` (default 0). The value is emitted in the
+  result metadata so the consolidator's `harness_turns` derivation
+  exercises the same code path as the real runners.
   """
 
   @behaviour JidoClaw.Forge.Runner
@@ -23,26 +28,32 @@ defmodule JidoClaw.Forge.Runners.Fake do
   def init(_client, config) do
     proposals = Map.get(config, :fake_proposals, [])
     mcp_config_path = Map.get(config, :mcp_config_path)
+    turns = Map.get(config, :fake_turns, 0)
 
     {:ok,
      %{
        fake_proposals: proposals,
        mcp_config_path: mcp_config_path,
+       fake_turns: turns,
        iteration: 0
      }}
   end
 
   @impl true
   def run_iteration(_client, state, _opts) do
-    with {:ok, server_url} <- read_server_url(state.mcp_config_path),
-         {:ok, _session_id} <- mcp_initialize(server_url),
-         :ok <- send_proposals(server_url, state.fake_proposals),
-         :ok <- commit(server_url) do
-      {:ok, Runner.done("fake-completed")}
-    else
-      {:error, reason} ->
-        {:ok, Runner.error("fake_runner_failed: #{inspect(reason)}")}
-    end
+    base =
+      with {:ok, server_url} <- read_server_url(state.mcp_config_path),
+           {:ok, _session_id} <- mcp_initialize(server_url),
+           :ok <- send_proposals(server_url, state.fake_proposals),
+           :ok <- commit(server_url) do
+        Runner.done("fake-completed")
+      else
+        {:error, reason} ->
+          Runner.error("fake_runner_failed: #{inspect(reason)}")
+      end
+
+    metadata = Map.merge(base.metadata, %{turns: state.fake_turns})
+    {:ok, %{base | metadata: metadata}}
   end
 
   @impl true

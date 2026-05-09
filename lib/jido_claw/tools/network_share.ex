@@ -21,22 +21,34 @@ defmodule JidoClaw.Tools.NetworkShare do
       ]
     ]
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
-  def run(params, _context) do
-    case JidoClaw.Network.Node.broadcast_solution(params.solution_id) do
-      :ok ->
-        {:ok, %{solution_id: params.solution_id, status: "shared"}}
+  def run(params, context) do
+    MCPScope.wrap(:network_share, params, context, fn _enriched ->
+      case JidoClaw.Network.Node.broadcast_solution(params.solution_id) do
+        :ok ->
+          {:ok, %{solution_id: params.solution_id, status: "shared"}}
 
-      {:error, :not_connected} ->
-        {:ok,
-         %{solution_id: params.solution_id, status: "not_shared", reason: "network not connected"}}
+        {:error, :not_connected} ->
+          {:ok,
+           %{
+             solution_id: params.solution_id,
+             status: "not_shared",
+             reason: "network not connected"
+           }}
 
-      {:error, :not_running} ->
-        {:ok,
-         %{solution_id: params.solution_id, status: "not_shared", reason: "network not running"}}
+        {:error, :not_running} ->
+          {:ok,
+           %{
+             solution_id: params.solution_id,
+             status: "not_shared",
+             reason: "network not running"
+           }}
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
   end
 end

@@ -18,12 +18,9 @@ defmodule JidoClaw.Embeddings.RatePacer do
 
   ## Single bucket today
 
-  v0.6.1 uses a single Voyage-wide bucket: the `model` argument on
-  `acquire/2` and `try_admit/2` is accepted for forward-compat with
-  multi-provider growth but is **not** used to partition state. If a
-  separate Local provider needs metering later, re-shape the state
-  map to `%{voyage: bucket(), local: bucket()}` keyed on the
-  argument.
+  Voyage is the only embedding provider. The `model` argument on
+  `acquire/2` and `try_admit/2` is accepted for forward-compat but
+  is **not** used to partition state.
 
   ## Effective window derivation
 

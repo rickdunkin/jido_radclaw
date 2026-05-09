@@ -589,9 +589,8 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp normalize_policy("default"), do: :default
-  defp normalize_policy("local_only"), do: :local_only
   defp normalize_policy("disabled"), do: :disabled
-  defp normalize_policy(p) when p in [:default, :local_only, :disabled], do: p
+  defp normalize_policy(p) when p in [:default, :disabled], do: p
   defp normalize_policy(_), do: nil
 
   defp apply_policy_if_needed(workspace, _attr, nil), do: workspace

@@ -18,20 +18,22 @@ defmodule JidoClaw.Tools.GitCommit do
       ]
     ]
 
+  alias JidoClaw.Tools.MCPScope
+
   @impl true
-  def run(%{message: message, files: files}, _context) do
-    # Stage files
-    Enum.each(files, fn file ->
-      System.cmd("git", ["add", file], stderr_to_stdout: true)
+  def run(%{message: message, files: files} = params, context) do
+    MCPScope.wrap(:git_commit, params, context, fn _enriched ->
+      Enum.each(files, fn file ->
+        System.cmd("git", ["add", file], stderr_to_stdout: true)
+      end)
+
+      case System.cmd("git", ["commit", "-m", message], stderr_to_stdout: true) do
+        {output, 0} ->
+          {:ok, %{output: String.trim(output), status: "committed"}}
+
+        {output, _} ->
+          {:error, "git commit failed: #{String.trim(output)}"}
+      end
     end)
-
-    # Commit
-    case System.cmd("git", ["commit", "-m", message], stderr_to_stdout: true) do
-      {output, 0} ->
-        {:ok, %{output: String.trim(output), status: "committed"}}
-
-      {output, _} ->
-        {:error, "git commit failed: #{String.trim(output)}"}
-    end
   end
 end

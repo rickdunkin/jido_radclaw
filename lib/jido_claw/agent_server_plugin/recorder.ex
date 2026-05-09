@@ -22,6 +22,7 @@ defmodule JidoClaw.AgentServerPlugin.Recorder do
     * `ai.tool.started` — tool call about to execute
     * `ai.tool.result` — tool call returned (ok or error envelope)
     * `ai.llm.response` — final LLM response, may carry `thinking_content`
+    * `ai.usage` — per-call token / model usage (carries `call_id`)
     * `ai.request.completed` — terminal signal for a request_id
     * `ai.request.failed` — terminal signal (error path)
 
@@ -40,6 +41,7 @@ defmodule JidoClaw.AgentServerPlugin.Recorder do
       "ai.tool.started",
       "ai.tool.result",
       "ai.llm.response",
+      "ai.usage",
       "ai.request.completed",
       "ai.request.failed"
     ]

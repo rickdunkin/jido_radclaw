@@ -233,6 +233,20 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/memory blocks edit " <> label, state) do
+    label = String.trim(label)
+
+    case memory_scope(state) do
+      {:ok, scope} ->
+        edit_block_at_scope(scope, label)
+
+      _ ->
+        IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
+    end
+
+    {:ok, state}
+  end
+
   def handle("/memory blocks history " <> label, state) do
     label = String.trim(label)
 
@@ -323,7 +337,7 @@ defmodule JidoClaw.CLI.Commands do
               "  \e[32m✓\e[0m  succeeded — facts_added=#{run.facts_added}, blocks_written=#{run.blocks_written}, blocks_revised=#{run.blocks_revised}"
             )
 
-          {:error, "scope_busy"} ->
+          {:error, :scope_busy} ->
             IO.puts("  \e[33m⚠\e[0m  consolidation already running for this scope")
 
           {:error, reason} ->
@@ -1173,9 +1187,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp apply_workspace_policy(state, _kind, :error, raw) do
-    IO.puts(
-      "  \e[31m✗\e[0m  '#{raw}' is not a valid policy. Use one of: default, local_only, disabled."
-    )
+    IO.puts("  \e[31m✗\e[0m  '#{raw}' is not a valid policy. Use one of: default, disabled.")
 
     {:ok, state}
   end
@@ -1218,14 +1230,13 @@ defmodule JidoClaw.CLI.Commands do
     do: JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy)
 
   defp parse_policy("default"), do: {:ok, :default}
-  defp parse_policy("local_only"), do: {:ok, :local_only}
   defp parse_policy("disabled"), do: {:ok, :disabled}
   defp parse_policy(_), do: :error
 
   defp print_workspace_usage(state) do
     IO.puts("  Usage:")
-    IO.puts("    /workspace embedding <default|local_only|disabled>")
-    IO.puts("    /workspace consolidation <default|local_only|disabled>")
+    IO.puts("    /workspace embedding <default|disabled>")
+    IO.puts("    /workspace consolidation <default|disabled>")
     {:ok, state}
   end
 
@@ -1387,4 +1398,136 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  Usage: /servers [list | current | test <name>]")
     {:ok, state}
   end
+
+  # ---------------------------------------------------------------------------
+  # /memory blocks edit <label>
+  # ---------------------------------------------------------------------------
+
+  defp edit_block_at_scope(scope, label) do
+    case JidoClaw.Memory.list_blocks_for_scope_chain(scope) do
+      [] ->
+        IO.puts("  \e[33m⚠\e[0m  no blocks visible at the active scope")
+
+      blocks ->
+        case Enum.find(blocks, &(&1.label == label)) do
+          nil ->
+            IO.puts("  \e[33m⚠\e[0m  no block with label \e[1m#{label}\e[0m at the active scope")
+
+          block ->
+            edit_and_save_block(scope, block)
+        end
+    end
+  end
+
+  defp edit_and_save_block(scope, block) do
+    do_edit_block(scope, block, block.value)
+  end
+
+  defp do_edit_block(scope, block, initial) do
+    case open_in_editor(initial, label_to_filename(block.label)) do
+      {:ok, new_value} ->
+        cond do
+          new_value == block.value ->
+            IO.puts("  \e[2m   No changes detected.\e[0m")
+
+          byte_size(new_value) > block.char_limit ->
+            IO.puts(
+              "  \e[31m✗\e[0m  Block exceeds char_limit (#{byte_size(new_value)} > #{block.char_limit}). Re-opening editor..."
+            )
+
+            do_edit_block(scope, block, new_value)
+
+          true ->
+            apply_block_edit(scope, block, new_value)
+        end
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  Editor failed: #{inspect(reason)}")
+    end
+  end
+
+  defp apply_block_edit(scope, block, new_value) do
+    same_scope? = same_scope?(scope, block)
+
+    result =
+      if same_scope? do
+        JidoClaw.Memory.Block.revise(block, %{value: new_value})
+      else
+        attrs = %{
+          tenant_id: block.tenant_id,
+          scope_kind: scope.scope_kind,
+          user_id: scope.user_id,
+          workspace_id: scope.workspace_id,
+          project_id: scope.project_id,
+          session_id: scope.session_id,
+          label: block.label,
+          description: block.description,
+          value: new_value,
+          char_limit: block.char_limit,
+          pinned: block.pinned,
+          position: block.position,
+          source: :user_save,
+          written_by: "cli"
+        }
+
+        JidoClaw.Memory.Block.write(attrs)
+      end
+
+    case result do
+      {:ok, written} ->
+        kind = if same_scope?, do: "revised", else: "override created"
+        IO.puts("  \e[32m✓\e[0m  block #{kind} (id=#{written.id})")
+
+      {:error, err} ->
+        IO.puts("  \e[31m✗\e[0m  Block write failed: #{inspect(err)}")
+    end
+  end
+
+  defp same_scope?(scope, block) do
+    scope.scope_kind == block.scope_kind and
+      primary_fk(scope) == block_primary_fk(block)
+  end
+
+  defp block_primary_fk(%{scope_kind: :user, user_id: id}), do: id
+  defp block_primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
+  defp block_primary_fk(%{scope_kind: :project, project_id: id}), do: id
+  defp block_primary_fk(%{scope_kind: :session, session_id: id}), do: id
+  defp block_primary_fk(_), do: nil
+
+  defp open_in_editor(initial_content, suffix) do
+    [editor | extra_args] =
+      (System.get_env("EDITOR") || "vi")
+      |> String.split(~r/\s+/, trim: true)
+      |> case do
+        [] -> ["vi"]
+        parts -> parts
+      end
+
+    tmp_dir = System.tmp_dir!()
+    tmp_path = Path.join(tmp_dir, "jido_block_#{System.unique_integer([:positive])}_#{suffix}")
+
+    try do
+      File.write!(tmp_path, initial_content)
+
+      case System.cmd(editor, extra_args ++ [tmp_path], into: IO.stream(:stdio, :line)) do
+        {_, 0} ->
+          case File.read(tmp_path) do
+            {:ok, content} -> {:ok, content}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {_, exit_code} ->
+          {:error, {:editor_exit, exit_code}}
+      end
+    after
+      File.rm(tmp_path)
+    end
+  end
+
+  defp label_to_filename(label) when is_binary(label) do
+    safe = Regex.replace(~r/[^a-zA-Z0-9_.-]+/, label, "_")
+    "#{safe}.md"
+  end
+
+  defp label_to_filename(_), do: "block.md"
 end

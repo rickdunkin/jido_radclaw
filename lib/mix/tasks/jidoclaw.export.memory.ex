@@ -35,6 +35,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
 
   require Ash.Query
 
+  alias JidoClaw.Export.Canonical
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
   alias JidoClaw.Security.Redaction.Patterns
@@ -63,13 +64,13 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
           is_nil(invalid_at) and is_nil(expired_at)
       )
       |> Ash.read!()
+      |> Enum.sort_by(& &1.id)
 
     Mix.shell().info("Exporting #{length(facts)} Memory.Fact rows to #{out}")
 
     payload = %{
       manifest: %{
         version: "v0.6.3a",
-        exported_at: DateTime.utc_now() |> DateTime.to_iso8601(),
         tenant_id: tenant_id,
         workspace_id: workspace_id,
         included_resources: ["memory_facts"],
@@ -85,7 +86,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
     }
 
     File.mkdir_p!(Path.dirname(out))
-    File.write!(out, Jason.encode!(payload, pretty: true))
+    File.write!(out, Canonical.encode!(payload))
 
     Mix.shell().info("Done.")
     :ok

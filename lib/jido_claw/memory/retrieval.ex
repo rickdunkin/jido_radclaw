@@ -40,11 +40,6 @@ defmodule JidoClaw.Memory.Retrieval do
   alias JidoClaw.Memory.{HybridSearchSql, Scope}
 
   @default_limit 10
-  # The default is the *stored* model — the one rows are written under
-  # and the partial HNSW index filters on. Voyage's request side is
-  # `voyage-4`, but the ANN pool predicates `embedding_model = $X`, so
-  # the caller-visible default has to match storage.
-  @default_embedding_model "voyage-4-large"
 
   @doc """
   Search Memory.Fact for the resolved scope.
@@ -61,8 +56,6 @@ defmodule JidoClaw.Memory.Retrieval do
   Optional:
 
     * `:limit`           — int, default 10.
-    * `:embedding_model` — `"voyage-4-large"` (default — the stored model)
-                            or `"mxbai-embed-large"`.
     * `:dedup`           — `:by_precedence` (default) | `:none`.
     * `:embed_queries?`  — `true` (default) to compute the embedding via
                             the policy resolver. `false` skips ANN.
@@ -106,11 +99,11 @@ defmodule JidoClaw.Memory.Retrieval do
         []
 
       _ ->
-        {embedding, embedding_model} =
+        embedding =
           if settings.embed_queries? do
             resolve_embedding(query, scope.workspace_id, settings.opts)
           else
-            {nil, Keyword.get(settings.opts, :embedding_model, @default_embedding_model)}
+            nil
           end
 
         ranked =
@@ -119,22 +112,23 @@ defmodule JidoClaw.Memory.Retrieval do
             scope_chain: chain,
             query: query,
             query_embedding: embedding,
-            embedding_model: embedding_model || @default_embedding_model,
             limit: settings.limit,
             dedup: settings.dedup,
             bitemporal: settings.bitemporal
           })
 
         # A real query with no matches must return `[]`. Empty queries
-        # short-circuit upstream to `recency_scan/2`.
+        # short-circuit upstream to `recency_scan/2`. The Fact structs
+        # already carry `:shadowed_by` metadata from the SQL pass when
+        # dedup is `:by_precedence` — see `HybridSearchSql.load_facts/2`.
         Enum.map(ranked, & &1.fact)
     end
   end
 
-  # Mirror of Solutions.Matcher.resolve_embedding/3. Returns
-  # `{embedding_or_nil, stored_model_or_nil}`. When the caller supplies
-  # an explicit `:query_embedding` or `:embedding_model`, those win;
-  # otherwise we consult `PolicyResolver` for the workspace's policy.
+  # Mirror of Solutions.Matcher.resolve_embedding/3. Returns the query
+  # embedding (list of floats) or nil. When the caller supplies an
+  # explicit `:query_embedding`, it wins; otherwise we consult
+  # `PolicyResolver` for the workspace's policy.
   #
   # `workspace_id` is always populated for `:session`/`:project`/
   # `:workspace` scopes via the ancestor walk in `Scope.resolve/1`. It is
@@ -143,45 +137,21 @@ defmodule JidoClaw.Memory.Retrieval do
   # recall has no per-workspace embedding policy.
   defp resolve_embedding(query, workspace_id, opts) do
     explicit_embedding = Keyword.get(opts, :query_embedding)
-    explicit_model = Keyword.get(opts, :embedding_model)
 
-    cond do
-      not is_nil(explicit_embedding) ->
-        {explicit_embedding, explicit_model || @default_embedding_model}
+    if not is_nil(explicit_embedding) do
+      explicit_embedding
+    else
+      resolver = Keyword.get(opts, :policy_resolver, PolicyResolver)
+      policy = resolver.resolve(workspace_id)
 
-      not is_nil(explicit_model) ->
-        {compute_for_model(query, explicit_model, opts), explicit_model}
+      case resolver.model_for_query(policy) do
+        :disabled ->
+          nil
 
-      true ->
-        resolver = Keyword.get(opts, :policy_resolver, PolicyResolver)
-        policy = resolver.resolve(workspace_id)
-
-        case resolver.model_for_query(policy) do
-          :disabled ->
-            {nil, nil}
-
-          %{provider: :local, request_model: _req, stored_model: stored} ->
-            {compute_local(query, opts), stored}
-
-          %{provider: :voyage, request_model: req, stored_model: stored} ->
-            {compute_voyage(query, req, opts), stored}
-        end
+        %{provider: :voyage, request_model: req} ->
+          compute_voyage(query, req, opts)
+      end
     end
-  end
-
-  defp compute_for_model(query, "mxbai-embed-large", opts), do: compute_local(query, opts)
-
-  defp compute_for_model(query, _other, opts), do: compute_voyage(query, "voyage-4", opts)
-
-  defp compute_local(query, opts) do
-    local_mod = Keyword.get(opts, :local_module, JidoClaw.Embeddings.Local)
-
-    case local_mod.embed_for_query(query) do
-      {:ok, vec} -> vec
-      _ -> nil
-    end
-  rescue
-    _ -> nil
   end
 
   defp compute_voyage(query, model, opts) do

@@ -1,0 +1,32 @@
+{
+  "11111111-1111-4111-8111-111111111111": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "problem_signature": "compile-elixir-warning-as-error",
+    "solution_content": "Run mix compile --warnings-as-errors before commit.",
+    "language": "elixir",
+    "framework": null,
+    "runtime": null,
+    "agent_id": "main",
+    "tags": ["build"],
+    "verification": {},
+    "trust_score": 0.6,
+    "sharing": "local",
+    "inserted_at": "2025-09-01T00:00:00Z",
+    "updated_at": "2025-09-01T00:00:00Z"
+  },
+  "22222222-2222-4222-8222-222222222222": {
+    "id": "22222222-2222-4222-8222-222222222222",
+    "problem_signature": "test-failure-pattern",
+    "solution_content": "Inspect mix test --failed output.",
+    "language": "elixir",
+    "framework": null,
+    "runtime": null,
+    "agent_id": "main",
+    "tags": ["test"],
+    "verification": {},
+    "trust_score": 0.5,
+    "sharing": "local",
+    "inserted_at": "2025-09-02T00:00:00Z",
+    "updated_at": "2025-09-02T00:00:00Z"
+  }
+}

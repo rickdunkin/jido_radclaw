@@ -70,18 +70,19 @@ defmodule JidoClaw.Tools.StoreSolution do
 
   @impl true
   def run(params, context) do
-    context = MCPScope.with_default(context)
-    tool_context = Map.get(context, :tool_context, %{})
-    tenant_id = Map.get(tool_context, :tenant_id)
-    workspace_uuid = Map.get(tool_context, :workspace_uuid)
-    session_uuid = Map.get(tool_context, :session_uuid)
-    created_by_user_id = Map.get(tool_context, :user_id)
+    MCPScope.wrap(:store_solution, params, context, fn enriched ->
+      tool_context = Map.get(enriched, :tool_context, %{})
+      tenant_id = Map.get(tool_context, :tenant_id)
+      workspace_uuid = Map.get(tool_context, :workspace_uuid)
+      session_uuid = Map.get(tool_context, :session_uuid)
+      created_by_user_id = Map.get(tool_context, :user_id)
 
-    cond do
-      is_nil(tenant_id) -> {:error, :missing_scope_tenant}
-      is_nil(workspace_uuid) -> {:error, :missing_scope_workspace}
-      true -> store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id)
-    end
+      cond do
+        is_nil(tenant_id) -> {:error, :missing_scope_tenant}
+        is_nil(workspace_uuid) -> {:error, :missing_scope_workspace}
+        true -> store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id)
+      end
+    end)
   end
 
   defp store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id) do

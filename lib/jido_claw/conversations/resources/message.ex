@@ -85,6 +85,11 @@ defmodule JidoClaw.Conversations.Message do
       index([:tool_call_id], where: "tool_call_id IS NOT NULL")
       index([:parent_message_id], where: "parent_message_id IS NOT NULL")
       index([:tenant_id, :session_id])
+
+      index([:request_id, :role],
+        where: "request_id IS NOT NULL",
+        name: "messages_request_id_role_idx"
+      )
     end
   end
 
@@ -101,6 +106,12 @@ defmodule JidoClaw.Conversations.Message do
       action: :tool_call_parent,
       args: [:session_id, :request_id, :tool_call_id]
     )
+
+    define(:by_live_tool_row,
+      action: :by_live_tool_row,
+      args: [:session_id, :request_id, :tool_call_id, :role],
+      get?: true
+    )
   end
 
   actions do
@@ -116,7 +127,12 @@ defmodule JidoClaw.Conversations.Message do
         :content,
         :metadata,
         :tool_call_id,
-        :parent_message_id
+        :parent_message_id,
+        :run_id,
+        :model,
+        :input_tokens,
+        :output_tokens,
+        :latency_ms
       ])
 
       change({__MODULE__.Changes.DenormalizeTenant, []})
@@ -136,7 +152,12 @@ defmodule JidoClaw.Conversations.Message do
         :tool_call_id,
         :parent_message_id,
         :import_hash,
-        :inserted_at
+        :inserted_at,
+        :run_id,
+        :model,
+        :input_tokens,
+        :output_tokens,
+        :latency_ms
       ])
 
       change({__MODULE__.Changes.ValidateCrossTenantFk, []})
@@ -184,6 +205,23 @@ defmodule JidoClaw.Conversations.Message do
       )
 
       prepare(build(limit: 1, sort: [sequence: :asc]))
+    end
+
+    read :by_live_tool_row do
+      get?(true)
+      argument(:session_id, :uuid, allow_nil?: false)
+      argument(:request_id, :string, allow_nil?: false)
+      argument(:tool_call_id, :string, allow_nil?: false)
+      argument(:role, :atom, allow_nil?: false)
+
+      filter(
+        expr(
+          session_id == ^arg(:session_id) and
+            request_id == ^arg(:request_id) and
+            tool_call_id == ^arg(:tool_call_id) and
+            role == ^arg(:role)
+        )
+      )
     end
 
     read :for_consolidator do
@@ -266,6 +304,32 @@ defmodule JidoClaw.Conversations.Message do
       public?(true)
       writable?(true)
       default(&DateTime.utc_now/0)
+    end
+
+    # Telemetry merged from `RequestCorrelation` at append time.
+    attribute :run_id, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :model, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :input_tokens, :integer do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :output_tokens, :integer do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :latency_ms, :integer do
+      allow_nil?(true)
+      public?(true)
     end
   end
 

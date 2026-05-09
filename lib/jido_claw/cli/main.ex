@@ -15,8 +15,14 @@ defmodule JidoClaw.CLI.Main do
   end
 
   def main(["--setup" | args]) do
+    project_dir = JidoClaw.Startup.resolve_project_dir_from_argv(args)
+    Application.put_env(:jido_claw, :project_dir, project_dir)
+    Application.put_env(:jido_claw, :first_run_setup_pending, true)
     Application.put_env(:jido_claw, :force_setup, true)
-    main(args)
+    Application.ensure_all_started(:jido_claw)
+    JidoClaw.CLI.Setup.run(project_dir)
+    IO.puts("Setup complete — restart with the binary or `mix jidoclaw`.")
+    :ok
   end
 
   def main(args) do

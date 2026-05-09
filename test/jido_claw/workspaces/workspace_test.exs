@@ -44,6 +44,24 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
       assert ws.consolidation_policy == :default
     end
 
+    test ":local_only is rejected at the attribute layer for both policies" do
+      assert {:error, _} =
+               Workspace.register(%{
+                 tenant_id: "default",
+                 path: "/tmp/local-only-#{System.unique_integer([:positive])}",
+                 name: "demo",
+                 embedding_policy: :local_only
+               })
+
+      assert {:error, _} =
+               Workspace.register(%{
+                 tenant_id: "default",
+                 path: "/tmp/local-only-c-#{System.unique_integer([:positive])}",
+                 name: "demo",
+                 consolidation_policy: :local_only
+               })
+    end
+
     test "policies are independent — flipping one doesn't move the other" do
       tenant = "default"
       path = "/tmp/policy-indep-#{System.unique_integer([:positive])}"
@@ -56,9 +74,9 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
       assert ws2.embedding_policy == :default
       assert ws2.consolidation_policy == :disabled
 
-      {:ok, ws3} = Workspace.set_consolidation_policy(ws2, :local_only)
+      {:ok, ws3} = Workspace.set_consolidation_policy(ws2, :default)
       assert ws3.embedding_policy == :default
-      assert ws3.consolidation_policy == :local_only
+      assert ws3.consolidation_policy == :default
     end
   end
 

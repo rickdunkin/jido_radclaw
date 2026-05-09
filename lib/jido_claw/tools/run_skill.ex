@@ -40,9 +40,14 @@ defmodule JidoClaw.Tools.RunSkill do
     ]
 
   alias JidoClaw.Workflows.StepResult
+  alias JidoClaw.Tools.MCPScope
 
   @impl true
   def run(params, context) do
+    MCPScope.wrap(:run_skill, params, context, fn enriched -> do_run(params, enriched) end)
+  end
+
+  defp do_run(params, context) do
     skill_name = params.skill
     extra_context = Map.get(params, :context, "")
     tool_context = Map.get(context, :tool_context, %{}) || %{}

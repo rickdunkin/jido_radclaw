@@ -2,14 +2,13 @@ defmodule JidoClaw.Memory.Link do
   @moduledoc """
   Directed graph edge between two `Memory.Fact` rows in the same scope.
 
-  Relations:
+  Relations (plan §3.8):
 
-    * `:supports`        — A reinforces B
-    * `:contradicts`     — A directly contradicts B
-    * `:supersedes`      — A replaces B (B should be deprioritized)
-    * `:duplicates`      — A is a near-duplicate of B
-    * `:depends_on`      — A only makes sense given B
-    * `:related`         — generic association (consolidator-friendly)
+    * `:related`     — generic association (consolidator-friendly)
+    * `:supports`    — A reinforces B
+    * `:contradicts` — A directly contradicts B
+    * `:supersedes`  — A replaces B (B should be deprioritized)
+    * `:elaborates`  — A expands or refines B without contradicting
 
   ## Cross-tenant + cross-scope rejection
 
@@ -31,7 +30,7 @@ defmodule JidoClaw.Memory.Link do
     data_layer: AshPostgres.DataLayer,
     primary_read_warning?: false
 
-  @relations [:supports, :contradicts, :supersedes, :duplicates, :depends_on, :related]
+  @relations [:related, :supports, :contradicts, :supersedes, :elaborates]
   @scope_kinds [:user, :workspace, :project, :session]
 
   postgres do

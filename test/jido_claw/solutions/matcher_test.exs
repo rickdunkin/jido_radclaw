@@ -7,10 +7,10 @@ defmodule JidoClaw.Solutions.MatcherTest do
     * Fix 2: threshold filter applies against the SQL `combined_score`,
       not `trust_score`, so a moderate-relevance row passes when its
       trust_score is `0.0` (default).
-    * Fix 3: when neither `:embedding_model` nor `:query_embedding` is
-      supplied, the matcher consults the workspace's embedding policy
-      via `PolicyResolver`. `:disabled` workspaces never call the
-      Voyage stub. Missing-workspace fails closed to `:disabled`.
+    * Fix 3: when `:query_embedding` is not supplied, the matcher
+      consults the workspace's embedding policy via `PolicyResolver`.
+      `:disabled` workspaces never call the Voyage stub.
+      Missing-workspace fails closed to `:disabled`.
     * Cross-workspace isolation — a `:local` row in workspace B is
       not returned to a query against workspace A.
   """
@@ -27,13 +27,6 @@ defmodule JidoClaw.Solutions.MatcherTest do
       do: %{provider: :voyage, request_model: "voyage-4", stored_model: "voyage-4-large"}
 
     def model_for_query(:disabled), do: :disabled
-
-    def model_for_query(:local_only),
-      do: %{
-        provider: :local,
-        request_model: "mxbai-embed-large",
-        stored_model: "mxbai-embed-large"
-      }
   end
 
   defmodule DisabledResolver do
