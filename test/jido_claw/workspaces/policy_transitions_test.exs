@@ -1,39 +1,41 @@
 defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Repo
-  alias JidoClaw.Workspaces.{PolicyTransitions, Workspace}
+  alias JidoClaw.Workspaces.PolicyTransitions
 
   setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
-    :ok
+    %{tenant_id: seed_tenant("policy-transitions")}
   end
 
   describe "apply_embedding/3 — memory_facts coverage" do
-    test ":default flips memory_facts :disabled rows to :pending alongside solutions" do
-      {:ok, ws} = ws("default-flip")
-      {:ok, fact} = seed_disabled_fact(ws)
+    test ":default flips memory_facts :disabled rows to :pending alongside solutions", %{
+      tenant_id: tenant_id
+    } do
+      {:ok, ws} = ws(tenant_id, "default-flip")
+      {:ok, fact} = seed_disabled_fact(tenant_id, ws)
       assert fact.embedding_status == :disabled
 
       :ok = PolicyTransitions.apply_embedding(ws.id, :default)
 
-      reloaded = Ash.get!(Fact, fact.id)
+      {:ok, reloaded} = Fact.by_id_global(fact.id)
       assert reloaded.embedding_status == :pending
     end
 
-    test ":disabled flips memory_facts :pending|:processing|:failed back to :disabled" do
-      {:ok, ws} = ws("disable-active")
+    test ":disabled flips memory_facts :pending|:processing|:failed back to :disabled", %{
+      tenant_id: tenant_id
+    } do
+      {:ok, ws} = ws(tenant_id, "disable-active")
 
-      pending = seed_fact_with_status(ws, :pending)
-      processing = seed_fact_with_status(ws, :processing)
-      failed = seed_fact_with_status(ws, :failed)
+      pending = seed_fact_with_status(tenant_id, ws, :pending)
+      processing = seed_fact_with_status(tenant_id, ws, :processing)
+      failed = seed_fact_with_status(tenant_id, ws, :failed)
 
       :ok = PolicyTransitions.apply_embedding(ws.id, :disabled)
 
       Enum.each([pending, processing, failed], fn fact ->
-        reloaded = Ash.get!(Fact, fact.id)
+        {:ok, reloaded} = Fact.by_id_global(fact.id)
         assert reloaded.embedding_status == :disabled
         assert reloaded.embedding_attempt_count == 0
         assert is_nil(reloaded.embedding_next_attempt_at)
@@ -41,27 +43,31 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
       end)
     end
 
-    test ":disabled with purge_existing: true clears :ready memory_fact embeddings" do
-      {:ok, ws} = ws("disable-purge")
-      ready_fact = seed_ready_fact(ws)
+    test ":disabled with purge_existing: true clears :ready memory_fact embeddings", %{
+      tenant_id: tenant_id
+    } do
+      {:ok, ws} = ws(tenant_id, "disable-purge")
+      ready_fact = seed_ready_fact(tenant_id, ws)
 
       assert ready_fact.embedding_status == :ready
       refute is_nil(ready_fact.embedding)
 
       :ok = PolicyTransitions.apply_embedding(ws.id, :disabled, purge_existing: true)
 
-      reloaded = Ash.get!(Fact, ready_fact.id)
+      {:ok, reloaded} = Fact.by_id_global(ready_fact.id)
       assert reloaded.embedding_status == :disabled
       assert is_nil(reloaded.embedding)
     end
 
-    test ":disabled WITHOUT purge_existing leaves :ready memory_fact embeddings intact" do
-      {:ok, ws} = ws("disable-keep-ready")
-      ready_fact = seed_ready_fact(ws)
+    test ":disabled WITHOUT purge_existing leaves :ready memory_fact embeddings intact", %{
+      tenant_id: tenant_id
+    } do
+      {:ok, ws} = ws(tenant_id, "disable-keep-ready")
+      ready_fact = seed_ready_fact(tenant_id, ws)
 
       :ok = PolicyTransitions.apply_embedding(ws.id, :disabled)
 
-      reloaded = Ash.get!(Fact, ready_fact.id)
+      {:ok, reloaded} = Fact.by_id_global(ready_fact.id)
       assert reloaded.embedding_status == :ready
       refute is_nil(reloaded.embedding)
     end
@@ -71,44 +77,53 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp ws(label) do
-    Workspace.register(%{
-      tenant_id: "default",
-      path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
-      name: label
-    })
+  defp ws(tenant_id, label) do
+    Workspace.register(
+      %{
+        path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
+        name: label
+      },
+      tenant: tenant_id
+    )
   end
 
-  defp seed_disabled_fact(workspace) do
+  defp seed_disabled_fact(tenant_id, workspace) do
     Fact
-    |> Ash.Changeset.for_create(:record, %{
-      tenant_id: workspace.tenant_id,
-      scope_kind: :workspace,
-      workspace_id: workspace.id,
-      label: "policy-#{System.unique_integer([:positive])}",
-      content: "disabled-row",
-      tags: ["fact"],
-      source: :user_save,
-      trust_score: 0.5,
-      embedding_status: :disabled
-    })
-    |> Ash.create(domain: JidoClaw.Memory)
-  end
-
-  defp seed_fact_with_status(workspace, status) when status in [:pending, :processing, :failed] do
-    {:ok, fact} =
-      Fact
-      |> Ash.Changeset.for_create(:record, %{
-        tenant_id: workspace.tenant_id,
+    |> Ash.Changeset.for_create(
+      :record,
+      %{
         scope_kind: :workspace,
         workspace_id: workspace.id,
-        label: "policy-#{status}-#{System.unique_integer([:positive])}",
-        content: "row-with-status-#{status}",
+        label: "policy-#{System.unique_integer([:positive])}",
+        content: "disabled-row",
         tags: ["fact"],
         source: :user_save,
         trust_score: 0.5,
-        embedding_status: :pending
-      })
+        embedding_status: :disabled
+      },
+      tenant: tenant_id
+    )
+    |> Ash.create(domain: JidoClaw.Memory)
+  end
+
+  defp seed_fact_with_status(tenant_id, workspace, status)
+       when status in [:pending, :processing, :failed] do
+    {:ok, fact} =
+      Fact
+      |> Ash.Changeset.for_create(
+        :record,
+        %{
+          scope_kind: :workspace,
+          workspace_id: workspace.id,
+          label: "policy-#{status}-#{System.unique_integer([:positive])}",
+          content: "row-with-status-#{status}",
+          tags: ["fact"],
+          source: :user_save,
+          trust_score: 0.5,
+          embedding_status: :pending
+        },
+        tenant: tenant_id
+      )
       |> Ash.create(domain: JidoClaw.Memory)
 
     # Drive the row into the target status via direct UPDATE so we
@@ -119,30 +134,38 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
       [Ecto.UUID.dump!(fact.id), Atom.to_string(status)]
     )
 
-    Ash.get!(Fact, fact.id)
+    {:ok, reloaded} = Fact.by_id_global(fact.id)
+    reloaded
   end
 
-  defp seed_ready_fact(workspace) do
+  defp seed_ready_fact(tenant_id, workspace) do
     {:ok, fact} =
       Fact
-      |> Ash.Changeset.for_create(:record, %{
-        tenant_id: workspace.tenant_id,
-        scope_kind: :workspace,
-        workspace_id: workspace.id,
-        label: "ready-#{System.unique_integer([:positive])}",
-        content: "ready-row",
-        tags: ["fact"],
-        source: :user_save,
-        trust_score: 0.5,
-        embedding_status: :pending
-      })
+      |> Ash.Changeset.for_create(
+        :record,
+        %{
+          scope_kind: :workspace,
+          workspace_id: workspace.id,
+          label: "ready-#{System.unique_integer([:positive])}",
+          content: "ready-row",
+          tags: ["fact"],
+          source: :user_save,
+          trust_score: 0.5,
+          embedding_status: :pending
+        },
+        tenant: tenant_id
+      )
       |> Ash.create(domain: JidoClaw.Memory)
 
     fact
-    |> Ash.Changeset.for_update(:transition_embedding_status, %{
-      embedding: List.duplicate(0.001, 1024),
-      embedding_status: :ready
-    })
+    |> Ash.Changeset.for_update(
+      :transition_embedding_status,
+      %{
+        embedding: List.duplicate(0.001, 1024),
+        embedding_status: :ready
+      },
+      tenant: tenant_id
+    )
     |> Ash.update!()
   end
 end

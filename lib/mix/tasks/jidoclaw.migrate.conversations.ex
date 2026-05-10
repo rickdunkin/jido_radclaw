@@ -187,7 +187,6 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
 
     attrs = %{
       session_id: session.id,
-      tenant_id: session.tenant_id,
       role: role,
       sequence: sequence,
       content: content,
@@ -196,7 +195,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
       inserted_at: inserted_at
     }
 
-    case Message.import(attrs) do
+    case Message.import(attrs, tenant: session.tenant_id) do
       {:ok, _} ->
         :ok
 

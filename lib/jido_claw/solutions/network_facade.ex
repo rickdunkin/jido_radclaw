@@ -52,10 +52,9 @@ defmodule JidoClaw.Solutions.NetworkFacade do
       |> normalize_keys()
       |> Map.drop(@forced_inbound_keys)
       |> Map.put(:sharing, :shared)
-      |> Map.put(:tenant_id, tenant_id)
       |> Map.put(:workspace_id, workspace_id)
 
-    Solution.store(attrs)
+    Solution.store(attrs, tenant: tenant_id)
   end
 
   @doc """
@@ -73,12 +72,12 @@ defmodule JidoClaw.Solutions.NetworkFacade do
     tenant_id = Map.fetch!(node_state, :tenant_id)
     workspace_id = Map.fetch!(node_state, :workspace_id)
 
-    case Ash.get(Solution, solution_id, domain: JidoClaw.Solutions.Domain) do
-      {:ok, %Solution{tenant_id: ^tenant_id, workspace_id: ^workspace_id, sharing: sharing} = sol}
+    case Solution.by_id(solution_id, tenant: tenant_id) do
+      {:ok, %Solution{workspace_id: ^workspace_id, sharing: sharing} = sol}
       when sharing in [:local, :shared, :public] ->
         {:ok, sol}
 
-      {:ok, %Solution{tenant_id: ^tenant_id, sharing: :public} = sol} ->
+      {:ok, %Solution{sharing: :public} = sol} ->
         {:ok, sol}
 
       _ ->
@@ -100,9 +99,9 @@ defmodule JidoClaw.Solutions.NetworkFacade do
     case Solution.by_signature(
            signature,
            workspace_id,
-           tenant_id,
            [:local, :shared, :public],
-           [:public]
+           [:public],
+           tenant: tenant_id
          ) do
       {:ok, list} when is_list(list) -> list
       _ -> []

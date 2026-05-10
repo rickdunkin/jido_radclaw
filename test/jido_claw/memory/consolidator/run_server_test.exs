@@ -10,14 +10,14 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   regression that re-introduces the race or drops a forwarded field
   fails fast.
   """
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
-  alias JidoClaw.Conversations.{Message, Session}
+  alias JidoClaw.Conversations.Message
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link}
   alias JidoClaw.Memory.Consolidator
   alias JidoClaw.Memory.Consolidator.Clusterer
   alias JidoClaw.Memory.Consolidator.TestSupport.PromptCapture
-  alias JidoClaw.Workspaces.{Resolver, Workspace}
+  alias JidoClaw.Workspaces.Resolver
 
   @consolidator_key JidoClaw.Memory.Consolidator
   @memory_domain JidoClaw.Memory.Domain
@@ -30,7 +30,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
     # for the run's duration via `Repo.checkout/1` — that's
     # incompatible with shared mode's single routed connection. Lock
     # semantics are covered separately in `lock_owner_test.exs`.
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
     prev = Application.get_env(:jido_claw, @consolidator_key, [])
     prev_persist = Application.get_env(:jido_claw, JidoClaw.Forge.Persistence, [])
     Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
@@ -48,15 +47,16 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       Application.put_env(:jido_claw, @consolidator_key, prev)
       Application.put_env(:jido_claw, :consolidator_advisory_lock_disabled?, false)
       Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, prev_persist)
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
     end)
 
-    :ok
+    %{tenant_id: seed_tenant("run-server")}
   end
 
   describe "end-to-end fake-harness run" do
-    test "succeeded run writes a block + fact when proposals stage cleanly" do
-      {_ws, scope} = workspace_scope()
+    test "succeeded run writes a block + fact when proposals stage cleanly", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       assert {:ok, run} =
                Consolidator.run_now(scope,
@@ -79,15 +79,17 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.blocks_written >= 1
       assert run.facts_added >= 1
 
-      blocks = Ash.read!(Block, domain: @memory_domain)
+      blocks = Ash.read!(Block, domain: @memory_domain, tenant: tenant_id)
       assert Enum.any?(blocks, &(&1.label == "core_facts" and &1.value =~ "shipping"))
 
-      facts = Ash.read!(Fact, domain: @memory_domain)
+      facts = Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id)
       assert Enum.any?(facts, &(&1.label == "geo" and &1.content =~ "Canada"))
     end
 
-    test "propose_link forwards relation, reason, confidence to a Link row" do
-      {_ws, scope} = workspace_scope()
+    test "propose_link forwards relation, reason, confidence to a Link row", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       # Distinct labels: Fact.record/1's InvalidatePriorActiveLabel hook
       # invalidates any active row at the same `(tenant, scope, label)`,
@@ -115,7 +117,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.status == :succeeded
       assert run.links_added >= 1
 
-      links = Ash.read!(Link, domain: @memory_domain)
+      links = Ash.read!(Link, domain: @memory_domain, tenant: tenant_id)
       created = Enum.find(links, &(&1.from_fact_id == fact_a.id and &1.to_fact_id == fact_b.id))
 
       refute is_nil(created)
@@ -125,8 +127,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert created.written_by == "consolidator"
     end
 
-    test "propose_update invalidates original + writes replacement + writes :supersedes link" do
-      {_ws, scope} = workspace_scope()
+    test "propose_update invalidates original + writes replacement + writes :supersedes link",
+         %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       original = seed_fact_simple!(scope, "vacation_plans")
 
@@ -154,10 +157,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # replacement row is written — NOT from
       # maybe_invalidate_unlabeled/1, which short-circuits for labeled
       # facts.
-      reloaded = Ash.get!(Fact, original.id, domain: @memory_domain)
+      reloaded = Ash.get!(Fact, original.id, domain: @memory_domain, tenant: tenant_id)
       refute is_nil(reloaded.invalid_at)
 
-      facts = Ash.read!(Fact, domain: @memory_domain)
+      facts = Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id)
 
       replacement =
         Enum.find(facts, fn f ->
@@ -169,7 +172,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert replacement.tags == ["v2"]
       assert replacement.source == :consolidator_promoted
 
-      links = Ash.read!(Link, domain: @memory_domain)
+      links = Ash.read!(Link, domain: @memory_domain, tenant: tenant_id)
 
       supersedes =
         Enum.find(links, fn l ->
@@ -181,8 +184,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert supersedes.written_by == "consolidator"
     end
 
-    test "defer_cluster (facts) — watermark stops at row before deferred cluster" do
-      {_ws, scope} = workspace_scope()
+    test "defer_cluster (facts) — watermark stops at row before deferred cluster", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       # Truncate to microseconds — the Ash attributes are
       # `:utc_datetime_usec` and an unrounded `DateTime.utc_now/0` can
@@ -210,8 +215,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.facts_processed_until_id == a.id
     end
 
-    test "defer_cluster (messages) — single-cluster defer pins watermark to nil" do
-      {_ws, session, scope} = session_scope()
+    test "defer_cluster (messages) — single-cluster defer pins watermark to nil", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, session, scope} = session_scope(tenant_id)
 
       t0 = DateTime.utc_now() |> DateTime.truncate(:microsecond)
       _ = seed_message_at!(session, "msg one", t0, 1)
@@ -243,8 +250,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.messages_processed_until_id == nil
     end
 
-    test "fake_proposals: [] → succeeded run with zero counters" do
-      {_ws, scope} = workspace_scope()
+    test "fake_proposals: [] → succeeded run with zero counters", %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       assert {:ok, run} =
                Consolidator.run_now(scope,
@@ -270,9 +277,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.links_added == 0
     end
 
-    test "runner_config.prompt reaches the runner via state.prompt" do
+    test "runner_config.prompt reaches the runner via state.prompt", %{tenant_id: tenant_id} do
       {:ok, _agent} = PromptCapture.start_link()
-      {_ws, scope} = workspace_scope()
+      {_ws, scope} = workspace_scope(tenant_id)
 
       # PromptCapture.run_iteration returns done("") without committing
       # any proposals, so the run finalises as :failed (max_turns_reached).
@@ -287,13 +294,15 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       captured = PromptCapture.last_prompt()
       assert is_binary(captured)
       assert captured =~ "memory consolidator"
-      assert captured =~ "workspace (tenant=default"
+      assert captured =~ "workspace (tenant=#{tenant_id}"
       assert captured =~ "list_clusters"
       assert captured =~ "commit_proposals"
     end
 
-    test "harness_model column tracks the configured model across consecutive runs" do
-      {_ws, scope} = workspace_scope()
+    test "harness_model column tracks the configured model across consecutive runs", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
 
       Application.put_env(:jido_claw, @consolidator_key,
         enabled: true,
@@ -342,7 +351,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run_b.harness_model == "model-B"
     end
 
-    test "per-call harness override picks the harness's nested model, not the global default's" do
+    test "per-call harness override picks the harness's nested model, not the global default's",
+         %{tenant_id: tenant_id} do
       empty_codex_home =
         Path.join(System.tmp_dir!(), "empty_codex_nested_#{System.unique_integer([:positive])}")
 
@@ -372,7 +382,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         ]
       )
 
-      {_ws, scope} = workspace_scope()
+      {_ws, scope} = workspace_scope(tenant_id)
 
       assert {:error, "no_credentials"} =
                Consolidator.run_now(scope,
@@ -381,7 +391,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
                  await_ms: 30_000
                )
 
-      rows = Ash.read!(ConsolidationRun, domain: @memory_domain)
+      rows = Ash.read!(ConsolidationRun, domain: @memory_domain, tenant: tenant_id)
 
       row =
         Enum.find(rows, fn r ->
@@ -393,7 +403,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert row.harness_model == "codex-y"
     end
 
-    test ":no_credentials egress writes a failed row with harness=:codex" do
+    test ":no_credentials egress writes a failed row with harness=:codex", %{
+      tenant_id: tenant_id
+    } do
       empty_codex_home =
         Path.join(System.tmp_dir!(), "empty_codex_#{System.unique_integer([:positive])}")
 
@@ -409,7 +421,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
           else: Application.delete_env(:jido_claw, :codex_home_dir)
       end)
 
-      {_ws, scope} = workspace_scope()
+      {_ws, scope} = workspace_scope(tenant_id)
 
       result =
         Consolidator.run_now(scope,
@@ -420,7 +432,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
       assert {:error, "no_credentials"} = result
 
-      rows = Ash.read!(ConsolidationRun, domain: @memory_domain)
+      rows = Ash.read!(ConsolidationRun, domain: @memory_domain, tenant: tenant_id)
 
       row =
         Enum.find(rows, fn r ->
@@ -435,7 +447,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       refute is_nil(row.forge_session_id), "expected a forge_session_id (init/2 ran)"
     end
 
-    test "per-run forge_home is created mid-flight and cleaned up after the run" do
+    test "per-run forge_home is created mid-flight and cleaned up after the run", %{
+      tenant_id: tenant_id
+    } do
       forge_home =
         Path.join(System.tmp_dir!(), "forge_home_cleanup_#{System.unique_integer([:positive])}")
 
@@ -464,7 +478,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         end
       end)
 
-      {_ws, scope} = workspace_scope()
+      {_ws, scope} = workspace_scope(tenant_id)
 
       assert {:ok, run} =
                Consolidator.run_now(scope,
@@ -484,7 +498,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       refute File.dir?(Path.join(forge_home, run.forge_session_id))
     end
 
-    test "Forge session is eventually stopped after every covered exit path" do
+    test "Forge session is eventually stopped after every covered exit path", %{
+      tenant_id: tenant_id
+    } do
       # DEFERRED: source plan asked for await_ready timeout, harness
       # DOWN during bootstrap, and run_iteration crash coverage. All
       # three require a test-only stub runner that hangs/crashes inside
@@ -493,7 +509,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # paths reachable today: succeeded with proposals and succeeded
       # without.
 
-      {_ws, scope1} = workspace_scope()
+      {_ws, scope1} = workspace_scope(tenant_id)
 
       assert {:ok, run_with_proposals} =
                Consolidator.run_now(scope1,
@@ -515,7 +531,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
           run_with_proposals.forge_session_id not in JidoClaw.Forge.Manager.list_sessions()
         end)
 
-      {_ws, scope2} = workspace_scope()
+      {_ws, scope2} = workspace_scope(tenant_id)
 
       assert {:ok, empty_run} =
                Consolidator.run_now(scope2,
@@ -535,10 +551,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
   # -- helpers ----------------------------------------------------------------
 
-  defp workspace_scope do
+  defp workspace_scope(tenant_id) do
     {:ok, ws} =
       Resolver.ensure_workspace(
-        "default",
+        tenant_id,
         "/tmp/run_server_test_#{System.unique_integer([:positive])}"
       )
 
@@ -547,7 +563,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
     {:ok, ws} = Workspace.set_consolidation_policy(ws, :default)
 
     scope = %{
-      tenant_id: "default",
+      tenant_id: tenant_id,
       scope_kind: :workspace,
       user_id: nil,
       workspace_id: ws.id,
@@ -558,20 +574,22 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
     {ws, scope}
   end
 
-  defp session_scope do
-    {ws, _ws_scope} = workspace_scope()
+  defp session_scope(tenant_id) do
+    {ws, _ws_scope} = workspace_scope(tenant_id)
 
     {:ok, session} =
-      Session.start(%{
-        workspace_id: ws.id,
-        tenant_id: "default",
-        kind: :repl,
-        external_id: "sess-#{System.unique_integer([:positive])}",
-        started_at: DateTime.utc_now()
-      })
+      Session.start(
+        %{
+          workspace_id: ws.id,
+          kind: :repl,
+          external_id: "sess-#{System.unique_integer([:positive])}",
+          started_at: DateTime.utc_now()
+        },
+        tenant: tenant_id
+      )
 
     scope = %{
-      tenant_id: "default",
+      tenant_id: tenant_id,
       scope_kind: :session,
       user_id: nil,
       workspace_id: ws.id,
@@ -589,54 +607,60 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   # silently fail to load even when the test author thought timestamps
   # were the only thing that mattered.
   defp seed_fact_simple!(scope, label) do
-    Fact.record!(%{
-      tenant_id: scope.tenant_id,
-      scope_kind: scope.scope_kind,
-      user_id: scope.user_id,
-      workspace_id: scope.workspace_id,
-      project_id: scope.project_id,
-      session_id: scope.session_id,
-      label: label,
-      content: "content for #{label}",
-      tags: ["seed"],
-      source: :model_remember,
-      written_by: "test"
-    })
+    Fact.record!(
+      %{
+        scope_kind: scope.scope_kind,
+        user_id: scope.user_id,
+        workspace_id: scope.workspace_id,
+        project_id: scope.project_id,
+        session_id: scope.session_id,
+        label: label,
+        content: "content for #{label}",
+        tags: ["seed"],
+        source: :model_remember,
+        written_by: "test"
+      },
+      tenant: scope.tenant_id
+    )
   end
 
   # `Fact.record/1`'s accept list does not include `:inserted_at`, so
   # explicit-timestamp seeding has to go through `:import_legacy`.
   defp seed_fact_at!(scope, label, ts) do
-    Fact.import_legacy!(%{
-      tenant_id: scope.tenant_id,
-      scope_kind: scope.scope_kind,
-      user_id: scope.user_id,
-      workspace_id: scope.workspace_id,
-      project_id: scope.project_id,
-      session_id: scope.session_id,
-      label: label,
-      content: "imported content for #{label}",
-      tags: ["seed-import"],
-      written_by: "test",
-      import_hash: "test-#{System.unique_integer([:positive])}",
-      inserted_at: ts,
-      valid_at: ts
-    })
+    Fact.import_legacy!(
+      %{
+        scope_kind: scope.scope_kind,
+        user_id: scope.user_id,
+        workspace_id: scope.workspace_id,
+        project_id: scope.project_id,
+        session_id: scope.session_id,
+        label: label,
+        content: "imported content for #{label}",
+        tags: ["seed-import"],
+        written_by: "test",
+        import_hash: "test-#{System.unique_integer([:positive])}",
+        inserted_at: ts,
+        valid_at: ts
+      },
+      tenant: scope.tenant_id
+    )
   end
 
   # `Message.append/1` allocates `sequence` and ignores `tenant_id` /
   # `inserted_at` — `Message.import/1` is the only path that accepts
   # all three as writable arguments.
   defp seed_message_at!(session, content, ts, sequence) do
-    Message.import!(%{
-      session_id: session.id,
-      tenant_id: session.tenant_id,
-      role: :user,
-      sequence: sequence,
-      content: content,
-      inserted_at: ts,
-      import_hash: "msg-#{System.unique_integer([:positive])}"
-    })
+    Message.import!(
+      %{
+        session_id: session.id,
+        role: :user,
+        sequence: sequence,
+        content: content,
+        inserted_at: ts,
+        import_hash: "msg-#{System.unique_integer([:positive])}"
+      },
+      tenant: session.tenant_id
+    )
   end
 
   defp eventually(fun, timeout_ms \\ 1_000) do

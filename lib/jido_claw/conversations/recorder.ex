@@ -484,7 +484,7 @@ defmodule JidoClaw.Conversations.Recorder do
         tool_call_id: tool_call_id
       }
 
-      attempt_append(attrs)
+      attempt_append(attrs, scope.tenant_id)
     end
   end
 
@@ -503,7 +503,9 @@ defmodule JidoClaw.Conversations.Recorder do
 
       parent =
         if is_binary(request_id) and is_binary(tool_call_id) do
-          case Message.tool_call_parent(scope.session_id, request_id, tool_call_id) do
+          case Message.tool_call_parent(scope.session_id, request_id, tool_call_id,
+                 tenant: scope.tenant_id
+               ) do
             {:ok, [%{id: id} | _]} -> id
             _ -> nil
           end
@@ -526,7 +528,7 @@ defmodule JidoClaw.Conversations.Recorder do
         parent_message_id: parent
       }
 
-      attempt_append(attrs)
+      attempt_append(attrs, scope.tenant_id)
     end
   end
 
@@ -555,7 +557,7 @@ defmodule JidoClaw.Conversations.Recorder do
             metadata: %{}
           }
 
-          attempt_append(attrs)
+          attempt_append(attrs, scope.tenant_id)
         end
     end
   end
@@ -744,8 +746,8 @@ defmodule JidoClaw.Conversations.Recorder do
   # Append helpers
   # ---------------------------------------------------------------------------
 
-  defp attempt_append(attrs) do
-    case Message.append(attrs) do
+  defp attempt_append(attrs, tenant_id) do
+    case Message.append(attrs, tenant: tenant_id) do
       {:ok, _} ->
         :ok
 

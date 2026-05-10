@@ -36,6 +36,12 @@ defmodule JidoClaw.Conversations.Session do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:start, action: :start)
     define(:touch, action: :touch)
@@ -46,11 +52,12 @@ defmodule JidoClaw.Conversations.Session do
 
     define(:by_external,
       action: :by_external,
-      args: [:tenant_id, :workspace_id, :kind, :external_id],
+      args: [:workspace_id, :kind, :external_id],
       get?: true
     )
 
     define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -58,16 +65,12 @@ defmodule JidoClaw.Conversations.Session do
 
     create :start do
       primary?(true)
-      upsert?(true)
-      upsert_identity(:unique_external)
-      upsert_fields([:last_active_at, :updated_at])
 
       accept([
         :workspace_id,
         :user_id,
         :kind,
         :external_id,
-        :tenant_id,
         :started_at,
         :idle_timeout_seconds,
         :metadata
@@ -77,28 +80,30 @@ defmodule JidoClaw.Conversations.Session do
 
       change(fn changeset, _ctx ->
         Ash.Changeset.before_action(changeset, fn cs ->
-          tenant_id = Ash.Changeset.get_attribute(cs, :tenant_id)
+          tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
           workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
 
-          case Ash.get(JidoClaw.Workspaces.Workspace, workspace_id, domain: JidoClaw.Workspaces) do
+          case JidoClaw.Workspaces.Workspace.by_id_global(workspace_id) do
             {:ok, %{tenant_id: ^tenant_id}} ->
               cs
 
             {:ok, %{tenant_id: parent_tenant}} ->
               Ash.Changeset.add_error(cs,
                 field: :workspace_id,
-                message: "cross-tenant FK mismatch",
+                message: "cross_tenant_fk_mismatch",
                 vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
               )
 
             {:error, _} ->
               Ash.Changeset.add_error(cs,
                 field: :workspace_id,
-                message: "workspace not found"
+                message: "workspace_not_found"
               )
           end
         end)
       end)
+
+      change({JidoClaw.Audit.Producers.SessionStart, []})
     end
 
     update :touch do
@@ -108,7 +113,9 @@ defmodule JidoClaw.Conversations.Session do
 
     update :close do
       accept([])
+      require_atomic?(false)
       change(set_attribute(:closed_at, &DateTime.utc_now/0))
+      change({JidoClaw.Audit.Producers.SessionEnd, []})
     end
 
     update :set_next_sequence do
@@ -141,14 +148,13 @@ defmodule JidoClaw.Conversations.Session do
 
     read :by_external do
       get?(true)
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:workspace_id, :uuid, allow_nil?: false)
       argument(:kind, :atom, allow_nil?: false)
       argument(:external_id, :string, allow_nil?: false)
 
       filter(
         expr(
-          tenant_id == ^arg(:tenant_id) and workspace_id == ^arg(:workspace_id) and
+          workspace_id == ^arg(:workspace_id) and
             kind == ^arg(:kind) and external_id == ^arg(:external_id)
         )
       )
@@ -156,6 +162,13 @@ defmodule JidoClaw.Conversations.Session do
 
     read :by_id do
       get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
       argument(:id, :uuid, allow_nil?: false)
       filter(expr(id == ^arg(:id)))
     end
@@ -230,6 +243,11 @@ defmodule JidoClaw.Conversations.Session do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :workspace, JidoClaw.Workspaces.Workspace do
       define_attribute?(false)
       attribute_writable?(true)

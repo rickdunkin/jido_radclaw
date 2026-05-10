@@ -47,7 +47,6 @@ defmodule JidoClaw.Tools.ScheduleTask do
 
   @impl true
   def run(params, context) do
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 
     id = params[:id] || generate_id(params.task)
@@ -65,26 +64,32 @@ defmodule JidoClaw.Tools.ScheduleTask do
 
         case JidoClaw.Cron.Scheduler.schedule(tenant_id, opts) do
           {:ok, ^id, _pid} ->
-            # Persist to YAML
-            job_map = %{
-              id: id,
+            {kind, value} = persistable_schedule(schedule_tuple)
+
+            persist_attrs = %{
+              job_id: id,
               task: params.task,
-              schedule: schedule_str,
-              mode: to_string(mode)
+              mode: mode,
+              schedule_kind: kind,
+              schedule_value: value
             }
 
-            JidoClaw.Cron.Persistence.add_job(project_dir, job_map)
+            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: tenant_id) do
+              {:ok, _job} ->
+                schedule_desc = format_schedule(schedule_str)
 
-            schedule_desc = format_schedule(schedule_str)
+                {:ok,
+                 %{
+                   result:
+                     "Scheduled task '#{id}': \"#{params.task}\"\n" <>
+                       "Schedule: #{schedule_desc}\n" <>
+                       "Mode: #{mode}\n" <>
+                       "Persisted — will reload on restart."
+                 }}
 
-            {:ok,
-             %{
-               result:
-                 "Scheduled task '#{id}': \"#{params.task}\"\n" <>
-                   "Schedule: #{schedule_desc}\n" <>
-                   "Mode: #{mode}\n" <>
-                   "Persisted to .jido/cron.yaml — will reload on restart."
-             }}
+              {:error, reason} ->
+                {:error, "Failed to persist job: #{inspect(reason)}"}
+            end
 
           {:error, reason} ->
             {:error, "Failed to schedule task: #{inspect(reason)}"}
@@ -96,6 +101,9 @@ defmodule JidoClaw.Tools.ScheduleTask do
            "Use a cron expression (e.g., '0 9 * * *') or interval (e.g., 'every 1h', 'every 30m')."}
     end
   end
+
+  defp persistable_schedule({:cron, expr}), do: {:cron, expr}
+  defp persistable_schedule({:every, ms}), do: {:every, Integer.to_string(ms)}
 
   # -- Schedule Parsing --
 

@@ -43,9 +43,17 @@ defmodule JidoClaw.Memory.Link do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:create_link, action: :create_link)
     define(:for_fact, action: :for_fact, args: [:fact_id])
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -64,12 +72,30 @@ defmodule JidoClaw.Memory.Link do
       ])
 
       change({__MODULE__.Changes.ValidateScopeAndDenormalize, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_link]}
+      )
     end
 
     read :for_fact do
       argument(:fact_id, :uuid, allow_nil?: false)
 
       filter(expr(from_fact_id == ^arg(:fact_id) or to_fact_id == ^arg(:fact_id)))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -147,6 +173,11 @@ defmodule JidoClaw.Memory.Link do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :from_fact, JidoClaw.Memory.Fact do
       source_attribute(:from_fact_id)
       define_attribute?(false)
@@ -173,12 +204,11 @@ defmodule JidoClaw.Memory.Link do
       Ash.Changeset.before_action(changeset, fn cs ->
         from_id = Ash.Changeset.get_attribute(cs, :from_fact_id)
         to_id = Ash.Changeset.get_attribute(cs, :to_fact_id)
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
 
-        with {:ok, from_fact} <-
-               Ash.get(JidoClaw.Memory.Fact, from_id, domain: JidoClaw.Memory.Domain),
-             {:ok, to_fact} <-
-               Ash.get(JidoClaw.Memory.Fact, to_id, domain: JidoClaw.Memory.Domain) do
-          validate_scopes(cs, from_fact, to_fact)
+        with {:ok, from_fact} <- JidoClaw.Memory.Fact.by_id_global(from_id),
+             {:ok, to_fact} <- JidoClaw.Memory.Fact.by_id_global(to_id) do
+          validate_scopes(cs, from_fact, to_fact, tenant_id)
         else
           {:error, _} ->
             Ash.Changeset.add_error(cs,
@@ -189,13 +219,20 @@ defmodule JidoClaw.Memory.Link do
       end)
     end
 
-    defp validate_scopes(cs, from_fact, to_fact) do
+    defp validate_scopes(cs, from_fact, to_fact, tenant_id) do
       cond do
         from_fact.tenant_id != to_fact.tenant_id ->
           Ash.Changeset.add_error(cs,
             field: :to_fact_id,
             message: "cross_tenant_link",
             vars: [from_tenant: from_fact.tenant_id, to_tenant: to_fact.tenant_id]
+          )
+
+        is_binary(tenant_id) and from_fact.tenant_id != tenant_id ->
+          Ash.Changeset.add_error(cs,
+            field: :from_fact_id,
+            message: "cross_tenant_fk_mismatch",
+            vars: [supplied_tenant: tenant_id, parent_tenant: from_fact.tenant_id]
           )
 
         not same_scope?(from_fact, to_fact) ->
@@ -210,7 +247,6 @@ defmodule JidoClaw.Memory.Link do
 
         true ->
           cs
-          |> Ash.Changeset.force_change_attribute(:tenant_id, from_fact.tenant_id)
           |> Ash.Changeset.force_change_attribute(:scope_kind, from_fact.scope_kind)
           |> Ash.Changeset.force_change_attribute(:user_id, from_fact.user_id)
           |> Ash.Changeset.force_change_attribute(:workspace_id, from_fact.workspace_id)

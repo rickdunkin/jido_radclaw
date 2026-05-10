@@ -130,7 +130,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
         case Repo.query(sql, params) do
           {:ok, %Postgrex.Result{columns: cols, rows: rows}} ->
-            load_facts(cols, rows)
+            load_facts(cols, rows, tenant_id)
 
           {:error, reason} ->
             Logger.warning("[Memory.HybridSearchSql] query failed: #{inspect(reason)}")
@@ -172,7 +172,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         case Repo.query(sql, params) do
           {:ok, %Postgrex.Result{rows: rows}} ->
             ids = Enum.map(rows, fn [raw_id] -> Ecto.UUID.cast!(raw_id) end)
-            load_facts_by_ids(ids)
+            load_facts_by_ids(ids, tenant_id)
 
           {:error, reason} ->
             Logger.warning("[Memory.HybridSearchSql] recency query failed: #{inspect(reason)}")
@@ -218,15 +218,15 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   end
 
   # Load facts in the same id-order as the SQL recency dedup chose.
-  defp load_facts_by_ids([]), do: []
+  defp load_facts_by_ids([], _tenant_id), do: []
 
-  defp load_facts_by_ids(ids) do
+  defp load_facts_by_ids(ids, tenant_id) do
     require Ash.Query
 
     loaded =
       Fact
       |> Ash.Query.filter(id in ^ids)
-      |> Ash.read!()
+      |> Ash.read!(tenant: tenant_id)
       |> Map.new(fn f -> {f.id, f} end)
 
     Enum.flat_map(ids, fn id ->
@@ -755,7 +755,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   # structs.
   # ---------------------------------------------------------------------------
 
-  defp load_facts(cols, rows) do
+  defp load_facts(cols, rows, tenant_id) do
     require Ash.Query
 
     id_index = Enum.find_index(cols, &(&1 == "id"))
@@ -791,7 +791,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         loaded =
           Fact
           |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!()
+          |> Ash.read!(tenant: tenant_id)
           |> Map.new(fn f -> {f.id, f} end)
 
         # `shadow_index` non-nil means the SQL projected a

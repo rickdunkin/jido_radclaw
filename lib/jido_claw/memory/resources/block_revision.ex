@@ -36,9 +36,17 @@ defmodule JidoClaw.Memory.BlockRevision do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:create_for_block, action: :create_for_block)
     define(:for_block, action: :for_block, args: [:block_id])
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -49,7 +57,6 @@ defmodule JidoClaw.Memory.BlockRevision do
 
       accept([
         :block_id,
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -66,6 +73,19 @@ defmodule JidoClaw.Memory.BlockRevision do
       argument(:block_id, :uuid, allow_nil?: false)
       filter(expr(block_id == ^arg(:block_id)))
       prepare(build(sort: [inserted_at: :asc]))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -138,6 +158,11 @@ defmodule JidoClaw.Memory.BlockRevision do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :block, JidoClaw.Memory.Block do
       define_attribute?(false)
       attribute_writable?(true)

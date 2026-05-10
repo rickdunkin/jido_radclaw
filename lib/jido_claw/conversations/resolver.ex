@@ -10,14 +10,14 @@ defmodule JidoClaw.Conversations.Resolver do
   pre-validate the parent — a mismatch surfaces as an
   `Ash.Error.Changes.InvalidAttribute`.
 
-  ## Closed-session reuse
+  ## v0.6.4 — insert-then-fallback for race-safe audit
 
-  `:start`'s `upsert_fields` deliberately excludes `:closed_at`. A repeat
-  call against a previously closed `(tenant, workspace, kind, external_id)`
-  returns the existing closed row unchanged. Surfaces that need to
-  bump `last_active_at` use the `:touch` action; surfaces that need
-  explicit reopen semantics should add a dedicated `:reopen` action
-  rather than ever folding `:closed_at` into the upsert field set.
+  `:start` no longer upserts. The `unique_external` identity enforces
+  uniqueness at the DB; on conflict we look up the existing row and
+  call `:touch` to bump `last_active_at`. The audit `:session_start`
+  emit lives in the `:start` action's after_action so it fires
+  exactly-once per session — only when the insert actually wins the
+  race.
 
   ## Frozen-snapshot prompt persistence
 
@@ -39,7 +39,6 @@ defmodule JidoClaw.Conversations.Resolver do
       when is_binary(tenant_id) and is_binary(workspace_id) and is_atom(kind) and
              is_binary(external_id) and is_list(opts) do
     attrs = %{
-      tenant_id: tenant_id,
       workspace_id: workspace_id,
       kind: kind,
       external_id: external_id,
@@ -49,12 +48,33 @@ defmodule JidoClaw.Conversations.Resolver do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
-    with {:ok, session} <-
-           Session
-           |> Ash.Changeset.for_create(:start, attrs)
-           |> Ash.create(upsert?: true, upsert_identity: :unique_external) do
-      maybe_persist_snapshot(session, opts)
+    case Session.start(attrs, tenant: tenant_id) do
+      {:ok, session} ->
+        maybe_persist_snapshot(session, opts)
+
+      {:error, %Ash.Error.Invalid{errors: errors}} = err ->
+        if Enum.any?(errors, &unique_external_violation?/1) do
+          fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts)
+        else
+          err
+        end
     end
+  end
+
+  defp fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts) do
+    with {:ok, existing} <-
+           Session.by_external(workspace_id, kind, external_id, tenant: tenant_id),
+         {:ok, touched} <- Session.touch(existing, tenant: tenant_id) do
+      maybe_persist_snapshot(touched, opts)
+    end
+  end
+
+  # Detect the unique_external duplicate-key error shape. We accept
+  # multiple shapes since Ash's exact error type varies by Postgrex
+  # vs Ash-level identity violations.
+  defp unique_external_violation?(err) do
+    str = inspect(err)
+    String.contains?(str, "unique_external") or String.contains?(str, "23505")
   end
 
   defp maybe_persist_snapshot(%Session{kind: :cron} = s, _opts), do: {:ok, s}
@@ -69,7 +89,7 @@ defmodule JidoClaw.Conversations.Resolver do
 
     with {:ok, scope} <- JidoClaw.Memory.Scope.resolve(scope_ctx(s)),
          snap = JidoClaw.Agent.Prompt.build_snapshot(project_dir, scope),
-         {:ok, updated} <- Session.set_prompt_snapshot(s, snap) do
+         {:ok, updated} <- Session.set_prompt_snapshot(s, snap, tenant: s.tenant_id) do
       {:ok, updated}
     else
       {:error, reason} ->

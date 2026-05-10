@@ -73,7 +73,9 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       verdict = Map.get(certificate, "verdict", "UNKNOWN")
       confidence = Map.get(certificate, "confidence", 0.0)
 
-      {trust_score, persistence_error} = maybe_persist(solution_id, certificate)
+      tool_context = Map.get(context, :tool_context, %{})
+      tenant_id = Map.get(tool_context, :tenant_id)
+      {trust_score, persistence_error} = maybe_persist(solution_id, certificate, tenant_id)
 
       {:ok,
        %{
@@ -206,14 +208,17 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   defp extract_output(%{output: output}), do: inspect(output)
   defp extract_output(result), do: inspect(result)
 
-  defp maybe_persist(nil, _certificate), do: {nil, nil}
+  defp maybe_persist(nil, _certificate, _tenant_id), do: {nil, nil}
+  defp maybe_persist(_solution_id, _certificate, nil), do: {nil, "tenant_id required to persist"}
 
-  defp maybe_persist(solution_id, certificate) do
+  defp maybe_persist(solution_id, certificate, tenant_id) when is_binary(tenant_id) do
     verification_map = Map.merge(%{"status" => "semi_formal"}, certificate)
 
-    with {:ok, solution} <- Ash.get(Solution, solution_id, domain: JidoClaw.Solutions.Domain),
+    with {:ok, solution} <- Solution.by_id(solution_id, tenant: tenant_id),
          {:ok, updated} <-
-           Solution.update_verification_and_trust(solution, %{verification: verification_map}) do
+           Solution.update_verification_and_trust(solution, %{verification: verification_map},
+             tenant: tenant_id
+           ) do
       {updated.trust_score, nil}
     else
       {:error, %Ash.Error.Query.NotFound{}} ->

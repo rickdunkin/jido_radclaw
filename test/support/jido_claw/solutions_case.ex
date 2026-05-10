@@ -11,11 +11,22 @@ defmodule JidoClaw.SolutionsCase do
   Tests that require Postgres-side `pgvector` and `pg_trgm` need both
   extensions installed (`CREATE EXTENSION` is run by the `ash.setup`
   alias) — see AGENTS.md for the prerequisite Homebrew step.
+
+  ## v0.6.4 multitenancy contract
+
+  Workspace and Solution rows scope by `:attribute` multitenancy with
+  `global? false`. Fixtures here:
+
+    1. call `Tenants.Tenant.ensure/1` first so the FK parent row exists,
+    2. thread `tenant: tenant_id` via the action opt rather than embed
+       it in attrs, and
+    3. omit `tenant_id` from the attrs map.
   """
 
   use ExUnit.CaseTemplate
 
   alias JidoClaw.Solutions.Solution
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
 
   using do
@@ -40,20 +51,25 @@ defmodule JidoClaw.SolutionsCase do
 
   @doc """
   Insert a workspace under `tenant_id` with the given `embedding_policy`.
+  Threads tenant via opt; ensures the parent `Tenant` row exists first.
   Returns the persisted struct.
   """
   def workspace_fixture(tenant_id, opts \\ []) do
+    {:ok, _} = Tenant.ensure(tenant_id)
+
     name = Keyword.get(opts, :name, "ws-#{System.unique_integer([:positive])}")
     path = Keyword.get(opts, :path, "/tmp/#{name}")
     policy = Keyword.get(opts, :embedding_policy, :disabled)
 
     {:ok, ws} =
-      Workspace.register(%{
-        tenant_id: tenant_id,
-        path: path,
-        name: name,
-        embedding_policy: policy
-      })
+      Workspace.register(
+        %{
+          path: path,
+          name: name,
+          embedding_policy: policy
+        },
+        tenant: tenant_id
+      )
 
     ws
   end
@@ -89,7 +105,6 @@ defmodule JidoClaw.SolutionsCase do
       language: Keyword.get(opts, :language, "elixir"),
       framework: Keyword.get(opts, :framework),
       sharing: Keyword.get(opts, :sharing, :local),
-      tenant_id: tenant_id,
       workspace_id: workspace_id,
       embedding_status: Keyword.get(opts, :embedding_status, :disabled),
       tags: Keyword.get(opts, :tags, []),
@@ -103,7 +118,7 @@ defmodule JidoClaw.SolutionsCase do
         emb -> Map.put(attrs, :embedding, emb)
       end
 
-    {:ok, sol} = Solution.store(attrs)
+    {:ok, sol} = Solution.store(attrs, tenant: tenant_id)
     sol
   end
 end

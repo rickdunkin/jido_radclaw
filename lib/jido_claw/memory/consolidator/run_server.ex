@@ -582,14 +582,16 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp load_facts(tenant_id, scope_kind, fk, since_at, since_id, limit) do
-    case Fact.for_consolidator(%{
-           tenant_id: tenant_id,
-           scope_kind: scope_kind,
-           scope_fk_id: fk,
-           since_inserted_at: since_at,
-           since_id: since_id,
-           limit: limit
-         }) do
+    case Fact.for_consolidator(
+           %{
+             scope_kind: scope_kind,
+             scope_fk_id: fk,
+             since_inserted_at: since_at,
+             since_id: since_id,
+             limit: limit
+           },
+           tenant: tenant_id
+         ) do
       {:ok, facts} -> {:ok, facts}
       facts when is_list(facts) -> {:ok, facts}
       {:error, reason} -> {:error, reason}
@@ -597,14 +599,16 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp load_messages(tenant_id, :session, fk, since_at, since_id, limit) do
-    case Message.for_consolidator(%{
-           tenant_id: tenant_id,
-           scope_kind: :session,
-           scope_fk_id: fk,
-           since_inserted_at: since_at,
-           since_id: since_id,
-           limit: limit
-         }) do
+    case Message.for_consolidator(
+           %{
+             scope_kind: :session,
+             scope_fk_id: fk,
+             since_inserted_at: since_at,
+             since_id: since_id,
+             limit: limit
+           },
+           tenant: tenant_id
+         ) do
       {:ok, messages} -> {:ok, messages}
       messages when is_list(messages) -> {:ok, messages}
       {:error, reason} -> {:error, reason}
@@ -628,12 +632,14 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp read_latest_succeeded_runs(tenant_id, scope_kind, fk) do
-    case ConsolidationRun.latest_for_scope(%{
-           tenant_id: tenant_id,
-           scope_kind: scope_kind,
-           scope_fk_id: fk,
-           status: :succeeded
-         }) do
+    case ConsolidationRun.latest_for_scope(
+           %{
+             scope_kind: scope_kind,
+             scope_fk_id: fk,
+             status: :succeeded
+           },
+           tenant: tenant_id
+         ) do
       {:ok, list} when is_list(list) -> list
       list when is_list(list) -> list
       _ -> []
@@ -658,12 +664,14 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     do: {run.messages_processed_until_at, run.messages_processed_until_id}
 
   defp walk_history_for_watermark(stream, tenant_id, scope_kind, fk) do
-    case ConsolidationRun.history_for_scope(%{
-           tenant_id: tenant_id,
-           scope_kind: scope_kind,
-           scope_fk_id: fk,
-           limit: 20
-         }) do
+    case ConsolidationRun.history_for_scope(
+           %{
+             scope_kind: scope_kind,
+             scope_fk_id: fk,
+             limit: 20
+           },
+           tenant: tenant_id
+         ) do
       {:ok, runs} -> first_non_null_watermark(runs, stream)
       runs when is_list(runs) -> first_non_null_watermark(runs, stream)
       _ -> {nil, nil}
@@ -692,7 +700,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
         run_attrs =
           %{
-            tenant_id: state.scope.tenant_id,
             scope_kind: state.scope.scope_kind,
             user_id: state.scope[:user_id],
             workspace_id: state.scope[:workspace_id],
@@ -708,7 +715,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
           |> Map.merge(counts)
           |> Map.merge(watermarks)
 
-        case ConsolidationRun.record_run(run_attrs) do
+        case ConsolidationRun.record_run(run_attrs, tenant: state.scope.tenant_id) do
           {:ok, run} -> {run, hint_ids}
           {:error, err} -> Ash.DataLayer.rollback(ConsolidationRun, err)
         end
@@ -820,7 +827,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   defp build_block_attrs(state, args) do
     %{
-      tenant_id: state.scope.tenant_id,
       scope_kind: state.scope.scope_kind,
       user_id: state.scope[:user_id],
       workspace_id: state.scope[:workspace_id],
@@ -838,29 +844,32 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp maybe_revise_or_write_block(state, attrs) do
+    tenant_id = state.scope.tenant_id
+
     case Block.history_for_label(
-           state.scope.tenant_id,
            state.scope.scope_kind,
            Scope.primary_fk(state.scope),
-           attrs.label
+           attrs.label,
+           tenant: tenant_id
          ) do
       {:ok, [_ | _] = history} ->
         active = Enum.find(history, fn b -> is_nil(b.invalid_at) end)
 
         case active do
-          nil -> Block.write(attrs)
+          nil -> Block.write(attrs, tenant: tenant_id)
           prior -> Block.revise(prior, attrs)
         end
 
       _ ->
-        Block.write(attrs)
+        Block.write(attrs, tenant: tenant_id)
     end
   end
 
   defp apply_fact_adds(state) do
+    tenant_id = state.scope.tenant_id
+
     Enum.reduce(state.staging.fact_adds, {0, []}, fn args, {count, ids} ->
       attrs = %{
-        tenant_id: state.scope.tenant_id,
         scope_kind: state.scope.scope_kind,
         user_id: state.scope[:user_id],
         workspace_id: state.scope[:workspace_id],
@@ -875,7 +884,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         skip_backfill_hint?: true
       }
 
-      case Fact.record(attrs) do
+      case Fact.record(attrs, tenant: tenant_id) do
         {:ok, fact} ->
           {count + 1, [fact.id | ids]}
 
@@ -894,7 +903,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp apply_fact_updates(state) do
     Enum.reduce(state.staging.fact_updates, {0, 0, 0, []}, fn args,
                                                               {added, invalidated, links, ids} ->
-      case do_apply_fact_update(args) do
+      case do_apply_fact_update(state.scope.tenant_id, args) do
         {:ok, replacement, link_added?} ->
           link_inc = if link_added?, do: 1, else: 0
           {added + 1, invalidated + 1, links + link_inc, [replacement.id | ids]}
@@ -911,17 +920,17 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     end)
   end
 
-  defp do_apply_fact_update(args) do
+  defp do_apply_fact_update(tenant_id, args) do
     with {:ok, original} <-
-           Ash.get(Fact, Map.get(args, :fact_id), domain: JidoClaw.Memory.Domain),
+           Fact.by_id(Map.get(args, :fact_id), tenant: tenant_id),
          :ok <- maybe_invalidate_unlabeled(original),
          {:ok, replacement} <- write_replacement(original, args) do
-      {:ok, replacement, supersedes_link(replacement.id, original.id)}
+      {:ok, replacement, supersedes_link(replacement.id, original.id, tenant_id)}
     end
   end
 
-  defp maybe_invalidate_unlabeled(%{label: nil} = fact) do
-    case Fact.invalidate_by_id(fact, %{reason: "consolidator_update"}) do
+  defp maybe_invalidate_unlabeled(%{label: nil, tenant_id: tenant_id} = fact) do
+    case Fact.invalidate_by_id(fact, %{reason: "consolidator_update"}, tenant: tenant_id) do
       {:ok, _} -> :ok
       err -> err
     end
@@ -930,41 +939,50 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp maybe_invalidate_unlabeled(_), do: :ok
 
   defp write_replacement(original, args) do
-    Fact.record(%{
-      tenant_id: original.tenant_id,
-      scope_kind: original.scope_kind,
-      user_id: original.user_id,
-      workspace_id: original.workspace_id,
-      project_id: original.project_id,
-      session_id: original.session_id,
-      label: original.label,
-      content: Map.get(args, :new_content),
-      tags: Map.get(args, :tags, original.tags),
-      source: :consolidator_promoted,
-      trust_score: 0.85,
-      written_by: "consolidator",
-      skip_backfill_hint?: true
-    })
+    Fact.record(
+      %{
+        scope_kind: original.scope_kind,
+        user_id: original.user_id,
+        workspace_id: original.workspace_id,
+        project_id: original.project_id,
+        session_id: original.session_id,
+        label: original.label,
+        content: Map.get(args, :new_content),
+        tags: Map.get(args, :tags, original.tags),
+        source: :consolidator_promoted,
+        trust_score: 0.85,
+        written_by: "consolidator",
+        skip_backfill_hint?: true
+      },
+      tenant: original.tenant_id
+    )
   end
 
-  defp supersedes_link(new_id, old_id) do
-    case Link.create_link(%{
-           from_fact_id: new_id,
-           to_fact_id: old_id,
-           relation: :supersedes,
-           reason: "consolidator_update",
-           written_by: "consolidator"
-         }) do
+  defp supersedes_link(new_id, old_id, tenant_id) do
+    case Link.create_link(
+           %{
+             from_fact_id: new_id,
+             to_fact_id: old_id,
+             relation: :supersedes,
+             reason: "consolidator_update",
+             written_by: "consolidator"
+           },
+           tenant: tenant_id
+         ) do
       {:ok, _} -> true
       _ -> false
     end
   end
 
   defp apply_fact_deletes(state) do
+    tenant_id = state.scope.tenant_id
+
     Enum.reduce(state.staging.fact_deletes, 0, fn args, acc ->
-      with {:ok, fact} <- Ash.get(Fact, Map.get(args, :fact_id), domain: JidoClaw.Memory.Domain),
+      with {:ok, fact} <- Fact.by_id(Map.get(args, :fact_id), tenant: tenant_id),
            {:ok, _} <-
-             Fact.invalidate_by_id(fact, %{reason: Map.get(args, :reason, "consolidator_delete")}) do
+             Fact.invalidate_by_id(fact, %{reason: Map.get(args, :reason, "consolidator_delete")},
+               tenant: tenant_id
+             ) do
         acc + 1
       else
         err ->
@@ -980,10 +998,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp apply_link_creates(state) do
+    tenant_id = state.scope.tenant_id
+
     Enum.reduce(state.staging.link_creates, 0, fn args, acc ->
       with {:ok, relation} <- map_relation(Map.get(args, :relation)),
            attrs = link_attrs(args, relation),
-           {:ok, _} <- Link.create_link(attrs) do
+           {:ok, _} <- Link.create_link(attrs, tenant: tenant_id) do
         acc + 1
       else
         err ->
@@ -1073,7 +1093,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     finished_at = DateTime.utc_now()
 
     attrs = %{
-      tenant_id: state.scope.tenant_id,
       scope_kind: state.scope.scope_kind,
       user_id: state.scope[:user_id],
       workspace_id: state.scope[:workspace_id],
@@ -1088,7 +1107,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       harness_model: state.effective_harness_model
     }
 
-    case ConsolidationRun.record_run(attrs) do
+    case ConsolidationRun.record_run(attrs, tenant: state.scope.tenant_id) do
       {:ok, run} ->
         if status == :failed, do: emit_run_telemetry(state, run, :failed, error_string)
         {:ok, run}

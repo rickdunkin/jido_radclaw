@@ -21,6 +21,15 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
   the runtime forge session key — a string per `forge/persistence.ex:18`,
   not a UUID FK. A nullable UUID FK can be added later once Forge threads
   its DB UUID through `tool_context` directly.
+
+  ## Deprecated columns (v0.6.4)
+
+  `workspace_id :string` and `agent_id :string` are deprecated. Phase 0
+  added `workspace_uuid` and `session_uuid` UUID columns; Phase 4 stops
+  writing to the string siblings. The columns + indexes remain through
+  v0.6 for replay/audit access; a v0.7 migration will drop them. Do not
+  read from these columns going forward — they will not reflect post-v0.6.4
+  writes.
   """
 
   use Ash.Resource,
@@ -79,11 +88,9 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
         :tokens_out,
         :certificate_verdict,
         :certificate_confidence,
-        :workspace_id,
         :workspace_uuid,
         :session_uuid,
         :project_dir,
-        :agent_id,
         :forge_session_key,
         :metadata,
         :started_at,

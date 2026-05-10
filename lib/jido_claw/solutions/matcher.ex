@@ -108,13 +108,12 @@ defmodule JidoClaw.Solutions.Matcher do
           limit: limit,
           threshold: threshold,
           workspace_id: workspace_id,
-          tenant_id: tenant_id,
           local_visibility: local_vis,
           cross_workspace_visibility: cross_vis,
           query_embedding: embedding
         }
 
-        case Solution.search(search_args) do
+        case Solution.search(search_args, tenant: tenant_id) do
           {:ok, solutions} ->
             solutions
             |> Enum.map(fn sol ->
@@ -130,7 +129,7 @@ defmodule JidoClaw.Solutions.Matcher do
   end
 
   defp exact_match(signature, workspace_id, tenant_id, local_vis, cross_vis) do
-    case Solution.by_signature(signature, workspace_id, tenant_id, local_vis, cross_vis) do
+    case Solution.by_signature(signature, workspace_id, local_vis, cross_vis, tenant: tenant_id) do
       {:ok, [first | _]} -> {:ok, first}
       {:ok, []} -> :none
       {:ok, %Solution{} = sol} -> {:ok, sol}

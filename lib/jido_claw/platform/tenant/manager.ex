@@ -62,6 +62,7 @@ defmodule JidoClaw.Tenant.Manager do
     case :ets.lookup(state.table, "default") do
       [] ->
         tenant = JidoClaw.Tenant.new(id: "default", name: "Default")
+        ensure_postgres_row(tenant)
 
         case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
           {:ok, _pid} ->
@@ -84,11 +85,15 @@ defmodule JidoClaw.Tenant.Manager do
   def handle_call({:ensure, id, attrs}, _from, state) do
     case :ets.lookup(state.table, id) do
       [{^id, existing}] ->
+        # Best-effort sync the Postgres row in case the cache survived
+        # a DB reset.
+        ensure_postgres_row(existing)
         {:reply, {:ok, existing}, state}
 
       [] ->
         attrs = Keyword.merge([id: id, name: id], attrs)
         tenant = JidoClaw.Tenant.new(attrs)
+        ensure_postgres_row(tenant)
 
         case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
           {:ok, _pid} ->
@@ -109,6 +114,7 @@ defmodule JidoClaw.Tenant.Manager do
 
   def handle_call({:create, attrs}, _from, state) do
     tenant = JidoClaw.Tenant.new(attrs)
+    ensure_postgres_row(tenant)
 
     case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
       {:ok, _pid} ->
@@ -163,4 +169,16 @@ defmodule JidoClaw.Tenant.Manager do
   def handle_call(:count, _from, state) do
     {:reply, :ets.info(state.table, :size), state}
   end
+
+  defp ensure_postgres_row(%{id: id} = _tenant) when is_binary(id) do
+    case JidoClaw.Tenants.Tenant.ensure(id) do
+      {:ok, _row} -> :ok
+      {:error, reason} -> Logger.warning("[Tenant] Postgres row sync failed: #{inspect(reason)}")
+    end
+  rescue
+    e ->
+      Logger.warning("[Tenant] Postgres row sync raised: #{Exception.message(e)}")
+  end
+
+  defp ensure_postgres_row(_), do: :ok
 end

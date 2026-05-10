@@ -1,35 +1,13 @@
 defmodule JidoClaw.Conversations.MessageTest do
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
-  alias JidoClaw.Conversations.{Message, Session}
-  alias JidoClaw.Workspaces.Workspace
-
-  setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
-    :ok
-  end
+  alias JidoClaw.Conversations.Message
 
   defp seed do
-    tenant_id = "tenant-#{System.unique_integer([:positive])}"
-
-    {:ok, ws} =
-      Workspace.register(%{
-        tenant_id: tenant_id,
-        path: "/tmp/msgtest-#{System.unique_integer([:positive])}",
-        name: "ws"
-      })
-
-    {:ok, session} =
-      Session.start(%{
-        workspace_id: ws.id,
-        tenant_id: tenant_id,
-        kind: :repl,
-        external_id: "sess-#{System.unique_integer([:positive])}",
-        started_at: DateTime.utc_now()
-      })
-
-    %{tenant_id: tenant_id, workspace: ws, session: session}
+    seed_full(
+      tenant_label: "msg",
+      session: [kind: :repl, external_id: "sess-#{System.unique_integer([:positive])}"]
+    )
   end
 
   describe ":append" do
@@ -37,22 +15,28 @@ defmodule JidoClaw.Conversations.MessageTest do
       %{session: session, tenant_id: tenant_id} = seed()
 
       assert {:ok, m1} =
-               Message.append(%{
-                 session_id: session.id,
-                 role: :user,
-                 content: "hello"
-               })
+               Message.append(
+                 %{
+                   session_id: session.id,
+                   role: :user,
+                   content: "hello"
+                 },
+                 tenant: tenant_id
+               )
 
       assert m1.sequence == 1
       assert m1.tenant_id == tenant_id
       assert m1.role == :user
 
       assert {:ok, m2} =
-               Message.append(%{
-                 session_id: session.id,
-                 role: :assistant,
-                 content: "hi back"
-               })
+               Message.append(
+                 %{
+                   session_id: session.id,
+                   role: :assistant,
+                   content: "hi back"
+                 },
+                 tenant: tenant_id
+               )
 
       assert m2.sequence == 2
     end
@@ -61,24 +45,30 @@ defmodule JidoClaw.Conversations.MessageTest do
       %{session: session, tenant_id: tenant_id} = seed()
 
       {:ok, m} =
-        Message.append(%{
-          session_id: session.id,
-          role: :user,
-          content: "x"
-        })
+        Message.append(
+          %{
+            session_id: session.id,
+            role: :user,
+            content: "x"
+          },
+          tenant: tenant_id
+        )
 
       assert m.tenant_id == tenant_id
     end
 
     test "redaction runs on content before persistence" do
-      %{session: session} = seed()
+      %{session: session, tenant_id: tenant_id} = seed()
 
       {:ok, m} =
-        Message.append(%{
-          session_id: session.id,
-          role: :user,
-          content: "API_KEY=sk-abcdef0123456789abcdef0123456789"
-        })
+        Message.append(
+          %{
+            session_id: session.id,
+            role: :user,
+            content: "API_KEY=sk-abcdef0123456789abcdef0123456789"
+          },
+          tenant: tenant_id
+        )
 
       refute m.content =~ "sk-abcdef0123456789"
     end
@@ -93,26 +83,30 @@ defmodule JidoClaw.Conversations.MessageTest do
       hash2 = "h2-#{System.unique_integer([:positive])}"
 
       assert {:ok, _} =
-               Message.import(%{
-                 session_id: session.id,
-                 tenant_id: tenant_id,
-                 role: :user,
-                 sequence: 1,
-                 content: "same",
-                 inserted_at: ts,
-                 import_hash: hash1
-               })
+               Message.import(
+                 %{
+                   session_id: session.id,
+                   role: :user,
+                   sequence: 1,
+                   content: "same",
+                   inserted_at: ts,
+                   import_hash: hash1
+                 },
+                 tenant: tenant_id
+               )
 
       assert {:ok, _} =
-               Message.import(%{
-                 session_id: session.id,
-                 tenant_id: tenant_id,
-                 role: :user,
-                 sequence: 2,
-                 content: "same",
-                 inserted_at: ts,
-                 import_hash: hash2
-               })
+               Message.import(
+                 %{
+                   session_id: session.id,
+                   role: :user,
+                   sequence: 2,
+                   content: "same",
+                   inserted_at: ts,
+                   import_hash: hash2
+                 },
+                 tenant: tenant_id
+               )
     end
 
     test "import is idempotent on duplicate import_hash" do
@@ -121,26 +115,30 @@ defmodule JidoClaw.Conversations.MessageTest do
       hash = "dup-#{System.unique_integer([:positive])}"
 
       {:ok, _} =
-        Message.import(%{
-          session_id: session.id,
-          tenant_id: tenant_id,
-          role: :user,
-          sequence: 1,
-          content: "same",
-          inserted_at: DateTime.utc_now(),
-          import_hash: hash
-        })
+        Message.import(
+          %{
+            session_id: session.id,
+            role: :user,
+            sequence: 1,
+            content: "same",
+            inserted_at: DateTime.utc_now(),
+            import_hash: hash
+          },
+          tenant: tenant_id
+        )
 
       assert {:error, %Ash.Error.Invalid{} = err} =
-               Message.import(%{
-                 session_id: session.id,
-                 tenant_id: tenant_id,
-                 role: :user,
-                 sequence: 99,
-                 content: "again",
-                 inserted_at: DateTime.utc_now(),
-                 import_hash: hash
-               })
+               Message.import(
+                 %{
+                   session_id: session.id,
+                   role: :user,
+                   sequence: 99,
+                   content: "again",
+                   inserted_at: DateTime.utc_now(),
+                   import_hash: hash
+                 },
+                 tenant: tenant_id
+               )
 
       assert inspect(err) =~ "unique_import_hash"
     end
@@ -150,16 +148,23 @@ defmodule JidoClaw.Conversations.MessageTest do
     test "import refuses tenant_id that doesn't match the parent session" do
       %{session: session} = seed()
 
+      # Ensure the unrelated tenant exists so the FK validation hook
+      # actually fires the cross_tenant_fk_mismatch branch (vs. a
+      # missing-parent error for the audit row).
+      other_tenant = seed_tenant("other")
+
       assert {:error, %Ash.Error.Invalid{} = err} =
-               Message.import(%{
-                 session_id: session.id,
-                 tenant_id: "OTHER_TENANT",
-                 role: :user,
-                 sequence: 1,
-                 content: "x",
-                 inserted_at: DateTime.utc_now(),
-                 import_hash: "x-#{System.unique_integer([:positive])}"
-               })
+               Message.import(
+                 %{
+                   session_id: session.id,
+                   role: :user,
+                   sequence: 1,
+                   content: "x",
+                   inserted_at: DateTime.utc_now(),
+                   import_hash: "x-#{System.unique_integer([:positive])}"
+                 },
+                 tenant: other_tenant
+               )
 
       assert inspect(err) =~ "cross_tenant_fk_mismatch"
     end
@@ -167,13 +172,17 @@ defmodule JidoClaw.Conversations.MessageTest do
 
   describe ":for_session" do
     test "returns rows ordered by sequence ascending" do
-      %{session: session} = seed()
+      %{session: session, tenant_id: tenant_id} = seed()
 
-      Message.append!(%{session_id: session.id, role: :user, content: "1"})
-      Message.append!(%{session_id: session.id, role: :assistant, content: "2"})
-      Message.append!(%{session_id: session.id, role: :user, content: "3"})
+      Message.append!(%{session_id: session.id, role: :user, content: "1"}, tenant: tenant_id)
 
-      {:ok, rows} = Message.for_session(session.id)
+      Message.append!(%{session_id: session.id, role: :assistant, content: "2"},
+        tenant: tenant_id
+      )
+
+      Message.append!(%{session_id: session.id, role: :user, content: "3"}, tenant: tenant_id)
+
+      {:ok, rows} = Message.for_session(session.id, tenant: tenant_id)
       assert Enum.map(rows, & &1.content) == ["1", "2", "3"]
       assert Enum.map(rows, & &1.sequence) == [1, 2, 3]
     end

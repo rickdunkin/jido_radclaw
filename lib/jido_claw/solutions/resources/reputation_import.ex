@@ -22,9 +22,15 @@ defmodule JidoClaw.Solutions.ReputationImport do
     repo(JidoClaw.Repo)
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:record_import, action: :record_import)
-    define(:find_by_hash, action: :find_by_hash, args: [:tenant_id, :source_sha256], get?: true)
+    define(:find_by_hash, action: :find_by_hash, args: [:source_sha256], get?: true)
   end
 
   actions do
@@ -34,7 +40,6 @@ defmodule JidoClaw.Solutions.ReputationImport do
       primary?(true)
 
       accept([
-        :tenant_id,
         :source_sha256,
         :source_path,
         :imported_at,
@@ -45,10 +50,9 @@ defmodule JidoClaw.Solutions.ReputationImport do
 
     read :find_by_hash do
       get?(true)
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:source_sha256, :string, allow_nil?: false)
 
-      filter(expr(tenant_id == ^arg(:tenant_id) and source_sha256 == ^arg(:source_sha256)))
+      filter(expr(source_sha256 == ^arg(:source_sha256)))
     end
   end
 
@@ -88,6 +92,13 @@ defmodule JidoClaw.Solutions.ReputationImport do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
   end
 
   identities do

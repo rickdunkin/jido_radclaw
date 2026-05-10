@@ -88,12 +88,14 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
             else
               Enum.count(entries, fn entry ->
                 attrs = legacy_to_attrs(entry, workspace)
+                tenant_id = attrs[:tenant_id] || workspace.tenant_id
+                attrs_minus_tenant = Map.delete(attrs, :tenant_id)
 
                 # Idempotency: skip when a row with this id already exists.
                 if attrs[:id] && row_exists?(:solutions, attrs[:id]) do
                   false
                 else
-                  case Solution.import_legacy(attrs) do
+                  case Solution.import_legacy(attrs_minus_tenant, tenant: tenant_id) do
                     {:ok, _} ->
                       true
 
@@ -186,7 +188,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
       {:ok, body} ->
         sha = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
-        case ReputationImport.find_by_hash(workspace.tenant_id, sha) do
+        case ReputationImport.find_by_hash(sha, tenant: workspace.tenant_id) do
           {:ok, %ReputationImport{} = existing} ->
             Mix.shell().info(
               "reputation.json: already imported at #{DateTime.to_iso8601(existing.imported_at)}; skipping"
@@ -223,14 +225,16 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
           merged = Enum.count(rows, &merge_reputation_row(&1, workspace))
 
           {:ok, _} =
-            ReputationImport.record_import(%{
-              tenant_id: workspace.tenant_id,
-              source_sha256: sha,
-              source_path: path,
-              imported_at: DateTime.utc_now(),
-              rows_imported: merged,
-              metadata: %{}
-            })
+            ReputationImport.record_import(
+              %{
+                source_sha256: sha,
+                source_path: path,
+                imported_at: DateTime.utc_now(),
+                rows_imported: merged,
+                metadata: %{}
+              },
+              tenant: workspace.tenant_id
+            )
 
           merged
         end
@@ -257,7 +261,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
   defp merge_reputation_row(row, workspace) do
     existing =
-      case Reputation.get(workspace.tenant_id, row.agent_id) do
+      case Reputation.get(row.agent_id, tenant: workspace.tenant_id) do
         {:ok, %Reputation{} = r} -> r
         _ -> nil
       end
@@ -265,15 +269,17 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
     summed = sum_with_existing(row, existing)
     score = Reputation.compute_score(summed)
 
-    case Reputation.upsert(%{
-           tenant_id: workspace.tenant_id,
-           agent_id: row.agent_id,
-           score: score,
-           solutions_verified: summed.solutions_verified,
-           solutions_failed: summed.solutions_failed,
-           solutions_shared: summed.solutions_shared,
-           last_active: summed.last_active
-         }) do
+    case Reputation.upsert(
+           %{
+             agent_id: row.agent_id,
+             score: score,
+             solutions_verified: summed.solutions_verified,
+             solutions_failed: summed.solutions_failed,
+             solutions_shared: summed.solutions_shared,
+             last_active: summed.last_active
+           },
+           tenant: workspace.tenant_id
+         ) do
       {:ok, _} ->
         :telemetry.execute(
           [:jido_claw, :solutions, :reputation, :imported],

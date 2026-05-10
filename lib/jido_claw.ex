@@ -300,12 +300,12 @@ defmodule JidoClaw do
            JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, workspace_dir),
          {:ok, session} <-
            JidoClaw.Conversations.Session.by_external(
-             tenant_id,
              workspace.id,
              kind,
-             session_id_external
+             session_id_external,
+             tenant: tenant_id
            ),
-         {:ok, rows} <- JidoClaw.Conversations.Message.for_session(session.id) do
+         {:ok, rows} <- JidoClaw.Conversations.Message.for_session(session.id, tenant: tenant_id) do
       rows
       |> Enum.filter(&(&1.role in [:user, :assistant, :system]))
       |> Enum.map(&cold_view/1)

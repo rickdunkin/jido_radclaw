@@ -18,31 +18,41 @@ defmodule JidoClaw.Tools.UnscheduleTask do
 
   @impl true
   def run(params, context) do
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
     id = String.trim(params.id)
 
-    # Unschedule from in-memory scheduler
     sched_result = JidoClaw.Cron.Scheduler.unschedule(tenant_id, id)
-
-    # Remove from persistent YAML regardless (cleanup)
-    persist_result = JidoClaw.Cron.Persistence.remove_job(project_dir, id)
+    persist_result = remove_persistent(tenant_id, id)
 
     case {sched_result, persist_result} do
       {:ok, :ok} ->
-        {:ok, %{result: "Removed task '#{id}' from scheduler and .jido/cron.yaml."}}
+        {:ok, %{result: "Removed task '#{id}' from scheduler and persistent store."}}
 
       {:ok, {:error, :not_found}} ->
-        {:ok, %{result: "Removed task '#{id}' from scheduler (was not in .jido/cron.yaml)."}}
+        {:ok, %{result: "Removed task '#{id}' from scheduler (was not in persistent store)."}}
 
       {{:error, :not_found}, :ok} ->
-        {:ok, %{result: "Task '#{id}' was not running but removed from .jido/cron.yaml."}}
+        {:ok, %{result: "Task '#{id}' was not running but removed from persistent store."}}
 
       {{:error, :not_found}, {:error, :not_found}} ->
-        {:ok, %{result: "Task '#{id}' not found in scheduler or .jido/cron.yaml."}}
+        {:ok, %{result: "Task '#{id}' not found in scheduler or persistent store."}}
 
       {_, _} ->
         {:ok, %{result: "Cleaned up task '#{id}'."}}
+    end
+  end
+
+  defp remove_persistent(tenant_id, id) do
+    case JidoClaw.Cron.Job.by_job_id(id, tenant: tenant_id) do
+      {:ok, job} ->
+        case JidoClaw.Cron.Job.remove(job, tenant: tenant_id) do
+          :ok -> :ok
+          {:ok, _} -> :ok
+          err -> err
+        end
+
+      {:error, _} ->
+        {:error, :not_found}
     end
   end
 end

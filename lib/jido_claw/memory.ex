@@ -175,7 +175,7 @@ defmodule JidoClaw.Memory do
 
     chain_maps = Enum.map(chain, fn {kind, fk} -> %{scope_kind: kind, fk_id: fk} end)
 
-    case Block.for_scope_chain(scope.tenant_id, chain_maps) do
+    case Block.for_scope_chain(chain_maps, tenant: scope.tenant_id) do
       {:ok, blocks} ->
         blocks
         |> Enum.group_by(& &1.label)
@@ -210,7 +210,7 @@ defmodule JidoClaw.Memory do
   defp do_remember(attrs, tool_context, opts) do
     with {:ok, scope} <- Scope.resolve(tool_context),
          create_attrs = build_create_attrs(attrs, scope, opts),
-         {:ok, _fact} <- Fact.record(create_attrs) do
+         {:ok, _fact} <- Fact.record(create_attrs, tenant: scope.tenant_id) do
       :ok
     else
       {:error, %Ash.Error.Invalid{} = err} ->
@@ -247,7 +247,6 @@ defmodule JidoClaw.Memory do
       end
 
     %{
-      tenant_id: scope.tenant_id,
       scope_kind: scope.scope_kind,
       user_id: scope[:user_id],
       workspace_id: scope[:workspace_id],
@@ -286,7 +285,9 @@ defmodule JidoClaw.Memory do
   defp invalidate_at_label(scope, label, source) do
     facts_at_label(scope, label, source)
     |> Enum.each(fn fact ->
-      case Fact.invalidate_by_id(fact, %{reason: "user_forget_#{source}"}) do
+      case Fact.invalidate_by_id(fact, %{reason: "user_forget_#{source}"},
+             tenant: scope.tenant_id
+           ) do
         {:ok, _} ->
           :ok
 
@@ -299,40 +300,44 @@ defmodule JidoClaw.Memory do
   defp facts_at_label(%{scope_kind: :user} = scope, label, source) do
     Fact
     |> Ash.Query.filter(
-      tenant_id == ^scope.tenant_id and scope_kind == :user and
+      scope_kind == :user and
         user_id == ^scope.user_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
+    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
   defp facts_at_label(%{scope_kind: :workspace} = scope, label, source) do
     Fact
     |> Ash.Query.filter(
-      tenant_id == ^scope.tenant_id and scope_kind == :workspace and
+      scope_kind == :workspace and
         workspace_id == ^scope.workspace_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
+    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
   defp facts_at_label(%{scope_kind: :project} = scope, label, source) do
     Fact
     |> Ash.Query.filter(
-      tenant_id == ^scope.tenant_id and scope_kind == :project and
+      scope_kind == :project and
         project_id == ^scope.project_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
+    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
   defp facts_at_label(%{scope_kind: :session} = scope, label, source) do
     Fact
     |> Ash.Query.filter(
-      tenant_id == ^scope.tenant_id and scope_kind == :session and
+      scope_kind == :session and
         session_id == ^scope.session_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
+    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 

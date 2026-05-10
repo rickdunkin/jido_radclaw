@@ -3,6 +3,9 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
 
   import JidoClaw.ExportTestHelper
 
+  alias JidoClaw.Conversations.Session
+  alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
+
   @fixtures Path.expand("../../fixtures/exports/conversations", __DIR__)
 
   setup do
@@ -157,6 +160,32 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
         content = line["content"] || ""
         refute content =~ ~r/sk-[A-Za-z0-9]{20,}/
       end)
+    end
+
+    test "--session-uuid resolves a tenant-scoped session without --tenant" do
+      tenant_id = "export-test-uuid-#{System.unique_integer([:positive])}"
+      project_dir = unique_project_dir("convo-uuid")
+      copy_fixture(Path.join(@fixtures, "sanitized"), project_dir)
+      rename_session_tenant(project_dir, "__tenant__", tenant_id)
+
+      reenable!("jidoclaw.migrate.conversations")
+      Mix.Task.run("jidoclaw.migrate.conversations", ["--project", project_dir])
+
+      {:ok, workspace} = WorkspaceResolver.ensure_workspace(tenant_id, project_dir)
+      {:ok, session} = Session.by_external(workspace.id, :api, "sample", tenant: tenant_id)
+
+      out_path = Path.join([project_dir, "convo-export-by-uuid.jsonl.exported"])
+
+      reenable!("jidoclaw.export.conversations")
+
+      Mix.Task.run("jidoclaw.export.conversations", [
+        "--session-uuid",
+        session.id,
+        "--out",
+        out_path
+      ])
+
+      assert File.exists?(out_path)
     end
   end
 end

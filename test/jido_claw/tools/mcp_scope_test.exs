@@ -16,7 +16,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
 
   use JidoClaw.SolutionsCase, async: false
 
-  alias JidoClaw.Conversations.{Message, Resolver, Session}
+  alias JidoClaw.Conversations.{Message, Resolver}
   alias JidoClaw.Tools.MCPScope
 
   setup do
@@ -57,7 +57,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
         end)
 
       assert result == {:ok, %{a: 1}}
-      assert {:ok, []} = Message.for_session(session.id)
+      assert {:ok, []} = Message.for_session(session.id, tenant: session.tenant_id)
     end
   end
 
@@ -74,7 +74,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
 
       assert result == {:ok, %{ok: true}}
 
-      {:ok, rows} = Message.for_session(session.id)
+      {:ok, rows} = Message.for_session(session.id, tenant: session.tenant_id)
       assert length(rows) == 2
 
       [call, result_row] = Enum.sort_by(rows, & &1.sequence)
@@ -94,7 +94,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
       MCPScope.wrap(:demo, %{a: 1}, %{tool_context: scope}, fn _ -> {:ok, %{}} end)
       MCPScope.wrap(:demo, %{a: 2}, %{tool_context: scope}, fn _ -> {:ok, %{}} end)
 
-      {:ok, rows} = Message.for_session(session.id)
+      {:ok, rows} = Message.for_session(session.id, tenant: session.tenant_id)
       assert length(rows) == 4
 
       tool_calls = Enum.filter(rows, &(&1.role == :tool_call))
@@ -119,7 +119,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
       MCPScope.wrap(:demo, %{}, ctx, fn _ -> {:ok, %{}} end)
       MCPScope.wrap(:demo, %{}, ctx, fn _ -> {:ok, %{}} end)
 
-      {:ok, rows} = Message.for_session(session.id)
+      {:ok, rows} = Message.for_session(session.id, tenant: session.tenant_id)
 
       tool_calls = Enum.filter(rows, &(&1.role == :tool_call))
       tool_results = Enum.filter(rows, &(&1.role == :tool_result))

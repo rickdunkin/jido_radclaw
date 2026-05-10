@@ -40,14 +40,16 @@ defmodule JidoClaw.Agent.PromptSnapshotTest do
     {:ok, ws} = WorkspaceResolver.ensure_workspace("default", dir)
 
     {:ok, _block} =
-      JidoClaw.Memory.Block.write(%{
-        tenant_id: "default",
-        scope_kind: :workspace,
-        workspace_id: ws.id,
-        label: "guideline",
-        value: "Always run mix format",
-        source: :user
-      })
+      JidoClaw.Memory.Block.write(
+        %{
+          scope_kind: :workspace,
+          workspace_id: ws.id,
+          label: "guideline",
+          value: "Always run mix format",
+          source: :user
+        },
+        tenant: "default"
+      )
 
     scope = %{
       tenant_id: "default",

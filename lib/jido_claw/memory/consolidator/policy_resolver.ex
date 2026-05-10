@@ -27,7 +27,7 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolver do
 
   @spec gate(scope_record()) :: :ok | {:skip, String.t()}
   def gate(%{scope_kind: :workspace, tenant_id: tenant_id, workspace_id: ws_id}) do
-    case Ash.get(Workspace, ws_id, domain: JidoClaw.Workspaces) do
+    case Workspace.by_id_global(ws_id) do
       {:ok, %{tenant_id: ^tenant_id, consolidation_policy: policy}} ->
         decide(policy)
 

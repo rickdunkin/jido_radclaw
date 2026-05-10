@@ -44,10 +44,18 @@ defmodule JidoClaw.Memory.Episode do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:record, action: :record)
     define(:for_consolidator, action: :for_consolidator)
     define(:for_fact, action: :for_fact, args: [:fact_id])
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -57,7 +65,6 @@ defmodule JidoClaw.Memory.Episode do
       primary?(true)
 
       accept([
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -77,7 +84,6 @@ defmodule JidoClaw.Memory.Episode do
     end
 
     read :for_consolidator do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:scope_kind, :atom, allow_nil?: false, constraints: [one_of: @scope_kinds])
       argument(:scope_fk_id, :uuid, allow_nil?: false)
       argument(:since_inserted_at, :utc_datetime_usec, allow_nil?: true)
@@ -90,6 +96,19 @@ defmodule JidoClaw.Memory.Episode do
       argument(:fact_id, :uuid, allow_nil?: false)
 
       prepare({__MODULE__.Preparations.ForFact, []})
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -159,6 +178,13 @@ defmodule JidoClaw.Memory.Episode do
       public?(true)
       writable?(true)
       default(&DateTime.utc_now/0)
+    end
+  end
+
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
     end
   end
 
@@ -244,14 +270,13 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       kind = Ash.Query.get_argument(query, :scope_kind)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       since_at = Ash.Query.get_argument(query, :since_inserted_at)
       limit = Ash.Query.get_argument(query, :limit)
 
       query
-      |> JidoClaw.Memory.Episode.apply_scope_filter(kind, tenant, fk)
+      |> JidoClaw.Memory.Episode.apply_scope_filter(kind, fk)
       |> JidoClaw.Memory.Episode.apply_since_filter(since_at)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
       |> Ash.Query.limit(limit)
@@ -291,29 +316,20 @@ defmodule JidoClaw.Memory.Episode do
   end
 
   @doc false
-  def apply_scope_filter(query, :user, tenant, fk) do
-    Ash.Query.filter(query, tenant_id == ^tenant and scope_kind == :user and user_id == ^fk)
+  def apply_scope_filter(query, :user, fk) do
+    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
   end
 
-  def apply_scope_filter(query, :workspace, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :workspace and workspace_id == ^fk
-    )
+  def apply_scope_filter(query, :workspace, fk) do
+    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
   end
 
-  def apply_scope_filter(query, :project, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :project and project_id == ^fk
-    )
+  def apply_scope_filter(query, :project, fk) do
+    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
   end
 
-  def apply_scope_filter(query, :session, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :session and session_id == ^fk
-    )
+  def apply_scope_filter(query, :session, fk) do
+    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
   end
 
   @doc false

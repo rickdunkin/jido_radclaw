@@ -1,40 +1,44 @@
 defmodule JidoClaw.Memory.FactTest do
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Memory
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Workspaces.Resolver
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    tenant_id = seed_tenant("fact")
 
     {:ok, ws} =
       Resolver.ensure_workspace(
-        "default",
+        tenant_id,
         "/tmp/fact_test_#{System.unique_integer([:positive])}",
         []
       )
 
     tool_context = %{
-      tenant_id: "default",
+      tenant_id: tenant_id,
       user_id: nil,
       workspace_uuid: ws.id,
       session_uuid: nil
     }
 
-    {:ok, tool_context: tool_context, workspace: ws}
+    {:ok, tenant_id: tenant_id, tool_context: tool_context, workspace: ws}
   end
 
   describe ":record" do
-    test "writes a Fact at the resolved scope", %{tool_context: tc, workspace: ws} do
+    test "writes a Fact at the resolved scope", %{
+      tenant_id: tenant_id,
+      tool_context: tc,
+      workspace: ws
+    } do
       :ok =
         Memory.remember_from_user(
           %{key: "label_a", content: "value_a", type: "fact"},
           tc
         )
 
-      [fact] = Ash.read!(Fact)
-      assert fact.tenant_id == "default"
+      [fact] = Ash.read!(Fact, tenant: tenant_id)
+      assert fact.tenant_id == tenant_id
       assert fact.scope_kind == :workspace
       assert fact.workspace_id == ws.id
       assert fact.label == "label_a"
@@ -45,11 +49,14 @@ defmodule JidoClaw.Memory.FactTest do
       assert fact.expired_at == nil
     end
 
-    test "second write at same label invalidates the prior", %{tool_context: tc} do
+    test "second write at same label invalidates the prior", %{
+      tenant_id: tenant_id,
+      tool_context: tc
+    } do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
       :ok = Memory.remember_from_user(%{key: "L", content: "v2", type: "fact"}, tc)
 
-      facts = Ash.read!(Fact) |> Enum.sort_by(& &1.inserted_at)
+      facts = Ash.read!(Fact, tenant: tenant_id) |> Enum.sort_by(& &1.inserted_at)
       assert length(facts) == 2
 
       [old, new] = facts
@@ -61,10 +68,13 @@ defmodule JidoClaw.Memory.FactTest do
       assert new.invalid_at == nil
     end
 
-    test "active label uniqueness — concurrent writes collide", %{tool_context: tc} do
+    test "active label uniqueness — concurrent writes collide", %{
+      tenant_id: tenant_id,
+      tool_context: tc
+    } do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
 
-      [fact] = Ash.read!(Fact)
+      [fact] = Ash.read!(Fact, tenant: tenant_id)
       assert fact.invalid_at == nil
     end
   end
@@ -134,20 +144,24 @@ defmodule JidoClaw.Memory.FactTest do
       refute Enum.any?(after_forget, fn m -> m.key == "del" end)
     end
 
-    test "model-source forget does not touch user-saved rows", %{tool_context: tc} do
+    test "model-source forget does not touch user-saved rows", %{
+      tenant_id: tenant_id,
+      tool_context: tc
+    } do
       :ok = Memory.remember_from_user(%{key: "shared", content: "user", type: "fact"}, tc)
 
       :ok = Memory.forget("shared", tool_context: tc, source: :model_remember)
 
-      survivors = Ash.read!(Fact)
+      survivors = Ash.read!(Fact, tenant: tenant_id)
       assert Enum.any?(survivors, fn f -> f.label == "shared" and is_nil(f.invalid_at) end)
     end
   end
 
   describe "cross-tenant FK validation" do
     test "rejects a workspace_id pointing at a different tenant", %{workspace: ws} do
+      other_tenant = seed_tenant("other")
+
       attrs = %{
-        tenant_id: "other_tenant",
         scope_kind: :workspace,
         workspace_id: ws.id,
         label: "x",
@@ -157,7 +171,7 @@ defmodule JidoClaw.Memory.FactTest do
         trust_score: 0.7
       }
 
-      assert {:error, %Ash.Error.Invalid{} = err} = Fact.record(attrs)
+      assert {:error, %Ash.Error.Invalid{} = err} = Fact.record(attrs, tenant: other_tenant)
       assert inspect(err) =~ "cross_tenant_fk_mismatch"
     end
   end

@@ -1,14 +1,17 @@
 defmodule JidoClaw.Conversations.RequestCorrelationTest do
-  use ExUnit.Case, async: false
+  @moduledoc """
+  `RequestCorrelation` is `global? true` (see
+  `lib/jido_claw/conversations/resources/request_correlation.ex:79-83`):
+  the resource keeps `tenant_id` as a regular accepted attribute and
+  callers (`lib/jido_claw.ex:192`) supply it inside the attrs map.
+  These tests mirror that production-call shape rather than threading
+  `tenant:` opts through, since the `:attribute` strategy under
+  `global? true` does not auto-populate the attribute from the opt and
+  the action would fail with `field: :tenant_id ... required`.
+  """
+  use JidoClaw.TenantCase, async: false
 
-  alias JidoClaw.Conversations.{RequestCorrelation, Session}
-  alias JidoClaw.Workspaces.Workspace
-
-  setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
-    :ok
-  end
+  alias JidoClaw.Conversations.RequestCorrelation
 
   describe ":register accept list" do
     test "supplying :inserted_at is rejected (not in accept list)" do
@@ -52,24 +55,9 @@ defmodule JidoClaw.Conversations.RequestCorrelationTest do
   end
 
   defp seed do
-    tenant = "tenant-rc-#{System.unique_integer([:positive])}"
-
-    {:ok, ws} =
-      Workspace.register(%{
-        tenant_id: tenant,
-        path: "/tmp/rc-#{System.unique_integer([:positive])}",
-        name: "rc"
-      })
-
-    {:ok, session} =
-      Session.start(%{
-        workspace_id: ws.id,
-        tenant_id: tenant,
-        kind: :api,
-        external_id: "ext-rc-#{System.unique_integer([:positive])}",
-        started_at: DateTime.utc_now()
-      })
-
-    %{tenant_id: tenant, workspace: ws, session: session}
+    seed_full(
+      tenant_label: "rc",
+      session: [kind: :api, external_id: "ext-rc-#{System.unique_integer([:positive])}"]
+    )
   end
 end

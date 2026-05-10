@@ -49,7 +49,7 @@ defmodule JidoClaw.Solutions.Reads.HybridSearch do
       limit: Ash.Query.get_argument(query, :limit) || 10,
       threshold: Ash.Query.get_argument(query, :threshold) || 0.0,
       workspace_id: Ash.Query.get_argument(query, :workspace_id),
-      tenant_id: Ash.Query.get_argument(query, :tenant_id),
+      tenant_id: query.tenant,
       local_visibility:
         Ash.Query.get_argument(query, :local_visibility) || [:local, :shared, :public],
       cross_workspace_visibility:

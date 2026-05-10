@@ -99,7 +99,7 @@ defmodule JidoClaw.Tools.MCPScope do
     }
 
     parent_id =
-      case attempt_append(call_attrs) do
+      case attempt_append(call_attrs, tc[:tenant_id]) do
         {:ok, %{id: id}} -> id
         _ -> nil
       end
@@ -117,7 +117,7 @@ defmodule JidoClaw.Tools.MCPScope do
         parent_message_id: parent_id
       }
 
-      _ = attempt_append(result_attrs)
+      _ = attempt_append(result_attrs, tc[:tenant_id])
       result
     rescue
       err ->
@@ -136,19 +136,19 @@ defmodule JidoClaw.Tools.MCPScope do
           parent_message_id: parent_id
         }
 
-        _ = attempt_append(result_attrs)
+        _ = attempt_append(result_attrs, tc[:tenant_id])
         reraise(err, stacktrace)
     end
   end
 
-  defp attempt_append(attrs) do
-    case Message.append(attrs) do
+  defp attempt_append(attrs, tenant_id) when is_binary(tenant_id) do
+    case Message.append(attrs, tenant: tenant_id) do
       {:ok, msg} ->
         {:ok, msg}
 
       {:error, %Ash.Error.Invalid{} = err} ->
         if duplicate_key?(err) do
-          fetch_existing_live_row(attrs)
+          fetch_existing_live_row(attrs, tenant_id)
         else
           Logger.warning("[MCPScope.wrap] append failed: #{inspect(err)}")
           :error
@@ -164,14 +164,19 @@ defmodule JidoClaw.Tools.MCPScope do
       :error
   end
 
-  defp fetch_existing_live_row(%{
-         session_id: session_id,
-         request_id: request_id,
-         tool_call_id: tool_call_id,
-         role: role
-       })
-       when is_binary(request_id) and is_binary(tool_call_id) do
-    case Message.by_live_tool_row(session_id, request_id, tool_call_id, role) do
+  defp attempt_append(_attrs, _), do: :error
+
+  defp fetch_existing_live_row(
+         %{
+           session_id: session_id,
+           request_id: request_id,
+           tool_call_id: tool_call_id,
+           role: role
+         },
+         tenant_id
+       )
+       when is_binary(request_id) and is_binary(tool_call_id) and is_binary(tenant_id) do
+    case Message.by_live_tool_row(session_id, request_id, tool_call_id, role, tenant: tenant_id) do
       {:ok, msg} when is_map(msg) -> {:ok, msg}
       _ -> :error
     end
@@ -179,7 +184,7 @@ defmodule JidoClaw.Tools.MCPScope do
     _ -> :error
   end
 
-  defp fetch_existing_live_row(_), do: :error
+  defp fetch_existing_live_row(_, _), do: :error
 
   defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
     errors

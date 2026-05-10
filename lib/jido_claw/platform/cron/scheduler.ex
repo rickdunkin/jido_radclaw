@@ -2,12 +2,18 @@ defmodule JidoClaw.Cron.Scheduler do
   @moduledoc "API for managing cron jobs within a tenant."
   require Logger
 
-  alias JidoClaw.Cron.Persistence
+  alias JidoClaw.Cron.Job
 
-  @doc "Load persisted jobs from .jido/cron.yaml and schedule them."
+  @doc """
+  Load persisted jobs from `cron_jobs` (Postgres) and schedule them.
+
+  Replaces the v0.5.x `.jido/cron.yaml` file-store. The action's
+  `:for_tenant` filter excludes `disabled_at IS NOT NULL` rows so a
+  worker-side auto-disable survives restart.
+  """
   @spec load_persistent_jobs(String.t(), String.t()) :: {:ok, non_neg_integer()}
-  def load_persistent_jobs(tenant_id \\ "default", project_dir) do
-    case Persistence.load(project_dir) do
+  def load_persistent_jobs(tenant_id \\ "default", _project_dir) do
+    case Job.for_tenant(tenant: tenant_id) do
       {:ok, jobs} ->
         count =
           Enum.reduce(jobs, 0, fn job, acc ->
@@ -18,7 +24,7 @@ defmodule JidoClaw.Cron.Scheduler do
                 acc + 1
 
               {:error, reason} ->
-                Logger.warning("[Cron] Failed to load job #{job["id"]}: #{inspect(reason)}")
+                Logger.warning("[Cron] Failed to load job #{job.job_id}: #{inspect(reason)}")
                 acc
             end
           end)
@@ -31,41 +37,30 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
-  defp build_persistent_opts(job) do
-    id = job["id"] || job[:id]
-    task = job["task"] || job[:task]
-    schedule_str = job["schedule"] || job[:schedule]
-    mode = parse_mode(job["mode"] || job[:mode])
-
+  defp build_persistent_opts(%Job{} = job) do
     [
-      id: id,
-      task: task,
-      schedule: parse_schedule(schedule_str),
-      mode: mode
+      id: job.job_id,
+      task: job.task,
+      schedule: hydrate_schedule(job.schedule_kind, job.schedule_value),
+      mode: job.mode
     ]
   end
 
-  defp parse_schedule("every " <> interval) do
-    case Regex.run(~r/^(\d+)\s*(s|m|h|d)$/i, String.trim(interval)) do
-      [_, amount, unit] ->
-        ms = String.to_integer(amount) * unit_ms(String.downcase(unit))
-        {:every, ms}
+  defp hydrate_schedule(:cron, expr), do: {:cron, expr}
 
-      nil ->
-        {:cron, interval}
+  defp hydrate_schedule(:every, ms_str) do
+    case Integer.parse(ms_str || "") do
+      {ms, _} when ms > 0 -> {:every, ms}
+      _ -> {:cron, ms_str || ""}
     end
   end
 
-  defp parse_schedule(expr), do: {:cron, expr}
-
-  defp unit_ms("s"), do: 1_000
-  defp unit_ms("m"), do: 60_000
-  defp unit_ms("h"), do: 3_600_000
-  defp unit_ms("d"), do: 86_400_000
-  defp unit_ms(_), do: 60_000
-
-  defp parse_mode("isolated"), do: :isolated
-  defp parse_mode(_), do: :main
+  defp hydrate_schedule(:at, iso) do
+    case DateTime.from_iso8601(iso || "") do
+      {:ok, dt, _} -> {:at, dt}
+      _ -> {:cron, ""}
+    end
+  end
 
   def schedule(tenant_id, opts) do
     id = Keyword.get(opts, :id, "job_#{:erlang.unique_integer([:positive])}")
@@ -163,4 +158,24 @@ defmodule JidoClaw.Cron.Scheduler do
       :ok
     end
   end
+
+  # Used by start_system_jobs/0 to parse the cadence config string.
+  defp parse_schedule("every " <> interval) do
+    case Regex.run(~r/^(\d+)\s*(s|m|h|d)$/i, String.trim(interval)) do
+      [_, amount, unit] ->
+        ms = String.to_integer(amount) * unit_ms(String.downcase(unit))
+        {:every, ms}
+
+      nil ->
+        {:cron, interval}
+    end
+  end
+
+  defp parse_schedule(expr), do: {:cron, expr}
+
+  defp unit_ms("s"), do: 1_000
+  defp unit_ms("m"), do: 60_000
+  defp unit_ms("h"), do: 3_600_000
+  defp unit_ms("d"), do: 86_400_000
+  defp unit_ms(_), do: 60_000
 end

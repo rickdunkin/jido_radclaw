@@ -71,6 +71,7 @@ defmodule JidoClaw.Cron.Worker do
 
   def handle_cast(:disable, state) do
     Logger.info("[Cron] Disabled job #{state.id}")
+    persist_disabled(state)
     {:noreply, %{state | status: :disabled}}
   end
 
@@ -159,6 +160,7 @@ defmodule JidoClaw.Cron.Worker do
 
         if new_status == :disabled do
           Logger.error("[Cron] Job #{state.id} auto-disabled after #{@max_failures} failures")
+          persist_disabled(state)
         end
 
         %{
@@ -211,4 +213,23 @@ defmodule JidoClaw.Cron.Worker do
   end
 
   defp schedule_next(state), do: state
+
+  # Best-effort persistence — a transient DB error shouldn't crash
+  # the worker. Eventual consistency is acceptable: if persist fails
+  # this run, the next failure will retry. Crashing is strictly worse.
+  defp persist_disabled(state) do
+    case JidoClaw.Cron.Job.by_job_id(state.id, tenant: state.tenant_id) do
+      {:ok, job} ->
+        case JidoClaw.Cron.Job.disable(job, tenant: state.tenant_id) do
+          {:ok, _} -> :ok
+          err -> Logger.warning("[Cron] disable persistence failed: #{inspect(err)}")
+        end
+
+      {:error, _} ->
+        # Job not in Postgres — system jobs aren't persisted in v0.6.4.
+        :ok
+    end
+  rescue
+    e -> Logger.warning("[Cron] disable persistence raised: #{Exception.message(e)}")
+  end
 end

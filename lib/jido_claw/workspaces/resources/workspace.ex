@@ -36,6 +36,12 @@ defmodule JidoClaw.Workspaces.Workspace do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:register, action: :register)
     define(:rename, action: :rename, args: [:name])
@@ -47,8 +53,10 @@ defmodule JidoClaw.Workspaces.Workspace do
       args: [:consolidation_policy]
     )
 
-    define(:by_path, action: :by_path, args: [:tenant_id, :user_id, :path], get?: true)
-    define(:for_user, action: :for_user, args: [:tenant_id, :user_id])
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
+    define(:by_path, action: :by_path, args: [:user_id, :path], get?: true)
+    define(:for_user, action: :for_user, args: [:user_id])
   end
 
   actions do
@@ -62,7 +70,6 @@ defmodule JidoClaw.Workspaces.Workspace do
         :path,
         :user_id,
         :project_id,
-        :tenant_id,
         :embedding_policy,
         :consolidation_policy,
         :metadata
@@ -104,24 +111,35 @@ defmodule JidoClaw.Workspaces.Workspace do
       change(set_attribute(:consolidation_policy, arg(:consolidation_policy)))
     end
 
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
     read :by_path do
       get?(true)
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:user_id, :uuid, allow_nil?: true)
       argument(:path, :string, allow_nil?: false)
 
       filter(
         expr(
-          tenant_id == ^arg(:tenant_id) and path == ^arg(:path) and
+          path == ^arg(:path) and
             ((is_nil(user_id) and is_nil(^arg(:user_id))) or user_id == ^arg(:user_id))
         )
       )
     end
 
     read :for_user do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:user_id, :uuid, allow_nil?: false)
-      filter(expr(tenant_id == ^arg(:tenant_id) and user_id == ^arg(:user_id)))
+      filter(expr(user_id == ^arg(:user_id)))
     end
   end
 
@@ -182,6 +200,11 @@ defmodule JidoClaw.Workspaces.Workspace do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :user, JidoClaw.Accounts.User do
       define_attribute?(false)
       attribute_writable?(true)

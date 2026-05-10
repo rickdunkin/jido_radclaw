@@ -53,19 +53,27 @@ defmodule JidoClaw.Tools.Forget do
     end
   end
 
-  defp invalidate_by_id(id, _tool_context) do
-    case Ash.get(JidoClaw.Memory.Fact, id, domain: JidoClaw.Memory.Domain) do
-      {:ok, %{source: :model_remember} = fact} ->
-        case JidoClaw.Memory.Fact.invalidate_by_id(fact, %{reason: "model_forget"}) do
-          {:ok, _} -> {:ok, %{status: "invalidated", target: id}}
-          {:error, err} -> {:error, err}
-        end
+  defp invalidate_by_id(id, tool_context) do
+    tenant_id = Map.get(tool_context, :tenant_id)
 
-      {:ok, %{source: source}} ->
-        {:error, {:source_not_invalidatable, source}}
+    if is_binary(tenant_id) do
+      case JidoClaw.Memory.Fact.by_id(id, tenant: tenant_id) do
+        {:ok, %{source: :model_remember} = fact} ->
+          case JidoClaw.Memory.Fact.invalidate_by_id(fact, %{reason: "model_forget"},
+                 tenant: tenant_id
+               ) do
+            {:ok, _} -> {:ok, %{status: "invalidated", target: id}}
+            {:error, err} -> {:error, err}
+          end
 
-      {:error, reason} ->
-        {:error, reason}
+        {:ok, %{source: source}} ->
+          {:error, {:source_not_invalidatable, source}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :tenant_required}
     end
   end
 

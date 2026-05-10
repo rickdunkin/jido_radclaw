@@ -75,6 +75,7 @@ defmodule JidoClaw.Application do
       {Registry, keys: :unique, name: JidoClaw.Memory.Consolidator.RunRegistry},
       {Task.Supervisor, name: JidoClaw.TaskSupervisor},
       {Task.Supervisor, name: JidoClaw.Memory.Consolidator.TaskSupervisor},
+      {Task.Supervisor, name: JidoClaw.Audit.TaskSupervisor},
       JidoClaw.Repo,
       JidoClaw.Security.Vault,
       {Phoenix.PubSub, name: JidoClaw.PubSub},
@@ -86,7 +87,8 @@ defmodule JidoClaw.Application do
       {Jido.Signal.Bus, name: JidoClaw.SignalBus, partition_count: 1},
       JidoClaw.Conversations.RequestCorrelation.Cache,
       JidoClaw.Conversations.Recorder,
-      JidoClaw.Conversations.RequestCorrelation.Sweeper
+      JidoClaw.Conversations.RequestCorrelation.Sweeper,
+      JidoClaw.Audit.SignalListener
     ]
 
     [

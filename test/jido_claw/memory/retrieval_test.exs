@@ -1,5 +1,5 @@
 defmodule JidoClaw.Memory.RetrievalTest do
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
   require Ash.Query
 
@@ -8,38 +8,41 @@ defmodule JidoClaw.Memory.RetrievalTest do
   alias JidoClaw.Workspaces.Resolver
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    tenant_id = seed_tenant("retrieval")
 
     {:ok, ws} =
       Resolver.ensure_workspace(
-        "default",
+        tenant_id,
         "/tmp/retrieval_test_#{System.unique_integer([:positive])}",
         []
       )
 
     tool_context = %{
-      tenant_id: "default",
+      tenant_id: tenant_id,
       user_id: nil,
       workspace_uuid: ws.id,
       session_uuid: nil
     }
 
-    {:ok, tool_context: tool_context, workspace: ws}
+    {:ok, tenant_id: tenant_id, tool_context: tool_context, workspace: ws}
   end
 
-  defp create_session(ws) do
+  defp create_session(tenant_id, ws) do
     external_id = "ext_#{System.unique_integer([:positive])}"
     started_at = DateTime.utc_now()
 
     {:ok, session} =
       JidoClaw.Conversations.Session
-      |> Ash.Changeset.for_create(:start, %{
-        tenant_id: "default",
-        workspace_id: ws.id,
-        kind: :repl,
-        external_id: external_id,
-        started_at: started_at
-      })
+      |> Ash.Changeset.for_create(
+        :start,
+        %{
+          workspace_id: ws.id,
+          kind: :repl,
+          external_id: external_id,
+          started_at: started_at
+        },
+        tenant: tenant_id
+      )
       |> Ash.create(domain: JidoClaw.Conversations)
 
     session.id
@@ -57,10 +60,11 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "scope-chain regression" do
     test "workspace fact recalled from a session-scoped tool_context", %{
+      tenant_id: tenant_id,
       workspace: ws
     } do
       ws_only_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id
       }
 
@@ -70,10 +74,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
           ws_only_ctx
         )
 
-      session_id = create_session(ws)
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }
@@ -106,7 +110,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "ANN hits even when FTS+lex miss",
-         %{tool_context: tc, stub_voyage: stub} do
+         %{tenant_id: tenant_id, tool_context: tc, stub_voyage: stub} do
       embedding = stub.fixed_embedding()
 
       :ok =
@@ -115,15 +119,20 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [seeded] = Ash.read!(Fact)
+      [seeded] = Ash.read!(Fact, tenant: tenant_id)
 
       # Manually populate the embedding row to mimic a successful
       # backfill (Memory.remember_from_user defaults to disabled when
       # the workspace policy is :disabled, which is the case here).
-      Ash.Changeset.for_update(seeded, :transition_embedding_status, %{
-        embedding: embedding,
-        embedding_status: :ready
-      })
+      Ash.Changeset.for_update(
+        seeded,
+        :transition_embedding_status,
+        %{
+          embedding: embedding,
+          embedding_status: :ready
+        },
+        tenant: tenant_id
+      )
       |> Ash.update!()
 
       # A query that does not lexically match the seeded content/label/tags
@@ -143,7 +152,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "hybrid search per-pool precedence dedup" do
     test "lower-scope sibling cannot win a label when the closer-scope row is pushed below the per-pool LIMIT pre-fix",
-         %{workspace: ws} do
+         %{tenant_id: tenant_id, workspace: ws} do
       # The reviewer's bug: each FTS/ANN/Lex pool applied LIMIT N*4
       # BEFORE the cross-pool precedence dedup. A closer-scope row at
       # the same label as a lower-scope row could rank below that cap
@@ -154,11 +163,11 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # matching rows to actually push the session row past the cap.
       # Without that pressure, both rows fit comfortably under the cap
       # pre-fix and the test passes for the wrong reason.
-      ws_ctx = %{tenant_id: "default", workspace_uuid: ws.id}
-      session_id = create_session(ws)
+      ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }
@@ -215,7 +224,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # by id rather than relying on a content marker (which would
       # itself increase the lex_text and shift workspace_pref's rank).
       [workspace_pref] =
-        Ash.read!(JidoClaw.Memory.Fact)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
         |> Enum.filter(fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
@@ -236,17 +245,17 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "hybrid search :by_precedence — direct candidate-set inspection" do
     test "lower-precedence sibling at the same label is excluded from the candidate set even when it ranks #1 in the pools",
-         %{workspace: ws} do
+         %{tenant_id: tenant_id, workspace: ws} do
       # Direct test of the per-pool precedence dedup contract: the
       # lower-precedence sibling at a contested label must not appear
       # in HybridSearchSql's result list under :by_precedence dedup,
       # even when its FTS/lex scores would put it at the top of every
       # pool.
-      ws_ctx = %{tenant_id: "default", workspace_uuid: ws.id}
-      session_id = create_session(ws)
+      ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }
@@ -285,7 +294,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       end)
 
       [workspace_pref] =
-        Ash.read!(JidoClaw.Memory.Fact)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
         |> Enum.filter(fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
@@ -295,7 +304,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # before ranking so 12 ≤ cap and session_pref makes it through.
       ranked =
         JidoClaw.Memory.HybridSearchSql.run(%{
-          tenant_id: "default",
+          tenant_id: tenant_id,
           scope_chain: [{:session, session_id}, {:workspace, ws.id}],
           query: "diagnostic",
           query_embedding: nil,
@@ -315,21 +324,24 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "source rank order (plan §3.13)" do
     test "imported_legacy outranks model_remember when scope_rank ties", %{
+      tenant_id: tenant_id,
       workspace: ws
     } do
-      ws_ctx = %{tenant_id: "default", workspace_uuid: ws.id}
+      ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
 
       {:ok, legacy_row} =
-        JidoClaw.Memory.Fact.import_legacy(%{
-          tenant_id: "default",
-          scope_kind: :workspace,
-          workspace_id: ws.id,
-          label: "preference",
-          content: "imported-legacy-content",
-          tags: ["fact"],
-          trust_score: 0.5,
-          import_hash: "legacy_#{System.unique_integer([:positive])}"
-        })
+        JidoClaw.Memory.Fact.import_legacy(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "preference",
+            content: "imported-legacy-content",
+            tags: ["fact"],
+            trust_score: 0.5,
+            import_hash: "legacy_#{System.unique_integer([:positive])}"
+          },
+          tenant: tenant_id
+        )
 
       # Keep the legacy row in current-truth (`invalid_at` is in the
       # future) while making it invisible to the partial unique index
@@ -357,17 +369,17 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "scope precedence wins over source: imported_legacy at workspace vs model_remember at session",
-         %{workspace: ws} do
+         %{tenant_id: tenant_id, workspace: ws} do
       # End-to-end: closer-scope row wins regardless of source rank.
       # imported_legacy at the workspace scope is a higher-precedence
       # source than model_remember (per the new ordering), but the
       # session-scope model_remember row is at a closer scope, so it
       # wins by scope_rank. Source rank only matters when scope
       # precedence ties.
-      session_id = create_session(ws)
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }
@@ -376,16 +388,18 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # (Memory.remember_* doesn't expose the source). Use a unique
       # import_hash so the legacy unique identity is satisfied.
       {:ok, _legacy} =
-        JidoClaw.Memory.Fact.import_legacy(%{
-          tenant_id: "default",
-          scope_kind: :workspace,
-          workspace_id: ws.id,
-          label: "preference",
-          content: "imported-legacy-content",
-          tags: ["fact"],
-          trust_score: 0.5,
-          import_hash: "legacy_#{System.unique_integer([:positive])}"
-        })
+        JidoClaw.Memory.Fact.import_legacy(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "preference",
+            content: "imported-legacy-content",
+            tags: ["fact"],
+            trust_score: 0.5,
+            import_hash: "legacy_#{System.unique_integer([:positive])}"
+          },
+          tenant: tenant_id
+        )
 
       # Session-scope :model_remember at the same label.
       :ok =
@@ -406,6 +420,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "current_truth bitemporal" do
     test "future-dated valid_at rows are excluded from default recall", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       :ok =
@@ -421,7 +436,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       future_fact =
-        Ash.read!(JidoClaw.Memory.Fact)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
         |> Enum.find(fn f -> f.label == "future_only" end)
 
       # Push the future_only row's valid_at one hour into the future.
@@ -441,6 +456,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "rows with future invalid_at are still surfaced (currently valid)", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       :ok =
@@ -449,7 +465,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [fact] = Ash.read!(JidoClaw.Memory.Fact)
+      [fact] = Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
 
       # Set invalid_at to one hour from now — row is still currently
       # valid until then. expired_at stays nil so the row is the live
@@ -469,10 +485,11 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "bitemporal world_at" do
     test "returns a superseded fact at world_t inside its valid window", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       :ok = Memory.remember_from_user(%{key: "mode", content: "v1", type: "fact"}, tc)
-      [fact] = Ash.read!(Fact)
+      [fact] = Ash.read!(Fact, tenant: tenant_id)
 
       t0 = DateTime.utc_now() |> DateTime.add(86_400, :second)
       half_day_later = DateTime.add(t0, 12 * 3600, :second)
@@ -515,6 +532,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     alias JidoClaw.Memory.Retrieval
 
     test "lists losing same-label same-scope siblings on the kept row's metadata", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       # Seed three rows at (workspace, "preference") with different
@@ -530,7 +548,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: cons_id}] = Ash.read!(Fact)
+      [%{id: cons_id}] = Ash.read!(Fact, tenant: tenant_id)
 
       JidoClaw.Repo.query!(
         "UPDATE memory_facts SET source = 'consolidator_promoted', invalid_at = $2 WHERE id = $1",
@@ -544,7 +562,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Ash.read!(Fact)
+        Ash.read!(Fact, tenant: tenant_id)
         |> Enum.filter(fn f -> f.id != cons_id and f.source == :model_remember end)
 
       JidoClaw.Repo.query!(
@@ -559,7 +577,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [user_save] =
-        Ash.read!(Fact)
+        Ash.read!(Fact, tenant: tenant_id)
         |> Enum.filter(fn f -> f.id not in [cons_id, model_id] and f.source == :user_save end)
 
       results =
@@ -592,6 +610,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "bitemporally-excluded rows are not surfaced as shadows under :current_truth", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       now = DateTime.utc_now()
@@ -604,7 +623,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: loser_id}] = Ash.read!(Fact)
+      [%{id: loser_id}] = Ash.read!(Fact, tenant: tenant_id)
 
       # Make the loser invisible to :current_truth via expired_at in
       # the past, but keep its invalid_at NULL would re-block the
@@ -623,7 +642,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [winner_fact] =
-        Ash.read!(Fact)
+        Ash.read!(Fact, tenant: tenant_id)
         |> Enum.filter(&(&1.id != loser_id))
 
       results = Retrieval.search(tool_context: tc, query: "content", limit: 5)
@@ -658,6 +677,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "rows that don't match the query are not in the candidate set", %{
+      tenant_id: tenant_id,
       tool_context: tc
     } do
       future = DateTime.add(DateTime.utc_now(), 3600, :second)
@@ -671,7 +691,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: first_id}] = Ash.read!(Fact)
+      [%{id: first_id}] = Ash.read!(Fact, tenant: tenant_id)
 
       JidoClaw.Repo.query!(
         "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
@@ -685,7 +705,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: other_id}] =
-        Ash.read!(Fact) |> Enum.filter(&(&1.id != first_id))
+        Ash.read!(Fact, tenant: tenant_id) |> Enum.filter(&(&1.id != first_id))
 
       results = Retrieval.search(tool_context: tc, query: "qqqqqaaaa", limit: 5)
       preference = Enum.filter(results, &(&1.label == "preference"))
@@ -705,7 +725,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "ANN-precedence: precedence winner beats semantic-distance winner; loser surfaces in shadowed_by",
-         %{tool_context: tc} do
+         %{tenant_id: tenant_id, tool_context: tc} do
       stub_voyage = Module.concat([__MODULE__, AnnShadowVoyage])
 
       unless Code.ensure_loaded?(stub_voyage) do
@@ -728,16 +748,20 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: user_id}] = Ash.read!(Fact)
+      [%{id: user_id}] = Ash.read!(Fact, tenant: tenant_id)
 
       far_vec = List.duplicate(0.999, 1024)
 
       JidoClaw.Memory.Fact
-      |> Ash.get!(user_id)
-      |> Ash.Changeset.for_update(:transition_embedding_status, %{
-        embedding: far_vec,
-        embedding_status: :ready
-      })
+      |> Ash.get!(user_id, tenant: tenant_id)
+      |> Ash.Changeset.for_update(
+        :transition_embedding_status,
+        %{
+          embedding: far_vec,
+          embedding_status: :ready
+        },
+        tenant: tenant_id
+      )
       |> Ash.update!()
 
       JidoClaw.Repo.query!(
@@ -753,16 +777,20 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Ash.read!(Fact) |> Enum.filter(&(&1.id != user_id))
+        Ash.read!(Fact, tenant: tenant_id) |> Enum.filter(&(&1.id != user_id))
 
       close_vec = stub_voyage.query_vec()
 
       JidoClaw.Memory.Fact
-      |> Ash.get!(model_id)
-      |> Ash.Changeset.for_update(:transition_embedding_status, %{
-        embedding: close_vec,
-        embedding_status: :ready
-      })
+      |> Ash.get!(model_id, tenant: tenant_id)
+      |> Ash.Changeset.for_update(
+        :transition_embedding_status,
+        %{
+          embedding: close_vec,
+          embedding_status: :ready
+        },
+        tenant: tenant_id
+      )
       |> Ash.update!()
 
       # First park the model row's invalid_at in the future so the
@@ -806,17 +834,17 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "recency scope-chain dedup" do
     test "closer-scope row wins per label even when newer parent-scope row + noise would fill an Elixir-side overfetch buffer",
-         %{workspace: ws} do
+         %{tenant_id: tenant_id, workspace: ws} do
       # Old Elixir-side dedup over an overfetch buffer: T0 session row
       # is older than 10+ newer workspace rows; the buffer might not
       # contain the session row at all, so dedup picks the (newer)
       # workspace row at the same label. SQL-side dedup must always
       # keep the closer-scope row per label.
-      ws_ctx = %{tenant_id: "default", workspace_uuid: ws.id}
-      session_id = create_session(ws)
+      ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }
@@ -856,9 +884,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
     end
 
     test "session-scoped row wins over workspace-scoped row at same label", %{
+      tenant_id: tenant_id,
       workspace: ws
     } do
-      ws_ctx = %{tenant_id: "default", workspace_uuid: ws.id}
+      ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
 
       :ok =
         Memory.remember_from_user(
@@ -866,10 +895,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
           ws_ctx
         )
 
-      session_id = create_session(ws)
+      session_id = create_session(tenant_id, ws)
 
       session_ctx = %{
-        tenant_id: "default",
+        tenant_id: tenant_id,
         workspace_uuid: ws.id,
         session_uuid: session_id
       }

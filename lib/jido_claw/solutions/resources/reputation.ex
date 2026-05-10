@@ -52,10 +52,18 @@ defmodule JidoClaw.Solutions.Reputation do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
-    define(:get, action: :get, args: [:tenant_id, :agent_id], get?: true)
+    define(:get, action: :get, args: [:agent_id], get?: true)
     define(:upsert, action: :upsert)
-    define(:top, action: :top, args: [:tenant_id])
+    define(:top, action: :top)
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -76,7 +84,6 @@ defmodule JidoClaw.Solutions.Reputation do
       ])
 
       accept([
-        :tenant_id,
         :agent_id,
         :score,
         :solutions_verified,
@@ -88,18 +95,28 @@ defmodule JidoClaw.Solutions.Reputation do
 
     read :get do
       get?(true)
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:agent_id, :string, allow_nil?: false)
 
-      filter(expr(tenant_id == ^arg(:tenant_id) and agent_id == ^arg(:agent_id)))
+      filter(expr(agent_id == ^arg(:agent_id)))
     end
 
     read :top do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:limit, :integer, allow_nil?: true, default: 10)
 
-      filter(expr(tenant_id == ^arg(:tenant_id)))
       prepare(build(sort: [score: :desc]))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -146,6 +163,13 @@ defmodule JidoClaw.Solutions.Reputation do
     end
 
     timestamps()
+  end
+
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
   end
 
   identities do

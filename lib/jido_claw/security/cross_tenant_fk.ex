@@ -59,7 +59,7 @@ defmodule JidoClaw.Security.CrossTenantFk do
   """
   @spec validate(Ash.Changeset.t(), [fk_spec()]) :: Ash.Changeset.t()
   def validate(changeset, specs) when is_list(specs) do
-    tenant_id = Ash.Changeset.get_attribute(changeset, :tenant_id)
+    tenant_id = changeset.tenant || Ash.Changeset.get_attribute(changeset, :tenant_id)
 
     Enum.reduce(specs, changeset, fn spec, cs ->
       validate_one(cs, tenant_id, spec)
@@ -103,8 +103,8 @@ defmodule JidoClaw.Security.CrossTenantFk do
     end
   end
 
-  defp do_validate(cs, fk_attr, fk_value, parent_resource, parent_domain, tenant_id) do
-    case Ash.get(parent_resource, fk_value, domain: parent_domain) do
+  defp do_validate(cs, fk_attr, fk_value, parent_resource, _parent_domain, tenant_id) do
+    case parent_resource.by_id_global(fk_value) do
       {:ok, %{tenant_id: ^tenant_id}} ->
         cs
 

@@ -37,9 +37,17 @@ defmodule JidoClaw.Memory.FactEpisode do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:create_for_pair, action: :create_for_pair)
     define(:for_fact, action: :for_fact, args: [:fact_id])
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -56,6 +64,19 @@ defmodule JidoClaw.Memory.FactEpisode do
       argument(:fact_id, :uuid, allow_nil?: false)
       filter(expr(fact_id == ^arg(:fact_id)))
       prepare(build(sort: [inserted_at: :desc]))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -93,6 +114,11 @@ defmodule JidoClaw.Memory.FactEpisode do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :fact, JidoClaw.Memory.Fact do
       define_attribute?(false)
       attribute_writable?(true)
@@ -110,9 +136,9 @@ defmodule JidoClaw.Memory.FactEpisode do
 
   defmodule Changes.DenormalizeTenant do
     @moduledoc """
-    Copy `tenant_id` from the parent Fact row, then validate it against
-    the parent Episode row's `tenant_id`. Cross-tenant joins are
-    rejected with a `cross_tenant_join_mismatch` error.
+    Validate the parent Fact and Episode share the changeset's
+    tenant_id. Cross-tenant joins are rejected with
+    `cross_tenant_join_mismatch`.
     """
     use Ash.Resource.Change
 
@@ -121,22 +147,30 @@ defmodule JidoClaw.Memory.FactEpisode do
       Ash.Changeset.before_action(changeset, fn cs ->
         fact_id = Ash.Changeset.get_attribute(cs, :fact_id)
         episode_id = Ash.Changeset.get_attribute(cs, :episode_id)
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
 
-        with {:ok, fact} <-
-               Ash.get(JidoClaw.Memory.Fact, fact_id, domain: JidoClaw.Memory.Domain),
-             {:ok, episode} <-
-               Ash.get(JidoClaw.Memory.Episode, episode_id, domain: JidoClaw.Memory.Domain) do
-          if fact.tenant_id == episode.tenant_id do
-            Ash.Changeset.force_change_attribute(cs, :tenant_id, fact.tenant_id)
-          else
-            Ash.Changeset.add_error(cs,
-              field: :episode_id,
-              message: "cross_tenant_join_mismatch",
-              vars: [
-                fact_tenant: fact.tenant_id,
-                episode_tenant: episode.tenant_id
-              ]
-            )
+        with {:ok, fact} <- JidoClaw.Memory.Fact.by_id_global(fact_id),
+             {:ok, episode} <- JidoClaw.Memory.Episode.by_id_global(episode_id) do
+          cond do
+            fact.tenant_id != episode.tenant_id ->
+              Ash.Changeset.add_error(cs,
+                field: :episode_id,
+                message: "cross_tenant_join_mismatch",
+                vars: [
+                  fact_tenant: fact.tenant_id,
+                  episode_tenant: episode.tenant_id
+                ]
+              )
+
+            is_binary(tenant_id) and fact.tenant_id != tenant_id ->
+              Ash.Changeset.add_error(cs,
+                field: :fact_id,
+                message: "cross_tenant_fk_mismatch",
+                vars: [supplied_tenant: tenant_id, parent_tenant: fact.tenant_id]
+              )
+
+            true ->
+              cs
           end
         else
           {:error, _} ->

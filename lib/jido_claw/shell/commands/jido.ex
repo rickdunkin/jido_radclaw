@@ -114,9 +114,9 @@ defmodule JidoClaw.Shell.Commands.Jido do
       case JidoClaw.Solutions.Solution.by_signature(
              fingerprint,
              workspace_uuid,
-             tenant_id,
              [:local, :shared, :public],
-             [:public]
+             [:public],
+             tenant: tenant_id
            ) do
         {:ok, [first | _]} -> {:ok, first}
         {:ok, []} -> :not_found

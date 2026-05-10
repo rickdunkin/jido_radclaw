@@ -100,7 +100,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
 
     case Repo.query(sql(), params) do
       {:ok, %Postgrex.Result{columns: cols, rows: rows}} ->
-        load_solutions(cols, rows)
+        load_solutions(cols, rows, tenant_id)
 
       {:error, reason} ->
         Logger.warning("[HybridSearchSql] query failed: #{inspect(reason)}")
@@ -211,7 +211,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
   # row IDs and re-materialize through `Ash.read` so the resource layer
   # casts everything correctly; preserve insertion order via the SQL's
   # combined_score ranking and zip the score back onto each solution.
-  defp load_solutions(cols, rows) do
+  defp load_solutions(cols, rows, tenant_id) do
     id_index = Enum.find_index(cols, &(&1 == "id"))
     score_index = Enum.find_index(cols, &(&1 == "combined_score"))
 
@@ -233,7 +233,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
         loaded =
           Solution
           |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!()
+          |> Ash.read!(tenant: tenant_id)
           |> Map.new(fn s -> {s.id, s} end)
 
         Enum.flat_map(ranked, fn {id, score} ->

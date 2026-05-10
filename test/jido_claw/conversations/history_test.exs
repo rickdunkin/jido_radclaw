@@ -6,16 +6,9 @@ defmodule JidoClaw.Conversations.HistoryTest do
   out tool/reasoning rows so legacy callers (REPL view, web LiveView,
   channel adapters) keep their existing shape.
   """
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
-  alias JidoClaw.Conversations.{Message, Session}
-  alias JidoClaw.Workspaces.Workspace
-
-  setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
-    :ok
-  end
+  alias JidoClaw.Conversations.Message
 
   describe "history/2 (hot path — live Session.Worker)" do
     test "returns only :user/:assistant/:system rows from the in-memory cache" do
@@ -65,61 +58,64 @@ defmodule JidoClaw.Conversations.HistoryTest do
   # ---------------------------------------------------------------------------
 
   defp seed_session_with_history do
-    tenant = "tenant-hist-#{System.unique_integer([:positive])}"
+    tenant_id = seed_tenant("hist")
     project_dir = "/tmp/hist-#{System.unique_integer([:positive])}"
     external_id = "ext-hist-#{System.unique_integer([:positive])}"
 
-    {:ok, ws} =
-      Workspace.register(%{
-        tenant_id: tenant,
-        path: project_dir,
-        name: "hist"
-      })
+    {:ok, ws} = seed_workspace(tenant_id, path: project_dir, name: "hist")
 
     {:ok, session} =
-      Session.start(%{
-        workspace_id: ws.id,
-        tenant_id: tenant,
-        kind: :api,
-        external_id: external_id,
-        started_at: DateTime.utc_now()
-      })
+      seed_session(tenant_id, ws.id, kind: :api, external_id: external_id)
 
     request_id = "req-hist-#{System.unique_integer([:positive])}"
     tool_call_id = "call-hist-#{System.unique_integer([:positive])}"
 
     # Seed a representative multi-role transcript so we can verify that
     # both filters (worker hydration + cold-path) drop the non-chat rows.
-    Message.append!(%{session_id: session.id, role: :user, content: "hello"})
+    Message.append!(%{session_id: session.id, role: :user, content: "hello"}, tenant: tenant_id)
 
-    Message.append!(%{
-      session_id: session.id,
-      request_id: request_id,
-      role: :tool_call,
-      content: "ls()",
-      tool_call_id: tool_call_id
-    })
+    Message.append!(
+      %{
+        session_id: session.id,
+        request_id: request_id,
+        role: :tool_call,
+        content: "ls()",
+        tool_call_id: tool_call_id
+      },
+      tenant: tenant_id
+    )
 
-    Message.append!(%{
-      session_id: session.id,
-      request_id: request_id,
-      role: :tool_result,
-      content: "ls() -> ok",
-      tool_call_id: tool_call_id
-    })
+    Message.append!(
+      %{
+        session_id: session.id,
+        request_id: request_id,
+        role: :tool_result,
+        content: "ls() -> ok",
+        tool_call_id: tool_call_id
+      },
+      tenant: tenant_id
+    )
 
-    Message.append!(%{
-      session_id: session.id,
-      request_id: request_id,
-      role: :reasoning,
-      content: "thinking..."
-    })
+    Message.append!(
+      %{
+        session_id: session.id,
+        request_id: request_id,
+        role: :reasoning,
+        content: "thinking..."
+      },
+      tenant: tenant_id
+    )
 
-    Message.append!(%{session_id: session.id, role: :assistant, content: "hi back"})
-    Message.append!(%{session_id: session.id, role: :system, content: "system ack"})
+    Message.append!(%{session_id: session.id, role: :assistant, content: "hi back"},
+      tenant: tenant_id
+    )
+
+    Message.append!(%{session_id: session.id, role: :system, content: "system ack"},
+      tenant: tenant_id
+    )
 
     %{
-      tenant_id: tenant,
+      tenant_id: tenant_id,
       external_id: external_id,
       project_dir: project_dir,
       workspace: ws,

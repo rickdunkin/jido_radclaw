@@ -93,6 +93,12 @@ defmodule JidoClaw.Conversations.Message do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:append, action: :append)
     define(:import, action: :import)
@@ -101,6 +107,8 @@ defmodule JidoClaw.Conversations.Message do
     define(:by_tool_call, action: :by_tool_call, args: [:session_id, :tool_call_id])
     define(:by_request, action: :by_request, args: [:session_id, :request_id])
     define(:for_consolidator, action: :for_consolidator)
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
 
     define(:tool_call_parent,
       action: :tool_call_parent,
@@ -143,7 +151,6 @@ defmodule JidoClaw.Conversations.Message do
     create :import do
       accept([
         :session_id,
-        :tenant_id,
         :request_id,
         :role,
         :sequence,
@@ -225,8 +232,6 @@ defmodule JidoClaw.Conversations.Message do
     end
 
     read :for_consolidator do
-      argument(:tenant_id, :string, allow_nil?: false)
-
       argument(:scope_kind, :atom,
         allow_nil?: false,
         constraints: [one_of: [:session]]
@@ -238,6 +243,19 @@ defmodule JidoClaw.Conversations.Message do
       argument(:limit, :integer, allow_nil?: true, default: 500)
 
       prepare({__MODULE__.Preparations.ForConsolidator, []})
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -334,6 +352,11 @@ defmodule JidoClaw.Conversations.Message do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :session, SessionResource do
       define_attribute?(false)
       attribute_writable?(true)
@@ -369,14 +392,23 @@ defmodule JidoClaw.Conversations.Message do
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
         case Ash.Changeset.get_attribute(cs, :session_id) do
           nil ->
             Ash.Changeset.add_error(cs, field: :session_id, message: "session_required")
 
           session_id ->
-            case JidoClaw.Conversations.Session.by_id(session_id) do
-              {:ok, %{tenant_id: tenant_id}} ->
-                Ash.Changeset.force_change_attribute(cs, :tenant_id, tenant_id)
+            case JidoClaw.Conversations.Session.by_id_global(session_id) do
+              {:ok, %{tenant_id: ^tenant_id}} ->
+                cs
+
+              {:ok, %{tenant_id: parent_tenant}} ->
+                Ash.Changeset.add_error(cs,
+                  field: :session_id,
+                  message: "cross_tenant_fk_mismatch",
+                  vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
+                )
 
               {:error, _} ->
                 Ash.Changeset.add_error(cs,
@@ -468,7 +500,7 @@ defmodule JidoClaw.Conversations.Message do
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         session_id = Ash.Changeset.get_attribute(cs, :session_id)
-        tenant_id = Ash.Changeset.get_attribute(cs, :tenant_id)
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
         validate(cs, session_id, tenant_id)
       end)
     end
@@ -477,7 +509,7 @@ defmodule JidoClaw.Conversations.Message do
     defp validate(cs, _, nil), do: cs
 
     defp validate(cs, session_id, tenant_id) do
-      case JidoClaw.Conversations.Session.by_id(session_id) do
+      case JidoClaw.Conversations.Session.by_id_global(session_id) do
         {:ok, %{tenant_id: ^tenant_id}} ->
           cs
 
@@ -515,14 +547,13 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       since_at = Ash.Query.get_argument(query, :since_inserted_at)
       since_id = Ash.Query.get_argument(query, :since_id)
       limit = Ash.Query.get_argument(query, :limit)
 
       query
-      |> Ash.Query.filter(tenant_id == ^tenant and session_id == ^fk)
+      |> Ash.Query.filter(session_id == ^fk)
       |> apply_since(since_at, since_id)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
       |> Ash.Query.limit(limit)

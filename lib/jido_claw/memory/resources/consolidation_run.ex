@@ -49,10 +49,18 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:record_run, action: :record_run)
     define(:latest_for_scope, action: :latest_for_scope)
     define(:history_for_scope, action: :history_for_scope)
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -62,7 +70,6 @@ defmodule JidoClaw.Memory.ConsolidationRun do
       primary?(true)
 
       accept([
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -90,10 +97,10 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
       change({__MODULE__.Changes.ValidateScopeFk, []})
       change({__MODULE__.Changes.ValidateCrossTenant, []})
+      change({JidoClaw.Audit.Producers.MemoryConsolidation, []})
     end
 
     read :latest_for_scope do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:scope_kind, :atom, allow_nil?: false, constraints: [one_of: @scope_kinds])
       argument(:scope_fk_id, :uuid, allow_nil?: false)
       argument(:status, :atom, allow_nil?: true, constraints: [one_of: @statuses])
@@ -102,12 +109,24 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     end
 
     read :history_for_scope do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:scope_kind, :atom, allow_nil?: false, constraints: [one_of: @scope_kinds])
       argument(:scope_fk_id, :uuid, allow_nil?: false)
       argument(:limit, :integer, allow_nil?: true, default: 20)
 
       prepare({__MODULE__.Preparations.HistoryForScope, []})
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -254,6 +273,13 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     end
   end
 
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+  end
+
   defmodule Changes.ValidateScopeFk do
     @moduledoc false
     use Ash.Resource.Change
@@ -304,13 +330,12 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       kind = Ash.Query.get_argument(query, :scope_kind)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       status = Ash.Query.get_argument(query, :status)
 
       query
-      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, tenant, fk)
+      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, fk)
       |> JidoClaw.Memory.ConsolidationRun.apply_status_filter(status)
       |> Ash.Query.sort(started_at: :desc)
       |> Ash.Query.limit(1)
@@ -324,42 +349,32 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       kind = Ash.Query.get_argument(query, :scope_kind)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       limit = Ash.Query.get_argument(query, :limit)
 
       query
-      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, tenant, fk)
+      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, fk)
       |> Ash.Query.sort(started_at: :desc)
       |> Ash.Query.limit(limit)
     end
   end
 
   @doc false
-  def apply_scope_filter(query, :user, tenant, fk) do
-    Ash.Query.filter(query, tenant_id == ^tenant and scope_kind == :user and user_id == ^fk)
+  def apply_scope_filter(query, :user, fk) do
+    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
   end
 
-  def apply_scope_filter(query, :workspace, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :workspace and workspace_id == ^fk
-    )
+  def apply_scope_filter(query, :workspace, fk) do
+    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
   end
 
-  def apply_scope_filter(query, :project, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :project and project_id == ^fk
-    )
+  def apply_scope_filter(query, :project, fk) do
+    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
   end
 
-  def apply_scope_filter(query, :session, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :session and session_id == ^fk
-    )
+  def apply_scope_filter(query, :session, fk) do
+    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
   end
 
   @doc false

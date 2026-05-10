@@ -93,10 +93,10 @@ defmodule JidoClaw.Memory.Scope do
     project_id = Map.get(ctx, :project_id)
 
     {workspace_id, user_id, project_id} =
-      maybe_load_session_ancestors(session_id, workspace_id, user_id, project_id)
+      maybe_load_session_ancestors(tenant_id, session_id, workspace_id, user_id, project_id)
 
     {workspace_id, user_id, project_id} =
-      maybe_load_workspace_ancestors(workspace_id, user_id, project_id)
+      maybe_load_workspace_ancestors(tenant_id, workspace_id, user_id, project_id)
 
     scope_kind = derive_kind(session_id, project_id, workspace_id, user_id)
 
@@ -121,10 +121,10 @@ defmodule JidoClaw.Memory.Scope do
   defp derive_kind(_, _, _, user_id) when is_binary(user_id), do: :user
   defp derive_kind(_, _, _, _), do: nil
 
-  defp maybe_load_session_ancestors(nil, ws, u, p), do: {ws, u, p}
+  defp maybe_load_session_ancestors(_tenant_id, nil, ws, u, p), do: {ws, u, p}
 
-  defp maybe_load_session_ancestors(session_id, supplied_ws, supplied_user, project_id) do
-    case ConvSession.by_id(session_id) do
+  defp maybe_load_session_ancestors(tenant_id, session_id, supplied_ws, supplied_user, project_id) do
+    case session_lookup(tenant_id, session_id) do
       {:ok, %{workspace_id: ws_id, user_id: user_id_from_session}} ->
         ws = supplied_ws || ws_id
 
@@ -143,10 +143,10 @@ defmodule JidoClaw.Memory.Scope do
     end
   end
 
-  defp maybe_load_workspace_ancestors(nil, u, p), do: {nil, u, p}
+  defp maybe_load_workspace_ancestors(_tenant_id, nil, u, p), do: {nil, u, p}
 
-  defp maybe_load_workspace_ancestors(ws_id, supplied_user, supplied_project) do
-    case Ash.get(Workspace, ws_id, domain: JidoClaw.Workspaces) do
+  defp maybe_load_workspace_ancestors(tenant_id, ws_id, supplied_user, supplied_project) do
+    case workspace_lookup(tenant_id, ws_id) do
       {:ok, %{user_id: user_id_from_ws, project_id: project_id_from_ws}} ->
         {ws_id, supplied_user || user_id_from_ws, supplied_project || project_id_from_ws}
 
@@ -154,6 +154,12 @@ defmodule JidoClaw.Memory.Scope do
         {ws_id, supplied_user, supplied_project}
     end
   end
+
+  defp session_lookup(nil, session_id), do: ConvSession.by_id_global(session_id)
+  defp session_lookup(tenant_id, session_id), do: ConvSession.by_id(session_id, tenant: tenant_id)
+
+  defp workspace_lookup(nil, ws_id), do: Workspace.by_id_global(ws_id)
+  defp workspace_lookup(tenant_id, ws_id), do: Workspace.by_id(ws_id, tenant: tenant_id)
 
   @doc """
   Return the scope chain in retrieval-precedence order: most specific

@@ -74,7 +74,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   defp resolve_session(opts) do
     case Keyword.get(opts, :session_uuid) do
       uuid when is_binary(uuid) ->
-        case Ash.get(Session, uuid, domain: JidoClaw.Conversations) do
+        case Session.by_id_global(uuid) do
           {:ok, session} ->
             output_path = output_path(opts, session)
             {:ok, session, output_path}
@@ -97,7 +97,8 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
     workspace_dir = Keyword.get(opts, :workspace) || File.cwd!()
 
     with {:ok, workspace} <- WorkspaceResolver.ensure_workspace(tenant, workspace_dir),
-         {:ok, session} <- Session.by_external(tenant, workspace.id, kind, external) do
+         {:ok, session} <-
+           Session.by_external(workspace.id, kind, external, tenant: tenant) do
       output_path = output_path(opts, session)
       {:ok, session, output_path}
     else
@@ -124,7 +125,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   end
 
   defp do_export(session, output_path, opts) do
-    case Message.for_session(session.id) do
+    case Message.for_session(session.id, tenant: session.tenant_id) do
       {:ok, rows} ->
         File.mkdir_p!(Path.dirname(output_path))
         write_jsonl(output_path, rows)

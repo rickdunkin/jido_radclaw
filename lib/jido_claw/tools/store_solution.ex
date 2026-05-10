@@ -100,13 +100,12 @@ defmodule JidoClaw.Tools.StoreSolution do
       framework: Map.get(params, :framework),
       tags: Map.get(params, :tags, []),
       sharing: :local,
-      tenant_id: tenant_id,
       workspace_id: workspace_uuid,
       session_id: session_uuid,
       created_by_user_id: created_by_user_id
     }
 
-    case Solution.store(attrs) do
+    case Solution.store(attrs, tenant: tenant_id) do
       {:ok, solution} ->
         {:ok, %{id: solution.id, signature: signature, status: "stored"}}
 

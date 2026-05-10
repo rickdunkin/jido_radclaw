@@ -87,15 +87,24 @@ defmodule JidoClaw.Memory.Block do
     end
   end
 
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
+  end
+
   code_interface do
     define(:write, action: :write)
     define(:invalidate, action: :invalidate)
-    define(:for_scope_chain, action: :for_scope_chain, args: [:tenant_id, :scope_chain])
+    define(:for_scope_chain, action: :for_scope_chain, args: [:scope_chain])
 
     define(:history_for_label,
       action: :history_for_label,
-      args: [:tenant_id, :scope_kind, :scope_fk_id, :label]
+      args: [:scope_kind, :scope_fk_id, :label]
     )
+
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -105,7 +114,6 @@ defmodule JidoClaw.Memory.Block do
       primary?(true)
 
       accept([
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -125,6 +133,11 @@ defmodule JidoClaw.Memory.Block do
       change({__MODULE__.Changes.ValidateScopeFk, []})
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({__MODULE__.Changes.CapValueLength, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_block]}
+      )
     end
 
     update :invalidate do
@@ -135,11 +148,14 @@ defmodule JidoClaw.Memory.Block do
 
       change({__MODULE__.Changes.MarkInvalidated, []})
       change({__MODULE__.Changes.WriteRevisionForUpdate, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_block]}
+      )
     end
 
     read :for_scope_chain do
-      argument(:tenant_id, :string, allow_nil?: false)
-
       argument(:scope_chain, {:array, :map},
         allow_nil?: false,
         description: "List of %{scope_kind: atom, fk_id: uuid} maps in retrieval precedence order"
@@ -149,13 +165,25 @@ defmodule JidoClaw.Memory.Block do
     end
 
     read :history_for_label do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:scope_kind, :atom, allow_nil?: false, constraints: [one_of: @scope_kinds])
       argument(:scope_fk_id, :uuid, allow_nil?: false)
       argument(:label, :string, allow_nil?: false)
 
       prepare({__MODULE__.Preparations.HistoryForLabel, []})
       prepare(build(sort: [inserted_at: :asc]))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -268,6 +296,13 @@ defmodule JidoClaw.Memory.Block do
       public?(true)
       default(&DateTime.utc_now/0)
       writable?(true)
+    end
+  end
+
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
     end
   end
 
@@ -394,7 +429,6 @@ defmodule JidoClaw.Memory.Block do
 
         attrs = %{
           block_id: prior.id,
-          tenant_id: prior.tenant_id,
           scope_kind: prior.scope_kind,
           user_id: prior.user_id,
           workspace_id: prior.workspace_id,
@@ -406,7 +440,7 @@ defmodule JidoClaw.Memory.Block do
           reason: reason
         }
 
-        case BlockRevision.create_for_block(attrs) do
+        case BlockRevision.create_for_block(attrs, tenant: prior.tenant_id) do
           {:ok, _} ->
             {:ok, result}
 
@@ -436,9 +470,8 @@ defmodule JidoClaw.Memory.Block do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       chain = Ash.Query.get_argument(query, :scope_chain) || []
-      filter_expr = JidoClaw.Memory.Block.build_chain_filter(tenant, chain)
+      filter_expr = JidoClaw.Memory.Block.build_chain_filter(chain)
 
       query
       |> Ash.Query.do_filter(filter_expr)
@@ -453,14 +486,13 @@ defmodule JidoClaw.Memory.Block do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       kind = Ash.Query.get_argument(query, :scope_kind)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       arg_label = Ash.Query.get_argument(query, :label)
 
       Ash.Query.do_filter(
         query,
-        JidoClaw.Memory.Block.build_history_filter(tenant, kind, fk, arg_label)
+        JidoClaw.Memory.Block.build_history_filter(kind, fk, arg_label)
       )
     end
   end
@@ -504,66 +536,45 @@ defmodule JidoClaw.Memory.Block do
   @doc false
   # An empty chain filters to no rows. `false` is a valid Ash filter
   # value (compiled to `WHERE FALSE`).
-  def build_chain_filter(_tenant, []), do: expr(false)
+  def build_chain_filter([]), do: expr(false)
 
-  def build_chain_filter(tenant, chain) do
+  def build_chain_filter(chain) do
     chain
-    |> Enum.map(&chain_clause(tenant, &1))
+    |> Enum.map(&chain_clause/1)
     |> Enum.reduce(fn next, acc -> expr(^acc or ^next) end)
   end
 
-  defp chain_clause(tenant, %{scope_kind: :user, fk_id: fk}) do
-    expr(tenant_id == ^tenant and scope_kind == :user and user_id == ^fk and is_nil(invalid_at))
+  defp chain_clause(%{scope_kind: :user, fk_id: fk}) do
+    expr(scope_kind == :user and user_id == ^fk and is_nil(invalid_at))
   end
 
-  defp chain_clause(tenant, %{scope_kind: :workspace, fk_id: fk}) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :workspace and workspace_id == ^fk and
-        is_nil(invalid_at)
-    )
+  defp chain_clause(%{scope_kind: :workspace, fk_id: fk}) do
+    expr(scope_kind == :workspace and workspace_id == ^fk and is_nil(invalid_at))
   end
 
-  defp chain_clause(tenant, %{scope_kind: :project, fk_id: fk}) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :project and project_id == ^fk and
-        is_nil(invalid_at)
-    )
+  defp chain_clause(%{scope_kind: :project, fk_id: fk}) do
+    expr(scope_kind == :project and project_id == ^fk and is_nil(invalid_at))
   end
 
-  defp chain_clause(tenant, %{scope_kind: :session, fk_id: fk}) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :session and session_id == ^fk and
-        is_nil(invalid_at)
-    )
+  defp chain_clause(%{scope_kind: :session, fk_id: fk}) do
+    expr(scope_kind == :session and session_id == ^fk and is_nil(invalid_at))
   end
 
   @doc false
-  def build_history_filter(tenant, :user, fk, arg_label) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :user and user_id == ^fk and
-        label == ^arg_label
-    )
+  def build_history_filter(:user, fk, arg_label) do
+    expr(scope_kind == :user and user_id == ^fk and label == ^arg_label)
   end
 
-  def build_history_filter(tenant, :workspace, fk, arg_label) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :workspace and workspace_id == ^fk and
-        label == ^arg_label
-    )
+  def build_history_filter(:workspace, fk, arg_label) do
+    expr(scope_kind == :workspace and workspace_id == ^fk and label == ^arg_label)
   end
 
-  def build_history_filter(tenant, :project, fk, arg_label) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :project and project_id == ^fk and
-        label == ^arg_label
-    )
+  def build_history_filter(:project, fk, arg_label) do
+    expr(scope_kind == :project and project_id == ^fk and label == ^arg_label)
   end
 
-  def build_history_filter(tenant, :session, fk, arg_label) do
-    expr(
-      tenant_id == ^tenant and scope_kind == :session and session_id == ^fk and
-        label == ^arg_label
-    )
+  def build_history_filter(:session, fk, arg_label) do
+    expr(scope_kind == :session and session_id == ^fk and label == ^arg_label)
   end
 
   # ---------------------------------------------------------------------------
@@ -599,7 +610,7 @@ defmodule JidoClaw.Memory.Block do
       Ash.transact(__MODULE__, fn ->
         with :ok <- invalidate_prior_block(prior),
              new_attrs = build_revise_attrs(prior, attrs),
-             {:ok, new_block} <- write(new_attrs),
+             {:ok, new_block} <- write(new_attrs, tenant: prior.tenant_id),
              {:ok, _rev} <- write_revision_row(prior, attrs) do
           new_block
         else
@@ -611,7 +622,7 @@ defmodule JidoClaw.Memory.Block do
   end
 
   defp load_prior(id) when is_binary(id),
-    do: Ash.get(__MODULE__, id, domain: JidoClaw.Memory.Domain)
+    do: by_id_global(id)
 
   defp load_prior(b) when is_struct(b, __MODULE__), do: {:ok, b}
 
@@ -632,7 +643,6 @@ defmodule JidoClaw.Memory.Block do
 
   defp build_revise_attrs(prior, attrs) do
     %{
-      tenant_id: prior.tenant_id,
       scope_kind: prior.scope_kind,
       user_id: prior.user_id,
       workspace_id: prior.workspace_id,
@@ -652,7 +662,6 @@ defmodule JidoClaw.Memory.Block do
   defp write_revision_row(prior, attrs) do
     rev_attrs = %{
       block_id: prior.id,
-      tenant_id: prior.tenant_id,
       scope_kind: prior.scope_kind,
       user_id: prior.user_id,
       workspace_id: prior.workspace_id,
@@ -664,6 +673,6 @@ defmodule JidoClaw.Memory.Block do
       reason: Map.get(attrs, :reason)
     }
 
-    BlockRevision.create_for_block(rev_attrs)
+    BlockRevision.create_for_block(rev_attrs, tenant: prior.tenant_id)
   end
 end

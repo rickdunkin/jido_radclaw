@@ -253,10 +253,10 @@ defmodule JidoClaw.CLI.Commands do
     case memory_scope(state) do
       {:ok, scope} ->
         case JidoClaw.Memory.Block.history_for_label(
-               scope.tenant_id,
                scope.scope_kind,
                primary_fk(scope),
-               label
+               label,
+               tenant: scope.tenant_id
              ) do
           {:ok, revisions} ->
             IO.puts("")
@@ -292,7 +292,7 @@ defmodule JidoClaw.CLI.Commands do
           JidoClaw.Memory.Scope.chain(scope)
           |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
 
-        case JidoClaw.Memory.Block.for_scope_chain(scope.tenant_id, chain) do
+        case JidoClaw.Memory.Block.for_scope_chain(chain, tenant: scope.tenant_id) do
           {:ok, blocks} ->
             IO.puts("")
             IO.puts("  \e[1mScope Blocks\e[0m")
@@ -355,12 +355,14 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/memory status" <> _, state) do
     case memory_scope(state) do
       {:ok, scope} ->
-        case JidoClaw.Memory.ConsolidationRun.history_for_scope(%{
-               tenant_id: scope.tenant_id,
-               scope_kind: scope.scope_kind,
-               scope_fk_id: JidoClaw.Memory.Scope.primary_fk(scope),
-               limit: 10
-             }) do
+        case JidoClaw.Memory.ConsolidationRun.history_for_scope(
+               %{
+                 scope_kind: scope.scope_kind,
+                 scope_fk_id: JidoClaw.Memory.Scope.primary_fk(scope),
+                 limit: 10
+               },
+               tenant: scope.tenant_id
+             ) do
           {:ok, runs} -> render_run_history(runs)
           runs when is_list(runs) -> render_run_history(runs)
           {:error, err} -> IO.puts("  \e[31m✗\e[0m  history fetch failed: #{inspect(err)}")
@@ -609,23 +611,38 @@ defmodule JidoClaw.CLI.Commands do
 
         case JidoClaw.Cron.Scheduler.schedule("default", opts) do
           {:ok, ^id, _pid} ->
-            JidoClaw.Cron.Persistence.add_job(project_dir, %{
-              id: id,
-              task: task,
-              schedule: schedule,
-              mode: "main"
-            })
+            {kind, value} = persistable_schedule(schedule_tuple)
 
-            IO.puts("")
-            IO.puts("  \e[32m✓\e[0m Scheduled '\e[1m#{id}\e[0m': \"#{task}\" (#{schedule})")
-            IO.puts("  \e[2mPersisted to .jido/cron.yaml\e[0m")
-            IO.puts("")
+            persist_attrs = %{
+              job_id: id,
+              task: task,
+              mode: :main,
+              schedule_kind: kind,
+              schedule_value: value
+            }
+
+            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: "default") do
+              {:ok, _} ->
+                IO.puts("")
+                IO.puts("  \e[32m✓\e[0m Scheduled '\e[1m#{id}\e[0m': \"#{task}\" (#{schedule})")
+                IO.puts("  \e[2mPersisted to cron_jobs\e[0m")
+                IO.puts("")
+
+              {:error, err} ->
+                IO.puts("")
+                IO.puts("  \e[33m⚠\e[0m Scheduled but persistence failed: #{inspect(err)}")
+                IO.puts("")
+            end
 
           {:error, reason} ->
             IO.puts("")
             IO.puts("  \e[31m✗\e[0m Failed to schedule: #{inspect(reason)}")
             IO.puts("")
         end
+
+        # Suppress the unused-binding warning while project_dir remains in
+        # scope for other handlers below.
+        _ = project_dir
 
         {:ok, state}
 
@@ -645,7 +662,12 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/cron remove " <> id, state) do
     id = String.trim(id)
     JidoClaw.Cron.Scheduler.unschedule("default", id)
-    JidoClaw.Cron.Persistence.remove_job(state.cwd, id)
+
+    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default") do
+      {:ok, job} -> _ = JidoClaw.Cron.Job.remove(job, tenant: "default")
+      _ -> :ok
+    end
+
     IO.puts("")
     IO.puts("  \e[32m✓\e[0m Removed job '\e[1m#{id}\e[0m'")
     IO.puts("")
@@ -664,6 +686,12 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/cron disable " <> id, state) do
     id = String.trim(id)
     JidoClaw.Cron.Worker.disable("default", id)
+
+    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default") do
+      {:ok, job} -> _ = JidoClaw.Cron.Job.disable(job, tenant: "default")
+      _ -> :ok
+    end
+
     IO.puts("")
     IO.puts("  \e[32m✓\e[0m Disabled job '\e[1m#{id}\e[0m'")
     IO.puts("")
@@ -1080,6 +1108,9 @@ defmodule JidoClaw.CLI.Commands do
   defp cron_unit_ms("d"), do: 86_400_000
   defp cron_unit_ms(_), do: 60_000
 
+  defp persistable_schedule({:cron, expr}), do: {:cron, expr}
+  defp persistable_schedule({:every, ms}), do: {:every, Integer.to_string(ms)}
+
   defp strategy_label(%{name: name, display_name: display})
        when is_binary(display) and display != "" do
     "#{display} (#{name})"
@@ -1204,8 +1235,8 @@ defmodule JidoClaw.CLI.Commands do
 
       uuid when is_binary(uuid) ->
         with {:ok, workspace} <-
-               Ash.get(JidoClaw.Workspaces.Workspace, uuid, domain: JidoClaw.Workspaces),
-             {:ok, _} <- apply_policy_action(workspace, kind, policy) do
+               JidoClaw.Workspaces.Workspace.by_id(uuid, tenant: state.tenant_id),
+             {:ok, _} <- apply_policy_action(workspace, kind, policy, state.tenant_id) do
           IO.puts(
             "  \e[32m✓\e[0m  workspace #{kind} policy set to \e[1m#{Atom.to_string(policy)}\e[0m"
           )
@@ -1223,11 +1254,11 @@ defmodule JidoClaw.CLI.Commands do
     end
   end
 
-  defp apply_policy_action(workspace, :embedding, policy),
-    do: JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy)
+  defp apply_policy_action(workspace, :embedding, policy, tenant),
+    do: JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy, tenant: tenant)
 
-  defp apply_policy_action(workspace, :consolidation, policy),
-    do: JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy)
+  defp apply_policy_action(workspace, :consolidation, policy, tenant),
+    do: JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy, tenant: tenant)
 
   defp parse_policy("default"), do: {:ok, :default}
   defp parse_policy("disabled"), do: {:ok, :disabled}
@@ -1454,7 +1485,6 @@ defmodule JidoClaw.CLI.Commands do
         JidoClaw.Memory.Block.revise(block, %{value: new_value})
       else
         attrs = %{
-          tenant_id: block.tenant_id,
           scope_kind: scope.scope_kind,
           user_id: scope.user_id,
           workspace_id: scope.workspace_id,
@@ -1470,7 +1500,7 @@ defmodule JidoClaw.CLI.Commands do
           written_by: "cli"
         }
 
-        JidoClaw.Memory.Block.write(attrs)
+        JidoClaw.Memory.Block.write(attrs, tenant: scope.tenant_id)
       end
 
     case result do

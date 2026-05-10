@@ -228,11 +228,14 @@ config :jido_claw,
     JidoClaw.GitHub,
     JidoClaw.Folio,
     JidoClaw.Reasoning.Domain,
+    JidoClaw.Tenants,
     JidoClaw.Workspaces,
     JidoClaw.Conversations,
     JidoClaw.Solutions.Domain,
     JidoClaw.Embeddings.Domain,
-    JidoClaw.Memory.Domain
+    JidoClaw.Memory.Domain,
+    JidoClaw.Audit,
+    JidoClaw.Cron
   ],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
 

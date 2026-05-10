@@ -119,9 +119,15 @@ defmodule JidoClaw.Memory.Fact do
     custom_indexes do
       index([:tenant_id, :scope_kind, :valid_at])
       index([:tenant_id, :source, :inserted_at])
-      index([:search_vector], using: "gin")
+      index([:search_vector], using: "gin", all_tenants?: true)
       index([:tenant_id, :embedding_status])
     end
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
   end
 
   code_interface do
@@ -132,6 +138,8 @@ defmodule JidoClaw.Memory.Fact do
     define(:invalidate_by_label, action: :invalidate_by_label)
     define(:for_consolidator, action: :for_consolidator)
     define(:transition_embedding_status, action: :transition_embedding_status)
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -141,7 +149,6 @@ defmodule JidoClaw.Memory.Fact do
       primary?(true)
 
       accept([
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -170,11 +177,15 @@ defmodule JidoClaw.Memory.Fact do
       change({__MODULE__.Changes.ResolveInitialEmbeddingStatus, []})
       change({__MODULE__.Changes.InvalidatePriorActiveLabel, []})
       change({__MODULE__.Changes.HintBackfillWorker, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_fact]}
+      )
     end
 
     create :import_legacy do
       accept([
-        :tenant_id,
         :scope_kind,
         :user_id,
         :workspace_id,
@@ -211,6 +222,11 @@ defmodule JidoClaw.Memory.Fact do
       require_atomic?(false)
 
       change({__MODULE__.Changes.MarkPromoted, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_fact]}
+      )
     end
 
     update :invalidate_by_id do
@@ -219,6 +235,11 @@ defmodule JidoClaw.Memory.Fact do
       require_atomic?(false)
 
       change({__MODULE__.Changes.MarkInvalidated, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_fact]}
+      )
     end
 
     update :invalidate_by_label do
@@ -229,10 +250,14 @@ defmodule JidoClaw.Memory.Fact do
 
       validate({__MODULE__.Validations.SourceForInvalidateByLabel, []})
       change({__MODULE__.Changes.MarkInvalidated, []})
+
+      change(
+        {JidoClaw.Audit.Producers.MemoryWrite,
+         [event_kind: :memory_write, target_kind: :memory_fact]}
+      )
     end
 
     read :for_consolidator do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:scope_kind, :atom, allow_nil?: false, constraints: [one_of: @scope_kinds])
       argument(:scope_fk_id, :uuid, allow_nil?: false)
       argument(:since_inserted_at, :utc_datetime_usec, allow_nil?: true)
@@ -258,6 +283,19 @@ defmodule JidoClaw.Memory.Fact do
       ])
 
       require_atomic?(false)
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
   end
 
@@ -422,6 +460,13 @@ defmodule JidoClaw.Memory.Fact do
       public?(true)
       default(&DateTime.utc_now/0)
       writable?(true)
+    end
+  end
+
+  relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
     end
   end
 
@@ -618,7 +663,16 @@ defmodule JidoClaw.Memory.Fact do
     end
 
     defp resolve_status_from_policy(cs, workspace_id) do
-      case Ash.get(JidoClaw.Workspaces.Workspace, workspace_id, domain: JidoClaw.Workspaces) do
+      tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
+      result =
+        if tenant_id do
+          JidoClaw.Workspaces.Workspace.by_id(workspace_id, tenant: tenant_id)
+        else
+          JidoClaw.Workspaces.Workspace.by_id_global(workspace_id)
+        end
+
+      case result do
         {:ok, %{embedding_policy: :disabled}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
@@ -649,10 +703,12 @@ defmodule JidoClaw.Memory.Fact do
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
         with label when is_binary(label) <- Ash.Changeset.get_attribute(cs, :label),
              scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind),
              {:ok, fk_id} <- JidoClaw.Memory.Fact.scope_fk_for(cs, scope_kind),
-             tenant_id = Ash.Changeset.get_attribute(cs, :tenant_id) do
+             true <- is_binary(tenant_id) do
           JidoClaw.Memory.Fact.invalidate_prior_active_label(
             tenant_id,
             scope_kind,
@@ -772,7 +828,6 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def prepare(query, _opts, _context) do
-      tenant = Ash.Query.get_argument(query, :tenant_id)
       kind = Ash.Query.get_argument(query, :scope_kind)
       fk = Ash.Query.get_argument(query, :scope_fk_id)
       since_at = Ash.Query.get_argument(query, :since_inserted_at)
@@ -781,7 +836,7 @@ defmodule JidoClaw.Memory.Fact do
       sources = Ash.Query.get_argument(query, :sources)
 
       query
-      |> JidoClaw.Memory.Fact.apply_scope_filter(kind, tenant, fk)
+      |> JidoClaw.Memory.Fact.apply_scope_filter(kind, fk)
       |> JidoClaw.Memory.Fact.apply_since_filter(since_at, since_id)
       |> JidoClaw.Memory.Fact.apply_sources_filter(sources)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
@@ -854,29 +909,20 @@ defmodule JidoClaw.Memory.Fact do
   defp uuid_dump(other), do: other
 
   @doc false
-  def apply_scope_filter(query, :user, tenant, fk) do
-    Ash.Query.filter(query, tenant_id == ^tenant and scope_kind == :user and user_id == ^fk)
+  def apply_scope_filter(query, :user, fk) do
+    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
   end
 
-  def apply_scope_filter(query, :workspace, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :workspace and workspace_id == ^fk
-    )
+  def apply_scope_filter(query, :workspace, fk) do
+    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
   end
 
-  def apply_scope_filter(query, :project, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :project and project_id == ^fk
-    )
+  def apply_scope_filter(query, :project, fk) do
+    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
   end
 
-  def apply_scope_filter(query, :session, tenant, fk) do
-    Ash.Query.filter(
-      query,
-      tenant_id == ^tenant and scope_kind == :session and session_id == ^fk
-    )
+  def apply_scope_filter(query, :session, fk) do
+    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
   end
 
   @doc false

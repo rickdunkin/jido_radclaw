@@ -126,7 +126,7 @@ defmodule JidoClaw.Session.Worker do
   end
 
   def handle_continue(:load, state) do
-    messages = load_messages(state.session_uuid)
+    messages = load_messages(state.session_uuid, state.tenant_id)
     {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
@@ -152,7 +152,7 @@ defmodule JidoClaw.Session.Worker do
       }
       |> Map.merge(telemetry)
 
-    case Message.append(attrs) do
+    case Message.append(attrs, tenant: state.tenant_id) do
       {:ok, message} ->
         new_state = %{
           state
@@ -206,7 +206,7 @@ defmodule JidoClaw.Session.Worker do
 
   @impl true
   def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: nil} = state) do
-    messages = load_messages(uuid)
+    messages = load_messages(uuid, state.tenant_id)
     {:reply, :ok, %{state | session_uuid: uuid, messages: messages}, @idle_timeout}
   end
 
@@ -251,8 +251,8 @@ defmodule JidoClaw.Session.Worker do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp load_messages(session_uuid) do
-    case Message.for_session(session_uuid) do
+  defp load_messages(session_uuid, tenant_id) when is_binary(tenant_id) do
+    case Message.for_session(session_uuid, tenant: tenant_id) do
       {:ok, rows} -> Enum.flat_map(rows, &to_view/1)
       _ -> []
     end
@@ -261,6 +261,8 @@ defmodule JidoClaw.Session.Worker do
       Logger.warning("[Session] message hydration raised: #{Exception.message(e)}")
       []
   end
+
+  defp load_messages(_session_uuid, _), do: []
 
   # Map a Conversations.Message row → the legacy in-memory shape so
   # JidoClaw.history/2 callers (and the REPL view) keep their existing

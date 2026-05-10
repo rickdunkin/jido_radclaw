@@ -41,33 +41,39 @@ defmodule JidoClaw.Conversations.RecorderTest do
       tool_call_id = "shared-call-#{System.unique_integer([:positive])}"
 
       {:ok, parent_a} =
-        Message.append(%{
-          session_id: session_a.id,
-          request_id: r_a,
-          role: :tool_call,
-          content: "tool_a()",
-          tool_call_id: tool_call_id
-        })
+        Message.append(
+          %{
+            session_id: session_a.id,
+            request_id: r_a,
+            role: :tool_call,
+            content: "tool_a()",
+            tool_call_id: tool_call_id
+          },
+          tenant: tenant_a
+        )
 
       {:ok, parent_b} =
-        Message.append(%{
-          session_id: session_b.id,
-          request_id: r_b,
-          role: :tool_call,
-          content: "tool_b()",
-          tool_call_id: tool_call_id
-        })
+        Message.append(
+          %{
+            session_id: session_b.id,
+            request_id: r_b,
+            role: :tool_call,
+            content: "tool_b()",
+            tool_call_id: tool_call_id
+          },
+          tenant: tenant_b
+        )
 
       emit_tool_result(r_a, tool_call_id, "tool_a", {:ok, "ok-a"})
       finalize_and_flush(r_a)
 
-      [tr_a] = tool_results_for(session_a.id)
+      [tr_a] = tool_results_for(session_a.id, tenant_a)
 
       assert tr_a.parent_message_id == parent_a.id,
              "expected the :tool_result for r_a to link to session A's parent (#{parent_a.id}), got #{inspect(tr_a.parent_message_id)} (B's parent is #{parent_b.id})"
 
       # Sanity: nothing slipped into session B yet.
-      assert tool_results_for(session_b.id) == []
+      assert tool_results_for(session_b.id, tenant_b) == []
     end
 
     test "two requests in the same session with overlapping tool_call_ids each resolve their own parent" do
@@ -82,27 +88,33 @@ defmodule JidoClaw.Conversations.RecorderTest do
       tool_call_id = "dup-#{System.unique_integer([:positive])}"
 
       {:ok, parent_1} =
-        Message.append(%{
-          session_id: session.id,
-          request_id: r1,
-          role: :tool_call,
-          content: "first",
-          tool_call_id: tool_call_id
-        })
+        Message.append(
+          %{
+            session_id: session.id,
+            request_id: r1,
+            role: :tool_call,
+            content: "first",
+            tool_call_id: tool_call_id
+          },
+          tenant: tenant
+        )
 
       {:ok, parent_2} =
-        Message.append(%{
-          session_id: session.id,
-          request_id: r2,
-          role: :tool_call,
-          content: "second",
-          tool_call_id: tool_call_id
-        })
+        Message.append(
+          %{
+            session_id: session.id,
+            request_id: r2,
+            role: :tool_call,
+            content: "second",
+            tool_call_id: tool_call_id
+          },
+          tenant: tenant
+        )
 
       emit_tool_result(r2, tool_call_id, "second", {:ok, "ok-2"})
       finalize_and_flush(r2)
 
-      [tr_2] = tool_results_for(session.id)
+      [tr_2] = tool_results_for(session.id, tenant)
 
       assert tr_2.parent_message_id == parent_2.id,
              "expected r2 result to link to parent_2 (#{parent_2.id}), got #{inspect(tr_2.parent_message_id)} (parent_1 is #{parent_1.id})"
@@ -117,7 +129,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
       emit_tool_result(r3, "orphan_call", "orphan_tool", {:error, :nope})
       finalize_and_flush(r3)
 
-      [tr_3] = tool_results_for(session.id)
+      [tr_3] = tool_results_for(session.id, tenant)
 
       assert tr_3.parent_message_id == nil
       assert tr_3.tool_call_id == "orphan_call"
@@ -143,7 +155,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
       emit_tool_result(sentinel_request, "real", "real_tool", {:ok, "y"})
       finalize_and_flush(sentinel_request)
 
-      results = tool_results_for(sentinel_session.id)
+      results = tool_results_for(sentinel_session.id, tenant)
       tool_call_ids = Enum.map(results, & &1.tool_call_id) |> MapSet.new()
 
       assert MapSet.member?(tool_call_ids, "real")
@@ -199,7 +211,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
           request_id
         )
 
-      {:ok, rows} = Message.for_session(session.id)
+      {:ok, rows} = Message.for_session(session.id, tenant: tenant)
       [assistant] = Enum.filter(rows, &(&1.role == :assistant))
 
       assert assistant.model == "anthropic/claude-test"
@@ -271,7 +283,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
           request_id
         )
 
-      {:ok, rows} = Message.for_session(session.id)
+      {:ok, rows} = Message.for_session(session.id, tenant: tenant)
       [assistant] = Enum.filter(rows, &(&1.role == :assistant))
 
       assert assistant.model == "model-from-durable"
@@ -345,18 +357,21 @@ defmodule JidoClaw.Conversations.RecorderTest do
       tool_call_id = "call-durable-#{System.unique_integer([:positive])}"
 
       {:ok, parent} =
-        Message.append(%{
-          session_id: session.id,
-          request_id: request_id,
-          role: :tool_call,
-          content: "tool()",
-          tool_call_id: tool_call_id
-        })
+        Message.append(
+          %{
+            session_id: session.id,
+            request_id: request_id,
+            role: :tool_call,
+            content: "tool()",
+            tool_call_id: tool_call_id
+          },
+          tenant: tenant
+        )
 
       emit_tool_result(request_id, tool_call_id, "tool", {:ok, "ok"})
       finalize_and_flush(request_id)
 
-      [tr] = tool_results_for(session.id)
+      [tr] = tool_results_for(session.id, tenant)
 
       assert tr.parent_message_id == parent.id,
              "expected the :tool_result to link to the durable-path parent (#{parent.id}), got #{inspect(tr.parent_message_id)}"
@@ -369,22 +384,27 @@ defmodule JidoClaw.Conversations.RecorderTest do
 
   defp seed_session(label) do
     tenant_id = "tenant-rec-#{label}-#{System.unique_integer([:positive])}"
+    {:ok, _} = JidoClaw.Tenants.Tenant.ensure(tenant_id)
 
     {:ok, ws} =
-      Workspace.register(%{
-        tenant_id: tenant_id,
-        path: "/tmp/rec-#{label}-#{System.unique_integer([:positive])}",
-        name: label
-      })
+      Workspace.register(
+        %{
+          path: "/tmp/rec-#{label}-#{System.unique_integer([:positive])}",
+          name: label
+        },
+        tenant: tenant_id
+      )
 
     {:ok, session} =
-      Session.start(%{
-        workspace_id: ws.id,
-        tenant_id: tenant_id,
-        kind: :api,
-        external_id: "ext-#{label}-#{System.unique_integer([:positive])}",
-        started_at: DateTime.utc_now()
-      })
+      Session.start(
+        %{
+          workspace_id: ws.id,
+          kind: :api,
+          external_id: "ext-#{label}-#{System.unique_integer([:positive])}",
+          started_at: DateTime.utc_now()
+        },
+        tenant: tenant_id
+      )
 
     %{tenant_id: tenant_id, workspace: ws, session: session}
   end
@@ -453,8 +473,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
     end
   end
 
-  defp tool_results_for(session_id) do
-    {:ok, rows} = Message.for_session(session_id)
+  defp tool_results_for(session_id, tenant_id) do
+    {:ok, rows} = Message.for_session(session_id, tenant: tenant_id)
     Enum.filter(rows, &(&1.role == :tool_result))
   end
 end

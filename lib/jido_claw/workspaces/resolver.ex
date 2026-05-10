@@ -10,14 +10,29 @@ defmodule JidoClaw.Workspaces.Resolver do
   Resolvers are the only callers that opt into upsert; direct
   `Workspace.register/1` calls behave as a normal create and surface a
   unique-constraint error on conflict.
+
+  ## v0.6.4 — tenant FK ensure
+
+  Step 0 of `ensure_workspace/3` calls `Tenants.Tenant.ensure/1` so the
+  parent `tenants(id)` row exists before any FK-bearing write hits
+  Postgres. The action's `upsert_fields([:updated_at])` semantics make
+  concurrent first-writes for the same id collapse onto the same row
+  without re-activating a `:suspended` tenant.
   """
 
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
 
   @spec ensure_workspace(String.t(), String.t(), keyword()) ::
           {:ok, Workspace.t()} | {:error, term()}
   def ensure_workspace(tenant_id, project_dir, opts \\ [])
       when is_binary(tenant_id) and is_binary(project_dir) and is_list(opts) do
+    with {:ok, _tenant} <- Tenant.ensure(tenant_id) do
+      do_register(tenant_id, project_dir, opts)
+    end
+  end
+
+  defp do_register(tenant_id, project_dir, opts) do
     expanded = Path.expand(project_dir)
     user_id = Keyword.get(opts, :user_id)
     name = Keyword.get(opts, :name) || Path.basename(expanded)
@@ -26,7 +41,6 @@ defmodule JidoClaw.Workspaces.Resolver do
       if user_id, do: :unique_user_path_authed, else: :unique_user_path_cli
 
     attrs = %{
-      tenant_id: tenant_id,
       path: expanded,
       name: name,
       user_id: user_id,
@@ -37,7 +51,7 @@ defmodule JidoClaw.Workspaces.Resolver do
     }
 
     Workspace
-    |> Ash.Changeset.for_create(:register, attrs)
+    |> Ash.Changeset.for_create(:register, attrs, tenant: tenant_id)
     |> Ash.create(upsert?: true, upsert_identity: upsert_identity)
   end
 end

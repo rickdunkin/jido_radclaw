@@ -61,8 +61,14 @@ defmodule JidoClaw.Solutions.Solution do
       index([:tenant_id, :sharing])
       index([:tenant_id, :trust_score])
       index([:tenant_id, :embedding_status])
-      index([:search_vector], using: "gin")
+      index([:search_vector], using: "gin", all_tenants?: true)
     end
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
   end
 
   code_interface do
@@ -74,13 +80,12 @@ defmodule JidoClaw.Solutions.Solution do
       args: [
         :signature,
         :workspace_id,
-        :tenant_id,
         :local_visibility,
         :cross_workspace_visibility
       ]
     )
 
-    define(:stats, action: :stats, args: [:tenant_id, :workspace_id])
+    define(:stats, action: :stats, args: [:workspace_id])
     define(:update_trust, action: :update_trust)
     define(:update_verification, action: :update_verification)
     define(:update_verification_and_trust, action: :update_verification_and_trust)
@@ -88,6 +93,8 @@ defmodule JidoClaw.Solutions.Solution do
     define(:transition_embedding_status, action: :transition_embedding_status)
     define(:with_deleted, action: :with_deleted)
     define(:search, action: :search)
+    define(:by_id, action: :by_id, args: [:id], get?: true)
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -120,7 +127,6 @@ defmodule JidoClaw.Solutions.Solution do
         :workspace_id,
         :session_id,
         :created_by_user_id,
-        :tenant_id,
         :embedding,
         :embedding_status
       ])
@@ -129,6 +135,7 @@ defmodule JidoClaw.Solutions.Solution do
       change({__MODULE__.Changes.ValidateCrossTenantFk, []})
       change({__MODULE__.Changes.ResolveInitialEmbeddingStatus, []})
       change({__MODULE__.Changes.HintBackfillWorker, []})
+      change({JidoClaw.Audit.Producers.SolutionShare, []})
     end
 
     create :import_legacy do
@@ -146,7 +153,6 @@ defmodule JidoClaw.Solutions.Solution do
         :workspace_id,
         :session_id,
         :created_by_user_id,
-        :tenant_id,
         :deleted_at,
         :embedding,
         :embedding_status
@@ -165,7 +171,6 @@ defmodule JidoClaw.Solutions.Solution do
     read :by_signature do
       argument(:signature, :string, allow_nil?: false)
       argument(:workspace_id, :uuid, allow_nil?: false)
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:local_visibility, {:array, :atom}, default: [:local, :shared, :public])
       argument(:cross_workspace_visibility, {:array, :atom}, default: [:public])
 
@@ -173,7 +178,7 @@ defmodule JidoClaw.Solutions.Solution do
 
       filter(
         expr(
-          tenant_id == ^arg(:tenant_id) and problem_signature == ^arg(:signature) and
+          problem_signature == ^arg(:signature) and
             ((workspace_id == ^arg(:workspace_id) and sharing in ^arg(:local_visibility)) or
                (workspace_id != ^arg(:workspace_id) and
                   sharing in ^arg(:cross_workspace_visibility)))
@@ -184,11 +189,23 @@ defmodule JidoClaw.Solutions.Solution do
     end
 
     read :stats do
-      argument(:tenant_id, :string, allow_nil?: false)
       argument(:workspace_id, :uuid, allow_nil?: false)
 
       prepare(build(filter: [is_nil: :deleted_at]))
-      filter(expr(tenant_id == ^arg(:tenant_id) and workspace_id == ^arg(:workspace_id)))
+      filter(expr(workspace_id == ^arg(:workspace_id)))
+    end
+
+    read :by_id do
+      get?(true)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
     end
 
     read :with_deleted do
@@ -240,7 +257,6 @@ defmodule JidoClaw.Solutions.Solution do
       argument(:limit, :integer, default: 10)
       argument(:threshold, :float, default: 0.0)
       argument(:workspace_id, :uuid, allow_nil?: false)
-      argument(:tenant_id, :string, allow_nil?: false)
 
       argument(:local_visibility, {:array, :atom}, default: [:local, :shared, :public])
 
@@ -385,6 +401,11 @@ defmodule JidoClaw.Solutions.Solution do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :workspace, WorkspaceResource do
       define_attribute?(false)
       attribute_writable?(true)
@@ -462,7 +483,7 @@ defmodule JidoClaw.Solutions.Solution do
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
-        tenant_id = Ash.Changeset.get_attribute(cs, :tenant_id)
+        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
         workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
         session_id = Ash.Changeset.get_attribute(cs, :session_id)
 
@@ -475,7 +496,7 @@ defmodule JidoClaw.Solutions.Solution do
     defp validate_workspace_tenant(cs, nil, _tenant_id), do: cs
 
     defp validate_workspace_tenant(cs, workspace_id, tenant_id) do
-      case Ash.get(WorkspaceResource, workspace_id, domain: JidoClaw.Workspaces) do
+      case WorkspaceResource.by_id_global(workspace_id) do
         {:ok, %{tenant_id: ^tenant_id}} ->
           cs
 
@@ -498,7 +519,7 @@ defmodule JidoClaw.Solutions.Solution do
     defp validate_session_scope(cs, nil, _workspace_id, _tenant_id), do: cs
 
     defp validate_session_scope(cs, session_id, workspace_id, tenant_id) do
-      case Ash.get(SessionResource, session_id, domain: JidoClaw.Conversations) do
+      case SessionResource.by_id_global(session_id) do
         {:ok, %{tenant_id: ^tenant_id, workspace_id: ^workspace_id}} ->
           cs
 
@@ -547,7 +568,16 @@ defmodule JidoClaw.Solutions.Solution do
     defp resolve_status_from_policy(cs, nil), do: cs
 
     defp resolve_status_from_policy(cs, workspace_id) do
-      case Ash.get(WorkspaceResource, workspace_id, domain: JidoClaw.Workspaces) do
+      tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
+      result =
+        if tenant_id do
+          WorkspaceResource.by_id(workspace_id, tenant: tenant_id)
+        else
+          WorkspaceResource.by_id_global(workspace_id)
+        end
+
+      case result do
         {:ok, %{embedding_policy: :disabled}} ->
           Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
@@ -611,7 +641,9 @@ defmodule JidoClaw.Solutions.Solution do
         merged = %{record | verification: new_verification}
 
         agent_rep_score =
-          case JidoClaw.Solutions.Reputation.get(record.tenant_id, record.agent_id || "unknown") do
+          case JidoClaw.Solutions.Reputation.get(record.agent_id || "unknown",
+                 tenant: record.tenant_id
+               ) do
             {:ok, nil} -> 0.5
             {:ok, %{score: score}} -> score
             _ -> 0.5

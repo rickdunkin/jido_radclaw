@@ -1,12 +1,20 @@
 defmodule JidoClaw.Reasoning.TelemetryTest do
-  use ExUnit.Case, async: false
+  @moduledoc """
+  v0.6.4 — `Reasoning.Telemetry.persist/9` no longer populates the
+  deprecated `workspace_id` / `agent_id` string columns on
+  `Reasoning.Outcome`. Tests below that previously asserted those
+  columns reflected `:workspace_id` / `:agent_id` opts now assert the
+  columns are nil. The `@tag :deprecated_outcome_columns` markers let
+  us delete those assertions in one sweep when a v0.7 migration drops
+  the columns.
+
+  See `lib/jido_claw/reasoning/resources/outcome.ex` moduledoc for the
+  full deprecation contract and `lib/jido_claw/reasoning/telemetry.ex`
+  for the writer that no longer threads these fields.
+  """
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Reasoning.{Classifier, Resources.Outcome, Telemetry}
-
-  setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
-    :ok
-  end
 
   describe "with_outcome/4" do
     test "returns the fun's result verbatim on :ok" do
@@ -60,9 +68,10 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       assert meta.status == :ok
     end
 
-    test "persists a row with workspace_id and project_dir round-tripped" do
+    @tag :deprecated_outcome_columns
+    test "deprecated workspace_id stays nil; project_dir still round-trips" do
       Telemetry.with_outcome(
-        "cot",
+        "cot-deprecated-ws",
         "a sample prompt for telemetry",
         [
           execution_kind: :strategy_run,
@@ -73,15 +82,18 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       )
 
       {:ok, rows} = Outcome.list_by_task_type(:open_ended)
-
-      assert Enum.any?(rows, fn r ->
-               r.workspace_id == "ws-abc" and r.project_dir == "/tmp/foo"
-             end)
+      row = Enum.find(rows, fn r -> r.strategy == "cot-deprecated-ws" end)
+      assert row
+      # Deprecated string column — Telemetry.persist no longer populates
+      # workspace_id (see Outcome moduledoc).
+      assert row.workspace_id == nil
+      assert row.project_dir == "/tmp/foo"
     end
 
-    test "persists agent_id and forge_session_key when supplied in opts" do
+    @tag :deprecated_outcome_columns
+    test "deprecated agent_id stays nil; forge_session_key still persists" do
       Telemetry.with_outcome(
-        "cot",
+        "cot-deprecated-agent",
         "a prompt with agent attribution",
         [
           execution_kind: :strategy_run,
@@ -92,28 +104,22 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       )
 
       {:ok, rows} = Outcome.list_by_task_type(:open_ended)
-
-      assert Enum.any?(rows, fn r ->
-               r.agent_id == "main" and r.forge_session_key == "forge-xyz"
-             end)
+      row = Enum.find(rows, fn r -> r.strategy == "cot-deprecated-agent" end)
+      assert row
+      # Deprecated string column — see Outcome moduledoc.
+      assert row.agent_id == nil
+      assert row.forge_session_key == "forge-xyz"
     end
 
     test "persists workspace_uuid and session_uuid when supplied in opts" do
-      {:ok, ws} =
-        JidoClaw.Workspaces.Workspace.register(%{
-          tenant_id: "default",
-          path: "/tmp/tel-fk-#{System.unique_integer([:positive])}",
-          name: "ws"
-        })
+      tenant_id = seed_tenant("tel-fk")
+      {:ok, ws} = seed_workspace(tenant_id, name: "ws")
 
       {:ok, session} =
-        JidoClaw.Conversations.Session.start(%{
-          workspace_id: ws.id,
-          tenant_id: "default",
+        seed_session(tenant_id, ws.id,
           kind: :api,
-          external_id: "sess-tel",
-          started_at: DateTime.utc_now()
-        })
+          external_id: "sess-tel-#{System.unique_integer([:positive])}"
+        )
 
       Telemetry.with_outcome(
         "cot",
@@ -134,15 +140,17 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
     end
 
     test "agent_id and forge_session_key default to nil when absent from opts" do
+      strategy = "cot-no-attribution"
+
       Telemetry.with_outcome(
-        "cot",
+        strategy,
         "a prompt without agent attribution",
-        [execution_kind: :strategy_run, workspace_id: "ws-no-agent"],
+        [execution_kind: :strategy_run],
         fn -> {:ok, %{}} end
       )
 
       {:ok, rows} = Outcome.list_by_task_type(:open_ended)
-      row = Enum.find(rows, fn r -> r.workspace_id == "ws-no-agent" end)
+      row = Enum.find(rows, fn r -> r.strategy == strategy end)
       assert row
       assert row.agent_id == nil
       assert row.forge_session_key == nil

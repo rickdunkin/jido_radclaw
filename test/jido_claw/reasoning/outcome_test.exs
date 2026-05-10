@@ -1,12 +1,19 @@
 defmodule JidoClaw.Reasoning.OutcomeTest do
-  use ExUnit.Case, async: false
+  @moduledoc """
+  v0.6.4 deprecates the `workspace_id` and `agent_id` string columns on
+  `Reasoning.Outcome`. They remain on the schema (and indexes) for
+  replay/audit access through the v0.6 line, but `:record`'s accept
+  list no longer includes them and `Reasoning.Telemetry.persist/9`
+  stops populating them. A v0.7 migration will drop the columns; the
+  `@tag :deprecated_outcome_columns` markers below let us delete the
+  associated assertions in one sweep at that time.
+
+  See the moduledoc on `lib/jido_claw/reasoning/resources/outcome.ex`
+  for the deprecation contract.
+  """
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Reasoning.Resources.Outcome
-
-  setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
-    :ok
-  end
 
   describe "record/1" do
     test "persists all enum fields and free-form metadata" do
@@ -24,7 +31,6 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
         duration_ms: 1200,
         tokens_in: 100,
         tokens_out: 50,
-        workspace_id: "ws-1",
         project_dir: "/tmp/proj",
         metadata: %{"extra" => "value"},
         started_at: now,
@@ -37,8 +43,27 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
       assert row.task_type == :qa
       assert row.complexity == :simple
       assert row.status == :ok
-      assert row.workspace_id == "ws-1"
       assert row.metadata == %{"extra" => "value"}
+    end
+
+    @tag :deprecated_outcome_columns
+    test "deprecated workspace_id stays nil after :record (no longer in accept list)" do
+      now = DateTime.utc_now()
+
+      attrs = %{
+        strategy: "cot",
+        execution_kind: :strategy_run,
+        task_type: :qa,
+        complexity: :simple,
+        prompt_length: 42,
+        status: :ok,
+        started_at: now,
+        completed_at: now
+      }
+
+      assert {:ok, row} = Outcome.record(attrs)
+      # Deprecated string column — see Outcome moduledoc.
+      assert row.workspace_id == nil
     end
 
     test "accepts :certificate_verification execution_kind (0.4.2 placeholder)" do
@@ -62,7 +87,8 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
       assert {:error, _} = Outcome.record(%{strategy: "cot"})
     end
 
-    test "persists agent_id and forge_session_key" do
+    @tag :deprecated_outcome_columns
+    test "deprecated agent_id stays nil after :record; forge_session_key still persists" do
       now = DateTime.utc_now()
 
       attrs = %{
@@ -73,31 +99,24 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
         prompt_length: 10,
         status: :ok,
         started_at: now,
-        agent_id: "main",
         forge_session_key: "forge-abc123"
       }
 
       assert {:ok, row} = Outcome.record(attrs)
-      assert row.agent_id == "main"
+      # Deprecated string column — see Outcome moduledoc.
+      assert row.agent_id == nil
       assert row.forge_session_key == "forge-abc123"
     end
 
     test "persists workspace_uuid and session_uuid (Phase 0 sibling FKs)" do
-      {:ok, ws} =
-        JidoClaw.Workspaces.Workspace.register(%{
-          tenant_id: "default",
-          path: "/tmp/outcome-fk-#{System.unique_integer([:positive])}",
-          name: "ws"
-        })
+      tenant_id = seed_tenant("outcome-fk")
+      {:ok, ws} = seed_workspace(tenant_id, name: "ws")
 
       {:ok, session} =
-        JidoClaw.Conversations.Session.start(%{
-          workspace_id: ws.id,
-          tenant_id: "default",
+        seed_session(tenant_id, ws.id,
           kind: :api,
-          external_id: "sess-fk",
-          started_at: DateTime.utc_now()
-        })
+          external_id: "sess-fk-#{System.unique_integer([:positive])}"
+        )
 
       attrs = %{
         strategy: "cot",

@@ -181,11 +181,9 @@ defmodule JidoClaw.Tools.Reason do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 
     [
-      workspace_id: Map.get(tool_context, :workspace_id),
       workspace_uuid: Map.get(tool_context, :workspace_uuid),
       session_uuid: Map.get(tool_context, :session_uuid),
       project_dir: Map.get(tool_context, :project_dir),
-      agent_id: Map.get(tool_context, :agent_id),
       forge_session_key: Map.get(tool_context, :forge_session_key)
     ]
     |> Keyword.merge(extra)

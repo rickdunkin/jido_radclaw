@@ -71,9 +71,15 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     repo(JidoClaw.Repo)
 
     custom_indexes do
-      index([:expires_at])
+      index([:expires_at], all_tenants?: true)
       index([:tenant_id, :expires_at])
     end
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(true)
   end
 
   code_interface do
@@ -204,6 +210,11 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+    end
+
     belongs_to :session, SessionResource do
       define_attribute?(false)
       attribute_writable?(true)
@@ -264,7 +275,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     defp validate_session(cs, _, nil), do: cs
 
     defp validate_session(cs, session_id, tenant_id) do
-      case JidoClaw.Conversations.Session.by_id(session_id) do
+      case JidoClaw.Conversations.Session.by_id_global(session_id) do
         {:ok, %{tenant_id: ^tenant_id}} ->
           cs
 
@@ -288,7 +299,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     defp validate_workspace(cs, _, nil), do: cs
 
     defp validate_workspace(cs, workspace_id, tenant_id) do
-      case Ash.get(JidoClaw.Workspaces.Workspace, workspace_id, domain: JidoClaw.Workspaces) do
+      case JidoClaw.Workspaces.Workspace.by_id_global(workspace_id) do
         {:ok, %{tenant_id: ^tenant_id}} ->
           cs
 
