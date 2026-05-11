@@ -10,18 +10,17 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     * `lexical_pool` — `similarity(lexical_text, $X)` plus an
       ESCAPE-protected `LIKE` substring fallback, GIN-trigram-indexed.
 
-  ## RRF combine vs. weighted-sum
+  ## RRF combine
 
-  Mirrors `JidoClaw.Solutions.HybridSearchSql` shape but combines the
-  three pool ranks via **Reciprocal Rank Fusion**:
+  Mirrors `JidoClaw.Solutions.HybridSearchSql`. The three pool ranks
+  are combined via **Reciprocal Rank Fusion**:
 
       score = 1/(60 + r_fts) + 1/(60 + r_ann) + 1/(60 + r_lex)
 
-  Solutions stays weighted-sum (no Phase 3 behavior change there).
-  Memory chose RRF per the source plan §3.13 because the lexical pool's
-  raw `similarity` scores have a different distribution than FTS's
-  `ts_rank_cd` and the cosine `1 - distance` — RRF is rank-only, so the
-  three pools combine without per-pool weight tuning.
+  Rank-only fusion sidesteps the fact that the lexical pool's raw
+  `similarity` scores, FTS's `ts_rank_cd`, and the cosine `1 - distance`
+  live on incomparable scales — there is no per-pool weight tuning to
+  maintain.
 
   ## Scope chain
 

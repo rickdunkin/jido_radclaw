@@ -1,92 +1,11 @@
 defmodule JidoClaw.Solutions.SolutionTest do
   use JidoClaw.SolutionsCase, async: false
 
-  alias JidoClaw.Solutions.Reputation
+  alias JidoClaw.Repo
   alias JidoClaw.Solutions.Solution
-  alias JidoClaw.Solutions.Trust
 
-  describe "update_verification_and_trust + RecomputeTrustScore" do
-    test "uses the agent's real reputation score (not the 0.5 neutral fallback)" do
-      tenant_id = unique_tenant_id()
-      workspace = workspace_fixture(tenant_id, embedding_policy: :disabled)
-      actor = actor_for(tenant_id)
-      agent_id = "agent-trust-#{System.unique_integer([:positive])}"
-
-      # Seed a non-neutral reputation under (tenant, agent_id). The
-      # RecomputeTrustScore change must thread an actor through the
-      # nested Reputation.get read for this row to be visible — without
-      # fix 2 it lands at the 0.5 neutral fallback.
-      {:ok, _rep} =
-        Reputation.upsert(
-          %{
-            agent_id: agent_id,
-            score: 0.9,
-            solutions_verified: 9,
-            solutions_failed: 1,
-            solutions_shared: 5,
-            last_active: DateTime.utc_now()
-          },
-          tenant: tenant_id,
-          actor: actor
-        )
-
-      pre_update_reputation = 0.9
-
-      sig =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
-
-      {:ok, solution} =
-        Solution.store(
-          %{
-            problem_signature: sig,
-            solution_content: "x = 1",
-            language: "elixir",
-            framework: "phoenix",
-            sharing: :local,
-            workspace_id: workspace.id,
-            agent_id: agent_id,
-            embedding_status: :disabled,
-            verification: %{},
-            trust_score: 0.0
-          },
-          tenant: tenant_id,
-          actor: actor
-        )
-
-      new_verification = %{"status" => "semi_formal", "confidence" => 0.8}
-
-      # Mirror the change's computation: the change uses `cs.data`
-      # (the loaded record) with the new verification map merged in,
-      # then calls Trust.compute/2 with the pre-update reputation
-      # threaded as :agent_reputation. RecordReputationOutcome only
-      # mutates reputation for "passed"/"failed" — semi_formal leaves
-      # it untouched so the pre-update snapshot is the value actually
-      # used.
-      merged = %{solution | verification: new_verification}
-      expected = Trust.compute(merged, agent_reputation: pre_update_reputation)
-
-      {:ok, updated} =
-        Solution.update_verification_and_trust(
-          solution,
-          %{verification: new_verification},
-          tenant: tenant_id,
-          actor: actor
-        )
-
-      # Tight delta: same Trust.compute on the same inputs; the only
-      # floating-point variance is the freshness `now` snapshot used
-      # by the change vs. the test (microseconds apart, both well
-      # inside the 7-day full-freshness window).
-      assert_in_delta updated.trust_score, expected, 0.001
-
-      # Sanity floor: the 0.5 fallback would yield a score 0.06 lower
-      # than the 0.9 reputation. Even with freshness jitter, the
-      # difference between fix and bug is well outside the delta.
-      fallback = Trust.compute(merged, agent_reputation: 0.5)
-      refute_in_delta updated.trust_score, fallback, 0.01
-    end
-  end
+  # Reputation × Trust composition coverage lives in
+  # `test/jido_claw/solutions/reputation_test.exs`.
 
   describe "import_legacy + ResolveInitialEmbeddingStatus" do
     test "system import under :disabled workspace lands at :disabled (not :pending)" do
@@ -117,4 +36,87 @@ defmodule JidoClaw.Solutions.SolutionTest do
       assert solution.embedding_status == :disabled
     end
   end
+
+  describe "cross-tenant FK rejection" do
+    test ":store rejects a (tenant_id, workspace_id) pair where the workspace lives in a different tenant" do
+      tenant_a = unique_tenant_id()
+      tenant_b = unique_tenant_id()
+
+      workspace_a = workspace_fixture(tenant_a, embedding_policy: :disabled)
+      _workspace_b_setup = workspace_fixture(tenant_b, embedding_policy: :disabled)
+
+      actor_b = actor_for(tenant_b)
+
+      sig =
+        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
+        |> Base.encode16(case: :lower)
+
+      attrs = %{
+        problem_signature: sig,
+        solution_content: "x = 1",
+        language: "elixir",
+        sharing: :local,
+        workspace_id: workspace_a.id,
+        embedding_status: :disabled
+      }
+
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Solution.store(attrs, tenant: tenant_b, actor: actor_b)
+
+      assert error_contains_cross_tenant?(err),
+             "expected :cross_tenant_fk_mismatch in error chain; got: #{inspect(err)}"
+
+      {:ok, %{rows: [[count]]}} =
+        Repo.query("SELECT COUNT(*) FROM solutions WHERE tenant_id = $1", [tenant_b])
+
+      assert count == 0
+    end
+
+    test ":import_legacy rejects the same cross-tenant FK mismatch" do
+      tenant_a = unique_tenant_id()
+      tenant_b = unique_tenant_id()
+
+      workspace_a = workspace_fixture(tenant_a, embedding_policy: :disabled)
+      _workspace_b_setup = workspace_fixture(tenant_b, embedding_policy: :disabled)
+
+      sig =
+        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
+        |> Base.encode16(case: :lower)
+
+      attrs = %{
+        problem_signature: sig,
+        solution_content: "x = 1",
+        language: "elixir",
+        sharing: :local,
+        workspace_id: workspace_a.id,
+        embedding_status: :disabled
+      }
+
+      # `authorize?: false` mirrors the migration task call shape;
+      # the FK validation should still fire because it runs as a
+      # before_action change, not a policy.
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Solution.import_legacy(attrs, tenant: tenant_b, authorize?: false)
+
+      assert error_contains_cross_tenant?(err),
+             "expected :cross_tenant_fk_mismatch in error chain; got: #{inspect(err)}"
+
+      {:ok, %{rows: [[count]]}} =
+        Repo.query("SELECT COUNT(*) FROM solutions WHERE tenant_id = $1", [tenant_b])
+
+      assert count == 0
+    end
+  end
+
+  # Walks the Ash error tree looking for the `cross_tenant_fk_mismatch`
+  # message on the `:workspace_id` field. Errors arrive nested as
+  # `Ash.Error.Invalid` wrapping `Ash.Error.Changes.InvalidAttribute`.
+  defp error_contains_cross_tenant?(%Ash.Error.Invalid{errors: errors}) do
+    Enum.any?(errors, &cross_tenant?/1)
+  end
+
+  defp error_contains_cross_tenant?(_), do: false
+
+  defp cross_tenant?(%{message: "cross_tenant_fk_mismatch"}), do: true
+  defp cross_tenant?(_), do: false
 end

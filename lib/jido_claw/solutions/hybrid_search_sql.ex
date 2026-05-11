@@ -11,18 +11,31 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     * `lexical_pool` — `similarity(lexical_text, $11)` plus a
       LIKE-escaped substring fallback, GIN-indexed via `gin_trgm_ops`.
 
-  Each pool emits ranked candidates; the outer `SELECT` UNIONs them
-  and orders by a weighted combined score. Tenant + workspace +
+  Each pool emits ranked candidates; the outer `SELECT` combines them
+  via **Reciprocal Rank Fusion**. Tenant + workspace +
   sharing-visibility predicates are applied **inside each pool** —
   if visibility were applied only in the outer SELECT, a high-
   ranking pile of private rows from other workspaces could fill
   `LIMIT $7 * 4` first and then be discarded, crowding out the
   visible rows that should have surfaced.
 
+  ## RRF combine
+
+  Mirrors `JidoClaw.Memory.HybridSearchSql`. Each pool emits per-row
+  ranks; the outer combine is:
+
+      score = (r_fts  IS NOT NULL ? 1/(60 + r_fts)  : 0)
+            + (r_ann  IS NOT NULL ? 1/(60 + r_ann)  : 0)
+            + (r_lex  IS NOT NULL ? 1/(60 + r_lex)  : 0)
+
+  Rank-only fusion sidesteps the fact that `ts_rank_cd`,
+  `1 - cosine_distance`, and `similarity()` live on incomparable
+  scales — there is no per-pool weight tuning to maintain.
+
   ## Return shape
 
   `run/1` returns `[%{solution: %Solution{}, combined_score: float()}]`.
-  The combined score is the SQL-computed weighted sum and is not an
+  The combined score is the SQL-computed RRF sum and is not an
   attribute on the resource — it is carried in the wrapper map so the
   caller (`Matcher.find_solutions/2`) can apply the relevance threshold
   without falling back to `trust_score`.
@@ -170,28 +183,42 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
        ORDER BY similarity(s.lexical_text, $11) DESC
        LIMIT $7 * 4
     ),
-    pooled AS (
-      SELECT id, MAX(fts_score) AS fts_score,
-             MAX(ann_score) AS ann_score,
-             MAX(lex_score) AS lex_score
+    fts AS (
+      SELECT id, RANK() OVER (ORDER BY fts_score DESC) AS r_fts
+        FROM fts_pool
+    ),
+    ann AS (
+      SELECT id, RANK() OVER (ORDER BY ann_score DESC) AS r_ann
+        FROM ann_pool
+    ),
+    lexical AS (
+      SELECT id, RANK() OVER (ORDER BY lex_score DESC) AS r_lex
+        FROM lexical_pool
+    ),
+    ranked AS (
+      SELECT id, r_fts, r_ann, r_lex,
+             (CASE WHEN r_fts IS NOT NULL THEN 1.0/(60 + r_fts) ELSE 0.0 END
+              + CASE WHEN r_ann IS NOT NULL THEN 1.0/(60 + r_ann) ELSE 0.0 END
+              + CASE WHEN r_lex IS NOT NULL THEN 1.0/(60 + r_lex) ELSE 0.0 END
+             )::float AS combined_score
         FROM (
-          SELECT * FROM fts_pool
-          UNION ALL SELECT * FROM ann_pool
-          UNION ALL SELECT * FROM lexical_pool
-        ) u
-       GROUP BY id
+          SELECT id, MIN(r_fts) AS r_fts, MIN(r_ann) AS r_ann, MIN(r_lex) AS r_lex
+            FROM (
+              SELECT id, r_fts, NULL::bigint AS r_ann, NULL::bigint AS r_lex FROM fts
+              UNION ALL
+              SELECT id, NULL::bigint, r_ann, NULL::bigint FROM ann
+              UNION ALL
+              SELECT id, NULL::bigint, NULL::bigint, r_lex FROM lexical
+            ) u
+           GROUP BY id
+        ) m
     )
-    SELECT s.*,
-           (p.fts_score * 0.4 + p.ann_score * 0.4 + p.lex_score * 0.2) AS combined_score
-      FROM pooled p
-      JOIN solutions s ON s.id = p.id
+    SELECT s.*, ranked.combined_score
+      FROM ranked
+      JOIN solutions s ON s.id = ranked.id
      WHERE s.tenant_id = $9
        AND s.deleted_at IS NULL
-       AND (
-         (s.workspace_id = $8 AND s.sharing::text = ANY($5))
-         OR (s.workspace_id <> $8 AND s.sharing::text = ANY($6))
-       )
-     ORDER BY combined_score DESC, s.trust_score DESC, s.updated_at DESC
+     ORDER BY ranked.combined_score DESC, s.trust_score DESC, s.updated_at DESC
      LIMIT $7;
     """
   end

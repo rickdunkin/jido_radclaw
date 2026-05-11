@@ -65,9 +65,10 @@ defmodule JidoClaw.Solutions.MatcherTest do
         Matcher.find_solutions("postgres migration",
           tenant_id: tenant_id,
           workspace_id: ws.id,
-          # Lower than default 0.3; the lexical pool weights similarity at
-          # 0.2 so a near-perfect token hit still doesn't reach 0.3 alone.
-          threshold: 0.05,
+          # RRF score for a single-pool match is ~1/(60+1) ≈ 0.016 — pick
+          # a threshold below that so a near-perfect lexical-only hit
+          # still surfaces.
+          threshold: 0.005,
           policy_resolver: DisabledResolver
         )
 
@@ -75,10 +76,10 @@ defmodule JidoClaw.Solutions.MatcherTest do
 
       Enum.each(results, fn match ->
         assert match.match_type == :fuzzy
-        assert match.score >= 0.05
+        assert match.score >= 0.005
         # The crucial regression: pre-fix, score fell back to
         # trust_score (0.0) and was filtered out at the default
-        # 0.3 threshold.
+        # threshold.
         refute match.score == match.solution.trust_score
       end)
     end

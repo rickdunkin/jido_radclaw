@@ -48,7 +48,7 @@ defmodule JidoClaw.Solutions.Matcher do
   alias JidoClaw.Embeddings.RatePacer
   alias JidoClaw.Solutions.{Fingerprint, Solution}
 
-  @default_threshold 0.3
+  @default_threshold 0.01
   @default_limit 5
 
   @doc """

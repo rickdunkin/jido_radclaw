@@ -142,4 +142,66 @@ defmodule JidoClaw.SolutionsCase do
     {:ok, sol} = Solution.store(attrs, tenant: tenant_id, actor: actor)
     sol
   end
+
+  @doc """
+  Insert `count` rows directly into `solutions` via `Repo.insert_all`,
+  bypassing the Ash pipeline. Used by tests that need a large fixture
+  table to give the Postgres planner a real choice between index and
+  sequential scan.
+
+  The `builder` callback receives the 1-based row index and must return
+  a map of column values. Required keys: `:solution_content`,
+  `:problem_signature`. Optional keys mirror the table's defaults
+  (`:language`, `:framework`, `:sharing`, `:embedding_status`,
+  `:trust_score`, `:tags`).
+
+  Notes:
+
+    * UUIDs are dumped to binaries via `Ecto.UUID.dump!/1` because
+      `Repo.insert_all` doesn't run Ecto's type casters the way
+      `Repo.insert` does.
+    * Enums (`sharing`, `embedding_status`) are written as the text
+      representation that Postgres expects.
+    * `inserted_at` / `updated_at` are supplied as `%DateTime{}` —
+      `insert_all` does not auto-populate them.
+  """
+  def bulk_insert_solutions(tenant_id, workspace_id, count, builder)
+      when is_binary(tenant_id) and is_integer(count) and is_function(builder, 1) do
+    workspace_uuid = Ecto.UUID.dump!(workspace_id)
+    now = DateTime.utc_now()
+
+    # 15 params per row * 4000 rows = 60_000 params, under the 65_535
+    # Postgres protocol limit for parameter count.
+    chunk_size = 4_000
+
+    1..count
+    |> Stream.chunk_every(chunk_size)
+    |> Enum.reduce(0, fn chunk, acc ->
+      rows =
+        Enum.map(chunk, fn i ->
+          attrs = builder.(i)
+
+          %{
+            id: Ecto.UUID.dump!(Ecto.UUID.generate()),
+            problem_signature: Map.fetch!(attrs, :problem_signature),
+            solution_content: Map.fetch!(attrs, :solution_content),
+            language: Map.get(attrs, :language, "elixir"),
+            framework: Map.get(attrs, :framework),
+            tags: Map.get(attrs, :tags, []),
+            verification: Map.get(attrs, :verification, %{}),
+            trust_score: Map.get(attrs, :trust_score, 0.0),
+            sharing: Map.get(attrs, :sharing, "local"),
+            workspace_id: workspace_uuid,
+            tenant_id: tenant_id,
+            embedding_status: Map.get(attrs, :embedding_status, "disabled"),
+            embedding_attempt_count: 0,
+            inserted_at: now,
+            updated_at: now
+          }
+        end)
+
+      {inserted, _} = JidoClaw.Repo.insert_all("solutions", rows)
+      acc + inserted
+    end)
+  end
 end

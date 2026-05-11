@@ -3,6 +3,7 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
 
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Repo
+  alias JidoClaw.Solutions.Solution
   alias JidoClaw.Workspaces.PolicyTransitions
 
   setup do
@@ -73,19 +74,119 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
     end
   end
 
+  describe "apply_embedding/3 — solutions coverage and full state machine" do
+    test "embedding policy transitions fix up solution row status across the full state machine",
+         %{tenant_id: tenant_id} do
+      {:ok, ws} = ws(tenant_id, "sol-policy-flip", embedding_policy: :disabled)
+      actor = actor_for(tenant_id)
+
+      # 1. With :disabled, stored solutions get :disabled status.
+      sols = for i <- 1..3, do: seed_solution(ws, tenant_id, "problem #{i}")
+      Enum.each(sols, fn s -> assert s.embedding_status == :disabled end)
+
+      # 2. Flip to :default — all three rows go to :pending, error fields cleared.
+      :ok = PolicyTransitions.apply_embedding(ws.id, :default)
+
+      for s <- reload_solutions(sols, tenant_id, actor) do
+        assert s.embedding_status == :pending
+        assert s.embedding_attempt_count == 0
+        assert s.embedding_last_error == nil
+      end
+
+      # 3. Simulate backfill completion via direct SQL (backfill worker
+      # is out of scope for this state-machine test).
+      Enum.each(sols, &mark_solution_embedding_ready(&1, tenant_id))
+
+      Enum.each(reload_solutions(sols, tenant_id, actor), fn s ->
+        assert s.embedding_status == :ready
+        refute is_nil(s.embedding)
+      end)
+
+      # 4. Flip back to :disabled WITHOUT purge_existing — :ready rows
+      # keep their embedding (and stay :ready).
+      :ok = PolicyTransitions.apply_embedding(ws.id, :disabled)
+
+      Enum.each(reload_solutions(sols, tenant_id, actor), fn s ->
+        assert s.embedding_status == :ready
+        refute is_nil(s.embedding)
+      end)
+
+      # 5. Flip with purge_existing — rows go :disabled, embedding NULL.
+      :ok = PolicyTransitions.apply_embedding(ws.id, :disabled, purge_existing: true)
+
+      Enum.each(reload_solutions(sols, tenant_id, actor), fn s ->
+        assert s.embedding_status == :disabled
+        assert is_nil(s.embedding)
+      end)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp ws(tenant_id, label) do
-    Workspace.register(
+  defp ws(tenant_id, label, opts \\ []) do
+    attrs =
       %{
         path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
         name: label
+      }
+      |> maybe_put(opts, :embedding_policy)
+
+    Workspace.register(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+  end
+
+  defp maybe_put(attrs, opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> Map.put(attrs, key, value)
+      :error -> attrs
+    end
+  end
+
+  defp seed_solution(workspace, tenant_id, content) do
+    sig =
+      :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}-#{content}")
+      |> Base.encode16(case: :lower)
+
+    {:ok, sol} =
+      Solution.store(
+        %{
+          problem_signature: sig,
+          solution_content: content,
+          language: "elixir",
+          sharing: :local,
+          workspace_id: workspace.id,
+          embedding_status: :disabled
+        },
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
+      )
+
+    sol
+  end
+
+  defp reload_solutions(sols, tenant_id, actor) do
+    Enum.map(sols, fn s ->
+      {:ok, reloaded} = Solution.by_id(s.id, tenant: tenant_id, actor: actor)
+      reloaded
+    end)
+  end
+
+  defp mark_solution_embedding_ready(sol, tenant_id) do
+    sol
+    |> Ash.Changeset.for_update(
+      :transition_embedding_status,
+      %{
+        embedding: List.duplicate(0.001, 1024),
+        embedding_status: :ready,
+        embedding_attempt_count: 0,
+        embedding_next_attempt_at: nil,
+        embedding_last_error: nil
       },
       tenant: tenant_id,
       actor: actor_for(tenant_id)
     )
+    |> Ash.update!()
   end
 
   defp seed_disabled_fact(tenant_id, workspace) do

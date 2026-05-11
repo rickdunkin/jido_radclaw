@@ -105,6 +105,12 @@ defmodule JidoClaw.Conversations.Message do
         where: "request_id IS NOT NULL",
         name: "messages_request_id_role_idx"
       )
+
+      index([:search_vector],
+        using: "gin",
+        all_tenants?: true,
+        name: "messages_search_vector_idx"
+      )
     end
   end
 
@@ -363,6 +369,18 @@ defmodule JidoClaw.Conversations.Message do
     attribute :latency_ms, :integer do
       allow_nil?(true)
       public?(true)
+    end
+
+    # Generated column — populated by Postgres `GENERATED ALWAYS AS (...) STORED`
+    # via the `messages_search_vector` IMMUTABLE wrapper function. The Ash-emitted
+    # migration is hand-edited to add the GENERATED clause and the wrapper SQL
+    # function — without that, the column would be a plain nullable tsvector and
+    # FTS queries would silently never match.
+    attribute :search_vector, AshPostgres.Tsvector do
+      allow_nil?(true)
+      public?(false)
+      writable?(false)
+      generated?(true)
     end
   end
 
