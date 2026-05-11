@@ -50,9 +50,11 @@ defmodule JidoClaw.Web.SetupLive do
           :for={{_key, check} <- @status.prerequisites}
           style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border);"
         >
-          <span><%= check.name %></span>
+          <span>{check.name}</span>
           <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <span :if={check.version} style="color: var(--muted); font-size: 0.875rem;"><%= check.version %></span>
+            <span :if={check.version} style="color: var(--muted); font-size: 0.875rem;">
+              {check.version}
+            </span>
             <span :if={check.ok?} style="color: #4ade80;">✓</span>
             <span :if={!check.ok?} style="color: #f87171;">✗</span>
           </div>
@@ -65,14 +67,17 @@ defmodule JidoClaw.Web.SetupLive do
           :for={{_key, cred} <- @status.credentials}
           style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border);"
         >
-          <span><%= cred.provider %></span>
+          <span>{cred.provider}</span>
           <div>
             <span :if={cred.valid?} style="color: #4ade80;">Connected</span>
             <span :if={cred.configured? and !cred.valid?} style="color: #facc15;">Invalid</span>
             <span :if={!cred.configured?} style="color: var(--muted);">Not configured</span>
           </div>
         </div>
-        <p :if={!@status.has_ai_provider?} style="color: #facc15; font-size: 0.875rem; margin-top: 1rem;">
+        <p
+          :if={!@status.has_ai_provider?}
+          style="color: #facc15; font-size: 0.875rem; margin-top: 1rem;"
+        >
           At least one AI provider is needed. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or start Ollama.
         </p>
       </div>
@@ -81,8 +86,8 @@ defmodule JidoClaw.Web.SetupLive do
         <h2 style="font-weight: 600; margin-bottom: 1rem;">Database</h2>
         <div style="display: flex; justify-content: space-between; padding: 0.5rem 0;">
           <span>PostgreSQL Connection</span>
-          <span :if={@status.database.ok?} style="color: #4ade80;"><%= @status.database.status %></span>
-          <span :if={!@status.database.ok?} style="color: #f87171;"><%= @status.database.status %></span>
+          <span :if={@status.database.ok?} style="color: #4ade80;">{@status.database.status}</span>
+          <span :if={!@status.database.ok?} style="color: #f87171;">{@status.database.status}</span>
         </div>
       </div>
 
@@ -90,7 +95,9 @@ defmodule JidoClaw.Web.SetupLive do
         <div :if={@status.ready?} style="color: #4ade80; font-weight: 600; margin-bottom: 1rem;">
           All systems go!
         </div>
-        <.button :if={@status.ready?} navigate="/dashboard" variant="primary">Go to Dashboard</.button>
+        <.button :if={@status.ready?} navigate="/dashboard" variant="primary">
+          Go to Dashboard
+        </.button>
         <button :if={!@status.ready?} class="btn" phx-click="recheck">Re-check</button>
       </div>
     </div>

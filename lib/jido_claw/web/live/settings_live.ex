@@ -24,15 +24,15 @@ defmodule JidoClaw.Web.SettingsLive do
           <div style="display: flex; flex-direction: column; gap: 0.75rem;">
             <div style="display: flex; justify-content: space-between;">
               <span style="color: var(--muted);">Mode</span>
-              <span><%= @mode %></span>
+              <span>{@mode}</span>
             </div>
             <div style="display: flex; justify-content: space-between;">
               <span style="color: var(--muted);">Gateway Port</span>
-              <span><%= @gateway_port %></span>
+              <span>{@gateway_port}</span>
             </div>
             <div style="display: flex; justify-content: space-between;">
               <span style="color: var(--muted);">Ash Domains</span>
-              <span><%= @ash_domain_count %></span>
+              <span>{@ash_domain_count}</span>
             </div>
           </div>
         </div>

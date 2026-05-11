@@ -32,13 +32,15 @@ defmodule JidoClaw.Web.WorkflowsLive do
           </thead>
           <tbody>
             <tr :for={run <- @runs}>
-              <td><%= run.name %></td>
-              <td style="color: var(--muted);"><%= run.workflow_type || "—" %></td>
+              <td>{run.name}</td>
+              <td style="color: var(--muted);">{run.workflow_type || "—"}</td>
               <td><.status_badge status={run.status} /></td>
-              <td style="color: var(--muted); font-size: 0.875rem;"><%= format_time(run.started_at) %></td>
+              <td style="color: var(--muted); font-size: 0.875rem;">{format_time(run.started_at)}</td>
             </tr>
             <tr :if={@runs == []}>
-              <td colspan="4" style="text-align: center; color: var(--muted); padding: 2rem;">No workflow runs yet</td>
+              <td colspan="4" style="text-align: center; color: var(--muted); padding: 2rem;">
+                No workflow runs yet
+              </td>
             </tr>
           </tbody>
         </table>

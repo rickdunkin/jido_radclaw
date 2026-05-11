@@ -26,11 +26,13 @@ defmodule JidoClaw.Web.ForgeLive do
           </thead>
           <tbody>
             <tr :for={session_id <- @sessions}>
-              <td style="font-family: monospace;"><%= session_id %></td>
+              <td style="font-family: monospace;">{session_id}</td>
               <td><.status_badge status={:running} /></td>
             </tr>
             <tr :if={@sessions == []}>
-              <td colspan="2" style="text-align: center; color: var(--muted); padding: 2rem;">No active forge sessions</td>
+              <td colspan="2" style="text-align: center; color: var(--muted); padding: 2rem;">
+                No active forge sessions
+              </td>
             </tr>
           </tbody>
         </table>

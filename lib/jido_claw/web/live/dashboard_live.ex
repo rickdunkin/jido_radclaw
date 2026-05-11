@@ -32,18 +32,28 @@ defmodule JidoClaw.Web.DashboardLive do
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
         <div class="card">
-          <h2 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--muted);">Recent Workflows</h2>
-          <div :if={@workflow_summary.recent_completions == []} style="color: var(--muted); font-size: 0.875rem;">
+          <h2 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--muted);">
+            Recent Workflows
+          </h2>
+          <div
+            :if={@workflow_summary.recent_completions == []}
+            style="color: var(--muted); font-size: 0.875rem;"
+          >
             No recent workflow completions
           </div>
-          <div :for={run <- Enum.take(@workflow_summary.recent_completions, 5)} style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);">
-            <span><%= Map.get(run, :name, "unnamed") %></span>
+          <div
+            :for={run <- Enum.take(@workflow_summary.recent_completions, 5)}
+            style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);"
+          >
+            <span>{Map.get(run, :name, "unnamed")}</span>
             <.status_badge status={Map.get(run, :status, :completed)} />
           </div>
         </div>
 
         <div class="card">
-          <h2 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--muted);">Quick Actions</h2>
+          <h2 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--muted);">
+            Quick Actions
+          </h2>
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             <.button navigate="/forge">New Forge Session</.button>
             <.button navigate="/workflows">View Workflows</.button>

@@ -30,22 +30,39 @@ defmodule JidoClaw.Web.FolioLive do
       <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Folio GTD</h1>
 
       <div style="display: flex; gap: 0.25rem; margin-bottom: 1.5rem;">
-        <button class={"btn #{if @tab == :inbox, do: "btn-primary"}"} phx-click="tab" phx-value-tab="inbox">
-          Inbox (<%= length(@inbox) %>)
+        <button
+          class={"btn #{if @tab == :inbox, do: "btn-primary"}"}
+          phx-click="tab"
+          phx-value-tab="inbox"
+        >
+          Inbox ({length(@inbox)})
         </button>
-        <button class={"btn #{if @tab == :actions, do: "btn-primary"}"} phx-click="tab" phx-value-tab="actions">
-          Next Actions (<%= length(@actions) %>)
+        <button
+          class={"btn #{if @tab == :actions, do: "btn-primary"}"}
+          phx-click="tab"
+          phx-value-tab="actions"
+        >
+          Next Actions ({length(@actions)})
         </button>
-        <button class={"btn #{if @tab == :projects, do: "btn-primary"}"} phx-click="tab" phx-value-tab="projects">
-          Projects (<%= length(@projects) %>)
+        <button
+          class={"btn #{if @tab == :projects, do: "btn-primary"}"}
+          phx-click="tab"
+          phx-value-tab="projects"
+        >
+          Projects ({length(@projects)})
         </button>
       </div>
 
       <div :if={@tab == :inbox} class="card">
-        <div :for={item <- @inbox} style="padding: 0.75rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <div
+          :for={item <- @inbox}
+          style="padding: 0.75rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;"
+        >
           <div>
-            <div style="font-weight: 500;"><%= item.title %></div>
-            <div :if={item.notes} style="color: var(--muted); font-size: 0.875rem;"><%= String.slice(item.notes, 0, 100) %></div>
+            <div style="font-weight: 500;">{item.title}</div>
+            <div :if={item.notes} style="color: var(--muted); font-size: 0.875rem;">
+              {String.slice(item.notes, 0, 100)}
+            </div>
           </div>
           <.status_badge status={item.status} />
         </div>
@@ -55,12 +72,15 @@ defmodule JidoClaw.Web.FolioLive do
       </div>
 
       <div :if={@tab == :actions} class="card">
-        <div :for={action <- @actions} style="padding: 0.75rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <div
+          :for={action <- @actions}
+          style="padding: 0.75rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;"
+        >
           <div>
-            <div style="font-weight: 500;"><%= action.title %></div>
+            <div style="font-weight: 500;">{action.title}</div>
             <div style="color: var(--muted); font-size: 0.875rem;">
-              <%= if action.context, do: "@#{action.context}", else: "" %>
-              <%= if action.due_date, do: " · Due #{action.due_date}", else: "" %>
+              {if action.context, do: "@#{action.context}", else: ""}
+              {if action.due_date, do: " · Due #{action.due_date}", else: ""}
             </div>
           </div>
           <.status_badge status={action.status} />
@@ -71,9 +91,14 @@ defmodule JidoClaw.Web.FolioLive do
       </div>
 
       <div :if={@tab == :projects} class="card">
-        <div :for={project <- @projects} style="padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
-          <div style="font-weight: 500;"><%= project.name %></div>
-          <div :if={project.outcome} style="color: var(--muted); font-size: 0.875rem;"><%= project.outcome %></div>
+        <div
+          :for={project <- @projects}
+          style="padding: 0.75rem 0; border-bottom: 1px solid var(--border);"
+        >
+          <div style="font-weight: 500;">{project.name}</div>
+          <div :if={project.outcome} style="color: var(--muted); font-size: 0.875rem;">
+            {project.outcome}
+          </div>
         </div>
         <div :if={@projects == []} style="text-align: center; color: var(--muted); padding: 2rem;">
           No active projects

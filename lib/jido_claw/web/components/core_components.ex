@@ -6,10 +6,10 @@ defmodule JidoClaw.Web.CoreComponents do
   def flash_group(assigns) do
     ~H"""
     <div :if={msg = Phoenix.Flash.get(@flash, :info)} class="flash flash-info">
-      <%= msg %>
+      {msg}
     </div>
     <div :if={msg = Phoenix.Flash.get(@flash, :error)} class="flash flash-error">
-      <%= msg %>
+      {msg}
     </div>
     """
   end
@@ -21,11 +21,15 @@ defmodule JidoClaw.Web.CoreComponents do
 
   def button(assigns) do
     ~H"""
-    <.link :if={@navigate} navigate={@navigate} class={"btn #{if @variant == "primary", do: "btn-primary"} #{@class}"}>
-      <%= render_slot(@inner_block) %>
+    <.link
+      :if={@navigate}
+      navigate={@navigate}
+      class={"btn #{if @variant == "primary", do: "btn-primary"} #{@class}"}
+    >
+      {render_slot(@inner_block)}
     </.link>
     <button :if={!@navigate} class={"btn #{if @variant == "primary", do: "btn-primary"} #{@class}"}>
-      <%= render_slot(@inner_block) %>
+      {render_slot(@inner_block)}
     </button>
     """
   end
@@ -38,10 +42,10 @@ defmodule JidoClaw.Web.CoreComponents do
     ~H"""
     <div class="card" style="text-align: center;">
       <div style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.5rem;">
-        <%= @label %>
+        {@label}
       </div>
       <div style="font-size: 2rem; font-weight: 700; color: var(--accent);">
-        <%= @value || render_slot(@inner_block) %>
+        {@value || render_slot(@inner_block)}
       </div>
     </div>
     """
@@ -61,7 +65,7 @@ defmodule JidoClaw.Web.CoreComponents do
     assigns = assign(assigns, :color, color)
 
     ~H"""
-    <span class={"badge #{@color}"}><%= @status %></span>
+    <span class={"badge #{@color}"}>{@status}</span>
     """
   end
 end

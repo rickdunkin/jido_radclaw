@@ -1,7 +1,13 @@
 <header style="border-bottom: 1px solid var(--border); padding: 0.75rem 0; position: sticky; top: 0; background: var(--bg); z-index: 50;">
-  <div class="container" style="display: flex; align-items: center; justify-content: space-between;">
+  <div
+    class="container"
+    style="display: flex; align-items: center; justify-content: space-between;"
+  >
     <div style="display: flex; align-items: center; gap: 2rem;">
-      <.link navigate="/dashboard" style="color: var(--accent); text-decoration: none; font-weight: 700; font-size: 1.125rem;">
+      <.link
+        navigate="/dashboard"
+        style="color: var(--accent); text-decoration: none; font-weight: 700; font-size: 1.125rem;"
+      >
         ⚡ JidoClaw
       </.link>
       <nav style="display: flex; gap: 0.25rem;">
@@ -16,7 +22,7 @@
     </div>
     <div style="display: flex; align-items: center; gap: 1rem; color: var(--muted); font-size: 0.875rem;">
       <%= if @current_user do %>
-        <span><%= @current_user.email %></span>
+        <span>{@current_user.email}</span>
       <% end %>
     </div>
   </div>
