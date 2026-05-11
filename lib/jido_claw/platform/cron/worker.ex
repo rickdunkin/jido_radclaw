@@ -118,7 +118,8 @@ defmodule JidoClaw.Cron.Worker do
           :main ->
             JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
               kind: :cron,
-              external_id: state.agent_id
+              external_id: state.agent_id,
+              actor: JidoClaw.Authorization.Actor.system(state.tenant_id)
             )
 
           :isolated ->
@@ -126,7 +127,8 @@ defmodule JidoClaw.Cron.Worker do
 
             JidoClaw.chat(state.tenant_id, session_id, state.task,
               kind: :cron,
-              external_id: session_id
+              external_id: session_id,
+              actor: JidoClaw.Authorization.Actor.system(state.tenant_id)
             )
 
           :system_job ->
@@ -218,9 +220,11 @@ defmodule JidoClaw.Cron.Worker do
   # the worker. Eventual consistency is acceptable: if persist fails
   # this run, the next failure will retry. Crashing is strictly worse.
   defp persist_disabled(state) do
-    case JidoClaw.Cron.Job.by_job_id(state.id, tenant: state.tenant_id) do
+    actor = JidoClaw.Authorization.Actor.system(state.tenant_id)
+
+    case JidoClaw.Cron.Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
       {:ok, job} ->
-        case JidoClaw.Cron.Job.disable(job, tenant: state.tenant_id) do
+        case JidoClaw.Cron.Job.disable(job, tenant: state.tenant_id, actor: actor) do
           {:ok, _} -> :ok
           err -> Logger.warning("[Cron] disable persistence failed: #{inspect(err)}")
         end

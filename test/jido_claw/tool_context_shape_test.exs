@@ -11,7 +11,8 @@ defmodule JidoClaw.ToolContextShapeTest do
     :workspace_id,
     :workspace_uuid,
     :user_id,
-    :agent_id
+    :agent_id,
+    :actor
   ]
 
   @callers [

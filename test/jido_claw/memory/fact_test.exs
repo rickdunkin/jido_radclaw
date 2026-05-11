@@ -37,7 +37,7 @@ defmodule JidoClaw.Memory.FactTest do
           tc
         )
 
-      [fact] = Ash.read!(Fact, tenant: tenant_id)
+      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.tenant_id == tenant_id
       assert fact.scope_kind == :workspace
       assert fact.workspace_id == ws.id
@@ -56,7 +56,10 @@ defmodule JidoClaw.Memory.FactTest do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
       :ok = Memory.remember_from_user(%{key: "L", content: "v2", type: "fact"}, tc)
 
-      facts = Ash.read!(Fact, tenant: tenant_id) |> Enum.sort_by(& &1.inserted_at)
+      facts =
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+        |> Enum.sort_by(& &1.inserted_at)
+
       assert length(facts) == 2
 
       [old, new] = facts
@@ -74,7 +77,7 @@ defmodule JidoClaw.Memory.FactTest do
     } do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
 
-      [fact] = Ash.read!(Fact, tenant: tenant_id)
+      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.invalid_at == nil
     end
   end
@@ -152,7 +155,7 @@ defmodule JidoClaw.Memory.FactTest do
 
       :ok = Memory.forget("shared", tool_context: tc, source: :model_remember)
 
-      survivors = Ash.read!(Fact, tenant: tenant_id)
+      survivors = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
       assert Enum.any?(survivors, fn f -> f.label == "shared" and is_nil(f.invalid_at) end)
     end
   end
@@ -171,8 +174,45 @@ defmodule JidoClaw.Memory.FactTest do
         trust_score: 0.7
       }
 
-      assert {:error, %Ash.Error.Invalid{} = err} = Fact.record(attrs, tenant: other_tenant)
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Fact.record(attrs, tenant: other_tenant, actor: actor_for(other_tenant))
+
       assert inspect(err) =~ "cross_tenant_fk_mismatch"
+    end
+  end
+
+  describe "import_legacy + ResolveInitialEmbeddingStatus" do
+    test "system import under :disabled workspace lands at :disabled (not :pending)" do
+      tenant_id = seed_tenant("fact-embed-policy")
+
+      {:ok, ws} =
+        seed_workspace(tenant_id,
+          path: "/tmp/fact_embed_#{System.unique_integer([:positive])}",
+          embedding_policy: :disabled
+        )
+
+      # Omit :embedding_status so the change's resolution path runs.
+      # Setting it would short-circuit the change and pass the test
+      # without exercising fix 3.
+      attrs = %{
+        scope_kind: :workspace,
+        workspace_id: ws.id,
+        label: "embed-policy",
+        content: "value",
+        tags: ["fact"],
+        trust_score: 0.5,
+        import_hash:
+          :crypto.hash(:sha256, "embed-policy-#{System.unique_integer([:positive])}")
+          |> Base.encode16(case: :lower)
+      }
+
+      # `authorize?: false` mirrors the migration task's call shape —
+      # the change's system-actor fallback (fix 3) is what makes the
+      # nested Workspace.by_id lookup succeed under the read policy.
+      assert {:ok, fact} =
+               Fact.import_legacy(attrs, tenant: tenant_id, authorize?: false)
+
+      assert fact.embedding_status == :disabled
     end
   end
 end

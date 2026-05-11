@@ -45,8 +45,12 @@ defmodule JidoClaw.Cron.Job do
       authorize_if(always())
     end
 
-    policy action_type([:read, :create, :update, :destroy]) do
-      authorize_if(always())
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
     end
   end
 

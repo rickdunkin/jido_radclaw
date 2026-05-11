@@ -63,13 +63,28 @@ defmodule JidoClaw do
       {:ok, kind} when is_atom(kind) ->
         project_dir = Keyword.get(opts, :workspace_id) || File.cwd!()
 
+        # Build the actor up-front so the Session.Worker carries it from
+        # init. Surfaces that have a real user (web/socket) pass actor
+        # via opts; surfaces without a user (REPL, Discord, Cron) get a
+        # tenant-bound system actor.
+        user_id = Keyword.get(opts, :user_id)
+
+        actor =
+          Keyword.get(opts, :actor) ||
+            if user_id,
+              do: %{user_id: user_id, tenant_id: tenant_id},
+              else: JidoClaw.Authorization.Actor.system(tenant_id)
+
+        opts = Keyword.put(opts, :actor, actor)
+
         # Phase 2 ordering: resolve Workspace + Session row BEFORE the
         # user-message append. Worker.add_message now writes a
         # Conversations.Message row keyed by session.id (UUID); without
         # the resolver running first the worker has no UUID to write
         # against and add_message returns :session_uuid_unset.
         with {:ok, _} <- JidoClaw.Startup.ensure_project_state(project_dir),
-             {:ok, _pid} <- JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id),
+             {:ok, _pid} <-
+               JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id, actor: actor),
              {:ok, agent_pid} <- resolve_agent_pid(session_id),
              {:ok, workspace, session} <-
                resolve_persistence(tenant_id, project_dir, session_id, kind, opts),
@@ -148,6 +163,12 @@ defmodule JidoClaw do
 
     JidoClaw.Session.Worker.add_message(tenant_id, session_id, :user, message, request_id)
 
+    actor =
+      Keyword.get(opts, :actor) ||
+        if user_id,
+          do: %{user_id: user_id, tenant_id: tenant_id},
+          else: JidoClaw.Authorization.Actor.system(tenant_id)
+
     tool_context =
       JidoClaw.ToolContext.build(%{
         project_dir: project_dir,
@@ -157,7 +178,8 @@ defmodule JidoClaw do
         workspace_id: session_id,
         workspace_uuid: workspace.id,
         user_id: user_id,
-        agent_id: session_id
+        agent_id: session_id,
+        actor: actor
       })
 
     response =
@@ -295,17 +317,23 @@ defmodule JidoClaw do
   def history(tenant_id, session_id_external, opts) when is_list(opts) do
     kind = Keyword.fetch!(opts, :kind)
     workspace_dir = Keyword.get(opts, :workspace_id) || File.cwd!()
+    actor = Keyword.get(opts, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
 
     with {:ok, workspace} <-
-           JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, workspace_dir),
+           JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, workspace_dir, actor: actor),
          {:ok, session} <-
            JidoClaw.Conversations.Session.by_external(
              workspace.id,
              kind,
              session_id_external,
-             tenant: tenant_id
+             tenant: tenant_id,
+             actor: actor
            ),
-         {:ok, rows} <- JidoClaw.Conversations.Message.for_session(session.id, tenant: tenant_id) do
+         {:ok, rows} <-
+           JidoClaw.Conversations.Message.for_session(session.id,
+             tenant: tenant_id,
+             actor: actor
+           ) do
       rows
       |> Enum.filter(&(&1.role in [:user, :assistant, :system]))
       |> Enum.map(&cold_view/1)

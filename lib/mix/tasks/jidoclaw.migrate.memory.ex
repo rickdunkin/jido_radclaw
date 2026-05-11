@@ -78,7 +78,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   # dry-run lookup compares apples to apples with the
   # `Resolver`-stored row.
   defp resolve_workspace(project_dir, true = _dry_run?) do
-    case Workspace.by_path(nil, project_dir, tenant: "default") do
+    case Workspace.by_path(nil, project_dir, tenant: "default", authorize?: false) do
       {:ok, ws} when not is_nil(ws) -> {:ok, ws}
       _ -> :would_create
     end
@@ -182,7 +182,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
         tenant_id = attrs[:tenant_id] || "default"
         attrs_minus_tenant = Map.delete(attrs, :tenant_id)
 
-        case Fact.import_legacy(attrs_minus_tenant, tenant: tenant_id) do
+        case Fact.import_legacy(attrs_minus_tenant, tenant: tenant_id, authorize?: false) do
           {:ok, _} ->
             Map.update!(acc, :inserted, &(&1 + 1))
 

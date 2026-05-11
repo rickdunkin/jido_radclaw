@@ -19,7 +19,9 @@ defmodule JidoClaw.Conversations.HistoryTest do
       # set_session_uuid call is what triggers `load_messages/1` to
       # hydrate `state.messages` from Postgres — without it the in-memory
       # cache stays empty regardless of seeded rows.
-      {:ok, _pid} = JidoClaw.Session.Supervisor.ensure_session(tenant, external_id)
+      {:ok, _pid} =
+        JidoClaw.Session.Supervisor.ensure_session(tenant, external_id, actor: actor_for(tenant))
+
       :ok = JidoClaw.Session.Worker.set_session_uuid(tenant, external_id, session.id)
 
       msgs = JidoClaw.history(tenant, external_id)
@@ -72,7 +74,10 @@ defmodule JidoClaw.Conversations.HistoryTest do
 
     # Seed a representative multi-role transcript so we can verify that
     # both filters (worker hydration + cold-path) drop the non-chat rows.
-    Message.append!(%{session_id: session.id, role: :user, content: "hello"}, tenant: tenant_id)
+    Message.append!(%{session_id: session.id, role: :user, content: "hello"},
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
+    )
 
     Message.append!(
       %{
@@ -82,7 +87,8 @@ defmodule JidoClaw.Conversations.HistoryTest do
         content: "ls()",
         tool_call_id: tool_call_id
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
 
     Message.append!(
@@ -93,7 +99,8 @@ defmodule JidoClaw.Conversations.HistoryTest do
         content: "ls() -> ok",
         tool_call_id: tool_call_id
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
 
     Message.append!(
@@ -103,15 +110,18 @@ defmodule JidoClaw.Conversations.HistoryTest do
         role: :reasoning,
         content: "thinking..."
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
 
     Message.append!(%{session_id: session.id, role: :assistant, content: "hi back"},
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
 
     Message.append!(%{session_id: session.id, role: :system, content: "system ack"},
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
 
     %{

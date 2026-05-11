@@ -116,7 +116,8 @@ defmodule JidoClaw.Shell.Commands.Jido do
              workspace_uuid,
              [:local, :shared, :public],
              [:public],
-             tenant: tenant_id
+             tenant: tenant_id,
+             actor: JidoClaw.Authorization.Actor.system(tenant_id)
            ) do
         {:ok, [first | _]} -> {:ok, first}
         {:ok, []} -> :not_found

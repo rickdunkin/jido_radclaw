@@ -71,35 +71,52 @@ defmodule JidoClaw.TenantCase do
   end
 
   @doc """
+  Build a tenant-bound actor map matching the production user→tenant
+  rule (`tenant_id == to_string(user.id)`). Defaults to a shape that
+  satisfies the standard `tenant_id == ^actor(:tenant_id)` policy.
+  """
+  @spec actor_for(String.t()) :: %{user_id: String.t(), tenant_id: String.t()}
+  def actor_for(tenant_id) when is_binary(tenant_id) do
+    %{user_id: tenant_id, tenant_id: tenant_id}
+  end
+
+  @doc """
   Register a workspace under `tenant_id` via `Workspace.register/2`.
   Threads the tenant via the `tenant:` opt; `path` and `name` default
-  to unique values when not supplied.
+  to unique values when not supplied. The `:actor` opt, when supplied,
+  is forwarded so policy-enabled tests pass tenant-actor checks; when
+  absent, defaults to `actor_for(tenant_id)`.
   """
   @spec seed_workspace(String.t(), keyword()) :: {:ok, Workspace.t()} | {:error, term()}
   def seed_workspace(tenant_id, opts \\ []) do
     name = Keyword.get(opts, :name, "ws-#{System.unique_integer([:positive])}")
     path = Keyword.get(opts, :path, "/tmp/#{name}")
+    actor = Keyword.get(opts, :actor, actor_for(tenant_id))
 
     attrs =
       opts
-      |> Keyword.drop([:name, :path])
+      |> Keyword.drop([:name, :path, :actor])
       |> Map.new()
       |> Map.put(:name, name)
       |> Map.put(:path, path)
 
-    Workspace.register(attrs, tenant: tenant_id)
+    Workspace.register(attrs, tenant: tenant_id, actor: actor)
   end
 
   @doc """
   Start a session under `tenant_id` for the supplied `workspace_id`.
   `kind`, `external_id`, and `started_at` default to sensible test
-  values; pass `opts` to override.
+  values; pass `opts` to override. Threads `:actor` like
+  `seed_workspace/2`.
   """
   @spec seed_session(String.t(), Ecto.UUID.t(), keyword()) ::
           {:ok, Session.t()} | {:error, term()}
   def seed_session(tenant_id, workspace_id, opts \\ []) do
+    actor = Keyword.get(opts, :actor, actor_for(tenant_id))
+
     attrs =
       opts
+      |> Keyword.drop([:actor])
       |> Map.new()
       |> Map.put(:workspace_id, workspace_id)
       |> Map.put_new(:kind, :api)
@@ -109,7 +126,7 @@ defmodule JidoClaw.TenantCase do
       )
       |> Map.put_new(:started_at, DateTime.utc_now())
 
-    Session.start(attrs, tenant: tenant_id)
+    Session.start(attrs, tenant: tenant_id, actor: actor)
   end
 
   @doc """

@@ -20,6 +20,7 @@ defmodule JidoClaw.Workspaces.Resolver do
   without re-activating a `:suspended` tenant.
   """
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
 
@@ -36,6 +37,7 @@ defmodule JidoClaw.Workspaces.Resolver do
     expanded = Path.expand(project_dir)
     user_id = Keyword.get(opts, :user_id)
     name = Keyword.get(opts, :name) || Path.basename(expanded)
+    actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
 
     upsert_identity =
       if user_id, do: :unique_user_path_authed, else: :unique_user_path_cli
@@ -51,7 +53,7 @@ defmodule JidoClaw.Workspaces.Resolver do
     }
 
     Workspace
-    |> Ash.Changeset.for_create(:register, attrs, tenant: tenant_id)
-    |> Ash.create(upsert?: true, upsert_identity: upsert_identity)
+    |> Ash.Changeset.for_create(:register, attrs, tenant: tenant_id, actor: actor)
+    |> Ash.create(upsert?: true, upsert_identity: upsert_identity, actor: actor)
   end
 end

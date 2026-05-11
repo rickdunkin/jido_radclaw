@@ -88,10 +88,11 @@ defmodule JidoClaw.Solutions.Matcher do
     workspace_id = Keyword.fetch!(opts, :workspace_id)
     local_vis = Keyword.get(opts, :local_visibility, [:local, :shared, :public])
     cross_vis = Keyword.get(opts, :cross_workspace_visibility, [:public])
+    actor = Keyword.get(opts, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
 
     query_fp = Fingerprint.generate(problem_description, opts)
 
-    case exact_match(query_fp.signature, workspace_id, tenant_id, local_vis, cross_vis) do
+    case exact_match(query_fp.signature, workspace_id, tenant_id, local_vis, cross_vis, actor) do
       {:ok, solution} ->
         [%{solution: solution, score: 1.0, match_type: :exact}]
 
@@ -113,7 +114,7 @@ defmodule JidoClaw.Solutions.Matcher do
           query_embedding: embedding
         }
 
-        case Solution.search(search_args, tenant: tenant_id) do
+        case Solution.search(search_args, tenant: tenant_id, actor: actor) do
           {:ok, solutions} ->
             solutions
             |> Enum.map(fn sol ->
@@ -128,8 +129,11 @@ defmodule JidoClaw.Solutions.Matcher do
     end
   end
 
-  defp exact_match(signature, workspace_id, tenant_id, local_vis, cross_vis) do
-    case Solution.by_signature(signature, workspace_id, local_vis, cross_vis, tenant: tenant_id) do
+  defp exact_match(signature, workspace_id, tenant_id, local_vis, cross_vis, actor) do
+    case Solution.by_signature(signature, workspace_id, local_vis, cross_vis,
+           tenant: tenant_id,
+           actor: actor
+         ) do
       {:ok, [first | _]} -> {:ok, first}
       {:ok, []} -> :none
       {:ok, %Solution{} = sol} -> {:ok, sol}

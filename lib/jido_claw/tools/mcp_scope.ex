@@ -98,8 +98,10 @@ defmodule JidoClaw.Tools.MCPScope do
       tool_call_id: tool_call_id
     }
 
+    actor = actor_for(tc)
+
     parent_id =
-      case attempt_append(call_attrs, tc[:tenant_id]) do
+      case attempt_append(call_attrs, tc[:tenant_id], actor) do
         {:ok, %{id: id}} -> id
         _ -> nil
       end
@@ -117,7 +119,7 @@ defmodule JidoClaw.Tools.MCPScope do
         parent_message_id: parent_id
       }
 
-      _ = attempt_append(result_attrs, tc[:tenant_id])
+      _ = attempt_append(result_attrs, tc[:tenant_id], actor)
       result
     rescue
       err ->
@@ -136,19 +138,38 @@ defmodule JidoClaw.Tools.MCPScope do
           parent_message_id: parent_id
         }
 
-        _ = attempt_append(result_attrs, tc[:tenant_id])
+        _ = attempt_append(result_attrs, tc[:tenant_id], actor)
         reraise(err, stacktrace)
     end
   end
 
-  defp attempt_append(attrs, tenant_id) when is_binary(tenant_id) do
-    case Message.append(attrs, tenant: tenant_id) do
+  # Build the Ash actor from the tool_context. Prefer the canonical
+  # `:actor` slot; otherwise synthesize a tenant-bound system actor so
+  # MCP-side appends still pass tenant-actor policies.
+  defp actor_for(tc) do
+    case Map.get(tc, :actor) do
+      %{} = actor ->
+        actor
+
+      _ ->
+        case Map.get(tc, :tenant_id) do
+          tenant_id when is_binary(tenant_id) -> JidoClaw.Authorization.Actor.system(tenant_id)
+          _ -> nil
+        end
+    end
+  end
+
+  defp attempt_append(attrs, tenant_id, actor) when is_binary(tenant_id) do
+    opts = [tenant: tenant_id]
+    opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+
+    case Message.append(attrs, opts) do
       {:ok, msg} ->
         {:ok, msg}
 
       {:error, %Ash.Error.Invalid{} = err} ->
         if duplicate_key?(err) do
-          fetch_existing_live_row(attrs, tenant_id)
+          fetch_existing_live_row(attrs, tenant_id, actor)
         else
           Logger.warning("[MCPScope.wrap] append failed: #{inspect(err)}")
           :error
@@ -164,7 +185,7 @@ defmodule JidoClaw.Tools.MCPScope do
       :error
   end
 
-  defp attempt_append(_attrs, _), do: :error
+  defp attempt_append(_attrs, _, _), do: :error
 
   defp fetch_existing_live_row(
          %{
@@ -173,10 +194,14 @@ defmodule JidoClaw.Tools.MCPScope do
            tool_call_id: tool_call_id,
            role: role
          },
-         tenant_id
+         tenant_id,
+         actor
        )
        when is_binary(request_id) and is_binary(tool_call_id) and is_binary(tenant_id) do
-    case Message.by_live_tool_row(session_id, request_id, tool_call_id, role, tenant: tenant_id) do
+    opts = [tenant: tenant_id]
+    opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+
+    case Message.by_live_tool_row(session_id, request_id, tool_call_id, role, opts) do
       {:ok, msg} when is_map(msg) -> {:ok, msg}
       _ -> :error
     end
@@ -184,7 +209,7 @@ defmodule JidoClaw.Tools.MCPScope do
     _ -> :error
   end
 
-  defp fetch_existing_live_row(_, _), do: :error
+  defp fetch_existing_live_row(_, _, _), do: :error
 
   defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
     errors

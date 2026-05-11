@@ -78,14 +78,28 @@ defmodule JidoClaw.Tools.StoreSolution do
       created_by_user_id = Map.get(tool_context, :user_id)
 
       cond do
-        is_nil(tenant_id) -> {:error, :missing_scope_tenant}
-        is_nil(workspace_uuid) -> {:error, :missing_scope_workspace}
-        true -> store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id)
+        is_nil(tenant_id) ->
+          {:error, :missing_scope_tenant}
+
+        is_nil(workspace_uuid) ->
+          {:error, :missing_scope_workspace}
+
+        true ->
+          actor = Map.get(tool_context, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+
+          store(
+            params,
+            tenant_id,
+            workspace_uuid,
+            session_uuid,
+            created_by_user_id,
+            actor
+          )
       end
     end)
   end
 
-  defp store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id) do
+  defp store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id, actor) do
     signature =
       JidoClaw.Solutions.Fingerprint.signature(
         params.problem_description,
@@ -105,7 +119,7 @@ defmodule JidoClaw.Tools.StoreSolution do
       created_by_user_id: created_by_user_id
     }
 
-    case Solution.store(attrs, tenant: tenant_id) do
+    case Solution.store(attrs, tenant: tenant_id, actor: actor) do
       {:ok, solution} ->
         {:ok, %{id: solution.id, signature: signature, status: "stored"}}
 

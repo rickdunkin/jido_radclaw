@@ -49,6 +49,10 @@ defmodule JidoClaw.Tools.ScheduleTask do
   def run(params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 
+    actor =
+      get_in(context, [:tool_context, :actor]) ||
+        JidoClaw.Authorization.Actor.system(tenant_id)
+
     id = params[:id] || generate_id(params.task)
     mode = parse_mode(params[:mode])
     schedule_str = String.trim(params.schedule)
@@ -74,7 +78,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
               schedule_value: value
             }
 
-            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: tenant_id) do
+            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: tenant_id, actor: actor) do
               {:ok, _job} ->
                 schedule_desc = format_schedule(schedule_str)
 

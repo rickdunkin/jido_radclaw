@@ -169,6 +169,7 @@ defmodule JidoClaw.Workflows.StepAction do
       workspace_id: pick(params, context, :workspace_id, "wf_#{tag}"),
       workspace_uuid: pick(params, context, :workspace_uuid, nil),
       user_id: pick(params, context, :user_id, nil),
+      actor: pick(params, context, :actor, nil),
       project_dir: pick(params, context, :project_dir, File.cwd!()),
       agent_id: tag
     }

@@ -103,7 +103,9 @@ defmodule JidoClaw.Tools.RunSkill do
 
   # Phase 0 — full canonical scope (minus :agent_id, which each step
   # assigns) gets forwarded into every workflow driver so child agents
-  # inherit the parent's tenant/session/workspace/user UUIDs.
+  # inherit the parent's tenant/session/workspace/user UUIDs. Also
+  # carries `:actor` so child workflow steps can satisfy tenant-actor
+  # policies on Ash writes/reads.
   @doc false
   def scope_context(tool_context) when is_map(tool_context) do
     Map.take(tool_context, [
@@ -113,7 +115,8 @@ defmodule JidoClaw.Tools.RunSkill do
       :workspace_id,
       :workspace_uuid,
       :project_dir,
-      :user_id
+      :user_id,
+      :actor
     ])
   end
 

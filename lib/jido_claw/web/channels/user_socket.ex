@@ -13,8 +13,18 @@ defmodule JidoClaw.Web.UserSocket do
            :jido_claw,
            []
          ) do
-      {:ok, user} -> {:ok, assign(socket, :current_user, user)}
-      :error -> {:error, :unauthorized}
+      {:ok, user} ->
+        actor = JidoClaw.Authorization.Actor.build(user)
+
+        socket =
+          socket
+          |> assign(:current_user, user)
+          |> assign(:current_actor, actor)
+
+        {:ok, socket}
+
+      :error ->
+        {:error, :unauthorized}
     end
   end
 

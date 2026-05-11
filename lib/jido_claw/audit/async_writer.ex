@@ -58,7 +58,7 @@ defmodule JidoClaw.Audit.AsyncWriter do
   defp do_record(%{tenant_id: tenant_id} = attrs) when is_binary(tenant_id) do
     attrs
     |> Map.delete(:tenant_id)
-    |> Event.record(tenant: tenant_id)
+    |> Event.record(tenant: tenant_id, authorize?: false)
     |> case do
       {:ok, _} ->
         :ok

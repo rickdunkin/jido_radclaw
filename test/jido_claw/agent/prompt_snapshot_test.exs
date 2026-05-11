@@ -48,7 +48,8 @@ defmodule JidoClaw.Agent.PromptSnapshotTest do
           value: "Always run mix format",
           source: :user
         },
-        tenant: "default"
+        tenant: "default",
+        actor: JidoClaw.Authorization.Actor.system("default")
       )
 
     scope = %{

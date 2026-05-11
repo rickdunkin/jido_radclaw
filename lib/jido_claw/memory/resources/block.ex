@@ -54,10 +54,25 @@ defmodule JidoClaw.Memory.Block do
     otp_app: :jido_claw,
     domain: JidoClaw.Memory.Domain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     primary_read_warning?: false
 
   require Ash.Query
   import Ash.Expr
+
+  policies do
+    bypass action(:by_id_global) do
+      authorize_if(always())
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
 
   alias JidoClaw.Memory.BlockRevision
   alias JidoClaw.Repo
@@ -421,7 +436,9 @@ defmodule JidoClaw.Memory.Block do
     use Ash.Resource.Change
 
     @impl true
-    def change(changeset, _opts, _context) do
+    def change(changeset, _opts, context) do
+      actor = Map.get(context, :actor)
+
       Ash.Changeset.after_action(changeset, fn cs, result ->
         prior = cs.data
         reason = Ash.Changeset.get_argument(cs, :reason)
@@ -440,7 +457,10 @@ defmodule JidoClaw.Memory.Block do
           reason: reason
         }
 
-        case BlockRevision.create_for_block(attrs, tenant: prior.tenant_id) do
+        opts = [tenant: prior.tenant_id]
+        opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+
+        case BlockRevision.create_for_block(attrs, opts) do
           {:ok, _} ->
             {:ok, result}
 
@@ -604,14 +624,19 @@ defmodule JidoClaw.Memory.Block do
   > pattern used for `Memory.Fact` (a `:skip_*_hint?` argument on the
   > action, with the consolidator dispatching after publish).
   """
-  @spec revise(prior(), map()) :: {:ok, t()} | {:error, term()}
-  def revise(prior_block_or_id, attrs) when is_map(attrs) do
+  @spec revise(prior(), map(), keyword()) :: {:ok, t()} | {:error, term()}
+  def revise(prior_block_or_id, attrs, opts \\ []) when is_map(attrs) and is_list(opts) do
+    actor = Keyword.get(opts, :actor)
+
     with {:ok, prior} <- load_prior(prior_block_or_id) do
+      write_opts = [tenant: prior.tenant_id]
+      write_opts = if actor, do: Keyword.put(write_opts, :actor, actor), else: write_opts
+
       Ash.transact(__MODULE__, fn ->
         with :ok <- invalidate_prior_block(prior),
              new_attrs = build_revise_attrs(prior, attrs),
-             {:ok, new_block} <- write(new_attrs, tenant: prior.tenant_id),
-             {:ok, _rev} <- write_revision_row(prior, attrs) do
+             {:ok, new_block} <- write(new_attrs, write_opts),
+             {:ok, _rev} <- write_revision_row(prior, attrs, actor) do
           new_block
         else
           {:error, err} -> Ash.DataLayer.rollback(__MODULE__, err)
@@ -659,7 +684,7 @@ defmodule JidoClaw.Memory.Block do
     }
   end
 
-  defp write_revision_row(prior, attrs) do
+  defp write_revision_row(prior, attrs, actor) do
     rev_attrs = %{
       block_id: prior.id,
       scope_kind: prior.scope_kind,
@@ -673,6 +698,9 @@ defmodule JidoClaw.Memory.Block do
       reason: Map.get(attrs, :reason)
     }
 
-    BlockRevision.create_for_block(rev_attrs, tenant: prior.tenant_id)
+    opts = [tenant: prior.tenant_id]
+    opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+
+    BlockRevision.create_for_block(rev_attrs, opts)
   end
 end

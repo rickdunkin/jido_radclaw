@@ -37,13 +37,13 @@ defmodule JidoClaw.Cron.JobTest do
       tenant_id = seed_tenant("cron-upsert")
       attrs = upsert_attrs(job_id: "daily-report", task: "v1")
 
-      {:ok, first} = Job.upsert(attrs, tenant: tenant_id)
+      {:ok, first} = Job.upsert(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
       assert first.task == "v1"
 
       Process.sleep(2)
 
       updated = Map.put(attrs, :task, "v2")
-      {:ok, second} = Job.upsert(updated, tenant: tenant_id)
+      {:ok, second} = Job.upsert(updated, tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert second.id == first.id
       assert second.task == "v2"
@@ -56,8 +56,8 @@ defmodule JidoClaw.Cron.JobTest do
 
       attrs = upsert_attrs(job_id: "shared-id")
 
-      {:ok, a_row} = Job.upsert(attrs, tenant: tenant_a)
-      {:ok, b_row} = Job.upsert(attrs, tenant: tenant_b)
+      {:ok, a_row} = Job.upsert(attrs, tenant: tenant_a, actor: actor_for(tenant_a))
+      {:ok, b_row} = Job.upsert(attrs, tenant: tenant_b, actor: actor_for(tenant_b))
 
       refute a_row.id == b_row.id
       assert a_row.tenant_id == tenant_a
@@ -71,7 +71,9 @@ defmodule JidoClaw.Cron.JobTest do
         upsert_attrs()
         |> Map.put(:tenant_id, "wrong-tenant")
 
-      assert {:error, %Ash.Error.Invalid{} = err} = Job.upsert(attrs, tenant: tenant_id)
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Job.upsert(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert inspect(err) =~ "NoSuchInput" or inspect(err) =~ "tenant_id"
     end
   end
@@ -79,13 +81,13 @@ defmodule JidoClaw.Cron.JobTest do
   describe ":disable / :enable" do
     test ":disable stamps disabled_at; :enable clears it" do
       tenant_id = seed_tenant("cron-disable")
-      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id)
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
       assert is_nil(row.disabled_at)
 
-      {:ok, disabled} = Job.disable(row, %{}, tenant: tenant_id)
+      {:ok, disabled} = Job.disable(row, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
       assert %DateTime{} = disabled.disabled_at
 
-      {:ok, enabled} = Job.enable(disabled, %{}, tenant: tenant_id)
+      {:ok, enabled} = Job.enable(disabled, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
       assert is_nil(enabled.disabled_at)
     end
   end
@@ -93,11 +95,11 @@ defmodule JidoClaw.Cron.JobTest do
   describe ":remove" do
     test "destroys the row" do
       tenant_id = seed_tenant("cron-remove")
-      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id)
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
 
-      :ok = Job.remove(row, tenant: tenant_id)
+      :ok = Job.remove(row, tenant: tenant_id, actor: actor_for(tenant_id))
 
-      assert {:error, _} = Job.by_id(row.id, tenant: tenant_id)
+      assert {:error, _} = Job.by_id(row.id, tenant: tenant_id, actor: actor_for(tenant_id))
     end
   end
 
@@ -106,15 +108,15 @@ defmodule JidoClaw.Cron.JobTest do
       tenant_id = seed_tenant("cron-by-id")
       other_tenant = seed_tenant("cron-by-id-other")
 
-      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id)
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
 
-      assert {:ok, _} = Job.by_id(row.id, tenant: tenant_id)
-      assert {:error, _} = Job.by_id(row.id, tenant: other_tenant)
+      assert {:ok, _} = Job.by_id(row.id, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert {:error, _} = Job.by_id(row.id, tenant: other_tenant, actor: actor_for(other_tenant))
     end
 
     test ":by_id_global bypasses tenancy" do
       tenant_id = seed_tenant("cron-by-id-global")
-      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id)
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert {:ok, fetched} = Job.by_id_global(row.id)
       assert fetched.id == row.id
@@ -125,21 +127,39 @@ defmodule JidoClaw.Cron.JobTest do
   describe ":by_job_id / :for_tenant" do
     test ":by_job_id returns the matching row under the active tenant" do
       tenant_id = seed_tenant("cron-by-job-id")
-      {:ok, _} = Job.upsert(upsert_attrs(job_id: "want-me"), tenant: tenant_id)
-      {:ok, _} = Job.upsert(upsert_attrs(job_id: "skip-me"), tenant: tenant_id)
 
-      assert {:ok, row} = Job.by_job_id("want-me", tenant: tenant_id)
+      {:ok, _} =
+        Job.upsert(upsert_attrs(job_id: "want-me"),
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _} =
+        Job.upsert(upsert_attrs(job_id: "skip-me"),
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert {:ok, row} = Job.by_job_id("want-me", tenant: tenant_id, actor: actor_for(tenant_id))
       assert row.job_id == "want-me"
     end
 
     test ":for_tenant excludes rows with disabled_at set" do
       tenant_id = seed_tenant("cron-for-tenant")
 
-      {:ok, active} = Job.upsert(upsert_attrs(job_id: "active"), tenant: tenant_id)
-      {:ok, will_disable} = Job.upsert(upsert_attrs(job_id: "to-disable"), tenant: tenant_id)
-      {:ok, _disabled} = Job.disable(will_disable, %{}, tenant: tenant_id)
+      {:ok, active} =
+        Job.upsert(upsert_attrs(job_id: "active"), tenant: tenant_id, actor: actor_for(tenant_id))
 
-      {:ok, rows} = Job.for_tenant(tenant: tenant_id)
+      {:ok, will_disable} =
+        Job.upsert(upsert_attrs(job_id: "to-disable"),
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _disabled} =
+        Job.disable(will_disable, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      {:ok, rows} = Job.for_tenant(tenant: tenant_id, actor: actor_for(tenant_id))
 
       job_ids = Enum.map(rows, & &1.job_id)
       assert "active" in job_ids
@@ -160,7 +180,7 @@ defmodule JidoClaw.Cron.JobTest do
 
       for {kind, value} <- schedules do
         attrs = upsert_attrs(schedule_kind: kind, schedule_value: value, job_id: "kind-#{kind}")
-        assert {:ok, row} = Job.upsert(attrs, tenant: tenant_id)
+        assert {:ok, row} = Job.upsert(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
         assert row.schedule_kind == kind
         assert row.schedule_value == value
       end

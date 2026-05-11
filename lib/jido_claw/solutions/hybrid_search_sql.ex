@@ -232,8 +232,12 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
 
         loaded =
           Solution
+          |> Ash.Query.for_read(:read, %{},
+            actor: JidoClaw.Authorization.Actor.system(tenant_id),
+            tenant: tenant_id
+          )
           |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!(tenant: tenant_id)
+          |> Ash.read!()
           |> Map.new(fn s -> {s.id, s} end)
 
         Enum.flat_map(ranked, fn {id, score} ->

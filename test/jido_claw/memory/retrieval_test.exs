@@ -41,7 +41,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
           external_id: external_id,
           started_at: started_at
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.create(domain: JidoClaw.Conversations)
 
@@ -119,7 +120,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [seeded] = Ash.read!(Fact, tenant: tenant_id)
+      [seeded] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       # Manually populate the embedding row to mimic a successful
       # backfill (Memory.remember_from_user defaults to disabled when
@@ -131,7 +132,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
           embedding: embedding,
           embedding_status: :ready
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.update!()
 
@@ -224,7 +226,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # by id rather than relying on a content marker (which would
       # itself increase the lex_text and shift workspace_pref's rank).
       [workspace_pref] =
-        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.filter(fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
@@ -294,7 +296,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       end)
 
       [workspace_pref] =
-        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.filter(fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
@@ -340,7 +342,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
             trust_score: 0.5,
             import_hash: "legacy_#{System.unique_integer([:positive])}"
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       # Keep the legacy row in current-truth (`invalid_at` is in the
@@ -398,7 +401,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
             trust_score: 0.5,
             import_hash: "legacy_#{System.unique_integer([:positive])}"
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       # Session-scope :model_remember at the same label.
@@ -436,7 +440,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       future_fact =
-        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
+        Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.find(fn f -> f.label == "future_only" end)
 
       # Push the future_only row's valid_at one hour into the future.
@@ -465,7 +469,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [fact] = Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id)
+      [fact] = Ash.read!(JidoClaw.Memory.Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       # Set invalid_at to one hour from now — row is still currently
       # valid until then. expired_at stays nil so the row is the live
@@ -489,7 +493,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       tool_context: tc
     } do
       :ok = Memory.remember_from_user(%{key: "mode", content: "v1", type: "fact"}, tc)
-      [fact] = Ash.read!(Fact, tenant: tenant_id)
+      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       t0 = DateTime.utc_now() |> DateTime.add(86_400, :second)
       half_day_later = DateTime.add(t0, 12 * 3600, :second)
@@ -548,7 +552,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: cons_id}] = Ash.read!(Fact, tenant: tenant_id)
+      [%{id: cons_id}] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       JidoClaw.Repo.query!(
         "UPDATE memory_facts SET source = 'consolidator_promoted', invalid_at = $2 WHERE id = $1",
@@ -562,7 +566,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Ash.read!(Fact, tenant: tenant_id)
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.filter(fn f -> f.id != cons_id and f.source == :model_remember end)
 
       JidoClaw.Repo.query!(
@@ -577,7 +581,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [user_save] =
-        Ash.read!(Fact, tenant: tenant_id)
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.filter(fn f -> f.id not in [cons_id, model_id] and f.source == :user_save end)
 
       results =
@@ -623,7 +627,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: loser_id}] = Ash.read!(Fact, tenant: tenant_id)
+      [%{id: loser_id}] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       # Make the loser invisible to :current_truth via expired_at in
       # the past, but keep its invalid_at NULL would re-block the
@@ -642,7 +646,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [winner_fact] =
-        Ash.read!(Fact, tenant: tenant_id)
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.filter(&(&1.id != loser_id))
 
       results = Retrieval.search(tool_context: tc, query: "content", limit: 5)
@@ -691,7 +695,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: first_id}] = Ash.read!(Fact, tenant: tenant_id)
+      [%{id: first_id}] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       JidoClaw.Repo.query!(
         "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
@@ -705,7 +709,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: other_id}] =
-        Ash.read!(Fact, tenant: tenant_id) |> Enum.filter(&(&1.id != first_id))
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+        |> Enum.filter(&(&1.id != first_id))
 
       results = Retrieval.search(tool_context: tc, query: "qqqqqaaaa", limit: 5)
       preference = Enum.filter(results, &(&1.label == "preference"))
@@ -748,19 +753,20 @@ defmodule JidoClaw.Memory.RetrievalTest do
           tc
         )
 
-      [%{id: user_id}] = Ash.read!(Fact, tenant: tenant_id)
+      [%{id: user_id}] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
 
       far_vec = List.duplicate(0.999, 1024)
 
       JidoClaw.Memory.Fact
-      |> Ash.get!(user_id, tenant: tenant_id)
+      |> Ash.get!(user_id, tenant: tenant_id, actor: actor_for(tenant_id))
       |> Ash.Changeset.for_update(
         :transition_embedding_status,
         %{
           embedding: far_vec,
           embedding_status: :ready
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.update!()
 
@@ -777,19 +783,21 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Ash.read!(Fact, tenant: tenant_id) |> Enum.filter(&(&1.id != user_id))
+        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+        |> Enum.filter(&(&1.id != user_id))
 
       close_vec = stub_voyage.query_vec()
 
       JidoClaw.Memory.Fact
-      |> Ash.get!(model_id, tenant: tenant_id)
+      |> Ash.get!(model_id, tenant: tenant_id, actor: actor_for(tenant_id))
       |> Ash.Changeset.for_update(
         :transition_embedding_status,
         %{
           embedding: close_vec,
           embedding_status: :ready
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.update!()
 

@@ -15,6 +15,7 @@ defmodule JidoClaw.Solutions.NetworkFacade do
       `broadcast_solution/1` and `handle_solution_requested/2` paths.
   """
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Solutions.Solution
 
   @forced_inbound_keys [
@@ -54,7 +55,7 @@ defmodule JidoClaw.Solutions.NetworkFacade do
       |> Map.put(:sharing, :shared)
       |> Map.put(:workspace_id, workspace_id)
 
-    Solution.store(attrs, tenant: tenant_id)
+    Solution.store(attrs, tenant: tenant_id, actor: Actor.system(tenant_id))
   end
 
   @doc """
@@ -72,7 +73,7 @@ defmodule JidoClaw.Solutions.NetworkFacade do
     tenant_id = Map.fetch!(node_state, :tenant_id)
     workspace_id = Map.fetch!(node_state, :workspace_id)
 
-    case Solution.by_id(solution_id, tenant: tenant_id) do
+    case Solution.by_id(solution_id, tenant: tenant_id, actor: Actor.system(tenant_id)) do
       {:ok, %Solution{workspace_id: ^workspace_id, sharing: sharing} = sol}
       when sharing in [:local, :shared, :public] ->
         {:ok, sol}
@@ -101,7 +102,8 @@ defmodule JidoClaw.Solutions.NetworkFacade do
            workspace_id,
            [:local, :shared, :public],
            [:public],
-           tenant: tenant_id
+           tenant: tenant_id,
+           actor: Actor.system(tenant_id)
          ) do
       {:ok, list} when is_list(list) -> list
       _ -> []

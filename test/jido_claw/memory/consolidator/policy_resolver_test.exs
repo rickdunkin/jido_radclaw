@@ -22,7 +22,10 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolverTest do
         "/tmp/policy_test_#{name}_#{System.unique_integer([:positive])}"
       )
 
-    Workspace.set_consolidation_policy(workspace, policy)
+    Workspace.set_consolidation_policy(workspace, policy,
+      tenant: "default",
+      actor: JidoClaw.Authorization.Actor.system("default")
+    )
   end
 
   describe "gate/1 — :workspace scope" do

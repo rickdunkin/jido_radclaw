@@ -75,7 +75,8 @@ defmodule JidoClaw.MCPScope.Initializer do
           session_uuid: session_uuid,
           session_id: session_id,
           project_dir: cwd,
-          agent_id: "main"
+          agent_id: "main",
+          actor: JidoClaw.Authorization.Actor.system("default")
         }
 
         Application.put_env(:jido_claw, :jido_claw_mcp_default_scope, scope)

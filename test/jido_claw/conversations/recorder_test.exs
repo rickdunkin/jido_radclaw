@@ -49,7 +49,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
             content: "tool_a()",
             tool_call_id: tool_call_id
           },
-          tenant: tenant_a
+          tenant: tenant_a,
+          actor: %{user_id: tenant_a, tenant_id: tenant_a}
         )
 
       {:ok, parent_b} =
@@ -61,7 +62,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
             content: "tool_b()",
             tool_call_id: tool_call_id
           },
-          tenant: tenant_b
+          tenant: tenant_b,
+          actor: %{user_id: tenant_b, tenant_id: tenant_b}
         )
 
       emit_tool_result(r_a, tool_call_id, "tool_a", {:ok, "ok-a"})
@@ -96,7 +98,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
             content: "first",
             tool_call_id: tool_call_id
           },
-          tenant: tenant
+          tenant: tenant,
+          actor: %{user_id: tenant, tenant_id: tenant}
         )
 
       {:ok, parent_2} =
@@ -108,7 +111,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
             content: "second",
             tool_call_id: tool_call_id
           },
-          tenant: tenant
+          tenant: tenant,
+          actor: %{user_id: tenant, tenant_id: tenant}
         )
 
       emit_tool_result(r2, tool_call_id, "second", {:ok, "ok-2"})
@@ -211,7 +215,12 @@ defmodule JidoClaw.Conversations.RecorderTest do
           request_id
         )
 
-      {:ok, rows} = Message.for_session(session.id, tenant: tenant)
+      {:ok, rows} =
+        Message.for_session(session.id,
+          tenant: tenant,
+          actor: %{user_id: tenant, tenant_id: tenant}
+        )
+
       [assistant] = Enum.filter(rows, &(&1.role == :assistant))
 
       assert assistant.model == "anthropic/claude-test"
@@ -283,7 +292,12 @@ defmodule JidoClaw.Conversations.RecorderTest do
           request_id
         )
 
-      {:ok, rows} = Message.for_session(session.id, tenant: tenant)
+      {:ok, rows} =
+        Message.for_session(session.id,
+          tenant: tenant,
+          actor: %{user_id: tenant, tenant_id: tenant}
+        )
+
       [assistant] = Enum.filter(rows, &(&1.role == :assistant))
 
       assert assistant.model == "model-from-durable"
@@ -365,7 +379,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
             content: "tool()",
             tool_call_id: tool_call_id
           },
-          tenant: tenant
+          tenant: tenant,
+          actor: %{user_id: tenant, tenant_id: tenant}
         )
 
       emit_tool_result(request_id, tool_call_id, "tool", {:ok, "ok"})
@@ -385,6 +400,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
   defp seed_session(label) do
     tenant_id = "tenant-rec-#{label}-#{System.unique_integer([:positive])}"
     {:ok, _} = JidoClaw.Tenants.Tenant.ensure(tenant_id)
+    actor = %{user_id: tenant_id, tenant_id: tenant_id}
 
     {:ok, ws} =
       Workspace.register(
@@ -392,7 +408,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
           path: "/tmp/rec-#{label}-#{System.unique_integer([:positive])}",
           name: label
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor
       )
 
     {:ok, session} =
@@ -403,7 +420,8 @@ defmodule JidoClaw.Conversations.RecorderTest do
           external_id: "ext-#{label}-#{System.unique_integer([:positive])}",
           started_at: DateTime.utc_now()
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor
       )
 
     %{tenant_id: tenant_id, workspace: ws, session: session}
@@ -449,7 +467,11 @@ defmodule JidoClaw.Conversations.RecorderTest do
   end
 
   defp start_session_worker(tenant_id, session_uuid) do
-    {:ok, _pid} = JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_uuid)
+    actor = %{user_id: tenant_id, tenant_id: tenant_id}
+
+    {:ok, _pid} =
+      JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_uuid, actor: actor)
+
     :ok = JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_uuid, session_uuid)
     :ok
   end
@@ -474,7 +496,12 @@ defmodule JidoClaw.Conversations.RecorderTest do
   end
 
   defp tool_results_for(session_id, tenant_id) do
-    {:ok, rows} = Message.for_session(session_id, tenant: tenant_id)
+    {:ok, rows} =
+      Message.for_session(session_id,
+        tenant: tenant_id,
+        actor: %{user_id: tenant_id, tenant_id: tenant_id}
+      )
+
     Enum.filter(rows, &(&1.role == :tool_result))
   end
 end

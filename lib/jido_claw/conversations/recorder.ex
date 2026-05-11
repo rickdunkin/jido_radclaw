@@ -484,7 +484,7 @@ defmodule JidoClaw.Conversations.Recorder do
         tool_call_id: tool_call_id
       }
 
-      attempt_append(attrs, scope.tenant_id)
+      attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
   end
 
@@ -504,7 +504,8 @@ defmodule JidoClaw.Conversations.Recorder do
       parent =
         if is_binary(request_id) and is_binary(tool_call_id) do
           case Message.tool_call_parent(scope.session_id, request_id, tool_call_id,
-                 tenant: scope.tenant_id
+                 tenant: scope.tenant_id,
+                 actor: actor_for(scope)
                ) do
             {:ok, [%{id: id} | _]} -> id
             _ -> nil
@@ -528,7 +529,7 @@ defmodule JidoClaw.Conversations.Recorder do
         parent_message_id: parent
       }
 
-      attempt_append(attrs, scope.tenant_id)
+      attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
   end
 
@@ -557,7 +558,7 @@ defmodule JidoClaw.Conversations.Recorder do
             metadata: %{}
           }
 
-          attempt_append(attrs, scope.tenant_id)
+          attempt_append(attrs, scope.tenant_id, actor_for(scope))
         end
     end
   end
@@ -746,8 +747,11 @@ defmodule JidoClaw.Conversations.Recorder do
   # Append helpers
   # ---------------------------------------------------------------------------
 
-  defp attempt_append(attrs, tenant_id) do
-    case Message.append(attrs, tenant: tenant_id) do
+  defp attempt_append(attrs, tenant_id, actor) do
+    opts = [tenant: tenant_id]
+    opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+
+    case Message.append(attrs, opts) do
       {:ok, _} ->
         :ok
 
@@ -769,6 +773,17 @@ defmodule JidoClaw.Conversations.Recorder do
       Logger.warning("[Recorder] append raised: #{Exception.message(e)}")
       :ok
   end
+
+  # Build a per-call Ash actor from a resolved scope. The scope shape
+  # is identical from the cache and DB-fallback paths (`session_id`,
+  # `tenant_id`, `workspace_id`, `user_id`). Used at every internal
+  # write boundary so policies that filter by `tenant_id` don't drop
+  # the recorder's writes.
+  defp actor_for(%{tenant_id: tenant_id, user_id: user_id}) when is_binary(tenant_id) do
+    %{user_id: user_id, tenant_id: tenant_id}
+  end
+
+  defp actor_for(_), do: nil
 
   defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
     Enum.any?(errors, fn err ->

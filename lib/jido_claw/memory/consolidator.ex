@@ -155,6 +155,7 @@ defmodule JidoClaw.Memory.Consolidator do
     require Ash.Query
 
     JidoClaw.Workspaces.Workspace
+    |> Ash.Query.for_read(:read, %{}, authorize?: false)
     |> Ash.Query.filter(consolidation_policy != :disabled)
     |> Ash.read!(domain: JidoClaw.Workspaces)
   end
@@ -210,6 +211,7 @@ defmodule JidoClaw.Memory.Consolidator do
     workspace_index = Map.new(workspaces, fn ws -> {ws.id, ws} end)
 
     JidoClaw.Conversations.Session
+    |> Ash.Query.for_read(:read, %{}, authorize?: false)
     |> Ash.Query.filter(workspace_id in ^workspace_ids and is_nil(closed_at))
     |> Ash.read!(domain: JidoClaw.Conversations)
     |> Enum.map(fn session ->

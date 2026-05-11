@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
       Mix.Task.run("jidoclaw.migrate.cron", ["--project", project_dir, "--tenant", tenant_a])
 
       assert {:ok, %Tenant{id: ^tenant_a}} = Tenant.by_id(tenant_a)
-      {:ok, jobs} = Job.for_tenant(tenant: tenant_a)
+      {:ok, jobs} = Job.for_tenant(tenant: tenant_a, authorize?: false)
       assert length(jobs) == 1
       assert hd(jobs).job_id == "job_a"
     end
@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
       ])
 
       assert match?({:error, _}, Tenant.by_id(tenant_b))
-      {:ok, jobs} = Job.for_tenant(tenant: tenant_b)
+      {:ok, jobs} = Job.for_tenant(tenant: tenant_b, authorize?: false)
       assert jobs == []
     end
 
@@ -56,7 +56,7 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
       Mix.Task.run("jidoclaw.migrate.cron", ["--project", project_dir, "--tenant", tenant_c])
 
       assert match?({:error, _}, Tenant.by_id(tenant_c))
-      {:ok, jobs} = Job.for_tenant(tenant: tenant_c)
+      {:ok, jobs} = Job.for_tenant(tenant: tenant_c, authorize?: false)
       assert jobs == []
     end
   end

@@ -31,6 +31,7 @@ defmodule JidoClaw.Conversations.Resolver do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session
 
   @spec ensure_session(String.t(), Ecto.UUID.t(), atom(), String.t(), keyword()) ::
@@ -38,6 +39,8 @@ defmodule JidoClaw.Conversations.Resolver do
   def ensure_session(tenant_id, workspace_id, kind, external_id, opts \\ [])
       when is_binary(tenant_id) and is_binary(workspace_id) and is_atom(kind) and
              is_binary(external_id) and is_list(opts) do
+    actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
+
     attrs = %{
       workspace_id: workspace_id,
       kind: kind,
@@ -48,24 +51,27 @@ defmodule JidoClaw.Conversations.Resolver do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
-    case Session.start(attrs, tenant: tenant_id) do
+    case Session.start(attrs, tenant: tenant_id, actor: actor) do
       {:ok, session} ->
-        maybe_persist_snapshot(session, opts)
+        maybe_persist_snapshot(session, opts, actor)
 
       {:error, %Ash.Error.Invalid{errors: errors}} = err ->
         if Enum.any?(errors, &unique_external_violation?/1) do
-          fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts)
+          fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts, actor)
         else
           err
         end
     end
   end
 
-  defp fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts) do
+  defp fallback_to_existing(tenant_id, workspace_id, kind, external_id, opts, actor) do
     with {:ok, existing} <-
-           Session.by_external(workspace_id, kind, external_id, tenant: tenant_id),
-         {:ok, touched} <- Session.touch(existing, tenant: tenant_id) do
-      maybe_persist_snapshot(touched, opts)
+           Session.by_external(workspace_id, kind, external_id,
+             tenant: tenant_id,
+             actor: actor
+           ),
+         {:ok, touched} <- Session.touch(existing, tenant: tenant_id, actor: actor) do
+      maybe_persist_snapshot(touched, opts, actor)
     end
   end
 
@@ -77,19 +83,19 @@ defmodule JidoClaw.Conversations.Resolver do
     String.contains?(str, "unique_external") or String.contains?(str, "23505")
   end
 
-  defp maybe_persist_snapshot(%Session{kind: :cron} = s, _opts), do: {:ok, s}
+  defp maybe_persist_snapshot(%Session{kind: :cron} = s, _opts, _actor), do: {:ok, s}
 
-  defp maybe_persist_snapshot(%Session{metadata: %{"prompt_snapshot" => snap}} = s, _opts)
+  defp maybe_persist_snapshot(%Session{metadata: %{"prompt_snapshot" => snap}} = s, _opts, _actor)
        when is_binary(snap) and snap != "" do
     {:ok, s}
   end
 
-  defp maybe_persist_snapshot(%Session{} = s, opts) do
+  defp maybe_persist_snapshot(%Session{} = s, opts, actor) do
     project_dir = Keyword.get(opts, :project_dir, File.cwd!())
 
     with {:ok, scope} <- JidoClaw.Memory.Scope.resolve(scope_ctx(s)),
          snap = JidoClaw.Agent.Prompt.build_snapshot(project_dir, scope),
-         {:ok, updated} <- Session.set_prompt_snapshot(s, snap, tenant: s.tenant_id) do
+         {:ok, updated} <- Session.set_prompt_snapshot(s, snap, tenant: s.tenant_id, actor: actor) do
       {:ok, updated}
     else
       {:error, reason} ->

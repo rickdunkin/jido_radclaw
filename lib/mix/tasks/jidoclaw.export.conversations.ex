@@ -98,7 +98,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
 
     with {:ok, workspace} <- WorkspaceResolver.ensure_workspace(tenant, workspace_dir),
          {:ok, session} <-
-           Session.by_external(workspace.id, kind, external, tenant: tenant) do
+           Session.by_external(workspace.id, kind, external, tenant: tenant, authorize?: false) do
       output_path = output_path(opts, session)
       {:ok, session, output_path}
     else
@@ -125,7 +125,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   end
 
   defp do_export(session, output_path, opts) do
-    case Message.for_session(session.id, tenant: session.tenant_id) do
+    case Message.for_session(session.id, tenant: session.tenant_id, authorize?: false) do
       {:ok, rows} ->
         File.mkdir_p!(Path.dirname(output_path))
         write_jsonl(output_path, rows)

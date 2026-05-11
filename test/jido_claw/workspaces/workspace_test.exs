@@ -17,7 +17,7 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
         user_id: nil
       }
 
-      assert {:ok, ws} = Workspace.register(attrs, tenant: tenant_id)
+      assert {:ok, ws} = Workspace.register(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
       assert ws.tenant_id == tenant_id
       assert ws.user_id == nil
       assert ws.embedding_policy == :disabled
@@ -39,7 +39,8 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
                    embedding_policy: :default,
                    consolidation_policy: :default
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert ws.embedding_policy == :default
@@ -56,7 +57,8 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
                    name: "demo",
                    embedding_policy: :local_only
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert {:error, _} =
@@ -66,7 +68,8 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
                    name: "demo",
                    consolidation_policy: :local_only
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
     end
 
@@ -75,15 +78,30 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
     } do
       path = "/tmp/policy-indep-#{System.unique_integer([:positive])}"
 
-      {:ok, ws} = Workspace.register(%{path: path, name: "demo"}, tenant: tenant_id)
+      {:ok, ws} =
+        Workspace.register(%{path: path, name: "demo"},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
       assert ws.embedding_policy == :disabled
       assert ws.consolidation_policy == :disabled
 
-      {:ok, ws2} = Workspace.set_embedding_policy(ws, :default)
+      {:ok, ws2} =
+        Workspace.set_embedding_policy(ws, :default,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
       assert ws2.embedding_policy == :default
       assert ws2.consolidation_policy == :disabled
 
-      {:ok, ws3} = Workspace.set_consolidation_policy(ws2, :default)
+      {:ok, ws3} =
+        Workspace.set_consolidation_policy(ws2, :default,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
       assert ws3.embedding_policy == :default
       assert ws3.consolidation_policy == :default
     end
@@ -93,11 +111,20 @@ defmodule JidoClaw.Workspaces.WorkspaceTest do
     test "the same path under one tenant for two CLI rows raises", %{tenant_id: tenant_id} do
       path = "/tmp/cli-collision-#{System.unique_integer([:positive])}"
 
-      assert {:ok, _} = Workspace.register(%{path: path, name: "a"}, tenant: tenant_id)
+      assert {:ok, _} =
+               Workspace.register(%{path: path, name: "a"},
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
       # Direct register/1 without resolver-supplied upsert_identity falls
       # back to a plain insert; the partial-unique :unique_user_path_cli
       # index rejects the duplicate.
-      assert {:error, _} = Workspace.register(%{path: path, name: "b"}, tenant: tenant_id)
+      assert {:error, _} =
+               Workspace.register(%{path: path, name: "b"},
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
     end
   end
 

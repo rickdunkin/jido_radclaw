@@ -27,7 +27,7 @@ defmodule JidoClaw.Web.AuthControllerTest do
 
     # Snapshot the existing audit-row count under "default" so the
     # per-test assertions can use a delta rather than an absolute.
-    {:ok, baseline_rows} = Event.read(tenant: "default")
+    {:ok, baseline_rows} = Event.read(tenant: "default", authorize?: false)
     initial_count = Enum.count(baseline_rows, &(&1.event_kind == :auth_event))
     {:ok, baseline: initial_count}
   end
@@ -42,12 +42,12 @@ defmodule JidoClaw.Web.AuthControllerTest do
 
       :ok =
         eventually(fn ->
-          {:ok, rows} = Event.read(tenant: "default")
+          {:ok, rows} = Event.read(tenant: "default", authorize?: false)
           delta = Enum.count(rows, &(&1.event_kind == :auth_event)) - baseline
           delta == 1
         end)
 
-      {:ok, rows} = Event.read(tenant: "default")
+      {:ok, rows} = Event.read(tenant: "default", authorize?: false)
       auth_rows = Enum.filter(rows, &(&1.event_kind == :auth_event))
       [latest | _] = Enum.sort_by(auth_rows, & &1.inserted_at, {:desc, DateTime})
 
@@ -71,12 +71,12 @@ defmodule JidoClaw.Web.AuthControllerTest do
 
       :ok =
         eventually(fn ->
-          {:ok, rows} = Event.read(tenant: "default")
+          {:ok, rows} = Event.read(tenant: "default", authorize?: false)
           delta = Enum.count(rows, &(&1.event_kind == :auth_event)) - baseline
           delta == 1
         end)
 
-      {:ok, rows} = Event.read(tenant: "default")
+      {:ok, rows} = Event.read(tenant: "default", authorize?: false)
       auth_rows = Enum.filter(rows, &(&1.event_kind == :auth_event))
       [latest | _] = Enum.sort_by(auth_rows, & &1.inserted_at, {:desc, DateTime})
 
@@ -98,12 +98,12 @@ defmodule JidoClaw.Web.AuthControllerTest do
 
       :ok =
         eventually(fn ->
-          {:ok, rows} = Event.read(tenant: "default")
+          {:ok, rows} = Event.read(tenant: "default", authorize?: false)
           delta = Enum.count(rows, &(&1.event_kind == :auth_event)) - baseline
           delta == 1
         end)
 
-      {:ok, rows} = Event.read(tenant: "default")
+      {:ok, rows} = Event.read(tenant: "default", authorize?: false)
       auth_rows = Enum.filter(rows, &(&1.event_kind == :auth_event))
       [latest | _] = Enum.sort_by(auth_rows, & &1.inserted_at, {:desc, DateTime})
 

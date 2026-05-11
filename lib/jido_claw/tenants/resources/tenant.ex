@@ -27,9 +27,18 @@ defmodule JidoClaw.Tenants.Tenant do
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Tenants,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
 
   @statuses [:active, :suspended, :terminating]
+
+  # Tenant resource is itself untenanted; admin scoping for
+  # archive/suspend is deferred to v0.7+.
+  policies do
+    policy action_type([:read, :create, :update, :destroy]) do
+      authorize_if(always())
+    end
+  end
 
   postgres do
     table("tenants")

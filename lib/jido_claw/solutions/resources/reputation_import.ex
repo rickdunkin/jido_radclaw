@@ -15,7 +15,20 @@ defmodule JidoClaw.Solutions.ReputationImport do
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Solutions.Domain,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
+
+  # ReputationImport defines only `:record_import` and `:find_by_hash` —
+  # no `:by_id_global`. Omit the bypass.
+  policies do
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
 
   postgres do
     table("reputation_imports")

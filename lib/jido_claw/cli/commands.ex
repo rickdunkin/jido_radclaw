@@ -3,6 +3,7 @@ defmodule JidoClaw.CLI.Commands do
   Slash command handler for the REPL.
   """
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Branding
 
   def handle("/help", state) do
@@ -256,7 +257,8 @@ defmodule JidoClaw.CLI.Commands do
                scope.scope_kind,
                primary_fk(scope),
                label,
-               tenant: scope.tenant_id
+               tenant: scope.tenant_id,
+               actor: Actor.system(scope.tenant_id)
              ) do
           {:ok, revisions} ->
             IO.puts("")
@@ -292,7 +294,10 @@ defmodule JidoClaw.CLI.Commands do
           JidoClaw.Memory.Scope.chain(scope)
           |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
 
-        case JidoClaw.Memory.Block.for_scope_chain(chain, tenant: scope.tenant_id) do
+        case JidoClaw.Memory.Block.for_scope_chain(chain,
+               tenant: scope.tenant_id,
+               actor: Actor.system(scope.tenant_id)
+             ) do
           {:ok, blocks} ->
             IO.puts("")
             IO.puts("  \e[1mScope Blocks\e[0m")
@@ -361,7 +366,8 @@ defmodule JidoClaw.CLI.Commands do
                  scope_fk_id: JidoClaw.Memory.Scope.primary_fk(scope),
                  limit: 10
                },
-               tenant: scope.tenant_id
+               tenant: scope.tenant_id,
+               actor: Actor.system(scope.tenant_id)
              ) do
           {:ok, runs} -> render_run_history(runs)
           runs when is_list(runs) -> render_run_history(runs)
@@ -621,7 +627,10 @@ defmodule JidoClaw.CLI.Commands do
               schedule_value: value
             }
 
-            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: "default") do
+            case JidoClaw.Cron.Job.upsert(persist_attrs,
+                   tenant: "default",
+                   actor: Actor.system("default")
+                 ) do
               {:ok, _} ->
                 IO.puts("")
                 IO.puts("  \e[32m✓\e[0m Scheduled '\e[1m#{id}\e[0m': \"#{task}\" (#{schedule})")
@@ -662,9 +671,10 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/cron remove " <> id, state) do
     id = String.trim(id)
     JidoClaw.Cron.Scheduler.unschedule("default", id)
+    actor = Actor.system("default")
 
-    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default") do
-      {:ok, job} -> _ = JidoClaw.Cron.Job.remove(job, tenant: "default")
+    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default", actor: actor) do
+      {:ok, job} -> _ = JidoClaw.Cron.Job.remove(job, tenant: "default", actor: actor)
       _ -> :ok
     end
 
@@ -686,9 +696,10 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/cron disable " <> id, state) do
     id = String.trim(id)
     JidoClaw.Cron.Worker.disable("default", id)
+    actor = Actor.system("default")
 
-    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default") do
-      {:ok, job} -> _ = JidoClaw.Cron.Job.disable(job, tenant: "default")
+    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default", actor: actor) do
+      {:ok, job} -> _ = JidoClaw.Cron.Job.disable(job, tenant: "default", actor: actor)
       _ -> :ok
     end
 
@@ -1234,9 +1245,11 @@ defmodule JidoClaw.CLI.Commands do
         {:ok, state}
 
       uuid when is_binary(uuid) ->
+        actor = Actor.system(state.tenant_id)
+
         with {:ok, workspace} <-
-               JidoClaw.Workspaces.Workspace.by_id(uuid, tenant: state.tenant_id),
-             {:ok, _} <- apply_policy_action(workspace, kind, policy, state.tenant_id) do
+               JidoClaw.Workspaces.Workspace.by_id(uuid, tenant: state.tenant_id, actor: actor),
+             {:ok, _} <- apply_policy_action(workspace, kind, policy, state.tenant_id, actor) do
           IO.puts(
             "  \e[32m✓\e[0m  workspace #{kind} policy set to \e[1m#{Atom.to_string(policy)}\e[0m"
           )
@@ -1254,11 +1267,19 @@ defmodule JidoClaw.CLI.Commands do
     end
   end
 
-  defp apply_policy_action(workspace, :embedding, policy, tenant),
-    do: JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy, tenant: tenant)
+  defp apply_policy_action(workspace, :embedding, policy, tenant, actor),
+    do:
+      JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy,
+        tenant: tenant,
+        actor: actor
+      )
 
-  defp apply_policy_action(workspace, :consolidation, policy, tenant),
-    do: JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy, tenant: tenant)
+  defp apply_policy_action(workspace, :consolidation, policy, tenant, actor),
+    do:
+      JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy,
+        tenant: tenant,
+        actor: actor
+      )
 
   defp parse_policy("default"), do: {:ok, :default}
   defp parse_policy("disabled"), do: {:ok, :disabled}
@@ -1482,7 +1503,9 @@ defmodule JidoClaw.CLI.Commands do
 
     result =
       if same_scope? do
-        JidoClaw.Memory.Block.revise(block, %{value: new_value})
+        JidoClaw.Memory.Block.revise(block, %{value: new_value},
+          actor: Actor.system(scope.tenant_id)
+        )
       else
         attrs = %{
           scope_kind: scope.scope_kind,
@@ -1500,7 +1523,10 @@ defmodule JidoClaw.CLI.Commands do
           written_by: "cli"
         }
 
-        JidoClaw.Memory.Block.write(attrs, tenant: scope.tenant_id)
+        JidoClaw.Memory.Block.write(attrs,
+          tenant: scope.tenant_id,
+          actor: Actor.system(scope.tenant_id)
+        )
       end
 
     case result do

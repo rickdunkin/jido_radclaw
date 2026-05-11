@@ -87,14 +87,17 @@ defmodule JidoClaw.Audit.Event do
   end
 
   policies do
-    # Multitenancy filter at SQL level is the primary tenant boundary
-    # (`global? false`). The policy here is defense-in-depth: when an
-    # actor map is supplied, allow tenant-matching reads; otherwise
-    # rely on multitenancy. Internal callers that don't have an actor
-    # in scope (Audit producers, the SignalListener) pass
-    # `authorize?: false` to bypass.
-    policy action_type([:read, :create]) do
-      authorize_if(always())
+    # Tenant-actor matching for both creates and reads. The
+    # AsyncWriter (Audit.Producers, SignalListener) bypasses with
+    # `authorize?: false` since it operates as internal infrastructure
+    # — the audit row's tenant is already established by the producer
+    # action's tenant: opt.
+    policy action_type(:create) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
     end
   end
 

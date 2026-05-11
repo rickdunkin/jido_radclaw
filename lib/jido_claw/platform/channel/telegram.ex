@@ -44,7 +44,8 @@ defmodule JidoClaw.Channel.Telegram do
 
       case JidoClaw.chat("default", session_id, text,
              kind: :telegram,
-             external_id: session_id
+             external_id: session_id,
+             actor: JidoClaw.Authorization.Actor.system("default")
            ) do
         {:ok, response} ->
           send_message(to_string(chat_id), response, state)

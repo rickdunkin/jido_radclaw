@@ -43,7 +43,22 @@ defmodule JidoClaw.Solutions.Solution do
     otp_app: :jido_claw,
     domain: JidoClaw.Solutions.Domain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     primary_read_warning?: false
+
+  policies do
+    bypass action(:by_id_global) do
+      authorize_if(always())
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
 
   alias JidoClaw.Security.Redaction.Transcript
   alias JidoClaw.Workspaces.Workspace, as: WorkspaceResource
@@ -549,7 +564,9 @@ defmodule JidoClaw.Solutions.Solution do
     use Ash.Resource.Change
 
     @impl true
-    def change(changeset, _opts, _context) do
+    def change(changeset, _opts, context) do
+      actor = Map.get(context, :actor)
+
       Ash.Changeset.before_action(changeset, fn cs ->
         # If the caller already set embedding_status (e.g. import_legacy
         # carrying :ready or :disabled), respect it. Otherwise resolve
@@ -560,19 +577,33 @@ defmodule JidoClaw.Solutions.Solution do
 
           _ ->
             workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
-            resolve_status_from_policy(cs, workspace_id)
+            resolve_status_from_policy(cs, workspace_id, actor)
         end
       end)
     end
 
-    defp resolve_status_from_policy(cs, nil), do: cs
+    defp resolve_status_from_policy(cs, nil, _actor), do: cs
 
-    defp resolve_status_from_policy(cs, workspace_id) do
+    defp resolve_status_from_policy(cs, workspace_id, actor) do
       tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
+      # System imports (`authorize?: false` migration tasks) may reach
+      # here without an actor. Workspace.by_id is policy-protected, so
+      # fall back to a tenant-bound system actor that satisfies the
+      # `tenant_id == ^actor(:tenant_id)` policy without granting
+      # cross-tenant access.
+      effective_actor =
+        actor ||
+          (tenant_id && JidoClaw.Authorization.Actor.system(tenant_id))
 
       result =
         if tenant_id do
-          WorkspaceResource.by_id(workspace_id, tenant: tenant_id)
+          opts = [tenant: tenant_id]
+
+          opts =
+            if effective_actor, do: Keyword.put(opts, :actor, effective_actor), else: opts
+
+          WorkspaceResource.by_id(workspace_id, opts)
         else
           WorkspaceResource.by_id_global(workspace_id)
         end
@@ -630,7 +661,9 @@ defmodule JidoClaw.Solutions.Solution do
     use Ash.Resource.Change
 
     @impl true
-    def change(changeset, _opts, _context) do
+    def change(changeset, _opts, context) do
+      context_actor = Map.get(context, :actor)
+
       Ash.Changeset.before_action(changeset, fn cs ->
         # The :verification attribute is being set; combine the data
         # currently on the row with the new verification map and
@@ -640,9 +673,18 @@ defmodule JidoClaw.Solutions.Solution do
         new_verification = Ash.Changeset.get_attribute(cs, :verification)
         merged = %{record | verification: new_verification}
 
+        # Reputation reads are policy-protected. Thread the context actor
+        # through; if context didn't carry one (e.g. internal callers),
+        # fall back to a tenant-bound system actor so the read isn't
+        # silently filtered to zero rows.
+        actor =
+          context_actor ||
+            (record.tenant_id && JidoClaw.Authorization.Actor.system(record.tenant_id))
+
         agent_rep_score =
           case JidoClaw.Solutions.Reputation.get(record.agent_id || "unknown",
-                 tenant: record.tenant_id
+                 tenant: record.tenant_id,
+                 actor: actor
                ) do
             {:ok, nil} -> 0.5
             {:ok, %{score: score}} -> score

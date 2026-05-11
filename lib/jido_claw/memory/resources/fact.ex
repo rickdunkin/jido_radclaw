@@ -70,9 +70,24 @@ defmodule JidoClaw.Memory.Fact do
     otp_app: :jido_claw,
     domain: JidoClaw.Memory.Domain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     primary_read_warning?: false
 
   require Ash.Query
+
+  policies do
+    bypass action(:by_id_global) do
+      authorize_if(always())
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
 
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
@@ -645,7 +660,9 @@ defmodule JidoClaw.Memory.Fact do
     use Ash.Resource.Change
 
     @impl true
-    def change(changeset, _opts, _context) do
+    def change(changeset, _opts, context) do
+      actor = Map.get(context, :actor)
+
       Ash.Changeset.before_action(changeset, fn cs ->
         case Ash.Changeset.get_attribute(cs, :embedding_status) do
           status when status in [:ready, :failed, :disabled, :processing] ->
@@ -653,21 +670,35 @@ defmodule JidoClaw.Memory.Fact do
 
           _ ->
             workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
-            resolve_status_from_policy(cs, workspace_id)
+            resolve_status_from_policy(cs, workspace_id, actor)
         end
       end)
     end
 
-    defp resolve_status_from_policy(cs, nil) do
+    defp resolve_status_from_policy(cs, nil, _actor) do
       Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
     end
 
-    defp resolve_status_from_policy(cs, workspace_id) do
+    defp resolve_status_from_policy(cs, workspace_id, actor) do
       tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+
+      # System imports (`authorize?: false` migration tasks) may reach
+      # here without an actor. Workspace.by_id is policy-protected, so
+      # fall back to a tenant-bound system actor that satisfies the
+      # `tenant_id == ^actor(:tenant_id)` policy without granting
+      # cross-tenant access.
+      effective_actor =
+        actor ||
+          (tenant_id && JidoClaw.Authorization.Actor.system(tenant_id))
 
       result =
         if tenant_id do
-          JidoClaw.Workspaces.Workspace.by_id(workspace_id, tenant: tenant_id)
+          opts = [tenant: tenant_id]
+
+          opts =
+            if effective_actor, do: Keyword.put(opts, :actor, effective_actor), else: opts
+
+          JidoClaw.Workspaces.Workspace.by_id(workspace_id, opts)
         else
           JidoClaw.Workspaces.Workspace.by_id_global(workspace_id)
         end

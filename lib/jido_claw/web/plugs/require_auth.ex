@@ -18,7 +18,12 @@ defmodule JidoClaw.Web.Plugs.RequireAuth do
            []
          ) do
       {:ok, user} ->
-        assign(conn, :current_user, user)
+        actor = JidoClaw.Authorization.Actor.build(user)
+
+        conn
+        |> assign(:current_user, user)
+        |> assign(:current_actor, actor)
+        |> Ash.PlugHelpers.set_actor(actor)
 
       :error ->
         conn

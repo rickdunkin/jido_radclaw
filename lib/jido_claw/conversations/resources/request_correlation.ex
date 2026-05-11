@@ -59,12 +59,23 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Conversations,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
 
   alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Workspaces.Workspace, as: WorkspaceResource
 
   @sweep_batch 1_000
+
+  # Permissive: lookup-by-`request_id` callers (Recorder, Session.Worker,
+  # sweeper, JidoClaw.chat) have no actor at lookup time. This is an
+  # internal-trust boundary documented as a known gap until v0.7+ adds
+  # `agent_id` for tenant-derived authentication.
+  policies do
+    policy action_type([:read, :create, :update, :destroy]) do
+      authorize_if(always())
+    end
+  end
 
   postgres do
     table("request_correlations")

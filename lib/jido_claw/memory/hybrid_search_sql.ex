@@ -225,8 +225,12 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
     loaded =
       Fact
+      |> Ash.Query.for_read(:read, %{},
+        actor: JidoClaw.Authorization.Actor.system(tenant_id),
+        tenant: tenant_id
+      )
       |> Ash.Query.filter(id in ^ids)
-      |> Ash.read!(tenant: tenant_id)
+      |> Ash.read!()
       |> Map.new(fn f -> {f.id, f} end)
 
     Enum.flat_map(ids, fn id ->
@@ -790,8 +794,12 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
         loaded =
           Fact
+          |> Ash.Query.for_read(:read, %{},
+            actor: JidoClaw.Authorization.Actor.system(tenant_id),
+            tenant: tenant_id
+          )
           |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!(tenant: tenant_id)
+          |> Ash.read!()
           |> Map.new(fn f -> {f.id, f} end)
 
         # `shadow_index` non-nil means the SQL projected a

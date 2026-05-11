@@ -29,7 +29,12 @@ defmodule JidoClaw.MCPScope.InitializerTest do
     assert is_binary(scope.workspace_uuid)
     assert scope.tenant_id == "default"
 
-    {:ok, session} = Session.by_id(scope.session_uuid, tenant: scope.tenant_id)
+    {:ok, session} =
+      Session.by_id(scope.session_uuid,
+        tenant: scope.tenant_id,
+        actor: JidoClaw.Authorization.Actor.system(scope.tenant_id)
+      )
+
     assert session.kind == :mcp
     assert session.external_id == scope.session_id
   end

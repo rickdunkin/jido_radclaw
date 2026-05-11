@@ -16,7 +16,8 @@ defmodule JidoClaw.Conversations.SessionTest do
                    external_id: "sess-abc",
                    started_at: now
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert session.workspace_id == ws.id
@@ -44,7 +45,8 @@ defmodule JidoClaw.Conversations.SessionTest do
                    external_id: "x",
                    started_at: DateTime.utc_now()
                  },
-                 tenant: other_tenant
+                 tenant: other_tenant,
+                 actor: actor_for(other_tenant)
                )
 
       messages =
@@ -67,7 +69,8 @@ defmodule JidoClaw.Conversations.SessionTest do
                    external_id: "x",
                    started_at: DateTime.utc_now()
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       messages =

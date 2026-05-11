@@ -11,9 +11,13 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
   def call(conn, _opts) do
     with {:ok, api_key} <- extract_api_key(conn),
          {:ok, user} <- authenticate(api_key) do
+      actor = JidoClaw.Authorization.Actor.build(user)
+
       conn
       |> assign(:current_user, user)
+      |> assign(:current_actor, actor)
       |> assign(:auth_method, :api_key)
+      |> Ash.PlugHelpers.set_actor(actor)
     else
       {:error, reason} ->
         conn

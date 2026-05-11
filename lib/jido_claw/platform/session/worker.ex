@@ -37,6 +37,15 @@ defmodule JidoClaw.Session.Worker do
 
       :active → :agent_lost (agent crashes)
       :active → :hibernated (idle timeout, 5 min)
+
+  ## Actor
+
+  `state.actor` carries the latest Ash authorization actor supplied
+  through `set_actor/3` (typically by `Session.Supervisor.ensure_session/3`).
+  Worker is keyed by `(tenant_id, session_id)` so `tenant_id` cannot drift
+  between turns; the policy enforced as of v0.6.4 only checks `tenant_id`.
+  If a future policy enforces user_id matching, the safer pattern is
+  per-call actor passing rather than the state-stored shape used here.
   """
   use GenServer
   require Logger
@@ -49,6 +58,7 @@ defmodule JidoClaw.Session.Worker do
     :id,
     :tenant_id,
     :session_uuid,
+    :actor,
     :agent_pid,
     :agent_ref,
     :created_at,
@@ -99,16 +109,30 @@ defmodule JidoClaw.Session.Worker do
     GenServer.call(name, {:set_session_uuid, session_uuid})
   end
 
+  @doc """
+  Update the worker's authorization actor.
+
+  Called from `Session.Supervisor.ensure_session/3` when an
+  already-running worker is reused — the most recent caller's actor
+  wins. Internal trust path; never accept actor from end-user input.
+  """
+  def set_actor(tenant_id, session_id, actor) do
+    name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
+    GenServer.call(name, {:set_actor, actor})
+  end
+
   @impl true
   def init(opts) do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     session_id = Keyword.fetch!(opts, :session_id)
     session_uuid = Keyword.get(opts, :session_uuid)
+    actor = Keyword.get(opts, :actor)
 
     state = %__MODULE__{
       id: session_id,
       tenant_id: tenant_id,
       session_uuid: session_uuid,
+      actor: actor,
       created_at: DateTime.utc_now(),
       last_active: DateTime.utc_now(),
       messages: []
@@ -126,7 +150,7 @@ defmodule JidoClaw.Session.Worker do
   end
 
   def handle_continue(:load, state) do
-    messages = load_messages(state.session_uuid, state.tenant_id)
+    messages = load_messages(state.session_uuid, state.tenant_id, state.actor)
     {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
@@ -152,7 +176,7 @@ defmodule JidoClaw.Session.Worker do
       }
       |> Map.merge(telemetry)
 
-    case Message.append(attrs, tenant: state.tenant_id) do
+    case Message.append(attrs, append_opts(state)) do
       {:ok, message} ->
         new_state = %{
           state
@@ -206,7 +230,7 @@ defmodule JidoClaw.Session.Worker do
 
   @impl true
   def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: nil} = state) do
-    messages = load_messages(uuid, state.tenant_id)
+    messages = load_messages(uuid, state.tenant_id, state.actor)
     {:reply, :ok, %{state | session_uuid: uuid, messages: messages}, @idle_timeout}
   end
 
@@ -220,6 +244,10 @@ defmodule JidoClaw.Session.Worker do
     )
 
     {:reply, {:error, :session_uuid_already_set}, state, @idle_timeout}
+  end
+
+  def handle_call({:set_actor, actor}, _from, state) do
+    {:reply, :ok, %{state | actor: actor}, @idle_timeout}
   end
 
   @impl true
@@ -251,8 +279,10 @@ defmodule JidoClaw.Session.Worker do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp load_messages(session_uuid, tenant_id) when is_binary(tenant_id) do
-    case Message.for_session(session_uuid, tenant: tenant_id) do
+  defp load_messages(session_uuid, tenant_id, actor) when is_binary(tenant_id) do
+    actor = actor || JidoClaw.Authorization.Actor.system(tenant_id)
+
+    case Message.for_session(session_uuid, tenant: tenant_id, actor: actor) do
       {:ok, rows} -> Enum.flat_map(rows, &to_view/1)
       _ -> []
     end
@@ -262,7 +292,12 @@ defmodule JidoClaw.Session.Worker do
       []
   end
 
-  defp load_messages(_session_uuid, _), do: []
+  defp load_messages(_session_uuid, _, _), do: []
+
+  defp append_opts(%__MODULE__{tenant_id: tenant_id, actor: actor}) do
+    base = [tenant: tenant_id]
+    if actor, do: Keyword.put(base, :actor, actor), else: base
+  end
 
   # Map a Conversations.Message row → the legacy in-memory shape so
   # JidoClaw.history/2 callers (and the REPL view) keep their existing

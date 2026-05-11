@@ -89,7 +89,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
             {ok_count + 1, fail_count}
 
           true ->
-            case Job.upsert(attrs, tenant: tenant) do
+            case Job.upsert(attrs, tenant: tenant, authorize?: false) do
               {:ok, _} ->
                 {ok_count + 1, fail_count}
 

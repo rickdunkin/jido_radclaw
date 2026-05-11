@@ -27,7 +27,7 @@ defmodule JidoClaw.Memory.BlockTest do
         source: :user
       }
 
-      assert {:ok, block} = Block.write(attrs, tenant: tenant_id)
+      assert {:ok, block} = Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
       assert block.label == "style_guide"
       assert block.invalid_at == nil
       assert block.char_limit == 2000
@@ -44,7 +44,9 @@ defmodule JidoClaw.Memory.BlockTest do
         source: :user
       }
 
-      assert {:error, %Ash.Error.Invalid{} = err} = Block.write(attrs, tenant: tenant_id)
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert inspect(err) =~ "value_exceeds_char_limit"
     end
 
@@ -57,7 +59,9 @@ defmodule JidoClaw.Memory.BlockTest do
         source: :user
       }
 
-      assert {:error, %Ash.Error.Invalid{} = err} = Block.write(attrs, tenant: tenant_id)
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert inspect(err) =~ "scope_fk_required"
     end
   end
@@ -73,14 +77,18 @@ defmodule JidoClaw.Memory.BlockTest do
             value: "v1",
             source: :user
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      assert {:ok, updated} = Block.revise(block, %{value: "v2", reason: "user_edit"})
+      assert {:ok, updated} =
+               Block.revise(block, %{value: "v2", reason: "user_edit"},
+                 actor: actor_for(tenant_id)
+               )
 
       assert updated.value == "v2"
 
-      revisions = Ash.read!(BlockRevision, tenant: tenant_id)
+      revisions = Ash.read!(BlockRevision, tenant: tenant_id, actor: actor_for(tenant_id))
       assert Enum.any?(revisions, fn r -> r.value == "v1" end)
     end
 
@@ -97,10 +105,14 @@ defmodule JidoClaw.Memory.BlockTest do
             value: "v1",
             source: :user
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      assert {:ok, replacement} = Block.revise(prior, %{value: "v2", reason: "user_edit"})
+      assert {:ok, replacement} =
+               Block.revise(prior, %{value: "v2", reason: "user_edit"},
+                 actor: actor_for(tenant_id)
+               )
 
       # Replacement is a new row, not an in-place update.
       refute replacement.id == prior.id
@@ -114,7 +126,10 @@ defmodule JidoClaw.Memory.BlockTest do
 
       # history_for_label returns at least both rows, ordered by inserted_at ascending.
       assert {:ok, history} =
-               Block.history_for_label(:workspace, ws.id, "iar_label", tenant: tenant_id)
+               Block.history_for_label(:workspace, ws.id, "iar_label",
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
 
       assert length(history) >= 2
 
@@ -134,11 +149,15 @@ defmodule JidoClaw.Memory.BlockTest do
             value: "to_invalidate",
             source: :user
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       assert {:ok, invalidated} =
-               Block.invalidate(block, %{reason: "no_longer_relevant"}, tenant: tenant_id)
+               Block.invalidate(block, %{reason: "no_longer_relevant"},
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
 
       assert invalidated.invalid_at != nil
       assert invalidated.expired_at != nil
@@ -159,13 +178,17 @@ defmodule JidoClaw.Memory.BlockTest do
             value: "v1",
             source: :user
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, _} = Block.revise(block, %{value: "v2"})
+      {:ok, _} = Block.revise(block, %{value: "v2"}, actor: actor_for(tenant_id))
 
       assert {:ok, blocks} =
-               Block.history_for_label(:workspace, ws.id, "history_label", tenant: tenant_id)
+               Block.history_for_label(:workspace, ws.id, "history_label",
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
 
       assert is_list(blocks)
     end

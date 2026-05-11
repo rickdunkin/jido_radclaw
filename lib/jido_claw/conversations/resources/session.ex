@@ -24,7 +24,22 @@ defmodule JidoClaw.Conversations.Session do
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Conversations,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
+
+  policies do
+    bypass action(:by_id_global) do
+      authorize_if(always())
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
 
   postgres do
     table("conversation_sessions")

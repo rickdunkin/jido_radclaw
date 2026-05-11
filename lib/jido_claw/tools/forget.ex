@@ -57,10 +57,13 @@ defmodule JidoClaw.Tools.Forget do
     tenant_id = Map.get(tool_context, :tenant_id)
 
     if is_binary(tenant_id) do
-      case JidoClaw.Memory.Fact.by_id(id, tenant: tenant_id) do
+      actor = Map.get(tool_context, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+
+      case JidoClaw.Memory.Fact.by_id(id, tenant: tenant_id, actor: actor) do
         {:ok, %{source: :model_remember} = fact} ->
           case JidoClaw.Memory.Fact.invalidate_by_id(fact, %{reason: "model_forget"},
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor
                ) do
             {:ok, _} -> {:ok, %{status: "invalidated", target: id}}
             {:error, err} -> {:error, err}

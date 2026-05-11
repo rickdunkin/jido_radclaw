@@ -172,7 +172,9 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
       Mix.Task.run("jidoclaw.migrate.conversations", ["--project", project_dir])
 
       {:ok, workspace} = WorkspaceResolver.ensure_workspace(tenant_id, project_dir)
-      {:ok, session} = Session.by_external(workspace.id, :api, "sample", tenant: tenant_id)
+
+      {:ok, session} =
+        Session.by_external(workspace.id, :api, "sample", tenant: tenant_id, authorize?: false)
 
       out_path = Path.join([project_dir, "convo-export-by-uuid.jsonl.exported"])
 

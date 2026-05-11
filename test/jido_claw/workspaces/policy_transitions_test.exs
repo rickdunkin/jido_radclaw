@@ -83,7 +83,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
         path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
         name: label
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
   end
 
@@ -101,7 +102,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
         trust_score: 0.5,
         embedding_status: :disabled
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
     |> Ash.create(domain: JidoClaw.Memory)
   end
@@ -122,7 +124,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
           trust_score: 0.5,
           embedding_status: :pending
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.create(domain: JidoClaw.Memory)
 
@@ -153,7 +156,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
           trust_score: 0.5,
           embedding_status: :pending
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
       |> Ash.create(domain: JidoClaw.Memory)
 
@@ -164,7 +168,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
         embedding: List.duplicate(0.001, 1024),
         embedding_status: :ready
       },
-      tenant: tenant_id
+      tenant: tenant_id,
+      actor: actor_for(tenant_id)
     )
     |> Ash.update!()
   end

@@ -33,7 +33,7 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
 
       assert :ok = AsyncWriter.sync(attrs)
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
       [row] = Enum.filter(rows, &(&1.target_id == "demo_tool"))
       assert row.tenant_id == tenant_id
       assert row.actor_id == "main"
@@ -53,7 +53,7 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
 
       assert :ok = AsyncWriter.sync(bad_attrs)
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
       refute Enum.any?(rows, &(&1.event_kind == :not_a_real_kind))
     end
 
@@ -95,7 +95,7 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
       # are visible immediately after the task exits.
       :ok =
         eventually(fn ->
-          {:ok, rows} = Event.read(tenant: tenant_id)
+          {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
           Enum.any?(rows, &(&1.target_id == "cast_tool"))
         end)
     end
@@ -118,7 +118,7 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
       # logging the error.
       Process.sleep(50)
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
       refute Enum.any?(rows, &(&1.event_kind == :not_a_real_kind))
     end
   end

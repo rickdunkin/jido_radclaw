@@ -13,7 +13,7 @@ defmodule JidoClaw.Cron.Scheduler do
   """
   @spec load_persistent_jobs(String.t(), String.t()) :: {:ok, non_neg_integer()}
   def load_persistent_jobs(tenant_id \\ "default", _project_dir) do
-    case Job.for_tenant(tenant: tenant_id) do
+    case Job.for_tenant(tenant: tenant_id, authorize?: false) do
       {:ok, jobs} ->
         count =
           Enum.reduce(jobs, 0, fn job, acc ->

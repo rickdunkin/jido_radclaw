@@ -72,14 +72,14 @@ defmodule JidoClaw.Audit.SignalListenerTest do
 
       :ok =
         eventually(fn ->
-          {:ok, rows} = Event.read(tenant: tenant_id)
+          {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
           Enum.any?(rows, fn r ->
             r.event_kind == :tool_call and r.target_id == "demo_tool"
           end)
         end)
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
       [row] = Enum.filter(rows, &(&1.target_id == "demo_tool" and &1.event_kind == :tool_call))
 
       assert row.actor_kind == :agent

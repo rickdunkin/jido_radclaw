@@ -156,10 +156,22 @@ defmodule JidoClaw.Memory.Scope do
   end
 
   defp session_lookup(nil, session_id), do: ConvSession.by_id_global(session_id)
-  defp session_lookup(tenant_id, session_id), do: ConvSession.by_id(session_id, tenant: tenant_id)
+
+  defp session_lookup(tenant_id, session_id),
+    do:
+      ConvSession.by_id(session_id,
+        tenant: tenant_id,
+        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+      )
 
   defp workspace_lookup(nil, ws_id), do: Workspace.by_id_global(ws_id)
-  defp workspace_lookup(tenant_id, ws_id), do: Workspace.by_id(ws_id, tenant: tenant_id)
+
+  defp workspace_lookup(tenant_id, ws_id),
+    do:
+      Workspace.by_id(ws_id,
+        tenant: tenant_id,
+        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+      )
 
   @doc """
   Return the scope chain in retrieval-precedence order: most specific

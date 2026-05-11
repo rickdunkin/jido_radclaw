@@ -59,11 +59,12 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
 
     facts =
       Fact
+      |> Ash.Query.for_read(:read, %{}, tenant: tenant_id, authorize?: false)
       |> Ash.Query.filter(
         workspace_id == ^workspace_id and
           is_nil(invalid_at) and is_nil(expired_at)
       )
-      |> Ash.read!(tenant: tenant_id)
+      |> Ash.read!()
       |> Enum.sort_by(& &1.id)
 
     Mix.shell().info("Exporting #{length(facts)} Memory.Fact rows to #{out}")

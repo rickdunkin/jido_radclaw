@@ -79,10 +79,14 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.blocks_written >= 1
       assert run.facts_added >= 1
 
-      blocks = Ash.read!(Block, domain: @memory_domain, tenant: tenant_id)
+      blocks =
+        Ash.read!(Block, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert Enum.any?(blocks, &(&1.label == "core_facts" and &1.value =~ "shipping"))
 
-      facts = Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id)
+      facts =
+        Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert Enum.any?(facts, &(&1.label == "geo" and &1.content =~ "Canada"))
     end
 
@@ -117,7 +121,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.status == :succeeded
       assert run.links_added >= 1
 
-      links = Ash.read!(Link, domain: @memory_domain, tenant: tenant_id)
+      links =
+        Ash.read!(Link, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+
       created = Enum.find(links, &(&1.from_fact_id == fact_a.id and &1.to_fact_id == fact_b.id))
 
       refute is_nil(created)
@@ -157,10 +163,17 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # replacement row is written — NOT from
       # maybe_invalidate_unlabeled/1, which short-circuits for labeled
       # facts.
-      reloaded = Ash.get!(Fact, original.id, domain: @memory_domain, tenant: tenant_id)
+      reloaded =
+        Ash.get!(Fact, original.id,
+          domain: @memory_domain,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
       refute is_nil(reloaded.invalid_at)
 
-      facts = Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id)
+      facts =
+        Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
 
       replacement =
         Enum.find(facts, fn f ->
@@ -172,7 +185,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert replacement.tags == ["v2"]
       assert replacement.source == :consolidator_promoted
 
-      links = Ash.read!(Link, domain: @memory_domain, tenant: tenant_id)
+      links =
+        Ash.read!(Link, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
 
       supersedes =
         Enum.find(links, fn l ->
@@ -391,7 +405,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
                  await_ms: 30_000
                )
 
-      rows = Ash.read!(ConsolidationRun, domain: @memory_domain, tenant: tenant_id)
+      rows =
+        Ash.read!(ConsolidationRun,
+          domain: @memory_domain,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
 
       row =
         Enum.find(rows, fn r ->
@@ -432,7 +451,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
       assert {:error, "no_credentials"} = result
 
-      rows = Ash.read!(ConsolidationRun, domain: @memory_domain, tenant: tenant_id)
+      rows =
+        Ash.read!(ConsolidationRun,
+          domain: @memory_domain,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
 
       row =
         Enum.find(rows, fn r ->
@@ -560,7 +584,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
     # Resolver creates with `consolidation_policy: :disabled` — flip to
     # `:default` so `PolicyResolver.gate/1` returns `:ok` for this scope.
-    {:ok, ws} = Workspace.set_consolidation_policy(ws, :default)
+    {:ok, ws} =
+      Workspace.set_consolidation_policy(ws, :default,
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
+      )
 
     scope = %{
       tenant_id: tenant_id,
@@ -585,7 +613,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
           external_id: "sess-#{System.unique_integer([:positive])}",
           started_at: DateTime.utc_now()
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
 
     scope = %{
@@ -620,7 +649,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         source: :model_remember,
         written_by: "test"
       },
-      tenant: scope.tenant_id
+      tenant: scope.tenant_id,
+      actor: actor_for(scope.tenant_id)
     )
   end
 
@@ -642,7 +672,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         inserted_at: ts,
         valid_at: ts
       },
-      tenant: scope.tenant_id
+      tenant: scope.tenant_id,
+      actor: actor_for(scope.tenant_id)
     )
   end
 
@@ -659,7 +690,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         inserted_at: ts,
         import_hash: "msg-#{System.unique_integer([:positive])}"
       },
-      tenant: session.tenant_id
+      tenant: session.tenant_id,
+      actor: actor_for(session.tenant_id)
     )
   end
 

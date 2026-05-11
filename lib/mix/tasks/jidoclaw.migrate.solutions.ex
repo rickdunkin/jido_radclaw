@@ -95,7 +95,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
                 if attrs[:id] && row_exists?(:solutions, attrs[:id]) do
                   false
                 else
-                  case Solution.import_legacy(attrs_minus_tenant, tenant: tenant_id) do
+                  case Solution.import_legacy(attrs_minus_tenant,
+                         tenant: tenant_id,
+                         authorize?: false
+                       ) do
                     {:ok, _} ->
                       true
 
@@ -188,7 +191,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
       {:ok, body} ->
         sha = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
-        case ReputationImport.find_by_hash(sha, tenant: workspace.tenant_id) do
+        case ReputationImport.find_by_hash(sha, tenant: workspace.tenant_id, authorize?: false) do
           {:ok, %ReputationImport{} = existing} ->
             Mix.shell().info(
               "reputation.json: already imported at #{DateTime.to_iso8601(existing.imported_at)}; skipping"
@@ -233,7 +236,8 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
                 rows_imported: merged,
                 metadata: %{}
               },
-              tenant: workspace.tenant_id
+              tenant: workspace.tenant_id,
+              authorize?: false
             )
 
           merged
@@ -261,7 +265,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
   defp merge_reputation_row(row, workspace) do
     existing =
-      case Reputation.get(row.agent_id, tenant: workspace.tenant_id) do
+      case Reputation.get(row.agent_id, tenant: workspace.tenant_id, authorize?: false) do
         {:ok, %Reputation{} = r} -> r
         _ -> nil
       end
@@ -278,7 +282,8 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
              solutions_shared: summed.solutions_shared,
              last_active: summed.last_active
            },
-           tenant: workspace.tenant_id
+           tenant: workspace.tenant_id,
+           authorize?: false
          ) do
       {:ok, _} ->
         :telemetry.execute(

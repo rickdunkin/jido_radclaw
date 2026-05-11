@@ -43,6 +43,7 @@ defmodule JidoClaw.Web.RpcChannel do
       ) do
     tenant_id = tenant_for(socket)
     user_id = socket.assigns.current_user.id
+    _actor = socket.assigns[:current_actor]
     project_dir = File.cwd!()
 
     # Resolve durable Workspace + Conversation rows BEFORE starting the
@@ -78,11 +79,13 @@ defmodule JidoClaw.Web.RpcChannel do
       ) do
     tenant_id = tenant_for(socket)
     user_id = socket.assigns.current_user.id
+    actor = socket.assigns[:current_actor]
 
     case JidoClaw.chat(tenant_id, session_id, content,
            kind: :web_rpc,
            external_id: session_id,
-           user_id: user_id
+           user_id: user_id,
+           actor: actor
          ) do
       {:ok, response} ->
         push(socket, "session.response", %{session_id: session_id, content: response})

@@ -21,7 +21,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    role: :user,
                    content: "hello"
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert m1.sequence == 1
@@ -35,7 +36,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    role: :assistant,
                    content: "hi back"
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert m2.sequence == 2
@@ -51,7 +53,8 @@ defmodule JidoClaw.Conversations.MessageTest do
             role: :user,
             content: "x"
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       assert m.tenant_id == tenant_id
@@ -67,7 +70,8 @@ defmodule JidoClaw.Conversations.MessageTest do
             role: :user,
             content: "API_KEY=sk-abcdef0123456789abcdef0123456789"
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       refute m.content =~ "sk-abcdef0123456789"
@@ -92,7 +96,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    inserted_at: ts,
                    import_hash: hash1
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert {:ok, _} =
@@ -105,7 +110,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    inserted_at: ts,
                    import_hash: hash2
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
     end
 
@@ -124,7 +130,8 @@ defmodule JidoClaw.Conversations.MessageTest do
             inserted_at: DateTime.utc_now(),
             import_hash: hash
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
       assert {:error, %Ash.Error.Invalid{} = err} =
@@ -137,7 +144,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    inserted_at: DateTime.utc_now(),
                    import_hash: hash
                  },
-                 tenant: tenant_id
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
                )
 
       assert inspect(err) =~ "unique_import_hash"
@@ -163,7 +171,8 @@ defmodule JidoClaw.Conversations.MessageTest do
                    inserted_at: DateTime.utc_now(),
                    import_hash: "x-#{System.unique_integer([:positive])}"
                  },
-                 tenant: other_tenant
+                 tenant: other_tenant,
+                 actor: actor_for(other_tenant)
                )
 
       assert inspect(err) =~ "cross_tenant_fk_mismatch"
@@ -174,15 +183,24 @@ defmodule JidoClaw.Conversations.MessageTest do
     test "returns rows ordered by sequence ascending" do
       %{session: session, tenant_id: tenant_id} = seed()
 
-      Message.append!(%{session_id: session.id, role: :user, content: "1"}, tenant: tenant_id)
-
-      Message.append!(%{session_id: session.id, role: :assistant, content: "2"},
-        tenant: tenant_id
+      Message.append!(%{session_id: session.id, role: :user, content: "1"},
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
       )
 
-      Message.append!(%{session_id: session.id, role: :user, content: "3"}, tenant: tenant_id)
+      Message.append!(%{session_id: session.id, role: :assistant, content: "2"},
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
+      )
 
-      {:ok, rows} = Message.for_session(session.id, tenant: tenant_id)
+      Message.append!(%{session_id: session.id, role: :user, content: "3"},
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
+      )
+
+      {:ok, rows} =
+        Message.for_session(session.id, tenant: tenant_id, actor: actor_for(tenant_id))
+
       assert Enum.map(rows, & &1.content) == ["1", "2", "3"]
       assert Enum.map(rows, & &1.sequence) == [1, 2, 3]
     end

@@ -50,9 +50,21 @@ defmodule JidoClaw.SolutionsCase do
   def unique_tenant_id, do: "tenant-#{System.unique_integer([:positive])}"
 
   @doc """
+  Build a tenant-bound actor map matching the production user→tenant
+  rule (`tenant_id == to_string(user.id)`). Mirrors
+  `JidoClaw.TenantCase.actor_for/1`.
+  """
+  @spec actor_for(String.t()) :: %{user_id: String.t(), tenant_id: String.t()}
+  def actor_for(tenant_id) when is_binary(tenant_id) do
+    %{user_id: tenant_id, tenant_id: tenant_id}
+  end
+
+  @doc """
   Insert a workspace under `tenant_id` with the given `embedding_policy`.
   Threads tenant via opt; ensures the parent `Tenant` row exists first.
-  Returns the persisted struct.
+  Returns the persisted struct. The `:actor` opt defaults to
+  `actor_for(tenant_id)` so policy-enabled tests pass tenant-actor
+  checks.
   """
   def workspace_fixture(tenant_id, opts \\ []) do
     {:ok, _} = Tenant.ensure(tenant_id)
@@ -60,6 +72,7 @@ defmodule JidoClaw.SolutionsCase do
     name = Keyword.get(opts, :name, "ws-#{System.unique_integer([:positive])}")
     path = Keyword.get(opts, :path, "/tmp/#{name}")
     policy = Keyword.get(opts, :embedding_policy, :disabled)
+    actor = Keyword.get(opts, :actor, actor_for(tenant_id))
 
     {:ok, ws} =
       Workspace.register(
@@ -68,7 +81,8 @@ defmodule JidoClaw.SolutionsCase do
           name: name,
           embedding_policy: policy
         },
-        tenant: tenant_id
+        tenant: tenant_id,
+        actor: actor
       )
 
     ws
@@ -118,7 +132,9 @@ defmodule JidoClaw.SolutionsCase do
         emb -> Map.put(attrs, :embedding, emb)
       end
 
-    {:ok, sol} = Solution.store(attrs, tenant: tenant_id)
+    actor = Keyword.get(opts, :actor, actor_for(tenant_id))
+
+    {:ok, sol} = Solution.store(attrs, tenant: tenant_id, actor: actor)
     sol
   end
 end

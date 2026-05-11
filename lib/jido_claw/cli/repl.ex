@@ -149,7 +149,10 @@ defmodule JidoClaw.CLI.Repl do
         tenant_id = "default"
 
         # Ensure a Session.Worker GenServer is running for this CLI session
-        {:ok, _session_pid} = JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id)
+        {:ok, _session_pid} =
+          JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id,
+            actor: JidoClaw.Authorization.Actor.system(tenant_id)
+          )
 
         # Phase 0 — resolve durable Workspace + Session rows so the
         # tool_context threaded into every Agent.ask carries

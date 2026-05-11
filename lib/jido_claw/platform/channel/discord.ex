@@ -45,7 +45,8 @@ defmodule JidoClaw.Channel.Discord do
 
     case JidoClaw.chat("default", session_id, normalized.text,
            kind: :discord,
-           external_id: session_id
+           external_id: session_id,
+           actor: JidoClaw.Authorization.Actor.system("default")
          ) do
       {:ok, response} ->
         send_message(normalized.channel_id, response, state)

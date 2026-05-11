@@ -19,6 +19,9 @@ defmodule JidoClaw.ToolContext do
     * `:workspace_uuid` — Phase 0 UUID FK target (`Workspaces.Workspace.id`)
     * `:user_id`        — UUID of the authenticated user; nil for CLI/Discord/Telegram
     * `:agent_id`       — runtime agent identity (e.g. `"main"` or a session id)
+    * `:actor`          — Ash authorization actor map; built by
+                           `JidoClaw.Authorization.Actor`. Nil for paths
+                           that haven't resolved an actor (system / public)
 
   `:forge_session_key` is preserved through `build/1` and `child/2` when
   set on the input scope; consumers (`spawn_agent`, `send_to_agent`,
@@ -34,7 +37,8 @@ defmodule JidoClaw.ToolContext do
     :workspace_id,
     :workspace_uuid,
     :user_id,
-    :agent_id
+    :agent_id,
+    :actor
   ]
 
   @doc """

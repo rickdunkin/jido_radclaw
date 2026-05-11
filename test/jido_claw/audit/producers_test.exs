@@ -38,10 +38,11 @@ defmodule JidoClaw.Audit.ProducersTest do
             external_id: external_id,
             started_at: DateTime.utc_now()
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
       audit_row =
         Enum.find(rows, fn r ->
@@ -69,12 +70,13 @@ defmodule JidoClaw.Audit.ProducersTest do
             external_id: "ext-end-#{System.unique_integer([:positive])}",
             started_at: DateTime.utc_now()
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, _closed} = Session.close(session, %{}, tenant: tenant_id)
+      {:ok, _closed} = Session.close(session, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
       audit_row =
         Enum.find(rows, fn r ->
@@ -99,10 +101,11 @@ defmodule JidoClaw.Audit.ProducersTest do
             value: "v1",
             source: :user
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
       audit_row =
         Enum.find(rows, fn r ->
@@ -129,10 +132,11 @@ defmodule JidoClaw.Audit.ProducersTest do
             workspace_id: ws.id,
             embedding_status: :disabled
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
       audit_row =
         Enum.find(rows, fn r ->
@@ -157,15 +161,281 @@ defmodule JidoClaw.Audit.ProducersTest do
             workspace_id: ws.id,
             embedding_status: :disabled
           },
-          tenant: tenant_id
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
         )
 
-      {:ok, rows} = Event.read(tenant: tenant_id)
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert Enum.all?(rows, fn r ->
                not (r.event_kind == :solution_share and r.target_id == to_string(sol.id))
              end),
              "did not expect a :solution_share audit row for a :local solution"
+    end
+  end
+
+  describe "real action surfaces" do
+    alias JidoClaw.Memory.ConsolidationRun
+    alias JidoClaw.Memory.Episode
+    alias JidoClaw.Memory.Fact
+    alias JidoClaw.Memory.Link
+
+    defp find_audit(rows, kind, target_kind, target_id) do
+      Enum.find(rows, fn r ->
+        r.event_kind == kind and r.target_kind == target_kind and
+          r.target_id == to_string(target_id)
+      end)
+    end
+
+    test "Memory.Fact.record / promote / invalidate_by_id all emit :memory_write" do
+      tenant_id = seed_tenant("audit-fact")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, fact} =
+        Fact.record(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-fact-record",
+            content: "v1",
+            source: :user_save,
+            trust_score: 0.7
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _promoted} =
+        Fact.promote(fact, %{trust_score: 0.85}, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      {:ok, _invalidated} =
+        Fact.invalidate_by_id(fact, %{reason: "test"},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      memory_writes =
+        Enum.filter(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_fact and
+            r.target_id == to_string(fact.id)
+        end)
+
+      assert length(memory_writes) >= 3,
+             "expected three :memory_write audit rows (record + promote + invalidate)"
+    end
+
+    test "Memory.Fact.invalidate_by_label emits :memory_write" do
+      tenant_id = seed_tenant("audit-fact-label")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      label = "lbl-#{System.unique_integer([:positive])}"
+
+      {:ok, fact} =
+        Fact.record(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: label,
+            content: "to invalidate",
+            source: :user_save,
+            trust_score: 0.7
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _} =
+        Fact.invalidate_by_label(fact, %{source: :user_save, reason: "label test"},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :memory_write, :memory_fact, fact.id),
+             "expected :memory_write audit row for invalidate_by_label"
+    end
+
+    test "Memory.Block.write / invalidate emit :memory_write" do
+      tenant_id = seed_tenant("audit-block")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, block} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-block",
+            value: "v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _invalidated} =
+        Block.invalidate(block, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      writes =
+        Enum.filter(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_block and
+            r.target_id == to_string(block.id)
+        end)
+
+      assert length(writes) >= 2,
+             "expected :memory_write audit rows for both write and invalidate"
+    end
+
+    test "Memory.Episode.record emits :memory_write with target_kind :memory_episode" do
+      tenant_id = seed_tenant("audit-episode")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, episode} =
+        Episode.record(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            kind: :transcript
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :memory_write, :memory_episode, episode.id),
+             "expected :memory_write audit row for episode"
+    end
+
+    test "Memory.Link.create_link emits :memory_write with target_kind :memory_link" do
+      tenant_id = seed_tenant("audit-link")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, fact_a} =
+        Fact.record(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "lnk-a",
+            content: "a",
+            source: :user_save,
+            trust_score: 0.7
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, fact_b} =
+        Fact.record(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "lnk-b",
+            content: "b",
+            source: :user_save,
+            trust_score: 0.7
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, link} =
+        Link.create_link(
+          %{
+            from_fact_id: fact_a.id,
+            to_fact_id: fact_b.id,
+            relation: :supersedes,
+            confidence: 0.9
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :memory_write, :memory_link, link.id),
+             "expected :memory_write audit row for link"
+    end
+
+    test "Memory.ConsolidationRun.record_run emits :memory_consolidation" do
+      tenant_id = seed_tenant("audit-cons")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, run} =
+        ConsolidationRun.record_run(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            started_at: DateTime.utc_now(),
+            finished_at: DateTime.utc_now(),
+            status: :succeeded,
+            facts_added: 1,
+            blocks_written: 0,
+            links_added: 0
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :memory_consolidation, :memory_consolidation_run, run.id),
+             "expected :memory_consolidation audit row for record_run"
+    end
+
+    test "Solution.store (shared/public) emits :solution_share" do
+      tenant_id = seed_tenant("audit-sol-share2")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, sol} =
+        Solution.store(
+          %{
+            problem_signature: "sig-share2-#{System.unique_integer([:positive])}",
+            solution_content: "shared content",
+            language: "elixir",
+            sharing: :public,
+            workspace_id: ws.id,
+            embedding_status: :disabled
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :solution_share, :solution, sol.id),
+             "expected :solution_share audit row for public solution"
+    end
+
+    test "Session.start / Session.close emit :session_start and :session_end" do
+      tenant_id = seed_tenant("audit-sessions")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, session} =
+        Session.start(
+          %{
+            workspace_id: ws.id,
+            kind: :api,
+            external_id: "ext-real-#{System.unique_integer([:positive])}",
+            started_at: DateTime.utc_now()
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _closed} = Session.close(session, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert find_audit(rows, :session_start, :session, session.id),
+             "expected :session_start audit row"
+
+      assert find_audit(rows, :session_end, :session, session.id),
+             "expected :session_end audit row"
     end
   end
 end

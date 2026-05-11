@@ -42,6 +42,7 @@ defmodule JidoClaw.Memory do
   require Logger
   require Ash.Query
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Memory.{Block, Fact, Retrieval, Scope}
 
   @doc """
@@ -112,13 +113,15 @@ defmodule JidoClaw.Memory do
 
     case Scope.resolve(tool_context || %{}) do
       {:ok, scope} ->
+        actor = actor_for(tool_context || %{}, scope.tenant_id)
+
         sources =
           case source do
             :all -> [:user_save, :model_remember, :consolidator_promoted, :imported_legacy]
             other -> [other]
           end
 
-        Enum.each(sources, &invalidate_at_label(scope, label, &1))
+        Enum.each(sources, &invalidate_at_label(scope, label, &1, actor))
         :ok
 
       _ ->
@@ -175,7 +178,10 @@ defmodule JidoClaw.Memory do
 
     chain_maps = Enum.map(chain, fn {kind, fk} -> %{scope_kind: kind, fk_id: fk} end)
 
-    case Block.for_scope_chain(chain_maps, tenant: scope.tenant_id) do
+    case Block.for_scope_chain(chain_maps,
+           tenant: scope.tenant_id,
+           actor: Actor.system(scope.tenant_id)
+         ) do
       {:ok, blocks} ->
         blocks
         |> Enum.group_by(& &1.label)
@@ -209,8 +215,9 @@ defmodule JidoClaw.Memory do
 
   defp do_remember(attrs, tool_context, opts) do
     with {:ok, scope} <- Scope.resolve(tool_context),
+         actor = actor_for(tool_context, scope.tenant_id),
          create_attrs = build_create_attrs(attrs, scope, opts),
-         {:ok, _fact} <- Fact.record(create_attrs, tenant: scope.tenant_id) do
+         {:ok, _fact} <- Fact.record(create_attrs, tenant: scope.tenant_id, actor: actor) do
       :ok
     else
       {:error, %Ash.Error.Invalid{} = err} ->
@@ -282,11 +289,12 @@ defmodule JidoClaw.Memory do
   # clarity).
   # ---------------------------------------------------------------------------
 
-  defp invalidate_at_label(scope, label, source) do
-    facts_at_label(scope, label, source)
+  defp invalidate_at_label(scope, label, source, actor) do
+    facts_at_label(scope, label, source, actor)
     |> Enum.each(fn fact ->
       case Fact.invalidate_by_id(fact, %{reason: "user_forget_#{source}"},
-             tenant: scope.tenant_id
+             tenant: scope.tenant_id,
+             actor: actor
            ) do
         {:ok, _} ->
           :ok
@@ -297,48 +305,52 @@ defmodule JidoClaw.Memory do
     end)
   end
 
-  defp facts_at_label(%{scope_kind: :user} = scope, label, source) do
+  defp facts_at_label(%{scope_kind: :user} = scope, label, source, actor) do
     Fact
+    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :user and
         user_id == ^scope.user_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
-  defp facts_at_label(%{scope_kind: :workspace} = scope, label, source) do
+  defp facts_at_label(%{scope_kind: :workspace} = scope, label, source, actor) do
     Fact
+    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :workspace and
         workspace_id == ^scope.workspace_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
-  defp facts_at_label(%{scope_kind: :project} = scope, label, source) do
+  defp facts_at_label(%{scope_kind: :project} = scope, label, source, actor) do
     Fact
+    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :project and
         project_id == ^scope.project_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
   end
 
-  defp facts_at_label(%{scope_kind: :session} = scope, label, source) do
+  defp facts_at_label(%{scope_kind: :session} = scope, label, source, actor) do
     Fact
+    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :session and
         session_id == ^scope.session_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.Query.set_tenant(scope.tenant_id)
     |> Ash.read!()
+  end
+
+  defp actor_for(tool_context, tenant_id) when is_map(tool_context) do
+    Map.get(tool_context, :actor) || Actor.system(tenant_id)
   end
 
   # ---------------------------------------------------------------------------
