@@ -11,10 +11,9 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   `Cron.Job.for_tenant`, so `Cron.Scheduler.load_persistent_jobs/2` does
   not bring up workers for them.
 
-  These contracts are split because `Scheduler.build_persistent_opts/1`
-  drops `mfa_module`/`mfa_function`/`mfa_args` — system jobs lose their
-  MFA on reload, so a single-test "fail then reload" approach can't drive
-  failure post-reload. Splitting sidesteps that.
+  Contract 3: `Scheduler.load_persistent_jobs/2` rehydrates `:mfa` from
+  the persisted `mfa_module`/`mfa_function`/`mfa_args` columns so a
+  reloaded system job ticks under its original MFA.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -102,6 +101,67 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
         {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant, "skip-me"}}}
 
       refute GenServer.whereis(worker_via)
+    end
+  end
+
+  describe "Contract 3: reload restores MFA from Postgres" do
+    test "system_job reloaded from Postgres ticks under its persisted MFA" do
+      tenant = seed_tenant("reload_mfa")
+      {:ok, _} = JidoClaw.Tenant.Manager.ensure_tenant(tenant)
+
+      {:ok, _job} =
+        Job.upsert(
+          %{
+            job_id: "reload-mfa-test",
+            schedule_kind: :every,
+            schedule_value: "60000",
+            mode: :system_job,
+            mfa_module: "JidoClaw.Cron.TestSupport",
+            mfa_function: "always_fail",
+            mfa_args: %{}
+          },
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      # The reload path is the ONLY way the Worker gets MFA here.
+      # No explicit mfa: in Scheduler.schedule/2.
+      assert {:ok, 1} = Scheduler.load_persistent_jobs(tenant, ".")
+
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, "reload-mfa-test") end)
+
+      # (1) Worker state carries the reloaded MFA.
+      state = Cron.Worker.get_state(tenant, "reload-mfa-test")
+      assert state.mfa == {JidoClaw.Cron.TestSupport, :always_fail, []}
+
+      # (2) Triggering a tick actually invokes always_fail/0 (not a
+      # rescued MatchError from nil MFA). Both shapes produce
+      # {:error, _} so we check the exact reason.
+      Cron.Worker.trigger(tenant, "reload-mfa-test")
+
+      eventually(fn ->
+        state = Cron.Worker.get_state(tenant, "reload-mfa-test")
+        state.last_result == {:error, :forced}
+      end)
+    end
+  end
+
+  defp eventually(fun, deadline_ms \\ 1_500) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_eventually(fun, deadline)
+  end
+
+  defp do_eventually(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        ExUnit.Assertions.flunk("eventually condition not met within timeout")
+
+      true ->
+        Process.sleep(20)
+        do_eventually(fun, deadline)
     end
   end
 end

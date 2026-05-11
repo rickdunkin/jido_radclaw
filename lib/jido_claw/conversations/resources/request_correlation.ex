@@ -67,10 +67,12 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
 
   @sweep_batch 1_000
 
-  # Permissive: lookup-by-`request_id` callers (Recorder, Session.Worker,
-  # sweeper, JidoClaw.chat) have no actor at lookup time. This is an
-  # internal-trust boundary documented as a known gap until v0.7+ adds
-  # `agent_id` for tenant-derived authentication.
+  # RequestCorrelation has internal callers with no actor in scope
+  # (Recorder telemetry callbacks, Session.Worker durable lookups, and
+  # JidoClaw.chat's correlation registration). The 60s sweeper bypasses
+  # explicitly via `authorize?: false` in `sweep_expired/0`; the others
+  # rely on this permissive policy. Closing the broader gap requires
+  # the v0.7+ agent-identity work.
   policies do
     policy action_type([:read, :create, :update, :destroy]) do
       authorize_if(always())
@@ -249,14 +251,14 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
       __MODULE__
       |> Ash.Query.for_read(:expired)
       |> Ash.Query.limit(@sweep_batch)
-      |> Ash.read!()
+      |> Ash.read!(authorize?: false)
 
     case expired do
       [] ->
         {:ok, 0}
 
       records ->
-        Ash.bulk_destroy!(records, :complete, %{})
+        Ash.bulk_destroy!(records, :complete, %{}, authorize?: false)
         {:ok, length(records)}
     end
   end

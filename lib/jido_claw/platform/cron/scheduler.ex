@@ -17,14 +17,25 @@ defmodule JidoClaw.Cron.Scheduler do
       {:ok, jobs} ->
         count =
           Enum.reduce(jobs, 0, fn job, acc ->
-            opts = build_persistent_opts(job)
+            case build_persistent_opts(job) do
+              {:ok, opts} ->
+                case schedule(tenant_id, opts) do
+                  {:ok, _, _} ->
+                    acc + 1
 
-            case schedule(tenant_id, opts) do
-              {:ok, _, _} ->
-                acc + 1
+                  {:error, reason} ->
+                    Logger.warning(
+                      "[Cron] Failed to schedule job #{job.job_id}: #{inspect(reason)}"
+                    )
+
+                    acc
+                end
 
               {:error, reason} ->
-                Logger.warning("[Cron] Failed to load job #{job.job_id}: #{inspect(reason)}")
+                Logger.warning(
+                  "[Cron] Skipping invalid persisted job #{job.job_id}: #{inspect(reason)}"
+                )
+
                 acc
             end
           end)
@@ -38,12 +49,74 @@ defmodule JidoClaw.Cron.Scheduler do
   end
 
   defp build_persistent_opts(%Job{} = job) do
-    [
+    base = [
       id: job.job_id,
       task: job.task,
       schedule: hydrate_schedule(job.schedule_kind, job.schedule_value),
       mode: job.mode
     ]
+
+    case build_mfa(job) do
+      {:ok, nil} -> {:ok, base}
+      {:ok, mfa} -> {:ok, Keyword.put(base, :mfa, mfa)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Non-system_job rows don't need an MFA.
+  defp build_mfa(%Job{mode: mode}) when mode != :system_job, do: {:ok, nil}
+
+  # system_job rows REQUIRE an MFA. Missing it on reload = data corruption,
+  # don't schedule.
+  defp build_mfa(%Job{mfa_module: nil}), do: {:error, :missing_mfa_module}
+
+  defp build_mfa(%Job{mfa_module: mod_str, mfa_function: fun_str, mfa_args: args}) do
+    with {:ok, module} <- resolve_module(mod_str),
+         {:ok, function} <- resolve_atom(fun_str),
+         {:ok, arg_list} <- mfa_args_to_list(args),
+         :ok <- ensure_exported(module, function, length(arg_list)) do
+      {:ok, {module, function, arg_list}}
+    end
+  end
+
+  # Writers may persist either "JidoClaw.Cron.TestSupport" or
+  # "Elixir.JidoClaw.Cron.TestSupport". Normalize before lookup.
+  defp resolve_module(str) when is_binary(str) do
+    normalized =
+      if String.starts_with?(str, "Elixir."), do: str, else: "Elixir." <> str
+
+    try do
+      {:ok, String.to_existing_atom(normalized)}
+    rescue
+      ArgumentError -> {:error, {:unknown_module, str}}
+    end
+  end
+
+  defp resolve_module(other), do: {:error, {:invalid_module, other}}
+
+  defp resolve_atom(str) when is_binary(str) do
+    try do
+      {:ok, String.to_existing_atom(str)}
+    rescue
+      ArgumentError -> {:error, {:unknown_function, str}}
+    end
+  end
+
+  defp resolve_atom(other), do: {:error, {:invalid_atom, other}}
+
+  # mfa_args is :map (jsonb) so it round-trips through Postgres, but MFA
+  # args are positional. Today every system job uses []; non-empty maps
+  # return an explicit error rather than reordering Map.values.
+  defp mfa_args_to_list(args) when args == %{} or is_nil(args), do: {:ok, []}
+  defp mfa_args_to_list(args), do: {:error, {:unsupported_args_shape, args}}
+
+  defp ensure_exported(module, function, arity) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, function, arity) do
+      :ok
+    else
+      _ -> {:error, {:not_exported, module, function, arity}}
+    end
   end
 
   defp hydrate_schedule(:cron, expr), do: {:cron, expr}
