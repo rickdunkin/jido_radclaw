@@ -1,18 +1,20 @@
-# Patch for anubis_mcp 1.1.1 — Anubis.Server.Handlers.Tools
+# Patch for anubis_mcp 1.5.0 — Anubis.Server.Handlers.Tools
 #
-# jido_mcp registers tool schemas as JSON Schema, but Anubis.Server.Handlers.Tools
-# routes them through Peri.validate/2 before dispatching. Peri crashes with
-# FunctionClauseError on the JSON-Schema shape (string keys, no Peri-native
-# types), so tool calls never reach handle_tool_call/3.
-#
-# This patch is a port of anubis_mcp 1.1.1's handler with two surgical changes:
+# Port of upstream 1.5.0's handler — including check_task_policy/3, which
+# enforces MCP spec 2025-11-25 task-augmentation semantics — with two
+# surgical changes layered in:
 #   1. validate_params/3 has a `rescue` clause that returns {:ok, params} on
-#      any Peri crash. Jido.Exec.run validates arguments internally, so skipping
-#      Peri validation is safe.
-#   2. atomize_known_keys/1 converts known string keys to atoms before calling
-#      server.handle_tool_call/3, because MCP JSON arrives with string keys but
-#      Jido actions pattern-match on atom keys. Unknown keys stay as strings
-#      (String.to_existing_atom/1, so no user-controlled atom creation).
+#      any Peri crash. jido_mcp registers tool input_schemas as JSON Schema
+#      via `Jido.Action.Schema.to_json_schema/2`
+#      (deps/jido_mcp/lib/jido_mcp/server/runtime.ex), but the upstream
+#      handler routes them through Peri before dispatch. Peri crashes with
+#      FunctionClauseError on JSON-Schema-shaped descriptors. Jido.Exec.run
+#      validates arguments internally, so skipping Peri validation is safe.
+#   2. atomize_known_keys/1 converts known string keys to atoms before
+#      calling server.handle_tool_call/3. MCP JSON arrives with string keys
+#      but Jido actions pattern-match on atom keys. Unknown keys stay as
+#      strings (String.to_existing_atom/1, so no user-controlled atom
+#      creation).
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
 # in mix.exs to suppress the "redefining module" warning this intentionally
@@ -45,11 +47,16 @@ defmodule Anubis.Server.Handlers.Tools do
 
   @spec handle_call(map(), Frame.t(), module()) ::
           {:reply, map(), Frame.t()} | {:error, Error.t(), Frame.t()}
-  def handle_call(%{"params" => %{"name" => tool_name, "arguments" => params}}, frame, server) do
+  def handle_call(
+        %{"params" => %{"name" => tool_name, "arguments" => params}} = request,
+        frame,
+        server
+      ) do
     registered_tools = Handlers.get_server_tools(server, frame)
 
     if tool = find_tool_module(registered_tools, tool_name) do
-      with {:ok, params} <- validate_params(params, tool, frame),
+      with :ok <- check_task_policy(tool, request, frame),
+           {:ok, params} <- validate_params(params, tool, frame),
            do: forward_to(server, tool, params, frame)
     else
       payload = %{message: "Tool not found: #{tool_name}"}
@@ -57,11 +64,12 @@ defmodule Anubis.Server.Handlers.Tools do
     end
   end
 
-  def handle_call(%{"params" => %{"name" => tool_name}}, frame, server) do
+  def handle_call(%{"params" => %{"name" => tool_name}} = request, frame, server) do
     registered_tools = Handlers.get_server_tools(server, frame)
 
     if tool = find_tool_module(registered_tools, tool_name) do
-      with {:ok, params} <- validate_params(%{}, tool, frame),
+      with :ok <- check_task_policy(tool, request, frame),
+           {:ok, params} <- validate_params(%{}, tool, frame),
            do: forward_to(server, tool, params, frame)
     else
       payload = %{message: "Tool not found: #{tool_name}"}
@@ -72,6 +80,26 @@ defmodule Anubis.Server.Handlers.Tools do
   # Private functions
 
   defp find_tool_module(tools, name), do: Enum.find(tools, &(&1.name == name))
+
+  # Spec 2025-11-25: tool with execution.taskSupport == "required" MUST be
+  # invoked as a task. Direct (non-augmented) calls return -32601. Augmented
+  # calls reach this handler only via the task worker path, where
+  # `Frame.task_id` is set, so we use that as the discriminator.
+  defp check_task_policy(%Tool{task_support: :required}, _request, %Frame{task_id: nil} = frame) do
+    {:error,
+     Error.protocol(:method_not_found, %{
+       message: "Tool requires task augmentation (execution.taskSupport == \"required\")"
+     }), frame}
+  end
+
+  defp check_task_policy(%Tool{task_support: :forbidden}, %{"params" => %{"task" => _}}, frame) do
+    {:error,
+     Error.protocol(:method_not_found, %{
+       message: "Tool does not support task augmentation (execution.taskSupport == \"forbidden\")"
+     }), frame}
+  end
+
+  defp check_task_policy(_tool, _request, _frame), do: :ok
 
   defp validate_params(_, %Tool{validate_input: nil}, _), do: {:ok, %{}}
 
