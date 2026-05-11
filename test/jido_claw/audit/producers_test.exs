@@ -19,6 +19,7 @@ defmodule JidoClaw.Audit.ProducersTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit.Event
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session
   alias JidoClaw.Memory.Block
   alias JidoClaw.Solutions.Solution
@@ -288,6 +289,179 @@ defmodule JidoClaw.Audit.ProducersTest do
 
       assert length(writes) >= 2,
              "expected :memory_write audit rows for both write and invalidate"
+    end
+
+    test "Block.invalidate carries the BlockRevision id in the audit payload" do
+      tenant_id = seed_tenant("audit-block-revision")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, block} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-block-rev",
+            value: "v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _invalidated} =
+        Block.invalidate(block, %{reason: "carrying-rev-test"},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, revisions} =
+        JidoClaw.Memory.BlockRevision.for_block(block.id,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert [revision] = revisions
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      invalidate_audit =
+        Enum.find(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_block and
+            r.target_id == to_string(block.id) and
+            (Map.get(r.payload, "block_revision_id") ||
+               Map.get(r.payload, :block_revision_id)) != nil
+        end)
+
+      assert invalidate_audit,
+             "expected :invalidate audit row to carry block_revision_id in payload"
+
+      assert (Map.get(invalidate_audit.payload, "block_revision_id") ||
+                Map.get(invalidate_audit.payload, :block_revision_id)) ==
+               to_string(revision.id)
+    end
+
+    test "Block.revise emits a :revise audit row linking prior -> new -> revision" do
+      tenant_id = seed_tenant("audit-block-revise")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, prior} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-revise",
+            value: "v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, new_block} =
+        Block.revise(prior, %{value: "v2", reason: "test-revise"}, actor: actor_for(tenant_id))
+
+      {:ok, revisions} =
+        JidoClaw.Memory.BlockRevision.for_block(prior.id,
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert [revision] = revisions
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      revise_audit =
+        Enum.find(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_block and
+            r.target_id == to_string(prior.id) and
+            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) ==
+              "revise"
+        end)
+
+      assert revise_audit, "expected a :memory_write audit row marked operation: :revise"
+
+      payload = revise_audit.payload
+      pick = fn key -> Map.get(payload, Atom.to_string(key)) || Map.get(payload, key) end
+
+      assert pick.(:prior_block_id) == to_string(prior.id)
+      assert pick.(:new_block_id) == to_string(new_block.id)
+      assert pick.(:block_revision_id) == to_string(revision.id)
+    end
+
+    test "Block.revise by a user actor records actor_kind: :user with actor_id" do
+      # Before Fix 2, emit_revise_audit derived actor_id from
+      # actor[:id], so canonical user actors (which carry :user_id,
+      # not :id) logged actor_id: nil. The classifier reads :user_id
+      # first, so the row now carries the tenant-bound user id.
+      tenant_id = seed_tenant("audit-revise-user-actor")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, prior} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-revise-user",
+            value: "v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _new_block} =
+        Block.revise(prior, %{value: "v2", reason: "user-actor"}, actor: actor_for(tenant_id))
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      revise_audit =
+        Enum.find(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_block and
+            r.target_id == to_string(prior.id) and
+            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) == "revise"
+        end)
+
+      assert revise_audit
+      assert revise_audit.actor_kind == :user
+      assert revise_audit.actor_id == tenant_id
+    end
+
+    test "Block.revise by a system actor of a :user-sourced prior records actor_kind: :system" do
+      # Before Fix 2, actor_kind_for(prior.source) returned :user from
+      # the prior block's source field — so a system revise of a
+      # user-sourced block was logged with actor_kind: :user. The
+      # classifier reads the actor instead of the prior's source.
+      tenant_id = seed_tenant("audit-revise-sys-actor")
+      {:ok, ws} = seed_workspace(tenant_id)
+
+      {:ok, prior} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "audit-revise-sys",
+            value: "v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      {:ok, _new_block} =
+        Block.revise(prior, %{value: "v2", reason: "sys-actor"}, actor: Actor.system(tenant_id))
+
+      {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      revise_audit =
+        Enum.find(rows, fn r ->
+          r.event_kind == :memory_write and r.target_kind == :memory_block and
+            r.target_id == to_string(prior.id) and
+            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) == "revise"
+        end)
+
+      assert revise_audit
+      assert revise_audit.actor_kind == :system
+      assert revise_audit.actor_id == nil
     end
 
     test "Memory.Episode.record emits :memory_write with target_kind :memory_episode" do

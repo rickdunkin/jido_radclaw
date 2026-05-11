@@ -461,8 +461,11 @@ defmodule JidoClaw.Memory.Block do
         opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
 
         case BlockRevision.create_for_block(attrs, opts) do
-          {:ok, _} ->
-            {:ok, result}
+          {:ok, rev} ->
+            # Stash the revision id so the downstream MemoryWrite producer
+            # can include it in the audit payload — the audit trail then
+            # links the invalidate event to the snapshot it preserved.
+            {:ok, Ash.Resource.put_metadata(result, :block_revision_id, rev.id)}
 
           {:error, err} ->
             require Logger
@@ -636,7 +639,8 @@ defmodule JidoClaw.Memory.Block do
         with :ok <- invalidate_prior_block(prior),
              new_attrs = build_revise_attrs(prior, attrs),
              {:ok, new_block} <- write(new_attrs, write_opts),
-             {:ok, _rev} <- write_revision_row(prior, attrs, actor) do
+             {:ok, rev} <- write_revision_row(prior, attrs, actor) do
+          emit_revise_audit(prior, new_block, rev, actor)
           new_block
         else
           {:error, err} -> Ash.DataLayer.rollback(__MODULE__, err)
@@ -702,5 +706,32 @@ defmodule JidoClaw.Memory.Block do
     opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
 
     BlockRevision.create_for_block(rev_attrs, opts)
+  end
+
+  # revise/3 uses raw SQL to invalidate the prior block (bypassing the
+  # `:invalidate` action's change chain), so the audit row that would
+  # normally fire from MemoryWrite never gets emitted. Emit it here so the
+  # audit trail still links the invalidation to the new block and the
+  # BlockRevision snapshot.
+  defp emit_revise_audit(prior, new_block, rev, actor) do
+    {actor_kind, actor_id} = JidoClaw.Audit.ActorClassifier.classify(actor)
+
+    JidoClaw.Audit.AsyncWriter.sync(%{
+      tenant_id: prior.tenant_id,
+      event_kind: :memory_write,
+      actor_kind: actor_kind,
+      actor_id: actor_id,
+      target_kind: :memory_block,
+      target_id: to_string(prior.id),
+      payload: %{
+        operation: :revise,
+        source: prior.source,
+        scope_kind: prior.scope_kind,
+        label: prior.label,
+        prior_block_id: to_string(prior.id),
+        new_block_id: to_string(new_block.id),
+        block_revision_id: to_string(rev.id)
+      }
+    })
   end
 end

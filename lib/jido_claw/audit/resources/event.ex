@@ -30,7 +30,8 @@ defmodule JidoClaw.Audit.Event do
     :session_start,
     :session_end,
     :tool_call,
-    :auth_event
+    :auth_event,
+    :policy_denied
   ]
 
   @actor_kinds [:user, :agent, :system]

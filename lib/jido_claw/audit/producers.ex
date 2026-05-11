@@ -73,11 +73,19 @@ defmodule JidoClaw.Audit.Producers do
           do: Map.put(payload, :relation, relation),
           else: payload
 
+      payload =
+        if revision_id = metadata(result, :block_revision_id),
+          do: Map.put(payload, :block_revision_id, to_string(revision_id)),
+          else: payload
+
       payload
     end
 
     defp field(map, key) when is_map(map), do: Map.get(map, key)
     defp field(_, _), do: nil
+
+    defp metadata(%{__metadata__: meta}, key) when is_map(meta), do: Map.get(meta, key)
+    defp metadata(_, _), do: nil
   end
 
   defmodule MemoryConsolidation do

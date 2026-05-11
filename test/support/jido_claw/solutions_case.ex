@@ -40,7 +40,12 @@ defmodule JidoClaw.SolutionsCase do
 
   setup tags do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: not tags[:async])
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+
+    on_exit(fn ->
+      JidoClaw.Audit.AsyncWriter.flush()
+      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+    end)
+
     :ok
   end
 

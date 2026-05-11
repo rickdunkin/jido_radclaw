@@ -251,7 +251,8 @@ config :ash,
   policies: [no_filter_static_forbidden_reads?: false],
   default_actions_require_atomic?: true,
   bulk_actions_default_to_errors?: true,
-  known_types: [AshPostgres.Timestamptz, AshPostgres.TimestamptzUsec]
+  known_types: [AshPostgres.Timestamptz, AshPostgres.TimestamptzUsec],
+  tracer: [JidoClaw.Audit.AshTracer]
 
 # Cloak Vault for encrypted secret storage
 config :jido_claw, JidoClaw.Security.Vault,

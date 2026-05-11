@@ -41,19 +41,94 @@ defmodule JidoClaw.Audit.AsyncWriter do
     :ok
   end
 
+  @doc """
+  Drain in-flight async audit writes. Loops until the supervisor
+  reports no live children or `timeout_ms` elapses. Tasks scheduled
+  by stragglers during the drain window are picked up by the loop.
+
+  Public so it can be invoked from `Application.stop/1` later, but
+  currently used only from test sandbox teardown to keep
+  `Postgrex.Protocol ... owner exited` noise out of the suite.
+  """
+  @spec flush(non_neg_integer()) :: :ok
+  def flush(timeout_ms \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    drain_loop(deadline)
+  rescue
+    ArgumentError -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp drain_loop(deadline) do
+    case Task.Supervisor.children(@sup) do
+      [] ->
+        :ok
+
+      pids ->
+        Enum.each(pids, fn pid ->
+          if Process.alive?(pid) do
+            ref = Process.monitor(pid)
+            remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+            receive do
+              {:DOWN, ^ref, :process, ^pid, _} -> :ok
+            after
+              remaining ->
+                Process.demonitor(ref, [:flush])
+                :ok
+            end
+          end
+        end)
+
+        if System.monotonic_time(:millisecond) < deadline do
+          drain_loop(deadline)
+        else
+          :ok
+        end
+    end
+  end
+
   defp safe_record(attrs, mode) do
     do_record(attrs)
   rescue
     e ->
-      Logger.warning(
-        "[Audit.AsyncWriter] #{mode} write failed: #{Exception.message(e)} attrs=#{inspect(attrs)}"
-      )
+      if sandbox_shutdown?(e) do
+        # `DBConnection.ConnectionError` is raised (not thrown) when
+        # the sandbox owner exits mid-checkout, so we must look for
+        # it here as well as in the catch clause below.
+        :ok
+      else
+        Logger.warning(
+          "[Audit.AsyncWriter] #{mode} write failed: #{Exception.message(e)} attrs=#{inspect(attrs)}"
+        )
+      end
   catch
     kind, payload ->
-      Logger.warning(
-        "[Audit.AsyncWriter] #{mode} write #{kind}: #{inspect(payload)} attrs=#{inspect(attrs)}"
-      )
+      if sandbox_shutdown?(payload) do
+        # Test sandbox tore down before the cast'd write could check out a
+        # connection. Not interesting; drop without logging.
+        :ok
+      else
+        Logger.warning(
+          "[Audit.AsyncWriter] #{mode} write #{kind}: #{inspect(payload)} attrs=#{inspect(attrs)}"
+        )
+      end
   end
+
+  defp sandbox_shutdown?({:shutdown, reason}) when is_binary(reason),
+    do: sandbox_text?(reason)
+
+  defp sandbox_shutdown?({{:shutdown, reason}, _}) when is_binary(reason),
+    do: sandbox_text?(reason)
+
+  defp sandbox_shutdown?(%DBConnection.ConnectionError{message: msg}) when is_binary(msg),
+    do: sandbox_text?(msg)
+
+  defp sandbox_shutdown?(_), do: false
+
+  defp sandbox_text?(text),
+    do: String.contains?(text, "owner") and String.contains?(text, "exited")
 
   defp do_record(%{tenant_id: tenant_id} = attrs) when is_binary(tenant_id) do
     attrs
