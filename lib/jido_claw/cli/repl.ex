@@ -34,26 +34,57 @@ defmodule JidoClaw.CLI.Repl do
   ]
 
   def start(project_dir) do
-    # First-time setup wizard
-    config =
-      if Setup.needed?(project_dir) do
-        Setup.run(project_dir)
-      else
-        Config.load(project_dir)
-      end
-
+    config = ensure_config(project_dir)
     model = Config.model(config)
 
     # Override jido_ai model aliases so :fast resolves to user's configured model
     Application.put_env(:jido_ai, :model_aliases, %{fast: model, capable: model})
 
-    # Resolve the configured strategy against the registry so typos / stale
-    # entries in .jido/config.yaml fall back to "auto" instead of silently
-    # propagating into every agent turn via prepare_user_message/2.
-    configured_strategy = Config.strategy(config)
-    strategy = resolve_strategy(configured_strategy)
+    {configured_strategy, strategy} = resolve_configured_strategy(config)
 
-    # Boot sequence
+    print_boot_sequence(project_dir, config, model, strategy)
+    maybe_warn_strategy_fallback(configured_strategy, strategy)
+    sync_project_state(project_dir)
+    announce_provider_status(config)
+    announce_discord_status()
+
+    case JidoClaw.Jido.start_agent(Agent, id: "main") do
+      {:ok, pid} ->
+        state = boot_repl_session(pid, project_dir, config, model, strategy)
+        loop(state)
+
+      {:error, reason} ->
+        Formatter.print_error("Failed to start agent: #{inspect(reason)}")
+    end
+  end
+
+  defp ensure_config(project_dir) do
+    if Setup.needed?(project_dir) do
+      Setup.run(project_dir)
+    else
+      Config.load(project_dir)
+    end
+  end
+
+  # Resolve the configured strategy against the registry so typos / stale
+  # entries in .jido/config.yaml fall back to "auto" instead of silently
+  # propagating into every agent turn via prepare_user_message/2.
+  defp resolve_configured_strategy(config) do
+    configured = Config.strategy(config)
+    {configured, resolve_strategy(configured)}
+  end
+
+  defp maybe_warn_strategy_fallback(strategy, strategy), do: :ok
+
+  defp maybe_warn_strategy_fallback(configured, _strategy) do
+    IO.puts(
+      "  \e[33m⚠\e[0m  strategy    \e[1m#{configured}\e[0m is not a known strategy \e[2m— falling back to \e[1mauto\e[0m\e[2m. Check .jido/config.yaml.\e[0m"
+    )
+
+    IO.puts("")
+  end
+
+  defp print_boot_sequence(project_dir, config, model, strategy) do
     mode = Application.get_env(:jido_claw, :mode, :both)
 
     Branding.boot_sequence(project_dir,
@@ -63,39 +94,34 @@ defmodule JidoClaw.CLI.Repl do
       tools_count: length(JidoClaw.Agent.tool_modules()),
       gateway: mode in [:gateway, :both]
     )
+  end
 
-    if strategy != configured_strategy do
-      IO.puts(
-        "  \e[33m⚠\e[0m  strategy    \e[1m#{configured_strategy}\e[0m is not a known strategy \e[2m— falling back to \e[1mauto\e[0m\e[2m. Check .jido/config.yaml.\e[0m"
-      )
+  # Ensure JIDO.md, system prompt, and default skills; reconcile prompt sync.
+  defp sync_project_state(project_dir) do
+    case Startup.ensure_project_state(project_dir) do
+      {:ok, result} ->
+        maybe_announce_prompt_upgrade(Keyword.fetch!(result, :prompt_sync))
 
-      IO.puts("")
+      {:error, reason} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  prompt sync failed: \e[1m#{inspect(reason)}\e[0m \e[2m— continuing with existing .jido/ state\e[0m"
+        )
+
+        IO.puts("")
     end
+  end
 
-    # Ensure JIDO.md, system prompt, and default skills; reconcile prompt sync.
-    prompt_sync =
-      case Startup.ensure_project_state(project_dir) do
-        {:ok, result} ->
-          Keyword.fetch!(result, :prompt_sync)
+  defp maybe_announce_prompt_upgrade(:sidecar_written) do
+    IO.puts(
+      "  \e[33m↻\e[0m  prompt      \e[1mupgrade available\e[0m \e[2m— review .jido/system_prompt.md.default, then /upgrade-prompt\e[0m"
+    )
 
-        {:error, reason} ->
-          IO.puts(
-            "  \e[33m⚠\e[0m  prompt sync failed: \e[1m#{inspect(reason)}\e[0m \e[2m— continuing with existing .jido/ state\e[0m"
-          )
+    IO.puts("")
+  end
 
-          IO.puts("")
-          :noop
-      end
+  defp maybe_announce_prompt_upgrade(_), do: :ok
 
-    if prompt_sync == :sidecar_written do
-      IO.puts(
-        "  \e[33m↻\e[0m  prompt      \e[1mupgrade available\e[0m \e[2m— review .jido/system_prompt.md.default, then /upgrade-prompt\e[0m"
-      )
-
-      IO.puts("")
-    end
-
-    # Check provider connectivity
+  defp announce_provider_status(config) do
     provider_name = Config.provider_label(config)
     api_key_env = Config.api_key_env(config)
 
@@ -114,119 +140,148 @@ defmodule JidoClaw.CLI.Repl do
         IO.puts("  \e[2m   Check your connection or run /setup to reconfigure\e[0m")
         IO.puts("")
     end
+  end
 
-    # Check Discord status — gateway connection is async, so poll briefly
-    if System.get_env("DISCORD_BOT_TOKEN") do
-      case Process.whereis(Nostrum.ConsumerGroup) do
-        nil ->
-          IO.puts("  \e[31m✗\e[0m  Discord bot failed to start")
-          IO.puts("")
-
-        _pid ->
-          bot_user = poll_discord_ready(10, 500)
-
-          case bot_user do
-            %{username: name} ->
-              IO.puts("  \e[32m✓\e[0m  Discord bot online as \e[1m#{name}\e[0m")
-              IO.puts("")
-
-            nil ->
-              IO.puts("  \e[31m✗\e[0m  Discord bot failed to connect")
-
-              IO.puts(
-                "  \e[2m   Check your DISCORD_BOT_TOKEN and that privileged intents are enabled\e[0m"
-              )
-
-              IO.puts("")
-          end
-      end
+  # Discord gateway connection is async, so poll briefly before declaring failure.
+  defp announce_discord_status do
+    case System.get_env("DISCORD_BOT_TOKEN") do
+      nil -> :ok
+      _token -> announce_discord_consumer_group()
     end
+  end
 
-    # Start agent
-    case JidoClaw.Jido.start_agent(Agent, id: "main") do
-      {:ok, pid} ->
-        session_id = SessionId.new()
-        tenant_id = "default"
+  defp announce_discord_consumer_group do
+    case Process.whereis(Nostrum.ConsumerGroup) do
+      nil -> announce_discord_failed_start()
+      _pid -> announce_discord_connection(poll_discord_ready(10, 500))
+    end
+  end
 
-        # Ensure a Session.Worker GenServer is running for this CLI session
-        {:ok, _session_pid} =
-          JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id,
-            actor: JidoClaw.Authorization.Actor.system(tenant_id)
-          )
+  defp announce_discord_failed_start do
+    IO.puts("  \e[31m✗\e[0m  Discord bot failed to start")
+    IO.puts("")
+  end
 
-        # Phase 0 — resolve durable Workspace + Session rows so the
-        # tool_context threaded into every Agent.ask carries
-        # workspace_uuid + session_uuid. CLI runs unauthenticated so
-        # user_id is nil; the partial-unique :unique_user_path_cli
-        # identity keeps these rows from colliding with web/RPC rows.
-        {workspace_uuid, session_uuid, session_record} =
-          ensure_persisted_session(tenant_id, project_dir, session_id)
+  defp announce_discord_connection(%{username: name}) do
+    IO.puts("  \e[32m✓\e[0m  Discord bot online as \e[1m#{name}\e[0m")
+    IO.puts("")
+  end
 
-        # Phase 2 — wire the Worker to the persisted session UUID so
-        # Worker.add_message can write Conversations.Message rows.
-        # This also hydrates state.messages from Postgres if any prior
-        # rows exist for this session.
-        if session_uuid do
-          Worker.set_session_uuid(tenant_id, session_id, session_uuid)
-        end
+  defp announce_discord_connection(nil) do
+    IO.puts("  \e[31m✗\e[0m  Discord bot failed to connect")
 
-        # Inject the system prompt after the Session row exists so the
-        # frozen-snapshot path can read `metadata["prompt_snapshot"]`
-        # and the Anthropic prompt cache stays warm across turns.
-        case Startup.inject_system_prompt(pid, project_dir, session_record) do
-          :ok ->
-            :ok
+    IO.puts("  \e[2m   Check your DISCORD_BOT_TOKEN and that privileged intents are enabled\e[0m")
 
-          {:error, reason} ->
-            IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
-        end
+    IO.puts("")
+  end
 
-        # Bind agent process to session for crash tracking
-        Worker.set_agent(tenant_id, session_id, pid)
+  defp boot_repl_session(pid, project_dir, config, model, strategy) do
+    session_id = SessionId.new()
+    tenant_id = "default"
 
-        # Register main agent with tracker and configure display
-        AgentTracker.register("main", pid, nil, nil)
+    ensure_session_worker!(tenant_id, session_id)
 
-        context_window =
-          case Config.model_info(config) do
-            {:ok, %{limits: %{context_window: cw}}} -> cw
-            _ -> 131_072
-          end
+    # Phase 0 — resolve durable Workspace + Session rows so the
+    # tool_context threaded into every Agent.ask carries
+    # workspace_uuid + session_uuid. CLI runs unauthenticated so
+    # user_id is nil; the partial-unique :unique_user_path_cli
+    # identity keeps these rows from colliding with web/RPC rows.
+    {workspace_uuid, session_uuid, session_record} =
+      ensure_persisted_session(tenant_id, project_dir, session_id)
 
-        Display.configure(model_name(model), Config.provider_label(config), context_window)
+    # Phase 2 — wire the Worker to the persisted session UUID so
+    # Worker.add_message can write Conversations.Message rows.
+    # This also hydrates state.messages from Postgres if any prior
+    # rows exist for this session.
+    maybe_set_worker_session_uuid(tenant_id, session_id, session_uuid)
 
-        profile = resolve_profile(session_id)
-        Display.set_profile(profile)
+    # Inject the system prompt after the Session row exists so the
+    # frozen-snapshot path can read `metadata["prompt_snapshot"]`
+    # and the Anthropic prompt cache stays warm across turns.
+    inject_system_prompt_with_warning(pid, project_dir, session_record)
 
-        # Load persistent cron jobs
-        case JidoClaw.Cron.Scheduler.load_persistent_jobs("default", project_dir) do
-          {:ok, 0} -> :ok
-          {:ok, n} -> IO.puts("  \e[32m✓\e[0m  cron        \e[1m#{n} jobs loaded\e[0m")
-        end
+    # Bind agent process to session for crash tracking
+    bind_agent_to_worker(tenant_id, session_id, pid)
 
-        # Start heartbeat writer
-        JidoClaw.Heartbeat.start_link(project_dir: project_dir)
+    AgentTracker.register("main", pid, nil, nil)
+    configure_display_from_config(config, model)
 
-        state = %__MODULE__{
-          agent_pid: pid,
-          agent_id: "main",
-          config: config,
-          cwd: project_dir,
-          model: model,
-          session_id: session_id,
-          session_uuid: session_uuid,
-          workspace_uuid: workspace_uuid,
-          tenant_id: tenant_id,
-          started_at: System.monotonic_time(:second),
-          strategy: strategy,
-          profile: profile
-        }
+    profile = resolve_profile(session_id)
+    Display.set_profile(profile)
 
-        loop(state)
+    load_cron_jobs(project_dir)
+    start_heartbeat(project_dir)
+
+    %__MODULE__{
+      agent_pid: pid,
+      agent_id: "main",
+      config: config,
+      cwd: project_dir,
+      model: model,
+      session_id: session_id,
+      session_uuid: session_uuid,
+      workspace_uuid: workspace_uuid,
+      tenant_id: tenant_id,
+      started_at: System.monotonic_time(:second),
+      strategy: strategy,
+      profile: profile
+    }
+  end
+
+  # Hard-match so a failing supervisor crashes the boot rather than silently
+  # regressing the session worker.
+  defp ensure_session_worker!(tenant_id, session_id) do
+    {:ok, _session_pid} =
+      JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id,
+        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+      )
+
+    :ok
+  end
+
+  defp maybe_set_worker_session_uuid(_tenant_id, _session_id, nil), do: :ok
+  defp maybe_set_worker_session_uuid(_tenant_id, _session_id, false), do: :ok
+
+  defp maybe_set_worker_session_uuid(tenant_id, session_id, session_uuid) do
+    Worker.set_session_uuid(tenant_id, session_id, session_uuid)
+  end
+
+  defp inject_system_prompt_with_warning(pid, project_dir, session_record) do
+    case Startup.inject_system_prompt(pid, project_dir, session_record) do
+      :ok ->
+        :ok
 
       {:error, reason} ->
-        Formatter.print_error("Failed to start agent: #{inspect(reason)}")
+        IO.puts("  \e[33m⚠\e[0m  System prompt injection failed: #{inspect(reason)}")
     end
+  end
+
+  defp bind_agent_to_worker(tenant_id, session_id, pid) do
+    Worker.set_agent(tenant_id, session_id, pid)
+  end
+
+  defp configure_display_from_config(config, model) do
+    context_window =
+      case Config.model_info(config) do
+        {:ok, %{limits: %{context_window: cw}}} -> cw
+        _ -> 131_072
+      end
+
+    Display.configure(model_name(model), Config.provider_label(config), context_window)
+  end
+
+  defp load_cron_jobs(project_dir) do
+    case JidoClaw.Cron.Scheduler.load_persistent_jobs("default", project_dir) do
+      {:ok, 0} -> :ok
+      {:ok, n} -> IO.puts("  \e[32m✓\e[0m  cron        \e[1m#{n} jobs loaded\e[0m")
+    end
+  end
+
+  # Heartbeat registers a named GenServer, so a second boot in the same VM
+  # returns {:error, {:already_started, _}}. Ignore the result either way.
+  defp start_heartbeat(project_dir) do
+    _ = JidoClaw.Heartbeat.start_link(project_dir: project_dir)
+    :ok
   end
 
   defp loop(state) do
