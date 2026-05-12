@@ -103,7 +103,7 @@ defmodule Mix.Tasks.Jidoclaw.MemoryExportTest do
       payload = out_path |> File.read!() |> Jason.decode!()
 
       facts = payload["facts"]
-      assert is_list(facts) and length(facts) > 0
+      assert [_ | _] = facts
 
       # Each row's `redactions_applied` must agree with re-running
       # `Patterns.redact_with_count/1` over the same post-migrate

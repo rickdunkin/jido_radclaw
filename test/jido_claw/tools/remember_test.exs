@@ -69,7 +69,7 @@ defmodule JidoClaw.Tools.RememberTest do
       Remember.run(%{key: "persisted_key", content: "persisted content"}, %{tool_context: tc})
 
       results = JidoClaw.Memory.recall("persisted_key", tool_context: tc)
-      assert length(results) > 0
+      assert [_ | _] = results
       entry = Enum.find(results, &(&1.key == "persisted_key"))
       assert entry != nil
       assert entry.content == "persisted content"

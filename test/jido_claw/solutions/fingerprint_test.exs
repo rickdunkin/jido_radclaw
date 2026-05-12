@@ -38,8 +38,7 @@ defmodule JidoClaw.Solutions.FingerprintTest do
     test "should extract search terms from description" do
       fp = Fingerprint.generate("implement login and JWT token generation")
 
-      assert is_list(fp.search_terms)
-      assert length(fp.search_terms) > 0
+      assert [_ | _] = fp.search_terms
       # Stopwords like "and" must be absent
       refute "and" in fp.search_terms
     end

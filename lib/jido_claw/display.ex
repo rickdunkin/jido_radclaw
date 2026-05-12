@@ -757,7 +757,7 @@ defmodule JidoClaw.Display do
     tracker_state = JidoClaw.AgentTracker.get_state()
     children = tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end)
 
-    if length(children) > 0 do
+    if children != [] do
       # Print a compact status line
       _running = Enum.count(children, fn {_, a} -> a.status == :running end)
       done = Enum.count(children, fn {_, a} -> a.status == :done end)
@@ -778,7 +778,7 @@ defmodule JidoClaw.Display do
 
     all_done = Enum.all?(children, fn {_, a} -> a.status in [:done, :error] end)
 
-    if all_done and length(children) > 0 do
+    if all_done and children != [] do
       IO.puts(SwarmBox.render_summary(tracker_state.agents))
     end
   end

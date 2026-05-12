@@ -208,7 +208,7 @@ defmodule JidoClaw.Audit.AshTracer do
       try do
         Exception.message(error)
       rescue
-        _ -> "forbidden"
+        _ in [Protocol.UndefinedError, FunctionClauseError, ArgumentError] -> "forbidden"
       end
     else
       "forbidden"
@@ -222,7 +222,7 @@ defmodule JidoClaw.Audit.AshTracer do
       try do
         Exception.message(err)
       rescue
-        _ -> nil
+        _ in [Protocol.UndefinedError, FunctionClauseError, ArgumentError] -> nil
       end
 
     "#{inspect(struct)}#{if msg, do: ": " <> String.slice(msg, 0, 200), else: ""}"

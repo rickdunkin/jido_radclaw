@@ -109,7 +109,7 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
 
   defp validate_resource(%{type: :secrets} = r) do
     has_env_map = is_map(r[:env_map]) and map_size(r[:env_map]) > 0
-    has_vault_keys = is_list(r[:vault_keys]) and length(r[:vault_keys]) > 0
+    has_vault_keys = is_list(r[:vault_keys]) and r[:vault_keys] != []
 
     if has_env_map or has_vault_keys do
       []

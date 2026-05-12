@@ -120,7 +120,7 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
       # in Postgres as `[REDACTED:API_KEY]`. The export's redaction
       # manifest scans for `[REDACTED…]` markers and reports their
       # positions; we expect at least one site.
-      assert length(redactions) > 0,
+      assert [_ | _] = redactions,
              "expected at least one redaction site in the with-secrets fixture's export"
 
       # Each manifest entry must point at the start of a `[REDACTED…]`

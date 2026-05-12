@@ -145,22 +145,22 @@ defmodule JidoClaw.Embeddings.RatePacer do
     rpm = Keyword.get(config, :rpm, @default_rpm)
     tpm = Keyword.get(config, :tpm, @default_tpm)
 
-    if not (is_integer(rpm) and rpm > 0) do
-      Logger.error(
-        "[Embeddings.RatePacer] :rpm must be a positive integer, got #{inspect(rpm)} — refusing to start"
-      )
-
-      {:stop, {:invalid_config, :rpm, rpm}}
-    else
-      if not (is_integer(tpm) and tpm > 0) do
+    if is_integer(rpm) and rpm > 0 do
+      if is_integer(tpm) and tpm > 0 do
+        do_init(rpm, tpm, config)
+      else
         Logger.error(
           "[Embeddings.RatePacer] :tpm must be a positive integer, got #{inspect(tpm)} — refusing to start"
         )
 
         {:stop, {:invalid_config, :tpm, tpm}}
-      else
-        do_init(rpm, tpm, config)
       end
+    else
+      Logger.error(
+        "[Embeddings.RatePacer] :rpm must be a positive integer, got #{inspect(rpm)} — refusing to start"
+      )
+
+      {:stop, {:invalid_config, :rpm, rpm}}
     end
   end
 

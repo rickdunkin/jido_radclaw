@@ -660,7 +660,15 @@ defmodule JidoClaw.Forge.Harness do
       JidoClaw.Forge.Resources.Checkpoint
       |> Ash.get!(checkpoint_id, authorize?: false)
     rescue
-      _ -> nil
+      _ in [
+        Ash.Error.Invalid,
+        Ash.Error.Unknown,
+        Ash.Error.Query.NotFound,
+        DBConnection.ConnectionError,
+        DBConnection.OwnershipError,
+        Postgrex.Error
+      ] ->
+        nil
     end
   end
 

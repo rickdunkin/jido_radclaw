@@ -328,7 +328,7 @@ defmodule JidoClaw.Session.Worker do
       try do
         JidoClaw.Conversations.RequestCorrelation.Cache.lookup(request_id)
       rescue
-        _ -> :error
+        _ in [ArgumentError] -> :error
       end
 
     case cache_lookup do

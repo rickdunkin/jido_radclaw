@@ -259,7 +259,15 @@ defmodule JidoClaw.Forge.Persistence do
           |> List.first()
         end
       rescue
-        e ->
+        e in [
+          Ash.Error.Invalid,
+          Ash.Error.Unknown,
+          Ash.Error.Query.NotFound,
+          DBConnection.ConnectionError,
+          DBConnection.OwnershipError,
+          Postgrex.Error
+        ] ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
           Logger.warning("[Forge.Persistence] Failed to get latest checkpoint: #{inspect(e)}")
           nil
       end
@@ -345,7 +353,15 @@ defmodule JidoClaw.Forge.Persistence do
           }
         end
       rescue
-        e ->
+        e in [
+          Ash.Error.Invalid,
+          Ash.Error.Unknown,
+          Ash.Error.Query.NotFound,
+          DBConnection.ConnectionError,
+          DBConnection.OwnershipError,
+          Postgrex.Error
+        ] ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
           Logger.warning("[Forge.Persistence] Failed to build context_for_resume: #{inspect(e)}")
           nil
       end
@@ -361,7 +377,15 @@ defmodule JidoClaw.Forge.Persistence do
       |> Ash.read!(authorize?: false)
       |> List.first()
     rescue
-      _ -> nil
+      _ in [
+        Ash.Error.Invalid,
+        Ash.Error.Unknown,
+        Ash.Error.Query.NotFound,
+        DBConnection.ConnectionError,
+        DBConnection.OwnershipError,
+        Postgrex.Error
+      ] ->
+        nil
     end
   end
 

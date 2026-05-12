@@ -60,7 +60,7 @@ defmodule JidoClaw.Forge.SandboxInit do
               System.cmd("sbx", ["rm", "--force", name], stderr_to_stdout: true)
             end
 
-            if length(orphans) > 0 do
+            if orphans != [] do
               Logger.info(
                 "[Forge.SandboxInit] Cleaned up #{length(orphans)} orphaned sandbox(es)"
               )

@@ -6,3 +6,10 @@
 /jido
 .env
 erl_crash.dump
+
+# Added by ex_harness
+/priv/plts/*.plt
+/priv/plts/*.plt.hash
+/.reach/
+/.harness/
+/.ex_dna_cache/

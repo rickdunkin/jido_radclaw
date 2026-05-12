@@ -138,9 +138,7 @@ defmodule JidoClaw.Memory.Retrieval do
   defp resolve_embedding(query, workspace_id, opts) do
     explicit_embedding = Keyword.get(opts, :query_embedding)
 
-    if not is_nil(explicit_embedding) do
-      explicit_embedding
-    else
+    if is_nil(explicit_embedding) do
       resolver = Keyword.get(opts, :policy_resolver, PolicyResolver)
       policy = resolver.resolve(workspace_id)
 
@@ -151,6 +149,8 @@ defmodule JidoClaw.Memory.Retrieval do
         %{provider: :voyage, request_model: req} ->
           compute_voyage(query, req, opts)
       end
+    else
+      explicit_embedding
     end
   end
 

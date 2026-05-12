@@ -61,7 +61,7 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{format_elapsed(elapsed)}\e[0m")
 
     # Show per-agent breakdown if any children exist
-    if length(children) > 0 do
+    if children != [] do
       IO.puts("")
       IO.puts(JidoClaw.Display.SwarmBox.render_header(tracker.agents, terminal_cols()))
       IO.puts(JidoClaw.Display.SwarmBox.render_agents(tracker.agents, tracker.order))
@@ -1108,8 +1108,8 @@ defmodule JidoClaw.CLI.Commands do
       diff <= 0 -> "now"
       diff < 60 -> "#{diff}s"
       diff < 3600 -> "#{div(diff, 60)}m"
-      diff < 86400 -> "#{div(diff, 3600)}h #{div(rem(diff, 3600), 60)}m"
-      true -> "#{div(diff, 86400)}d"
+      diff < 86_400 -> "#{div(diff, 3600)}h #{div(rem(diff, 3600), 60)}m"
+      true -> "#{div(diff, 86_400)}d"
     end
   end
 

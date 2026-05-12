@@ -32,7 +32,13 @@ defmodule JidoClaw.MixProject do
       escript: escript(),
       compilers: Mix.compilers(),
       aliases: aliases(),
-      usage_rules: usage_rules()
+      usage_rules: usage_rules(),
+      dialyzer: [
+        plt_local_path: "priv/plts/dialyzer.plt",
+        plt_core_path: "priv/plts/dialyzer-core.plt",
+        plt_add_apps: [:ex_unit, :mix],
+        flags: [:error_handling, :unknown, :no_opaque]
+      ]
     ]
   end
 
@@ -44,6 +50,12 @@ defmodule JidoClaw.MixProject do
       extra_applications: [:logger, :inets, :ssl, :runtime_tools],
       mod: {JidoClaw.Application, []}
       # Nostrum is started conditionally — see channel_children() in application.ex
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [precommit: :test]
     ]
   end
 
@@ -95,6 +107,15 @@ defmodule JidoClaw.MixProject do
 
   defp deps do
     [
+      {:makeup_js, "~> 0.1", only: [:dev, :test]},
+      {:makeup_elixir, "~> 1.0", only: [:dev, :test]},
+      {:makeup, "~> 1.0", only: [:dev, :test]},
+      {:reach, "~> 2.2", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.2", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.3", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_harness, "~> 0.1", only: [:dev, :test], runtime: false},
       {:usage_rules, "~> 1.0", only: [:dev]},
       {:tidewave, "~> 0.5", only: :dev},
       {:igniter, "~> 0.5", only: [:dev, :test]},
@@ -180,7 +201,16 @@ defmodule JidoClaw.MixProject do
       setup: ["deps.get", "ash.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ash.setup --quiet", "test"]
+      test: ["ash.setup --quiet", "test"],
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        # "credo --strict",
+        # "ex_dna",
+        # "dialyzer --format short",
+        "test"
+      ]
     ]
   end
 end

@@ -72,7 +72,7 @@ defmodule JidoClaw.Solutions.MatcherTest do
           policy_resolver: DisabledResolver
         )
 
-      assert length(results) >= 1
+      assert [_ | _] = results
 
       Enum.each(results, fn match ->
         assert match.match_type == :fuzzy

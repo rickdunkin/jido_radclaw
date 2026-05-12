@@ -164,8 +164,7 @@ defmodule JidoClaw.SkillsTest do
       start_skills!(dir)
 
       for skill <- Skills.all() do
-        assert is_list(skill.steps)
-        assert length(skill.steps) > 0
+        assert [_ | _] = skill.steps
       end
     end
 

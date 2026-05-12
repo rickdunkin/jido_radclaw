@@ -43,8 +43,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
 
       # The pre-fix behavior was an unconditional `[]` from the
       # exception arm. Any non-empty result here proves the SQL ran.
-      assert is_list(results)
-      assert length(results) >= 1
+      assert [_ | _] = results
     end
 
     test "queries containing % and _ don't blow up", %{tenant_id: tenant_id, workspace: ws} do
@@ -77,7 +76,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
           query_embedding: nil
         })
 
-      assert length(results) >= 1
+      assert [_ | _] = results
 
       Enum.each(results, fn entry ->
         assert %{solution: %Solution{}, combined_score: score} = entry
