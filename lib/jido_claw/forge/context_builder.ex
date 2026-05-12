@@ -5,6 +5,7 @@ defmodule JidoClaw.Forge.ContextBuilder do
   without stuffing the full event log into the context window.
   """
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge.Persistence
 
   @default_max_tokens 4_000
@@ -145,14 +146,14 @@ defmodule JidoClaw.Forge.ContextBuilder do
   end
 
   defp format_error(%{event_type: "iteration.completed", data: data}, _max_reason_chars) do
-    iteration = Map.get(data, "iteration") || Map.get(data, :iteration)
+    iteration = MapKeys.coalesce_field(data, "iteration")
     prefix = if iteration, do: "iteration #{iteration}", else: "iteration"
     "- #{prefix}: completed with error status"
   end
 
   defp format_error(%{event_type: type, data: data}, max_reason_chars) do
     reason =
-      (Map.get(data, "reason") || Map.get(data, :reason) || "unknown")
+      MapKeys.coalesce_field(data, "reason", "unknown")
       |> to_string()
       |> String.slice(0, max_reason_chars)
 

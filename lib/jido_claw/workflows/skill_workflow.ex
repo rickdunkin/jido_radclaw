@@ -13,7 +13,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
 
   alias Jido.Composer.Workflow.Machine
   alias Jido.Composer.Node.ActionNode
-  alias JidoClaw.Workflows.{ContextBuilder, StepResult}
+  alias JidoClaw.Workflows.{ContextBuilder, StepNormalizer, StepResult}
   require Logger
 
   @doc """
@@ -37,7 +37,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
   @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
           {:ok, list()} | {:error, term()}
   def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
-    steps = skill.steps
+    steps = StepNormalizer.normalize(skill.steps)
     step_count = length(steps)
     workspace_id = Keyword.get(opts, :workspace_id)
     scope_context = Keyword.get(opts, :scope_context, %{})
@@ -109,9 +109,9 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
       step_idx = state_to_index(machine.status)
       step = Enum.at(steps, step_idx - 1)
 
-      template_name = Map.get(step, "template") || Map.get(step, :template)
-      task = Map.get(step, "task") || Map.get(step, :task)
-      step_name = Map.get(step, "name") || Map.get(step, :name) || template_name
+      template_name = Map.get(step, :template)
+      task = Map.get(step, :task)
+      step_name = Map.get(step, :name) || template_name
 
       # Build context from all preceding step results
       preceding_context = ContextBuilder.format_preceding_all(results)

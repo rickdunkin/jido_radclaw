@@ -21,6 +21,7 @@ defmodule JidoClaw.Audit.ProducersTest do
   alias JidoClaw.Audit.Event
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Memory.Block
   alias JidoClaw.Solutions.Solution
 
@@ -54,7 +55,7 @@ defmodule JidoClaw.Audit.ProducersTest do
       assert audit_row, "expected one :session_start audit row for the new session"
       assert audit_row.actor_kind == :system
       payload = audit_row.payload
-      assert (Map.get(payload, "external_id") || Map.get(payload, :external_id)) == external_id
+      assert MapKeys.coalesce_field(payload, "external_id") == external_id
     end
   end
 
@@ -328,15 +329,13 @@ defmodule JidoClaw.Audit.ProducersTest do
         Enum.find(rows, fn r ->
           r.event_kind == :memory_write and r.target_kind == :memory_block and
             r.target_id == to_string(block.id) and
-            (Map.get(r.payload, "block_revision_id") ||
-               Map.get(r.payload, :block_revision_id)) != nil
+            MapKeys.coalesce_field(r.payload, "block_revision_id") != nil
         end)
 
       assert invalidate_audit,
              "expected :invalidate audit row to carry block_revision_id in payload"
 
-      assert (Map.get(invalidate_audit.payload, "block_revision_id") ||
-                Map.get(invalidate_audit.payload, :block_revision_id)) ==
+      assert MapKeys.coalesce_field(invalidate_audit.payload, "block_revision_id") ==
                to_string(revision.id)
     end
 
@@ -374,14 +373,13 @@ defmodule JidoClaw.Audit.ProducersTest do
         Enum.find(rows, fn r ->
           r.event_kind == :memory_write and r.target_kind == :memory_block and
             r.target_id == to_string(prior.id) and
-            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) ==
-              "revise"
+            MapKeys.coalesce_field(r.payload, "operation") == "revise"
         end)
 
       assert revise_audit, "expected a :memory_write audit row marked operation: :revise"
 
       payload = revise_audit.payload
-      pick = fn key -> Map.get(payload, Atom.to_string(key)) || Map.get(payload, key) end
+      pick = fn key -> MapKeys.coalesce_field(payload, Atom.to_string(key)) end
 
       assert pick.(:prior_block_id) == to_string(prior.id)
       assert pick.(:new_block_id) == to_string(new_block.id)
@@ -418,7 +416,7 @@ defmodule JidoClaw.Audit.ProducersTest do
         Enum.find(rows, fn r ->
           r.event_kind == :memory_write and r.target_kind == :memory_block and
             r.target_id == to_string(prior.id) and
-            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) == "revise"
+            MapKeys.coalesce_field(r.payload, "operation") == "revise"
         end)
 
       assert revise_audit
@@ -456,7 +454,7 @@ defmodule JidoClaw.Audit.ProducersTest do
         Enum.find(rows, fn r ->
           r.event_kind == :memory_write and r.target_kind == :memory_block and
             r.target_id == to_string(prior.id) and
-            (Map.get(r.payload, "operation") || Map.get(r.payload, :operation)) == "revise"
+            MapKeys.coalesce_field(r.payload, "operation") == "revise"
         end)
 
       assert revise_audit

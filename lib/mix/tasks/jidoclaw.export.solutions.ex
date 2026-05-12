@@ -33,6 +33,23 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
   alias JidoClaw.Repo
   alias JidoClaw.Workspaces.Resolver
 
+  @solution_columns %{
+    "id" => :id,
+    "problem_signature" => :problem_signature,
+    "solution_content" => :solution_content,
+    "language" => :language,
+    "framework" => :framework,
+    "runtime" => :runtime,
+    "agent_id" => :agent_id,
+    "tags" => :tags,
+    "verification" => :verification,
+    "trust_score" => :trust_score,
+    "sharing" => :sharing,
+    "inserted_at" => :inserted_at,
+    "updated_at" => :updated_at,
+    "deleted_at" => :deleted_at
+  }
+
   @impl true
   def run(args) do
     {opts, _, _} =
@@ -102,7 +119,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
           {:id, format_id(v)}
 
         {k, v} ->
-          {String.to_atom(k), v}
+          {Map.fetch!(@solution_columns, k), v}
       end)
     end)
   end

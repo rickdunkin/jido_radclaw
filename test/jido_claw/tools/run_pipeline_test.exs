@@ -5,6 +5,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
 
   import JidoClaw.Reasoning.StrategyTestHelper
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.Resources.Outcome
   alias JidoClaw.Tools.RunPipeline
 
@@ -57,7 +58,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end)
     |> Enum.filter(fn r -> r.pipeline_name == name end)
     |> Enum.sort_by(fn r ->
-      Map.get(r.metadata, "stage_index") || Map.get(r.metadata, :stage_index)
+      MapKeys.coalesce_field(r.metadata, "stage_index")
     end)
   end
 
@@ -646,7 +647,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       assert s2.status == :error
 
       md = s2.metadata
-      failure_reason = Map.get(md, "failure_reason") || Map.get(md, :failure_reason)
+      failure_reason = MapKeys.coalesce_field(md, "failure_reason")
       pre_cap = Map.get(md, "accumulated_context_bytes_pre_cap")
       dropped = Map.get(md, "dropped_stage_indexes")
 
@@ -786,7 +787,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       assert s1.status == :error
 
       md = s1.metadata
-      failure_reason = Map.get(md, "failure_reason") || Map.get(md, :failure_reason)
+      failure_reason = MapKeys.coalesce_field(md, "failure_reason")
       pre_cap = Map.get(md, "accumulated_context_bytes_pre_cap")
       dropped = Map.get(md, "dropped_stage_indexes")
       assert failure_reason =~ "initial prompt alone"
@@ -857,8 +858,8 @@ defmodule JidoClaw.Tools.RunPipelineTest do
   # ---------------------------------------------------------------------------
 
   defp stage_index(row),
-    do: Map.get(row.metadata, "stage_index") || Map.get(row.metadata, :stage_index)
+    do: MapKeys.coalesce_field(row.metadata, "stage_index")
 
   defp stage_total(row),
-    do: Map.get(row.metadata, "stage_total") || Map.get(row.metadata, :stage_total)
+    do: MapKeys.coalesce_field(row.metadata, "stage_total")
 end

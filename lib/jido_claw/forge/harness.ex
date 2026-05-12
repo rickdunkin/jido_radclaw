@@ -2,6 +2,7 @@ defmodule JidoClaw.Forge.Harness do
   use GenServer, restart: :temporary
   require Logger
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge.{Sandbox, Bootstrap, Persistence, PubSub, ResourceProvisioner}
 
   @registry JidoClaw.Forge.SessionRegistry
@@ -743,7 +744,7 @@ defmodule JidoClaw.Forge.Harness do
             Map.merge(base_runner_state, snapshot)
           end
 
-        checkpoint_metadata = checkpoint.metadata || %{}
+        checkpoint_metadata = normalize_checkpoint_metadata(checkpoint.metadata)
 
         new_state = %{
           state
@@ -752,8 +753,7 @@ defmodule JidoClaw.Forge.Harness do
             state: :ready,
             iteration: checkpoint.exec_session_sequence || 0,
             output_sequence:
-              Map.get(checkpoint_metadata, "output_sequence") ||
-                Map.get(checkpoint_metadata, :output_sequence) ||
+              Map.get(checkpoint_metadata, :output_sequence) ||
                 checkpoint.exec_session_sequence || 0
         }
 
@@ -765,13 +765,8 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp recover_extra_sandboxes(state, checkpoint) do
-    checkpoint_metadata = checkpoint.metadata || %{}
-
-    # extra_sandboxes may be stored under atom or string keys depending on serialization
-    extra =
-      Map.get(checkpoint_metadata, "extra_sandboxes") ||
-        Map.get(checkpoint_metadata, :extra_sandboxes) ||
-        %{}
+    checkpoint_metadata = normalize_checkpoint_metadata(checkpoint.metadata)
+    extra = Map.get(checkpoint_metadata, :extra_sandboxes, %{})
 
     Enum.reduce_while(extra, {:ok, state}, fn {name, spec}, {:ok, acc_state} ->
       name =
@@ -789,7 +784,7 @@ defmodule JidoClaw.Forge.Harness do
         Logger.warning("[Forge.Harness] Skipping unknown sandbox name during recovery")
         {:cont, {:ok, acc_state}}
       else
-        spec = atomize_spec_keys(spec)
+        spec = MapKeys.normalize_keys(spec, :atom_existing)
         sandbox_module = resolve_client(Map.get(spec, :sandbox, :default))
         create_spec = build_sandbox_spec(acc_state, spec)
 
@@ -832,19 +827,13 @@ defmodule JidoClaw.Forge.Harness do
     end)
   end
 
-  defp atomize_spec_keys(spec) when is_map(spec) do
-    Map.new(spec, fn
-      {k, v} when is_binary(k) ->
-        try do
-          {String.to_existing_atom(k), v}
-        rescue
-          ArgumentError -> {k, v}
-        end
+  defp normalize_checkpoint_metadata(nil), do: %{}
 
-      pair ->
-        pair
-    end)
+  defp normalize_checkpoint_metadata(metadata) when is_map(metadata) do
+    MapKeys.normalize_keys(metadata, :atom_existing)
   end
+
+  defp normalize_checkpoint_metadata(_), do: %{}
 
   # Lazy provisioning helpers
 

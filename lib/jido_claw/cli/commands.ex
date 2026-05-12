@@ -173,8 +173,8 @@ defmodule JidoClaw.CLI.Commands do
         IO.puts("  \e[33m▸\e[0m \e[1m#{skill.name}\e[0m — #{skill.description}")
 
         Enum.each(skill.steps, fn step ->
-          template = Map.get(step, "template") || Map.get(step, :template)
-          task = Map.get(step, "task") || Map.get(step, :task)
+          template = Map.get(step, :template)
+          task = Map.get(step, :task)
           IO.puts("    \e[2m→ #{template}: #{task}\e[0m")
         end)
       end)

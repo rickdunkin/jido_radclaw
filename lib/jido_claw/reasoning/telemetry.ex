@@ -14,6 +14,7 @@ defmodule JidoClaw.Reasoning.Telemetry do
 
   require Logger
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Classifier, Resources.Outcome, TaskProfile}
 
   @type fun_result :: {:ok, map()} | {:error, term()}
@@ -237,10 +238,10 @@ defmodule JidoClaw.Reasoning.Telemetry do
   # emit :prompt_tokens / :completion_tokens, so try both.
   defp tokens_from_usage(usage) do
     {
-      Map.get(usage, :input_tokens) || Map.get(usage, "input_tokens") ||
-        Map.get(usage, :prompt_tokens) || Map.get(usage, "prompt_tokens"),
-      Map.get(usage, :output_tokens) || Map.get(usage, "output_tokens") ||
-        Map.get(usage, :completion_tokens) || Map.get(usage, "completion_tokens")
+      MapKeys.coalesce_field(usage, :input_tokens) ||
+        MapKeys.coalesce_field(usage, :prompt_tokens),
+      MapKeys.coalesce_field(usage, :output_tokens) ||
+        MapKeys.coalesce_field(usage, :completion_tokens)
     }
   end
 

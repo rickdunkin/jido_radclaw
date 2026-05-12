@@ -226,6 +226,37 @@ defmodule JidoClaw.SkillsTest do
       {:ok, skill} = Skills.get("explore_codebase")
       assert length(skill.steps) == 2
     end
+
+    test "loaded skill steps have atom keys (StepNormalizer fires at parse_skill_file/1)",
+         %{dir: dir} do
+      # YamlElixir decodes maps with string keys; the parse boundary must
+      # convert them so workflow drivers read atoms exclusively.
+      skills_dir = Path.join([dir, ".jido", "skills"])
+      File.mkdir_p!(skills_dir)
+
+      yaml = """
+      name: mixed_keys_skill
+      description: Mixed-shape YAML loads as atom-keyed steps
+      steps:
+        - name: alpha
+          template: t1
+          task: do alpha
+        - name: beta
+          template: t2
+          task: do beta
+          depends_on: [alpha]
+      synthesis: done
+      """
+
+      File.write!(Path.join(skills_dir, "mixed_keys_skill.yaml"), yaml)
+      start_skills!(dir)
+
+      {:ok, skill} = Skills.get("mixed_keys_skill")
+      assert [%{name: "alpha"} = a, %{name: "beta", depends_on: ["alpha"]} = b] = skill.steps
+      refute Map.has_key?(a, "name")
+      refute Map.has_key?(b, "depends_on")
+      assert Skills.execution_mode(skill) == :dag
+    end
   end
 
   # ---------------------------------------------------------------------------

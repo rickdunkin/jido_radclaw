@@ -25,6 +25,16 @@ defmodule JidoClaw.VFS.Workspace do
   require Logger
 
   alias Jido.Shell.VFS
+  alias JidoClaw.Core.MapKeys
+
+  @adapter_keys %{
+    "local" => :local,
+    "in_memory" => :in_memory,
+    "github" => :github,
+    "s3" => :s3,
+    "git" => :git
+  }
+  @valid_adapters Map.values(@adapter_keys)
 
   @registry JidoClaw.VFS.WorkspaceRegistry
   @supervisor JidoClaw.VFS.WorkspaceSupervisor
@@ -222,8 +232,8 @@ defmodule JidoClaw.VFS.Workspace do
     |> get_in(["vfs", "mounts"])
     |> List.wrap()
     |> Enum.each(fn entry ->
-      path = Map.get(entry, "path") || Map.get(entry, :path)
-      adapter = Map.get(entry, "adapter") || Map.get(entry, :adapter)
+      path = MapKeys.coalesce_field(entry, "path")
+      adapter = MapKeys.coalesce_field(entry, "adapter")
 
       cond do
         not is_binary(path) or path == "" ->
@@ -233,11 +243,28 @@ defmodule JidoClaw.VFS.Workspace do
           Logger.warning("[VFS.Workspace] Skipping mount #{path}: missing :adapter key")
 
         true ->
-          adapter_key = adapter |> to_string() |> String.to_atom()
-          _ = do_mount(workspace_id, path, adapter_key, entry, fail_soft?: true)
+          case parse_adapter_key(adapter) do
+            {:ok, adapter_key} ->
+              _ = do_mount(workspace_id, path, adapter_key, entry, fail_soft?: true)
+
+            {:error, reason} ->
+              log_mount_warning(path, adapter, reason)
+          end
       end
     end)
   end
+
+  defp parse_adapter_key(adapter) when is_atom(adapter) and adapter in @valid_adapters,
+    do: {:ok, adapter}
+
+  defp parse_adapter_key(adapter) when is_binary(adapter) do
+    case Map.fetch(@adapter_keys, adapter) do
+      {:ok, atom} -> {:ok, atom}
+      :error -> {:error, {:unknown_adapter, adapter}}
+    end
+  end
+
+  defp parse_adapter_key(_), do: {:error, :invalid_adapter}
 
   # -- Adapter translation + mount --------------------------------------------
 

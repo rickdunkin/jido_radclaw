@@ -11,6 +11,7 @@ defmodule JidoClaw.MixProject do
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :dev,
       elixirc_paths: elixirc_paths(Mix.env()),
+      listeners: [Phoenix.CodeReloader],
       # Intentionally redefining four upstream modules — silences the
       # resulting "redefining module" warnings globally so
       # `--warnings-as-errors` stays green:

@@ -181,6 +181,27 @@ defmodule JidoClaw.Memory.FactTest do
     end
   end
 
+  describe "mixed-key attrs precedence" do
+    test "atom keys win over string keys", %{
+      tenant_id: tenant_id,
+      tool_context: tc
+    } do
+      attrs = %{
+        "key" => "string_label",
+        "content" => "string_content",
+        :key => "atom_label",
+        :content => "atom_content",
+        :type => "fact"
+      }
+
+      :ok = Memory.remember_from_user(attrs, tc)
+
+      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert fact.label == "atom_label"
+      assert fact.content == "atom_content"
+    end
+  end
+
   describe "import_legacy + ResolveInitialEmbeddingStatus" do
     test "system import under :disabled workspace lands at :disabled (not :pending)" do
       tenant_id = seed_tenant("fact-embed-policy")

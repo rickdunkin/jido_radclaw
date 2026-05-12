@@ -80,6 +80,7 @@ defmodule JidoClaw.Conversations.Recorder do
 
   alias JidoClaw.Conversations.{Message, RequestCorrelation, ToolTranscript}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Core.MapKeys
 
   @topics [
     "ai.tool.started",
@@ -245,8 +246,8 @@ defmodule JidoClaw.Conversations.Recorder do
 
   @doc false
   def handle_telemetry(_event, measurements, metadata, _config) do
-    request_id = Map.get(metadata, :request_id) || Map.get(metadata, "request_id")
-    duration = Map.get(measurements, :duration_ms) || Map.get(measurements, "duration_ms")
+    request_id = MapKeys.coalesce_field(metadata, :request_id)
+    duration = MapKeys.coalesce_field(measurements, :duration_ms)
 
     if is_binary(request_id) and is_integer(duration) and duration > 0 do
       try do
@@ -299,13 +300,13 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp handle_signal(%{type: "ai.request.completed"} = signal, state) do
     safe_handle(fn -> record_telemetry(signal) end, "ai.request.completed.telemetry")
-    request_id = get_in(signal.data, [:request_id]) || signal.data["request_id"]
+    request_id = MapKeys.coalesce_field(signal.data, :request_id)
     finalize_request(request_id, state)
   end
 
   defp handle_signal(%{type: "ai.request.failed"} = signal, state) do
     safe_handle(fn -> record_telemetry(signal) end, "ai.request.failed.telemetry")
-    request_id = get_in(signal.data, [:request_id]) || signal.data["request_id"]
+    request_id = MapKeys.coalesce_field(signal.data, :request_id)
     finalize_request(request_id, state)
   end
 
@@ -317,8 +318,8 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp handle_usage(%{data: data}, state) do
     telemetry = extract_telemetry(data)
-    request_id = metadata_request_id(data) || field(data, :request_id)
-    call_id = field(data, :call_id)
+    request_id = metadata_request_id(data) || MapKeys.field(data, :request_id)
+    call_id = MapKeys.field(data, :call_id)
 
     cond do
       telemetry == %{} ->
@@ -349,8 +350,8 @@ defmodule JidoClaw.Conversations.Recorder do
   end
 
   defp learn_call_request(%{data: data}, state) do
-    request_id = metadata_request_id(data) || field(data, :request_id)
-    call_id = field(data, :call_id)
+    request_id = metadata_request_id(data) || MapKeys.field(data, :request_id)
+    call_id = MapKeys.field(data, :call_id)
 
     if is_binary(request_id) and is_binary(call_id) do
       state
@@ -464,9 +465,9 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp record_tool_call(%{data: data}) do
     request_id = metadata_request_id(data)
-    tool_call_id = field(data, :call_id)
-    tool_name = field(data, :tool_name) || ""
-    arguments = field(data, :arguments)
+    tool_call_id = MapKeys.field(data, :call_id)
+    tool_name = MapKeys.field(data, :tool_name) || ""
+    arguments = MapKeys.field(data, :arguments)
 
     with {:ok, scope} <- resolve_scope(request_id) do
       envelope = ToolTranscript.envelope(arguments)
@@ -494,9 +495,9 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp record_tool_result(%{data: data}) do
     request_id = metadata_request_id(data)
-    tool_call_id = field(data, :call_id)
-    tool_name = field(data, :tool_name) || ""
-    raw_result = field(data, :result)
+    tool_call_id = MapKeys.field(data, :call_id)
+    tool_name = MapKeys.field(data, :tool_name) || ""
+    raw_result = MapKeys.field(data, :result)
 
     with {:ok, scope} <- resolve_scope(request_id) do
       envelope = ToolTranscript.envelope(raw_result)
@@ -623,7 +624,7 @@ defmodule JidoClaw.Conversations.Recorder do
   # ---------------------------------------------------------------------------
 
   defp record_telemetry(%{data: data}) do
-    request_id = metadata_request_id(data) || field(data, :request_id)
+    request_id = metadata_request_id(data) || MapKeys.field(data, :request_id)
     telemetry = extract_telemetry(data)
 
     cond do
@@ -639,43 +640,44 @@ defmodule JidoClaw.Conversations.Recorder do
   end
 
   defp extract_telemetry(data) do
-    metadata = field(data, :metadata) || %{}
-    usage = field(data, :usage) || %{}
-    {result_usage, result_model} = telemetry_from_result(field(data, :result))
+    metadata = MapKeys.field(data, :metadata) || %{}
+    usage = MapKeys.field(data, :usage) || %{}
+    {result_usage, result_model} = telemetry_from_result(MapKeys.field(data, :result))
 
-    duration_ms = field(metadata, :duration_ms) || field(data, :duration_ms)
+    duration_ms = MapKeys.field(metadata, :duration_ms) || MapKeys.field(data, :duration_ms)
 
     %{}
-    |> maybe_put(:run_id, field(metadata, :run_id) || field(data, :run_id))
+    |> maybe_put(:run_id, MapKeys.field(metadata, :run_id) || MapKeys.field(data, :run_id))
     |> maybe_put(
       :model,
-      field(metadata, :model) || field(data, :model) || field(usage, :model) || result_model
+      MapKeys.field(metadata, :model) || MapKeys.field(data, :model) ||
+        MapKeys.field(usage, :model) || result_model
     )
     |> maybe_put(
       :input_tokens,
-      field(metadata, :input_tokens) ||
-        field(data, :input_tokens) ||
-        field(usage, :input_tokens) ||
-        field(result_usage, :input_tokens)
+      MapKeys.field(metadata, :input_tokens) ||
+        MapKeys.field(data, :input_tokens) ||
+        MapKeys.field(usage, :input_tokens) ||
+        MapKeys.field(result_usage, :input_tokens)
     )
     |> maybe_put(
       :output_tokens,
-      field(metadata, :output_tokens) ||
-        field(data, :output_tokens) ||
-        field(usage, :output_tokens) ||
-        field(result_usage, :output_tokens)
+      MapKeys.field(metadata, :output_tokens) ||
+        MapKeys.field(data, :output_tokens) ||
+        MapKeys.field(usage, :output_tokens) ||
+        MapKeys.field(result_usage, :output_tokens)
     )
     |> maybe_put(
       :latency_ms,
-      field(metadata, :latency_ms) || field(data, :latency_ms) || duration_ms
+      MapKeys.field(metadata, :latency_ms) || MapKeys.field(data, :latency_ms) || duration_ms
     )
   end
 
   defp telemetry_from_result({:ok, payload, _effects}) when is_map(payload),
-    do: {field(payload, :usage) || %{}, field(payload, :model)}
+    do: {MapKeys.field(payload, :usage) || %{}, MapKeys.field(payload, :model)}
 
   defp telemetry_from_result({:ok, payload}) when is_map(payload),
-    do: {field(payload, :usage) || %{}, field(payload, :model)}
+    do: {MapKeys.field(payload, :usage) || %{}, MapKeys.field(payload, :model)}
 
   defp telemetry_from_result(_), do: {%{}, nil}
 
@@ -818,13 +820,7 @@ defmodule JidoClaw.Conversations.Recorder do
   end
 
   defp metadata_request_id(data) do
-    metadata = field(data, :metadata) || %{}
-    field(metadata, :request_id)
+    metadata = MapKeys.field(data, :metadata) || %{}
+    MapKeys.field(metadata, :request_id)
   end
-
-  defp field(data, key) when is_map(data) do
-    Map.get(data, key, Map.get(data, Atom.to_string(key)))
-  end
-
-  defp field(_, _), do: nil
 end

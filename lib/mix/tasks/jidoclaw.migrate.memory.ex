@@ -212,12 +212,12 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   end
 
   defp legacy_to_attrs(entry, workspace) do
-    label = field(entry, "key")
-    content_raw = field(entry, "content") || ""
+    label = entry["key"]
+    content_raw = entry["content"] || ""
     content = MemoryRedaction.redact_fact!(content_raw)
-    type = field(entry, "type") || "fact"
+    type = entry["type"] || "fact"
 
-    inserted_at = parse_timestamp(field(entry, "created_at") || field(entry, "updated_at"))
+    inserted_at = parse_timestamp(entry["created_at"] || entry["updated_at"])
     valid_at = inserted_at
 
     inserted_at_ms = DateTime.to_unix(inserted_at, :millisecond)
@@ -245,10 +245,6 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
       valid_at: valid_at,
       embedding_status: :disabled
     }
-  end
-
-  defp field(entry, key) do
-    Map.get(entry, key) || Map.get(entry, String.to_atom(key))
   end
 
   defp parse_timestamp(nil), do: DateTime.utc_now()

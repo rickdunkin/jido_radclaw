@@ -13,6 +13,8 @@ defmodule JidoClaw.Solutions.Trust do
   accepts a `%JidoClaw.Solutions.Solution{}` or any map with matching fields.
   """
 
+  alias JidoClaw.Core.MapKeys
+
   # ---------------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------------
@@ -38,6 +40,7 @@ defmodule JidoClaw.Solutions.Trust do
   def compute(solution, opts \\ []) do
     agent_rep = Keyword.get(opts, :agent_reputation, 0.5)
     now = Keyword.get(opts, :now, DateTime.utc_now())
+    solution = normalize(solution)
 
     verification_score(solution) * 0.35 +
       completeness_score(solution) * 0.25 +
@@ -58,8 +61,8 @@ defmodule JidoClaw.Solutions.Trust do
   """
   @spec verification_score(map()) :: float()
   def verification_score(solution) do
-    v = Map.get(solution, :verification) || Map.get(solution, "verification")
-    score_verification(v)
+    solution = normalize(solution)
+    score_verification(Map.get(solution, :verification))
   end
 
   @doc """
@@ -78,14 +81,15 @@ defmodule JidoClaw.Solutions.Trust do
   """
   @spec completeness_score(map()) :: float()
   def completeness_score(solution) do
+    solution = normalize(solution)
     base = 0.3
 
     bonus =
       [
-        {present?(solution, :framework, "framework"), 0.10},
-        {present?(solution, :runtime, "runtime"), 0.10},
+        {present?(solution, :framework), 0.10},
+        {present?(solution, :runtime), 0.10},
         {tags_present?(solution), 0.10},
-        {present?(solution, :agent_id, "agent_id"), 0.10},
+        {present?(solution, :agent_id), 0.10},
         {verification_present?(solution), 0.15},
         {sharing_not_local?(solution), 0.15}
       ]
@@ -111,11 +115,8 @@ defmodule JidoClaw.Solutions.Trust do
   """
   @spec freshness_score(map(), DateTime.t()) :: float()
   def freshness_score(solution, now \\ DateTime.utc_now()) do
-    ts =
-      Map.get(solution, :updated_at) ||
-        Map.get(solution, "updated_at") ||
-        Map.get(solution, :inserted_at) ||
-        Map.get(solution, "inserted_at")
+    solution = normalize(solution)
+    ts = Map.get(solution, :updated_at) || Map.get(solution, :inserted_at)
 
     case parse_datetime(ts) do
       {:ok, dt} ->
@@ -165,25 +166,29 @@ defmodule JidoClaw.Solutions.Trust do
   # Private helpers — completeness
   # ---------------------------------------------------------------------------
 
-  defp present?(solution, atom_key, string_key) do
-    value = Map.get(solution, atom_key) || Map.get(solution, string_key)
+  defp present?(solution, key) do
+    value = Map.get(solution, key)
     not is_nil(value) and value != ""
   end
 
   defp tags_present?(solution) do
-    tags = Map.get(solution, :tags) || Map.get(solution, "tags")
+    tags = Map.get(solution, :tags)
     is_list(tags) and tags != []
   end
 
   defp verification_present?(solution) do
-    v = Map.get(solution, :verification) || Map.get(solution, "verification")
+    v = Map.get(solution, :verification)
     is_map(v) and map_size(v) > 0
   end
 
   defp sharing_not_local?(solution) do
-    sharing = Map.get(solution, :sharing) || Map.get(solution, "sharing")
+    sharing = Map.get(solution, :sharing)
     sharing not in [:local, "local", nil]
   end
+
+  defp normalize(%_struct{} = s), do: Map.from_struct(s)
+  defp normalize(map) when is_map(map), do: MapKeys.normalize_keys(map, :atom_existing)
+  defp normalize(other), do: other
 
   # ---------------------------------------------------------------------------
   # Private helpers — freshness

@@ -24,6 +24,8 @@ defmodule JidoClaw.Audit.ActorClassifier do
   misclassified as `:user` purely because the key is present.
   """
 
+  alias JidoClaw.Core.MapKeys
+
   @type kind :: :user | :agent | :system
 
   @spec classify(map() | struct() | nil) :: {kind(), String.t() | nil}
@@ -38,10 +40,10 @@ defmodule JidoClaw.Audit.ActorClassifier do
       system_kind?(actor) ->
         {:system, nil}
 
-      id = non_nil_field(actor, :agent_id, "agent_id") ->
+      id = non_nil_field(actor, :agent_id) ->
         {:agent, to_string(id)}
 
-      id = non_nil_field(actor, :user_id, "user_id") ->
+      id = non_nil_field(actor, :user_id) ->
         {:user, to_string(id)}
 
       true ->
@@ -52,15 +54,15 @@ defmodule JidoClaw.Audit.ActorClassifier do
   def classify(_), do: {:system, nil}
 
   defp system_kind?(actor) do
-    case Map.get(actor, :kind) || Map.get(actor, "kind") do
+    case MapKeys.coalesce_field(actor, :kind) do
       :system -> true
       "system" -> true
       _ -> false
     end
   end
 
-  defp non_nil_field(actor, atom_key, string_key) do
-    case Map.get(actor, atom_key) || Map.get(actor, string_key) do
+  defp non_nil_field(actor, key) do
+    case MapKeys.coalesce_field(actor, key) do
       nil -> nil
       "" -> nil
       value -> value
@@ -68,8 +70,8 @@ defmodule JidoClaw.Audit.ActorClassifier do
   end
 
   defp classify_by_kind(actor) do
-    kind = Map.get(actor, :kind) || Map.get(actor, "kind")
-    id = non_nil_field(actor, :id, "id")
+    kind = MapKeys.coalesce_field(actor, :kind)
+    id = non_nil_field(actor, :id)
 
     case {kind, id} do
       {:user, id} when not is_nil(id) -> {:user, to_string(id)}

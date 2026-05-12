@@ -51,6 +51,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       ]
     ]
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Certificates, Telemetry}
   alias JidoClaw.Solutions.Solution
 
@@ -194,7 +195,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       {:error, reason} ->
         usage =
           if is_map(reason) do
-            Map.get(reason, :usage) || Map.get(reason, "usage") || %{}
+            MapKeys.coalesce_field(reason, :usage, %{})
           else
             %{}
           end

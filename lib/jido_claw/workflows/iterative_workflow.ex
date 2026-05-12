@@ -27,7 +27,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
       synthesis: "Present final implementation"
   """
 
-  alias JidoClaw.Workflows.{ContextBuilder, StepAction, StepResult}
+  alias JidoClaw.Workflows.{ContextBuilder, StepAction, StepNormalizer, StepResult}
   require Logger
 
   @default_max_iterations 3
@@ -54,6 +54,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
     max_iter = skill.max_iterations || @default_max_iterations
     workspace_id = Keyword.get(opts, :workspace_id)
     scope_context = Keyword.get(opts, :scope_context, %{})
+    skill = %{skill | steps: StepNormalizer.normalize(skill.steps)}
 
     case extract_roles(skill) do
       {:ok, generator, evaluator} ->
@@ -102,7 +103,10 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   """
   @spec extract_roles(JidoClaw.Skills.t()) :: {:ok, map(), map()} | {:error, String.t()}
   def extract_roles(skill) do
-    steps = Enum.map(skill.steps, &normalize_step/1)
+    steps =
+      skill.steps
+      |> StepNormalizer.normalize()
+      |> Enum.map(&normalize_step/1)
 
     generator = Enum.find(steps, fn s -> s.role == "generator" end)
     evaluator = Enum.find(steps, fn s -> s.role == "evaluator" end)
@@ -279,30 +283,26 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
   defp normalize_step(step) do
     %{
-      name: Map.get(step, "name") || Map.get(step, :name),
-      template: Map.get(step, "template") || Map.get(step, :template),
-      task: Map.get(step, "task") || Map.get(step, :task),
-      role: Map.get(step, "role") || Map.get(step, :role),
-      produces: normalize_map_field(step, "produces"),
-      consumes: normalize_list_field(step, "consumes")
+      name: Map.get(step, :name),
+      template: Map.get(step, :template),
+      task: Map.get(step, :task),
+      role: Map.get(step, :role),
+      produces: normalize_map_field(step, :produces),
+      consumes: normalize_list_field(step, :consumes)
     }
   end
 
   defp normalize_map_field(step, key) do
-    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+    case Map.get(step, key) do
       v when is_map(v) -> v
       _ -> nil
     end
-  rescue
-    ArgumentError -> nil
   end
 
   defp normalize_list_field(step, key) do
-    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+    case Map.get(step, key) do
       v when is_list(v) -> Enum.map(v, &to_string/1)
       _ -> []
     end
-  rescue
-    ArgumentError -> []
   end
 end

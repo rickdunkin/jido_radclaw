@@ -17,6 +17,7 @@ defmodule JidoClaw.Network.Protocol do
   """
 
   alias JidoClaw.Agent.Identity
+  alias JidoClaw.Core.MapKeys
 
   @valid_types ~w(share request response ping pong)
 
@@ -55,7 +56,7 @@ defmodule JidoClaw.Network.Protocol do
   """
   @spec decode(map()) :: {:ok, map()} | {:error, atom()}
   def decode(raw) when is_map(raw) do
-    normalised = normalize_keys(raw)
+    normalised = MapKeys.normalize_keys(raw, :string)
 
     with {:ok, type} <- fetch_valid_type(normalised),
          {:ok, from} <- fetch_string(normalised, "from"),
@@ -163,14 +164,6 @@ defmodule JidoClaw.Network.Protocol do
   end
 
   defp utc_now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
-
-  # Normalise atom or string keys to string keys for uniform access.
-  defp normalize_keys(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {to_string(k), v}
-      {k, v} -> {k, v}
-    end)
-  end
 
   defp fetch_valid_type(map) do
     case Map.fetch(map, "type") do

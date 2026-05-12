@@ -5,6 +5,7 @@ defmodule JidoClaw.Tools.ReasonTest do
 
   import JidoClaw.Reasoning.StrategyTestHelper
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.Resources.Outcome
   alias JidoClaw.Tools.Reason
 
@@ -166,8 +167,7 @@ defmodule JidoClaw.Tools.ReasonTest do
       row = find_row(strategy: result.strategy, execution_kind: :strategy_run)
       assert row
       # metadata keys round-trip as strings through Postgres JSONB.
-      selection_mode =
-        Map.get(row.metadata, "selection_mode") || Map.get(row.metadata, :selection_mode)
+      selection_mode = MapKeys.coalesce_field(row.metadata, "selection_mode")
 
       assert selection_mode == "auto"
     end
@@ -185,8 +185,7 @@ defmodule JidoClaw.Tools.ReasonTest do
       row = find_row(strategy: result.strategy, execution_kind: :strategy_run)
       assert row
 
-      selection_mode =
-        Map.get(row.metadata, "selection_mode") || Map.get(row.metadata, :selection_mode)
+      selection_mode = MapKeys.coalesce_field(row.metadata, "selection_mode")
 
       assert selection_mode == "auto"
     end
@@ -247,8 +246,7 @@ defmodule JidoClaw.Tools.ReasonTest do
           # strategy match a built-in, no alias_name key is recorded.
           assert row.strategy == row.base_strategy
 
-          alias_name =
-            Map.get(row.metadata, "alias_name") || Map.get(row.metadata, :alias_name)
+          alias_name = MapKeys.coalesce_field(row.metadata, "alias_name")
 
           # Either the alias won (then alias_name is recorded) or a built-in
           # won (then alias_name is absent). Both are valid — the critical
@@ -272,8 +270,7 @@ defmodule JidoClaw.Tools.ReasonTest do
       row = find_row(strategy: result.strategy, execution_kind: :strategy_run)
       assert row
 
-      alias_name =
-        Map.get(row.metadata, "alias_name") || Map.get(row.metadata, :alias_name)
+      alias_name = MapKeys.coalesce_field(row.metadata, "alias_name")
 
       refute alias_name
     end
@@ -413,8 +410,7 @@ defmodule JidoClaw.Tools.ReasonTest do
           row = find_row(strategy: result.strategy, execution_kind: :strategy_run)
           assert row
 
-          alias_name =
-            Map.get(row.metadata, "alias_name") || Map.get(row.metadata, :alias_name)
+          alias_name = MapKeys.coalesce_field(row.metadata, "alias_name")
 
           if alias_name == "fast_reviewer" do
             assert result.output =~ "You are a fast, focused reviewer"

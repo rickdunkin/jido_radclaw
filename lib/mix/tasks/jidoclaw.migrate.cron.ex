@@ -105,10 +105,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
   end
 
   defp legacy_to_attrs(job) do
-    id = job["id"] || job[:id]
-    task = job["task"] || job[:task]
-    schedule_str = job["schedule"] || job[:schedule]
-    mode_str = job["mode"] || job[:mode] || "main"
+    id = job["id"]
+    task = job["task"]
+    schedule_str = job["schedule"]
+    mode_str = job["mode"] || "main"
 
     cond do
       not is_binary(id) ->

@@ -16,6 +16,7 @@ defmodule JidoClaw.Audit.SignalListenerTest do
 
   alias JidoClaw.Audit.{AsyncWriter, Event, SignalListener}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Core.MapKeys
 
   setup do
     # Each test gets a unique telemetry handler id so they don't
@@ -86,8 +87,8 @@ defmodule JidoClaw.Audit.SignalListenerTest do
       assert row.target_kind == :tool
 
       payload = row.payload
-      assert (Map.get(payload, "request_id") || Map.get(payload, :request_id)) == request_id
-      assert (Map.get(payload, "tool_name") || Map.get(payload, :tool_name)) == "demo_tool"
+      assert MapKeys.coalesce_field(payload, "request_id") == request_id
+      assert MapKeys.coalesce_field(payload, "tool_name") == "demo_tool"
 
       Cache.delete(request_id)
     end

@@ -16,6 +16,7 @@ defmodule JidoClaw.Solutions.NetworkFacade do
   """
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Solutions.Solution
 
   @forced_inbound_keys [
@@ -50,7 +51,7 @@ defmodule JidoClaw.Solutions.NetworkFacade do
 
     attrs =
       payload
-      |> normalize_keys()
+      |> MapKeys.normalize_keys(:atom_existing, drop_unknown: true)
       |> Map.drop(@forced_inbound_keys)
       |> Map.put(:sharing, :shared)
       |> Map.put(:workspace_id, workspace_id)
@@ -131,33 +132,5 @@ defmodule JidoClaw.Solutions.NetworkFacade do
       "inserted_at" => s.inserted_at,
       "updated_at" => s.updated_at
     }
-  end
-
-  defp normalize_keys(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {k, v}
-      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
-    end)
-  rescue
-    ArgumentError ->
-      # Drop any unrecognized atoms — they can't be valid Solution attrs.
-      map
-      |> Enum.flat_map(fn
-        {k, v} when is_atom(k) ->
-          [{k, v}]
-
-        {k, v} when is_binary(k) ->
-          case safe_existing_atom(k) do
-            {:ok, atom} -> [{atom, v}]
-            :error -> []
-          end
-      end)
-      |> Map.new()
-  end
-
-  defp safe_existing_atom(s) do
-    {:ok, String.to_existing_atom(s)}
-  rescue
-    ArgumentError -> :error
   end
 end

@@ -14,6 +14,7 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Classifier, Resources.Outcome, Telemetry}
 
   describe "with_outcome/4" do
@@ -296,12 +297,11 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
 
       row =
         Enum.find(rows, fn r ->
-          md = r.metadata
-          (Map.get(md, "extra") || Map.get(md, :extra)) == "hello"
+          MapKeys.coalesce_field(r.metadata, "extra") == "hello"
         end)
 
       assert row
-      assert (Map.get(row.metadata, "stage_index") || Map.get(row.metadata, :stage_index)) == 2
+      assert MapKeys.coalesce_field(row.metadata, "stage_index") == 2
     end
 
     test "skips the classified signal when caller pre-supplies :profile" do

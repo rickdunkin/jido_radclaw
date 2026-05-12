@@ -41,6 +41,8 @@ defmodule JidoClaw.Skills do
   use GenServer
   require Logger
 
+  alias JidoClaw.Workflows.StepNormalizer
+
   defstruct [:name, :description, :steps, :synthesis, :mode, :max_iterations]
 
   @default_skills %{
@@ -304,9 +306,10 @@ defmodule JidoClaw.Skills do
   """
   @spec has_dag_steps?(%__MODULE__{}) :: boolean()
   def has_dag_steps?(%__MODULE__{steps: steps}) do
-    Enum.any?(steps, fn step ->
-      Map.has_key?(step, "depends_on") or Map.has_key?(step, :depends_on) or
-        Map.has_key?(step, "name") or Map.has_key?(step, :name)
+    steps
+    |> StepNormalizer.normalize()
+    |> Enum.any?(fn step ->
+      Map.has_key?(step, :depends_on) or Map.has_key?(step, :name)
     end)
   end
 
@@ -318,9 +321,11 @@ defmodule JidoClaw.Skills do
   """
   @spec execution_mode(%__MODULE__{}) :: :iterative | :dag | :sequential
   def execution_mode(%__MODULE__{mode: "iterative"}), do: :iterative
+  def execution_mode(%__MODULE__{mode: :iterative}), do: :iterative
 
   def execution_mode(%__MODULE__{} = skill) do
-    if has_dag_steps?(skill), do: :dag, else: :sequential
+    normalized = %{skill | steps: StepNormalizer.normalize(skill.steps)}
+    if has_dag_steps?(normalized), do: :dag, else: :sequential
   end
 
   # Backwards-compatible API (accepts project_dir but ignores it — uses cache)
@@ -399,7 +404,7 @@ defmodule JidoClaw.Skills do
         skill = %__MODULE__{
           name: Map.get(data, "name", Path.basename(path, ".yaml")),
           description: Map.get(data, "description", ""),
-          steps: Map.get(data, "steps", []),
+          steps: StepNormalizer.normalize(Map.get(data, "steps", [])),
           synthesis: Map.get(data, "synthesis", ""),
           mode: Map.get(data, "mode"),
           max_iterations: Map.get(data, "max_iterations")

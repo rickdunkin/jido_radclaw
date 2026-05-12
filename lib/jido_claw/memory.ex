@@ -43,6 +43,7 @@ defmodule JidoClaw.Memory do
   require Ash.Query
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Memory.{Block, Fact, Retrieval, Scope}
 
   @doc """
@@ -214,6 +215,8 @@ defmodule JidoClaw.Memory do
   # ---------------------------------------------------------------------------
 
   defp do_remember(attrs, tool_context, opts) do
+    attrs = MapKeys.normalize_keys(attrs, :atom_existing)
+
     with {:ok, scope} <- Scope.resolve(tool_context),
          actor = actor_for(tool_context, scope.tenant_id),
          create_attrs = build_create_attrs(attrs, scope, opts),
@@ -240,11 +243,9 @@ defmodule JidoClaw.Memory do
   end
 
   defp build_create_attrs(attrs, scope, opts) do
-    label = Map.get(attrs, :key) || Map.get(attrs, "key")
-    content = Map.get(attrs, :content) || Map.get(attrs, "content")
-
-    type =
-      Map.get(attrs, :type) || Map.get(attrs, "type") || "fact"
+    label = Map.get(attrs, :key)
+    content = Map.get(attrs, :content)
+    type = Map.get(attrs, :type) || "fact"
 
     tags =
       case type do
@@ -264,7 +265,7 @@ defmodule JidoClaw.Memory do
       tags: tags,
       source: Keyword.fetch!(opts, :source),
       trust_score: Keyword.fetch!(opts, :trust_score),
-      written_by: Map.get(attrs, :written_by) || Map.get(attrs, "written_by")
+      written_by: Map.get(attrs, :written_by)
     }
   end
 

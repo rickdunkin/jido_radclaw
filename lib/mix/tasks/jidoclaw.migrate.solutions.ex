@@ -251,13 +251,12 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
   defp coerce_legacy_reputation(raw) do
     %{
-      agent_id: to_string(Map.get(raw, "agent_id") || Map.get(raw, :agent_id) || ""),
+      agent_id: to_string(raw["agent_id"] || ""),
       score: 0.5,
-      solutions_verified:
-        Map.get(raw, "solutions_verified") || Map.get(raw, :solutions_verified) || 0,
-      solutions_failed: Map.get(raw, "solutions_failed") || Map.get(raw, :solutions_failed) || 0,
-      solutions_shared: Map.get(raw, "solutions_shared") || Map.get(raw, :solutions_shared) || 0,
-      last_active: parse_dt(Map.get(raw, "last_active") || Map.get(raw, :last_active))
+      solutions_verified: raw["solutions_verified"] || 0,
+      solutions_failed: raw["solutions_failed"] || 0,
+      solutions_shared: raw["solutions_shared"] || 0,
+      last_active: parse_dt(raw["last_active"])
     }
   end
 

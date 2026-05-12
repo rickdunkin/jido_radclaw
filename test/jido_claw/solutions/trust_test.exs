@@ -363,4 +363,40 @@ defmodule JidoClaw.Solutions.TrustTest do
       assert_in_delta score, expected, 0.001
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # mixed-key precedence
+  # ---------------------------------------------------------------------------
+
+  describe "mixed-key precedence" do
+    test "atom verification wins over string verification" do
+      solution = %{
+        "verification" => %{"status" => "passed"},
+        :verification => %{status: "failed"}
+      }
+
+      assert Trust.verification_score(solution) == 0.0
+    end
+
+    test "atom framework wins over string framework in completeness" do
+      solution = %{
+        "framework" => "",
+        :framework => "elixir",
+        :verification => %{status: "passed"}
+      }
+
+      # Base 0.3 + framework 0.10 + verification 0.15 = 0.55
+      assert_in_delta Trust.completeness_score(solution), 0.55, 1.0e-6
+    end
+
+    test "atom updated_at wins over string updated_at in freshness" do
+      now = DateTime.utc_now()
+      recent = now |> DateTime.add(-3 * 86_400, :second) |> DateTime.to_iso8601()
+      old = now |> DateTime.add(-400 * 86_400, :second) |> DateTime.to_iso8601()
+
+      solution = %{"updated_at" => old, :updated_at => recent}
+
+      assert Trust.freshness_score(solution, now) == 1.0
+    end
+  end
 end

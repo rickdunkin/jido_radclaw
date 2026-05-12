@@ -1,8 +1,17 @@
 defmodule JidoClaw.BackgroundProcess.Registry do
+  # credo:disable-for-this-file ExSlop.Check.Warning.GenserverAsKvStore
   @moduledoc """
   Tracks spawned OS processes (ports and PIDs) with output buffering.
   Two-phase termination: SIGTERM -> 5s delay -> SIGKILL.
   Auto-cleanup after 1 hour.
+
+  This module would superficially fit ETS or Agent (state is a map keyed by
+  process id), but it also owns:
+    - SIGTERM→SIGKILL two-phase termination timers (Process.send_after)
+    - A recurring :cleanup tick
+    - A terminate/2 callback that walks state on shutdown
+    - Serialized read-modify-write on output_buffer with byte-cap trimming
+  Neither ETS nor Agent supports those primitives, so this stays a GenServer.
   """
   use GenServer
   require Logger

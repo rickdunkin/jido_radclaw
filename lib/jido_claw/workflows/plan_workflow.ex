@@ -22,7 +22,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       Phase 2: [synthesize]              — sequential (waits for phase 1)
   """
 
-  alias JidoClaw.Workflows.{ContextBuilder, StepResult}
+  alias JidoClaw.Workflows.{ContextBuilder, StepNormalizer, StepResult}
   require Logger
 
   @step_timeout_ms 300_000
@@ -36,7 +36,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   @spec run(JidoClaw.Skills.t(), String.t(), String.t(), keyword()) ::
           {:ok, list()} | {:error, term()}
   def run(skill, extra_context \\ "", project_dir \\ File.cwd!(), opts \\ []) do
-    steps = skill.steps
+    steps = StepNormalizer.normalize(skill.steps)
     workspace_id = Keyword.get(opts, :workspace_id)
     scope_context = Keyword.get(opts, :scope_context, %{})
 
@@ -71,27 +71,27 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       |> Enum.with_index(1)
       |> Enum.map(fn {step, idx} ->
         name =
-          case Map.get(step, "name") || Map.get(step, :name) do
+          case Map.get(step, :name) do
             nil -> "step_#{idx}"
             n when is_binary(n) -> n
             n when is_atom(n) -> Atom.to_string(n)
           end
 
         deps =
-          case Map.get(step, "depends_on") || Map.get(step, :depends_on) do
+          case Map.get(step, :depends_on) do
             nil -> []
             deps when is_list(deps) -> Enum.map(deps, &to_string/1)
             dep -> [to_string(dep)]
           end
 
-        produces = normalize_yaml_map(step, "produces")
-        consumes = normalize_yaml_list(step, "consumes")
+        produces = normalize_yaml_map(step, :produces)
+        consumes = normalize_yaml_list(step, :consumes)
 
         %{
           name: name,
-          template: Map.get(step, "template") || Map.get(step, :template),
-          task: Map.get(step, "task") || Map.get(step, :task),
-          role: Map.get(step, "role") || Map.get(step, :role),
+          template: Map.get(step, :template),
+          task: Map.get(step, :task),
+          role: Map.get(step, :role),
           depends_on: deps,
           produces: produces,
           consumes: consumes
@@ -102,21 +102,17 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   end
 
   defp normalize_yaml_map(step, key) do
-    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+    case Map.get(step, key) do
       v when is_map(v) -> v
       _ -> nil
     end
-  rescue
-    ArgumentError -> nil
   end
 
   defp normalize_yaml_list(step, key) do
-    case Map.get(step, key) || Map.get(step, String.to_existing_atom(key)) do
+    case Map.get(step, key) do
       v when is_list(v) -> Enum.map(v, &to_string/1)
       _ -> []
     end
-  rescue
-    ArgumentError -> []
   end
 
   # ---------------------------------------------------------------------------

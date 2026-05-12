@@ -21,6 +21,7 @@ defmodule JidoClaw.Audit.AshTracer do
 
   alias JidoClaw.Audit.ActorClassifier
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Core.MapKeys
 
   @process_key :jido_claw_audit_tracer_metadata
   @resource_target_kinds %{
@@ -166,7 +167,7 @@ defmodule JidoClaw.Audit.AshTracer do
   end
 
   defp tenant_from_actor(actor) when is_map(actor) do
-    case Map.get(actor, :tenant_id) || Map.get(actor, "tenant_id") do
+    case MapKeys.coalesce_field(actor, :tenant_id) do
       tenant when is_binary(tenant) and tenant != "" -> tenant
       _ -> nil
     end

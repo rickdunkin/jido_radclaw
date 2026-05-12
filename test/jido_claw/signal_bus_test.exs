@@ -1,6 +1,8 @@
 defmodule JidoClaw.SignalBusTest do
   use ExUnit.Case
 
+  alias JidoClaw.Core.MapKeys
+
   # Not async: relies on the application-managed JidoClaw.SignalBus.
   # No setup needed — the bus is started by JidoClaw.Application.
 
@@ -56,7 +58,7 @@ defmodule JidoClaw.SignalBusTest do
 
       assert_receive {:signal, signal}, 500
       # Data may be atom- or string-keyed depending on jido_signal internals
-      data_key = signal.data[:key] || signal.data["key"]
+      data_key = MapKeys.coalesce_field(signal.data, :key)
       assert data_key == "some_key"
 
       JidoClaw.SignalBus.unsubscribe(sub_id)

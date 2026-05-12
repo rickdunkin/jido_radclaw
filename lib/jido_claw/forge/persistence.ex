@@ -2,6 +2,7 @@ defmodule JidoClaw.Forge.Persistence do
   require Logger
   require Ash.Query
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Security.Redaction.Patterns
 
   def enabled? do
@@ -438,7 +439,7 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   defp iteration_error?(%{event_type: "iteration.completed", data: data}) do
-    status = Map.get(data, "status") || Map.get(data, :status)
+    status = MapKeys.coalesce_field(data, "status")
     status in [:error, "error"]
   end
 

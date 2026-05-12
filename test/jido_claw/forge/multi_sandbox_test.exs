@@ -38,6 +38,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
   """
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
 
@@ -651,7 +652,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert checkpoint != nil
 
       metadata = checkpoint.metadata
-      recovered_extra = metadata["extra_sandboxes"] || metadata[:extra_sandboxes]
+      recovered_extra = MapKeys.coalesce_field(metadata, "extra_sandboxes")
       assert recovered_extra != nil
       # Keys are strings after JSON round-trip through the DB
       assert Map.has_key?(recovered_extra, "worker") or Map.has_key?(recovered_extra, :worker)

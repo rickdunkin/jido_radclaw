@@ -21,6 +21,7 @@ defmodule JidoClaw.Audit.SignalListener do
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Conversations.ToolTranscript
+  alias JidoClaw.Core.MapKeys
 
   @topic "ai.tool.started"
   @retry_after_ms 250
@@ -91,9 +92,9 @@ defmodule JidoClaw.Audit.SignalListener do
   end
 
   defp handle_signal(%{data: data}) do
-    request_id = metadata_request_id(data) || field(data, :request_id)
-    tool_name = field(data, :tool_name)
-    arguments = field(data, :arguments)
+    request_id = metadata_request_id(data) || MapKeys.field(data, :request_id)
+    tool_name = MapKeys.field(data, :tool_name)
+    arguments = MapKeys.field(data, :arguments)
 
     cond do
       not is_binary(request_id) ->
@@ -102,7 +103,7 @@ defmodule JidoClaw.Audit.SignalListener do
       true ->
         case resolve_scope(request_id) do
           {:ok, scope} ->
-            agent_id = field(data, :agent_id) || metadata_field(data, :agent_id)
+            agent_id = MapKeys.field(data, :agent_id) || metadata_field(data, :agent_id)
 
             AsyncWriter.cast(%{
               tenant_id: scope.tenant_id,
@@ -162,18 +163,12 @@ defmodule JidoClaw.Audit.SignalListener do
   end
 
   defp metadata_request_id(data) do
-    metadata = field(data, :metadata) || %{}
-    field(metadata, :request_id)
+    metadata = MapKeys.field(data, :metadata) || %{}
+    MapKeys.field(metadata, :request_id)
   end
 
   defp metadata_field(data, key) do
-    metadata = field(data, :metadata) || %{}
-    field(metadata, key)
+    metadata = MapKeys.field(data, :metadata) || %{}
+    MapKeys.field(metadata, key)
   end
-
-  defp field(map, key) when is_map(map) do
-    Map.get(map, key, Map.get(map, Atom.to_string(key)))
-  end
-
-  defp field(_, _), do: nil
 end

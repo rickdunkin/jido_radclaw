@@ -141,6 +141,7 @@ defmodule JidoClaw.Tools.RunPipeline do
       usage: [type: :map]
     ]
 
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{PipelineStore, PipelineValidator, StrategyRegistry, Telemetry}
 
   @impl true
@@ -581,10 +582,10 @@ defmodule JidoClaw.Tools.RunPipeline do
     %{
       input_tokens:
         (acc[:input_tokens] || 0) +
-          (Map.get(usage, :input_tokens) || Map.get(usage, "input_tokens") || 0),
+          (MapKeys.coalesce_field(usage, :input_tokens) || 0),
       output_tokens:
         (acc[:output_tokens] || 0) +
-          (Map.get(usage, :output_tokens) || Map.get(usage, "output_tokens") || 0)
+          (MapKeys.coalesce_field(usage, :output_tokens) || 0)
     }
   end
 
