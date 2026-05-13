@@ -56,29 +56,59 @@ defmodule JidoClaw.Application do
     # Nostrum must start FIRST (initializes the ConsumerGroup :pg scope),
     # then the consumer joins the group. Shard sessions wait 5s for consumers.
     # Skipped in MCP mode — Discord would pollute stdio.
-    unless Application.get_env(:jido_claw, :skip_discord) do
-      if discord_token = System.get_env("DISCORD_BOT_TOKEN") do
-        Application.put_env(:nostrum, :token, discord_token)
-        Application.put_env(:nostrum, :gateway_intents, :all)
-        Application.put_env(:nostrum, :num_shards, :auto)
-
-        case Application.ensure_all_started(:nostrum) do
-          {:ok, _} ->
-            case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
-              {:ok, _} ->
-                Logger.warning("[JidoClaw] Discord adapter started")
-
-              {:error, reason} ->
-                Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
-            end
-
-          {:error, reason} ->
-            Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
-        end
-      end
-    end
+    maybe_start_discord()
 
     result
+  end
+
+  defp maybe_start_discord do
+    if Application.get_env(:jido_claw, :skip_discord) do
+      :ok
+    else
+      case System.get_env("DISCORD_BOT_TOKEN") do
+        nil ->
+          :ok
+
+        token ->
+          Application.put_env(:nostrum, :token, token)
+          Application.put_env(:nostrum, :gateway_intents, :all)
+          Application.put_env(:nostrum, :num_shards, :auto)
+
+          start_nostrum()
+      end
+    end
+  end
+
+  defp start_nostrum do
+    with :ok <- ensure_nostrum_started(),
+         :ok <- start_discord_consumer() do
+      Logger.warning("[JidoClaw] Discord adapter started")
+    end
+  end
+
+  defp ensure_nostrum_started do
+    case Application.ensure_all_started(:nostrum) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[JidoClaw] Discord failed to start: #{inspect(reason)}")
+        {:error, :nostrum}
+    end
+  end
+
+  defp start_discord_consumer do
+    case Supervisor.start_child(JidoClaw.Supervisor, JidoClaw.Channel.DiscordConsumer) do
+      {:ok, _} ->
+        :ok
+
+      {:ok, _, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[JidoClaw] Discord consumer failed to start: #{inspect(reason)}")
+        {:error, :consumer}
+    end
   end
 
   # -- Core: always started --
@@ -346,31 +376,30 @@ defmodule JidoClaw.Application do
   defp parse_dotenv(content) do
     content
     |> String.split("\n")
-    |> Enum.each(fn line ->
-      line = String.trim(line)
+    |> Enum.each(&parse_dotenv_line/1)
+  end
 
-      cond do
-        line == "" ->
-          :skip
+  defp parse_dotenv_line(line) do
+    line = String.trim(line)
 
-        String.starts_with?(line, "#") ->
-          :skip
+    cond do
+      line == "" -> :skip
+      String.starts_with?(line, "#") -> :skip
+      true -> put_env_if_unset(line)
+    end
+  end
 
-        true ->
-          case String.split(line, "=", parts: 2) do
-            [key, value] ->
-              key = String.trim(key)
-              value = value |> String.trim() |> strip_quotes()
-              # Only set if not already in environment (env vars take precedence)
-              if System.get_env(key) == nil do
-                System.put_env(key, value)
-              end
+  defp put_env_if_unset(line) do
+    case String.split(line, "=", parts: 2) do
+      [key, value] ->
+        key = String.trim(key)
+        value = value |> String.trim() |> strip_quotes()
+        # env vars take precedence over .env entries
+        if System.get_env(key) == nil, do: System.put_env(key, value)
 
-            _ ->
-              :skip
-          end
-      end
-    end)
+      _ ->
+        :skip
+    end
   end
 
   @doc """

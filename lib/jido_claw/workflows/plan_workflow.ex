@@ -132,23 +132,26 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   end
 
   defp detect_cycle(name, step_map, path) do
-    if name in path do
-      cycle = Enum.reverse([name | path]) |> Enum.join(" -> ")
-      {:error, "Cyclic dependency detected: #{cycle}"}
-    else
-      step = Map.get(step_map, name)
+    cond do
+      name in path ->
+        cycle = [name | path] |> Enum.reverse() |> Enum.join(" -> ")
+        {:error, "Cyclic dependency detected: #{cycle}"}
 
-      if step do
-        Enum.reduce_while(step.depends_on, :ok, fn dep, :ok ->
-          case detect_cycle(dep, step_map, [name | path]) do
-            :ok -> {:cont, :ok}
-            {:error, _} = err -> {:halt, err}
-          end
-        end)
-      else
+      step = Map.get(step_map, name) ->
+        detect_cycle_in_deps(step.depends_on, step_map, [name | path])
+
+      true ->
         :ok
-      end
     end
+  end
+
+  defp detect_cycle_in_deps(deps, step_map, path) do
+    Enum.reduce_while(deps, :ok, fn dep, :ok ->
+      case detect_cycle(dep, step_map, path) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
   end
 
   # ---------------------------------------------------------------------------
@@ -202,28 +205,29 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   end
 
   defp step_depth(step, step_map, known_depths, visiting) do
-    if MapSet.member?(visiting, step.name) do
-      # Cycle — return 0 (cycle validation is done separately)
-      0
-    else
-      case Map.get(known_depths, step.name) do
-        nil ->
-          visiting = MapSet.put(visiting, step.name)
+    cond do
+      MapSet.member?(visiting, step.name) ->
+        # Cycle — return 0 (cycle validation is done separately)
+        0
 
-          dep_depth =
-            step.depends_on
-            |> Enum.map(fn dep ->
-              dep_step = Map.fetch!(step_map, dep)
-              step_depth(dep_step, step_map, known_depths, visiting)
-            end)
-            |> then(fn depths -> if depths == [], do: -1, else: Enum.max(depths) end)
+      Map.has_key?(known_depths, step.name) ->
+        Map.fetch!(known_depths, step.name)
 
-          dep_depth + 1
-
-        known ->
-          known
-      end
+      true ->
+        visiting = MapSet.put(visiting, step.name)
+        max_dep_depth(step.depends_on, step_map, known_depths, visiting) + 1
     end
+  end
+
+  defp max_dep_depth([], _step_map, _known_depths, _visiting), do: -1
+
+  defp max_dep_depth(deps, step_map, known_depths, visiting) do
+    deps
+    |> Enum.map(fn dep ->
+      dep_step = Map.fetch!(step_map, dep)
+      step_depth(dep_step, step_map, known_depths, visiting)
+    end)
+    |> Enum.max()
   end
 
   # ---------------------------------------------------------------------------

@@ -96,37 +96,8 @@ defmodule JidoClaw.Forge.Manager do
 
       true ->
         case Registry.lookup(@registry, session_id) do
-          [{_pid, _}] ->
-            {:reply, {:error, :already_exists}, state}
-
-          [] ->
-            if cluster_session_exists?(session_id) do
-              {:reply, {:error, :already_exists}, state}
-            else
-              child_spec = {JidoClaw.Forge.Harness, {session_id, spec, []}}
-
-              case DynamicSupervisor.start_child(@supervisor, child_spec) do
-                {:ok, pid} ->
-                  Process.monitor(pid)
-                  handle = %{session_id: session_id, pid: pid}
-
-                  new_state = %{
-                    state
-                    | sessions: MapSet.put(state.sessions, session_id),
-                      session_runners: Map.put(state.session_runners, session_id, runner_type),
-                      runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
-                  }
-
-                  ForgePubSub.broadcast_session_event({:session_started, session_id})
-                  {:reply, {:ok, handle}, new_state}
-
-                {:error, :already_claimed} ->
-                  {:reply, {:error, :already_exists}, state}
-
-                {:error, reason} ->
-                  {:reply, {:error, reason}, state}
-              end
-            end
+          [{_pid, _}] -> {:reply, {:error, :already_exists}, state}
+          [] -> try_start_session(session_id, spec, runner_type, state)
         end
     end
   end
@@ -212,6 +183,36 @@ defmodule JidoClaw.Forge.Manager do
       end
 
       {:noreply, state}
+    end
+  end
+
+  defp try_start_session(session_id, spec, runner_type, state) do
+    if cluster_session_exists?(session_id) do
+      {:reply, {:error, :already_exists}, state}
+    else
+      child_spec = {JidoClaw.Forge.Harness, {session_id, spec, []}}
+
+      case DynamicSupervisor.start_child(@supervisor, child_spec) do
+        {:ok, pid} ->
+          Process.monitor(pid)
+          handle = %{session_id: session_id, pid: pid}
+
+          new_state = %{
+            state
+            | sessions: MapSet.put(state.sessions, session_id),
+              session_runners: Map.put(state.session_runners, session_id, runner_type),
+              runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
+          }
+
+          ForgePubSub.broadcast_session_event({:session_started, session_id})
+          {:reply, {:ok, handle}, new_state}
+
+        {:error, :already_claimed} ->
+          {:reply, {:error, :already_exists}, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     end
   end
 

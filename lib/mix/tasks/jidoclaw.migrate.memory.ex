@@ -113,58 +113,73 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   defp migrate_memory(project_dir, workspace, dry_run?) do
     path = Path.join([project_dir, ".jido", "memory.json"])
 
+    case read_entries(path) do
+      {:ok, entries} ->
+        Mix.shell().info("memory.json: #{length(entries)} entries")
+        migrate_entries(entries, workspace, dry_run?)
+
+      :empty ->
+        %{inserted: 0, skipped: 0, failed: 0}
+    end
+  end
+
+  defp read_entries(path) do
     case File.read(path) do
       {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, map} when is_map(map) ->
-            entries =
-              map
-              |> Enum.map(fn {_id, entry} -> entry end)
-              |> Enum.reject(&is_nil/1)
-
-            Mix.shell().info("memory.json: #{length(entries)} entries")
-
-            cond do
-              dry_run? and is_nil(workspace) ->
-                # Workspace would be created — every entry's
-                # import_hash is unique within a fresh workspace_id, so
-                # all entries would be inserted on a real run.
-                %{inserted: length(entries), skipped: 0, failed: 0}
-
-              dry_run? ->
-                # Workspace already exists. Compute each entry's
-                # import_hash and predict insert vs skip without
-                # writing.
-                Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
-                  attrs = legacy_to_attrs(entry, workspace)
-
-                  if already_imported?(attrs[:import_hash]) do
-                    Map.update!(acc, :skipped, &(&1 + 1))
-                  else
-                    Map.update!(acc, :inserted, &(&1 + 1))
-                  end
-                end)
-
-              true ->
-                Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
-                  attrs = legacy_to_attrs(entry, workspace)
-                  classify_import(entry, attrs, acc)
-                end)
-            end
-
-          {:error, reason} ->
-            Mix.shell().info("memory.json: invalid JSON (#{inspect(reason)})")
-            %{inserted: 0, skipped: 0, failed: 0}
-        end
+        decode_entries(body)
 
       {:error, :enoent} ->
         Mix.shell().info("memory.json: not present, skipping")
-        %{inserted: 0, skipped: 0, failed: 0}
+        :empty
 
       {:error, reason} ->
         Mix.shell().info("memory.json: read error (#{inspect(reason)})")
-        %{inserted: 0, skipped: 0, failed: 0}
+        :empty
     end
+  end
+
+  defp decode_entries(body) do
+    case Jason.decode(body) do
+      {:ok, map} when is_map(map) ->
+        entries =
+          map
+          |> Enum.map(fn {_id, entry} -> entry end)
+          |> Enum.reject(&is_nil/1)
+
+        {:ok, entries}
+
+      {:error, reason} ->
+        Mix.shell().info("memory.json: invalid JSON (#{inspect(reason)})")
+        :empty
+    end
+  end
+
+  # Workspace would be created — every entry's import_hash is unique
+  # within a fresh workspace_id, so all entries would be inserted on a
+  # real run.
+  defp migrate_entries(entries, nil, true) do
+    %{inserted: length(entries), skipped: 0, failed: 0}
+  end
+
+  # Workspace already exists. Compute each entry's import_hash and
+  # predict insert vs skip without writing.
+  defp migrate_entries(entries, workspace, true) do
+    Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
+      attrs = legacy_to_attrs(entry, workspace)
+
+      if already_imported?(attrs[:import_hash]) do
+        Map.update!(acc, :skipped, &(&1 + 1))
+      else
+        Map.update!(acc, :inserted, &(&1 + 1))
+      end
+    end)
+  end
+
+  defp migrate_entries(entries, workspace, false) do
+    Enum.reduce(entries, %{inserted: 0, skipped: 0, failed: 0}, fn entry, acc ->
+      attrs = legacy_to_attrs(entry, workspace)
+      classify_import(entry, attrs, acc)
+    end)
   end
 
   # Pre-check the partial unique `import_hash` identity so the

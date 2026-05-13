@@ -809,14 +809,8 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         Enum.flat_map(ranked, fn {id, score} ->
           case Map.fetch(loaded, id) do
             {:ok, fact} ->
-              fact =
-                if attach? do
-                  attach_shadows(fact, Map.get(shadows_by_id, id, []))
-                else
-                  fact
-                end
-
-              [%{fact: fact, combined_score: score}]
+              shadows = Map.get(shadows_by_id, id, [])
+              [%{fact: maybe_attach_shadows(fact, attach?, shadows), combined_score: score}]
 
             :error ->
               []
@@ -824,6 +818,9 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         end)
     end
   end
+
+  defp maybe_attach_shadows(fact, false, _shadows), do: fact
+  defp maybe_attach_shadows(fact, true, shadows), do: attach_shadows(fact, shadows)
 
   defp decode_shadowed_by(nil), do: []
 

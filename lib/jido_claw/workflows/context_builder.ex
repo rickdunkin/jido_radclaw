@@ -83,33 +83,29 @@ defmodule JidoClaw.Workflows.ContextBuilder do
       ""
     else
       sections =
-        Enum.flat_map(consumes, fn producer_name ->
-          producer_step = Enum.find(all_steps, fn s -> s.name == producer_name end)
-          producer_result = Enum.find(prior_results, fn r -> r.name == producer_name end)
-
-          static = if producer_step, do: Map.get(producer_step, :produces) || %{}, else: %{}
-
-          dynamic =
-            if producer_result, do: Map.get(producer_result, :artifacts) || %{}, else: %{}
-
-          merged = Map.merge(normalize_produces(static), dynamic)
-
-          if map_size(merged) > 0 do
-            lines =
-              Enum.map(merged, fn {k, v} -> "- **#{k}**: #{v}" end)
-              |> Enum.join("\n")
-
-            ["### Artifacts from #{producer_name}\n#{lines}"]
-          else
-            []
-          end
-        end)
+        Enum.flat_map(consumes, &format_artifact_section(&1, all_steps, prior_results))
 
       if sections == [] do
         ""
       else
         "## Artifact Context\n\n#{Enum.join(sections, "\n\n")}"
       end
+    end
+  end
+
+  defp format_artifact_section(producer_name, all_steps, prior_results) do
+    producer_step = Enum.find(all_steps, fn s -> s.name == producer_name end)
+    producer_result = Enum.find(prior_results, fn r -> r.name == producer_name end)
+
+    static = if producer_step, do: Map.get(producer_step, :produces) || %{}, else: %{}
+    dynamic = if producer_result, do: Map.get(producer_result, :artifacts) || %{}, else: %{}
+    merged = Map.merge(normalize_produces(static), dynamic)
+
+    if map_size(merged) > 0 do
+      lines = Enum.map_join(merged, "\n", fn {k, v} -> "- **#{k}**: #{v}" end)
+      ["### Artifacts from #{producer_name}\n#{lines}"]
+    else
+      []
     end
   end
 

@@ -45,22 +45,26 @@ defmodule JidoClaw.Tools.EditFile do
                "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
 
             true ->
-              new_content = String.replace(content, old_str, new_str, global: false)
-
-              case Resolver.write(path, new_content, opts) do
-                :ok ->
-                  diff = build_diff(old_str, new_str)
-                  {:ok, %{path: path, diff: diff, status: "edited"}}
-
-                {:error, reason} ->
-                  {:error, "Failed to write #{path}: #{inspect(reason)}"}
-              end
+              write_edit(path, content, old_str, new_str, opts)
           end
 
         {:error, reason} ->
           {:error, "Cannot read #{path}: #{inspect(reason)}"}
       end
     end)
+  end
+
+  defp write_edit(path, content, old_str, new_str, opts) do
+    new_content = String.replace(content, old_str, new_str, global: false)
+
+    case Resolver.write(path, new_content, opts) do
+      :ok ->
+        diff = build_diff(old_str, new_str)
+        {:ok, %{path: path, diff: diff, status: "edited"}}
+
+      {:error, reason} ->
+        {:error, "Failed to write #{path}: #{inspect(reason)}"}
+    end
   end
 
   defp count_occurrences(content, pattern) do

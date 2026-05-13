@@ -143,16 +143,19 @@ defmodule JidoClaw.Forge.Sandbox.Local do
 
     if sandbox do
       Agent.update(pid, fn state ->
-        update_in(state, [sid, :env], fn existing ->
-          merged = Map.merge(existing || %{}, env)
-          Map.new(merged, fn {k, v} -> {to_string(k), to_string(v)} end)
-        end)
+        update_in(state, [sid, :env], &stringify_env(&1, env))
       end)
 
       :ok
     else
       {:error, :no_sandbox}
     end
+  end
+
+  defp stringify_env(existing, env) do
+    (existing || %{})
+    |> Map.merge(env)
+    |> Map.new(fn {k, v} -> {to_string(k), to_string(v)} end)
   end
 
   @impl true

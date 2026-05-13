@@ -19,21 +19,15 @@ defmodule JidoClaw.Cron.Scheduler do
       {:ok, jobs} ->
         count =
           Enum.reduce(jobs, 0, fn job, acc ->
-            case build_persistent_opts(job) do
-              {:ok, opts} ->
-                case schedule(tenant_id, opts) do
-                  {:ok, _, _} ->
-                    acc + 1
+            case try_schedule_job(tenant_id, job) do
+              :ok ->
+                acc + 1
 
-                  {:error, reason} ->
-                    Logger.warning(
-                      "[Cron] Failed to schedule job #{job.job_id}: #{inspect(reason)}"
-                    )
+              {:error, :schedule, reason} ->
+                Logger.warning("[Cron] Failed to schedule job #{job.job_id}: #{inspect(reason)}")
+                acc
 
-                    acc
-                end
-
-              {:error, reason} ->
+              {:error, :build_opts, reason} ->
                 Logger.warning(
                   "[Cron] Skipping invalid persisted job #{job.job_id}: #{inspect(reason)}"
                 )
@@ -47,6 +41,19 @@ defmodule JidoClaw.Cron.Scheduler do
       {:error, reason} ->
         Logger.warning("[Cron] Failed to load persistent jobs: #{inspect(reason)}")
         {:ok, 0}
+    end
+  end
+
+  defp try_schedule_job(tenant_id, job) do
+    case build_persistent_opts(job) do
+      {:ok, opts} ->
+        case schedule(tenant_id, opts) do
+          {:ok, _, _} -> :ok
+          {:error, reason} -> {:error, :schedule, reason}
+        end
+
+      {:error, reason} ->
+        {:error, :build_opts, reason}
     end
   end
 
