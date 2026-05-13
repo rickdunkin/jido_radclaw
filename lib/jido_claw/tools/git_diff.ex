@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.GitDiff do
+  @moduledoc false
   use Jido.Action,
     name: "git_diff",
     description: "Show git diff output. Can show staged or unstaged changes.",

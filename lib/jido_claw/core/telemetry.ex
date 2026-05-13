@@ -2,6 +2,8 @@ defmodule JidoClaw.Telemetry do
   use Supervisor
   import Telemetry.Metrics
 
+  alias JidoClaw.Tenant.Manager
+
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
   end
@@ -86,9 +88,9 @@ defmodule JidoClaw.Telemetry do
   # Periodic measurement: emit current tenant count
   def emit_tenant_count do
     count =
-      case Process.whereis(JidoClaw.Tenant.Manager) do
+      case Process.whereis(Manager) do
         nil -> 0
-        _pid -> JidoClaw.Tenant.Manager.count()
+        _pid -> Manager.count()
       end
 
     :telemetry.execute([:jido_claw, :tenant, :count], %{count: count}, %{})

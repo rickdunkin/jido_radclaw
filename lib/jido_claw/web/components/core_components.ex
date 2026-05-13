@@ -1,4 +1,5 @@
 defmodule JidoClaw.Web.CoreComponents do
+  @moduledoc false
   use Phoenix.Component
 
   attr(:flash, :map, required: true)

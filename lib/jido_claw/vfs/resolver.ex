@@ -22,6 +22,7 @@ defmodule JidoClaw.VFS.Resolver do
 
   alias Jido.Shell.VFS, as: ShellVFS
   alias Jido.Shell.VFS.MountTable
+  alias JidoClaw.VFS.Workspace
 
   # -- Public API -------------------------------------------------------------
 
@@ -34,7 +35,7 @@ defmodule JidoClaw.VFS.Resolver do
     * `:workspace_id` — when set, absolute paths are checked against the
       workspace's VFS mount table before falling back to the local filesystem.
     * `:project_dir` — when set alongside `:workspace_id`, the workspace is
-      auto-bootstrapped via `JidoClaw.VFS.Workspace.ensure_started/2`
+      auto-bootstrapped via `Workspace.ensure_started/2`
       before consulting the mount table. Bootstrap failures surface as
       `{:error, {:workspace_bootstrap_failed, reason}}` rather than silently
       falling through to the local filesystem.
@@ -226,7 +227,7 @@ defmodule JidoClaw.VFS.Resolver do
         # isn't usable. `nil` means "no bootstrap intent, use legacy
         # mount-check behavior".
         if is_binary(ws) and ws != "" and is_binary(pd) do
-          case JidoClaw.VFS.Workspace.ensure_started(ws, pd) do
+          case Workspace.ensure_started(ws, pd) do
             {:ok, _pid} -> :ok
             {:error, reason} -> {:error, {:workspace_bootstrap_failed, reason}}
           end
@@ -274,15 +275,13 @@ defmodule JidoClaw.VFS.Resolver do
   defp parse_path(path, opts) do
     workspace_id = Keyword.get(opts, :workspace_id)
 
-    cond do
-      is_binary(workspace_id) and workspace_id != "" and String.starts_with?(path, "/") ->
-        case MountTable.resolve(workspace_id, path) do
-          {:ok, _mount, _rel} -> {:vfs, workspace_id, path}
-          {:error, :no_mount} -> {:local, path}
-        end
-
-      true ->
-        {:local, path}
+    if is_binary(workspace_id) and workspace_id != "" and String.starts_with?(path, "/") do
+      case MountTable.resolve(workspace_id, path) do
+        {:ok, _mount, _rel} -> {:vfs, workspace_id, path}
+        {:error, :no_mount} -> {:local, path}
+      end
+    else
+      {:local, path}
     end
   end
 

@@ -16,6 +16,15 @@ defmodule JidoClaw.Audit.EventTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit.Event
+  alias JidoClaw.Conversations.Message, as: ConversationsMessage
+  alias JidoClaw.Cron.Job, as: CronJob
+  alias JidoClaw.Memory.Block, as: MemoryBlock
+  alias JidoClaw.Memory.ConsolidationRun
+  alias JidoClaw.Memory.Episode
+  alias JidoClaw.Memory.Fact
+  alias JidoClaw.Memory.Link, as: MemoryLink
+  alias JidoClaw.Solutions.Reputation
+  alias JidoClaw.Solutions.Solution
 
   describe ":record" do
     test "requires tenant: opt; rejects writes without tenant" do
@@ -310,7 +319,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, session: session_b} = seed_full(tenant_label: "fk-msg-b")
 
       {:ok, msg_b} =
-        JidoClaw.Conversations.Message.append(
+        ConversationsMessage.append(
           %{
             session_id: session_b.id,
             role: :user,
@@ -339,7 +348,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-fact-b")
 
       {:ok, fact_b} =
-        JidoClaw.Memory.Fact.record(
+        Fact.record(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -372,7 +381,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-sol-b")
 
       {:ok, sol_b} =
-        JidoClaw.Solutions.Solution.store(
+        Solution.store(
           %{
             problem_signature: "sig-fk-#{System.unique_integer([:positive])}",
             solution_content: "content",
@@ -404,7 +413,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-block-b")
 
       {:ok, block_b} =
-        JidoClaw.Memory.Block.write(
+        MemoryBlock.write(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -435,7 +444,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-ep-b")
 
       {:ok, ep_b} =
-        JidoClaw.Memory.Episode.record(
+        Episode.record(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -464,7 +473,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-link-b")
 
       {:ok, fact_a_b} =
-        JidoClaw.Memory.Fact.record(
+        Fact.record(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -478,7 +487,7 @@ defmodule JidoClaw.Audit.EventTest do
         )
 
       {:ok, fact_b_b} =
-        JidoClaw.Memory.Fact.record(
+        Fact.record(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -492,7 +501,7 @@ defmodule JidoClaw.Audit.EventTest do
         )
 
       {:ok, link_b} =
-        JidoClaw.Memory.Link.create_link(
+        MemoryLink.create_link(
           %{
             from_fact_id: fact_a_b.id,
             to_fact_id: fact_b_b.id,
@@ -522,7 +531,7 @@ defmodule JidoClaw.Audit.EventTest do
       %{tenant_id: tenant_b, workspace: ws_b} = seed_full(tenant_label: "fk-cons-b")
 
       {:ok, run_b} =
-        JidoClaw.Memory.ConsolidationRun.record_run(
+        ConsolidationRun.record_run(
           %{
             scope_kind: :workspace,
             workspace_id: ws_b.id,
@@ -553,7 +562,7 @@ defmodule JidoClaw.Audit.EventTest do
       tenant_b = seed_tenant("fk-rep-b")
 
       {:ok, rep_b} =
-        JidoClaw.Solutions.Reputation.upsert(
+        Reputation.upsert(
           %{agent_id: "agent-fk-rep"},
           tenant: tenant_b,
           actor: actor_for(tenant_b)
@@ -578,7 +587,7 @@ defmodule JidoClaw.Audit.EventTest do
       tenant_b = seed_tenant("fk-cron-b")
 
       {:ok, job_b} =
-        JidoClaw.Cron.Job.upsert(
+        CronJob.upsert(
           %{
             job_id: "fk-cron-#{System.unique_integer([:positive])}",
             schedule_kind: :every,

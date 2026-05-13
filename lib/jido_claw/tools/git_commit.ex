@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.GitCommit do
+  @moduledoc false
   use Jido.Action,
     name: "git_commit",
     description:

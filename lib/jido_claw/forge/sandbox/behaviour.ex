@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Sandbox.Behaviour do
+  @moduledoc false
   @callback create(spec :: map()) :: {:ok, struct(), String.t()} | {:error, term()}
   @callback exec(client :: struct(), command :: String.t(), opts :: keyword()) ::
               {String.t(), integer()}

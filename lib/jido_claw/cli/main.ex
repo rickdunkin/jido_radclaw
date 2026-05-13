@@ -10,6 +10,9 @@ defmodule JidoClaw.CLI.Main do
 
   require Logger
 
+  alias JidoClaw.CLI.Repl
+  alias JidoClaw.CLI.Setup
+
   def main(["--mcp" | _rest]) do
     start_mcp()
   end
@@ -20,7 +23,7 @@ defmodule JidoClaw.CLI.Main do
     Application.put_env(:jido_claw, :first_run_setup_pending, true)
     Application.put_env(:jido_claw, :force_setup, true)
     Application.ensure_all_started(:jido_claw)
-    JidoClaw.CLI.Setup.run(project_dir)
+    Setup.run(project_dir)
     IO.puts("Setup complete — restart with the binary or `mix jidoclaw`.")
     :ok
   end
@@ -30,7 +33,7 @@ defmodule JidoClaw.CLI.Main do
     Application.put_env(:jido_claw, :project_dir, project_dir)
     Application.ensure_all_started(:jido_claw)
 
-    JidoClaw.CLI.Repl.start(project_dir)
+    Repl.start(project_dir)
   end
 
   defp start_mcp do

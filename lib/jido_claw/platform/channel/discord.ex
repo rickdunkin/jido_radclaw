@@ -6,6 +6,9 @@ defmodule JidoClaw.Channel.Discord do
   @behaviour JidoClaw.Channel.Behaviour
   require Logger
 
+  alias JidoClaw.Authorization.Actor
+  alias Nostrum.Api.Message
+
   @impl true
   def init(config) do
     state = %{
@@ -46,7 +49,7 @@ defmodule JidoClaw.Channel.Discord do
     case JidoClaw.chat("default", session_id, normalized.text,
            kind: :discord,
            external_id: session_id,
-           actor: JidoClaw.Authorization.Actor.system("default")
+           actor: Actor.system("default")
          ) do
       {:ok, response} ->
         send_message(normalized.channel_id, response, state)
@@ -62,7 +65,7 @@ defmodule JidoClaw.Channel.Discord do
     # Nostrum API call
     case Code.ensure_loaded(Nostrum.Api.Message) do
       {:module, _} ->
-        Nostrum.Api.Message.create(String.to_integer(channel_id), content: content)
+        Message.create(String.to_integer(channel_id), content: content)
         :ok
 
       {:error, _} ->

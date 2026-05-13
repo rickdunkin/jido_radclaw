@@ -27,6 +27,8 @@ defmodule JidoClaw.MCPScope.Initializer do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -76,7 +78,7 @@ defmodule JidoClaw.MCPScope.Initializer do
           session_id: session_id,
           project_dir: cwd,
           agent_id: "main",
-          actor: JidoClaw.Authorization.Actor.system("default")
+          actor: Actor.system("default")
         }
 
         Application.put_env(:jido_claw, :jido_claw_mcp_default_scope, scope)

@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.Agents.ResearchCoordinator do
+  @moduledoc false
   require Logger
 
   def research(event, triage) do

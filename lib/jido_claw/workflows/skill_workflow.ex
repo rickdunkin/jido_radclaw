@@ -11,9 +11,10 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
   like FanOut for parallel steps.
   """
 
-  alias Jido.Composer.Workflow.Machine
   alias Jido.Composer.Node.ActionNode
+  alias Jido.Composer.Workflow.Machine
   alias JidoClaw.Workflows.{ContextBuilder, StepNormalizer, StepResult}
+  alias JidoClaw.Workflows.StepAction
   require Logger
 
   @doc """
@@ -54,7 +55,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
         |> Enum.with_index(1)
         |> Enum.map(fn {_step, idx} ->
           state_name = :"step_#{idx}"
-          {:ok, node} = ActionNode.new(JidoClaw.Workflows.StepAction)
+          {:ok, node} = ActionNode.new(StepAction)
           {state_name, node}
         end)
         |> Map.new()
@@ -133,7 +134,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
         |> maybe_put(:workspace_id, workspace_id)
         |> Map.merge(scope_context)
 
-      case JidoClaw.Workflows.StepAction.run(params, scope_context) do
+      case StepAction.run(params, scope_context) do
         {:ok, %StepResult{} = step_result} ->
           # Apply result to machine context and transition to next state
           machine = Machine.apply_result(machine, step_result)

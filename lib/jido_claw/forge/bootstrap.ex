@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Bootstrap do
+  @moduledoc false
   require Logger
 
   @spec execute(struct(), list(map()), keyword()) :: :ok | {:error, map(), term()}

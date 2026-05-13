@@ -1,4 +1,5 @@
 defmodule JidoClaw.Setup.CredentialValidator do
+  @moduledoc false
   @doc "Validate that configured API credentials work."
   def validate_all do
     %{

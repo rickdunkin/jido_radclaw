@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.GetAgentResult do
+  @moduledoc false
   use Jido.Action,
     name: "get_agent_result",
     description:

@@ -23,6 +23,7 @@ defmodule JidoClaw.Audit.ProducersTest do
   alias JidoClaw.Conversations.Session
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Memory.Block
+  alias JidoClaw.Memory.BlockRevision
   alias JidoClaw.Solutions.Solution
 
   describe "SessionStart producer" do
@@ -316,7 +317,7 @@ defmodule JidoClaw.Audit.ProducersTest do
         )
 
       {:ok, revisions} =
-        JidoClaw.Memory.BlockRevision.for_block(block.id,
+        BlockRevision.for_block(block.id,
           tenant: tenant_id,
           actor: actor_for(tenant_id)
         )
@@ -360,7 +361,7 @@ defmodule JidoClaw.Audit.ProducersTest do
         Block.revise(prior, %{value: "v2", reason: "test-revise"}, actor: actor_for(tenant_id))
 
       {:ok, revisions} =
-        JidoClaw.Memory.BlockRevision.for_block(prior.id,
+        BlockRevision.for_block(prior.id,
           tenant: tenant_id,
           actor: actor_for(tenant_id)
         )

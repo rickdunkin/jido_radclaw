@@ -60,9 +60,9 @@ defmodule JidoClaw.Solutions.Solution do
     end
   end
 
+  alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Security.Redaction.Transcript
   alias JidoClaw.Workspaces.Workspace, as: WorkspaceResource
-  alias JidoClaw.Conversations.Session, as: SessionResource
 
   postgres do
     table("solutions")
@@ -563,6 +563,8 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Authorization.Actor
+
     @impl true
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
@@ -594,7 +596,7 @@ defmodule JidoClaw.Solutions.Solution do
       # cross-tenant access.
       effective_actor =
         actor ||
-          (tenant_id && JidoClaw.Authorization.Actor.system(tenant_id))
+          (tenant_id && Actor.system(tenant_id))
 
       result =
         if tenant_id do
@@ -660,6 +662,10 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Authorization.Actor
+    alias JidoClaw.Solutions.Reputation
+    alias JidoClaw.Solutions.Trust
+
     @impl true
     def change(changeset, _opts, context) do
       context_actor = Map.get(context, :actor)
@@ -679,10 +685,10 @@ defmodule JidoClaw.Solutions.Solution do
         # silently filtered to zero rows.
         actor =
           context_actor ||
-            (record.tenant_id && JidoClaw.Authorization.Actor.system(record.tenant_id))
+            (record.tenant_id && Actor.system(record.tenant_id))
 
         agent_rep_score =
-          case JidoClaw.Solutions.Reputation.get(record.agent_id || "unknown",
+          case Reputation.get(record.agent_id || "unknown",
                  tenant: record.tenant_id,
                  actor: actor
                ) do
@@ -692,7 +698,7 @@ defmodule JidoClaw.Solutions.Solution do
           end
 
         score =
-          JidoClaw.Solutions.Trust.compute(merged, agent_reputation: agent_rep_score)
+          Trust.compute(merged, agent_reputation: agent_rep_score)
 
         Ash.Changeset.force_change_attribute(cs, :trust_score, score)
       end)
@@ -702,6 +708,8 @@ defmodule JidoClaw.Solutions.Solution do
   defmodule Changes.RecordReputationOutcome do
     @moduledoc false
     use Ash.Resource.Change
+
+    alias JidoClaw.Solutions.Reputation
 
     @impl true
     def change(changeset, _opts, _context) do
@@ -722,10 +730,10 @@ defmodule JidoClaw.Solutions.Solution do
     defp verification_status(_), do: nil
 
     defp maybe_record("passed", tenant_id, agent_id),
-      do: JidoClaw.Solutions.Reputation.record_success(tenant_id, agent_id)
+      do: Reputation.record_success(tenant_id, agent_id)
 
     defp maybe_record("failed", tenant_id, agent_id),
-      do: JidoClaw.Solutions.Reputation.record_failure(tenant_id, agent_id)
+      do: Reputation.record_failure(tenant_id, agent_id)
 
     defp maybe_record(_other, _tenant_id, _agent_id), do: :ok
   end

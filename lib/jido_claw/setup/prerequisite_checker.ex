@@ -1,4 +1,5 @@
 defmodule JidoClaw.Setup.PrerequisiteChecker do
+  @moduledoc false
   @doc "Check all prerequisites and return a map of results."
   def check_all do
     %{

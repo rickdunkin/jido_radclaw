@@ -1,6 +1,8 @@
 defmodule JidoClaw.Forge.Runners.Shell do
+  @moduledoc false
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.Runner
+  alias JidoClaw.Forge.Sandbox
 
   @impl true
   def init(_client, _config), do: :ok
@@ -9,7 +11,7 @@ defmodule JidoClaw.Forge.Runners.Shell do
   def run_iteration(client, state, opts) do
     command = Keyword.get(opts, :command, Map.get(state, :command, "echo 'no command'"))
 
-    case JidoClaw.Forge.Sandbox.exec(client, command, opts) do
+    case Sandbox.exec(client, command, opts) do
       {output, 0} -> {:ok, Runner.done(output)}
       {output, code} -> {:ok, Runner.error("exit code #{code}", output)}
     end

@@ -1,6 +1,8 @@
 defmodule JidoClaw.Web.HealthController do
   use Phoenix.Controller, formats: [:json]
 
+  alias JidoClaw.Tenant.Manager
+
   def index(conn, _params) do
     uptime =
       System.monotonic_time(:second) -
@@ -13,9 +15,9 @@ defmodule JidoClaw.Web.HealthController do
       end
 
     tenant_count =
-      case Process.whereis(JidoClaw.Tenant.Manager) do
+      case Process.whereis(Manager) do
         nil -> 0
-        _pid -> JidoClaw.Tenant.Manager.count()
+        _pid -> Manager.count()
       end
 
     json(conn, %{

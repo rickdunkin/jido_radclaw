@@ -74,6 +74,8 @@ defmodule JidoClaw.Memory.Block do
     end
   end
 
+  alias JidoClaw.Audit.ActorClassifier
+  alias JidoClaw.Audit.AsyncWriter
   alias JidoClaw.Memory.BlockRevision
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
@@ -349,12 +351,14 @@ defmodule JidoClaw.Memory.Block do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Block
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
 
-        case JidoClaw.Memory.Block.scope_fk_for(cs, scope_kind) do
+        case Block.scope_fk_for(cs, scope_kind) do
           {:ok, _} ->
             cs
 
@@ -491,10 +495,12 @@ defmodule JidoClaw.Memory.Block do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.Block
+
     @impl true
     def prepare(query, _opts, _context) do
       chain = Ash.Query.get_argument(query, :scope_chain) || []
-      filter_expr = JidoClaw.Memory.Block.build_chain_filter(chain)
+      filter_expr = Block.build_chain_filter(chain)
 
       query
       |> Ash.Query.do_filter(filter_expr)
@@ -507,6 +513,8 @@ defmodule JidoClaw.Memory.Block do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.Block
+
     @impl true
     def prepare(query, _opts, _context) do
       kind = Ash.Query.get_argument(query, :scope_kind)
@@ -515,7 +523,7 @@ defmodule JidoClaw.Memory.Block do
 
       Ash.Query.do_filter(
         query,
-        JidoClaw.Memory.Block.build_history_filter(kind, fk, arg_label)
+        Block.build_history_filter(kind, fk, arg_label)
       )
     end
   end
@@ -525,7 +533,13 @@ defmodule JidoClaw.Memory.Block do
   # module compiles before the `use Ash.Resource` block has finalized).
   # ---------------------------------------------------------------------------
 
-  @doc false
+  @doc """
+  Resolve the foreign-key id for `scope_kind` from `changeset`.
+
+  Returns `{:ok, id}` when the attribute is set, `:missing` otherwise.
+  Public so the inline `change` modules in this file can reference it
+  before the resource is fully compiled.
+  """
   def scope_fk_for(changeset, :user) do
     case Ash.Changeset.get_attribute(changeset, :user_id) do
       nil -> :missing
@@ -556,9 +570,12 @@ defmodule JidoClaw.Memory.Block do
 
   def scope_fk_for(_, _), do: :missing
 
-  @doc false
-  # An empty chain filters to no rows. `false` is a valid Ash filter
-  # value (compiled to `WHERE FALSE`).
+  @doc """
+  Build an Ash filter expression matching any `(scope_kind, fk)` pair in
+  `chain`, restricted to currently-active rows (`invalid_at IS NULL`).
+  An empty chain compiles to `WHERE FALSE` (matches no rows). Public so
+  inline preparation modules can call it.
+  """
   def build_chain_filter([]), do: expr(false)
 
   def build_chain_filter(chain) do
@@ -583,7 +600,11 @@ defmodule JidoClaw.Memory.Block do
     expr(scope_kind == :session and session_id == ^fk and is_nil(invalid_at))
   end
 
-  @doc false
+  @doc """
+  Build an Ash filter expression for the full history of a `(scope, label)`
+  pair — including invalidated rows. Public so inline preparation
+  modules can call it.
+  """
   def build_history_filter(:user, fk, arg_label) do
     expr(scope_kind == :user and user_id == ^fk and label == ^arg_label)
   end
@@ -714,9 +735,9 @@ defmodule JidoClaw.Memory.Block do
   # audit trail still links the invalidation to the new block and the
   # BlockRevision snapshot.
   defp emit_revise_audit(prior, new_block, rev, actor) do
-    {actor_kind, actor_id} = JidoClaw.Audit.ActorClassifier.classify(actor)
+    {actor_kind, actor_id} = ActorClassifier.classify(actor)
 
-    JidoClaw.Audit.AsyncWriter.sync(%{
+    AsyncWriter.sync(%{
       tenant_id: prior.tenant_id,
       event_kind: :memory_write,
       actor_kind: actor_kind,

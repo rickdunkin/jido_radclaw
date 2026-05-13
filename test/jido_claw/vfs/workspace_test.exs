@@ -1,7 +1,8 @@
 defmodule JidoClaw.VFS.WorkspaceTest do
-  # async: false — Jido.Shell.VFS.MountTable is global ETS state.
+  # async: false — VFS.MountTable is global ETS state.
   use ExUnit.Case, async: false
 
+  alias Jido.Shell.VFS
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -35,7 +36,7 @@ defmodule JidoClaw.VFS.WorkspaceTest do
       mounts = Workspace.mounts(ws)
       assert [%{path: "/project"}] = mounts
 
-      assert {:ok, "hi"} = Jido.Shell.VFS.read_file(ws, "/project/hello.txt")
+      assert {:ok, "hi"} = VFS.read_file(ws, "/project/hello.txt")
     end
 
     test "is idempotent — subsequent calls return the same pid", %{
@@ -96,8 +97,8 @@ defmodule JidoClaw.VFS.WorkspaceTest do
       assert log =~ "project_dir drift"
       assert_receive {:DOWN, ^ref, :process, ^pid_a, _}, 1_000
 
-      assert {:ok, "b-only"} = Jido.Shell.VFS.read_file(ws, "/project/only_in_b.txt")
-      assert {:error, _} = Jido.Shell.VFS.read_file(ws, "/project/only_in_a.txt")
+      assert {:ok, "b-only"} = VFS.read_file(ws, "/project/only_in_b.txt")
+      assert {:error, _} = VFS.read_file(ws, "/project/only_in_a.txt")
     end
 
     test "drift detection invalidates SessionManager sessions for the workspace", %{
@@ -151,7 +152,7 @@ defmodule JidoClaw.VFS.WorkspaceTest do
       assert {:ok, new_pid} = Workspace.ensure_started(ws, tmp)
       assert is_pid(new_pid)
       assert new_pid != pid
-      assert {:ok, "hi"} = Jido.Shell.VFS.read_file(ws, "/project/hello.txt")
+      assert {:ok, "hi"} = VFS.read_file(ws, "/project/hello.txt")
     end
 
     test "no self-call deadlock when SessionManager itself triggers drift", %{
@@ -202,8 +203,8 @@ defmodule JidoClaw.VFS.WorkspaceTest do
 
       assert :ok = Workspace.mount(ws, "/scratch", :in_memory, %{})
 
-      :ok = Jido.Shell.VFS.write_file(ws, "/scratch/note.txt", "scratch content")
-      assert {:ok, "scratch content"} = Jido.Shell.VFS.read_file(ws, "/scratch/note.txt")
+      :ok = VFS.write_file(ws, "/scratch/note.txt", "scratch content")
+      assert {:ok, "scratch content"} = VFS.read_file(ws, "/scratch/note.txt")
     end
 
     test "fail-soft: unknown adapter logs + returns :ok so bootstrap continues", %{

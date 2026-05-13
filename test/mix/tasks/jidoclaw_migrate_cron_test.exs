@@ -3,12 +3,13 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
 
   import JidoClaw.ExportTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Cron.Job
   alias JidoClaw.Tenants.Tenant
 
   setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
   end
 

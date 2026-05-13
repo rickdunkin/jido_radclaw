@@ -27,6 +27,9 @@ defmodule JidoClaw.Conversations.Session do
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer]
 
+  alias JidoClaw.Conversations.Resources.GlobalLookup
+  alias JidoClaw.Workspaces.Workspace
+
   policies do
     bypass action(:by_id_global) do
       authorize_if(always())
@@ -98,23 +101,14 @@ defmodule JidoClaw.Conversations.Session do
           tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
           workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
 
-          case JidoClaw.Workspaces.Workspace.by_id_global(workspace_id) do
-            {:ok, %{tenant_id: ^tenant_id}} ->
-              cs
-
-            {:ok, %{tenant_id: parent_tenant}} ->
-              Ash.Changeset.add_error(cs,
-                field: :workspace_id,
-                message: "cross_tenant_fk_mismatch",
-                vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
-              )
-
-            {:error, _} ->
-              Ash.Changeset.add_error(cs,
-                field: :workspace_id,
-                message: "workspace_not_found"
-              )
-          end
+          GlobalLookup.validate_tenant_match(
+            cs,
+            workspace_id,
+            tenant_id,
+            :workspace_id,
+            &Workspace.by_id_global/1,
+            "workspace_not_found"
+          )
         end)
       end)
 

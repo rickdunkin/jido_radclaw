@@ -1,4 +1,5 @@
 defmodule JidoClaw.Accounts.Checks.RegistrationAllowed do
+  @moduledoc false
   use Ash.Policy.SimpleCheck
 
   @impl true

@@ -1,5 +1,7 @@
 defmodule JidoClaw.Forge.PubSub do
+  @moduledoc false
   alias JidoClaw.Security.Redaction.ChannelRedaction
+  alias JidoClaw.Security.Redaction.Patterns
   require Logger
 
   @sessions_topic "forge:sessions"
@@ -33,7 +35,7 @@ defmodule JidoClaw.Forge.PubSub do
     |> Tuple.to_list()
     |> Enum.map(fn
       val when is_map(val) -> ChannelRedaction.redact_payload(val)
-      val when is_binary(val) -> JidoClaw.Security.Redaction.Patterns.redact(val)
+      val when is_binary(val) -> Patterns.redact(val)
       val -> val
     end)
     |> List.to_tuple()

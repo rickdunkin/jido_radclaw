@@ -9,6 +9,7 @@ defmodule JidoClaw.Conversations.HistoryTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Session.Worker
 
   describe "history/2 (hot path — live Session.Worker)" do
     test "returns only :user/:assistant/:system rows from the in-memory cache" do
@@ -22,7 +23,7 @@ defmodule JidoClaw.Conversations.HistoryTest do
       {:ok, _pid} =
         JidoClaw.Session.Supervisor.ensure_session(tenant, external_id, actor: actor_for(tenant))
 
-      :ok = JidoClaw.Session.Worker.set_session_uuid(tenant, external_id, session.id)
+      :ok = Worker.set_session_uuid(tenant, external_id, session.id)
 
       msgs = JidoClaw.history(tenant, external_id)
 

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.SpawnAgent do
+  @moduledoc false
   use Jido.Action,
     name: "spawn_agent",
     description:
@@ -31,13 +32,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
       ]
     ]
 
+  alias JidoClaw.Agent.Templates
+
   @impl true
   def run(params, context) do
     template_name = params.template
     task = params.task
     tag = Map.get(params, :tag) || "#{template_name}_#{:erlang.unique_integer([:positive])}"
 
-    case JidoClaw.Agent.Templates.get(template_name) do
+    case Templates.get(template_name) do
       {:ok, template} ->
         case JidoClaw.Jido.start_agent(template.module, id: tag) do
           {:ok, pid} ->

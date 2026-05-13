@@ -50,7 +50,10 @@ defmodule JidoClaw.Session.Worker do
   use GenServer
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Conversations.RequestCorrelation
+  alias JidoClaw.Conversations.RequestCorrelation.Cache
 
   @idle_timeout 300_000
 
@@ -280,7 +283,7 @@ defmodule JidoClaw.Session.Worker do
   # ---------------------------------------------------------------------------
 
   defp load_messages(session_uuid, tenant_id, actor) when is_binary(tenant_id) do
-    actor = actor || JidoClaw.Authorization.Actor.system(tenant_id)
+    actor = actor || Actor.system(tenant_id)
 
     case Message.for_session(session_uuid, tenant: tenant_id, actor: actor) do
       {:ok, rows} -> Enum.flat_map(rows, &to_view/1)
@@ -326,7 +329,7 @@ defmodule JidoClaw.Session.Worker do
   defp lookup_telemetry(request_id) when is_binary(request_id) do
     cache_lookup =
       try do
-        JidoClaw.Conversations.RequestCorrelation.Cache.lookup(request_id)
+        Cache.lookup(request_id)
       rescue
         _ in [ArgumentError] -> :error
       end
@@ -343,7 +346,7 @@ defmodule JidoClaw.Session.Worker do
   defp lookup_telemetry(_), do: %{}
 
   defp durable_lookup(request_id) do
-    case JidoClaw.Conversations.RequestCorrelation.lookup(request_id) do
+    case RequestCorrelation.lookup(request_id) do
       {:ok, row} -> telemetry_subset(row)
       _ -> %{}
     end

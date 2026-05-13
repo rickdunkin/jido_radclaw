@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Runners.ClaudeCode do
+  @moduledoc false
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.{Runner, Sandbox}
   alias JidoClaw.Security.Redaction.PromptRedaction
@@ -112,25 +113,23 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
     {events, last_result, turns} =
       Enum.reduce(lines, {[], nil, 0}, fn line, {events_acc, result_acc, turns_acc} ->
-        cond do
-          not String.starts_with?(line, "{") ->
-            {events_acc, result_acc, turns_acc}
+        if String.starts_with?(line, "{") do
+          case Jason.decode(line) do
+            {:ok, %{"type" => "assistant"} = decoded} ->
+              {[decoded | events_acc], result_acc, turns_acc + 1}
 
-          true ->
-            case Jason.decode(line) do
-              {:ok, %{"type" => "assistant"} = decoded} ->
-                {[decoded | events_acc], result_acc, turns_acc + 1}
+            {:ok, %{"type" => type} = decoded}
+            when type in ["tool_use", "tool_result", "system"] ->
+              {[decoded | events_acc], result_acc, turns_acc}
 
-              {:ok, %{"type" => type} = decoded}
-              when type in ["tool_use", "tool_result", "system"] ->
-                {[decoded | events_acc], result_acc, turns_acc}
+            {:ok, %{"type" => "result"} = result} ->
+              {events_acc, result, turns_acc}
 
-              {:ok, %{"type" => "result"} = result} ->
-                {events_acc, result, turns_acc}
-
-              _ ->
-                {events_acc, result_acc, turns_acc}
-            end
+            _ ->
+              {events_acc, result_acc, turns_acc}
+          end
+        else
+          {events_acc, result_acc, turns_acc}
         end
       end)
 

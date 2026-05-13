@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.IssueCommentClient do
+  @moduledoc false
   require Logger
 
   @github_api "https://api.github.com"

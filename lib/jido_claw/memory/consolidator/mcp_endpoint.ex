@@ -30,12 +30,10 @@ defmodule JidoClaw.Memory.Consolidator.MCPEndpoint do
   @doc "Stop a Bandit endpoint started with `start_link/1`."
   @spec stop(map()) :: :ok
   def stop(%{pid: pid}) when is_pid(pid) do
-    try do
-      Supervisor.stop(pid, :normal, 5_000)
-      :ok
-    catch
-      _, _ -> :ok
-    end
+    Supervisor.stop(pid, :normal, 5_000)
+    :ok
+  catch
+    _, _ -> :ok
   end
 
   def stop(_), do: :ok

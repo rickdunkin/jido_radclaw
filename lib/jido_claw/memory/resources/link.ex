@@ -214,6 +214,8 @@ defmodule JidoClaw.Memory.Link do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -221,8 +223,8 @@ defmodule JidoClaw.Memory.Link do
         to_id = Ash.Changeset.get_attribute(cs, :to_fact_id)
         tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
 
-        with {:ok, from_fact} <- JidoClaw.Memory.Fact.by_id_global(from_id),
-             {:ok, to_fact} <- JidoClaw.Memory.Fact.by_id_global(to_id) do
+        with {:ok, from_fact} <- Fact.by_id_global(from_id),
+             {:ok, to_fact} <- Fact.by_id_global(to_id) do
           validate_scopes(cs, from_fact, to_fact, tenant_id)
         else
           {:error, _} ->

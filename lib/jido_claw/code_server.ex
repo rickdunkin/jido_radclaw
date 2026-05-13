@@ -1,4 +1,14 @@
 defmodule JidoClaw.CodeServer do
+  @moduledoc """
+  Top-level subsystem that manages per-project runtimes and conversations.
+
+  Each project path is backed by a `JidoClaw.CodeServer.Runtime` process,
+  started lazily on demand under `RuntimeSupervisor` and looked up via
+  `RuntimeRegistry`. Provides the conversation lifecycle API
+  (`start_conversation/2`, `send_user_message/4`, `subscribe/3`,
+  `stop_conversation/2`) used by the editor-facing layers.
+  """
+
   require Logger
 
   @doc "Ensure a project runtime is started for the given project path."

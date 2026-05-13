@@ -5,6 +5,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   alias JidoClaw.Memory
   alias JidoClaw.Memory.Fact
+  alias JidoClaw.Memory.HybridSearchSql
   alias JidoClaw.Workspaces.Resolver
 
   setup do
@@ -305,7 +306,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # pre-fix; post-fix the per-pool dedup filters workspace_pref
       # before ranking so 12 ≤ cap and session_pref makes it through.
       ranked =
-        JidoClaw.Memory.HybridSearchSql.run(%{
+        HybridSearchSql.run(%{
           tenant_id: tenant_id,
           scope_chain: [{:session, session_id}, {:workspace, ws.id}],
           query: "diagnostic",
@@ -332,7 +333,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       ws_ctx = %{tenant_id: tenant_id, workspace_uuid: ws.id}
 
       {:ok, legacy_row} =
-        JidoClaw.Memory.Fact.import_legacy(
+        Fact.import_legacy(
           %{
             scope_kind: :workspace,
             workspace_id: ws.id,
@@ -391,7 +392,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # (Memory.remember_* doesn't expose the source). Use a unique
       # import_hash so the legacy unique identity is satisfied.
       {:ok, _legacy} =
-        JidoClaw.Memory.Fact.import_legacy(
+        Fact.import_legacy(
           %{
             scope_kind: :workspace,
             workspace_id: ws.id,

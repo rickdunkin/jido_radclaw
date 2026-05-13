@@ -74,10 +74,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
     payload =
       rows
       |> Enum.sort_by(& &1[:id])
-      |> Enum.map(fn row ->
-        {row[:id], to_legacy_shape(row)}
-      end)
-      |> Enum.into(%{})
+      |> Map.new(fn row -> {row[:id], to_legacy_shape(row)} end)
 
     File.mkdir_p!(Path.dirname(out_path))
     File.write!(out_path, Canonical.encode!(payload))

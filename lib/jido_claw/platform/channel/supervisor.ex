@@ -1,8 +1,10 @@
 defmodule JidoClaw.Channel.Supervisor do
   @moduledoc "Manages channel adapter processes per tenant."
 
+  alias JidoClaw.Tenant.InstanceSupervisor
+
   def start_channel(tenant_id, adapter_module, config) do
-    sup = JidoClaw.Tenant.InstanceSupervisor.channel_sup(tenant_id)
+    sup = InstanceSupervisor.channel_sup(tenant_id)
 
     child_spec = {
       JidoClaw.Channel.Worker,
@@ -13,12 +15,12 @@ defmodule JidoClaw.Channel.Supervisor do
   end
 
   def stop_channel(tenant_id, pid) do
-    sup = JidoClaw.Tenant.InstanceSupervisor.channel_sup(tenant_id)
+    sup = InstanceSupervisor.channel_sup(tenant_id)
     DynamicSupervisor.terminate_child(sup, pid)
   end
 
   def list_channels(tenant_id) do
-    sup = JidoClaw.Tenant.InstanceSupervisor.channel_sup(tenant_id)
+    sup = InstanceSupervisor.channel_sup(tenant_id)
 
     case GenServer.whereis(sup) do
       nil ->

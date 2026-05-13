@@ -48,13 +48,15 @@ defmodule JidoClaw.Workflows.StepAction do
 
   require Logger
 
+  alias JidoClaw.Agent.Templates
+
   @impl true
   def run(params, context) do
     template_name = params.template
     task = params.task
     step_name = Map.get(params, :name, template_name)
 
-    with {:ok, template} <- JidoClaw.Agent.Templates.get(template_name),
+    with {:ok, template} <- Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
          scope = resolve_scope(params, context, tag),
          tool_context = JidoClaw.ToolContext.build(scope),
@@ -147,20 +149,22 @@ defmodule JidoClaw.Workflows.StepAction do
 
   def extract_artifacts(_), do: %{}
 
-  @doc false
-  # Resolve the canonical tool_context scope for a step. Source order is
-  # params (workflow driver passed-through scope_context) → context (the
-  # second arg of Jido.Action.run/2) → context.tool_context (parent
-  # agent's threaded scope) → fallback.
-  #
-  # `workspace_id` keeps its existing per-step fallback (`"wf_#{tag}"`)
-  # so unit tests and ad-hoc StepAction.run/2 callers still get a
-  # deterministic VFS key. The new Phase 0 UUIDs fall back to nil; the
-  # downstream resolver/telemetry code handles missing UUIDs gracefully.
-  # `project_dir` flows through the same pick/4 chain so direct
-  # StepAction.run/2 callers that pass a parent `tool_context` (without
-  # also setting `params.project_dir`) inherit the parent's anchor
-  # instead of silently falling back to `File.cwd!()`.
+  @doc """
+  Test seam: resolve the canonical `tool_context` scope for a step.
+
+  Source order is params (workflow driver passed-through `scope_context`)
+  → context (the second arg of `Jido.Action.run/2`) → `context.tool_context`
+  (parent agent's threaded scope) → fallback.
+
+  `workspace_id` keeps its existing per-step fallback (`"wf_\#{tag}"`) so
+  unit tests and ad-hoc `StepAction.run/2` callers still get a
+  deterministic VFS key. The Phase 0 UUIDs fall back to `nil`; the
+  downstream resolver/telemetry code handles missing UUIDs gracefully.
+  `project_dir` flows through the same `pick/4` chain so direct
+  `StepAction.run/2` callers that pass a parent `tool_context` (without
+  also setting `params.project_dir`) inherit the parent's anchor instead
+  of silently falling back to `File.cwd!()`.
+  """
   def resolve_scope(params, context, tag) do
     %{
       tenant_id: pick(params, context, :tenant_id, nil),
@@ -175,8 +179,7 @@ defmodule JidoClaw.Workflows.StepAction do
     }
   end
 
-  @doc false
-  def pick(params, context, key, fallback) do
+  defp pick(params, context, key, fallback) do
     Map.get(params, key) ||
       Map.get(context, key) ||
       get_in(context, [:tool_context, key]) ||

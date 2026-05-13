@@ -36,38 +36,32 @@ defmodule JidoClaw.CLI.Setup do
   def run(project_dir) do
     print_welcome()
 
-    # Step 1: Pick provider
     {provider_key, provider_name} = pick_provider()
 
-    # Step 2: API key (LLM provider)
     api_key_env = configure_api_key(provider_key, provider_name)
 
-    # Step 3: Voyage credential — required regardless of LLM provider.
+    # Voyage credential — required regardless of LLM provider.
     # The boot guard enforces this on subsequent app starts. Capturing
     # it here writes the value to `.env` so re-invocations boot
     # cleanly. Exits with non-zero status when the user declines and
     # no key is already set.
     prompt_voyage_key(project_dir)
 
-    # Step 4: Pick model
     model = pick_model(provider_key)
 
-    # Step 5: Workspace policies. The embedding policy is derived
+    # Workspace policies. The embedding policy is derived
     # from the (now guaranteed) Voyage key — always `:default`. The
     # consolidation policy keeps its explicit Y/N prompt.
     consolidation_policy = pick_consolidation_policy()
 
-    # Step 6: Build config
     config_map =
       build_config(provider_key, model, api_key_env)
       |> Map.put("embedding_policy", "default")
       |> Map.put("consolidation_policy", Atom.to_string(consolidation_policy))
 
-    # Step 7: Test connection
     loaded = Config.deep_merge(Config.load(project_dir), config_map)
     test_connection(loaded, provider_name)
 
-    # Step 8: Save
     write_config(project_dir, config_map)
 
     IO.puts("\n  \e[32m✓\e[0m  Configuration saved to #{config_path(project_dir)}")

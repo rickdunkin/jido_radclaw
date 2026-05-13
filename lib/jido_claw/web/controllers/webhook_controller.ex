@@ -2,10 +2,13 @@ defmodule JidoClaw.Web.WebhookController do
   use Phoenix.Controller, formats: [:json]
   require Logger
 
-  def github(conn, _params) do
-    {:ok, raw_body} = JidoClaw.Web.CacheBodyReader.raw_body(conn)
+  alias JidoClaw.GitHub.WebhookPipeline
+  alias JidoClaw.Web.CacheBodyReader
 
-    case JidoClaw.GitHub.WebhookPipeline.process(conn, raw_body) do
+  def github(conn, _params) do
+    {:ok, raw_body} = CacheBodyReader.raw_body(conn)
+
+    case WebhookPipeline.process(conn, raw_body) do
       {:ok, _} ->
         conn |> put_status(200) |> json(%{status: "ok"})
 

@@ -113,17 +113,14 @@ defmodule JidoClaw.Reasoning.Telemetry do
       }
     )
 
-    persist(
-      strategy_name,
-      profile,
-      execution_kind,
-      status,
-      duration_ms,
-      started_at,
-      completed_at,
-      result,
-      opts
-    )
+    persist(strategy_name, profile, result, %{
+      execution_kind: execution_kind,
+      status: status,
+      duration_ms: duration_ms,
+      started_at: started_at,
+      completed_at: completed_at,
+      opts: opts
+    })
 
     result
   end
@@ -156,17 +153,18 @@ defmodule JidoClaw.Reasoning.Telemetry do
   # Private — persistence
   # ---------------------------------------------------------------------------
 
-  defp persist(
-         strategy,
-         profile,
-         execution_kind,
-         status,
-         duration_ms,
-         started_at,
-         completed_at,
-         result,
-         opts
-       ) do
+  # `info` keys: :execution_kind, :status, :duration_ms, :started_at,
+  # :completed_at, :opts. Bundled to keep arity within credo limits.
+  defp persist(strategy, profile, result, info) do
+    %{
+      execution_kind: execution_kind,
+      status: status,
+      duration_ms: duration_ms,
+      started_at: started_at,
+      completed_at: completed_at,
+      opts: opts
+    } = info
+
     {tokens_in, tokens_out} = extract_tokens(result)
     {extracted_verdict, extracted_confidence} = extract_certificate_fields(result)
     caller_metadata = Keyword.get(opts, :metadata, %{})

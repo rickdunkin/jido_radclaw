@@ -157,7 +157,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       File.write!(Path.join(tmp, "mix.exs"), "# fake mix.exs")
 
       on_exit(fn ->
-        _ = JidoClaw.VFS.Workspace.teardown(ws)
+        _ = Workspace.teardown(ws)
         File.rm_rf!(tmp)
       end)
 
@@ -193,7 +193,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       File.write!(Path.join(dir_b, "only_b.txt"), "from B")
 
       on_exit(fn ->
-        _ = JidoClaw.VFS.Workspace.teardown(ws)
+        _ = Workspace.teardown(ws)
         File.rm_rf!(dir_a)
         File.rm_rf!(dir_b)
       end)

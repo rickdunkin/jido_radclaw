@@ -5,14 +5,15 @@ defmodule Mix.Tasks.Jidoclaw.MemoryExportTest do
 
   import JidoClaw.ExportTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Repo
   alias JidoClaw.Security.Redaction.Patterns
 
   @fixtures Path.expand("../../fixtures/exports/memory", __DIR__)
 
   setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
   end
 

@@ -174,26 +174,24 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   # present rows — counting every `:ok` as "imported" overstates
   # inserts on a second migration pass.
   defp classify_import(entry, attrs, acc) do
-    cond do
-      already_imported?(attrs[:import_hash]) ->
-        Map.update!(acc, :skipped, &(&1 + 1))
+    if already_imported?(attrs[:import_hash]) do
+      Map.update!(acc, :skipped, &(&1 + 1))
+    else
+      tenant_id = attrs[:tenant_id] || "default"
+      attrs_minus_tenant = Map.delete(attrs, :tenant_id)
 
-      true ->
-        tenant_id = attrs[:tenant_id] || "default"
-        attrs_minus_tenant = Map.delete(attrs, :tenant_id)
+      case Fact.import_legacy(attrs_minus_tenant, tenant: tenant_id, authorize?: false) do
+        {:ok, _} ->
+          Map.update!(acc, :inserted, &(&1 + 1))
 
-        case Fact.import_legacy(attrs_minus_tenant, tenant: tenant_id, authorize?: false) do
-          {:ok, _} ->
-            Map.update!(acc, :inserted, &(&1 + 1))
+        {:error, err} ->
+          Logger.warning(
+            "[migrate.memory] import failed for #{inspect(entry["key"])}: " <>
+              inspect(err)
+          )
 
-          {:error, err} ->
-            Logger.warning(
-              "[migrate.memory] import failed for #{inspect(entry["key"])}: " <>
-                inspect(err)
-            )
-
-            Map.update!(acc, :failed, &(&1 + 1))
-        end
+          Map.update!(acc, :failed, &(&1 + 1))
+      end
     end
   end
 

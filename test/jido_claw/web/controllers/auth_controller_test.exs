@@ -17,13 +17,14 @@ defmodule JidoClaw.Web.AuthControllerTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit.Event
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Web.AuthController
 
   setup do
     # The controller emits under the literal "default" tenant
     # (`tenant_for_auth/0`). Ensure the FK parent exists so the
     # async write doesn't drop with a missing-tenant log.
-    {:ok, _} = JidoClaw.Tenants.Tenant.ensure("default")
+    {:ok, _} = Tenant.ensure("default")
 
     # Snapshot the existing audit-row count under "default" so the
     # per-test assertions can use a delta rather than an absolute.

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Agent do
+  @moduledoc false
   use JidoClaw.Agent.Defaults,
     name: "jido_claw",
     description:

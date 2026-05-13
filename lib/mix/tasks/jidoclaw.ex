@@ -6,6 +6,9 @@ defmodule Mix.Tasks.Jidoclaw do
 
   require Logger
 
+  alias JidoClaw.CLI.Repl
+  alias JidoClaw.CLI.Setup
+
   @impl true
   def run(["--mcp" | _rest]) do
     Application.put_env(:jido_claw, :serve_mode, :mcp)
@@ -34,7 +37,7 @@ defmodule Mix.Tasks.Jidoclaw do
 
     Mix.Task.run("app.start")
 
-    JidoClaw.CLI.Setup.run(project_dir)
+    Setup.run(project_dir)
     IO.puts("Setup complete — restart with `mix jidoclaw`.")
   end
 
@@ -44,6 +47,6 @@ defmodule Mix.Tasks.Jidoclaw do
 
     Mix.Task.run("app.start")
 
-    JidoClaw.CLI.Repl.start(project_dir)
+    Repl.start(project_dir)
   end
 end

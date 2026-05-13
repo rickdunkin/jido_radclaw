@@ -1,15 +1,17 @@
 defmodule JidoClaw.Memory.Consolidator.PolicyResolverTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Memory.Consolidator.PolicyResolver
   alias JidoClaw.Workspaces.{Resolver, Workspace}
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
-    :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :auto)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.mode(JidoClaw.Repo, :auto)
 
     on_exit(fn ->
-      :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :manual)
+      :ok = Sandbox.mode(JidoClaw.Repo, :manual)
     end)
 
     :ok
@@ -24,7 +26,7 @@ defmodule JidoClaw.Memory.Consolidator.PolicyResolverTest do
 
     Workspace.set_consolidation_policy(workspace, policy,
       tenant: "default",
-      actor: JidoClaw.Authorization.Actor.system("default")
+      actor: Actor.system("default")
     )
   end
 

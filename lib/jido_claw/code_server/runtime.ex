@@ -1,4 +1,5 @@
 defmodule JidoClaw.CodeServer.Runtime do
+  @moduledoc false
   use GenServer
   require Logger
 

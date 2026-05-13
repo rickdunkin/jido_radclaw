@@ -1,4 +1,5 @@
 defmodule JidoClaw.Agent.Workers.Coder do
+  @moduledoc false
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_coder",
     description:

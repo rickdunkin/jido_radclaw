@@ -1,6 +1,20 @@
 defmodule JidoClaw.Application do
+  @moduledoc """
+  OTP `Application` callback for JidoClaw.
+
+  Boots the supervision tree in groups — core infrastructure (Repo, Vault,
+  PubSub, SignalBus, Forge engine, agent runtime, shell sessions, network),
+  the platform layer, the optional Phoenix gateway, libcluster, and the MCP
+  stdio server — selected by the `:mode`, `:cluster_enabled`, and
+  `:serve_mode` runtime config. Also loads `.env` files, registers the
+  Ollama provider, and dynamically starts Nostrum (Discord) when a token
+  is present.
+  """
+
   use Application
   require Logger
+
+  alias JidoClaw.Embeddings.BootGuard
 
   @impl true
   def start(_type, _args) do
@@ -15,7 +29,7 @@ defmodule JidoClaw.Application do
     # Boot guard: refuse to start when the only embedding provider's
     # credential is missing. Bypassed when the `--setup` arm has set
     # `:first_run_setup_pending` so the wizard can capture the key.
-    JidoClaw.Embeddings.BootGuard.assert_voyage_key_or_raise!()
+    BootGuard.assert_voyage_key_or_raise!()
 
     # Record boot time for uptime tracking
     Application.put_env(:jido_claw, :started_at, System.monotonic_time(:second))
@@ -294,8 +308,13 @@ defmodule JidoClaw.Application do
     end
   end
 
-  # -- .env file loading --
-  @doc false
+  @doc """
+  Load `.env` files into the environment at boot.
+
+  Walks `project_dir/.jido/.env`, `project_dir/.env`, `cwd/.jido/.env`,
+  `cwd/.env` in that order. Each file is parsed with unset-only writes,
+  so earlier (more specific) paths take precedence.
+  """
   def load_dotenv do
     project_dir = Application.get_env(:jido_claw, :project_dir) || File.cwd!()
     cwd = File.cwd!()
@@ -354,7 +373,12 @@ defmodule JidoClaw.Application do
     end)
   end
 
-  @doc false
+  @doc """
+  Redirect the default `:logger` handler to `:standard_error`.
+
+  Called from the `mix jidoclaw` task so framework log output does not
+  contaminate stdout (which the CLI uses for the REPL/MCP transport).
+  """
   def redirect_logger_to_stderr do
     :logger.remove_handler(:default)
 

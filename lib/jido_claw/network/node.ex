@@ -18,9 +18,11 @@ defmodule JidoClaw.Network.Node do
   require Logger
 
   alias JidoClaw.Agent.Identity
-  alias JidoClaw.SignalBus
   alias JidoClaw.Network.Protocol
+  alias JidoClaw.SignalBus
   alias JidoClaw.Solutions.{Matcher, NetworkFacade}
+  alias JidoClaw.Solutions.Reputation
+  alias JidoClaw.Workspaces.Resolver
 
   @pubsub JidoClaw.PubSub
   @topic "jido:network"
@@ -139,7 +141,7 @@ defmodule JidoClaw.Network.Node do
 
     workspace_id =
       Keyword.get(opts, :workspace_id) ||
-        case JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir) do
+        case Resolver.ensure_workspace(tenant_id, project_dir) do
           {:ok, %{id: id}} -> id
           _ -> nil
         end
@@ -353,7 +355,7 @@ defmodule JidoClaw.Network.Node do
         case NetworkFacade.store_inbound(attrs, node_state) do
           {:ok, solution} ->
             Logger.debug("[Network.Node] Stored response solution #{solution.id} from #{from}")
-            JidoClaw.Solutions.Reputation.record_share(state.tenant_id, from)
+            Reputation.record_share(state.tenant_id, from)
 
           {:error, reason} ->
             Logger.debug("[Network.Node] Could not store response solution: #{inspect(reason)}")
@@ -391,7 +393,7 @@ defmodule JidoClaw.Network.Node do
 
     case NetworkFacade.store_inbound(attrs, node_state(state)) do
       {:ok, solution} ->
-        JidoClaw.Solutions.Reputation.record_share(state.tenant_id, from)
+        Reputation.record_share(state.tenant_id, from)
         {:ok, solution}
 
       other ->

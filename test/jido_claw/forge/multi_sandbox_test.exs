@@ -2,31 +2,34 @@ defmodule JidoClaw.Forge.MultiSandboxTest.InputRunner do
   @moduledoc false
   @behaviour JidoClaw.Forge.Runner
 
+  alias JidoClaw.Forge.Runner
+  alias JidoClaw.Forge.Sandbox
+
   # A test runner that returns :needs_input on the first iteration,
   # then :done on subsequent calls. Writes a marker file via apply_input
   # so we can verify which sandbox received the input.
 
   @impl true
   def init(client, _config) do
-    JidoClaw.Forge.Sandbox.exec(client, "echo initialized > runner_init.txt", [])
+    Sandbox.exec(client, "echo initialized > runner_init.txt", [])
     {:ok, %{asked: false}}
   end
 
   @impl true
   def run_iteration(_client, %{asked: false} = _state, _opts) do
-    {:ok, JidoClaw.Forge.Runner.needs_input("what is your name?")}
+    {:ok, Runner.needs_input("what is your name?")}
   end
 
   def run_iteration(client, %{asked: true} = _state, _opts) do
     {output, _} =
-      JidoClaw.Forge.Sandbox.exec(client, "cat input_received.txt 2>/dev/null || echo none", [])
+      Sandbox.exec(client, "cat input_received.txt 2>/dev/null || echo none", [])
 
-    {:ok, JidoClaw.Forge.Runner.done(output)}
+    {:ok, Runner.done(output)}
   end
 
   @impl true
   def apply_input(client, input, state) do
-    JidoClaw.Forge.Sandbox.write_file(client, "input_received.txt", input)
+    Sandbox.write_file(client, "input_received.txt", input)
     {:ok, %{state | asked: true}}
   end
 end
@@ -38,8 +41,10 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
   """
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge
+  alias JidoClaw.Forge.Persistence
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
 
   @timeout 10_000
@@ -594,7 +599,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
     setup do
       # Re-enable persistence for these tests and check out the DB
       Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: true)
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+      :ok = Sandbox.checkout(JidoClaw.Repo)
 
       on_exit(fn ->
         Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
@@ -606,7 +611,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
     test "checkpoint with file-mount resources is JSON-serializable" do
       session_id = "multi_sbx_ckpt_mnt_#{:erlang.unique_integer([:positive])}"
 
-      JidoClaw.Forge.Persistence.record_session_started(session_id, %{
+      Persistence.record_session_started(session_id, %{
         runner: :shell,
         resources: [
           %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
@@ -617,7 +622,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # build_sandbox_spec recomputes mounts at create time.
       extra = %{worker: %{sandbox: :fake}}
 
-      JidoClaw.Forge.Persistence.save_checkpoint(session_id, 1, %{}, %{
+      Persistence.save_checkpoint(session_id, 1, %{}, %{
         resources: [
           %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
         ],
@@ -626,7 +631,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
         extra_sandboxes: extra
       })
 
-      checkpoint = JidoClaw.Forge.Persistence.latest_checkpoint(session_id)
+      checkpoint = Persistence.latest_checkpoint(session_id)
       assert checkpoint != nil
       assert checkpoint.metadata["extra_sandboxes"] != nil
     end
@@ -635,12 +640,11 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       session_id = "multi_sbx_ckpt_#{:erlang.unique_integer([:positive])}"
 
       # Record a session so checkpoint has a parent
-      JidoClaw.Forge.Persistence.record_session_started(session_id, %{runner: :shell})
+      Persistence.record_session_started(session_id, %{runner: :shell})
 
-      # Save a checkpoint with extra_sandboxes metadata
       extra = %{worker: %{sandbox: :fake}, gpu: %{sandbox: :docker_sandbox}}
 
-      JidoClaw.Forge.Persistence.save_checkpoint(session_id, 1, %{}, %{
+      Persistence.save_checkpoint(session_id, 1, %{}, %{
         resources: [],
         bootstrap_steps: [],
         output_sequence: 1,
@@ -648,7 +652,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       })
 
       # Retrieve and verify
-      checkpoint = JidoClaw.Forge.Persistence.latest_checkpoint(session_id)
+      checkpoint = Persistence.latest_checkpoint(session_id)
       assert checkpoint != nil
 
       metadata = checkpoint.metadata

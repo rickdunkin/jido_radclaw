@@ -45,13 +45,18 @@ defmodule JidoClaw.Tools.ScheduleTask do
 
   require Logger
 
+  alias Crontab.CronExpression.Parser
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.Scheduler
+
   @impl true
   def run(params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 
     actor =
       get_in(context, [:tool_context, :actor]) ||
-        JidoClaw.Authorization.Actor.system(tenant_id)
+        Actor.system(tenant_id)
 
     id = params[:id] || generate_id(params.task)
     mode = parse_mode(params[:mode])
@@ -66,7 +71,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
           mode: mode
         ]
 
-        case JidoClaw.Cron.Scheduler.schedule(tenant_id, opts) do
+        case Scheduler.schedule(tenant_id, opts) do
           {:ok, ^id, _pid} ->
             {kind, value} = persistable_schedule(schedule_tuple)
 
@@ -78,7 +83,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
               schedule_value: value
             }
 
-            case JidoClaw.Cron.Job.upsert(persist_attrs, tenant: tenant_id, actor: actor) do
+            case Job.upsert(persist_attrs, tenant: tenant_id, actor: actor) do
               {:ok, _job} ->
                 schedule_desc = format_schedule(schedule_str)
 
@@ -120,7 +125,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
     fields = String.split(expr)
 
     if length(fields) == 5 do
-      case Crontab.CronExpression.Parser.parse(expr) do
+      case Parser.parse(expr) do
         {:ok, _} -> {:ok, {:cron, expr}}
         {:error, _} -> {:error, "invalid cron expression"}
       end

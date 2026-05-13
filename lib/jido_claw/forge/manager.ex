@@ -1,6 +1,10 @@
 defmodule JidoClaw.Forge.Manager do
+  @moduledoc false
   use GenServer
   require Logger
+
+  alias JidoClaw.Forge.Persistence
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
 
   @registry JidoClaw.Forge.SessionRegistry
   @supervisor JidoClaw.Forge.HarnessSupervisor
@@ -113,7 +117,7 @@ defmodule JidoClaw.Forge.Manager do
                       runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
                   }
 
-                  JidoClaw.Forge.PubSub.broadcast_session_event({:session_started, session_id})
+                  ForgePubSub.broadcast_session_event({:session_started, session_id})
                   {:reply, {:ok, handle}, new_state}
 
                 {:error, :already_claimed} ->
@@ -133,10 +137,10 @@ defmodule JidoClaw.Forge.Manager do
       [{pid, _}] ->
         # Persist cancelled phase before terminating so recovery can distinguish
         # graceful stops from crashes
-        JidoClaw.Forge.Persistence.update_session_phase(session_id, :cancelled)
+        Persistence.update_session_phase(session_id, :cancelled)
         DynamicSupervisor.terminate_child(@supervisor, pid)
         new_state = decrement_session(state, session_id)
-        JidoClaw.Forge.PubSub.broadcast_session_event({:session_stopped, session_id, reason})
+        ForgePubSub.broadcast_session_event({:session_stopped, session_id, reason})
         {:reply, :ok, new_state}
 
       [] ->
@@ -179,7 +183,7 @@ defmodule JidoClaw.Forge.Manager do
         "[Forge.Manager] Attempting recovery for #{session_id} (attempt #{attempts + 1}/#{@max_recovery_attempts})"
       )
 
-      JidoClaw.Forge.PubSub.broadcast_session_event({:session_recovering, session_id})
+      ForgePubSub.broadcast_session_event({:session_recovering, session_id})
 
       new_attempts = Map.put(state.recovery_attempts, session_id, attempts + 1)
 
@@ -204,7 +208,7 @@ defmodule JidoClaw.Forge.Manager do
           "[Forge.Manager] Recovery exhausted for #{session_id} after #{attempts} attempts"
         )
 
-        JidoClaw.Forge.PubSub.broadcast_session_event({:session_recovery_exhausted, session_id})
+        ForgePubSub.broadcast_session_event({:session_recovery_exhausted, session_id})
       end
 
       {:noreply, state}
@@ -212,16 +216,14 @@ defmodule JidoClaw.Forge.Manager do
   end
 
   defp recoverable?(session_id) do
-    try do
-      db_session = JidoClaw.Forge.Persistence.find_session(session_id)
-      checkpoint = JidoClaw.Forge.Persistence.latest_checkpoint(session_id)
+    db_session = Persistence.find_session(session_id)
+    checkpoint = Persistence.latest_checkpoint(session_id)
 
-      db_session != nil &&
-        checkpoint != nil &&
-        db_session.phase in [:running, :ready, :needs_input, :resuming, :failed]
-    rescue
-      _ -> false
-    end
+    db_session != nil &&
+      checkpoint != nil &&
+      db_session.phase in [:running, :ready, :needs_input, :resuming, :failed]
+  rescue
+    _ -> false
   end
 
   defp cluster_session_exists?(session_id) do

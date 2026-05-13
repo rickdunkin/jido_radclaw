@@ -17,11 +17,12 @@ defmodule JidoClaw.Memory.Consolidator.LockOwnerTest do
   """
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Memory.Consolidator.LockOwner
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :auto)
-    on_exit(fn -> :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :manual) end)
+    :ok = Sandbox.mode(JidoClaw.Repo, :auto)
+    on_exit(fn -> :ok = Sandbox.mode(JidoClaw.Repo, :manual) end)
     :ok
   end
 

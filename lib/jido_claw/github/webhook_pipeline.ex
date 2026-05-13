@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.WebhookPipeline do
+  @moduledoc false
   require Logger
 
   alias JidoClaw.GitHub.WebhookSignature

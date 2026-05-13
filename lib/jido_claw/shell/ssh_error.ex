@@ -153,15 +153,13 @@ defmodule JidoClaw.Shell.SSHError do
   defp auth_reason?({:authentication_failed, _}), do: true
 
   defp auth_reason?(reason) when is_list(reason) do
-    case List.ascii_printable?(reason) do
-      true ->
-        reason
-        |> to_string()
-        |> String.downcase()
-        |> String.contains?("auth")
-
-      false ->
-        false
+    if List.ascii_printable?(reason) do
+      reason
+      |> to_string()
+      |> String.downcase()
+      |> String.contains?("auth")
+    else
+      false
     end
   end
 

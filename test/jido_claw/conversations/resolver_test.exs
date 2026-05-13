@@ -1,11 +1,12 @@
 defmodule JidoClaw.Conversations.ResolverTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.Resolver, as: ConvResolver
   alias JidoClaw.Workspaces.Resolver, as: WsResolver
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
     :ok
   end
 

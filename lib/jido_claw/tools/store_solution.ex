@@ -65,6 +65,8 @@ defmodule JidoClaw.Tools.StoreSolution do
       ]
     ]
 
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Solutions.Fingerprint
   alias JidoClaw.Solutions.Solution
   alias JidoClaw.Tools.MCPScope
 
@@ -85,7 +87,7 @@ defmodule JidoClaw.Tools.StoreSolution do
           {:error, :missing_scope_workspace}
 
         true ->
-          actor = Map.get(tool_context, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+          actor = Map.get(tool_context, :actor) || Actor.system(tenant_id)
 
           store(
             params,
@@ -101,7 +103,7 @@ defmodule JidoClaw.Tools.StoreSolution do
 
   defp store(params, tenant_id, workspace_uuid, session_uuid, created_by_user_id, actor) do
     signature =
-      JidoClaw.Solutions.Fingerprint.signature(
+      Fingerprint.signature(
         params.problem_description,
         params.language,
         Map.get(params, :framework)

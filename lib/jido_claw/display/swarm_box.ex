@@ -16,16 +16,11 @@ defmodule JidoClaw.Display.SwarmBox do
     total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
     tokens_str = StatusBar.format_tokens(total_tokens)
 
-    status_parts = []
-
     status_parts =
-      if running > 0, do: status_parts ++ ["\e[33m#{running} running\e[0m"], else: status_parts
-
-    status_parts =
-      if done > 0, do: status_parts ++ ["\e[32m#{done} done\e[0m"], else: status_parts
-
-    status_parts =
-      if errored > 0, do: status_parts ++ ["\e[31m#{errored} error\e[0m"], else: status_parts
+      []
+      |> prepend_if(errored > 0, "\e[31m#{errored} error\e[0m")
+      |> prepend_if(done > 0, "\e[32m#{done} done\e[0m")
+      |> prepend_if(running > 0, "\e[33m#{running} running\e[0m")
 
     status_str = Enum.join(status_parts, "  ")
 
@@ -102,4 +97,7 @@ defmodule JidoClaw.Display.SwarmBox do
   defp status_label(:done), do: "\e[32mdone\e[0m"
   defp status_label(:error), do: "\e[31merror\e[0m"
   defp status_label(_), do: "\e[2munknown\e[0m"
+
+  defp prepend_if(list, true, item), do: [item | list]
+  defp prepend_if(list, false, _item), do: list
 end

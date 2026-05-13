@@ -31,15 +31,15 @@ defmodule JidoClaw.Audit.ActorClassifierTest do
       assert ActorClassifier.classify(%{agent_id: "a", tenant_id: "t"}) == {:agent, "a"}
     end
 
-    test "%{kind: :user, id: \"u\"} → {:user, \"u\"}" do
+    test ~S|%{kind: :user, id: "u"} → {:user, "u"}| do
       assert ActorClassifier.classify(%{kind: :user, id: "u"}) == {:user, "u"}
     end
 
-    test "%{\"kind\" => \"user\", \"id\" => \"u\"} → {:user, \"u\"} (string keys)" do
+    test ~S|%{"kind" => "user", "id" => "u"} → {:user, "u"} (string keys)| do
       assert ActorClassifier.classify(%{"kind" => "user", "id" => "u"}) == {:user, "u"}
     end
 
-    test "%{kind: :agent, id: \"a\"} → {:agent, \"a\"}" do
+    test ~S|%{kind: :agent, id: "a"} → {:agent, "a"}| do
       assert ActorClassifier.classify(%{kind: :agent, id: "a"}) == {:agent, "a"}
     end
 

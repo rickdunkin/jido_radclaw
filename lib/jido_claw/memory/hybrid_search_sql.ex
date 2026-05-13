@@ -67,6 +67,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Memory.{Fact, Retrieval}
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.SearchEscape
@@ -99,9 +100,10 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         like_pattern = SearchEscape.escape_like(query_text)
         raw_lower = SearchEscape.lower_only(query_text)
 
-        # Build the dynamic prefix params: tenant_id, then chain FK
-        # uuids, then optional world/system timestamps for non-default
-        # bitemporal modes. Static-tail params follow.
+        # Parameter ordering is load-bearing: tenant_id binds to $1, then
+        # scope-chain FK uuids, then optional world/system timestamps for
+        # non-default bitemporal modes. Static-tail params bind after.
+        # Reordering will silently mis-bind SQL placeholders.
         scope_fragment = build_scope_chain_fragment(scope_chain, 2)
         bt_fragment = build_bitemporal_fragment(bitemporal, scope_fragment.next)
 
@@ -165,7 +167,9 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         bt_fragment = build_bitemporal_fragment(bitemporal, scope_fragment.next)
         limit_param = "$#{bt_fragment.next}"
 
-        params = [tenant_id] ++ scope_fragment.params ++ bt_fragment.params ++ [limit]
+        params =
+          Enum.concat([[tenant_id], scope_fragment.params, bt_fragment.params, [limit]])
+
         sql = build_recency_sql(scope_fragment.sql, bt_fragment.sql, dedup, limit_param)
 
         case Repo.query(sql, params) do
@@ -225,7 +229,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     loaded =
       Fact
       |> Ash.Query.for_read(:read, %{},
-        actor: JidoClaw.Authorization.Actor.system(tenant_id),
+        actor: Actor.system(tenant_id),
         tenant: tenant_id
       )
       |> Ash.Query.filter(id in ^ids)
@@ -252,7 +256,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   # Returns %{sql: <OR-clause string>, params: [<uuid binaries>], next: <next $N>}.
   # Each chain entry consumes one parameter for its FK uuid.
   defp build_scope_chain_fragment(chain, base_idx) do
-    {clauses, params, next} =
+    {clauses_rev, params_rev, next} =
       chain
       |> Enum.with_index(base_idx)
       |> Enum.reduce({[], [], base_idx}, fn {{kind, fk}, idx}, {clauses_acc, params_acc, _} ->
@@ -262,9 +266,11 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         clause =
           "(scope_kind = '#{kind_str}' AND #{column} = $#{idx})"
 
-        {clauses_acc ++ [clause], params_acc ++ [uuid_dump(fk)], idx + 1}
+        {[clause | clauses_acc], [uuid_dump(fk) | params_acc], idx + 1}
       end)
 
+    clauses = Enum.reverse(clauses_rev)
+    params = Enum.reverse(params_rev)
     %{sql: "(" <> Enum.join(clauses, " OR ") <> ")", params: params, next: next}
   end
 
@@ -794,7 +800,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         loaded =
           Fact
           |> Ash.Query.for_read(:read, %{},
-            actor: JidoClaw.Authorization.Actor.system(tenant_id),
+            actor: Actor.system(tenant_id),
             tenant: tenant_id
           )
           |> Ash.Query.filter(id in ^ids)

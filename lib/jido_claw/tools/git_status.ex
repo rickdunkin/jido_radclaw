@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.GitStatus do
+  @moduledoc false
   use Jido.Action,
     name: "git_status",
     description: "Show git repository status. Returns modified, staged, and untracked files.",

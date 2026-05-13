@@ -1,4 +1,5 @@
 defmodule JidoClaw.Folio.Project do
+  @moduledoc false
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Folio,

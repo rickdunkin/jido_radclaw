@@ -102,10 +102,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     full_path = resolve_path(workspace_dir, path)
     File.mkdir_p!(Path.dirname(full_path))
 
-    case File.write(full_path, content) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    File.write(full_path, content)
   end
 
   @impl true
@@ -131,10 +128,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
       Enum.map(merged, fn {k, v} -> "#{k}=#{v}" end)
       |> Enum.join("\n")
 
-    case File.write(env_file, lines <> "\n") do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    File.write(env_file, lines <> "\n")
   end
 
   @impl true
@@ -187,7 +181,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
         sbx_args
       end
 
-    sbx_args ++ ["--" | args]
+    Enum.concat([sbx_args, ["--"], args])
   end
 
   defp build_exec_args(sandbox_name, workspace_dir, command) do

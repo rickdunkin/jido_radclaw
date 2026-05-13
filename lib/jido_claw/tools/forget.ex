@@ -37,6 +37,9 @@ defmodule JidoClaw.Tools.Forget do
       ]
     ]
 
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Memory.Fact
+
   @impl true
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
@@ -57,11 +60,11 @@ defmodule JidoClaw.Tools.Forget do
     tenant_id = Map.get(tool_context, :tenant_id)
 
     if is_binary(tenant_id) do
-      actor = Map.get(tool_context, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+      actor = Map.get(tool_context, :actor) || Actor.system(tenant_id)
 
-      case JidoClaw.Memory.Fact.by_id(id, tenant: tenant_id, actor: actor) do
+      case Fact.by_id(id, tenant: tenant_id, actor: actor) do
         {:ok, %{source: :model_remember} = fact} ->
-          case JidoClaw.Memory.Fact.invalidate_by_id(fact, %{reason: "model_forget"},
+          case Fact.invalidate_by_id(fact, %{reason: "model_forget"},
                  tenant: tenant_id,
                  actor: actor
                ) do

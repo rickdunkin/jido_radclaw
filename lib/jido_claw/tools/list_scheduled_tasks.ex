@@ -14,11 +14,13 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
     ],
     schema: []
 
+  alias JidoClaw.Cron.Scheduler
+
   @impl true
   def run(_params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 
-    jobs = JidoClaw.Cron.Scheduler.list_jobs(tenant_id)
+    jobs = Scheduler.list_jobs(tenant_id)
 
     if jobs == [] do
       {:ok, %{result: "No scheduled tasks. Use schedule_task to create one."}}

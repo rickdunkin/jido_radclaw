@@ -4,6 +4,7 @@ defmodule JidoClaw.CLI.ReplTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.CLI.Repl
+  alias JidoClaw.Shell.ProfileManager
 
   describe "resolve_strategy/1" do
     test "passes \"auto\" through unchanged (selector, not a registry entry)" do
@@ -41,18 +42,18 @@ defmodule JidoClaw.CLI.ReplTest do
       ws = "repl-resolve-profile-#{System.unique_integer([:positive])}"
 
       :ok =
-        JidoClaw.Shell.ProfileManager.replace_profiles_for_test(%{
+        ProfileManager.replace_profiles_for_test(%{
           "default" => %{},
           "staging" => %{"K" => "v"}
         })
 
       try do
         assert Repl.resolve_profile(ws) == "default"
-        assert {:ok, "staging"} = JidoClaw.Shell.ProfileManager.switch(ws, "staging")
+        assert {:ok, "staging"} = ProfileManager.switch(ws, "staging")
         assert Repl.resolve_profile(ws) == "staging"
       after
-        :ok = JidoClaw.Shell.ProfileManager.replace_profiles_for_test(%{})
-        :ok = JidoClaw.Shell.ProfileManager.clear_active_for_test()
+        :ok = ProfileManager.replace_profiles_for_test(%{})
+        :ok = ProfileManager.clear_active_for_test()
       end
     end
   end

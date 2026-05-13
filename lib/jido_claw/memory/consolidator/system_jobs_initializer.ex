@@ -13,14 +13,17 @@ defmodule JidoClaw.Memory.Consolidator.SystemJobsInitializer do
 
   require Logger
 
+  alias JidoClaw.Cron.Scheduler
+  alias JidoClaw.Tenant.Manager
+
   def start_link(opts) do
     Task.start_link(__MODULE__, :run, [opts])
   end
 
   def run(_opts) do
-    case JidoClaw.Tenant.Manager.ensure_tenant("system", name: "System") do
+    case Manager.ensure_tenant("system", name: "System") do
       {:ok, _tenant} ->
-        JidoClaw.Cron.Scheduler.start_system_jobs()
+        Scheduler.start_system_jobs()
 
       {:error, reason} ->
         Logger.warning("[Memory.Consolidator] failed to ensure system tenant: #{inspect(reason)}")

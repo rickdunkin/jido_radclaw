@@ -89,6 +89,7 @@ defmodule JidoClaw.Memory.Fact do
     end
   end
 
+  alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
@@ -590,12 +591,14 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
 
-        case JidoClaw.Memory.Fact.scope_fk_for(cs, scope_kind) do
+        case Fact.scope_fk_for(cs, scope_kind) do
           {:ok, _} ->
             cs
 
@@ -659,6 +662,9 @@ defmodule JidoClaw.Memory.Fact do
     """
     use Ash.Resource.Change
 
+    alias JidoClaw.Authorization.Actor
+    alias JidoClaw.Workspaces.Workspace
+
     @impl true
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
@@ -689,7 +695,7 @@ defmodule JidoClaw.Memory.Fact do
       # cross-tenant access.
       effective_actor =
         actor ||
-          (tenant_id && JidoClaw.Authorization.Actor.system(tenant_id))
+          (tenant_id && Actor.system(tenant_id))
 
       result =
         if tenant_id do
@@ -698,9 +704,9 @@ defmodule JidoClaw.Memory.Fact do
           opts =
             if effective_actor, do: Keyword.put(opts, :actor, effective_actor), else: opts
 
-          JidoClaw.Workspaces.Workspace.by_id(workspace_id, opts)
+          Workspace.by_id(workspace_id, opts)
         else
-          JidoClaw.Workspaces.Workspace.by_id_global(workspace_id)
+          Workspace.by_id_global(workspace_id)
         end
 
       case result do
@@ -731,6 +737,8 @@ defmodule JidoClaw.Memory.Fact do
     """
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -738,9 +746,9 @@ defmodule JidoClaw.Memory.Fact do
 
         with label when is_binary(label) <- Ash.Changeset.get_attribute(cs, :label),
              scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind),
-             {:ok, fk_id} <- JidoClaw.Memory.Fact.scope_fk_for(cs, scope_kind),
+             {:ok, fk_id} <- Fact.scope_fk_for(cs, scope_kind),
              true <- is_binary(tenant_id) do
-          JidoClaw.Memory.Fact.invalidate_prior_active_label(
+          Fact.invalidate_prior_active_label(
             tenant_id,
             scope_kind,
             fk_id,
@@ -757,6 +765,8 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       if Ash.Changeset.get_argument(changeset, :skip_backfill_hint?) do
@@ -765,7 +775,7 @@ defmodule JidoClaw.Memory.Fact do
         Ash.Changeset.after_transaction(changeset, fn _cs, result ->
           case result do
             {:ok, %{embedding_status: :pending, id: id}} ->
-              JidoClaw.Memory.Fact.hint_backfill(id)
+              Fact.hint_backfill(id)
 
             _ ->
               :ok
@@ -857,6 +867,8 @@ defmodule JidoClaw.Memory.Fact do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def prepare(query, _opts, _context) do
       kind = Ash.Query.get_argument(query, :scope_kind)
@@ -867,9 +879,9 @@ defmodule JidoClaw.Memory.Fact do
       sources = Ash.Query.get_argument(query, :sources)
 
       query
-      |> JidoClaw.Memory.Fact.apply_scope_filter(kind, fk)
-      |> JidoClaw.Memory.Fact.apply_since_filter(since_at, since_id)
-      |> JidoClaw.Memory.Fact.apply_sources_filter(sources)
+      |> Fact.apply_scope_filter(kind, fk)
+      |> Fact.apply_since_filter(since_at, since_id)
+      |> Fact.apply_sources_filter(sources)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
       |> Ash.Query.limit(limit)
     end
@@ -879,7 +891,13 @@ defmodule JidoClaw.Memory.Fact do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  @doc false
+  @doc """
+  Resolve the foreign-key id for `scope_kind` from `changeset`.
+
+  Returns `{:ok, id}` when the attribute is set, `:missing` when it is `nil`,
+  or `:missing` for unknown `scope_kind`. Public because Ash `change`
+  modules in the same file reference it before the resource compiles.
+  """
   def scope_fk_for(changeset, :user) do
     nullable_attr(changeset, :user_id)
   end
@@ -939,24 +957,20 @@ defmodule JidoClaw.Memory.Fact do
   defp uuid_dump(uuid) when is_binary(uuid), do: Ecto.UUID.dump!(uuid)
   defp uuid_dump(other), do: other
 
-  @doc false
-  def apply_scope_filter(query, :user, fk) do
-    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
-  end
+  @doc """
+  Narrow `query` to rows whose `scope_kind` and FK match `kind`/`fk`.
 
-  def apply_scope_filter(query, :workspace, fk) do
-    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
-  end
+  Delegates to `JidoClaw.Memory.Resources.ScopeFilter.apply/3`. Public
+  because read-action preparation blocks defined in this file invoke
+  it before the resource is fully compiled.
+  """
+  defdelegate apply_scope_filter(query, kind, fk), to: ScopeFilter, as: :apply
 
-  def apply_scope_filter(query, :project, fk) do
-    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
-  end
-
-  def apply_scope_filter(query, :session, fk) do
-    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
-  end
-
-  @doc false
+  @doc """
+  Narrow `query` to rows newer than `since_at`, optionally tie-breaking on
+  `since_id` for stable cursor pagination. A `nil` `since_at` skips the
+  filter.
+  """
   def apply_since_filter(query, nil, _), do: query
 
   def apply_since_filter(query, since_at, nil) do
@@ -970,7 +984,10 @@ defmodule JidoClaw.Memory.Fact do
     )
   end
 
-  @doc false
+  @doc """
+  Narrow `query` to facts whose `source` is in `sources`. `nil` and `[]`
+  skip the filter.
+  """
   def apply_sources_filter(query, nil), do: query
   def apply_sources_filter(query, []), do: query
 

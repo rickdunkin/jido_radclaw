@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Runner do
+  @moduledoc false
   @type sandbox :: struct()
   @type config :: map()
   @type state :: map()

@@ -20,6 +20,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   alias JidoClaw.Cron
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Scheduler
+  alias JidoClaw.Tenant.Manager
 
   defp wait_until_disabled(job_id, tenant, attempts \\ 50) do
     result =
@@ -40,7 +41,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   describe "Contract 1: worker auto-disable persists disabled_at" do
     test "3 failures auto-disable a job and persist disabled_at" do
       tenant = seed_tenant("disable")
-      {:ok, _} = JidoClaw.Tenant.Manager.ensure_tenant(tenant)
+      {:ok, _} = Manager.ensure_tenant(tenant)
 
       {:ok, _job} =
         Job.upsert(
@@ -77,7 +78,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   describe "Contract 2: disabled rows are skipped by scheduler reload" do
     test "rows with disabled_at set are not loaded by scheduler reload" do
       tenant = seed_tenant("excluded")
-      {:ok, _} = JidoClaw.Tenant.Manager.ensure_tenant(tenant)
+      {:ok, _} = Manager.ensure_tenant(tenant)
 
       {:ok, job} =
         Job.upsert(
@@ -107,7 +108,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   describe "Contract 3: reload restores MFA from Postgres" do
     test "system_job reloaded from Postgres ticks under its persisted MFA" do
       tenant = seed_tenant("reload_mfa")
-      {:ok, _} = JidoClaw.Tenant.Manager.ensure_tenant(tenant)
+      {:ok, _} = Manager.ensure_tenant(tenant)
 
       {:ok, _job} =
         Job.upsert(

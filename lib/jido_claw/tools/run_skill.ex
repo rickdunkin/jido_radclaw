@@ -39,8 +39,11 @@ defmodule JidoClaw.Tools.RunSkill do
       ]
     ]
 
-  alias JidoClaw.Workflows.StepResult
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.Workflows.IterativeWorkflow
+  alias JidoClaw.Workflows.PlanWorkflow
+  alias JidoClaw.Workflows.SkillWorkflow
+  alias JidoClaw.Workflows.StepResult
 
   @impl true
   def run(params, context) do
@@ -64,7 +67,7 @@ defmodule JidoClaw.Tools.RunSkill do
         result =
           case JidoClaw.Skills.execution_mode(skill) do
             :iterative ->
-              JidoClaw.Workflows.IterativeWorkflow.run(
+              IterativeWorkflow.run(
                 skill,
                 extra_context,
                 project_dir,
@@ -73,7 +76,7 @@ defmodule JidoClaw.Tools.RunSkill do
               )
 
             :dag ->
-              JidoClaw.Workflows.PlanWorkflow.run(
+              PlanWorkflow.run(
                 skill,
                 extra_context,
                 project_dir,
@@ -82,7 +85,7 @@ defmodule JidoClaw.Tools.RunSkill do
               )
 
             :sequential ->
-              JidoClaw.Workflows.SkillWorkflow.run(
+              SkillWorkflow.run(
                 skill,
                 extra_context,
                 project_dir,
@@ -101,12 +104,13 @@ defmodule JidoClaw.Tools.RunSkill do
     end
   end
 
-  # Phase 0 — full canonical scope (minus :agent_id, which each step
-  # assigns) gets forwarded into every workflow driver so child agents
-  # inherit the parent's tenant/session/workspace/user UUIDs. Also
-  # carries `:actor` so child workflow steps can satisfy tenant-actor
-  # policies on Ash writes/reads.
-  @doc false
+  @doc """
+  Test seam: pluck the canonical scope keys out of `tool_context` for
+  forwarding into every workflow driver. The full set (minus
+  `:agent_id`, which each step assigns) propagates so child agents
+  inherit the parent's tenant/session/workspace/user UUIDs and
+  `:actor` for tenant-actor policy enforcement on Ash writes/reads.
+  """
   def scope_context(tool_context) when is_map(tool_context) do
     Map.take(tool_context, [
       :tenant_id,
@@ -120,7 +124,12 @@ defmodule JidoClaw.Tools.RunSkill do
     ])
   end
 
-  @doc false
+  @doc """
+  Test seam: assemble the final tool-result map from a skill plus the
+  list of step results emitted by the workflow. Converts
+  `%StepResult{}` structs to `{label, text}` tuples and renders the
+  numbered step transcript that the synthesis prompt references.
+  """
   def build_result(skill, results) do
     # Convert %StepResult{} structs to {label, text} tuples at the boundary
     tuples =

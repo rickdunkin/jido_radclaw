@@ -1,4 +1,12 @@
 defmodule JidoClaw.Web do
+  @moduledoc """
+  Phoenix web entry point for JidoClaw.
+
+  Centralizes the `use JidoClaw.Web, :controller | :live_view | :channel | :html`
+  macros that wire shared imports, layouts, and components into each web
+  module. Also exposes the static-asset path list used by the endpoint.
+  """
+
   def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
 
   def router do

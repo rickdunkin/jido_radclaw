@@ -5,12 +5,13 @@ defmodule JidoClaw.Tools.RunPipelineTest do
 
   import JidoClaw.Reasoning.StrategyTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.Resources.Outcome
   alias JidoClaw.Tools.RunPipeline
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
     :ok
   end
 
@@ -34,12 +35,10 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     @moduledoc false
 
     def run(%{prompt: prompt}, _ctx) do
-      cond do
-        String.contains?(prompt, "Prior stage output") ->
-          {:error, %{output: "stage 2 boom", usage: %{input_tokens: 2, output_tokens: 0}}}
-
-        true ->
-          {:ok, %{output: "stage 1 ok", usage: %{input_tokens: 3, output_tokens: 4}}}
+      if String.contains?(prompt, "Prior stage output") do
+        {:error, %{output: "stage 2 boom", usage: %{input_tokens: 2, output_tokens: 0}}}
+      else
+        {:ok, %{output: "stage 1 ok", usage: %{input_tokens: 3, output_tokens: 4}}}
       end
     end
   end

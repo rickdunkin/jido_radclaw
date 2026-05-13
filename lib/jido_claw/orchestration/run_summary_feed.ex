@@ -1,6 +1,9 @@
 defmodule JidoClaw.Orchestration.RunSummaryFeed do
+  @moduledoc false
   use GenServer
   require Logger
+
+  alias JidoClaw.Orchestration.RunPubSub
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -12,7 +15,7 @@ defmodule JidoClaw.Orchestration.RunSummaryFeed do
 
   @impl true
   def init(_opts) do
-    JidoClaw.Orchestration.RunPubSub.subscribe_all()
+    RunPubSub.subscribe_all()
     {:ok, %{active_runs: %{}, recent_completions: []}}
   end
 

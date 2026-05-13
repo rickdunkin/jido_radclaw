@@ -291,6 +291,7 @@ defmodule JidoClaw.JidoMd do
       |> maybe_add(has_oban, "Oban")
       |> maybe_add(has_absinthe, "Absinthe/GraphQL")
       |> maybe_add(umbrella, "Umbrella project (apps/ directory)")
+      |> Enum.reverse()
 
     if frameworks == [] do
       ""
@@ -322,6 +323,7 @@ defmodule JidoClaw.JidoMd do
       |> maybe_add(has_nest, "NestJS")
       |> maybe_add(has_prisma, "Prisma")
       |> maybe_add(has_ts, "TypeScript")
+      |> Enum.reverse()
 
     if frameworks == [] do
       ""
@@ -344,6 +346,7 @@ defmodule JidoClaw.JidoMd do
       |> maybe_add(has_actix, "Actix-web")
       |> maybe_add(has_tokio, "Tokio async")
       |> maybe_add(has_sqlx, "SQLx")
+      |> Enum.reverse()
 
     if frameworks == [] do
       ""
@@ -364,6 +367,7 @@ defmodule JidoClaw.JidoMd do
       |> maybe_add(has_gin, "Gin")
       |> maybe_add(has_echo, "Echo")
       |> maybe_add(has_fiber, "Fiber")
+      |> Enum.reverse()
 
     if frameworks == [] do
       ""
@@ -388,6 +392,7 @@ defmodule JidoClaw.JidoMd do
       |> maybe_add(has_fastapi, "FastAPI")
       |> maybe_add(has_flask, "Flask")
       |> maybe_add(has_sqlalchemy, "SQLAlchemy")
+      |> Enum.reverse()
 
     if frameworks == [] do
       ""
@@ -583,7 +588,9 @@ defmodule JidoClaw.JidoMd do
     String.contains?(pkg_content, "\"#{dep_name}\"")
   end
 
-  defp maybe_add(list, true, item), do: list ++ [item]
+  # Prepends `item` when `cond?` is true. Callers must `Enum.reverse/1`
+  # the resulting list to recover the original chain order.
+  defp maybe_add(list, true, item), do: [item | list]
   defp maybe_add(list, false, _item), do: list
 
   defp wildcard_relative(base_dir, pattern) do

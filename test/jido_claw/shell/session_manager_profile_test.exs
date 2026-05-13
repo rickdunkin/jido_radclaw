@@ -8,6 +8,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
   # would trample each other's active-by-workspace state.
   use ExUnit.Case, async: false
 
+  alias Jido.Shell.ShellSession
   alias JidoClaw.Shell.{ProfileManager, SessionManager}
   alias JidoClaw.VFS.Workspace
 
@@ -114,7 +115,6 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       workspace_id: ws,
       tmp: tmp
     } do
-      # Set an ad hoc env var via the built-in env command
       assert {:ok, %{exit_code: 0}} =
                SessionManager.run(ws, "env ADHOC=kept", 5_000,
                  project_dir: tmp,
@@ -158,7 +158,7 @@ defmodule JidoClaw.Shell.SessionManagerProfileTest do
       # Induce VFS failure AFTER host has succeeded.
       # `real_writer` succeeds for host, `fail_writer` fails for VFS —
       # rollback path kicks in.
-      real_writer = &Jido.Shell.ShellSession.update_env/2
+      real_writer = &ShellSession.update_env/2
       fail_writer = fn _id, _env -> {:error, :induced} end
 
       assert {:error, :vfs_update_failed, :ok, :induced} =

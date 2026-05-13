@@ -1,12 +1,13 @@
 defmodule JidoClaw.Agent.PromptTest do
   use ExUnit.Case, async: false
 
+  alias Jido.Signal.Bus
   alias JidoClaw.Agent.Prompt
 
   # Jido.Signal.Bus uses its own internal naming, not Process.register/2.
   # Attempt the start and treat :already_started as success.
   defp ensure_signal_bus do
-    case Jido.Signal.Bus.start_link(name: JidoClaw.SignalBus) do
+    case Bus.start_link(name: JidoClaw.SignalBus) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end

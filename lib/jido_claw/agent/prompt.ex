@@ -148,8 +148,6 @@ defmodule JidoClaw.Agent.Prompt do
          {:ok, new_body} <- File.read(sys_path),
          :ok <- write_sync(stamp_path, sha(new_body), sha(new_body)) do
       {:ok, %{from: default_sidecar, to: sys_path, backup: backup_path}}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -159,18 +157,16 @@ defmodule JidoClaw.Agent.Prompt do
 
   # Sidecar missing (pre-0.4 user or first install after ensure/1).
   defp dispatch_sync(%{sidecar: nil} = ctx) do
-    cond do
-      ctx.body_sha == ctx.default_sha ->
-        # Fresh install or user sits on the latest bundled default.
-        write_sync(ctx.stamp_path, ctx.default_sha, ctx.body_sha)
-        {:ok, :noop}
-
-      true ->
-        # User has diverged from the bundled default — offer the new one.
-        atomic_write(ctx.default_sidecar_path, ctx.default_bytes)
-        write_sync(ctx.stamp_path, ctx.default_sha, ctx.body_sha)
-        emit_sidecar_signal(ctx.project_dir)
-        {:ok, :sidecar_written}
+    if ctx.body_sha == ctx.default_sha do
+      # Fresh install or user sits on the latest bundled default.
+      write_sync(ctx.stamp_path, ctx.default_sha, ctx.body_sha)
+      {:ok, :noop}
+    else
+      # User has diverged from the bundled default — offer the new one.
+      atomic_write(ctx.default_sidecar_path, ctx.default_bytes)
+      write_sync(ctx.stamp_path, ctx.default_sha, ctx.body_sha)
+      emit_sidecar_signal(ctx.project_dir)
+      {:ok, :sidecar_written}
     end
   end
 
@@ -412,15 +408,13 @@ defmodule JidoClaw.Agent.Prompt do
   end
 
   defp emit_sidecar_signal(project_dir) do
-    try do
-      JidoClaw.SignalBus.emit("jido_claw.agent.prompt_sidecar_available", %{
-        project_dir: project_dir
-      })
-    rescue
-      _ -> :ok
-    catch
-      :exit, _ -> :ok
-    end
+    JidoClaw.SignalBus.emit("jido_claw.agent.prompt_sidecar_available", %{
+      project_dir: project_dir
+    })
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   # ---------------------------------------------------------------------------

@@ -84,6 +84,7 @@ defmodule JidoClaw.Tools.RunCommand do
     |> then(&{:ok, &1})
   end
 
+  alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.MCPScope
 
   @impl true
@@ -104,17 +105,15 @@ defmodule JidoClaw.Tools.RunCommand do
       stream_to_display? = streaming_requested?(params)
 
       with :ok <- validate_backend_server(backend, server) do
-        dispatch(
-          command,
-          timeout,
-          workspace_id,
-          project_dir,
-          backend,
-          server,
-          params,
-          stream_to_display?,
-          agent_id
-        )
+        dispatch(command, backend, %{
+          timeout: timeout,
+          workspace_id: workspace_id,
+          project_dir: project_dir,
+          server: server,
+          params: params,
+          stream?: stream_to_display?,
+          agent_id: agent_id
+        })
       end
     end)
   end
@@ -128,46 +127,45 @@ defmodule JidoClaw.Tools.RunCommand do
 
   defp validate_backend_server(_, _), do: :ok
 
-  defp dispatch(
-         command,
-         timeout,
-         workspace_id,
-         project_dir,
-         :ssh,
-         server,
-         _params,
-         stream?,
-         agent_id
-       ) do
+  # `dispatch_opts` keys: :timeout, :workspace_id, :project_dir, :server,
+  # :params, :stream?, :agent_id. Bundled to keep arity within credo limits.
+  defp dispatch(command, :ssh, dispatch_opts) do
+    %{
+      timeout: timeout,
+      workspace_id: workspace_id,
+      project_dir: project_dir,
+      server: server,
+      stream?: stream?,
+      agent_id: agent_id
+    } = dispatch_opts
+
     if session_manager_available?() do
       opts =
         [project_dir: project_dir, backend: :ssh, server: server]
         |> maybe_put_streaming(stream?, agent_id)
 
-      JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout, opts)
+      SessionManager.run(workspace_id, command, timeout, opts)
     else
       {:error, "SSH requires SessionManager; SessionManager is not running"}
     end
   end
 
-  defp dispatch(
-         command,
-         timeout,
-         workspace_id,
-         project_dir,
-         backend,
-         _server,
-         _params,
-         stream?,
-         agent_id
-       ) do
+  defp dispatch(command, backend, dispatch_opts) do
+    %{
+      timeout: timeout,
+      workspace_id: workspace_id,
+      project_dir: project_dir,
+      stream?: stream?,
+      agent_id: agent_id
+    } = dispatch_opts
+
     opts =
       [project_dir: project_dir]
       |> maybe_put(:backend, backend)
       |> maybe_put_streaming(stream?, agent_id)
 
     if session_manager_available?() do
-      JidoClaw.Shell.SessionManager.run(workspace_id, command, timeout, opts)
+      SessionManager.run(workspace_id, command, timeout, opts)
     else
       # System.cmd fallback gate: ignore stream_to_display: entirely —
       # without SessionManager there are no shell session events for

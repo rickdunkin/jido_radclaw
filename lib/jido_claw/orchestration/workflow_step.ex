@@ -1,4 +1,5 @@
 defmodule JidoClaw.Orchestration.WorkflowStep do
+  @moduledoc false
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Orchestration,

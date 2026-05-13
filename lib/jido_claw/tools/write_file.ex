@@ -28,8 +28,8 @@ defmodule JidoClaw.Tools.WriteFile do
       content: [type: :string, required: true, doc: "File content"]
     ]
 
-  alias JidoClaw.VFS.Resolver
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.VFS.Resolver
 
   @impl true
   def run(%{path: path, content: content} = params, context) do

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Sandbox.Local do
+  @moduledoc false
   use Agent
   @behaviour JidoClaw.Forge.Sandbox.Behaviour
 
@@ -80,11 +81,9 @@ defmodule JidoClaw.Forge.Sandbox.Local do
   end
 
   defp run_with_timeout(executable, args, cwd, env, :infinity) do
-    try do
-      System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
-    rescue
-      e -> {Exception.message(e), 1}
-    end
+    System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
+  rescue
+    e -> {Exception.message(e), 1}
   end
 
   defp run_with_timeout(executable, args, cwd, env, timeout) when is_integer(timeout) do
@@ -135,10 +134,7 @@ defmodule JidoClaw.Forge.Sandbox.Local do
 
     full_path = if String.starts_with?(path, "/"), do: path, else: Path.join(sandbox.dir, path)
 
-    case File.read(full_path) do
-      {:ok, content} -> {:ok, content}
-      {:error, reason} -> {:error, reason}
-    end
+    File.read(full_path)
   end
 
   @impl true

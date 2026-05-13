@@ -151,9 +151,9 @@ defmodule JidoClaw.Reasoning.Classifier do
     # classifier never picks it; Adaptive runs its own inner selection.
     candidates =
       StrategyRegistry.list()
-      |> Enum.reject(&(&1.name == "adaptive"))
-      |> Enum.reject(&(&1.name in exclude))
-      |> Enum.reject(&base_excluded?(&1.name, exclude_bases))
+      |> Enum.reject(fn %{name: name} ->
+        name == "adaptive" or name in exclude or base_excluded?(name, exclude_bases)
+      end)
       |> Enum.map(fn %{name: name} ->
         prefers = StrategyRegistry.prefers_for(name) || %{task_types: [], complexity: []}
         heuristic = score_candidate(prefers, profile)

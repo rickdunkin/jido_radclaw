@@ -5,10 +5,11 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
 
   import JidoClaw.Reasoning.StrategyTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Reasoning.{AutoSelect, Resources.Outcome, TaskProfile}
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
     :ok
   end
 

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.EditFile do
+  @moduledoc false
   use Jido.Action,
     name: "edit_file",
     description:
@@ -20,8 +21,8 @@ defmodule JidoClaw.Tools.EditFile do
       new_string: [type: :string, required: true, doc: "Replacement text"]
     ]
 
-  alias JidoClaw.VFS.Resolver
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.VFS.Resolver
 
   @impl true
   def run(%{path: path, old_string: old_str, new_string: new_str} = params, context) do

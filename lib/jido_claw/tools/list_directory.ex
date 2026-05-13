@@ -32,8 +32,8 @@ defmodule JidoClaw.Tools.ListDirectory do
       max_results: [type: :integer, default: 200, doc: "Max entries to return"]
     ]
 
-  alias JidoClaw.VFS.Resolver
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.VFS.Resolver
 
   @impl true
   def run(params, context) do
@@ -49,50 +49,66 @@ defmodule JidoClaw.Tools.ListDirectory do
     project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
     ws_opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-    entries =
-      cond do
-        Resolver.remote?(path) ->
-          # Remote URI paths: delegate entirely to VFS resolver (no glob support)
-          case Resolver.ls(path) do
-            {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
-            {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
-          end
+    entries = fetch_entries(path, params, ws_opts)
+    format_entries(entries, path, max_results)
+  end
 
-        true ->
-          # Bootstrap the workspace first so we never mask a bootstrap
-          # failure by falling through to `list_local/2`.
-          case Resolver.ensure_workspace_ready(path, ws_opts) do
-            :ok ->
-              if Resolver.under_workspace_mount?(path, ws_opts) do
-                case Resolver.ls(path, ws_opts) do
-                  {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
-                  {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
-                end
-              else
-                list_local(path, Map.get(params, :pattern))
-              end
-
-            {:error, reason} ->
-              {:error, "Cannot list #{path}: #{inspect(reason)}"}
-          end
-      end
-
-    case entries do
-      {:error, _} = err ->
-        err
-
-      list ->
-        truncated = Enum.take(list, max_results)
-        total = length(list)
-        content = Enum.join(truncated, "\n")
-
-        note =
-          if total > max_results,
-            do: "\n(#{total - max_results} more entries truncated)",
-            else: ""
-
-        {:ok, %{path: path, entries: content <> note, total: total}}
+  defp fetch_entries(path, params, ws_opts) do
+    if Resolver.remote?(path) do
+      list_remote(path)
+    else
+      list_workspace_or_local(path, params, ws_opts)
     end
+  end
+
+  # Remote URI paths: delegate entirely to VFS resolver (no glob support)
+  defp list_remote(path) do
+    case Resolver.ls(path) do
+      {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
+      {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  # Bootstrap the workspace first so we never mask a bootstrap
+  # failure by falling through to `list_local/2`.
+  defp list_workspace_or_local(path, params, ws_opts) do
+    case Resolver.ensure_workspace_ready(path, ws_opts) do
+      :ok ->
+        list_mounted_or_local(path, params, ws_opts)
+
+      {:error, reason} ->
+        {:error, "Cannot list #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp list_mounted_or_local(path, params, ws_opts) do
+    if Resolver.under_workspace_mount?(path, ws_opts) do
+      list_workspace_mount(path, ws_opts)
+    else
+      list_local(path, Map.get(params, :pattern))
+    end
+  end
+
+  defp list_workspace_mount(path, ws_opts) do
+    case Resolver.ls(path, ws_opts) do
+      {:ok, names} -> Enum.map(names, fn name -> "entry  #{name}" end)
+      {:error, reason} -> {:error, "Cannot list #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp format_entries({:error, _} = err, _path, _max_results), do: err
+
+  defp format_entries(list, path, max_results) do
+    truncated = Enum.take(list, max_results)
+    total = length(list)
+    content = Enum.join(truncated, "\n")
+
+    note =
+      if total > max_results,
+        do: "\n(#{total - max_results} more entries truncated)",
+        else: ""
+
+    {:ok, %{path: path, entries: content <> note, total: total}}
   end
 
   # -- Private ----------------------------------------------------------------

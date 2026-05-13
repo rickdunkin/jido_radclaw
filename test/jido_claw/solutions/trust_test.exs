@@ -112,7 +112,7 @@ defmodule JidoClaw.Solutions.TrustTest do
       assert Trust.verification_score(%{verification: %{status: "passed"}}) == 1.0
     end
 
-    test "should return 1.0 for %{\"status\" => \"passed\"} (string keys)" do
+    test ~S|should return 1.0 for %{"status" => "passed"} (string keys)| do
       assert Trust.verification_score(%{verification: %{"status" => "passed"}}) == 1.0
     end
 
@@ -120,7 +120,7 @@ defmodule JidoClaw.Solutions.TrustTest do
       assert Trust.verification_score(%{verification: %{status: "failed"}}) == 0.0
     end
 
-    test "should return 0.0 for %{\"status\" => \"failed\"} (string keys)" do
+    test ~S|should return 0.0 for %{"status" => "failed"} (string keys)| do
       assert Trust.verification_score(%{verification: %{"status" => "failed"}}) == 0.0
     end
 

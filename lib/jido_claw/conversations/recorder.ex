@@ -65,7 +65,7 @@ defmodule JidoClaw.Conversations.Recorder do
   ## Bus restart resilience
 
   `init/1` returns `{:ok, state, {:continue, :setup}}`. `setup` resolves
-  the bus PID via `Jido.Signal.Bus.whereis/2`; if the bus isn't up yet
+  the bus PID via `Bus.whereis/2`; if the bus isn't up yet
   (`{:error, :not_found}`), it schedules a 250ms `:retry_setup` send.
   When the resolved bus crashes, the `:DOWN` handler schedules the
   same retry. Either path eventually re-subscribes. The agent loop
@@ -78,6 +78,7 @@ defmodule JidoClaw.Conversations.Recorder do
   use GenServer
   require Logger
 
+  alias Jido.Signal.Bus
   alias JidoClaw.Conversations.{Message, RequestCorrelation, ToolTranscript}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Core.MapKeys
@@ -210,7 +211,7 @@ defmodule JidoClaw.Conversations.Recorder do
   defp do_setup(state) do
     attach_latency_handler()
 
-    case Jido.Signal.Bus.whereis(JidoClaw.SignalBus) do
+    case Bus.whereis(JidoClaw.SignalBus) do
       {:ok, bus_pid} ->
         subs = Enum.map(@topics, &subscribe_topic/1)
         Process.monitor(bus_pid)
@@ -644,33 +645,63 @@ defmodule JidoClaw.Conversations.Recorder do
     usage = MapKeys.field(data, :usage) || %{}
     {result_usage, result_model} = telemetry_from_result(MapKeys.field(data, :result))
 
-    duration_ms = MapKeys.field(metadata, :duration_ms) || MapKeys.field(data, :duration_ms)
+    sources = %{
+      data: data,
+      metadata: metadata,
+      usage: usage,
+      result_usage: result_usage,
+      result_model: result_model
+    }
 
     %{}
-    |> maybe_put(:run_id, MapKeys.field(metadata, :run_id) || MapKeys.field(data, :run_id))
-    |> maybe_put(
-      :model,
-      MapKeys.field(metadata, :model) || MapKeys.field(data, :model) ||
-        MapKeys.field(usage, :model) || result_model
-    )
-    |> maybe_put(
-      :input_tokens,
-      MapKeys.field(metadata, :input_tokens) ||
-        MapKeys.field(data, :input_tokens) ||
-        MapKeys.field(usage, :input_tokens) ||
-        MapKeys.field(result_usage, :input_tokens)
-    )
-    |> maybe_put(
-      :output_tokens,
-      MapKeys.field(metadata, :output_tokens) ||
-        MapKeys.field(data, :output_tokens) ||
-        MapKeys.field(usage, :output_tokens) ||
-        MapKeys.field(result_usage, :output_tokens)
-    )
-    |> maybe_put(
-      :latency_ms,
-      MapKeys.field(metadata, :latency_ms) || MapKeys.field(data, :latency_ms) || duration_ms
-    )
+    |> maybe_put(:run_id, telemetry_run_id(sources))
+    |> maybe_put(:model, telemetry_model(sources))
+    |> maybe_put(:input_tokens, telemetry_input_tokens(sources))
+    |> maybe_put(:output_tokens, telemetry_output_tokens(sources))
+    |> maybe_put(:latency_ms, telemetry_latency_ms(sources))
+  end
+
+  defp telemetry_run_id(%{metadata: metadata, data: data}) do
+    MapKeys.field(metadata, :run_id) || MapKeys.field(data, :run_id)
+  end
+
+  defp telemetry_model(%{
+         metadata: metadata,
+         data: data,
+         usage: usage,
+         result_model: result_model
+       }) do
+    MapKeys.field(metadata, :model) || MapKeys.field(data, :model) ||
+      MapKeys.field(usage, :model) || result_model
+  end
+
+  defp telemetry_input_tokens(%{
+         metadata: metadata,
+         data: data,
+         usage: usage,
+         result_usage: result_usage
+       }) do
+    MapKeys.field(metadata, :input_tokens) ||
+      MapKeys.field(data, :input_tokens) ||
+      MapKeys.field(usage, :input_tokens) ||
+      MapKeys.field(result_usage, :input_tokens)
+  end
+
+  defp telemetry_output_tokens(%{
+         metadata: metadata,
+         data: data,
+         usage: usage,
+         result_usage: result_usage
+       }) do
+    MapKeys.field(metadata, :output_tokens) ||
+      MapKeys.field(data, :output_tokens) ||
+      MapKeys.field(usage, :output_tokens) ||
+      MapKeys.field(result_usage, :output_tokens)
+  end
+
+  defp telemetry_latency_ms(%{metadata: metadata, data: data}) do
+    duration_ms = MapKeys.field(metadata, :duration_ms) || MapKeys.field(data, :duration_ms)
+    MapKeys.field(metadata, :latency_ms) || MapKeys.field(data, :latency_ms) || duration_ms
   end
 
   defp telemetry_from_result({:ok, payload, _effects}) when is_map(payload),

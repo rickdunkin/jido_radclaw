@@ -38,9 +38,12 @@ defmodule JidoClaw.CLI.Commands.SolutionsStats do
       acc
       |> Map.update!(:total, &(&1 + n))
       |> Map.update!(:by_language, fn m -> Map.update(m, lang, n, &(&1 + n)) end)
-      |> Map.update!(:by_framework, fn m ->
-        if is_binary(fw), do: Map.update(m, fw, n, &(&1 + n)), else: m
-      end)
+      |> Map.update!(:by_framework, &update_framework(&1, fw, n))
     end)
   end
+
+  defp update_framework(map, framework, n) when is_binary(framework),
+    do: Map.update(map, framework, n, &(&1 + n))
+
+  defp update_framework(map, _framework, _n), do: map
 end

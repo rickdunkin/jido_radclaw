@@ -44,8 +44,9 @@ defmodule JidoClaw.Solutions.Matcher do
 
   require Logger
 
-  alias JidoClaw.Embeddings.PolicyResolver
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Embeddings.RatePacer
+  alias JidoClaw.Memory.EmbeddingResolver
   alias JidoClaw.Solutions.{Fingerprint, Solution}
 
   @default_threshold 0.01
@@ -88,7 +89,7 @@ defmodule JidoClaw.Solutions.Matcher do
     workspace_id = Keyword.fetch!(opts, :workspace_id)
     local_vis = Keyword.get(opts, :local_visibility, [:local, :shared, :public])
     cross_vis = Keyword.get(opts, :cross_workspace_visibility, [:public])
-    actor = Keyword.get(opts, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+    actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
 
     query_fp = Fingerprint.generate(problem_description, opts)
 
@@ -141,26 +142,10 @@ defmodule JidoClaw.Solutions.Matcher do
     end
   end
 
-  # Returns the query embedding (list of floats) or nil. When the
-  # caller supplies an explicit :query_embedding it wins — otherwise
-  # we consult PolicyResolver.
+  # Resolve the query embedding via the shared policy resolver, supplying
+  # the rate-paced Voyage compute callback.
   defp resolve_embedding(query, workspace_id, opts) do
-    explicit_embedding = Keyword.get(opts, :query_embedding)
-
-    if is_nil(explicit_embedding) do
-      resolver = Keyword.get(opts, :policy_resolver, PolicyResolver)
-      policy = resolver.resolve(workspace_id)
-
-      case resolver.model_for_query(policy) do
-        :disabled ->
-          nil
-
-        %{provider: :voyage, request_model: req} ->
-          compute_voyage(query, req, opts)
-      end
-    else
-      explicit_embedding
-    end
+    EmbeddingResolver.resolve(query, workspace_id, opts, &compute_voyage/3)
   end
 
   defp compute_voyage(query, model, opts) do

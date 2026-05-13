@@ -63,17 +63,15 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
             "generator=#{generator.name}, evaluator=#{evaluator.name}, max=#{max_iter}"
         )
 
-        iterate(
-          generator,
-          evaluator,
-          extra_context,
-          project_dir,
-          workspace_id,
-          scope_context,
-          max_iter,
-          1,
-          nil
-        )
+        config = %{
+          extra_context: extra_context,
+          project_dir: project_dir,
+          workspace_id: workspace_id,
+          scope_context: scope_context,
+          max_iter: max_iter
+        }
+
+        iterate(generator, evaluator, config, 1, nil)
 
       {:error, reason} ->
         {:error, reason}
@@ -165,36 +163,27 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   # Private
   # ---------------------------------------------------------------------------
 
+  # `config` keys: :extra_context, :project_dir, :workspace_id, :scope_context,
+  # :max_iter. Bundled to keep arity within credo limits.
+  #
   # The last argument is `{last_gen_result, last_eval_result}` — a tuple carrying
   # the most recent outputs from both sides so the max-iteration cap can return
   # the correct generator result rather than the evaluator feedback.
-  defp iterate(
-         _generator,
-         _evaluator,
-         _extra_context,
-         _project_dir,
-         _workspace_id,
-         _scope_context,
-         max_iter,
-         iteration,
-         {last_gen_result, last_eval_result}
-       )
+  defp iterate(_generator, _evaluator, %{max_iter: max_iter}, iteration, {last_gen, last_eval})
        when iteration > max_iter do
     Logger.info("[IterativeWorkflow] Max iterations (#{max_iter}) reached, returning last result")
-    cap_result(last_gen_result, last_eval_result)
+    cap_result(last_gen, last_eval)
   end
 
-  defp iterate(
-         generator,
-         evaluator,
-         extra_context,
-         project_dir,
-         workspace_id,
-         scope_context,
-         max_iter,
-         iteration,
-         last_pair
-       ) do
+  defp iterate(generator, evaluator, config, iteration, last_pair) do
+    %{
+      extra_context: extra_context,
+      project_dir: project_dir,
+      workspace_id: workspace_id,
+      scope_context: scope_context,
+      max_iter: max_iter
+    } = config
+
     last_eval_result = if is_tuple(last_pair), do: elem(last_pair, 1), else: last_pair
     IO.puts("  \e[36m  ⟳ iteration #{iteration}/#{max_iter}\e[0m")
 
@@ -256,18 +245,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
               :fail ->
                 IO.puts("  \e[33m  ✗ VERDICT: FAIL (iteration #{iteration})\e[0m")
-
-                iterate(
-                  generator,
-                  evaluator,
-                  extra_context,
-                  project_dir,
-                  workspace_id,
-                  scope_context,
-                  max_iter,
-                  iteration + 1,
-                  {gen_result, eval_result}
-                )
+                iterate(generator, evaluator, config, iteration + 1, {gen_result, eval_result})
             end
 
           {:error, reason} ->

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Error do
+  @moduledoc false
   defmodule ProvisionError do
     defexception [:message, :session_id, :reason]
     @impl true

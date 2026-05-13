@@ -10,6 +10,8 @@ defmodule JidoClaw.Startup do
   require Logger
 
   alias JidoClaw.Agent.Prompt
+  alias JidoClaw.Reasoning.PipelineStore
+  alias JidoClaw.Reasoning.StrategyStore
 
   @typedoc "Result of the sync branch inside the `:ok` tuple from `ensure_project_state/1`."
   @type sync_result :: :noop | :overwritten | :sidecar_written | :stamp_only
@@ -43,18 +45,18 @@ defmodule JidoClaw.Startup do
   defp ensure_strategies_dir(project_dir) do
     File.mkdir_p!(Path.join([project_dir, ".jido", "strategies"]))
 
-    case Process.whereis(JidoClaw.Reasoning.StrategyStore) do
+    case Process.whereis(StrategyStore) do
       nil -> :ok
-      _pid -> JidoClaw.Reasoning.StrategyStore.reload()
+      _pid -> StrategyStore.reload()
     end
   end
 
   defp ensure_pipelines_dir(project_dir) do
     File.mkdir_p!(Path.join([project_dir, ".jido", "pipelines"]))
 
-    case Process.whereis(JidoClaw.Reasoning.PipelineStore) do
+    case Process.whereis(PipelineStore) do
       nil -> :ok
-      _pid -> JidoClaw.Reasoning.PipelineStore.reload()
+      _pid -> PipelineStore.reload()
     end
   end
 

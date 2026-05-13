@@ -16,17 +16,21 @@ defmodule JidoClaw.Tools.UnscheduleTask do
       id: [type: :string, required: true, doc: "The job ID to remove"]
     ]
 
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.Scheduler
+
   @impl true
   def run(params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 
     actor =
       get_in(context, [:tool_context, :actor]) ||
-        JidoClaw.Authorization.Actor.system(tenant_id)
+        Actor.system(tenant_id)
 
     id = String.trim(params.id)
 
-    sched_result = JidoClaw.Cron.Scheduler.unschedule(tenant_id, id)
+    sched_result = Scheduler.unschedule(tenant_id, id)
     persist_result = remove_persistent(tenant_id, id, actor)
 
     case {sched_result, persist_result} do
@@ -48,9 +52,9 @@ defmodule JidoClaw.Tools.UnscheduleTask do
   end
 
   defp remove_persistent(tenant_id, id, actor) do
-    case JidoClaw.Cron.Job.by_job_id(id, tenant: tenant_id, actor: actor) do
+    case Job.by_job_id(id, tenant: tenant_id, actor: actor) do
       {:ok, job} ->
-        case JidoClaw.Cron.Job.remove(job, tenant: tenant_id, actor: actor) do
+        case Job.remove(job, tenant: tenant_id, actor: actor) do
           :ok -> :ok
           {:ok, _} -> :ok
           err -> err

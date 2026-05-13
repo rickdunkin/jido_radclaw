@@ -1,13 +1,17 @@
 defmodule JidoClaw.Conversations.RecorderTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Jido.Signal.Bus
   alias JidoClaw.Conversations.{Message, Recorder, RequestCorrelation, Session}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Session.Worker, as: SessionWorker
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
 
   setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
   end
 
@@ -207,7 +211,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
       finalize_and_flush(request_id)
 
       :ok =
-        JidoClaw.Session.Worker.add_message(
+        SessionWorker.add_message(
           tenant,
           session.id,
           :assistant,
@@ -284,7 +288,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
       })
 
       :ok =
-        JidoClaw.Session.Worker.add_message(
+        SessionWorker.add_message(
           tenant,
           session.id,
           :assistant,
@@ -399,7 +403,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
 
   defp seed_session(label) do
     tenant_id = "tenant-rec-#{label}-#{System.unique_integer([:positive])}"
-    {:ok, _} = JidoClaw.Tenants.Tenant.ensure(tenant_id)
+    {:ok, _} = Tenant.ensure(tenant_id)
     actor = %{user_id: tenant_id, tenant_id: tenant_id}
 
     {:ok, ws} =
@@ -458,12 +462,12 @@ defmodule JidoClaw.Conversations.RecorderTest do
         source: "/test"
       )
 
-    Jido.Signal.Bus.publish(JidoClaw.SignalBus, [signal])
+    Bus.publish(JidoClaw.SignalBus, [signal])
   end
 
   defp emit_signal(type, data) do
     {:ok, signal} = Jido.Signal.new(type, data, source: "/test")
-    Jido.Signal.Bus.publish(JidoClaw.SignalBus, [signal])
+    Bus.publish(JidoClaw.SignalBus, [signal])
   end
 
   defp start_session_worker(tenant_id, session_uuid) do
@@ -472,7 +476,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
     {:ok, _pid} =
       JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_uuid, actor: actor)
 
-    :ok = JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_uuid, session_uuid)
+    :ok = SessionWorker.set_session_uuid(tenant_id, session_uuid, session_uuid)
     :ok
   end
 
@@ -484,7 +488,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
         source: "/test"
       )
 
-    Jido.Signal.Bus.publish(JidoClaw.SignalBus, [terminal])
+    Bus.publish(JidoClaw.SignalBus, [terminal])
 
     case Recorder.flush(request_id, 5_000) do
       :ok ->

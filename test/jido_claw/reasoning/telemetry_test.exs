@@ -16,6 +16,7 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
 
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Classifier, Resources.Outcome, Telemetry}
+  alias JidoClaw.Tools.RunPipeline
 
   describe "with_outcome/4" do
     test "returns the fun's result verbatim on :ok" do
@@ -360,7 +361,7 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
 
       try do
         assert {:error, _msg} =
-                 JidoClaw.Tools.RunPipeline.run(
+                 RunPipeline.run(
                    %{
                      pipeline_name: "cap_fail_tel_#{System.unique_integer([:positive])}",
                      prompt: "INITIAL",
@@ -403,7 +404,7 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
 
       try do
         assert {:error, _msg} =
-                 JidoClaw.Tools.RunPipeline.run(
+                 RunPipeline.run(
                    %{
                      pipeline_name: "cap_classified_#{System.unique_integer([:positive])}",
                      prompt: "INITIAL",

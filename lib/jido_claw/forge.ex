@@ -1,7 +1,18 @@
 defmodule JidoClaw.Forge do
-  alias JidoClaw.Forge.{Manager, Harness, Persistence}
+  @moduledoc """
+  Public API for the Forge subsystem — sandboxed execution of agent sessions.
+
+  Forge manages long-running sessions that run commands and iterations inside
+  isolated sandboxes (local or Docker). This module exposes session lifecycle
+  (`start_session/2`, `wake/1`, `stop_session/2`), control (`run_iteration/2`,
+  `exec/3`, `apply_input/2`), and sandbox attachment helpers delegating to the
+  `Manager`, `Harness`, and `Persistence` collaborators.
+  """
+
+  alias JidoClaw.Forge.{Harness, Manager, Persistence}
 
   defmodule SessionHandle do
+    @moduledoc false
     defstruct [:session_id, :pid]
   end
 

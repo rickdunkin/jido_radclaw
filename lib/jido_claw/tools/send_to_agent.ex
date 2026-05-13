@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.SendToAgent do
+  @moduledoc false
   use Jido.Action,
     name: "send_to_agent",
     description: "Send a follow-up message to a running child agent.",
@@ -13,6 +14,8 @@ defmodule JidoClaw.Tools.SendToAgent do
       agent_id: [type: :string, required: true, doc: "The agent ID to send to"],
       message: [type: :string, required: true, doc: "The message to send"]
     ]
+
+  alias JidoClaw.Agent.Templates
 
   @impl true
   def run(params, context) do
@@ -36,7 +39,7 @@ defmodule JidoClaw.Tools.SendToAgent do
         # Send async via the agent module's ask
         spawn(fn ->
           try do
-            case JidoClaw.Agent.Templates.get(template_name) do
+            case Templates.get(template_name) do
               {:ok, template} ->
                 template.module.ask_sync(pid, params.message,
                   timeout: 120_000,

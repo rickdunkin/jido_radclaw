@@ -1,15 +1,18 @@
 defmodule JidoClaw.Agent.PromptSnapshotTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Agent.Prompt
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Memory.Block
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
-    :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :auto)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.mode(JidoClaw.Repo, :auto)
 
     on_exit(fn ->
-      :ok = Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, :manual)
+      :ok = Sandbox.mode(JidoClaw.Repo, :manual)
     end)
 
     project_dir =
@@ -40,7 +43,7 @@ defmodule JidoClaw.Agent.PromptSnapshotTest do
     {:ok, ws} = WorkspaceResolver.ensure_workspace("default", dir)
 
     {:ok, _block} =
-      JidoClaw.Memory.Block.write(
+      Block.write(
         %{
           scope_kind: :workspace,
           workspace_id: ws.id,
@@ -49,7 +52,7 @@ defmodule JidoClaw.Agent.PromptSnapshotTest do
           source: :user
         },
         tenant: "default",
-        actor: JidoClaw.Authorization.Actor.system("default")
+        actor: Actor.system("default")
       )
 
     scope = %{

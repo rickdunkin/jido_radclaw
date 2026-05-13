@@ -21,7 +21,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
       `JidoClaw.Memory.recall/2`. The query is variadic; remaining
       words are joined on whitespace.
     * `solutions find <fingerprint>` — exact signature lookup via
-      `JidoClaw.Solutions.Solution.by_signature/5`. A `:not_found`
+      `Solution.by_signature/5`. A `:not_found`
       result is reported on stdout with exit 0 — the query was valid,
       the corpus just doesn't hold that signature.
 
@@ -32,8 +32,14 @@ defmodule JidoClaw.Shell.Commands.Jido do
 
   @behaviour Jido.Shell.Command
 
+  alias Jido.Shell.Error
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Presenters
+  alias JidoClaw.Forge.Resources.Session, as: ForgeSession
   alias JidoClaw.Shell.ProfileManager
+  alias JidoClaw.Shell.SessionManager, as: ShellSessionManager
+  alias JidoClaw.Solutions.Solution
+  alias JidoClaw.Workspaces.Resolver
 
   @impl true
   def name, do: "jido"
@@ -111,13 +117,13 @@ defmodule JidoClaw.Shell.Commands.Jido do
     {tenant_id, workspace_uuid} = default_scope()
 
     result =
-      case JidoClaw.Solutions.Solution.by_signature(
+      case Solution.by_signature(
              fingerprint,
              workspace_uuid,
              [:local, :shared, :public],
              [:public],
              tenant: tenant_id,
-             actor: JidoClaw.Authorization.Actor.system(tenant_id)
+             actor: Actor.system(tenant_id)
            ) do
         {:ok, [first | _]} -> {:ok, first}
         {:ok, []} -> :not_found
@@ -138,7 +144,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
         {tid, wid}
 
       _ ->
-        case JidoClaw.Workspaces.Resolver.ensure_workspace("default", File.cwd!()) do
+        case Resolver.ensure_workspace("default", File.cwd!()) do
           {:ok, %{id: wid, tenant_id: tid}} -> {tid, wid}
           _ -> {"default", nil}
         end
@@ -152,7 +158,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
     emit_line(emit, "error: #{label} is required")
 
     {:error,
-     Jido.Shell.Error.validation("jido", [
+     Error.validation("jido", [
        %{path: [:args, field], message: "is required"}
      ])}
   end
@@ -161,13 +167,13 @@ defmodule JidoClaw.Shell.Commands.Jido do
     Enum.each(usage_lines(), &emit_line(emit, &1))
     emit_line(emit, "error: unknown sub-command \"#{sub}\"")
 
-    {:error, Jido.Shell.Error.shell(:unknown_command, %{name: "jido " <> sub})}
+    {:error, Error.shell(:unknown_command, %{name: "jido " <> sub})}
   end
 
   # -- Helpers ---------------------------------------------------------------
 
   defp fetch_active_sessions do
-    case JidoClaw.Forge.Resources.Session.list_active() do
+    case ForgeSession.list_active() do
       {:ok, sessions} -> {:ok, sessions}
       {:error, reason} -> {:error, inspect(reason)}
     end
@@ -205,7 +211,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
       ws ->
         case Process.whereis(JidoClaw.Shell.SessionManager) do
           nil -> 0
-          _pid -> JidoClaw.Shell.SessionManager.count_active_ssh_sessions(ws)
+          _pid -> ShellSessionManager.count_active_ssh_sessions(ws)
         end
     end
   catch

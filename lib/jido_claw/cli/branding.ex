@@ -3,6 +3,8 @@ defmodule JidoClaw.CLI.Branding do
   ASCII art, boot sequence, spinners, and visual identity for JidoClaw.
   """
 
+  alias JidoClaw.Display.StatusBar
+
   # -- Main Logo --
 
   def logo(:full) do
@@ -41,17 +43,27 @@ defmodule JidoClaw.CLI.Branding do
   # -- Boot Sequence --
 
   def boot_sequence(project_dir, opts \\ []) do
-    provider = opts[:provider] || "ollama"
-    model = opts[:model] || "nemotron-3-super:cloud"
-    strategy = opts[:strategy] || "react"
-    project_type = detect_type(project_dir)
-    tools_count = opts[:tools_count] || length(JidoClaw.Agent.tool_modules())
-    gateway = opts[:gateway] || false
+    info = %{
+      project_dir: project_dir,
+      provider: opts[:provider] || "ollama",
+      model: opts[:model] || "nemotron-3-super:cloud",
+      strategy: opts[:strategy] || "react",
+      project_type: detect_type(project_dir),
+      tools_count: opts[:tools_count] || length(JidoClaw.Agent.tool_modules()),
+      gateway: opts[:gateway] || false,
+      skills_count: count_yaml_files(Path.join([project_dir, ".jido", "skills"])),
+      agents_count: count_yaml_files(Path.join([project_dir, ".jido", "agents"]))
+    }
 
-    # Count skills and agents from .jido/
-    skills_count = count_yaml_files(Path.join([project_dir, ".jido", "skills"]))
-    agents_count = count_yaml_files(Path.join([project_dir, ".jido", "agents"]))
+    boot_header()
+    boot_core_config(info)
+    boot_optional_counts(info)
+    boot_jido_md(project_dir)
+    boot_memory(project_dir)
+    boot_footer()
+  end
 
+  defp boot_header do
     IO.write("\e[2J\e[H")
     IO.puts(logo())
 
@@ -60,28 +72,34 @@ defmodule JidoClaw.CLI.Branding do
     )
 
     :timer.sleep(80)
-
     IO.puts("")
-    animate_line("  \e[33m⚙\e[0m  workspace   \e[1m#{Path.basename(project_dir)}\e[0m")
-    animate_line("  \e[33m⚙\e[0m  project     \e[1m#{project_type}\e[0m")
-    animate_line("  \e[33m⚙\e[0m  provider    \e[1m#{provider}\e[0m")
-    animate_line("  \e[33m⚙\e[0m  model       \e[1m#{model}\e[0m")
-    animate_line("  \e[33m⚙\e[0m  strategy    \e[1m#{strategy}\e[0m")
-    animate_line("  \e[33m⚙\e[0m  tools       \e[1m#{tools_count} loaded\e[0m")
+  end
+
+  defp boot_core_config(info) do
+    animate_line("  \e[33m⚙\e[0m  workspace   \e[1m#{Path.basename(info.project_dir)}\e[0m")
+    animate_line("  \e[33m⚙\e[0m  project     \e[1m#{info.project_type}\e[0m")
+    animate_line("  \e[33m⚙\e[0m  provider    \e[1m#{info.provider}\e[0m")
+    animate_line("  \e[33m⚙\e[0m  model       \e[1m#{info.model}\e[0m")
+    animate_line("  \e[33m⚙\e[0m  strategy    \e[1m#{info.strategy}\e[0m")
+    animate_line("  \e[33m⚙\e[0m  tools       \e[1m#{info.tools_count} loaded\e[0m")
     animate_line("  \e[33m⚙\e[0m  templates   \e[1m6 agent types\e[0m")
+  end
 
-    if skills_count > 0 do
-      animate_line("  \e[32m✓\e[0m  skills      \e[1m#{skills_count} loaded\e[0m")
+  defp boot_optional_counts(info) do
+    if info.skills_count > 0 do
+      animate_line("  \e[32m✓\e[0m  skills      \e[1m#{info.skills_count} loaded\e[0m")
     end
 
-    if agents_count > 0 do
-      animate_line("  \e[32m✓\e[0m  agents      \e[1m#{agents_count} custom\e[0m")
+    if info.agents_count > 0 do
+      animate_line("  \e[32m✓\e[0m  agents      \e[1m#{info.agents_count} custom\e[0m")
     end
 
-    if gateway do
+    if info.gateway do
       animate_line("  \e[33m⚙\e[0m  gateway     \e[1mhttp://localhost:#{gateway_port()}\e[0m")
     end
+  end
 
+  defp boot_jido_md(project_dir) do
     jido_md = Path.join([project_dir, ".jido", "JIDO.md"])
 
     if File.exists?(jido_md) do
@@ -89,20 +107,27 @@ defmodule JidoClaw.CLI.Branding do
     else
       animate_line("  \e[33m↻\e[0m  JIDO.md     \e[2mgenerating...\e[0m")
     end
+  end
 
-    # Show memory size if exists
+  defp boot_memory(project_dir) do
     memory_path = Path.join([project_dir, ".jido", "memory.json"])
 
     if File.exists?(memory_path) do
-      case File.stat(memory_path) do
-        {:ok, %{size: size}} when size > 0 ->
-          animate_line("  \e[32m✓\e[0m  memory      \e[2m#{format_bytes(size)}\e[0m")
-
-        _ ->
-          :ok
-      end
+      animate_memory_size(memory_path)
     end
+  end
 
+  defp animate_memory_size(memory_path) do
+    case File.stat(memory_path) do
+      {:ok, %{size: size}} when size > 0 ->
+        animate_line("  \e[32m✓\e[0m  memory      \e[2m#{format_bytes(size)}\e[0m")
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp boot_footer do
     IO.puts("")
     IO.puts(divider())
     IO.puts("")
@@ -218,7 +243,7 @@ defmodule JidoClaw.CLI.Branding do
       end
 
     tokens = Map.get(stats, :tokens, 0)
-    tokens_str = JidoClaw.Display.StatusBar.format_tokens(tokens)
+    tokens_str = StatusBar.format_tokens(tokens)
 
     parts =
       [

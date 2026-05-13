@@ -5,12 +5,13 @@ defmodule JidoClaw.Tools.ReasonTest do
 
   import JidoClaw.Reasoning.StrategyTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.Resources.Outcome
   alias JidoClaw.Tools.Reason
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
     :ok
   end
 

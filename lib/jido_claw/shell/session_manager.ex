@@ -28,12 +28,15 @@ defmodule JidoClaw.Shell.SessionManager do
   use GenServer
   require Logger
 
+  alias Jido.Shell.Command.Parser
   alias Jido.Shell.ShellSession
   alias Jido.Shell.ShellSessionServer
   alias Jido.Shell.VFS.MountTable
+  alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.ServerRegistry.ServerEntry
   alias JidoClaw.Shell.SSHError
+  alias JidoClaw.VFS.Workspace, as: VFSWorkspace
 
   @default_timeout 30_000
   @max_output_chars 10_000
@@ -76,7 +79,7 @@ defmodule JidoClaw.Shell.SessionManager do
   # token (e.g. `cat x|head`, `cat x>out`, `foo&bar`). `&&` chains are still
   # acceptable because the rest of the command clears the classifier, so it
   # is carved out in `check_no_metachars/1` below. `;` is deliberately absent:
-  # `Jido.Shell.Command.Parser.parse_program/1` already splits on `;`, so a
+  # `Parser.parse_program/1` already splits on `;`, so a
   # token-embedded `;` means the parser produced multiple clean commands.
   @embedded_forcing_chars ["|", ">", "<", "`", "$(", "${", "&"]
 
@@ -195,7 +198,12 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
-  @doc false
+  @doc """
+  Return the name of the public ETS table the supervised SessionManager
+  uses as a read-only mirror of remote SSH session state. Public so
+  `read_ssh_sessions_ets/0` and integration tests can read the table
+  name directly rather than duplicating the literal.
+  """
   @spec ssh_sessions_ets() :: atom()
   def ssh_sessions_ets, do: @ssh_sessions_ets
 
@@ -219,7 +227,7 @@ defmodule JidoClaw.Shell.SessionManager do
 
   @doc """
   Stop and forget the shell sessions for `workspace_id` without tearing down
-  the VFS workspace. Used by `JidoClaw.VFS.Workspace.ensure_started/2` on
+  the VFS workspace. Used by `VFSWorkspace.ensure_started/2` on
   drift — the workspace is already being rebuilt by the caller, so this
   avoids the SessionManager → Workspace → SessionManager re-entry loop.
   """
@@ -245,10 +253,13 @@ defmodule JidoClaw.Shell.SessionManager do
     do_update_env(workspace_id, keys_to_drop, new_overlay, [])
   end
 
-  @doc false
-  # Internal test-injection seam: `:host_writer` and `:vfs_writer` opts
-  # default to `&Jido.Shell.ShellSession.update_env/2`; tests override
-  # the VFS writer to induce a post-host failure and assert rollback.
+  @doc """
+  Test seam: drive the host/vfs writer pair with overridable injectors.
+
+  `:host_writer` and `:vfs_writer` opts default to
+  `&Jido.Shell.ShellSession.update_env/2`; tests override the VFS writer
+  to induce a post-host failure and assert rollback.
+  """
   @spec do_update_env(String.t(), [String.t()], map(), keyword()) ::
           :ok
           | {:error, :host_update_failed, term()}
@@ -260,9 +271,10 @@ defmodule JidoClaw.Shell.SessionManager do
     )
   end
 
-  @doc false
-  # Test seam — reads the host session's `state.env` for inspection in
-  # rollback tests. Returns `{:ok, env}` | `{:error, :no_session}`.
+  @doc """
+  Test seam: read the host session's `state.env` for inspection in
+  rollback tests. Returns `{:ok, env}` or `{:error, :no_session}`.
+  """
   @spec __host_env_for_test__(String.t()) :: {:ok, map()} | {:error, term()}
   def __host_env_for_test__(workspace_id) do
     GenServer.call(__MODULE__, {:host_env_for_test, workspace_id})
@@ -364,7 +376,7 @@ defmodule JidoClaw.Shell.SessionManager do
         {%{host: host_id, vfs: vfs_id}, sessions} ->
           _ = ShellSession.stop(host_id)
           _ = ShellSession.stop(vfs_id)
-          _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+          _ = VFSWorkspace.teardown(workspace_id)
           sessions
       end
 
@@ -374,7 +386,7 @@ defmodule JidoClaw.Shell.SessionManager do
     # caller implicitly created one (e.g. a later host session). The
     # teardown is a no-op for unknown workspaces.
     if had_ssh_only? do
-      _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+      _ = VFSWorkspace.teardown(workspace_id)
     end
 
     new_state = put_ssh_sessions(%{state | sessions: new_sessions}, new_ssh)
@@ -475,12 +487,10 @@ defmodule JidoClaw.Shell.SessionManager do
   defp handle_ssh_run(workspace_id, command, timeout, opts, project_dir, state) do
     server = Keyword.get(opts, :server)
 
-    cond do
-      not is_binary(server) or server == "" ->
-        {:reply, {:error, "SSH requires :server option"}, state}
-
-      true ->
-        run_ssh_with_retry(workspace_id, server, command, timeout, opts, project_dir, state, 1)
+    if is_binary(server) and server != "" do
+      run_ssh_with_retry(workspace_id, server, command, timeout, opts, project_dir, state, 1)
+    else
+      {:reply, {:error, "SSH requires :server option"}, state}
     end
   end
 
@@ -504,30 +514,28 @@ defmodule JidoClaw.Shell.SessionManager do
             execute_ssh_command(session_id, command, timeout, entry, streaming?, opts)
           end)
 
-        cond do
-          retries_left > 0 and transport_drop?(raw) ->
-            Logger.debug(
-              "[SessionManager] SSH transport drop on #{workspace_id}/#{server}, retrying once"
-            )
+        if retries_left > 0 and transport_drop?(raw) do
+          Logger.debug(
+            "[SessionManager] SSH transport drop on #{workspace_id}/#{server}, retrying once"
+          )
 
-            evicted = evict_ssh_session(workspace_id, server, new_state)
+          evicted = evict_ssh_session(workspace_id, server, new_state)
 
-            # IMPORTANT: return the recursive call's tuple as-is — the
-            # retry's state (post-eviction, possibly with a fresh cache
-            # entry from the rebuild) is the authoritative one.
-            run_ssh_with_retry(
-              workspace_id,
-              server,
-              command,
-              timeout,
-              opts,
-              project_dir,
-              evicted,
-              retries_left - 1
-            )
-
-          true ->
-            {:reply, format_if_retry_raw_error(raw, entry), new_state}
+          # IMPORTANT: return the recursive call's tuple as-is — the
+          # retry's state (post-eviction, possibly with a fresh cache
+          # entry from the rebuild) is the authoritative one.
+          run_ssh_with_retry(
+            workspace_id,
+            server,
+            command,
+            timeout,
+            opts,
+            project_dir,
+            evicted,
+            retries_left - 1
+          )
+        else
+          {:reply, format_if_retry_raw_error(raw, entry), new_state}
         end
 
       {:error, message, new_state} ->
@@ -552,7 +560,7 @@ defmodule JidoClaw.Shell.SessionManager do
             fun.(true)
           after
             JidoClaw.Display.end_stream(session_id)
-            _ = Jido.Shell.ShellSessionServer.unsubscribe(session_id, display_pid)
+            _ = ShellSessionServer.unsubscribe(session_id, display_pid)
           end
 
         :no_stream ->
@@ -616,7 +624,7 @@ defmodule JidoClaw.Shell.SessionManager do
 
             _ = ShellSession.stop(host_id)
             _ = ShellSession.stop(vfs_id)
-            _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+            _ = VFSWorkspace.teardown(workspace_id)
             new_state = %{state | sessions: Map.delete(state.sessions, workspace_id)}
             start_new_session(workspace_id, project_dir, new_state)
 
@@ -627,7 +635,7 @@ defmodule JidoClaw.Shell.SessionManager do
 
             _ = ShellSession.stop(host_id)
             _ = ShellSession.stop(vfs_id)
-            _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+            _ = VFSWorkspace.teardown(workspace_id)
             new_state = %{state | sessions: Map.delete(state.sessions, workspace_id)}
             start_new_session(workspace_id, project_dir, new_state)
 
@@ -644,7 +652,7 @@ defmodule JidoClaw.Shell.SessionManager do
   defp start_new_session(workspace_id, project_dir, state) do
     initial_env = profile_env(workspace_id)
 
-    with {:ok, _ws_pid} <- JidoClaw.VFS.Workspace.ensure_started(workspace_id, project_dir),
+    with {:ok, _ws_pid} <- VFSWorkspace.ensure_started(workspace_id, project_dir),
          {:ok, host_id} <- start_host_session(workspace_id, project_dir, initial_env),
          {:ok, vfs_id} <- start_vfs_session(workspace_id, host_id, initial_env) do
       entry = %{host: host_id, vfs: vfs_id, project_dir: project_dir}
@@ -674,7 +682,7 @@ defmodule JidoClaw.Shell.SessionManager do
   # Tuple shape is `{key, profile_name, env}` so PM.current/1 can read
   # the same rows without a GenServer hop; we only need the env here.
   defp profile_env(workspace_id) do
-    table = JidoClaw.Shell.ProfileManager.ets_table()
+    table = ProfileManager.ets_table()
 
     case :ets.whereis(table) do
       :undefined ->
@@ -919,7 +927,10 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
-  @doc false
+  @doc """
+  Test seam: expose the private `transport_drop?/1` classifier so SSH
+  retry tests can assert which result tuples evict the cached session.
+  """
   @spec __transport_drop_for_test__(term()) :: boolean()
   def __transport_drop_for_test__(result), do: transport_drop?(result)
 
@@ -1062,7 +1073,7 @@ defmodule JidoClaw.Shell.SessionManager do
   defp cleanup_failed_start(workspace_id, _state) do
     _ = ShellSession.stop(workspace_id <> ":host")
     _ = ShellSession.stop(workspace_id <> ":vfs")
-    _ = JidoClaw.VFS.Workspace.teardown(workspace_id)
+    _ = VFSWorkspace.teardown(workspace_id)
     :ok
   end
 
@@ -1075,14 +1086,22 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
-  @doc false
+  @doc """
+  Test seam: route a `command` to `:vfs` or `:host` based on the
+  workspace's allowlist, extension commands, and path-mount rules.
+
+  Returns `:vfs` when the parsed program is allowed and either uses no
+  workspace paths or all paths fall under the workspace mount; falls
+  back to `:host` for anything else. Exposed for the classifier test
+  suite — production callers go through `resolve_target/3`.
+  """
   def classify(command, workspace_id) do
     # v0.5.1: `check_allowlist_or_extension/1` admits registry-extension
     # commands and `help`, and `check_extension_only_or_paths_mount/2`
     # short-circuits when the whole program is extension/help (no workspace
     # paths to validate). Baseline sandbox commands still flow through the
     # existing absolute-path mount check.
-    with {:ok, parsed} <- Jido.Shell.Command.Parser.parse_program(command),
+    with {:ok, parsed} <- Parser.parse_program(command),
          :ok <- check_allowlist_or_extension(parsed),
          :ok <- check_no_metachars(command),
          :ok <- check_extension_only_or_paths_mount(parsed, workspace_id) do
@@ -1254,25 +1273,23 @@ defmodule JidoClaw.Shell.SessionManager do
           do_collect(session_id, deadline, acc, code, streaming?)
 
         {:jido_shell_session, ^session_id, :command_done} ->
-          {:ok, %{output: finalize_output(acc, streaming?), exit_code: exit_code}}
+          ok_output(acc, exit_code, streaming?)
 
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}} = error}} ->
           # Output cap exceeded mid-stream. Surface the error directly
           # so callers can react (e.g. RunCommand can render the
           # streamed preview alongside the cap-overflow message).
-          preview = finalize_output(acc, streaming?)
-          new_context = Map.put(error.context || %{}, :preview, preview)
-          {:error, %{error | context: new_context}}
+          output_limit_error(error, acc, streaming?)
 
         {:jido_shell_session, ^session_id, {:error, _error}} ->
-          {:ok, %{output: finalize_output(acc, streaming?), exit_code: max(exit_code, 1)}}
+          ok_output(acc, max(exit_code, 1), streaming?)
 
         {:jido_shell_session, ^session_id, :command_cancelled} ->
-          {:error, "Command was cancelled"}
+          cancellation_error()
 
         {:jido_shell_session, ^session_id, {:command_crashed, reason}} ->
-          {:error, "Command crashed: #{inspect(reason)}"}
+          crashed_error(reason)
 
         # Ignore lifecycle events (command_started, cwd_changed)
         {:jido_shell_session, ^session_id, _other} ->
@@ -1363,7 +1380,7 @@ defmodule JidoClaw.Shell.SessionManager do
           do_collect_ssh(session_id, deadline, acc, code, entry, streaming?)
 
         {:jido_shell_session, ^session_id, :command_done} ->
-          {:ok, %{output: finalize_output(acc, streaming?), exit_code: exit_code}}
+          ok_output(acc, exit_code, streaming?)
 
         # Remote non-zero exit — surfaced by the SSH backend as an
         # Error struct but semantically a successful command completion
@@ -1371,16 +1388,14 @@ defmodule JidoClaw.Shell.SessionManager do
         # `{:ok, %{exit_code: <n>}}` instead of a terminal error.
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :exit_code}, context: %{code: code}}}} ->
-          {:ok, %{output: finalize_output(acc, streaming?), exit_code: code}}
+          ok_output(acc, code, streaming?)
 
         # Output cap exceeded mid-stream — surface the structured
         # error with preview folded into context so callers (RunCommand)
         # can render the streamed preview alongside the cap message.
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}} = error}} ->
-          preview = finalize_output(acc, streaming?)
-          new_context = Map.put(error.context || %{}, :preview, preview)
-          {:error, %{error | context: new_context}}
+          output_limit_error(error, acc, streaming?)
 
         # Preserve raw struct for transport-drop classification by the
         # retry path. Format-at-boundary semantics live in
@@ -1399,10 +1414,10 @@ defmodule JidoClaw.Shell.SessionManager do
           {:error, SSHError.format(reason, entry)}
 
         {:jido_shell_session, ^session_id, :command_cancelled} ->
-          {:error, "Command was cancelled"}
+          cancellation_error()
 
         {:jido_shell_session, ^session_id, {:command_crashed, reason}} ->
-          {:error, "Command crashed: #{inspect(reason)}"}
+          crashed_error(reason)
 
         {:jido_shell_session, ^session_id, _other} ->
           do_collect_ssh(session_id, deadline, acc, exit_code, entry, streaming?)
@@ -1428,6 +1443,31 @@ defmodule JidoClaw.Shell.SessionManager do
       output
     end
   end
+
+  # Build the `{:ok, %{output, exit_code}}` tuple shared by both
+  # receive loops. Finalises the accumulator (reverse + truncate) so
+  # the result is ready to surface to the caller.
+  defp ok_output(acc, exit_code, streaming?) do
+    {:ok, %{output: finalize_output(acc, streaming?), exit_code: exit_code}}
+  end
+
+  # Build the `{:error, %Jido.Shell.Error{}}` tuple for an output-limit
+  # cap overflow, folding the streamed preview into the error's
+  # `context.preview` so callers can render the partial output beside
+  # the cap message.
+  defp output_limit_error(%Jido.Shell.Error{} = error, acc, streaming?) do
+    preview = finalize_output(acc, streaming?)
+    new_context = Map.put(error.context || %{}, :preview, preview)
+    {:error, %{error | context: new_context}}
+  end
+
+  # Canonical cancellation result. Shared so both receive loops produce
+  # byte-identical output for `:command_cancelled`.
+  defp cancellation_error, do: {:error, "Command was cancelled"}
+
+  # Canonical crash result. Shared so both receive loops produce
+  # byte-identical output for `:command_crashed`.
+  defp crashed_error(reason), do: {:error, "Command crashed: #{inspect(reason)}"}
 
   # Cut at most `cap` bytes from `binary` along a UTF-8 codepoint
   # boundary so the result is always valid UTF-8 — `binary_part/3`

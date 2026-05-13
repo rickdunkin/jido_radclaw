@@ -1,6 +1,7 @@
 defmodule JidoClaw.Tools.EditFileTest do
   use ExUnit.Case
 
+  alias Jido.Shell.VFS
   alias JidoClaw.Tools.EditFile
   alias JidoClaw.VFS.Workspace
 
@@ -122,7 +123,7 @@ defmodule JidoClaw.Tools.EditFileTest do
       File.mkdir_p!(tmp)
       {:ok, _} = Workspace.ensure_started(workspace_id, tmp)
       :ok = Workspace.mount(workspace_id, "/scratch", :in_memory, %{})
-      :ok = Jido.Shell.VFS.write_file(workspace_id, "/scratch/doc.txt", "foo bar baz")
+      :ok = VFS.write_file(workspace_id, "/scratch/doc.txt", "foo bar baz")
 
       on_exit(fn ->
         _ = Workspace.teardown(workspace_id)
@@ -136,7 +137,7 @@ defmodule JidoClaw.Tools.EditFileTest do
                )
 
       assert result.status == "edited"
-      assert {:ok, "foo qux baz"} = Jido.Shell.VFS.read_file(workspace_id, "/scratch/doc.txt")
+      assert {:ok, "foo qux baz"} = VFS.read_file(workspace_id, "/scratch/doc.txt")
     end
 
     test "auto-bootstraps VFS when tool_context carries workspace_id + project_dir" do

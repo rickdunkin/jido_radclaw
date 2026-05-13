@@ -1,4 +1,5 @@
 defmodule JidoClaw.Web.RpcChannel do
+  @moduledoc false
   use Phoenix.Channel
   require Logger
 

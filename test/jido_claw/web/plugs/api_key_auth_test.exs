@@ -9,10 +9,11 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit.Event
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Web.Plugs.ApiKeyAuth
 
   setup do
-    {:ok, _} = JidoClaw.Tenants.Tenant.ensure("default")
+    {:ok, _} = Tenant.ensure("default")
 
     {:ok, baseline_rows} = Event.read(tenant: "default", authorize?: false)
     initial_count = Enum.count(baseline_rows, &(&1.event_kind == :auth_event))

@@ -347,8 +347,6 @@ defmodule JidoClaw.Shell.ServerRegistry do
          shell: parse_string(raw, "shell", @default_shell),
          connect_timeout: parse_connect_timeout(raw, name)
        }}
-    else
-      :skip -> :skip
     end
   end
 

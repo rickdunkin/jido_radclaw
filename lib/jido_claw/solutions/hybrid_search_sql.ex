@@ -64,6 +64,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
   require Logger
   require Ash.Query
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.SearchEscape
   alias JidoClaw.Solutions.Solution
@@ -260,7 +261,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
         loaded =
           Solution
           |> Ash.Query.for_read(:read, %{},
-            actor: JidoClaw.Authorization.Actor.system(tenant_id),
+            actor: Actor.system(tenant_id),
             tenant: tenant_id
           )
           |> Ash.Query.filter(id in ^ids)

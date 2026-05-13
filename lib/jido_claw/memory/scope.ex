@@ -44,6 +44,7 @@ defmodule JidoClaw.Memory.Scope do
   unrelated scopes serializing — annoying, not incorrect.
   """
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session, as: ConvSession
   alias JidoClaw.Workspaces.Workspace
 
@@ -75,12 +76,10 @@ defmodule JidoClaw.Memory.Scope do
   def resolve(tool_context) when is_map(tool_context) do
     tenant_id = Map.get(tool_context, :tenant_id)
 
-    cond do
-      is_nil(tenant_id) or tenant_id == "" ->
-        {:error, :tenant_required}
-
-      true ->
-        do_resolve(tenant_id, tool_context)
+    if is_nil(tenant_id) or tenant_id == "" do
+      {:error, :tenant_required}
+    else
+      do_resolve(tenant_id, tool_context)
     end
   end
 
@@ -161,7 +160,7 @@ defmodule JidoClaw.Memory.Scope do
     do:
       ConvSession.by_id(session_id,
         tenant: tenant_id,
-        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+        actor: Actor.system(tenant_id)
       )
 
   defp workspace_lookup(nil, ws_id), do: Workspace.by_id_global(ws_id)
@@ -170,7 +169,7 @@ defmodule JidoClaw.Memory.Scope do
     do:
       Workspace.by_id(ws_id,
         tenant: tenant_id,
-        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+        actor: Actor.system(tenant_id)
       )
 
   @doc """

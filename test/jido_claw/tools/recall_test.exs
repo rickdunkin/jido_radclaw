@@ -1,12 +1,13 @@
 defmodule JidoClaw.Tools.RecallTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Tools.Recall
   alias JidoClaw.Tools.Remember
   alias JidoClaw.Workspaces.Resolver
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
 
     {:ok, ws} =
       Resolver.ensure_workspace(

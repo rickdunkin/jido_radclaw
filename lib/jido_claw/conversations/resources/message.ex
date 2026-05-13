@@ -422,6 +422,9 @@ defmodule JidoClaw.Conversations.Message do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Conversations.Resources.GlobalLookup
+    alias JidoClaw.Conversations.Session
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -432,23 +435,14 @@ defmodule JidoClaw.Conversations.Message do
             Ash.Changeset.add_error(cs, field: :session_id, message: "session_required")
 
           session_id ->
-            case JidoClaw.Conversations.Session.by_id_global(session_id) do
-              {:ok, %{tenant_id: ^tenant_id}} ->
-                cs
-
-              {:ok, %{tenant_id: parent_tenant}} ->
-                Ash.Changeset.add_error(cs,
-                  field: :session_id,
-                  message: "cross_tenant_fk_mismatch",
-                  vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
-                )
-
-              {:error, _} ->
-                Ash.Changeset.add_error(cs,
-                  field: :session_id,
-                  message: "session_not_found"
-                )
-            end
+            GlobalLookup.validate_tenant_match(
+              cs,
+              session_id,
+              tenant_id,
+              :session_id,
+              &Session.by_id_global/1,
+              "session_not_found"
+            )
         end
       end)
     end
@@ -457,6 +451,8 @@ defmodule JidoClaw.Conversations.Message do
   defmodule Changes.AllocateSequence do
     @moduledoc false
     use Ash.Resource.Change
+
+    alias Ecto.Adapters.SQL
 
     @impl true
     def change(changeset, _opts, _context) do
@@ -478,7 +474,7 @@ defmodule JidoClaw.Conversations.Message do
       session_uuid = Ecto.UUID.dump!(session_id)
 
       result =
-        Ecto.Adapters.SQL.query!(
+        SQL.query!(
           JidoClaw.Repo,
           "UPDATE conversation_sessions SET next_sequence = next_sequence + 1 WHERE id = $1 RETURNING next_sequence - 1",
           [session_uuid]
@@ -501,6 +497,8 @@ defmodule JidoClaw.Conversations.Message do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Security.Redaction.Transcript
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -519,7 +517,7 @@ defmodule JidoClaw.Conversations.Message do
           Ash.Changeset.force_change_attribute(
             cs,
             attr,
-            JidoClaw.Security.Redaction.Transcript.redact(value)
+            Transcript.redact(value)
           )
       end
     end
@@ -528,6 +526,9 @@ defmodule JidoClaw.Conversations.Message do
   defmodule Changes.ValidateCrossTenantFk do
     @moduledoc false
     use Ash.Resource.Change
+
+    alias JidoClaw.Conversations.Resources.GlobalLookup
+    alias JidoClaw.Conversations.Session
 
     @impl true
     def change(changeset, _opts, _context) do
@@ -538,27 +539,15 @@ defmodule JidoClaw.Conversations.Message do
       end)
     end
 
-    defp validate(cs, nil, _), do: cs
-    defp validate(cs, _, nil), do: cs
-
     defp validate(cs, session_id, tenant_id) do
-      case JidoClaw.Conversations.Session.by_id_global(session_id) do
-        {:ok, %{tenant_id: ^tenant_id}} ->
-          cs
-
-        {:ok, %{tenant_id: parent_tenant}} ->
-          Ash.Changeset.add_error(cs,
-            field: :session_id,
-            message: "cross_tenant_fk_mismatch",
-            vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
-          )
-
-        {:error, _} ->
-          Ash.Changeset.add_error(cs,
-            field: :session_id,
-            message: "session_not_found"
-          )
-      end
+      GlobalLookup.validate_tenant_match(
+        cs,
+        session_id,
+        tenant_id,
+        :session_id,
+        &Session.by_id_global/1,
+        "session_not_found"
+      )
     end
   end
 

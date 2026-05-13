@@ -3,11 +3,13 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
 
   import JidoClaw.ExportTestHelper
 
+  alias Ecto.Adapters.SQL.Sandbox
+
   @fixtures Path.expand("../../fixtures/exports/solutions", __DIR__)
 
   setup do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(pid) end)
     :ok
   end
 

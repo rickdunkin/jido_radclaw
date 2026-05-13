@@ -1,4 +1,5 @@
 defmodule JidoClaw.Agent.Workers.DocsWriter do
+  @moduledoc false
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_docs_writer",
     description:

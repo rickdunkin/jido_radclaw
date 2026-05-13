@@ -18,10 +18,16 @@ defmodule JidoClaw do
 
   require Logger
 
-  alias JidoClaw.{Conversations, Workspaces}
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Conversations
+  alias JidoClaw.Conversations.Message, as: ConversationsMessage
+  alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache, as: CorrelationCache
-  alias JidoClaw.Conversations.Recorder
+  alias JidoClaw.Conversations.Session, as: ConversationsSession
+  alias JidoClaw.Session.Worker, as: SessionWorker
+  alias JidoClaw.Tenant.Manager, as: TenantManager
+  alias JidoClaw.Workspaces
 
   @version "0.3.0"
 
@@ -73,7 +79,7 @@ defmodule JidoClaw do
           Keyword.get(opts, :actor) ||
             if user_id,
               do: %{user_id: user_id, tenant_id: tenant_id},
-              else: JidoClaw.Authorization.Actor.system(tenant_id)
+              else: Actor.system(tenant_id)
 
         opts = Keyword.put(opts, :actor, actor)
 
@@ -88,7 +94,7 @@ defmodule JidoClaw do
              {:ok, agent_pid} <- resolve_agent_pid(session_id),
              {:ok, workspace, session} <-
                resolve_persistence(tenant_id, project_dir, session_id, kind, opts),
-             :ok <- JidoClaw.Session.Worker.set_session_uuid(tenant_id, session_id, session.id),
+             :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session.id),
              :ok <-
                JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session) do
           run_chat_turn(
@@ -161,13 +167,13 @@ defmodule JidoClaw do
 
     register_correlation(request_id, session.id, tenant_id, workspace.id, user_id)
 
-    JidoClaw.Session.Worker.add_message(tenant_id, session_id, :user, message, request_id)
+    SessionWorker.add_message(tenant_id, session_id, :user, message, request_id)
 
     actor =
       Keyword.get(opts, :actor) ||
         if user_id,
           do: %{user_id: user_id, tenant_id: tenant_id},
-          else: JidoClaw.Authorization.Actor.system(tenant_id)
+          else: Actor.system(tenant_id)
 
     tool_context =
       JidoClaw.ToolContext.build(%{
@@ -232,23 +238,23 @@ defmodule JidoClaw do
   end
 
   defp handle_response({:ok, answer}, tenant_id, session_id, request_id) when is_binary(answer) do
-    JidoClaw.Session.Worker.add_message(tenant_id, session_id, :assistant, answer, request_id)
+    SessionWorker.add_message(tenant_id, session_id, :assistant, answer, request_id)
     {:ok, answer}
   end
 
   defp handle_response({:ok, %{text: text}}, tenant_id, session_id, request_id) do
-    JidoClaw.Session.Worker.add_message(tenant_id, session_id, :assistant, text, request_id)
+    SessionWorker.add_message(tenant_id, session_id, :assistant, text, request_id)
     {:ok, text}
   end
 
   defp handle_response({:ok, %{last_answer: answer}}, tenant_id, session_id, request_id) do
-    JidoClaw.Session.Worker.add_message(tenant_id, session_id, :assistant, answer, request_id)
+    SessionWorker.add_message(tenant_id, session_id, :assistant, answer, request_id)
     {:ok, answer}
   end
 
   defp handle_response({:ok, other}, tenant_id, session_id, request_id) do
     text = inspect(other)
-    JidoClaw.Session.Worker.add_message(tenant_id, session_id, :assistant, text, request_id)
+    SessionWorker.add_message(tenant_id, session_id, :assistant, text, request_id)
     {:ok, text}
   end
 
@@ -284,7 +290,7 @@ defmodule JidoClaw do
   persisted session, use `history/3`.
   """
   def history(tenant_id, session_id) do
-    JidoClaw.Session.Worker.get_messages(tenant_id, session_id)
+    SessionWorker.get_messages(tenant_id, session_id)
   rescue
     _ -> []
   end
@@ -317,12 +323,12 @@ defmodule JidoClaw do
   def history(tenant_id, session_id_external, opts) when is_list(opts) do
     kind = Keyword.fetch!(opts, :kind)
     workspace_dir = Keyword.get(opts, :workspace_id) || File.cwd!()
-    actor = Keyword.get(opts, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+    actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
 
     with {:ok, workspace} <-
            JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, workspace_dir, actor: actor),
          {:ok, session} <-
-           JidoClaw.Conversations.Session.by_external(
+           ConversationsSession.by_external(
              workspace.id,
              kind,
              session_id_external,
@@ -330,7 +336,7 @@ defmodule JidoClaw do
              actor: actor
            ),
          {:ok, rows} <-
-           JidoClaw.Conversations.Message.for_session(session.id,
+           ConversationsMessage.for_session(session.id,
              tenant: tenant_id,
              actor: actor
            ) do
@@ -352,11 +358,11 @@ defmodule JidoClaw do
 
   @doc "Create a new tenant."
   def create_tenant(attrs \\ []) do
-    JidoClaw.Tenant.Manager.create_tenant(attrs)
+    TenantManager.create_tenant(attrs)
   end
 
   @doc "List all tenants."
   def tenants do
-    JidoClaw.Tenant.Manager.list_tenants()
+    TenantManager.list_tenants()
   end
 end

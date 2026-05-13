@@ -1,10 +1,11 @@
 defmodule JidoClaw.Reasoning.StatisticsTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Reasoning.{Resources.Outcome, Statistics}
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+    :ok = Sandbox.checkout(JidoClaw.Repo)
     :ok
   end
 

@@ -12,6 +12,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
   millions of rows.
   """
 
+  alias AshPostgres.DataLayer.Info
+  alias Ecto.Adapters.SQL
   alias JidoClaw.Repo
 
   @doc """
@@ -137,10 +139,10 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
 
   defp run_aggregate(column, tenant_id, fk_id)
        when column in ["user_id", "project_id"] do
-    table = AshPostgres.DataLayer.Info.table(JidoClaw.Workspaces.Workspace)
+    table = Info.table(JidoClaw.Workspaces.Workspace)
 
     {:ok, %{rows: [[result]]}} =
-      Ecto.Adapters.SQL.query(
+      SQL.query(
         Repo,
         """
         SELECT MIN(CASE consolidation_policy

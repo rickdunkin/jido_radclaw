@@ -157,6 +157,9 @@ defmodule JidoClaw.Memory.FactEpisode do
     """
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Episode
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -164,8 +167,8 @@ defmodule JidoClaw.Memory.FactEpisode do
         episode_id = Ash.Changeset.get_attribute(cs, :episode_id)
         tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
 
-        with {:ok, fact} <- JidoClaw.Memory.Fact.by_id_global(fact_id),
-             {:ok, episode} <- JidoClaw.Memory.Episode.by_id_global(episode_id) do
+        with {:ok, fact} <- Fact.by_id_global(fact_id),
+             {:ok, episode} <- Episode.by_id_global(episode_id) do
           cond do
             fact.tenant_id != episode.tenant_id ->
               Ash.Changeset.add_error(cs,

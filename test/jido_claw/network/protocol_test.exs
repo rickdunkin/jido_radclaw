@@ -1,8 +1,8 @@
 defmodule JidoClaw.Network.ProtocolTest do
   use ExUnit.Case, async: true
 
-  alias JidoClaw.Network.Protocol
   alias JidoClaw.Agent.Identity
+  alias JidoClaw.Network.Protocol
 
   # ---------------------------------------------------------------------------
   # Setup — generate a fresh Ed25519 keypair for each test

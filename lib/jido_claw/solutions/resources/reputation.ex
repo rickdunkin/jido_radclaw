@@ -338,10 +338,7 @@ defmodule JidoClaw.Solutions.Reputation do
   defp freshness_score(%DateTime{} = dt) do
     age_days = DateTime.diff(DateTime.utc_now(), dt, :second) / 86_400.0
 
-    cond do
-      age_days <= 30 -> 1.0
-      true -> max(0.0, 1.0 - (age_days - 30) / 30)
-    end
+    if age_days <= 30, do: 1.0, else: max(0.0, 1.0 - (age_days - 30) / 30)
   end
 
   defp freshness_score(other) when is_binary(other) do

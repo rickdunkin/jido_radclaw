@@ -1,4 +1,5 @@
 defmodule JidoClaw.Accounts.User.Senders.SendPasswordResetEmail do
+  @moduledoc false
   use AshAuthentication.Sender
 
   @impl true

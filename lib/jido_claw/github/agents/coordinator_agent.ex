@@ -1,7 +1,8 @@
 defmodule JidoClaw.GitHub.Agents.CoordinatorAgent do
+  @moduledoc false
   require Logger
 
-  alias JidoClaw.GitHub.Agents.{TriageAgent, ResearchCoordinator, PullRequestCoordinator}
+  alias JidoClaw.GitHub.Agents.{PullRequestCoordinator, ResearchCoordinator, TriageAgent}
 
   def run(event) do
     Logger.info(

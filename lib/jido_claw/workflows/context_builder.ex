@@ -151,9 +151,7 @@ defmodule JidoClaw.Workflows.ContextBuilder do
   end
 
   defp normalize_produces(produces) when is_map(produces) do
-    Enum.reduce(produces, %{}, fn {k, v}, acc ->
-      Map.put(acc, to_string(k), format_produces_value(v))
-    end)
+    Map.new(produces, fn {k, v} -> {to_string(k), format_produces_value(v)} end)
   end
 
   defp normalize_produces(_), do: %{}

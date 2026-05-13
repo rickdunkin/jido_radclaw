@@ -23,6 +23,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   """
 
   alias JidoClaw.Workflows.{ContextBuilder, StepNormalizer, StepResult}
+  alias JidoClaw.Workflows.StepAction
   require Logger
 
   @step_timeout_ms 300_000
@@ -59,7 +60,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   end
 
   # ---------------------------------------------------------------------------
-  # Step normalisation
+  # Normalisation helpers
   # ---------------------------------------------------------------------------
 
   # Assign a unique string name to each step. Uses the `name` field from YAML
@@ -321,7 +322,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
     artifact_context = ContextBuilder.format_artifact_context(step, named_steps, prior_results)
 
     # Inject ARTIFACTS output contract if step has produces
-    task = JidoClaw.Workflows.StepAction.inject_produces_instruction(task, step.produces)
+    task = StepAction.inject_produces_instruction(task, step.produces)
 
     full_task = ContextBuilder.build_task(task, extra_context, dep_context, artifact_context)
 
@@ -339,7 +340,7 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
       |> maybe_put(:workspace_id, workspace_id)
       |> Map.merge(scope_context)
 
-    case JidoClaw.Workflows.StepAction.run(params, scope_context) do
+    case StepAction.run(params, scope_context) do
       {:ok, %StepResult{} = step_result} ->
         {:ok, step_result}
 

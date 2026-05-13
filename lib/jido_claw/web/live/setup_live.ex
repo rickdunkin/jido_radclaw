@@ -1,9 +1,11 @@
 defmodule JidoClaw.Web.SetupLive do
   use JidoClaw.Web, :live_view
 
+  alias JidoClaw.Setup.Wizard
+
   @impl true
   def mount(_params, _session, socket) do
-    status = JidoClaw.Setup.Wizard.run()
+    status = Wizard.run()
 
     {:ok,
      assign(socket,
@@ -113,6 +115,6 @@ defmodule JidoClaw.Web.SetupLive do
 
   @impl true
   def handle_event("recheck", _params, socket) do
-    {:noreply, assign(socket, status: JidoClaw.Setup.Wizard.run())}
+    {:noreply, assign(socket, status: Wizard.run())}
   end
 end

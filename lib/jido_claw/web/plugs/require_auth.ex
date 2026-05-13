@@ -2,6 +2,9 @@ defmodule JidoClaw.Web.Plugs.RequireAuth do
   @moduledoc false
   import Plug.Conn
 
+  alias AshAuthentication.Plug.Helpers
+  alias JidoClaw.Authorization.Actor
+
   @behaviour Plug
 
   @impl true
@@ -11,14 +14,14 @@ defmodule JidoClaw.Web.Plugs.RequireAuth do
   def call(conn, _opts) do
     session = get_session(conn)
 
-    case AshAuthentication.Plug.Helpers.authenticate_resource_from_session(
+    case Helpers.authenticate_resource_from_session(
            JidoClaw.Accounts.User,
            session,
            :jido_claw,
            []
          ) do
       {:ok, user} ->
-        actor = JidoClaw.Authorization.Actor.build(user)
+        actor = Actor.build(user)
 
         conn
         |> assign(:current_user, user)

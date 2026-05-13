@@ -23,7 +23,9 @@ defmodule JidoClaw.Tools.MCPScope do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, ToolTranscript}
+  alias JidoClaw.MCPScope.Initializer
 
   @doc """
   Returns the `context` map with `:tool_context` populated from the
@@ -153,7 +155,7 @@ defmodule JidoClaw.Tools.MCPScope do
 
       _ ->
         case Map.get(tc, :tenant_id) do
-          tenant_id when is_binary(tenant_id) -> JidoClaw.Authorization.Actor.system(tenant_id)
+          tenant_id when is_binary(tenant_id) -> Actor.system(tenant_id)
           _ -> nil
         end
     end
@@ -242,7 +244,7 @@ defmodule JidoClaw.Tools.MCPScope do
   defp maybe_reresolve do
     if Application.get_env(:jido_claw, :serve_mode) == :mcp do
       try do
-        JidoClaw.MCPScope.Initializer.ensure_default_scope()
+        Initializer.ensure_default_scope()
       rescue
         _ -> :ok
       catch

@@ -36,8 +36,7 @@ defmodule JidoClaw.Memory.Retrieval do
                              predicates against `system_t`.
   """
 
-  alias JidoClaw.Embeddings.PolicyResolver
-  alias JidoClaw.Memory.{HybridSearchSql, Scope}
+  alias JidoClaw.Memory.{EmbeddingResolver, HybridSearchSql, Scope}
 
   @default_limit 10
 
@@ -125,33 +124,10 @@ defmodule JidoClaw.Memory.Retrieval do
     end
   end
 
-  # Mirror of Solutions.Matcher.resolve_embedding/3. Returns the query
-  # embedding (list of floats) or nil. When the caller supplies an
-  # explicit `:query_embedding`, it wins; otherwise we consult
-  # `PolicyResolver` for the workspace's policy.
-  #
-  # `workspace_id` is always populated for `:session`/`:project`/
-  # `:workspace` scopes via the ancestor walk in `Scope.resolve/1`. It is
-  # `nil` for pure `:user`-scoped recalls — `PolicyResolver.resolve/1`
-  # then fails closed to `:disabled`, which is correct: a user-scope-only
-  # recall has no per-workspace embedding policy.
+  # Resolve the query embedding via the shared policy resolver, supplying
+  # the lean (no rate-pacer) Voyage compute callback.
   defp resolve_embedding(query, workspace_id, opts) do
-    explicit_embedding = Keyword.get(opts, :query_embedding)
-
-    if is_nil(explicit_embedding) do
-      resolver = Keyword.get(opts, :policy_resolver, PolicyResolver)
-      policy = resolver.resolve(workspace_id)
-
-      case resolver.model_for_query(policy) do
-        :disabled ->
-          nil
-
-        %{provider: :voyage, request_model: req} ->
-          compute_voyage(query, req, opts)
-      end
-    else
-      explicit_embedding
-    end
+    EmbeddingResolver.resolve(query, workspace_id, opts, &compute_voyage/3)
   end
 
   defp compute_voyage(query, model, opts) do

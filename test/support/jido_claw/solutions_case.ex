@@ -25,6 +25,8 @@ defmodule JidoClaw.SolutionsCase do
 
   use ExUnit.CaseTemplate
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Audit.AsyncWriter
   alias JidoClaw.Solutions.Solution
   alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
@@ -39,11 +41,11 @@ defmodule JidoClaw.SolutionsCase do
   end
 
   setup tags do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: not tags[:async])
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: not tags[:async])
 
     on_exit(fn ->
-      JidoClaw.Audit.AsyncWriter.flush()
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+      AsyncWriter.flush()
+      Sandbox.stop_owner(pid)
     end)
 
     :ok

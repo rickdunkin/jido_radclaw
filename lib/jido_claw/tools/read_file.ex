@@ -30,8 +30,8 @@ defmodule JidoClaw.Tools.ReadFile do
       limit: [type: :integer, default: 2000, doc: "Max lines to read"]
     ]
 
-  alias JidoClaw.VFS.Resolver
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.VFS.Resolver
 
   @impl true
   def run(%{path: path} = params, context) do

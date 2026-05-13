@@ -47,6 +47,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     end
   end
 
+  alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Security.CrossTenantFk
 
   @scope_kinds [:user, :workspace, :project, :session]
@@ -299,12 +300,14 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Fact
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
 
-        case JidoClaw.Memory.Fact.scope_fk_for(cs, scope_kind) do
+        case Fact.scope_fk_for(cs, scope_kind) do
           {:ok, _} ->
             cs
 
@@ -343,6 +346,8 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.ConsolidationRun
+
     @impl true
     def prepare(query, _opts, _context) do
       kind = Ash.Query.get_argument(query, :scope_kind)
@@ -350,8 +355,8 @@ defmodule JidoClaw.Memory.ConsolidationRun do
       status = Ash.Query.get_argument(query, :status)
 
       query
-      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, fk)
-      |> JidoClaw.Memory.ConsolidationRun.apply_status_filter(status)
+      |> ConsolidationRun.apply_scope_filter(kind, fk)
+      |> ConsolidationRun.apply_status_filter(status)
       |> Ash.Query.sort(started_at: :desc)
       |> Ash.Query.limit(1)
     end
@@ -362,6 +367,8 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.ConsolidationRun
+
     @impl true
     def prepare(query, _opts, _context) do
       kind = Ash.Query.get_argument(query, :scope_kind)
@@ -369,30 +376,22 @@ defmodule JidoClaw.Memory.ConsolidationRun do
       limit = Ash.Query.get_argument(query, :limit)
 
       query
-      |> JidoClaw.Memory.ConsolidationRun.apply_scope_filter(kind, fk)
+      |> ConsolidationRun.apply_scope_filter(kind, fk)
       |> Ash.Query.sort(started_at: :desc)
       |> Ash.Query.limit(limit)
     end
   end
 
-  @doc false
-  def apply_scope_filter(query, :user, fk) do
-    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
-  end
+  @doc """
+  Narrow `query` to rows whose `scope_kind` and FK match `kind`/`fk`.
+  Public so inline preparation modules can call it.
+  """
+  defdelegate apply_scope_filter(query, kind, fk), to: ScopeFilter, as: :apply
 
-  def apply_scope_filter(query, :workspace, fk) do
-    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
-  end
-
-  def apply_scope_filter(query, :project, fk) do
-    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
-  end
-
-  def apply_scope_filter(query, :session, fk) do
-    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
-  end
-
-  @doc false
+  @doc """
+  Narrow `query` to runs with the given `status`. A `nil` `status`
+  skips the filter.
+  """
   def apply_status_filter(query, nil), do: query
 
   def apply_status_filter(query, status) do

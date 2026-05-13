@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Persistence do
+  @moduledoc false
   require Logger
   require Ash.Query
 
@@ -370,24 +371,22 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   def find_session(session_id) do
-    try do
-      JidoClaw.Forge.Resources.Session
-      |> Ash.Query.filter(name == ^session_id)
-      |> Ash.Query.sort(inserted_at: :desc)
-      |> Ash.Query.limit(1)
-      |> Ash.read!(authorize?: false)
-      |> List.first()
-    rescue
-      _ in [
-        Ash.Error.Invalid,
-        Ash.Error.Unknown,
-        Ash.Error.Query.NotFound,
-        DBConnection.ConnectionError,
-        DBConnection.OwnershipError,
-        Postgrex.Error
-      ] ->
-        nil
-    end
+    JidoClaw.Forge.Resources.Session
+    |> Ash.Query.filter(name == ^session_id)
+    |> Ash.Query.sort(inserted_at: :desc)
+    |> Ash.Query.limit(1)
+    |> Ash.read!(authorize?: false)
+    |> List.first()
+  rescue
+    _ in [
+      Ash.Error.Invalid,
+      Ash.Error.Unknown,
+      Ash.Error.Query.NotFound,
+      DBConnection.ConnectionError,
+      DBConnection.OwnershipError,
+      Postgrex.Error
+    ] ->
+      nil
   end
 
   defp redact_map(map) when is_map(map) do

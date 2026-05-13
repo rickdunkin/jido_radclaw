@@ -2,6 +2,7 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
   # async: false — SessionManager is a singleton GenServer.
   use ExUnit.Case, async: false
 
+  alias Jido.Shell.ShellSessionServer
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.VFS.Workspace
 
@@ -224,6 +225,37 @@ defmodule JidoClaw.Shell.SessionManagerVFSTest do
 
       assert Workspace.mounts(ws) == []
       assert {:error, :no_session} = SessionManager.cwd(ws, :host)
+    end
+  end
+
+  describe "cancellation" do
+    test "external cancel mid-flight surfaces {:error, \"Command was cancelled\"}", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # Bootstrap the host session so the ShellSessionServer is alive
+      # before we subscribe/cancel. The bootstrap call subscribes and
+      # then unsubscribes the SessionManager, leaving the test process
+      # free to subscribe for the long-running command.
+      {:ok, _} = SessionManager.run(ws, "true", 5_000, project_dir: tmp, backend: :host)
+      session_id = ws <> ":host"
+
+      {:ok, :subscribed} = ShellSessionServer.subscribe(session_id, self())
+
+      task =
+        Task.async(fn ->
+          SessionManager.run(ws, "sleep 10", 5_000, project_dir: tmp, backend: :host)
+        end)
+
+      # Wait until the command is actually running so the cancel hits
+      # `do_collect`'s receive loop (not a not-yet-started session).
+      assert_receive {:jido_shell_session, ^session_id, {:command_started, _line}}, 2_000
+
+      {:ok, :cancelled} = ShellSessionServer.cancel(session_id)
+
+      assert Task.await(task, 5_000) == {:error, "Command was cancelled"}
+
+      _ = ShellSessionServer.unsubscribe(session_id, self())
     end
   end
 end

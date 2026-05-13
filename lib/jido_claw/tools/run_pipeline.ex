@@ -234,23 +234,22 @@ defmodule JidoClaw.Tools.RunPipeline do
 
     warn_if_previous_mode_cap_ignored(stages, pipeline_cap)
 
+    loop_ctx = %{
+      initial_prompt: initial_prompt,
+      pipeline_name: pipeline_name,
+      total: total,
+      pipeline_cap: pipeline_cap,
+      runner: runner,
+      wrap_opts: wrap_opts
+    }
+
     result =
       stages
       |> Enum.with_index(1)
       |> Enum.reduce_while(
         {:ok, %{outputs: [], last: initial_prompt, usage: empty_usage()}},
         fn {stage, idx}, {:ok, acc} ->
-          run_stage_in_loop(
-            stage,
-            idx,
-            acc,
-            initial_prompt,
-            pipeline_name,
-            total,
-            pipeline_cap,
-            runner,
-            wrap_opts
-          )
+          run_stage_in_loop(stage, idx, acc, loop_ctx)
         end
       )
 
@@ -269,17 +268,18 @@ defmodule JidoClaw.Tools.RunPipeline do
     end
   end
 
-  defp run_stage_in_loop(
-         stage,
-         idx,
-         acc,
-         initial_prompt,
-         pipeline_name,
-         total,
-         pipeline_cap,
-         runner,
-         wrap_opts
-       ) do
+  # `loop_ctx` keys: :initial_prompt, :pipeline_name, :total, :pipeline_cap,
+  # :runner, :wrap_opts. Bundled to keep arity within credo limits.
+  defp run_stage_in_loop(stage, idx, acc, loop_ctx) do
+    %{
+      initial_prompt: initial_prompt,
+      pipeline_name: pipeline_name,
+      total: total,
+      pipeline_cap: pipeline_cap,
+      runner: runner,
+      wrap_opts: wrap_opts
+    } = loop_ctx
+
     user_strategy = stage.strategy
     {:ok, base_atom} = StrategyRegistry.atom_for(user_strategy)
     base_name = Atom.to_string(base_atom)

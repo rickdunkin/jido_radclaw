@@ -1,5 +1,8 @@
 defmodule JidoClaw.Forge.Runners.Custom do
+  @moduledoc false
   @behaviour JidoClaw.Forge.Runner
+
+  alias JidoClaw.Forge.Runner
 
   @impl true
   def init(client, config) do
@@ -14,7 +17,7 @@ defmodule JidoClaw.Forge.Runners.Custom do
     if run_fn do
       run_fn.(client, state, opts)
     else
-      {:ok, JidoClaw.Forge.Runner.error("no run_fn configured")}
+      {:ok, Runner.error("no run_fn configured")}
     end
   end
 

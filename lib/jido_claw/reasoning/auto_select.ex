@@ -130,13 +130,11 @@ defmodule JidoClaw.Reasoning.AutoSelect do
 
         recent = safe_query(task_type, since: since)
 
-        cond do
-          total_samples(recent) >= @min_history_samples ->
-            {recent, :recent}
-
-          true ->
-            all_time = safe_query(task_type, since: nil)
-            {all_time, window_label_for(all_time)}
+        if total_samples(recent) >= @min_history_samples do
+          {recent, :recent}
+        else
+          all_time = safe_query(task_type, since: nil)
+          {all_time, window_label_for(all_time)}
         end
     end
   end

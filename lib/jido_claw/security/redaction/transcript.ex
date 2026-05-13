@@ -54,9 +54,10 @@ defmodule JidoClaw.Security.Redaction.Transcript do
   # ---------------------------------------------------------------------------
 
   defp walk(value, ctx) when is_binary(value) do
-    cond do
-      json_aware_key?(ctx) -> redact_json_aware(value, ctx)
-      true -> Patterns.redact(value)
+    if json_aware_key?(ctx) do
+      redact_json_aware(value, ctx)
+    else
+      Patterns.redact(value)
     end
   end
 

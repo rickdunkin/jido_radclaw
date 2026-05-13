@@ -12,17 +12,19 @@ defmodule JidoClaw.Memory.Consolidator.Plug do
 
   use Plug.Router
 
+  alias JidoClaw.Memory.Consolidator.Plug.RunForward
+
   plug(:match)
   plug(:dispatch)
 
   match "/run/:run_id" do
-    JidoClaw.Memory.Consolidator.Plug.RunForward.call(conn,
+    RunForward.call(conn,
       server: JidoClaw.Memory.Consolidator.MCPServer
     )
   end
 
   match "/run/:run_id/*_rest" do
-    JidoClaw.Memory.Consolidator.Plug.RunForward.call(conn,
+    RunForward.call(conn,
       server: JidoClaw.Memory.Consolidator.MCPServer
     )
   end

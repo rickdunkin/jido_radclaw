@@ -9,6 +9,11 @@ defmodule JidoClaw.Memory.Consolidator.Staging do
   Block proposals enforce `char_limit` here (returning structured
   `:char_limit_exceeded` info so the model can adapt) — every other
   proposal type is validated at publish time.
+
+  Buckets are stored reversed (newest-first) for O(1) `add/3`; callers
+  MUST go through `entries/2` to read in append (proposal) order. The
+  apply phase in `RunServer` depends on that order for deterministic
+  ID and hint emission.
   """
 
   defstruct fact_adds: [],
@@ -27,6 +32,14 @@ defmodule JidoClaw.Memory.Consolidator.Staging do
           cluster_defers: list(map())
         }
 
+  @type bucket ::
+          :fact_adds
+          | :fact_updates
+          | :fact_deletes
+          | :block_updates
+          | :link_creates
+          | :cluster_defers
+
   @doc "Empty staging buffer."
   @spec new() :: t()
   def new, do: %__MODULE__{}
@@ -34,23 +47,23 @@ defmodule JidoClaw.Memory.Consolidator.Staging do
   @doc "Append a fact-add proposal."
   @spec add(t(), atom(), map()) :: {:ok, t()}
   def add(%__MODULE__{} = staging, :fact_add, args) do
-    {:ok, %{staging | fact_adds: staging.fact_adds ++ [args]}}
+    {:ok, %{staging | fact_adds: [args | staging.fact_adds]}}
   end
 
   def add(%__MODULE__{} = staging, :fact_update, args) do
-    {:ok, %{staging | fact_updates: staging.fact_updates ++ [args]}}
+    {:ok, %{staging | fact_updates: [args | staging.fact_updates]}}
   end
 
   def add(%__MODULE__{} = staging, :fact_delete, args) do
-    {:ok, %{staging | fact_deletes: staging.fact_deletes ++ [args]}}
+    {:ok, %{staging | fact_deletes: [args | staging.fact_deletes]}}
   end
 
   def add(%__MODULE__{} = staging, :link_create, args) do
-    {:ok, %{staging | link_creates: staging.link_creates ++ [args]}}
+    {:ok, %{staging | link_creates: [args | staging.link_creates]}}
   end
 
   def add(%__MODULE__{} = staging, :cluster_defer, args) do
-    {:ok, %{staging | cluster_defers: staging.cluster_defers ++ [args]}}
+    {:ok, %{staging | cluster_defers: [args | staging.cluster_defers]}}
   end
 
   @doc """
@@ -68,8 +81,18 @@ defmodule JidoClaw.Memory.Consolidator.Staging do
     if size > char_limit do
       {:char_limit_exceeded, size, char_limit}
     else
-      {:ok, %{staging | block_updates: staging.block_updates ++ [args]}}
+      {:ok, %{staging | block_updates: [args | staging.block_updates]}}
     end
+  end
+
+  @doc """
+  Return the entries for `bucket` in append (proposal) order. Required
+  for any read site — the buckets are stored newest-first internally
+  for O(1) prepend.
+  """
+  @spec entries(t(), bucket()) :: [map()]
+  def entries(%__MODULE__{} = staging, bucket) do
+    staging |> Map.fetch!(bucket) |> Enum.reverse()
   end
 
   @doc "Total number of staged proposals across every type."

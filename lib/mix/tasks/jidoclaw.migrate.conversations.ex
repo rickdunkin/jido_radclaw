@@ -46,6 +46,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
   require Logger
 
   alias JidoClaw.Conversations.{Message, Resolver, Session}
+  alias JidoClaw.Tenant.Manager
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
   @impl true
@@ -86,7 +87,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
   end
 
   defp verify_tenant(tenant_id) do
-    case JidoClaw.Tenant.Manager.get_tenant(tenant_id) do
+    case Manager.get_tenant(tenant_id) do
       {:ok, _} ->
         :ok
 

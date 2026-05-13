@@ -7,6 +7,8 @@ defmodule JidoClaw.Heartbeat do
   use GenServer
   require Logger
 
+  alias JidoClaw.Cron.Scheduler
+
   @interval_ms 60_000
   @filename "heartbeat.md"
 
@@ -66,7 +68,7 @@ defmodule JidoClaw.Heartbeat do
 
     cron_count =
       try do
-        length(JidoClaw.Cron.Scheduler.list_jobs("default"))
+        length(Scheduler.list_jobs("default"))
       rescue
         e in [RuntimeError, ErlangError, ArgumentError] ->
           Logger.debug("[Heartbeat] Cron count unavailable: #{Exception.message(e)}")

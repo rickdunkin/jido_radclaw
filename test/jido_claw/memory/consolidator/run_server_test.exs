@@ -13,6 +13,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Forge.Manager, as: ForgeManager
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link}
   alias JidoClaw.Memory.Consolidator
   alias JidoClaw.Memory.Consolidator.Clusterer
@@ -492,7 +494,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       test_pid = self()
 
       spawn_link(fn ->
-        JidoClaw.Forge.PubSub.subscribe_sessions()
+        ForgePubSub.subscribe_sessions()
 
         receive do
           {:session_started, _session_id} ->
@@ -552,7 +554,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # `run_server.ex:381`.
       :ok =
         eventually(fn ->
-          run_with_proposals.forge_session_id not in JidoClaw.Forge.Manager.list_sessions()
+          run_with_proposals.forge_session_id not in ForgeManager.list_sessions()
         end)
 
       {_ws, scope2} = workspace_scope(tenant_id)
@@ -568,7 +570,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
       :ok =
         eventually(fn ->
-          empty_run.forge_session_id not in JidoClaw.Forge.Manager.list_sessions()
+          empty_run.forge_session_id not in ForgeManager.list_sessions()
         end)
     end
   end

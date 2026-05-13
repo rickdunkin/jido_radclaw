@@ -174,18 +174,16 @@ defmodule JidoClaw.Forge.Runners.Codex do
 
     {events, terminal, turns} =
       Enum.reduce(lines, {[], nil, 0}, fn line, {events_acc, terminal_acc, turns_acc} ->
-        cond do
-          not String.starts_with?(line, "{") ->
-            {events_acc, terminal_acc, turns_acc}
+        if String.starts_with?(line, "{") do
+          case Jason.decode(line) do
+            {:ok, decoded} ->
+              handle_event(decoded, events_acc, terminal_acc, turns_acc)
 
-          true ->
-            case Jason.decode(line) do
-              {:ok, decoded} ->
-                handle_event(decoded, events_acc, terminal_acc, turns_acc)
-
-              _ ->
-                {events_acc, terminal_acc, turns_acc}
-            end
+            _ ->
+              {events_acc, terminal_acc, turns_acc}
+          end
+        else
+          {events_acc, terminal_acc, turns_acc}
         end
       end)
 

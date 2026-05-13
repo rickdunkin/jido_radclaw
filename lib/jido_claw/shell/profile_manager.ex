@@ -187,20 +187,24 @@ defmodule JidoClaw.Shell.ProfileManager do
     GenServer.call(__MODULE__, :reload)
   end
 
-  @doc false
-  # Test seam — replaces in-memory `profiles` and derives `default_env`
-  # from `profiles["default"]` (or `%{}`) without touching disk.
-  # Integration tests install fixture profiles this way against the
-  # supervised singleton rather than swapping project_dir.
+  @doc """
+  Test seam: replace in-memory `profiles` and derive `default_env` from
+  `profiles["default"]` (or `%{}`) without touching disk.
+
+  Integration tests install fixture profiles this way against the
+  supervised singleton rather than swapping `project_dir`.
+  """
   @spec replace_profiles_for_test(map()) :: :ok
   def replace_profiles_for_test(profiles) when is_map(profiles) do
     GenServer.call(__MODULE__, {:replace_profiles_for_test, profiles})
   end
 
-  @doc false
-  # Test seam — clears the active-by-workspace map. Used by integration
-  # test teardown to leave the supervised singleton clean for the next
-  # test case.
+  @doc """
+  Test seam: clear the active-by-workspace map.
+
+  Used by integration test teardown to leave the supervised singleton
+  clean for the next test case.
+  """
   @spec clear_active_for_test() :: :ok
   def clear_active_for_test do
     GenServer.call(__MODULE__, :clear_active_for_test)
@@ -270,9 +274,10 @@ defmodule JidoClaw.Shell.ProfileManager do
         {:reply, {:ok, env}, state}
 
       :error ->
-        cond do
-          name == @magic_default -> {:reply, {:ok, state.default_env}, state}
-          true -> {:reply, {:error, :not_found}, state}
+        if name == @magic_default do
+          {:reply, {:ok, state.default_env}, state}
+        else
+          {:reply, {:error, :not_found}, state}
         end
     end
   end
@@ -488,9 +493,10 @@ defmodule JidoClaw.Shell.ProfileManager do
     do: {@magic_default, "reload"}
 
   defp resolve_reload_target(_state, active_name, new_profiles) do
-    cond do
-      Map.has_key?(new_profiles, active_name) -> {active_name, "reload"}
-      true -> {@magic_default, "profile_removed"}
+    if Map.has_key?(new_profiles, active_name) do
+      {active_name, "reload"}
+    else
+      {@magic_default, "profile_removed"}
     end
   end
 
@@ -515,16 +521,14 @@ defmodule JidoClaw.Shell.ProfileManager do
   defp parse_profile(acc, name, env) when is_binary(name) and is_map(env) do
     clean_name = String.trim(name)
 
-    cond do
-      clean_name == "" ->
-        Logger.warning("[ProfileManager] Skipping profile with empty name")
-        acc
+    if clean_name == "" do
+      Logger.warning("[ProfileManager] Skipping profile with empty name")
+      acc
+    else
+      coerced =
+        Enum.reduce(env, %{}, fn {k, v}, kv -> coerce_entry(kv, clean_name, k, v) end)
 
-      true ->
-        coerced =
-          Enum.reduce(env, %{}, fn {k, v}, kv -> coerce_entry(kv, clean_name, k, v) end)
-
-        Map.put(acc, clean_name, coerced)
+      Map.put(acc, clean_name, coerced)
     end
   end
 

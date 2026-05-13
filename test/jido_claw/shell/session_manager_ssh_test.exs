@@ -4,6 +4,8 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
   # would trample each other's SSH session cache.
   use ExUnit.Case, async: false
 
+  alias Jido.Shell.ShellSession
+  alias Jido.Shell.ShellSessionServer
   alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.ServerRegistry.ServerEntry
@@ -406,7 +408,7 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
         )
 
       fail_ssh_writer = fn _id, _env -> {:error, :induced} end
-      real_writer = &Jido.Shell.ShellSession.update_env/2
+      real_writer = &ShellSession.update_env/2
 
       # Manually drive update_env with an injected SSH writer that
       # fails. Host/VFS should succeed; SSH failure must not roll host
@@ -548,7 +550,7 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
         )
 
       session_id = ws <> ":ssh:staging"
-      assert {:ok, _pid} = Jido.Shell.ShellSession.lookup(session_id)
+      assert {:ok, _pid} = ShellSession.lookup(session_id)
 
       :ok = SessionManager.stop_session(ws)
 
@@ -556,7 +558,7 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
       # synchronously, but the Registry entry is removed via a :DOWN
       # monitor message shortly after. Poll briefly to avoid the race.
       assert_eventually(fn ->
-        Jido.Shell.ShellSession.lookup(session_id) == {:error, :not_found}
+        ShellSession.lookup(session_id) == {:error, :not_found}
       end)
     end
 
@@ -569,12 +571,12 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
         )
 
       session_id = ws <> ":ssh:staging"
-      assert {:ok, _pid} = Jido.Shell.ShellSession.lookup(session_id)
+      assert {:ok, _pid} = ShellSession.lookup(session_id)
 
       :ok = SessionManager.drop_sessions(ws)
 
       assert_eventually(fn ->
-        Jido.Shell.ShellSession.lookup(session_id) == {:error, :not_found}
+        ShellSession.lookup(session_id) == {:error, :not_found}
       end)
     end
   end
@@ -916,6 +918,53 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
 
     test "already-formatted string error is not a transport drop" do
       refute SessionManager.__transport_drop_for_test__({:error, "SSH to staging failed: ..."})
+    end
+  end
+
+  # -- Cancellation ----------------------------------------------------------
+
+  describe "cancellation" do
+    test "external cancel mid-flight surfaces {:error, \"Command was cancelled\"}", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      # Bootstrap SSH session so subscribe/cancel target a live
+      # ShellSessionServer. Drain the FakeSSH connect/exec notifications
+      # from the bootstrap so the test mailbox starts clean.
+      {:ok, _} =
+        SessionManager.run(ws, "true", 5_000,
+          project_dir: tmp,
+          backend: :ssh,
+          server: "staging"
+        )
+
+      session_id = ws <> ":ssh:staging"
+      drain_fake_ssh_messages()
+
+      {:ok, :subscribed} = ShellSessionServer.subscribe(session_id, self())
+
+      # `__fake_hang__` makes FakeSSH accept the exec but emit no
+      # backend events — `do_collect_ssh/6` blocks in receive until
+      # we cancel externally.
+      task =
+        Task.async(fn ->
+          SessionManager.run(ws, "__fake_hang__", 5_000,
+            project_dir: tmp,
+            backend: :ssh,
+            server: "staging"
+          )
+        end)
+
+      # Lifecycle event proves the command is mid-flight; cancelling
+      # before this would race the receive loop's startup.
+      assert_receive {:jido_shell_session, ^session_id, {:command_started, _line}}, 2_000
+
+      {:ok, :cancelled} = ShellSessionServer.cancel(session_id)
+
+      assert Task.await(task, 5_000) == {:error, "Command was cancelled"}
+
+      _ = ShellSessionServer.unsubscribe(session_id, self())
+      drain_fake_ssh_messages()
     end
   end
 

@@ -23,7 +23,7 @@ defmodule JidoClaw.Conversations.Resolver do
 
   When the resolved session is non-`:cron` and has no
   `metadata["prompt_snapshot"]` yet, build the frozen snapshot from
-  `JidoClaw.Agent.Prompt.build_snapshot/2` and persist it via
+  `Prompt.build_snapshot/2` and persist it via
   `:set_prompt_snapshot`. The snapshot is best-effort — failures
   surface as `Logger.warning` and the session is returned unchanged
   so an unhealthy Memory subsystem can never block session creation.
@@ -31,8 +31,10 @@ defmodule JidoClaw.Conversations.Resolver do
 
   require Logger
 
+  alias JidoClaw.Agent.Prompt
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session
+  alias JidoClaw.Memory.Scope
 
   @spec ensure_session(String.t(), Ecto.UUID.t(), atom(), String.t(), keyword()) ::
           {:ok, Session.t()} | {:error, term()}
@@ -93,8 +95,8 @@ defmodule JidoClaw.Conversations.Resolver do
   defp maybe_persist_snapshot(%Session{} = s, opts, actor) do
     project_dir = Keyword.get(opts, :project_dir, File.cwd!())
 
-    with {:ok, scope} <- JidoClaw.Memory.Scope.resolve(scope_ctx(s)),
-         snap = JidoClaw.Agent.Prompt.build_snapshot(project_dir, scope),
+    with {:ok, scope} <- Scope.resolve(scope_ctx(s)),
+         snap = Prompt.build_snapshot(project_dir, scope),
          {:ok, updated} <- Session.set_prompt_snapshot(s, snap, tenant: s.tenant_id, actor: actor) do
       {:ok, updated}
     else

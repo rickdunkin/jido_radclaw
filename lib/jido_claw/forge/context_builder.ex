@@ -113,20 +113,25 @@ defmodule JidoClaw.Forge.ContextBuilder do
     output = Map.get(data, :output)
     seq = Map.get(data, :sequence)
 
-    lines = ["## Progress", "#{n} iteration(s) completed."]
+    seq_line =
+      if seq, do: ["Last execution: iteration #{seq}, status: #{status}."], else: []
 
-    lines =
-      if seq, do: lines ++ ["Last execution: iteration #{seq}, status: #{status}."], else: lines
-
-    lines =
+    output_lines =
       if output && output != "" do
         # Reserve ~25% of the total token budget for the output excerpt
         max_excerpt_chars = div(max_tokens, 4) * 4
         excerpt = output |> String.trim() |> String.slice(0, max_excerpt_chars)
-        lines ++ ["Last output (excerpt):", "```", excerpt, "```"]
+        ["Last output (excerpt):", "```", excerpt, "```"]
       else
-        lines
+        []
       end
+
+    lines =
+      Enum.concat([
+        ["## Progress", "#{n} iteration(s) completed."],
+        seq_line,
+        output_lines
+      ])
 
     Enum.join(lines, "\n")
   end

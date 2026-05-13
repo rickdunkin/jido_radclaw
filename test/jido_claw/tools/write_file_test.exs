@@ -3,6 +3,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
   # keeping sync as a conservative default for file-mutating tests)
   use ExUnit.Case
 
+  alias Jido.Shell.VFS
   alias JidoClaw.Tools.WriteFile
   alias JidoClaw.VFS.Workspace
 
@@ -98,7 +99,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
                )
 
       assert result.path == "/scratch/note.txt"
-      assert {:ok, "vfs-write"} = Jido.Shell.VFS.read_file(workspace_id, "/scratch/note.txt")
+      assert {:ok, "vfs-write"} = VFS.read_file(workspace_id, "/scratch/note.txt")
     end
 
     test "auto-bootstraps VFS when tool_context carries workspace_id + project_dir" do

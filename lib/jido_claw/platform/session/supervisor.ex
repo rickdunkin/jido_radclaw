@@ -1,12 +1,15 @@
 defmodule JidoClaw.Session.Supervisor do
   @moduledoc "Manages session worker processes."
 
+  alias JidoClaw.Session.Worker
+  alias JidoClaw.Tenant.InstanceSupervisor
+
   def start_session(tenant_id, session_id, opts \\ []) do
     # Try tenant-specific supervisor first, fall back to global
-    sup = JidoClaw.Tenant.InstanceSupervisor.session_sup(tenant_id)
+    sup = InstanceSupervisor.session_sup(tenant_id)
 
     child_spec = {
-      JidoClaw.Session.Worker,
+      Worker,
       [tenant_id: tenant_id, session_id: session_id, actor: Keyword.get(opts, :actor)]
     }
 
@@ -36,7 +39,7 @@ defmodule JidoClaw.Session.Supervisor do
   end
 
   defp set_actor_on_existing(tenant_id, session_id, actor, pid) do
-    _ = JidoClaw.Session.Worker.set_actor(tenant_id, session_id, actor)
+    _ = Worker.set_actor(tenant_id, session_id, actor)
     {:ok, pid}
   end
 

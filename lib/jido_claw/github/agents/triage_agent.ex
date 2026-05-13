@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.Agents.TriageAgent do
+  @moduledoc false
   @bug_keywords ~w(bug error crash fail broken exception timeout 500 nil undefined)
   @feature_keywords ~w(feature request add implement support enhance improve)
   @doc_keywords ~w(docs documentation typo readme guide example)

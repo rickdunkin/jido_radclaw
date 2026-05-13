@@ -31,6 +31,7 @@ defmodule Jido.Shell.ShellSession do
   alias Jido.Shell.Error
   alias Jido.Shell.ShellSession.State
   alias Jido.Shell.ShellSessionServer
+  alias Jido.Shell.VFS
 
   @type workspace_id :: String.t()
 
@@ -155,12 +156,12 @@ defmodule Jido.Shell.ShellSession do
   """
   @spec teardown_workspace(workspace_id(), keyword()) :: :ok | {:error, Error.t()}
   def teardown_workspace(workspace_id, opts \\ []) do
-    Jido.Shell.VFS.unmount_workspace(workspace_id, opts)
+    VFS.unmount_workspace(workspace_id, opts)
   end
 
   defp ensure_root_mount(workspace_id) do
-    if Jido.Shell.VFS.list_mounts(workspace_id) == [] do
-      case Jido.Shell.VFS.mount(
+    if VFS.list_mounts(workspace_id) == [] do
+      case VFS.mount(
              workspace_id,
              "/",
              Jido.VFS.Adapter.InMemory,
@@ -189,7 +190,7 @@ defmodule Jido.Shell.ShellSession do
 
     if managed_workspace_mount? and
          workspace_inactive?(state.workspace_id, stopping_session_id) do
-      _ = Jido.Shell.VFS.unmount_workspace(state.workspace_id, managed_only: true)
+      _ = VFS.unmount_workspace(state.workspace_id, managed_only: true)
     end
 
     :ok
@@ -217,14 +218,12 @@ defmodule Jido.Shell.ShellSession do
   end
 
   defp safe_get_state(pid) when is_pid(pid) do
-    try do
-      case GenServer.call(pid, :get_state, 1_000) do
-        {:ok, state} -> {:ok, state}
-        _ -> :error
-      end
-    catch
-      :exit, _ -> :error
+    case GenServer.call(pid, :get_state, 1_000) do
+      {:ok, state} -> {:ok, state}
+      _ -> :error
     end
+  catch
+    :exit, _ -> :error
   end
 
   defp validate_workspace_id(workspace_id) when is_binary(workspace_id) do

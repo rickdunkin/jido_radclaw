@@ -3,6 +3,8 @@ defmodule JidoClaw.Tenant.Manager do
   use GenServer
   require Logger
 
+  alias JidoClaw.Tenant.InstanceSupervisor
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -64,7 +66,7 @@ defmodule JidoClaw.Tenant.Manager do
         tenant = JidoClaw.Tenant.new(id: "default", name: "Default")
         ensure_postgres_row(tenant)
 
-        case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
+        case InstanceSupervisor.start_instance(tenant.id) do
           {:ok, _pid} ->
             :ets.insert(state.table, {tenant.id, tenant})
             JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
@@ -95,7 +97,7 @@ defmodule JidoClaw.Tenant.Manager do
         tenant = JidoClaw.Tenant.new(attrs)
         ensure_postgres_row(tenant)
 
-        case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
+        case InstanceSupervisor.start_instance(tenant.id) do
           {:ok, _pid} ->
             :ets.insert(state.table, {tenant.id, tenant})
             JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
@@ -116,7 +118,7 @@ defmodule JidoClaw.Tenant.Manager do
     tenant = JidoClaw.Tenant.new(attrs)
     ensure_postgres_row(tenant)
 
-    case JidoClaw.Tenant.InstanceSupervisor.start_instance(tenant.id) do
+    case InstanceSupervisor.start_instance(tenant.id) do
       {:ok, _pid} ->
         :ets.insert(state.table, {tenant.id, tenant})
         JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
@@ -155,7 +157,7 @@ defmodule JidoClaw.Tenant.Manager do
   def handle_call({:destroy, id}, _from, state) do
     case :ets.lookup(state.table, id) do
       [{^id, _tenant}] ->
-        JidoClaw.Tenant.InstanceSupervisor.stop_instance(id)
+        InstanceSupervisor.stop_instance(id)
         :ets.delete(state.table, id)
         JidoClaw.Telemetry.emit_tenant_destroy(%{tenant_id: id})
         Logger.info("[Tenant] Destroyed tenant #{id}")

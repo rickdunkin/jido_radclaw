@@ -48,10 +48,12 @@ defmodule JidoClaw.Forge.ClusteringTest do
   """
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Forge
-  alias JidoClaw.Forge.{Manager, Harness}
-  alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.Forge.ClusteringTest.MockHarness
+  alias JidoClaw.Forge.{Harness, Manager}
+  alias JidoClaw.Forge.Persistence
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
 
   @timeout 10_000
 
@@ -84,13 +86,11 @@ defmodule JidoClaw.Forge.ClusteringTest do
   end
 
   defp stop_session(session_id) do
-    try do
-      Forge.stop_session(session_id)
-    rescue
-      _ -> :ok
-    catch
-      :exit, _ -> :ok
-    end
+    Forge.stop_session(session_id)
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   describe "without clustering (default)" do
@@ -403,7 +403,7 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
     setup do
       Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: true)
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(JidoClaw.Repo)
+      :ok = Sandbox.checkout(JidoClaw.Repo)
 
       on_exit(fn ->
         Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
@@ -414,10 +414,9 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
     test "claim_session succeeds for a fresh session_id" do
       sid = "claim_fresh_#{:erlang.unique_integer([:positive])}"
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
 
-      # Verify the row was created
-      session = JidoClaw.Forge.Persistence.find_session(sid)
+      session = Persistence.find_session(sid)
       assert session != nil
       assert session.phase == :created
     end
@@ -426,58 +425,57 @@ defmodule JidoClaw.Forge.ClusteringTest do
       sid = "claim_dup_#{:erlang.unique_integer([:positive])}"
 
       # First claim succeeds (creates row with phase :created)
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
 
       # Second claim with same name fails — row is in :created (active) phase
       assert {:error, :already_claimed} =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+               Persistence.claim_session(sid, %{runner: :shell})
     end
 
     test "claim_session allows reuse of a terminal (completed) session" do
       sid = "claim_reuse_#{:erlang.unique_integer([:positive])}"
 
       # Create and mark as completed
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :completed)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :completed)
 
       # Verify it's terminal
-      session = JidoClaw.Forge.Persistence.find_session(sid)
+      session = Persistence.find_session(sid)
       assert session.phase == :completed
 
       # Reclaiming a terminal session should succeed (upsert resets it)
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :workflow})
+      assert :ok = Persistence.claim_session(sid, %{runner: :workflow})
 
-      # Verify the session was reset
-      session = JidoClaw.Forge.Persistence.find_session(sid)
+      session = Persistence.find_session(sid)
       assert session.phase == :created
     end
 
     test "claim_session allows reuse of a cancelled session" do
       sid = "claim_cancelled_#{:erlang.unique_integer([:positive])}"
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :cancelled)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :cancelled)
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
     end
 
     test "claim_session allows reuse of a failed session" do
       sid = "claim_failed_#{:erlang.unique_integer([:positive])}"
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :failed)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :failed)
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
     end
 
     test "claim_session rejects when existing session is in active phase" do
       sid = "claim_active_#{:erlang.unique_integer([:positive])}"
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :running)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :running)
 
       assert {:error, :already_claimed} =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+               Persistence.claim_session(sid, %{runner: :shell})
     end
 
     test "recovery claim succeeds for active-phase sessions" do
@@ -485,63 +483,62 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
       # Create a session and set it to :running (simulates a crash that
       # left stale state in the DB)
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :running)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :running)
 
       # A normal (non-recovery) claim should be rejected
       assert {:error, :already_claimed} =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+               Persistence.claim_session(sid, %{runner: :shell})
 
       # A recovery claim should succeed — the crashed process left stale state
       assert :ok =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
+               Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
 
-      # Verify the session was reset to :created
-      session = JidoClaw.Forge.Persistence.find_session(sid)
+      session = Persistence.find_session(sid)
       assert session.phase == :created
     end
 
     test "recovery claim rejects when another recovery already claimed" do
       sid = "claim_double_recovery_#{:erlang.unique_integer([:positive])}"
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :failed)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :failed)
 
       # First recovery claim succeeds (resets to :created)
       assert :ok =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
+               Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
 
       # Second recovery claim sees :created (active) — rejected
       assert {:error, :already_claimed} =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
+               Persistence.claim_session(sid, %{runner: :shell}, recovery: true)
     end
 
     test "serialized terminal reuse — second claim sees reset row" do
       sid = "claim_serial_#{:erlang.unique_integer([:positive])}"
 
       # Create and terminate
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :completed)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :completed)
 
       # First reuse claim succeeds (upsert resets to :created)
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :workflow})
+      assert :ok = Persistence.claim_session(sid, %{runner: :workflow})
 
       # Second reuse claim sees :created (active phase) — rejected
       assert {:error, :already_claimed} =
-               JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
+               Persistence.claim_session(sid, %{runner: :shell})
     end
 
     test "claim_session returns :ok when persistence is disabled" do
       Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
 
-      assert :ok = JidoClaw.Forge.Persistence.claim_session("anything", %{runner: :shell})
+      assert :ok = Persistence.claim_session("anything", %{runner: :shell})
     end
 
     test "Harness.init rejects when DB has active session for same name" do
       # This verifies the end-to-end path: Harness.init -> claim_session -> DB.
       # Use shared sandbox mode so the Harness process (spawned by
       # DynamicSupervisor) can access the DB connection.
-      Ecto.Adapters.SQL.Sandbox.mode(JidoClaw.Repo, {:shared, self()})
+      Sandbox.mode(JidoClaw.Repo, {:shared, self()})
 
       pg_pid =
         case :pg.start_link(:jido_claw) do
@@ -553,8 +550,8 @@ defmodule JidoClaw.Forge.ClusteringTest do
 
       # Pre-create an active session in the DB
       sid = "claim_e2e_#{:erlang.unique_integer([:positive])}"
-      assert :ok = JidoClaw.Forge.Persistence.claim_session(sid, %{runner: :shell})
-      JidoClaw.Forge.Persistence.update_session_phase(sid, :running)
+      assert :ok = Persistence.claim_session(sid, %{runner: :shell})
+      Persistence.update_session_phase(sid, :running)
 
       # Starting a Forge session with the same name should fail
       assert {:error, :already_exists} =

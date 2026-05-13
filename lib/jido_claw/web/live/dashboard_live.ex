@@ -1,18 +1,22 @@
 defmodule JidoClaw.Web.DashboardLive do
   use JidoClaw.Web, :live_view
 
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
+  alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.RunSummaryFeed
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
-      JidoClaw.Forge.PubSub.subscribe_sessions()
-      JidoClaw.Orchestration.RunPubSub.subscribe_all()
+      ForgePubSub.subscribe_sessions()
+      RunPubSub.subscribe_all()
     end
 
     {:ok,
      assign(socket,
        page_title: "Dashboard",
        forge_sessions: length(JidoClaw.Forge.list_sessions()),
-       workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary(),
+       workflow_summary: RunSummaryFeed.get_summary(),
        uptime: get_uptime()
      )}
   end
@@ -89,20 +93,17 @@ defmodule JidoClaw.Web.DashboardLive do
   # Run events (RunPubSub — not yet broadcast, but matches the intended contract)
   @impl true
   def handle_info({:run_started, _id, _info}, socket) do
-    {:noreply,
-     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply, assign(socket, workflow_summary: RunSummaryFeed.get_summary())}
   end
 
   @impl true
   def handle_info({:run_completed, _id, _info}, socket) do
-    {:noreply,
-     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply, assign(socket, workflow_summary: RunSummaryFeed.get_summary())}
   end
 
   @impl true
   def handle_info({:run_failed, _id, _info}, socket) do
-    {:noreply,
-     assign(socket, workflow_summary: JidoClaw.Orchestration.RunSummaryFeed.get_summary())}
+    {:noreply, assign(socket, workflow_summary: RunSummaryFeed.get_summary())}
   end
 
   @impl true

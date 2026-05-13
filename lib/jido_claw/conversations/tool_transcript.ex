@@ -7,8 +7,8 @@ defmodule JidoClaw.Conversations.ToolTranscript do
   paths produce byte-identical row shapes.
   """
 
-  alias JidoClaw.Security.Redaction.Transcript
   alias JidoClaw.Conversations.TranscriptEnvelope
+  alias JidoClaw.Security.Redaction.Transcript
 
   @doc """
   Run the supplied payload through the canonical envelope normalizer

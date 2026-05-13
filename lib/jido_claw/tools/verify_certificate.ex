@@ -51,6 +51,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       ]
     ]
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Certificates, Telemetry}
   alias JidoClaw.Solutions.Solution
@@ -79,7 +80,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
 
       actor =
         if is_binary(tenant_id) do
-          Map.get(tool_context, :actor) || JidoClaw.Authorization.Actor.system(tenant_id)
+          Map.get(tool_context, :actor) || Actor.system(tenant_id)
         else
           nil
         end

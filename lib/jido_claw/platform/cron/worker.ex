@@ -6,6 +6,10 @@ defmodule JidoClaw.Cron.Worker do
   use GenServer
   require Logger
 
+  alias Crontab.CronExpression.Parser
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.Job
+
   @max_failures 3
   @stuck_threshold_ms 2 * 60 * 60 * 1000
 
@@ -119,7 +123,7 @@ defmodule JidoClaw.Cron.Worker do
             JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
               kind: :cron,
               external_id: state.agent_id,
-              actor: JidoClaw.Authorization.Actor.system(state.tenant_id)
+              actor: Actor.system(state.tenant_id)
             )
 
           :isolated ->
@@ -128,7 +132,7 @@ defmodule JidoClaw.Cron.Worker do
             JidoClaw.chat(state.tenant_id, session_id, state.task,
               kind: :cron,
               external_id: session_id,
-              actor: JidoClaw.Authorization.Actor.system(state.tenant_id)
+              actor: Actor.system(state.tenant_id)
             )
 
           :system_job ->
@@ -193,7 +197,7 @@ defmodule JidoClaw.Cron.Worker do
   end
 
   defp schedule_next(%{schedule: {:cron, expression}} = state) do
-    case Crontab.CronExpression.Parser.parse(expression) do
+    case Parser.parse(expression) do
       {:ok, cron} ->
         case Crontab.Scheduler.get_next_run_date(cron) do
           {:ok, next_dt} ->
@@ -220,11 +224,11 @@ defmodule JidoClaw.Cron.Worker do
   # the worker. Eventual consistency is acceptable: if persist fails
   # this run, the next failure will retry. Crashing is strictly worse.
   defp persist_disabled(state) do
-    actor = JidoClaw.Authorization.Actor.system(state.tenant_id)
+    actor = Actor.system(state.tenant_id)
 
-    case JidoClaw.Cron.Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+    case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
       {:ok, job} ->
-        case JidoClaw.Cron.Job.disable(job, tenant: state.tenant_id, actor: actor) do
+        case Job.disable(job, tenant: state.tenant_id, actor: actor) do
           {:ok, _} -> :ok
           err -> Logger.warning("[Cron] disable persistence failed: #{inspect(err)}")
         end

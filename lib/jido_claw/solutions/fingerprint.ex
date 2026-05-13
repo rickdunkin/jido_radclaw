@@ -130,40 +130,26 @@ defmodule JidoClaw.Solutions.Fingerprint do
   def extract_target(description) when is_binary(description) do
     lower = String.downcase(description)
 
-    cond do
-      contains_any?(lower, ~w(login logout signup register password credential token jwt auth)) ->
-        "authentication"
+    Enum.find_value(target_keywords(), fn {keywords, label} ->
+      if contains_any?(lower, keywords), do: label
+    end)
+  end
 
-      contains_any?(lower, ~w(permission role access authorize policy rbac)) ->
-        "authorization"
-
-      contains_any?(lower, ~w(route router routing path redirect plug middleware)) ->
-        "routing"
-
-      contains_any?(lower, ~w(deploy deployment release build artifact docker image container)) ->
-        "deployment"
-
-      contains_any?(lower, ~w(migration migrate schema alter table column)) ->
-        "migrations"
-
-      contains_any?(lower, ~w(cache caching redis memcached ets ttl)) ->
-        "caching"
-
-      contains_any?(lower, ~w(test spec mock stub assertion coverage)) ->
-        "testing"
-
-      contains_any?(lower, ~w(performance slow timeout latency throughput bottleneck)) ->
-        "performance"
-
-      contains_any?(lower, ~w(parse parsing parse json xml yaml csv binary)) ->
-        "parsing"
-
-      contains_any?(lower, ~w(connect connection pool socket websocket channel)) ->
-        "networking"
-
-      true ->
-        nil
-    end
+  # Ordered list of `{keywords, label}` pairs evaluated top-to-bottom.
+  # The first match wins, preserving the original `cond` precedence.
+  defp target_keywords do
+    [
+      {~w(login logout signup register password credential token jwt auth), "authentication"},
+      {~w(permission role access authorize policy rbac), "authorization"},
+      {~w(route router routing path redirect plug middleware), "routing"},
+      {~w(deploy deployment release build artifact docker image container), "deployment"},
+      {~w(migration migrate schema alter table column), "migrations"},
+      {~w(cache caching redis memcached ets ttl), "caching"},
+      {~w(test spec mock stub assertion coverage), "testing"},
+      {~w(performance slow timeout latency throughput bottleneck), "performance"},
+      {~w(parse parsing parse json xml yaml csv binary), "parsing"},
+      {~w(connect connection pool socket websocket channel), "networking"}
+    ]
   end
 
   @doc """
@@ -176,8 +162,7 @@ defmodule JidoClaw.Solutions.Fingerprint do
     description
     |> String.downcase()
     |> String.split(~r/[\s\p{P}]+/u, trim: true)
-    |> Enum.reject(&(&1 in @stopwords))
-    |> Enum.reject(&(String.length(&1) < 3))
+    |> Enum.reject(&(&1 in @stopwords or String.length(&1) < 3))
     |> Enum.uniq()
     |> Enum.sort()
   end

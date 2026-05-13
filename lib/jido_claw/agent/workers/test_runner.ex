@@ -1,4 +1,5 @@
 defmodule JidoClaw.Agent.Workers.TestRunner do
+  @moduledoc false
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_test_runner",
     description:

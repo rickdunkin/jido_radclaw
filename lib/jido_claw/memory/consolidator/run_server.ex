@@ -27,6 +27,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Forge.Harness
+  alias JidoClaw.Forge.Manager, as: ForgeManager
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link, Scope}
 
   alias JidoClaw.Memory.Consolidator.{
@@ -36,6 +39,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     PolicyResolver,
     Staging
   }
+
+  alias JidoClaw.Memory.Consolidator.Prompt
 
   @registry JidoClaw.Memory.Consolidator.RunRegistry
 
@@ -379,7 +384,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       |> Map.put(:mcp_server_url, endpoint.url)
       |> Map.put(:forge_home, run_forge_home)
       |> Map.put(:codex_home, codex_home)
-      |> Map.put(:prompt, JidoClaw.Memory.Consolidator.Prompt.build(state))
+      |> Map.put(:prompt, Prompt.build(state))
       |> maybe_add_fake_proposals(harness, state.opts)
 
     # Refine effective_harness_model with whatever runner_config landed
@@ -425,19 +430,17 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp drive_harness(_parent, forge_session_id, spec, timeout_ms) do
     # Subscribe before start_session so we can't miss the :ready broadcast
     # if bootstrap completes inside the same scheduler quantum.
-    :ok = JidoClaw.Forge.PubSub.subscribe(forge_session_id)
+    :ok = ForgePubSub.subscribe(forge_session_id)
     run_forge_home = Map.get(spec.runner_config, :forge_home)
 
     try do
-      case JidoClaw.Forge.Manager.start_session(forge_session_id, spec) do
+      case ForgeManager.start_session(forge_session_id, spec) do
         {:ok, %{pid: pid}} ->
           try do
             with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)),
                  result <-
-                   JidoClaw.Forge.Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
+                   Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
               result
-            else
-              {:error, reason} -> {:error, reason}
             end
           rescue
             e -> {:error, Exception.message(e)}
@@ -494,11 +497,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp bootstrap_timeout(run_timeout_ms), do: min(run_timeout_ms, 60_000)
 
   defp maybe_stop_forge_session(forge_session_id) do
-    try do
-      JidoClaw.Forge.Manager.stop_session(forge_session_id, :normal)
-    catch
-      _, _ -> :ok
-    end
+    ForgeManager.stop_session(forge_session_id, :normal)
+  catch
+    _, _ -> :ok
   end
 
   defp base_runner_config(:fake, _opts), do: %{fake_proposals: []}
@@ -770,7 +771,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   defp compute_watermarks(state) do
     deferred_cluster_ids =
-      state.staging.cluster_defers
+      state.staging
+      |> Staging.entries(:cluster_defers)
       |> Enum.map(&Map.get(&1, :cluster_id))
       |> MapSet.new()
 
@@ -814,7 +816,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp apply_block_updates(state) do
-    Enum.reduce(state.staging.block_updates, 0, fn args, acc ->
+    Enum.reduce(Staging.entries(state.staging, :block_updates), 0, fn args, acc ->
       attrs = build_block_attrs(state, args)
 
       case maybe_revise_or_write_block(state, attrs) do
@@ -879,7 +881,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp apply_fact_adds(state) do
     tenant_id = state.scope.tenant_id
 
-    Enum.reduce(state.staging.fact_adds, {0, []}, fn args, {count, ids} ->
+    Enum.reduce(Staging.entries(state.staging, :fact_adds), {0, []}, fn args, {count, ids} ->
       attrs = %{
         scope_kind: state.scope.scope_kind,
         user_id: state.scope[:user_id],
@@ -912,8 +914,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp apply_fact_updates(state) do
-    Enum.reduce(state.staging.fact_updates, {0, 0, 0, []}, fn args,
-                                                              {added, invalidated, links, ids} ->
+    Enum.reduce(Staging.entries(state.staging, :fact_updates), {0, 0, 0, []}, fn args,
+                                                                                 {added,
+                                                                                  invalidated,
+                                                                                  links, ids} ->
       case do_apply_fact_update(state.scope.tenant_id, args) do
         {:ok, replacement, link_added?} ->
           link_inc = if link_added?, do: 1, else: 0
@@ -996,7 +1000,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     tenant_id = state.scope.tenant_id
     actor = Actor.system(tenant_id)
 
-    Enum.reduce(state.staging.fact_deletes, 0, fn args, acc ->
+    Enum.reduce(Staging.entries(state.staging, :fact_deletes), 0, fn args, acc ->
       with {:ok, fact} <- Fact.by_id(Map.get(args, :fact_id), tenant: tenant_id, actor: actor),
            {:ok, _} <-
              Fact.invalidate_by_id(fact, %{reason: Map.get(args, :reason, "consolidator_delete")},
@@ -1021,7 +1025,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     tenant_id = state.scope.tenant_id
     actor = Actor.system(tenant_id)
 
-    Enum.reduce(state.staging.link_creates, 0, fn args, acc ->
+    Enum.reduce(Staging.entries(state.staging, :link_creates), 0, fn args, acc ->
       with {:ok, relation} <- map_relation(Map.get(args, :relation)),
            attrs = link_attrs(args, relation),
            {:ok, _} <- Link.create_link(attrs, tenant: tenant_id, actor: actor) do

@@ -208,6 +208,8 @@ defmodule JidoClaw.Audit.Event do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Audit.Event
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -224,7 +226,7 @@ defmodule JidoClaw.Audit.Event do
     defp validate(cs, _kind, _id, nil), do: cs
 
     defp validate(cs, target_kind, target_id, tenant_id) do
-      case Map.get(JidoClaw.Audit.Event.target_dispatch(), target_kind) do
+      case Map.get(Event.target_dispatch(), target_kind) do
         nil ->
           :telemetry.execute(
             [:jido_claw, :audit, :cross_tenant_fk, :skipped],

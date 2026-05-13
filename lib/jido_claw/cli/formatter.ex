@@ -3,6 +3,8 @@ defmodule JidoClaw.CLI.Formatter do
   Output formatting: ANSI colors, tool panels, diff rendering.
   """
 
+  alias JidoClaw.CLI.Branding
+
   def print_answer(answer) when is_binary(answer) do
     cleaned = strip_think_tags(answer)
     IO.puts("")
@@ -72,7 +74,7 @@ defmodule JidoClaw.CLI.Formatter do
       :stop -> :ok
     after
       150 ->
-        frame = JidoClaw.CLI.Branding.spinner_frame(tick)
+        frame = Branding.spinner_frame(tick)
         IO.write("\e[2K\r#{frame}")
         spinner_loop(parent, tick + 1)
     end

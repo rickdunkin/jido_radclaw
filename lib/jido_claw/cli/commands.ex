@@ -5,6 +5,25 @@ defmodule JidoClaw.CLI.Commands do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Branding
+  alias JidoClaw.CLI.Commands.SolutionsStats
+  alias JidoClaw.CLI.Setup, as: CLISetup
+  alias JidoClaw.Cron.Job, as: CronJob
+  alias JidoClaw.Cron.Scheduler, as: CronScheduler
+  alias JidoClaw.Cron.Worker, as: CronWorker
+  alias JidoClaw.Display.StatusBar
+  alias JidoClaw.Display.SwarmBox
+  alias JidoClaw.Memory.Block, as: MemoryBlock
+  alias JidoClaw.Memory.ConsolidationRun
+  alias JidoClaw.Memory.Consolidator
+  alias JidoClaw.Memory.Scope, as: MemoryScope
+  alias JidoClaw.Reasoning.Statistics, as: ReasoningStatistics
+  alias JidoClaw.Reasoning.StrategyRegistry
+  alias JidoClaw.Shell.ServerRegistry
+  alias JidoClaw.Shell.SessionManager, as: ShellSessionManager
+  alias JidoClaw.Solutions.Matcher, as: SolutionsMatcher
+  alias JidoClaw.Tenant.Manager, as: TenantManager
+  alias JidoClaw.Workspaces.PolicyTransitions
+  alias JidoClaw.Workspaces.Workspace
 
   def handle("/help", state) do
     IO.puts(Branding.help_text())
@@ -49,9 +68,7 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[33m⚙\e[0m  messages    \e[1m#{live.messages}\e[0m")
     IO.puts("  \e[33m⚙\e[0m  tool calls  \e[1m#{live.tool_calls}\e[0m")
 
-    IO.puts(
-      "  \e[33m⚙\e[0m  tokens      \e[1m#{JidoClaw.Display.StatusBar.format_tokens(live.tokens)}\e[0m"
-    )
+    IO.puts("  \e[33m⚙\e[0m  tokens      \e[1m#{StatusBar.format_tokens(live.tokens)}\e[0m")
 
     IO.puts(
       "  \e[33m⚙\e[0m  agents      \e[1m#{running} running / #{live.agents_spawned} total\e[0m"
@@ -63,8 +80,8 @@ defmodule JidoClaw.CLI.Commands do
     # Show per-agent breakdown if any children exist
     if children != [] do
       IO.puts("")
-      IO.puts(JidoClaw.Display.SwarmBox.render_header(tracker.agents, terminal_cols()))
-      IO.puts(JidoClaw.Display.SwarmBox.render_agents(tracker.agents, tracker.order))
+      IO.puts(SwarmBox.render_header(tracker.agents, terminal_cols()))
+      IO.puts(SwarmBox.render_agents(tracker.agents, tracker.order))
     end
 
     IO.puts("")
@@ -99,11 +116,7 @@ defmodule JidoClaw.CLI.Commands do
     if models == [] do
       IO.puts("  \e[2mNo models listed for provider '#{provider_key}'.\e[0m")
     else
-      Enum.each(models, fn model ->
-        desc = Config.model_description(model)
-        active = if model == state.model, do: " \e[32m← active\e[0m", else: ""
-        IO.puts("  \e[33m▸\e[0m \e[1m#{model}\e[0m  \e[2m#{desc}\e[0m#{active}")
-      end)
+      print_model_list(models, state.model)
     end
 
     IO.puts("")
@@ -129,11 +142,7 @@ defmodule JidoClaw.CLI.Commands do
     if models == [] do
       IO.puts("  \e[2mNo models listed for provider '#{key}'.\e[0m")
     else
-      Enum.each(models, fn model ->
-        desc = Config.model_description(model)
-        active = if model == state.model, do: " \e[32m← active\e[0m", else: ""
-        IO.puts("  \e[33m▸\e[0m \e[1m#{model}\e[0m  \e[2m#{desc}\e[0m#{active}")
-      end)
+      print_model_list(models, state.model)
     end
 
     IO.puts("")
@@ -152,8 +161,8 @@ defmodule JidoClaw.CLI.Commands do
       IO.puts("  \e[1mSwarm Dashboard\e[0m")
       IO.puts("  \e[2mNo child agents running.\e[0m")
     else
-      IO.puts(JidoClaw.Display.SwarmBox.render_header(tracker.agents, terminal_cols()))
-      IO.puts(JidoClaw.Display.SwarmBox.render_agents(tracker.agents, tracker.order))
+      IO.puts(SwarmBox.render_header(tracker.agents, terminal_cols()))
+      IO.puts(SwarmBox.render_agents(tracker.agents, tracker.order))
     end
 
     IO.puts("")
@@ -169,15 +178,7 @@ defmodule JidoClaw.CLI.Commands do
     if skills == [] do
       IO.puts("  \e[2mNo skills found. Add YAML files to .jido/skills/\e[0m")
     else
-      Enum.each(skills, fn skill ->
-        IO.puts("  \e[33m▸\e[0m \e[1m#{skill.name}\e[0m — #{skill.description}")
-
-        Enum.each(skill.steps, fn step ->
-          template = Map.get(step, :template)
-          task = Map.get(step, :task)
-          IO.puts("    \e[2m→ #{template}: #{task}\e[0m")
-        end)
-      end)
+      Enum.each(skills, &print_skill_entry/1)
     end
 
     IO.puts("")
@@ -252,36 +253,8 @@ defmodule JidoClaw.CLI.Commands do
     label = String.trim(label)
 
     case memory_scope(state) do
-      {:ok, scope} ->
-        case JidoClaw.Memory.Block.history_for_label(
-               scope.scope_kind,
-               primary_fk(scope),
-               label,
-               tenant: scope.tenant_id,
-               actor: Actor.system(scope.tenant_id)
-             ) do
-          {:ok, revisions} ->
-            IO.puts("")
-            IO.puts("  \e[1mBlock History: #{label}\e[0m")
-
-            if revisions == [] do
-              IO.puts("  \e[2mNo history for this label.\e[0m")
-            else
-              Enum.each(revisions, fn block ->
-                ts = format_short_date(block.inserted_at)
-                IO.puts("  \e[33m▸\e[0m \e[1m#{ts}\e[0m \e[2m(#{block.source})\e[0m")
-                IO.puts("    \e[2m#{block.value}\e[0m")
-              end)
-            end
-
-            IO.puts("")
-
-          {:error, err} ->
-            IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
-        end
-
-      _ ->
-        IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
+      {:ok, scope} -> render_block_history(scope, label)
+      _ -> IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
     end
 
     {:ok, state}
@@ -289,42 +262,8 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/memory blocks", state) do
     case memory_scope(state) do
-      {:ok, scope} ->
-        chain =
-          JidoClaw.Memory.Scope.chain(scope)
-          |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
-
-        case JidoClaw.Memory.Block.for_scope_chain(chain,
-               tenant: scope.tenant_id,
-               actor: Actor.system(scope.tenant_id)
-             ) do
-          {:ok, blocks} ->
-            IO.puts("")
-            IO.puts("  \e[1mScope Blocks\e[0m")
-
-            if blocks == [] do
-              IO.puts("  \e[2mNo blocks for this scope.\e[0m")
-            else
-              IO.puts("  \e[2m#{length(blocks)} block(s)\e[0m")
-              IO.puts("")
-
-              Enum.each(blocks, fn b ->
-                IO.puts(
-                  "  \e[33m▸\e[0m \e[1m#{b.label}\e[0m \e[2m(#{b.scope_kind}, pos=#{b.position})\e[0m"
-                )
-
-                IO.puts("    \e[2m#{b.value}\e[0m")
-              end)
-            end
-
-            IO.puts("")
-
-          {:error, err} ->
-            IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
-        end
-
-      _ ->
-        IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
+      {:ok, scope} -> render_scope_blocks(scope)
+      _ -> IO.puts("  \e[31mNo session scope — start a session first.\e[0m")
     end
 
     {:ok, state}
@@ -336,7 +275,7 @@ defmodule JidoClaw.CLI.Commands do
         IO.puts("")
         IO.puts("  \e[2mConsolidating memory for #{scope.scope_kind} scope…\e[0m")
 
-        case JidoClaw.Memory.Consolidator.run_now(scope, override_min_input_count: true) do
+        case Consolidator.run_now(scope, override_min_input_count: true) do
           {:ok, run} ->
             IO.puts(
               "  \e[32m✓\e[0m  succeeded — facts_added=#{run.facts_added}, blocks_written=#{run.blocks_written}, blocks_revised=#{run.blocks_revised}"
@@ -360,10 +299,10 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/memory status" <> _, state) do
     case memory_scope(state) do
       {:ok, scope} ->
-        case JidoClaw.Memory.ConsolidationRun.history_for_scope(
+        case ConsolidationRun.history_for_scope(
                %{
                  scope_kind: scope.scope_kind,
-                 scope_fk_id: JidoClaw.Memory.Scope.primary_fk(scope),
+                 scope_fk_id: MemoryScope.primary_fk(scope),
                  limit: 10
                },
                tenant: scope.tenant_id,
@@ -417,7 +356,7 @@ defmodule JidoClaw.CLI.Commands do
     results =
       case session_scope(state) do
         {:ok, tenant_id, workspace_uuid} ->
-          JidoClaw.Solutions.Matcher.find_solutions(q,
+          SolutionsMatcher.find_solutions(q,
             tenant_id: tenant_id,
             workspace_id: workspace_uuid,
             limit: 10
@@ -435,13 +374,7 @@ defmodule JidoClaw.CLI.Commands do
     else
       IO.puts("  \e[2m#{length(results)} result(s)\e[0m")
       IO.puts("")
-
-      Enum.each(results, fn %{solution: sol} ->
-        lang = if sol.language, do: " \e[36m[#{sol.language}]\e[0m", else: ""
-        preview = sol.solution_content |> String.slice(0, 80) |> String.replace("\n", " ")
-        IO.puts("  \e[33m▸\e[0m \e[1m#{sol.id}\e[0m#{lang}")
-        IO.puts("    \e[2m#{preview}\e[0m")
-      end)
+      Enum.each(results, &print_solution_result/1)
     end
 
     IO.puts("")
@@ -452,7 +385,7 @@ defmodule JidoClaw.CLI.Commands do
     stats =
       case session_scope(state) do
         {:ok, tenant_id, workspace_uuid} ->
-          JidoClaw.CLI.Commands.SolutionsStats.fetch(tenant_id, workspace_uuid)
+          SolutionsStats.fetch(tenant_id, workspace_uuid)
 
         :missing ->
           %{total: 0, by_language: %{}, by_framework: %{}}
@@ -542,7 +475,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/setup", state) do
-    new_config = JidoClaw.CLI.Setup.run(state.cwd)
+    new_config = CLISetup.run(state.cwd)
     new_model = JidoClaw.Config.model(new_config)
     {:ok, %{state | config: new_config, model: new_model}}
   end
@@ -550,7 +483,7 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/config", state), do: handle("/setup", state)
 
   def handle("/gateway", state) do
-    port = JidoClaw.CLI.Branding.gateway_port()
+    port = Branding.gateway_port()
     mode = Application.get_env(:jido_claw, :mode, :both)
 
     IO.puts("")
@@ -576,7 +509,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/tenants", state) do
-    tenants = JidoClaw.Tenant.Manager.list_tenants()
+    tenants = TenantManager.list_tenants()
 
     IO.puts("")
     IO.puts("  \e[1mTenants\e[0m")
@@ -584,10 +517,7 @@ defmodule JidoClaw.CLI.Commands do
     if tenants == [] do
       IO.puts("  \e[2mNo tenants.\e[0m")
     else
-      Enum.each(tenants, fn t ->
-        status_color = if t.status == :active, do: "\e[32m", else: "\e[33m"
-        IO.puts("  \e[33m▸\e[0m \e[1m#{t.name}\e[0m (#{t.id})  #{status_color}#{t.status}\e[0m")
-      end)
+      Enum.each(tenants, &print_tenant_row/1)
     end
 
     IO.puts("")
@@ -596,85 +526,18 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/cron add " <> rest, state) do
     case parse_cron_add(rest) do
-      {:ok, id, schedule, task} ->
-        project_dir = state.cwd
-
-        schedule_tuple =
-          if String.starts_with?(schedule, "every ") do
-            case Regex.run(~r/^every\s+(\d+)\s*(s|m|h|d)$/i, schedule) do
-              [_, amount, unit] ->
-                ms = String.to_integer(amount) * cron_unit_ms(String.downcase(unit))
-                {:every, ms}
-
-              nil ->
-                {:cron, schedule}
-            end
-          else
-            {:cron, schedule}
-          end
-
-        opts = [id: id, task: task, schedule: schedule_tuple, mode: :main]
-
-        case JidoClaw.Cron.Scheduler.schedule("default", opts) do
-          {:ok, ^id, _pid} ->
-            {kind, value} = persistable_schedule(schedule_tuple)
-
-            persist_attrs = %{
-              job_id: id,
-              task: task,
-              mode: :main,
-              schedule_kind: kind,
-              schedule_value: value
-            }
-
-            case JidoClaw.Cron.Job.upsert(persist_attrs,
-                   tenant: "default",
-                   actor: Actor.system("default")
-                 ) do
-              {:ok, _} ->
-                IO.puts("")
-                IO.puts("  \e[32m✓\e[0m Scheduled '\e[1m#{id}\e[0m': \"#{task}\" (#{schedule})")
-                IO.puts("  \e[2mPersisted to cron_jobs\e[0m")
-                IO.puts("")
-
-              {:error, err} ->
-                IO.puts("")
-                IO.puts("  \e[33m⚠\e[0m Scheduled but persistence failed: #{inspect(err)}")
-                IO.puts("")
-            end
-
-          {:error, reason} ->
-            IO.puts("")
-            IO.puts("  \e[31m✗\e[0m Failed to schedule: #{inspect(reason)}")
-            IO.puts("")
-        end
-
-        # Suppress the unused-binding warning while project_dir remains in
-        # scope for other handlers below.
-        _ = project_dir
-
-        {:ok, state}
-
-      :error ->
-        IO.puts("")
-        IO.puts("  \e[33mUsage:\e[0m /cron add <id> \"<schedule>\" <task description>")
-
-        IO.puts(
-          "  \e[2mExample: /cron add daily-tests \"0 9 * * *\" Run mix test and report results\e[0m"
-        )
-
-        IO.puts("")
-        {:ok, state}
+      {:ok, id, schedule, task} -> add_cron_job(state, id, schedule, task)
+      :error -> print_cron_add_usage(state)
     end
   end
 
   def handle("/cron remove " <> id, state) do
     id = String.trim(id)
-    JidoClaw.Cron.Scheduler.unschedule("default", id)
+    CronScheduler.unschedule("default", id)
     actor = Actor.system("default")
 
-    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default", actor: actor) do
-      {:ok, job} -> _ = JidoClaw.Cron.Job.remove(job, tenant: "default", actor: actor)
+    case CronJob.by_job_id(id, tenant: "default", actor: actor) do
+      {:ok, job} -> _ = CronJob.remove(job, tenant: "default", actor: actor)
       _ -> :ok
     end
 
@@ -686,7 +549,7 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/cron trigger " <> id, state) do
     id = String.trim(id)
-    JidoClaw.Cron.Scheduler.trigger("default", id)
+    CronScheduler.trigger("default", id)
     IO.puts("")
     IO.puts("  \e[32m✓\e[0m Triggered job '\e[1m#{id}\e[0m'")
     IO.puts("")
@@ -695,11 +558,11 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/cron disable " <> id, state) do
     id = String.trim(id)
-    JidoClaw.Cron.Worker.disable("default", id)
+    CronWorker.disable("default", id)
     actor = Actor.system("default")
 
-    case JidoClaw.Cron.Job.by_job_id(id, tenant: "default", actor: actor) do
-      {:ok, job} -> _ = JidoClaw.Cron.Job.disable(job, tenant: "default", actor: actor)
+    case CronJob.by_job_id(id, tenant: "default", actor: actor) do
+      {:ok, job} -> _ = CronJob.disable(job, tenant: "default", actor: actor)
       _ -> :ok
     end
 
@@ -710,7 +573,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/cron", state) do
-    jobs = JidoClaw.Cron.Scheduler.list_jobs("default")
+    jobs = CronScheduler.list_jobs("default")
 
     IO.puts("")
     IO.puts("  \e[1mCron Jobs\e[0m")
@@ -718,21 +581,7 @@ defmodule JidoClaw.CLI.Commands do
     if jobs == [] do
       IO.puts("  \e[2mNo scheduled jobs. Use /cron add or ask the agent to schedule one.\e[0m")
     else
-      Enum.each(jobs, fn job ->
-        status_icon =
-          case job.status do
-            :active -> "\e[32m●\e[0m"
-            :disabled -> "\e[31m✗\e[0m"
-            :stuck -> "\e[33m⚠\e[0m"
-            _ -> "\e[2m○\e[0m"
-          end
-
-        schedule_str = format_cron_schedule(job.schedule)
-        next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
-
-        IO.puts("  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{next_str}")
-        IO.puts("    \e[2m\"#{job.task}\"\e[0m  failures: #{job.failure_count}")
-      end)
+      Enum.each(jobs, &print_cron_job/1)
     end
 
     IO.puts("")
@@ -755,10 +604,7 @@ defmodule JidoClaw.CLI.Commands do
       IO.puts("  \e[2mNo channels connected.\e[0m")
       IO.puts("  \e[2mConfigure: DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN\e[0m")
     else
-      Enum.each(channels, fn ch ->
-        status_color = if ch.status == :connected, do: "\e[32m", else: "\e[33m"
-        IO.puts("  \e[33m▸\e[0m \e[1m#{ch.platform}\e[0m  #{status_color}#{ch.status}\e[0m")
-      end)
+      Enum.each(channels, &print_channel_row/1)
     end
 
     IO.puts("")
@@ -767,7 +613,7 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/strategies stats", state) do
     %{strategies: strategies, task_types: task_types} =
-      JidoClaw.Reasoning.Statistics.summary()
+      ReasoningStatistics.summary()
 
     IO.puts("")
     IO.puts("  \e[1mStrategy Statistics\e[0m")
@@ -809,7 +655,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/strategies", state) do
-    strategies = JidoClaw.Reasoning.StrategyRegistry.list()
+    strategies = StrategyRegistry.list()
     current = state.strategy
 
     IO.puts("")
@@ -841,7 +687,7 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/strategy " <> name_str, state) do
     name = String.trim(name_str)
 
-    if name == "auto" or JidoClaw.Reasoning.StrategyRegistry.valid?(name) do
+    if name == "auto" or StrategyRegistry.valid?(name) do
       IO.puts("  \e[32m✓\e[0m  Reasoning preference set to \e[1m#{name}\e[0m")
       IO.puts("  \e[2m(The agent will see this preference on the next query)\e[0m")
       {:ok, %{state | strategy: name}}
@@ -849,7 +695,7 @@ defmodule JidoClaw.CLI.Commands do
       IO.puts("  \e[31m✗\e[0m  Unknown strategy: \e[1m#{name}\e[0m")
 
       available =
-        ["auto" | JidoClaw.Reasoning.StrategyRegistry.list() |> Enum.map(& &1.name)]
+        ["auto" | StrategyRegistry.list() |> Enum.map(& &1.name)]
         |> Enum.join(", ")
 
       IO.puts("  \e[2mAvailable: #{available}\e[0m")
@@ -1032,7 +878,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp memory_scope(state) do
-    JidoClaw.Memory.Scope.resolve(memory_tool_context(state))
+    MemoryScope.resolve(memory_tool_context(state))
   end
 
   defp primary_fk(%{scope_kind: :user, user_id: id}), do: id
@@ -1160,8 +1006,8 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp print_profile_current(state) do
-    alias JidoClaw.Shell.ProfileManager
     alias JidoClaw.Security.Redaction.Env, as: EnvRedaction
+    alias JidoClaw.Shell.ProfileManager
 
     current = ProfileManager.current(state.session_id)
     env = ProfileManager.active_env(state.session_id)
@@ -1170,17 +1016,15 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[1mActive Profile\e[0m  \e[1m#{current}\e[0m")
     IO.puts("")
 
-    cond do
-      map_size(env) == 0 ->
-        IO.puts("  \e[2mNo variables in this profile.\e[0m")
-
-      true ->
-        env
-        |> Enum.sort()
-        |> Enum.each(fn {k, v} ->
-          redacted = EnvRedaction.redact_value(k, v)
-          IO.puts("  \e[33m⚙\e[0m  \e[1m#{k}\e[0m=#{redacted}")
-        end)
+    if map_size(env) == 0 do
+      IO.puts("  \e[2mNo variables in this profile.\e[0m")
+    else
+      env
+      |> Enum.sort()
+      |> Enum.each(fn {k, v} ->
+        redacted = EnvRedaction.redact_value(k, v)
+        IO.puts("  \e[33m⚙\e[0m  \e[1m#{k}\e[0m=#{redacted}")
+      end)
     end
 
     IO.puts("")
@@ -1245,38 +1089,44 @@ defmodule JidoClaw.CLI.Commands do
         {:ok, state}
 
       uuid when is_binary(uuid) ->
-        actor = Actor.system(state.tenant_id)
-
-        with {:ok, workspace} <-
-               JidoClaw.Workspaces.Workspace.by_id(uuid, tenant: state.tenant_id, actor: actor),
-             {:ok, _} <- apply_policy_action(workspace, kind, policy, state.tenant_id, actor) do
-          IO.puts(
-            "  \e[32m✓\e[0m  workspace #{kind} policy set to \e[1m#{Atom.to_string(policy)}\e[0m"
-          )
-
-          if kind == :embedding do
-            apply_embedding_transition(workspace, policy)
-          end
-
-          {:ok, state}
-        else
-          {:error, reason} ->
-            IO.puts("  \e[31m✗\e[0m  Failed to set workspace policy: #{inspect(reason)}")
-            {:ok, state}
-        end
+        commit_workspace_policy(state, kind, policy, uuid)
     end
   end
 
+  defp commit_workspace_policy(state, kind, policy, uuid) do
+    actor = Actor.system(state.tenant_id)
+
+    with {:ok, workspace} <-
+           Workspace.by_id(uuid, tenant: state.tenant_id, actor: actor),
+         {:ok, _} <- apply_policy_action(workspace, kind, policy, state.tenant_id, actor) do
+      IO.puts(
+        "  \e[32m✓\e[0m  workspace #{kind} policy set to \e[1m#{Atom.to_string(policy)}\e[0m"
+      )
+
+      maybe_apply_embedding_transition(kind, workspace, policy)
+      {:ok, state}
+    else
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  Failed to set workspace policy: #{inspect(reason)}")
+        {:ok, state}
+    end
+  end
+
+  defp maybe_apply_embedding_transition(:embedding, workspace, policy),
+    do: apply_embedding_transition(workspace, policy)
+
+  defp maybe_apply_embedding_transition(_, _, _), do: :ok
+
   defp apply_policy_action(workspace, :embedding, policy, tenant, actor),
     do:
-      JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, policy,
+      Workspace.set_embedding_policy(workspace, policy,
         tenant: tenant,
         actor: actor
       )
 
   defp apply_policy_action(workspace, :consolidation, policy, tenant, actor),
     do:
-      JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, policy,
+      Workspace.set_consolidation_policy(workspace, policy,
         tenant: tenant,
         actor: actor
       )
@@ -1297,14 +1147,12 @@ defmodule JidoClaw.CLI.Commands do
   # workspaces should consider migrating in batches (deferred to
   # v0.7+).
   defp apply_embedding_transition(workspace, new_policy) do
-    JidoClaw.Workspaces.PolicyTransitions.apply_embedding(workspace.id, new_policy)
+    PolicyTransitions.apply_embedding(workspace.id, new_policy)
   end
 
   # -- Servers helpers --
 
   defp list_servers(state) do
-    alias JidoClaw.Shell.ServerRegistry
-
     rows =
       ServerRegistry.list()
       |> Enum.map(fn name ->
@@ -1319,52 +1167,50 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[1mDeclared Servers\e[0m")
     IO.puts("")
 
-    cond do
-      rows == [] ->
-        IO.puts("  \e[2mNo servers declared in .jido/config.yaml\e[0m")
-        IO.puts("")
-        {:ok, state}
+    if rows == [] do
+      IO.puts("  \e[2mNo servers declared in .jido/config.yaml\e[0m")
+      IO.puts("")
+      {:ok, state}
+    else
+      name_w = column_width(rows, :name, "name")
+      target_w = column_width(rows, :target, "user@host:port")
+      auth_w = column_width(rows, :auth, "auth")
+      status_w = column_width(rows, :status, "status")
 
-      true ->
-        name_w = column_width(rows, :name, "name")
-        target_w = column_width(rows, :target, "user@host:port")
-        auth_w = column_width(rows, :auth, "auth")
-        status_w = column_width(rows, :status, "status")
+      header =
+        "    " <>
+          String.pad_trailing("name", name_w) <>
+          "  " <>
+          String.pad_trailing("user@host:port", target_w) <>
+          "  " <>
+          String.pad_trailing("auth", auth_w) <>
+          "  " <>
+          String.pad_trailing("status", status_w) <>
+          "  " <> "env"
 
-        header =
-          "    " <>
-            String.pad_trailing("name", name_w) <>
+      IO.puts("  \e[2m#{header}\e[0m")
+
+      Enum.each(rows, fn row ->
+        name_padded = String.pad_trailing(row.name, name_w)
+        target_padded = String.pad_trailing(row.target, target_w)
+        auth_padded = String.pad_trailing(row.auth, auth_w)
+        status_padded = String.pad_trailing(row.status, status_w)
+        colored_name = "\e[1m#{name_padded}\e[0m"
+        colored_status = colorize_server_status(row.status_atom, status_padded)
+
+        IO.puts(
+          "  \e[33m▸\e[0m " <>
+            colored_name <>
             "  " <>
-            String.pad_trailing("user@host:port", target_w) <>
-            "  " <>
-            String.pad_trailing("auth", auth_w) <>
-            "  " <>
-            String.pad_trailing("status", status_w) <>
-            "  " <> "env"
+            target_padded <>
+            "  " <> auth_padded <> "  " <> colored_status <> "  " <> row.env_label
+        )
+      end)
 
-        IO.puts("  \e[2m#{header}\e[0m")
-
-        Enum.each(rows, fn row ->
-          name_padded = String.pad_trailing(row.name, name_w)
-          target_padded = String.pad_trailing(row.target, target_w)
-          auth_padded = String.pad_trailing(row.auth, auth_w)
-          status_padded = String.pad_trailing(row.status, status_w)
-          colored_name = "\e[1m#{name_padded}\e[0m"
-          colored_status = colorize_server_status(row.status_atom, status_padded)
-
-          IO.puts(
-            "  \e[33m▸\e[0m " <>
-              colored_name <>
-              "  " <>
-              target_padded <>
-              "  " <> auth_padded <> "  " <> colored_status <> "  " <> row.env_label
-          )
-        end)
-
-        IO.puts("")
-        IO.puts("  \e[2mTest: /servers test <name>\e[0m")
-        IO.puts("")
-        {:ok, state}
+      IO.puts("")
+      IO.puts("  \e[2mTest: /servers test <name>\e[0m")
+      IO.puts("")
+      {:ok, state}
     end
   end
 
@@ -1393,14 +1239,14 @@ defmodule JidoClaw.CLI.Commands do
   defp compute_server_status(%{auth_kind: :default}, _project_dir), do: {:unchecked, "unchecked"}
 
   defp compute_server_status(%{auth_kind: :password} = entry, _project_dir) do
-    case JidoClaw.Shell.ServerRegistry.resolve_secrets(entry) do
+    case ServerRegistry.resolve_secrets(entry) do
       {:ok, _} -> {:ok, "ok"}
       {:error, {:missing_env, _}} -> {:missing_env, "missing_env"}
     end
   end
 
   defp compute_server_status(%{auth_kind: :key_path, key_path: kp}, project_dir) do
-    resolved = JidoClaw.Shell.ServerRegistry.resolve_key_path(kp, project_dir)
+    resolved = ServerRegistry.resolve_key_path(kp, project_dir)
 
     case File.read(resolved) do
       {:ok, _} -> {:ok, "ok"}
@@ -1428,7 +1274,7 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp test_server(state, name) do
-    case JidoClaw.Shell.SessionManager.run(
+    case ShellSessionManager.run(
            state.session_id,
            "echo ok",
            5_000,
@@ -1503,9 +1349,7 @@ defmodule JidoClaw.CLI.Commands do
 
     result =
       if same_scope? do
-        JidoClaw.Memory.Block.revise(block, %{value: new_value},
-          actor: Actor.system(scope.tenant_id)
-        )
+        MemoryBlock.revise(block, %{value: new_value}, actor: Actor.system(scope.tenant_id))
       else
         attrs = %{
           scope_kind: scope.scope_kind,
@@ -1523,7 +1367,7 @@ defmodule JidoClaw.CLI.Commands do
           written_by: "cli"
         }
 
-        JidoClaw.Memory.Block.write(attrs,
+        MemoryBlock.write(attrs,
           tenant: scope.tenant_id,
           actor: Actor.system(scope.tenant_id)
         )
@@ -1565,12 +1409,9 @@ defmodule JidoClaw.CLI.Commands do
     try do
       File.write!(tmp_path, initial_content)
 
-      case System.cmd(editor, extra_args ++ [tmp_path], into: IO.stream(:stdio, :line)) do
+      case System.cmd(editor, Enum.concat(extra_args, [tmp_path]), into: IO.stream(:stdio, :line)) do
         {_, 0} ->
-          case File.read(tmp_path) do
-            {:ok, content} -> {:ok, content}
-            {:error, reason} -> {:error, reason}
-          end
+          File.read(tmp_path)
 
         {_, exit_code} ->
           {:error, {:editor_exit, exit_code}}
@@ -1586,4 +1427,210 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   defp label_to_filename(_), do: "block.md"
+
+  # -- /models helpers --
+
+  defp print_model_list(models, current_model) do
+    alias JidoClaw.Config
+
+    Enum.each(models, fn model ->
+      desc = Config.model_description(model)
+      active = if model == current_model, do: " \e[32m← active\e[0m", else: ""
+      IO.puts("  \e[33m▸\e[0m \e[1m#{model}\e[0m  \e[2m#{desc}\e[0m#{active}")
+    end)
+  end
+
+  # -- /skills helpers --
+
+  defp print_skill_entry(skill) do
+    IO.puts("  \e[33m▸\e[0m \e[1m#{skill.name}\e[0m — #{skill.description}")
+    Enum.each(skill.steps, &print_skill_step/1)
+  end
+
+  defp print_skill_step(step) do
+    template = Map.get(step, :template)
+    task = Map.get(step, :task)
+    IO.puts("    \e[2m→ #{template}: #{task}\e[0m")
+  end
+
+  # -- /memory blocks helpers --
+
+  defp render_block_history(scope, label) do
+    case MemoryBlock.history_for_label(
+           scope.scope_kind,
+           primary_fk(scope),
+           label,
+           tenant: scope.tenant_id,
+           actor: Actor.system(scope.tenant_id)
+         ) do
+      {:ok, revisions} -> print_block_revisions(label, revisions)
+      {:error, err} -> IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
+    end
+  end
+
+  defp print_block_revisions(label, revisions) do
+    IO.puts("")
+    IO.puts("  \e[1mBlock History: #{label}\e[0m")
+
+    if revisions == [] do
+      IO.puts("  \e[2mNo history for this label.\e[0m")
+    else
+      Enum.each(revisions, &print_block_revision/1)
+    end
+
+    IO.puts("")
+  end
+
+  defp print_block_revision(block) do
+    ts = format_short_date(block.inserted_at)
+    IO.puts("  \e[33m▸\e[0m \e[1m#{ts}\e[0m \e[2m(#{block.source})\e[0m")
+    IO.puts("    \e[2m#{block.value}\e[0m")
+  end
+
+  defp render_scope_blocks(scope) do
+    chain =
+      MemoryScope.chain(scope)
+      |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
+
+    case MemoryBlock.for_scope_chain(chain,
+           tenant: scope.tenant_id,
+           actor: Actor.system(scope.tenant_id)
+         ) do
+      {:ok, blocks} -> print_scope_blocks(blocks)
+      {:error, err} -> IO.puts("  \e[31mError: #{inspect(err)}\e[0m")
+    end
+  end
+
+  defp print_scope_blocks(blocks) do
+    IO.puts("")
+    IO.puts("  \e[1mScope Blocks\e[0m")
+
+    if blocks == [] do
+      IO.puts("  \e[2mNo blocks for this scope.\e[0m")
+    else
+      IO.puts("  \e[2m#{length(blocks)} block(s)\e[0m")
+      IO.puts("")
+      Enum.each(blocks, &print_scope_block/1)
+    end
+
+    IO.puts("")
+  end
+
+  defp print_scope_block(b) do
+    IO.puts("  \e[33m▸\e[0m \e[1m#{b.label}\e[0m \e[2m(#{b.scope_kind}, pos=#{b.position})\e[0m")
+
+    IO.puts("    \e[2m#{b.value}\e[0m")
+  end
+
+  # -- /solutions helpers --
+
+  defp print_solution_result(%{solution: sol}) do
+    lang = if sol.language, do: " \e[36m[#{sol.language}]\e[0m", else: ""
+    preview = sol.solution_content |> String.slice(0, 80) |> String.replace("\n", " ")
+    IO.puts("  \e[33m▸\e[0m \e[1m#{sol.id}\e[0m#{lang}")
+    IO.puts("    \e[2m#{preview}\e[0m")
+  end
+
+  # -- /tenants helpers --
+
+  defp print_tenant_row(t) do
+    status_color = if t.status == :active, do: "\e[32m", else: "\e[33m"
+    IO.puts("  \e[33m▸\e[0m \e[1m#{t.name}\e[0m (#{t.id})  #{status_color}#{t.status}\e[0m")
+  end
+
+  # -- /cron add helpers --
+
+  defp add_cron_job(state, id, schedule, task) do
+    schedule_tuple = parse_cron_schedule(schedule)
+    opts = [id: id, task: task, schedule: schedule_tuple, mode: :main]
+
+    case CronScheduler.schedule("default", opts) do
+      {:ok, ^id, _pid} -> persist_cron_job(id, task, schedule, schedule_tuple)
+      {:error, reason} -> print_cron_schedule_error(reason)
+    end
+
+    {:ok, state}
+  end
+
+  defp parse_cron_schedule("every " <> _ = schedule) do
+    case Regex.run(~r/^every\s+(\d+)\s*(s|m|h|d)$/i, schedule) do
+      [_, amount, unit] ->
+        ms = String.to_integer(amount) * cron_unit_ms(String.downcase(unit))
+        {:every, ms}
+
+      nil ->
+        {:cron, schedule}
+    end
+  end
+
+  defp parse_cron_schedule(schedule), do: {:cron, schedule}
+
+  defp persist_cron_job(id, task, schedule, schedule_tuple) do
+    {kind, value} = persistable_schedule(schedule_tuple)
+
+    persist_attrs = %{
+      job_id: id,
+      task: task,
+      mode: :main,
+      schedule_kind: kind,
+      schedule_value: value
+    }
+
+    case CronJob.upsert(persist_attrs, tenant: "default", actor: Actor.system("default")) do
+      {:ok, _} -> print_cron_persist_ok(id, task, schedule)
+      {:error, err} -> print_cron_persist_warn(err)
+    end
+  end
+
+  defp print_cron_persist_ok(id, task, schedule) do
+    IO.puts("")
+    IO.puts("  \e[32m✓\e[0m Scheduled '\e[1m#{id}\e[0m': \"#{task}\" (#{schedule})")
+    IO.puts("  \e[2mPersisted to cron_jobs\e[0m")
+    IO.puts("")
+  end
+
+  defp print_cron_persist_warn(err) do
+    IO.puts("")
+    IO.puts("  \e[33m⚠\e[0m Scheduled but persistence failed: #{inspect(err)}")
+    IO.puts("")
+  end
+
+  defp print_cron_schedule_error(reason) do
+    IO.puts("")
+    IO.puts("  \e[31m✗\e[0m Failed to schedule: #{inspect(reason)}")
+    IO.puts("")
+  end
+
+  defp print_cron_add_usage(state) do
+    IO.puts("")
+    IO.puts("  \e[33mUsage:\e[0m /cron add <id> \"<schedule>\" <task description>")
+
+    IO.puts(
+      "  \e[2mExample: /cron add daily-tests \"0 9 * * *\" Run mix test and report results\e[0m"
+    )
+
+    IO.puts("")
+    {:ok, state}
+  end
+
+  defp print_cron_job(job) do
+    status_icon = cron_status_icon(job.status)
+    schedule_str = format_cron_schedule(job.schedule)
+    next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
+
+    IO.puts("  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{next_str}")
+    IO.puts("    \e[2m\"#{job.task}\"\e[0m  failures: #{job.failure_count}")
+  end
+
+  defp cron_status_icon(:active), do: "\e[32m●\e[0m"
+  defp cron_status_icon(:disabled), do: "\e[31m✗\e[0m"
+  defp cron_status_icon(:stuck), do: "\e[33m⚠\e[0m"
+  defp cron_status_icon(_), do: "\e[2m○\e[0m"
+
+  # -- /channels helpers --
+
+  defp print_channel_row(ch) do
+    status_color = if ch.status == :connected, do: "\e[32m", else: "\e[33m"
+    IO.puts("  \e[33m▸\e[0m \e[1m#{ch.platform}\e[0m  #{status_color}#{ch.status}\e[0m")
+  end
 end

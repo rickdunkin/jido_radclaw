@@ -2,7 +2,9 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
   @moduledoc false
   import Plug.Conn
 
+  alias AshAuthentication.Strategy.ApiKey.Actions
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Authorization.Actor
 
   @behaviour Plug
 
@@ -13,7 +15,7 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
   def call(conn, _opts) do
     with {:ok, api_key} <- extract_api_key(conn),
          {:ok, user} <- authenticate(api_key) do
-      actor = JidoClaw.Authorization.Actor.build(user)
+      actor = Actor.build(user)
 
       emit_auth_event(:api_key_sign_in_success, to_string(user.id), %{})
 
@@ -49,7 +51,7 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
   defp authenticate(api_key) do
     strategy = AshAuthentication.Info.strategy!(JidoClaw.Accounts.User, :api_key)
 
-    case AshAuthentication.Strategy.ApiKey.Actions.sign_in(strategy, %{api_key: api_key}, []) do
+    case Actions.sign_in(strategy, %{api_key: api_key}, []) do
       {:ok, user} -> {:ok, user}
       {:error, _} -> {:error, "invalid_api_key"}
     end

@@ -3,6 +3,8 @@ defmodule JidoClaw.Cron.Scheduler do
   require Logger
 
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.Worker
+  alias JidoClaw.Tenant.InstanceSupervisor
 
   @doc """
   Load persisted jobs from `cron_jobs` (Postgres) and schedule them.
@@ -95,11 +97,9 @@ defmodule JidoClaw.Cron.Scheduler do
   defp resolve_module(other), do: {:error, {:invalid_module, other}}
 
   defp resolve_atom(str) when is_binary(str) do
-    try do
-      {:ok, String.to_existing_atom(str)}
-    rescue
-      ArgumentError -> {:error, {:unknown_function, str}}
-    end
+    {:ok, String.to_existing_atom(str)}
+  rescue
+    ArgumentError -> {:error, {:unknown_function, str}}
   end
 
   defp resolve_atom(other), do: {:error, {:invalid_atom, other}}
@@ -137,7 +137,7 @@ defmodule JidoClaw.Cron.Scheduler do
 
   def schedule(tenant_id, opts) do
     id = Keyword.get(opts, :id, "job_#{:erlang.unique_integer([:positive])}")
-    sup = JidoClaw.Tenant.InstanceSupervisor.cron_sup(tenant_id)
+    sup = InstanceSupervisor.cron_sup(tenant_id)
 
     child_spec = {
       JidoClaw.Cron.Worker,
@@ -162,13 +162,13 @@ defmodule JidoClaw.Cron.Scheduler do
         {:error, :not_found}
 
       pid ->
-        sup = JidoClaw.Tenant.InstanceSupervisor.cron_sup(tenant_id)
+        sup = InstanceSupervisor.cron_sup(tenant_id)
         DynamicSupervisor.terminate_child(sup, pid)
     end
   end
 
   def list_jobs(tenant_id) do
-    sup = JidoClaw.Tenant.InstanceSupervisor.cron_sup(tenant_id)
+    sup = InstanceSupervisor.cron_sup(tenant_id)
 
     case GenServer.whereis(sup) do
       nil ->
@@ -188,7 +188,7 @@ defmodule JidoClaw.Cron.Scheduler do
   end
 
   def trigger(tenant_id, job_id) do
-    JidoClaw.Cron.Worker.trigger(tenant_id, job_id)
+    Worker.trigger(tenant_id, job_id)
   end
 
   @doc """

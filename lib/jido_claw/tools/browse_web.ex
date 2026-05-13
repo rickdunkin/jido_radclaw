@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.BrowseWeb do
+  @moduledoc false
   use Jido.Action,
     name: "browse_web",
     description:

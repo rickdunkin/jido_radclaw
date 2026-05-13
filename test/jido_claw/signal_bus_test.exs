@@ -1,6 +1,7 @@
 defmodule JidoClaw.SignalBusTest do
   use ExUnit.Case
 
+  alias Jido.Signal.Bus
   alias JidoClaw.Core.MapKeys
 
   # Not async: relies on the application-managed JidoClaw.SignalBus.
@@ -106,11 +107,11 @@ defmodule JidoClaw.SignalBusTest do
       # Emit against a bus name that was never started — should log and return :ok
       result =
         try do
-          # Directly test the internal behaviour: Jido.Signal.Bus.publish to a
+          # Directly test the internal behaviour: Bus.publish to a
           # non-existent named bus returns an error, which SignalBus.emit swallows.
           case Jido.Signal.new("jido_claw.test.event", %{}, source: "/jido_claw") do
             {:ok, signal} ->
-              case Jido.Signal.Bus.publish(:nonexistent_bus_for_test, [signal]) do
+              case Bus.publish(:nonexistent_bus_for_test, [signal]) do
                 {:ok, _} -> :ok
                 {:error, _reason} -> :ok
               end

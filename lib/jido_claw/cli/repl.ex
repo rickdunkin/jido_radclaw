@@ -4,9 +4,16 @@ defmodule JidoClaw.CLI.Repl do
   """
 
   alias JidoClaw.{Agent, AgentTracker, Config, Display, Session.Worker, Startup, Stats}
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
+  alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.SessionId
+  alias JidoClaw.Cron.Scheduler, as: CronScheduler
   alias JidoClaw.Reasoning.StrategyRegistry
+  alias JidoClaw.Shell.ProfileManager
+  alias JidoClaw.Workspaces.PolicyTransitions
+  alias JidoClaw.Workspaces.Workspace
+  alias Nostrum.Cache.Me
 
   defstruct [
     :agent_pid,
@@ -233,7 +240,7 @@ defmodule JidoClaw.CLI.Repl do
   defp ensure_session_worker!(tenant_id, session_id) do
     {:ok, _session_pid} =
       JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id,
-        actor: JidoClaw.Authorization.Actor.system(tenant_id)
+        actor: Actor.system(tenant_id)
       )
 
     :ok
@@ -271,7 +278,7 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp load_cron_jobs(project_dir) do
-    case JidoClaw.Cron.Scheduler.load_persistent_jobs("default", project_dir) do
+    case CronScheduler.load_persistent_jobs("default", project_dir) do
       {:ok, 0} -> :ok
       {:ok, n} -> IO.puts("  \e[32m✓\e[0m  cron        \e[1m#{n} jobs loaded\e[0m")
     end
@@ -363,7 +370,7 @@ defmodule JidoClaw.CLI.Repl do
         Display.stop_thinking()
 
         # Barrier: assistant row must come AFTER tool/reasoning rows.
-        _ = JidoClaw.Conversations.Recorder.flush(request_id)
+        _ = Recorder.flush(request_id)
 
         case result do
           {:ok, answer} when is_binary(answer) ->
@@ -473,12 +480,15 @@ defmodule JidoClaw.CLI.Repl do
   defp extract_text(%{last_answer: answer}) when is_binary(answer), do: answer
   defp extract_text(other), do: inspect(other)
 
-  @doc false
-  # Normalize an arbitrary strategy name (from .jido/config.yaml or a typo)
-  # against the registry. "auto" is always valid (selector, not a registry
-  # entry); anything else must be a known built-in or user alias. Unknown
-  # values fall back to "auto" so the agent-facing hint can never inject a
-  # nonexistent strategy into the prompt.
+  @doc """
+  Test seam: normalize an arbitrary strategy name (from `.jido/config.yaml`
+  or a typo) against the registry.
+
+  `"auto"` is always valid (selector, not a registry entry); anything else
+  must be a known built-in or user alias. Unknown values fall back to
+  `"auto"` so the agent-facing hint can never inject a nonexistent
+  strategy into the prompt.
+  """
   def resolve_strategy("auto"), do: "auto"
 
   def resolve_strategy(name) when is_binary(name) do
@@ -487,16 +497,19 @@ defmodule JidoClaw.CLI.Repl do
 
   def resolve_strategy(_), do: "auto"
 
-  @doc false
-  # Returns the ProfileManager-tracked active profile for a workspace,
-  # defaulting to "default" when ProfileManager isn't running (e.g.
-  # under test harnesses that don't boot the full supervision tree) or
-  # the workspace has no recorded switch. Mirrors resolve_strategy/1's
-  # "never crash, always produce a reasonable default" contract.
+  @doc """
+  Test seam: return the `ProfileManager`-tracked active profile for a
+  workspace.
+
+  Defaults to `"default"` when `ProfileManager` isn't running (e.g.
+  under test harnesses that don't boot the full supervision tree) or the
+  workspace has no recorded switch. Mirrors `resolve_strategy/1`'s
+  "never crash, always produce a reasonable default" contract.
+  """
   def resolve_profile(workspace_id) when is_binary(workspace_id) do
-    case Process.whereis(JidoClaw.Shell.ProfileManager) do
+    case Process.whereis(ProfileManager) do
       nil -> "default"
-      _pid -> JidoClaw.Shell.ProfileManager.current(workspace_id)
+      _pid -> ProfileManager.current(workspace_id)
     end
   catch
     :exit, _ -> "default"
@@ -504,16 +517,17 @@ defmodule JidoClaw.CLI.Repl do
 
   def resolve_profile(_), do: "default"
 
-  @doc false
-  # Prepend a reasoning-preference hint to the agent-facing message when the
-  # REPL has a non-react strategy active. react is the agent's native loop —
-  # no hint needed. auto gets a hint pointing at reason(strategy: "auto")
-  # so history-aware selection kicks in for complex queries. Any other
-  # concrete strategy (cot/tot/etc.) names itself in the hint so the agent
-  # invokes reason(strategy: "<name>") on queries that benefit.
-  #
-  # Public (via @doc false) so the REPL test suite can assert on the string
-  # without needing to drive the full handle_message flow.
+  @doc """
+  Test seam: prepend a reasoning-preference hint to the agent-facing
+  message when the REPL has a non-react strategy active.
+
+  `"react"` is the agent's native loop — no hint needed. `"auto"` gets a
+  hint pointing at `reason(strategy: "auto")` so history-aware selection
+  kicks in for complex queries. Any other concrete strategy
+  (`cot`/`tot`/etc.) names itself in the hint so the agent invokes
+  `reason(strategy: "<name>")` on queries that benefit. Exposed for the
+  REPL test suite so assertions can hit the exact string.
+  """
   def prepare_user_message(message, "react"), do: message
 
   def prepare_user_message(message, "auto") do
@@ -562,9 +576,9 @@ defmodule JidoClaw.CLI.Repl do
   defp poll_discord_ready(0, _interval), do: nil
 
   defp poll_discord_ready(attempts, interval) do
-    case Code.ensure_loaded(Nostrum.Cache.Me) do
+    case Code.ensure_loaded(Me) do
       {:module, _} ->
-        case Nostrum.Cache.Me.get() do
+        case Me.get() do
           nil ->
             Process.sleep(interval)
             poll_discord_ready(attempts - 1, interval)
@@ -664,9 +678,9 @@ defmodule JidoClaw.CLI.Repl do
         workspace
 
       true ->
-        case JidoClaw.Workspaces.Workspace.set_embedding_policy(workspace, new_policy) do
+        case Workspace.set_embedding_policy(workspace, new_policy) do
           {:ok, w} ->
-            JidoClaw.Workspaces.PolicyTransitions.apply_embedding(w.id, new_policy)
+            PolicyTransitions.apply_embedding(w.id, new_policy)
             w
 
           _ ->
@@ -684,7 +698,7 @@ defmodule JidoClaw.CLI.Repl do
         workspace
 
       true ->
-        case JidoClaw.Workspaces.Workspace.set_consolidation_policy(workspace, new_policy) do
+        case Workspace.set_consolidation_policy(workspace, new_policy) do
           {:ok, w} -> w
           _ -> workspace
         end

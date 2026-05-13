@@ -1,4 +1,5 @@
 defmodule JidoClaw.Orchestration.RunPubSub do
+  @moduledoc false
   def run_topic(run_id), do: "orchestration:run:#{run_id}"
   def runs_topic, do: "orchestration:runs"
 

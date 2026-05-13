@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.WebhookSignature do
+  @moduledoc false
   @spec verify(binary(), String.t() | nil) :: :ok | {:error, atom()}
   def verify(_payload, nil), do: {:error, :missing_signature_header}
 

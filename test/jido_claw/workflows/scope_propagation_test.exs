@@ -1,6 +1,7 @@
 defmodule JidoClaw.Workflows.ScopePropagationTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Test.EchoStub
   alias JidoClaw.Workflows.{IterativeWorkflow, PlanWorkflow, SkillWorkflow, StepAction}
 
@@ -13,7 +14,7 @@ defmodule JidoClaw.Workflows.ScopePropagationTest do
   # `assert_receive` the per-step `tool_context`.
   setup context do
     if context[:integration_workflow] do
-      sandbox_pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      sandbox_pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
 
       Application.put_env(:jido_claw, :agent_templates_override, %{
         "echo_test" => %{
@@ -29,7 +30,7 @@ defmodule JidoClaw.Workflows.ScopePropagationTest do
       on_exit(fn ->
         Application.delete_env(:jido_claw, :agent_templates_override)
         Application.delete_env(:jido_claw, :echo_stub_target)
-        Ecto.Adapters.SQL.Sandbox.stop_owner(sandbox_pid)
+        Sandbox.stop_owner(sandbox_pid)
       end)
     end
 

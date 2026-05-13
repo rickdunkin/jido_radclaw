@@ -1,4 +1,5 @@
 defmodule JidoClaw.GitHub.Agents.PullRequestCoordinator do
+  @moduledoc false
   require Logger
 
   @max_attempts 3

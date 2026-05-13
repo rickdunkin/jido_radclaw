@@ -271,6 +271,10 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Conversations.Resources.GlobalLookup
+    alias JidoClaw.Conversations.Session
+    alias JidoClaw.Workspaces.Workspace
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
@@ -284,51 +288,28 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
       end)
     end
 
-    defp validate_session(cs, nil, _), do: cs
-    defp validate_session(cs, _, nil), do: cs
-
     defp validate_session(cs, session_id, tenant_id) do
-      case JidoClaw.Conversations.Session.by_id_global(session_id) do
-        {:ok, %{tenant_id: ^tenant_id}} ->
-          cs
-
-        {:ok, %{tenant_id: parent_tenant}} ->
-          Ash.Changeset.add_error(cs,
-            field: :session_id,
-            message: "cross_tenant_fk_mismatch",
-            vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
-          )
-
-        {:error, _} ->
-          Ash.Changeset.add_error(cs,
-            field: :session_id,
-            message: "session_not_found"
-          )
-      end
+      GlobalLookup.validate_tenant_match(
+        cs,
+        session_id,
+        tenant_id,
+        :session_id,
+        &Session.by_id_global/1,
+        "session_not_found"
+      )
     end
 
     defp validate_workspace(%{errors: errors} = cs, _, _) when errors != [], do: cs
-    defp validate_workspace(cs, nil, _), do: cs
-    defp validate_workspace(cs, _, nil), do: cs
 
     defp validate_workspace(cs, workspace_id, tenant_id) do
-      case JidoClaw.Workspaces.Workspace.by_id_global(workspace_id) do
-        {:ok, %{tenant_id: ^tenant_id}} ->
-          cs
-
-        {:ok, %{tenant_id: parent_tenant}} ->
-          Ash.Changeset.add_error(cs,
-            field: :workspace_id,
-            message: "cross_tenant_fk_mismatch",
-            vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
-          )
-
-        {:error, _} ->
-          Ash.Changeset.add_error(cs,
-            field: :workspace_id,
-            message: "workspace_not_found"
-          )
-      end
+      GlobalLookup.validate_tenant_match(
+        cs,
+        workspace_id,
+        tenant_id,
+        :workspace_id,
+        &Workspace.by_id_global/1,
+        "workspace_not_found"
+      )
     end
   end
 end

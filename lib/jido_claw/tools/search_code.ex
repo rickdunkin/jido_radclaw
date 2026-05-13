@@ -1,4 +1,5 @@
 defmodule JidoClaw.Tools.SearchCode do
+  @moduledoc false
   use Jido.Action,
     name: "search_code",
     description:
@@ -24,15 +25,13 @@ defmodule JidoClaw.Tools.SearchCode do
       path = Map.get(params, :path, ".")
       max_results = Map.get(params, :max_results, 50)
 
-      args = ["-rn", "--color=never"]
-
-      args =
+      glob_args =
         case Map.get(params, :glob) do
-          nil -> args
-          g -> args ++ ["--include=#{g}"]
+          nil -> []
+          g -> ["--include=#{g}"]
         end
 
-      args = args ++ [pattern, path]
+      args = Enum.concat([["-rn", "--color=never"], glob_args, [pattern, path]])
 
       case System.cmd("grep", args, stderr_to_stdout: true) do
         {output, 0} ->

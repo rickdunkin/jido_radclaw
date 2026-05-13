@@ -1,6 +1,8 @@
 defmodule JidoClaw.MCPScope.InitializerTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session
   alias JidoClaw.MCPScope.Initializer
 
@@ -10,11 +12,11 @@ defmodule JidoClaw.MCPScope.InitializerTest do
     # masks a regression.
     Application.delete_env(:jido_claw, :jido_claw_mcp_default_scope)
 
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
 
     on_exit(fn ->
       Application.delete_env(:jido_claw, :jido_claw_mcp_default_scope)
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+      Sandbox.stop_owner(pid)
     end)
 
     :ok
@@ -32,7 +34,7 @@ defmodule JidoClaw.MCPScope.InitializerTest do
     {:ok, session} =
       Session.by_id(scope.session_uuid,
         tenant: scope.tenant_id,
-        actor: JidoClaw.Authorization.Actor.system(scope.tenant_id)
+        actor: Actor.system(scope.tenant_id)
       )
 
     assert session.kind == :mcp

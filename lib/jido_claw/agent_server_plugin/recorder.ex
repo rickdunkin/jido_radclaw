@@ -48,6 +48,8 @@ defmodule JidoClaw.AgentServerPlugin.Recorder do
 
   require Logger
 
+  alias Jido.Signal.Bus
+
   @impl Jido.Plugin
   def mount(_agent, _config), do: {:ok, nil}
 
@@ -58,7 +60,7 @@ defmodule JidoClaw.AgentServerPlugin.Recorder do
   end
 
   defp publish(signal) do
-    Jido.Signal.Bus.publish(JidoClaw.SignalBus, [signal])
+    Bus.publish(JidoClaw.SignalBus, [signal])
   rescue
     e ->
       Logger.warning("[Recorder.Plugin] publish raised: #{Exception.message(e)}")

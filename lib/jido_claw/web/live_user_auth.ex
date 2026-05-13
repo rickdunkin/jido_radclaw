@@ -1,6 +1,9 @@
 defmodule JidoClaw.Web.LiveUserAuth do
+  @moduledoc false
   import Phoenix.Component
   import Phoenix.LiveView
+
+  alias AshAuthentication.Plug.Helpers
 
   def on_mount(:live_user_optional, _params, session, socket) do
     socket = assign_current_user(socket, session)
@@ -28,7 +31,7 @@ defmodule JidoClaw.Web.LiveUserAuth do
   end
 
   defp assign_current_user(socket, session) do
-    case AshAuthentication.Plug.Helpers.authenticate_resource_from_session(
+    case Helpers.authenticate_resource_from_session(
            JidoClaw.Accounts.User,
            session,
            :jido_claw,

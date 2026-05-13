@@ -32,6 +32,8 @@ defmodule JidoClaw.SignalBus do
 
   require Logger
 
+  alias Jido.Signal.Bus
+
   @bus __MODULE__
 
   # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ defmodule JidoClaw.SignalBus do
   def emit(type, data \\ %{}) when is_binary(type) and is_map(data) do
     case Jido.Signal.new(type, data, source: "/jido_claw") do
       {:ok, signal} ->
-        case Jido.Signal.Bus.publish(@bus, [signal]) do
+        case Bus.publish(@bus, [signal]) do
           {:ok, _} ->
             :ok
 
@@ -72,9 +74,7 @@ defmodule JidoClaw.SignalBus do
   """
   @spec subscribe(String.t()) :: {:ok, String.t()} | {:error, term()}
   def subscribe(path_pattern) when is_binary(path_pattern) do
-    Jido.Signal.Bus.subscribe(@bus, path_pattern,
-      dispatch: {:pid, target: self(), delivery_mode: :async}
-    )
+    Bus.subscribe(@bus, path_pattern, dispatch: {:pid, target: self(), delivery_mode: :async})
   end
 
   @doc """
@@ -82,6 +82,6 @@ defmodule JidoClaw.SignalBus do
   """
   @spec unsubscribe(String.t()) :: :ok | {:error, term()}
   def unsubscribe(subscription_id) when is_binary(subscription_id) do
-    Jido.Signal.Bus.unsubscribe(@bus, subscription_id)
+    Bus.unsubscribe(@bus, subscription_id)
   end
 end

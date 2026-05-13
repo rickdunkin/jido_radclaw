@@ -1,8 +1,14 @@
 defmodule JidoClaw.Setup.Wizard do
+  @moduledoc false
+
+  alias Ecto.Adapters.SQL
+  alias JidoClaw.Setup.CredentialValidator
+  alias JidoClaw.Setup.PrerequisiteChecker
+
   @doc "Run the full setup check and return overall status."
   def run do
-    prerequisites = JidoClaw.Setup.PrerequisiteChecker.check_all()
-    credentials = JidoClaw.Setup.CredentialValidator.validate_all()
+    prerequisites = PrerequisiteChecker.check_all()
+    credentials = CredentialValidator.validate_all()
     database = check_database()
 
     %{
@@ -19,12 +25,10 @@ defmodule JidoClaw.Setup.Wizard do
   end
 
   defp check_database do
-    try do
-      Ecto.Adapters.SQL.query!(JidoClaw.Repo, "SELECT 1")
-      %{ok?: true, status: "connected"}
-    rescue
-      _ -> %{ok?: false, status: "not connected"}
-    end
+    SQL.query!(JidoClaw.Repo, "SELECT 1")
+    %{ok?: true, status: "connected"}
+  rescue
+    _ -> %{ok?: false, status: "not connected"}
   end
 
   defp prerequisites_met?(prereqs) do

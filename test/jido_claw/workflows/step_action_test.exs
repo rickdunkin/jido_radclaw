@@ -10,6 +10,7 @@ defmodule JidoClaw.Workflows.StepActionTest do
 
   require Ash.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Test.EchoStub
@@ -66,8 +67,8 @@ defmodule JidoClaw.Workflows.StepActionTest do
   # carries the user_id from the parent's scope.
   describe "register_child_correlation/1 — user_id propagation through SkillWorkflow" do
     setup do
-      pid = Ecto.Adapters.SQL.Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-      on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+      pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      on_exit(fn -> Sandbox.stop_owner(pid) end)
 
       Application.put_env(:jido_claw, :agent_templates_override, %{
         "echo_user_test" => %{

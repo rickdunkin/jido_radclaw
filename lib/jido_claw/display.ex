@@ -14,6 +14,7 @@ defmodule JidoClaw.Display do
   use GenServer
   require Logger
 
+  alias JidoClaw.CLI.Branding
   alias JidoClaw.Display.{StatusBar, SwarmBox}
 
   @spinner_interval 150
@@ -322,7 +323,7 @@ defmodule JidoClaw.Display do
   end
 
   def handle_info(:spinner_tick, state) do
-    frame = JidoClaw.CLI.Branding.spinner_frame(state.spinner_tick)
+    frame = Branding.spinner_frame(state.spinner_tick)
     IO.write("\e[2K\r#{frame}")
     ref = Process.send_after(self(), :spinner_tick, @spinner_interval)
     {:noreply, %{state | spinner_tick: state.spinner_tick + 1, spinner_ref: ref}}
@@ -564,10 +565,7 @@ defmodule JidoClaw.Display do
     lines
     |> :binary.split(<<"\n">>, [:global])
     |> Enum.map(fn line ->
-      cond do
-        line == <<>> -> <<>>
-        true -> prefix <> line
-      end
+      if line == <<>>, do: <<>>, else: prefix <> line
     end)
     |> Enum.intersperse("\n")
     |> IO.iodata_to_binary()
@@ -616,11 +614,9 @@ defmodule JidoClaw.Display do
   end
 
   defp error_message(%_{} = err) do
-    try do
-      Exception.message(err)
-    rescue
-      _ -> inspect(err)
-    end
+    Exception.message(err)
+  rescue
+    _ -> inspect(err)
   end
 
   defp error_message(other), do: inspect(other)

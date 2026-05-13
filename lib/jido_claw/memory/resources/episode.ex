@@ -42,6 +42,8 @@ defmodule JidoClaw.Memory.Episode do
     end
   end
 
+  alias JidoClaw.Memory.Fact
+  alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Security.CrossTenantFk
   alias JidoClaw.Security.Redaction.Transcript
 
@@ -216,12 +218,14 @@ defmodule JidoClaw.Memory.Episode do
     @moduledoc false
     use Ash.Resource.Change
 
+    alias JidoClaw.Memory.Episode
+
     @impl true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
 
-        case JidoClaw.Memory.Episode.scope_fk_for(cs, scope_kind) do
+        case Episode.scope_fk_for(cs, scope_kind) do
           {:ok, _} ->
             cs
 
@@ -288,6 +292,8 @@ defmodule JidoClaw.Memory.Episode do
     use Ash.Resource.Preparation
     require Ash.Query
 
+    alias JidoClaw.Memory.Episode
+
     @impl true
     def prepare(query, _opts, _context) do
       kind = Ash.Query.get_argument(query, :scope_kind)
@@ -296,8 +302,8 @@ defmodule JidoClaw.Memory.Episode do
       limit = Ash.Query.get_argument(query, :limit)
 
       query
-      |> JidoClaw.Memory.Episode.apply_scope_filter(kind, fk)
-      |> JidoClaw.Memory.Episode.apply_since_filter(since_at)
+      |> Episode.apply_scope_filter(kind, fk)
+      |> Episode.apply_since_filter(since_at)
       |> Ash.Query.sort(inserted_at: :asc, id: :asc)
       |> Ash.Query.limit(limit)
     end
@@ -330,29 +336,24 @@ defmodule JidoClaw.Memory.Episode do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  @doc false
+  @doc """
+  Delegate to `Fact.scope_fk_for/2` — shared scope FK resolution.
+  Public so inline change modules can reference it.
+  """
   def scope_fk_for(changeset, kind) do
-    JidoClaw.Memory.Fact.scope_fk_for(changeset, kind)
+    Fact.scope_fk_for(changeset, kind)
   end
 
-  @doc false
-  def apply_scope_filter(query, :user, fk) do
-    Ash.Query.filter(query, scope_kind == :user and user_id == ^fk)
-  end
+  @doc """
+  Narrow `query` to rows whose `scope_kind` and FK match `kind`/`fk`.
+  Public so inline preparation modules can call it.
+  """
+  defdelegate apply_scope_filter(query, kind, fk), to: ScopeFilter, as: :apply
 
-  def apply_scope_filter(query, :workspace, fk) do
-    Ash.Query.filter(query, scope_kind == :workspace and workspace_id == ^fk)
-  end
-
-  def apply_scope_filter(query, :project, fk) do
-    Ash.Query.filter(query, scope_kind == :project and project_id == ^fk)
-  end
-
-  def apply_scope_filter(query, :session, fk) do
-    Ash.Query.filter(query, scope_kind == :session and session_id == ^fk)
-  end
-
-  @doc false
+  @doc """
+  Narrow `query` to rows newer than `since_at`. A `nil` `since_at` skips
+  the filter.
+  """
   def apply_since_filter(query, nil), do: query
 
   def apply_since_filter(query, since_at) do

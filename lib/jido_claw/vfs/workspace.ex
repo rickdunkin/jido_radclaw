@@ -26,6 +26,7 @@ defmodule JidoClaw.VFS.Workspace do
 
   alias Jido.Shell.VFS
   alias JidoClaw.Core.MapKeys
+  alias JidoClaw.Shell.SessionManager
 
   @adapter_keys %{
     "local" => :local,
@@ -123,7 +124,7 @@ defmodule JidoClaw.VFS.Workspace do
   #      `ensure_session/3`, there are no sessions for this workspace_id
   #      in SessionManager's state and the call would be a no-op anyway.
   defp invalidate_shell_sessions(workspace_id) do
-    case Process.whereis(JidoClaw.Shell.SessionManager) do
+    case Process.whereis(SessionManager) do
       nil ->
         :ok
 
@@ -131,7 +132,7 @@ defmodule JidoClaw.VFS.Workspace do
         :ok
 
       _pid ->
-        JidoClaw.Shell.SessionManager.drop_sessions(workspace_id)
+        SessionManager.drop_sessions(workspace_id)
     end
   end
 
@@ -279,21 +280,19 @@ defmodule JidoClaw.VFS.Workspace do
   end
 
   defp do_vfs_mount(workspace_id, path, adapter, adapter_opts, soft?) do
-    try do
-      case VFS.mount(workspace_id, path, adapter, adapter_opts) do
-        :ok ->
-          maybe_hint_github(path, adapter_opts)
-          :ok
+    case VFS.mount(workspace_id, path, adapter, adapter_opts) do
+      :ok ->
+        maybe_hint_github(path, adapter_opts)
+        :ok
 
-        {:error, reason} ->
-          log_mount_warning(path, adapter, reason)
-          if soft?, do: :ok, else: {:error, reason}
-      end
-    rescue
-      e ->
-        log_mount_warning(path, adapter, Exception.message(e))
-        if soft?, do: :ok, else: {:error, Exception.message(e)}
+      {:error, reason} ->
+        log_mount_warning(path, adapter, reason)
+        if soft?, do: :ok, else: {:error, reason}
     end
+  rescue
+    e ->
+      log_mount_warning(path, adapter, Exception.message(e))
+      if soft?, do: :ok, else: {:error, Exception.message(e)}
   end
 
   defp log_mount_warning(path, adapter, reason) do

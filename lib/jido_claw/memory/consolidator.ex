@@ -29,8 +29,8 @@ defmodule JidoClaw.Memory.Consolidator do
 
   require Logger
 
-  alias JidoClaw.Memory.Scope
   alias JidoClaw.Memory.Consolidator.RunServer
+  alias JidoClaw.Memory.Scope
 
   @doc """
   Run the consolidator for one scope synchronously.
@@ -122,7 +122,8 @@ defmodule JidoClaw.Memory.Consolidator do
     config
     |> Keyword.get(:harness_options, [])
     |> Keyword.get(:timeout_ms, 600_000)
-    # Add a buffer for cluster + publish + cleanup phases.
+    # 60s buffer covers cluster + publish + cleanup phases beyond the
+    # harness timeout itself.
     |> Kernel.+(60_000)
   end
 

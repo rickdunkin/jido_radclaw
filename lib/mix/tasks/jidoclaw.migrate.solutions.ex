@@ -74,46 +74,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
     case File.read(path) do
       {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, map} when is_map(map) ->
-            entries =
-              map
-              |> Enum.map(fn {_id, entry} -> entry end)
-              |> Enum.reject(&is_nil/1)
-
-            Mix.shell().info("solutions.json: #{length(entries)} entries")
-
-            if dry_run? do
-              length(entries)
-            else
-              Enum.count(entries, fn entry ->
-                attrs = legacy_to_attrs(entry, workspace)
-                tenant_id = attrs[:tenant_id] || workspace.tenant_id
-                attrs_minus_tenant = Map.delete(attrs, :tenant_id)
-
-                # Idempotency: skip when a row with this id already exists.
-                if attrs[:id] && row_exists?(:solutions, attrs[:id]) do
-                  false
-                else
-                  case Solution.import_legacy(attrs_minus_tenant,
-                         tenant: tenant_id,
-                         authorize?: false
-                       ) do
-                    {:ok, _} ->
-                      true
-
-                    {:error, reason} ->
-                      Logger.warning("[migrate] solution skipped: #{inspect(reason)}")
-                      false
-                  end
-                end
-              end)
-            end
-
-          _ ->
-            Mix.shell().error("solutions.json: could not parse JSON")
-            0
-        end
+        process_solutions_body(body, workspace, dry_run?)
 
       {:error, :enoent} ->
         Mix.shell().info("solutions.json: not found, skipping")
@@ -122,6 +83,57 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
       {:error, reason} ->
         Mix.shell().error("solutions.json: read failed: #{inspect(reason)}")
         0
+    end
+  end
+
+  defp process_solutions_body(body, workspace, dry_run?) do
+    case Jason.decode(body) do
+      {:ok, map} when is_map(map) ->
+        import_solution_entries(decode_solution_entries(map), workspace, dry_run?)
+
+      _ ->
+        Mix.shell().error("solutions.json: could not parse JSON")
+        0
+    end
+  end
+
+  defp decode_solution_entries(map) do
+    map
+    |> Enum.map(fn {_id, entry} -> entry end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp import_solution_entries(entries, workspace, dry_run?) do
+    Mix.shell().info("solutions.json: #{length(entries)} entries")
+
+    if dry_run? do
+      length(entries)
+    else
+      Enum.count(entries, &import_solution_entry(&1, workspace))
+    end
+  end
+
+  defp import_solution_entry(entry, workspace) do
+    attrs = legacy_to_attrs(entry, workspace)
+    tenant_id = attrs[:tenant_id] || workspace.tenant_id
+    attrs_minus_tenant = Map.delete(attrs, :tenant_id)
+
+    # Idempotency: skip when a row with this id already exists.
+    if attrs[:id] && row_exists?(:solutions, attrs[:id]) do
+      false
+    else
+      do_import_solution(attrs_minus_tenant, tenant_id)
+    end
+  end
+
+  defp do_import_solution(attrs_minus_tenant, tenant_id) do
+    case Solution.import_legacy(attrs_minus_tenant, tenant: tenant_id, authorize?: false) do
+      {:ok, _} ->
+        true
+
+      {:error, reason} ->
+        Logger.warning("[migrate] solution skipped: #{inspect(reason)}")
+        false
     end
   end
 

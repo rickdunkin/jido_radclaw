@@ -16,6 +16,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
   require Logger
 
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Tenants.Tenant
 
   @shortdoc "Migrate .jido/cron.yaml into the cron_jobs table"
 
@@ -67,7 +68,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
     has_valid? = Enum.any?(prepared, fn {_job, attrs} -> attrs != :invalid end)
 
     if has_valid? and not dry_run? do
-      case JidoClaw.Tenants.Tenant.ensure(tenant) do
+      case Tenant.ensure(tenant) do
         {:ok, _} ->
           :ok
 

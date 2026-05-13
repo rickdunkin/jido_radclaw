@@ -6,6 +6,8 @@ defmodule JidoClaw.Channel.Telegram do
   @behaviour JidoClaw.Channel.Behaviour
   require Logger
 
+  alias JidoClaw.Authorization.Actor
+
   @base_url "https://api.telegram.org/bot"
 
   @impl true
@@ -45,7 +47,7 @@ defmodule JidoClaw.Channel.Telegram do
       case JidoClaw.chat("default", session_id, text,
              kind: :telegram,
              external_id: session_id,
-             actor: JidoClaw.Authorization.Actor.system("default")
+             actor: Actor.system("default")
            ) do
         {:ok, response} ->
           send_message(to_string(chat_id), response, state)

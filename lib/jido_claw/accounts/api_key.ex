@@ -1,4 +1,5 @@
 defmodule JidoClaw.Accounts.ApiKey do
+  @moduledoc false
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Accounts,

@@ -1,4 +1,5 @@
 defmodule JidoClaw.Forge.Resources.Session do
+  @moduledoc false
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Forge.Domain,
