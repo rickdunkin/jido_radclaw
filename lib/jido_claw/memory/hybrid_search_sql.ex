@@ -68,7 +68,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   require Logger
 
   alias JidoClaw.Authorization.Actor
-  alias JidoClaw.Memory.{Fact, Retrieval}
+  alias JidoClaw.Memory.{Fact, Retrieval, ScopeFk}
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.SearchEscape
 
@@ -224,17 +224,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   defp load_facts_by_ids([], _tenant_id), do: []
 
   defp load_facts_by_ids(ids, tenant_id) do
-    require Ash.Query
-
-    loaded =
-      Fact
-      |> Ash.Query.for_read(:read, %{},
-        actor: Actor.system(tenant_id),
-        tenant: tenant_id
-      )
-      |> Ash.Query.filter(id in ^ids)
-      |> Ash.read!()
-      |> Map.new(fn f -> {f.id, f} end)
+    loaded = load_fact_map(ids, tenant_id)
 
     Enum.flat_map(ids, fn id ->
       case Map.fetch(loaded, id) do
@@ -244,9 +234,20 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     end)
   end
 
-  defp uuid_dump(<<_::binary-size(16)>> = raw), do: raw
-  defp uuid_dump(uuid) when is_binary(uuid), do: Ecto.UUID.dump!(uuid)
-  defp uuid_dump(other), do: other
+  defp load_fact_map([], _tenant_id), do: %{}
+
+  defp load_fact_map(ids, tenant_id) do
+    require Ash.Query
+
+    Fact
+    |> Ash.Query.for_read(:read, %{},
+      actor: Actor.system(tenant_id),
+      tenant: tenant_id
+    )
+    |> Ash.Query.filter(id in ^ids)
+    |> Ash.read!()
+    |> Map.new(fn f -> {f.id, f} end)
+  end
 
   defp scope_fk_column(:user), do: "user_id"
   defp scope_fk_column(:workspace), do: "workspace_id"
@@ -266,7 +267,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         clause =
           "(scope_kind = '#{kind_str}' AND #{column} = $#{idx})"
 
-        {[clause | clauses_acc], [uuid_dump(fk) | params_acc], idx + 1}
+        {[clause | clauses_acc], [ScopeFk.uuid_dump(fk) | params_acc], idx + 1}
       end)
 
     clauses = Enum.reverse(clauses_rev)
@@ -796,16 +797,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
       _ ->
         ids = Enum.map(ranked, fn {id, _} -> id end)
-
-        loaded =
-          Fact
-          |> Ash.Query.for_read(:read, %{},
-            actor: Actor.system(tenant_id),
-            tenant: tenant_id
-          )
-          |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!()
-          |> Map.new(fn f -> {f.id, f} end)
+        loaded = load_fact_map(ids, tenant_id)
 
         # `shadow_index` non-nil means the SQL projected a
         # `shadowed_by` column (i.e. `:by_precedence` ran). In that

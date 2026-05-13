@@ -561,17 +561,10 @@ defmodule JidoClaw.CLI.Repl do
       tokens: live.tokens,
       tool_calls: live.tool_calls,
       agents_spawned: live.agents_spawned,
-      elapsed: format_elapsed(elapsed),
+      elapsed: Formatter.format_elapsed(elapsed),
       estimated_cost: cost
     }
   end
-
-  defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
-
-  defp format_elapsed(seconds) when seconds < 3600,
-    do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
-
-  defp format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
 
   defp poll_discord_ready(0, _interval), do: nil
 

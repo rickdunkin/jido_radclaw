@@ -24,28 +24,9 @@ defmodule JidoClaw.Memory.ConsolidationRun do
   The audit row's own `tenant_id` is still validated against scope FKs.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Memory.Domain,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer],
-    primary_read_warning?: false
+  use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
   require Ash.Query
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
 
   alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Security.CrossTenantFk
@@ -111,7 +92,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
         :harness_model
       ])
 
-      change({__MODULE__.Changes.ValidateScopeFk, []})
+      change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({JidoClaw.Audit.Producers.MemoryConsolidation, []})
     end
@@ -293,32 +274,6 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
-    end
-  end
-
-  defmodule Changes.ValidateScopeFk do
-    @moduledoc false
-    use Ash.Resource.Change
-
-    alias JidoClaw.Memory.Fact
-
-    @impl true
-    def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
-
-        case Fact.scope_fk_for(cs, scope_kind) do
-          {:ok, _} ->
-            cs
-
-          :missing ->
-            Ash.Changeset.add_error(cs,
-              field: :scope_kind,
-              message: "scope_fk_required",
-              vars: [scope_kind: scope_kind]
-            )
-        end
-      end)
     end
   end
 

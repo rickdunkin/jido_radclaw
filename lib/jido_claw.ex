@@ -208,7 +208,51 @@ defmodule JidoClaw do
     :exit, reason -> {:error, inspect(reason)}
   end
 
-  @doc false
+  @doc """
+  Convenience entry point for child requests (sub-agents, workflows): pulls
+  `session_uuid`, `tenant_id`, `workspace_uuid`, and `user_id` out of a
+  tool_context map and forwards to `register_correlation/5`. Returns a fresh
+  `request_id` regardless — if the context is missing `session_uuid` or
+  `tenant_id`, registration is skipped but the caller still gets an id to
+  thread through.
+
+  See the note on `register_correlation/5` about eventual relocation.
+  """
+  def register_child_correlation(ctx) do
+    request_id = Ecto.UUID.generate()
+
+    case ctx do
+      %{session_uuid: session_uuid, tenant_id: tenant_id} = c
+      when is_binary(session_uuid) and is_binary(tenant_id) ->
+        register_correlation(
+          request_id,
+          session_uuid,
+          tenant_id,
+          Map.get(c, :workspace_uuid),
+          Map.get(c, :user_id)
+        )
+
+      _ ->
+        :ok
+    end
+
+    request_id
+  end
+
+  @doc """
+  Register a request-correlation scope: persists the row via
+  `Conversations.RequestCorrelation.register/1` and mirrors it into the
+  in-process `CorrelationCache`. If the Postgres write fails, logs a warning
+  and still caches locally so the in-process `Recorder` can resolve scope —
+  DB-side retry is left for later.
+
+  > #### Note {: .info}
+  >
+  > This helper (and `register_child_correlation/1`) should be moved out of
+  > the top-level `JidoClaw` module into
+  > `JidoClaw.Conversations.RequestCorrelation` alongside the Ash resource it
+  > wraps. It lives here for historical reasons.
+  """
   def register_correlation(request_id, session_uuid, tenant_id, workspace_uuid, user_id) do
     scope = %{
       session_id: session_uuid,

@@ -3,7 +3,9 @@ defmodule JidoClaw.CLI.Branding do
   ASCII art, boot sequence, spinners, and visual identity for JidoClaw.
   """
 
+  alias JidoClaw.CLI.Terminal
   alias JidoClaw.Display.StatusBar
+  alias JidoClaw.ProjectType
 
   # -- Main Logo --
 
@@ -31,7 +33,7 @@ defmodule JidoClaw.CLI.Branding do
   def logo(:minimal), do: "\e[36m⚡ JIDOCLAW\e[0m"
 
   def logo do
-    cols = terminal_cols()
+    cols = Terminal.terminal_cols()
 
     cond do
       cols >= 70 -> logo(:full)
@@ -48,7 +50,7 @@ defmodule JidoClaw.CLI.Branding do
       provider: opts[:provider] || "ollama",
       model: opts[:model] || "nemotron-3-super:cloud",
       strategy: opts[:strategy] || "react",
-      project_type: detect_type(project_dir),
+      project_type: ProjectType.detect(project_dir),
       tools_count: opts[:tools_count] || length(JidoClaw.Agent.tool_modules()),
       gateway: opts[:gateway] || false,
       skills_count: count_yaml_files(Path.join([project_dir, ".jido", "skills"])),
@@ -273,7 +275,7 @@ defmodule JidoClaw.CLI.Branding do
   # -- Divider --
 
   def divider do
-    cols = terminal_cols()
+    cols = Terminal.terminal_cols()
     "\e[2m  " <> String.duplicate("─", min(cols - 4, 60)) <> "\e[0m"
   end
 
@@ -312,25 +314,6 @@ defmodule JidoClaw.CLI.Branding do
     :timer.sleep(40)
   end
 
-  defp terminal_cols do
-    case :io.columns() do
-      {:ok, cols} ->
-        cols
-
-      _ ->
-        case System.cmd("tput", ["cols"], stderr_to_stdout: true) do
-          {output, 0} ->
-            case Integer.parse(String.trim(output)) do
-              {cols, _} -> cols
-              :error -> 120
-            end
-
-          _ ->
-            120
-        end
-    end
-  end
-
   defp count_yaml_files(dir) do
     case File.ls(dir) do
       {:ok, files} -> Enum.count(files, &String.ends_with?(&1, ".yaml"))
@@ -341,15 +324,4 @@ defmodule JidoClaw.CLI.Branding do
   defp format_bytes(bytes) when bytes < 1024, do: "#{bytes}B"
   defp format_bytes(bytes) when bytes < 1_048_576, do: "#{Float.round(bytes / 1024, 1)}KB"
   defp format_bytes(bytes), do: "#{Float.round(bytes / 1_048_576, 1)}MB"
-
-  defp detect_type(dir) do
-    cond do
-      File.exists?(Path.join(dir, "mix.exs")) -> "elixir"
-      File.exists?(Path.join(dir, "package.json")) -> "node"
-      File.exists?(Path.join(dir, "Cargo.toml")) -> "rust"
-      File.exists?(Path.join(dir, "go.mod")) -> "go"
-      File.exists?(Path.join(dir, "pyproject.toml")) -> "python"
-      true -> "unknown"
-    end
-  end
 end

@@ -237,7 +237,14 @@ config :jido_claw,
     JidoClaw.Audit,
     JidoClaw.Cron
   ],
+  base_resources: [JidoClaw.Resource],
   token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
+
+config :spark, :formatter,
+  "JidoClaw.Resource": [
+    type: Ash.Resource,
+    extensions: [AshPostgres.DataLayer, Ash.Policy.Authorizer]
+  ]
 
 # Postgrex types module — registers the pgvector extension so Postgrex
 # encodes/decodes :vector columns. Defined at lib/jido_claw/postgrex_types.ex.

@@ -142,7 +142,7 @@ defmodule JidoClaw.Tools.RunPipeline do
     ]
 
   alias JidoClaw.Core.MapKeys
-  alias JidoClaw.Reasoning.{PipelineStore, PipelineValidator, StrategyRegistry, Telemetry}
+  alias JidoClaw.Reasoning.{Output, PipelineStore, PipelineValidator, StrategyRegistry, Telemetry}
 
   @impl true
   def run(params, context) do
@@ -393,7 +393,7 @@ defmodule JidoClaw.Tools.RunPipeline do
   end
 
   defp append_stage(%{outputs: outputs, usage: usage} = acc, idx, user_strategy, result) do
-    output = extract_output(result)
+    output = Output.extract_output(result)
 
     stage_record = %{
       stage: idx,
@@ -561,20 +561,6 @@ defmodule JidoClaw.Tools.RunPipeline do
   end
 
   defp pad(n, width), do: n |> Integer.to_string() |> String.pad_leading(width, "0")
-
-  defp extract_output(%{output: output}) when is_binary(output) and output != "", do: output
-
-  defp extract_output(%{output: output}) when is_map(output) do
-    cond do
-      Map.has_key?(output, :result) -> output.result
-      Map.has_key?(output, :answer) -> output.answer
-      Map.has_key?(output, :conclusion) -> output.conclusion
-      true -> inspect(output)
-    end
-  end
-
-  defp extract_output(%{output: output}), do: inspect(output)
-  defp extract_output(result), do: inspect(result)
 
   defp empty_usage, do: %{input_tokens: 0, output_tokens: 0}
 

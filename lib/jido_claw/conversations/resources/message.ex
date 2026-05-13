@@ -60,25 +60,7 @@ defmodule JidoClaw.Conversations.Message do
   the Solutions resource (`solution.ex:486`).
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Conversations,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
+  use JidoClaw.Resource, domain: JidoClaw.Conversations
 
   alias JidoClaw.Conversations.Session, as: SessionResource
 

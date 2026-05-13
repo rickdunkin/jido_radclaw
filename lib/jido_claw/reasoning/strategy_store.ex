@@ -52,9 +52,10 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   """
 
   use GenServer
+  use JidoClaw.NoClone
   require Logger
 
-  alias JidoClaw.Reasoning.{Complexity, TaskType}
+  alias JidoClaw.Reasoning.{Complexity, TaskType, YamlStore}
 
   defstruct [:name, :base, :description, :prefers, :display_name, :prompts]
 
@@ -174,6 +175,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
 
   defp strategies_dir(project_dir), do: Path.join([project_dir, ".jido", "strategies"])
 
+  @no_clone true
   defp load_from_disk(project_dir) do
     dir = strategies_dir(project_dir)
 
@@ -216,7 +218,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   end
 
   defp validate(data) do
-    with {:ok, name} <- fetch_name(data),
+    with {:ok, name} <- YamlStore.fetch_name(data),
          :ok <- refuse_builtin_collision(name),
          {:ok, base} <- fetch_base(data),
          prefers <- parse_prefers(Map.get(data, "prefers")),
@@ -230,22 +232,6 @@ defmodule JidoClaw.Reasoning.StrategyStore do
          display_name: stringish(Map.get(data, "display_name")),
          prompts: prompts
        }}
-    end
-  end
-
-  defp fetch_name(data) do
-    case Map.get(data, "name") do
-      name when is_binary(name) ->
-        cleaned = String.trim(name)
-
-        cond do
-          cleaned == "" -> {:error, "empty name"}
-          String.contains?(cleaned, "/") -> {:error, "name must not contain '/'"}
-          true -> {:ok, cleaned}
-        end
-
-      _ ->
-        {:error, "missing or non-string name"}
     end
   end
 

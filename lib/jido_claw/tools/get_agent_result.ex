@@ -18,6 +18,8 @@ defmodule JidoClaw.Tools.GetAgentResult do
       timeout: [type: :integer, required: false, doc: "Max wait time in ms (default: 60000)"]
     ]
 
+  alias JidoClaw.Reasoning.Output
+
   @impl true
   def run(params, _context) do
     agent_id = params.agent_id
@@ -31,7 +33,12 @@ defmodule JidoClaw.Tools.GetAgentResult do
         try do
           case Jido.Await.completion(pid, timeout) do
             {:ok, result} ->
-              {:ok, %{agent_id: agent_id, status: "completed", result: extract_result(result)}}
+              {:ok,
+               %{
+                 agent_id: agent_id,
+                 status: "completed",
+                 result: Output.extract_result(result)
+               }}
 
             {:error, :timeout} ->
               {:ok,
@@ -49,10 +56,4 @@ defmodule JidoClaw.Tools.GetAgentResult do
         end
     end
   end
-
-  defp extract_result(%{last_answer: answer}) when is_binary(answer), do: answer
-  defp extract_result(%{answer: answer}) when is_binary(answer), do: answer
-  defp extract_result(%{text: text}) when is_binary(text), do: text
-  defp extract_result(result) when is_binary(result), do: result
-  defp extract_result(result), do: inspect(result, limit: :infinity, pretty: true)
 end

@@ -51,6 +51,7 @@ defmodule JidoClaw.Shell.ProfileManager do
 
   alias JidoClaw.Config
   alias JidoClaw.Shell.SessionManager
+  alias JidoClaw.Shell.Util, as: ShellUtil
 
   defstruct [
     :project_dir,
@@ -537,7 +538,7 @@ defmodule JidoClaw.Shell.ProfileManager do
   # payload must never be inspected.
   defp parse_profile(acc, name, other) when is_binary(name) do
     Logger.warning(
-      "[ProfileManager] Profile '#{name}' env is not a mapping (got: #{type_hint(other)}) — skipping"
+      "[ProfileManager] Profile '#{name}' env is not a mapping (got: #{ShellUtil.type_hint(other)}) — skipping"
     )
 
     acc
@@ -548,7 +549,7 @@ defmodule JidoClaw.Shell.ProfileManager do
   # hint, mirroring the key/value policy in `coerce_entry/4`.
   defp parse_profile(acc, name, other) do
     Logger.warning(
-      "[ProfileManager] Profile with non-string name (got: #{type_hint(name)}, env: #{type_hint(other)}) — skipping"
+      "[ProfileManager] Profile with non-string name (got: #{ShellUtil.type_hint(name)}, env: #{ShellUtil.type_hint(other)}) — skipping"
     )
 
     acc
@@ -558,7 +559,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     cond do
       not is_binary(key) ->
         Logger.warning(
-          "[ProfileManager] Non-string key in profile '#{profile}' (got: #{type_hint(key)}) — skipping entry"
+          "[ProfileManager] Non-string key in profile '#{profile}' (got: #{ShellUtil.type_hint(key)}) — skipping entry"
         )
 
         acc
@@ -571,26 +572,10 @@ defmodule JidoClaw.Shell.ProfileManager do
 
       true ->
         Logger.warning(
-          "[ProfileManager] Non-string value for #{profile}.#{key} (got: #{type_hint(value)}) — skipping entry"
+          "[ProfileManager] Non-string value for #{profile}.#{key} (got: #{ShellUtil.type_hint(value)}) — skipping entry"
         )
 
         acc
     end
   end
-
-  # Structural type hint for rejected profile values — never the value
-  # itself. A config typo like `DATABASE_PASSWORD: [prod-secret]` should
-  # log `list/1`, not the secret. Keys fall through the same helper
-  # because a non-string key could itself be a structured term carrying
-  # sensitive data.
-  defp type_hint(value) when is_binary(value), do: "string"
-  defp type_hint(value) when is_integer(value), do: "integer"
-  defp type_hint(value) when is_float(value), do: "float"
-  defp type_hint(value) when is_boolean(value), do: "boolean"
-  defp type_hint(nil), do: "nil"
-  defp type_hint(value) when is_atom(value), do: "atom"
-  defp type_hint(value) when is_list(value), do: "list/#{length(value)}"
-  defp type_hint(value) when is_map(value), do: "map/#{map_size(value)}"
-  defp type_hint(value) when is_tuple(value), do: "tuple/#{tuple_size(value)}"
-  defp type_hint(_), do: "term"
 end

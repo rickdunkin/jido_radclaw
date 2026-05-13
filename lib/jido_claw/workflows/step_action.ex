@@ -49,6 +49,7 @@ defmodule JidoClaw.Workflows.StepAction do
   require Logger
 
   alias JidoClaw.Agent.Templates
+  alias JidoClaw.Reasoning.Output
 
   @impl true
   def run(params, context) do
@@ -61,7 +62,7 @@ defmodule JidoClaw.Workflows.StepAction do
          scope = resolve_scope(params, context, tag),
          tool_context = JidoClaw.ToolContext.build(scope),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
-      request_id = register_child_correlation(tool_context)
+      request_id = JidoClaw.register_child_correlation(tool_context)
 
       try do
         case template.module.ask_sync(pid, task,
@@ -70,7 +71,7 @@ defmodule JidoClaw.Workflows.StepAction do
                tool_context: tool_context
              ) do
           {:ok, result} ->
-            text = extract_result(result)
+            text = Output.extract_result(result)
 
             {:ok,
              %JidoClaw.Workflows.StepResult{
@@ -184,32 +185,5 @@ defmodule JidoClaw.Workflows.StepAction do
       Map.get(context, key) ||
       get_in(context, [:tool_context, key]) ||
       fallback
-  end
-
-  defp extract_result(%{last_answer: answer}) when is_binary(answer), do: answer
-  defp extract_result(%{answer: answer}) when is_binary(answer), do: answer
-  defp extract_result(%{text: text}) when is_binary(text), do: text
-  defp extract_result(result) when is_binary(result), do: result
-  defp extract_result(result), do: inspect(result, limit: :infinity, pretty: true)
-
-  defp register_child_correlation(ctx) do
-    request_id = Ecto.UUID.generate()
-
-    case ctx do
-      %{session_uuid: session_uuid, tenant_id: tenant_id} = c
-      when is_binary(session_uuid) and is_binary(tenant_id) ->
-        JidoClaw.register_correlation(
-          request_id,
-          session_uuid,
-          tenant_id,
-          Map.get(c, :workspace_uuid),
-          Map.get(c, :user_id)
-        )
-
-      _ ->
-        :ok
-    end
-
-    request_id
   end
 end

@@ -50,29 +50,10 @@ defmodule JidoClaw.Memory.Block do
       skip the same way.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Memory.Domain,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer],
-    primary_read_warning?: false
+  use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
   require Ash.Query
   import Ash.Expr
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
 
   alias JidoClaw.Audit.ActorClassifier
   alias JidoClaw.Audit.AsyncWriter
@@ -147,7 +128,7 @@ defmodule JidoClaw.Memory.Block do
         :valid_at
       ])
 
-      change({__MODULE__.Changes.ValidateScopeFk, []})
+      change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({__MODULE__.Changes.CapValueLength, []})
 
@@ -163,7 +144,7 @@ defmodule JidoClaw.Memory.Block do
       argument(:reason, :string, allow_nil?: true)
       require_atomic?(false)
 
-      change({__MODULE__.Changes.MarkInvalidated, []})
+      change(JidoClaw.Memory.Changes.MarkInvalidated)
       change({__MODULE__.Changes.WriteRevisionForUpdate, []})
 
       change(
@@ -347,37 +328,13 @@ defmodule JidoClaw.Memory.Block do
   # Inline change modules
   # ---------------------------------------------------------------------------
 
-  defmodule Changes.ValidateScopeFk do
-    @moduledoc false
-    use Ash.Resource.Change
-
-    alias JidoClaw.Memory.Block
-
-    @impl true
-    def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
-
-        case Block.scope_fk_for(cs, scope_kind) do
-          {:ok, _} ->
-            cs
-
-          :missing ->
-            Ash.Changeset.add_error(cs,
-              field: :scope_kind,
-              message: "scope_fk_required",
-              vars: [scope_kind: scope_kind]
-            )
-        end
-      end)
-    end
-  end
-
   defmodule Changes.ValidateCrossTenant do
     @moduledoc false
     use Ash.Resource.Change
+    use JidoClaw.NoClone
 
     @impl true
+    @no_clone true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
@@ -415,22 +372,6 @@ defmodule JidoClaw.Memory.Block do
           true ->
             cs
         end
-      end)
-    end
-  end
-
-  defmodule Changes.MarkInvalidated do
-    @moduledoc false
-    use Ash.Resource.Change
-
-    @impl true
-    def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        now = DateTime.utc_now()
-
-        cs
-        |> Ash.Changeset.force_change_attribute(:invalid_at, now)
-        |> Ash.Changeset.force_change_attribute(:expired_at, now)
       end)
     end
   end

@@ -1,6 +1,7 @@
 defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @moduledoc false
   @behaviour JidoClaw.Forge.Runner
+  use JidoClaw.NoClone
   alias JidoClaw.Forge.{Runner, Sandbox}
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
@@ -175,6 +176,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     end
   end
 
+  @no_clone true
   defp sync_file(client, source, dest) do
     case File.read(source) do
       {:ok, content} ->

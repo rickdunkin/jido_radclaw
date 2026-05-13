@@ -76,6 +76,7 @@ defmodule JidoClaw.Conversations.Recorder do
   """
 
   use GenServer
+  use JidoClaw.NoClone
   require Logger
 
   alias Jido.Signal.Bus
@@ -748,6 +749,7 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp resolve_scope(nil), do: :error
 
+  @no_clone true
   defp resolve_scope(request_id) do
     case Cache.lookup(request_id) do
       {:ok, scope} ->

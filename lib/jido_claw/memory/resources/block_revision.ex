@@ -17,26 +17,7 @@ defmodule JidoClaw.Memory.BlockRevision do
   always project back to the right scope without joining Block.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Memory.Domain,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer],
-    primary_read_warning?: false
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
+  use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
   @scope_kinds [:user, :workspace, :project, :session]
   @sources [:user, :consolidator]

@@ -66,30 +66,12 @@ defmodule JidoClaw.Memory.Fact do
   is a write-time conflict, not just a query convention.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Memory.Domain,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer],
-    primary_read_warning?: false
+  use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
   require Ash.Query
 
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
-
   alias JidoClaw.Memory.Resources.ScopeFilter
+  alias JidoClaw.Memory.ScopeFk
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
@@ -187,7 +169,7 @@ defmodule JidoClaw.Memory.Fact do
       # commits. See `JidoClaw.Memory.Fact.hint_backfill/1`.
       argument(:skip_backfill_hint?, :boolean, default: false)
 
-      change({__MODULE__.Changes.ValidateScopeFk, []})
+      change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({__MODULE__.Changes.RedactContent, []})
       change({__MODULE__.Changes.ResolveInitialEmbeddingStatus, []})
@@ -226,7 +208,7 @@ defmodule JidoClaw.Memory.Fact do
 
       change({__MODULE__.Changes.AcceptLegacyTimestamps, []})
       change({__MODULE__.Changes.FixSourceImportedLegacy, []})
-      change({__MODULE__.Changes.ValidateScopeFk, []})
+      change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({__MODULE__.Changes.RedactContent, []})
       change({__MODULE__.Changes.ResolveInitialEmbeddingStatus, []})
@@ -250,7 +232,7 @@ defmodule JidoClaw.Memory.Fact do
       argument(:reason, :string, allow_nil?: true)
       require_atomic?(false)
 
-      change({__MODULE__.Changes.MarkInvalidated, []})
+      change(JidoClaw.Memory.Changes.MarkInvalidated)
 
       change(
         {JidoClaw.Audit.Producers.MemoryWrite,
@@ -265,7 +247,7 @@ defmodule JidoClaw.Memory.Fact do
       require_atomic?(false)
 
       validate({__MODULE__.Validations.SourceForInvalidateByLabel, []})
-      change({__MODULE__.Changes.MarkInvalidated, []})
+      change(JidoClaw.Memory.Changes.MarkInvalidated)
 
       change(
         {JidoClaw.Audit.Producers.MemoryWrite,
@@ -587,42 +569,19 @@ defmodule JidoClaw.Memory.Fact do
     end
   end
 
-  defmodule Changes.ValidateScopeFk do
-    @moduledoc false
-    use Ash.Resource.Change
-
-    alias JidoClaw.Memory.Fact
-
-    @impl true
-    def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
-
-        case Fact.scope_fk_for(cs, scope_kind) do
-          {:ok, _} ->
-            cs
-
-          :missing ->
-            Ash.Changeset.add_error(cs,
-              field: :scope_kind,
-              message: "scope_fk_required",
-              vars: [scope_kind: scope_kind]
-            )
-        end
-      end)
-    end
-  end
-
   defmodule Changes.ValidateCrossTenant do
     @moduledoc false
     use Ash.Resource.Change
+    use JidoClaw.NoClone
 
     @impl true
+    @no_clone true
     def change(changeset, _opts, _context) do
       Ash.Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
           {:workspace_id, JidoClaw.Workspaces.Workspace, JidoClaw.Workspaces},
           {:session_id, JidoClaw.Conversations.Session, JidoClaw.Conversations},
+          # User and Project lack tenant_id columns — see plan §0.5.2.
           {:user_id, :no_tenant_column, nil},
           {:project_id, :no_tenant_column, nil}
         ])
@@ -661,11 +620,13 @@ defmodule JidoClaw.Memory.Fact do
     scope (no workspace ancestor) default to `:disabled`.
     """
     use Ash.Resource.Change
+    use JidoClaw.NoClone
 
     alias JidoClaw.Authorization.Actor
     alias JidoClaw.Workspaces.Workspace
 
     @impl true
+    @no_clone true
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 
@@ -804,22 +765,6 @@ defmodule JidoClaw.Memory.Fact do
     end
   end
 
-  defmodule Changes.MarkInvalidated do
-    @moduledoc false
-    use Ash.Resource.Change
-
-    @impl true
-    def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        now = DateTime.utc_now()
-
-        cs
-        |> Ash.Changeset.force_change_attribute(:invalid_at, now)
-        |> Ash.Changeset.force_change_attribute(:expired_at, now)
-      end)
-    end
-  end
-
   defmodule Validations.SourceForInvalidateByLabel do
     @moduledoc false
     use Ash.Resource.Validation
@@ -948,14 +893,10 @@ defmodule JidoClaw.Memory.Fact do
     :ok
   end
 
-  defp scope_column_and_value(:user, fk), do: {"user_id", uuid_dump(fk)}
-  defp scope_column_and_value(:workspace, fk), do: {"workspace_id", uuid_dump(fk)}
-  defp scope_column_and_value(:project, fk), do: {"project_id", uuid_dump(fk)}
-  defp scope_column_and_value(:session, fk), do: {"session_id", uuid_dump(fk)}
-
-  defp uuid_dump(<<_::binary-size(16)>> = raw), do: raw
-  defp uuid_dump(uuid) when is_binary(uuid), do: Ecto.UUID.dump!(uuid)
-  defp uuid_dump(other), do: other
+  defp scope_column_and_value(:user, fk), do: {"user_id", ScopeFk.uuid_dump(fk)}
+  defp scope_column_and_value(:workspace, fk), do: {"workspace_id", ScopeFk.uuid_dump(fk)}
+  defp scope_column_and_value(:project, fk), do: {"project_id", ScopeFk.uuid_dump(fk)}
+  defp scope_column_and_value(:session, fk), do: {"session_id", ScopeFk.uuid_dump(fk)}
 
   @doc """
   Narrow `query` to rows whose `scope_kind` and FK match `kind`/`fk`.

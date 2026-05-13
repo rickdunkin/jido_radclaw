@@ -14,7 +14,7 @@ defmodule JidoClaw.Display do
   use GenServer
   require Logger
 
-  alias JidoClaw.CLI.Branding
+  alias JidoClaw.CLI.{Branding, Formatter, Terminal}
   alias JidoClaw.Display.{StatusBar, SwarmBox}
 
   @spinner_interval 150
@@ -171,7 +171,7 @@ defmodule JidoClaw.Display do
 
   @impl true
   def init(_opts) do
-    width = detect_terminal_width()
+    width = Terminal.terminal_cols()
     {:ok, %__MODULE__{terminal_width: width}}
   end
 
@@ -672,7 +672,7 @@ defmodule JidoClaw.Display do
     args_str =
       args
       |> Enum.map(fn {k, v} ->
-        v_display = truncate_value(v)
+        v_display = Formatter.truncate_value(v)
         "\e[2m#{k}=\e[0m#{v_display}"
       end)
       |> Enum.join(" ")
@@ -782,34 +782,5 @@ defmodule JidoClaw.Display do
   defp render_status_bar_string(state) do
     tracker_state = JidoClaw.AgentTracker.get_state()
     StatusBar.render(state, tracker_state, state.terminal_width)
-  end
-
-  defp truncate_value(v) when is_binary(v) do
-    if String.length(v) > 80 do
-      "\e[2m\"#{String.slice(v, 0, 77)}...\"\e[0m"
-    else
-      "\e[2m\"#{v}\"\e[0m"
-    end
-  end
-
-  defp truncate_value(v), do: "\e[2m#{inspect(v, limit: 3)}\e[0m"
-
-  defp detect_terminal_width do
-    case :io.columns() do
-      {:ok, cols} ->
-        cols
-
-      _ ->
-        case System.cmd("tput", ["cols"], stderr_to_stdout: true) do
-          {output, 0} ->
-            case Integer.parse(String.trim(output)) do
-              {cols, _} -> cols
-              :error -> 120
-            end
-
-          _ ->
-            120
-        end
-    end
   end
 end

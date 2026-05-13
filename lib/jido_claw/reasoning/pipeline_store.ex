@@ -35,9 +35,10 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   """
 
   use GenServer
+  use JidoClaw.NoClone
   require Logger
 
-  alias JidoClaw.Reasoning.PipelineValidator
+  alias JidoClaw.Reasoning.{PipelineValidator, YamlStore}
 
   defstruct [:name, :description, :stages, :max_context_bytes]
 
@@ -130,6 +131,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
 
   defp pipelines_dir(project_dir), do: Path.join([project_dir, ".jido", "pipelines"])
 
+  @no_clone true
   defp load_from_disk(project_dir) do
     dir = pipelines_dir(project_dir)
 
@@ -172,7 +174,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   end
 
   defp validate(data) do
-    with {:ok, name} <- fetch_name(data),
+    with {:ok, name} <- YamlStore.fetch_name(data),
          {:ok, max_context_bytes} <- fetch_max_context_bytes(data),
          {:ok, raw_stages} <- fetch_stages(data),
          {:ok, normalized} <- PipelineValidator.normalize_stages(raw_stages),
@@ -194,22 +196,6 @@ defmodule JidoClaw.Reasoning.PipelineStore do
       {:ok, raw}
     else
       {:error, "max_context_bytes must be a positive integer (got: #{inspect(raw)})"}
-    end
-  end
-
-  defp fetch_name(data) do
-    case Map.get(data, "name") do
-      name when is_binary(name) ->
-        cleaned = String.trim(name)
-
-        cond do
-          cleaned == "" -> {:error, "empty name"}
-          String.contains?(cleaned, "/") -> {:error, "name must not contain '/'"}
-          true -> {:ok, cleaned}
-        end
-
-      _ ->
-        {:error, "missing or non-string name"}
     end
   end
 

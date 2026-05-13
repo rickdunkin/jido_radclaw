@@ -70,6 +70,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
   require Logger
 
   alias JidoClaw.Config
+  alias JidoClaw.Shell.Util, as: ShellUtil
 
   defmodule ServerEntry do
     @moduledoc "Parsed, validated server entry for SSH routing."
@@ -445,7 +446,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
 
       other ->
         Logger.warning(
-          "[ServerRegistry] Server '#{name}' env is not a map (got: #{type_hint(other)}) — ignoring"
+          "[ServerRegistry] Server '#{name}' env is not a map (got: #{ShellUtil.type_hint(other)}) — ignoring"
         )
 
         %{}
@@ -456,7 +457,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     cond do
       not is_binary(key) ->
         Logger.warning(
-          "[ServerRegistry] Server '#{name}' has non-string env key (got: #{type_hint(key)}) — skipping entry"
+          "[ServerRegistry] Server '#{name}' has non-string env key (got: #{ShellUtil.type_hint(key)}) — skipping entry"
         )
 
         acc
@@ -469,7 +470,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
 
       true ->
         Logger.warning(
-          "[ServerRegistry] Server '#{name}' env.#{key} is #{type_hint(value)} — skipping entry"
+          "[ServerRegistry] Server '#{name}' env.#{key} is #{ShellUtil.type_hint(value)} — skipping entry"
         )
 
         acc
@@ -525,15 +526,4 @@ defmodule JidoClaw.Shell.ServerRegistry do
     Application.get_env(:jido_claw, :ssh_test_modules, %{})
     |> Map.take([:ssh_module, :ssh_connection_module])
   end
-
-  defp type_hint(value) when is_binary(value), do: "string"
-  defp type_hint(value) when is_integer(value), do: "integer"
-  defp type_hint(value) when is_float(value), do: "float"
-  defp type_hint(value) when is_boolean(value), do: "boolean"
-  defp type_hint(nil), do: "nil"
-  defp type_hint(value) when is_atom(value), do: "atom"
-  defp type_hint(value) when is_list(value), do: "list/#{length(value)}"
-  defp type_hint(value) when is_map(value), do: "map/#{map_size(value)}"
-  defp type_hint(value) when is_tuple(value), do: "tuple/#{tuple_size(value)}"
-  defp type_hint(_), do: "term"
 end

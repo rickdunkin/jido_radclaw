@@ -80,9 +80,13 @@ defmodule JidoClaw.CLI.Formatter do
     end
   end
 
-  # -- Private --
-
-  defp truncate_value(v) when is_binary(v) do
+  @doc """
+  Truncate a value for compact tool-call display. Binaries longer than
+  80 chars get a `"..."` suffix; everything else falls back to `inspect/2`
+  with `limit: 3`. Wrapped in dim ANSI so it doesn't compete with the
+  surrounding label.
+  """
+  def truncate_value(v) when is_binary(v) do
     if String.length(v) > 80 do
       "\e[2m\"#{String.slice(v, 0, 77)}...\"\e[0m"
     else
@@ -90,7 +94,20 @@ defmodule JidoClaw.CLI.Formatter do
     end
   end
 
-  defp truncate_value(v), do: "\e[2m#{inspect(v, limit: 3)}\e[0m"
+  def truncate_value(v), do: "\e[2m#{inspect(v, limit: 3)}\e[0m"
+
+  @doc """
+  Format an elapsed-time value (integer seconds) as `Ns`, `Nm Ns`, or
+  `Nh Nm` depending on magnitude.
+  """
+  def format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
+
+  def format_elapsed(seconds) when seconds < 3600,
+    do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+
+  def format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
+
+  # -- Private --
 
   defp strip_think_tags(text) do
     # Remove <think>...</think> blocks from models that use thinking tags (qwen3, etc)

@@ -16,11 +16,7 @@ defmodule JidoClaw.Cron.Job do
   compatibility.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Cron,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+  use JidoClaw.Resource, domain: JidoClaw.Cron
 
   @modes [:main, :isolated, :system_job]
   @schedule_kinds [:cron, :every, :at]
@@ -38,20 +34,6 @@ defmodule JidoClaw.Cron.Job do
     strategy(:attribute)
     attribute(:tenant_id)
     global?(false)
-  end
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
   end
 
   code_interface do

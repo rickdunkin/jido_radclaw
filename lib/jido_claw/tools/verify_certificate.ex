@@ -53,7 +53,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
-  alias JidoClaw.Reasoning.{Certificates, Telemetry}
+  alias JidoClaw.Reasoning.{Certificates, Output, Telemetry}
   alias JidoClaw.Solutions.Solution
 
   @impl true
@@ -175,7 +175,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   defp execute_cert(runner, run_params) do
     case runner.run(run_params, %{}) do
       {:ok, result} ->
-        output_str = extract_output(result)
+        output_str = Output.extract_output(result)
         usage = Map.get(result, :usage, %{})
 
         case Certificates.parse_certificate(output_str) do
@@ -204,20 +204,6 @@ defmodule JidoClaw.Tools.VerifyCertificate do
         {:error, %{reason: "Reasoning strategy failed: #{inspect(reason)}", usage: usage}}
     end
   end
-
-  defp extract_output(%{output: output}) when is_binary(output) and output != "", do: output
-
-  defp extract_output(%{output: output}) when is_map(output) do
-    cond do
-      Map.has_key?(output, :result) -> output.result
-      Map.has_key?(output, :answer) -> output.answer
-      Map.has_key?(output, :conclusion) -> output.conclusion
-      true -> inspect(output)
-    end
-  end
-
-  defp extract_output(%{output: output}), do: inspect(output)
-  defp extract_output(result), do: inspect(result)
 
   defp maybe_persist(nil, _certificate, _tenant_id, _actor), do: {nil, nil}
 

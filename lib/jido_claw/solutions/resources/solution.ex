@@ -39,26 +39,7 @@ defmodule JidoClaw.Solutions.Solution do
   untenanted by design.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Solutions.Domain,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer],
-    primary_read_warning?: false
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
+  use JidoClaw.Resource, domain: JidoClaw.Solutions.Domain, primary_read_warning?: false
 
   alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Security.Redaction.Transcript
@@ -562,10 +543,12 @@ defmodule JidoClaw.Solutions.Solution do
   defmodule Changes.ResolveInitialEmbeddingStatus do
     @moduledoc false
     use Ash.Resource.Change
+    use JidoClaw.NoClone
 
     alias JidoClaw.Authorization.Actor
 
     @impl true
+    @no_clone true
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 

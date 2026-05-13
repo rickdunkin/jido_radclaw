@@ -21,28 +21,10 @@ defmodule JidoClaw.Conversations.Session do
   already has both the Workspace UUID and the tenant in hand.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Conversations,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+  use JidoClaw.Resource, domain: JidoClaw.Conversations
 
   alias JidoClaw.Conversations.Resources.GlobalLookup
   alias JidoClaw.Workspaces.Workspace
-
-  policies do
-    bypass action(:by_id_global) do
-      authorize_if(always())
-    end
-
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
 
   postgres do
     table("conversation_sessions")

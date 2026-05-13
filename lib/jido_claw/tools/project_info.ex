@@ -16,6 +16,7 @@ defmodule JidoClaw.Tools.ProjectInfo do
     ],
     schema: []
 
+  alias JidoClaw.ProjectType
   alias JidoClaw.Tools.MCPScope
 
   @impl true
@@ -29,23 +30,12 @@ defmodule JidoClaw.Tools.ProjectInfo do
     {:ok,
      %{
        cwd: cwd,
-       project_type: detect_project_type(cwd),
+       project_type: ProjectType.detect(cwd),
        git_branch: detect_git_branch(),
        git_dirty: detect_git_dirty(),
        top_level_files: detect_top_level_files(cwd),
        has_jido_md: File.exists?(Path.join([cwd, ".jido", "JIDO.md"]))
      }}
-  end
-
-  defp detect_project_type(cwd) do
-    cond do
-      File.exists?(Path.join(cwd, "mix.exs")) -> "elixir"
-      File.exists?(Path.join(cwd, "package.json")) -> "node"
-      File.exists?(Path.join(cwd, "Cargo.toml")) -> "rust"
-      File.exists?(Path.join(cwd, "go.mod")) -> "go"
-      File.exists?(Path.join(cwd, "pyproject.toml")) -> "python"
-      true -> "unknown"
-    end
   end
 
   defp detect_git_branch do

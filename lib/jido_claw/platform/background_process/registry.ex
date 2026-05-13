@@ -157,27 +157,12 @@ defmodule JidoClaw.BackgroundProcess.Registry do
       _, _ -> :ok
     end
 
-    case Map.get(state.processes, id) do
-      nil ->
-        {:noreply, state}
-
-      entry ->
-        updated = %{entry | status: :killed}
-        {:noreply, %{state | processes: Map.put(state.processes, id, updated)}}
-    end
+    {:noreply, mark_killed(state, id)}
   end
 
   def handle_info({:force_kill_pid, id, pid}, state) do
     if Process.alive?(pid), do: Process.exit(pid, :kill)
-
-    case Map.get(state.processes, id) do
-      nil ->
-        {:noreply, state}
-
-      entry ->
-        updated = %{entry | status: :killed}
-        {:noreply, %{state | processes: Map.put(state.processes, id, updated)}}
-    end
+    {:noreply, mark_killed(state, id)}
   end
 
   def handle_info(:cleanup, state) do
@@ -218,5 +203,16 @@ defmodule JidoClaw.BackgroundProcess.Registry do
 
   defp schedule_cleanup do
     Process.send_after(self(), :cleanup, @cleanup_interval)
+  end
+
+  defp mark_killed(state, id) do
+    case Map.get(state.processes, id) do
+      nil ->
+        state
+
+      entry ->
+        updated = %{entry | status: :killed}
+        %{state | processes: Map.put(state.processes, id, updated)}
+    end
   end
 end

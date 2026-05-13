@@ -38,7 +38,7 @@ defmodule JidoClaw.Tools.Reason do
       ]
     ]
 
-  alias JidoClaw.Reasoning.{AutoSelect, StrategyRegistry, Telemetry}
+  alias JidoClaw.Reasoning.{AutoSelect, Output, StrategyRegistry, Telemetry}
 
   @impl true
   def run(params, context) do
@@ -193,7 +193,7 @@ defmodule JidoClaw.Tools.Reason do
     {:ok,
      %{
        strategy: strategy_name,
-       output: extract_output(result),
+       output: Output.extract_output(result),
        status: Map.get(result, :status),
        usage: Map.get(result, :usage, %{})
      }}
@@ -202,20 +202,6 @@ defmodule JidoClaw.Tools.Reason do
   defp format_runner_result({:error, reason}, strategy_name) do
     {:error, format_error(strategy_name, reason)}
   end
-
-  defp extract_output(%{output: output}) when is_binary(output) and output != "", do: output
-
-  defp extract_output(%{output: output}) when is_map(output) do
-    cond do
-      Map.has_key?(output, :result) -> output.result
-      Map.has_key?(output, :answer) -> output.answer
-      Map.has_key?(output, :conclusion) -> output.conclusion
-      true -> inspect(output)
-    end
-  end
-
-  defp extract_output(%{output: output}), do: inspect(output)
-  defp extract_output(result), do: inspect(result)
 
   defp format_error(strategy, %{output: output}) when is_binary(output) do
     "#{strategy} reasoning failed: #{output}"

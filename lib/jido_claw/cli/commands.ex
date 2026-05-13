@@ -6,6 +6,7 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Branding
   alias JidoClaw.CLI.Commands.SolutionsStats
+  alias JidoClaw.CLI.Formatter
   alias JidoClaw.CLI.Setup, as: CLISetup
   alias JidoClaw.Cron.Job, as: CronJob
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
@@ -33,7 +34,7 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/quit", state) do
     live = JidoClaw.Stats.get()
     elapsed = System.monotonic_time(:second) - state.started_at
-    stats = Map.put(live, :elapsed, format_elapsed(elapsed))
+    stats = Map.put(live, :elapsed, Formatter.format_elapsed(elapsed))
     IO.puts(Branding.goodbye(stats))
     :quit
   end
@@ -75,7 +76,7 @@ defmodule JidoClaw.CLI.Commands do
     )
 
     elapsed = System.monotonic_time(:second) - state.started_at
-    IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{format_elapsed(elapsed)}\e[0m")
+    IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{Formatter.format_elapsed(elapsed)}\e[0m")
 
     # Show per-agent breakdown if any children exist
     if children != [] do
@@ -911,13 +912,6 @@ defmodule JidoClaw.CLI.Commands do
   defp format_short_date(%DateTime{} = dt), do: dt |> DateTime.to_iso8601() |> String.slice(0, 10)
   defp format_short_date(other) when is_binary(other), do: String.slice(other, 0, 10)
   defp format_short_date(_), do: ""
-
-  defp format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
-
-  defp format_elapsed(seconds) when seconds < 3600,
-    do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
-
-  defp format_elapsed(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
 
   defp terminal_cols do
     case :io.columns() do
