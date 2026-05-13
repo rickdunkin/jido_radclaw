@@ -70,6 +70,8 @@ defmodule JidoClaw.Memory.Fact do
 
   require Ash.Query
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Memory.ScopeFk
   alias JidoClaw.Repo
@@ -552,9 +554,9 @@ defmodule JidoClaw.Memory.Fact do
     end
 
     defp apply_argument(cs, arg, attr) do
-      case Ash.Changeset.get_argument(cs, arg) do
+      case Changeset.get_argument(cs, arg) do
         nil -> cs
-        value -> Ash.Changeset.force_change_attribute(cs, attr, value)
+        value -> Changeset.force_change_attribute(cs, attr, value)
       end
     end
   end
@@ -565,7 +567,7 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.force_change_attribute(changeset, :source, :imported_legacy)
+      Changeset.force_change_attribute(changeset, :source, :imported_legacy)
     end
   end
 
@@ -577,7 +579,7 @@ defmodule JidoClaw.Memory.Fact do
     @impl true
     @no_clone true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
           {:workspace_id, JidoClaw.Workspaces.Workspace, JidoClaw.Workspaces},
           {:session_id, JidoClaw.Conversations.Session, JidoClaw.Conversations},
@@ -595,14 +597,14 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        case Ash.Changeset.get_attribute(cs, :content) do
+      Changeset.before_action(changeset, fn cs ->
+        case Changeset.get_attribute(cs, :content) do
           nil ->
             cs
 
           content when is_binary(content) ->
             redacted = MemoryRedaction.redact_fact!(content)
-            Ash.Changeset.force_change_attribute(cs, :content, redacted)
+            Changeset.force_change_attribute(cs, :content, redacted)
 
           _ ->
             cs
@@ -630,24 +632,24 @@ defmodule JidoClaw.Memory.Fact do
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 
-      Ash.Changeset.before_action(changeset, fn cs ->
-        case Ash.Changeset.get_attribute(cs, :embedding_status) do
+      Changeset.before_action(changeset, fn cs ->
+        case Changeset.get_attribute(cs, :embedding_status) do
           status when status in [:ready, :failed, :disabled, :processing] ->
             cs
 
           _ ->
-            workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
+            workspace_id = Changeset.get_attribute(cs, :workspace_id)
             resolve_status_from_policy(cs, workspace_id, actor)
         end
       end)
     end
 
     defp resolve_status_from_policy(cs, nil, _actor) do
-      Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
+      Changeset.force_change_attribute(cs, :embedding_status, :disabled)
     end
 
     defp resolve_status_from_policy(cs, workspace_id, actor) do
-      tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
       # System imports (`authorize?: false` migration tasks) may reach
       # here without an actor. Workspace.by_id is policy-protected, so
@@ -672,10 +674,10 @@ defmodule JidoClaw.Memory.Fact do
 
       case result do
         {:ok, %{embedding_policy: :disabled}} ->
-          Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
+          Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
         {:ok, %{embedding_policy: :default}} ->
-          Ash.Changeset.force_change_attribute(cs, :embedding_status, :pending)
+          Changeset.force_change_attribute(cs, :embedding_status, :pending)
 
         _ ->
           cs
@@ -702,11 +704,11 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
-        with label when is_binary(label) <- Ash.Changeset.get_attribute(cs, :label),
-             scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind),
+        with label when is_binary(label) <- Changeset.get_attribute(cs, :label),
+             scope_kind = Changeset.get_attribute(cs, :scope_kind),
              {:ok, fk_id} <- Fact.scope_fk_for(cs, scope_kind),
              true <- is_binary(tenant_id) do
           Fact.invalidate_prior_active_label(
@@ -730,10 +732,10 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      if Ash.Changeset.get_argument(changeset, :skip_backfill_hint?) do
+      if Changeset.get_argument(changeset, :skip_backfill_hint?) do
         changeset
       else
-        Ash.Changeset.after_transaction(changeset, fn _cs, result ->
+        Changeset.after_transaction(changeset, fn _cs, result ->
           case result do
             {:ok, %{embedding_status: :pending, id: id}} ->
               Fact.hint_backfill(id)
@@ -754,13 +756,13 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         promoted_at =
-          Ash.Changeset.get_argument(cs, :promoted_at) || DateTime.utc_now()
+          Changeset.get_argument(cs, :promoted_at) || DateTime.utc_now()
 
         cs
-        |> Ash.Changeset.force_change_attribute(:source, :consolidator_promoted)
-        |> Ash.Changeset.force_change_attribute(:promoted_at, promoted_at)
+        |> Changeset.force_change_attribute(:source, :consolidator_promoted)
+        |> Changeset.force_change_attribute(:promoted_at, promoted_at)
       end)
     end
   end
@@ -771,7 +773,7 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def validate(changeset, _opts, _context) do
-      case Ash.Changeset.get_argument(changeset, :source) do
+      case Changeset.get_argument(changeset, :source) do
         :model_remember ->
           :ok
 
@@ -816,19 +818,19 @@ defmodule JidoClaw.Memory.Fact do
 
     @impl true
     def prepare(query, _opts, _context) do
-      kind = Ash.Query.get_argument(query, :scope_kind)
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      since_at = Ash.Query.get_argument(query, :since_inserted_at)
-      since_id = Ash.Query.get_argument(query, :since_id)
-      limit = Ash.Query.get_argument(query, :limit)
-      sources = Ash.Query.get_argument(query, :sources)
+      kind = Query.get_argument(query, :scope_kind)
+      fk = Query.get_argument(query, :scope_fk_id)
+      since_at = Query.get_argument(query, :since_inserted_at)
+      since_id = Query.get_argument(query, :since_id)
+      limit = Query.get_argument(query, :limit)
+      sources = Query.get_argument(query, :sources)
 
       query
       |> Fact.apply_scope_filter(kind, fk)
       |> Fact.apply_since_filter(since_at, since_id)
       |> Fact.apply_sources_filter(sources)
-      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
-      |> Ash.Query.limit(limit)
+      |> Query.sort(inserted_at: :asc, id: :asc)
+      |> Query.limit(limit)
     end
   end
 
@@ -862,7 +864,7 @@ defmodule JidoClaw.Memory.Fact do
   def scope_fk_for(_, _), do: :missing
 
   defp nullable_attr(changeset, attr) do
-    case Ash.Changeset.get_attribute(changeset, attr) do
+    case Changeset.get_attribute(changeset, attr) do
       nil -> :missing
       id -> {:ok, id}
     end
@@ -915,11 +917,11 @@ defmodule JidoClaw.Memory.Fact do
   def apply_since_filter(query, nil, _), do: query
 
   def apply_since_filter(query, since_at, nil) do
-    Ash.Query.filter(query, inserted_at > ^since_at)
+    Query.filter(query, inserted_at > ^since_at)
   end
 
   def apply_since_filter(query, since_at, since_id) do
-    Ash.Query.filter(
+    Query.filter(
       query,
       inserted_at > ^since_at or (inserted_at == ^since_at and id > ^since_id)
     )
@@ -933,7 +935,7 @@ defmodule JidoClaw.Memory.Fact do
   def apply_sources_filter(query, []), do: query
 
   def apply_sources_filter(query, sources) when is_list(sources) do
-    Ash.Query.filter(query, source in ^sources)
+    Query.filter(query, source in ^sources)
   end
 
   @doc """

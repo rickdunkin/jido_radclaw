@@ -460,7 +460,7 @@ defmodule JidoClaw.JidoMd do
   defp entry_points_section([]), do: ""
 
   defp entry_points_section(points) do
-    list = points |> Enum.map(&"  - `#{&1}`") |> Enum.join("\n")
+    list = Enum.map_join(points, "\n", &"  - `#{&1}`")
     "- **Entry points**:\n#{list}\n"
   end
 

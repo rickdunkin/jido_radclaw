@@ -138,6 +138,42 @@ defmodule JidoClaw.Tools.ReadFileTest do
 
       assert message =~ "Cannot read"
     end
+
+    test "should reject negative offset", %{dir: dir} do
+      path = Path.join(dir, "neg_offset.txt")
+      File.write!(path, "a\nb\nc")
+
+      assert {:error, "offset must be non-negative"} =
+               ReadFile.run(%{path: path, offset: -1}, %{})
+    end
+
+    test "should reject negative limit", %{dir: dir} do
+      path = Path.join(dir, "neg_limit.txt")
+      File.write!(path, "a\nb\nc")
+
+      assert {:error, "limit must be non-negative"} =
+               ReadFile.run(%{path: path, limit: -1}, %{})
+    end
+
+    test "should reject when both offset and limit are negative", %{dir: dir} do
+      path = Path.join(dir, "neg_both.txt")
+      File.write!(path, "a\nb\nc")
+
+      assert {:error, "offset must be non-negative"} =
+               ReadFile.run(%{path: path, offset: -1, limit: -1}, %{})
+    end
+  end
+
+  describe "run/2 edge cases" do
+    test "should return empty content when offset exceeds line count", %{dir: dir} do
+      path = Path.join(dir, "past_end.txt")
+      File.write!(path, "a\nb\nc")
+
+      assert {:ok, result} = ReadFile.run(%{path: path, offset: 100}, %{})
+
+      assert result.content == ""
+      assert result.total_lines == 3
+    end
   end
 
   describe "run/2 auto-bootstrap via tool_context" do

@@ -207,8 +207,7 @@ defmodule JidoClaw.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format",
-        # "credo --strict",
-        # "ex_dna",
+        "credo --strict",
         # "dialyzer --format short",
         "test"
       ]

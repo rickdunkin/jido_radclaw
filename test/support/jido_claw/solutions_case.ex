@@ -26,6 +26,7 @@ defmodule JidoClaw.SolutionsCase do
   use ExUnit.CaseTemplate
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Ecto.UUID
   alias JidoClaw.Audit.AsyncWriter
   alias JidoClaw.Solutions.Solution
   alias JidoClaw.Tenants.Tenant
@@ -169,7 +170,7 @@ defmodule JidoClaw.SolutionsCase do
   """
   def bulk_insert_solutions(tenant_id, workspace_id, count, builder)
       when is_binary(tenant_id) and is_integer(count) and is_function(builder, 1) do
-    workspace_uuid = Ecto.UUID.dump!(workspace_id)
+    workspace_uuid = UUID.dump!(workspace_id)
     now = DateTime.utc_now()
 
     # 15 params per row * 4000 rows = 60_000 params, under the 65_535
@@ -184,7 +185,7 @@ defmodule JidoClaw.SolutionsCase do
           attrs = builder.(i)
 
           %{
-            id: Ecto.UUID.dump!(Ecto.UUID.generate()),
+            id: UUID.dump!(UUID.generate()),
             problem_signature: Map.fetch!(attrs, :problem_signature),
             solution_content: Map.fetch!(attrs, :solution_content),
             language: Map.get(attrs, :language, "elixir"),

@@ -124,9 +124,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
     merged = Map.merge(existing, Map.new(env, fn {k, v} -> {to_string(k), to_string(v)} end))
 
-    lines =
-      Enum.map(merged, fn {k, v} -> "#{k}=#{v}" end)
-      |> Enum.join("\n")
+    lines = Enum.map_join(merged, "\n", fn {k, v} -> "#{k}=#{v}" end)
 
     File.write(env_file, lines <> "\n")
   end

@@ -62,6 +62,8 @@ defmodule JidoClaw.Conversations.Message do
 
   use JidoClaw.Resource, domain: JidoClaw.Conversations
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Conversations.Session, as: SessionResource
 
   @roles [:user, :assistant, :tool_call, :tool_result, :reasoning, :system]
@@ -409,12 +411,12 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
-        case Ash.Changeset.get_attribute(cs, :session_id) do
+        case Changeset.get_attribute(cs, :session_id) do
           nil ->
-            Ash.Changeset.add_error(cs, field: :session_id, message: "session_required")
+            Changeset.add_error(cs, field: :session_id, message: "session_required")
 
           session_id ->
             GlobalLookup.validate_tenant_match(
@@ -438,13 +440,13 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         case cs.errors do
           [_ | _] ->
             cs
 
           _ ->
-            session_id = Ash.Changeset.get_attribute(cs, :session_id)
+            session_id = Changeset.get_attribute(cs, :session_id)
             allocate(cs, session_id)
         end
       end)
@@ -464,10 +466,10 @@ defmodule JidoClaw.Conversations.Message do
 
       case result.rows do
         [[seq]] ->
-          Ash.Changeset.force_change_attribute(cs, :sequence, seq)
+          Changeset.force_change_attribute(cs, :sequence, seq)
 
         _ ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :session_id,
             message: "sequence_allocation_failed"
           )
@@ -483,7 +485,7 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         cs
         |> redact_attribute(:content)
         |> redact_attribute(:metadata)
@@ -491,12 +493,12 @@ defmodule JidoClaw.Conversations.Message do
     end
 
     defp redact_attribute(cs, attr) do
-      case Ash.Changeset.get_attribute(cs, attr) do
+      case Changeset.get_attribute(cs, attr) do
         nil ->
           cs
 
         value ->
-          Ash.Changeset.force_change_attribute(
+          Changeset.force_change_attribute(
             cs,
             attr,
             Transcript.redact(value)
@@ -514,9 +516,9 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        session_id = Ash.Changeset.get_attribute(cs, :session_id)
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        session_id = Changeset.get_attribute(cs, :session_id)
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
         validate(cs, session_id, tenant_id)
       end)
     end
@@ -551,26 +553,26 @@ defmodule JidoClaw.Conversations.Message do
 
     @impl true
     def prepare(query, _opts, _context) do
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      since_at = Ash.Query.get_argument(query, :since_inserted_at)
-      since_id = Ash.Query.get_argument(query, :since_id)
-      limit = Ash.Query.get_argument(query, :limit)
+      fk = Query.get_argument(query, :scope_fk_id)
+      since_at = Query.get_argument(query, :since_inserted_at)
+      since_id = Query.get_argument(query, :since_id)
+      limit = Query.get_argument(query, :limit)
 
       query
-      |> Ash.Query.filter(session_id == ^fk)
+      |> Query.filter(session_id == ^fk)
       |> apply_since(since_at, since_id)
-      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
-      |> Ash.Query.limit(limit)
+      |> Query.sort(inserted_at: :asc, id: :asc)
+      |> Query.limit(limit)
     end
 
     defp apply_since(query, nil, _), do: query
 
     defp apply_since(query, since_at, nil) do
-      Ash.Query.filter(query, inserted_at > ^since_at)
+      Query.filter(query, inserted_at > ^since_at)
     end
 
     defp apply_since(query, since_at, since_id) do
-      Ash.Query.filter(
+      Query.filter(
         query,
         inserted_at > ^since_at or (inserted_at == ^since_at and id > ^since_id)
       )

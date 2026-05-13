@@ -32,6 +32,7 @@ defmodule JidoClaw.Shell.SessionManager do
   alias Jido.Shell.ShellSession
   alias Jido.Shell.ShellSessionServer
   alias Jido.Shell.VFS.MountTable
+  alias JidoClaw.Display
   alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.ServerRegistry.ServerEntry
@@ -559,7 +560,7 @@ defmodule JidoClaw.Shell.SessionManager do
           try do
             fun.(true)
           after
-            JidoClaw.Display.end_stream(session_id)
+            Display.end_stream(session_id)
             _ = ShellSessionServer.unsubscribe(session_id, display_pid)
           end
 
@@ -575,12 +576,12 @@ defmodule JidoClaw.Shell.SessionManager do
     agent_id = Keyword.get(opts, :agent_id, "main")
     tool_name = Keyword.get(opts, :tool_name, "run_command")
 
-    case GenServer.whereis(JidoClaw.Display) do
+    case GenServer.whereis(Display) do
       nil ->
         :no_stream
 
       display_pid ->
-        case JidoClaw.Display.start_stream(session_id, agent_id, tool_name) do
+        case Display.start_stream(session_id, agent_id, tool_name) do
           :ok ->
             case ShellSessionServer.subscribe(session_id, display_pid) do
               {:ok, :subscribed} ->
@@ -591,7 +592,7 @@ defmodule JidoClaw.Shell.SessionManager do
                   "[SessionManager] Display subscribe failed for #{session_id}: #{inspect(reason)}"
                 )
 
-                JidoClaw.Display.abort_stream(session_id)
+                Display.abort_stream(session_id)
                 :no_stream
             end
 
@@ -1221,7 +1222,7 @@ defmodule JidoClaw.Shell.SessionManager do
           # Run rejected — no events will fire. Force-drop the
           # Display registration so it doesn't leak; the outer
           # try/after's end_stream cast becomes a no-op.
-          if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+          if streaming?, do: Display.abort_stream(session_id)
           {:error, "Command rejected: #{inspect(reason)}"}
       end
 
@@ -1229,7 +1230,7 @@ defmodule JidoClaw.Shell.SessionManager do
     result
   catch
     {:subscribe_failed, reason} ->
-      if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+      if streaming?, do: Display.abort_stream(session_id)
       {:error, "Could not subscribe to session: #{inspect(reason)}"}
   end
 
@@ -1335,14 +1336,14 @@ defmodule JidoClaw.Shell.SessionManager do
           # `run_ssh_with_retry/8` can classify the failure via
           # `transport_drop?/1`. `format_if_retry_raw_error/2` formats
           # at the boundary if the retry path opts not to retry.
-          if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+          if streaming?, do: Display.abort_stream(session_id)
           {:error, err}
 
         {:error, reason} ->
           # Run rejected — no events will fire. Force-drop the
           # Display registration so it doesn't leak; the outer
           # try/after's end_stream cast becomes a no-op.
-          if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+          if streaming?, do: Display.abort_stream(session_id)
           {:error, SSHError.format(reason, entry)}
       end
 
@@ -1350,7 +1351,7 @@ defmodule JidoClaw.Shell.SessionManager do
     result
   catch
     {:subscribe_failed, reason} ->
-      if streaming?, do: JidoClaw.Display.abort_stream(session_id)
+      if streaming?, do: Display.abort_stream(session_id)
       {:error, "Could not subscribe to SSH session: #{inspect(reason)}"}
   end
 

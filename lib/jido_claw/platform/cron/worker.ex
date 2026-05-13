@@ -9,6 +9,7 @@ defmodule JidoClaw.Cron.Worker do
   alias Crontab.CronExpression.Parser
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Telemetry
 
   @max_failures 3
   @stuck_threshold_ms 2 * 60 * 60 * 1000
@@ -113,7 +114,7 @@ defmodule JidoClaw.Cron.Worker do
   # -- Private --
 
   defp execute_job(state) do
-    JidoClaw.Telemetry.emit_cron_start(%{job_id: state.id, tenant_id: state.tenant_id})
+    Telemetry.emit_cron_start(%{job_id: state.id, tenant_id: state.tenant_id})
     start_time = System.monotonic_time()
 
     result =
@@ -141,12 +142,12 @@ defmodule JidoClaw.Cron.Worker do
         end
       rescue
         e ->
-          JidoClaw.Telemetry.emit_cron_exception(%{job_id: state.id}, :error)
+          Telemetry.emit_cron_exception(%{job_id: state.id}, :error)
           {:error, Exception.message(e)}
       end
 
     duration = System.monotonic_time() - start_time
-    JidoClaw.Telemetry.emit_cron_stop(%{job_id: state.id, tenant_id: state.tenant_id}, duration)
+    Telemetry.emit_cron_stop(%{job_id: state.id, tenant_id: state.tenant_id}, duration)
 
     case result do
       :ok ->

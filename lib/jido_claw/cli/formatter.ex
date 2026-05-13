@@ -24,12 +24,10 @@ defmodule JidoClaw.CLI.Formatter do
 
   def print_tool_call(name, args) when is_map(args) do
     args_str =
-      args
-      |> Enum.map(fn {k, v} ->
+      Enum.map_join(args, " ", fn {k, v} ->
         v_display = truncate_value(v)
         "\e[2m#{k}=\e[0m#{v_display}"
       end)
-      |> Enum.join(" ")
 
     IO.puts("  \e[33m⟳\e[0m \e[1m#{name}\e[0m #{args_str}")
   end
@@ -41,13 +39,12 @@ defmodule JidoClaw.CLI.Formatter do
   def render_diff(diff_text) when is_binary(diff_text) do
     diff_text
     |> String.split("\n")
-    |> Enum.map(fn
+    |> Enum.map_join("\n", fn
       "+" <> rest -> "  \e[32m+ #{rest}\e[0m"
       "-" <> rest -> "  \e[31m- #{rest}\e[0m"
       "@@" <> rest -> "  \e[36m@@ #{rest}\e[0m"
       line -> "  \e[2m  #{line}\e[0m"
     end)
-    |> Enum.join("\n")
   end
 
   # -- Thinking Spinner (runs in a separate process) --

@@ -170,7 +170,7 @@ defmodule JidoClaw.Reasoning.AutoSelect do
     alternatives = Enum.map(ranked, fn {n, s} -> {n, s} end)
 
     case tie_candidates(ranked) do
-      [_, _ | _] = tied when length(tied) >= 2 ->
+      [_, _ | _] = tied ->
         if Keyword.get(opts, :llm_tiebreak, true) do
           attempt_tiebreak(tied, ranked, prompt, opts, alternatives)
         else

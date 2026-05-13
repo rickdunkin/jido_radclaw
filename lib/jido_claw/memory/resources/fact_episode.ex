@@ -20,6 +20,8 @@ defmodule JidoClaw.Memory.FactEpisode do
 
   use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
+  alias Ash.Changeset
+
   @roles [:primary, :supporting, :contradicting]
 
   postgres do
@@ -143,16 +145,16 @@ defmodule JidoClaw.Memory.FactEpisode do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        fact_id = Ash.Changeset.get_attribute(cs, :fact_id)
-        episode_id = Ash.Changeset.get_attribute(cs, :episode_id)
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        fact_id = Changeset.get_attribute(cs, :fact_id)
+        episode_id = Changeset.get_attribute(cs, :episode_id)
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
         with {:ok, fact} <- Fact.by_id_global(fact_id),
              {:ok, episode} <- Episode.by_id_global(episode_id) do
           cond do
             fact.tenant_id != episode.tenant_id ->
-              Ash.Changeset.add_error(cs,
+              Changeset.add_error(cs,
                 field: :episode_id,
                 message: "cross_tenant_join_mismatch",
                 vars: [
@@ -162,7 +164,7 @@ defmodule JidoClaw.Memory.FactEpisode do
               )
 
             is_binary(tenant_id) and fact.tenant_id != tenant_id ->
-              Ash.Changeset.add_error(cs,
+              Changeset.add_error(cs,
                 field: :fact_id,
                 message: "cross_tenant_fk_mismatch",
                 vars: [supplied_tenant: tenant_id, parent_tenant: fact.tenant_id]
@@ -173,7 +175,7 @@ defmodule JidoClaw.Memory.FactEpisode do
           end
         else
           {:error, _} ->
-            Ash.Changeset.add_error(cs,
+            Changeset.add_error(cs,
               field: :fact_id,
               message: "fact_or_episode_not_found"
             )

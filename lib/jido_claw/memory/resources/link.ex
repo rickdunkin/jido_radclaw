@@ -26,6 +26,8 @@ defmodule JidoClaw.Memory.Link do
 
   use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
+  alias Ash.Changeset
+
   @relations [:related, :supports, :contradicts, :supersedes, :elaborates]
   @scope_kinds [:user, :workspace, :project, :session]
 
@@ -199,17 +201,17 @@ defmodule JidoClaw.Memory.Link do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        from_id = Ash.Changeset.get_attribute(cs, :from_fact_id)
-        to_id = Ash.Changeset.get_attribute(cs, :to_fact_id)
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        from_id = Changeset.get_attribute(cs, :from_fact_id)
+        to_id = Changeset.get_attribute(cs, :to_fact_id)
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
         with {:ok, from_fact} <- Fact.by_id_global(from_id),
              {:ok, to_fact} <- Fact.by_id_global(to_id) do
           validate_scopes(cs, from_fact, to_fact, tenant_id)
         else
           {:error, _} ->
-            Ash.Changeset.add_error(cs,
+            Changeset.add_error(cs,
               field: :from_fact_id,
               message: "fact_not_found"
             )
@@ -220,21 +222,21 @@ defmodule JidoClaw.Memory.Link do
     defp validate_scopes(cs, from_fact, to_fact, tenant_id) do
       cond do
         from_fact.tenant_id != to_fact.tenant_id ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :to_fact_id,
             message: "cross_tenant_link",
             vars: [from_tenant: from_fact.tenant_id, to_tenant: to_fact.tenant_id]
           )
 
         is_binary(tenant_id) and from_fact.tenant_id != tenant_id ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :from_fact_id,
             message: "cross_tenant_fk_mismatch",
             vars: [supplied_tenant: tenant_id, parent_tenant: from_fact.tenant_id]
           )
 
         not same_scope?(from_fact, to_fact) ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :to_fact_id,
             message: "cross_scope_link",
             vars: [
@@ -245,11 +247,11 @@ defmodule JidoClaw.Memory.Link do
 
         true ->
           cs
-          |> Ash.Changeset.force_change_attribute(:scope_kind, from_fact.scope_kind)
-          |> Ash.Changeset.force_change_attribute(:user_id, from_fact.user_id)
-          |> Ash.Changeset.force_change_attribute(:workspace_id, from_fact.workspace_id)
-          |> Ash.Changeset.force_change_attribute(:project_id, from_fact.project_id)
-          |> Ash.Changeset.force_change_attribute(:session_id, from_fact.session_id)
+          |> Changeset.force_change_attribute(:scope_kind, from_fact.scope_kind)
+          |> Changeset.force_change_attribute(:user_id, from_fact.user_id)
+          |> Changeset.force_change_attribute(:workspace_id, from_fact.workspace_id)
+          |> Changeset.force_change_attribute(:project_id, from_fact.project_id)
+          |> Changeset.force_change_attribute(:session_id, from_fact.session_id)
       end
     end
 

@@ -21,6 +21,7 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
 
   use JidoClaw.SolutionsCase, async: false
 
+  alias Ecto.UUID
   alias JidoClaw.Embeddings.BackfillWorker
   alias JidoClaw.Repo
 
@@ -133,7 +134,7 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
   # ---------------------------------------------------------------------------
 
   defp insert_pending_solution(tenant_id, workspace_id, content) do
-    id = Ecto.UUID.generate()
+    id = UUID.generate()
     sig = "sig-#{System.unique_integer([:positive])}"
 
     Repo.query!(
@@ -145,7 +146,7 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
       VALUES ($1, $2, $3, $4, $5, 'elixir', 'local', '{}', '{}'::jsonb, 0.0,
               'pending', 0, now() - interval '1 hour', now())
       """,
-      [Ecto.UUID.dump!(id), tenant_id, Ecto.UUID.dump!(workspace_id), sig, content]
+      [UUID.dump!(id), tenant_id, UUID.dump!(workspace_id), sig, content]
     )
 
     id
@@ -164,7 +165,7 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
 
   defp column(id, name) do
     %Postgrex.Result{rows: [[value]]} =
-      Repo.query!("SELECT #{name} FROM solutions WHERE id = $1", [Ecto.UUID.dump!(id)])
+      Repo.query!("SELECT #{name} FROM solutions WHERE id = $1", [UUID.dump!(id)])
 
     value
   end

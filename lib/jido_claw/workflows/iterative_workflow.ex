@@ -141,6 +141,9 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
         :fail
 
       matches ->
+        # "Last VERDICT wins" is intentional (see comment above); Regex.scan
+        # results are bounded by the small number of verdict tokens an LLM emits.
+        # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
         if String.upcase(List.last(matches) |> List.last()) == "PASS", do: :pass, else: :fail
     end
   end

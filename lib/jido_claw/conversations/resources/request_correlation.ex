@@ -62,6 +62,8 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer]
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Workspaces.Workspace, as: WorkspaceResource
 
@@ -249,8 +251,8 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   def sweep_expired do
     expired =
       __MODULE__
-      |> Ash.Query.for_read(:expired)
-      |> Ash.Query.limit(@sweep_batch)
+      |> Query.for_read(:expired)
+      |> Query.limit(@sweep_batch)
       |> Ash.read!(authorize?: false)
 
     case expired do
@@ -277,10 +279,10 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        tenant_id = Ash.Changeset.get_attribute(cs, :tenant_id)
-        session_id = Ash.Changeset.get_attribute(cs, :session_id)
-        workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
+      Changeset.before_action(changeset, fn cs ->
+        tenant_id = Changeset.get_attribute(cs, :tenant_id)
+        session_id = Changeset.get_attribute(cs, :session_id)
+        workspace_id = Changeset.get_attribute(cs, :workspace_id)
 
         cs
         |> validate_session(session_id, tenant_id)

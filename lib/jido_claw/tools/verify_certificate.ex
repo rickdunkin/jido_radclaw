@@ -98,7 +98,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
        }}
     else
       {:error, :unknown_type} ->
-        valid = Certificates.types() |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+        valid = Enum.map_join(Certificates.types(), ", ", &Atom.to_string/1)
         {:error, "Unknown certificate type '#{cert_type_str}'. Valid types: #{valid}"}
 
       {:error, :no_certificate} ->

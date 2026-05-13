@@ -28,6 +28,8 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
   require Ash.Query
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Security.CrossTenantFk
 
@@ -283,7 +285,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
           {:workspace_id, JidoClaw.Workspaces.Workspace, JidoClaw.Workspaces},
           {:session_id, JidoClaw.Conversations.Session, JidoClaw.Conversations},
@@ -305,15 +307,15 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     @impl true
     def prepare(query, _opts, _context) do
-      kind = Ash.Query.get_argument(query, :scope_kind)
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      status = Ash.Query.get_argument(query, :status)
+      kind = Query.get_argument(query, :scope_kind)
+      fk = Query.get_argument(query, :scope_fk_id)
+      status = Query.get_argument(query, :status)
 
       query
       |> ConsolidationRun.apply_scope_filter(kind, fk)
       |> ConsolidationRun.apply_status_filter(status)
-      |> Ash.Query.sort(started_at: :desc)
-      |> Ash.Query.limit(1)
+      |> Query.sort(started_at: :desc)
+      |> Query.limit(1)
     end
   end
 
@@ -326,14 +328,14 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     @impl true
     def prepare(query, _opts, _context) do
-      kind = Ash.Query.get_argument(query, :scope_kind)
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      limit = Ash.Query.get_argument(query, :limit)
+      kind = Query.get_argument(query, :scope_kind)
+      fk = Query.get_argument(query, :scope_fk_id)
+      limit = Query.get_argument(query, :limit)
 
       query
       |> ConsolidationRun.apply_scope_filter(kind, fk)
-      |> Ash.Query.sort(started_at: :desc)
-      |> Ash.Query.limit(limit)
+      |> Query.sort(started_at: :desc)
+      |> Query.limit(limit)
     end
   end
 
@@ -350,6 +352,6 @@ defmodule JidoClaw.Memory.ConsolidationRun do
   def apply_status_filter(query, nil), do: query
 
   def apply_status_filter(query, status) do
-    Ash.Query.filter(query, status == ^status)
+    Query.filter(query, status == ^status)
   end
 end

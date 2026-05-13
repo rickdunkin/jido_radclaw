@@ -131,9 +131,7 @@ defmodule JidoClaw.Tools.StoreSolution do
   end
 
   defp format_error(%Ash.Error.Invalid{errors: errors}) do
-    errors
-    |> Enum.map(&inspect/1)
-    |> Enum.join("; ")
+    Enum.map_join(errors, "; ", &inspect/1)
   end
 
   defp format_error(reason), do: inspect(reason)

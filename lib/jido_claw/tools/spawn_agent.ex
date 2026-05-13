@@ -33,6 +33,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
     ]
 
   alias JidoClaw.Agent.Templates
+  alias JidoClaw.AgentTracker
 
   @impl true
   def run(params, context) do
@@ -44,7 +45,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
       {:ok, template} ->
         case JidoClaw.Jido.start_agent(template.module, id: tag) do
           {:ok, pid} ->
-            JidoClaw.AgentTracker.register(tag, pid, template_name, task)
+            AgentTracker.register(tag, pid, template_name, task)
 
             child_tool_context =
               JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
@@ -59,11 +60,11 @@ defmodule JidoClaw.Tools.SpawnAgent do
                   tool_context: child_tool_context
                 )
 
-                JidoClaw.AgentTracker.mark_complete(tag, :done)
+                AgentTracker.mark_complete(tag, :done)
               rescue
-                _ -> JidoClaw.AgentTracker.mark_complete(tag, :error)
+                _ -> AgentTracker.mark_complete(tag, :error)
               catch
-                _, _ -> JidoClaw.AgentTracker.mark_complete(tag, :error)
+                _, _ -> AgentTracker.mark_complete(tag, :error)
               end
             end)
 

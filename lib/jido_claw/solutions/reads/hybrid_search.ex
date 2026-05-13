@@ -18,6 +18,7 @@ defmodule JidoClaw.Solutions.Reads.HybridSearch do
 
   use Ash.Resource.ManualRead
 
+  alias Ash.Query
   alias JidoClaw.Solutions.HybridSearchSql
 
   @impl true
@@ -42,18 +43,18 @@ defmodule JidoClaw.Solutions.Reads.HybridSearch do
 
   defp build_args(query) do
     %{
-      query: Ash.Query.get_argument(query, :query),
-      query_embedding: Ash.Query.get_argument(query, :query_embedding),
-      language: Ash.Query.get_argument(query, :language),
-      framework: Ash.Query.get_argument(query, :framework),
-      limit: Ash.Query.get_argument(query, :limit) || 10,
-      threshold: Ash.Query.get_argument(query, :threshold) || 0.0,
-      workspace_id: Ash.Query.get_argument(query, :workspace_id),
+      query: Query.get_argument(query, :query),
+      query_embedding: Query.get_argument(query, :query_embedding),
+      language: Query.get_argument(query, :language),
+      framework: Query.get_argument(query, :framework),
+      limit: Query.get_argument(query, :limit) || 10,
+      threshold: Query.get_argument(query, :threshold) || 0.0,
+      workspace_id: Query.get_argument(query, :workspace_id),
       tenant_id: query.tenant,
       local_visibility:
-        Ash.Query.get_argument(query, :local_visibility) || [:local, :shared, :public],
+        Query.get_argument(query, :local_visibility) || [:local, :shared, :public],
       cross_workspace_visibility:
-        Ash.Query.get_argument(query, :cross_workspace_visibility) || [:public]
+        Query.get_argument(query, :cross_workspace_visibility) || [:public]
     }
   end
 end

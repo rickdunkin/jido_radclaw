@@ -173,11 +173,10 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
 
   defp validate_deps(named_steps, step_map) do
     missing =
-      Enum.flat_map(named_steps, fn step ->
-        Enum.flat_map(step.depends_on, fn dep ->
-          if Map.has_key?(step_map, dep), do: [], else: [{step.name, dep}]
-        end)
-      end)
+      for step <- named_steps,
+          dep <- step.depends_on,
+          not Map.has_key?(step_map, dep),
+          do: {step.name, dep}
 
     if missing == [] do
       :ok

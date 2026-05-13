@@ -332,7 +332,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   defp known_prompt_key(_), do: nil
 
   defp known_prompt_key_list do
-    @known_prompt_keys |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+    Enum.map_join(@known_prompt_keys, ", ", &Atom.to_string/1)
   end
 
   # Never `String.to_atom/1` on user input — match against the known enum

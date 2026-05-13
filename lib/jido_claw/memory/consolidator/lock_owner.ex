@@ -16,6 +16,8 @@ defmodule JidoClaw.Memory.Consolidator.LockOwner do
   `base_size + max_concurrent_scopes`.
   """
 
+  alias JidoClaw.Repo
+
   @acquire_timeout 5_000
   @release_timeout 5_000
 
@@ -85,14 +87,14 @@ defmodule JidoClaw.Memory.Consolidator.LockOwner do
   end
 
   defp hold(key, parent) do
-    JidoClaw.Repo.checkout(fn ->
-      case JidoClaw.Repo.query!("SELECT pg_try_advisory_lock($1)", [key]) do
+    Repo.checkout(fn ->
+      case Repo.query!("SELECT pg_try_advisory_lock($1)", [key]) do
         %{rows: [[true]]} ->
           send(parent, {:acquired, self()})
 
           receive do
             :release ->
-              JidoClaw.Repo.query!("SELECT pg_advisory_unlock($1)", [key])
+              Repo.query!("SELECT pg_advisory_unlock($1)", [key])
               send(parent, {:released, self()})
           end
 

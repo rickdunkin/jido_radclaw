@@ -9,6 +9,8 @@ defmodule JidoClaw.Stats do
   use GenServer
   require Logger
 
+  alias JidoClaw.SignalBus
+
   defstruct messages: 0,
             tokens: 0,
             tool_calls: 0,
@@ -94,10 +96,10 @@ defmodule JidoClaw.Stats do
 
   @impl true
   def init(_opts) do
-    JidoClaw.SignalBus.subscribe("jido_claw.tool.*")
-    JidoClaw.SignalBus.subscribe("jido_claw.agent.*")
-    JidoClaw.SignalBus.subscribe("jido_claw.memory.*")
-    JidoClaw.SignalBus.subscribe("jido_claw.skill.*")
+    SignalBus.subscribe("jido_claw.tool.*")
+    SignalBus.subscribe("jido_claw.agent.*")
+    SignalBus.subscribe("jido_claw.memory.*")
+    SignalBus.subscribe("jido_claw.skill.*")
     {:ok, %__MODULE__{started_at: System.monotonic_time(:second)}}
   end
 
@@ -107,7 +109,7 @@ defmodule JidoClaw.Stats do
   end
 
   def handle_cast({:track_tool_call, agent_id, name}, state) do
-    JidoClaw.SignalBus.emit("jido_claw.tool.complete", %{agent_id: agent_id, name: name})
+    SignalBus.emit("jido_claw.tool.complete", %{agent_id: agent_id, name: name})
     # Also update AgentTracker for per-agent stats
     JidoClaw.AgentTracker.track_tool(agent_id, name)
     {:noreply, %{state | tool_calls: state.tool_calls + 1}}
@@ -118,7 +120,7 @@ defmodule JidoClaw.Stats do
   end
 
   def handle_cast({:track_agent_spawn, template}, state) do
-    JidoClaw.SignalBus.emit("jido_claw.agent.spawned", %{template: inspect(template)})
+    SignalBus.emit("jido_claw.agent.spawned", %{template: inspect(template)})
     {:noreply, %{state | agents_spawned: state.agents_spawned + 1}}
   end
 

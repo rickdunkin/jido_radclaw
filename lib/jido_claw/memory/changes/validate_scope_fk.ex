@@ -11,6 +11,8 @@ defmodule JidoClaw.Memory.Changes.ValidateScopeFk do
   """
   use Ash.Resource.Change
 
+  alias Ash.Changeset
+
   @scope_attrs %{
     user: :user_id,
     workspace: :workspace_id,
@@ -20,15 +22,15 @@ defmodule JidoClaw.Memory.Changes.ValidateScopeFk do
 
   @impl true
   def change(changeset, _opts, _context) do
-    Ash.Changeset.before_action(changeset, fn cs ->
-      scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
+    Changeset.before_action(changeset, fn cs ->
+      scope_kind = Changeset.get_attribute(cs, :scope_kind)
 
       case Map.get(@scope_attrs, scope_kind) do
         nil ->
           add_missing(cs, scope_kind)
 
         attr ->
-          case Ash.Changeset.get_attribute(cs, attr) do
+          case Changeset.get_attribute(cs, attr) do
             nil -> add_missing(cs, scope_kind)
             _id -> cs
           end
@@ -38,7 +40,7 @@ defmodule JidoClaw.Memory.Changes.ValidateScopeFk do
 
   defp add_missing(cs, scope_kind),
     do:
-      Ash.Changeset.add_error(cs,
+      Changeset.add_error(cs,
         field: :scope_kind,
         message: "scope_fk_required",
         vars: [scope_kind: scope_kind]

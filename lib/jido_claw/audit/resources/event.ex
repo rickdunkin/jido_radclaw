@@ -23,6 +23,8 @@ defmodule JidoClaw.Audit.Event do
 
   require Ash.Query
 
+  alias Ash.Changeset
+
   @event_kinds [
     :memory_write,
     :memory_consolidation,
@@ -212,10 +214,10 @@ defmodule JidoClaw.Audit.Event do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        target_kind = Ash.Changeset.get_attribute(cs, :target_kind)
-        target_id = Ash.Changeset.get_attribute(cs, :target_id)
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      Changeset.before_action(changeset, fn cs ->
+        target_kind = Changeset.get_attribute(cs, :target_kind)
+        target_id = Changeset.get_attribute(cs, :target_id)
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
         validate(cs, target_kind, target_id, tenant_id)
       end)
@@ -262,7 +264,7 @@ defmodule JidoClaw.Audit.Event do
           cs
 
         {:ok, %{tenant_id: parent_tenant}} ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :target_id,
             message: "cross_tenant_fk_mismatch",
             vars: [

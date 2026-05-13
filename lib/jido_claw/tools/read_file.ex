@@ -26,8 +26,8 @@ defmodule JidoClaw.Tools.ReadFile do
         required: true,
         doc: "Absolute or relative file path, or remote URI (github://, s3://, git://)"
       ],
-      offset: [type: :integer, default: 0, doc: "Start line (0-indexed)"],
-      limit: [type: :integer, default: 2000, doc: "Max lines to read"]
+      offset: [type: :non_neg_integer, default: 0, doc: "Start line (0-indexed)"],
+      limit: [type: :non_neg_integer, default: 2000, doc: "Max lines to read"]
     ]
 
   alias JidoClaw.Tools.MCPScope
@@ -35,9 +35,18 @@ defmodule JidoClaw.Tools.ReadFile do
 
   @impl true
   def run(%{path: path} = params, context) do
+    offset = Map.get(params, :offset, 0)
+    limit = Map.get(params, :limit, 2000)
+
+    cond do
+      offset < 0 -> {:error, "offset must be non-negative"}
+      limit < 0 -> {:error, "limit must be non-negative"}
+      true -> do_read(path, params, context, offset, limit)
+    end
+  end
+
+  defp do_read(path, params, context, offset, limit) do
     MCPScope.wrap(:read_file, params, context, fn enriched ->
-      offset = Map.get(params, :offset, 0)
-      limit = Map.get(params, :limit, 2000)
       workspace_id = get_in(enriched, [:tool_context, :workspace_id])
       project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
 
@@ -49,12 +58,10 @@ defmodule JidoClaw.Tools.ReadFile do
           numbered =
             lines
             |> Enum.with_index(1)
-            |> Enum.drop(offset)
-            |> Enum.take(limit)
-            |> Enum.map(fn {line, n} ->
+            |> Enum.slice(offset, limit)
+            |> Enum.map_join("\n", fn {line, n} ->
               "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
             end)
-            |> Enum.join("\n")
 
           {:ok, %{path: path, content: numbered, total_lines: total}}
 

@@ -22,6 +22,7 @@ defmodule JidoClaw.VFS.Resolver do
 
   alias Jido.Shell.VFS, as: ShellVFS
   alias Jido.Shell.VFS.MountTable
+  alias Jido.VFS, as: JidoVFS
   alias JidoClaw.VFS.Workspace
 
   # -- Public API -------------------------------------------------------------
@@ -52,17 +53,17 @@ defmodule JidoClaw.VFS.Resolver do
 
         {:github, owner, repo, ref, file_path} ->
           with {:ok, fs} <- github_filesystem(owner, repo, ref) do
-            Jido.VFS.read(fs, file_path)
+            JidoVFS.read(fs, file_path)
           end
 
         {:s3, bucket, key} ->
           with {:ok, fs} <- s3_filesystem(bucket) do
-            Jido.VFS.read(fs, key)
+            JidoVFS.read(fs, key)
           end
 
         {:git, repo_path, file_path} ->
           with {:ok, fs} <- git_filesystem(repo_path) do
-            Jido.VFS.read(fs, file_path)
+            JidoVFS.read(fs, file_path)
           end
 
         {:error, reason} ->
@@ -91,17 +92,17 @@ defmodule JidoClaw.VFS.Resolver do
 
         {:github, owner, repo, ref, file_path} ->
           with {:ok, fs} <- github_filesystem(owner, repo, ref) do
-            Jido.VFS.write(fs, file_path, content)
+            JidoVFS.write(fs, file_path, content)
           end
 
         {:s3, bucket, key} ->
           with {:ok, fs} <- s3_filesystem(bucket) do
-            Jido.VFS.write(fs, key, content)
+            JidoVFS.write(fs, key, content)
           end
 
         {:git, repo_path, file_path} ->
           with {:ok, fs} <- git_filesystem(repo_path) do
-            Jido.VFS.write(fs, file_path, content)
+            JidoVFS.write(fs, file_path, content)
           end
 
         {:error, reason} ->
@@ -131,21 +132,21 @@ defmodule JidoClaw.VFS.Resolver do
 
         {:github, owner, repo, ref, dir_path} ->
           with {:ok, fs} <- github_filesystem(owner, repo, ref),
-               {:ok, contents} <- Jido.VFS.list_contents(fs, dir_path) do
+               {:ok, contents} <- JidoVFS.list_contents(fs, dir_path) do
             names = Enum.map(contents, & &1.name)
             {:ok, names}
           end
 
         {:s3, bucket, prefix} ->
           with {:ok, fs} <- s3_filesystem(bucket),
-               {:ok, contents} <- Jido.VFS.list_contents(fs, prefix) do
+               {:ok, contents} <- JidoVFS.list_contents(fs, prefix) do
             names = Enum.map(contents, & &1.name)
             {:ok, names}
           end
 
         {:git, repo_path, dir_path} ->
           with {:ok, fs} <- git_filesystem(repo_path),
-               {:ok, contents} <- Jido.VFS.list_contents(fs, dir_path) do
+               {:ok, contents} <- JidoVFS.list_contents(fs, dir_path) do
             names = Enum.map(contents, & &1.name)
             {:ok, names}
           end
@@ -305,7 +306,7 @@ defmodule JidoClaw.VFS.Resolver do
         nil
       end
 
-    case Jido.VFS.safe_configure(Jido.VFS.Adapter.GitHub,
+    case JidoVFS.safe_configure(JidoVFS.Adapter.GitHub,
            owner: owner,
            repo: repo,
            ref: ref,
@@ -319,14 +320,14 @@ defmodule JidoClaw.VFS.Resolver do
   defp s3_filesystem(bucket) do
     region = System.get_env("AWS_REGION") || Application.get_env(:ex_aws, :region, "us-east-1")
 
-    case Jido.VFS.safe_configure(Jido.VFS.Adapter.S3, bucket: bucket, region: region) do
+    case JidoVFS.safe_configure(JidoVFS.Adapter.S3, bucket: bucket, region: region) do
       {:ok, fs} -> {:ok, fs}
       {:error, reason} -> {:error, {:s3_configure_failed, reason}}
     end
   end
 
   defp git_filesystem(repo_path) do
-    case Jido.VFS.safe_configure(Jido.VFS.Adapter.Git, path: repo_path) do
+    case JidoVFS.safe_configure(JidoVFS.Adapter.Git, path: repo_path) do
       {:ok, fs} -> {:ok, fs}
       {:error, reason} -> {:error, {:git_configure_failed, reason}}
     end

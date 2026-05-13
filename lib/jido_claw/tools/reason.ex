@@ -53,7 +53,7 @@ defmodule JidoClaw.Tools.Reason do
         run_strategy(strategy_name, prompt, context)
 
       true ->
-        valid = StrategyRegistry.list() |> Enum.map(& &1.name) |> Enum.join(", ")
+        valid = Enum.map_join(StrategyRegistry.list(), ", ", & &1.name)
         {:error, "Unknown strategy '#{strategy_name}'. Valid strategies: #{valid}"}
     end
   end

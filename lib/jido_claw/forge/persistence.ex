@@ -3,6 +3,7 @@ defmodule JidoClaw.Forge.Persistence do
   require Logger
   require Ash.Query
 
+  alias Ash.Query
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Security.Redaction.Patterns
 
@@ -256,7 +257,7 @@ defmodule JidoClaw.Forge.Persistence do
 
         if session do
           JidoClaw.Forge.Resources.Checkpoint
-          |> Ash.Query.for_read(:latest_for_session, %{session_id: session.id})
+          |> Query.for_read(:latest_for_session, %{session_id: session.id})
           |> Ash.read!(authorize?: false)
           |> List.first()
         end
@@ -300,7 +301,7 @@ defmodule JidoClaw.Forge.Persistence do
           args = if opts[:limit], do: Map.put(args, :limit, opts[:limit]), else: args
 
           JidoClaw.Forge.Resources.Event
-          |> Ash.Query.for_read(:for_session, args)
+          |> Query.for_read(:for_session, args)
           |> Ash.read!(authorize?: false)
         else
           []
@@ -372,9 +373,9 @@ defmodule JidoClaw.Forge.Persistence do
 
   def find_session(session_id) do
     JidoClaw.Forge.Resources.Session
-    |> Ash.Query.filter(name == ^session_id)
-    |> Ash.Query.sort(inserted_at: :desc)
-    |> Ash.Query.limit(1)
+    |> Query.filter(name == ^session_id)
+    |> Query.sort(inserted_at: :desc)
+    |> Query.limit(1)
     |> Ash.read!(authorize?: false)
     |> List.first()
   rescue
@@ -417,9 +418,9 @@ defmodule JidoClaw.Forge.Persistence do
 
   defp latest_exec_output(session) do
     JidoClaw.Forge.Resources.ExecSession
-    |> Ash.Query.filter(session_id == ^session.id)
-    |> Ash.Query.sort(sequence: :desc)
-    |> Ash.Query.limit(1)
+    |> Query.filter(session_id == ^session.id)
+    |> Query.sort(sequence: :desc)
+    |> Query.limit(1)
     |> Ash.read!(authorize?: false)
     |> case do
       [exec] ->

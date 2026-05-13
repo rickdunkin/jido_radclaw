@@ -3,13 +3,14 @@ defmodule JidoClaw.GitHub.WebhookPipeline do
   require Logger
 
   alias JidoClaw.GitHub.WebhookSignature
+  alias Plug.Conn
 
   @supported_events ["issues.opened", "issues.edited", "issue_comment.created"]
 
   def process(conn, raw_body) do
-    signature = List.first(Plug.Conn.get_req_header(conn, "x-hub-signature-256"))
-    event = List.first(Plug.Conn.get_req_header(conn, "x-github-event"))
-    delivery_id = List.first(Plug.Conn.get_req_header(conn, "x-github-delivery"))
+    signature = List.first(Conn.get_req_header(conn, "x-hub-signature-256"))
+    event = List.first(Conn.get_req_header(conn, "x-github-event"))
+    delivery_id = List.first(Conn.get_req_header(conn, "x-github-delivery"))
 
     with :ok <- WebhookSignature.verify(raw_body, signature),
          {:ok, payload} <- Jason.decode(raw_body),

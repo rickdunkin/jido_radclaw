@@ -56,9 +56,7 @@ defmodule JidoClaw.Memory.Consolidator.Prompt do
   defp render_clusters([]), do: "(none)"
 
   defp render_clusters(clusters) do
-    clusters
-    |> Enum.map(&render_cluster/1)
-    |> Enum.join("\n")
+    Enum.map_join(clusters, "\n", &render_cluster/1)
   end
 
   defp render_cluster(cluster) do

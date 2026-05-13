@@ -524,9 +524,9 @@ defmodule JidoClaw.Tools.RunPipeline do
 
   defp build_accumulate_prompt(initial, stages, drop_count) do
     body =
-      stages
-      |> Enum.map(fn %{stage: i, output: out} -> "## Stage #{i} output\n#{out}" end)
-      |> Enum.join("\n\n")
+      Enum.map_join(stages, "\n\n", fn %{stage: i, output: out} ->
+        "## Stage #{i} output\n#{out}"
+      end)
 
     notice = if drop_count > 0, do: elision_notice(drop_count), else: ""
 

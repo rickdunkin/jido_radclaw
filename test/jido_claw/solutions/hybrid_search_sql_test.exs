@@ -17,6 +17,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
 
   use JidoClaw.SolutionsCase, async: false
 
+  alias Ecto.UUID
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.HybridSearchSql
   alias JidoClaw.Solutions.SearchEscape
@@ -460,7 +461,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
          WHERE id = $1 AND tenant_id = $2
            AND search_vector @@ websearch_to_tsquery('english', $3)
         """,
-        [Ecto.UUID.dump!(row_id), tenant_id, query]
+        [UUID.dump!(row_id), tenant_id, query]
       )
 
     rows != []
@@ -477,7 +478,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
          WHERE id = $1 AND tenant_id = $2
            AND (lexical_text % $3 OR lexical_text LIKE '%' || $4 || '%' ESCAPE '\\')
         """,
-        [Ecto.UUID.dump!(row_id), tenant_id, raw_lower, like_pattern]
+        [UUID.dump!(row_id), tenant_id, raw_lower, like_pattern]
       )
 
     rows != []
@@ -493,7 +494,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
            AND embedding_status = 'ready'
            AND $3::vector IS NOT NULL
         """,
-        [Ecto.UUID.dump!(row_id), tenant_id, embedding]
+        [UUID.dump!(row_id), tenant_id, embedding]
       )
 
     rows != []
@@ -516,7 +517,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
           END
         FROM solutions WHERE id = $1
         """,
-        [Ecto.UUID.dump!(row_id), query_text]
+        [UUID.dump!(row_id), query_text]
       )
 
     {:ok, %{rows: [[ann]]}} =
@@ -529,13 +530,13 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
           END
         FROM solutions WHERE id = $1
         """,
-        [Ecto.UUID.dump!(row_id), embedding]
+        [UUID.dump!(row_id), embedding]
       )
 
     {:ok, %{rows: [[lex]]}} =
       Repo.query(
         "SELECT similarity(lexical_text, $2)::float FROM solutions WHERE id = $1",
-        [Ecto.UUID.dump!(row_id), raw_lower]
+        [UUID.dump!(row_id), raw_lower]
       )
 
     {fts || 0.0, ann || 0.0, lex || 0.0}
@@ -555,7 +556,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
         [tenant_id, query]
       )
 
-    Enum.map(rows, fn [raw_id] -> Ecto.UUID.cast!(raw_id) end)
+    Enum.map(rows, fn [raw_id] -> UUID.cast!(raw_id) end)
   end
 
   defp per_pool_rank_order(tenant_id, _workspace_id, query, :lexical) do
@@ -573,7 +574,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
         [tenant_id, raw_lower, like_pattern]
       )
 
-    Enum.map(rows, fn [raw_id] -> Ecto.UUID.cast!(raw_id) end)
+    Enum.map(rows, fn [raw_id] -> UUID.cast!(raw_id) end)
   end
 
   defp position_of(list, id), do: Enum.find_index(list, &(&1 == id))

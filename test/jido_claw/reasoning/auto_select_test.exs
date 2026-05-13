@@ -19,6 +19,8 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
     @moduledoc false
 
     def choose(_prompt, candidates, _opts) when is_list(candidates) and candidates != [] do
+      # This stub deliberately picks the last candidate (see comment above).
+      # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
       {:ok, List.last(candidates)}
     end
   end

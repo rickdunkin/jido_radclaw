@@ -251,7 +251,7 @@ defmodule JidoClaw.Reasoning.Classifier do
 
   defp enumerated?(prompt) do
     case Regex.scan(@numbered_list, prompt) do
-      matches when length(matches) >= 2 -> true
+      [_, _ | _] -> true
       _ -> false
     end
   end

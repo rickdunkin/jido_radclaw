@@ -551,6 +551,10 @@ defmodule JidoClaw.Display do
         {<<>>, data}
 
       matches ->
+        # :binary.matches/2 already scanned the binary; walking the resulting
+        # {pos, len} list to its tail is cheap, and rewriting with
+        # :binary.split/3 would re-scan the data.
+        # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
         {pos, len} = List.last(matches)
         cut = pos + len
         complete = binary_part(data, 0, cut)
@@ -670,12 +674,10 @@ defmodule JidoClaw.Display do
 
   defp render_tool_start(tool_name, args) when is_map(args) do
     args_str =
-      args
-      |> Enum.map(fn {k, v} ->
+      Enum.map_join(args, " ", fn {k, v} ->
         v_display = Formatter.truncate_value(v)
         "\e[2m#{k}=\e[0m#{v_display}"
       end)
-      |> Enum.join(" ")
 
     IO.puts("  \e[33m⟳\e[0m \e[1m#{tool_name}\e[0m #{args_str}")
   end

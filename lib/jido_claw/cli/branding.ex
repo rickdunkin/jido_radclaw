@@ -283,8 +283,7 @@ defmodule JidoClaw.CLI.Branding do
 
   def tool_start(tool_name, params) do
     params_str =
-      params
-      |> Enum.map(fn {k, v} ->
+      Enum.map_join(params, ", ", fn {k, v} ->
         v_str =
           if is_binary(v) and String.length(v) > 60,
             do: String.slice(v, 0, 57) <> "...",
@@ -292,7 +291,6 @@ defmodule JidoClaw.CLI.Branding do
 
         "#{k}=#{v_str}"
       end)
-      |> Enum.join(", ")
 
     IO.puts("  \e[33m⟳\e[0m \e[2m#{tool_name}\e[0m #{params_str}")
   end

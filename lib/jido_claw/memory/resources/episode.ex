@@ -23,6 +23,8 @@ defmodule JidoClaw.Memory.Episode do
 
   require Ash.Query
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Memory.Resources.ScopeFilter
   alias JidoClaw.Security.CrossTenantFk
@@ -203,15 +205,15 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        scope_kind = Ash.Changeset.get_attribute(cs, :scope_kind)
+      Changeset.before_action(changeset, fn cs ->
+        scope_kind = Changeset.get_attribute(cs, :scope_kind)
 
         case Episode.scope_fk_for(cs, scope_kind) do
           {:ok, _} ->
             cs
 
           :missing ->
-            Ash.Changeset.add_error(cs,
+            Changeset.add_error(cs,
               field: :scope_kind,
               message: "scope_fk_required",
               vars: [scope_kind: scope_kind]
@@ -227,7 +229,7 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
           {:workspace_id, JidoClaw.Workspaces.Workspace, JidoClaw.Workspaces},
           {:session_id, JidoClaw.Conversations.Session, JidoClaw.Conversations},
@@ -246,7 +248,7 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         cs
         |> redact(:content)
         |> redact(:metadata)
@@ -254,12 +256,12 @@ defmodule JidoClaw.Memory.Episode do
     end
 
     defp redact(cs, attr) do
-      case Ash.Changeset.get_attribute(cs, attr) do
+      case Changeset.get_attribute(cs, attr) do
         nil ->
           cs
 
         value ->
-          Ash.Changeset.force_change_attribute(cs, attr, Transcript.redact(value))
+          Changeset.force_change_attribute(cs, attr, Transcript.redact(value))
       end
     end
   end
@@ -277,16 +279,16 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def prepare(query, _opts, _context) do
-      kind = Ash.Query.get_argument(query, :scope_kind)
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      since_at = Ash.Query.get_argument(query, :since_inserted_at)
-      limit = Ash.Query.get_argument(query, :limit)
+      kind = Query.get_argument(query, :scope_kind)
+      fk = Query.get_argument(query, :scope_fk_id)
+      since_at = Query.get_argument(query, :since_inserted_at)
+      limit = Query.get_argument(query, :limit)
 
       query
       |> Episode.apply_scope_filter(kind, fk)
       |> Episode.apply_since_filter(since_at)
-      |> Ash.Query.sort(inserted_at: :asc, id: :asc)
-      |> Ash.Query.limit(limit)
+      |> Query.sort(inserted_at: :asc, id: :asc)
+      |> Query.limit(limit)
     end
   end
 
@@ -301,9 +303,9 @@ defmodule JidoClaw.Memory.Episode do
 
     @impl true
     def prepare(query, _opts, _context) do
-      fact_id_arg = Ash.Query.get_argument(query, :fact_id)
+      fact_id_arg = Query.get_argument(query, :fact_id)
 
-      Ash.Query.filter(
+      Query.filter(
         query,
         exists(
           JidoClaw.Memory.FactEpisode,
@@ -338,6 +340,6 @@ defmodule JidoClaw.Memory.Episode do
   def apply_since_filter(query, nil), do: query
 
   def apply_since_filter(query, since_at) do
-    Ash.Query.filter(query, inserted_at > ^since_at)
+    Query.filter(query, inserted_at > ^since_at)
   end
 end

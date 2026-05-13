@@ -145,10 +145,9 @@ defmodule JidoClaw.Tools.RunSkill do
     steps_output =
       tuples
       |> Enum.with_index(1)
-      |> Enum.map(fn {{step_name, result}, idx} ->
+      |> Enum.map_join("\n\n---\n\n", fn {{step_name, result}, idx} ->
         "## Step #{idx}: #{step_name}\n\n#{result}"
       end)
-      |> Enum.join("\n\n---\n\n")
 
     %{
       skill: skill.name,

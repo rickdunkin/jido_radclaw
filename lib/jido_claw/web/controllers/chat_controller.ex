@@ -15,11 +15,12 @@ defmodule JidoClaw.Web.ChatController do
     user_id = conn.assigns.current_user.id
     tenant_id = to_string(user_id)
     actor = conn.assigns[:current_actor]
+    content = messages |> Enum.at(-1) |> Map.get("content", "")
 
     if stream do
-      stream_response(conn, tenant_id, user_id, actor, model, messages)
+      stream_response(conn, tenant_id, user_id, actor, model, content)
     else
-      sync_response(conn, tenant_id, user_id, actor, model, messages)
+      sync_response(conn, tenant_id, user_id, actor, model, content)
     end
   end
 
@@ -29,9 +30,7 @@ defmodule JidoClaw.Web.ChatController do
     |> json(%{error: %{message: "messages field is required", type: "invalid_request_error"}})
   end
 
-  defp sync_response(conn, tenant_id, user_id, actor, _model, messages) do
-    last_message = List.last(messages)
-    content = Map.get(last_message, "content", "")
+  defp sync_response(conn, tenant_id, user_id, actor, _model, content) do
     session_id = "api_#{:erlang.unique_integer([:positive])}"
 
     case JidoClaw.chat(tenant_id, session_id, content,
@@ -61,9 +60,7 @@ defmodule JidoClaw.Web.ChatController do
     end
   end
 
-  defp stream_response(conn, tenant_id, user_id, actor, _model, messages) do
-    last_message = List.last(messages)
-    content = Map.get(last_message, "content", "")
+  defp stream_response(conn, tenant_id, user_id, actor, _model, content) do
     session_id = "api_stream_#{:erlang.unique_integer([:positive])}"
 
     conn =

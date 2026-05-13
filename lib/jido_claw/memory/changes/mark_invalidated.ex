@@ -6,14 +6,16 @@ defmodule JidoClaw.Memory.Changes.MarkInvalidated do
   """
   use Ash.Resource.Change
 
+  alias Ash.Changeset
+
   @impl true
   def change(changeset, _opts, _context) do
-    Ash.Changeset.before_action(changeset, fn cs ->
+    Changeset.before_action(changeset, fn cs ->
       now = DateTime.utc_now()
 
       cs
-      |> Ash.Changeset.force_change_attribute(:invalid_at, now)
-      |> Ash.Changeset.force_change_attribute(:expired_at, now)
+      |> Changeset.force_change_attribute(:invalid_at, now)
+      |> Changeset.force_change_attribute(:expired_at, now)
     end)
   end
 end

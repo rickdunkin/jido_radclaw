@@ -41,6 +41,7 @@ defmodule JidoClaw.Solutions.Solution do
 
   use JidoClaw.Resource, domain: JidoClaw.Solutions.Domain, primary_read_warning?: false
 
+  alias Ash.Changeset
   alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Security.Redaction.Transcript
   alias JidoClaw.Workspaces.Workspace, as: WorkspaceResource
@@ -430,14 +431,14 @@ defmodule JidoClaw.Solutions.Solution do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        case Ash.Changeset.get_attribute(cs, :solution_content) do
+      Changeset.before_action(changeset, fn cs ->
+        case Changeset.get_attribute(cs, :solution_content) do
           nil ->
             cs
 
           content when is_binary(content) ->
             redacted = Transcript.redact(content, json_aware_keys: [])
-            Ash.Changeset.force_change_attribute(cs, :solution_content, redacted)
+            Changeset.force_change_attribute(cs, :solution_content, redacted)
 
           _ ->
             cs
@@ -465,9 +466,9 @@ defmodule JidoClaw.Solutions.Solution do
     end
 
     defp apply_argument(cs, arg, attr) do
-      case Ash.Changeset.get_argument(cs, arg) do
+      case Changeset.get_argument(cs, arg) do
         nil -> cs
-        value -> Ash.Changeset.force_change_attribute(cs, attr, value)
+        value -> Changeset.force_change_attribute(cs, attr, value)
       end
     end
   end
@@ -478,10 +479,10 @@ defmodule JidoClaw.Solutions.Solution do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
-        workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
-        session_id = Ash.Changeset.get_attribute(cs, :session_id)
+      Changeset.before_action(changeset, fn cs ->
+        tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
+        workspace_id = Changeset.get_attribute(cs, :workspace_id)
+        session_id = Changeset.get_attribute(cs, :session_id)
 
         cs
         |> validate_workspace_tenant(workspace_id, tenant_id)
@@ -497,14 +498,14 @@ defmodule JidoClaw.Solutions.Solution do
           cs
 
         {:ok, %{tenant_id: parent_tenant}} ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :workspace_id,
             message: "cross_tenant_fk_mismatch",
             vars: [supplied_tenant: tenant_id, parent_tenant: parent_tenant]
           )
 
         {:error, _} ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :workspace_id,
             message: "workspace_not_found"
           )
@@ -520,7 +521,7 @@ defmodule JidoClaw.Solutions.Solution do
           cs
 
         {:ok, %{tenant_id: parent_tenant, workspace_id: parent_workspace}} ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :session_id,
             message: "cross_tenant_fk_mismatch",
             vars: [
@@ -532,7 +533,7 @@ defmodule JidoClaw.Solutions.Solution do
           )
 
         {:error, _} ->
-          Ash.Changeset.add_error(cs,
+          Changeset.add_error(cs,
             field: :session_id,
             message: "session_not_found"
           )
@@ -552,16 +553,16 @@ defmodule JidoClaw.Solutions.Solution do
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         # If the caller already set embedding_status (e.g. import_legacy
         # carrying :ready or :disabled), respect it. Otherwise resolve
         # from the Workspace's embedding_policy.
-        case Ash.Changeset.get_attribute(cs, :embedding_status) do
+        case Changeset.get_attribute(cs, :embedding_status) do
           status when status in [:ready, :failed, :disabled, :processing] ->
             cs
 
           _ ->
-            workspace_id = Ash.Changeset.get_attribute(cs, :workspace_id)
+            workspace_id = Changeset.get_attribute(cs, :workspace_id)
             resolve_status_from_policy(cs, workspace_id, actor)
         end
       end)
@@ -570,7 +571,7 @@ defmodule JidoClaw.Solutions.Solution do
     defp resolve_status_from_policy(cs, nil, _actor), do: cs
 
     defp resolve_status_from_policy(cs, workspace_id, actor) do
-      tenant_id = cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id)
+      tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
       # System imports (`authorize?: false` migration tasks) may reach
       # here without an actor. Workspace.by_id is policy-protected, so
@@ -595,10 +596,10 @@ defmodule JidoClaw.Solutions.Solution do
 
       case result do
         {:ok, %{embedding_policy: :disabled}} ->
-          Ash.Changeset.force_change_attribute(cs, :embedding_status, :disabled)
+          Changeset.force_change_attribute(cs, :embedding_status, :disabled)
 
         {:ok, %{embedding_policy: :default}} ->
-          Ash.Changeset.force_change_attribute(cs, :embedding_status, :pending)
+          Changeset.force_change_attribute(cs, :embedding_status, :pending)
 
         _ ->
           # Workspace not found or unknown policy — leave at default.
@@ -616,7 +617,7 @@ defmodule JidoClaw.Solutions.Solution do
       # Use after_transaction so we only hint the worker AFTER the
       # transaction commits — running the hint inside after_action could
       # signal on a row that's about to be rolled back.
-      Ash.Changeset.after_transaction(changeset, fn _cs, result ->
+      Changeset.after_transaction(changeset, fn _cs, result ->
         case result do
           {:ok, %{embedding_status: :pending, id: id}} ->
             send_hint_safely(id)
@@ -653,13 +654,13 @@ defmodule JidoClaw.Solutions.Solution do
     def change(changeset, _opts, context) do
       context_actor = Map.get(context, :actor)
 
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         # The :verification attribute is being set; combine the data
         # currently on the row with the new verification map and
         # recompute trust via Trust.compute/2 with the agent's reputation
         # threaded through as :agent_reputation.
         record = cs.data
-        new_verification = Ash.Changeset.get_attribute(cs, :verification)
+        new_verification = Changeset.get_attribute(cs, :verification)
         merged = %{record | verification: new_verification}
 
         # Reputation reads are policy-protected. Thread the context actor
@@ -683,7 +684,7 @@ defmodule JidoClaw.Solutions.Solution do
         score =
           Trust.compute(merged, agent_reputation: agent_rep_score)
 
-        Ash.Changeset.force_change_attribute(cs, :trust_score, score)
+        Changeset.force_change_attribute(cs, :trust_score, score)
       end)
     end
   end
@@ -696,7 +697,7 @@ defmodule JidoClaw.Solutions.Solution do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.after_transaction(changeset, fn _cs, result ->
+      Changeset.after_transaction(changeset, fn _cs, result ->
         with {:ok, solution} <- result,
              %{tenant_id: tenant_id, agent_id: agent_id, verification: verification}
              when is_binary(tenant_id) and is_binary(agent_id) <- solution do

@@ -55,6 +55,8 @@ defmodule JidoClaw.Memory.Block do
   require Ash.Query
   import Ash.Expr
 
+  alias Ash.Changeset
+  alias Ash.Query
   alias JidoClaw.Audit.ActorClassifier
   alias JidoClaw.Audit.AsyncWriter
   alias JidoClaw.Memory.BlockRevision
@@ -336,7 +338,7 @@ defmodule JidoClaw.Memory.Block do
     @impl true
     @no_clone true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
+      Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
           {:workspace_id, JidoClaw.Workspaces.Workspace, JidoClaw.Workspaces},
           {:session_id, JidoClaw.Conversations.Session, JidoClaw.Conversations},
@@ -354,16 +356,16 @@ defmodule JidoClaw.Memory.Block do
 
     @impl true
     def change(changeset, _opts, _context) do
-      Ash.Changeset.before_action(changeset, fn cs ->
-        value = Ash.Changeset.get_attribute(cs, :value)
-        char_limit = Ash.Changeset.get_attribute(cs, :char_limit) || 2000
+      Changeset.before_action(changeset, fn cs ->
+        value = Changeset.get_attribute(cs, :value)
+        char_limit = Changeset.get_attribute(cs, :char_limit) || 2000
 
         cond do
           is_nil(value) ->
             cs
 
           byte_size(value) > char_limit ->
-            Ash.Changeset.add_error(cs,
+            Changeset.add_error(cs,
               field: :value,
               message: "value_exceeds_char_limit",
               vars: [byte_size: byte_size(value), char_limit: char_limit]
@@ -384,10 +386,10 @@ defmodule JidoClaw.Memory.Block do
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 
-      Ash.Changeset.after_action(changeset, fn cs, result ->
+      Changeset.after_action(changeset, fn cs, result ->
         prior = cs.data
-        reason = Ash.Changeset.get_argument(cs, :reason)
-        written_by_arg = Ash.Changeset.get_argument(cs, :written_by)
+        reason = Changeset.get_argument(cs, :reason)
+        written_by_arg = Changeset.get_argument(cs, :written_by)
 
         attrs = %{
           block_id: prior.id,
@@ -440,12 +442,12 @@ defmodule JidoClaw.Memory.Block do
 
     @impl true
     def prepare(query, _opts, _context) do
-      chain = Ash.Query.get_argument(query, :scope_chain) || []
+      chain = Query.get_argument(query, :scope_chain) || []
       filter_expr = Block.build_chain_filter(chain)
 
       query
-      |> Ash.Query.do_filter(filter_expr)
-      |> Ash.Query.sort(position: :asc, inserted_at: :desc)
+      |> Query.do_filter(filter_expr)
+      |> Query.sort(position: :asc, inserted_at: :desc)
     end
   end
 
@@ -458,11 +460,11 @@ defmodule JidoClaw.Memory.Block do
 
     @impl true
     def prepare(query, _opts, _context) do
-      kind = Ash.Query.get_argument(query, :scope_kind)
-      fk = Ash.Query.get_argument(query, :scope_fk_id)
-      arg_label = Ash.Query.get_argument(query, :label)
+      kind = Query.get_argument(query, :scope_kind)
+      fk = Query.get_argument(query, :scope_fk_id)
+      arg_label = Query.get_argument(query, :label)
 
-      Ash.Query.do_filter(
+      Query.do_filter(
         query,
         Block.build_history_filter(kind, fk, arg_label)
       )
@@ -482,28 +484,28 @@ defmodule JidoClaw.Memory.Block do
   before the resource is fully compiled.
   """
   def scope_fk_for(changeset, :user) do
-    case Ash.Changeset.get_attribute(changeset, :user_id) do
+    case Changeset.get_attribute(changeset, :user_id) do
       nil -> :missing
       id -> {:ok, id}
     end
   end
 
   def scope_fk_for(changeset, :workspace) do
-    case Ash.Changeset.get_attribute(changeset, :workspace_id) do
+    case Changeset.get_attribute(changeset, :workspace_id) do
       nil -> :missing
       id -> {:ok, id}
     end
   end
 
   def scope_fk_for(changeset, :project) do
-    case Ash.Changeset.get_attribute(changeset, :project_id) do
+    case Changeset.get_attribute(changeset, :project_id) do
       nil -> :missing
       id -> {:ok, id}
     end
   end
 
   def scope_fk_for(changeset, :session) do
-    case Ash.Changeset.get_attribute(changeset, :session_id) do
+    case Changeset.get_attribute(changeset, :session_id) do
       nil -> :missing
       id -> {:ok, id}
     end
