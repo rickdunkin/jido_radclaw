@@ -798,9 +798,6 @@ defmodule JidoClaw.Shell.SessionManager do
       {:error, %Jido.Shell.Error{} = err, entry} ->
         {:error, SSHError.format(err, entry), state}
 
-      {:error, %Jido.Shell.Error{} = err} ->
-        {:error, SSHError.format(err, fake_entry_for_error(server_name)), state}
-
       {:error, reason} ->
         {:error, "SSH session start failed: #{inspect(reason)}", state}
     end

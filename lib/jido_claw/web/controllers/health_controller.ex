@@ -11,7 +11,6 @@ defmodule JidoClaw.Web.HealthController do
     session_count =
       case Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]) do
         list when is_list(list) -> length(list)
-        _ -> 0
       end
 
     tenant_count =

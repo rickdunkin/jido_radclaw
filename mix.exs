@@ -1,7 +1,7 @@
 defmodule JidoClaw.MixProject do
   use Mix.Project
 
-  @version "0.5.3"
+  @version "0.6.4"
 
   def project do
     [
@@ -37,7 +37,7 @@ defmodule JidoClaw.MixProject do
       dialyzer: [
         plt_local_path: "priv/plts/dialyzer.plt",
         plt_core_path: "priv/plts/dialyzer-core.plt",
-        plt_add_apps: [:ex_unit, :mix],
+        plt_add_apps: [:ex_unit, :mix, :nostrum, :llm_db],
         flags: [:error_handling, :unknown, :no_opaque]
       ]
     ]

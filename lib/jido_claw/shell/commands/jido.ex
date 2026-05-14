@@ -127,7 +127,6 @@ defmodule JidoClaw.Shell.Commands.Jido do
            ) do
         {:ok, [first | _]} -> {:ok, first}
         {:ok, []} -> :not_found
-        {:ok, %JidoClaw.Solutions.Solution{} = sol} -> {:ok, sol}
         _ -> :not_found
       end
 

@@ -235,10 +235,6 @@ defmodule JidoClaw.Memory do
       {:error, reason} ->
         Logger.warning("[Memory] write failed: #{inspect(reason)}")
         :ok
-
-      :error ->
-        Logger.warning("[Memory] scope unresolvable, dropping write")
-        :ok
     end
   end
 

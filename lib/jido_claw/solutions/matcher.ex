@@ -137,7 +137,6 @@ defmodule JidoClaw.Solutions.Matcher do
          ) do
       {:ok, [first | _]} -> {:ok, first}
       {:ok, []} -> :none
-      {:ok, %Solution{} = sol} -> {:ok, sol}
       _ -> :none
     end
   end

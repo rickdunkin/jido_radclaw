@@ -45,6 +45,15 @@ defmodule JidoClaw.Skills do
 
   defstruct [:name, :description, :steps, :synthesis, :mode, :max_iterations]
 
+  @type t :: %__MODULE__{
+          name: String.t() | nil,
+          description: String.t() | nil,
+          steps: list() | nil,
+          synthesis: String.t() | nil,
+          mode: String.t() | atom() | nil,
+          max_iterations: pos_integer() | nil
+        }
+
   @default_skills %{
     "full_review.yaml" => """
     name: full_review

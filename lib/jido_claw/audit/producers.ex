@@ -82,7 +82,6 @@ defmodule JidoClaw.Audit.Producers do
     end
 
     defp field(map, key) when is_map(map), do: Map.get(map, key)
-    defp field(_, _), do: nil
 
     defp metadata(%{__metadata__: meta}, key) when is_map(meta), do: Map.get(meta, key)
     defp metadata(_, _), do: nil

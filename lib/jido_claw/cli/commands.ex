@@ -310,7 +310,6 @@ defmodule JidoClaw.CLI.Commands do
                actor: Actor.system(scope.tenant_id)
              ) do
           {:ok, runs} -> render_run_history(runs)
-          runs when is_list(runs) -> render_run_history(runs)
           {:error, err} -> IO.puts("  \e[31m✗\e[0m  history fetch failed: #{inspect(err)}")
         end
 
@@ -429,13 +428,8 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/network disconnect", state) do
-    case JidoClaw.Network.Node.disconnect() do
-      :ok ->
-        IO.puts("  \e[32m✓\e[0m  Disconnected from agent network")
-
-      {:error, reason} ->
-        IO.puts("  \e[31m✗\e[0m  Failed to disconnect: #{inspect(reason)}")
-    end
+    :ok = JidoClaw.Network.Node.disconnect()
+    IO.puts("  \e[32m✓\e[0m  Disconnected from agent network")
 
     {:ok, state}
   end
@@ -886,7 +880,6 @@ defmodule JidoClaw.CLI.Commands do
   defp primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
   defp primary_fk(%{scope_kind: :project, project_id: id}), do: id
   defp primary_fk(%{scope_kind: :session, session_id: id}), do: id
-  defp primary_fk(_), do: nil
 
   # Parse `<label>` or `<label> --source model|user|all`.
   defp parse_forget_args(input) do

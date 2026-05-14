@@ -52,7 +52,7 @@ defmodule JidoClaw.Network.Node do
 
   Safe to call when server is not running — returns `:ok` immediately.
   """
-  @spec connect() :: :ok
+  @spec connect() :: :ok | {:error, term()}
   def connect do
     case GenServer.whereis(__MODULE__) do
       nil -> :ok

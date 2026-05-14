@@ -29,7 +29,7 @@ defmodule JidoClaw do
   alias JidoClaw.Tenant.Manager, as: TenantManager
   alias JidoClaw.Workspaces
 
-  @version "0.3.0"
+  @version "0.6.4"
 
   def version, do: @version
 

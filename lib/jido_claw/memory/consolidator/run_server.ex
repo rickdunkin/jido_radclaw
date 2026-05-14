@@ -584,39 +584,31 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp load_facts(tenant_id, scope_kind, fk, since_at, since_id, limit) do
-    case Fact.for_consolidator(
-           %{
-             scope_kind: scope_kind,
-             scope_fk_id: fk,
-             since_inserted_at: since_at,
-             since_id: since_id,
-             limit: limit
-           },
-           tenant: tenant_id,
-           actor: Actor.system(tenant_id)
-         ) do
-      {:ok, facts} -> {:ok, facts}
-      facts when is_list(facts) -> {:ok, facts}
-      {:error, reason} -> {:error, reason}
-    end
+    Fact.for_consolidator(
+      %{
+        scope_kind: scope_kind,
+        scope_fk_id: fk,
+        since_inserted_at: since_at,
+        since_id: since_id,
+        limit: limit
+      },
+      tenant: tenant_id,
+      actor: Actor.system(tenant_id)
+    )
   end
 
   defp load_messages(tenant_id, :session, fk, since_at, since_id, limit) do
-    case Message.for_consolidator(
-           %{
-             scope_kind: :session,
-             scope_fk_id: fk,
-             since_inserted_at: since_at,
-             since_id: since_id,
-             limit: limit
-           },
-           tenant: tenant_id,
-           actor: Actor.system(tenant_id)
-         ) do
-      {:ok, messages} -> {:ok, messages}
-      messages when is_list(messages) -> {:ok, messages}
-      {:error, reason} -> {:error, reason}
-    end
+    Message.for_consolidator(
+      %{
+        scope_kind: :session,
+        scope_fk_id: fk,
+        since_inserted_at: since_at,
+        since_id: since_id,
+        limit: limit
+      },
+      tenant: tenant_id,
+      actor: Actor.system(tenant_id)
+    )
   end
 
   defp load_messages(_tenant_id, _scope_kind, _fk, _since_at, _since_id, _limit), do: {:ok, []}
@@ -646,7 +638,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
            actor: Actor.system(tenant_id)
          ) do
       {:ok, list} when is_list(list) -> list
-      list when is_list(list) -> list
       _ -> []
     end
   rescue
@@ -679,7 +670,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
            actor: Actor.system(tenant_id)
          ) do
       {:ok, runs} -> first_non_null_watermark(runs, stream)
-      runs when is_list(runs) -> first_non_null_watermark(runs, stream)
       _ -> {nil, nil}
     end
   rescue
@@ -1074,15 +1064,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         true -> inspect(reason)
       end
 
-    run_or_nil = maybe_write_run_row(state, status, persisted_reason)
+    _ = maybe_write_run_row(state, status, persisted_reason)
 
-    reply =
-      case {status, run_or_nil} do
-        {:succeeded, {:ok, run}} -> {:ok, run}
-        _ -> {:error, reason}
-      end
-
-    do_finalise(state, reply)
+    do_finalise(state, {:error, reason})
   end
 
   defp finalise_with_run(state, :succeeded, run) do

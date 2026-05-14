@@ -90,7 +90,6 @@ defmodule JidoClaw.Forge.Persistence do
       end)
       |> case do
         {:ok, :ok} -> :ok
-        {:error, :already_claimed} -> {:error, :already_claimed}
         {:error, _} -> {:error, :already_claimed}
       end
     else

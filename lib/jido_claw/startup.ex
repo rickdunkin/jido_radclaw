@@ -13,9 +13,6 @@ defmodule JidoClaw.Startup do
   alias JidoClaw.Reasoning.PipelineStore
   alias JidoClaw.Reasoning.StrategyStore
 
-  @typedoc "Result of the sync branch inside the `:ok` tuple from `ensure_project_state/1`."
-  @type sync_result :: :noop | :overwritten | :sidecar_written | :stamp_only
-
   @doc """
   Ensure project-level `.jido/` files exist and reconcile the system prompt
   with the bundled default.
@@ -24,7 +21,7 @@ defmodule JidoClaw.Startup do
   print a one-line notice when the `.default` sidecar was just written.
   """
   @spec ensure_project_state(String.t()) ::
-          {:ok, [prompt_sync: Prompt.sync_result() | sync_result()]}
+          {:ok, [prompt_sync: Prompt.sync_result()]}
           | {:error, term()}
   def ensure_project_state(project_dir) when is_binary(project_dir) do
     with :ok <- safe_bootstrap(:jido_md, fn -> JidoClaw.JidoMd.ensure(project_dir) end),

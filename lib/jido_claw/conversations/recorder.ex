@@ -255,7 +255,6 @@ defmodule JidoClaw.Conversations.Recorder do
       try do
         case RequestCorrelation.record_telemetry(request_id, %{latency_ms: duration}) do
           {:ok, _} -> :ok
-          :ok -> :ok
           {:error, _} -> :ok
         end
 
@@ -412,7 +411,6 @@ defmodule JidoClaw.Conversations.Recorder do
   defp merge_telemetry(request_id, telemetry) when is_binary(request_id) do
     case RequestCorrelation.record_telemetry(request_id, telemetry) do
       {:ok, _} -> :ok
-      :ok -> :ok
       {:error, _} -> :ok
     end
 

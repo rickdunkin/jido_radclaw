@@ -388,9 +388,6 @@ defmodule JidoClaw.Shell.ProfileManager do
 
       {:error, _, _, _} = error ->
         {:error, error}
-
-      {:error, _} = error ->
-        error
     end
   end
 
@@ -466,13 +463,6 @@ defmodule JidoClaw.Shell.ProfileManager do
         end
 
         %{state | active_by_workspace: new_active}
-
-      {:error, reason_tag} ->
-        Logger.warning(
-          "[ProfileManager] Reload transition failed for workspace=#{workspace_id}: #{inspect(reason_tag)}"
-        )
-
-        state
 
       {:error, _, _} = error ->
         Logger.warning(

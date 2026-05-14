@@ -41,7 +41,6 @@ defmodule JidoClaw.Memory.Consolidator.MCPEndpoint do
   defp bound_port(pid) do
     case ThousandIsland.listener_info(pid) do
       {:ok, {_addr, port}} -> port
-      {_addr, port} -> port
     end
   end
 end

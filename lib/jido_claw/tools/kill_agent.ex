@@ -39,9 +39,6 @@ defmodule JidoClaw.Tools.KillAgent do
 
       {:error, :not_found} ->
         {:error, "Agent '#{params.agent_id}' not found."}
-
-      {:error, reason} ->
-        {:error, "Failed to stop agent: #{inspect(reason)}"}
     end
   end
 end

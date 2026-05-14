@@ -28,6 +28,8 @@ defmodule JidoClaw.Agent.Prompt do
   @sync_filename ".system_prompt.sync"
   @default_marker_filename "system_prompt.md.default"
 
+  @type sync_result :: :noop | :overwritten | :sidecar_written | :stamp_only
+
   # ---------------------------------------------------------------------------
   # System prompt file management
   # ---------------------------------------------------------------------------
@@ -81,8 +83,7 @@ defmodule JidoClaw.Agent.Prompt do
       `.jido/system_prompt.md.default` for review.
     * `{:error, reason}` — unexpected IO failure.
   """
-  @spec sync(String.t()) ::
-          {:ok, :noop | :overwritten | :sidecar_written | :stamp_only} | {:error, term()}
+  @spec sync(String.t()) :: {:ok, sync_result()} | {:error, term()}
   def sync(project_dir) do
     __sync_with__(project_dir, @default_system_prompt, @default_system_prompt_sha)
   end
@@ -91,7 +92,7 @@ defmodule JidoClaw.Agent.Prompt do
   # Injectable entry point so tests can simulate a changed bundled default
   # without recompiling the module.
   @spec __sync_with__(String.t(), binary(), String.t()) ::
-          {:ok, :noop | :overwritten | :sidecar_written | :stamp_only} | {:error, term()}
+          {:ok, sync_result()} | {:error, term()}
   def __sync_with__(project_dir, default_bytes, default_sha) do
     sys_path = system_prompt_path(project_dir)
     stamp_path = sync_stamp_path(project_dir)
