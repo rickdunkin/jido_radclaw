@@ -38,7 +38,8 @@ defmodule JidoClaw.MixProject do
         plt_local_path: "priv/plts/dialyzer.plt",
         plt_core_path: "priv/plts/dialyzer-core.plt",
         plt_add_apps: [:ex_unit, :mix, :nostrum, :llm_db],
-        flags: [:error_handling, :unknown, :no_opaque]
+        flags: [:error_handling, :unknown, :no_opaque],
+        ignore_warnings: ".dialyzer_ignore.exs"
       ]
     ]
   end
@@ -208,7 +209,7 @@ defmodule JidoClaw.MixProject do
         "deps.unlock --unused",
         "format",
         "credo --strict",
-        # "dialyzer --format short",
+        "dialyzer --format short",
         "test"
       ]
     ]

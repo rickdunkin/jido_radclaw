@@ -17,13 +17,15 @@ defmodule JidoClaw.Reasoning.Telemetry do
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Classifier, Resources.Outcome, TaskProfile}
 
-  @type fun_result :: {:ok, map()} | {:error, term()}
+  @type fun_result(success) :: {:ok, success} | {:error, term()}
 
   @type opts :: [
           execution_kind: atom(),
+          workspace_id: String.t() | nil,
           workspace_uuid: Ecto.UUID.t() | nil,
           session_uuid: Ecto.UUID.t() | nil,
           project_dir: String.t() | nil,
+          agent_id: String.t() | nil,
           forge_session_key: String.t() | nil,
           profile: TaskProfile.t() | nil,
           base_strategy: String.t() | nil,
@@ -48,7 +50,9 @@ defmodule JidoClaw.Reasoning.Telemetry do
   on successful write. Write failures are debug-logged; they never disrupt
   the caller.
   """
-  @spec with_outcome(String.t(), String.t(), opts(), (-> fun_result())) :: fun_result()
+  @spec with_outcome(String.t(), String.t(), opts(), (-> fun_result(success))) ::
+          fun_result(success)
+        when success: map()
   def with_outcome(strategy_name, prompt, opts, fun)
       when is_binary(strategy_name) and is_binary(prompt) and is_list(opts) and
              is_function(fun, 0) do

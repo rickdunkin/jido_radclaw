@@ -284,6 +284,8 @@ defmodule JidoClaw.Reasoning.Certificates do
     """
   end
 
+  @type parse_error :: :no_certificate | :invalid_json | :invalid_shape
+
   @doc """
   Parse a certificate from LLM output text.
 
@@ -296,7 +298,7 @@ defmodule JidoClaw.Reasoning.Certificates do
     - `{:error, :invalid_json}` when block found but JSON is malformed
     - `{:error, :invalid_shape}` when JSON is valid but missing required keys
   """
-  @spec parse_certificate(String.t()) :: {:ok, map()} | {:error, atom()}
+  @spec parse_certificate(String.t()) :: {:ok, map()} | {:error, parse_error()}
   def parse_certificate(text) when is_binary(text) do
     with {:ok, json_str} <- extract_fenced_block(text),
          {:ok, decoded} <- decode_json(json_str),
