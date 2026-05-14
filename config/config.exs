@@ -16,7 +16,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "qwen3.5:27b" => %{
           name: "Qwen 3.5 27B",
@@ -25,7 +25,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "qwen3-coder-next:latest" => %{
           name: "Qwen 3 Coder Next",
@@ -34,7 +34,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 16384}
+          limits: %{context: 131_072, output: 16384}
         },
         "qwen3-next:80b" => %{
           name: "Qwen 3 Next 80B",
@@ -43,7 +43,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "devstral-small-2:24b" => %{
           name: "Devstral Small 2 24B",
@@ -52,7 +52,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 16384}
+          limits: %{context: 131_072, output: 16384}
         },
         "nemotron-cascade-2:30b" => %{
           name: "Nemotron Cascade 2 30B (MoE 3B active)",
@@ -61,7 +61,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "glm-4.7-flash:latest" => %{
           name: "GLM 4.7 Flash",
@@ -70,7 +70,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "qwen3:32b" => %{
           name: "Qwen 3 32B",
@@ -79,7 +79,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "nemotron-3-super:cloud" => %{
           name: "Nemotron 3 Super 120B (MoE 12B active, cloud)",
@@ -88,7 +88,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 262_144, max_output_tokens: 16384}
+          limits: %{context: 262_144, output: 16384}
         },
         "nemotron-3-super:latest" => %{
           name: "Nemotron 3 Super 120B (MoE 12B active)",
@@ -97,7 +97,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 262_144, max_output_tokens: 16384}
+          limits: %{context: 262_144, output: 16384}
         },
         "qwen3-coder:480b" => %{
           name: "Qwen 3 Coder 480B (cloud)",
@@ -106,7 +106,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 262_144, max_output_tokens: 32768}
+          limits: %{context: 262_144, output: 32768}
         },
         "deepseek-v3.1:671b" => %{
           name: "DeepSeek V3.1 671B (cloud)",
@@ -115,7 +115,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 16384}
+          limits: %{context: 131_072, output: 16384}
         },
         "qwen3.5:72b" => %{
           name: "Qwen 3.5 72B",
@@ -124,7 +124,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         },
         "llama4-maverick:latest" => %{
           name: "Llama 4 Maverick",
@@ -133,7 +133,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 1_048_576, max_output_tokens: 16384}
+          limits: %{context: 1_048_576, output: 16384}
         },
         "kimi-k2.5:latest" => %{
           name: "Kimi K2.5",
@@ -142,7 +142,7 @@ config :llm_db,
             tools: %{enabled: true, streaming: false, strict: false, parallel: false},
             streaming: %{text: true, tool_calls: false}
           },
-          limits: %{context_window: 131_072, max_output_tokens: 8192}
+          limits: %{context: 131_072, output: 8192}
         }
       }
     ]

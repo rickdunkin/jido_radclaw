@@ -148,7 +148,7 @@ defmodule JidoClaw.VFS.Workspace do
   Non-default mounts are fail-soft: any raise or `{:error, _}` is logged and
   the function returns `:ok` anyway so the workspace bootstrap keeps going.
   """
-  @spec mount(String.t(), String.t(), atom(), map() | keyword()) :: :ok | {:error, term()}
+  @spec mount(String.t(), String.t(), atom(), map() | keyword()) :: :ok
   def mount(workspace_id, path, adapter_key, user_opts) do
     GenServer.call(via(workspace_id), {:mount, path, adapter_key, user_opts})
   end
@@ -197,7 +197,7 @@ defmodule JidoClaw.VFS.Workspace do
 
   @impl true
   def handle_call({:mount, path, adapter_key, user_opts}, _from, state) do
-    result = do_mount(state.workspace_id, path, adapter_key, user_opts, fail_soft?: true)
+    result = do_mount(state.workspace_id, path, adapter_key, user_opts)
     {:reply, result, state}
   end
 
@@ -246,7 +246,7 @@ defmodule JidoClaw.VFS.Workspace do
         true ->
           case parse_adapter_key(adapter) do
             {:ok, adapter_key} ->
-              _ = do_mount(workspace_id, path, adapter_key, entry, fail_soft?: true)
+              _ = do_mount(workspace_id, path, adapter_key, entry)
 
             {:error, reason} ->
               log_mount_warning(path, adapter, reason)
@@ -269,17 +269,17 @@ defmodule JidoClaw.VFS.Workspace do
 
   # -- Adapter translation + mount --------------------------------------------
 
-  defp do_mount(workspace_id, path, adapter_key, user_opts, fail_soft?: soft?) do
+  defp do_mount(workspace_id, path, adapter_key, user_opts) do
     with {:ok, {adapter, adapter_opts}} <- to_adapter_spec(adapter_key, user_opts) do
-      do_vfs_mount(workspace_id, path, adapter, adapter_opts, soft?)
+      do_vfs_mount(workspace_id, path, adapter, adapter_opts)
     else
       {:error, reason} ->
         log_mount_warning(path, adapter_key, reason)
-        if soft?, do: :ok, else: {:error, reason}
+        :ok
     end
   end
 
-  defp do_vfs_mount(workspace_id, path, adapter, adapter_opts, soft?) do
+  defp do_vfs_mount(workspace_id, path, adapter, adapter_opts) do
     case VFS.mount(workspace_id, path, adapter, adapter_opts) do
       :ok ->
         maybe_hint_github(path, adapter_opts)
@@ -287,12 +287,12 @@ defmodule JidoClaw.VFS.Workspace do
 
       {:error, reason} ->
         log_mount_warning(path, adapter, reason)
-        if soft?, do: :ok, else: {:error, reason}
+        :ok
     end
   rescue
     e ->
       log_mount_warning(path, adapter, Exception.message(e))
-      if soft?, do: :ok, else: {:error, Exception.message(e)}
+      :ok
   end
 
   defp log_mount_warning(path, adapter, reason) do
@@ -380,8 +380,6 @@ defmodule JidoClaw.VFS.Workspace do
       _ -> nil
     end
   end
-
-  defp to_existing_atom_safe(s) when is_atom(s), do: s
 
   defp to_existing_atom_safe(s) when is_binary(s) do
     String.to_existing_atom(s)

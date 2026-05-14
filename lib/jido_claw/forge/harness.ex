@@ -134,11 +134,6 @@ defmodule JidoClaw.Forge.Harness do
     {:stop, :already_claimed}
   end
 
-  defp stop_unclaimed_session(session_id, reason) do
-    Logger.error("[Forge.Harness] Session claim failed for #{session_id}: #{inspect(reason)}")
-    {:stop, {:claim_failed, reason}}
-  end
-
   defp stop_invalid_resources(session_id, reasons) do
     Logger.error(
       "[Forge.Harness] Resource validation failed for #{session_id}: #{inspect(reasons)}"
@@ -243,6 +238,17 @@ defmodule JidoClaw.Forge.Harness do
       send(self(), :init_runner)
       {:noreply, new_state}
     else
+      {:error, {:bootstrap_step, step}, reason} ->
+        persist(fn ->
+          log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)})
+        end)
+
+        Logger.error(
+          "[Forge.Harness] Bootstrap failed at step #{inspect(step)}: #{inspect(reason)}"
+        )
+
+        {:stop, {:bootstrap_failed, reason}, state}
+
       {:error, resource, reason} when is_map(resource) ->
         persist(fn ->
           log_event(state, "resource.provision_failed", %{
@@ -253,17 +259,6 @@ defmodule JidoClaw.Forge.Harness do
 
         Logger.error("[Forge.Harness] Resource provisioning failed: #{inspect(reason)}")
         {:stop, {:resource_provision_failed, reason}, state}
-
-      {:error, step, reason} ->
-        persist(fn ->
-          log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)})
-        end)
-
-        Logger.error(
-          "[Forge.Harness] Bootstrap failed at step #{inspect(step)}: #{inspect(reason)}"
-        )
-
-        {:stop, {:bootstrap_failed, reason}, state}
     end
   end
 
@@ -735,7 +730,6 @@ defmodule JidoClaw.Forge.Harness do
       {:ok, %{state | state: :initializing}}
     else
       {:error, _resource_or_step, reason} -> {:error, {:bootstrap_failed, reason}}
-      {:error, reason} -> {:error, {:bootstrap_failed, reason}}
     end
   end
 
@@ -1051,6 +1045,13 @@ defmodule JidoClaw.Forge.Harness do
       persist(fn -> log_event(state, "bootstrap.completed") end)
       {:ok, %{state | state: :initializing}}
     else
+      {:error, {:bootstrap_step, step}, reason} ->
+        persist(fn ->
+          log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)})
+        end)
+
+        {:error, {:bootstrap_failed, reason}}
+
       {:error, resource, reason} when is_map(resource) ->
         persist(fn ->
           log_event(state, "resource.provision_failed", %{
@@ -1060,17 +1061,6 @@ defmodule JidoClaw.Forge.Harness do
         end)
 
         {:error, {:resource_provision_failed, reason}}
-
-      {:error, step, reason} ->
-        persist(fn ->
-          log_event(state, "bootstrap.failed", %{step: inspect(step), reason: inspect(reason)})
-        end)
-
-        {:error, {:bootstrap_failed, reason}}
-
-      {:error, reason} ->
-        persist(fn -> log_event(state, "bootstrap.failed", %{reason: inspect(reason)}) end)
-        {:error, {:bootstrap_failed, reason}}
     end
   end
 
@@ -1230,7 +1220,11 @@ defmodule JidoClaw.Forge.Harness do
 
   defp run_bootstrap_steps(state, client \\ nil) do
     bootstrap_steps = Map.get(state.spec, :bootstrap_steps, [])
-    Bootstrap.execute(client || default_client(state), bootstrap_steps)
+
+    case Bootstrap.execute(client || default_client(state), bootstrap_steps) do
+      {:error, step, reason} -> {:error, {:bootstrap_step, step}, reason}
+      other -> other
+    end
   end
 
   # Session claim — atomic ownership via advisory lock + unique constraint.

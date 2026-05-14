@@ -270,7 +270,7 @@ defmodule JidoClaw.CLI.Repl do
   defp configure_display_from_config(config, model) do
     context_window =
       case Config.model_info(config) do
-        {:ok, %{limits: %{context_window: cw}}} -> cw
+        {:ok, %{limits: %{context: cw}}} -> cw
         _ -> 131_072
       end
 

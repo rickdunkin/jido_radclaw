@@ -130,18 +130,15 @@ defmodule JidoClaw.Embeddings.Voyage do
   end
 
   defp handle_response(
-         {:ok, %Req.Response{status: 429, headers: headers}},
+         {:ok, %Req.Response{status: 429} = response},
          model,
          latency_ms,
          redactions_applied
        ) do
     retry_after =
-      headers
-      |> List.keyfind("retry-after", 0)
-      |> case do
-        {_, [val | _]} -> parse_retry_after(val)
-        {_, val} -> parse_retry_after(val)
-        nil -> 60
+      case Req.Response.get_header(response, "retry-after") do
+        [val | _] -> parse_retry_after(val)
+        [] -> 60
       end
 
     :telemetry.execute(
@@ -191,5 +188,16 @@ defmodule JidoClaw.Embeddings.Voyage do
     end
   end
 
-  defp parse_retry_after(_), do: 60
+  @doc """
+  Test seam: exercise the 429 branch of `handle_response/4` directly.
+
+  Returns the `{:error, {:rate_limited, retry_after}}` tuple the live
+  pipeline would emit. Header parsing comes from
+  `Req.Response.get_header/2`, so callers must build a real
+  `%Req.Response{}` (the only shape `handle_response/4` accepts).
+  """
+  @spec __handle_429_for_test__(Req.Response.t()) :: {:error, {:rate_limited, integer()}}
+  def __handle_429_for_test__(%Req.Response{status: 429} = response) do
+    handle_response({:ok, response}, "voyage-test", 0, 0)
+  end
 end

@@ -18,14 +18,14 @@ defmodule JidoClaw.Forge.Runner do
           metadata: map()
         }
 
-  @callback init(sandbox(), config()) :: :ok | {:error, term()}
+  @callback init(sandbox(), config()) :: :ok | {:ok, state()} | {:error, term()}
   @callback run_iteration(sandbox(), state(), opts()) ::
               {:ok, iteration_result()} | {:error, term()}
-  @callback apply_input(sandbox(), input(), state()) :: :ok | {:error, term()}
+  @callback apply_input(sandbox(), input(), state()) :: :ok | {:ok, state()} | {:error, term()}
   @callback handle_output(chunk(), stream(), state()) :: {:ok, events(), state()}
   @callback terminate(sandbox(), term()) :: :ok
   @callback serialize_state(state()) :: map()
-  @callback restore_state(config(), snapshot :: map()) :: {:ok, state()} | {:error, term()}
+  @callback restore_state(state(), snapshot :: map()) :: {:ok, state()} | {:error, term()}
 
   @optional_callbacks [handle_output: 3, terminate: 2, serialize_state: 1, restore_state: 2]
 

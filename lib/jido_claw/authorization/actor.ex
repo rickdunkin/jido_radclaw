@@ -18,16 +18,18 @@ defmodule JidoClaw.Authorization.Actor do
       system actor is denied by every standard policy — never use it.
   """
 
-  @type actor :: %{user_id: String.t() | nil, tenant_id: String.t()} | nil
+  @type user_actor :: %{user_id: String.t(), tenant_id: String.t()}
+  @type system_actor :: %{kind: :system, user_id: nil, tenant_id: String.t()}
+  @type actor :: user_actor() | system_actor() | nil
 
-  @spec build(map() | nil) :: actor()
+  @spec build(JidoClaw.Accounts.User.t() | nil) :: user_actor() | nil
   def build(%JidoClaw.Accounts.User{} = user) do
     %{user_id: user.id, tenant_id: to_string(user.id)}
   end
 
   def build(nil), do: nil
 
-  @spec system(String.t()) :: actor()
+  @spec system(String.t()) :: system_actor()
   def system(tenant_id) when is_binary(tenant_id) do
     %{kind: :system, user_id: nil, tenant_id: tenant_id}
   end

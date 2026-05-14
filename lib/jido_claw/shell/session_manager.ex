@@ -857,7 +857,7 @@ defmodule JidoClaw.Shell.SessionManager do
       name: server_name,
       host: "",
       user: "",
-      port: 0,
+      port: 22,
       auth_kind: :default,
       cwd: "/",
       env: %{},

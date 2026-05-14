@@ -4,6 +4,7 @@ defmodule JidoClaw.CLI.ReplTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.CLI.Repl
+  alias JidoClaw.Config
   alias JidoClaw.Shell.ProfileManager
 
   describe "resolve_strategy/1" do
@@ -90,6 +91,24 @@ defmodule JidoClaw.CLI.ReplTest do
 
       assert prepared =~ "reason(strategy: \"tot\")"
       assert String.ends_with?(prepared, "Plan a migration")
+    end
+  end
+
+  # Regression for the §5 dialyzer fix: the REPL's display-config path
+  # destructures `%{limits: %{context: cw}}`, and the custom Ollama
+  # registry in `config/config.exs` declares its limits with the
+  # canonical `:context`/`:output` keys (not the LLMDB-stripped
+  # `:context_window`/`:max_output_tokens` legacy keys). Verifying the
+  # round-trip here keeps the two surfaces from drifting again.
+  describe "Config.model_info/1 on custom Ollama models" do
+    test "qwen3:32b resolves with limits.context populated" do
+      assert {:ok, %{limits: %{context: 131_072}}} =
+               Config.model_info(%{"model" => "ollama:qwen3:32b"})
+    end
+
+    test "nemotron-3-super:cloud resolves with the 262K context" do
+      assert {:ok, %{limits: %{context: 262_144}}} =
+               Config.model_info(%{"model" => "ollama:nemotron-3-super:cloud"})
     end
   end
 end
