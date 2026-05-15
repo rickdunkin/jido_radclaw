@@ -11,6 +11,13 @@ defmodule JidoClaw.Accounts.ApiKey do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:create, action: :create, args: [:user_id])
+    define(:revoke, action: :revoke)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
+  end
+
   actions do
     defaults([:read, :destroy])
 

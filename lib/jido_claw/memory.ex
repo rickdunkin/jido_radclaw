@@ -303,47 +303,54 @@ defmodule JidoClaw.Memory do
   end
 
   defp facts_at_label(%{scope_kind: :user} = scope, label, source, actor) do
-    Fact
-    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
+    Fact.query_to_list(%{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :user and
         user_id == ^scope.user_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.read!()
+    |> Ash.read(actor: actor, tenant: scope.tenant_id)
+    |> read_or_empty()
   end
 
   defp facts_at_label(%{scope_kind: :workspace} = scope, label, source, actor) do
-    Fact
-    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
+    Fact.query_to_list(%{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :workspace and
         workspace_id == ^scope.workspace_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.read!()
+    |> Ash.read(actor: actor, tenant: scope.tenant_id)
+    |> read_or_empty()
   end
 
   defp facts_at_label(%{scope_kind: :project} = scope, label, source, actor) do
-    Fact
-    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
+    Fact.query_to_list(%{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :project and
         project_id == ^scope.project_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.read!()
+    |> Ash.read(actor: actor, tenant: scope.tenant_id)
+    |> read_or_empty()
   end
 
   defp facts_at_label(%{scope_kind: :session} = scope, label, source, actor) do
-    Fact
-    |> Ash.Query.for_read(:read, %{}, actor: actor, tenant: scope.tenant_id)
+    Fact.query_to_list(%{}, actor: actor, tenant: scope.tenant_id)
     |> Ash.Query.filter(
       scope_kind == :session and
         session_id == ^scope.session_id and label == ^label and is_nil(invalid_at) and
         source == ^source
     )
-    |> Ash.read!()
+    |> Ash.read(actor: actor, tenant: scope.tenant_id)
+    |> read_or_empty()
+  end
+
+  defp read_or_empty({:ok, facts}), do: facts
+
+  defp read_or_empty({:error, err}) do
+    Logger.warning("[Memory.forget] facts_at_label read failed: #{inspect(err)}")
+    []
   end
 
   defp actor_for(tool_context, tenant_id) when is_map(tool_context) do

@@ -41,6 +41,7 @@ defmodule JidoClaw.Memory.BlockRevision do
   code_interface do
     define(:create_for_block, action: :create_for_block)
     define(:for_block, action: :for_block, args: [:block_id])
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end

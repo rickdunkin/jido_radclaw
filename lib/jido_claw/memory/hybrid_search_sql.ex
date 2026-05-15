@@ -238,14 +238,16 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   defp load_fact_map([], _tenant_id), do: %{}
 
   defp load_fact_map(ids, tenant_id) do
-    Fact
-    |> Ash.Query.for_read(:read, %{},
+    Fact.query_to_list(%{},
       actor: Actor.system(tenant_id),
       tenant: tenant_id
     )
     |> Ash.Query.filter(id in ^ids)
-    |> Ash.read!()
-    |> Map.new(fn f -> {f.id, f} end)
+    |> Ash.read(actor: Actor.system(tenant_id), tenant: tenant_id)
+    |> case do
+      {:ok, facts} -> Map.new(facts, fn f -> {f.id, f} end)
+      {:error, _} -> %{}
+    end
   end
 
   defp scope_fk_column(:user), do: "user_id"

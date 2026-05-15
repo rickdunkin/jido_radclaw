@@ -259,14 +259,16 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
         ids = Enum.map(ranked, fn {id, _} -> id end)
 
         loaded =
-          Solution
-          |> Ash.Query.for_read(:read, %{},
+          Solution.query_to_list(%{},
             actor: Actor.system(tenant_id),
             tenant: tenant_id
           )
           |> Ash.Query.filter(id in ^ids)
-          |> Ash.read!()
-          |> Map.new(fn s -> {s.id, s} end)
+          |> Ash.read(actor: Actor.system(tenant_id), tenant: tenant_id)
+          |> case do
+            {:ok, solutions} -> Map.new(solutions, fn s -> {s.id, s} end)
+            {:error, _} -> %{}
+          end
 
         Enum.flat_map(ranked, fn {id, score} ->
           case Map.fetch(loaded, id) do

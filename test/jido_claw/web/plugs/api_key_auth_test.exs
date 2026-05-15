@@ -8,6 +8,8 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Accounts.ApiKey
+  alias JidoClaw.Accounts.User
   alias JidoClaw.Audit.Event
   alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Web.Plugs.ApiKeyAuth
@@ -103,15 +105,9 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
       password_confirmation: password
     }
 
-    {:ok, user} =
-      JidoClaw.Accounts.User
-      |> Ash.Changeset.for_create(:register_with_password, user_attrs)
-      |> Ash.create(authorize?: false)
+    {:ok, user} = User.register_with_password(user_attrs, authorize?: false)
 
-    {:ok, api_key} =
-      JidoClaw.Accounts.ApiKey
-      |> Ash.Changeset.for_create(:create, %{user_id: user.id})
-      |> Ash.create(authorize?: false)
+    {:ok, api_key} = ApiKey.create(user.id, authorize?: false)
 
     plaintext = Ash.Resource.get_metadata(api_key, :plaintext_api_key)
     {user, plaintext}

@@ -44,6 +44,8 @@ defmodule JidoClaw.Solutions.ReputationImport do
   code_interface do
     define(:record_import, action: :record_import)
     define(:find_by_hash, action: :find_by_hash, args: [:source_sha256], get?: true)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
   end
 
   actions do

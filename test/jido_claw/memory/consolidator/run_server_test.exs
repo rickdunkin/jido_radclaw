@@ -22,7 +22,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   alias JidoClaw.Workspaces.Resolver
 
   @consolidator_key JidoClaw.Memory.Consolidator
-  @memory_domain JidoClaw.Memory.Domain
 
   setup do
     # Shared sandbox so cross-process writes (RunServer, harness Task,
@@ -82,12 +81,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.facts_added >= 1
 
       blocks =
-        Ash.read!(Block, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+        Block.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert Enum.any?(blocks, &(&1.label == "core_facts" and &1.value =~ "shipping"))
 
       facts =
-        Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert Enum.any?(facts, &(&1.label == "geo" and &1.content =~ "Canada"))
     end
@@ -124,7 +123,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert run.links_added >= 1
 
       links =
-        Ash.read!(Link, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+        Link.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       created = Enum.find(links, &(&1.from_fact_id == fact_a.id and &1.to_fact_id == fact_b.id))
 
@@ -166,8 +165,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # maybe_invalidate_unlabeled/1, which short-circuits for labeled
       # facts.
       reloaded =
-        Ash.get!(Fact, original.id,
-          domain: @memory_domain,
+        Fact.by_id!(original.id,
           tenant: tenant_id,
           actor: actor_for(tenant_id)
         )
@@ -175,7 +173,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       refute is_nil(reloaded.invalid_at)
 
       facts =
-        Ash.read!(Fact, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       replacement =
         Enum.find(facts, fn f ->
@@ -188,7 +186,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert replacement.source == :consolidator_promoted
 
       links =
-        Ash.read!(Link, domain: @memory_domain, tenant: tenant_id, actor: actor_for(tenant_id))
+        Link.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       supersedes =
         Enum.find(links, fn l ->
@@ -408,8 +406,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
                )
 
       rows =
-        Ash.read!(ConsolidationRun,
-          domain: @memory_domain,
+        ConsolidationRun.list!(
           tenant: tenant_id,
           actor: actor_for(tenant_id)
         )
@@ -454,8 +451,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert {:error, "no_credentials"} = result
 
       rows =
-        Ash.read!(ConsolidationRun,
-          domain: @memory_domain,
+        ConsolidationRun.list!(
           tenant: tenant_id,
           actor: actor_for(tenant_id)
         )

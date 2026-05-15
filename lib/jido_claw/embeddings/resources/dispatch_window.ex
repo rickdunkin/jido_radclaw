@@ -24,6 +24,8 @@ defmodule JidoClaw.Embeddings.DispatchWindow do
   end
 
   code_interface do
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:read_window, action: :read_window, args: [:model, :window_started_at])
   end
 

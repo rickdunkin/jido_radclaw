@@ -1,12 +1,24 @@
 defmodule JidoClaw.Web.ProjectsLive do
   use JidoClaw.Web, :live_view
 
+  require Logger
+
+  alias JidoClaw.Projects.Project
+
   @impl true
   def mount(_params, _session, socket) do
-    projects =
-      Ash.read!(JidoClaw.Projects.Project, actor: socket.assigns.current_user, authorize?: false)
+    {projects, projects_error} =
+      case Project.read(actor: socket.assigns.current_user, authorize?: false) do
+        {:ok, items} ->
+          {items, nil}
 
-    {:ok, assign(socket, page_title: "Projects", projects: projects)}
+        {:error, e} ->
+          Logger.warning("[ProjectsLive] projects read failed: #{inspect(e)}")
+          {[], "Could not load projects"}
+      end
+
+    {:ok,
+     assign(socket, page_title: "Projects", projects: projects, projects_error: projects_error)}
   end
 
   @impl true

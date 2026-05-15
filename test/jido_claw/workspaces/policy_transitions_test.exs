@@ -190,9 +190,7 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
   end
 
   defp seed_disabled_fact(tenant_id, workspace) do
-    Fact
-    |> Ash.Changeset.for_create(
-      :record,
+    Fact.record(
       %{
         scope_kind: :workspace,
         workspace_id: workspace.id,
@@ -206,15 +204,12 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
       tenant: tenant_id,
       actor: actor_for(tenant_id)
     )
-    |> Ash.create(domain: JidoClaw.Memory)
   end
 
   defp seed_fact_with_status(tenant_id, workspace, status)
        when status in [:pending, :processing, :failed] do
     {:ok, fact} =
-      Fact
-      |> Ash.Changeset.for_create(
-        :record,
+      Fact.record(
         %{
           scope_kind: :workspace,
           workspace_id: workspace.id,
@@ -228,7 +223,6 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
         tenant: tenant_id,
         actor: actor_for(tenant_id)
       )
-      |> Ash.create(domain: JidoClaw.Memory)
 
     # Drive the row into the target status via direct UPDATE so we
     # cover the :processing / :failed branches the action layer
@@ -244,9 +238,7 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
 
   defp seed_ready_fact(tenant_id, workspace) do
     {:ok, fact} =
-      Fact
-      |> Ash.Changeset.for_create(
-        :record,
+      Fact.record(
         %{
           scope_kind: :workspace,
           workspace_id: workspace.id,
@@ -260,11 +252,9 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
         tenant: tenant_id,
         actor: actor_for(tenant_id)
       )
-      |> Ash.create(domain: JidoClaw.Memory)
 
-    fact
-    |> Ash.Changeset.for_update(
-      :transition_embedding_status,
+    Fact.transition_embedding_status!(
+      fact,
       %{
         embedding: List.duplicate(0.001, 1024),
         embedding_status: :ready
@@ -272,6 +262,5 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
       tenant: tenant_id,
       actor: actor_for(tenant_id)
     )
-    |> Ash.update!()
   end
 end

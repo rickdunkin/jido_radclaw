@@ -13,6 +13,8 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
   code_interface do
     define(:create)
     define(:update_status)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_by_repo, action: :by_repo)
     define(:get_by_issue, action: :by_issue)
   end

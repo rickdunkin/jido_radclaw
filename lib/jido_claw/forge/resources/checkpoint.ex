@@ -17,6 +17,9 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
   code_interface do
     define(:create)
     define(:latest_for_session)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
+    define(:get_by_id, action: :read, get_by: [:id])
   end
 
   actions do

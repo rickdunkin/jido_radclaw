@@ -18,6 +18,8 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:complete)
     define(:fail)
     define(:cancel)
+    define(:list, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_active)
     define(:list_by_project, action: :by_project)
   end

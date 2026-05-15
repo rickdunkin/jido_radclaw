@@ -5,6 +5,8 @@ defmodule JidoClaw.Forge.Persistence do
 
   alias Ash.Query
   alias JidoClaw.Core.MapKeys
+  alias JidoClaw.Forge.Resources.Checkpoint
+  alias JidoClaw.Forge.Resources.Event
   alias JidoClaw.Security.Redaction.Patterns
 
   def enabled? do
@@ -14,19 +16,26 @@ defmodule JidoClaw.Forge.Persistence do
 
   def record_session_started(session_id, spec) do
     if enabled?() do
+      attrs = %{
+        name: session_id,
+        runner_type: to_string(Map.get(spec, :runner, :shell)),
+        runner_config: Map.get(spec, :runner_config, %{}),
+        spec: redact_map(spec),
+        started_at: DateTime.utc_now()
+      }
+
       try do
-        Ash.create!(
-          JidoClaw.Forge.Resources.Session,
-          %{
-            name: session_id,
-            runner_type: to_string(Map.get(spec, :runner, :shell)),
-            runner_config: Map.get(spec, :runner_config, %{}),
-            spec: redact_map(spec),
-            started_at: DateTime.utc_now()
-          },
-          action: :start,
-          authorize?: false
-        )
+        case Ash.create(JidoClaw.Forge.Resources.Session, attrs,
+               action: :start,
+               authorize?: false
+             ) do
+          {:ok, session} ->
+            session
+
+          {:error, e} ->
+            Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
+            nil
+        end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
       end
@@ -131,7 +140,6 @@ defmodule JidoClaw.Forge.Persistence do
         session = find_session(session_id)
 
         if session do
-          # Two-step flow: create with :start, then update with :complete
           start_attrs = %{
             session_id: session.id,
             sequence: sequence,
@@ -143,29 +151,45 @@ defmodule JidoClaw.Forge.Persistence do
               do: Map.put(start_attrs, :started_at, started_at),
               else: start_attrs
 
-          exec_session =
-            Ash.create!(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false)
+          case Ash.create(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false) do
+            {:ok, exec_session} ->
+              finish_execution(exec_session, output, exit_code, runner_status)
 
-          result_status =
-            case runner_status do
-              :error -> :failed
-              _ -> if exit_code == 0, do: :completed, else: :failed
-            end
-
-          raw_output_bytes = byte_size(output || "")
-
-          exec_session
-          |> Ash.Changeset.for_update(:complete, %{
-            result_status: result_status,
-            output: truncate(Patterns.redact(output || ""), 10_000),
-            exit_code: exit_code,
-            raw_output_bytes: raw_output_bytes
-          })
-          |> Ash.update!(authorize?: false)
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to start exec session: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record execution: #{inspect(e)}")
       end
+    end
+  end
+
+  defp finish_execution(exec_session, output, exit_code, runner_status) do
+    result_status =
+      case runner_status do
+        :error -> :failed
+        _ -> if exit_code == 0, do: :completed, else: :failed
+      end
+
+    raw_output_bytes = byte_size(output || "")
+
+    exec_session
+    |> Ash.Changeset.for_update(:complete, %{
+      result_status: result_status,
+      output: truncate(Patterns.redact(output || ""), 10_000),
+      exit_code: exit_code,
+      raw_output_bytes: raw_output_bytes
+    })
+    |> Ash.update(authorize?: false)
+    |> case do
+      {:ok, exec} ->
+        exec
+
+      {:error, e} ->
+        Logger.warning("[Forge.Persistence] Failed to complete exec session: #{inspect(e)}")
+        nil
     end
   end
 
@@ -186,7 +210,14 @@ defmodule JidoClaw.Forge.Persistence do
               do: Map.put(attrs, :exec_session_sequence, exec_session_sequence),
               else: attrs
 
-          Ash.create!(JidoClaw.Forge.Resources.Event, attrs, authorize?: false)
+          case Ash.create(JidoClaw.Forge.Resources.Event, attrs, authorize?: false) do
+            {:ok, event} ->
+              event
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to log event: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to log event: #{inspect(e)}")
@@ -202,7 +233,15 @@ defmodule JidoClaw.Forge.Persistence do
         if session do
           session
           |> Ash.Changeset.for_update(:update_phase, %{phase: phase})
-          |> Ash.update!(authorize?: false)
+          |> Ash.update(authorize?: false)
+          |> case do
+            {:ok, updated} ->
+              updated
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to update session phase: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to update session phase: #{inspect(e)}")
@@ -218,7 +257,15 @@ defmodule JidoClaw.Forge.Persistence do
         if session do
           session
           |> Ash.Changeset.for_update(:set_sandbox_id, %{sandbox_id: sandbox_id})
-          |> Ash.update!(authorize?: false)
+          |> Ash.update(authorize?: false)
+          |> case do
+            {:ok, updated} ->
+              updated
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to record sandbox_id: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to record sandbox_id: #{inspect(e)}")
@@ -232,16 +279,21 @@ defmodule JidoClaw.Forge.Persistence do
         session = find_session(session_id)
 
         if session do
-          Ash.create!(
-            JidoClaw.Forge.Resources.Checkpoint,
-            %{
-              session_id: session.id,
-              exec_session_sequence: sequence,
-              runner_state_snapshot: runner_state_snapshot,
-              metadata: metadata
-            },
-            authorize?: false
-          )
+          attrs = %{
+            session_id: session.id,
+            exec_session_sequence: sequence,
+            runner_state_snapshot: runner_state_snapshot,
+            metadata: metadata
+          }
+
+          case Ash.create(JidoClaw.Forge.Resources.Checkpoint, attrs, authorize?: false) do
+            {:ok, checkpoint} ->
+              checkpoint
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to save checkpoint: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e -> Logger.warning("[Forge.Persistence] Failed to save checkpoint: #{inspect(e)}")
@@ -255,10 +307,16 @@ defmodule JidoClaw.Forge.Persistence do
         session = find_session(session_id)
 
         if session do
-          JidoClaw.Forge.Resources.Checkpoint
-          |> Query.for_read(:latest_for_session, %{session_id: session.id})
-          |> Ash.read!(authorize?: false)
-          |> List.first()
+          Checkpoint.query_to_latest_for_session(%{session_id: session.id})
+          |> Ash.read(authorize?: false)
+          |> case do
+            {:ok, checkpoints} ->
+              List.first(checkpoints)
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to get latest checkpoint: #{inspect(e)}")
+              nil
+          end
         end
       rescue
         e in [
@@ -299,9 +357,16 @@ defmodule JidoClaw.Forge.Persistence do
 
           args = if opts[:limit], do: Map.put(args, :limit, opts[:limit]), else: args
 
-          JidoClaw.Forge.Resources.Event
-          |> Query.for_read(:for_session, args)
-          |> Ash.read!(authorize?: false)
+          Event.query_to_list_for_session(args)
+          |> Ash.read(authorize?: false)
+          |> case do
+            {:ok, events} ->
+              events
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to get events: #{inspect(e)}")
+              []
+          end
         else
           []
         end
@@ -375,8 +440,11 @@ defmodule JidoClaw.Forge.Persistence do
     |> Query.filter(name == ^session_id)
     |> Query.sort(inserted_at: :desc)
     |> Query.limit(1)
-    |> Ash.read!(authorize?: false)
-    |> List.first()
+    |> Ash.read(authorize?: false)
+    |> case do
+      {:ok, sessions} -> List.first(sessions)
+      {:error, _} -> nil
+    end
   rescue
     _ in [
       Ash.Error.Invalid,
@@ -420,9 +488,9 @@ defmodule JidoClaw.Forge.Persistence do
     |> Query.filter(session_id == ^session.id)
     |> Query.sort(sequence: :desc)
     |> Query.limit(1)
-    |> Ash.read!(authorize?: false)
+    |> Ash.read(authorize?: false)
     |> case do
-      [exec] ->
+      {:ok, [exec]} ->
         %{
           output: exec.output,
           exit_code: exec.exit_code,
@@ -430,7 +498,10 @@ defmodule JidoClaw.Forge.Persistence do
           sequence: exec.sequence
         }
 
-      [] ->
+      {:ok, []} ->
+        nil
+
+      {:error, _} ->
         nil
     end
   rescue

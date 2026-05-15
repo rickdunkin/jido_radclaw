@@ -58,6 +58,8 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
 
   code_interface do
     define(:record, action: :record)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
 
     define(:list_by_task_type,
       action: :by_task_type,

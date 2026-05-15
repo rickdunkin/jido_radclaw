@@ -14,6 +14,7 @@ defmodule JidoClaw.Projects.Project do
   code_interface do
     define(:create, action: :create)
     define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:get_by_github_full_name, action: :read, get_by: [:github_full_name])
     define(:update, action: :update)
   end

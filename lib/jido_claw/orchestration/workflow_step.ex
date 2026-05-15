@@ -16,6 +16,8 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
     define(:complete)
     define(:fail)
     define(:skip)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
   end
 
   actions do

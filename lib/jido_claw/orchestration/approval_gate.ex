@@ -14,6 +14,8 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     define(:create)
     define(:approve)
     define(:reject)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_pending_for_run, action: :pending_for_run)
   end
 

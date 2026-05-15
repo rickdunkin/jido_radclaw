@@ -50,6 +50,7 @@ defmodule JidoClaw.Workspaces.Workspace do
       args: [:consolidation_policy]
     )
 
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
     define(:by_path, action: :by_path, args: [:user_id, :path], get?: true)

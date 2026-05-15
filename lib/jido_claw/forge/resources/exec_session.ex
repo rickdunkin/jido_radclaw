@@ -20,6 +20,8 @@ defmodule JidoClaw.Forge.Resources.ExecSession do
   code_interface do
     define(:start)
     define(:complete)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
   end
 
   actions do

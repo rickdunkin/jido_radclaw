@@ -50,6 +50,7 @@ defmodule JidoClaw.Memory.Link do
   code_interface do
     define(:create_link, action: :create_link)
     define(:for_fact, action: :for_fact, args: [:fact_id])
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end

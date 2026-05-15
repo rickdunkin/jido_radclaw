@@ -18,6 +18,8 @@ defmodule JidoClaw.Forge.Resources.Session do
     define(:cancel)
     define(:set_sandbox_id)
     define(:list_active)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
   end
 
   actions do

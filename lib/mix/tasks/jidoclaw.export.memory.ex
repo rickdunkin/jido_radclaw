@@ -57,16 +57,25 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
     {:ok, %{id: workspace_id, tenant_id: tenant_id}} =
       Resolver.ensure_workspace("default", project_dir)
 
-    facts =
-      Fact
-      |> Ash.Query.for_read(:read, %{}, tenant: tenant_id, authorize?: false)
+    query =
+      Fact.query_to_list(%{}, tenant: tenant_id, authorize?: false)
       |> Ash.Query.filter(
         workspace_id == ^workspace_id and
           is_nil(invalid_at) and is_nil(expired_at)
       )
-      |> Ash.read!()
-      |> Enum.sort_by(& &1.id)
 
+    case Ash.read(query, tenant: tenant_id, authorize?: false) do
+      {:ok, raw_facts} ->
+        facts = Enum.sort_by(raw_facts, & &1.id)
+        write_export(facts, out, tenant_id, workspace_id, with_delta?)
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("export failed: #{inspect(reason)}")
+    end
+  end
+
+  defp write_export(facts, out, tenant_id, workspace_id, with_delta?) do
     Mix.shell().info("Exporting #{length(facts)} Memory.Fact rows to #{out}")
 
     payload = %{
@@ -90,7 +99,6 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
     File.write!(out, Canonical.encode!(payload))
 
     Mix.shell().info("Done.")
-    :ok
   end
 
   defp fact_to_export(fact, with_delta?) do

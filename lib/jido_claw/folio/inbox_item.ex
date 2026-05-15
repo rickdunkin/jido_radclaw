@@ -14,6 +14,8 @@ defmodule JidoClaw.Folio.InboxItem do
     define(:capture)
     define(:process)
     define(:discard)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_unprocessed, action: :unprocessed)
     define(:list_by_user, action: :by_user)
   end

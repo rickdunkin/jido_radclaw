@@ -138,6 +138,7 @@ defmodule JidoClaw.Memory.Fact do
     define(:invalidate_by_label, action: :invalidate_by_label)
     define(:for_consolidator, action: :for_consolidator)
     define(:transition_embedding_status, action: :transition_embedding_status)
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end

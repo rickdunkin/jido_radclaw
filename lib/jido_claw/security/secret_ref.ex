@@ -20,6 +20,8 @@ defmodule JidoClaw.Security.SecretRef do
   code_interface do
     define(:create)
     define(:update)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:get_by_name, action: :by_name)
     define(:list_by_category, action: :by_category)
   end

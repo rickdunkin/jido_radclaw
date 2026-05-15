@@ -15,6 +15,8 @@ defmodule JidoClaw.Folio.Project do
     define(:complete)
     define(:defer)
     define(:reactivate)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_active, action: :active)
     define(:list_by_user, action: :by_user)
   end

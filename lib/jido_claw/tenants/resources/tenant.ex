@@ -52,6 +52,7 @@ defmodule JidoClaw.Tenants.Tenant do
     define(:archive, action: :archive)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:list, action: :list)
+    define(:read, action: :read)
   end
 
   actions do

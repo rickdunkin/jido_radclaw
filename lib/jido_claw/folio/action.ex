@@ -15,6 +15,8 @@ defmodule JidoClaw.Folio.Action do
     define(:complete)
     define(:defer)
     define(:wait)
+    define(:read, action: :read)
+    define(:destroy, action: :destroy)
     define(:list_next_actions, action: :next_actions)
     define(:list_waiting, action: :waiting)
     define(:list_by_context, action: :by_context)

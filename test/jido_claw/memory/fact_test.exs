@@ -37,7 +37,7 @@ defmodule JidoClaw.Memory.FactTest do
           tc
         )
 
-      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+      [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.tenant_id == tenant_id
       assert fact.scope_kind == :workspace
       assert fact.workspace_id == ws.id
@@ -57,7 +57,7 @@ defmodule JidoClaw.Memory.FactTest do
       :ok = Memory.remember_from_user(%{key: "L", content: "v2", type: "fact"}, tc)
 
       facts =
-        Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
         |> Enum.sort_by(& &1.inserted_at)
 
       assert length(facts) == 2
@@ -77,7 +77,7 @@ defmodule JidoClaw.Memory.FactTest do
     } do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
 
-      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+      [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.invalid_at == nil
     end
   end
@@ -155,7 +155,7 @@ defmodule JidoClaw.Memory.FactTest do
 
       :ok = Memory.forget("shared", tool_context: tc, source: :model_remember)
 
-      survivors = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+      survivors = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert Enum.any?(survivors, fn f -> f.label == "shared" and is_nil(f.invalid_at) end)
     end
   end
@@ -196,7 +196,7 @@ defmodule JidoClaw.Memory.FactTest do
 
       :ok = Memory.remember_from_user(attrs, tc)
 
-      [fact] = Ash.read!(Fact, tenant: tenant_id, actor: actor_for(tenant_id))
+      [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.label == "atom_label"
       assert fact.content == "atom_content"
     end

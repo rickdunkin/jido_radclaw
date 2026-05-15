@@ -1,15 +1,23 @@
 defmodule JidoClaw.Web.WorkflowsLive do
   use JidoClaw.Web, :live_view
 
+  require Logger
+
+  alias JidoClaw.Orchestration.WorkflowRun
+
   @impl true
   def mount(_params, _session, socket) do
-    runs =
-      Ash.read!(JidoClaw.Orchestration.WorkflowRun,
-        actor: socket.assigns.current_user,
-        authorize?: false
-      )
+    {runs, runs_error} =
+      case WorkflowRun.list(actor: socket.assigns.current_user, authorize?: false) do
+        {:ok, items} ->
+          {items, nil}
 
-    {:ok, assign(socket, page_title: "Workflows", runs: runs)}
+        {:error, e} ->
+          Logger.warning("[WorkflowsLive] runs list failed: #{inspect(e)}")
+          {[], "Could not load workflow runs"}
+      end
+
+    {:ok, assign(socket, page_title: "Workflows", runs: runs, runs_error: runs_error)}
   end
 
   @impl true

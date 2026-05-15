@@ -12,6 +12,10 @@ defmodule JidoClaw.Accounts.User do
     repo(JidoClaw.Repo)
   end
 
+  code_interface do
+    define(:register_with_password, action: :register_with_password)
+  end
+
   authentication do
     tokens do
       enabled?(true)

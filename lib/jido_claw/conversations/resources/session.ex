@@ -49,6 +49,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_next_sequence, action: :set_next_sequence, args: [:next_sequence])
     define(:set_prompt_snapshot, action: :set_prompt_snapshot, args: [:snapshot])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
+    define(:list, action: :read)
 
     define(:by_external,
       action: :by_external,

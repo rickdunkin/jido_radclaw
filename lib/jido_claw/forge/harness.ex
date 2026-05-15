@@ -5,6 +5,7 @@ defmodule JidoClaw.Forge.Harness do
 
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge.{Bootstrap, Persistence, PubSub, ResourceProvisioner, Sandbox}
+  alias JidoClaw.Forge.Resources.Checkpoint
 
   @registry JidoClaw.Forge.SessionRegistry
 
@@ -675,8 +676,10 @@ defmodule JidoClaw.Forge.Harness do
   # Recovery helpers
 
   defp load_checkpoint(checkpoint_id) do
-    JidoClaw.Forge.Resources.Checkpoint
-    |> Ash.get!(checkpoint_id, authorize?: false)
+    case Checkpoint.get_by_id(checkpoint_id, authorize?: false) do
+      {:ok, checkpoint} -> checkpoint
+      {:error, _} -> nil
+    end
   rescue
     _ in [
       Ash.Error.Invalid,

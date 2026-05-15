@@ -88,7 +88,7 @@ defmodule JidoClaw.Memory.BlockTest do
 
       assert updated.value == "v2"
 
-      revisions = Ash.read!(BlockRevision, tenant: tenant_id, actor: actor_for(tenant_id))
+      revisions = BlockRevision.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert Enum.any?(revisions, fn r -> r.value == "v1" end)
     end
 

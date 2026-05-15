@@ -58,6 +58,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     define(:record_run, action: :record_run)
     define(:latest_for_scope, action: :latest_for_scope)
     define(:history_for_scope, action: :history_for_scope)
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end

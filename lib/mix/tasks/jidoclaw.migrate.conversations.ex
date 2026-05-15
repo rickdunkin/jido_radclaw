@@ -141,8 +141,14 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
 
       if max_seq > 0 do
         next = max_seq + 1
-        Session.set_next_sequence!(session, next, authorize?: false)
-        Mix.shell().info("    imported up to sequence=#{max_seq}; next_sequence=#{next}")
+
+        case Session.set_next_sequence(session, next, authorize?: false) do
+          {:ok, _} ->
+            Mix.shell().info("    imported up to sequence=#{max_seq}; next_sequence=#{next}")
+
+          {:error, reason} ->
+            Mix.raise("    set_next_sequence failed: #{inspect(reason)}")
+        end
       else
         Mix.shell().info("    no rows imported")
       end

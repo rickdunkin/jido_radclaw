@@ -90,6 +90,7 @@ defmodule JidoClaw.Solutions.Solution do
     define(:transition_embedding_status, action: :transition_embedding_status)
     define(:with_deleted, action: :with_deleted)
     define(:search, action: :search)
+    define(:list, action: :read)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end

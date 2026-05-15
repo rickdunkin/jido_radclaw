@@ -1,17 +1,45 @@
 defmodule JidoClaw.Web.FolioLive do
   use JidoClaw.Web, :live_view
 
+  require Logger
+
+  alias JidoClaw.Folio.Action, as: FolioAction
+  alias JidoClaw.Folio.InboxItem
+  alias JidoClaw.Folio.Project, as: FolioProject
+
   @impl true
   def mount(_params, _session, socket) do
     actor = socket.assigns.current_user
 
-    inbox =
-      Ash.read!(JidoClaw.Folio.InboxItem, action: :unprocessed, actor: actor, authorize?: false)
+    {inbox, inbox_error} =
+      case InboxItem.list_unprocessed(actor: actor, authorize?: false) do
+        {:ok, items} ->
+          {items, nil}
 
-    actions =
-      Ash.read!(JidoClaw.Folio.Action, action: :next_actions, actor: actor, authorize?: false)
+        {:error, e} ->
+          Logger.warning("[FolioLive] inbox list failed: #{inspect(e)}")
+          {[], "Could not load inbox"}
+      end
 
-    projects = Ash.read!(JidoClaw.Folio.Project, action: :active, actor: actor, authorize?: false)
+    {actions, actions_error} =
+      case FolioAction.list_next_actions(actor: actor, authorize?: false) do
+        {:ok, items} ->
+          {items, nil}
+
+        {:error, e} ->
+          Logger.warning("[FolioLive] actions list failed: #{inspect(e)}")
+          {[], "Could not load actions"}
+      end
+
+    {projects, projects_error} =
+      case FolioProject.list_active(actor: actor, authorize?: false) do
+        {:ok, items} ->
+          {items, nil}
+
+        {:error, e} ->
+          Logger.warning("[FolioLive] projects list failed: #{inspect(e)}")
+          {[], "Could not load projects"}
+      end
 
     {:ok,
      assign(socket,
@@ -19,7 +47,10 @@ defmodule JidoClaw.Web.FolioLive do
        tab: :inbox,
        inbox: inbox,
        actions: actions,
-       projects: projects
+       projects: projects,
+       inbox_error: inbox_error,
+       actions_error: actions_error,
+       projects_error: projects_error
      )}
   end
 

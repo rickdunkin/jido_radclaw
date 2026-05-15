@@ -62,6 +62,8 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer]
 
+  require Logger
+
   alias Ash.Changeset
   alias Ash.Query
   alias JidoClaw.Conversations.Session, as: SessionResource
@@ -103,6 +105,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     define(:expired, action: :expired)
     define(:lookup, action: :lookup, args: [:request_id], get?: true)
     define(:record_telemetry, action: :record_telemetry, get_by: [:request_id])
+    define(:read, action: :read)
   end
 
   actions do
@@ -253,19 +256,35 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   """
   @spec sweep_expired() :: {:ok, non_neg_integer()}
   def sweep_expired do
-    expired =
-      __MODULE__
-      |> Query.for_read(:expired)
+    query =
+      __MODULE__.query_to_expired()
       |> Query.limit(@sweep_batch)
-      |> Ash.read!(authorize?: false)
 
-    case expired do
-      [] ->
+    case Ash.read(query, authorize?: false) do
+      {:ok, []} ->
         {:ok, 0}
 
-      records ->
-        Ash.bulk_destroy!(records, :complete, %{}, authorize?: false)
-        {:ok, length(records)}
+      {:ok, expired} ->
+        do_bulk_destroy(expired)
+
+      {:error, reason} ->
+        Logger.warning("[RequestCorrelation] sweep read failed: #{inspect(reason)}")
+        {:ok, 0}
+    end
+  end
+
+  defp do_bulk_destroy(expired) do
+    case Ash.bulk_destroy(expired, :complete, %{}, authorize?: false, return_errors?: true) do
+      %Ash.BulkResult{status: :success, records: records} ->
+        {:ok, length(records || expired)}
+
+      %Ash.BulkResult{status: status, error_count: errors}
+      when status in [:partial_success, :error] ->
+        Logger.warning(
+          "[RequestCorrelation] sweep destroy partial: status=#{status} errors=#{errors}"
+        )
+
+        {:ok, length(expired) - (errors || 0)}
     end
   end
 

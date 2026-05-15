@@ -30,8 +30,10 @@ defmodule JidoClaw.Memory.Consolidator do
   require Logger
   require Ash.Query
 
+  alias JidoClaw.Conversations.Session, as: ConversationSession
   alias JidoClaw.Memory.Consolidator.RunServer
   alias JidoClaw.Memory.Scope
+  alias JidoClaw.Workspaces.Workspace
 
   @doc """
   Run the consolidator for one scope synchronously.
@@ -154,10 +156,13 @@ defmodule JidoClaw.Memory.Consolidator do
   end
 
   defp read_workspaces do
-    JidoClaw.Workspaces.Workspace
-    |> Ash.Query.for_read(:read, %{}, authorize?: false)
+    Workspace.query_to_list(%{}, authorize?: false)
     |> Ash.Query.filter(consolidation_policy != :disabled)
-    |> Ash.read!(domain: JidoClaw.Workspaces)
+    |> Ash.read(domain: JidoClaw.Workspaces, authorize?: false)
+    |> case do
+      {:ok, workspaces} -> workspaces
+      {:error, _} -> []
+    end
   end
 
   defp workspace_scope(ws) do
@@ -209,10 +214,16 @@ defmodule JidoClaw.Memory.Consolidator do
     workspace_ids = Enum.map(workspaces, & &1.id)
     workspace_index = Map.new(workspaces, fn ws -> {ws.id, ws} end)
 
-    JidoClaw.Conversations.Session
-    |> Ash.Query.for_read(:read, %{}, authorize?: false)
-    |> Ash.Query.filter(workspace_id in ^workspace_ids and is_nil(closed_at))
-    |> Ash.read!(domain: JidoClaw.Conversations)
+    sessions =
+      ConversationSession.query_to_list(%{}, authorize?: false)
+      |> Ash.Query.filter(workspace_id in ^workspace_ids and is_nil(closed_at))
+      |> Ash.read(domain: JidoClaw.Conversations, authorize?: false)
+      |> case do
+        {:ok, list} -> list
+        {:error, _} -> []
+      end
+
+    sessions
     |> Enum.map(fn session ->
       ws = Map.get(workspace_index, session.workspace_id)
 

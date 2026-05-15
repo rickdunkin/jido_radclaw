@@ -52,8 +52,7 @@ defmodule JidoClaw.Workspaces.Resolver do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
-    Workspace
-    |> Ash.Changeset.for_create(:register, attrs, tenant: tenant_id, actor: actor)
+    Workspace.changeset_to_register(attrs, tenant: tenant_id, actor: actor)
     |> Ash.create(upsert?: true, upsert_identity: upsert_identity, actor: actor)
   end
 end
