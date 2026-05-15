@@ -22,12 +22,14 @@ defmodule JidoClaw.Folio.InboxItem do
     defaults([:read, :destroy])
 
     create :capture do
+      description("Capture a new item into the inbox for later processing.")
       primary?(true)
       accept([:title, :notes, :source, :user_id])
       change(set_attribute(:status, :inbox))
     end
 
     update :process do
+      description("Process an inbox item and record its routing outcome.")
       accept([])
 
       # outcome is reserved for future routing logic (e.g., dispatching to action, project, reference lists)
@@ -43,16 +45,19 @@ defmodule JidoClaw.Folio.InboxItem do
     end
 
     update :discard do
+      description("Discard an inbox item without further routing.")
       accept([])
       change(set_attribute(:status, :discarded))
       change(set_attribute(:processed_at, &DateTime.utc_now/0))
     end
 
     read :unprocessed do
+      description("List inbox items still awaiting processing.")
       filter(expr(status == :inbox))
     end
 
     read :by_user do
+      description("List all inbox items belonging to a user.")
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(user_id == ^arg(:user_id)))
     end

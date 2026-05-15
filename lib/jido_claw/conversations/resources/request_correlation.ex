@@ -109,6 +109,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     defaults([:read])
 
     create :register do
+      description("Register a request_id with its dispatching scope and optional telemetry.")
       primary?(true)
 
       accept([
@@ -129,20 +130,24 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     end
 
     update :record_telemetry do
+      description("Merge per-request telemetry into an existing correlation row.")
       accept([:run_id, :model, :input_tokens, :output_tokens, :latency_ms])
       require_atomic?(false)
     end
 
     destroy :complete do
+      description("Delete a correlation row once the request finishes.")
       primary?(true)
     end
 
     read :expired do
+      description("List correlation rows whose TTL has elapsed.")
       filter(expr(expires_at < now()))
       prepare(build(sort: [expires_at: :asc]))
     end
 
     read :lookup do
+      description("Look up a single correlation row by request_id.")
       get?(true)
       argument(:request_id, :string, allow_nil?: false)
       filter(expr(request_id == ^arg(:request_id)))

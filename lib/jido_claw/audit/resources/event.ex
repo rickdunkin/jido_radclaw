@@ -115,6 +115,7 @@ defmodule JidoClaw.Audit.Event do
     defaults([:read])
 
     create :record do
+      description("Append an audit row describing an actor, event, and target.")
       primary?(true)
 
       accept([
@@ -130,6 +131,7 @@ defmodule JidoClaw.Audit.Event do
     end
 
     read :for_target do
+      description("List audit events for a given target, newest first.")
       argument(:target_kind, :atom, allow_nil?: false, constraints: [one_of: @target_kinds])
       argument(:target_id, :string, allow_nil?: false)
 
@@ -138,6 +140,7 @@ defmodule JidoClaw.Audit.Event do
     end
 
     read :for_actor do
+      description("List audit events for a given actor, newest first.")
       argument(:actor_kind, :atom, allow_nil?: false, constraints: [one_of: @actor_kinds])
       argument(:actor_id, :string, allow_nil?: false)
 

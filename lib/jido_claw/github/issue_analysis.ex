@@ -21,6 +21,7 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     defaults([:read, :destroy])
 
     create :create do
+      description("Record an analysis of a GitHub issue with triage and research data.")
       primary?(true)
 
       accept([
@@ -37,6 +38,7 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     end
 
     update :update_status do
+      description("Advance an issue analysis to a new pipeline status.")
       accept([])
 
       argument(:status, :atom,
@@ -48,11 +50,13 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
     end
 
     read :by_repo do
+      description("List issue analyses for a repository.")
       argument(:repo_full_name, :string, allow_nil?: false)
       filter(expr(repo_full_name == ^arg(:repo_full_name)))
     end
 
     read :by_issue do
+      description("Fetch the analysis for a specific repository issue.")
       argument(:repo_full_name, :string, allow_nil?: false)
       argument(:issue_number, :integer, allow_nil?: false)
 

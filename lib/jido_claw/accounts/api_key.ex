@@ -15,6 +15,7 @@ defmodule JidoClaw.Accounts.ApiKey do
     defaults([:read, :destroy])
 
     create :create do
+      description("Generate a new API key for a user.")
       primary?(true)
       argument(:user_id, :uuid, allow_nil?: false)
       change(manage_relationship(:user_id, :user, type: :append_and_remove))

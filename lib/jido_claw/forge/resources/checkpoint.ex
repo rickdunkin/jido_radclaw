@@ -23,6 +23,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
     defaults([:read, :destroy])
 
     create :create do
+      description("Record a sandbox checkpoint for a session.")
       primary?(true)
 
       accept([
@@ -36,6 +37,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
     end
 
     read :latest_for_session do
+      description("Fetch the most recent checkpoint for a session.")
       argument(:session_id, :uuid, allow_nil?: false)
       filter(expr(session_id == ^arg(:session_id)))
       prepare(build(sort: [created_at: :desc], limit: 1))

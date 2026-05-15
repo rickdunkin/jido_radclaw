@@ -26,6 +26,7 @@ defmodule JidoClaw.Folio.Action do
     defaults([:read, :destroy])
 
     create :create do
+      description("Capture a new next-action with optional project and context.")
       primary?(true)
 
       accept([
@@ -43,17 +44,20 @@ defmodule JidoClaw.Folio.Action do
     end
 
     update :complete do
+      description("Mark an action as completed and stamp completed_at.")
       accept([])
       change(set_attribute(:status, :completed))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
     end
 
     update :defer do
+      description("Defer an action to the someday/maybe list.")
       accept([])
       change(set_attribute(:status, :someday))
     end
 
     update :wait do
+      description("Move an action to waiting and record who it is waiting on.")
       accept([])
       argument(:waiting_for, :string)
       change(set_attribute(:status, :waiting))
@@ -61,24 +65,29 @@ defmodule JidoClaw.Folio.Action do
     end
 
     read :next_actions do
+      description("List actions ready to be worked on next.")
       filter(expr(status == :next))
     end
 
     read :waiting do
+      description("List actions currently waiting on someone else.")
       filter(expr(status == :waiting))
     end
 
     read :by_context do
+      description("List next actions available in a given context.")
       argument(:context, :string, allow_nil?: false)
       filter(expr(context == ^arg(:context) and status == :next))
     end
 
     read :by_project do
+      description("List all actions belonging to a project.")
       argument(:project_id, :uuid, allow_nil?: false)
       filter(expr(project_id == ^arg(:project_id)))
     end
 
     read :by_user do
+      description("List all actions belonging to a user.")
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(user_id == ^arg(:user_id)))
     end

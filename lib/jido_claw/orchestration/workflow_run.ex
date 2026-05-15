@@ -26,12 +26,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     defaults([:read, :destroy])
 
     create :create do
+      description("Create a new workflow run in pending status.")
       primary?(true)
       accept([:name, :workflow_type, :config, :retry_of_id, :user_id, :project_id, :metadata])
       change(set_attribute(:status, :pending))
     end
 
     update :start do
+      description("Transition a pending workflow run to running and stamp started_at.")
       accept([])
       validate(attribute_equals(:status, :pending))
       change(set_attribute(:status, :running))
@@ -39,18 +41,21 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     update :await_approval do
+      description("Pause a running workflow run while it waits for human approval.")
       accept([])
       validate(attribute_equals(:status, :running))
       change(set_attribute(:status, :awaiting_approval))
     end
 
     update :resume do
+      description("Resume a workflow run after its approval gate clears.")
       accept([])
       validate(attribute_equals(:status, :awaiting_approval))
       change(set_attribute(:status, :running))
     end
 
     update :complete do
+      description("Mark a running workflow run completed and record its result.")
       accept([])
       argument(:result, :map)
       validate(attribute_equals(:status, :running))
@@ -60,6 +65,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     update :fail do
+      description("Mark a workflow run failed and record the error.")
       accept([])
       argument(:error, :string)
       validate(attribute_in(:status, [:running, :awaiting_approval]))
@@ -69,6 +75,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     update :cancel do
+      description("Cancel a workflow run that has not yet reached a terminal state.")
       accept([])
       validate(negate(attribute_in(:status, [:completed, :failed, :cancelled])))
       change(set_attribute(:status, :cancelled))
@@ -76,10 +83,12 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     read :list_active do
+      description("List workflow runs that have not yet reached a terminal state.")
       filter(expr(status in [:pending, :running, :awaiting_approval]))
     end
 
     read :by_project do
+      description("List workflow runs belonging to a project.")
       argument(:project_id, :uuid, allow_nil?: false)
       filter(expr(project_id == ^arg(:project_id)))
     end

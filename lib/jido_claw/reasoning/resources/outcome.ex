@@ -69,6 +69,7 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
     defaults([:read, :destroy])
 
     create :record do
+      description("Record the outcome of a reasoning strategy execution.")
       primary?(true)
 
       accept([
@@ -99,6 +100,7 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
     end
 
     read :by_task_type do
+      description("List reasoning outcomes for a task type, optionally since a cutoff.")
       argument(:task_type, JidoClaw.Reasoning.TaskType, allow_nil?: false)
       argument(:since, :utc_datetime_usec)
       argument(:execution_kind, JidoClaw.Reasoning.ExecutionKind, default: :strategy_run)

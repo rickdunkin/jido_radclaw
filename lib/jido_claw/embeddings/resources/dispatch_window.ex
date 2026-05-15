@@ -31,6 +31,7 @@ defmodule JidoClaw.Embeddings.DispatchWindow do
     defaults([:read, :destroy])
 
     read :read_window do
+      description("Read the rate-budget counter row for a model and window start.")
       get?(true)
       argument(:model, :string, allow_nil?: false)
       argument(:window_started_at, :utc_datetime_usec, allow_nil?: false)

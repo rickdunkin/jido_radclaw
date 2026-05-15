@@ -21,12 +21,14 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     defaults([:read, :destroy])
 
     create :create do
+      description("Request an approval gate for a step in a workflow run.")
       primary?(true)
       accept([:step_name, :reason, :workflow_run_id, :requested_by_id])
       change(set_attribute(:status, :pending))
     end
 
     update :approve do
+      description("Approve a pending gate and record approver and comment.")
       accept([])
       argument(:approver_id, :uuid, allow_nil?: false)
       argument(:comment, :string)
@@ -37,6 +39,7 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     end
 
     update :reject do
+      description("Reject a pending gate and record approver and comment.")
       accept([])
       argument(:approver_id, :uuid, allow_nil?: false)
       argument(:comment, :string)
@@ -47,6 +50,7 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     end
 
     read :pending_for_run do
+      description("List pending approval gates for a given workflow run.")
       argument(:workflow_run_id, :uuid, allow_nil?: false)
       filter(expr(workflow_run_id == ^arg(:workflow_run_id) and status == :pending))
     end

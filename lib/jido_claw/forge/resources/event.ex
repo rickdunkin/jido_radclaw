@@ -25,11 +25,13 @@ defmodule JidoClaw.Forge.Resources.Event do
     defaults([:read, :destroy])
 
     create :create do
+      description("Record an event emitted during a Forge session.")
       primary?(true)
       accept([:event_type, :data, :exec_session_sequence, :session_id])
     end
 
     read :for_session do
+      description("List events for a session with optional filters and pagination.")
       argument(:session_id, :uuid, allow_nil?: false)
       argument(:after, :utc_datetime_usec)
       argument(:event_types, {:array, :string})

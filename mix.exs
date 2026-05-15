@@ -113,6 +113,7 @@ defmodule JidoClaw.MixProject do
       {:makeup_elixir, "~> 1.0", only: [:dev, :test]},
       {:makeup, "~> 1.0", only: [:dev, :test]},
       {:reach, "~> 2.2", only: [:dev, :test], runtime: false},
+      {:ash_credo, "~> 0.12", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.2", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.3", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

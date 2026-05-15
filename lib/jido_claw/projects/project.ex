@@ -20,18 +20,23 @@ defmodule JidoClaw.Projects.Project do
 
   actions do
     create :create do
+      description("Register a project linked to a GitHub repository.")
       accept([:name, :github_full_name, :default_branch, :settings])
     end
 
     read :read do
+      description("Read projects, optionally fetching by GitHub full name.")
       primary?(true)
     end
 
     update :update do
+      description("Update a project's name, default branch, or settings.")
       accept([:name, :default_branch, :settings])
     end
 
-    destroy(:destroy)
+    destroy :destroy do
+      description("Delete a project.")
+    end
   end
 
   policies do

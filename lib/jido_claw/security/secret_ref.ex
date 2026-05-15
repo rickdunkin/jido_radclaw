@@ -28,22 +28,26 @@ defmodule JidoClaw.Security.SecretRef do
     defaults([:read, :destroy])
 
     create :create do
+      description("Store an encrypted secret reference for a user.")
       primary?(true)
       accept([:name, :category, :encrypted_value, :user_id])
     end
 
     update :update do
+      description("Rotate the encrypted value of an existing secret reference.")
       primary?(true)
       accept([:encrypted_value])
     end
 
     read :by_name do
+      description("Look up a user's secret reference by name.")
       argument(:name, :string, allow_nil?: false)
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(name == ^arg(:name) and user_id == ^arg(:user_id)))
     end
 
     read :by_category do
+      description("List a user's secret references within a category.")
       argument(:category, :string, allow_nil?: false)
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(category == ^arg(:category) and user_id == ^arg(:user_id)))

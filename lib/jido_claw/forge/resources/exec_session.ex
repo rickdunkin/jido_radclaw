@@ -26,6 +26,7 @@ defmodule JidoClaw.Forge.Resources.ExecSession do
     defaults([:read, :destroy])
 
     create :start do
+      description("Start a new runner iteration within a Forge session.")
       primary?(true)
       accept([:sequence, :command, :session_id, :metadata, :started_at])
       change(set_attribute(:status, :running))
@@ -40,6 +41,7 @@ defmodule JidoClaw.Forge.Resources.ExecSession do
     end
 
     update :complete do
+      description("Complete an exec session and capture its output and timing.")
       require_atomic?(false)
       accept([])
       argument(:result_status, :atom, allow_nil?: false)

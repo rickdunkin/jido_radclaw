@@ -50,6 +50,7 @@ defmodule JidoClaw.Solutions.ReputationImport do
     defaults([:read, :destroy])
 
     create :record_import do
+      description("Record that a reputation.json file with this SHA-256 has been imported.")
       primary?(true)
 
       accept([
@@ -62,6 +63,7 @@ defmodule JidoClaw.Solutions.ReputationImport do
     end
 
     read :find_by_hash do
+      description("Look up an import ledger entry by source SHA-256.")
       get?(true)
       argument(:source_sha256, :string, allow_nil?: false)
 

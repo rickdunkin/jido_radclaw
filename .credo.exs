@@ -8,7 +8,7 @@
         included: ["lib/", "test/"],
         excluded: []
       },
-      plugins: [],
+      plugins: [{AshCredo, []}],
       requires: [],
       strict: true,
       parse_timeout: 5000,
@@ -17,6 +17,24 @@
         enabled: [
           # ex_dna — AI code-duplication detector
           {ExDNA.Credo, []},
+          # ash_credo — Ash framework code-quality checks
+          {AshCredo.Check.Warning.AuthorizerWithoutPolicies, []},
+          {AshCredo.Check.Warning.EmptyDomain, []},
+          {AshCredo.Check.Warning.MissingDomain, []},
+          {AshCredo.Check.Warning.MissingPrimaryKey, []},
+          {AshCredo.Check.Warning.NoActions, []},
+          {AshCredo.Check.Warning.SensitiveFieldInAccept, []},
+          {AshCredo.Check.Warning.WildcardAcceptOnAction, []},
+          {AshCredo.Check.Refactor.DirectiveInFunctionBody, []},
+          {AshCredo.Check.Refactor.LargeResource, []},
+          {AshCredo.Check.Refactor.RaisingCall, []},
+          {AshCredo.Check.Refactor.UseCodeInterface, []},
+          {AshCredo.Check.Design.MissingCodeInterface, []},
+          {AshCredo.Check.Design.MissingIdentity, []},
+          {AshCredo.Check.Design.MissingPrimaryAction, []},
+          {AshCredo.Check.Design.MissingTimestamps, []},
+          {AshCredo.Check.Readability.ActionMissingDescription, []},
+          {AshCredo.Check.Readability.BelongsToMissingAllowNil, []},
           # ex_slop — AI code-slop checks (added by ex_harness)
           {ExSlop.Check.Readability.BoilerplateDocParams, []},
           {ExSlop.Check.Readability.DocFalseOnPublicFunction, []},

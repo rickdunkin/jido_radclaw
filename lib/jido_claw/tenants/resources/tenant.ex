@@ -58,6 +58,7 @@ defmodule JidoClaw.Tenants.Tenant do
     defaults([:read])
 
     create :register do
+      description("Idempotently register a tenant row, refreshing updated_at on conflict.")
       primary?(true)
       upsert?(true)
       upsert_fields([:updated_at])
@@ -66,28 +67,33 @@ defmodule JidoClaw.Tenants.Tenant do
     end
 
     update :suspend do
+      description("Suspend a tenant, blocking further activity.")
       accept([])
       change(set_attribute(:status, :suspended))
     end
 
     update :resume do
+      description("Return a suspended tenant to active status.")
       accept([])
       change(set_attribute(:status, :active))
     end
 
     update :archive do
+      description("Soft-disable a tenant by marking it terminating and stamping archived_at.")
       accept([])
       change(set_attribute(:status, :terminating))
       change(set_attribute(:archived_at, &DateTime.utc_now/0))
     end
 
     read :by_id do
+      description("Fetch a single tenant row by its string id.")
       get?(true)
       argument(:id, :string, allow_nil?: false)
       filter(expr(id == ^arg(:id)))
     end
 
     read :list do
+      description("List all tenants in insertion order.")
       prepare(build(sort: [inserted_at: :asc]))
     end
   end

@@ -24,6 +24,7 @@ defmodule JidoClaw.Forge.Resources.Session do
     defaults([:read, :destroy])
 
     create :start do
+      description("Start or resume a Forge session, upserting by unique name.")
       primary?(true)
       accept([:name, :runner_type, :runner_config, :spec, :metadata, :started_at])
 
@@ -50,6 +51,7 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     update :update_phase do
+      description("Transition a session to a new lifecycle phase.")
       accept([])
       argument(:phase, :atom, allow_nil?: false)
       change(set_attribute(:phase, arg(:phase)))
@@ -57,6 +59,7 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     update :mark_failed do
+      description("Mark a session failed and record the last error.")
       accept([])
       argument(:error, :string)
       change(set_attribute(:phase, :failed))
@@ -65,6 +68,7 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     update :complete do
+      description("Mark a session completed and stamp completed_at.")
       accept([])
       change(set_attribute(:phase, :completed))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
@@ -72,12 +76,14 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     update :cancel do
+      description("Cancel an in-flight session.")
       accept([])
       change(set_attribute(:phase, :cancelled))
       change(set_attribute(:last_activity_at, &DateTime.utc_now/0))
     end
 
     update :set_sandbox_id do
+      description("Attach a sandbox identifier to a session.")
       accept([])
       argument(:sandbox_id, :string, allow_nil?: false)
       change(set_attribute(:sandbox_id, arg(:sandbox_id)))
@@ -85,6 +91,8 @@ defmodule JidoClaw.Forge.Resources.Session do
     end
 
     read :list_active do
+      description("List sessions in any non-terminal phase.")
+
       filter(
         expr(
           phase in [

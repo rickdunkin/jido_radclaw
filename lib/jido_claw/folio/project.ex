@@ -23,32 +23,38 @@ defmodule JidoClaw.Folio.Project do
     defaults([:read, :destroy])
 
     create :create do
+      description("Create a new active project with a desired outcome.")
       primary?(true)
       accept([:name, :outcome, :notes, :user_id])
       change(set_attribute(:status, :active))
     end
 
     update :complete do
+      description("Mark a project as completed and stamp completed_at.")
       accept([])
       change(set_attribute(:status, :completed))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))
     end
 
     update :defer do
+      description("Defer a project to the someday/maybe list.")
       accept([])
       change(set_attribute(:status, :someday))
     end
 
     update :reactivate do
+      description("Return a deferred or completed project to active status.")
       accept([])
       change(set_attribute(:status, :active))
     end
 
     read :active do
+      description("List all currently active projects.")
       filter(expr(status == :active))
     end
 
     read :by_user do
+      description("List all projects belonging to a user.")
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(user_id == ^arg(:user_id)))
     end

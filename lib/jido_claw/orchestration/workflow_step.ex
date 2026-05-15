@@ -22,18 +22,21 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
     defaults([:read, :destroy])
 
     create :create do
+      description("Create a new pending step within a workflow run.")
       primary?(true)
       accept([:name, :step_type, :config, :sequence, :workflow_run_id])
       change(set_attribute(:status, :pending))
     end
 
     update :start do
+      description("Transition a workflow step to running and stamp started_at.")
       accept([])
       change(set_attribute(:status, :running))
       change(set_attribute(:started_at, &DateTime.utc_now/0))
     end
 
     update :complete do
+      description("Mark a workflow step completed and record its output.")
       accept([])
       argument(:output, :map)
       change(set_attribute(:status, :completed))
@@ -42,6 +45,7 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
     end
 
     update :fail do
+      description("Mark a workflow step failed and record the error.")
       accept([])
       argument(:error, :string)
       change(set_attribute(:status, :failed))
@@ -50,6 +54,7 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
     end
 
     update :skip do
+      description("Mark a workflow step as skipped.")
       accept([])
       change(set_attribute(:status, :skipped))
     end
