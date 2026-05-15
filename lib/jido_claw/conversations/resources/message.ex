@@ -372,17 +372,20 @@ defmodule JidoClaw.Conversations.Message do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :session, SessionResource do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :parent_message, __MODULE__ do
       source_attribute(:parent_message_id)
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(true)
     end
   end
 

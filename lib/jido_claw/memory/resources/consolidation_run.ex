@@ -276,6 +276,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
   end
 

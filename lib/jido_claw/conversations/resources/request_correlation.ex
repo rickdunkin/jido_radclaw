@@ -233,16 +233,19 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :session, SessionResource do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :workspace, WorkspaceResource do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(true)
     end
   end
 

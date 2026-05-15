@@ -401,22 +401,26 @@ defmodule JidoClaw.Solutions.Solution do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :workspace, WorkspaceResource do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :session, SessionResource do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(true)
     end
 
     belongs_to :created_by, JidoClaw.Accounts.User do
       source_attribute(:created_by_user_id)
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(true)
     end
   end
 

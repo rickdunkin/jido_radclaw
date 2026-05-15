@@ -129,7 +129,8 @@ defmodule JidoClaw.GitHub.IssueAnalysis do
   relationships do
     belongs_to(:project, JidoClaw.Projects.Project,
       define_attribute?: false,
-      attribute_writable?: true
+      attribute_writable?: true,
+      allow_nil?: true
     )
   end
 end

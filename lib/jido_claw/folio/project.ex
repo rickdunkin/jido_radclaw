@@ -101,7 +101,8 @@ defmodule JidoClaw.Folio.Project do
   relationships do
     belongs_to(:user, JidoClaw.Accounts.User,
       define_attribute?: false,
-      attribute_writable?: true
+      attribute_writable?: true,
+      allow_nil?: true
     )
 
     has_many :actions, JidoClaw.Folio.Action do

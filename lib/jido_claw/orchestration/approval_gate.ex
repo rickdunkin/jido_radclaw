@@ -103,7 +103,8 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
     belongs_to(:requester, JidoClaw.Accounts.User,
       source_attribute: :requested_by_id,
       define_attribute?: false,
-      attribute_writable?: true
+      attribute_writable?: true,
+      allow_nil?: true
     )
 
     belongs_to :workflow_run, JidoClaw.Orchestration.WorkflowRun do

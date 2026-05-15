@@ -174,18 +174,21 @@ defmodule JidoClaw.Memory.Link do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :from_fact, JidoClaw.Memory.Fact do
       source_attribute(:from_fact_id)
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :to_fact, JidoClaw.Memory.Fact do
       source_attribute(:to_fact_id)
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
   end
 

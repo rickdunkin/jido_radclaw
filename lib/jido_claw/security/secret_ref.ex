@@ -89,10 +89,11 @@ defmodule JidoClaw.Security.SecretRef do
   end
 
   relationships do
-    belongs_to(:user, JidoClaw.Accounts.User,
-      define_attribute?: false,
-      attribute_writable?: true
-    )
+    belongs_to :user, JidoClaw.Accounts.User do
+      define_attribute?(false)
+      attribute_writable?(true)
+      allow_nil?(false)
+    end
   end
 
   identities do

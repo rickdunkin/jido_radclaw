@@ -115,16 +115,19 @@ defmodule JidoClaw.Memory.FactEpisode do
     belongs_to :tenant, JidoClaw.Tenants.Tenant do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :fact, JidoClaw.Memory.Fact do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
 
     belongs_to :episode, JidoClaw.Memory.Episode do
       define_attribute?(false)
       attribute_writable?(true)
+      allow_nil?(false)
     end
   end
 

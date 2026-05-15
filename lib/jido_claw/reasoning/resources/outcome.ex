@@ -252,12 +252,14 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       define_attribute?(false)
       attribute_writable?(true)
       source_attribute(:workspace_uuid)
+      allow_nil?(true)
     end
 
     belongs_to :session, JidoClaw.Conversations.Session do
       define_attribute?(false)
       attribute_writable?(true)
       source_attribute(:session_uuid)
+      allow_nil?(true)
     end
   end
 end
