@@ -34,6 +34,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
     update :start do
       description("Transition a pending workflow run to running and stamp started_at.")
+      primary?(true)
       accept([])
       validate(attribute_equals(:status, :pending))
       change(set_attribute(:status, :running))

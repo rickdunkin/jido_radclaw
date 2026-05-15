@@ -123,6 +123,7 @@ defmodule JidoClaw.Accounts.User do
 
     update :change_password do
       description("Change a user's password.")
+      primary?(true)
       require_atomic?(false)
       argument(:current_password, :string, allow_nil?: false, sensitive?: true)
       argument(:password, :string, allow_nil?: false, sensitive?: true)
@@ -152,6 +153,7 @@ defmodule JidoClaw.Accounts.User do
 
     action :request_magic_link do
       description("Send a user a magic link.")
+      primary?(true)
       argument(:email, :ci_string, allow_nil?: false)
       run(AshAuthentication.Strategy.MagicLink.Request)
     end

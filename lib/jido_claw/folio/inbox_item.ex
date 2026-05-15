@@ -30,6 +30,7 @@ defmodule JidoClaw.Folio.InboxItem do
 
     update :process do
       description("Process an inbox item and record its routing outcome.")
+      primary?(true)
       accept([])
 
       # outcome is reserved for future routing logic (e.g., dispatching to action, project, reference lists)

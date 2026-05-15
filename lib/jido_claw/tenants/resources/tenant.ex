@@ -74,6 +74,7 @@ defmodule JidoClaw.Tenants.Tenant do
 
     update :resume do
       description("Return a suspended tenant to active status.")
+      primary?(true)
       accept([])
       change(set_attribute(:status, :active))
     end

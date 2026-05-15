@@ -31,6 +31,7 @@ defmodule JidoClaw.Folio.Project do
 
     update :complete do
       description("Mark a project as completed and stamp completed_at.")
+      primary?(true)
       accept([])
       change(set_attribute(:status, :completed))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))

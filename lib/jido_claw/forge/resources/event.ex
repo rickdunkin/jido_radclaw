@@ -92,6 +92,7 @@ defmodule JidoClaw.Forge.Resources.Event do
     end
 
     create_timestamp(:timestamp)
+    update_timestamp(:updated_at)
   end
 
   relationships do

@@ -28,6 +28,7 @@ defmodule JidoClaw.Memory.Consolidator do
   """
 
   require Logger
+  require Ash.Query
 
   alias JidoClaw.Memory.Consolidator.RunServer
   alias JidoClaw.Memory.Scope
@@ -153,8 +154,6 @@ defmodule JidoClaw.Memory.Consolidator do
   end
 
   defp read_workspaces do
-    require Ash.Query
-
     JidoClaw.Workspaces.Workspace
     |> Ash.Query.for_read(:read, %{}, authorize?: false)
     |> Ash.Query.filter(consolidation_policy != :disabled)
@@ -207,7 +206,6 @@ defmodule JidoClaw.Memory.Consolidator do
   defp active_session_scopes([]), do: []
 
   defp active_session_scopes(workspaces) do
-    require Ash.Query
     workspace_ids = Enum.map(workspaces, & &1.id)
     workspace_index = Map.new(workspaces, fn ws -> {ws.id, ws} end)
 

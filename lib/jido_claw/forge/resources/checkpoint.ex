@@ -74,6 +74,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
     end
 
     create_timestamp(:created_at)
+    update_timestamp(:updated_at)
   end
 
   relationships do

@@ -245,6 +245,9 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
       allow_nil?(true)
       public?(true)
     end
+
+    create_timestamp(:inserted_at)
+    update_timestamp(:updated_at)
   end
 
   relationships do

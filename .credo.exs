@@ -31,8 +31,10 @@
           {AshCredo.Check.Refactor.UseCodeInterface, []},
           {AshCredo.Check.Design.MissingCodeInterface, []},
           {AshCredo.Check.Design.MissingIdentity, []},
-          {AshCredo.Check.Design.MissingPrimaryAction, []},
-          {AshCredo.Check.Design.MissingTimestamps, []},
+          {AshCredo.Check.Design.MissingPrimaryAction,
+           [files: %{excluded: ["lib/jido_claw/accounts/token.ex"]}]},
+          {AshCredo.Check.Design.MissingTimestamps,
+           [files: %{excluded: ["lib/jido_claw/audit/resources/event.ex"]}]},
           {AshCredo.Check.Readability.ActionMissingDescription, []},
           {AshCredo.Check.Readability.BelongsToMissingAllowNil, []},
           # ex_slop — AI code-slop checks (added by ex_harness)

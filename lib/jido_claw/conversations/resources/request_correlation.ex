@@ -181,12 +181,8 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
       public?(true)
     end
 
-    attribute :inserted_at, :utc_datetime_usec do
-      allow_nil?(false)
-      public?(true)
-      writable?(true)
-      default(&DateTime.utc_now/0)
-    end
+    create_timestamp(:inserted_at, public?: true)
+    update_timestamp(:updated_at, public?: true)
 
     # `expires_at` and `inserted_at` both default to `DateTime.utc_now()`-based
     # values that fire at changeset-build time (before `allow_nil?: false`

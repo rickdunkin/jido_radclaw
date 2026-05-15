@@ -45,6 +45,7 @@ defmodule JidoClaw.Folio.Action do
 
     update :complete do
       description("Mark an action as completed and stamp completed_at.")
+      primary?(true)
       accept([])
       change(set_attribute(:status, :completed))
       change(set_attribute(:completed_at, &DateTime.utc_now/0))

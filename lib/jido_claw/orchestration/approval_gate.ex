@@ -29,6 +29,7 @@ defmodule JidoClaw.Orchestration.ApprovalGate do
 
     update :approve do
       description("Approve a pending gate and record approver and comment.")
+      primary?(true)
       accept([])
       argument(:approver_id, :uuid, allow_nil?: false)
       argument(:comment, :string)

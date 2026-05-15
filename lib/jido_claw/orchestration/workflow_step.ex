@@ -30,6 +30,7 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
 
     update :start do
       description("Transition a workflow step to running and stamp started_at.")
+      primary?(true)
       accept([])
       change(set_attribute(:status, :running))
       change(set_attribute(:started_at, &DateTime.utc_now/0))

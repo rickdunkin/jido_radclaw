@@ -66,6 +66,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   """
 
   require Logger
+  require Ash.Query
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Memory.{Fact, Retrieval, ScopeFk}
@@ -237,8 +238,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   defp load_fact_map([], _tenant_id), do: %{}
 
   defp load_fact_map(ids, tenant_id) do
-    require Ash.Query
-
     Fact
     |> Ash.Query.for_read(:read, %{},
       actor: Actor.system(tenant_id),
@@ -766,8 +765,6 @@ defmodule JidoClaw.Memory.HybridSearchSql do
   # ---------------------------------------------------------------------------
 
   defp load_facts(cols, rows, tenant_id) do
-    require Ash.Query
-
     id_index = Enum.find_index(cols, &(&1 == "id"))
     score_index = Enum.find_index(cols, &(&1 == "combined_score"))
     shadow_index = Enum.find_index(cols, &(&1 == "shadowed_by"))

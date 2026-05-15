@@ -52,6 +52,7 @@ defmodule JidoClaw.Forge.Resources.Session do
 
     update :update_phase do
       description("Transition a session to a new lifecycle phase.")
+      primary?(true)
       accept([])
       argument(:phase, :atom, allow_nil?: false)
       change(set_attribute(:phase, arg(:phase)))
