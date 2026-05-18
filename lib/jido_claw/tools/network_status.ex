@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.NetworkStatus do
   Tool that checks the agent network connection status and peer count.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "network_status",
     description: "Check the agent network connection status and peer count.",
     category: "solutions",

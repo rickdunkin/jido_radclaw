@@ -3,6 +3,12 @@ defmodule JidoClaw.Forge.Sandbox.Behaviour do
   @callback create(spec :: map()) :: {:ok, struct(), String.t()} | {:error, term()}
   @callback exec(client :: struct(), command :: String.t(), opts :: keyword()) ::
               {String.t(), integer()}
+  @callback exec_argv(
+              client :: struct(),
+              command :: String.t(),
+              args :: [String.t()],
+              opts :: keyword()
+            ) :: {String.t(), integer()}
   @callback spawn(client :: struct(), command :: String.t(), args :: list(), opts :: keyword()) ::
               {:ok, term()} | {:error, term()}
   @callback write_file(client :: struct(), path :: String.t(), content :: binary()) ::

@@ -284,7 +284,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
           "[RequestCorrelation] sweep destroy partial: status=#{status} errors=#{errors}"
         )
 
-        {:ok, length(expired) - (errors || 0)}
+        {:ok, max(length(expired) - errors, 0)}
     end
   end
 

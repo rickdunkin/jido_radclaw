@@ -14,17 +14,28 @@ defmodule JidoClaw.Application do
   use Application
   require Logger
 
+  alias JidoClaw.Core.DependencyPatches
   alias JidoClaw.Embeddings.BootGuard
+  alias JidoClaw.Security.Redaction.LogRedactor
+  alias JidoClaw.Security.RuntimeSecrets
+  alias JidoClaw.Security.VaultConfig
 
   @impl true
   def start(_type, _args) do
+    DependencyPatches.ensure_loaded!()
+
     # In MCP mode, stdout is reserved for JSON-RPC — redirect all logging to stderr.
     if Application.get_env(:jido_claw, :serve_mode) == :mcp do
       redirect_logger_to_stderr()
     end
 
+    LogRedactor.install!()
+
     # Load .env file if present (project root or cwd)
     load_dotenv()
+
+    RuntimeSecrets.ensure_configured!()
+    VaultConfig.ensure_configured!()
 
     # Boot guard: refuse to start when the only embedding provider's
     # credential is missing. Bypassed when the `--setup` arm has set
@@ -46,7 +57,7 @@ defmodule JidoClaw.Application do
         mcp_children()
       ])
 
-    opts = [strategy: :rest_for_one, name: JidoClaw.Supervisor, max_restarts: 10, max_seconds: 30]
+    opts = [strategy: :one_for_one, name: JidoClaw.Supervisor, max_restarts: 10, max_seconds: 30]
     result = Supervisor.start_link(children, opts)
 
     # Start Nostrum (Discord) only when token is configured — it's runtime: false
@@ -136,132 +147,165 @@ defmodule JidoClaw.Application do
     ]
 
     [
-      # Infrastructure (nested supervisor — if these crash, rest_for_one restarts dependents)
-      %{
-        id: JidoClaw.InfraSupervisor,
-        start:
-          {Supervisor, :start_link,
-           [infra_children, [strategy: :one_for_one, name: JidoClaw.InfraSupervisor]]},
-        type: :supervisor
-      },
+      # Infrastructure
+      supervisor_child(JidoClaw.InfraSupervisor, infra_children, :one_for_one),
 
       # Forge sandbox execution engine
+      supervisor_child(JidoClaw.Forge.Supervisor, forge_children(), :rest_for_one),
+
+      # Orchestration workflow feed
+      JidoClaw.Orchestration.RunSummaryFeed,
+
+      # Code Server runtime management
+      supervisor_child(JidoClaw.CodeServer.Supervisor, code_server_children(), :rest_for_one),
+
+      # Finch HTTP pools
+      {Finch, name: JidoClaw.Finch},
+
+      # Embeddings — RatePacer must start AFTER Finch (Voyage HTTP)
+      # and BackfillWorker must start AFTER RatePacer + Repo.
+      JidoClaw.Embeddings.RatePacer,
+      JidoClaw.Embeddings.BackfillWorker,
+
+      # Telemetry
+      JidoClaw.Telemetry,
+
+      # Stats
+      JidoClaw.Stats,
+
+      # Supervised heartbeat writer for .jido/heartbeat.md.
+      heartbeat_child(),
+
+      # Background process tracking
+      JidoClaw.BackgroundProcess.Registry,
+
+      # Tool approval
+      JidoClaw.Platform.Approval,
+
+      # Global session supervisor (fallback for non-tenant sessions)
+      {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},
+
+      # Jido agent runtime
+      JidoClaw.Jido,
+
+      # Messaging runtime (rooms, agents, bridges — powered by jido_messaging)
+      JidoClaw.Messaging,
+
+      # Multi-tenancy
+      supervisor_child(JidoClaw.TenantRuntimeSupervisor, tenant_children(), :rest_for_one),
+
+      # Memory consolidator MCP server (always-on, scoped per-run
+      # via the Bandit-fronted Plug.Router). The transport-internal
+      # `start: true` is what Anubis's supervisor reads — a
+      # top-level start option is silently ignored.
+      {JidoClaw.Memory.Consolidator.MCPServer, transport: {:streamable_http, [start: true]}},
+
+      # Boot-time initializer: ensure the "system" tenant and
+      # register platform cron jobs (memory consolidator tick).
+      # Transient so a failure here surfaces loudly without
+      # cascading into the rest of the supervision tree.
+      %{
+        id: JidoClaw.Memory.Consolidator.SystemJobsInitializer,
+        start: {JidoClaw.Memory.Consolidator.SystemJobsInitializer, :start_link, [[]]},
+        type: :worker,
+        restart: :transient
+      },
+
+      # Solutions engine — Store + Reputation GenServers retired
+      # in v0.6.1; Solutions live in Postgres now (see
+      # JidoClaw.Solutions.Solution and JidoClaw.Solutions.Reputation
+      # resources). Persistence is handled by the new BackfillWorker
+      # added above.
+
+      # Persistent memory — v0.6.3 replaces the GenServer + ETS + JSON
+      # store with the Postgres-backed `JidoClaw.Memory.Domain`. No
+      # supervised process: the API at `JidoClaw.Memory` is a thin
+      # module of code-interface calls.
+
+      # Cached skill registry
+      {JidoClaw.Skills, [project_dir: project_dir()]},
+
+      # Cached user-defined reasoning strategies (.jido/strategies/*.yaml)
+      {JidoClaw.Reasoning.StrategyStore, [project_dir: project_dir()]},
+
+      # Cached user-defined pipelines (.jido/pipelines/*.yaml)
+      {JidoClaw.Reasoning.PipelineStore, [project_dir: project_dir()]},
+
+      # Network
+      {JidoClaw.Network.Supervisor, [project_dir: project_dir()]},
+
+      # Agent tracking (per-agent stats for swarm display)
+      JidoClaw.AgentTracker,
+
+      # Display coordinator (spinner, status bar, swarm box)
+      JidoClaw.Display,
+
+      # VFS/Profile/ServerRegistry/SessionManager dependency chain.
+      supervisor_child(JidoClaw.Shell.Supervisor, shell_children(), :rest_for_one)
+    ]
+  end
+
+  defp supervisor_child(id, children, strategy) do
+    %{
+      id: id,
+      start: {Supervisor, :start_link, [children, [strategy: strategy, name: id]]},
+      type: :supervisor
+    }
+  end
+
+  defp heartbeat_child do
+    %{
+      id: JidoClaw.Heartbeat,
+      start: {JidoClaw.Heartbeat, :start_link, [[project_dir: project_dir()]]},
+      type: :worker,
+      restart: :transient
+    }
+  end
+
+  defp forge_children do
+    List.flatten([
       {Registry, keys: :unique, name: JidoClaw.Forge.SessionRegistry},
       {DynamicSupervisor, name: JidoClaw.Forge.HarnessSupervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: JidoClaw.Forge.ExecSessionSupervisor, strategy: :one_for_one},
+      forge_sandbox_children(),
       JidoClaw.Forge.Manager
-    ] ++
-      forge_sandbox_children() ++
-      [
-        # Orchestration workflow feed
-        JidoClaw.Orchestration.RunSummaryFeed,
+    ])
+  end
 
-        # Code Server runtime management
-        {Registry, keys: :unique, name: JidoClaw.CodeServer.RuntimeRegistry},
-        {DynamicSupervisor, name: JidoClaw.CodeServer.RuntimeSupervisor, strategy: :one_for_one},
+  defp code_server_children do
+    [
+      {Registry, keys: :unique, name: JidoClaw.CodeServer.RuntimeRegistry},
+      {DynamicSupervisor, name: JidoClaw.CodeServer.RuntimeSupervisor, strategy: :one_for_one}
+    ]
+  end
 
-        # Finch HTTP pools
-        {Finch, name: JidoClaw.Finch},
+  defp tenant_children do
+    [
+      JidoClaw.Tenant.Supervisor,
+      JidoClaw.Tenant.Manager
+    ]
+  end
 
-        # Embeddings — RatePacer must start AFTER Finch (Voyage HTTP)
-        # and BackfillWorker must start AFTER RatePacer + Repo.
-        JidoClaw.Embeddings.RatePacer,
-        JidoClaw.Embeddings.BackfillWorker,
+  defp shell_children do
+    [
+      # VFS workspace registry + supervisor must start before SessionManager so
+      # SessionManager.start_new_session/3 can call Workspace.ensure_started/2.
+      {Registry, keys: :unique, name: JidoClaw.VFS.WorkspaceRegistry},
+      JidoClaw.VFS.WorkspaceSupervisor,
 
-        # Telemetry
-        JidoClaw.Telemetry,
+      # Profile manager must start before SessionManager so
+      # SessionManager.start_new_session/3 can read the active env. The
+      # read-only ETS mirror avoids a ProfileManager ↔ SessionManager
+      # call cycle on the session-bootstrap path.
+      {JidoClaw.Shell.ProfileManager, [project_dir: project_dir(), ets_mirror: true]},
 
-        # Stats
-        JidoClaw.Stats,
+      # SSH server registry must start before SessionManager so SSH routing
+      # lookups can resolve; a registry crash restarts only SessionManager.
+      {JidoClaw.Shell.ServerRegistry, [project_dir: project_dir()]},
 
-        # Background process tracking
-        JidoClaw.BackgroundProcess.Registry,
-
-        # Tool approval
-        JidoClaw.Platform.Approval,
-
-        # Global session supervisor (fallback for non-tenant sessions)
-        {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},
-
-        # Jido agent runtime
-        JidoClaw.Jido,
-
-        # Messaging runtime (rooms, agents, bridges — powered by jido_messaging)
-        JidoClaw.Messaging,
-
-        # Multi-tenancy
-        JidoClaw.Tenant.Supervisor,
-        JidoClaw.Tenant.Manager,
-
-        # Memory consolidator MCP server (always-on, scoped per-run
-        # via the Bandit-fronted Plug.Router). The transport-internal
-        # `start: true` is what Anubis's supervisor reads — a
-        # top-level start option is silently ignored.
-        {JidoClaw.Memory.Consolidator.MCPServer, transport: {:streamable_http, [start: true]}},
-
-        # Boot-time initializer: ensure the "system" tenant and
-        # register platform cron jobs (memory consolidator tick).
-        # Transient so a failure here surfaces loudly without
-        # cascading into the rest of the supervision tree.
-        %{
-          id: JidoClaw.Memory.Consolidator.SystemJobsInitializer,
-          start: {JidoClaw.Memory.Consolidator.SystemJobsInitializer, :start_link, [[]]},
-          type: :worker,
-          restart: :transient
-        },
-
-        # Solutions engine — Store + Reputation GenServers retired
-        # in v0.6.1; Solutions live in Postgres now (see
-        # JidoClaw.Solutions.Solution and JidoClaw.Solutions.Reputation
-        # resources). Persistence is handled by the new BackfillWorker
-        # added above.
-
-        # Persistent memory — v0.6.3 replaces the GenServer + ETS + JSON
-        # store with the Postgres-backed `JidoClaw.Memory.Domain`. No
-        # supervised process: the API at `JidoClaw.Memory` is a thin
-        # module of code-interface calls.
-
-        # Cached skill registry
-        {JidoClaw.Skills, [project_dir: project_dir()]},
-
-        # Cached user-defined reasoning strategies (.jido/strategies/*.yaml)
-        {JidoClaw.Reasoning.StrategyStore, [project_dir: project_dir()]},
-
-        # Cached user-defined pipelines (.jido/pipelines/*.yaml)
-        {JidoClaw.Reasoning.PipelineStore, [project_dir: project_dir()]},
-
-        # Network
-        {JidoClaw.Network.Supervisor, [project_dir: project_dir()]},
-
-        # Agent tracking (per-agent stats for swarm display)
-        JidoClaw.AgentTracker,
-
-        # Display coordinator (spinner, status bar, swarm box)
-        JidoClaw.Display,
-
-        # VFS workspace registry + supervisor (must start BEFORE SessionManager so
-        # SessionManager.start_new_session/3 can call Workspace.ensure_started/2).
-        {Registry, keys: :unique, name: JidoClaw.VFS.WorkspaceRegistry},
-        JidoClaw.VFS.WorkspaceSupervisor,
-
-        # Profile manager — must start BEFORE SessionManager so
-        # SessionManager.start_new_session/3 can read the active env, and
-        # so a SessionManager crash under :rest_for_one doesn't wipe the
-        # active-by-workspace map. `ets_mirror: true` enables the
-        # read-only table SessionManager uses to avoid a GenServer
-        # call into ProfileManager on the session-bootstrap path —
-        # breaking the PM ↔ SM mutual-call cycle.
-        {JidoClaw.Shell.ProfileManager, [project_dir: project_dir(), ets_mirror: true]},
-
-        # SSH server registry — parses `.jido/config.yaml` servers: list.
-        # Must start BEFORE SessionManager so SSH routing lookups can
-        # resolve; under :rest_for_one, a registry crash restarts
-        # SessionManager too, clearing any stale SSH session cache.
-        {JidoClaw.Shell.ServerRegistry, [project_dir: project_dir()]},
-
-        # Shell session manager (jido_shell + Host backend for real command execution)
-        JidoClaw.Shell.SessionManager
-      ]
+      # Shell session manager (jido_shell + Host backend for real command execution)
+      JidoClaw.Shell.SessionManager
+    ]
   end
 
   defp project_dir do
@@ -275,7 +319,7 @@ defmodule JidoClaw.Application do
         [JidoClaw.Forge.SandboxInit]
 
       _ ->
-        [JidoClaw.Forge.Sandbox.Local]
+        [JidoClaw.Forge.Runner.HostShell]
     end
   end
 

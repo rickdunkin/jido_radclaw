@@ -27,6 +27,8 @@ defmodule JidoClaw.Tools.MCPScope do
   alias JidoClaw.Conversations.{Message, ToolTranscript}
   alias JidoClaw.MCPScope.Initializer
 
+  @wrapped_key :__jidoclaw_mcp_scope_wrapped__
+
   @doc """
   Returns the `context` map with `:tool_context` populated from the
   MCP-mode default scope when missing.
@@ -75,10 +77,16 @@ defmodule JidoClaw.Tools.MCPScope do
     enriched = with_default(context || %{})
     tc = Map.get(enriched, :tool_context) || %{}
 
-    if record?(tc) do
-      do_wrap_recorded(tool_name, params, enriched, tc, fun)
-    else
+    if Map.get(enriched, @wrapped_key) do
       fun.(enriched)
+    else
+      wrapped = Map.put(enriched, @wrapped_key, true)
+
+      if record?(tc) do
+        do_wrap_recorded(tool_name, params, wrapped, tc, fun)
+      else
+        fun.(wrapped)
+      end
     end
   end
 

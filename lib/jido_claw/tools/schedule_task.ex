@@ -6,7 +6,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
   Persists to `.jido/cron.yaml` so jobs survive restarts.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "schedule_task",
     description: """
     Schedule a recurring task that the agent will execute on a schedule.

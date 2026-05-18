@@ -2,11 +2,12 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
   use ExUnit.Case, async: true
 
   alias JidoClaw.Forge.ResourceProvisioner
-  alias JidoClaw.Forge.Sandbox.Local
+  alias JidoClaw.Forge.Runner.HostShell
+  alias JidoClaw.Test.StubSandbox
 
   setup do
-    {:ok, client, sandbox_id} = Local.create(%{})
-    on_exit(fn -> Local.destroy(client, sandbox_id) end)
+    {:ok, client, sandbox_id} = HostShell.create(%{})
+    on_exit(fn -> HostShell.destroy(client, sandbox_id) end)
     %{client: client, sandbox_id: sandbox_id}
   end
 
@@ -22,7 +23,7 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
       assert :ok = ResourceProvisioner.provision_all(client, resources)
 
-      {output, 0} = Local.exec(client, "echo $MY_VAR", [])
+      {output, 0} = HostShell.exec(client, "echo $MY_VAR", [])
       assert String.trim(output) == "hello"
     end
 
@@ -34,7 +35,7 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
       assert :ok = ResourceProvisioner.provision_all(client, resources)
 
-      {output, 0} = Local.exec(client, "echo $FIRST $SECOND", [])
+      {output, 0} = HostShell.exec(client, "echo $FIRST $SECOND", [])
       assert String.trim(output) == "1 2"
     end
 
@@ -60,7 +61,7 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
       assert :ok = ResourceProvisioner.provision_all(client, resources)
 
-      {output, 0} = Local.exec(client, "echo $AFTER_MOUNT", [])
+      {output, 0} = HostShell.exec(client, "echo $AFTER_MOUNT", [])
       assert String.trim(output) == "yes"
     end
   end
@@ -119,7 +120,7 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
                  env_prefix: "SECRET_"
                })
 
-      {output, 0} = Local.exec(client, "echo $SECRET_DB_PASS", [])
+      {output, 0} = HostShell.exec(client, "echo $SECRET_DB_PASS", [])
       assert String.trim(output) == "resolved_db_pass"
     end
   end
@@ -142,10 +143,10 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
                  }
                })
 
-      {output, 0} = Local.exec(client, "echo $DATABASE_URL", [])
+      {output, 0} = HostShell.exec(client, "echo $DATABASE_URL", [])
       assert String.trim(output) == "resolved_database_url"
 
-      {output, 0} = Local.exec(client, "echo $OPENAI_API_KEY", [])
+      {output, 0} = HostShell.exec(client, "echo $OPENAI_API_KEY", [])
       assert String.trim(output) == "resolved_openai_api_key"
     end
 
@@ -171,6 +172,31 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
                  source: "https://nonexistent.invalid/repo.git",
                  mount_path: "/tmp/repo"
                })
+    end
+
+    test "uses argv git clone so shell metacharacters are inert" do
+      {:ok, client, sandbox_id} = StubSandbox.create(%{})
+      on_exit(fn -> StubSandbox.destroy(client, sandbox_id) end)
+
+      assert :ok =
+               ResourceProvisioner.provision(client, %{
+                 type: :git_repo,
+                 source: "https://example.invalid/repo.git; touch /tmp/pwned",
+                 branch: "main; echo injected",
+                 mount_path: "repo; rm -rf /"
+               })
+
+      assert StubSandbox.events(client) == [
+               {:exec_argv,
+                [
+                  "git",
+                  "clone",
+                  "--branch",
+                  "main; echo injected",
+                  "https://example.invalid/repo.git; touch /tmp/pwned",
+                  "repo; rm -rf /"
+                ]}
+             ]
     end
   end
 

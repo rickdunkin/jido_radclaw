@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.NetworkShare do
   Tool that shares a solution with the agent network for other agents to discover and use.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "network_share",
     description: "Share a solution with the agent network for other agents to discover and use.",
     category: "solutions",

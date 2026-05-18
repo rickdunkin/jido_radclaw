@@ -81,8 +81,35 @@ defmodule JidoClaw.ApplicationTest do
     end
   end
 
+  describe "supervision topology" do
+    test "keeps the root supervisor one_for_one and isolates dependency chains" do
+      assert supervisor_strategy(JidoClaw.Supervisor) == :one_for_one
+      assert supervisor_strategy(JidoClaw.InfraSupervisor) == :one_for_one
+      assert supervisor_strategy(JidoClaw.Forge.Supervisor) == :rest_for_one
+      assert supervisor_strategy(JidoClaw.CodeServer.Supervisor) == :rest_for_one
+      assert supervisor_strategy(JidoClaw.TenantRuntimeSupervisor) == :rest_for_one
+      assert supervisor_strategy(JidoClaw.Shell.Supervisor) == :rest_for_one
+    end
+
+    test "supervises the heartbeat writer" do
+      assert {JidoClaw.Heartbeat, pid, :worker, [JidoClaw.Heartbeat]} =
+               JidoClaw.Supervisor
+               |> Supervisor.which_children()
+               |> Enum.find(fn {id, _pid, _type, _modules} -> id == JidoClaw.Heartbeat end)
+
+      assert pid == Process.whereis(JidoClaw.Heartbeat)
+    end
+  end
+
   defp capture_env(keys) do
     Enum.map(keys, fn k -> {k, System.get_env(k)} end)
+  end
+
+  defp supervisor_strategy(name) do
+    name
+    |> Process.whereis()
+    |> :sys.get_state()
+    |> elem(2)
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:jido_claw, key)

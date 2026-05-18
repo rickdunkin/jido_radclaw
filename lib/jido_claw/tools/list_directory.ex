@@ -11,7 +11,7 @@ defmodule JidoClaw.Tools.ListDirectory do
   Note: glob patterns are only supported for local paths.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "list_directory",
     description:
       "List files and directories at a path. Returns file names with type indicators. Supports github://, s3://, git:// URIs.",
@@ -85,7 +85,7 @@ defmodule JidoClaw.Tools.ListDirectory do
     if Resolver.under_workspace_mount?(path, ws_opts) do
       list_workspace_mount(path, ws_opts)
     else
-      list_local(path, Map.get(params, :pattern))
+      list_local(path, Map.get(params, :pattern), ws_opts)
     end
   end
 
@@ -113,31 +113,58 @@ defmodule JidoClaw.Tools.ListDirectory do
 
   # -- Private ----------------------------------------------------------------
 
-  defp list_local(path, nil) do
-    case File.ls(path) do
-      {:ok, files} ->
-        files
-        |> Enum.sort()
-        |> Enum.map(fn f ->
-          full = Path.join(path, f)
-          type = if File.dir?(full), do: "dir", else: "file"
-          "#{type}  #{f}"
-        end)
-
+  defp list_local(path, nil, ws_opts) do
+    with {:ok, local_path} <- Resolver.local_path(path, ws_opts, :read),
+         {:ok, files} <- File.ls(local_path) do
+      format_local_entries(files, local_path)
+    else
       {:error, reason} ->
         {:error, "Cannot list #{path}: #{inspect(reason)}"}
     end
   end
 
-  defp list_local(path, glob) do
-    full_pattern = Path.join(path, glob)
+  defp list_local(path, glob, ws_opts) do
+    with :ok <- validate_glob(glob),
+         {:ok, local_path} <- Resolver.local_path(path, ws_opts, :read) do
+      local_path
+      |> Path.join(glob)
+      |> Path.wildcard()
+      |> Enum.filter(&match?({:ok, _}, Resolver.local_path(&1, ws_opts, :read)))
+      |> Enum.sort()
+      |> Enum.map(fn f ->
+        rel = Path.relative_to(f, local_path)
+        type = if File.dir?(f), do: "dir", else: "file"
+        "#{type}  #{rel}"
+      end)
+    else
+      {:error, reason} ->
+        {:error, "Cannot list #{path}: #{inspect(reason)}"}
+    end
+  end
 
-    Path.wildcard(full_pattern)
+  defp format_local_entries(files, local_path) do
+    files
     |> Enum.sort()
     |> Enum.map(fn f ->
-      rel = Path.relative_to(f, path)
-      type = if File.dir?(f), do: "dir", else: "file"
-      "#{type}  #{rel}"
+      full = Path.join(local_path, f)
+      type = if File.dir?(full), do: "dir", else: "file"
+      "#{type}  #{f}"
     end)
+  end
+
+  defp validate_glob(glob) do
+    cond do
+      Path.type(glob) == :absolute ->
+        {:error, :absolute_glob_not_allowed}
+
+      String.starts_with?(glob, "~") ->
+        {:error, :glob_outside_project}
+
+      Enum.any?(Path.split(glob), &(&1 == "..")) ->
+        {:error, :glob_outside_project}
+
+      true ->
+        :ok
+    end
   end
 end

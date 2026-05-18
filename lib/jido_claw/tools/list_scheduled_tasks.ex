@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
   Agent tool for listing all scheduled recurring tasks.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "list_scheduled_tasks",
     description:
       "List all scheduled recurring tasks with their status, schedule, next run time, and failure count.",

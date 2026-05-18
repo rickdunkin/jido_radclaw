@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.ProjectInfo do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "project_info",
     description:
       "Get information about the current project: type, structure, git status, and key files.",
@@ -21,32 +21,34 @@ defmodule JidoClaw.Tools.ProjectInfo do
 
   @impl true
   def run(params, context) do
-    MCPScope.wrap(:project_info, params, context, fn _enriched -> do_run() end)
+    MCPScope.wrap(:project_info, params, context, fn enriched ->
+      enriched
+      |> JidoClaw.ToolContext.project_dir()
+      |> do_run()
+    end)
   end
 
-  defp do_run do
-    cwd = File.cwd!()
-
+  defp do_run(cwd) do
     {:ok,
      %{
        cwd: cwd,
        project_type: ProjectType.detect(cwd),
-       git_branch: detect_git_branch(),
-       git_dirty: detect_git_dirty(),
+       git_branch: detect_git_branch(cwd),
+       git_dirty: detect_git_dirty(cwd),
        top_level_files: detect_top_level_files(cwd),
        has_jido_md: File.exists?(Path.join([cwd, ".jido", "JIDO.md"]))
      }}
   end
 
-  defp detect_git_branch do
-    case System.cmd("git", ["branch", "--show-current"], stderr_to_stdout: true) do
+  defp detect_git_branch(cwd) do
+    case System.cmd("git", ["branch", "--show-current"], cd: cwd, stderr_to_stdout: true) do
       {b, 0} -> String.trim(b)
       _ -> "not a git repo"
     end
   end
 
-  defp detect_git_dirty do
-    case System.cmd("git", ["status", "--porcelain"], stderr_to_stdout: true) do
+  defp detect_git_dirty(cwd) do
+    case System.cmd("git", ["status", "--porcelain"], cd: cwd, stderr_to_stdout: true) do
       {"", 0} -> false
       {_, 0} -> true
       _ -> false

@@ -8,7 +8,8 @@ defmodule JidoClaw.VFS.Resolver do
     * `git://repo-path/file`     — `Jido.VFS.Adapter.Git`
     * Absolute path under a workspace mount — `Jido.Shell.VFS.*` (requires
       `:workspace_id` opt)
-    * All other paths            — local filesystem via `File.*`
+    * All other paths            — local filesystem via `File.*`; when
+      `:project_dir` is supplied, local paths are jailed to that directory.
 
   Remote paths require credentials supplied via application config or
   environment variables. If no credentials are available the operation
@@ -24,6 +25,8 @@ defmodule JidoClaw.VFS.Resolver do
   alias Jido.Shell.VFS.MountTable
   alias Jido.VFS, as: JidoVFS
   alias JidoClaw.VFS.Workspace
+
+  @max_symlink_depth 40
 
   # -- Public API -------------------------------------------------------------
 
@@ -44,7 +47,7 @@ defmodule JidoClaw.VFS.Resolver do
   @spec read(String.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def read(path, opts \\ []) do
     with :ok <- maybe_ensure_workspace(path, opts) do
-      case parse_path(path, opts) do
+      case parse_path(path, opts, :read) do
         {:vfs, workspace_id, vfs_path} ->
           ShellVFS.read_file(workspace_id, vfs_path)
 
@@ -82,7 +85,7 @@ defmodule JidoClaw.VFS.Resolver do
   @spec write(String.t(), binary(), keyword()) :: :ok | {:error, term()}
   def write(path, content, opts \\ []) do
     with :ok <- maybe_ensure_workspace(path, opts) do
-      case parse_path(path, opts) do
+      case parse_path(path, opts, :write) do
         {:vfs, workspace_id, vfs_path} ->
           ShellVFS.write_file(workspace_id, vfs_path, content)
 
@@ -112,6 +115,44 @@ defmodule JidoClaw.VFS.Resolver do
   end
 
   @doc """
+  Atomically write content to a file when the selected backend supports it.
+
+  Local filesystem writes are staged in the destination directory and committed
+  with `File.rename/2`. VFS and remote writes use the underlying `Jido.VFS`
+  `write` + `move` operations on the same filesystem.
+  """
+  @spec atomic_write(String.t(), binary(), keyword()) :: :ok | {:error, term()}
+  def atomic_write(path, content, opts \\ []) do
+    with :ok <- maybe_ensure_workspace(path, opts) do
+      case parse_path(path, opts, :write) do
+        {:vfs, workspace_id, vfs_path} ->
+          vfs_atomic_write(workspace_id, vfs_path, content)
+
+        {:local, local_path} ->
+          local_atomic_write(local_path, content)
+
+        {:github, owner, repo, ref, file_path} ->
+          with {:ok, fs} <- github_filesystem(owner, repo, ref) do
+            jido_vfs_atomic_write(fs, file_path, content)
+          end
+
+        {:s3, bucket, key} ->
+          with {:ok, fs} <- s3_filesystem(bucket) do
+            jido_vfs_atomic_write(fs, key, content)
+          end
+
+        {:git, repo_path, file_path} ->
+          with {:ok, fs} <- git_filesystem(repo_path) do
+            jido_vfs_atomic_write(fs, file_path, content)
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
   List directory contents.
 
   Returns `{:ok, [String.t()]}` or `{:error, reason}`.
@@ -121,7 +162,7 @@ defmodule JidoClaw.VFS.Resolver do
   @spec ls(String.t(), keyword()) :: {:ok, [String.t()]} | {:error, term()}
   def ls(path, opts \\ []) do
     with :ok <- maybe_ensure_workspace(path, opts) do
-      case parse_path(path, opts) do
+      case parse_path(path, opts, :read) do
         {:vfs, workspace_id, vfs_path} ->
           with {:ok, entries} <- ShellVFS.list_dir(workspace_id, vfs_path) do
             {:ok, Enum.map(entries, & &1.name)}
@@ -203,6 +244,22 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
+  @doc """
+  Resolve a local filesystem path using the same project-dir jail as
+  `read/2`, `write/3`, and `ls/2`.
+
+  This is intended for callers that need local filesystem metadata after the
+  resolver has chosen the local backend. Remote URIs and mounted VFS paths are
+  not translated here.
+  """
+  @spec local_path(String.t(), keyword(), :read | :write) :: {:ok, String.t()} | {:error, term()}
+  def local_path(path, opts \\ [], mode \\ :read) when mode in [:read, :write] do
+    case resolve_local_path(path, opts, mode) do
+      {:local, local_path} -> {:ok, local_path}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # -- Workspace bootstrap ----------------------------------------------------
 
   # Returns :ok when bootstrap was not needed or succeeded, or
@@ -242,7 +299,7 @@ defmodule JidoClaw.VFS.Resolver do
 
   # github://owner/repo[@ref]/path/to/file
   # ref defaults to "main" when omitted
-  defp parse_path("github://" <> rest, _opts) do
+  defp parse_path("github://" <> rest, _opts, _mode) do
     case String.split(rest, "/", parts: 3) do
       [owner_repo_ref, repo, file_path] when repo != "" ->
         {owner, ref} = split_owner_ref(owner_repo_ref)
@@ -257,7 +314,7 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path("s3://" <> rest, _opts) do
+  defp parse_path("s3://" <> rest, _opts, _mode) do
     case String.split(rest, "/", parts: 2) do
       [bucket, key] -> {:s3, bucket, key}
       [bucket] -> {:s3, bucket, ""}
@@ -265,7 +322,7 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path("git://" <> rest, _opts) do
+  defp parse_path("git://" <> rest, _opts, _mode) do
     case String.split(rest, "//", parts: 2) do
       [repo_path, file_path] -> {:git, repo_path, file_path}
       [repo_path] -> {:git, repo_path, ""}
@@ -273,24 +330,223 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path(path, opts) do
+  defp parse_path(path, opts, mode) do
     workspace_id = Keyword.get(opts, :workspace_id)
 
     if is_binary(workspace_id) and workspace_id != "" and String.starts_with?(path, "/") do
       case MountTable.resolve(workspace_id, path) do
         {:ok, _mount, _rel} -> {:vfs, workspace_id, path}
-        {:error, :no_mount} -> {:local, path}
+        {:error, :no_mount} -> resolve_local_path(path, opts, mode)
       end
     else
-      {:local, path}
+      resolve_local_path(path, opts, mode)
     end
   end
+
+  defp resolve_local_path(path, opts, mode) do
+    case Keyword.fetch(opts, :project_dir) do
+      {:ok, project_dir} when is_binary(project_dir) and project_dir != "" ->
+        resolve_project_path(path, project_dir, mode)
+
+      _ ->
+        {:local, path}
+    end
+  end
+
+  defp resolve_project_path(path, project_dir, mode) do
+    expanded_root = Path.expand(project_dir)
+
+    with {:ok, real_root} <- real_project_root(expanded_root),
+         candidate <- expand_candidate(path, expanded_root),
+         :ok <- ensure_under_project(candidate, expanded_root, real_root),
+         :ok <- ensure_safe_project_path(candidate, expanded_root, real_root, mode) do
+      {:local, candidate}
+    end
+  end
+
+  defp real_project_root(expanded_root) do
+    case realpath(expanded_root) do
+      {:ok, real_root} -> {:ok, real_root}
+      {:error, reason} -> {:error, {:invalid_project_dir, reason}}
+    end
+  end
+
+  defp expand_candidate(path, project_dir) do
+    case Path.type(path) do
+      :absolute -> Path.expand(path)
+      _ -> Path.expand(path, project_dir)
+    end
+  end
+
+  defp ensure_safe_project_path(candidate, _expanded_root, real_root, :read) do
+    case realpath(candidate) do
+      {:ok, real_candidate} -> ensure_under_real_root(real_candidate, real_root)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_safe_project_path(candidate, expanded_root, real_root, :write) do
+    case File.lstat(candidate) do
+      {:ok, _stat} ->
+        with {:ok, real_candidate} <- realpath(candidate) do
+          ensure_under_real_root(real_candidate, real_root)
+        end
+
+      {:error, :enoent} ->
+        candidate
+        |> Path.dirname()
+        |> nearest_existing_ancestor(expanded_root, real_root)
+        |> case do
+          {:ok, ancestor} ->
+            with {:ok, real_ancestor} <- realpath(ancestor) do
+              ensure_under_real_root(real_ancestor, real_root)
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp nearest_existing_ancestor(path, expanded_root, real_root) do
+    cond do
+      File.exists?(path) ->
+        {:ok, path}
+
+      under_path?(path, expanded_root) or under_path?(path, real_root) ->
+        path |> Path.dirname() |> nearest_existing_ancestor(expanded_root, real_root)
+
+      true ->
+        {:error, {:path_outside_project, path}}
+    end
+  end
+
+  defp ensure_under_project(candidate, expanded_root, real_root) do
+    if under_path?(candidate, expanded_root) or under_path?(candidate, real_root) do
+      :ok
+    else
+      {:error, {:path_outside_project, candidate}}
+    end
+  end
+
+  defp ensure_under_real_root(real_candidate, real_root) do
+    if under_path?(real_candidate, real_root) do
+      :ok
+    else
+      {:error, {:path_outside_project, real_candidate}}
+    end
+  end
+
+  defp under_path?(path, root) do
+    relative = Path.relative_to(path, root)
+
+    relative == "." or
+      (relative != path and relative != ".." and not String.starts_with?(relative, "../"))
+  end
+
+  defp realpath(path), do: realpath(path, 0)
+
+  defp realpath(_path, depth) when depth > @max_symlink_depth,
+    do: {:error, :too_many_symlinks}
+
+  defp realpath(path, depth) do
+    path
+    |> Path.expand()
+    |> Path.split()
+    |> resolve_realpath_parts(depth)
+  end
+
+  defp resolve_realpath_parts(["/" | parts], depth), do: resolve_realpath_parts("/", parts, depth)
+  defp resolve_realpath_parts(parts, depth), do: resolve_realpath_parts(File.cwd!(), parts, depth)
+
+  defp resolve_realpath_parts(current, [], _depth), do: {:ok, current}
+
+  defp resolve_realpath_parts(current, [part | rest], depth) do
+    next = Path.join(current, part)
+
+    case File.lstat(next) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        with {:ok, target} <- File.read_link(next) do
+          target
+          |> symlink_target_path(current)
+          |> join_parts(rest)
+          |> realpath(depth + 1)
+        end
+
+      {:ok, _stat} ->
+        resolve_realpath_parts(next, rest, depth)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp symlink_target_path(target, parent) do
+    case Path.type(target) do
+      :absolute -> Path.expand(target)
+      _ -> Path.expand(target, parent)
+    end
+  end
+
+  defp join_parts(path, parts), do: Enum.reduce(parts, path, &Path.join(&2, &1))
 
   defp split_owner_ref(owner_ref) do
     case String.split(owner_ref, "@", parts: 2) do
       [owner, ref] -> {owner, ref}
       [owner] -> {owner, "main"}
     end
+  end
+
+  defp local_atomic_write(local_path, content) do
+    local_path |> Path.dirname() |> File.mkdir_p!()
+    tmp_path = tmp_path_for(local_path)
+
+    case File.write(tmp_path, content, [:binary]) do
+      :ok ->
+        case File.rename(tmp_path, local_path) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            _ = File.rm(tmp_path)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp vfs_atomic_write(workspace_id, path, content) do
+    with {:ok, mount, relative_path} <- MountTable.resolve(workspace_id, path) do
+      jido_vfs_atomic_write(mount.filesystem, relative_path, content)
+    end
+  end
+
+  defp jido_vfs_atomic_write(filesystem, path, content) do
+    tmp_path = tmp_path_for(path)
+
+    case JidoVFS.write(filesystem, tmp_path, content) do
+      :ok ->
+        case JidoVFS.move(filesystem, tmp_path, path) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            _ = JidoVFS.delete(filesystem, tmp_path)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp tmp_path_for(path) do
+    "#{path}.#{System.unique_integer([:positive, :monotonic])}.tmp"
   end
 
   # -- Filesystem Builders ----------------------------------------------------

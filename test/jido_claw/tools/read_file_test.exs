@@ -13,12 +13,14 @@ defmodule JidoClaw.Tools.ReadFileTest do
     {:ok, dir: dir}
   end
 
+  defp context(dir), do: %{tool_context: %{project_dir: dir}}
+
   describe "run/2 success" do
     test "should return numbered lines when file exists", %{dir: dir} do
       path = Path.join(dir, "sample.txt")
       File.write!(path, "alpha\nbeta\ngamma")
 
-      assert {:ok, result} = ReadFile.run(%{path: path}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path}, context(dir))
 
       assert result.path == path
       assert result.total_lines == 3
@@ -31,7 +33,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       path = Path.join(dir, "padded.txt")
       File.write!(path, "only one line")
 
-      assert {:ok, result} = ReadFile.run(%{path: path}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path}, context(dir))
 
       assert result.content =~ "   1 │ only one line"
     end
@@ -40,7 +42,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       path = Path.join(dir, "offset.txt")
       File.write!(path, "line1\nline2\nline3\nline4")
 
-      assert {:ok, result} = ReadFile.run(%{path: path, offset: 2}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path, offset: 2}, context(dir))
 
       refute result.content =~ "│ line1"
       refute result.content =~ "│ line2"
@@ -53,7 +55,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       content = Enum.map_join(1..10, "\n", &"line#{&1}")
       File.write!(path, content)
 
-      assert {:ok, result} = ReadFile.run(%{path: path, limit: 3}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path, limit: 3}, context(dir))
 
       lines = String.split(result.content, "\n", trim: true)
       assert length(lines) == 3
@@ -64,7 +66,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       content = Enum.map_join(1..10, "\n", &"line#{&1}")
       File.write!(path, content)
 
-      assert {:ok, result} = ReadFile.run(%{path: path, offset: 3, limit: 2}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path, offset: 3, limit: 2}, context(dir))
 
       assert result.content =~ "│ line4"
       assert result.content =~ "│ line5"
@@ -76,7 +78,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       path = Path.join(dir, "total.txt")
       File.write!(path, "a\nb\nc\nd\ne")
 
-      assert {:ok, result} = ReadFile.run(%{path: path, offset: 2, limit: 1}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path, offset: 2, limit: 1}, context(dir))
 
       assert result.total_lines == 5
     end
@@ -85,7 +87,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       path = Path.join(dir, "empty.txt")
       File.write!(path, "")
 
-      assert {:ok, result} = ReadFile.run(%{path: path}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path}, context(dir))
 
       assert result.total_lines == 1
       assert result.content =~ "│"
@@ -127,40 +129,56 @@ defmodule JidoClaw.Tools.ReadFileTest do
     test "should return error when file does not exist", %{dir: dir} do
       path = Path.join(dir, "no_such_file.txt")
 
-      assert {:error, message} = ReadFile.run(%{path: path}, %{})
+      assert {:error, %{message: message}} = ReadFile.run(%{path: path}, context(dir))
 
       assert message =~ "Cannot read"
       assert message =~ path
     end
 
     test "should return error when path is a directory", %{dir: dir} do
-      assert {:error, message} = ReadFile.run(%{path: dir}, %{})
+      assert {:error, %{message: message}} = ReadFile.run(%{path: dir}, context(dir))
 
       assert message =~ "Cannot read"
+    end
+
+    test "rejects absolute paths outside the default project directory" do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_read_file_outside_#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(outside, "outside")
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, %{message: message}} = ReadFile.run(%{path: outside}, %{})
+
+      assert message =~ "Cannot read"
+      assert message =~ "path_outside_project"
     end
 
     test "should reject negative offset", %{dir: dir} do
       path = Path.join(dir, "neg_offset.txt")
       File.write!(path, "a\nb\nc")
 
-      assert {:error, "offset must be non-negative"} =
-               ReadFile.run(%{path: path, offset: -1}, %{})
+      assert {:error, %{message: "offset must be non-negative"}} =
+               ReadFile.run(%{path: path, offset: -1}, context(dir))
     end
 
     test "should reject negative limit", %{dir: dir} do
       path = Path.join(dir, "neg_limit.txt")
       File.write!(path, "a\nb\nc")
 
-      assert {:error, "limit must be non-negative"} =
-               ReadFile.run(%{path: path, limit: -1}, %{})
+      assert {:error, %{message: "limit must be non-negative"}} =
+               ReadFile.run(%{path: path, limit: -1}, context(dir))
     end
 
     test "should reject when both offset and limit are negative", %{dir: dir} do
       path = Path.join(dir, "neg_both.txt")
       File.write!(path, "a\nb\nc")
 
-      assert {:error, "offset must be non-negative"} =
-               ReadFile.run(%{path: path, offset: -1, limit: -1}, %{})
+      assert {:error, %{message: "offset must be non-negative"}} =
+               ReadFile.run(%{path: path, offset: -1, limit: -1}, context(dir))
     end
   end
 
@@ -169,7 +187,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       path = Path.join(dir, "past_end.txt")
       File.write!(path, "a\nb\nc")
 
-      assert {:ok, result} = ReadFile.run(%{path: path, offset: 100}, %{})
+      assert {:ok, result} = ReadFile.run(%{path: path, offset: 100}, context(dir))
 
       assert result.content == ""
       assert result.total_lines == 3

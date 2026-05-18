@@ -2,7 +2,7 @@ import Config
 
 # --- Forge Docker Sandbox ---
 # Set FORGE_SANDBOX=docker to use Docker Sandboxes instead of
-# the default Local (local temp directory) sandbox.
+# the default host-shell backend. The host-shell backend is not a sandbox.
 if System.get_env("FORGE_SANDBOX") == "docker" do
   config :jido_claw, :forge_sandbox, JidoClaw.Forge.Sandbox.Docker
 
@@ -27,6 +27,22 @@ end
 
 # --- Production overrides ---
 if config_env() == :prod do
+  secret_key_base =
+    System.get_env("SECRET_KEY_BASE") ||
+      raise """
+      environment variable SECRET_KEY_BASE is missing.
+
+      Generate one with `mix phx.gen.secret`.
+      """
+
+  token_signing_secret =
+    System.get_env("TOKEN_SIGNING_SECRET") ||
+      raise """
+      environment variable TOKEN_SIGNING_SECRET is missing.
+
+      Generate one with `mix phx.gen.secret`.
+      """
+
   if key = System.get_env("CLOAK_KEY") do
     config :jido_claw, JidoClaw.Security.Vault,
       ciphers: [
@@ -43,9 +59,17 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST", "localhost")
 
+  config :jido_claw, JidoClaw.Web.Endpoint,
+    secret_key_base: secret_key_base,
+    check_origin: ["https://#{host}", "http://#{host}"]
+
+  config :jido_claw, token_signing_secret: token_signing_secret
+else
   if secret_key_base = System.get_env("SECRET_KEY_BASE") do
-    config :jido_claw, JidoClaw.Web.Endpoint,
-      secret_key_base: secret_key_base,
-      check_origin: ["https://#{host}", "http://#{host}"]
+    config :jido_claw, JidoClaw.Web.Endpoint, secret_key_base: secret_key_base
+  end
+
+  if token_signing_secret = System.get_env("TOKEN_SIGNING_SECRET") do
+    config :jido_claw, token_signing_secret: token_signing_secret
   end
 end

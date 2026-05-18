@@ -1,5 +1,7 @@
 defmodule JidoClaw.Tools.EditFileTest do
   use ExUnit.Case
+  @max_content_bytes 5 * 1024 * 1024
+  import JidoClaw.ToolSchemaHelpers
 
   alias Jido.Shell.VFS
   alias JidoClaw.Tools.EditFile
@@ -14,13 +16,15 @@ defmodule JidoClaw.Tools.EditFileTest do
     {:ok, dir: dir}
   end
 
+  defp context(dir), do: %{tool_context: %{project_dir: dir}}
+
   describe "run/2 success" do
     test "should replace unique string match and return diff", %{dir: dir} do
       path = Path.join(dir, "edit_me.txt")
       File.write!(path, "foo bar baz")
 
       assert {:ok, result} =
-               EditFile.run(%{path: path, old_string: "bar", new_string: "qux"}, %{})
+               EditFile.run(%{path: path, old_string: "bar", new_string: "qux"}, context(dir))
 
       assert result.path == path
       assert result.status == "edited"
@@ -32,7 +36,10 @@ defmodule JidoClaw.Tools.EditFileTest do
       File.write!(path, "hello world")
 
       assert {:ok, result} =
-               EditFile.run(%{path: path, old_string: "hello", new_string: "goodbye"}, %{})
+               EditFile.run(
+                 %{path: path, old_string: "hello", new_string: "goodbye"},
+                 context(dir)
+               )
 
       assert result.diff =~ "- hello"
       assert result.diff =~ "+ goodbye"
@@ -43,7 +50,10 @@ defmodule JidoClaw.Tools.EditFileTest do
       File.write!(path, "alpha beta gamma")
 
       assert {:ok, _result} =
-               EditFile.run(%{path: path, old_string: "beta", new_string: "delta"}, %{})
+               EditFile.run(
+                 %{path: path, old_string: "beta", new_string: "delta"},
+                 context(dir)
+               )
 
       assert File.read!(path) == "alpha delta gamma"
     end
@@ -55,7 +65,7 @@ defmodule JidoClaw.Tools.EditFileTest do
       assert {:ok, result} =
                EditFile.run(
                  %{path: path, old_string: "line one\nline two", new_string: "replaced"},
-                 %{}
+                 context(dir)
                )
 
       assert result.status == "edited"
@@ -67,8 +77,8 @@ defmodule JidoClaw.Tools.EditFileTest do
     test "should return error when file does not exist", %{dir: dir} do
       path = Path.join(dir, "ghost.txt")
 
-      assert {:error, message} =
-               EditFile.run(%{path: path, old_string: "x", new_string: "y"}, %{})
+      assert {:error, %{message: message}} =
+               EditFile.run(%{path: path, old_string: "x", new_string: "y"}, context(dir))
 
       assert message =~ "Cannot read"
       assert message =~ path
@@ -78,10 +88,10 @@ defmodule JidoClaw.Tools.EditFileTest do
       path = Path.join(dir, "no_match.txt")
       File.write!(path, "some content here")
 
-      assert {:error, message} =
+      assert {:error, %{message: message}} =
                EditFile.run(
                  %{path: path, old_string: "not_present", new_string: "replacement"},
-                 %{}
+                 context(dir)
                )
 
       assert message =~ "not found"
@@ -92,8 +102,11 @@ defmodule JidoClaw.Tools.EditFileTest do
       path = Path.join(dir, "duplicate.txt")
       File.write!(path, "repeat repeat repeat")
 
-      assert {:error, message} =
-               EditFile.run(%{path: path, old_string: "repeat", new_string: "once"}, %{})
+      assert {:error, %{message: message}} =
+               EditFile.run(
+                 %{path: path, old_string: "repeat", new_string: "once"},
+                 context(dir)
+               )
 
       assert message =~ "3 times"
       assert message =~ path
@@ -103,10 +116,64 @@ defmodule JidoClaw.Tools.EditFileTest do
       path = Path.join(dir, "two_occurrences.txt")
       File.write!(path, "hello world hello")
 
-      assert {:error, message} =
-               EditFile.run(%{path: path, old_string: "hello", new_string: "hi"}, %{})
+      assert {:error, %{message: message}} =
+               EditFile.run(
+                 %{path: path, old_string: "hello", new_string: "hi"},
+                 context(dir)
+               )
 
       assert message =~ "2 times"
+    end
+  end
+
+  describe "replacement size limit" do
+    test "advertises caps for old_string and new_string in the tool schema" do
+      assert max_length(tool_property_schema(EditFile, :old_string)) == @max_content_bytes
+      assert max_length(tool_property_schema(EditFile, :new_string)) == @max_content_bytes
+    end
+
+    test "schema validation rejects oversized old_string" do
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, _reason} =
+               EditFile.validate_params(%{
+                 path: "too-large.txt",
+                 old_string: oversized,
+                 new_string: "ok"
+               })
+    end
+
+    test "schema validation rejects oversized new_string" do
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, _reason} =
+               EditFile.validate_params(%{
+                 path: "too-large.txt",
+                 old_string: "ok",
+                 new_string: oversized
+               })
+    end
+
+    test "run/2 rejects oversized old_string before reading", %{dir: dir} do
+      path = Path.join(dir, "too-large-old.txt")
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, %{message: message}} =
+               EditFile.run(%{path: path, old_string: oversized, new_string: "ok"}, context(dir))
+
+      assert message =~ "old_string exceeds"
+      assert message =~ "#{@max_content_bytes} byte limit"
+    end
+
+    test "run/2 rejects oversized new_string before reading", %{dir: dir} do
+      path = Path.join(dir, "too-large-new.txt")
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, %{message: message}} =
+               EditFile.run(%{path: path, old_string: "ok", new_string: oversized}, context(dir))
+
+      assert message =~ "new_string exceeds"
+      assert message =~ "#{@max_content_bytes} byte limit"
     end
   end
 

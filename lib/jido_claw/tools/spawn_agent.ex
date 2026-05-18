@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.SpawnAgent do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "spawn_agent",
     description:
       "Spawn a child agent from a template to work on a task. Available templates: coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier. The child agent works independently and results can be collected with get_agent_result.",
@@ -39,44 +39,19 @@ defmodule JidoClaw.Tools.SpawnAgent do
   def run(params, context) do
     template_name = params.template
     task = params.task
-    tag = Map.get(params, :tag) || "#{template_name}_#{:erlang.unique_integer([:positive])}"
 
-    case Templates.get(template_name) do
+    with :ok <- enforce_spawn_limits(context),
+         {:ok, tag} <- agent_id_for(template_name, params) do
+      spawn_from_template(template_name, task, tag, context)
+    end
+  end
+
+  defp spawn_from_template(template_name, task, tag, context) do
+    case templates().get(template_name) do
       {:ok, template} ->
-        case JidoClaw.Jido.start_agent(template.module, id: tag) do
+        case jido_runtime().start_agent(template.module, id: tag) do
           {:ok, pid} ->
-            AgentTracker.register(tag, pid, template_name, task)
-
-            child_tool_context =
-              JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
-
-            request_id = JidoClaw.register_child_correlation(child_tool_context)
-
-            spawn(fn ->
-              try do
-                template.module.ask_sync(pid, task,
-                  timeout: 120_000,
-                  request_id: request_id,
-                  tool_context: child_tool_context
-                )
-
-                AgentTracker.mark_complete(tag, :done)
-              rescue
-                _ -> AgentTracker.mark_complete(tag, :error)
-              catch
-                _, _ -> AgentTracker.mark_complete(tag, :error)
-              end
-            end)
-
-            {:ok,
-             %{
-               agent_id: tag,
-               template: template_name,
-               description: template.description,
-               status: "spawned",
-               message:
-                 "Agent '#{tag}' spawned with template '#{template_name}'. Use get_agent_result to collect the result when done."
-             }}
+            register_spawned_agent(pid, template, template_name, task, tag, context)
 
           {:error, reason} ->
             {:error, "Failed to spawn agent: #{inspect(reason)}"}
@@ -85,5 +60,122 @@ defmodule JidoClaw.Tools.SpawnAgent do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp register_spawned_agent(pid, template, template_name, task, tag, context) do
+    case agent_tracker().register(tag, pid, template_name, task) do
+      :ok ->
+        child_tool_context =
+          JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
+          |> Map.put(:swarm_depth, swarm_depth(context) + 1)
+
+        request_id = JidoClaw.register_child_correlation(child_tool_context)
+
+        spawn(fn ->
+          try do
+            template.module.ask_sync(pid, task,
+              timeout: 120_000,
+              request_id: request_id,
+              tool_context: child_tool_context
+            )
+
+            agent_tracker().mark_complete(tag, :done)
+          rescue
+            _ -> agent_tracker().mark_complete(tag, :error)
+          catch
+            _, _ -> agent_tracker().mark_complete(tag, :error)
+          end
+        end)
+
+        {:ok,
+         %{
+           agent_id: tag,
+           template: template_name,
+           description: template.description,
+           status: "spawned",
+           message:
+             "Agent '#{tag}' spawned with template '#{template_name}'. Use get_agent_result to collect the result when done."
+         }}
+
+      {:error, :agent_id_taken} ->
+        {:error, "Agent ID '#{tag}' is already in use."}
+    end
+  end
+
+  defp agent_id_for(template_name, params) do
+    case Map.get(params, :tag) do
+      tag when is_binary(tag) and byte_size(tag) > 0 ->
+        with :ok <- ensure_agent_id_available(tag) do
+          {:ok, tag}
+        end
+
+      _ ->
+        {:ok, generated_agent_id(template_name)}
+    end
+  end
+
+  defp generated_agent_id(template_name) do
+    "#{template_name}_#{Ecto.UUID.generate()}"
+  end
+
+  defp ensure_agent_id_available(tag) do
+    cond do
+      agent_tracker().get_agent(tag) != nil ->
+        {:error, "Agent ID '#{tag}' is already in use."}
+
+      jido_runtime().whereis(tag) != nil ->
+        {:error, "Agent ID '#{tag}' is already in use."}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp enforce_spawn_limits(context) do
+    cond do
+      agent_tracker().child_count() >= max_children() ->
+        {:error, :max_children}
+
+      swarm_depth(context) >= max_depth() ->
+        {:error, :max_depth}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp max_children do
+    case Application.get_env(:jido_claw, :spawn_agent_max_children, 8) do
+      max when is_integer(max) and max >= 0 -> max
+      _ -> 8
+    end
+  end
+
+  defp max_depth do
+    case Application.get_env(:jido_claw, :spawn_agent_max_depth, 1) do
+      max when is_integer(max) and max >= 0 -> max
+      _ -> 1
+    end
+  end
+
+  defp swarm_depth(context) do
+    context
+    |> get_in([:tool_context, :swarm_depth])
+    |> case do
+      depth when is_integer(depth) and depth >= 0 -> depth
+      _ -> 0
+    end
+  end
+
+  defp jido_runtime do
+    Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp agent_tracker do
+    Application.get_env(:jido_claw, :agent_tracker, AgentTracker)
+  end
+
+  defp templates do
+    Application.get_env(:jido_claw, :agent_templates, Templates)
   end
 end

@@ -5,3 +5,6 @@ memory.db
 heartbeat.md
 solutions.json
 cron.yaml
+system_prompt.md
+system_prompt.md.bak
+system_prompt.md.default

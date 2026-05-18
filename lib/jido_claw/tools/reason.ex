@@ -11,7 +11,7 @@ defmodule JidoClaw.Tools.Reason do
   normalized to `auto` at the tool boundary. Prefer `auto` in new code.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "reason",
     description:
       "Apply a structured reasoning strategy to analyze a complex problem. Use for architectural decisions, debugging complex issues, or multi-step planning.",

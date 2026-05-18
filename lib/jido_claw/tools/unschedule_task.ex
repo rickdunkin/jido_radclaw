@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.UnscheduleTask do
   Agent tool for removing a scheduled recurring task.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "unschedule_task",
     description:
       "Remove a scheduled recurring task by its ID. Use list_scheduled_tasks first to see available job IDs.",

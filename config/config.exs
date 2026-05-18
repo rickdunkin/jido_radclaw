@@ -197,8 +197,6 @@ config :jido_claw, JidoClaw.Web.Endpoint,
   http: [port: 4000],
   url: [host: "localhost"],
   server: true,
-  secret_key_base:
-    "jidoclaw_dev_secret_key_base_at_least_64_bytes_long_for_signing_and_encryption_purposes",
   render_errors: [formats: [json: JidoClaw.Web.ErrorJSON]],
   pubsub_server: JidoClaw.PubSub,
   live_view: [signing_salt: "jidoclaw_lv"],
@@ -237,8 +235,7 @@ config :jido_claw,
     JidoClaw.Audit,
     JidoClaw.Cron
   ],
-  base_resources: [JidoClaw.Resource],
-  token_signing_secret: "jidoclaw_dev_token_signing_secret_at_least_64_bytes_for_security"
+  base_resources: [JidoClaw.Resource]
 
 config :spark, :formatter,
   "JidoClaw.Resource": [
@@ -260,17 +257,6 @@ config :ash,
   bulk_actions_default_to_errors?: true,
   known_types: [AshPostgres.Timestamptz, AshPostgres.TimestamptzUsec],
   tracer: [JidoClaw.Audit.AshTracer]
-
-# Cloak Vault for encrypted secret storage
-config :jido_claw, JidoClaw.Security.Vault,
-  ciphers: [
-    default: {
-      Cloak.Ciphers.AES.GCM,
-      tag: "AES.GCM.V1",
-      key: Base.decode64!("dGhpc19pc19hX2Rldl9vbmx5X2tleV8zMl9ieXRlcw=="),
-      iv_length: 12
-    }
-  ]
 
 config :phoenix, :json_library, Jason
 

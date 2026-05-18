@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.ListAgents do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "list_agents",
     description: "List all running child agents with their status, template, and basic info.",
     category: "swarm",

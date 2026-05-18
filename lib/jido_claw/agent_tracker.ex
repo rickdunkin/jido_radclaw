@@ -139,26 +139,30 @@ defmodule JidoClaw.AgentTracker do
 
   @impl true
   def handle_call({:register, id, pid, template, task}, _from, state) do
-    entry = %AgentEntry{
-      id: id,
-      pid: pid,
-      template: template,
-      task: task,
-      started_at: System.monotonic_time(:millisecond)
-    }
+    if Map.has_key?(state.agents, id) do
+      {:reply, {:error, :agent_id_taken}, state}
+    else
+      entry = %AgentEntry{
+        id: id,
+        pid: pid,
+        template: template,
+        task: task,
+        started_at: System.monotonic_time(:millisecond)
+      }
 
-    ref = Process.monitor(pid)
+      ref = Process.monitor(pid)
 
-    state = %{
-      state
-      | agents: Map.put(state.agents, id, entry),
-        order: [id | state.order],
-        monitors: Map.put(state.monitors, ref, id)
-    }
+      state = %{
+        state
+        | agents: Map.put(state.agents, id, entry),
+          order: [id | state.order],
+          monitors: Map.put(state.monitors, ref, id)
+      }
 
-    notify_display({:agent_registered, id, entry})
+      notify_display({:agent_registered, id, entry})
 
-    {:reply, :ok, state}
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call(:get_state, _from, state) do

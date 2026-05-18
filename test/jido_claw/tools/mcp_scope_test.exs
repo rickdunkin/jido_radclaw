@@ -17,7 +17,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
   use JidoClaw.SolutionsCase, async: false
 
   alias JidoClaw.Conversations.{Message, Resolver}
-  alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.Tools.{ListAgents, MCPScope, ProjectInfo}
 
   setup do
     prior_serve_mode = Application.get_env(:jido_claw, :serve_mode)
@@ -146,10 +146,58 @@ defmodule JidoClaw.Tools.MCPScopeTest do
       assert length(tool_calls) == 1
       assert length(tool_results) == 1
     end
+
+    test "shared action wrapper records tools that do not call MCPScope.wrap directly",
+         %{scope: scope, session: session} do
+      Application.put_env(:jido_claw, :serve_mode, :mcp)
+      Application.put_env(:jido_claw, :jido_claw_mcp_default_scope, scope)
+
+      assert {:ok, %{count: count, agents: agents}} = ListAgents.run(%{}, %{tool_context: scope})
+      assert is_integer(count)
+      assert is_binary(agents)
+
+      [call, result] = sorted_session_rows(session)
+      assert call.role == :tool_call
+      assert result.role == :tool_result
+
+      assert call.metadata["tool_name"] == "list_agents" or
+               call.metadata[:tool_name] == "list_agents"
+
+      assert result.metadata["tool_name"] == "list_agents" or
+               result.metadata[:tool_name] == "list_agents"
+    end
+
+    test "legacy inner wraps do not double-record under the shared action wrapper",
+         %{scope: scope, session: session} do
+      Application.put_env(:jido_claw, :serve_mode, :mcp)
+      Application.put_env(:jido_claw, :jido_claw_mcp_default_scope, scope)
+
+      assert {:ok, %{cwd: "/tmp"}} = ProjectInfo.run(%{}, %{tool_context: scope})
+
+      [call, result] = sorted_session_rows(session)
+      assert call.role == :tool_call
+      assert result.role == :tool_result
+
+      assert call.metadata["tool_name"] == "project_info" or
+               call.metadata[:tool_name] == "project_info"
+
+      assert result.metadata["tool_name"] == "project_info" or
+               result.metadata[:tool_name] == "project_info"
+    end
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:jido_claw, key)
   defp restore_app_env(key, value), do: Application.put_env(:jido_claw, key, value)
 
   defp unique_id, do: Integer.to_string(System.unique_integer([:positive]))
+
+  defp sorted_session_rows(session) do
+    {:ok, rows} =
+      Message.for_session(session.id,
+        tenant: session.tenant_id,
+        actor: actor_for(session.tenant_id)
+      )
+
+    Enum.sort_by(rows, & &1.sequence)
+  end
 end

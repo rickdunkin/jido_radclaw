@@ -25,7 +25,10 @@ defmodule JidoClaw.Forge.Harness do
     resume_checkpoint_id: nil,
     sandbox_module: nil,
     sandbox_status: :none,
-    input_sandbox: nil
+    input_sandbox: nil,
+    iteration_task_pid: nil,
+    iteration_task_ref: nil,
+    iteration_from: nil
   ]
 
   def start_link({session_id, spec, _opts}) do
@@ -342,6 +345,32 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   @impl true
+  def handle_info(
+        {:DOWN, ref, :process, _pid, :normal},
+        %{iteration_task_ref: ref} = state
+      ) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{iteration_task_ref: ref} = state
+      ) do
+    failure = {:iteration_task_failed, reason}
+
+    persist(fn -> log_event(state, "iteration.failed", %{reason: inspect(failure)}) end)
+    persist(fn -> update_phase(state, :ready) end)
+    PubSub.broadcast(state.session_id, {:error, %{reason: failure}})
+    reply_iteration_from(state, {:error, failure})
+
+    {:noreply, state |> clear_iteration_task() |> Map.put(:state, :ready)}
+  end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
     case ensure_target_sandbox(state, opts) do
       {:ok, state, client} ->
@@ -362,17 +391,34 @@ defmodule JidoClaw.Forge.Harness do
         iteration_started_at = DateTime.utc_now()
         session_pid = self()
 
-        Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
-          result = state.runner.run_iteration(client, state.runner_state, opts)
+        case Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
+               result = state.runner.run_iteration(client, state.runner_state, opts)
 
-          GenServer.cast(
-            session_pid,
-            {:iteration_complete, result, from, new_state.iteration, target_sandbox,
-             iteration_started_at}
-          )
-        end)
+               GenServer.cast(
+                 session_pid,
+                 {:iteration_complete, self(), result, from, new_state.iteration, target_sandbox,
+                  iteration_started_at}
+               )
+             end) do
+          {:ok, task_pid} ->
+            task_ref = Process.monitor(task_pid)
 
-        {:noreply, new_state}
+            {:noreply,
+             %{
+               new_state
+               | iteration_task_pid: task_pid,
+                 iteration_task_ref: task_ref,
+                 iteration_from: from
+             }}
+
+          {:error, reason} ->
+            persist(fn ->
+              log_event(new_state, "iteration.failed", %{reason: inspect(reason)})
+            end)
+
+            persist(fn -> update_phase(new_state, :ready) end)
+            {:reply, {:error, reason}, %{new_state | state: :ready}}
+        end
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -505,89 +551,114 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl true
   def handle_cast(
-        {:iteration_complete, {:ok, result}, from, _iteration, target_sandbox,
+        {:iteration_complete, task_pid, {:ok, result}, from, _iteration, target_sandbox,
          iteration_started_at},
         state
       ) do
-    new_state =
-      case result.status do
-        :needs_input ->
-          PubSub.broadcast(state.session_id, {:needs_input, %{prompt: result.question}})
-          %{state | state: :needs_input, input_sandbox: target_sandbox}
+    if state.iteration_task_pid == task_pid do
+      state = clear_iteration_task(state)
 
-        :done ->
-          PubSub.broadcast(
-            state.session_id,
-            {:output, %{chunk: result.output, seq: state.output_sequence + 1}}
-          )
+      new_state =
+        case result.status do
+          :needs_input ->
+            PubSub.broadcast(state.session_id, {:needs_input, %{prompt: result.question}})
+            %{state | state: :needs_input, input_sandbox: target_sandbox}
 
-          %{state | state: :ready, output_sequence: state.output_sequence + 1}
+          :done ->
+            PubSub.broadcast(
+              state.session_id,
+              {:output, %{chunk: result.output, seq: state.output_sequence + 1}}
+            )
 
-        :continue ->
-          PubSub.broadcast(
-            state.session_id,
-            {:output, %{chunk: result.output, seq: state.output_sequence + 1}}
-          )
+            %{state | state: :ready, output_sequence: state.output_sequence + 1}
 
-          %{state | state: :ready, output_sequence: state.output_sequence + 1}
+          :continue ->
+            PubSub.broadcast(
+              state.session_id,
+              {:output, %{chunk: result.output, seq: state.output_sequence + 1}}
+            )
 
-        :error ->
-          PubSub.broadcast(state.session_id, {:error, %{reason: result.error}})
-          %{state | state: :ready}
+            %{state | state: :ready, output_sequence: state.output_sequence + 1}
 
-        _ ->
-          %{state | state: :ready}
-      end
+          :error ->
+            PubSub.broadcast(state.session_id, {:error, %{reason: result.error}})
+            %{state | state: :ready}
 
-    # Merge runner state from metadata if the runner returned updated state
-    new_state =
-      case result.metadata do
-        %{state: updated_runner_state} ->
-          %{new_state | runner_state: updated_runner_state}
+          _ ->
+            %{state | state: :ready}
+        end
 
-        _ ->
-          new_state
-      end
+      # Merge runner state from metadata if the runner returned updated state
+      new_state =
+        case result.metadata do
+          %{state: updated_runner_state} ->
+            %{new_state | runner_state: updated_runner_state}
 
-    persist(fn ->
-      log_event(new_state, "iteration.completed", %{
-        iteration: state.iteration,
-        status: result.status,
-        output_sequence: new_state.output_sequence
-      })
-    end)
+          _ ->
+            new_state
+        end
 
-    persist(fn ->
-      Persistence.record_execution_complete(
-        state.session_id,
-        Map.get(result, :output, ""),
-        Map.get(result, :exit_code, 0),
-        state.iteration,
-        result.status,
-        iteration_started_at
-      )
-    end)
+      persist(fn ->
+        log_event(new_state, "iteration.completed", %{
+          iteration: state.iteration,
+          status: result.status,
+          output_sequence: new_state.output_sequence
+        })
+      end)
 
-    save_topology_checkpoint(new_state)
+      persist(fn ->
+        Persistence.record_execution_complete(
+          state.session_id,
+          Map.get(result, :output, ""),
+          Map.get(result, :exit_code, 0),
+          state.iteration,
+          result.status,
+          iteration_started_at
+        )
+      end)
 
-    persist(fn -> update_phase(new_state, new_state.state) end)
+      save_topology_checkpoint(new_state)
 
-    GenServer.reply(from, {:ok, result})
-    {:noreply, new_state}
+      persist(fn -> update_phase(new_state, new_state.state) end)
+
+      GenServer.reply(from, {:ok, result})
+      {:noreply, new_state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
   def handle_cast(
-        {:iteration_complete, {:error, reason}, from, _iteration, _target_sandbox,
+        {:iteration_complete, task_pid, {:error, reason}, from, _iteration, _target_sandbox,
          _iteration_started_at},
         state
       ) do
-    persist(fn -> log_event(state, "iteration.failed", %{reason: inspect(reason)}) end)
-    persist(fn -> update_phase(state, :ready) end)
-    PubSub.broadcast(state.session_id, {:error, %{reason: reason}})
-    GenServer.reply(from, {:error, reason})
-    {:noreply, %{state | state: :ready}}
+    if state.iteration_task_pid == task_pid do
+      state = clear_iteration_task(state)
+      persist(fn -> log_event(state, "iteration.failed", %{reason: inspect(reason)}) end)
+      persist(fn -> update_phase(state, :ready) end)
+      PubSub.broadcast(state.session_id, {:error, %{reason: reason}})
+      GenServer.reply(from, {:error, reason})
+      {:noreply, %{state | state: :ready}}
+    else
+      {:noreply, state}
+    end
   end
+
+  defp clear_iteration_task(state) do
+    if state.iteration_task_ref, do: Process.demonitor(state.iteration_task_ref, [:flush])
+
+    %{
+      state
+      | iteration_task_pid: nil,
+        iteration_task_ref: nil,
+        iteration_from: nil
+    }
+  end
+
+  defp reply_iteration_from(%{iteration_from: nil}, _reply), do: :ok
+  defp reply_iteration_from(%{iteration_from: from}, reply), do: GenServer.reply(from, reply)
 
   @impl true
   def terminate(reason, state) do
@@ -1166,8 +1237,9 @@ defmodule JidoClaw.Forge.Harness do
   defp resolve_runner(module) when is_atom(module), do: module
 
   defp resolve_client(:default), do: Sandbox
-  defp resolve_client(:local), do: JidoClaw.Forge.Sandbox.Local
-  defp resolve_client(:fake), do: JidoClaw.Forge.Sandbox.Local
+  defp resolve_client(:host_shell), do: JidoClaw.Forge.Runner.HostShell
+  defp resolve_client(:local), do: JidoClaw.Forge.Runner.HostShell
+  defp resolve_client(:fake), do: JidoClaw.Forge.Runner.HostShell
   defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module
 

@@ -63,6 +63,23 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   @impl true
+  def exec_argv(
+        %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
+        command,
+        args,
+        opts
+      ) do
+    sbx_args = build_exec_argv_args(sandbox_name, workspace_dir, command, args)
+    timeout = Keyword.get(opts, :timeout)
+
+    if timeout do
+      exec_with_timeout(sbx_args, timeout)
+    else
+      System.cmd("sbx", sbx_args, stderr_to_stdout: true)
+    end
+  end
+
+  @impl true
   def run(
         %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
         agent_type,
@@ -99,16 +116,17 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   @impl true
   def write_file(%__MODULE__{workspace_dir: workspace_dir}, path, content) do
-    full_path = resolve_path(workspace_dir, path)
-    File.mkdir_p!(Path.dirname(full_path))
-
-    File.write(full_path, content)
+    with {:ok, full_path} <- resolve_path(workspace_dir, path),
+         :ok <- File.mkdir_p(Path.dirname(full_path)) do
+      File.write(full_path, content)
+    end
   end
 
   @impl true
   def read_file(%__MODULE__{workspace_dir: workspace_dir}, path) do
-    full_path = resolve_path(workspace_dir, path)
-    File.read(full_path)
+    with {:ok, full_path} <- resolve_path(workspace_dir, path) do
+      File.read(full_path)
+    end
   end
 
   @impl true
@@ -198,6 +216,21 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     args ++ [sandbox_name, "sh", "-c", command]
   end
 
+  defp build_exec_argv_args(sandbox_name, workspace_dir, command, command_args) do
+    args = ["exec"]
+
+    env_file = env_file_path(workspace_dir)
+
+    args =
+      if File.exists?(env_file) do
+        args ++ ["--env-file", env_file]
+      else
+        args
+      end
+
+    args ++ [sandbox_name, command | command_args]
+  end
+
   defp exec_with_timeout(args, timeout) do
     task =
       Task.async(fn ->
@@ -223,10 +256,9 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   defp resolve_path(workspace_dir, path) do
-    if String.starts_with?(path, "/") do
-      path
-    else
-      Path.join(workspace_dir, path)
+    case Path.safe_relative(path, workspace_dir) do
+      {:ok, relative_path} -> {:ok, Path.join(workspace_dir, relative_path)}
+      :error -> {:error, {:unsafe_path, path}}
     end
   end
 

@@ -31,7 +31,8 @@ defmodule JidoClaw.MixProject do
       elixirc_options: [ignore_module_conflict: true],
       deps: deps(),
       escript: escript(),
-      compilers: Mix.compilers(),
+      releases: releases(),
+      compilers: compilers(),
       aliases: aliases(),
       usage_rules: usage_rules(),
       dialyzer: [
@@ -57,7 +58,7 @@ defmodule JidoClaw.MixProject do
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [precommit: :test, "jidoclaw.system_prompt.check": :test]
     ]
   end
 
@@ -67,6 +68,22 @@ defmodule JidoClaw.MixProject do
       name: "jidoclaw",
       embed_elixir: true
     ]
+  end
+
+  defp releases do
+    [
+      jido_claw: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent]
+      ]
+    ]
+  end
+
+  defp compilers do
+    Enum.flat_map(Mix.compilers(), fn
+      :app -> [:jidoclaw_release_patches, :app]
+      compiler -> [compiler]
+    end)
   end
 
   defp usage_rules do
@@ -127,21 +144,42 @@ defmodule JidoClaw.MixProject do
       {:jido_ai, "~> 2.0", override: true},
       {:jido_action, "~> 2.0", override: true},
       {:req_llm, "~> 1.6"},
-      {:libgraph, github: "zblanco/libgraph", branch: "zw/multigraph-indexes", override: true},
+      {:libgraph,
+       github: "zblanco/libgraph", ref: "32280656f808090df85f0facabac27a51a6d2f92", override: true},
 
       # Jido ecosystem — full stack
       {:jido_signal, "~> 2.0", override: true},
-      {:jido_mcp, github: "agentjido/jido_mcp", branch: "main"},
+      {:jido_mcp,
+       github: "agentjido/jido_mcp",
+       ref: "ec6608a49db9fe6d4661b0bd042c66bced71aac2",
+       override: true},
       {:jido_browser, "~> 2.0"},
-      {:jido_skill, github: "agentjido/jido_skill", branch: "main"},
+      {:jido_chat,
+       github: "agentjido/jido_chat",
+       ref: "db1bb321d24c1179cc33c3dfad07cf0ecadcfddf",
+       override: true},
+      {:jido_skill,
+       github: "agentjido/jido_skill",
+       ref: "cc5ec5aaf5ae1c362952cb71949e759e570ddb82",
+       override: true},
       {:jido_composer, "~> 0.3"},
-      {:jido_messaging, github: "agentjido/jido_messaging", branch: "main"},
-      {:jido_shell, github: "agentjido/jido_shell", branch: "main"},
-      {:jido_vfs, github: "agentjido/jido_vfs", branch: "main"},
+      {:jido_messaging,
+       github: "agentjido/jido_messaging",
+       ref: "d8750967eb2d04767d4ba78190c66982fc0e4cda",
+       override: true},
+      {:jido_shell,
+       github: "agentjido/jido_shell",
+       ref: "4378d07f9cb6dc6adff1346cab3bf5abeed2f319",
+       override: true},
+      {:jido_vfs,
+       github: "agentjido/jido_vfs",
+       ref: "6e83cb92450af32d92b5280b1222f5e12ac0db28",
+       override: true},
 
       # Data
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
+      {:glob_ex, "~> 0.1"},
 
       # Phoenix gateway
       {:phoenix, "~> 1.7"},
@@ -207,6 +245,7 @@ defmodule JidoClaw.MixProject do
       test: ["ash.setup --quiet", "test"],
       precommit: [
         "compile --warnings-as-errors",
+        "jidoclaw.system_prompt.check",
         "deps.unlock --unused",
         "format",
         "credo --strict",

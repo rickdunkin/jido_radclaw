@@ -7,7 +7,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   to the solution store with recomputed trust scoring.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "verify_certificate",
     description:
       "Verify code using semi-formal reasoning certificates. Produces structured verdicts with confidence scores. Optionally updates a stored solution's verification and trust score.",

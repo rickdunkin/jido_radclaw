@@ -1,0 +1,11 @@
+/_build
+/deps
+/.git
+/.jido
+/.harness
+/.reach
+/.ex_dna_cache
+/cover
+/priv/plts
+erl_crash.dump
+.env

@@ -39,6 +39,7 @@ defmodule JidoClaw.Memory.Retrieval do
   alias JidoClaw.Memory.{EmbeddingResolver, HybridSearchSql, Scope}
 
   @default_limit 10
+  @current_truth_clock_skew_window "interval '1 second'"
 
   @doc """
   Search Memory.Fact for the resolved scope.
@@ -174,8 +175,10 @@ defmodule JidoClaw.Memory.Retrieval do
     # under Sandbox-wrapped tests where writes and reads share a
     # transaction: `now()` is pinned to the transaction start and would
     # exclude rows whose `valid_at` was set later in the same
-    # transaction.
-    "valid_at <= clock_timestamp() " <>
+    # transaction. The small tolerance absorbs app-vs-DB subsecond
+    # clock skew for immediately-read writes without surfacing
+    # intentionally future-dated memory.
+    "valid_at <= clock_timestamp() + #{@current_truth_clock_skew_window} " <>
       "AND (invalid_at IS NULL OR invalid_at > clock_timestamp()) " <>
       "AND expired_at IS NULL"
   end
@@ -192,7 +195,7 @@ defmodule JidoClaw.Memory.Retrieval do
 
     "inserted_at <= #{system_param} " <>
       "AND (expired_at IS NULL OR expired_at > #{system_param}) " <>
-      "AND valid_at <= clock_timestamp() " <>
+      "AND valid_at <= clock_timestamp() + #{@current_truth_clock_skew_window} " <>
       "AND (invalid_at IS NULL OR invalid_at > clock_timestamp())"
   end
 

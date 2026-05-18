@@ -25,7 +25,7 @@ defmodule JidoClaw.Tools.StoreSolution do
   "workspace = nil means everywhere" fallback.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "store_solution",
     description:
       "Store a verified coding solution for future reuse. " <>

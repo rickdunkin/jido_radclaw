@@ -47,10 +47,18 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
       assert File.read!(Path.join(dir, "hello.txt")) == "world"
     end
 
-    test "writes and reads a file with absolute path", %{client: client, dir: dir} do
+    test "rejects absolute paths", %{client: client, dir: dir} do
       abs_path = Path.join(dir, "subdir/abs.txt")
-      assert :ok = Docker.write_file(client, abs_path, "absolute")
-      assert {:ok, "absolute"} = Docker.read_file(client, abs_path)
+      assert {:error, {:unsafe_path, ^abs_path}} = Docker.write_file(client, abs_path, "absolute")
+      assert {:error, {:unsafe_path, ^abs_path}} = Docker.read_file(client, abs_path)
+      refute File.exists?(abs_path)
+    end
+
+    test "rejects paths that traverse outside the workspace", %{client: client} do
+      assert {:error, {:unsafe_path, "../escape.txt"}} =
+               Docker.write_file(client, "../escape.txt", "escape")
+
+      assert {:error, {:unsafe_path, "../escape.txt"}} = Docker.read_file(client, "../escape.txt")
     end
 
     test "creates parent directories for nested paths", %{client: client, dir: dir} do

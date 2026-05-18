@@ -87,7 +87,7 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
   describe "run/2 timeout" do
     test "should return error when command exceeds timeout" do
-      assert {:error, message} =
+      assert {:error, %{message: message}} =
                RunCommand.run(%{command: "sleep 10", timeout: 100}, %{})
 
       assert message =~ "timed out"
@@ -163,7 +163,8 @@ defmodule JidoClaw.Tools.RunCommandTest do
                )
 
       assert result.exit_code == 0
-      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+      assert_receive {:fake_ssh, {:exec, _, _, command}}
+      assert command =~ "echo via-tool"
     end
 
     test "legacy atom :ssh coerced to string, validation passes", %{workspace_id: ws} do
@@ -186,7 +187,7 @@ defmodule JidoClaw.Tools.RunCommandTest do
     end
 
     test "backend: \"ssh\" without server returns validation error", %{workspace_id: ws} do
-      assert {:error, message} =
+      assert {:error, %{message: message}} =
                RunCommand.run(
                  %{command: "echo hi", backend: "ssh", workspace_id: ws},
                  %{}
@@ -251,7 +252,7 @@ defmodule JidoClaw.Tools.RunCommandTest do
       Process.unregister(JidoClaw.Shell.SessionManager)
 
       try do
-        assert {:error, message} =
+        assert {:error, %{message: message}} =
                  RunCommand.run(
                    %{command: "echo nope", backend: "ssh", server: "staging"},
                    %{}
@@ -263,14 +264,14 @@ defmodule JidoClaw.Tools.RunCommandTest do
       end
     end
 
-    test "host/vfs paths fall back to System.cmd when SessionManager is down" do
+    test "host/vfs paths return error when SessionManager is down" do
       pid = Process.whereis(JidoClaw.Shell.SessionManager)
 
       Process.unregister(JidoClaw.Shell.SessionManager)
 
       try do
-        assert {:ok, result} = RunCommand.run(%{command: "echo ok"}, %{})
-        assert String.trim(result.output) == "ok"
+        assert {:error, %{message: message}} = RunCommand.run(%{command: "echo ok"}, %{})
+        assert message =~ "SessionManager is not running"
       after
         Process.register(pid, JidoClaw.Shell.SessionManager)
       end
@@ -368,7 +369,12 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
       assert_received {:response, response}
 
-      assert {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}, context: ctx}} =
+      assert {:error,
+              %{
+                code: :output_limit_exceeded,
+                message: "output_limit_exceeded",
+                details: %{context: ctx, type: "Jido.Shell.Error"}
+              }} =
                response
 
       assert is_integer(ctx.emitted_bytes)
@@ -417,26 +423,25 @@ defmodule JidoClaw.Tools.RunCommandTest do
       end
     end
 
-    test "System.cmd fallback ignores stream_to_display: entirely" do
+    test "SessionManager outage refuses stream_to_display without touching Display" do
       pid = Process.whereis(JidoClaw.Shell.SessionManager)
       Process.unregister(JidoClaw.Shell.SessionManager)
 
       try do
         io =
           capture_streaming(fn ->
-            {:ok, result} =
+            response =
               RunCommand.run(
-                %{command: "echo fallback_ok", stream_to_display: true, timeout: 5_000},
+                %{command: "echo fallback_refused", stream_to_display: true, timeout: 5_000},
                 %{}
               )
 
-            send(self(), {:result, result})
+            send(self(), {:response, response})
           end)
 
-        # System.cmd path doesn't touch Display.
         refute io =~ "[main] run_command:"
-        assert_received {:result, %{output: out, exit_code: 0}}
-        assert String.trim(out) == "fallback_ok"
+        assert_received {:response, {:error, %{message: message}}}
+        assert message =~ "SessionManager is not running"
       after
         Process.register(pid, JidoClaw.Shell.SessionManager)
       end

@@ -55,6 +55,12 @@ defmodule JidoClaw.Test.StubSandbox do
   end
 
   @impl true
+  def exec_argv(%__MODULE__{agent_pid: pid} = _client, command, args, _opts) do
+    Agent.update(pid, fn s -> %{s | events: [{:exec_argv, [command | args]} | s.events]} end)
+    {"", 0}
+  end
+
+  @impl true
   def write_file(%__MODULE__{agent_pid: pid} = _client, path, content) do
     Agent.update(pid, fn s ->
       %{s | files: Map.put(s.files, path, content), events: [{:write, path} | s.events]}

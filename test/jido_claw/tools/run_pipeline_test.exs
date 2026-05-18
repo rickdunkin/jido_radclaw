@@ -67,7 +67,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
 
   describe "validation" do
     test "rejects empty stages list" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{pipeline_name: "p", prompt: "x", stages: []},
                  %{reasoning_runner: OkRunner}
@@ -77,7 +77,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects unknown strategy" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -91,7 +91,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects a stage whose strategy resolves to react" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -105,7 +105,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects a stage with strategy: 'auto'" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -120,7 +120,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects a stage with strategy: 'adaptive'" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -135,7 +135,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects stage with non-string strategy key" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -149,7 +149,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "rejects stage with invalid context_mode" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: "p",
@@ -254,7 +254,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     test "mid-pipeline error persists earlier rows + failing row with status :error" do
       name = "fail_midway_#{System.unique_integer([:positive])}"
 
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: name,
@@ -400,7 +400,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
         base: react
         """,
         fn ->
-          assert {:error, msg} =
+          assert {:error, %{message: msg}} =
                    RunPipeline.run(
                      %{
                        pipeline_name: "should_fail",
@@ -482,7 +482,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
           - strategy: cot
         """,
         fn ->
-          assert {:error, msg} =
+          assert {:error, %{message: msg}} =
                    RunPipeline.run(
                      %{
                        pipeline_name: "p",
@@ -506,7 +506,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
           - strategy: cot
         """,
         fn ->
-          assert {:error, msg} =
+          assert {:error, %{message: msg}} =
                    RunPipeline.run(
                      %{
                        pipeline_name: "p",
@@ -523,7 +523,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "unknown pipeline_ref — explicit error" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{pipeline_name: "p", prompt: "x", pipeline_ref: "not_registered"},
                  %{reasoning_runner: OkRunner}
@@ -533,7 +533,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
     end
 
     test "neither stages nor pipeline_ref supplied — explicit error" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{pipeline_name: "p", prompt: "x"},
                  %{reasoning_runner: OkRunner}
@@ -618,7 +618,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       # BigBodyRunner emits 5 KB per stage. With cap = 2 KB, stage 2's
       # composed prompt is initial + stage_1_output (5 KB), which already
       # exceeds 2 KB even when reduced to initial + newest-stage + notice.
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: name,
@@ -764,7 +764,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       name = "cap_first_stage_fail_#{System.unique_integer([:positive])}"
       big_prompt = String.duplicate("x", 2_000)
 
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                RunPipeline.run(
                  %{
                    pipeline_name: name,

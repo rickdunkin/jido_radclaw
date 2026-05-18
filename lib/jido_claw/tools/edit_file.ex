@@ -1,6 +1,8 @@
 defmodule JidoClaw.Tools.EditFile do
   @moduledoc false
-  use Jido.Action,
+  @max_content_bytes 5 * 1024 * 1024
+
+  use JidoClaw.Tools.Action,
     name: "edit_file",
     description:
       "Edit a file by replacing an exact string match. The old_string must be unique in the file. Read the file first to get the exact text.",
@@ -11,53 +13,67 @@ defmodule JidoClaw.Tools.EditFile do
       diff: [type: :string, required: true],
       status: [type: :string, required: true]
     ],
-    schema: [
-      path: [type: :string, required: true, doc: "File path to edit"],
-      old_string: [
-        type: :string,
-        required: true,
-        doc: "Exact text to find (must be unique in file)"
-      ],
-      new_string: [type: :string, required: true, doc: "Replacement text"]
-    ]
+    schema:
+      Zoi.object(%{
+        path: Zoi.string(description: "File path to edit"),
+        old_string:
+          Zoi.string(description: "Exact text to find (must be unique in file)")
+          |> Zoi.max(@max_content_bytes,
+            message: "old_string must be at most #{@max_content_bytes} bytes"
+          ),
+        new_string:
+          Zoi.string(description: "Replacement text")
+          |> Zoi.max(@max_content_bytes,
+            message: "new_string must be at most #{@max_content_bytes} bytes"
+          )
+      })
 
+  alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
   @impl true
   def run(%{path: path, old_string: old_str, new_string: new_str} = params, context) do
-    MCPScope.wrap(:edit_file, params, context, fn enriched ->
-      workspace_id = get_in(enriched, [:tool_context, :workspace_id])
-      project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
-      opts = [workspace_id: workspace_id, project_dir: project_dir]
+    with :ok <- FilePayloadLimit.validate(:old_string, old_str),
+         :ok <- FilePayloadLimit.validate(:new_string, new_str) do
+      MCPScope.wrap(:edit_file, params, context, fn enriched ->
+        edit_with_context(path, old_str, new_str, enriched)
+      end)
+    end
+  end
 
-      case Resolver.read(path, opts) do
-        {:ok, content} ->
-          occurrences = count_occurrences(content, old_str)
+  defp edit_with_context(path, old_str, new_str, enriched) do
+    workspace_id = get_in(enriched, [:tool_context, :workspace_id])
+    project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
+    opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-          cond do
-            occurrences == 0 ->
-              {:error,
-               "old_string not found in #{path}. Read the file first to get the exact text."}
+    case Resolver.read(path, opts) do
+      {:ok, content} ->
+        replace_unique_match(path, content, old_str, new_str, opts)
 
-            occurrences > 1 ->
-              {:error,
-               "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
+      {:error, reason} ->
+        {:error, "Cannot read #{path}: #{inspect(reason)}"}
+    end
+  end
 
-            true ->
-              write_edit(path, content, old_str, new_str, opts)
-          end
+  defp replace_unique_match(path, content, old_str, new_str, opts) do
+    case count_occurrences(content, old_str) do
+      0 ->
+        {:error, "old_string not found in #{path}. Read the file first to get the exact text."}
 
-        {:error, reason} ->
-          {:error, "Cannot read #{path}: #{inspect(reason)}"}
-      end
-    end)
+      1 ->
+        write_edit(path, content, old_str, new_str, opts)
+
+      occurrences ->
+        {:error,
+         "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
+    end
   end
 
   defp write_edit(path, content, old_str, new_str, opts) do
     new_content = String.replace(content, old_str, new_str, global: false)
 
-    case Resolver.write(path, new_content, opts) do
+    case Resolver.atomic_write(path, new_content, opts) do
       :ok ->
         diff = build_diff(old_str, new_str)
         {:ok, %{path: path, diff: diff, status: "edited"}}

@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.KillAgent do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "kill_agent",
     description: "Stop a running child agent. Use 'all' as agent_id to stop all child agents.",
     category: "swarm",

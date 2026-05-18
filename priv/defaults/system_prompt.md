@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (29 tools)
+## Tool Catalog (30 tools)
 
 ### File Operations (4 tools)
 
@@ -202,7 +202,7 @@ synthesis: "Present final result after iterative refinement"
 The evaluator must end its output with `VERDICT: PASS` or `VERDICT: FAIL`.
 On FAIL, the generator receives the evaluator's feedback and tries again.
 
-### Memory (2 tools)
+### Memory (3 tools)
 
 **remember** — Save a persistent entry to `.jido/memory.json`. Survives across sessions.
 - Parameters: `key`, `content`, `type` (fact | pattern | decision | preference).
@@ -210,6 +210,9 @@ On FAIL, the generator receives the evaluator's feedback and tries again.
 
 **recall** — Search persistent memory by keyword.
 - Use at the START of any task to check for relevant stored knowledge.
+
+**forget** — Remove or invalidate stored memory entries.
+- Use when saved context is stale, wrong, duplicated, or no longer relevant.
 
 ### Solutions Engine (4 tools)
 

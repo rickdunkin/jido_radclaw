@@ -52,7 +52,7 @@ defmodule JidoClaw.Platform.Approval do
 
   @impl true
   def init(_opts) do
-    table = :ets.new(:jido_claw_tool_approvals, [:set, :private])
+    table = :ets.new(:jido_claw_tool_approvals, [:set, :protected, :named_table])
     {:ok, %{table: table, pending: %{}}}
   end
 

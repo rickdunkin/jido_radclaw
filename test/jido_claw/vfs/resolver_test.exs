@@ -39,8 +39,9 @@ defmodule JidoClaw.VFS.ResolverTest do
       assert {:ok, "yo"} = Resolver.read("/scratch/hello.txt", workspace_id: ws)
     end
 
-    test "absolute paths outside any mount fall through to local File.read", %{
-      workspace_id: ws
+    test "absolute paths outside any mount are blocked when project_dir is supplied", %{
+      workspace_id: ws,
+      tmp: tmp
     } do
       host_file =
         Path.join(
@@ -51,7 +52,8 @@ defmodule JidoClaw.VFS.ResolverTest do
       File.write!(host_file, "host content")
       on_exit(fn -> File.rm(host_file) end)
 
-      assert {:ok, "host content"} = Resolver.read(host_file, workspace_id: ws)
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.read(host_file, workspace_id: ws, project_dir: tmp)
     end
   end
 
@@ -63,6 +65,88 @@ defmodule JidoClaw.VFS.ResolverTest do
     end
   end
 
+  describe "project_dir jail" do
+    test "allows relative and absolute paths under project_dir", %{tmp: tmp} do
+      path = Path.join(tmp, "project_file.txt")
+
+      assert {:ok, "from /project mount"} =
+               Resolver.read("project_file.txt", project_dir: tmp)
+
+      assert {:ok, "from /project mount"} =
+               Resolver.read(path, project_dir: tmp)
+    end
+
+    test "rejects relative traversal outside project_dir", %{tmp: tmp} do
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.read("../outside.txt", project_dir: tmp)
+    end
+
+    test "rejects absolute paths outside project_dir", %{tmp: tmp} do
+      host_file =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_outside_#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(host_file, "outside")
+      on_exit(fn -> File.rm(host_file) end)
+
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.read(host_file, project_dir: tmp)
+    end
+
+    test "rejects symlink reads that escape project_dir", %{tmp: tmp} do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_symlink_outside_#{System.unique_integer([:positive])}.txt"
+        )
+
+      link = Path.join(tmp, "linked_secret.txt")
+
+      File.write!(outside, "outside")
+      File.ln_s!(outside, link)
+
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.read("linked_secret.txt", project_dir: tmp)
+    end
+
+    test "rejects writes outside project_dir", %{tmp: tmp} do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_write_outside_#{System.unique_integer([:positive])}.txt"
+        )
+
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.write(outside, "outside", project_dir: tmp)
+
+      refute File.exists?(outside)
+    end
+
+    test "rejects writes through symlinked parent directories", %{tmp: tmp} do
+      outside_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_symlink_write_outside_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(outside_dir)
+      File.ln_s!(outside_dir, Path.join(tmp, "linked_dir"))
+
+      on_exit(fn -> File.rm_rf!(outside_dir) end)
+
+      assert {:error, {:path_outside_project, _}} =
+               Resolver.write("linked_dir/secret.txt", "outside", project_dir: tmp)
+
+      refute File.exists?(Path.join(outside_dir, "secret.txt"))
+    end
+  end
+
   describe "ls/2 with workspace_id" do
     test "returns a flat list of names (not stat structs)", %{workspace_id: ws} do
       :ok = Resolver.write("/scratch/a.txt", "a", workspace_id: ws)
@@ -70,6 +154,34 @@ defmodule JidoClaw.VFS.ResolverTest do
 
       assert {:ok, names} = Resolver.ls("/scratch", workspace_id: ws)
       assert Enum.sort(names) == ["a.txt", "b.txt"]
+    end
+  end
+
+  describe "atomic_write/3" do
+    test "commits local writes through a temp file in the target directory", %{tmp: tmp} do
+      path = Path.join(tmp, "atomic.txt")
+      File.write!(path, "old")
+
+      assert :ok = Resolver.atomic_write("atomic.txt", "new", project_dir: tmp)
+
+      assert File.read!(path) == "new"
+      assert [] = Path.wildcard(Path.join(tmp, "atomic.txt.*.tmp"))
+    end
+
+    test "cleans up staged local writes when rename fails", %{tmp: tmp} do
+      target_dir = Path.join(tmp, "directory_target")
+      File.mkdir_p!(target_dir)
+
+      assert {:error, _reason} =
+               Resolver.atomic_write("directory_target", "new", project_dir: tmp)
+
+      assert File.dir?(target_dir)
+      assert [] = Path.wildcard(Path.join(tmp, "directory_target.*.tmp"))
+    end
+
+    test "commits VFS writes through the mounted filesystem", %{workspace_id: ws} do
+      assert :ok = Resolver.atomic_write("/scratch/atomic.txt", "new", workspace_id: ws)
+      assert {:ok, "new"} = Resolver.read("/scratch/atomic.txt", workspace_id: ws)
     end
   end
 

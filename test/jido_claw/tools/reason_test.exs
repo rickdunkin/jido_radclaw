@@ -146,7 +146,7 @@ defmodule JidoClaw.Tools.ReasonTest do
 
   describe "unknown strategy" do
     test "returns an error with the list of valid strategies" do
-      assert {:error, msg} =
+      assert {:error, %{message: msg}} =
                Reason.run(%{strategy: "not_a_strategy", prompt: "anything"}, %{})
 
       assert msg =~ "Unknown strategy"

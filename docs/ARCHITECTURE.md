@@ -49,7 +49,7 @@ JidoClaw.Supervisor (rest_for_one)
 │   ├── DynamicSupervisor (Forge.HarnessSupervisor) — harness processes
 │   ├── DynamicSupervisor (Forge.ExecSessionSupervisor) — exec sessions
 │   ├── JidoClaw.Forge.Manager             — forge lifecycle
-│   └── Forge.SandboxInit OR Forge.Sandbox.Local — sandbox backend (conditional)
+│   └── Forge.SandboxInit OR Forge.Runner.HostShell — execution backend (conditional)
 │
 ├── Orchestration
 │   └── JidoClaw.Orchestration.RunSummaryFeed — workflow event streaming
@@ -201,7 +201,7 @@ JidoClaw.Forge
 │   └── Step-by-step execution (StepHandler)
 │
 ├── Sandbox Backends
-│   ├── Forge.Sandbox.Local    — local OS process isolation (default)
+│   ├── Forge.Runner.HostShell — host OS execution, not isolated (default)
 │   └── Forge.Sandbox.Docker   — Docker container isolation (optional)
 │
 ├── Runners

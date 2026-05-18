@@ -194,6 +194,25 @@ defmodule JidoClaw.Agent.PromptTest do
 
       assert prompt =~ "remember"
       assert prompt =~ "recall"
+      assert prompt =~ "forget"
+    end
+
+    test "bundled tool catalog matches registered agent tools" do
+      prompt =
+        File.read!(
+          Path.join([:code.priv_dir(:jido_claw) |> to_string(), "defaults", "system_prompt.md"])
+        )
+
+      registered = JidoClaw.Agent.tool_modules() |> Enum.map(& &1.name()) |> Enum.sort()
+
+      documented =
+        ~r/^\*\*([a-z0-9_]+)\*\*/m
+        |> Regex.scan(prompt, capture: :all_but_first)
+        |> List.flatten()
+        |> Enum.sort()
+
+      assert documented == registered
+      assert prompt =~ "## Tool Catalog (#{length(registered)} tools)"
     end
 
     test "should document swarm/multi-agent tools" do

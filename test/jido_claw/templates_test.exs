@@ -43,6 +43,13 @@ defmodule JidoClaw.Agent.TemplatesTest do
       end
     end
 
+    test "max_iterations is derived from the worker module strategy options" do
+      for name <- @valid_names do
+        assert {:ok, %{module: module, max_iterations: template_iters}} = Templates.get(name)
+        assert Keyword.fetch!(module.strategy_opts(), :max_iterations) == template_iters
+      end
+    end
+
     test "coder template has full capability max_iterations of 25" do
       assert {:ok, %{max_iterations: 25}} = Templates.get("coder")
     end

@@ -9,7 +9,7 @@ defmodule JidoClaw.Tools.ReadFile do
   - All other paths             — reads from the local filesystem
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "read_file",
     description:
       "Read file contents. Always read a file before editing it. Returns numbered lines. Supports github://, s3://, git:// URIs.",

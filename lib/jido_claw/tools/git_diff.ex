@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.GitDiff do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "git_diff",
     description: "Show git diff output. Can show staged or unstaged changes.",
     category: "git",
@@ -17,7 +17,8 @@ defmodule JidoClaw.Tools.GitDiff do
 
   @impl true
   def run(params, context) do
-    MCPScope.wrap(:git_diff, params, context, fn _enriched ->
+    MCPScope.wrap(:git_diff, params, context, fn enriched ->
+      project_dir = JidoClaw.ToolContext.project_dir(enriched)
       staged = Map.get(params, :staged, false)
 
       args = ["diff"] ++ if(staged, do: ["--cached"], else: [])
@@ -29,7 +30,7 @@ defmodule JidoClaw.Tools.GitDiff do
             p -> ["--", p]
           end
 
-      case System.cmd("git", args, stderr_to_stdout: true) do
+      case System.cmd("git", args, cd: project_dir, stderr_to_stdout: true) do
         {output, 0} ->
           truncated =
             if byte_size(output) > 15_000 do

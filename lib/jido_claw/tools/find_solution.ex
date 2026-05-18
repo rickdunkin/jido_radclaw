@@ -15,7 +15,7 @@ defmodule JidoClaw.Tools.FindSolution do
   `:missing_scope` when scope is absent.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "find_solution",
     description:
       "Search for previously stored solutions matching a problem description. " <>

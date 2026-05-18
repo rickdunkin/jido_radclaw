@@ -14,7 +14,7 @@ defmodule JidoClaw.Tools.Recall do
   unchanged.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "recall",
     description:
       "Search persistent memory for past facts, patterns, decisions, and preferences. " <>

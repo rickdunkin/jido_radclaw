@@ -1,6 +1,11 @@
 import Config
 
 config :jido_claw, mode: :cli
+config :jido_claw, token_signing_secret: String.duplicate("test_token_signing_secret_", 4)
+
+config :jido_claw, JidoClaw.Web.Endpoint,
+  secret_key_base: String.duplicate("test_secret_key_base_", 4)
+
 config :jido_claw, :reasoning_telemetry_sync, true
 # Tests don't have VOYAGE_API_KEY set; the per-call defense in
 # `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`
@@ -11,6 +16,17 @@ config :jido_claw, :embeddings_strict_boot, false
 # Honored only on the streaming branch — non-streaming stays at 50 KB.
 config :jido_claw, :test_streaming_max_output_bytes_override, 100_000
 config :logger, level: :warning
+
+# Test-only Cloak key. Non-test boots must provide CLOAK_KEY or CLOAK_KEY_FILE
+# at runtime; see JidoClaw.Security.VaultConfig.
+config :jido_claw, JidoClaw.Security.Vault,
+  ciphers: [
+    default:
+      {Cloak.Ciphers.AES.GCM,
+       tag: "AES.GCM.V1",
+       key: Base.decode64!("dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ="),
+       iv_length: 12}
+  ]
 
 # Ecto's SQL.Sandbox wraps every test in a transaction, so any Ash
 # action whose changeset registers `after_transaction` hooks would

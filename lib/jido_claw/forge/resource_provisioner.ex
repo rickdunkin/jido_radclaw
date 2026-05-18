@@ -154,11 +154,7 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
     mount_path = Map.get(spec, :mount_path, "/workspace/repo")
     branch = Map.get(spec, :branch)
 
-    clone_cmd = "git clone"
-    clone_cmd = if branch, do: "#{clone_cmd} --branch #{branch}", else: clone_cmd
-    clone_cmd = "#{clone_cmd} #{source} #{mount_path}"
-
-    case Sandbox.exec(client, clone_cmd) do
+    case Sandbox.exec_argv(client, "git", git_clone_args(source, mount_path, branch)) do
       {_output, 0} -> :ok
       {output, code} -> {:error, {:git_clone_failed, code, String.slice(output, 0, 500)}}
     end
@@ -228,6 +224,12 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
   end
 
   # ── Helpers ─────────────────────────────────────────────────────────
+
+  defp git_clone_args(source, mount_path, branch) when is_binary(branch) and branch != "" do
+    ["clone", "--branch", branch, source, mount_path]
+  end
+
+  defp git_clone_args(source, mount_path, _branch), do: ["clone", source, mount_path]
 
   @doc """
   Extracts file_mount resources from a resource list for passing to sandbox creation.

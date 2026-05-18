@@ -4,21 +4,20 @@ defmodule JidoClaw.Tools.RunCommand do
 
   Routes through `JidoClaw.Shell.SessionManager` which uses jido_shell
   with the Host backend for persistent sessions (CWD, env vars,
-  history). Falls back to `System.cmd` if the session manager is
-  unavailable — *except* when `backend: "ssh"` is set, which strictly
-  requires SessionManager.
+  history). SessionManager is required; commands are refused if it is
+  unavailable.
 
   ## Routing
 
     * `backend: nil` / no backend param — classifier picks host vs VFS;
-      falls back to `System.cmd` if SessionManager is down.
+      requires SessionManager.
     * `backend: "host"` / `"vfs"` — routing override; still goes
       through SessionManager.
     * `backend: "ssh"` + `server: <name>` — routes to the SSH session
       for the declared server. Never falls back to local execution.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "run_command",
     description:
       "Execute a shell command and return its output. Use for running tests, builds, scripts, etc.",
@@ -68,13 +67,10 @@ defmodule JidoClaw.Tools.RunCommand do
         doc: """
         When true, stream output chunks to `JidoClaw.Display` in real time
         instead of only returning the captured output at the end. Silently
-        ignored under MCP serve_mode (stdio framing) and when the
-        SessionManager is unavailable.
+        ignored under MCP serve_mode (stdio framing).
         """
       ]
     ]
-
-  @max_output_chars 10_000
 
   @impl true
   def on_before_validate_params(params) do
@@ -167,10 +163,7 @@ defmodule JidoClaw.Tools.RunCommand do
     if session_manager_available?() do
       SessionManager.run(workspace_id, command, timeout, opts)
     else
-      # System.cmd fallback gate: ignore stream_to_display: entirely —
-      # without SessionManager there are no shell session events for
-      # Display to subscribe to.
-      run_with_system_cmd(command, timeout)
+      {:error, "SessionManager is not running; cannot execute command"}
     end
   end
 
@@ -229,25 +222,4 @@ defmodule JidoClaw.Tools.RunCommand do
       pid when is_pid(pid) -> Process.alive?(pid)
     end
   end
-
-  defp run_with_system_cmd(command, timeout) do
-    task =
-      Task.async(fn ->
-        System.cmd("sh", ["-c", command], stderr_to_stdout: true)
-      end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, {output, exit_code}} ->
-        {:ok, %{output: truncate(output), exit_code: exit_code}}
-
-      nil ->
-        {:error, "Command timed out after #{timeout}ms"}
-    end
-  end
-
-  defp truncate(output) when byte_size(output) > @max_output_chars do
-    String.slice(output, 0, @max_output_chars) <> "\n... (output truncated)"
-  end
-
-  defp truncate(output), do: output
 end

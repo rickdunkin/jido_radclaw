@@ -56,13 +56,13 @@ defmodule JidoClaw.Memory.FactTest do
       :ok = Memory.remember_from_user(%{key: "L", content: "v1", type: "fact"}, tc)
       :ok = Memory.remember_from_user(%{key: "L", content: "v2", type: "fact"}, tc)
 
-      facts =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.sort_by(& &1.inserted_at)
+      facts = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
       assert length(facts) == 2
 
-      [old, new] = facts
+      old = Enum.find(facts, &(&1.content == "v1"))
+      new = Enum.find(facts, &(&1.content == "v2"))
+
       assert old.content == "v1"
       assert old.invalid_at != nil
       assert old.expired_at != nil

@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.BrowseWeb do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "browse_web",
     description:
       "Fetch and read web pages using a headless browser. Supports content extraction, screenshot capture, and link extraction.",

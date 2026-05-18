@@ -77,4 +77,18 @@ defmodule JidoClaw.ToolContext do
     |> Map.put(:project_dir, Map.get(parent, :project_dir) || File.cwd!())
     |> build()
   end
+
+  @doc """
+  Return the effective project directory from an enriched tool context.
+
+  Tools that shell out or inspect the filesystem should use this after
+  `MCPScope.wrap/4` enriches the context, so MCP/web/CLI calls operate on the
+  scoped workspace instead of the BEAM startup directory.
+  """
+  @spec project_dir(map()) :: String.t()
+  def project_dir(%{tool_context: %{project_dir: dir}}) when is_binary(dir) and dir != "" do
+    dir
+  end
+
+  def project_dir(_enriched), do: File.cwd!()
 end

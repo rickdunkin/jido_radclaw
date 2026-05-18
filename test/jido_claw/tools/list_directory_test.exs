@@ -13,6 +13,8 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     {:ok, dir: dir}
   end
 
+  defp context(dir), do: %{tool_context: %{project_dir: dir}}
+
   defp touch(path) do
     File.write!(path, "")
   end
@@ -22,7 +24,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       touch(Path.join(dir, "file_a.txt"))
       touch(Path.join(dir, "file_b.txt"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir}, context(dir))
 
       assert result.path == dir
       assert result.entries =~ "file  file_a.txt"
@@ -32,7 +34,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     test "should list subdirectories with 'dir' type indicator", %{dir: dir} do
       File.mkdir_p!(Path.join(dir, "subdir"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir}, context(dir))
 
       assert result.entries =~ "dir  subdir"
     end
@@ -41,7 +43,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       touch(Path.join(dir, "readme.md"))
       File.mkdir_p!(Path.join(dir, "src"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir}, context(dir))
 
       assert result.entries =~ "file  readme.md"
       assert result.entries =~ "dir  src"
@@ -52,13 +54,13 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       touch(Path.join(dir, "b.txt"))
       File.mkdir_p!(Path.join(dir, "c"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir}, context(dir))
 
       assert result.total == 3
     end
 
     test "should return empty entries string for an empty directory", %{dir: dir} do
-      assert {:ok, result} = ListDirectory.run(%{path: dir}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir}, context(dir))
 
       assert result.entries == ""
       assert result.total == 0
@@ -71,7 +73,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       touch(Path.join(dir, "app_test.exs"))
       touch(Path.join(dir, "README.md"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir, pattern: "*.ex"}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir, pattern: "*.ex"}, context(dir))
 
       assert result.entries =~ "app.ex"
       refute result.entries =~ "app_test.exs"
@@ -84,7 +86,8 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       touch(Path.join(nested, "module.ex"))
       touch(Path.join(dir, "mix.exs"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir, pattern: "**/*.ex"}, %{})
+      assert {:ok, result} =
+               ListDirectory.run(%{path: dir, pattern: "**/*.ex"}, context(dir))
 
       assert result.entries =~ "module.ex"
       refute result.entries =~ "mix.exs"
@@ -93,7 +96,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     test "should return zero total when no files match pattern", %{dir: dir} do
       touch(Path.join(dir, "notes.txt"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir, pattern: "*.ex"}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir, pattern: "*.ex"}, context(dir))
 
       assert result.total == 0
       assert result.entries == ""
@@ -104,7 +107,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     test "should respect max_results and truncate excess entries", %{dir: dir} do
       Enum.each(1..10, fn i -> touch(Path.join(dir, "file_#{i}.txt")) end)
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir, max_results: 3}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir, max_results: 3}, context(dir))
 
       listed_lines = result.entries |> String.split("\n") |> Enum.reject(&(&1 == ""))
       # 3 entry lines + 1 truncation note line
@@ -116,7 +119,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     test "should not add truncation note when results fit within max_results", %{dir: dir} do
       touch(Path.join(dir, "only_one.txt"))
 
-      assert {:ok, result} = ListDirectory.run(%{path: dir, max_results: 5}, %{})
+      assert {:ok, result} = ListDirectory.run(%{path: dir, max_results: 5}, context(dir))
 
       refute result.entries =~ "truncated"
     end
@@ -126,7 +129,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     test "should return error when path does not exist", %{dir: dir} do
       nonexistent = Path.join(dir, "no_such_directory")
 
-      assert {:error, message} = ListDirectory.run(%{path: nonexistent}, %{})
+      assert {:error, %{message: message}} = ListDirectory.run(%{path: nonexistent}, context(dir))
 
       assert message =~ "Cannot list"
       assert message =~ nonexistent
@@ -136,7 +139,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       file_path = Path.join(dir, "a_file.txt")
       touch(file_path)
 
-      assert {:error, message} = ListDirectory.run(%{path: file_path}, %{})
+      assert {:error, %{message: message}} = ListDirectory.run(%{path: file_path}, context(dir))
 
       assert message =~ "Cannot list"
     end
@@ -211,7 +214,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
       ws = "ws-listdir-boot-fail-#{System.unique_integer([:positive])}"
       on_exit(fn -> _ = Workspace.teardown(ws) end)
 
-      assert {:error, message} =
+      assert {:error, %{message: message}} =
                ListDirectory.run(
                  %{path: "/project/anything"},
                  %{tool_context: %{workspace_id: ws, project_dir: ""}}

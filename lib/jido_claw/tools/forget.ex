@@ -11,7 +11,7 @@ defmodule JidoClaw.Tools.Forget do
   the active model-saved row at that label.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "forget",
     description:
       "Invalidate a memory you previously saved with `remember`. Pass `id` for an " <>

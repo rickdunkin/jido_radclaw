@@ -2,6 +2,8 @@ defmodule JidoClaw.Tools.WriteFileTest do
   # Not async — writes to tmp filesystem (isolated per test via unique dirs, but
   # keeping sync as a conservative default for file-mutating tests)
   use ExUnit.Case
+  @max_content_bytes 5 * 1024 * 1024
+  import JidoClaw.ToolSchemaHelpers
 
   alias Jido.Shell.VFS
   alias JidoClaw.Tools.WriteFile
@@ -16,12 +18,14 @@ defmodule JidoClaw.Tools.WriteFileTest do
     {:ok, dir: dir}
   end
 
+  defp context(dir), do: %{tool_context: %{project_dir: dir}}
+
   describe "run/2 success" do
     test "should create new file with given content when file does not exist", %{dir: dir} do
       path = Path.join(dir, "new_file.txt")
       content = "hello\nworld"
 
-      assert {:ok, result} = WriteFile.run(%{path: path, content: content}, %{})
+      assert {:ok, result} = WriteFile.run(%{path: path, content: content}, context(dir))
 
       assert result.path == path
       assert File.read!(path) == content
@@ -31,7 +35,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
       path = Path.join(dir, "counted.txt")
       content = "line1\nline2\nline3"
 
-      assert {:ok, result} = WriteFile.run(%{path: path, content: content}, %{})
+      assert {:ok, result} = WriteFile.run(%{path: path, content: content}, context(dir))
 
       assert result.lines_written == 3
     end
@@ -39,7 +43,8 @@ defmodule JidoClaw.Tools.WriteFileTest do
     test "should return lines_written of 1 for single-line content", %{dir: dir} do
       path = Path.join(dir, "single.txt")
 
-      assert {:ok, result} = WriteFile.run(%{path: path, content: "just one line"}, %{})
+      assert {:ok, result} =
+               WriteFile.run(%{path: path, content: "just one line"}, context(dir))
 
       assert result.lines_written == 1
     end
@@ -47,7 +52,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
     test "should create nested parent directories when they do not exist", %{dir: dir} do
       path = Path.join([dir, "deep", "nested", "dir", "file.txt"])
 
-      assert {:ok, result} = WriteFile.run(%{path: path, content: "deep content"}, %{})
+      assert {:ok, result} = WriteFile.run(%{path: path, content: "deep content"}, context(dir))
 
       assert result.path == path
       assert File.exists?(path)
@@ -58,7 +63,8 @@ defmodule JidoClaw.Tools.WriteFileTest do
       path = Path.join(dir, "overwrite.txt")
       File.write!(path, "original content")
 
-      assert {:ok, _result} = WriteFile.run(%{path: path, content: "new content"}, %{})
+      assert {:ok, _result} =
+               WriteFile.run(%{path: path, content: "new content"}, context(dir))
 
       assert File.read!(path) == "new content"
     end
@@ -66,10 +72,54 @@ defmodule JidoClaw.Tools.WriteFileTest do
     test "should handle empty content", %{dir: dir} do
       path = Path.join(dir, "empty.txt")
 
-      assert {:ok, result} = WriteFile.run(%{path: path, content: ""}, %{})
+      assert {:ok, result} = WriteFile.run(%{path: path, content: ""}, context(dir))
 
       assert File.read!(path) == ""
       assert result.lines_written == 1
+    end
+  end
+
+  describe "run/2 path jail" do
+    test "rejects absolute writes outside the default project directory" do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_write_file_outside_#{System.unique_integer([:positive])}.txt"
+        )
+
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, %{message: message}} =
+               WriteFile.run(%{path: outside, content: "outside"}, %{})
+
+      assert message =~ "Cannot write"
+      assert message =~ "path_outside_project"
+      refute File.exists?(outside)
+    end
+  end
+
+  describe "content size limit" do
+    test "advertises the write cap in the tool schema" do
+      assert max_length(tool_property_schema(WriteFile, :content)) == @max_content_bytes
+    end
+
+    test "schema validation rejects oversized content" do
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, _reason} =
+               WriteFile.validate_params(%{path: "too-large.txt", content: oversized})
+    end
+
+    test "run/2 rejects oversized content before writing", %{dir: dir} do
+      path = Path.join(dir, "too-large.txt")
+      oversized = String.duplicate("x", @max_content_bytes + 1)
+
+      assert {:error, %{message: message}} =
+               WriteFile.run(%{path: path, content: oversized}, context(dir))
+
+      assert message =~ "content exceeds"
+      assert message =~ "#{@max_content_bytes} byte limit"
+      refute File.exists?(path)
     end
   end
 

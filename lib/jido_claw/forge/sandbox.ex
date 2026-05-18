@@ -8,6 +8,10 @@ defmodule JidoClaw.Forge.Sandbox do
     impl_for(client).exec(client, command, opts)
   end
 
+  def exec_argv(client, command, args, opts \\ []) do
+    impl_for(client).exec_argv(client, command, args, opts)
+  end
+
   def spawn(client, command, args, opts \\ []) do
     impl_for(client).spawn(client, command, args, opts)
   end
@@ -43,7 +47,7 @@ defmodule JidoClaw.Forge.Sandbox do
   def impl_module, do: impl()
 
   defp impl do
-    Application.get_env(:jido_claw, :forge_sandbox, JidoClaw.Forge.Sandbox.Local)
+    Application.get_env(:jido_claw, :forge_sandbox, JidoClaw.Forge.Runner.HostShell)
   end
 
   defp impl_for(client) do

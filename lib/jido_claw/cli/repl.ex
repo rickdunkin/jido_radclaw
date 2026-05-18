@@ -217,7 +217,6 @@ defmodule JidoClaw.CLI.Repl do
     Display.set_profile(profile)
 
     load_cron_jobs(project_dir)
-    start_heartbeat(project_dir)
 
     %__MODULE__{
       agent_pid: pid,
@@ -282,13 +281,6 @@ defmodule JidoClaw.CLI.Repl do
       {:ok, 0} -> :ok
       {:ok, n} -> IO.puts("  \e[32m✓\e[0m  cron        \e[1m#{n} jobs loaded\e[0m")
     end
-  end
-
-  # Heartbeat registers a named GenServer, so a second boot in the same VM
-  # returns {:error, {:already_started, _}}. Ignore the result either way.
-  defp start_heartbeat(project_dir) do
-    _ = JidoClaw.Heartbeat.start_link(project_dir: project_dir)
-    :ok
   end
 
   defp loop(state) do

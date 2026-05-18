@@ -10,44 +10,37 @@ defmodule JidoClaw.Agent.Templates do
     "coder" => %{
       module: JidoClaw.Agent.Workers.Coder,
       description: "Full-capability coding agent with all tools",
-      model: :fast,
-      max_iterations: 25
+      model: :fast
     },
     "test_runner" => %{
       module: JidoClaw.Agent.Workers.TestRunner,
       description: "Runs tests and reports results (read-only)",
-      model: :fast,
-      max_iterations: 15
+      model: :fast
     },
     "reviewer" => %{
       module: JidoClaw.Agent.Workers.Reviewer,
       description: "Reviews code changes for bugs and style issues (read-only)",
-      model: :fast,
-      max_iterations: 15
+      model: :fast
     },
     "docs_writer" => %{
       module: JidoClaw.Agent.Workers.DocsWriter,
       description: "Writes documentation and comments",
-      model: :fast,
-      max_iterations: 15
+      model: :fast
     },
     "researcher" => %{
       module: JidoClaw.Agent.Workers.Researcher,
       description: "Explores and analyzes codebase structure",
-      model: :fast,
-      max_iterations: 15
+      model: :fast
     },
     "refactorer" => %{
       module: JidoClaw.Agent.Workers.Refactorer,
       description: "Refactors code with full tool access",
-      model: :fast,
-      max_iterations: 25
+      model: :fast
     },
     "verifier" => %{
       module: JidoClaw.Agent.Workers.Verifier,
       description: "Interactive verification — reads code, runs tests/commands, emits VERDICT",
-      model: :fast,
-      max_iterations: 20
+      model: :fast
     }
   }
 
@@ -70,13 +63,13 @@ defmodule JidoClaw.Agent.Templates do
 
     case Map.get(override, name) || Map.get(@templates, name) do
       nil -> {:error, "Unknown template '#{name}'. Available: #{Enum.join(names(), ", ")}"}
-      template -> {:ok, template}
+      template -> {:ok, hydrate_template(template)}
     end
   end
 
   @doc "Returns all templates as a map keyed by name."
   @spec list() :: %{String.t() => map()}
-  def list, do: @templates
+  def list, do: Map.new(@templates, fn {name, template} -> {name, hydrate_template(template)} end)
 
   @doc "Returns all template names."
   @spec names() :: [String.t()]
@@ -85,4 +78,18 @@ defmodule JidoClaw.Agent.Templates do
   @doc "Returns true if a template with the given name exists."
   @spec exists?(String.t()) :: boolean()
   def exists?(name), do: Map.has_key?(@templates, name)
+
+  defp hydrate_template(%{max_iterations: max_iterations} = template)
+       when is_integer(max_iterations) and max_iterations > 0 do
+    template
+  end
+
+  defp hydrate_template(%{module: module} = template) do
+    Map.put(template, :max_iterations, module_max_iterations(module))
+  end
+
+  defp module_max_iterations(module) do
+    module.strategy_opts()
+    |> Keyword.fetch!(:max_iterations)
+  end
 end

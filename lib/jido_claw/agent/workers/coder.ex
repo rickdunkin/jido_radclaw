@@ -17,7 +17,7 @@ defmodule JidoClaw.Agent.Workers.Coder do
       JidoClaw.Tools.ProjectInfo
     ],
     model: :fast,
-    max_iterations: 15,
+    max_iterations: 25,
     streaming: false,
     tool_timeout_ms: 30_000
 end

@@ -1,6 +1,6 @@
 defmodule JidoClaw.Tools.SendToAgent do
   @moduledoc false
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "send_to_agent",
     description: "Send a follow-up message to a running child agent.",
     category: "swarm",
@@ -15,45 +15,32 @@ defmodule JidoClaw.Tools.SendToAgent do
       message: [type: :string, required: true, doc: "The message to send"]
     ]
 
-  alias JidoClaw.Agent.Templates
-
   @impl true
   def run(params, context) do
-    case JidoClaw.Jido.whereis(params.agent_id) do
+    case jido_runtime().whereis(params.agent_id) do
       nil ->
         {:error, "Agent '#{params.agent_id}' not found."}
 
       pid ->
-        # Look up the template to get the agent module for ask_sync
-        # Extract template name from the agent_id prefix
-        template_name =
-          params.agent_id
-          |> String.split("_")
-          |> List.first()
+        send_to_agent(pid, params, context)
+    end
+  end
 
+  defp send_to_agent(pid, params, context) do
+    case template_for_agent(params.agent_id) do
+      {:ok, template} ->
         child_tool_context =
           JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id)
 
         request_id = JidoClaw.register_child_correlation(child_tool_context)
 
-        # Send async via the agent module's ask
         spawn(fn ->
           try do
-            case Templates.get(template_name) do
-              {:ok, template} ->
-                template.module.ask_sync(pid, params.message,
-                  timeout: 120_000,
-                  request_id: request_id,
-                  tool_context: child_tool_context
-                )
-
-              {:error, _} ->
-                JidoClaw.Agent.ask_sync(pid, params.message,
-                  timeout: 120_000,
-                  request_id: request_id,
-                  tool_context: child_tool_context
-                )
-            end
+            template.module.ask_sync(pid, params.message,
+              timeout: 120_000,
+              request_id: request_id,
+              tool_context: child_tool_context
+            )
           rescue
             _ -> :ok
           catch
@@ -67,6 +54,41 @@ defmodule JidoClaw.Tools.SendToAgent do
            status: "message_sent",
            message: "Message sent to agent '#{params.agent_id}'"
          }}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp template_for_agent(agent_id) do
+    case agent_tracker().get_agent(agent_id) do
+      %{template: template_name} when is_binary(template_name) ->
+        case templates().get(template_name) do
+          {:ok, template} ->
+            {:ok, template}
+
+          {:error, reason} ->
+            {:error,
+             "Template '#{template_name}' for agent '#{agent_id}' is unavailable: #{inspect(reason)}"}
+        end
+
+      nil ->
+        {:error, "Agent '#{agent_id}' is running but is not registered in AgentTracker."}
+
+      other ->
+        {:error, "Agent '#{agent_id}' has invalid tracker metadata: #{inspect(other)}"}
+    end
+  end
+
+  defp jido_runtime do
+    Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp agent_tracker do
+    Application.get_env(:jido_claw, :agent_tracker, JidoClaw.AgentTracker)
+  end
+
+  defp templates do
+    Application.get_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
   end
 end

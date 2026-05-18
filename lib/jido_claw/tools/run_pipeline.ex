@@ -98,7 +98,7 @@ defmodule JidoClaw.Tools.RunPipeline do
   `status: :error` by `Telemetry.with_outcome/4`.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "run_pipeline",
     description:
       "Run a sequence of reasoning strategies, feeding each stage's output into the next. For multi-stage analysis: CoT planning → ToT exploration → CoD summary.",

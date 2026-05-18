@@ -14,7 +14,7 @@ defmodule JidoClaw.Tools.Remember do
   exposed to the model is unchanged.
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "remember",
     description:
       "Save a fact, pattern, decision, or preference to persistent memory. " <>

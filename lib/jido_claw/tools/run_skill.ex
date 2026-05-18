@@ -13,7 +13,7 @@ defmodule JidoClaw.Tools.RunSkill do
   - `:iterative` — generator-evaluator loop via IterativeWorkflow
   """
 
-  use Jido.Action,
+  use JidoClaw.Tools.Action,
     name: "run_skill",
     description:
       "Run a named multi-step skill that orchestrates multiple agents via a Workflow FSM. Each step spawns an agent, waits for completion, then transitions to the next step. Use /skills to list available skills.",
