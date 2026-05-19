@@ -15,11 +15,13 @@ defmodule JidoClaw.Tools.SendToAgent do
       message: [type: :string, required: true, doc: "The message to send"]
     ]
 
+  alias JidoClaw.Error
+
   @impl true
   def run(params, context) do
     case jido_runtime().whereis(params.agent_id) do
       nil ->
-        {:error, "Agent '#{params.agent_id}' not found."}
+        {:error, Error.not_found(:agent, params.agent_id)}
 
       pid ->
         send_to_agent(pid, params, context)
@@ -69,14 +71,31 @@ defmodule JidoClaw.Tools.SendToAgent do
 
           {:error, reason} ->
             {:error,
-             "Template '#{template_name}' for agent '#{agent_id}' is unavailable: #{inspect(reason)}"}
+             Error.execution_error(
+               "Template '#{template_name}' for agent '#{agent_id}' is unavailable.",
+               phase: :template_lookup,
+               details: %{
+                 template: template_name,
+                 agent_id: agent_id,
+                 reason: inspect(reason)
+               }
+             )}
         end
 
       nil ->
-        {:error, "Agent '#{agent_id}' is running but is not registered in AgentTracker."}
+        {:error,
+         Error.execution_error(
+           "Agent '#{agent_id}' is running but is not registered in AgentTracker.",
+           phase: :tracker_lookup,
+           details: %{agent_id: agent_id, reason: :not_registered}
+         )}
 
       other ->
-        {:error, "Agent '#{agent_id}' has invalid tracker metadata: #{inspect(other)}"}
+        {:error,
+         Error.execution_error("Agent '#{agent_id}' has invalid tracker metadata.",
+           phase: :tracker_lookup,
+           details: %{agent_id: agent_id, metadata: inspect(other)}
+         )}
     end
   end
 

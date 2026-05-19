@@ -28,6 +28,7 @@ defmodule JidoClaw.Tools.EditFile do
           )
       })
 
+  alias JidoClaw.Error
   alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
@@ -52,21 +53,34 @@ defmodule JidoClaw.Tools.EditFile do
         replace_unique_match(path, content, old_str, new_str, opts)
 
       {:error, reason} ->
-        {:error, "Cannot read #{path}: #{inspect(reason)}"}
+        {:error,
+         Error.execution_error("Cannot read #{path}: #{inspect(reason)}",
+           phase: :read,
+           details: %{path: path, reason: inspect(reason)}
+         )}
     end
   end
 
   defp replace_unique_match(path, content, old_str, new_str, opts) do
     case count_occurrences(content, old_str) do
       0 ->
-        {:error, "old_string not found in #{path}. Read the file first to get the exact text."}
+        {:error,
+         Error.validation_error(
+           "old_string not found in #{path}. Read the file first to get the exact text.",
+           field: :old_string,
+           details: %{path: path, reason: :not_found}
+         )}
 
       1 ->
         write_edit(path, content, old_str, new_str, opts)
 
       occurrences ->
         {:error,
-         "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique."}
+         Error.validation_error(
+           "old_string found #{occurrences} times in #{path}. Provide more surrounding context to make it unique.",
+           field: :old_string,
+           details: %{path: path, reason: :non_unique, occurrences: occurrences}
+         )}
     end
   end
 
@@ -79,7 +93,11 @@ defmodule JidoClaw.Tools.EditFile do
         {:ok, %{path: path, diff: diff, status: "edited"}}
 
       {:error, reason} ->
-        {:error, "Failed to write #{path}: #{inspect(reason)}"}
+        {:error,
+         Error.execution_error("Failed to write #{path}: #{inspect(reason)}",
+           phase: :write,
+           details: %{path: path, reason: inspect(reason)}
+         )}
     end
   end
 

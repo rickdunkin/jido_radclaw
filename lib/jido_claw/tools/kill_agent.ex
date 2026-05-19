@@ -19,6 +19,8 @@ defmodule JidoClaw.Tools.KillAgent do
       ]
     ]
 
+  alias JidoClaw.Error
+
   @impl true
   def run(%{agent_id: "all"}, _context) do
     agents = JidoClaw.Jido.list_agents()
@@ -38,7 +40,7 @@ defmodule JidoClaw.Tools.KillAgent do
         {:ok, %{agent_id: params.agent_id, status: "stopped"}}
 
       {:error, :not_found} ->
-        {:error, "Agent '#{params.agent_id}' not found."}
+        {:error, Error.not_found(:agent, params.agent_id)}
     end
   end
 end

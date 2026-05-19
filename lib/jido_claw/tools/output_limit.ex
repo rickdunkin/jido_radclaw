@@ -46,7 +46,9 @@ defmodule JidoClaw.Tools.OutputLimit do
     "\n\n[tool output truncated: original #{original_bytes} bytes, cap #{max_bytes} bytes]"
   end
 
-  defp valid_utf8_prefix(value) do
+  @doc false
+  @spec valid_utf8_prefix(binary()) :: binary()
+  def valid_utf8_prefix(value) do
     if String.valid?(value) do
       value
     else

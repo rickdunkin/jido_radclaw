@@ -101,11 +101,16 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
 
     assert :ok = AgentTracker.register("coder_existing", pid, "coder", "existing task")
 
-    assert {:error, %{message: "Agent ID 'coder_existing' is already in use."}} =
+    assert {:error, %{code: :validation_error, message: message, details: details}} =
              SpawnAgent.run(
                %{template: "coder", task: "do work", tag: "coder_existing"},
                %{tool_context: %{}}
              )
+
+    assert message == "Agent ID 'coder_existing' is already in use."
+    assert details.field == :tag
+    assert details.value == "coder_existing"
+    assert details.reason == :agent_id_taken
 
     refute_receive {:start_agent, _opts, _pid}
     Process.exit(pid, :kill)

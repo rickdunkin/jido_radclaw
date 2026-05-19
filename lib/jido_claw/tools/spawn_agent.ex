@@ -34,6 +34,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   alias JidoClaw.Agent.Templates
   alias JidoClaw.AgentTracker
+  alias JidoClaw.Error
 
   @impl true
   def run(params, context) do
@@ -54,7 +55,11 @@ defmodule JidoClaw.Tools.SpawnAgent do
             register_spawned_agent(pid, template, template_name, task, tag, context)
 
           {:error, reason} ->
-            {:error, "Failed to spawn agent: #{inspect(reason)}"}
+            {:error,
+             Error.execution_error("Failed to spawn agent.",
+               phase: :spawn,
+               details: %{reason: inspect(reason), template: template_name}
+             )}
         end
 
       {:error, reason} ->
@@ -98,7 +103,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
          }}
 
       {:error, :agent_id_taken} ->
-        {:error, "Agent ID '#{tag}' is already in use."}
+        {:error, agent_id_taken_error(tag)}
     end
   end
 
@@ -121,14 +126,22 @@ defmodule JidoClaw.Tools.SpawnAgent do
   defp ensure_agent_id_available(tag) do
     cond do
       agent_tracker().get_agent(tag) != nil ->
-        {:error, "Agent ID '#{tag}' is already in use."}
+        {:error, agent_id_taken_error(tag)}
 
       jido_runtime().whereis(tag) != nil ->
-        {:error, "Agent ID '#{tag}' is already in use."}
+        {:error, agent_id_taken_error(tag)}
 
       true ->
         :ok
     end
+  end
+
+  defp agent_id_taken_error(tag) do
+    Error.validation_error("Agent ID '#{tag}' is already in use.",
+      field: :tag,
+      value: tag,
+      details: %{reason: :agent_id_taken}
+    )
   end
 
   defp enforce_spawn_limits(context) do

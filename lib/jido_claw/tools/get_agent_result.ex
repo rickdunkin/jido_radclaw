@@ -18,6 +18,7 @@ defmodule JidoClaw.Tools.GetAgentResult do
       timeout: [type: :integer, required: false, doc: "Max wait time in ms (default: 60000)"]
     ]
 
+  alias JidoClaw.Error
   alias JidoClaw.Reasoning.Output
 
   @impl true
@@ -27,7 +28,7 @@ defmodule JidoClaw.Tools.GetAgentResult do
 
     case jido_runtime().whereis(agent_id) do
       nil ->
-        {:error, "Agent '#{agent_id}' not found. It may have already completed and stopped."}
+        {:error, Error.not_found(:agent, agent_id)}
 
       pid ->
         try do
@@ -42,11 +43,15 @@ defmodule JidoClaw.Tools.GetAgentResult do
 
             {:ok, %{status: :failed} = result} ->
               {:error,
-               %{
-                 agent_id: agent_id,
-                 status: "failed",
-                 error: failure_reason(result)
-               }}
+               Error.execution_error("Agent failed.",
+                 phase: :await,
+                 details: %{
+                   agent_id: agent_id,
+                   status: "failed",
+                   code: :failed,
+                   error: failure_reason(result)
+                 }
+               )}
 
             {:ok, result} ->
               {:ok,
@@ -58,17 +63,41 @@ defmodule JidoClaw.Tools.GetAgentResult do
 
             {:error, :timeout} ->
               {:error,
-               %{
-                 agent_id: agent_id,
-                 status: "still_running",
-                 message: "Agent hasn't finished yet. Try again later or increase timeout."
-               }}
+               Error.execution_error(
+                 "Agent hasn't finished yet. Try again later or increase timeout.",
+                 phase: :timeout,
+                 details: %{
+                   agent_id: agent_id,
+                   status: "still_running",
+                   code: :still_running,
+                   timeout: timeout
+                 }
+               )}
 
             {:error, reason} ->
-              {:error, %{agent_id: agent_id, status: "failed", error: inspect(reason)}}
+              {:error,
+               Error.execution_error("Agent failed.",
+                 phase: :await,
+                 details: %{
+                   agent_id: agent_id,
+                   status: "failed",
+                   code: :failed,
+                   error: inspect(reason)
+                 }
+               )}
           end
         rescue
-          e -> {:error, %{agent_id: agent_id, status: "error", error: Exception.message(e)}}
+          e ->
+            {:error,
+             Error.execution_error(Exception.message(e),
+               phase: :await,
+               details: %{
+                 agent_id: agent_id,
+                 status: "error",
+                 code: :error,
+                 error: Exception.message(e)
+               }
+             )}
         end
     end
   end

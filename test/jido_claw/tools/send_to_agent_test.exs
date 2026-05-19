@@ -76,10 +76,13 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   end
 
   test "does not fall back to the main agent when tracker metadata is missing" do
-    assert {:error, %{message: message}} =
+    assert {:error, %{code: :execution_error, message: message, details: details}} =
              SendToAgent.run(%{agent_id: "untracked_123", message: "hello"}, %{})
 
     assert message =~ "not registered in AgentTracker"
+    assert details.phase == :tracker_lookup
+    assert details.reason == :not_registered
+    assert details.agent_id == "untracked_123"
   end
 
   test "returns error when the agent process is missing" do

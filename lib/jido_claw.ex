@@ -34,6 +34,16 @@ defmodule JidoClaw do
   def version, do: @version
 
   @doc """
+  Renders a JidoClaw error (or any term) as a human-readable string.
+
+  Delegates to `JidoClaw.Error.format/1`. Use this at the edge of any user-
+  or operator-facing surface (CLI, LiveView, MCP) instead of `inspect/1` so
+  that class containers flatten cleanly and leaves render their `:message`.
+  """
+  @spec format_error(term()) :: String.t()
+  defdelegate format_error(error), to: JidoClaw.Error, as: :format
+
+  @doc """
   Send a message to an agent session, creating it if needed.
 
   Deprecated 3-arity form. Routes through `chat/4` with `kind: :api`.
