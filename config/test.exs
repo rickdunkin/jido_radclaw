@@ -7,6 +7,15 @@ config :jido_claw, JidoClaw.Web.Endpoint,
   secret_key_base: String.duplicate("test_secret_key_base_", 4)
 
 config :jido_claw, :reasoning_telemetry_sync, true
+
+# Trace persistence is opt-in for tests. The Collector still ingests
+# events into the in-memory ring on every run, but
+# `JidoClaw.Trace.Persistence.append/2` is a no-op unless a test
+# explicitly flips `persist?: true` (and usually `persist_sync?: true`)
+# in its setup. This keeps async Persistence writes from outliving the
+# `Ecto.Adapters.SQL.Sandbox` owner.
+config :jido_claw, :trace, persist?: false
+
 # Tests don't have VOYAGE_API_KEY set; the per-call defense in
 # `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`
 # at the call site, which is what test fixtures rely on.

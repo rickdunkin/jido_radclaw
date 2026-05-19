@@ -176,11 +176,15 @@ defmodule JidoClaw.Tools.Reason do
 
   # Pull workspace_id / project_dir / agent_id / forge_session_key /
   # Phase 0 UUIDs from tool_context (all nil-safe) and fold in any extra
-  # keyword opts.
+  # keyword opts. `request_id` lives at the top-level context map (it
+  # is NOT in the canonical tool_context key set — see
+  # `JidoClaw.ToolContext`); `agent_id` lives on tool_context.
   defp base_telemetry_opts(context, extra) do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 
     [
+      request_id: Map.get(context, :request_id),
+      agent_id: Map.get(tool_context, :agent_id),
       workspace_uuid: Map.get(tool_context, :workspace_uuid),
       session_uuid: Map.get(tool_context, :session_uuid),
       project_dir: Map.get(tool_context, :project_dir),

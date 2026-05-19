@@ -2,7 +2,7 @@ defmodule JidoClaw.Reasoning.Telemetry do
   @moduledoc """
   Telemetry-and-persistence wrapper for reasoning strategy calls.
 
-  `with_outcome/4` runs `fun` between two `:telemetry.execute/3` calls,
+  `with_outcome/4` runs `fun` between two `JidoClaw.Trace.emit/3` calls,
   captures the result + duration, and persists a `reasoning_outcomes` row
   asynchronously via `Task.Supervisor`. In tests the write is synchronous
   (see `:reasoning_telemetry_sync` in `config/test.exs`) so assertions can
@@ -10,6 +10,16 @@ defmodule JidoClaw.Reasoning.Telemetry do
 
   The fun must return `{:ok, map()}` or `{:error, term()}`; the wrapper does
   not change the return value.
+
+  ## Canonical reasoning event path
+
+  v0.7+ emits `[:jido_claw, :reasoning, :event]` (the canonical 3-segment
+  shape that the Trace surface consumes) via `JidoClaw.Trace.emit/3`. The
+  legacy 4-segment `[:jido_claw, :reasoning, :strategy, :start|:stop]`
+  events are no longer emitted. External consumers attached to the legacy
+  names must migrate to `[:jido_claw, :reasoning, :event]` and filter on
+  `metadata.event in [:start, :stop, :error]` and `metadata.phase ==
+  :strategy`.
   """
 
   require Logger
@@ -26,6 +36,7 @@ defmodule JidoClaw.Reasoning.Telemetry do
           session_uuid: Ecto.UUID.t() | nil,
           project_dir: String.t() | nil,
           agent_id: String.t() | nil,
+          request_id: String.t() | nil,
           forge_session_key: String.t() | nil,
           profile: TaskProfile.t() | nil,
           base_strategy: String.t() | nil,
@@ -39,11 +50,18 @@ defmodule JidoClaw.Reasoning.Telemetry do
   @doc """
   Run `fun` with reasoning-outcome telemetry + persistence.
 
-  Emits:
-    * `[:jido_claw, :reasoning, :strategy, :start]` with `%{system_time: _}`
-      and metadata `%{strategy, execution_kind, task_type, prompt_length}`.
-    * `[:jido_claw, :reasoning, :strategy, :stop]` with `%{duration_ms}` and
-      metadata `%{strategy, execution_kind, task_type, status}`.
+  Emits via `JidoClaw.Trace.emit(:reasoning, ...)`:
+
+    * `event: :start, phase: :strategy, name: <strategy>` with metadata
+      `%{execution_kind, task_type, prompt_length, request_id, agent_id}`.
+    * Exactly one terminal event per outcome:
+        - `event: :stop` with `%{duration_ms}` on `{:ok, _}`
+        - `event: :error` with `%{duration_ms, status, reason}` on
+          `{:error, _}` / `{:error, :timeout}`
+
+  The terminal-event split mirrors the canonical `start/stop/error`
+  lifecycle that `JidoClaw.Trace.Collector.event_status/3` maps:
+  `:start → :running`, `:stop → :completed`, `:error → :failed`.
 
   Persists a `reasoning_outcomes` row asynchronously (or synchronously when
   `:reasoning_telemetry_sync` is true). Emits `jido_claw.reasoning.outcome_recorded`
@@ -66,24 +84,32 @@ defmodule JidoClaw.Reasoning.Telemetry do
 
     started_at = DateTime.utc_now()
     started_mono = System.monotonic_time()
+    request_id = Keyword.get(opts, :request_id)
+    agent_id = Keyword.get(opts, :agent_id)
 
-    :telemetry.execute(
-      [:jido_claw, :reasoning, :strategy, :start],
-      %{system_time: System.system_time()},
-      %{
-        strategy: strategy_name,
-        execution_kind: execution_kind,
-        task_type: profile.task_type,
-        prompt_length: profile.prompt_length
-      }
-    )
+    :ok =
+      JidoClaw.Trace.emit(
+        :reasoning,
+        %{
+          event: :start,
+          phase: :strategy,
+          name: strategy_name,
+          strategy: strategy_name,
+          execution_kind: execution_kind,
+          task_type: profile.task_type,
+          prompt_length: profile.prompt_length,
+          request_id: request_id,
+          agent_id: agent_id
+        },
+        %{system_time: System.system_time()}
+      )
 
-    {result, status} =
+    {result, status, terminal_reason} =
       try do
         case fun.() do
-          {:ok, _} = ok -> {ok, :ok}
-          {:error, :timeout} = err -> {err, :timeout}
-          {:error, _} = err -> {err, :error}
+          {:ok, _} = ok -> {ok, :ok, nil}
+          {:error, :timeout} = err -> {err, :timeout, :timeout}
+          {:error, reason} = err -> {err, :error, reason}
         end
       rescue
         e ->
@@ -91,14 +117,14 @@ defmodule JidoClaw.Reasoning.Telemetry do
             "[Reasoning.Telemetry] strategy #{strategy_name} raised: #{Exception.message(e)}"
           )
 
-          {{:error, e}, :error}
+          {{:error, e}, :error, e}
       catch
         :exit, reason ->
           Logger.debug(
             "[Reasoning.Telemetry] strategy #{strategy_name} exited: #{inspect(reason)}"
           )
 
-          {{:error, reason}, :error}
+          {{:error, reason}, :error, reason}
       end
 
     completed_at = DateTime.utc_now()
@@ -106,15 +132,15 @@ defmodule JidoClaw.Reasoning.Telemetry do
     duration_ms =
       System.convert_time_unit(System.monotonic_time() - started_mono, :native, :millisecond)
 
-    :telemetry.execute(
-      [:jido_claw, :reasoning, :strategy, :stop],
-      %{duration_ms: duration_ms},
-      %{
-        strategy: strategy_name,
-        execution_kind: execution_kind,
-        task_type: profile.task_type,
-        status: status
-      }
+    emit_terminal(
+      strategy_name,
+      profile,
+      execution_kind,
+      status,
+      duration_ms,
+      request_id,
+      agent_id,
+      terminal_reason
     )
 
     persist(strategy_name, profile, result, %{
@@ -127,6 +153,67 @@ defmodule JidoClaw.Reasoning.Telemetry do
     })
 
     result
+  end
+
+  # Exactly one terminal event per outcome — `:stop` on success,
+  # `:error` on failure/timeout. Mirrors the canonical Trace lifecycle
+  # so `event_status/3` maps cleanly without ambiguity.
+  defp emit_terminal(
+         strategy_name,
+         profile,
+         execution_kind,
+         :ok,
+         duration_ms,
+         request_id,
+         agent_id,
+         _reason
+       ) do
+    :ok =
+      JidoClaw.Trace.emit(
+        :reasoning,
+        %{
+          event: :stop,
+          phase: :strategy,
+          name: strategy_name,
+          strategy: strategy_name,
+          execution_kind: execution_kind,
+          task_type: profile.task_type,
+          status: :ok,
+          request_id: request_id,
+          agent_id: agent_id
+        },
+        %{duration_ms: duration_ms}
+      )
+  end
+
+  defp emit_terminal(
+         strategy_name,
+         profile,
+         execution_kind,
+         status,
+         duration_ms,
+         request_id,
+         agent_id,
+         reason
+       )
+       when status in [:error, :timeout] do
+    :ok =
+      JidoClaw.Trace.emit(
+        :reasoning,
+        %{
+          event: :error,
+          phase: :strategy,
+          name: strategy_name,
+          strategy: strategy_name,
+          execution_kind: execution_kind,
+          task_type: profile.task_type,
+          status: status,
+          reason: inspect(reason),
+          request_id: request_id,
+          agent_id: agent_id
+        },
+        %{duration_ms: duration_ms}
+      )
   end
 
   # ---------------------------------------------------------------------------

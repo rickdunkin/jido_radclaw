@@ -233,7 +233,18 @@ config :jido_claw,
     JidoClaw.Embeddings.Domain,
     JidoClaw.Memory.Domain,
     JidoClaw.Audit,
-    JidoClaw.Cron
+    JidoClaw.Cron,
+    JidoClaw.Trace.Domain
+  ],
+  trace: [
+    # JidoClaw.Trace.Collector ring + persistence defaults. See
+    # `JidoClaw.Trace.Collector` and `JidoClaw.Trace.Persistence`
+    # moduledocs for the bound rationale.
+    enabled?: true,
+    max_traces: 100,
+    max_events_per_trace: 300,
+    persist?: true,
+    persist_sync?: false
   ],
   base_resources: [JidoClaw.Resource]
 

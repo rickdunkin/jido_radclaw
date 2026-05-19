@@ -63,19 +63,33 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   test "rejects spawning when the child cap is reached" do
     Application.put_env(:jido_claw, :spawn_agent_max_children, 0)
 
-    assert {:error, %{code: :max_children, message: "max children", details: %{}}} =
+    assert {:error, wire} =
              SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: %{}})
+
+    assert wire.code == :execution_error
+    assert wire.message =~ "Maximum concurrent child agents reached (0/0)"
+    assert wire.details.reason == :max_children
+    assert wire.details.limit == 0
+    assert wire.details.current == 0
+    assert wire.details.phase == :spawn_limit
   end
 
   test "rejects spawning when swarm depth is reached" do
     Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
     Application.put_env(:jido_claw, :spawn_agent_max_depth, 1)
 
-    assert {:error, %{code: :max_depth, message: "max depth", details: %{}}} =
+    assert {:error, wire} =
              SpawnAgent.run(
                %{template: "coder", task: "do work"},
                %{tool_context: %{swarm_depth: 1}}
              )
+
+    assert wire.code == :execution_error
+    assert wire.message =~ "Maximum swarm depth reached (1/1)"
+    assert wire.details.reason == :max_depth
+    assert wire.details.limit == 1
+    assert wire.details.depth == 1
+    assert wire.details.phase == :spawn_limit
   end
 
   test "generated IDs are UUID-based and registered without collisions" do

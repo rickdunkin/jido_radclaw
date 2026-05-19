@@ -145,12 +145,27 @@ defmodule JidoClaw.Tools.SpawnAgent do
   end
 
   defp enforce_spawn_limits(context) do
-    cond do
-      agent_tracker().child_count() >= max_children() ->
-        {:error, :max_children}
+    current_children = agent_tracker().child_count()
+    child_limit = max_children()
+    current_depth = swarm_depth(context)
+    depth_limit = max_depth()
 
-      swarm_depth(context) >= max_depth() ->
-        {:error, :max_depth}
+    cond do
+      current_children >= child_limit ->
+        {:error,
+         Error.execution_error(
+           "Maximum concurrent child agents reached (#{current_children}/#{child_limit}).",
+           phase: :spawn_limit,
+           details: %{reason: :max_children, limit: child_limit, current: current_children}
+         )}
+
+      current_depth >= depth_limit ->
+        {:error,
+         Error.execution_error(
+           "Maximum swarm depth reached (#{current_depth}/#{depth_limit}).",
+           phase: :spawn_limit,
+           details: %{reason: :max_depth, limit: depth_limit, depth: current_depth}
+         )}
 
       true ->
         :ok

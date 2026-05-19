@@ -46,7 +46,7 @@ defmodule JidoClaw.Tools.OutputLimitTest do
 
     assert byte_size(message) <= OutputLimit.max_bytes()
     assert byte_size(payload) <= OutputLimit.max_bytes()
-    assert message =~ "[tool output truncated:"
+    assert message =~ "... (truncated)"
     assert payload =~ "[tool output truncated:"
   end
 

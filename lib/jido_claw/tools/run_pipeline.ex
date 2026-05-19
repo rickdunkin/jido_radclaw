@@ -156,6 +156,9 @@ defmodule JidoClaw.Tools.RunPipeline do
     project_dir = Map.get(tool_context, :project_dir)
     agent_id = Map.get(tool_context, :agent_id)
     forge_session_key = Map.get(tool_context, :forge_session_key)
+    # `request_id` is NOT in the canonical tool_context key set (see
+    # `JidoClaw.ToolContext`); it lives at the top-level context map.
+    request_id = Map.get(context, :request_id)
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
     caller_cap = Map.get(params, :max_context_bytes)
@@ -169,6 +172,7 @@ defmodule JidoClaw.Tools.RunPipeline do
           session_uuid: session_uuid,
           project_dir: project_dir,
           agent_id: agent_id,
+          request_id: request_id,
           forge_session_key: forge_session_key,
           pipeline_cap: effective_pipeline_cap
         ]
@@ -319,6 +323,7 @@ defmodule JidoClaw.Tools.RunPipeline do
           session_uuid: Keyword.get(wrap_opts, :session_uuid),
           project_dir: Keyword.get(wrap_opts, :project_dir),
           agent_id: Keyword.get(wrap_opts, :agent_id),
+          request_id: Keyword.get(wrap_opts, :request_id),
           forge_session_key: Keyword.get(wrap_opts, :forge_session_key),
           metadata: failure_metadata
         ]
@@ -356,6 +361,7 @@ defmodule JidoClaw.Tools.RunPipeline do
       session_uuid: Keyword.get(wrap_opts, :session_uuid),
       project_dir: Keyword.get(wrap_opts, :project_dir),
       agent_id: Keyword.get(wrap_opts, :agent_id),
+      request_id: Keyword.get(wrap_opts, :request_id),
       forge_session_key: Keyword.get(wrap_opts, :forge_session_key),
       metadata: metadata
     ]

@@ -39,35 +39,41 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
                )
     end
 
-    test "emits start + stop telemetry with expected metadata" do
+    test "emits canonical start + stop trace events with expected metadata" do
       ref = make_ref()
       test_pid = self()
+      handler_id = "telemetry-test-#{System.unique_integer([:positive])}"
 
-      :telemetry.attach_many(
-        "telemetry-test-#{System.unique_integer([:positive])}",
-        [
-          [:jido_claw, :reasoning, :strategy, :start],
-          [:jido_claw, :reasoning, :strategy, :stop]
-        ],
+      :telemetry.attach(
+        handler_id,
+        [:jido_claw, :reasoning, :event],
         fn event, measurements, metadata, _ ->
           send(test_pid, {ref, event, measurements, metadata})
         end,
         nil
       )
 
-      Telemetry.with_outcome(
-        "cot",
-        "testing prompt",
-        [execution_kind: :strategy_run],
-        fn -> {:ok, %{}} end
-      )
+      try do
+        Telemetry.with_outcome(
+          "cot",
+          "testing prompt",
+          [execution_kind: :strategy_run],
+          fn -> {:ok, %{}} end
+        )
 
-      assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :start], _, meta}
-      assert meta.strategy == "cot"
-      assert meta.execution_kind == :strategy_run
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], _,
+                        %{event: :start, phase: :strategy, name: "cot"} = start_meta}
 
-      assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :stop], %{duration_ms: _}, meta}
-      assert meta.status == :ok
+        assert start_meta.strategy == "cot"
+        assert start_meta.execution_kind == :strategy_run
+
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], %{duration_ms: _},
+                        %{event: :stop, phase: :strategy, name: "cot"} = stop_meta}
+
+        assert stop_meta.status == :ok
+      after
+        :telemetry.detach(handler_id)
+      end
     end
 
     @tag :deprecated_outcome_columns
@@ -341,18 +347,15 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
       end
     end
 
-    test "cap-failure stage still fires start + stop telemetry with status: :error" do
+    test "cap-failure stage still fires canonical start + error trace events" do
       ref = make_ref()
       test_pid = self()
 
       handler_id = "telemetry-cap-fail-#{System.unique_integer([:positive])}"
 
-      :telemetry.attach_many(
+      :telemetry.attach(
         handler_id,
-        [
-          [:jido_claw, :reasoning, :strategy, :start],
-          [:jido_claw, :reasoning, :strategy, :stop]
-        ],
+        [:jido_claw, :reasoning, :event],
         fn event, measurements, metadata, _ ->
           send(test_pid, {ref, event, measurements, metadata})
         end,
@@ -374,26 +377,26 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
                    %{reasoning_runner: BigBodyRunner}
                  )
 
-        # Stage 1 produces an :ok lifecycle; stage 2 is the cap-failure.
-        # Flush stage 1's events, then verify stage 2's start + stop fire
-        # and stop carries status: :error.
-        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :start], _, %{strategy: "cot"}}
+        # Stage 1 produces an :ok lifecycle (start + stop); stage 2 is
+        # the cap-failure (start + error).
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], _,
+                        %{event: :start, strategy: "cot"}}
 
-        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :stop], _,
-                        %{strategy: "cot", status: :ok}}
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], _,
+                        %{event: :stop, strategy: "cot", status: :ok}}
 
-        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :start], _,
-                        %{strategy: "tot"} = start_meta}
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], _,
+                        %{event: :start, strategy: "tot"} = start_meta}
 
-        assert_receive {^ref, [:jido_claw, :reasoning, :strategy, :stop], _,
-                        %{strategy: "tot", status: :error} = stop_meta}
+        assert_receive {^ref, [:jido_claw, :reasoning, :event], _,
+                        %{event: :error, strategy: "tot", status: :error} = error_meta}
 
         # start event metadata includes prompt_length driven by the
         # classification prompt (irreducible would-be request).
         assert is_integer(start_meta.prompt_length)
         assert start_meta.prompt_length > 0
 
-        _ = stop_meta
+        _ = error_meta
       after
         :telemetry.detach(handler_id)
       end

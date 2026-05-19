@@ -19,7 +19,15 @@ defmodule JidoClaw.Tools.Error do
   `details` is always passed through `sanitize_details/1` before reaching
   the agent. `OutputRedaction` and `OutputLimit` intentionally skip structs,
   so without this layer raw `%File.Error{}` payloads, PIDs, refs, large
-  `old_string` blobs, etc. would leak directly to the LLM context.
+  `old_string` blobs, etc. would leak directly to the LLM context. PIDs,
+  refs, and ports are dropped entirely from maps and lists; inside tuples
+  (where positional structure can't tolerate missing elements) they are
+  replaced with the atom `:dropped_runtime_handle`.
+
+  Both `wire.message` and string values inside structured/exception
+  `wire.details` are capped at `@max_string_bytes` (2 KB) and UTF-8 trimmed
+  at the truncation boundary. Legacy plain-map detail strings are handled
+  by the downstream `OutputLimit` pass in the tool wrapper, not here.
   """
 
   alias JidoClaw.Tools.OutputLimit
@@ -81,7 +89,7 @@ defmodule JidoClaw.Tools.Error do
   def normalize(%struct{} = error) when struct in @jido_claw_leaf_structs do
     %{
       code: struct_code(error),
-      message: Exception.message(error),
+      message: truncate_string(Exception.message(error)),
       details: sanitize_details(error_details(error))
     }
   end
@@ -91,7 +99,7 @@ defmodule JidoClaw.Tools.Error do
       when struct in @jido_claw_class_structs and is_list(errors) do
     %{
       code: struct_code(error),
-      message: JidoClaw.Error.format(error),
+      message: truncate_string(JidoClaw.Error.format(error)),
       details:
         sanitize_details(%{
           class: class,
@@ -107,13 +115,13 @@ defmodule JidoClaw.Tools.Error do
   # above, where those passes skip the inputs entirely.
   def normalize(%{code: code, message: message, details: details})
       when is_atom(code) and is_binary(message) and is_map(details) do
-    %{code: code, message: message, details: details}
+    %{code: code, message: truncate_string(message), details: details}
   end
 
   def normalize(%module{} = reason) do
     %{
       code: struct_code(reason),
-      message: exception_message(reason),
+      message: truncate_string(exception_message(reason)),
       details:
         reason
         |> Map.from_struct()
@@ -126,7 +134,7 @@ defmodule JidoClaw.Tools.Error do
   def normalize(%{message: message} = reason) when is_binary(message) do
     %{
       code: code_from_map(reason),
-      message: message,
+      message: truncate_string(message),
       details: details_from_map(reason, [:code, :message, "code", "message"])
     }
   end
@@ -134,7 +142,7 @@ defmodule JidoClaw.Tools.Error do
   def normalize(%{"message" => message} = reason) when is_binary(message) do
     %{
       code: code_from_map(reason),
-      message: message,
+      message: truncate_string(message),
       details: details_from_map(reason, [:code, :message, "code", "message"])
     }
   end
@@ -142,7 +150,7 @@ defmodule JidoClaw.Tools.Error do
   def normalize(%{error: error} = reason) do
     %{
       code: code_from_map(reason),
-      message: message(error),
+      message: truncate_string(message(error)),
       details: details_from_map(reason, [:code, :error, "code", "error"])
     }
   end
@@ -150,13 +158,13 @@ defmodule JidoClaw.Tools.Error do
   def normalize(%{"error" => error} = reason) do
     %{
       code: code_from_map(reason),
-      message: message(error),
+      message: truncate_string(message(error)),
       details: details_from_map(reason, [:code, :error, "code", "error"])
     }
   end
 
   def normalize(reason) when is_binary(reason) do
-    %{code: :tool_error, message: reason, details: %{}}
+    %{code: :tool_error, message: truncate_string(reason), details: %{}}
   end
 
   def normalize(reason) when is_atom(reason) do
@@ -168,7 +176,11 @@ defmodule JidoClaw.Tools.Error do
   end
 
   def normalize(reason) do
-    %{code: :tool_error, message: inspect(reason), details: %{reason: inspect(reason)}}
+    %{
+      code: :tool_error,
+      message: truncate_string(inspect(reason)),
+      details: %{reason: inspect(reason)}
+    }
   end
 
   # ---- struct_code/1: strict mapping, NEVER conflates phase with code ----
@@ -227,15 +239,15 @@ defmodule JidoClaw.Tools.Error do
   # ---- child_error_summary/1: per-error wire shape inside a class container ----
 
   defp child_error_summary(%struct{} = error) when struct in @jido_claw_leaf_structs do
-    %{code: struct_code(error), message: Exception.message(error)}
+    %{code: struct_code(error), message: truncate_string(Exception.message(error))}
   end
 
   defp child_error_summary(%struct{} = error) when is_exception(error) do
-    %{code: :foreign, module: inspect(struct), message: Exception.message(error)}
+    %{code: :foreign, module: inspect(struct), message: truncate_string(Exception.message(error))}
   end
 
   defp child_error_summary(other) do
-    %{code: :unknown, message: inspect(other)}
+    %{code: :unknown, message: truncate_string(inspect(other))}
   end
 
   # ---- sanitize_details/1: recursive scrub ----
@@ -274,7 +286,7 @@ defmodule JidoClaw.Tools.Error do
   defp sanitize_value(value) when is_binary(value), do: truncate_string(value)
 
   defp sanitize_value(%struct{} = exception) when is_exception(exception) do
-    %{module: inspect(struct), message: safe_exception_message(exception)}
+    %{module: inspect(struct), message: truncate_string(safe_exception_message(exception))}
   end
 
   defp sanitize_value(%_struct{} = other) do
@@ -303,6 +315,11 @@ defmodule JidoClaw.Tools.Error do
     end
   end
 
+  # Tuples preserve positional structure (e.g. `{:ok, pid}` from
+  # `GenServer.start_link/3`), so dropped runtime handles are replaced
+  # with the placeholder atom `:dropped_runtime_handle` rather than
+  # removed — wholesale tuple replacement would lose the `:ok`
+  # discriminator that callers pattern-match on.
   defp sanitize_value(value) when is_tuple(value) do
     value
     |> Tuple.to_list()
@@ -337,9 +354,17 @@ defmodule JidoClaw.Tools.Error do
 
   defp truncate_string(str), do: str
 
-  defp cap_collection(collection) do
+  defp cap_collection(collection) when is_map(collection) do
     if approximate_byte_size(collection) > @max_collection_bytes do
-      "[truncated: #{describe(collection)}]"
+      %{truncated: true, description: describe(collection)}
+    else
+      collection
+    end
+  end
+
+  defp cap_collection(collection) when is_list(collection) do
+    if approximate_byte_size(collection) > @max_collection_bytes do
+      [%{truncated: true, description: describe(collection)}]
     else
       collection
     end

@@ -62,6 +62,19 @@ defmodule JidoClaw.Conversations.Recorder do
   request already terminated, otherwise blocks until the terminal
   signal is processed.
 
+  ## Relationship to `JidoClaw.Trace`
+
+  Recorder writes the **durable record-of-truth** for messages — every
+  `:tool_call`, `:tool_result`, `:reasoning`, and assistant row is a
+  permanent `Conversations.Message` row.
+
+  `JidoClaw.Trace` consumes the same `ai.*` telemetry stream into a
+  bounded in-memory projection (plus optional Postgres persistence in
+  `trace_runs` / `trace_events`) for the in-flight view that
+  LiveViews, the REPL, MCP, and the certificate verifier all share.
+  The two writers do not overlap — `Trace` is correlation/replay; the
+  Recorder is durable conversation state.
+
   ## Bus restart resilience
 
   `init/1` returns `{:ok, state, {:continue, :setup}}`. `setup` resolves

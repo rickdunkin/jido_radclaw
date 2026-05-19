@@ -141,6 +141,11 @@ defmodule JidoClaw.Application do
       # acceptance gate "Bus restart resubscribe" / "Assistant ordering".
       {Jido.Signal.Bus, name: JidoClaw.SignalBus, partition_count: 1},
       JidoClaw.Conversations.RequestCorrelation.Cache,
+      # Trace.Persistence MUST start before Trace.Collector: the
+      # Collector attaches telemetry handlers in init/1 and may
+      # immediately fan events out to Persistence.
+      JidoClaw.Trace.Persistence,
+      JidoClaw.Trace.Collector,
       JidoClaw.Conversations.Recorder,
       JidoClaw.Conversations.RequestCorrelation.Sweeper,
       JidoClaw.Audit.SignalListener

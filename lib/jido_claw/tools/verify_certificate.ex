@@ -136,6 +136,8 @@ defmodule JidoClaw.Tools.VerifyCertificate do
     project_dir = Map.get(tool_context, :project_dir)
     agent_id = Map.get(tool_context, :agent_id)
     forge_session_key = Map.get(tool_context, :forge_session_key)
+    # `request_id` is at the top-level context, not on tool_context.
+    request_id = Map.get(context, :request_id)
 
     opts = [
       execution_kind: :certificate_verification,
@@ -145,6 +147,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       session_uuid: session_uuid,
       project_dir: project_dir,
       agent_id: agent_id,
+      request_id: request_id,
       forge_session_key: forge_session_key
     ]
 

@@ -202,6 +202,100 @@ defmodule JidoClawTest.ErrorToolsWireFormatTest do
 
       assert wire.details.stacktrace == "[stacktrace dropped]"
     end
+
+    test "oversized nested map stays a map with a truncated summary" do
+      nested =
+        Map.new(1..200, fn i -> {:"k#{i}", String.duplicate("x", 100)} end)
+
+      err = Error.execution_error("Boom", details: %{nested: nested})
+      wire = Wire.normalize(err)
+
+      assert is_map(wire.details.nested)
+      assert wire.details.nested.truncated == true
+      assert wire.details.nested.description =~ "map with"
+    end
+
+    test "oversized nested list stays a list with a truncated summary" do
+      items = Enum.map(1..200, fn _ -> String.duplicate("x", 100) end)
+
+      err = Error.execution_error("Boom", details: %{items: items})
+      wire = Wire.normalize(err)
+
+      assert is_list(wire.details.items)
+      [head | _] = wire.details.items
+      assert is_map(head)
+      assert head.truncated == true
+      assert head.description =~ "list with"
+    end
+
+    test "nested exception message inside details is truncated" do
+      huge_msg = String.duplicate("x", 3_000)
+      cause = RuntimeError.exception(huge_msg)
+
+      err = Error.execution_error("Boom", phase: :load, details: %{cause: cause})
+      wire = Wire.normalize(err)
+
+      assert is_map(wire.details.cause)
+      assert is_binary(wire.details.cause.message)
+      assert String.ends_with?(wire.details.cause.message, "... (truncated)")
+      assert byte_size(wire.details.cause.message) < byte_size(huge_msg)
+    end
+
+    test "class container child summary message is truncated" do
+      huge = String.duplicate("x", 3_000)
+
+      class = Error.to_class([Error.execution_error(huge)])
+      wire = Wire.normalize(class)
+
+      assert is_list(wire.details.errors)
+      [child | _] = wire.details.errors
+      assert is_binary(child.message)
+      assert String.ends_with?(child.message, "... (truncated)")
+      assert byte_size(child.message) < byte_size(huge)
+    end
+  end
+
+  describe "top-level wire.message is byte-bounded" do
+    test "first-party leaf message is truncated" do
+      huge = String.duplicate("x", 3_000)
+      wire = Wire.normalize(Error.execution_error(huge))
+
+      assert String.ends_with?(wire.message, "... (truncated)")
+      assert byte_size(wire.message) < 3_000
+    end
+
+    test "class container format/1 output is truncated" do
+      huge = String.duplicate("y", 1_500)
+
+      class =
+        Error.to_class([
+          Error.execution_error(huge),
+          Error.execution_error(String.duplicate("z", 1_500))
+        ])
+
+      wire = Wire.normalize(class)
+
+      assert String.valid?(wire.message)
+      assert String.ends_with?(wire.message, "... (truncated)")
+    end
+
+    test "foreign exception message is truncated at a UTF-8 boundary" do
+      huge = String.duplicate("€", 1_000)
+      wire = Wire.normalize(RuntimeError.exception(huge))
+
+      assert String.valid?(wire.message)
+      assert String.ends_with?(wire.message, "... (truncated)")
+      assert byte_size(wire.message) < 3_000
+    end
+
+    test "binary fallback message is truncated" do
+      huge = String.duplicate("x", 3_000)
+      wire = Wire.normalize(huge)
+
+      assert wire.code == :tool_error
+      assert String.ends_with?(wire.message, "... (truncated)")
+      assert byte_size(wire.message) < 3_000
+    end
   end
 
   describe "legacy fallbacks still work" do

@@ -3,6 +3,16 @@ defmodule JidoClaw.AgentTracker do
   Per-agent stat accumulator. Tracks tokens, tool calls, status, and cost
   for every agent (main + children). Subscribes to the SignalBus for
   tool and agent lifecycle events. Monitors child agent processes.
+
+  ## Relationship to `JidoClaw.Trace`
+
+  AgentTracker maintains **per-agent rollups** — totals and current
+  status used by the swarm/display UI. `JidoClaw.Trace` maintains the
+  **per-request event timeline** for the same telemetry stream. The
+  two views answer different questions: AgentTracker says "how is
+  this agent doing overall", Trace says "what happened during request
+  R". Both attach to the same `[:jido, :ai, :tool, :execute, *]`
+  events; telemetry is multi-listener, so they don't conflict.
   """
 
   use GenServer
