@@ -48,6 +48,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:close, action: :close)
     define(:set_next_sequence, action: :set_next_sequence, args: [:next_sequence])
     define(:set_prompt_snapshot, action: :set_prompt_snapshot, args: [:snapshot])
+    define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:snapshot])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
 
@@ -129,6 +130,23 @@ defmodule JidoClaw.Conversations.Session do
           changeset,
           :metadata,
           Map.put(md, "prompt_snapshot", snap)
+        )
+      end)
+    end
+
+    update :set_compaction_snapshot do
+      accept([])
+      argument(:snapshot, :map, allow_nil?: false)
+      require_atomic?(false)
+
+      change(fn changeset, _ctx ->
+        snap = Ash.Changeset.get_argument(changeset, :snapshot)
+        md = Ash.Changeset.get_attribute(changeset, :metadata) || %{}
+
+        Ash.Changeset.force_change_attribute(
+          changeset,
+          :metadata,
+          Map.put(md, "compaction", snap)
         )
       end)
     end

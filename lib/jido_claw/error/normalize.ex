@@ -131,6 +131,29 @@ defmodule JidoClaw.Error.Normalize do
     do: Common.execution("Reasoning operation failed.", :reasoning, reason, context)
 
   # ---------------------------------------------------------------------------
+  # compaction_error/2 — Reasoning.Compactor (storage, summarizer, transformer).
+  # ---------------------------------------------------------------------------
+
+  @spec compaction_error(term(), context()) :: Exception.t()
+  def compaction_error(reason, context \\ %{})
+
+  def compaction_error(%_{} = error, context) when is_exception(error),
+    do: from_exception(error, "Compaction operation failed.", :compaction, context)
+
+  def compaction_error({:timeout, timeout}, context),
+    do: Common.timeout_error(:compaction, timeout, context)
+
+  def compaction_error(reason, context) when is_binary(reason) do
+    case Context.detail(context, :field) do
+      nil -> Common.execution("Compaction operation failed.", :compaction, reason, context)
+      field -> Common.validation(reason, field, reason, context)
+    end
+  end
+
+  def compaction_error(reason, context),
+    do: Common.execution("Compaction operation failed.", :compaction, reason, context)
+
+  # ---------------------------------------------------------------------------
   # session_error/2 — Session.Supervisor / Session.Worker process failures.
   # ---------------------------------------------------------------------------
 

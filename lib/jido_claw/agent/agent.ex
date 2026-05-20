@@ -48,7 +48,16 @@ defmodule JidoClaw.Agent do
     max_iterations: 25,
     streaming: true,
     tool_timeout_ms: 30_000,
-    llm_opts: [provider_options: [anthropic_prompt_cache: true]]
+    llm_opts: [provider_options: [anthropic_prompt_cache: true]],
+    compaction: [
+      mode: :auto,
+      max_messages: 60,
+      recompact_delta_threshold: 30,
+      keep_last_turns: 6,
+      protect_first_n_turns: 2,
+      max_summary_chars: 4_000,
+      summarizer_timeout_ms: 15_000
+    ]
 
   @doc "Canonical tool module list. Derived from the `tools:` option above via `strategy_opts/0`; REPL banner + branding call this for accurate counts."
   @spec tool_modules() :: [module()]

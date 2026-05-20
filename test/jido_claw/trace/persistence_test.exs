@@ -93,7 +93,7 @@ defmodule JidoClaw.Trace.PersistenceTest do
       seqs = Enum.map(events, & &1.seq)
       assert seqs == Enum.sort(seqs)
       assert run.status == "completed"
-      assert run.last_seq == List.last(seqs)
+      assert run.last_seq == seqs |> Enum.reverse() |> List.first()
     end
   end
 
@@ -220,7 +220,7 @@ defmodule JidoClaw.Trace.PersistenceTest do
 
         assert trace.request_id == target_req
         # Events have been rehydrated from trace_events.
-        assert length(trace.events) >= 1
+        assert trace.events != []
       after
         if previous do
           Application.put_env(:jido_claw, :trace, previous)
@@ -273,7 +273,7 @@ defmodule JidoClaw.Trace.PersistenceTest do
       assert rows_b == []
 
       assert {:ok, rows_a} = Trace.history(tenant_id: tenant_a, page: [limit: 10])
-      assert length(rows_a) >= 1
+      assert rows_a != []
     end
   end
 

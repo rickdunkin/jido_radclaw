@@ -48,6 +48,9 @@ defmodule JidoClaw.Trace do
   """
 
   alias JidoClaw.Trace.{Collector, Event}
+  alias JidoClaw.Trace.Limit, as: TraceLimit
+  alias JidoClaw.Trace.Resources.TraceEvent
+  alias JidoClaw.Trace.Resources.TraceRun
 
   @agent_id_key :__jido_claw_agent_id__
 
@@ -166,7 +169,7 @@ defmodule JidoClaw.Trace do
     page = Keyword.get(opts, :page, limit: 50)
     ash_opts = if tenant_id, do: [tenant: tenant_id, page: page], else: [page: page]
 
-    case JidoClaw.Trace.Resources.TraceRun.recent(ash_opts) do
+    case TraceRun.recent(ash_opts) do
       {:ok, %Ash.Page.Keyset{results: runs}} -> {:ok, Enum.map(runs, &durable_run_to_trace/1)}
       {:ok, runs} when is_list(runs) -> {:ok, Enum.map(runs, &durable_run_to_trace/1)}
       {:error, reason} -> {:error, reason}
@@ -273,12 +276,7 @@ defmodule JidoClaw.Trace do
     :exit, _reason -> {:error, :not_found}
   end
 
-  defp maybe_limit(values, nil), do: values
-
-  defp maybe_limit(values, limit) when is_integer(limit) and limit >= 0,
-    do: Enum.take(values, limit)
-
-  defp maybe_limit(values, _limit), do: values
+  defp maybe_limit(values, limit), do: TraceLimit.take(values, limit)
 
   defp wrap_trace_result({:ok, trace}), do: {:ok, wrap_trace(trace)}
   defp wrap_trace_result({:error, reason}), do: {:error, reason}
@@ -287,7 +285,7 @@ defmodule JidoClaw.Trace do
     tenant_id = Keyword.get(opts, :tenant_id)
     ash_opts = if tenant_id, do: [tenant: tenant_id], else: []
 
-    case JidoClaw.Trace.Resources.TraceRun.by_request(request_id, ash_opts) do
+    case TraceRun.by_request(request_id, ash_opts) do
       {:ok, nil} ->
         {:error, :not_found}
 
@@ -308,7 +306,7 @@ defmodule JidoClaw.Trace do
 
   defp rehydrate_trace(run, ash_opts) do
     events =
-      case JidoClaw.Trace.Resources.TraceEvent.for_trace(run.trace_id, ash_opts) do
+      case TraceEvent.for_trace(run.trace_id, ash_opts) do
         {:ok, rows} -> Enum.map(rows, &durable_event_to_struct/1)
         _ -> []
       end
@@ -414,7 +412,7 @@ defmodule JidoClaw.Trace do
   defp build_span(events) do
     events = Enum.sort_by(events, & &1.seq)
     first = List.first(events)
-    last = List.last(events)
+    last = events |> Enum.reverse() |> List.first()
 
     %{
       source: first.source,

@@ -61,7 +61,19 @@ Pair with hermes T2-9 (diagnostic registry) — a unified trace surface is the n
 
 ### T1-2. Summary-based context compaction (`Jidoka.Compaction`)
 
-**Status (2026-05-18)**: NOT_ADOPTED. Same gap that **hermes T1-2** flagged (still NOT_ADOPTED in the 2026-05-18 re-review). `forge/context_builder.ex` has a hard-chop "max_chars trim" for resume prompts (compacting prior session history *into* a resume prompt — not the live thread). `conversations/tool_transcript.ex::result_summary/2` is a one-line preview of tool result content for DB storage. No live-thread compactor.
+**Status (2026-05-20)**: ADOPTED — main agent v1. Lives in `lib/jido_claw/reasoning/compactor*` with a tenant-aware Postgres-backed snapshot in `Session.metadata["compaction"]`. Workers explicitly carry `compaction: [mode: :off]` so they don't pay the cost; per-`{agent_id, context_ref}` keying is deferred to v2. Hooks into the agent lifecycle via `JidoClaw.Agent.Defaults`'s `on_before_cmd/2` override on `{:ai_react_start, _}`.
+
+Key divergences from Jidoka's shape:
+
+* **Hook surface**: the live LLM rewrite goes through a `Jido.AI.Reasoning.ReAct.RequestTransformer` implementation, not `runtime_context` mutation. The transformer filters projected messages by `refs.request_id ∈ snapshot.summarized_request_ids` (cumulative set) and prepends a delimited *user-role* summary message after any leading system messages — no system-prompt mutation, preserving trust boundary.
+* **Watermarking**: two handles — `last_summarized_sequence` (Postgres watermark, drives `Message.since_watermark/2` reads) and a cumulative `summarized_request_ids` set (drives transformer filter). Each re-compaction merges new source IDs and dedupes.
+* **Boundary discipline**: turn-grouped (by `request_id`), not role-adjacency-based, because `:tool_call` / `:tool_result` rows are standalone in this codebase.
+* **Forward-tagging**: `on_before_cmd` always injects `params[:extra_refs][:request_id]` so the live turn's projected messages will carry `refs.request_id` and be filterable by future compactions.
+* **Config**: opts-keyword via `compaction: [...]` on `use JidoClaw.Agent.Defaults`, not a Spark DSL (T3-7 decision).
+* **Summarizer bounds**: `Task.Supervisor.async_nolink(JidoClaw.TaskSupervisor, ...)` + 15s timeout + specific rescue clauses. No retries on v1.
+* **Trace surface**: `[:jido_claw, :compaction, :event]` already pre-wired in `Trace.Collector` (status mapping for `:summarized`/`:skipped` → `:completed`).
+
+**Prior state (kept for historical context)**: `forge/context_builder.ex` has a hard-chop "max_chars trim" for resume prompts (compacting prior session history *into* a resume prompt — not the live thread). `conversations/tool_transcript.ex::result_summary/2` is a one-line preview of tool result content for DB storage.
 
 **Where in jidoka**: `lib/jidoka/compaction.ex` (~790 lines), `lib/jidoka/compaction/{config,prompt}.ex`
 

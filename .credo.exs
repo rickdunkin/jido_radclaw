@@ -35,7 +35,14 @@
           {AshCredo.Check.Design.MissingPrimaryAction,
            [files: %{excluded: ["lib/jido_claw/accounts/token.ex"]}]},
           {AshCredo.Check.Design.MissingTimestamps,
-           [files: %{excluded: ["lib/jido_claw/audit/resources/event.ex"]}]},
+           [
+             files: %{
+               excluded: [
+                 "lib/jido_claw/audit/resources/event.ex",
+                 "lib/jido_claw/trace/resources/trace_event.ex"
+               ]
+             }
+           ]},
           {AshCredo.Check.Readability.ActionMissingDescription, []},
           {AshCredo.Check.Readability.BelongsToMissingAllowNil, []},
           # ex_slop — AI code-slop checks (added by ex_harness)

@@ -13,5 +13,6 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
     model: :fast,
     max_iterations: 15,
     streaming: false,
-    tool_timeout_ms: 30_000
+    tool_timeout_ms: 30_000,
+    compaction: [mode: :off]
 end

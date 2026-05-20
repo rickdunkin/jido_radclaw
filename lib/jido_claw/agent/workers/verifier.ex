@@ -19,5 +19,6 @@ defmodule JidoClaw.Agent.Workers.Verifier do
     model: :fast,
     max_iterations: 20,
     streaming: false,
-    tool_timeout_ms: 60_000
+    tool_timeout_ms: 60_000,
+    compaction: [mode: :off]
 end

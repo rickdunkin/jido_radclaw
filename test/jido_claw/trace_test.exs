@@ -4,9 +4,16 @@ defmodule JidoClaw.TraceTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Jido.Tracing.Context, as: TracingContext
+  alias Jido.Tracing.Trace, as: TracingTrace
+  alias JidoClaw.Conversations.RequestCorrelation
+  alias JidoClaw.Conversations.Session
+  alias JidoClaw.Reasoning.Telemetry, as: ReasoningTelemetry
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Trace
   alias JidoClaw.Trace.Collector
   alias JidoClaw.TraceTestHelpers, as: H
+  alias JidoClaw.Workspaces.Workspace
 
   setup do
     pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
@@ -309,7 +316,7 @@ defmodule JidoClaw.TraceTest do
 
       # Seed a Jido tracing context so emit_event/3 enriches with
       # jido_trace_id, jido_span_id, jido_parent_span_id.
-      Process.put({:jido, :trace_context}, Jido.Tracing.Trace.new_root())
+      Process.put({:jido, :trace_context}, TracingTrace.new_root())
 
       try do
         Trace.emit(:hook, %{
@@ -325,7 +332,7 @@ defmodule JidoClaw.TraceTest do
         assert event.event == :start
         assert is_binary(event.trace_id)
       after
-        Jido.Tracing.Context.clear()
+        TracingContext.clear()
       end
     end
 
@@ -437,7 +444,7 @@ defmodule JidoClaw.TraceTest do
       request_id = unique_id("req")
 
       :ok =
-        JidoClaw.Conversations.RequestCorrelation.Cache.put(request_id, %{
+        RequestCorrelation.Cache.put(request_id, %{
           session_id: Ecto.UUID.generate(),
           tenant_id: tenant_id,
           workspace_id: nil,
@@ -454,7 +461,7 @@ defmodule JidoClaw.TraceTest do
       assert {:ok, trace} = Trace.for_request(agent_id, request_id)
       assert trace.tenant_id == tenant_id
     after
-      :ok = JidoClaw.Conversations.RequestCorrelation.Cache.clear()
+      :ok = RequestCorrelation.Cache.clear()
     end
 
     test "latest(agent_id, tenant_id: B) returns :not_found when only tenant-A traces exist" do
@@ -511,16 +518,16 @@ defmodule JidoClaw.TraceTest do
       request_id = unique_id("req-durable")
 
       session = seed_session_for(tenant_id)
-      :ok = JidoClaw.Conversations.RequestCorrelation.Cache.clear()
+      :ok = RequestCorrelation.Cache.clear()
 
       {:ok, _} =
-        JidoClaw.Conversations.RequestCorrelation.register(%{
+        RequestCorrelation.register(%{
           request_id: request_id,
           session_id: session.id,
           tenant_id: tenant_id
         })
 
-      :ok = JidoClaw.Conversations.RequestCorrelation.Cache.delete(request_id)
+      :ok = RequestCorrelation.Cache.delete(request_id)
 
       :telemetry.execute(
         [:jido, :ai, :request, :start],
@@ -573,7 +580,7 @@ defmodule JidoClaw.TraceTest do
           nil
         )
 
-        JidoClaw.Reasoning.Telemetry.with_outcome(
+        ReasoningTelemetry.with_outcome(
           "cot",
           "canonical-path prompt",
           [execution_kind: :strategy_run, request_id: unique_id("req")],
@@ -617,18 +624,18 @@ defmodule JidoClaw.TraceTest do
   end
 
   defp seed_session_for(tenant_id) do
-    {:ok, _} = JidoClaw.Tenants.Tenant.ensure(tenant_id)
+    {:ok, _} = Tenant.ensure(tenant_id)
     actor = %{user_id: tenant_id, tenant_id: tenant_id}
 
     {:ok, workspace} =
-      JidoClaw.Workspaces.Workspace.register(
+      Workspace.register(
         %{name: "ws-#{System.unique_integer([:positive])}", path: "/tmp/#{tenant_id}"},
         tenant: tenant_id,
         actor: actor
       )
 
     {:ok, session} =
-      JidoClaw.Conversations.Session.start(
+      Session.start(
         %{
           workspace_id: workspace.id,
           kind: :api,
