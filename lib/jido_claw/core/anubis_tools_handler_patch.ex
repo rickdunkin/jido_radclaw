@@ -1,8 +1,9 @@
-# Patch for anubis_mcp 1.5.0 — Anubis.Server.Handlers.Tools
+# Patch for anubis_mcp 1.6.1 — Anubis.Server.Handlers.Tools
 #
-# Port of upstream 1.5.0's handler — including check_task_policy/3, which
-# enforces MCP spec 2025-11-25 task-augmentation semantics — with two
-# surgical changes layered in:
+# Port of upstream 1.6.1's handler — including check_task_policy/3 (MCP spec
+# 2025-11-25 task-augmentation semantics) and check_scopes/2 + visible?/2
+# (OAuth 2.1 authorization, added in 1.6.0 #158) — with two surgical changes
+# layered in:
 #   1. validate_params/3 has a `rescue` clause that returns {:ok, params} on
 #      any Peri crash. jido_mcp registers tool input_schemas as JSON Schema
 #      via `Jido.Action.Schema.to_json_schema/2`
@@ -15,6 +16,14 @@
 #      but Jido actions pattern-match on atom keys. Unknown keys stay as
 #      strings (String.to_existing_atom/1, so no user-controlled atom
 #      creation).
+#
+# The scope filter in `handle_list/3`, the `check_scopes` step in both
+# `handle_call/3` clauses, and the `check_scopes/2` + `visible?/2` helpers
+# are ported verbatim from 1.6.0's OAuth 2.1 feature so the patch preserves
+# upstream's authorization enforcement. Today every JidoClaw tool registers
+# with the struct default `scopes: []`, which short-circuits both helpers,
+# but porting them keeps the patch byte-equivalent in behavior to 1.6.1 for
+# any future call site that does declare scopes.
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
 # in mix.exs to suppress the "redefining module" warning this intentionally
@@ -34,7 +43,11 @@ defmodule Anubis.Server.Handlers.Tools do
   @spec handle_list(map, Frame.t(), module()) ::
           {:reply, map(), Frame.t()} | {:error, Error.t(), Frame.t()}
   def handle_list(request, frame, server_module) do
-    tools = Handlers.get_server_tools(server_module, frame)
+    tools =
+      server_module
+      |> Handlers.get_server_tools(frame)
+      |> Enum.filter(&visible?(&1, frame))
+
     limit = frame.pagination_limit
     {tools, cursor} = Handlers.maybe_paginate(request, tools, limit)
 
@@ -55,7 +68,8 @@ defmodule Anubis.Server.Handlers.Tools do
     registered_tools = Handlers.get_server_tools(server, frame)
 
     if tool = find_tool_module(registered_tools, tool_name) do
-      with :ok <- check_task_policy(tool, request, frame),
+      with :ok <- check_scopes(tool, frame),
+           :ok <- check_task_policy(tool, request, frame),
            {:ok, params} <- validate_params(params, tool, frame),
            do: forward_to(server, tool, params, frame)
     else
@@ -68,7 +82,8 @@ defmodule Anubis.Server.Handlers.Tools do
     registered_tools = Handlers.get_server_tools(server, frame)
 
     if tool = find_tool_module(registered_tools, tool_name) do
-      with :ok <- check_task_policy(tool, request, frame),
+      with :ok <- check_scopes(tool, frame),
+           :ok <- check_task_policy(tool, request, frame),
            {:ok, params} <- validate_params(%{}, tool, frame),
            do: forward_to(server, tool, params, frame)
     else
@@ -78,6 +93,22 @@ defmodule Anubis.Server.Handlers.Tools do
   end
 
   # Private functions
+
+  defp check_scopes(%Tool{scopes: []}, _frame), do: :ok
+
+  defp check_scopes(%Tool{scopes: required}, frame) do
+    granted = Frame.scopes(frame)
+    missing = Enum.reject(required, &(&1 in granted))
+
+    if missing == [] do
+      :ok
+    else
+      {:error, Error.execution("insufficient_scope", %{required: required, granted: granted}), frame}
+    end
+  end
+
+  defp visible?(%Tool{scopes: []}, _frame), do: true
+  defp visible?(%Tool{scopes: required}, frame), do: Frame.has_all_scopes?(frame, required)
 
   defp find_tool_module(tools, name), do: Enum.find(tools, &(&1.name == name))
 

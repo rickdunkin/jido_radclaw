@@ -16,7 +16,7 @@ defmodule JidoClaw.MixProject do
       # resulting "redefining module" warnings globally so
       # `--warnings-as-errors` stays green:
       #   - lib/jido_claw/core/anubis_tools_handler_patch.ex
-      #     (Anubis.Server.Handlers.Tools 1.5.0 — rescues Peri crash on
+      #     (Anubis.Server.Handlers.Tools 1.6.1 — rescues Peri crash on
       #     jido_mcp JSON Schema, atomizes arguments for Jido actions)
       #   - lib/jido_claw/core/jido_shell_registry_patch.ex
       #     (Jido.Shell.Command.Registry — :extra_commands hook)

@@ -5,6 +5,7 @@ defmodule JidoClaw.Core.AnubisToolsHandlerPatchTest do
 
   alias Anubis.MCP.Error
   alias Anubis.Server.Component.Tool
+  alias Anubis.Server.Context
   alias Anubis.Server.Frame
   alias Anubis.Server.Handlers.Tools, as: ToolsHandler
   alias Anubis.Server.Response
@@ -27,10 +28,18 @@ defmodule JidoClaw.Core.AnubisToolsHandlerPatchTest do
   end
 
   defp seed_frame(tools, opts \\ []) do
+    context =
+      case Keyword.get(opts, :scopes) do
+        nil -> %Context{}
+        scopes -> %Context{auth: %{scopes: scopes}}
+      end
+
     %Frame{
       tools: Map.new(tools, &{&1.name, &1}),
       assigns: %{test_pid: self()},
-      task_id: Keyword.get(opts, :task_id)
+      task_id: Keyword.get(opts, :task_id),
+      context: context,
+      pagination_limit: Keyword.get(opts, :pagination_limit)
     }
   end
 
@@ -165,6 +174,104 @@ defmodule JidoClaw.Core.AnubisToolsHandlerPatchTest do
       assert error.data.message =~ ~s(taskSupport == "forbidden")
 
       refute_received {:called, _, _}
+    end
+  end
+
+  describe "check_scopes/2 in handle_call/3 (ported from 1.6.0 OAuth 2.1)" do
+    test "tool with non-empty scopes and frame missing scopes returns insufficient_scope" do
+      tool = %Tool{
+        name: "scoped_tool",
+        task_support: :optional,
+        scopes: ["admin"],
+        validate_input: fn params -> {:ok, params} end
+      }
+
+      # Default frame: %Context{auth: nil} — Frame.scopes/1 returns [].
+      frame = seed_frame([tool])
+
+      request = %{
+        "params" => %{
+          "name" => "scoped_tool",
+          "arguments" => %{}
+        }
+      }
+
+      assert {:error, %Error{} = error, ^frame} =
+               ToolsHandler.handle_call(request, frame, StubServer)
+
+      assert error.reason == :execution_error
+      assert error.message == "insufficient_scope"
+      assert %{required: ["admin"], granted: []} = error.data
+
+      # Scope check happens before validate_params/forward_to.
+      refute_received {:called, _, _}
+    end
+
+    test "tool with non-empty scopes and frame holding all required scopes dispatches" do
+      tool = %Tool{
+        name: "scoped_tool",
+        task_support: :optional,
+        scopes: ["admin"],
+        validate_input: fn params -> {:ok, params} end
+      }
+
+      frame = seed_frame([tool], scopes: ["admin"])
+
+      request = %{
+        "params" => %{
+          "name" => "scoped_tool",
+          "arguments" => %{}
+        }
+      }
+
+      assert {:reply, _payload, _frame} =
+               ToolsHandler.handle_call(request, frame, StubServer)
+
+      # check_scopes → check_task_policy → validate → forward all passed.
+      assert_received {:called, "scoped_tool", _}
+    end
+  end
+
+  describe "visible?/2 in handle_list/3 (ported from 1.6.0 OAuth 2.1)" do
+    test "filters tools the frame lacks scopes for" do
+      public_tool = %Tool{name: "public_tool", scopes: []}
+      admin_tool = %Tool{name: "admin_tool", scopes: ["admin"]}
+
+      frame = seed_frame([public_tool, admin_tool])
+
+      assert {:reply, %{"tools" => tools}, ^frame} =
+               ToolsHandler.handle_list(%{}, frame, StubServer)
+
+      assert Enum.map(tools, & &1.name) == ["public_tool"]
+    end
+
+    test "returns all tools when frame has every required scope" do
+      public_tool = %Tool{name: "public_tool", scopes: []}
+      admin_tool = %Tool{name: "admin_tool", scopes: ["admin"]}
+
+      frame = seed_frame([public_tool, admin_tool], scopes: ["admin"])
+
+      assert {:reply, %{"tools" => tools}, ^frame} =
+               ToolsHandler.handle_list(%{}, frame, StubServer)
+
+      # get_server_tools sorts alphabetically.
+      assert Enum.map(tools, & &1.name) == ["admin_tool", "public_tool"]
+    end
+
+    test "filter runs before pagination so hidden tools don't eat the limit slot" do
+      # Handlers.get_server_tools/2 sorts tools alphabetically, so
+      # "a_admin_tool" precedes "z_public_tool". If pagination ran before
+      # the visibility filter, the limit-1 cut would take "a_admin_tool"
+      # and the filter would then strip it, leaving an empty result.
+      admin_tool = %Tool{name: "a_admin_tool", scopes: ["admin"]}
+      public_tool = %Tool{name: "z_public_tool", scopes: []}
+
+      frame = seed_frame([admin_tool, public_tool], pagination_limit: 1)
+
+      assert {:reply, %{"tools" => tools}, ^frame} =
+               ToolsHandler.handle_list(%{}, frame, StubServer)
+
+      assert Enum.map(tools, & &1.name) == ["z_public_tool"]
     end
   end
 end
