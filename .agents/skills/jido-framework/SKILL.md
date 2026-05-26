@@ -11,6 +11,7 @@ metadata:
 - [jido](references/jido.md)
 - [jido_action](references/jido_action.md)
 - [jido_ai](references/jido_ai.md)
+- [jido_chat](references/jido_chat.md)
 - [jido_composer](references/jido_composer.md)
 - [jido_messaging](references/jido_messaging.md)
 - [jido_shell](references/jido_shell.md)
@@ -20,7 +21,7 @@ metadata:
 ## Searching Documentation
 
 ```sh
-mix usage_rules.search_docs "search term" -p jido -p jido_action -p jido_ai -p jido_browser -p jido_composer -p jido_mcp -p jido_messaging -p jido_shell -p jido_signal -p jido_skill -p jido_vfs
+mix usage_rules.search_docs "search term" -p jido -p jido_action -p jido_ai -p jido_browser -p jido_chat -p jido_composer -p jido_mcp -p jido_messaging -p jido_shell -p jido_signal -p jido_skill -p jido_vfs
 ```
 
 ## Available Mix Tasks
