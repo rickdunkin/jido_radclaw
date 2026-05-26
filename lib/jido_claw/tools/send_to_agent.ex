@@ -36,6 +36,8 @@ defmodule JidoClaw.Tools.SendToAgent do
 
         request_id = JidoClaw.register_child_correlation(child_tool_context)
 
+        agent_tracker().update_request_id(params.agent_id, request_id)
+
         spawn(fn ->
           try do
             template.module.ask_sync(pid, params.message,

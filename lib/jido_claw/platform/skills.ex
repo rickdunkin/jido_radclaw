@@ -192,7 +192,7 @@ defmodule JidoClaw.Skills do
       - name: verify
         role: evaluator
         template: verifier
-        task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. End with VERDICT: PASS or VERDICT: FAIL with specific issues to fix."
+        task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. Return a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning listing any specific issues to fix."
         consumes: [implement]
     synthesis: "Present the final implementation after iterative refinement with verification results"
     """,
@@ -224,12 +224,13 @@ defmodule JidoClaw.Skills do
              - code: the implementation
              - specification: the original task description
              - evidence: your collected findings from steps 1-6
-          If ALL of the following hold, emit VERDICT: PASS:
+          Return a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and reasoning.
+          The verdict should be `pass` if ALL of the following hold:
             - mix compile passes
             - mix test passes
             - mix format --check-formatted passes
             - certificate confidence >= 0.8 and verdict PASS
-          Otherwise emit VERDICT: FAIL with specific issues.
+          Otherwise return `fail` with reasoning listing specific issues.
         consumes: [implement]
     synthesis: "Present the final implementation with verification certificate"
     """,

@@ -39,7 +39,8 @@ defmodule JidoClaw.Agent.Templates do
     },
     "verifier" => %{
       module: JidoClaw.Agent.Workers.Verifier,
-      description: "Interactive verification — reads code, runs tests/commands, emits VERDICT",
+      description:
+        "Interactive verification — reads code, runs tests/commands. Returns a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning.",
       model: :fast
     }
   }

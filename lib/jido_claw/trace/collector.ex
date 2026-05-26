@@ -87,7 +87,11 @@ defmodule JidoClaw.Trace.Collector do
     [:jido, :ai, :tool, :timeout],
     [:jido, :ai, :tool, :execute, :start],
     [:jido, :ai, :tool, :execute, :stop],
-    [:jido, :ai, :tool, :execute, :exception]
+    [:jido, :ai, :tool, :execute, :exception],
+    [:jido, :ai, :output, :start],
+    [:jido, :ai, :output, :validated],
+    [:jido, :ai, :output, :repair],
+    [:jido, :ai, :output, :error]
   ]
 
   @jido_claw_events [
@@ -358,6 +362,8 @@ defmodule JidoClaw.Trace.Collector do
   defp event_shape([:jido, :ai, :tool, :execute, event], _m),
     do: {:ok, :jido_ai, :tool, event}
 
+  defp event_shape([:jido, :ai, :output, event], _m), do: {:ok, :jido_ai, :output, event}
+
   defp event_shape([:jido_claw, category, :event], metadata) when is_atom(category) do
     {:ok, :jido_claw, category, atom_value(metadata, :event) || :event}
   end
@@ -436,11 +442,13 @@ defmodule JidoClaw.Trace.Collector do
   defp event_status(_category, event, _m) when event in [:start, :started], do: :running
 
   defp event_status(_category, event, _m)
-       when event in [:stop, :complete, :completed, :ok, :allow],
+       when event in [:stop, :complete, :completed, :ok, :allow, :validated],
        do: :completed
 
   defp event_status(:compaction, event, _m) when event in [:summarized, :skipped],
     do: :completed
+
+  defp event_status(:output, :repair, _m), do: :running
 
   defp event_status(_category, event, _m) when event in [:error, :failed, :timeout, :block],
     do: :failed

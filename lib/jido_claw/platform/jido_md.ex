@@ -103,7 +103,7 @@ defmodule JidoClaw.JidoMd do
     ### `verifier`
     - **Tools**: read_file, search_code, git_diff, git_status, run_command, list_directory
     - **Max iterations**: 20
-    - **Use for**: Interactive verification — running tests, starting servers, hitting endpoints, checking build output. Emits VERDICT: PASS or VERDICT: FAIL.
+    - **Use for**: Interactive verification — running tests, starting servers, hitting endpoints, checking build output. Returns a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning.
 
     ---
 

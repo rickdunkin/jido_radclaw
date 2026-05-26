@@ -25,11 +25,12 @@ steps:
          - code: the implementation
          - specification: the original task description
          - evidence: your collected findings from steps 1-6
-      If ALL of the following hold, emit VERDICT: PASS:
+      Return a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and reasoning.
+      The verdict should be `pass` if ALL of the following hold:
         - mix compile passes
         - mix test passes
         - mix format --check-formatted passes
         - certificate confidence >= 0.8 and verdict PASS
-      Otherwise emit VERDICT: FAIL with specific issues.
+      Otherwise return `fail` with reasoning listing specific issues.
     consumes: [implement]
 synthesis: "Present the final implementation with verification certificate"

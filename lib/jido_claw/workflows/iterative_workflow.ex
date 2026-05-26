@@ -3,9 +3,12 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   Execute skills as generator-evaluator loops with iterative refinement.
 
   Steps are assigned roles (`generator` and `evaluator`). The generator
-  produces output, the evaluator reviews it and emits a verdict
-  (`VERDICT: PASS` or `VERDICT: FAIL`). The loop continues until the
-  evaluator passes or `max_iterations` is reached.
+  produces output, the evaluator reviews it and returns a verdict
+  (`:pass` / `:fail`). The Verifier worker emits this via typed output
+  (`%{verdict: :pass | :fail, confidence: ..., reasoning: ...}`); older
+  text-mode evaluators that emit `VERDICT: PASS` / `VERDICT: FAIL` are
+  still recognised. The loop continues until the evaluator passes or
+  `max_iterations` is reached.
 
   ## YAML format
 
@@ -22,7 +25,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
         - name: evaluate
           role: evaluator
           template: verifier
-          task: "Verify: run tests, review code. End with VERDICT: PASS or VERDICT: FAIL."
+          task: "Verify: run tests, review code. Return a structured verdict (`pass`/`fail`), confidence, and reasoning."
           consumes: [implement]
       synthesis: "Present final implementation"
   """
@@ -128,11 +131,22 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
   end
 
   @doc """
-  Parse a verdict from evaluator output text.
+  Parse a verdict from evaluator output.
 
-  Returns `:pass`, `:fail`, or `:fail` (conservative default when no match).
+  Accepts either a typed map (`%{verdict: :pass | :fail | atom}`, the
+  shape Verifier emits via Jido.AI structured output) or the legacy
+  free-form text containing `VERDICT: PASS` / `VERDICT: FAIL`.
+
+  Returns `:pass` or `:fail`. Falls through to `:fail` on any
+  unrecognised input — conservative because a missing/garbled verdict
+  should not be treated as success.
   """
-  @spec parse_verdict(String.t()) :: :pass | :fail
+  @spec parse_verdict(map() | String.t() | nil) :: :pass | :fail
+  def parse_verdict(%{verdict: :pass}), do: :pass
+  def parse_verdict(%{verdict: :fail}), do: :fail
+  def parse_verdict(%{"verdict" => "pass"}), do: :pass
+  def parse_verdict(%{"verdict" => "fail"}), do: :fail
+
   def parse_verdict(text) when is_binary(text) do
     # Find the LAST VERDICT: token — earlier mentions may be instructions
     # like "To get VERDICT: PASS, fix X" followed by "VERDICT: FAIL".
@@ -241,7 +255,7 @@ defmodule JidoClaw.Workflows.IterativeWorkflow do
 
         case StepAction.run(eval_params, scope_context) do
           {:ok, %StepResult{} = eval_result} ->
-            case parse_verdict(eval_result.result) do
+            case parse_verdict(eval_result.typed_output || eval_result.result) do
               :pass ->
                 IO.puts("  \e[32m  ✓ VERDICT: PASS (iteration #{iteration})\e[0m")
                 {:ok, [gen_result, eval_result]}

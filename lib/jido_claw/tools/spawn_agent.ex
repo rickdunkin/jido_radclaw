@@ -68,23 +68,25 @@ defmodule JidoClaw.Tools.SpawnAgent do
   end
 
   defp register_spawned_agent(pid, template, template_name, task, tag, context) do
-    case agent_tracker().register(tag, pid, template_name, task) do
+    child_tool_context =
+      JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
+      |> Map.put(:swarm_depth, swarm_depth(context) + 1)
+
+    request_id = JidoClaw.register_child_correlation(child_tool_context)
+
+    case agent_tracker().register(tag, pid, template_name, task, request_id: request_id) do
       :ok ->
-        child_tool_context =
-          JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
-          |> Map.put(:swarm_depth, swarm_depth(context) + 1)
-
-        request_id = JidoClaw.register_child_correlation(child_tool_context)
-
         spawn(fn ->
           try do
-            template.module.ask_sync(pid, task,
-              timeout: 120_000,
-              request_id: request_id,
-              tool_context: child_tool_context
-            )
-
-            agent_tracker().mark_complete(tag, :done)
+            case template.module.ask_sync(pid, task,
+                   timeout: 120_000,
+                   request_id: request_id,
+                   tool_context: child_tool_context
+                 ) do
+              {:ok, _result} -> agent_tracker().mark_complete(tag, :done)
+              {:error, _reason} -> agent_tracker().mark_complete(tag, :error)
+              _other -> agent_tracker().mark_complete(tag, :done)
+            end
           rescue
             _ -> agent_tracker().mark_complete(tag, :error)
           catch

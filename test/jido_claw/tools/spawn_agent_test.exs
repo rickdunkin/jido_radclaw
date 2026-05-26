@@ -105,7 +105,15 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert_receive {:ask_sync, ^pid, "do work", opts}
     assert opts[:tool_context].agent_id == agent_id
 
-    assert %{id: ^agent_id, template: "coder"} = AgentTracker.get_agent(agent_id)
+    # The tracker entry must carry the same request_id that ask_sync was
+    # called with — registration happens AFTER register_child_correlation/1,
+    # so get_agent_result can read request-scoped state.
+    request_id = opts[:request_id]
+    assert is_binary(request_id)
+
+    assert %{id: ^agent_id, template: "coder", request_id: ^request_id} =
+             AgentTracker.get_agent(agent_id)
+
     Process.exit(pid, :kill)
   end
 
@@ -153,6 +161,41 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert %{pid: ^pid, task: "first"} = AgentTracker.get_agent("dup")
     Process.exit(pid, :kill)
     Process.exit(other_pid, :kill)
+  end
+
+  test "AgentTracker.register/5 stores request_id when provided" do
+    pid = spawn(fn -> Process.sleep(:infinity) end)
+    request_id = "req-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             AgentTracker.register("with-rid", pid, "coder", "do thing", request_id: request_id)
+
+    assert %{request_id: ^request_id} = AgentTracker.get_agent("with-rid")
+    Process.exit(pid, :kill)
+  end
+
+  test "AgentTracker.register/4 still works (backwards compat — request_id nil)" do
+    pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    assert :ok = AgentTracker.register("no-rid", pid, "coder", "do thing")
+    assert %{request_id: nil} = AgentTracker.get_agent("no-rid")
+    Process.exit(pid, :kill)
+  end
+
+  test "AgentTracker.update_request_id/2 overwrites the stored request_id" do
+    pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    assert :ok =
+             AgentTracker.register("upd-rid", pid, "coder", "task", request_id: "rid-1")
+
+    assert :ok = AgentTracker.update_request_id("upd-rid", "rid-2")
+    assert %{request_id: "rid-2"} = AgentTracker.get_agent("upd-rid")
+    Process.exit(pid, :kill)
+  end
+
+  test "AgentTracker.update_request_id/2 is a no-op for unknown agents" do
+    assert :ok = AgentTracker.update_request_id("never-registered", "rid-x")
+    assert AgentTracker.get_agent("never-registered") == nil
   end
 
   defp flush_tracker do

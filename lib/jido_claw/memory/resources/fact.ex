@@ -576,10 +576,9 @@ defmodule JidoClaw.Memory.Fact do
   defmodule Changes.ValidateCrossTenant do
     @moduledoc false
     use Ash.Resource.Change
-    use JidoClaw.NoClone
 
     @impl true
-    @no_clone true
+    # ex_dna:disable-for-next-line
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
@@ -624,13 +623,12 @@ defmodule JidoClaw.Memory.Fact do
     scope (no workspace ancestor) default to `:disabled`.
     """
     use Ash.Resource.Change
-    use JidoClaw.NoClone
 
     alias JidoClaw.Authorization.Actor
     alias JidoClaw.Workspaces.Workspace
 
     @impl true
-    @no_clone true
+    # ex_dna:disable-for-next-line
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 

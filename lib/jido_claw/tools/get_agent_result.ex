@@ -3,13 +3,14 @@ defmodule JidoClaw.Tools.GetAgentResult do
   use JidoClaw.Tools.Action,
     name: "get_agent_result",
     description:
-      "Wait for a spawned child agent to finish its task and return the result. Use this after spawn_agent to collect the output.",
+      "Wait for a spawned child agent to finish its current task and return the result. Use this after spawn_agent (or send_to_agent for a follow-up) to collect the output.",
     category: "swarm",
     tags: ["swarm", "read"],
     output_schema: [
       agent_id: [type: :string, required: true],
       status: [type: :string, required: true],
-      result: [type: :string],
+      result: [type: {:or, [:string, :map]}],
+      output_meta: [type: {:or, [:map, nil]}],
       message: [type: :string],
       error: [type: :string]
     ],
@@ -18,6 +19,7 @@ defmodule JidoClaw.Tools.GetAgentResult do
       timeout: [type: :integer, required: false, doc: "Max wait time in ms (default: 60000)"]
     ]
 
+  alias JidoClaw.AgentTracker
   alias JidoClaw.Error
   alias JidoClaw.Reasoning.Output
 
@@ -31,74 +33,133 @@ defmodule JidoClaw.Tools.GetAgentResult do
         {:error, Error.not_found(:agent, agent_id)}
 
       pid ->
-        try do
-          case await_module().completion(pid, timeout) do
-            {:ok, %{status: :completed} = result} ->
-              {:ok,
-               %{
-                 agent_id: agent_id,
-                 status: "completed",
-                 result: Output.extract_result(result)
-               }}
+        request_id = lookup_request_id(agent_id)
+        await_and_handle(pid, agent_id, timeout, request_id)
+    end
+  end
 
-            {:ok, %{status: :failed} = result} ->
-              {:error,
-               Error.execution_error("Agent failed.",
-                 phase: :await,
-                 details: %{
-                   agent_id: agent_id,
-                   status: "failed",
-                   code: :failed,
-                   error: failure_reason(result)
-                 }
-               )}
+  defp await_and_handle(pid, agent_id, timeout, request_id) do
+    result = await(pid, timeout, request_id)
+    handle_result(result, agent_id, timeout, request_id)
+  rescue
+    e ->
+      {:error,
+       Error.execution_error(Exception.message(e),
+         phase: :await,
+         details: %{
+           agent_id: agent_id,
+           status: "error",
+           code: :error,
+           error: Exception.message(e)
+         }
+       )}
+  end
 
-            {:ok, result} ->
-              {:ok,
-               %{
-                 agent_id: agent_id,
-                 status: "completed",
-                 result: Output.extract_result(result)
-               }}
+  defp await(pid, timeout, nil), do: await_module().completion(pid, timeout)
 
-            {:error, :timeout} ->
-              {:error,
-               Error.execution_error(
-                 "Agent hasn't finished yet. Try again later or increase timeout.",
-                 phase: :timeout,
-                 details: %{
-                   agent_id: agent_id,
-                   status: "still_running",
-                   code: :still_running,
-                   timeout: timeout
-                 }
-               )}
+  defp await(pid, timeout, request_id) do
+    await_module().completion(pid, timeout,
+      status_path: [:requests, request_id, :status],
+      result_path: [:requests, request_id],
+      error_path: [:requests, request_id, :error]
+    )
+  end
 
-            {:error, reason} ->
-              {:error,
-               Error.execution_error("Agent failed.",
-                 phase: :await,
-                 details: %{
-                   agent_id: agent_id,
-                   status: "failed",
-                   code: :failed,
-                   error: inspect(reason)
-                 }
-               )}
-          end
-        rescue
-          e ->
-            {:error,
-             Error.execution_error(Exception.message(e),
-               phase: :await,
-               details: %{
-                 agent_id: agent_id,
-                 status: "error",
-                 code: :error,
-                 error: Exception.message(e)
-               }
-             )}
-        end
+  defp handle_result({:ok, %{status: :completed, result: request}}, agent_id, _t, request_id)
+       when not is_nil(request_id) do
+    typed = Output.typed_request_output(request)
+    output_meta = Output.request_meta_output(request)
+
+    response =
+      %{
+        agent_id: agent_id,
+        status: "completed",
+        result: typed || Output.extract_result(Output.request_result(request))
+      }
+      |> maybe_put(:output_meta, output_meta)
+
+    {:ok, response}
+  end
+
+  defp handle_result({:ok, %{status: :failed, result: reason}}, agent_id, _t, request_id)
+       when not is_nil(request_id) do
+    {:error,
+     Error.execution_error("Agent failed.",
+       phase: :await,
+       details: %{
+         agent_id: agent_id,
+         status: "failed",
+         code: :failed,
+         error: inspect(reason)
+       }
+     )}
+  end
+
+  defp handle_result({:ok, %{status: :completed} = result}, agent_id, _t, _request_id) do
+    {:ok,
+     %{
+       agent_id: agent_id,
+       status: "completed",
+       result: Output.extract_result(result)
+     }}
+  end
+
+  defp handle_result({:ok, %{status: :failed} = result}, agent_id, _t, _request_id) do
+    {:error,
+     Error.execution_error("Agent failed.",
+       phase: :await,
+       details: %{
+         agent_id: agent_id,
+         status: "failed",
+         code: :failed,
+         error: failure_reason(result)
+       }
+     )}
+  end
+
+  defp handle_result({:ok, result}, agent_id, _t, _request_id) do
+    {:ok,
+     %{
+       agent_id: agent_id,
+       status: "completed",
+       result: Output.extract_result(result)
+     }}
+  end
+
+  defp handle_result({:error, :timeout}, agent_id, timeout, _request_id) do
+    {:error,
+     Error.execution_error(
+       "Agent hasn't finished yet. Try again later or increase timeout.",
+       phase: :timeout,
+       details: %{
+         agent_id: agent_id,
+         status: "still_running",
+         code: :still_running,
+         timeout: timeout
+       }
+     )}
+  end
+
+  defp handle_result({:error, reason}, agent_id, _t, _request_id) do
+    {:error,
+     Error.execution_error("Agent failed.",
+       phase: :await,
+       details: %{
+         agent_id: agent_id,
+         status: "failed",
+         code: :failed,
+         error: inspect(reason)
+       }
+     )}
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp lookup_request_id(agent_id) do
+    case agent_tracker().get_agent(agent_id) do
+      %{request_id: request_id} when is_binary(request_id) -> request_id
+      _ -> nil
     end
   end
 
@@ -109,6 +170,10 @@ defmodule JidoClaw.Tools.GetAgentResult do
 
   defp jido_runtime do
     Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp agent_tracker do
+    Application.get_env(:jido_claw, :agent_tracker, AgentTracker)
   end
 
   defp await_module do

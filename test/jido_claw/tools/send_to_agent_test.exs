@@ -15,6 +15,28 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
     def get_agent("untracked_123"), do: nil
+
+    # send_to_agent now calls update_request_id/2 to overwrite the
+    # tracked request_id after each follow-up turn. Default to a no-op
+    # for the existing assertions that don't care about the call —
+    # CapturingTracker (below) exercises the wired call.
+    def update_request_id(_agent_id, _request_id), do: :ok
+  end
+
+  defmodule CapturingTracker do
+    @moduledoc false
+
+    def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
+    def get_agent("untracked_123"), do: nil
+
+    def update_request_id(agent_id, request_id) do
+      send(
+        Application.fetch_env!(:jido_claw, :send_to_agent_test_pid),
+        {:update_request_id, agent_id, request_id}
+      )
+
+      :ok
+    end
   end
 
   defmodule FakeTemplates do
@@ -88,6 +110,22 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   test "returns error when the agent process is missing" do
     assert {:error, %{message: "Agent 'missing' not found."}} =
              SendToAgent.run(%{agent_id: "missing", message: "hello"}, %{})
+  end
+
+  test "updates AgentTracker with the follow-up request_id" do
+    Application.put_env(:jido_claw, :agent_tracker, CapturingTracker)
+
+    assert {:ok, %{status: "message_sent"}} =
+             SendToAgent.run(
+               %{agent_id: "docs_writer_123", message: "follow-up"},
+               %{tool_context: %{agent_id: "main"}}
+             )
+
+    assert_receive {:ask_sync, FakeWorker, _pid, "follow-up", opts}
+    request_id = opts[:request_id]
+    assert is_binary(request_id)
+
+    assert_receive {:update_request_id, "docs_writer_123", ^request_id}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)

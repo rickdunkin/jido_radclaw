@@ -35,7 +35,6 @@ defmodule JidoClaw.Forge.Runners.Codex do
   """
 
   @behaviour JidoClaw.Forge.Runner
-  use JidoClaw.NoClone
   alias JidoClaw.Forge.{Runner, Sandbox}
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
@@ -305,7 +304,7 @@ defmodule JidoClaw.Forge.Runners.Codex do
 
   defp handle_event(_, events, terminal, turns), do: {events, terminal, turns}
 
-  @no_clone true
+  # ex_dna:disable-for-next-line
   defp sync_file(client, source, dest) do
     case File.read(source) do
       {:ok, content} ->

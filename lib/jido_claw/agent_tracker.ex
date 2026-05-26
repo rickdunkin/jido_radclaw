@@ -29,6 +29,7 @@ defmodule JidoClaw.AgentTracker do
       :finished_at,
       :error,
       :last_tool,
+      :request_id,
       status: :running,
       tokens: 0,
       tool_calls: 0,
@@ -44,9 +45,19 @@ defmodule JidoClaw.AgentTracker do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Register an agent for tracking. Monitors the pid for crash detection."
-  def register(id, pid, template, task \\ nil) do
-    GenServer.call(__MODULE__, {:register, id, pid, template, task})
+  @doc """
+  Register an agent for tracking. Monitors the pid for crash detection.
+
+  Accepts an optional keyword list:
+
+    * `:request_id` — initial Jido.AI request id for this agent. Stored
+      so request-scoped `await_completion` callers (Tools.GetAgentResult)
+      can read the request map at `state.requests[request_id]` instead of
+      falling back to `:last_answer`.
+  """
+  def register(id, pid, template, task \\ nil, opts \\ []) do
+    request_id = Keyword.get(opts, :request_id)
+    GenServer.call(__MODULE__, {:register, id, pid, template, task, request_id})
   end
 
   @doc "Record a tool call for an agent."
@@ -62,6 +73,16 @@ defmodule JidoClaw.AgentTracker do
   @doc "Mark an agent as completed."
   def mark_complete(id, status \\ :done) when status in [:done, :error] do
     GenServer.cast(__MODULE__, {:mark_complete, id, status})
+  end
+
+  @doc """
+  Update the tracked `:request_id` for an agent. Called by `send_to_agent`
+  after each follow-up turn so `get_agent_result` reads the latest request's
+  typed output, not the initial spawn's. No-op if the agent is not tracked.
+  """
+  @spec update_request_id(String.t(), String.t()) :: :ok
+  def update_request_id(id, request_id) when is_binary(id) and is_binary(request_id) do
+    GenServer.call(__MODULE__, {:update_request_id, id, request_id})
   end
 
   @doc "Return the full tracker state (agents map + order)."
@@ -148,7 +169,7 @@ defmodule JidoClaw.AgentTracker do
   def handle_telemetry_event(_, _, _, _), do: :ok
 
   @impl true
-  def handle_call({:register, id, pid, template, task}, _from, state) do
+  def handle_call({:register, id, pid, template, task, request_id}, _from, state) do
     if Map.has_key?(state.agents, id) do
       {:reply, {:error, :agent_id_taken}, state}
     else
@@ -157,6 +178,7 @@ defmodule JidoClaw.AgentTracker do
         pid: pid,
         template: template,
         task: task,
+        request_id: request_id,
         started_at: System.monotonic_time(:millisecond)
       }
 
@@ -189,6 +211,10 @@ defmodule JidoClaw.AgentTracker do
       |> Enum.count(fn {id, _} -> id != "main" end)
 
     {:reply, count, state}
+  end
+
+  def handle_call({:update_request_id, id, rid}, _from, state) do
+    {:reply, :ok, update_agent(state, id, fn entry -> %{entry | request_id: rid} end)}
   end
 
   @impl true

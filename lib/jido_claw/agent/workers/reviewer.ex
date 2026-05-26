@@ -3,7 +3,7 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_reviewer",
     description:
-      "Reviews code changes for bugs, style issues, and correctness. Read-only access with git diff capabilities.",
+      "Reviews code changes for bugs, style issues, and correctness. Read-only access with git diff capabilities. Return a structured review (`overall`, short `summary`, and a list of `findings` with `severity` info/warning/error and `description`).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.GitDiff,
@@ -14,5 +14,24 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
     max_iterations: 15,
     streaming: false,
     tool_timeout_ms: 30_000,
-    compaction: [mode: :off]
+    compaction: [mode: :off],
+    output: %{
+      schema:
+        Zoi.object(%{
+          overall: Zoi.enum([:approve, :request_changes, :comment]),
+          summary: Zoi.string(),
+          findings:
+            Zoi.array(
+              Zoi.object(
+                %{
+                  severity: Zoi.enum(info: "info", warning: "warning", error: "error"),
+                  description: Zoi.string()
+                },
+                coerce: true
+              )
+            )
+        }),
+      retries: 1,
+      on_validation_error: :repair
+    }
 end

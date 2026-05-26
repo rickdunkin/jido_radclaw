@@ -52,7 +52,6 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   """
 
   use GenServer
-  use JidoClaw.NoClone
   require Logger
 
   alias JidoClaw.Reasoning.{Complexity, TaskType, YamlStore}
@@ -175,7 +174,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
 
   defp strategies_dir(project_dir), do: Path.join([project_dir, ".jido", "strategies"])
 
-  @no_clone true
+  # ex_dna:disable-for-next-line
   defp load_from_disk(project_dir) do
     dir = strategies_dir(project_dir)
 

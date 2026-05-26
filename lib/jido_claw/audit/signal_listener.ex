@@ -15,7 +15,6 @@ defmodule JidoClaw.Audit.SignalListener do
   """
 
   use GenServer
-  use JidoClaw.NoClone
   require Logger
 
   alias Jido.Signal.Bus
@@ -126,7 +125,7 @@ defmodule JidoClaw.Audit.SignalListener do
     end
   end
 
-  @no_clone true
+  # ex_dna:disable-for-next-line
   defp resolve_scope(request_id) do
     case Cache.lookup(request_id) do
       {:ok, scope} ->

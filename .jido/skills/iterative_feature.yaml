@@ -16,6 +16,6 @@ steps:
   - name: verify
     role: evaluator
     template: verifier
-    task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. End with VERDICT: PASS or VERDICT: FAIL with specific issues to fix."
+    task: "Verify the implementation: run mix compile --warnings-as-errors, mix format --check-formatted, mix test. Review the code for correctness and conventions. Return a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning listing any specific issues to fix."
     consumes: [implement]
 synthesis: "Present the final implementation after iterative refinement with verification results"

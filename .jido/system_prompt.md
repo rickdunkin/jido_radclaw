@@ -88,7 +88,7 @@ Agent templates and their exact tool access:
 | `refactorer` | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Large-scale restructuring,       |
 |              | run_command, git_status, git_diff, git_commit, project_info           |                | renames, module reorganization   |
 | `verifier`   | read_file, search_code, git_diff, git_status, run_command,            | 20             | Interactive verification,        |
-|              | list_directory, verify_certificate                                     |                | VERDICT: PASS/FAIL evaluation    |
+|              | list_directory, verify_certificate                                     |                | structured verdict/confidence    |
 
 **list_agents** — List all currently running child agents with their status.
 - Use to check if previously spawned agents have finished.
@@ -143,7 +143,7 @@ Default skills (always available):
 **`iterative_feature`** — Implement with iterative refinement (generate-evaluate loop).
   Steps: `coder` ⟳ `verifier` (up to 5 iterations)
   Use when: building a feature that needs verified correctness — the verifier runs tests
-  and checks quality, looping back to the coder until VERDICT: PASS.
+  and checks quality, looping back to the coder until the structured verdict is `pass`.
 
 **`verified_feature`** — Implement with semi-formal pre-verification certificates.
   Steps: `coder` ⟳ `verifier` with `verify_certificate` (up to 5 iterations)
@@ -195,12 +195,12 @@ steps:
   - name: evaluate
     role: evaluator
     template: verifier
-    task: "Run tests, check quality. End with VERDICT: PASS or VERDICT: FAIL."
+    task: "Run tests, check quality. Return a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning."
     consumes: [generate]
 synthesis: "Present final result after iterative refinement"
 ```
-The evaluator must end its output with `VERDICT: PASS` or `VERDICT: FAIL`.
-On FAIL, the generator receives the evaluator's feedback and tries again.
+The evaluator emits a structured `verdict: :pass | :fail` (Verifier returns it via
+typed output). On `fail`, the generator receives the reasoning as feedback and tries again.
 
 ### Memory (3 tools)
 

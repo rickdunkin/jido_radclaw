@@ -35,7 +35,6 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   """
 
   use GenServer
-  use JidoClaw.NoClone
   require Logger
 
   alias JidoClaw.Reasoning.{PipelineValidator, YamlStore}
@@ -131,7 +130,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
 
   defp pipelines_dir(project_dir), do: Path.join([project_dir, ".jido", "pipelines"])
 
-  @no_clone true
+  # ex_dna:disable-for-next-line
   defp load_from_disk(project_dir) do
     dir = pipelines_dir(project_dir)
 

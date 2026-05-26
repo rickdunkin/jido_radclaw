@@ -19,19 +19,49 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
         result -> result
       end
     end
+
+    def completion(_pid, _timeout, _opts) do
+      # 3-arity branch is used when the tracker carries a request_id and
+      # request-scoped paths are passed in. Drive it from the same
+      # process-dictionary slot the 2-arity stub uses so tests stay
+      # backwards-compatible while opting in to the typed-output path.
+      case Process.get(:fake_await_result_3) do
+        nil ->
+          case Process.get(:fake_await_result) do
+            {:raise, exception} -> raise exception
+            result -> result
+          end
+
+        {:raise, exception} ->
+          raise exception
+
+        result ->
+          result
+      end
+    end
+  end
+
+  defmodule FakeTracker do
+    @moduledoc false
+    def get_agent(_agent_id), do: Process.get(:fake_tracker_entry)
   end
 
   setup do
     original_jido = Application.get_env(:jido_claw, :jido_runtime)
     original_await = Application.get_env(:jido_claw, :jido_await)
+    original_tracker = Application.get_env(:jido_claw, :agent_tracker)
 
     Application.put_env(:jido_claw, :jido_runtime, FakeJido)
     Application.put_env(:jido_claw, :jido_await, FakeAwait)
+    Application.put_env(:jido_claw, :agent_tracker, FakeTracker)
 
     on_exit(fn ->
       restore_env(:jido_runtime, original_jido)
       restore_env(:jido_await, original_await)
+      restore_env(:agent_tracker, original_tracker)
       Process.delete(:fake_await_result)
+      Process.delete(:fake_await_result_3)
+      Process.delete(:fake_tracker_entry)
     end)
 
     :ok
@@ -99,6 +129,79 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
     assert message =~ "not found"
     assert details.field == :agent
     assert details.value == "missing"
+  end
+
+  describe "request-scoped path (tracker carries :request_id)" do
+    test "surfaces typed result + meta from completed request map" do
+      request_id = "req-typed"
+
+      typed = %{verdict: :pass, confidence: :high, reasoning: "all green"}
+      meta = %{status: :validated, schema_kind: :zoi, attempt: 0}
+
+      request = %{
+        status: :completed,
+        result: typed,
+        meta: %{output: meta}
+      }
+
+      Process.put(:fake_tracker_entry, %{request_id: request_id})
+
+      Process.put(
+        :fake_await_result_3,
+        {:ok, %{status: :completed, result: request}}
+      )
+
+      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+      assert response.agent_id == "agent-1"
+      assert response.status == "completed"
+      assert response.result == typed
+      assert response.output_meta == meta
+    end
+
+    test "falls back to text result when meta status is not :validated/:repaired" do
+      request_id = "req-untyped"
+
+      request = %{
+        status: :completed,
+        result: "free-form answer",
+        meta: %{}
+      }
+
+      Process.put(:fake_tracker_entry, %{request_id: request_id})
+
+      Process.put(
+        :fake_await_result_3,
+        {:ok, %{status: :completed, result: request}}
+      )
+
+      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+      assert response.result == "free-form answer"
+      refute Map.has_key?(response, :output_meta)
+    end
+
+    test "translates failed request to execution error" do
+      request_id = "req-failed"
+      Process.put(:fake_tracker_entry, %{request_id: request_id})
+
+      Process.put(
+        :fake_await_result_3,
+        {:ok, %{status: :failed, result: :crashed}}
+      )
+
+      assert {:error, %{code: :execution_error, details: details}} =
+               GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+
+      assert details.status == "failed"
+      assert details.error =~ ":crashed"
+    end
+
+    test "fallback path (no request_id) still works via 2-arity completion" do
+      # Tracker has no entry → no request_id → 2-arity completion path
+      Process.put(:fake_tracker_entry, nil)
+      Process.put(:fake_await_result, {:ok, %{status: :completed, last_answer: "legacy"}})
+
+      assert {:ok, %{result: "legacy"}} = GetAgentResult.run(%{agent_id: "legacy-agent"}, %{})
+    end
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)

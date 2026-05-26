@@ -45,6 +45,31 @@ defmodule JidoClaw.Workflows.IterativeWorkflowTest do
       text = "To get VERDICT: PASS, fix X. VERDICT: FAIL"
       assert IterativeWorkflow.parse_verdict(text) == :fail
     end
+
+    test "accepts typed pass map (Verifier structured output)" do
+      typed = %{verdict: :pass, confidence: :high, reasoning: "all good"}
+      assert IterativeWorkflow.parse_verdict(typed) == :pass
+    end
+
+    test "accepts typed fail map" do
+      typed = %{verdict: :fail, confidence: :low, reasoning: "tests failed"}
+      assert IterativeWorkflow.parse_verdict(typed) == :fail
+    end
+
+    test "accepts string-keyed typed pass map (JSON-decoded shape)" do
+      assert IterativeWorkflow.parse_verdict(%{"verdict" => "pass"}) == :pass
+      assert IterativeWorkflow.parse_verdict(%{"verdict" => "fail"}) == :fail
+    end
+
+    test "typed map wins over any text content (no regex fallback)" do
+      # If the map has :verdict, we use it directly — we don't scan strings.
+      assert IterativeWorkflow.parse_verdict(%{verdict: :pass}) == :pass
+    end
+
+    test "returns :fail for unknown atom verdicts" do
+      assert IterativeWorkflow.parse_verdict(%{verdict: :unknown}) == :fail
+      assert IterativeWorkflow.parse_verdict(%{verdict: :error}) == :fail
+    end
   end
 
   describe "extract_roles/1" do

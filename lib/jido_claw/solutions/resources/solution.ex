@@ -549,12 +549,11 @@ defmodule JidoClaw.Solutions.Solution do
   defmodule Changes.ResolveInitialEmbeddingStatus do
     @moduledoc false
     use Ash.Resource.Change
-    use JidoClaw.NoClone
 
     alias JidoClaw.Authorization.Actor
 
     @impl true
-    @no_clone true
+    # ex_dna:disable-for-next-line
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 

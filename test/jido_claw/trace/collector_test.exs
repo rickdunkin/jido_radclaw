@@ -71,6 +71,66 @@ defmodule JidoClaw.Trace.CollectorTest do
     end
   end
 
+  describe "native [:jido, :ai, :output, *] events" do
+    test "captures :start as running, :validated as completed" do
+      request_id = "out-req-#{System.unique_integer([:positive])}"
+
+      :telemetry.execute(
+        [:jido, :ai, :output, :start],
+        %{},
+        %{request_id: request_id, agent_id: "out-agent"}
+      )
+
+      :telemetry.execute(
+        [:jido, :ai, :output, :validated],
+        %{},
+        %{request_id: request_id, agent_id: "out-agent"}
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "out-agent"}, request_id)
+      output_events = Enum.filter(trace.events, &(&1.category == :output))
+      assert length(output_events) == 2
+
+      [start_event, validated_event] = Enum.sort_by(output_events, & &1.seq)
+      assert start_event.event == :start
+      assert start_event.status == :running
+
+      assert validated_event.event == :validated
+      assert validated_event.status == :completed
+    end
+
+    test "captures :repair as running, :error as failed" do
+      request_id = "out-fail-#{System.unique_integer([:positive])}"
+
+      :telemetry.execute(
+        [:jido, :ai, :output, :repair],
+        %{},
+        %{request_id: request_id, agent_id: "out-agent-2"}
+      )
+
+      :telemetry.execute(
+        [:jido, :ai, :output, :error],
+        %{},
+        %{request_id: request_id, agent_id: "out-agent-2"}
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "out-agent-2"}, request_id)
+      output_events = Enum.filter(trace.events, &(&1.category == :output))
+      assert length(output_events) == 2
+
+      [repair_event, error_event] = Enum.sort_by(output_events, & &1.seq)
+      assert repair_event.event == :repair
+      assert repair_event.status == :running
+
+      assert error_event.event == :error
+      assert error_event.status == :failed
+    end
+  end
+
   describe "crash recovery" do
     test "Collector survives a crash without duplicate telemetry handlers" do
       pid = Process.whereis(Collector)

@@ -13,8 +13,8 @@ defmodule JidoClaw.Workflows.StepActionTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
-  alias JidoClaw.Test.EchoStub
-  alias JidoClaw.Workflows.{SkillWorkflow, StepAction}
+  alias JidoClaw.Test.{EchoAskStub, EchoStub}
+  alias JidoClaw.Workflows.{SkillWorkflow, StepAction, StepResult}
 
   describe "resolve_scope/3 — :user_id" do
     test "carries :user_id from context.tool_context into the resolved scope" do
@@ -167,6 +167,113 @@ defmodule JidoClaw.Workflows.StepActionTest do
       # Cleanup so other tests don't inherit our entry.
       _ = RequestCorrelation.complete(request_id)
       Cache.delete(request_id)
+    end
+  end
+
+  # Covers the `run_step_async` branch — `EchoStub` only implements
+  # `ask_sync/3`, so without a stub that exports `ask/3` the
+  # `function_exported?` check at `run_step/7` always falls through to
+  # the sync path and the typed_output capture in `await_step/4` is
+  # untested.
+  describe "run_step_async/7 — typed_output capture" do
+    setup do
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "echo_async" => %{
+          module: EchoAskStub,
+          description: "test-only async echo template",
+          model: :fast,
+          max_iterations: 1
+        }
+      })
+
+      previous = Application.get_env(:jido_claw, :step_agent_server)
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :agent_templates_override)
+
+        case previous do
+          nil -> Application.delete_env(:jido_claw, :step_agent_server)
+          mod -> Application.put_env(:jido_claw, :step_agent_server, mod)
+        end
+      end)
+
+      :ok
+    end
+
+    test "populates typed_output when meta.output.status is :validated" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.ValidatedFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.typed_output == %{
+               verdict: :pass,
+               confidence: :high,
+               reasoning: "ok"
+             }
+
+      assert is_binary(step_result.result)
+      assert step_result.result != ""
+    end
+
+    test "leaves typed_output nil when meta.output.status is :error" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.ErrorFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.typed_output == nil
+      assert is_binary(step_result.result)
+    end
+  end
+
+  defmodule ValidatedFakeAgentServer do
+    @moduledoc false
+
+    # Mimics Jido.AgentServer.await_completion for a request that
+    # produced a Jido.AI structured output. Only the two shapes the
+    # test exercises are implemented; anything else raises so unexpected
+    # callers fail loudly rather than masking a regression.
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: %{verdict: :pass, confidence: :high, reasoning: "ok"},
+           meta: %{output: %{status: :validated, schema_kind: :map}}
+         }
+       }}
+    end
+  end
+
+  defmodule ErrorFakeAgentServer do
+    @moduledoc false
+
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: %{verdict: :pass, confidence: :high, reasoning: "ok"},
+           meta: %{output: %{status: :error, schema_kind: :map}}
+         }
+       }}
     end
   end
 end

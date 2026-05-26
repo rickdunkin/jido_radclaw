@@ -44,4 +44,49 @@ defmodule JidoClaw.Reasoning.Output do
   def extract_result(%{text: text}) when is_binary(text), do: text
   def extract_result(result) when is_binary(result), do: result
   def extract_result(result), do: inspect(result, limit: :infinity, pretty: true)
+
+  @doc """
+  Pull the `:result` field out of a request map (or a JSON-decoded
+  string-keyed equivalent), falling back to the whole value when no
+  `:result` key is present. Used when `Jido.AgentServer.await_completion`
+  is configured with `result_path: [:requests, request_id]` — the whole
+  request map comes back, and callers need to split `:result` from
+  `:meta`.
+  """
+  @spec request_result(map() | any()) :: any()
+  def request_result(%{result: result}), do: result
+  def request_result(%{"result" => result}), do: result
+  def request_result(other), do: other
+
+  @doc """
+  Pull `meta.output` (the `Jido.AI.Output.meta/4` bag) out of a request
+  map. Returns the meta map when present and shaped correctly, otherwise
+  `nil`. Accepts both atom- and string-keyed shapes.
+  """
+  @spec request_meta_output(map() | any()) :: map() | nil
+  def request_meta_output(%{meta: %{output: meta}}) when is_map(meta), do: meta
+  def request_meta_output(%{"meta" => %{"output" => meta}}) when is_map(meta), do: meta
+  def request_meta_output(_), do: nil
+
+  @doc """
+  Return the typed result from a request map when `meta.output[:status]`
+  is `:validated` or `:repaired` and `:result` is a map. Returns `nil`
+  otherwise — fall back to `extract_result/1` on the request's raw
+  result for legacy free-form text.
+  """
+  @spec typed_request_output(map() | any()) :: map() | nil
+  def typed_request_output(request) when is_map(request) do
+    case request_meta_output(request) do
+      %{status: status} when status in [:validated, :repaired] ->
+        case request_result(request) do
+          result when is_map(result) -> result
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def typed_request_output(_), do: nil
 end

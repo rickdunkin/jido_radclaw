@@ -48,8 +48,15 @@ defmodule JidoClaw.Workflows.StepAction do
 
   require Logger
 
+  alias Jido.AgentServer
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Reasoning.Output
+
+  defp agent_server_module do
+    Application.get_env(:jido_claw, :step_agent_server, AgentServer)
+  end
+
+  @step_timeout_ms 180_000
 
   @impl true
   def run(params, context) do
@@ -65,33 +72,7 @@ defmodule JidoClaw.Workflows.StepAction do
       request_id = JidoClaw.register_child_correlation(tool_context)
 
       try do
-        case template.module.ask_sync(pid, task,
-               timeout: 180_000,
-               request_id: request_id,
-               tool_context: tool_context
-             ) do
-          {:ok, result} ->
-            text = Output.extract_result(result)
-
-            {:ok,
-             %JidoClaw.Workflows.StepResult{
-               name: step_name,
-               template: template_name,
-               result: text,
-               artifacts: extract_artifacts(text)
-             }}
-
-          {:error, reason} ->
-            {:error, "Step #{template_name} failed: #{inspect(reason)}"}
-
-          other ->
-            {:ok,
-             %JidoClaw.Workflows.StepResult{
-               name: step_name,
-               template: template_name,
-               result: inspect(other)
-             }}
-        end
+        run_step(template.module, pid, request_id, task, tool_context, step_name, template_name)
       rescue
         e -> {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
       after
@@ -99,6 +80,98 @@ defmodule JidoClaw.Workflows.StepAction do
       end
     else
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
+    end
+  end
+
+  # Async path captures typed output + meta from `state.requests[rid]` by
+  # awaiting the full request map. Plain `Jido.Agent` modules without
+  # `ask/3` (test stubs) fall back to the synchronous `ask_sync` path,
+  # which can't surface meta but preserves existing scope-propagation
+  # contracts.
+  defp run_step(module, pid, request_id, task, tool_context, step_name, template_name) do
+    Code.ensure_loaded(module)
+
+    if function_exported?(module, :ask, 3) do
+      run_step_async(module, pid, request_id, task, tool_context, step_name, template_name)
+    else
+      run_step_sync(module, pid, request_id, task, tool_context, step_name, template_name)
+    end
+  end
+
+  defp run_step_async(module, pid, request_id, task, tool_context, step_name, template_name) do
+    case module.ask(pid, task, request_id: request_id, tool_context: tool_context) do
+      {:ok, %{id: ^request_id}} ->
+        await_step(pid, request_id, step_name, template_name)
+
+      {:error, reason} ->
+        {:error, "Step #{template_name} failed: #{inspect(reason)}"}
+
+      other ->
+        {:error, "Step #{template_name} failed: unexpected ask reply: #{inspect(other)}"}
+    end
+  end
+
+  defp run_step_sync(module, pid, request_id, task, tool_context, step_name, template_name) do
+    case module.ask_sync(pid, task,
+           timeout: @step_timeout_ms,
+           request_id: request_id,
+           tool_context: tool_context
+         ) do
+      {:ok, result} ->
+        text = Output.extract_result(result)
+
+        {:ok,
+         %JidoClaw.Workflows.StepResult{
+           name: step_name,
+           template: template_name,
+           result: text,
+           artifacts: extract_artifacts(text)
+         }}
+
+      {:error, reason} ->
+        {:error, "Step #{template_name} failed: #{inspect(reason)}"}
+
+      other ->
+        {:ok,
+         %JidoClaw.Workflows.StepResult{
+           name: step_name,
+           template: template_name,
+           result: inspect(other)
+         }}
+    end
+  end
+
+  defp await_step(pid, request_id, step_name, template_name) do
+    case agent_server_module().await_completion(pid,
+           timeout: @step_timeout_ms,
+           status_path: [:requests, request_id, :status],
+           result_path: [:requests, request_id],
+           error_path: [:requests, request_id, :error]
+         ) do
+      {:ok, %{status: :completed, result: request}} when is_map(request) ->
+        typed = Output.typed_request_output(request)
+        text = Output.extract_result(Output.request_result(request))
+
+        {:ok,
+         %JidoClaw.Workflows.StepResult{
+           name: step_name,
+           template: template_name,
+           result: text,
+           typed_output: typed,
+           artifacts: extract_artifacts(text)
+         }}
+
+      {:ok, %{status: :failed, result: reason}} ->
+        {:error, "Step #{template_name} failed: #{inspect(reason)}"}
+
+      {:error, :timeout} ->
+        {:error, "Step #{template_name} failed: timeout"}
+
+      {:error, {:timeout, _diag}} ->
+        {:error, "Step #{template_name} failed: timeout"}
+
+      {:error, reason} ->
+        {:error, "Step #{template_name} failed: #{inspect(reason)}"}
     end
   end
 
