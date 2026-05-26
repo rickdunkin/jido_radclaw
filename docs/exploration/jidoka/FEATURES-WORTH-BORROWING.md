@@ -1,6 +1,6 @@
 # Features Worth Borrowing from Jidoka
 
-Exploration notes — not a plan, not a commitment. Source: `~/workspace/claws/jidoka` (Mike Hostetler, creator of `jido`; beta 1.0). Initial inventory **2026-05-18**.
+Exploration notes — not a plan, not a commitment. Source: `~/workspace/claws/jidoka` (Mike Hostetler, creator of `jido`; `1.0.0-beta.1`, released 2026-05-24). Initial inventory **2026-05-18**, audited **2026-05-26**.
 
 ## How to read this document
 
@@ -19,7 +19,7 @@ Tiers are scoped to this codebase:
 
 For each entry:
 
-- **Status (2026-05-18)** — jido_radclaw side: NOT_ADOPTED / PARTIAL / SUPERSEDED / N/A
+- **Status (2026-05-18)** — jido_radclaw side: NOT_ADOPTED / PARTIAL / ADOPTED / SUPERSEDED / N/A
 - **Where in jidoka** — file paths
 - **What it does** — 1–3 sentences
 - **Gap in jido_radclaw** — what we don't have that this would supply
@@ -34,28 +34,21 @@ Borrowing means translating, not transplanting. Jidoka is a single-runtime libra
 
 ### T1-1. Unified runtime trace surface (`Jidoka.Trace` + `Trace.Event`)
 
-**Status (2026-05-18)**: PARTIAL / FRAGMENTED. The raw event stream already flows in jido_radclaw, but it lives in four uncoordinated places:
+**Status (2026-05-26)**: ADOPTED — `JidoClaw.Trace` is the unified projection. `Conversations.Recorder`, `AgentTracker`, `Reasoning.Telemetry`, and `RequestCorrelation` still exist (each a different abstraction — durable Postgres messages, in-memory per-agent stats, reasoning outcomes, per-request scope); Trace is the in-flight overlay that links them via `request_id`/`run_id`.
 
-- `lib/jido_claw/conversations/recorder.ex` — bus-subscriber GenServer writes Postgres `Message` rows for `ai.tool.started`, `ai.tool.result`, `ai.llm.response`, `ai.usage`, `ai.request.completed`
-- `lib/jido_claw/agent_tracker.ex` — in-memory per-agent stats (tokens/tool_calls/status) from `jido.ai.tool.execute.{start,stop}` + SignalBus `jido_claw.{tool,agent}.*`
-- `lib/jido_claw/reasoning/telemetry.ex` — `with_outcome/4` writes `Reasoning.Outcome` rows for strategy calls
-- `lib/jido_claw/conversations/resources/request_correlation.ex` — per-request scope receives `record_telemetry/2` with run_id, model, tokens, latency_ms
+Key facts:
 
-What's missing: a single `request_id → ordered list of normalized events` projection that the LiveViews, CLI REPL, MCP, and dashboard can all consume. There's no shared `%Event{}` struct. AgentTracker counts tool calls but doesn't keep an event log. Recorder writes durable rows but they're `messages`, not generic events (no hook/guardrail/workflow categories).
+* **Modules**: `lib/jido_claw/trace.ex` (public API: `emit/3`, `latest/2`, `for_request/3`, `list/2`), `lib/jido_claw/trace/event.ex` (`%JidoClaw.Trace.Event{}`), `lib/jido_claw/trace/collector.ex` (singleton GenServer attaching `:telemetry` handlers + `JidoClaw.SignalBus` topics, sanitizing into `%Event{}`, indexing by request/run/trace/agent/tenant). Helpers: `trace/domain.ex`, `trace/limit.ex`, `trace/persistence.ex`, `trace/sanitize.ex`.
+* **Durable replay**: Adopted the optional Postgres path — `lib/jido_claw/trace/resources/` defines `TraceRun` and `TraceEvent` Ash resources, and the collector writes through `Persistence` for cross-restart replay. This extends Jidoka's bounded-in-memory shape for jido_radclaw's multi-tenant deployment.
+* **Telemetry coverage** (wired in `collector.ex`): `[:jido, :ai, :request|:llm|:tool, *]`, `[:jido, :ai, :output, :start|:validated|:repair|:error]` (T1-3), `[:jido_claw, :compaction, :event]` (T1-2), `[:jido_claw, :handoff, :event]` (T2-1 slot — wired but no emitter yet).
+* **Tenant scoping**: events are keyed by `tenant_id`, as the original adoption sketch called for.
+* **Event shape**: `%JidoClaw.Trace.Event{}` carries `seq, at_ms, source, category, event, phase, name, status, duration_ms` plus correlation IDs (`request_id, run_id, trace_id, span_id, parent_span_id`) and `measurements`/`metadata` — matches current Jidoka's struct.
 
-**Where in jidoka**: `lib/jidoka/trace.ex`, `lib/jidoka/trace/event.ex`, `lib/jidoka/trace/collector.ex`
+**Prior state (kept for historical context)**: Before T1-1 landed, the raw event stream already flowed in jido_radclaw but lived in four uncoordinated places — `lib/jido_claw/conversations/recorder.ex` (bus-subscriber writing `Message` rows for `ai.tool.started`, `ai.tool.result`, `ai.llm.response`, `ai.usage`, `ai.request.completed`), `lib/jido_claw/agent_tracker.ex` (in-memory per-agent tokens/tool_calls/status), `lib/jido_claw/reasoning/telemetry.ex` (`with_outcome/4` → `Reasoning.Outcome`), and `lib/jido_claw/conversations/resources/request_correlation.ex` (per-request scope). There was no shared `%Event{}` struct or unified `request_id → events` projection — each LiveView, CLI REPL, and MCP surface reconstructed timelines ad hoc.
 
-**What**: A supervised `Trace.Collector` GenServer attaches `:telemetry` handlers for `[:jido, :ai, :request|llm|tool, *]` plus Jidoka-scoped events `[:jidoka, :{hook,guardrail,memory,workflow,subagent,handoff,mcp,output,schedule}, :event]` and projects them into bounded `%Jidoka.Trace{events: [%Event{...}]}` keyed by `request_id`/`run_id`/`agent_id`. Public API: `Jidoka.Trace.latest/1`, `list/1`, `for_request/2`, `events/2`, `spans/2`. Span derivation groups events by `{category, id}` and computes `started_at_ms`/`completed_at_ms`/`duration_ms`/`status`.
+**Where in jidoka**: `lib/jidoka/trace.ex`, `lib/jidoka/trace/event.ex`, `lib/jidoka/trace/collector.ex`, plus `lib/jidoka/trace/correlation.ex` (added since the 2026-05-18 baseline).
 
-**Gap**: No unified `JidoClaw.Trace` view, no `events/0`/`spans/0` projection per request, no shared `%Event{}` struct linking the four telemetry sinks.
-
-**Why it matters**: This is the keystone — most of the JIDOKA_GAPS Priority list and several Tier 2 items below depend on it (workflow visualization, eval replay, AgentView, Forge step-level UI). The three dashboard LiveViews (`agents_live.ex`, `workflows_live.ex`, `forge_live.ex`) currently each subscribe to PubSub topics and reconstruct timelines ad hoc. A shared `%Event{seq, at_ms, source, category, event, phase, request_id, run_id}` shape would unify the LiveViews, CLI REPL, MCP server, and the reasoning certificate verifier on one stream.
-
-This is the same architectural pattern OpenAI Agents SDK and LangSmith pioneered (spans for agent/model/tool/guardrail/handoff). The Elixir-side telemetry already produces 90% of the events; what's missing is the projection layer.
-
-**Adoption sketch**: Lift `Jidoka.Trace.Event` struct nearly verbatim into `lib/jido_claw/trace/event.ex`. New `lib/jido_claw/trace.ex` + `lib/jido_claw/trace/collector.ex` as a supervised GenServer attaching the same telemetry tap (already publishing) and subscribing to `JidoClaw.SignalBus` topics `jido_claw.{tool,agent}.*` for the events Recorder/AgentTracker already see. Two adaptations from Jidoka's design: (1) **tenant-scope** the collector by `tenant_id` in `target_ref/1`; (2) optionally persist to a thin `traces`/`trace_events` Ash resource for durable replay (Jidoka deliberately keeps it bounded-in-memory; jido_radclaw has Postgres). Do NOT try to subsume `Reasoning.Outcome` and `Conversations.Message` — those are different abstractions; the Trace is the in-flight view that *links* them via `request_id`.
-
-Pair with hermes T2-9 (diagnostic registry) — a unified trace surface is the natural backing store for diagnostics.
+Pair with hermes T2-9 (diagnostic registry) — the unified trace surface is the natural backing store for diagnostics.
 
 ---
 
@@ -132,26 +125,24 @@ Key facts:
 
 ### T1-4. Structured error contract (`Jidoka.Error` via Splode)
 
-**Status (2026-05-18)**: NOT_ADOPTED. Splode (`~> 0.3`) is already a transitive dep via Ash, but jido_radclaw has heterogeneous error shapes:
+**Status (2026-05-26)**: ADOPTED — `lib/jido_claw/error.ex` is a Splode root with four error classes (`invalid`, `execution`, `config`, `internal`), merging with `Ash.Error` so framework errors classify alongside first-party ones.
 
-- `lib/jido_claw/tools/error.ex` — `normalize/1` returns `%{code:, message:, details:}` maps
-- `lib/jido_claw/forge/error.ex` — five plain `defexception` modules with a `classify/1` returning `{atom, retry|terminal|...}`
-- Ash actions throw their own `Ash.Error.*`
-- Many `{:error, "string"}` patterns scattered throughout
+Key facts:
 
-There's no unified public error contract.
+* **Module**: `lib/jido_claw/error.ex` — `use Splode, error_classes: [invalid: ..., execution: ..., config: ..., internal: ...], merge_with: [Ash.Error], unknown_error: JidoClaw.Error.Internal.UnknownError`.
+* **Public constructors**: `validation_error/2`, `config_error/2`, `execution_error/2`, `not_found/3`, `invalid_argument/3`, `timeout/3`, `missing_required/2`.
+* **Concrete leaves**: `JidoClaw.Error.{ValidationError, ConfigError, ExecutionError}` plus `error/normalize.ex` (+ `error/normalize/` adapters), `error/internal/`, `error/invalid.ex`, `error/execution.ex`, `error/config.ex`.
+* **Forge integration**: `lib/jido_claw/forge/error.ex` modules (`ProvisionError`, `BootstrapError`, `ExecSessionError`, etc.) use `Splode.Error` and register under the `:execution` class — `Forge.Error.classify/1` is harmonized via class membership rather than parallel tuple-returning code.
+* **Tools integration**: `lib/jido_claw/tools/error.ex::normalize/1` consumes `%JidoClaw.Error.*{}` first-party structs before falling back to legacy heterogeneous inputs, producing a single agent-facing `%{code, message, details}` wire shape.
 
-**Where in jidoka**: `lib/jidoka/error.ex`, `lib/jidoka/error/normalize.ex`, `lib/jidoka/error/normalize/`
+**Adoption divergences from the original sketch**:
 
-**What**: Three Splode error classes (`Invalid`, `Execution`, `Config`) plus concrete `ValidationError`/`ConfigError`/`ExecutionError` structs with `field`, `value`, `details`. The `Jidoka.format_error/1` helper flattens nested error classes into single-line or bulleted messages. Public constructors: `validation_error/2`, `config_error/2`, `execution_error/2`, `invalid_context/2`, `missing_context/2`. Used throughout — every public function that returns `{:error, _}` returns one of these.
+* Four classes instead of three (added `internal` for `UnknownError` and other unclassified surfaces).
+* Merges with `Ash.Error` so framework errors classify cleanly — wasn't in the original sketch.
 
-**Gap**: A platform of this size should have a public, classified error shape that maps to its multi-surface presentation (CLI, MCP, Phoenix LiveView, web API). Today consumers can't pattern-match on error type — they parse strings.
+**Where in jidoka**: `lib/jidoka/error.ex`, `lib/jidoka/error/normalize.ex`, plus `lib/jidoka/error/normalize/{common,context}.ex` (split since the 2026-05-18 baseline).
 
-**Why it matters**: Sits underneath every other recommendation here — Trace, Output, Compaction, Schedule all return errors and consumers want `case ... do {:error, %ValidationError{}} -> ... ; {:error, %ExecutionError{}} -> ...` semantics. The cost is moderate (mostly find-and-replace of `{:error, "string"}` patterns). Pairs naturally with hermes **T1-4** (FailoverReason classifier) — the Splode classes are the *taxonomy* layer; FailoverReason is the *recovery-action* layer above it.
-
-**Adoption sketch**: Add `lib/jido_claw/error.ex` along Jidoka's pattern — three Splode classes (`Invalid` / `Execution` / `Config`), three concrete structs. Adopt incrementally at boundaries (Tools, Forge, Conversations, Reasoning) without rewriting Ash internals. Keep `JidoClaw.Tools.Error.normalize/1` as the agent-facing serializer, but have it consume `%JidoClaw.Error.*{}` natively first. Harmonize `Forge.Error.classify/1` — it already returns a tuple like `{:exec_failed, :retry}` which is essentially a 2-element subset of Jidoka's classification.
-
-Cheapest of the Tier 1 four; do this second after Trace.
+Pairs naturally with hermes **T1-4** (FailoverReason classifier) — the Splode classes are the *taxonomy* layer; FailoverReason is the *recovery-action* layer above it.
 
 ---
 
@@ -159,9 +150,9 @@ Cheapest of the Tier 1 four; do this second after Trace.
 
 ### T2-1. Conversation-ownership handoff (`Jidoka.Handoff`)
 
-**Status (2026-05-18)**: NOT_ADOPTED. There is no concept of "transfer ownership of this conversation to a different worker template and end this turn" anywhere in jido_radclaw. The closest pattern is `Tools.SpawnAgent` + `Tools.GetAgentResult`, which is a request/response model (parent stays in charge).
+**Status (2026-05-26)**: NOT_ADOPTED. There is no concept of "transfer ownership of this conversation to a different worker template and end this turn" anywhere in jido_radclaw. The closest pattern is `Tools.SpawnAgent` + `Tools.GetAgentResult`, which is a request/response model (parent stays in charge). Note: the trace surface (T1-1) already has `[:jido_claw, :handoff, :event]` wired in `collector.ex:103` — infrastructure-ready for an emitter.
 
-**Where in jidoka**: `lib/jidoka/handoff.ex`, `lib/jidoka/handoff/registry.ex`, plus capability module
+**Where in jidoka**: `lib/jidoka/handoff.ex`, `lib/jidoka/capability/handoff/registry.ex` (moved from `lib/jidoka/handoff/registry.ex` since the 2026-05-18 baseline), plus capability module
 
 **What**: A handoff is a first-class conversation-ownership transfer (returned as `{:handoff, %Jidoka.Handoff{}}` from `Jidoka.chat/3`, not just a tool call). `Handoff.Registry` tracks the current owner per `conversation_id`. `Jidoka.handoff_owner/1` and `reset_handoff/1` are public APIs. Subsequent turns on the same conversation route to the new owner until reset.
 
@@ -169,22 +160,24 @@ Cheapest of the Tier 1 four; do this second after Trace.
 
 **Why it matters**: A genuinely new capability that fits well with the existing platform. Example use case: a generic agent receives a request, decides it's a code-review task, and hands off to `Workers.Reviewer` for the rest of the conversation. The user sees a continuous chat but the routing optimization happens transparently. Foundation for tenant-level routing policies.
 
-**Adoption sketch**: New `JidoClaw.Agent.Handoff` struct (`to_agent`, `message`, `context`). New `Tools.Handoff` action that returns it as a directive. `Platform.Session.Worker` interprets the directive: ends the current turn, updates `Conversations.Session.metadata["current_agent_template"]`, optionally writes a `:system` message recording the transfer. Add a per-tenant `Handoff.Registry` (or repurpose the existing `TenantRegistry` infrastructure). Pair with **T1-1 Trace** so `[:jido_claw, :handoff, :event]` shows up in the timeline.
+**Adoption sketch**: New `JidoClaw.Agent.Handoff` struct (`to_agent`, `message`, `context`). New `Tools.Handoff` action that returns it as a directive. `Platform.Session.Worker` interprets the directive: ends the current turn, updates `Conversations.Session.metadata["current_agent_template"]`, optionally writes a `:system` message recording the transfer. Add a per-tenant `Handoff.Registry` (or repurpose the existing `TenantRegistry` infrastructure). The `[:jido_claw, :handoff, :event]` slot is already wired in the T1-1 Trace collector.
 
-The most independently shippable Tier 2 item — doesn't depend on Trace landing first.
+The most independently shippable Tier 2 item — minimal blocking dependencies now that Trace has landed.
 
 ---
 
 ### T2-2. Surface-neutral view projection (`Jidoka.AgentView`)
 
-**Status (2026-05-18)**: PARTIAL / INCONSISTENT. Each surface reinvents projection:
+**Status (2026-05-26)**: NOT_ADOPTED — no `JidoClaw.AgentView` struct exists. Each surface still reinvents projection:
 
 - `lib/jido_claw/web/live/agents_live.ex`, `dashboard_live.ex`, `forge_live.ex` — each subscribes to PubSub and assembles its own assigns
 - `lib/jido_claw/cli/repl.ex`, `commands.ex`, `presenters.ex` — its own projection
 - MCP server — its own
 - `Platform.Session.Worker` is sort of the canonical state holder but isn't shaped as a *projection*
 
-**Where in jidoka**: `lib/jidoka/agent_view.ex` (~429 lines), `lib/jidoka/agent_view/{defaults,projection,run,start,turn_state}.ex`
+A doc-comment in `lib/jido_claw/trace/domain.ex:8` names AgentView as a future trace-surface consumer; the surface is ready, the consumer isn't built.
+
+**Where in jidoka**: `lib/jidoka/agent_view.ex` (~437 lines), `lib/jidoka/agent_view/{defaults,projection,run,start,turn_state}.ex`
 
 **What**: A `use Jidoka.AgentView, agent: MyAgent` macro that gives any LiveView/CLI/channel a stable struct `%AgentView{visible_messages, streaming_message, llm_context, events, status, error, outcome, metadata}` plus lifecycle callbacks `before_turn/start_turn/await_turn/refresh_turn/after_turn`. The point: every surface that talks to an agent consumes the same projection.
 
@@ -194,29 +187,29 @@ The most independently shippable Tier 2 item — doesn't depend on Trace landing
 
 **Adoption sketch**: Define `JidoClaw.AgentView` struct with fields matching Jidoka's. Build a single projection function `AgentView.snapshot(session_id, opts)` that reads from `Conversations` + `AgentTracker` + `Trace` (T1-1) into the struct. LiveViews and the REPL both call it; MCP exposes it as `Tools.AgentStatus` (already exists but returns ad-hoc shape). **Don't ship the macro** — jido_radclaw's surfaces don't need the "easy ergonomics" Jidoka was built for; just the data shape.
 
-Blocked-by: T1-1 (the `events` field is the trace event list).
+T1-1 Trace has landed; this is now unblocked.
 
 ---
 
 ### T2-3. Subagent context-visibility policy (`forward_context`)
 
-**Status (2026-05-18)**: NOT_ADOPTED on the policy axis. `Tools.SpawnAgent` always forwards everything — there's no `:public | :none | {:only, [...]}` knob.
+**Status (2026-05-26)**: NOT_ADOPTED on the policy axis. `Tools.SpawnAgent` always forwards everything — there's no `:public | :none | {:only, [...]} | {:except, [...]}` knob.
 
-**Where in jidoka**: `lib/jidoka/subagent.ex`, `lib/jidoka/subagent/{definition,tool,runtime,context}.ex`
+**Where in jidoka**: `lib/jidoka/subagent.ex`, plus `lib/jidoka/capability/subagent/{context,definition,metadata,tool}.ex` and `lib/jidoka/capability/subagent/runtime/{calls,executor,result,trace}.ex` (moved from `lib/jidoka/subagent/*` since the 2026-05-18 baseline).
 
-**What**: Subagents are specialists exposed to the parent as tools with a fixed `task_schema`, `forward_context: :public | :none | {:only, [...]}`, `target: :ephemeral | {:peer, _}`, `result: :text | :structured`. The forwarding policy is enforced before the child agent is invoked.
+**What**: Subagents are specialists exposed to the parent as tools with a fixed `task_schema`, `forward_context: :public | :none | {:only, [...]} | {:except, [...]}`, `target: :ephemeral | {:peer, _} | {:peer, {:context, _}}`, `result: :text | :structured`. The forwarding policy is enforced before the child agent is invoked.
 
 **Gap**: The full subagent shape is SUPERSEDED by swarm (`Tools.SpawnAgent` + `Tools.GetAgentResult` + `AgentTracker` + worker modules) — actual OTP processes with full bidirectional messaging are much more capable than Jidoka's tool-call subagent pattern. But the **`forward_context` knob** is a genuine policy gap. Today every spawn forwards the same context.
 
 **Why it matters**: Tenant-isolation hygiene. A child agent often shouldn't see the parent's full context (e.g., user PII the parent gathered for a different decision). An explicit visibility policy enforced at spawn time is a small tightening with security payoff.
 
-**Adoption sketch**: Add a `context_visibility` parameter to `Tools.SpawnAgent` with the vocabulary `:public | :none | {:only, [keys]}`. Apply at the `JidoClaw.Agent.Workers.*` spawn path. Default to `:public` for backwards compat, but document that production deployments should pick explicitly. Optional: enforce via Spark verifier so the default-public-by-omission is loud in code review.
+**Adoption sketch**: Add a `context_visibility` parameter to `Tools.SpawnAgent` with the vocabulary `:public | :none | {:only, [keys]} | {:except, [keys]}`. Apply at the `JidoClaw.Agent.Workers.*` spawn path. Default to `:public` for backwards compat, but document that production deployments should pick explicitly. Optional: enforce via Spark verifier so the default-public-by-omission is loud in code review.
 
 ---
 
 ### T2-4. Agent inspection surface (`Jidoka.Inspection`)
 
-**Status (2026-05-18)**: PARTIAL. `AgentTracker.get_state/0` returns agent stats. `lib/jido_claw/core/stats.ex` aggregates. `lib/jido_claw/cli/presenters.ex` formats. But there's no unified `JidoClaw.inspect_agent/1` returning a single shape across "definition" (what worker is this?) and "running" (what is it doing right now?).
+**Status (2026-05-26)**: NOT_ADOPTED — no `JidoClaw.Inspection` module exists. Adjacent surfaces give partial views: `AgentTracker.get_state/0` returns agent stats, `lib/jido_claw/core/stats.ex` aggregates, `lib/jido_claw/cli/presenters.ex` formats. But there's no unified `JidoClaw.inspect_agent/1` returning a single shape across "definition" (what worker is this?) and "running" (what is it doing right now?).
 
 **Where in jidoka**: `lib/jidoka/inspection/inspection.ex`, `lib/jidoka/inspection/debug.ex`
 
@@ -226,13 +219,13 @@ Blocked-by: T1-1 (the `events` field is the trace event list).
 
 **Why it matters**: Makes debugging dramatically faster. A user reports "the agent did the wrong thing" — one function call returns the full picture instead of stitching it together from four sources.
 
-**Adoption sketch**: New `JidoClaw.Inspection` module mirroring Jidoka's surface but consuming jido_radclaw's existing sources (AgentTracker + Conversations.Session + Trace). The `Debug.summary` field list is a useful target — copy the shape. Blocked-by: T1-1 (the `usage` and `duration_ms` fields want trace-derived data).
+**Adoption sketch**: New `JidoClaw.Inspection` module mirroring Jidoka's surface but consuming jido_radclaw's existing sources (AgentTracker + Conversations.Session + Trace). The `Debug.summary` field list is a useful target — copy the shape. T1-1 Trace has landed, so the `usage`/`duration_ms` fields it would source from are now available.
 
 ---
 
 ### T2-5. Schedule kind switch (`:agent | :workflow`)
 
-**Status (2026-05-18)**: PARTIAL. `lib/jido_claw/cron/` + `lib/jido_claw/platform/cron/` is much more production-shaped than Jidoka's beta in-memory scheduler (multi-tenant, durable, Postgres-backed, failure-tolerant, auto-disable after 3 failures, stuck detection at 2h). Tools `ScheduleTask`/`UnscheduleTask`/`ListScheduledTasks` are mature. But Jidoka's scheduler has one shape idea worth lifting: a schedule can fire either a chat turn or a typed workflow input via `kind: :agent | :workflow`.
+**Status (2026-05-26)**: PARTIAL on the execution-target axis. `lib/jido_claw/cron/` + `lib/jido_claw/platform/cron/` is much more production-shaped than Jidoka's beta in-memory scheduler (multi-tenant, durable, Postgres-backed, failure-tolerant, auto-disable after 3 failures, stuck detection at 2h). `Cron.Job` has `@schedule_kinds [:cron, :every, :at]` — but those are *schedule-expression* shapes (cron string vs interval vs absolute time), not the *execution-target* shape Jidoka uses. Today the resource carries `mfa_module`/`mfa_function`/`mfa_args` attributes and dispatches MFA only. Tools `ScheduleTask`/`UnscheduleTask`/`ListScheduledTasks` are mature. Jidoka's `kind: :agent | :workflow` shape (chat-turn vs workflow-input dispatch) is the gap.
 
 **Where in jidoka**: `lib/jidoka/schedule.ex` (~375 lines), `lib/jidoka/schedule/{executor,manager}.ex`
 
@@ -242,7 +235,7 @@ Blocked-by: T1-1 (the `events` field is the trace event list).
 
 **Why it matters**: Small ergonomic win, makes the cron UI clearer. Per-kind observability shapes (run_count/skip_count/last_started_at_ms) are useful enrichments to `Cron.Job` attributes.
 
-**Adoption sketch**: Add `kind :: :agent | :workflow | :mfa` attribute to `Cron.Job`. Dispatch through a small adapter that maps kind to runtime entrypoint. Extend the `ScheduleTask` tool surface to expose the kind. Add the `run_count`/`skip_count` fields if not already present.
+**Adoption sketch**: Add a separate `target :: :agent | :workflow | :mfa` attribute to `Cron.Job` (the existing `kind` attribute is taken by the schedule expression). Dispatch through a small adapter that maps target to runtime entrypoint. Extend the `ScheduleTask` tool surface to expose the target. Add the `run_count`/`skip_count` fields if not already present.
 
 ---
 
@@ -318,30 +311,30 @@ Small polish to consider: the `Session.chat_opts/2` helper that merges per-turn 
 
 ## Cross-references and dependencies
 
-The Tier 1 four cluster into a dependency graph:
+The Tier 1 four clustered into a dependency graph (all now ADOPTED as of 2026-05-26):
 
 ```
-T1-4 Error (foundational) ──┬──> T1-1 Trace ──┬──> T2-2 AgentView
-                            │                 ├──> T2-4 Inspection
-                            │                 └──> T2-1 Handoff (uses trace events)
-                            ├──> T1-2 Compaction (emits trace events)
-                            └──> T1-3 Output (emits trace events)
+T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView
+               │                    ├──> T2-4 Inspection
+               │                    └──> T2-1 Handoff (uses trace events)
+               ├──> T1-2 Compaction ✓ (emits trace events)
+               └──> T1-3 Output ✓ (emits trace events)
 ```
 
-**Suggested first wave** (in order):
+**First wave (complete)**:
 
-1. **T1-4 Error** (~3 days + 1 day/subsystem) — foundational, Splode already a dep
-2. **T1-1 Trace** (~1 week) — keystone; unblocks LiveView consistency, eval/replay, debugging
-3. **T1-2 Compaction** (~1 week) — addresses known production gap; deprecates hermes T1-2 adoption sketch
-4. **T1-3 Output** (~1 week) — tightens reasoning/verifier flow; quick canary on Verifier VERDICT
+1. **T1-4 Error** — ADOPTED. Splode root with four classes (`invalid`, `execution`, `config`, `internal`), merging with `Ash.Error`.
+2. **T1-1 Trace** — ADOPTED. `JidoClaw.Trace` + `Trace.Collector` + `TraceRun`/`TraceEvent` Ash resources for durable replay.
+3. **T1-2 Compaction** — ADOPTED 2026-05-20. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; Postgres-backed snapshot in `Session.metadata["compaction"]`.
+4. **T1-3 Output** — ADOPTED 2026-05-26. All 7 worker templates carry structured-output contracts via upstream `Jido.AI.Output`.
 
-**Tier 2 sequencing** (after T1):
+**Tier 2 sequencing** (T1 is complete; all items below are unblocked):
 
-- **T2-1 Handoff** — most independently shippable; doesn't block on Trace landing
-- **T2-3 Subagent context-visibility** — small policy add, security-flavored
-- **T2-2 AgentView** + **T2-4 Inspection** — pair, both depend on T1-1 Trace shape stabilizing
-- **T2-5 Schedule kind** — small ergonomic win, can ship anytime
-- **T2-6 Imported agents** — defer until tenant-builder UI is on the roadmap
+- **T2-1 Handoff** — most independently shippable; the `[:jido_claw, :handoff, :event]` trace slot is already wired.
+- **T2-3 Subagent context-visibility** — small policy add, security-flavored.
+- **T2-2 AgentView** + **T2-4 Inspection** — pair, now unblocked since T1-1 Trace has landed.
+- **T2-5 Schedule kind** — small ergonomic win, can ship anytime.
+- **T2-6 Imported agents** — defer until tenant-builder UI is on the roadmap.
 
 ## Relationship to hermes exploration
 
@@ -351,7 +344,7 @@ This doc and `docs/exploration/hermes/FEATURES-WORTH-BORROWING.md` are complemen
 - **hermes T1-4 (FailoverReason)** → **layers above Jidoka T1-4 Error**. Splode classes are taxonomy; FailoverReason is recovery-action policy.
 - **hermes T2-9 (diagnostic registry)** → **builds on Jidoka T1-1 Trace** as the backing store.
 
-Adopt Jidoka T1-1 and T1-2 before re-evaluating hermes T1-2 and T1-4 adoption sketches.
+Jidoka T1-1, T1-2, T1-3, and T1-4 are all now ADOPTED — re-evaluate hermes T1-2 (`protect_first_n` paired discipline), T1-4 (FailoverReason recovery-action layer above Splode), and T2-9 (diagnostic registry backed by the trace surface) next.
 
 ## Notes on upstream alignment
 
