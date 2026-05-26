@@ -45,6 +45,16 @@ defmodule JidoClaw.Forge.SandboxInit do
 
   @doc false
   def cleanup_orphaned_sandboxes do
+    case System.find_executable("sbx") do
+      nil ->
+        Logger.debug("[Forge.SandboxInit] sbx CLI not found; skipping orphan cleanup")
+
+      _path ->
+        do_cleanup_orphaned_sandboxes()
+    end
+  end
+
+  defp do_cleanup_orphaned_sandboxes do
     case System.cmd("sbx", ["ls", "--json"], stderr_to_stdout: true) do
       {output, 0} ->
         case Jason.decode(output) do

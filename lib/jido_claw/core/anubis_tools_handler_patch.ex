@@ -103,7 +103,8 @@ defmodule Anubis.Server.Handlers.Tools do
     if missing == [] do
       :ok
     else
-      {:error, Error.execution("insufficient_scope", %{required: required, granted: granted}), frame}
+      {:error, Error.execution("insufficient_scope", %{required: required, granted: granted}),
+       frame}
     end
   end
 

@@ -14,7 +14,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   @impl true
   @spec create(map()) ::
-          {:error, {:sbx_create_failed, pos_integer(), any()}}
+          {:error, :sbx_not_found | {:sbx_create_failed, pos_integer(), any()}}
           | {:ok,
              %JidoClaw.Forge.Sandbox.Docker{
                sandbox_name: <<_::48, _::_*8>>,
@@ -22,6 +22,16 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
                workspace_dir: binary()
              }, binary()}
   def create(spec) do
+    case System.find_executable("sbx") do
+      nil ->
+        {:error, :sbx_not_found}
+
+      _path ->
+        do_create(spec)
+    end
+  end
+
+  defp do_create(spec) do
     sandbox_id = "#{:erlang.unique_integer([:positive])}"
     sandbox_name = "forge-#{sandbox_id}"
     workspace_dir = Path.join(workspace_base(), sandbox_name)

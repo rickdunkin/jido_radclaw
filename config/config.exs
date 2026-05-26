@@ -1,8 +1,5 @@
 import Config
 
-# Disable tzdata auto-update (escripts can't access priv dirs)
-config :tzdata, :autoupdate, :disabled
-
 # Register Ollama models in LLMDB catalog (latest 2025 models)
 config :llm_db,
   custom: %{
