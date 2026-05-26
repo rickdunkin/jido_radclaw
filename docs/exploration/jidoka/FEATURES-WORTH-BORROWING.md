@@ -98,45 +98,35 @@ This entry **deprecates hermes T1-2** as the adoption sketch — Jidoka's Elixir
 
 ### T1-3. Structured final output with repair-retry (`Jidoka.Output`)
 
-**Status (2026-05-18)**: NOT_ADOPTED for *final-answer* output. `lib/jido_claw/reasoning/output.ex` is just an `extract_output/1` helper that pulls `:result|:answer|:conclusion` from heterogeneous reasoning-tool result shapes — coercion, not validation. `lib/jido_claw/tools/action.ex` (Jido.Action behaviour) has per-tool input schemas (most via NimbleOptions, three via Zoi — `edit_file.ex`, `write_file.ex`, `shell/commands/jido.ex`), but there is no agent-level *final-answer* schema. The whole `JidoClaw.Agent.Workers.*` (Coder, Reviewer, Verifier, Researcher) family returns free-form strings that downstream code parses heuristically.
+**Status (2026-05-26)**: ADOPTED — all 7 worker templates carry structured-output contracts. No `JidoClaw.Agent.Output` behaviour was ported (the original adoption sketch called for one); instead, jido_radclaw consumes upstream `Jido.AI.Output` directly via `use Jido.AI.Agent, output: %{schema, retries, on_validation_error}`. Verifier and Reviewer landed in `46e1f87`; Coder, Researcher, TestRunner, Refactorer, and DocsWriter completed the rollout.
 
-**Where in jidoka**: `lib/jidoka/output.ex`, `lib/jidoka/output/{config,error,runtime,schema}.ex`
+Key facts:
 
-**What**: DSL surface inside `agent do`:
+* **Engine**: `Jido.AI.Output` (deps), not a borrowed module. Each worker file in `lib/jido_claw/agent/workers/` adds an `output: %{schema: Zoi.object(...), retries: 1, on_validation_error: :repair}` keyword to its `use JidoClaw.Agent.Defaults` call. The macro plumbs that into `strategy_opts[:output]` as a compiled `%Jido.AI.Output{}` (`deps/jido_ai/lib/jido_ai/agent.ex:354,427`), which the ReAct strategy then enforces.
+* **Validation site**: `Jido.AI.Reasoning.ReAct.Runner.finalize_output/4`, not Jidoka's `on_after_cmd` placement — same semantics: parse the model's last answer, either succeed, `:repair` once via a corrective re-prompt, or fail typed.
+* **Per-worker shapes**:
+  * **Verifier**: `verdict` (`:pass`/`:fail`), `confidence` (`:low`/`:medium`/`:high`), `reasoning`.
+  * **Reviewer**: `overall` (`:approve`/`:request_changes`/`:comment`), `summary`, `findings[]` (`severity`, `description`).
+  * **Coder / Refactorer**: `status` (`:completed`/`:partial`/`:blocked`), `summary`, `files_changed[]`, plus `notes` (Coder) or `improvements[]` (Refactorer).
+  * **Researcher**: `summary`, `confidence`, `findings[]` (`topic`, `detail`, `references[]`).
+  * **TestRunner**: `status` (`:passed`/`:failed`/`:error`), `summary`, `passed_count`/`failed_count` (both refined non-negative via `Zoi.gte(0)`), `failures[]` (`test`, `error`).
+  * **DocsWriter**: `status`, `summary`, `files_changed[]`, `kinds[]` (enum of `moduledoc`/`typespec`/`readme`/`guide`/`inline_comment`/`other`).
+* **Artifacts sub-object**: every workflow-touching worker (Coder, Researcher, TestRunner, Refactorer, DocsWriter) carries an `artifacts` sub-object with known optional keys (`url`/`port`/`files`) — that's the full wire contract the LLM sees (`ReqLLM.Schema` emits `additionalProperties: false`, so extras are forbidden by the JSON Schema injected into the prompt). The Zoi schema keeps `unrecognized_keys: :preserve` as **internal parse-time tolerance** so a defiant LLM emitting an unexpected key won't fail validation; the docs and prompt never promise that capability. Verifier and Reviewer omit the sub-object (evaluator/reviewer roles — no produces metadata). A `Zoi.map(key_type, value_type)` was tried first but crashes in `Jido.AI.Output`'s zoi-input normalizer (`deps/jido_ai/lib/jido_ai/output.ex:372` only recognises `Zoi.Types.Map` field-mode); the sub-object form side-steps that and still satisfies the existing `inject_produces_instruction` vocabulary.
+* **Workflow consumer**: `JidoClaw.Workflows.StepAction.run_step_async/7` projects `typed_output[:summary]` into `StepResult.result` (so `ContextBuilder.format_all`/`RunSkill.build_result` see prose, not an inspected map) and merges `typed_output[:artifacts]` (stringified) into `StepResult.artifacts`. `JidoClaw.Reasoning.Output.extract_result/1` carries the `:summary`/`:reasoning` fallbacks. `inject_produces_instruction/2` is schema-agnostic — it tells the LLM to use the `artifacts` field when emitting structured JSON, or append a fenced `ARTIFACTS:` block otherwise, so workers without a schema still feed the regex extractor.
+* **Trace surface**: `[:jido, :ai, :output, :start | :validated | :repair | :error]` wired in `JidoClaw.Trace.Collector` (`lib/jido_claw/trace/collector.ex`).
+* **Swarm consumer**: `JidoClaw.Tools.GetAgentResult` consumes typed output via `JidoClaw.Reasoning.Output.typed_request_output/1` and `request_meta_output/1` (`lib/jido_claw/tools/get_agent_result.ex:60-82`).
+* **Typed verdict parsing** lives in `JidoClaw.Workflows.IterativeWorkflow.parse_verdict/1` (`lib/jido_claw/workflows/iterative_workflow.ex:144-165`). It accepts both the typed `%{verdict: :pass | :fail}` shape from Verifier and the legacy free-form `VERDICT: PASS / FAIL` text. `JidoClaw.Reasoning.Certificates` only owns `parse_certificate/1` for fenced certificate JSON — a different artifact consumed by `Tools.VerifyCertificate`.
 
-```elixir
-output do
-  schema Zoi.object(%{
-    category: Zoi.enum([:billing, :technical, :account]),
-    confidence: Zoi.float(),
-    summary: Zoi.string()
-  })
-  retries 2
-  on_validation_error :retry
-end
-```
+**Prior state (kept for historical context)**: `lib/jido_claw/reasoning/output.ex` was an `extract_output/1` helper pulling `:result`/`:answer`/`:conclusion` from heterogeneous reasoning-tool result shapes — coercion, not validation. The Jido.Action behaviour had per-tool input schemas (most NimbleOptions, three Zoi — `edit_file.ex`, `write_file.ex`, `shell/commands/jido.ex`) but no agent-level final-answer schema. The whole `JidoClaw.Agent.Workers.*` family returned free-form strings that downstream code parsed heuristically.
 
-Validation runs in `on_after_cmd` for `:ai_react_start`. On failure, instructions are re-injected via a corrective system message (`"Validation failed: <errors>. Reply with valid JSON matching the schema."`) and the request retries up to N times. Imported JSON/YAML specs use the same shape via `Schema.normalize_attrs/1`. `Output.json_schema/1` produces a JSON Schema export for provider-side structured-output modes.
+**Where in jidoka**: `lib/jidoka/output.ex`, `lib/jidoka/output/{config,error,runtime,schema}.ex`.
 
-**Gap**: No agent-level final-output contract anywhere in jido_radclaw, even though several subsystems would benefit immediately.
+**Adoption divergences from the original sketch**:
 
-**Why it matters**: This is the most under-leveraged Jidoka feature for jido_radclaw, because:
-
-1. `Workers.Verifier` already emits a VERDICT — but unstructured. A schema would let `reasoning/certificates.ex` consume verifier output without heuristic parsing.
-2. `reasoning/certificates.ex` and `pipeline_store.ex` already think in terms of typed outcomes (`verdict`, `confidence`). Codifying that as a contract per worker would let the reasoning subsystem stop guessing.
-3. The verifier/reviewer/coder swarm pattern across `Tools.SpawnAgent` + `Tools.GetAgentResult` would become much more reliable if swarmed agents had typed return shapes.
-
-**Adoption sketch**: New `JidoClaw.Agent.Output` behaviour. A worker module declares `@output_schema` (a Zoi schema) and `@output_retries 2` (or expressed through the existing `Agent.Defaults` macro). **Use Zoi**, not NimbleOptions, for output contracts — three reasons:
-
-1. **Zoi is already a transitive dep** (v0.17.4 via `jido_action`, `jido_ai`, `jido_signal`, `jido_browser`, `jido_composer`, `llm_db`). No new dependency cost.
-2. **JSON Schema export**. Zoi emits JSON Schema natively; Anthropic/OpenAI structured-output modes consume JSON Schema. NimbleOptions has no path here.
-3. **Upstream direction.** `jido_action` 2.2 uses Zoi for its own internal metadata (`@schema Zoi.struct(...)`). Jidoka uses it everywhere (Output, Tool, Subagent, Context, Workflow, Handoff). Aligning early saves churn.
-
-Plug into `Tools.GetAgentResult` so swarm callers consume typed worker output. The retry loop is small: on validation failure, append `{role: :system, content: "Your previous response did not match the required schema: <errors>. Reply with valid JSON."}` and re-run up to `retries` times. The corrective message can include the JSON Schema rendering of the Zoi schema for free. Pair with **T1-1** — emit `[:jido_claw, :output, :event]` events into the trace.
-
-NimbleOptions still has a place — it's the right tool for "validate Elixir options at a function boundary" (worker init opts, registry args, `Cron.Job` config). Reserve Zoi for shapes that need to round-trip with an LLM or serialize as JSON Schema.
-
-Wire the verifier VERDICT first as the canary; expand to reviewer/coder/researcher as the schemas stabilize.
+* No `JidoClaw.Agent.Output` behaviour. Jido.AI already exposes the shape; wrapping it would add a passthrough.
+* No `@output_schema` module attribute. Reading attributes inside the `Defaults` macro expansion is fragile; the public path is `WorkerModule.strategy_opts() |> Keyword.fetch!(:output)`, which is what the per-worker contract smoke test (`test/jido_claw/agent/workers/worker_output_schemas_test.exs`) uses.
+* No system-prompt edits. Per-request schema instructions are injected by `Jido.AI.Output.apply_instructions/2`.
+* Wiring order matched the original suggestion — Verifier first as the canary, then Reviewer, then the five workflow workers as the consumer path stabilised.
 
 ---
 

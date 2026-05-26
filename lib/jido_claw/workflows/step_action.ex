@@ -150,7 +150,16 @@ defmodule JidoClaw.Workflows.StepAction do
          ) do
       {:ok, %{status: :completed, result: request}} when is_map(request) ->
         typed = Output.typed_request_output(request)
-        text = Output.extract_result(Output.request_result(request))
+        raw_text = Output.extract_result(Output.request_result(request))
+
+        {text, typed_artifacts} =
+          case typed do
+            %{} = m -> {Output.extract_result(m), typed_artifacts(m)}
+            _ -> {raw_text, %{}}
+          end
+
+        artifacts =
+          Map.merge(extract_artifacts(raw_text), normalize_artifacts(typed_artifacts))
 
         {:ok,
          %JidoClaw.Workflows.StepResult{
@@ -158,7 +167,7 @@ defmodule JidoClaw.Workflows.StepAction do
            template: template_name,
            result: text,
            typed_output: typed,
-           artifacts: extract_artifacts(text)
+           artifacts: artifacts
          }}
 
       {:ok, %{status: :failed, result: reason}} ->
@@ -188,13 +197,17 @@ defmodule JidoClaw.Workflows.StepAction do
     task <>
       "\n\n" <>
       """
-      If you discover runtime details (URLs, ports, generated file paths) that differ from the
-      expected configuration, report them using this format at the end of your response:
+      If you discover runtime details (URLs, ports, generated file paths) that
+      differ from the expected configuration, report them:
+        - If your final response is a structured JSON object, include them as
+          string values in the `artifacts` field (`url`, `port`, `files`).
+        - Otherwise, append an ARTIFACTS: key/value block at the end of your
+          response:
 
-      ARTIFACTS:
-      url: <actual URL>
-      port: <actual port>
-      files: <comma-separated file paths>
+          ARTIFACTS:
+          url: <actual URL>
+          port: <actual port>
+          files: <comma-separated file paths>
       """
   end
 
@@ -222,6 +235,23 @@ defmodule JidoClaw.Workflows.StepAction do
   end
 
   def extract_artifacts(_), do: %{}
+
+  defp typed_artifacts(%{artifacts: artifacts}), do: artifacts
+  defp typed_artifacts(%{"artifacts" => artifacts}), do: artifacts
+  defp typed_artifacts(_), do: %{}
+
+  defp normalize_artifacts(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new(fn {k, v} -> {to_string(k), to_string_safe(v)} end)
+  end
+
+  defp normalize_artifacts(_), do: %{}
+
+  defp to_string_safe(v) when is_binary(v), do: v
+  defp to_string_safe(v) when is_list(v), do: Enum.join(v, ", ")
+  defp to_string_safe(v) when is_map(v), do: inspect(v)
+  defp to_string_safe(v), do: to_string(v)
 
   @doc """
   Test seam: resolve the canonical `tool_context` scope for a step.

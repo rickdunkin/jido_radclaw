@@ -239,6 +239,100 @@ defmodule JidoClaw.Workflows.StepActionTest do
       assert step_result.typed_output == nil
       assert is_binary(step_result.result)
     end
+
+    test "projects typed_output[:summary] to StepResult.result (prose, not inspect)" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.SummaryFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.result == "Implemented foo"
+      assert step_result.typed_output.summary == "Implemented foo"
+    end
+
+    test "merges typed_output[:artifacts] into StepResult.artifacts (stringified)" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.ArtifactsFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.artifacts["url"] == "http://localhost:4000"
+      assert step_result.artifacts["port"] == "4000"
+    end
+
+    test "free-form path still extracts artifacts from ARTIFACTS: regex" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.FreeFormFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.typed_output == nil
+      assert step_result.artifacts["url"] == "http://localhost:4001"
+      assert step_result.artifacts["port"] == "4001"
+    end
+
+    test "carries :repaired typed output through to StepResult.typed_output" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.RepairedFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert step_result.typed_output == %{
+               status: :completed,
+               summary: "Repaired into shape",
+               files_changed: ["lib/foo.ex"],
+               notes: "n/a"
+             }
+
+      assert step_result.result == "Repaired into shape"
+    end
+
+    test "round-trips a fully string-keyed inner request map" do
+      Application.put_env(
+        :jido_claw,
+        :step_agent_server,
+        JidoClaw.Workflows.StepActionTest.StringKeyedFakeAgentServer
+      )
+
+      assert {:ok, %StepResult{} = step_result} =
+               StepAction.run(
+                 %{template: "echo_async", task: "go", project_dir: "/tmp", name: "async_step"},
+                 %{}
+               )
+
+      assert Map.get(step_result.typed_output, "summary") == "Started server"
+      assert step_result.result == "Started server"
+      assert step_result.artifacts["url"] == "http://localhost:4000"
+      assert step_result.artifacts["port"] == "4000"
+    end
   end
 
   defmodule ValidatedFakeAgentServer do
@@ -272,6 +366,122 @@ defmodule JidoClaw.Workflows.StepActionTest do
            status: :completed,
            result: %{verdict: :pass, confidence: :high, reasoning: "ok"},
            meta: %{output: %{status: :error, schema_kind: :map}}
+         }
+       }}
+    end
+  end
+
+  defmodule SummaryFakeAgentServer do
+    @moduledoc false
+
+    # Mimics a Coder-style schema'd worker — typed result has :summary,
+    # which should flow through to StepResult.result as prose.
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: %{
+             status: :completed,
+             summary: "Implemented foo",
+             files_changed: ["lib/foo.ex"],
+             notes: "n/a"
+           },
+           meta: %{output: %{status: :validated, schema_kind: :map}}
+         }
+       }}
+    end
+  end
+
+  defmodule ArtifactsFakeAgentServer do
+    @moduledoc false
+
+    # Typed output carries an :artifacts sub-map — should be merged
+    # into StepResult.artifacts (stringified) so downstream consumers
+    # see the same shape as the free-form regex path.
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: %{
+             status: :completed,
+             summary: "Started server",
+             files_changed: [],
+             notes: "",
+             artifacts: %{url: "http://localhost:4000", port: 4000}
+           },
+           meta: %{output: %{status: :validated, schema_kind: :map}}
+         }
+       }}
+    end
+  end
+
+  defmodule FreeFormFakeAgentServer do
+    @moduledoc false
+
+    # Worker without a schema — meta absent, result is free-form text.
+    # Regression cover for the path that pulls artifacts from a fenced
+    # ARTIFACTS: block via regex.
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: "Started the server.\n\nARTIFACTS:\nurl: http://localhost:4001\nport: 4001\n"
+         }
+       }}
+    end
+  end
+
+  defmodule RepairedFakeAgentServer do
+    @moduledoc false
+
+    # Repaired round-trip: meta.output.status == :repaired should still
+    # flow the typed map through (typed_request_output accepts both
+    # :validated and :repaired).
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           status: :completed,
+           result: %{
+             status: :completed,
+             summary: "Repaired into shape",
+             files_changed: ["lib/foo.ex"],
+             notes: "n/a"
+           },
+           meta: %{output: %{status: :repaired, schema_kind: :map}}
+         }
+       }}
+    end
+  end
+
+  defmodule StringKeyedFakeAgentServer do
+    @moduledoc false
+
+    # End-to-end string-keyed round-trip: the *inner* request map (meta +
+    # result + artifacts) is fully string-keyed (the shape a JSON-decoded
+    # request map produces). The outer envelope matches what
+    # Jido.AgentServer.await_completion emits.
+    def await_completion(_pid, _opts) do
+      {:ok,
+       %{
+         status: :completed,
+         result: %{
+           "status" => "completed",
+           "result" => %{
+             "status" => "completed",
+             "summary" => "Started server",
+             "files_changed" => [],
+             "notes" => "",
+             "artifacts" => %{"url" => "http://localhost:4000", "port" => "4000"}
+           },
+           "meta" => %{"output" => %{"status" => "validated", "schema_kind" => "map"}}
          }
        }}
     end

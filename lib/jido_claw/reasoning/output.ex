@@ -35,13 +35,19 @@ defmodule JidoClaw.Reasoning.Output do
   Coerce an agent-result map into a display string.
 
   Used by tools that pull intermediate or final outputs from a spawned
-  sub-agent. Prefers `:last_answer`, then `:answer`, then `:text`; falls
-  back to a pretty-printed inspect.
+  sub-agent. Prefers `:last_answer`, then `:answer`, then `:text`; for
+  typed structured-output maps (post `Jido.AI.Output` validation), falls
+  back to `:summary` and finally `:reasoning` so workflow transcripts get
+  prose instead of an inspected map. Anything else is pretty-printed.
   """
   @spec extract_result(any()) :: String.t()
   def extract_result(%{last_answer: answer}) when is_binary(answer), do: answer
   def extract_result(%{answer: answer}) when is_binary(answer), do: answer
   def extract_result(%{text: text}) when is_binary(text), do: text
+  def extract_result(%{summary: summary}) when is_binary(summary), do: summary
+  def extract_result(%{"summary" => summary}) when is_binary(summary), do: summary
+  def extract_result(%{reasoning: reasoning}) when is_binary(reasoning), do: reasoning
+  def extract_result(%{"reasoning" => reasoning}) when is_binary(reasoning), do: reasoning
   def extract_result(result) when is_binary(result), do: result
   def extract_result(result), do: inspect(result, limit: :infinity, pretty: true)
 
@@ -76,12 +82,9 @@ defmodule JidoClaw.Reasoning.Output do
   """
   @spec typed_request_output(map() | any()) :: map() | nil
   def typed_request_output(request) when is_map(request) do
-    case request_meta_output(request) do
-      %{status: status} when status in [:validated, :repaired] ->
-        case request_result(request) do
-          result when is_map(result) -> result
-          _ -> nil
-        end
+    case output_status(request_meta_output(request)) do
+      status when status in [:validated, :repaired, "validated", "repaired"] ->
+        typed_result(request)
 
       _ ->
         nil
@@ -89,4 +92,15 @@ defmodule JidoClaw.Reasoning.Output do
   end
 
   def typed_request_output(_), do: nil
+
+  defp output_status(%{status: status}), do: status
+  defp output_status(%{"status" => status}), do: status
+  defp output_status(_), do: nil
+
+  defp typed_result(request) do
+    case request_result(request) do
+      result when is_map(result) -> result
+      _ -> nil
+    end
+  end
 end
