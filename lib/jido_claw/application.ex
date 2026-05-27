@@ -128,6 +128,7 @@ defmodule JidoClaw.Application do
       {Registry, keys: :unique, name: JidoClaw.SessionRegistry},
       {Registry, keys: :unique, name: JidoClaw.TenantRegistry},
       {Registry, keys: :unique, name: JidoClaw.Memory.Consolidator.RunRegistry},
+      JidoClaw.Agent.Handoff.Registry,
       {Task.Supervisor, name: JidoClaw.TaskSupervisor},
       {Task.Supervisor, name: JidoClaw.Memory.Consolidator.TaskSupervisor},
       {Task.Supervisor, name: JidoClaw.Audit.TaskSupervisor},

@@ -150,19 +150,34 @@ Pairs naturally with hermes **T1-4** (FailoverReason classifier) — the Splode 
 
 ### T2-1. Conversation-ownership handoff (`Jidoka.Handoff`)
 
-**Status (2026-05-26)**: NOT_ADOPTED. There is no concept of "transfer ownership of this conversation to a different worker template and end this turn" anywhere in jido_radclaw. The closest pattern is `Tools.SpawnAgent` + `Tools.GetAgentResult`, which is a request/response model (parent stays in charge). Note: the trace surface (T1-1) already has `[:jido_claw, :handoff, :event]` wired in `collector.ex:103` — infrastructure-ready for an emitter.
+**Status (2026-05-27)**: ADOPTED — mid-conversation ownership transfer is a first-class capability. The main agent carries `JidoClaw.Tools.Handoff` (tool #31), the REPL and `JidoClaw.chat/4` both route through `JidoClaw.Agent.Handoff.Router.resolve_session_owner/6` before every dispatch, and ownership survives process restarts via `Conversations.Session.metadata["current_agent_template"]`.
 
-**Where in jidoka**: `lib/jidoka/handoff.ex`, `lib/jidoka/capability/handoff/registry.ex` (moved from `lib/jidoka/handoff/registry.ex` since the 2026-05-18 baseline), plus capability module
+Key facts:
 
-**What**: A handoff is a first-class conversation-ownership transfer (returned as `{:handoff, %Jidoka.Handoff{}}` from `Jidoka.chat/3`, not just a tool call). `Handoff.Registry` tracks the current owner per `conversation_id`. `Jidoka.handoff_owner/1` and `reset_handoff/1` are public APIs. Subsequent turns on the same conversation route to the new owner until reset.
+* **Modules**: `lib/jido_claw/agent/handoff.ex` (value struct), `lib/jido_claw/agent/handoff/registry.ex` (singleton GenServer keyed by `{tenant_id, runtime_session_id}`), `lib/jido_claw/agent/handoff/router.ex` (dispatch-time routing + preamble construction), `lib/jido_claw/tools/handoff.ex` (`handoff` tool with `output_schema`). Public API: `JidoClaw.handoff_owner/2`, `JidoClaw.reset_handoff/2`, `JidoClaw.reset_handoff/4`.
+* **Registry shape**: owner record carries `template`, `module`, `%Handoff{}`, `updated_at_ms`, plus two explicit booleans — `:preamble_consumed?` (toggled `true` after the first successful post-handoff turn) and `:prompt_injected?` (toggled `true` after `JidoClaw.Startup.inject_system_prompt/3` primes the routed worker pid). Both flags are assembled inside the registry so callers can't drift the invariants.
+* **Bounded preamble**: `Router.build_preamble/3` prepends a delimited `[HANDOFF CONTEXT … END HANDOFF CONTEXT]` block to the user message on the first post-handoff turn. Capped at `@max_preamble_bytes 4_000` total with per-field truncation (`@max_handoff_message_bytes 1_500`, `@max_handoff_summary_bytes 1_000`, `@max_handoff_reason_bytes 800`) plus a `@history_window 10` slice of recent chat history. Built BEFORE the current user message is written to `Session.Worker`, so the history window excludes the in-flight turn. The closing marker is preserved intact even under defense-in-depth clamping (truncating mid-marker would produce an unparseable preamble).
+* **Trust boundary**: preamble is a user-role string prepended to the user message — not a system-prompt mutation. Matches the same discipline T1-2 Compaction uses for summary injection.
+* **Durable mirror**: every successful handoff writes `Conversations.Session.metadata["current_agent_template"]` AND a `:system` `Conversations.Message` row ("Handed off from main to reviewer: …"). Both writes are best-effort — failure is logged but does not block the tool result. The metadata mirror is what makes cold-start hydration possible.
+* **Cold-start hydration**: `Session.Worker.set_session_uuid/3` re-seeds the registry from `metadata["current_agent_template"]` when a worker first learns its UUID after a restart. The original handoff message is lost across restarts, so hydration installs a placeholder owner with `preamble_consumed?: true` — the next post-restart turn lands on the worker raw rather than re-prepending a stale preamble. The Router's `cold_start_or_default/2` is the parallel path for cases where the runtime session isn't routed through `Session.Worker` first.
+* **Stale-template self-healing**: if `metadata["current_agent_template"]` names a template that no longer resolves via `Templates.get/1`, both `Session.Worker` hydration and `Router.route_with_owner/2` clear the metadata + log a warning and fall back to main.
+* **Worker lifecycle**: routed worker pids are addressed by `agent_id = "handoff:#{session_uuid}:#{template_name}"`. `Router.ensure_worker_pid/2` does a `Jido.whereis` first and falls back to `JidoClaw.Jido.start_agent/2`, treating `:already_started`/`:already_registered` as success. The Jido runtime module is `Application.get_env`-pluggable for tests.
+* **`/reset` semantics**: the REPL `/reset` command and `JidoClaw.reset_handoff/4` clear both the registry entry AND the durable metadata mirror so a later cold start doesn't reinstate a stale owner. `reset_handoff/2` is the registry-only path for callers without the `session_uuid`. The handoff tool explicitly rejects `to_template: "main"` with a hint to use `/reset` — handoff is a forward transition only.
+* **First-post-handoff barrier**: `Router.mark_preamble_consumed_on_success/5` only flips the flag when the dispatch returned `{:ok, _}` AND the registry still points at the same template (i.e. no concurrent re-handoff happened during the turn). Failures, timeouts, or template flips leave `preamble_consumed?: false` so the next turn re-prepends.
+* **System-prompt injection**: `Router.maybe_inject_prompt/6` calls `JidoClaw.Startup.inject_system_prompt/3` once per routed worker pid (gated on `prompt_injected?`). Failures are non-fatal and retry on the next turn.
+* **Tool context**: `JidoClaw.ToolContext` adds `:agent_template` as a canonical key alongside `:agent_id`. `:agent_id` is opaque runtime identity (`"handoff:<uuid>:<template>"`); `:agent_template` is the human-readable template name (`"reviewer"`, etc.) that the tool reads to derive `from_template`. `ToolContext.child/2` resets `:agent_template` to `nil` so swarm-spawned children aren't mis-attributed (they're not routed via the registry).
+* **Telemetry**: `JidoClaw.Tools.Handoff` emits `[:jido_claw, :handoff, :event]` with `event: :applied | :error`. The slot was already wired into `JidoClaw.Trace.Collector` (`lib/jido_claw/trace/collector.ex:103`) as part of T1-1; this entry is the first emitter and `event_name_label(:handoff, …)` already labels rows by template.
+* **Supervision**: `JidoClaw.Agent.Handoff.Registry` is started under `core_children` in `lib/jido_claw/application.ex:131`, alongside `SessionRegistry` and `TenantRegistry`.
+* **Tests landed**: registry unit, router unit, public-API integration, conversations dispatcher integration, conversations routing integration, worker hydration cold-start, tool unit, plus a `test/support/handoff_dispatch_capture.ex` helper.
 
-**Gap**: Today the chat REPL has no way to say "this isn't my job, route to a different worker." Routing decisions all happen at *spawn* time, not mid-conversation.
+**Adoption divergences from the original sketch**:
 
-**Why it matters**: A genuinely new capability that fits well with the existing platform. Example use case: a generic agent receives a request, decides it's a code-review task, and hands off to `Workers.Reviewer` for the rest of the conversation. The user sees a continuous chat but the routing optimization happens transparently. Foundation for tenant-level routing policies.
+* **Not returned as a directive**: the original sketch had `Platform.Session.Worker` interpret a `{:handoff, …}` directive returned from the tool. The shipped shape leaves `Session.Worker` ignorant of handoff — the Registry is the source of truth, and routing is resolved at the *next* turn's dispatch entry point (REPL + `run_chat_turn/8`) rather than mid-current-turn. The model's response to a `handoff` call is treated as a normal turn ending; the system prompt instructs the LLM to emit a brief acknowledgement only. This decoupling avoided invasive Session.Worker changes and made the tool composable with any future surface that calls `Router.resolve_session_owner/6`.
+* **Registry key is `{tenant_id, runtime_session_id}`, not `conversation_id`**: jido_radclaw doesn't have a single `conversation_id` — the runtime carries `(tenant, runtime_session_id)` and the durable layer carries `session_uuid`. The Registry uses the runtime key (hot-path); the `%Handoff{}` struct also carries `session_uuid` so cold-start and durable mirror paths have a UUID handle.
+* **Per-tenant scoping is implicit, not via a separate `Handoff.Registry` instance**: a single GenServer keyed by `(tenant, session)` covers the multitenant case without spawning per-tenant processes. `TenantRegistry` was not repurposed.
+* **'main' is a sentinel, not a target**: the tool rejects `to_template: "main"`. `/reset` is the only path back to main. This keeps the durable metadata mirror unambiguous — an absent `current_agent_template` key always means "main".
 
-**Adoption sketch**: New `JidoClaw.Agent.Handoff` struct (`to_agent`, `message`, `context`). New `Tools.Handoff` action that returns it as a directive. `Platform.Session.Worker` interprets the directive: ends the current turn, updates `Conversations.Session.metadata["current_agent_template"]`, optionally writes a `:system` message recording the transfer. Add a per-tenant `Handoff.Registry` (or repurpose the existing `TenantRegistry` infrastructure). The `[:jido_claw, :handoff, :event]` slot is already wired in the T1-1 Trace collector.
-
-The most independently shippable Tier 2 item — minimal blocking dependencies now that Trace has landed.
+**Where in jidoka**: `lib/jidoka/handoff.ex`, `lib/jidoka/capability/handoff/registry.ex` (moved from `lib/jidoka/handoff/registry.ex` since the 2026-05-18 baseline), plus the capability module.
 
 ---
 
@@ -311,12 +326,12 @@ Small polish to consider: the `Session.chat_opts/2` helper that merges per-turn 
 
 ## Cross-references and dependencies
 
-The Tier 1 four clustered into a dependency graph (all now ADOPTED as of 2026-05-26):
+The Tier 1 four clustered into a dependency graph (all now ADOPTED as of 2026-05-26); T2-1 followed on 2026-05-27:
 
 ```
 T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView
                │                    ├──> T2-4 Inspection
-               │                    └──> T2-1 Handoff (uses trace events)
+               │                    └──> T2-1 Handoff ✓ (emits trace events)
                ├──> T1-2 Compaction ✓ (emits trace events)
                └──> T1-3 Output ✓ (emits trace events)
 ```
@@ -328,11 +343,10 @@ T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView
 3. **T1-2 Compaction** — ADOPTED 2026-05-20. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; Postgres-backed snapshot in `Session.metadata["compaction"]`.
 4. **T1-3 Output** — ADOPTED 2026-05-26. All 7 worker templates carry structured-output contracts via upstream `Jido.AI.Output`.
 
-**Tier 2 sequencing** (T1 is complete; all items below are unblocked):
+**Tier 2 sequencing** (T1 is complete; T2-1 ADOPTED 2026-05-27; remaining items unblocked):
 
-- **T2-1 Handoff** — most independently shippable; the `[:jido_claw, :handoff, :event]` trace slot is already wired.
+- **T2-2 AgentView** + **T2-4 Inspection** — pair, the natural next focus now that handoff routing emits `:agent_template` into tool_context and Trace. AgentView would consume the routed template alongside the existing Session/Tracker/Trace sources.
 - **T2-3 Subagent context-visibility** — small policy add, security-flavored.
-- **T2-2 AgentView** + **T2-4 Inspection** — pair, now unblocked since T1-1 Trace has landed.
 - **T2-5 Schedule kind** — small ergonomic win, can ship anytime.
 - **T2-6 Imported agents** — defer until tenant-builder UI is on the roadmap.
 

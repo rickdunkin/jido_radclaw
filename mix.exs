@@ -143,7 +143,10 @@ defmodule JidoClaw.MixProject do
       {:jido, "~> 2.1", override: true},
       {:jido_ai, "~> 2.0", override: true},
       {:jido_action, "~> 2.0", override: true},
-      {:req_llm, "~> 1.6"},
+      {:req_llm,
+       github: "agentjido/req_llm",
+       ref: "87bbde942ff77380e7e2ed33847a624bbe5fa716",
+       override: true},
       {:libgraph,
        github: "zblanco/libgraph", ref: "32280656f808090df85f0facabac27a51a6d2f92", override: true},
 

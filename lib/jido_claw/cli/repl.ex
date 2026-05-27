@@ -4,9 +4,11 @@ defmodule JidoClaw.CLI.Repl do
   """
 
   alias JidoClaw.{Agent, AgentTracker, Config, Display, Session.Worker, Startup, Stats}
+  alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
   alias JidoClaw.Conversations.Recorder
+  alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Conversations.SessionId
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
   alias JidoClaw.Reasoning.StrategyRegistry
@@ -329,16 +331,41 @@ defmodule JidoClaw.CLI.Repl do
       )
     end
 
-    # Save the *raw* message here so session history captures what the user
-    # typed, not the hinted variant seen by the agent.
-    Worker.add_message(state.tenant_id, state.session_id, :user, message, request_id)
     Stats.track_message(:user)
 
     Display.reset_mode()
     Display.exit_input_mode()
     Display.start_thinking()
 
-    prepared = prepare_user_message(message, state.strategy)
+    actor = Actor.system(state.tenant_id)
+    session_record = fetch_session_record(state, actor)
+
+    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} =
+      HandoffRouter.resolve_session_owner(
+        state.tenant_id,
+        state.session_id,
+        state.session_uuid,
+        state.agent_pid,
+        actor,
+        project_dir: state.cwd,
+        session_record: session_record,
+        default_agent_id: state.agent_id
+      )
+
+    # 1. Build preamble BEFORE writing the current user message to
+    #    Session.Worker, so the recent-history window excludes this turn.
+    preamble =
+      if first_post_handoff? do
+        HandoffRouter.build_preamble(state.tenant_id, state.session_id, owner)
+      else
+        ""
+      end
+
+    # 2. Persist the *raw* user message — durable history reflects what the user
+    #    typed, not the strategy-prepared or preambled variant.
+    Worker.add_message(state.tenant_id, state.session_id, :user, message, request_id)
+
+    prepared_raw = prepare_user_message(message, state.strategy)
 
     tool_context =
       JidoClaw.ToolContext.build(%{
@@ -348,21 +375,32 @@ defmodule JidoClaw.CLI.Repl do
         session_uuid: state.session_uuid,
         workspace_id: state.session_id,
         workspace_uuid: state.workspace_uuid,
-        agent_id: state.agent_id
+        agent_id: routed_agent_id,
+        agent_template: routed_template
       })
 
-    case Agent.ask(state.agent_pid, prepared,
+    prepared_with_preamble = preamble <> prepared_raw
+
+    case Agent.ask(routed_pid, prepared_with_preamble,
            timeout: 120_000,
            request_id: request_id,
            tool_context: tool_context
          ) do
       {:ok, handle} ->
-        result = poll_with_tool_display(handle, state.agent_pid, MapSet.new())
+        result = poll_with_tool_display(handle, routed_pid, routed_template, MapSet.new())
 
         Display.stop_thinking()
 
         # Barrier: assistant row must come AFTER tool/reasoning rows.
         _ = Recorder.flush(request_id)
+
+        HandoffRouter.mark_preamble_consumed_on_success(
+          state.tenant_id,
+          state.session_id,
+          routed_template,
+          first_post_handoff?,
+          result
+        )
 
         case result do
           {:ok, answer} when is_binary(answer) ->
@@ -388,19 +426,33 @@ defmodule JidoClaw.CLI.Repl do
     end
   end
 
+  defp fetch_session_record(%{session_uuid: nil}, _actor), do: nil
+
+  defp fetch_session_record(%{session_uuid: uuid, tenant_id: tenant_id}, actor)
+       when is_binary(uuid) do
+    case ConversationsSession.by_id(uuid, tenant: tenant_id, actor: actor) do
+      {:ok, session} -> session
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp fetch_session_record(_state, _actor), do: nil
+
   # Poll for request completion, displaying tool calls as they appear.
   # seen_ids is a MapSet of {tool_call_id, stage} tuples already displayed.
-  defp poll_with_tool_display(handle, agent_pid, seen_ids) do
-    new_seen = display_new_tool_calls(agent_pid, seen_ids)
+  defp poll_with_tool_display(handle, agent_pid, agent_label, seen_ids) do
+    new_seen = display_new_tool_calls(agent_pid, agent_label, seen_ids)
 
     case Agent.await(handle, timeout: 600) do
       {:ok, result} ->
         # Final sweep to catch any completions logged after the last poll
-        display_new_tool_calls(agent_pid, new_seen)
+        display_new_tool_calls(agent_pid, agent_label, new_seen)
         {:ok, result}
 
       {:error, :timeout} ->
-        poll_with_tool_display(handle, agent_pid, new_seen)
+        poll_with_tool_display(handle, agent_pid, agent_label, new_seen)
 
       {:error, reason} ->
         {:error, reason}
@@ -409,7 +461,7 @@ defmodule JidoClaw.CLI.Repl do
     _ -> {:error, "Request failed"}
   catch
     :exit, {:timeout, _} ->
-      poll_with_tool_display(handle, agent_pid, seen_ids)
+      poll_with_tool_display(handle, agent_pid, agent_label, seen_ids)
 
     :exit, reason ->
       {:error, inspect(reason)}
@@ -418,7 +470,7 @@ defmodule JidoClaw.CLI.Repl do
   # Read the current pending_tool_calls from the agent status snapshot and
   # print any tool starts/completions not yet in seen_ids.
   # Returns the updated seen_ids MapSet.
-  defp display_new_tool_calls(agent_pid, seen_ids) do
+  defp display_new_tool_calls(agent_pid, agent_label, seen_ids) do
     case Jido.AgentServer.status(agent_pid) do
       {:ok, %{snapshot: snapshot}} ->
         tool_calls = Map.get(snapshot, :tool_calls, [])
@@ -431,8 +483,8 @@ defmodule JidoClaw.CLI.Repl do
 
           acc =
             if name != "" and not MapSet.member?(acc, {id, :started}) do
-              Stats.track_tool_call("main", name)
-              Display.tool_start("main", name, args)
+              Stats.track_tool_call(agent_label, name)
+              Display.tool_start(agent_label, name, args)
               MapSet.put(acc, {id, :started})
             else
               acc
@@ -441,7 +493,7 @@ defmodule JidoClaw.CLI.Repl do
           if completed and not MapSet.member?(acc, {id, :completed}) and name != "" do
             # Extract tool result for rich display preview
             result = tc_result(tc)
-            Display.tool_complete("main", name, result)
+            Display.tool_complete(agent_label, name, result)
             MapSet.put(acc, {id, :completed})
           else
             acc

@@ -50,10 +50,14 @@ defmodule JidoClaw.Session.Worker do
   use GenServer
   require Logger
 
+  alias JidoClaw.Agent.Handoff
+  alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Conversations.Session, as: ConversationsSession
 
   @idle_timeout 300_000
 
@@ -234,6 +238,7 @@ defmodule JidoClaw.Session.Worker do
   @impl true
   def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: nil} = state) do
     messages = load_messages(uuid, state.tenant_id, state.actor)
+    _ = seed_handoff_from_metadata(state.tenant_id, state.id, uuid, state.actor)
     {:reply, :ok, %{state | session_uuid: uuid, messages: messages}, @idle_timeout}
   end
 
@@ -369,4 +374,61 @@ defmodule JidoClaw.Session.Worker do
       end
     end)
   end
+
+  # Re-hydrate the handoff registry from the durable session metadata
+  # when the worker first learns its session_uuid. The original handoff
+  # message is lost across restarts; we install a placeholder owner with
+  # preamble_consumed?: true so the first post-restart turn just lands
+  # on the worker raw. Stale templates clear metadata + log.
+  defp seed_handoff_from_metadata(tenant_id, runtime_session_id, session_uuid, actor)
+       when is_binary(tenant_id) and is_binary(runtime_session_id) and is_binary(session_uuid) do
+    actor = actor || Actor.system(tenant_id)
+
+    case ConversationsSession.by_id(session_uuid, tenant: tenant_id, actor: actor) do
+      {:ok, %{metadata: %{"current_agent_template" => template_name}} = session}
+      when is_binary(template_name) ->
+        case Templates.get(template_name) do
+          {:ok, template} ->
+            handoff =
+              Handoff.new(%{
+                tenant_id: tenant_id,
+                runtime_session_id: runtime_session_id,
+                session_uuid: session_uuid,
+                from_template: "<rehydrated>",
+                to_template: template_name,
+                to_module: template.module,
+                message: "<rehydrated>"
+              })
+
+            :ok =
+              HandoffRegistry.put_owner(tenant_id, runtime_session_id, handoff,
+                preamble_consumed?: true
+              )
+
+            :ok
+
+          {:error, _} ->
+            Logger.warning(
+              "[Session] #{runtime_session_id} stale current_agent_template '#{template_name}' — clearing metadata"
+            )
+
+            _ =
+              ConversationsSession.set_current_agent_template(session, nil,
+                tenant: tenant_id,
+                actor: actor
+              )
+
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
+  rescue
+    e ->
+      Logger.warning("[Session] handoff hydration raised: #{Exception.message(e)}")
+      :ok
+  end
+
+  defp seed_handoff_from_metadata(_, _, _, _), do: :ok
 end

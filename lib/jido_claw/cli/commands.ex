@@ -46,6 +46,20 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  def handle("/reset", state) do
+    actor = Actor.system(state.tenant_id)
+
+    JidoClaw.reset_handoff(
+      state.tenant_id,
+      state.session_id,
+      state.session_uuid,
+      actor
+    )
+
+    IO.puts("  \e[2mHandoff ownership cleared. Next turn goes to main.\e[0m")
+    {:ok, state}
+  end
+
   def handle("/status", state) do
     alias JidoClaw.Config
 

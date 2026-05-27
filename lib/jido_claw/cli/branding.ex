@@ -168,6 +168,7 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m  \e[1mSession\e[0m                                         \e[36m│\e[0m
     \e[36m│\e[0m    /quit            Exit                            \e[36m│\e[0m
     \e[36m│\e[0m    /clear           Clear screen                    \e[36m│\e[0m
+    \e[36m│\e[0m    /reset           Return handoff ownership to main \e[36m│\e[0m
     \e[36m│\e[0m    /help            Show this help                  \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mConfig\e[0m                                          \e[36m│\e[0m

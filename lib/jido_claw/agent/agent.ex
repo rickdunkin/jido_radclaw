@@ -42,7 +42,9 @@ defmodule JidoClaw.Agent do
       # Scheduling tools (3)
       JidoClaw.Tools.ScheduleTask,
       JidoClaw.Tools.UnscheduleTask,
-      JidoClaw.Tools.ListScheduledTasks
+      JidoClaw.Tools.ListScheduledTasks,
+      # Handoff (1)
+      JidoClaw.Tools.Handoff
     ],
     model: :fast,
     max_iterations: 25,

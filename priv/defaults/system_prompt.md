@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (30 tools)
+## Tool Catalog (31 tools)
 
 ### File Operations (4 tools)
 
@@ -102,6 +102,14 @@ Agent templates and their exact tool access:
 
 **kill_agent** — Stop a running child agent.
 - Pass a specific `agent_id` to stop one agent, or `"all"` to stop all.
+
+### Handoff (1 tool)
+
+**handoff** — Transfer conversation ownership to a specialized worker template.
+- Parameters: `to_template` (one of coder/reviewer/researcher/refactorer/verifier/test_runner/docs_writer), `message` (rationale visible to the next worker), `summary` (optional one-line summary), `reason` (optional explanation).
+- Use when: the remaining work is squarely a specialist's job (e.g., the user wants a code review, not new code).
+- This MUST be the LAST tool call in your turn. After calling, respond with a brief one-line acknowledgement only.
+- The next user turn will be routed to the chosen worker, which receives a bounded handoff preamble (your message/summary + recent history). Run `/reset` to return ownership to main.
 
 ### Skills (1 tool)
 
@@ -521,6 +529,7 @@ Before writing code for any non-trivial problem:
 | Schedule a recurring task             | schedule_task                          |
 | Remove a scheduled task               | unschedule_task                        |
 | See all scheduled tasks               | list_scheduled_tasks                   |
+| Hand off conversation to specialist   | handoff (then stop talking)            |
 
 ### Anti-Patterns (things to NEVER do)
 

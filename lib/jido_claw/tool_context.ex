@@ -19,6 +19,10 @@ defmodule JidoClaw.ToolContext do
     * `:workspace_uuid` — Phase 0 UUID FK target (`Workspaces.Workspace.id`)
     * `:user_id`        — UUID of the authenticated user; nil for CLI/Discord/Telegram
     * `:agent_id`       — runtime agent identity (e.g. `"main"` or a session id)
+    * `:agent_template` — current routed template name (e.g., `"main"`,
+                           `"reviewer"`). Distinct from `:agent_id`, which is
+                           the opaque runtime identity. Used by the handoff
+                           tool to derive `from_template` cleanly.
     * `:actor`          — Ash authorization actor map; built by
                            `JidoClaw.Authorization.Actor`. Nil for paths
                            that haven't resolved an actor (system / public)
@@ -38,6 +42,7 @@ defmodule JidoClaw.ToolContext do
     :workspace_uuid,
     :user_id,
     :agent_id,
+    :agent_template,
     :actor
   ]
 
@@ -67,6 +72,10 @@ defmodule JidoClaw.ToolContext do
   `send_to_agent`) so child agents inherit the parent's full scope —
   `tenant_id`, `session_uuid`, `workspace_uuid`, `forge_session_key` —
   rather than just `:project_dir` + `:workspace_id`.
+
+  Resets `:agent_template` to `nil` because spawned children are not
+  routed via the handoff registry; callers that need a specific template
+  attribution should set it explicitly after the call.
   """
   @spec child(map() | nil, String.t()) :: map()
   def child(parent_tool_context, child_tag) when is_binary(child_tag) do
@@ -74,6 +83,7 @@ defmodule JidoClaw.ToolContext do
 
     parent
     |> Map.put(:agent_id, child_tag)
+    |> Map.put(:agent_template, nil)
     |> Map.put(:project_dir, Map.get(parent, :project_dir) || File.cwd!())
     |> build()
   end

@@ -12,6 +12,7 @@ defmodule JidoClaw.ToolContextShapeTest do
     :workspace_uuid,
     :user_id,
     :agent_id,
+    :agent_template,
     :actor
   ]
 
@@ -68,6 +69,18 @@ defmodule JidoClaw.ToolContextShapeTest do
       assert child.session_uuid == "ss"
       assert child.workspace_uuid == "ws"
       assert child.project_dir == "/tmp/foo"
+    end
+
+    test "resets :agent_template to nil even when parent had one set" do
+      parent = %{
+        project_dir: "/tmp/foo",
+        tenant_id: "tA",
+        agent_id: "main",
+        agent_template: "reviewer"
+      }
+
+      child = ToolContext.child(parent, "child_tag")
+      assert child.agent_template == nil
     end
 
     test "defaults :project_dir to File.cwd!() for a nil parent" do

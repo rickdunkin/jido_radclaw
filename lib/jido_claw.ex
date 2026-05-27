@@ -18,6 +18,8 @@ defmodule JidoClaw do
 
   require Logger
 
+  alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
+  alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations
   alias JidoClaw.Conversations.Message, as: ConversationsMessage
@@ -147,6 +149,11 @@ defmodule JidoClaw do
     end
   end
 
+  defp ask_runtime, do: Application.get_env(:jido_claw, :ask_runtime, JidoClaw.Agent)
+
+  defp recorder_flush_timeout,
+    do: Application.get_env(:jido_claw, :recorder_flush_timeout, 30_000)
+
   defp resolve_agent_pid(session_id) do
     case Jido.whereis(JidoClaw.Jido, session_id) do
       pid when is_pid(pid) ->
@@ -177,13 +184,32 @@ defmodule JidoClaw do
 
     register_correlation(request_id, session.id, tenant_id, workspace.id, user_id)
 
-    SessionWorker.add_message(tenant_id, session_id, :user, message, request_id)
-
     actor =
       Keyword.get(opts, :actor) ||
         if user_id,
           do: %{user_id: user_id, tenant_id: tenant_id},
           else: Actor.system(tenant_id)
+
+    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} =
+      HandoffRouter.resolve_session_owner(
+        tenant_id,
+        session_id,
+        session.id,
+        agent_pid,
+        actor,
+        project_dir: project_dir,
+        session_record: session,
+        default_agent_id: session_id
+      )
+
+    preamble =
+      if first_post_handoff? do
+        HandoffRouter.build_preamble(tenant_id, session_id, owner)
+      else
+        ""
+      end
+
+    SessionWorker.add_message(tenant_id, session_id, :user, message, request_id)
 
     tool_context =
       JidoClaw.ToolContext.build(%{
@@ -194,12 +220,13 @@ defmodule JidoClaw do
         workspace_id: session_id,
         workspace_uuid: workspace.id,
         user_id: user_id,
-        agent_id: session_id,
+        agent_id: routed_agent_id,
+        agent_template: routed_template,
         actor: actor
       })
 
     response =
-      JidoClaw.Agent.ask_sync(agent_pid, message,
+      ask_runtime().ask_sync(routed_pid, preamble <> message,
         timeout: 120_000,
         request_id: request_id,
         tool_context: tool_context
@@ -208,8 +235,19 @@ defmodule JidoClaw do
     # Barrier: ensure all tool/reasoning rows for this request are
     # committed BEFORE the assistant row is written, so the assistant
     # row's sequence is strictly greater than every tool/reasoning
-    # row's sequence. Non-fatal on timeout — log and continue.
-    _ = Recorder.flush(request_id)
+    # row's sequence. Non-fatal on timeout — log and continue. The
+    # timeout is configurable so tests that stub out the LLM (and
+    # therefore never see a completion signal) can short-circuit
+    # without blocking on the default 30s wait.
+    _ = Recorder.flush(request_id, recorder_flush_timeout())
+
+    HandoffRouter.mark_preamble_consumed_on_success(
+      tenant_id,
+      session_id,
+      routed_template,
+      first_post_handoff?,
+      response
+    )
 
     handle_response(response, tenant_id, session_id, request_id)
   rescue
@@ -408,6 +446,62 @@ defmodule JidoClaw do
       content: content,
       timestamp: DateTime.to_unix(inserted_at, :millisecond)
     }
+  end
+
+  @doc """
+  Return the current handoff owner record for `(tenant, runtime_session_id)`,
+  or `nil` when ownership is at main (no active handoff).
+  """
+  @spec handoff_owner(String.t(), String.t()) :: map() | nil
+  def handoff_owner(tenant_id, runtime_session_id)
+      when is_binary(tenant_id) and is_binary(runtime_session_id) do
+    HandoffRegistry.owner(tenant_id, runtime_session_id)
+  end
+
+  @doc """
+  Clear the handoff registry entry for `(tenant, runtime_session_id)`.
+
+  Registry-only — use when `session_uuid` is unknown. Idempotent.
+  """
+  @spec reset_handoff(String.t(), String.t()) :: :ok
+  def reset_handoff(tenant_id, runtime_session_id)
+      when is_binary(tenant_id) and is_binary(runtime_session_id) do
+    HandoffRegistry.clear(tenant_id, runtime_session_id)
+  end
+
+  @doc """
+  Clear the handoff registry entry AND the durable
+  `Conversations.Session.metadata["current_agent_template"]` mirror.
+
+  Preferred when `session_uuid` is known so cold-start hydration on a
+  later boot doesn't reinstate a stale owner.
+  """
+  @spec reset_handoff(String.t(), String.t(), String.t() | nil, map() | nil) :: :ok
+  def reset_handoff(tenant_id, runtime_session_id, session_uuid, actor)
+      when is_binary(tenant_id) and is_binary(runtime_session_id) do
+    :ok = HandoffRegistry.clear(tenant_id, runtime_session_id)
+
+    if is_binary(session_uuid) do
+      actor = actor || Actor.system(tenant_id)
+
+      case ConversationsSession.by_id(session_uuid, tenant: tenant_id, actor: actor) do
+        {:ok, session} ->
+          _ =
+            ConversationsSession.set_current_agent_template(session, nil,
+              tenant: tenant_id,
+              actor: actor
+            )
+
+          :ok
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
   end
 
   @doc "Create a new tenant."

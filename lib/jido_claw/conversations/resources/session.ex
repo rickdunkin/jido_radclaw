@@ -49,6 +49,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_next_sequence, action: :set_next_sequence, args: [:next_sequence])
     define(:set_prompt_snapshot, action: :set_prompt_snapshot, args: [:snapshot])
     define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:snapshot])
+    define(:set_current_agent_template, action: :set_current_agent_template, args: [:template])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
 
@@ -148,6 +149,25 @@ defmodule JidoClaw.Conversations.Session do
           :metadata,
           Map.put(md, "compaction", snap)
         )
+      end)
+    end
+
+    update :set_current_agent_template do
+      accept([])
+      argument(:template, :string, allow_nil?: true)
+      require_atomic?(false)
+
+      change(fn changeset, _ctx ->
+        template = Ash.Changeset.get_argument(changeset, :template)
+        md = Ash.Changeset.get_attribute(changeset, :metadata) || %{}
+
+        new_md =
+          case template do
+            nil -> Map.delete(md, "current_agent_template")
+            value -> Map.put(md, "current_agent_template", value)
+          end
+
+        Ash.Changeset.force_change_attribute(changeset, :metadata, new_md)
       end)
     end
 
