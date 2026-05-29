@@ -4,6 +4,7 @@ defmodule JidoClaw.Tools.InspectAgentTest do
   import JidoClaw.TraceTestHelpers, only: [sync_collector: 0]
 
   alias JidoClaw.Conversations.RequestCorrelation
+  alias JidoClaw.Memory.Block
   alias JidoClaw.Tools.InspectAgent
 
   setup do
@@ -127,6 +128,62 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       refute leaf_violates?(output.compaction)
       assert output.compaction["status"] == "summarized"
       assert output.compaction["strategy"] == "summary"
+    end
+
+    test "memory is exposed slimmed to {scope_kind, blocks_count} — no raw scope/namespace", %{
+      tenant_id: tid,
+      session: session,
+      workspace: workspace,
+      actor: actor
+    } do
+      # `kind: "session"` (map path) stays nil by design, so prove the
+      # non-nil path via `kind: "request"` (mirrors the compaction test
+      # setup). Seed one session-scoped block so blocks_count is known.
+      {:ok, _} =
+        Block.write(
+          %{
+            scope_kind: :session,
+            session_id: session.id,
+            label: "req_pref",
+            value: "session-scoped block",
+            source: :user
+          },
+          tenant: tid,
+          actor: actor
+        )
+
+      request_id = Ecto.UUID.generate()
+
+      {:ok, _} =
+        RequestCorrelation.register(%{
+          request_id: request_id,
+          session_id: session.id,
+          tenant_id: tid,
+          workspace_id: workspace.id,
+          user_id: nil
+        })
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{
+          agent_id: session.external_id,
+          request_id: request_id,
+          tenant_id: tid,
+          run_id: request_id
+        }
+      )
+
+      :ok = sync_collector()
+
+      assert {:ok, output} =
+               InspectAgent.run(%{target: request_id, kind: "request"}, ctx(tid))
+
+      # String-keyed (routed through JsonSafe), slimmed to kind + count.
+      assert output.memory == %{"scope_kind" => "session", "blocks_count" => 1}
+      # The raw-UUID scope sub-map and the FK-bearing namespace are dropped.
+      refute Map.has_key?(output.memory, "scope")
+      refute Map.has_key?(output.memory, "namespace")
     end
   end
 

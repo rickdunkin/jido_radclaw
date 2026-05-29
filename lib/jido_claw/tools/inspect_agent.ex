@@ -11,6 +11,14 @@ defmodule JidoClaw.Tools.InspectAgent do
   tenant-facing tool would leak cross-tenant runtime state. Workflow-run
   inspection is intentionally not exposed here for the same reason — use
   `JidoClaw.Inspection.inspect_workflow/1` from trusted local callers.
+
+  `:memory` IS exposed (it is tenant-scoped via `Memory.Scope.resolve`,
+  tenant read strictly from `tool_context.tenant_id`) but is slimmed to
+  `%{scope_kind, blocks_count}` — both the raw-UUID `scope` sub-map and
+  the FK embedded in `namespace` (`"session:<uuid>"` would leak the
+  session UUID, e.g. on `kind: "request"`) are dropped at the boundary.
+  Local Elixir callers keep the full `namespace`/`scope`. Contrast with
+  the fully-dropped `:subagents`/`:workflows`.
   """
 
   use JidoClaw.Tools.Action,
@@ -27,6 +35,7 @@ defmodule JidoClaw.Tools.InspectAgent do
       context_preview: [type: :string, required: false],
       handoffs: [type: :map, required: false],
       compaction: [type: :map, required: false],
+      memory: [type: :map, required: false],
       usage: [type: :map, required: true],
       duration_ms: [type: :integer, required: false],
       error: [type: :map, required: false],
@@ -120,6 +129,7 @@ defmodule JidoClaw.Tools.InspectAgent do
       context_preview: s.context_preview,
       handoffs: JsonSafe.encode(s.handoffs),
       compaction: JsonSafe.encode(s.compaction),
+      memory: s.memory |> slim_memory() |> JsonSafe.encode(),
       usage: JsonSafe.encode(s.usage),
       duration_ms: s.duration_ms,
       error: JsonSafe.encode(s.error),
@@ -128,4 +138,14 @@ defmodule JidoClaw.Tools.InspectAgent do
       input_kind: Atom.to_string(s.input_kind)
     }
   end
+
+  # Expose only the scope *kind* + block count at the MCP boundary — never
+  # an FK or raw UUID. Both the `scope` sub-map and the FK embedded in
+  # `namespace` are dropped; routing through `JsonSafe.encode/1` (above)
+  # then string-keys the result like the other nested maps. Anything that
+  # isn't the resolved shape (incl. `nil`) becomes `nil`.
+  defp slim_memory(%{blocks_count: count, scope: %{scope_kind: kind}}),
+    do: %{scope_kind: to_string(kind), blocks_count: count}
+
+  defp slim_memory(_), do: nil
 end

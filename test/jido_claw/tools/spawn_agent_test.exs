@@ -27,6 +27,17 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     end
   end
 
+  defmodule RestrictedTemplates do
+    def get("coder") do
+      {:ok,
+       %{
+         module: JidoClaw.Tools.SpawnAgentTest.FakeWorker,
+         description: "fake coder",
+         forward_context: :none
+       }}
+    end
+  end
+
   defmodule FakeWorker do
     def ask_sync(pid, task, opts) do
       send(
@@ -113,6 +124,54 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
 
     assert %{id: ^agent_id, template: "coder", request_id: ^request_id} =
              AgentTracker.get_agent(agent_id)
+
+    Process.exit(pid, :kill)
+  end
+
+  test "applies the template's forward_context policy to the child tool_context" do
+    configure_fake_spawn()
+    Application.put_env(:jido_claw, :agent_templates, RestrictedTemplates)
+
+    # No tenant_id here so register_child_correlation skips the DB write
+    # (this test has no sandbox); session_uuid still proves a structural
+    # key survives the policy.
+    tool_context = %{
+      session_uuid: "s",
+      user_id: "u",
+      workspace_uuid: "w",
+      actor: %{kind: :system}
+    }
+
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: tool_context})
+
+    assert_receive {:start_agent, [id: ^agent_id], pid}
+    assert_receive {:ask_sync, ^pid, "do work", opts}
+
+    child_ctx = opts[:tool_context]
+    assert child_ctx.user_id == nil
+    assert child_ctx.workspace_uuid == nil
+    assert child_ctx.actor == nil
+    assert child_ctx.session_uuid == "s"
+
+    Process.exit(pid, :kill)
+  end
+
+  test "default template (no forward_context) forwards the full scope" do
+    configure_fake_spawn()
+
+    tool_context = %{session_uuid: "s", user_id: "u", workspace_uuid: "w"}
+
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: tool_context})
+
+    assert_receive {:start_agent, [id: ^agent_id], pid}
+    assert_receive {:ask_sync, ^pid, "do work", opts}
+
+    child_ctx = opts[:tool_context]
+    assert child_ctx.user_id == "u"
+    assert child_ctx.workspace_uuid == "w"
+    assert child_ctx.session_uuid == "s"
 
     Process.exit(pid, :kill)
   end

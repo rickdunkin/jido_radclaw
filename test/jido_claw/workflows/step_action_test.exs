@@ -170,6 +170,74 @@ defmodule JidoClaw.Workflows.StepActionTest do
     end
   end
 
+  # Exercises the B3 enforcement site in `run/2`: the template's
+  # forward_context policy is applied (via ToolContext.apply_visibility)
+  # to the resolved scope BEFORE building the child tool_context, so the
+  # worker never sees the stripped keys.
+  describe "run/2 — forward_context policy" do
+    setup do
+      pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      on_exit(fn -> Sandbox.stop_owner(pid) end)
+
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "echo_restricted" => %{
+          module: EchoStub,
+          description: "test-only restricted echo template",
+          model: :fast,
+          max_iterations: 1,
+          forward_context: :none
+        }
+      })
+
+      Application.put_env(:jido_claw, :echo_stub_target, self())
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :echo_stub_target)
+      end)
+
+      :ok
+    end
+
+    test "nulls policy-controlled keys but keeps tenant_id/session_uuid intact" do
+      tenant_id = "tenant-fc-#{System.unique_integer([:positive])}"
+      project_dir = "/tmp/fc-#{System.unique_integer([:positive])}"
+
+      {:ok, workspace} = JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir)
+
+      {:ok, session} =
+        JidoClaw.Conversations.Resolver.ensure_session(
+          tenant_id,
+          workspace.id,
+          :api,
+          "ext-#{System.unique_integer([:positive])}"
+        )
+
+      scope = %{
+        tenant_id: tenant_id,
+        session_uuid: session.id,
+        workspace_uuid: workspace.id,
+        user_id: "00000000-0000-0000-0000-0000ffff0002",
+        actor: %{kind: :system},
+        project_dir: project_dir
+      }
+
+      assert {:ok, _} =
+               StepAction.run(%{template: "echo_restricted", task: "go"}, %{tool_context: scope})
+
+      assert_receive {:echo_stub, :tool_context, tc}, 5_000
+
+      # Policy-controlled keys are nulled before the worker sees them.
+      assert tc.user_id == nil
+      assert tc.workspace_uuid == nil
+      assert tc.actor == nil
+
+      # Structural keys survive so correlation + trace linkage keep working.
+      assert tc.tenant_id == tenant_id
+      assert tc.session_uuid == session.id
+    end
+  end
+
   # Covers the `run_step_async` branch — `EchoStub` only implements
   # `ask_sync/3`, so without a stub that exports `ask/3` the
   # `function_exported?` check at `run_step/7` always falls through to

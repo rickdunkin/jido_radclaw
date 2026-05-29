@@ -27,6 +27,7 @@ defmodule JidoClaw.Inspection do
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Inspection.Summary
   alias JidoClaw.MCPServer
+  alias JidoClaw.Memory
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Reasoning.Compactor.Storage, as: CompactorStorage
   alias JidoClaw.Session.Worker, as: SessionWorker
@@ -129,7 +130,8 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       context_preview: context_preview_for_request(session_uuid, request_id, tenant_id, actor),
-      compaction: compaction_for(session_uuid, tenant_id, actor)
+      compaction: compaction_for(session_uuid, tenant_id, actor),
+      memory: memory_for(session_uuid, tenant_id)
     }
   end
 
@@ -494,6 +496,7 @@ defmodule JidoClaw.Inspection do
       mcp_tools: mcp_tool_names(),
       handoffs: handoff_view(owner),
       compaction: compaction_for(session.id, tenant_id, actor),
+      memory: memory_for(session.id, tenant_id),
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
       duration_ms: duration_from_trace(trace),
@@ -516,6 +519,7 @@ defmodule JidoClaw.Inspection do
       tool_names: tool_names_for_module(JidoClaw.Agent),
       mcp_tools: mcp_tool_names(),
       compaction: compaction_for(session.id, tenant_id, actor),
+      memory: memory_for(session.id, tenant_id),
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
       duration_ms: duration_from_trace(trace),
@@ -682,6 +686,16 @@ defmodule JidoClaw.Inspection do
         []
     end
   end
+
+  # `:memory` is sourced from `Memory.namespace_info/1`, which resolves the
+  # scope strictly from `tenant_id` + `session_uuid`. The map-input dispatch
+  # (`session_map_summary/3`) has no session UUID, so `:memory` stays `nil`
+  # there — parallel to `compaction`.
+  defp memory_for(nil, _tenant_id), do: nil
+  defp memory_for(_session_uuid, nil), do: nil
+
+  defp memory_for(session_uuid, tenant_id),
+    do: safe(fn -> Memory.namespace_info(%{tenant_id: tenant_id, session_uuid: session_uuid}) end)
 
   defp compaction_for(nil, _tenant_id, _actor), do: nil
 

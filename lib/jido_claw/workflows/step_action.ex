@@ -67,7 +67,9 @@ defmodule JidoClaw.Workflows.StepAction do
     with {:ok, template} <- Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
          scope = resolve_scope(params, context, tag),
-         tool_context = JidoClaw.ToolContext.build(scope),
+         visibility = Map.get(template, :forward_context, :public),
+         scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
+         tool_context = JidoClaw.ToolContext.build(scoped),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
       request_id = JidoClaw.register_child_correlation(tool_context)
 

@@ -225,6 +225,11 @@ defmodule JidoClaw do
         actor: actor
       })
 
+    # Handoff routing is an ownership *transfer*, not a freshly-built child
+    # context: the same conversation's `tool_context` is routed to the owning
+    # worker as-is. Full-context continuity is the defining purpose of handoff,
+    # so the `forward_context` visibility policy (spawn / follow-up /
+    # workflow-step) deliberately does NOT apply here.
     response =
       ask_runtime().ask_sync(routed_pid, preamble <> message,
         timeout: 120_000,

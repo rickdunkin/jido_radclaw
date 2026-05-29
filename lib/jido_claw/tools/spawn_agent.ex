@@ -68,8 +68,10 @@ defmodule JidoClaw.Tools.SpawnAgent do
   end
 
   defp register_spawned_agent(pid, template, template_name, task, tag, context) do
+    visibility = Map.get(template, :forward_context, :public)
+
     child_tool_context =
-      JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag)
+      JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag, visibility)
       |> Map.put(:swarm_depth, swarm_depth(context) + 1)
 
     request_id = JidoClaw.register_child_correlation(child_tool_context)

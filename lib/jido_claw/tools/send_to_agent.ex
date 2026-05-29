@@ -31,8 +31,12 @@ defmodule JidoClaw.Tools.SendToAgent do
   defp send_to_agent(pid, params, context) do
     case template_for_agent(params.agent_id) do
       {:ok, template} ->
+        # Re-apply the template's forward_context on every follow-up so a
+        # child can't be re-widened mid-conversation.
+        visibility = Map.get(template, :forward_context, :public)
+
         child_tool_context =
-          JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id)
+          JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id, visibility)
 
         request_id = JidoClaw.register_child_correlation(child_tool_context)
 

@@ -1,6 +1,8 @@
 defmodule JidoClaw.Agent.TemplatesTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias JidoClaw.Agent.Templates
 
   @valid_names ~w[coder test_runner reviewer docs_writer researcher refactorer verifier]
@@ -201,5 +203,64 @@ defmodule JidoClaw.Agent.TemplatesTest do
     test "should return false for nil-like strings" do
       assert Templates.exists?("nil") == false
     end
+  end
+
+  describe "forward_context hydration" do
+    test "static templates default to :public" do
+      for name <- @valid_names do
+        assert {:ok, %{forward_context: :public}} = Templates.get(name)
+      end
+
+      assert {:ok, %{forward_context: :public}} = Templates.get("coder")
+    end
+
+    test "a valid {:only, [...]} policy survives hydration unchanged" do
+      with_fc_override({:only, [:user_id]}, fn ->
+        assert {:ok, %{forward_context: {:only, [:user_id]}}} = Templates.get("fc_test")
+      end)
+    end
+
+    test ~s(string-key policy {:only, ["user_id"]} fails closed to :none) do
+      assert_fc_fails_closed({:only, ["user_id"]})
+    end
+
+    test "typo'd-atom policy {:except, [:usr_id]} fails closed to :none (would else fail OPEN)" do
+      assert_fc_fails_closed({:except, [:usr_id]})
+    end
+
+    test "a bogus value fails closed to :none" do
+      assert_fc_fails_closed(:nope)
+    end
+  end
+
+  # Register a one-off `"fc_test"` template carrying `forward_context: fc`
+  # via the override hook, run `fun`, then restore the prior override.
+  defp with_fc_override(fc, fun) do
+    original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+
+    template = %{module: JidoClaw.Agent.Workers.Coder, max_iterations: 1, forward_context: fc}
+
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      Map.put(original, "fc_test", template)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:jido_claw, :agent_templates_override, original)
+    end
+  end
+
+  defp assert_fc_fails_closed(fc) do
+    with_fc_override(fc, fn ->
+      log =
+        capture_log(fn ->
+          assert {:ok, %{forward_context: :none}} = Templates.get("fc_test")
+        end)
+
+      assert log =~ "invalid :forward_context"
+    end)
   end
 end

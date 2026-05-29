@@ -10,6 +10,7 @@ defmodule JidoClaw.InspectionTest do
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Inspection
   alias JidoClaw.Inspection.Summary
+  alias JidoClaw.Memory.Block
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Trace.Resources.TraceEvent
   alias JidoClaw.Trace.Resources.TraceRun
@@ -162,16 +163,39 @@ defmodule JidoClaw.InspectionTest do
   end
 
   describe "inspect_agent/2 — session dispatches" do
-    test "%Session{} input populates session-axis summary", %{session: session} do
+    test "%Session{} input populates session-axis summary incl. sourced :memory", %{
+      tenant_id: tid,
+      session: session
+    } do
+      {:ok, _} =
+        Block.write(
+          %{
+            scope_kind: :session,
+            session_id: session.id,
+            label: "session_pref",
+            value: "prefers concise output",
+            source: :user
+          },
+          tenant: tid,
+          actor: actor_for(tid)
+        )
+
       assert {:ok, %Summary{input_kind: :session} = s} = Inspection.inspect_agent(session)
       assert is_list(s.tool_names)
+
+      # `:memory` is sourced via Memory.namespace_info/1 on the rich
+      # plain_session_summary path (parallel to :compaction).
+      assert s.memory.namespace == "session:#{session.id}"
+      assert s.memory.blocks_count >= 1
     end
 
-    test "%{tenant_id, session_id} map input matches session dispatch", %{
+    test "%{tenant_id, session_id} map input matches session dispatch; :memory stays nil", %{
       tenant_id: tid,
       runtime_session_id: rsid
     } do
-      assert {:ok, %Summary{input_kind: :session}} =
+      # The map-input path has no session UUID, so :memory is nil by design
+      # (consistent with :compaction).
+      assert {:ok, %Summary{input_kind: :session, memory: nil}} =
                Inspection.inspect_agent(%{tenant_id: tid, session_id: rsid})
     end
   end

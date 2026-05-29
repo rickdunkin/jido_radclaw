@@ -381,6 +381,11 @@ defmodule JidoClaw.CLI.Repl do
 
     prepared_with_preamble = preamble <> prepared_raw
 
+    # Handoff routing is an ownership *transfer*, not a freshly-built child
+    # context: the same conversation's `tool_context` is routed to the owning
+    # worker as-is. Full-context continuity is the defining purpose of handoff,
+    # so the `forward_context` visibility policy (spawn / follow-up /
+    # workflow-step) deliberately does NOT apply here.
     case Agent.ask(routed_pid, prepared_with_preamble,
            timeout: 120_000,
            request_id: request_id,

@@ -46,6 +46,15 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     def get(name), do: {:error, {:unknown_template, name}}
   end
 
+  defmodule RestrictedTemplates do
+    @moduledoc false
+
+    def get("docs_writer"),
+      do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.FakeWorker, forward_context: :none}}
+
+    def get(name), do: {:error, {:unknown_template, name}}
+  end
+
   defmodule FakeWorker do
     @moduledoc false
 
@@ -110,6 +119,33 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   test "returns error when the agent process is missing" do
     assert {:error, %{message: "Agent 'missing' not found."}} =
              SendToAgent.run(%{agent_id: "missing", message: "hello"}, %{})
+  end
+
+  test "re-applies the template's forward_context policy on every follow-up" do
+    Application.put_env(:jido_claw, :agent_templates, RestrictedTemplates)
+
+    # No tenant_id → register_child_correlation skips the DB write.
+    tool_context = %{
+      agent_id: "main",
+      session_uuid: "s",
+      user_id: "u",
+      workspace_uuid: "w",
+      actor: %{kind: :system}
+    }
+
+    assert {:ok, %{status: "message_sent"}} =
+             SendToAgent.run(
+               %{agent_id: "docs_writer_123", message: "follow-up"},
+               %{tool_context: tool_context}
+             )
+
+    assert_receive {:ask_sync, FakeWorker, _pid, "follow-up", opts}
+
+    child_ctx = opts[:tool_context]
+    assert child_ctx.user_id == nil
+    assert child_ctx.workspace_uuid == nil
+    assert child_ctx.actor == nil
+    assert child_ctx.session_uuid == "s"
   end
 
   test "updates AgentTracker with the follow-up request_id" do

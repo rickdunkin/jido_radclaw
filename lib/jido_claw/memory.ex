@@ -210,6 +210,42 @@ defmodule JidoClaw.Memory do
   defp scope_fk_for_block(%{scope_kind: :workspace, workspace_id: id}), do: id
   defp scope_fk_for_block(%{scope_kind: :user, user_id: id}), do: id
 
+  @doc """
+  Resolve the memory namespace for a `tool_context`-like map.
+
+  Returns `%{namespace, blocks_count, scope}` — the prompt-visible
+  namespace label (`"<scope_kind>:<primary_fk>"`), the count of
+  label-deduped Block-tier rows in the scope chain, and the resolved
+  scope record — or `nil` when the scope is unresolvable (e.g. missing
+  tenant). Sources `JidoClaw.Inspection.Summary.memory`.
+
+  Reuses `Scope.resolve/1` (loads ancestor FKs) and
+  `list_blocks_for_scope_chain/1`, which reads as `Actor.system/1`
+  internally — so `blocks_count` is scope-complete. Returns a bare
+  map/`nil`, consistent with the nil-friendly Memory read API.
+  """
+  @spec namespace_info(map()) ::
+          %{namespace: String.t(), blocks_count: non_neg_integer(), scope: Scope.scope_record()}
+          | nil
+  def namespace_info(tool_context) when is_map(tool_context) do
+    case Scope.resolve(tool_context) do
+      {:ok, scope} ->
+        %{
+          namespace: namespace_label(scope),
+          blocks_count: length(list_blocks_for_scope_chain(scope)),
+          scope: scope
+        }
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  def namespace_info(_), do: nil
+
+  defp namespace_label(%{scope_kind: kind} = scope),
+    do: "#{kind}:#{Scope.primary_fk(scope) || "none"}"
+
   # ---------------------------------------------------------------------------
   # Internal write path
   # ---------------------------------------------------------------------------

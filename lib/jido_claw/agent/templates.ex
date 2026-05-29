@@ -4,7 +4,22 @@ defmodule JidoClaw.Agent.Templates do
 
   Each template maps a name to a configuration that specifies
   which worker agent module to use and its operational parameters.
+
+  ## `forward_context` policy
+
+  Every resolved template carries a `:forward_context` key — the
+  `JidoClaw.ToolContext.visibility/0` policy applied when this template's
+  child agents are built (spawn / follow-up / workflow-step). It defaults
+  to `:public` (forward the parent's full scope; zero behavior change),
+  and operators tighten an individual template by adding
+  `forward_context: {:only, [...]}` / `{:except, [...]}` / `:none` to its
+  map. Policy keys are atoms drawn from
+  `JidoClaw.ToolContext.policy_controlled_keys/0`; `hydrate_template/1`
+  validates the field and fails closed to `:none` (with a warning) on any
+  unknown key or malformed value, so a typo can never silently widen scope.
   """
+
+  require Logger
 
   @templates %{
     "coder" => %{
@@ -80,13 +95,43 @@ defmodule JidoClaw.Agent.Templates do
   @spec exists?(String.t()) :: boolean()
   def exists?(name), do: Map.has_key?(@templates, name)
 
-  defp hydrate_template(%{max_iterations: max_iterations} = template)
-       when is_integer(max_iterations) and max_iterations > 0 do
-    template
+  defp hydrate_template(template),
+    do: template |> ensure_max_iterations() |> ensure_forward_context()
+
+  # Two clauses, NO catch-all — preserves today's behavior: a template
+  # lacking both :module and a valid :max_iterations still raises
+  # FunctionClauseError (loud), rather than returning a partially-hydrated
+  # map that crashes less clearly later.
+  defp ensure_max_iterations(%{max_iterations: m} = t) when is_integer(m) and m > 0, do: t
+
+  defp ensure_max_iterations(%{module: module} = t),
+    do: Map.put(t, :max_iterations, module_max_iterations(module))
+
+  defp ensure_forward_context(%{forward_context: fc} = t),
+    do: Map.put(t, :forward_context, validate_fc(fc, t))
+
+  defp ensure_forward_context(t), do: Map.put(t, :forward_context, :public)
+
+  defp validate_fc(fc, _t) when fc in [:public, :none], do: fc
+
+  # Every key must be a known policy-controlled key. This single membership
+  # check rejects BOTH string keys ({:only, ["user_id"]}) and typo'd atoms
+  # ({:except, [:usr_id]}) — the latter would otherwise fail OPEN for
+  # :except. Fail closed to :none + warn on any unknown key.
+  defp validate_fc({mode, keys} = fc, t) when mode in [:only, :except] and is_list(keys) do
+    allowed = JidoClaw.ToolContext.policy_controlled_keys()
+    if Enum.all?(keys, &(&1 in allowed)), do: fc, else: warn_fc(fc, t)
   end
 
-  defp hydrate_template(%{module: module} = template) do
-    Map.put(template, :max_iterations, module_max_iterations(module))
+  defp validate_fc(other, t), do: warn_fc(other, t)
+
+  defp warn_fc(bad, t) do
+    Logger.warning(
+      "[Templates] invalid :forward_context #{inspect(bad)} for " <>
+        "#{inspect(Map.get(t, :module))}; failing closed to :none"
+    )
+
+    :none
   end
 
   defp module_max_iterations(module) do
