@@ -32,7 +32,11 @@ defmodule JidoClaw.MCPServer do
 
         # Network tools
         JidoClaw.Tools.NetworkShare,
-        JidoClaw.Tools.NetworkStatus
+        JidoClaw.Tools.NetworkStatus,
+
+        # Introspection tools
+        JidoClaw.Tools.AgentStatus,
+        JidoClaw.Tools.InspectAgent
       ]
     }
 end

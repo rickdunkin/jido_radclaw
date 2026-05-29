@@ -504,6 +504,28 @@ defmodule JidoClaw do
     _ -> :ok
   end
 
+  @doc """
+  Inspect an agent target (module, pid, agent id, `%Conversations.Session{}`,
+  or `%{tenant_id, session_id}` map) and return a `%JidoClaw.Inspection.Summary{}`.
+
+  Thin delegate over `JidoClaw.Inspection.inspect_agent/2`.
+  """
+  defdelegate inspect_agent(target, opts \\ []), to: JidoClaw.Inspection
+
+  @doc """
+  Inspect a request id. Requires `tenant_id:` in `opts`.
+
+  Thin delegate over `JidoClaw.Inspection.inspect_request/2`.
+  """
+  defdelegate inspect_request(request_id, opts \\ []), to: JidoClaw.Inspection
+
+  @doc """
+  Inspect a workflow run by UUID or struct.
+
+  Thin delegate over `JidoClaw.Inspection.inspect_workflow/1`.
+  """
+  defdelegate inspect_workflow(target), to: JidoClaw.Inspection
+
   @doc "Create a new tenant."
   def create_tenant(attrs \\ []) do
     TenantManager.create_tenant(attrs)

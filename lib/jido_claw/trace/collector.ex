@@ -606,12 +606,22 @@ defmodule JidoClaw.Trace.Collector do
     end
   end
 
+  # Iterate `state.order` (insertion-ordered keys), NOT `state.traces` (a
+  # map). `by_agent`/`by_tenant` accumulate their key lists via
+  # `append_order/2`, and `latest/2` relies on `List.last/1` of those lists
+  # being the most-recently-inserted trace. Reducing over the `state.traces`
+  # map iterates in hash order once it exceeds ~32 entries (Erlang's HAMT
+  # threshold), which scrambles that recency order and makes `latest/2`
+  # return a stale trace for a busy agent. `prune_traces/1` keeps `order` and
+  # `traces` in lockstep, so every key here is present in `state.traces`.
   defp rebuild_indexes(%__MODULE__{} = state) do
     indexes =
       Enum.reduce(
-        state.traces,
+        state.order,
         %{by_agent: %{}, by_request: %{}, by_run: %{}, by_trace: %{}, by_tenant: %{}},
-        fn {key, trace}, acc ->
+        fn key, acc ->
+          trace = Map.fetch!(state.traces, key)
+
           acc
           |> put_index(:by_agent, trace.agent_id, key)
           |> put_index(:by_request, trace.request_id, key)

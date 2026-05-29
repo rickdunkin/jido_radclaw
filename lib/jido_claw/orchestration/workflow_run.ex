@@ -22,6 +22,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:destroy, action: :destroy)
     define(:list_active)
     define(:list_by_project, action: :by_project)
+    define(:by_id, action: :read, get_by: [:id])
   end
 
   actions do

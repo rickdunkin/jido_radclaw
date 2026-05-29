@@ -1,0 +1,131 @@
+defmodule JidoClaw.Tools.InspectAgent do
+  @moduledoc """
+  Return a `%JidoClaw.Inspection.Summary{}` for the given target — module,
+  agent id (including `"handoff:<uuid>:<template>"`), session id, or
+  request id.
+
+  Tenant is read strictly from `context.tool_context.tenant_id` (not an
+  MCP-overridable param). The MCP projection drops `:subagents` and
+  `:workflows` because both underlying sources (`AgentTracker`,
+  `WorkflowRun`) are not tenant-scoped today; surfacing them through a
+  tenant-facing tool would leak cross-tenant runtime state. Workflow-run
+  inspection is intentionally not exposed here for the same reason — use
+  `JidoClaw.Inspection.inspect_workflow/1` from trusted local callers.
+  """
+
+  use JidoClaw.Tools.Action,
+    name: "inspect_agent",
+    description:
+      "Inspect an agent target (module name, agent id, session id, or request id) " <>
+        "and return a summary of definition + current running state.",
+    category: "introspection",
+    tags: ["agent", "read"],
+    output_schema: [
+      system_prompt: [type: :string, required: false],
+      tool_names: [type: {:list, :string}, required: true],
+      mcp_tools: [type: {:list, :string}, required: true],
+      context_preview: [type: :string, required: false],
+      handoffs: [type: :map, required: false],
+      compaction: [type: :map, required: false],
+      usage: [type: :map, required: true],
+      duration_ms: [type: :integer, required: false],
+      error: [type: :map, required: false],
+      message_count: [type: :integer, required: false],
+      request_id: [type: :string, required: false],
+      input_kind: [type: :string, required: true]
+    ],
+    schema: [
+      target: [
+        type: :string,
+        required: true,
+        doc:
+          "Module name (\"JidoClaw.Agent\"), agent id (\"main\", \"handoff:<uuid>:<template>\"), session id, or request id."
+      ],
+      kind: [
+        type: {:in, ~w(auto module agent_id session request)},
+        required: false,
+        default: "auto",
+        doc:
+          "Dispatch hint. \"auto\" probes module → agent_id; \"request\" routes to inspect_request."
+      ]
+    ]
+
+  alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Inspection
+
+  @impl true
+  def run(params, context) do
+    tool_context = Map.get(context, :tool_context, %{})
+    tenant_id = Map.get(tool_context, :tenant_id)
+    kind = Map.get(params, :kind, "auto")
+    target = params.target
+
+    case dispatch(kind, target, tenant_id) do
+      {:ok, summary} -> {:ok, project(summary)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp dispatch("module", target, _tenant_id) do
+    case to_module(target) do
+      {:ok, module} -> Inspection.inspect_agent(module)
+      :error -> {:error, :unknown_target}
+    end
+  end
+
+  defp dispatch("agent_id", target, tenant_id) do
+    Inspection.inspect_agent(target, tenant_opts(tenant_id))
+  end
+
+  defp dispatch("session", target, tenant_id) when is_binary(tenant_id) do
+    Inspection.inspect_agent(%{tenant_id: tenant_id, session_id: target})
+  end
+
+  defp dispatch("session", _target, _), do: {:error, :tenant_required}
+
+  defp dispatch("request", target, tenant_id) when is_binary(tenant_id) do
+    Inspection.inspect_request(target, tenant_id: tenant_id)
+  end
+
+  defp dispatch("request", _target, _), do: {:error, :tenant_required}
+
+  defp dispatch("auto", target, tenant_id) do
+    case to_module(target) do
+      {:ok, module} -> Inspection.inspect_agent(module)
+      :error -> Inspection.inspect_agent(target, tenant_opts(tenant_id))
+    end
+  end
+
+  defp dispatch(_kind, _target, _tenant_id), do: {:error, :unknown_kind}
+
+  defp to_module(target) when is_binary(target) do
+    {:ok, String.to_existing_atom("Elixir." <> target)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp tenant_opts(nil), do: []
+  defp tenant_opts(tenant_id) when is_binary(tenant_id), do: [tenant_id: tenant_id]
+
+  # Projection rule: top-level keys stay atoms (required by `output_schema`
+  # and the tool tests), but every nested term is normalized through
+  # `JsonSafe.encode/1` so no leaf atom / DateTime / module reaches the
+  # MCP boundary. Nested maps (`usage`, `compaction`, `handoffs`, `error`)
+  # therefore come back string-keyed.
+  defp project(%Inspection.Summary{} = s) do
+    %{
+      system_prompt: s.system_prompt,
+      tool_names: s.tool_names,
+      mcp_tools: s.mcp_tools,
+      context_preview: s.context_preview,
+      handoffs: JsonSafe.encode(s.handoffs),
+      compaction: JsonSafe.encode(s.compaction),
+      usage: JsonSafe.encode(s.usage),
+      duration_ms: s.duration_ms,
+      error: JsonSafe.encode(s.error),
+      message_count: s.message_count,
+      request_id: s.request_id,
+      input_kind: Atom.to_string(s.input_kind)
+    }
+  end
+end

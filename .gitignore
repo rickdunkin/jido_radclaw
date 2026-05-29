@@ -6,6 +6,7 @@
 /jido
 .env
 erl_crash.dump
+.DS_Store
 
 # Added by ex_harness
 /priv/plts/*.plt

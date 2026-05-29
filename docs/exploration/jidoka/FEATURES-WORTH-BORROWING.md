@@ -19,7 +19,7 @@ Tiers are scoped to this codebase:
 
 For each entry:
 
-- **Status (2026-05-18)** — jido_radclaw side: NOT_ADOPTED / PARTIAL / ADOPTED / SUPERSEDED / N/A
+- **Status (2026-05-18)** — jido_radclaw side: NOT_ADOPTED / PARTIAL / ADOPTED / SUPERSEDED / N/A. **ADOPTED is strict** — the borrowed capability is fully implemented with no deferred or placeholder pieces. Any explicit deferral ("deferred to v2," a hardcoded-`nil` field awaiting a source it doesn't have yet, an unfinished consumer migration) keeps the entry PARTIAL, even when the shipped core is load-bearing in production.
 - **Where in jidoka** — file paths
 - **What it does** — 1–3 sentences
 - **Gap in jido_radclaw** — what we don't have that this would supply
@@ -40,9 +40,10 @@ Key facts:
 
 * **Modules**: `lib/jido_claw/trace.ex` (public API: `emit/3`, `latest/2`, `for_request/3`, `list/2`), `lib/jido_claw/trace/event.ex` (`%JidoClaw.Trace.Event{}`), `lib/jido_claw/trace/collector.ex` (singleton GenServer attaching `:telemetry` handlers + `JidoClaw.SignalBus` topics, sanitizing into `%Event{}`, indexing by request/run/trace/agent/tenant). Helpers: `trace/domain.ex`, `trace/limit.ex`, `trace/persistence.ex`, `trace/sanitize.ex`.
 * **Durable replay**: Adopted the optional Postgres path — `lib/jido_claw/trace/resources/` defines `TraceRun` and `TraceEvent` Ash resources, and the collector writes through `Persistence` for cross-restart replay. This extends Jidoka's bounded-in-memory shape for jido_radclaw's multi-tenant deployment.
-* **Telemetry coverage** (wired in `collector.ex`): `[:jido, :ai, :request|:llm|:tool, *]`, `[:jido, :ai, :output, :start|:validated|:repair|:error]` (T1-3), `[:jido_claw, :compaction, :event]` (T1-2), `[:jido_claw, :handoff, :event]` (T2-1 slot — wired but no emitter yet).
+* **Telemetry coverage** (wired in `collector.ex`): `[:jido, :ai, :request|:llm|:tool, *]`, `[:jido, :ai, :output, :start|:validated|:repair|:error]` (T1-3), `[:jido_claw, :compaction, :event]` (T1-2), `[:jido_claw, :handoff, :event]` (T2-1 emitter has since landed).
 * **Tenant scoping**: events are keyed by `tenant_id`, as the original adoption sketch called for.
 * **Event shape**: `%JidoClaw.Trace.Event{}` carries `seq, at_ms, source, category, event, phase, name, status, duration_ms` plus correlation IDs (`request_id, run_id, trace_id, span_id, parent_span_id`) and `measurements`/`metadata` — matches current Jidoka's struct.
+* **`latest/2` recency fix (2026-05-28)**: `Collector.rebuild_indexes/1` now iterates the insertion-ordered `state.order` instead of the `state.traces` map, which Erlang reorders into hash order past the ~32-entry HAMT threshold — that scramble made `latest/2` return a stale trace for a busy agent. Found and fixed while building T2-2/T2-4, both of which lean on `Trace.latest/2`; regression-tested in `test/jido_claw/trace_test.exs`.
 
 **Prior state (kept for historical context)**: Before T1-1 landed, the raw event stream already flowed in jido_radclaw but lived in four uncoordinated places — `lib/jido_claw/conversations/recorder.ex` (bus-subscriber writing `Message` rows for `ai.tool.started`, `ai.tool.result`, `ai.llm.response`, `ai.usage`, `ai.request.completed`), `lib/jido_claw/agent_tracker.ex` (in-memory per-agent tokens/tool_calls/status), `lib/jido_claw/reasoning/telemetry.ex` (`with_outcome/4` → `Reasoning.Outcome`), and `lib/jido_claw/conversations/resources/request_correlation.ex` (per-request scope). There was no shared `%Event{}` struct or unified `request_id → events` projection — each LiveView, CLI REPL, and MCP surface reconstructed timelines ad hoc.
 
@@ -54,7 +55,7 @@ Pair with hermes T2-9 (diagnostic registry) — the unified trace surface is the
 
 ### T1-2. Summary-based context compaction (`Jidoka.Compaction`)
 
-**Status (2026-05-20)**: ADOPTED — main agent v1. Lives in `lib/jido_claw/reasoning/compactor*` with a tenant-aware Postgres-backed snapshot in `Session.metadata["compaction"]`. Workers explicitly carry `compaction: [mode: :off]` so they don't pay the cost; per-`{agent_id, context_ref}` keying is deferred to v2. Hooks into the agent lifecycle via `JidoClaw.Agent.Defaults`'s `on_before_cmd/2` override on `{:ai_react_start, _}`.
+**Status (landed 2026-05-20; reclassified 2026-05-28)**: PARTIAL — the main-agent compaction path is live and load-bearing, but two pieces are explicitly deferred, which under the strict ADOPTED standard keeps it PARTIAL: per-`{agent_id, context_ref}` keying is deferred to v2 (workers meanwhile carry `compaction: [mode: :off]` so they don't pay the cost), and the summarizer has no retries on v1. Lives in `lib/jido_claw/reasoning/compactor*` with a tenant-aware Postgres-backed snapshot in `Session.metadata["compaction"]`; hooks into the agent lifecycle via `JidoClaw.Agent.Defaults`'s `on_before_cmd/2` override on `{:ai_react_start, _}`. Path to ADOPTED: ship v2 per-agent keying + summarizer retries.
 
 Key divergences from Jidoka's shape:
 
@@ -183,26 +184,30 @@ Key facts:
 
 ### T2-2. Surface-neutral view projection (`Jidoka.AgentView`)
 
-**Status (2026-05-26)**: NOT_ADOPTED — no `JidoClaw.AgentView` struct exists. Each surface still reinvents projection:
+**Status (2026-05-28)**: PARTIAL — the data layer is fully built and in real use, but the cross-surface unification that is the feature's whole point is only partly realized. The `%JidoClaw.AgentView{}` struct + `snapshot/2` + `to_mcp_map/1` are complete (read-only **session-axis** projection of "what is this agent doing right now," aggregating `JidoClaw.Trace`, `JidoClaw.Session.Worker`, `JidoClaw.Agent.Handoff.Registry`, and optionally `JidoClaw.Reasoning.Compactor.Storage`) and consumed by **two of four** surfaces — the rewired `agents_live.ex` LiveView and the new `agent_status` MCP tool. The CLI REPL, `dashboard_live`, and `forge_live` still hand-roll their own projections and are deferred, so the drift this feature targets persists there. The macro, lifecycle callbacks, and `streaming_message` are deliberate non-goals/placeholders — not gaps (see divergences); what keeps this PARTIAL rather than ADOPTED is the unfinished consumer migration.
 
-- `lib/jido_claw/web/live/agents_live.ex`, `dashboard_live.ex`, `forge_live.ex` — each subscribes to PubSub and assembles its own assigns
-- `lib/jido_claw/cli/repl.ex`, `commands.ex`, `presenters.ex` — its own projection
-- MCP server — its own
-- `Platform.Session.Worker` is sort of the canonical state holder but isn't shaped as a *projection*
+Key facts:
 
-A doc-comment in `lib/jido_claw/trace/domain.ex:8` names AgentView as a future trace-surface consumer; the surface is ready, the consumer isn't built.
+* **Modules**: `lib/jido_claw/agent_view.ex` — `%JidoClaw.AgentView{}` struct + public `snapshot/2` and `to_mcp_map/1`. No `use JidoClaw.AgentView` macro (the original sketch explicitly said *don't ship the macro*; the surfaces here only need the data shape, not Jidoka's ergonomics).
+* **Identity vocabulary**: two ids on the struct — `:session_id` (runtime id = `Conversations.Session.external_id`, keys the live worker + handoff registry) and `:session_uuid` (`Conversations.Session.id`, the Postgres UUID for FK reads). Both are carried because cold-read callers may hold one but not the other.
+* **Input forms**: `%{tenant_id, session_id}` map, `%Conversations.Session{}`, or `%Session.Worker{}`. Only the `%Session{}` form is permissive (returns `{:ok, …}` with no live worker); the map form is strict and needs a live worker or a resolvable `session_uuid`. Reserved errors: `:tenant_required`, `:session_not_resolved`, `:session_id_mismatch`, `:session_not_found`.
+* **Status enum**: `:idle | :running | :awaiting_handoff | :error | :hibernated | :agent_lost`, derived by cascade (trace `:failed`→`:error`, trace `:running`→`:running`, owner with `preamble_consumed?: false`→`:awaiting_handoff`, worker `:hibernated`/`:agent_lost`, else `:idle`). Worker `:active` is the normal idle lifecycle and is **not** mapped to `:running`. There is deliberately no `:done` — a long-lived session whose last trace completed is `:idle`; the terminal nuance (`:completed | :cancelled | :interrupted`) lives on a separate `:trace_status` field.
+* **Trace-key picker**: handoff owner → `"handoff:<uuid>:<template>"`; live worker pid (alive) → the pid; else the runtime `session_id`. A dead pid falls back to `session_id` (not `nil`) so the snapshot doesn't drop trace/events in the race before `Session.Worker` processes the agent's `:DOWN`.
+* **Events**: filtered by `events_categories` (default `[:request, :model, :tool, :output, :handoff, :reasoning]`) *first*, then capped by `events_limit` (default 100); `:infinity` branches explicitly to skip `Enum.take/2`.
+* **Resilience**: every `Session.Worker` call is wrapped in `try/catch :exit`; with no live worker, messages and count cold-read from `Conversations.Message`/`Session`.
+* **MCP projection**: `to_mcp_map/1` drops `:agent_module`, slims `Trace.Event` rows to a small public shape, then runs the whole map through the shared `JidoClaw.Core.JsonSafe.encode/1` (atoms→strings, module atoms dropped, `DateTime`/`NaiveDateTime`/`Date`→ISO-8601, `MapSet`→list, pids/refs dropped).
+* **Consumers wired**: `lib/jido_claw/web/live/agents_live.ex` (replaced the 3-card static stub; one card per snapshot, 5s polling tick, awaiting-handoff banner) and `JidoClaw.Tools.AgentStatus` (new MCP tool, tenant read strictly from `tool_context.tenant_id`).
 
-**Where in jidoka**: `lib/jidoka/agent_view.ex` (~437 lines), `lib/jidoka/agent_view/{defaults,projection,run,start,turn_state}.ex`
+**Adoption divergences from the original sketch**:
 
-**What**: A `use Jidoka.AgentView, agent: MyAgent` macro that gives any LiveView/CLI/channel a stable struct `%AgentView{visible_messages, streaming_message, llm_context, events, status, error, outcome, metadata}` plus lifecycle callbacks `before_turn/start_turn/await_turn/refresh_turn/after_turn`. The point: every surface that talks to an agent consumes the same projection.
+* **Sources are Trace + Session.Worker + Handoff.Registry + Compactor.Storage, not "Conversations + AgentTracker + Trace."** AgentView is session-axis and intentionally does **not** read `AgentTracker` (per-agent stats) — that's T2-4 Inspection's agent-axis job. Cold `Conversations` reads are the no-live-worker fallback only.
+* **`Tools.AgentStatus` is new**, not a reshape of an existing tool (the sketch's "already exists but returns ad-hoc shape" was inaccurate — the pre-existing tool is `Tools.ListAgents`, untouched here).
+* **Struct departures from Jidoka's**: dropped `runtime_context` (lives on `JidoClaw.ToolContext`) and `llm_context` (events carry it via `:model` metadata); added `tenant_id` (always required), `compaction`, `handoff_owner`, `agent_template`.
+* **No macro, no lifecycle callbacks** (`before_turn`/`start_turn`/…) — explicit v1 scope cut, with the REPL and the other two LiveViews left unmigrated.
 
-**Gap**: The three LiveViews, CLI REPL, and MCP all want the same view of "what is this agent doing right now" — but each derives it differently and they drift.
+**Prior state (kept for historical context)**: each surface reinvented projection — the three LiveViews (`agents_live`, `dashboard_live`, `forge_live`) each subscribed to PubSub and assembled their own assigns, the CLI REPL (`repl.ex`/`commands.ex`/`presenters.ex`) had its own, and MCP had its own. A doc-comment in `trace/domain.ex` named AgentView as a future trace-surface consumer; that consumer is now built.
 
-**Why it matters**: This is the one Jidoka feature where the *shape* is much higher value than the *implementation*. Defining a `%JidoClaw.AgentView{}` struct would let all surfaces consume one snapshot function and have consistent UX. Investment pays off as LiveViews get more sophisticated and as MCP exposes more agent state.
-
-**Adoption sketch**: Define `JidoClaw.AgentView` struct with fields matching Jidoka's. Build a single projection function `AgentView.snapshot(session_id, opts)` that reads from `Conversations` + `AgentTracker` + `Trace` (T1-1) into the struct. LiveViews and the REPL both call it; MCP exposes it as `Tools.AgentStatus` (already exists but returns ad-hoc shape). **Don't ship the macro** — jido_radclaw's surfaces don't need the "easy ergonomics" Jidoka was built for; just the data shape.
-
-T1-1 Trace has landed; this is now unblocked.
+**Where in jidoka**: `lib/jidoka/agent_view.ex` (~437 lines), `lib/jidoka/agent_view/{defaults,projection,run,start,turn_state}.ex`. jido_radclaw ships the struct + `snapshot/2` shape only — none of the macro/lifecycle machinery.
 
 ---
 
@@ -224,17 +229,26 @@ T1-1 Trace has landed; this is now unblocked.
 
 ### T2-4. Agent inspection surface (`Jidoka.Inspection`)
 
-**Status (2026-05-26)**: NOT_ADOPTED — no `JidoClaw.Inspection` module exists. Adjacent surfaces give partial views: `AgentTracker.get_state/0` returns agent stats, `lib/jido_claw/core/stats.ex` aggregates, `lib/jido_claw/cli/presenters.ex` formats. But there's no unified `JidoClaw.inspect_agent/1` returning a single shape across "definition" (what worker is this?) and "running" (what is it doing right now?).
+**Status (2026-05-28)**: PARTIAL — the capability is built and works across every input kind (module, pid, agent id, session, request id, workflow run), unifying "what is this agent?" (definition) with "what is it doing?" (running state) inside one function, with three thin top-level delegates on `JidoClaw` for Jidoka-parity entry points. It is PARTIAL under the strict standard because one advertised `Summary` field — `:memory` — is a documented placeholder, hardcoded `nil` because its source (`JidoClaw.Memory.namespace_info/1`) does not exist in the codebase yet; every other field is fully sourced. Path to ADOPTED: populate `:memory` once a memory-namespace source lands.
 
-**Where in jidoka**: `lib/jidoka/inspection/inspection.ex`, `lib/jidoka/inspection/debug.ex`
+Key facts:
 
-**What**: `Jidoka.inspect_agent/1`, `inspect_request/1`, `inspect_workflow/1` — returns a normalized `%Jidoka.Debug.summary{}` map (`system_prompt`, `skills`, `tool_names`, `mcp_tools`, `context_preview`, `memory`, `compaction`, `subagents`, `workflows`, `handoffs`, `usage`, `duration_ms`, `interrupt`, `error`, `message_count`) regardless of whether the input is a compiled module, struct, PID, or ID string.
+* **Modules**: `lib/jido_claw/inspection.ex` (public: `inspect_agent/2`, `inspect_request/2`, `inspect_workflow/1`), `lib/jido_claw/inspection/summary.ex` (`%JidoClaw.Inspection.Summary{}`). Top-level delegates in `lib/jido_claw.ex`: `JidoClaw.inspect_agent/2`, `inspect_request/2`, `inspect_workflow/1`.
+* **Summary shape** mirrors Jidoka's `Debug.summary` field-for-field: `system_prompt, skills, tool_names, mcp_tools, context_preview, memory, compaction, subagents, workflows, handoffs, usage, duration_ms, interrupt, error, message_count, request_id, input_kind, resolved_at_ms`. `:memory` is `nil` in v1 (no `Memory.namespace_info/1` to source from yet — documented as deferred).
+* **Polymorphic `inspect_agent/2`** dispatches on: compiled module (definition only), pid (→ `Jido.AgentServer.state` → agent_id/module/`last_request_id` + trace), agent-id string incl. `"handoff:<uuid>:<template>"`, `%Conversations.Session{}`, and `%{tenant_id, session_id}` map. The agent-id path resolves a worker module from the tracker entry's `:template` via `Templates.get/1`, falling back to `JidoClaw.Agent` for no-entry/unknown/`"main"` — so `inspect_agent("main")` returns the main tool set.
+* **Total `safe/1` discipline**: every field extraction is wrapped so any raise/exit becomes `nil`. `{:error, …}` is reserved for genuinely unresolvable inputs (wrong tenant, missing/mismatched handoff owner, bad target shape).
+* **`inspect_request/2` tenant cross-check**: `Trace.for_request` is tenant-scoped, but `RequestCorrelation` rows are global (`multitenancy global?: true`), so the resolver explicitly distinguishes matching-tenant (resolve session uuid) / different-tenant (`:not_found`) / no-row (`{:ok, nil}`, nil session fields). It deliberately does *not* route through `safe/1`, which would collapse the wrong-tenant-vs-missing distinction.
+* **`usage`/`error` read atom-OR-string keys** via `JidoClaw.Core.MapKeys.coalesce_field/3`, so durable-rehydrated traces (whose `measurements`/`metadata` come back string-keyed after a Postgres round-trip) still report nonzero token counts.
+* **`inspect_workflow/1`** takes a `%WorkflowRun{}` or UUID (via a new `define(:by_id, action: :read, get_by: [:id])` code interface). It is **local-callers-only** — not reachable through the MCP tool (see divergences).
+* **MCP tool**: `JidoClaw.Tools.InspectAgent` (new), tenant read strictly from `tool_context.tenant_id`. Nested terms are normalized through the shared `JsonSafe.encode/1`; top-level keys stay atoms to satisfy `output_schema`.
 
-**Gap**: For an agent platform with REPL + LiveView + MCP, `JidoClaw.inspect_agent(agent_id)` returning a single inspection map (definition + last request summary + active state) is valuable. Today these views are scattered.
+**Adoption divergences from the original sketch**:
 
-**Why it matters**: Makes debugging dramatically faster. A user reports "the agent did the wrong thing" — one function call returns the full picture instead of stitching it together from four sources.
+* **Leakage hygiene: the MCP tool drops `:subagents` and `:workflows` and refuses workflow dispatch entirely.** `AgentTracker` and `WorkflowRun` are not tenant-scoped today, so a tenant-facing tool that surfaced them (even `duration_ms`/`error`/an existence oracle) would leak cross-tenant runtime state. The tool's `kind` enum is `auto|module|agent_id|session|request` — no `workflow`. Trusted local Elixir callers still see both fields and `inspect_workflow/1`.
+* **Top-level `JidoClaw` delegates added** for full T2-4 parity with Jidoka's `Jidoka.inspect_*` surface (the sketch only called for the module).
+* **The implementation went through a code-review remediation pass** (the `transient-greeting-locket` plan): five fixes — remove MCP workflow dispatch [P1], extract the shared `JidoClaw.Core.JsonSafe` normalizer + JSON-normalize the compaction sub-map [P2], fill in the PID + non-handoff agent-id running state (both were stubs returning bare `[]`/`request_id` only) [P2], fix a latent always-nil bug in the request-correlation resolver so wrong-tenant returns `:not_found` [P2], and read usage/error via `coalesce_field` [P3].
 
-**Adoption sketch**: New `JidoClaw.Inspection` module mirroring Jidoka's surface but consuming jido_radclaw's existing sources (AgentTracker + Conversations.Session + Trace). The `Debug.summary` field list is a useful target — copy the shape. T1-1 Trace has landed, so the `usage`/`duration_ms` fields it would source from are now available.
+**Where in jidoka**: `lib/jidoka/inspection/inspection.ex`, `lib/jidoka/inspection/debug.ex`. The `Debug.summary` field list was the adoption target; jido_radclaw's `Summary` copies the shape and sources it from `AgentTracker` + `Conversations` + `Trace` + `Compactor.Storage` + `Handoff.Registry`.
 
 ---
 
@@ -326,26 +340,27 @@ Small polish to consider: the `Session.chat_opts/2` helper that merges per-turn 
 
 ## Cross-references and dependencies
 
-The Tier 1 four clustered into a dependency graph (all now ADOPTED as of 2026-05-26); T2-1 followed on 2026-05-27:
+The Tier 1 four and the first Tier 2 borrows cluster into a dependency graph. Under the strict ADOPTED standard (any deferral demotes to PARTIAL — ◐), the fully-adopted set is T1-1 Trace, T1-3 Output, T1-4 Error, and T2-1 Handoff (✓); T1-2 Compaction, T2-2 AgentView, and T2-4 Inspection are PARTIAL (◐) — each carries an explicit deferral or unfinished migration:
 
 ```
-T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView
-               │                    ├──> T2-4 Inspection
+T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView ◐ (data layer done; consumers partial)
+               │                    ├──> T2-4 Inspection ◐ (works; :memory field deferred)
                │                    └──> T2-1 Handoff ✓ (emits trace events)
-               ├──> T1-2 Compaction ✓ (emits trace events)
+               ├──> T1-2 Compaction ◐ (main-agent path; per-agent keying + retries → v2)
                └──> T1-3 Output ✓ (emits trace events)
 ```
 
-**First wave (complete)**:
+**First wave**:
 
 1. **T1-4 Error** — ADOPTED. Splode root with four classes (`invalid`, `execution`, `config`, `internal`), merging with `Ash.Error`.
 2. **T1-1 Trace** — ADOPTED. `JidoClaw.Trace` + `Trace.Collector` + `TraceRun`/`TraceEvent` Ash resources for durable replay.
-3. **T1-2 Compaction** — ADOPTED 2026-05-20. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; Postgres-backed snapshot in `Session.metadata["compaction"]`.
+3. **T1-2 Compaction** — PARTIAL (landed 2026-05-20; reclassified 2026-05-28). `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; Postgres-backed snapshot in `Session.metadata["compaction"]`. Main-agent path live and load-bearing; per-`{agent_id, context_ref}` keying and summarizer retries deferred to v2.
 4. **T1-3 Output** — ADOPTED 2026-05-26. All 7 worker templates carry structured-output contracts via upstream `Jido.AI.Output`.
 
-**Tier 2 sequencing** (T1 is complete; T2-1 ADOPTED 2026-05-27; remaining items unblocked):
+**Tier 2 sequencing** (T1-1/T1-3/T1-4 ADOPTED, T1-2 PARTIAL; T2-1 ADOPTED 2026-05-27; T2-2 + T2-4 PARTIAL as of 2026-05-28; remaining items unblocked):
 
-- **T2-2 AgentView** + **T2-4 Inspection** — pair, the natural next focus now that handoff routing emits `:agent_template` into tool_context and Trace. AgentView would consume the routed template alongside the existing Session/Tracker/Trace sources.
+- **T2-4 Inspection** — PARTIAL 2026-05-28. Agent-axis summary (`JidoClaw.inspect_*` delegates + `inspect_agent` tool); the four-source stitching is unified inside one function and works across all input kinds. PARTIAL only because the `:memory` field is a documented placeholder (`nil`) — its source doesn't exist in the codebase yet. Path to ADOPTED: populate `:memory` when a memory-namespace source lands.
+- **T2-2 AgentView** — PARTIAL 2026-05-28. Session-axis data layer (`snapshot/2` + `to_mcp_map/1`) done and consumed by `agents_live` + `agent_status`; the open work that takes it to ADOPTED is migrating the remaining surfaces (REPL, `dashboard_live`, `forge_live`) off their hand-rolled projections.
 - **T2-3 Subagent context-visibility** — small policy add, security-flavored.
 - **T2-5 Schedule kind** — small ergonomic win, can ship anytime.
 - **T2-6 Imported agents** — defer until tenant-builder UI is on the roadmap.
@@ -358,7 +373,7 @@ This doc and `docs/exploration/hermes/FEATURES-WORTH-BORROWING.md` are complemen
 - **hermes T1-4 (FailoverReason)** → **layers above Jidoka T1-4 Error**. Splode classes are taxonomy; FailoverReason is recovery-action policy.
 - **hermes T2-9 (diagnostic registry)** → **builds on Jidoka T1-1 Trace** as the backing store.
 
-Jidoka T1-1, T1-2, T1-3, and T1-4 are all now ADOPTED — re-evaluate hermes T1-2 (`protect_first_n` paired discipline), T1-4 (FailoverReason recovery-action layer above Splode), and T2-9 (diagnostic registry backed by the trace surface) next.
+Jidoka T1-1, T1-3, and T1-4 are ADOPTED; T1-2 Compaction is PARTIAL (main-agent path live; v2 deferrals outstanding) — re-evaluate hermes T1-2 (`protect_first_n` paired discipline), T1-4 (FailoverReason recovery-action layer above Splode), and T2-9 (diagnostic registry backed by the trace surface) next.
 
 ## Notes on upstream alignment
 

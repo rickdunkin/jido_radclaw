@@ -512,6 +512,36 @@ defmodule JidoClaw.TraceTest do
                Trace.latest(agent_id, tenant_id: tenant_a)
     end
 
+    test "latest/2 stays insertion-ordered once the Collector holds many traces" do
+      # Regression: the per-agent index must preserve insertion order. The
+      # 2-trace case above never grows the Collector's `traces` map past
+      # Erlang's ~32-entry HAMT threshold, so it can't catch the bug where
+      # `rebuild_indexes/1` iterated the (hash-ordered) `traces` map and
+      # made `latest/2` return a stale, hash-arbitrary trace for a busy
+      # agent. Emit >32 distinct requests for one agent and assert the
+      # newest still wins. (max_traces is 100, so none are evicted.)
+      agent_id = unique_id("busy-agent")
+
+      # Emit 40 distinct requests for one agent (oldest first); the reduce's
+      # final value is the newest request_id.
+      newest =
+        Enum.reduce(1..40, nil, fn i, _prev ->
+          request_id = unique_id("req-#{i}")
+
+          :telemetry.execute(
+            [:jido, :ai, :request, :start],
+            %{},
+            %{agent_id: agent_id, request_id: request_id}
+          )
+
+          request_id
+        end)
+
+      :ok = H.sync_collector()
+
+      assert {:ok, %{request_id: ^newest}} = Trace.latest(agent_id)
+    end
+
     test "tenant_id resolves from durable RequestCorrelation when Cache is empty" do
       tenant_id = "tenant-durable-#{System.unique_integer([:positive])}"
       agent_id = unique_id("durable-agent")
