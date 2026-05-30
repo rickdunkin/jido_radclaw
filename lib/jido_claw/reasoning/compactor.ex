@@ -1,6 +1,8 @@
 defmodule JidoClaw.Reasoning.Compactor do
   @moduledoc """
-  Summary-based context compaction for the main `JidoClaw.Agent`.
+  Summary-based context compaction, keyed per agent — the main agent,
+  handoff-routed workers, and spawned sub-agents each compact their own
+  durable slice.
 
   Live-thread compactor that runs once per user turn on `:ai_react_start`
   (via the `on_before_cmd/2` override injected by
@@ -12,7 +14,9 @@ defmodule JidoClaw.Reasoning.Compactor do
     2. Groups them into turns (by `request_id`), preserves the head
        (`protect_first_n_turns`) and tail (`keep_last_turns`), summarizes
        the middle via the bounded `Summarizer`.
-    3. Persists a `%Snapshot{}` in `Session.metadata["compaction"]`.
+    3. Persists a `%Snapshot{}` under `Session.metadata["compactions"][key]`,
+       where `key` is `"<agent_id>::<context_ref|default>"` (atomic per-key
+       `jsonb_set`, so concurrent distinct-key writes both survive).
     4. Installs `Compactor.RequestTransformer` on the `:ai_react_start`
        params and stuffs the snapshot into `params[:tool_context]`.
 
@@ -29,12 +33,15 @@ defmodule JidoClaw.Reasoning.Compactor do
   transformer that still applies the *previous* snapshot. The macro hook
   treats `{:error, _}` returns by falling through to the original action.
 
-  ## Scope (v1)
+  ## Scope
 
-  Main agent only. Worker agents (`Coder`, `Reviewer`, `Researcher`,
-  `TestRunner`, `DocsWriter`, `Refactorer`, `Verifier`) carry
-  `compaction: [mode: :off]` so the macro emits a no-op override. Per-agent
-  snapshot keying is deferred to v2.
+  Every agent compacts its own slice. The main agent (and both main-surface
+  paths) keys on `"main"`; a handoff-routed worker keys on
+  `"handoff:<uuid>:<template>"`; a spawned sub-agent keys on its spawn tag
+  (see `JidoClaw.Reasoning.Compactor.Identity`). All seven worker templates
+  (`Coder`, `Reviewer`, `Researcher`, `TestRunner`, `DocsWriter`,
+  `Refactorer`, `Verifier`) carry `compaction: [mode: :auto]`, and each
+  agent's snapshot lives under its own `Session.metadata["compactions"]` key.
 
   ## Public surface
 
@@ -54,6 +61,7 @@ defmodule JidoClaw.Reasoning.Compactor do
 
   alias JidoClaw.Reasoning.Compactor.{
     Config,
+    Identity,
     Prompt,
     RequestTransformer,
     Snapshot,
@@ -75,6 +83,9 @@ defmodule JidoClaw.Reasoning.Compactor do
       :session_uuid,
       :actor,
       :agent_id,
+      :compaction_id,
+      :context_ref,
+      :compaction_key,
       :request_id,
       :storage_opts,
       :base_metadata
@@ -135,6 +146,8 @@ defmodule JidoClaw.Reasoning.Compactor do
           session_uuid: session_uuid,
           actor: actor,
           agent_id: agent_id,
+          compaction_key:
+            compaction_key(compaction_id_from_context(ctx), Map.get(ctx, :context_ref)),
           request_id: request_id
         })
     end
@@ -166,6 +179,9 @@ defmodule JidoClaw.Reasoning.Compactor do
 
       true ->
         request_id = Map.get(params, :request_id) || generate_request_id()
+        compaction_id = compaction_id_from_context(ctx)
+        context_ref = Map.get(ctx, :context_ref)
+        key = compaction_key(compaction_id, context_ref)
 
         compactor_ctx = %Ctx{
           config: config,
@@ -173,8 +189,11 @@ defmodule JidoClaw.Reasoning.Compactor do
           session_uuid: session_uuid,
           actor: actor,
           agent_id: agent_id,
+          compaction_id: compaction_id,
+          context_ref: context_ref,
+          compaction_key: key,
           request_id: request_id,
-          storage_opts: [tenant: tenant_id, actor: actor],
+          storage_opts: [tenant: tenant_id, actor: actor, key: key],
           base_metadata: %{
             tenant_id: tenant_id,
             session_uuid: session_uuid,
@@ -187,11 +206,30 @@ defmodule JidoClaw.Reasoning.Compactor do
     end
   end
 
+  # Derive the durable compaction identity from the live tool_context — the
+  # SAME helper the register sites use, so stored (on message rows) == derived
+  # (here). Falls back to `"main"` when no identity is resolvable so the slice
+  # read always has a valid agent_id (matching the message resource default).
+  defp compaction_id_from_context(ctx) when is_map(ctx) do
+    Identity.resolve(
+      Map.get(ctx, :agent_template),
+      Map.get(ctx, :agent_id),
+      Map.get(ctx, :session_id)
+    ) || Identity.main()
+  end
+
+  # The per-agent snapshot key under `metadata["compactions"]`. `context_ref`
+  # is a future per-context lane; today it is always `"default"`.
+  defp compaction_key(identity, context_ref) do
+    "#{identity}::#{context_ref || "default"}"
+  end
+
   defp manual_install(action, params, %{
          tenant_id: tenant_id,
          session_uuid: session_uuid,
          actor: actor,
          agent_id: agent_id,
+         compaction_key: compaction_key,
          request_id: request_id
        }) do
     base_metadata = %{
@@ -201,7 +239,7 @@ defmodule JidoClaw.Reasoning.Compactor do
       request_id: request_id
     }
 
-    case Storage.latest(session_uuid, tenant: tenant_id, actor: actor) do
+    case Storage.latest(session_uuid, tenant: tenant_id, actor: actor, key: compaction_key) do
       {:ok, snap} ->
         emit_skipped(:manual_mode, agent_id, tenant_id, session_uuid, request_id)
         {:ok, install_overrides(action, params, snap, request_id)}
@@ -234,7 +272,12 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp evaluate_and_run(action, params, %Ctx{} = ctx, existing_snapshot) do
-    case load_slice_count(ctx.session_uuid, existing_snapshot, ctx.storage_opts) do
+    case load_slice_count(
+           ctx.session_uuid,
+           ctx.compaction_id,
+           existing_snapshot,
+           ctx.storage_opts
+         ) do
       {:ok, _, 0} ->
         emit_skipped(
           :no_source_messages,
@@ -554,8 +597,8 @@ defmodule JidoClaw.Reasoning.Compactor do
   defp threshold_for(%Config{recompact_delta_threshold: d}, %Snapshot{}),
     do: d
 
-  defp load_slice_count(session_uuid, nil, storage_opts) do
-    case Message.for_session(session_uuid,
+  defp load_slice_count(session_uuid, compaction_id, nil, storage_opts) do
+    case Message.for_session_agent(session_uuid, compaction_id,
            tenant: storage_opts[:tenant],
            actor: storage_opts[:actor]
          ) do
@@ -564,16 +607,22 @@ defmodule JidoClaw.Reasoning.Compactor do
     end
   end
 
-  defp load_slice_count(session_uuid, %Snapshot{last_summarized_sequence: nil}, storage_opts) do
-    load_slice_count(session_uuid, nil, storage_opts)
+  defp load_slice_count(
+         session_uuid,
+         compaction_id,
+         %Snapshot{last_summarized_sequence: nil},
+         storage_opts
+       ) do
+    load_slice_count(session_uuid, compaction_id, nil, storage_opts)
   end
 
   defp load_slice_count(
          session_uuid,
+         compaction_id,
          %Snapshot{last_summarized_sequence: watermark},
          storage_opts
        ) do
-    case Message.since_watermark(session_uuid, watermark,
+    case Message.since_watermark_for_agent(session_uuid, compaction_id, watermark,
            tenant: storage_opts[:tenant],
            actor: storage_opts[:actor]
          ) do
@@ -674,8 +723,16 @@ defmodule JidoClaw.Reasoning.Compactor do
 
     * `:tenant` (required) — tenant string for Ash policy.
     * `:actor` — Ash actor map; nil for system paths.
-    * `:agent_id` — optional agent label for telemetry.
+    * `:compaction_id` — the slice/key target: which agent's durable message
+      slice to summarize and under which `Session.metadata["compactions"]`
+      key to persist. Defaults to the main agent (`Identity.main/0`).
+    * `:agent_id` — alias for `:compaction_id` when the latter is absent (an
+      explicit `:compaction_id` wins). Also the telemetry/snapshot label.
     * `:config` — `%Config{}` to use; defaults to `Config.default/0`.
+
+  The persisted snapshot's `agent_id` always equals the compacted slice's
+  resolved id, so the snapshot label can never diverge from the slice it
+  summarized.
   """
   @spec compact(String.t(), String.t(), keyword()) ::
           {:ok, Snapshot.t()} | {:error, Exception.t()}
@@ -684,7 +741,8 @@ defmodule JidoClaw.Reasoning.Compactor do
     ctx = build_manual_ctx(session_uuid, tenant_id, opts)
 
     with {:ok, existing} <- Storage.latest(session_uuid, ctx.storage_opts),
-         {:ok, slice, slice_count} <- load_slice_count(session_uuid, existing, ctx.storage_opts) do
+         {:ok, slice, slice_count} <-
+           load_slice_count(session_uuid, ctx.compaction_id, existing, ctx.storage_opts) do
       run_manual(ctx, existing, slice, slice_count)
     end
   end
@@ -692,8 +750,19 @@ defmodule JidoClaw.Reasoning.Compactor do
   defp build_manual_ctx(session_uuid, tenant_id, opts) do
     config = Keyword.get(opts, :config) || Config.default()
     actor = Keyword.get(opts, :actor)
-    agent_id = Keyword.get(opts, :agent_id)
+    context_ref = Keyword.get(opts, :context_ref)
     request_id = Keyword.get(opts, :request_id) || generate_request_id()
+    # The slice/key target and the snapshot/telemetry label are ONE resolved
+    # id. An explicit `:compaction_id` wins; otherwise the documented
+    # `:agent_id` targets that agent's slice; otherwise the main agent. Keeping
+    # `compaction_id == agent_id` stops a snapshot from being labelled with a
+    # different id than the slice it actually summarized.
+    target_id =
+      Keyword.get(opts, :compaction_id) || Keyword.get(opts, :agent_id) || Identity.main()
+
+    agent_id = target_id
+    compaction_id = target_id
+    key = compaction_key(compaction_id, context_ref)
 
     %Ctx{
       config: config,
@@ -701,8 +770,11 @@ defmodule JidoClaw.Reasoning.Compactor do
       session_uuid: session_uuid,
       actor: actor,
       agent_id: agent_id,
+      compaction_id: compaction_id,
+      context_ref: context_ref,
+      compaction_key: key,
       request_id: request_id,
-      storage_opts: [tenant: tenant_id, actor: actor],
+      storage_opts: [tenant: tenant_id, actor: actor, key: key],
       base_metadata: %{
         tenant_id: tenant_id,
         session_uuid: session_uuid,
@@ -741,11 +813,15 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   @doc """
-  Return the latest persisted snapshot for `session_uuid`, or nil if none
-  has been stored. Tenant-aware.
+  Return the latest persisted snapshot for `session_uuid` under
+  `opts[:key]`, or nil if none has been stored under that key. Tenant-aware.
+
+  `:key` defaults to the main agent's `"main::default"`, so callers that
+  don't thread a per-agent key read the main slice's snapshot.
   """
   @spec latest(String.t(), keyword()) :: {:ok, Snapshot.t() | nil} | {:error, Exception.t()}
   def latest(session_uuid, opts) when is_binary(session_uuid) and is_list(opts) do
+    opts = Keyword.put_new(opts, :key, compaction_key(Identity.main(), nil))
     Storage.latest(session_uuid, opts)
   end
 

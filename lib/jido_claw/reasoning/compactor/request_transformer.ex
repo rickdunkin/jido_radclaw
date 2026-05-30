@@ -11,8 +11,8 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
       `snapshot.summarized_request_ids` → **dropped** (these have been
       replaced by the summary block).
     * Non-system rows with `nil` refs → **kept** (legacy untagged rows
-      from before T1-2 landed; v1 limitation, bounded in practice by
-      `max_messages` pressure).
+      from before T1-2 landed; a steady-state carve-out, bounded in
+      practice by `max_messages` pressure).
     * Non-system rows whose `refs.request_id` is NOT in the set → **kept**
       (newer than the watermark).
 

@@ -25,10 +25,10 @@ defmodule JidoClaw.Agent.Defaults do
       that runs `JidoClaw.Reasoning.Compactor.maybe_compact/3`, then
       delegates to `super/2`.
 
-  When `compaction: [mode: :off]` (the default for v1 workers) the
-  override still fires but `maybe_compact/3` short-circuits at the
-  pattern-match level (`%Config{mode: :off}` clause) — no I/O, no
-  storage reads.
+  When `compaction: [mode: :off]` (also the no-op fallback when no
+  `:compaction` opt is passed) the override still fires but
+  `maybe_compact/3` short-circuits at the pattern-match level
+  (`%Config{mode: :off}` clause) — no I/O, no storage reads.
 
   Compaction is best-effort. If `maybe_compact/3` returns `{:error, _}`,
   the override falls through with the original action so the agent

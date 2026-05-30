@@ -121,6 +121,8 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
         :tenant_id,
         :workspace_id,
         :user_id,
+        :agent_id,
+        :subagent,
         :expires_at,
         :run_id,
         :model,
@@ -182,6 +184,26 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     attribute :user_id, :uuid do
       allow_nil?(true)
       public?(true)
+    end
+
+    # Durable compaction identity for the dispatching agent
+    # (see `JidoClaw.Reasoning.Compactor.Identity`). Read back by
+    # `Session.Worker.lookup_request_attrs/1` and `Recorder.resolve_scope/1`
+    # to stamp `messages.agent_id`. NOT NULL, default `"main"` — aligns with
+    # `messages.agent_id`; un-routed registrations are attributed to the main
+    # agent's slice rather than landing as a NULL.
+    attribute :agent_id, :string do
+      allow_nil?(false)
+      public?(true)
+      default("main")
+    end
+
+    # `true` when the dispatching agent is a spawned sub-agent / workflow
+    # step. Stamped onto `messages.subagent`.
+    attribute :subagent, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
     end
 
     create_timestamp(:inserted_at, public?: true)

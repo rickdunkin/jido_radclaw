@@ -1,16 +1,17 @@
 defmodule JidoClaw.Reasoning.Compactor.Config do
   @moduledoc """
-  Compaction configuration for the main agent.
+  Per-agent compaction configuration.
 
   Carried on the agent module (via `JidoClaw.Agent.Defaults`) and threaded
   through `JidoClaw.Reasoning.Compactor.maybe_compact/3` and the bounded
-  summarizer call. Workers explicitly set `mode: :off` on v1.
+  summarizer call. The main agent and all seven workers carry `mode: :auto`;
+  a site opts out with `mode: :off`.
 
   ## Fields
 
     * `:mode` — `:auto | :manual | :off`. `:auto` runs per-turn checks on
       `:ai_react_start`. `:manual` only runs when `Compactor.compact/3` is
-      called explicitly. `:off` is the worker opt-out.
+      called explicitly. `:off` makes the macro emit a no-op override.
     * `:strategy` — currently only `:summary` is supported.
     * `:max_messages` — projected-message count that triggers a first
       compaction.
@@ -25,6 +26,14 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
     * `:summarizer_model` — ReqLLM-compatible model spec; `nil` lets the
       summarizer pick a default from the agent's config.
     * `:summarizer_timeout_ms` — bounded timeout for the summarizer Task.
+    * `:summarizer_max_retries` — number of *additional* summarizer
+      attempts after the first one fails with a transient phase
+      (`:summarizer_timeout`, `:summarizer_exit`, `:summarizer_backend`).
+      `0` disables retries; the default `1` means up to two total
+      attempts. `:summarizer_exception` is never retried.
+    * `:summarizer_retry_backoff_ms` — fixed delay slept between retry
+      attempts. Worst-case added latency is
+      `summarizer_max_retries * (summarizer_timeout_ms + summarizer_retry_backoff_ms)`.
 
   ## Invariants
 
@@ -34,6 +43,8 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
     * `recompact_delta_threshold > 0`
     * `max_summary_chars > 0`
     * `summarizer_timeout_ms > 0`
+    * `summarizer_max_retries >= 0`
+    * `summarizer_retry_backoff_ms > 0`
   """
 
   alias JidoClaw.Error
@@ -50,7 +61,9 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
           protect_first_n_turns: non_neg_integer(),
           max_summary_chars: pos_integer(),
           summarizer_model: term() | nil,
-          summarizer_timeout_ms: pos_integer()
+          summarizer_timeout_ms: pos_integer(),
+          summarizer_max_retries: non_neg_integer(),
+          summarizer_retry_backoff_ms: pos_integer()
         }
 
   @enforce_keys [
@@ -61,7 +74,9 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
     :keep_last_turns,
     :protect_first_n_turns,
     :max_summary_chars,
-    :summarizer_timeout_ms
+    :summarizer_timeout_ms,
+    :summarizer_max_retries,
+    :summarizer_retry_backoff_ms
   ]
   defstruct mode: :off,
             strategy: :summary,
@@ -71,13 +86,16 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
             protect_first_n_turns: 2,
             max_summary_chars: 4_000,
             summarizer_model: nil,
-            summarizer_timeout_ms: 15_000
+            summarizer_timeout_ms: 15_000,
+            summarizer_max_retries: 1,
+            summarizer_retry_backoff_ms: 250
 
   @doc """
-  Returns a `%Config{}` with the v1 defaults for the main agent.
+  Returns a `%Config{}` with the default `:auto` compaction settings.
 
-  Note: `default/0` returns mode `:auto`. Workers opt out with `mode: :off`
-  via their own `use JidoClaw.Agent.Defaults, compaction: [mode: :off]`.
+  Note: `default/0` returns mode `:auto` — the same mode the main agent and
+  all seven workers carry. A site opts out with `mode: :off` via its own
+  `use JidoClaw.Agent.Defaults, compaction: [mode: :off]`.
   """
   @spec default() :: t()
   def default do
@@ -90,12 +108,14 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
       protect_first_n_turns: 2,
       max_summary_chars: 4_000,
       summarizer_model: nil,
-      summarizer_timeout_ms: 15_000
+      summarizer_timeout_ms: 15_000,
+      summarizer_max_retries: 1,
+      summarizer_retry_backoff_ms: 250
     }
   end
 
   @doc """
-  Returns an `:off` config for opt-out callers (workers).
+  Returns an `:off` config for opt-out callers.
   """
   @spec off() :: t()
   def off do
@@ -108,7 +128,9 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
       protect_first_n_turns: 2,
       max_summary_chars: 4_000,
       summarizer_model: nil,
-      summarizer_timeout_ms: 15_000
+      summarizer_timeout_ms: 15_000,
+      summarizer_max_retries: 1,
+      summarizer_retry_backoff_ms: 250
     }
   end
 
@@ -166,6 +188,8 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
          :ok <- check_non_negative(config, :protect_first_n_turns),
          :ok <- check_positive(config, :max_summary_chars),
          :ok <- check_positive(config, :summarizer_timeout_ms),
+         :ok <- check_non_negative(config, :summarizer_max_retries),
+         :ok <- check_positive(config, :summarizer_retry_backoff_ms),
          :ok <- check_capacity(config) do
       :ok
     end

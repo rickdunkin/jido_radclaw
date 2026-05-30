@@ -13,6 +13,7 @@ defmodule JidoClaw.ToolContextShapeTest do
     :user_id,
     :agent_id,
     :agent_template,
+    :subagent,
     :actor
   ]
 
@@ -69,6 +70,8 @@ defmodule JidoClaw.ToolContextShapeTest do
       assert child.session_uuid == "ss"
       assert child.workspace_uuid == "ws"
       assert child.project_dir == "/tmp/foo"
+      # child/2 forces the sub-agent flag so durable rows are stamped correctly.
+      assert child.subagent == true
     end
 
     test "resets :agent_template to nil even when parent had one set" do

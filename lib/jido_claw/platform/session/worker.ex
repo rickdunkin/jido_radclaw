@@ -81,9 +81,17 @@ defmodule JidoClaw.Session.Worker do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def add_message(tenant_id, session_id, role, content, request_id \\ nil) do
+  @doc """
+  Append a message row.
+
+  `opts` may carry `:agent_id` / `:subagent` overrides that win over the
+  identity looked up from the `RequestCorrelation` row — used for the
+  handoff `:system` row, which is written during main's turn but must be
+  stamped with the *target worker's* compaction identity.
+  """
+  def add_message(tenant_id, session_id, role, content, request_id \\ nil, opts \\ []) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
-    GenServer.call(name, {:add_message, role, content, request_id})
+    GenServer.call(name, {:add_message, role, content, request_id, opts})
   end
 
   def get_messages(tenant_id, session_id) do
@@ -163,15 +171,15 @@ defmodule JidoClaw.Session.Worker do
 
   @impl true
   def handle_call(
-        {:add_message, _role, _content, _request_id},
+        {:add_message, _role, _content, _request_id, _opts},
         _from,
         %{session_uuid: nil} = state
       ) do
     {:reply, {:error, :session_uuid_unset}, state, @idle_timeout}
   end
 
-  def handle_call({:add_message, role, content, request_id}, _from, state) do
-    telemetry = lookup_telemetry(request_id)
+  def handle_call({:add_message, role, content, request_id, opts}, _from, state) do
+    request_attrs = lookup_request_attrs(request_id)
 
     attrs =
       %{
@@ -181,7 +189,8 @@ defmodule JidoClaw.Session.Worker do
         request_id: request_id,
         metadata: %{}
       }
-      |> Map.merge(telemetry)
+      |> Map.merge(request_attrs)
+      |> apply_identity_overrides(opts)
 
     case Message.append(attrs, append_opts(state)) do
       {:ok, message} ->
@@ -290,7 +299,9 @@ defmodule JidoClaw.Session.Worker do
   defp load_messages(session_uuid, tenant_id, actor) when is_binary(tenant_id) do
     actor = actor || Actor.system(tenant_id)
 
-    case Message.for_session(session_uuid, tenant: tenant_id, actor: actor) do
+    # Primary view only — sub-agent rows are excluded from the chat-visible
+    # in-memory cache (they belong to their own per-agent compaction slices).
+    case Message.for_session_primary(session_uuid, tenant: tenant_id, actor: actor) do
       {:ok, rows} -> Enum.flat_map(rows, &to_view/1)
       _ -> []
     end
@@ -325,34 +336,39 @@ defmodule JidoClaw.Session.Worker do
 
   defp to_view(_), do: []
 
-  # Pull telemetry merged into the RequestCorrelation row by the
+  # Pull the durable compaction identity (`agent_id`, `subagent`) plus the
+  # per-request telemetry merged into the RequestCorrelation row by the
   # Recorder. Cache hits cover the in-flight path; the durable lookup
   # fallback covers the post-finalize path where the cache has been
-  # cleared on `ai.request.completed`.
-  defp lookup_telemetry(nil), do: %{}
+  # cleared on `ai.request.completed`. Identity is stamped at register
+  # time, so it is present on the cache hit even before telemetry merges.
+  defp lookup_request_attrs(nil), do: %{}
 
-  defp lookup_telemetry(request_id) when is_binary(request_id) do
-    cache_lookup =
-      try do
-        Cache.lookup(request_id)
-      rescue
-        _ in [ArgumentError] -> :error
-      end
-
-    case cache_lookup do
+  defp lookup_request_attrs(request_id) when is_binary(request_id) do
+    case safe_cache_lookup(request_id) do
       {:ok, scope} when is_map(scope) ->
-        if has_telemetry?(scope), do: telemetry_subset(scope), else: durable_lookup(request_id)
+        attrs = request_attrs_subset(scope)
+        # Telemetry merges into the row AFTER the scope is first cached, so a
+        # cache hit may carry identity but not yet telemetry — fill telemetry
+        # from the durable row in that case (identity from the cache wins).
+        if has_telemetry?(scope), do: attrs, else: Map.merge(durable_attrs(request_id), attrs)
 
       _ ->
-        durable_lookup(request_id)
+        durable_attrs(request_id)
     end
   end
 
-  defp lookup_telemetry(_), do: %{}
+  defp lookup_request_attrs(_), do: %{}
 
-  defp durable_lookup(request_id) do
+  defp safe_cache_lookup(request_id) do
+    Cache.lookup(request_id)
+  rescue
+    _ in [ArgumentError] -> :error
+  end
+
+  defp durable_attrs(request_id) do
     case RequestCorrelation.lookup(request_id) do
-      {:ok, row} -> telemetry_subset(row)
+      {:ok, row} -> request_attrs_subset(row)
       _ -> %{}
     end
   rescue
@@ -365,8 +381,8 @@ defmodule JidoClaw.Session.Worker do
     end)
   end
 
-  defp telemetry_subset(source) do
-    [:run_id, :model, :input_tokens, :output_tokens, :latency_ms]
+  defp request_attrs_subset(source) do
+    [:agent_id, :subagent, :run_id, :model, :input_tokens, :output_tokens, :latency_ms]
     |> Enum.reduce(%{}, fn k, acc ->
       case Map.get(source, k) do
         nil -> acc
@@ -374,6 +390,17 @@ defmodule JidoClaw.Session.Worker do
       end
     end)
   end
+
+  # Caller-supplied `:agent_id` / `:subagent` win over the looked-up
+  # identity (handoff `:system` row uses this to stamp the target worker).
+  defp apply_identity_overrides(attrs, opts) do
+    attrs
+    |> override(:agent_id, Keyword.get(opts, :agent_id))
+    |> override(:subagent, Keyword.get(opts, :subagent))
+  end
+
+  defp override(attrs, _key, nil), do: attrs
+  defp override(attrs, key, value), do: Map.put(attrs, key, value)
 
   # Re-hydrate the handoff registry from the durable session metadata
   # when the worker first learns its session_uuid. The original handoff
@@ -394,10 +421,10 @@ defmodule JidoClaw.Session.Worker do
                 tenant_id: tenant_id,
                 runtime_session_id: runtime_session_id,
                 session_uuid: session_uuid,
-                from_template: "<rehydrated>",
+                from_template: Handoff.rehydrated_marker(),
                 to_template: template_name,
                 to_module: template.module,
-                message: "<rehydrated>"
+                message: Handoff.rehydrated_marker()
               })
 
             :ok =

@@ -99,14 +99,16 @@ defmodule JidoClaw.Tools.MCPScope do
     request_id = enriched_ctx[:mcp_request_id] || Ecto.UUID.generate()
     tool_call_id = enriched_ctx[:mcp_tool_call_id] || Ecto.UUID.generate()
 
-    call_attrs = %{
-      session_id: tc.session_uuid,
-      request_id: request_id,
-      role: :tool_call,
-      content: ToolTranscript.summarize_args(tool_name, params),
-      metadata: %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)},
-      tool_call_id: tool_call_id
-    }
+    call_attrs =
+      %{
+        session_id: tc.session_uuid,
+        request_id: request_id,
+        role: :tool_call,
+        content: ToolTranscript.summarize_args(tool_name, params),
+        metadata: %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)},
+        tool_call_id: tool_call_id
+      }
+      |> Map.merge(identity_attrs(tc))
 
     actor = actor_for(tc)
 
@@ -119,15 +121,17 @@ defmodule JidoClaw.Tools.MCPScope do
     try do
       result = fun.(enriched_ctx)
 
-      result_attrs = %{
-        session_id: tc.session_uuid,
-        request_id: request_id,
-        role: :tool_result,
-        content: ToolTranscript.result_summary(tool_name, result),
-        metadata: %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)},
-        tool_call_id: tool_call_id,
-        parent_message_id: parent_id
-      }
+      result_attrs =
+        %{
+          session_id: tc.session_uuid,
+          request_id: request_id,
+          role: :tool_result,
+          content: ToolTranscript.result_summary(tool_name, result),
+          metadata: %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)},
+          tool_call_id: tool_call_id,
+          parent_message_id: parent_id
+        }
+        |> Map.merge(identity_attrs(tc))
 
       _ = attempt_append(result_attrs, tc[:tenant_id], actor)
       result
@@ -135,23 +139,38 @@ defmodule JidoClaw.Tools.MCPScope do
       err ->
         stacktrace = __STACKTRACE__
 
-        result_attrs = %{
-          session_id: tc.session_uuid,
-          request_id: request_id,
-          role: :tool_result,
-          content: "#{tool_name} → exception: #{Exception.message(err)}",
-          metadata: %{
-            tool_name: to_string(tool_name),
-            result: %{error: Exception.message(err)}
-          },
-          tool_call_id: tool_call_id,
-          parent_message_id: parent_id
-        }
+        result_attrs =
+          %{
+            session_id: tc.session_uuid,
+            request_id: request_id,
+            role: :tool_result,
+            content: "#{tool_name} → exception: #{Exception.message(err)}",
+            metadata: %{
+              tool_name: to_string(tool_name),
+              result: %{error: Exception.message(err)}
+            },
+            tool_call_id: tool_call_id,
+            parent_message_id: parent_id
+          }
+          |> Map.merge(identity_attrs(tc))
 
         _ = attempt_append(result_attrs, tc[:tenant_id], actor)
         reraise(err, stacktrace)
     end
   end
+
+  # Stamp the durable compaction identity from the tool_context. MCP serve
+  # mode is single-user main-agent only, so these are normally absent and
+  # the message resource's `"main"` / `false` defaults apply; we still
+  # forward them in case a future MCP path threads a sub-agent scope.
+  defp identity_attrs(tc) do
+    %{}
+    |> put_present(:agent_id, Map.get(tc, :agent_id))
+    |> put_present(:subagent, Map.get(tc, :subagent))
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   # Build the Ash actor from the tool_context. Prefer the canonical
   # `:actor` slot; otherwise synthesize a tenant-bound system actor so

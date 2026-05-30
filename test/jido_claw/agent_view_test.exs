@@ -391,8 +391,12 @@ defmodule JidoClaw.AgentViewTest do
         "version" => 1
       }
 
+      # No handoff owner → AgentView reads the main agent's key.
       {:ok, _} =
-        ConversationsSession.set_compaction_snapshot(session, snap, tenant: tid, actor: actor)
+        ConversationsSession.set_compaction_snapshot(session, "main::default", snap,
+          tenant: tid,
+          actor: actor
+        )
 
       assert {:ok, view} = AgentView.snapshot(session)
       assert is_map(view.compaction)

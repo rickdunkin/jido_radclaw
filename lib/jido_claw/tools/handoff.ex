@@ -58,6 +58,7 @@ defmodule JidoClaw.Tools.Handoff do
 
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
+  alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session, as: ConversationsSession
@@ -254,16 +255,24 @@ defmodule JidoClaw.Tools.Handoff do
       :ok
   end
 
+  # The handoff `:system` row is written during the *main* agent's turn, so
+  # `ctx.request_id` resolves to main's compaction identity. Override the
+  # row's identity to the *target worker's* (`"handoff:<uuid>:<tpl>"`, the
+  # same id the router stamps on the worker) so the worker's durable slice
+  # includes its own handoff context — and enrich the body with the reason
+  # + summary so that context survives into the summarized source on
+  # re-compaction.
   defp write_system_message(ctx, %Handoff{} = handoff) do
-    body =
-      "Handed off from #{handoff.from_template} to #{handoff.to_template}: #{handoff.message}"
+    body = system_message_body(handoff)
+    identity = system_row_identity(ctx, handoff)
 
     case SessionWorker.add_message(
            ctx.tenant_id,
            ctx.runtime_session_id,
            :system,
            body,
-           ctx.request_id
+           ctx.request_id,
+           identity
          ) do
       :ok ->
         :ok
@@ -284,6 +293,28 @@ defmodule JidoClaw.Tools.Handoff do
       Logger.warning("[handoff] system message write exited: #{inspect(reason)}")
       :ok
   end
+
+  defp system_message_body(%Handoff{} = handoff) do
+    # `handoff.message` is `String.t()` (non-nil per the struct's type);
+    # `reason`/`summary`/`from_template` are nilable, so they keep fallbacks.
+    """
+    [HANDOFF #{handoff.from_template || "main"} → #{handoff.to_template}]
+    Reason: #{handoff.reason || "not provided"}
+    Summary: #{handoff.summary || "not provided"}
+    Message: #{handoff.message}
+    """
+    |> String.trim_trailing()
+  end
+
+  # Stamp the row with the target worker's compaction identity when the
+  # session UUID is known (the normal path). Without a UUID the worker can't
+  # be routed either, so fall back to the default (main) attribution.
+  defp system_row_identity(%{session_uuid: uuid}, %Handoff{to_template: to_template})
+       when is_binary(uuid) do
+    [agent_id: HandoffRouter.worker_agent_id(uuid, to_template), subagent: false]
+  end
+
+  defp system_row_identity(_ctx, _handoff), do: [subagent: false]
 
   # ---- Telemetry ----
 

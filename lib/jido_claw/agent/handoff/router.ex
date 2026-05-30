@@ -44,6 +44,22 @@ defmodule JidoClaw.Agent.Handoff.Router do
   @spec max_preamble_bytes() :: pos_integer()
   def max_preamble_bytes, do: @max_preamble_bytes
 
+  @doc """
+  The runtime/compaction agent id for a handoff-routed worker:
+  `"handoff:<session_uuid>:<template>"`.
+
+  Defined once here and reused by the handoff `:system`-row writer
+  (`JidoClaw.Tools.Handoff`) so the row the *main* turn writes carries the
+  *target worker's* identity — the same id this router stamps on the
+  worker's own correlation rows. Reader-reconstructable from
+  `(session_uuid, template)`, so no extra plumbing is needed across boots.
+  """
+  @spec worker_agent_id(String.t(), String.t()) :: String.t()
+  def worker_agent_id(session_uuid, template_name)
+      when is_binary(session_uuid) and is_binary(template_name) do
+    "handoff:#{session_uuid}:#{template_name}"
+  end
+
   # Internal struct that bundles the immutable per-call inputs (tenant,
   # session ids, default fallback, actor, project context). Threading
   # this instead of 8 positional args keeps cyclomatic-complexity /
@@ -276,10 +292,10 @@ defmodule JidoClaw.Agent.Handoff.Router do
         tenant_id: tenant_id,
         runtime_session_id: runtime_session_id,
         session_uuid: session_uuid,
-        from_template: "<rehydrated>",
+        from_template: Handoff.rehydrated_marker(),
         to_template: template_name,
         to_module: template.module,
-        message: "<rehydrated>"
+        message: Handoff.rehydrated_marker()
       })
 
     :ok =
@@ -346,9 +362,9 @@ defmodule JidoClaw.Agent.Handoff.Router do
   end
 
   defp route_known_template(owner, module, template_name, %Ctx{} = ctx) do
-    worker_agent_id = "handoff:#{ctx.effective_uuid}:#{template_name}"
+    agent_id = worker_agent_id(ctx.effective_uuid, template_name)
 
-    case ensure_worker_pid(module, worker_agent_id) do
+    case ensure_worker_pid(module, agent_id) do
       {:ok, pid} ->
         maybe_inject_prompt(
           pid,
@@ -360,11 +376,11 @@ defmodule JidoClaw.Agent.Handoff.Router do
         )
 
         first_post_handoff? = not Map.get(owner, :preamble_consumed?, false)
-        {pid, template_name, worker_agent_id, first_post_handoff?, owner}
+        {pid, template_name, agent_id, first_post_handoff?, owner}
 
       {:error, reason} ->
         Logger.warning(
-          "[handoff.router] worker start failed for #{worker_agent_id}: #{inspect(reason)} — falling back to main for this turn"
+          "[handoff.router] worker start failed for #{agent_id}: #{inspect(reason)} — falling back to main for this turn"
         )
 
         default_tuple(ctx)
@@ -409,13 +425,13 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
   defp maybe_inject_prompt(
          pid,
-         _owner,
+         owner,
          tenant_id,
          runtime_session_id,
          project_dir,
          session_record
        ) do
-    case JidoClaw.Startup.inject_system_prompt(pid, project_dir, session_record) do
+    case inject_prompt_for(pid, owner, project_dir, session_record) do
       :ok ->
         HandoffRegistry.mark_prompt_injected(tenant_id, runtime_session_id)
         :ok
@@ -428,6 +444,46 @@ defmodule JidoClaw.Agent.Handoff.Router do
         :ok
     end
   end
+
+  # When the handoff carries a reason/summary, inject the base prompt PLUS an
+  # additive handoff-context block (always kept by the compaction
+  # transformer). Otherwise — a contextless or rehydrated handoff — inject
+  # just the base session prompt.
+  defp inject_prompt_for(pid, owner, project_dir, session_record) do
+    case handoff_context_from_owner(owner) do
+      ctx when map_size(ctx) == 0 ->
+        JidoClaw.Startup.inject_system_prompt(pid, project_dir, session_record)
+
+      ctx ->
+        JidoClaw.Startup.inject_handoff_prompt(pid, project_dir, session_record, ctx)
+    end
+  end
+
+  # A routed owner always carries a `%Handoff{}`. Returns the additive
+  # handoff-context block's fields (message + reason + summary + handing-off
+  # template) when any of them is present, or an empty map for a contextless
+  # handoff. A rehydrated placeholder short-circuits to `%{}`: its sentinel
+  # `:message` is non-empty but must NOT surface as handoff context, so a
+  # rehydrated owner stays on the base prompt only.
+  defp handoff_context_from_owner(%{handoff: %Handoff{} = handoff}) do
+    cond do
+      Handoff.rehydrated?(handoff) ->
+        %{}
+
+      present?(handoff.message) or present?(handoff.reason) or present?(handoff.summary) ->
+        %{
+          message: handoff.message,
+          reason: handoff.reason,
+          summary: handoff.summary,
+          from_template: handoff.from_template
+        }
+
+      true ->
+        %{}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   # ---- Preamble helpers ----
 

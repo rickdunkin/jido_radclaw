@@ -11,6 +11,7 @@ defmodule JidoClaw.CLI.Repl do
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Conversations.SessionId
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
+  alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.StrategyRegistry
   alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Workspaces.PolicyTransitions
@@ -318,19 +319,6 @@ defmodule JidoClaw.CLI.Repl do
   defp handle_message(message, state) do
     request_id = Ecto.UUID.generate()
 
-    # Register correlation BEFORE the user-message append so the
-    # Recorder can resolve scope for any tool signal that fires during
-    # this turn, even if it races ahead of the dispatcher's add_message.
-    if state.session_uuid do
-      JidoClaw.register_correlation(
-        request_id,
-        state.session_uuid,
-        state.tenant_id,
-        state.workspace_uuid,
-        nil
-      )
-    end
-
     Stats.track_message(:user)
 
     Display.reset_mode()
@@ -351,6 +339,22 @@ defmodule JidoClaw.CLI.Repl do
         session_record: session_record,
         default_agent_id: state.agent_id
       )
+
+    # Register correlation AFTER routing (so the stamped compaction identity
+    # reflects the resolved owner) but BEFORE the user-message append, so the
+    # Recorder can resolve scope for any tool signal that fires during this
+    # turn even if it races ahead of the dispatcher's add_message.
+    if state.session_uuid do
+      JidoClaw.register_correlation(
+        request_id,
+        state.session_uuid,
+        state.tenant_id,
+        state.workspace_uuid,
+        nil,
+        agent_id: CompactionIdentity.resolve(routed_template, routed_agent_id, state.session_id),
+        subagent: false
+      )
+    end
 
     # 1. Build preamble BEFORE writing the current user message to
     #    Session.Worker, so the recent-history window excludes this turn.
@@ -376,7 +380,8 @@ defmodule JidoClaw.CLI.Repl do
         workspace_id: state.session_id,
         workspace_uuid: state.workspace_uuid,
         agent_id: routed_agent_id,
-        agent_template: routed_template
+        agent_template: routed_template,
+        subagent: false
       })
 
     prepared_with_preamble = preamble <> prepared_raw

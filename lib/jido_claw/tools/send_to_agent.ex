@@ -15,6 +15,7 @@ defmodule JidoClaw.Tools.SendToAgent do
       message: [type: :string, required: true, doc: "The message to send"]
     ]
 
+  alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
 
   @impl true
@@ -43,17 +44,18 @@ defmodule JidoClaw.Tools.SendToAgent do
         agent_tracker().update_request_id(params.agent_id, request_id)
 
         spawn(fn ->
-          try do
-            template.module.ask_sync(pid, params.message,
-              timeout: 120_000,
-              request_id: request_id,
-              tool_context: child_tool_context
+          SubagentTranscript.record_task(child_tool_context, request_id, params.message)
+
+          outcome =
+            SubagentTranscript.run(
+              template.module,
+              pid,
+              params.message,
+              request_id,
+              child_tool_context
             )
-          rescue
-            _ -> :ok
-          catch
-            _, _ -> :ok
-          end
+
+          _ = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
         end)
 
         {:ok,

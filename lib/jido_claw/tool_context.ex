@@ -23,6 +23,12 @@ defmodule JidoClaw.ToolContext do
                            `"reviewer"`). Distinct from `:agent_id`, which is
                            the opaque runtime identity. Used by the handoff
                            tool to derive `from_template` cleanly.
+    * `:subagent`       — boolean. `true` for spawned sub-agents and
+                           workflow steps (set by `child/2,3` and the
+                           workflow scope); `false` for conversation owners
+                           (REPL/chat main + handoff workers). Drives the
+                           durable `messages.subagent` flag so cold readers
+                           can exclude sub-agent rows from the primary view.
     * `:actor`          — Ash authorization actor map; built by
                            `JidoClaw.Authorization.Actor`. Nil for paths
                            that haven't resolved an actor (system / public)
@@ -43,6 +49,7 @@ defmodule JidoClaw.ToolContext do
     :user_id,
     :agent_id,
     :agent_template,
+    :subagent,
     :actor
   ]
 
@@ -105,6 +112,10 @@ defmodule JidoClaw.ToolContext do
   Resets `:agent_template` to `nil` because spawned children are not
   routed via the handoff registry; callers that need a specific template
   attribution should set it explicitly after the call.
+
+  Forces `:subagent` to `true` so the child's durable rows are flagged as
+  sub-agent rows (excluded from the primary cold-read view) and its
+  `RequestCorrelation` carries the sub-agent identity.
   """
   @spec child(map() | nil, String.t()) :: map()
   def child(parent_tool_context, child_tag) when is_binary(child_tag) do
@@ -113,6 +124,7 @@ defmodule JidoClaw.ToolContext do
     parent
     |> Map.put(:agent_id, child_tag)
     |> Map.put(:agent_template, nil)
+    |> Map.put(:subagent, true)
     |> Map.put(:project_dir, Map.get(parent, :project_dir) || File.cwd!())
     |> build()
   end

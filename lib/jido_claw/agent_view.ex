@@ -37,6 +37,7 @@ defmodule JidoClaw.AgentView do
   alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.Compactor.Storage, as: CompactorStorage
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Trace
@@ -316,7 +317,7 @@ defmodule JidoClaw.AgentView do
     started_at = derive_started_at(worker_info, base.session_record)
     last_active = derive_last_active(worker_info, base.session_record)
 
-    compaction = maybe_compaction(base, opts)
+    compaction = maybe_compaction(base, owner, opts)
     outcome = derive_outcome(trace)
 
     view = %__MODULE__{
@@ -445,7 +446,9 @@ defmodule JidoClaw.AgentView do
   defp cold_messages(%{session_uuid: nil}), do: []
 
   defp cold_messages(%{session_uuid: session_uuid, tenant_id: tenant_id, actor: actor}) do
-    case ConversationsMessage.for_session(session_uuid, tenant: tenant_id, actor: actor) do
+    # Primary view only — sub-agent rows belong to their own slices and are
+    # never part of the chat-visible conversation.
+    case ConversationsMessage.for_session_primary(session_uuid, tenant: tenant_id, actor: actor) do
       {:ok, rows} ->
         rows
         |> Enum.filter(&(&1.role in [:user, :assistant, :system]))
@@ -479,8 +482,10 @@ defmodule JidoClaw.AgentView do
          tenant_id: tenant_id,
          actor: actor
        }) do
-    case ConversationsMessage.for_session(session_uuid, tenant: tenant_id, actor: actor) do
-      {:ok, rows} -> length(rows)
+    # Match the chat-visible count to what `to_view/1`/`cold_message_view/1`
+    # renders: primary rows (sub-agents excluded) restricted to chat roles.
+    case ConversationsMessage.for_session_primary(session_uuid, tenant: tenant_id, actor: actor) do
+      {:ok, rows} -> Enum.count(rows, &(&1.role in [:user, :assistant, :system]))
       _ -> 0
     end
   rescue
@@ -550,14 +555,14 @@ defmodule JidoClaw.AgentView do
     }
   end
 
-  defp maybe_compaction(base, opts) do
+  defp maybe_compaction(base, owner, opts) do
     if Keyword.get(opts, :include_compaction?, true) and is_binary(base.session_uuid) do
-      load_compaction(base)
+      load_compaction(base, compaction_key_for(base, owner))
     end
   end
 
-  defp load_compaction(%{session_uuid: session_uuid, tenant_id: tenant_id, actor: actor}) do
-    case CompactorStorage.latest(session_uuid, tenant: tenant_id, actor: actor) do
+  defp load_compaction(%{session_uuid: session_uuid, tenant_id: tenant_id, actor: actor}, key) do
+    case CompactorStorage.latest(session_uuid, tenant: tenant_id, actor: actor, key: key) do
       {:ok, nil} -> nil
       {:ok, snapshot} -> snapshot_to_map(snapshot)
       _ -> nil
@@ -566,6 +571,23 @@ defmodule JidoClaw.AgentView do
     _ -> nil
   catch
     :exit, _ -> nil
+  end
+
+  # The snapshot key for the conversation's current owner: the handoff
+  # worker's identity when a handoff is active, else `"main"`. Run through
+  # the shared helper so the main case normalizes to `"main"` regardless of
+  # surface.
+  defp compaction_key_for(_base, nil), do: "#{CompactionIdentity.main()}::default"
+
+  defp compaction_key_for(base, owner) do
+    uuid = base.session_uuid || get_in(Map.from_struct(owner.handoff), [:session_uuid])
+    worker_id = "handoff:#{inspect_or(uuid)}:#{owner.template}"
+
+    identity =
+      CompactionIdentity.resolve(owner.template, worker_id, base.session_id) ||
+        CompactionIdentity.main()
+
+    "#{identity}::default"
   end
 
   defp snapshot_to_map(%_{} = snap), do: Map.from_struct(snap)

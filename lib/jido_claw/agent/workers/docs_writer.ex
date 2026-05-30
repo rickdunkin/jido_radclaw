@@ -13,7 +13,7 @@ defmodule JidoClaw.Agent.Workers.DocsWriter do
     max_iterations: 15,
     streaming: false,
     tool_timeout_ms: 30_000,
-    compaction: [mode: :off],
+    compaction: [mode: :auto],
     output: %{
       schema:
         Zoi.object(%{

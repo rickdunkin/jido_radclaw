@@ -33,12 +33,21 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
       the exit reason is preserved in `details`.
     * `:summarizer_backend` — the backend returned `{:error, reason}`.
 
-  No retries on v1.
+  ## Retries
+
+  Transient failures (`:summarizer_timeout`, `:summarizer_exit`,
+  `:summarizer_backend`) are retried up to `config.summarizer_max_retries`
+  additional times, sleeping `config.summarizer_retry_backoff_ms` between
+  attempts and emitting a `:retry` Trace breadcrumb before each. A
+  `:summarizer_exception` is treated as a deterministic bug in the backend
+  and is **never** retried. Worst-case added latency is
+  `summarizer_max_retries * (summarizer_timeout_ms + summarizer_retry_backoff_ms)`.
   """
 
   require Logger
 
   alias JidoClaw.Error
+  alias JidoClaw.Error.ExecutionError
   alias JidoClaw.Reasoning.Compactor.Config
 
   @type prompt :: String.t()
@@ -69,13 +78,36 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
           {:ok, String.t()} | {:error, Exception.t()}
   def summarize(prompt, %Config{} = config, opts \\ [])
       when is_binary(prompt) and is_list(opts) do
-    backend = resolve_backend()
-    timeout_ms = config.summarizer_timeout_ms
-
     backend_opts =
       opts
       |> Keyword.put_new(:model, config.summarizer_model)
       |> Keyword.put_new(:max_chars, config.max_summary_chars)
+
+    attempt_summarize(prompt, config, backend_opts, 0)
+  end
+
+  # Run one attempt; on a transient failure, sleep the configured backoff
+  # and recurse until `summarizer_max_retries` additional attempts are
+  # exhausted. `:summarizer_exception` is non-transient and short-circuits.
+  defp attempt_summarize(prompt, %Config{} = config, backend_opts, attempt) do
+    case run_attempt(prompt, config, backend_opts) do
+      {:ok, _summary} = ok ->
+        ok
+
+      {:error, error} ->
+        if retryable?(error) and attempt < config.summarizer_max_retries do
+          emit_retry(error, attempt + 1, config, backend_opts)
+          Process.sleep(config.summarizer_retry_backoff_ms)
+          attempt_summarize(prompt, config, backend_opts, attempt + 1)
+        else
+          {:error, error}
+        end
+    end
+  end
+
+  defp run_attempt(prompt, %Config{} = config, backend_opts) do
+    backend = resolve_backend()
+    timeout_ms = config.summarizer_timeout_ms
 
     task =
       Task.Supervisor.async_nolink(JidoClaw.TaskSupervisor, fn ->
@@ -86,6 +118,37 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
     |> finalize(task, config, timeout_ms)
   end
 
+  defp retryable?(%ExecutionError{phase: phase})
+       when phase in [:summarizer_timeout, :summarizer_exit, :summarizer_backend],
+       do: true
+
+  defp retryable?(_), do: false
+
+  defp emit_retry(error, attempt, %Config{} = config, backend_opts) do
+    JidoClaw.Trace.emit(
+      :compaction,
+      %{
+        event: :retry,
+        phase: :compaction,
+        name: "summary",
+        compaction: "summary",
+        status: :retry,
+        reason: error_phase(error),
+        retry_attempt: attempt,
+        max_retries: config.summarizer_max_retries,
+        request_id: Keyword.get(backend_opts, :request_id),
+        agent_id: Keyword.get(backend_opts, :agent_id),
+        tenant_id: Keyword.get(backend_opts, :tenant_id)
+      },
+      %{system_time: System.system_time()}
+    )
+
+    :ok
+  end
+
+  # Every transient/terminal failure from `run_attempt` is an `%ExecutionError{}`.
+  defp error_phase(%ExecutionError{phase: phase}), do: phase
+
   defp run_backend(backend, prompt, backend_opts) do
     {:ok, backend.summarize(prompt, backend_opts)}
   rescue
@@ -95,11 +158,11 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
     :throw, value -> {:throw, value}
   end
 
-  defp finalize(nil, task, _config, timeout_ms) do
+  defp finalize(nil, task, %Config{} = config, timeout_ms) do
     case Task.shutdown(task, :brutal_kill) do
       nil -> {:error, timeout_error(timeout_ms)}
       {:exit, reason} -> {:error, exit_error(reason)}
-      result -> handle_task_result(result, timeout_ms)
+      result -> handle_task_result(result, config.max_summary_chars)
     end
   end
 

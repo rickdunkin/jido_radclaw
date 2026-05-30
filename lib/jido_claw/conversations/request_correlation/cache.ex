@@ -26,6 +26,11 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
         tenant_id: <string>,
         workspace_id: <uuid> | nil,
         user_id: <uuid> | nil,
+        # Durable compaction identity + sub-agent flag, mirrored from the
+        # RequestCorrelation row so the Recorder can stamp messages.agent_id
+        # / messages.subagent without a DB round-trip.
+        agent_id: <string> | nil,
+        subagent: <boolean>,
         # Optional telemetry merged in by the Recorder when
         # `ai.llm.response` / `ai.request.completed` lands.
         run_id: <string> | nil,

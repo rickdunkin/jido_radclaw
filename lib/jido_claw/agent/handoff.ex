@@ -63,6 +63,8 @@ defmodule JidoClaw.Agent.Handoff do
           metadata: map()
         }
 
+  @rehydrated_marker "<rehydrated>"
+
   @doc """
   Build a `%Handoff{}` from a map of attributes.
 
@@ -78,4 +80,30 @@ defmodule JidoClaw.Agent.Handoff do
 
     struct!(__MODULE__, attrs)
   end
+
+  @doc """
+  Sentinel stamped on a handoff's `:from_template` and `:message` when an
+  owner is *rehydrated* from durable session metadata (after a restart)
+  rather than created from a live handoff. The original handoff message is
+  not recoverable across boots.
+
+  Exposed as a function (not just a module attribute) so the two
+  cross-module placeholder sites — `Router.synthesize_owner/5` and
+  `Session.Worker.seed_handoff_from_metadata/4` — share a single source of
+  truth instead of each hardcoding the literal.
+  """
+  @spec rehydrated_marker() :: String.t()
+  def rehydrated_marker, do: @rehydrated_marker
+
+  @doc """
+  True when `handoff` is a rehydration placeholder — its `:message` carries
+  `rehydrated_marker/0`.
+
+  The router consults this to keep a rehydrated owner on the base prompt
+  only: the placeholder `:message` is a sentinel, not real handoff context,
+  so it must not surface in the worker's system prompt.
+  """
+  @spec rehydrated?(t()) :: boolean()
+  def rehydrated?(%__MODULE__{message: @rehydrated_marker}), do: true
+  def rehydrated?(%__MODULE__{}), do: false
 end

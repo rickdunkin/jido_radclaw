@@ -17,6 +17,8 @@ defmodule JidoClaw.Reasoning.Compactor.ConfigTest do
       assert cfg.max_summary_chars == 4_000
       assert cfg.summarizer_timeout_ms == 15_000
       assert cfg.summarizer_model == nil
+      assert cfg.summarizer_max_retries == 1
+      assert cfg.summarizer_retry_backoff_ms == 250
     end
   end
 
@@ -26,6 +28,8 @@ defmodule JidoClaw.Reasoning.Compactor.ConfigTest do
 
       assert cfg.mode == :off
       assert cfg.strategy == :summary
+      assert cfg.summarizer_max_retries == 1
+      assert cfg.summarizer_retry_backoff_ms == 250
       assert :ok = Config.validate(cfg)
     end
   end
@@ -129,6 +133,19 @@ defmodule JidoClaw.Reasoning.Compactor.ConfigTest do
 
     test "rejects non-positive summarizer_timeout_ms" do
       assert {:error, %ValidationError{}} = Config.new(summarizer_timeout_ms: 0)
+    end
+
+    test "rejects negative summarizer_max_retries" do
+      assert {:error, %ValidationError{}} = Config.new(summarizer_max_retries: -1)
+    end
+
+    test "accepts zero summarizer_max_retries (retries disabled)" do
+      assert {:ok, cfg} = Config.new(summarizer_max_retries: 0)
+      assert cfg.summarizer_max_retries == 0
+    end
+
+    test "rejects non-positive summarizer_retry_backoff_ms" do
+      assert {:error, %ValidationError{}} = Config.new(summarizer_retry_backoff_ms: 0)
     end
 
     test "validates existing struct" do

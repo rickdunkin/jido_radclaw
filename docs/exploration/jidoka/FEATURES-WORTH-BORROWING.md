@@ -55,7 +55,7 @@ Pair with hermes T2-9 (diagnostic registry) — the unified trace surface is the
 
 ### T1-2. Summary-based context compaction (`Jidoka.Compaction`)
 
-**Status (landed 2026-05-20; reclassified 2026-05-28)**: PARTIAL — the main-agent compaction path is live and load-bearing, but two pieces are explicitly deferred, which under the strict ADOPTED standard keeps it PARTIAL: per-`{agent_id, context_ref}` keying is deferred to v2 (workers meanwhile carry `compaction: [mode: :off]` so they don't pay the cost), and the summarizer has no retries on v1. Lives in `lib/jido_claw/reasoning/compactor*` with a tenant-aware Postgres-backed snapshot in `Session.metadata["compaction"]`; hooks into the agent lifecycle via `JidoClaw.Agent.Defaults`'s `on_before_cmd/2` override on `{:ai_react_start, _}`. Path to ADOPTED: ship v2 per-agent keying + summarizer retries.
+**Status (landed 2026-05-20; reclassified 2026-05-28; ADOPTED 2026-05-30)**: ADOPTED — the two v2 deferrals are closed and compaction now covers **every** agent. Per-`{agent_id, context_ref}` keying is real: each `Conversations.Message` carries a durable compaction identity (`JidoClaw.Reasoning.Compactor.Identity` — `"main"` for both main surfaces, `"handoff:<uuid>:<tpl>"` for a routed worker, the spawn tag for a sub-agent) plus a `subagent` flag; the Compactor reads its source slice keyed by that identity (`Message.for_session_agent` / `since_watermark_for_agent`) and persists per-key snapshots under `Session.metadata["compactions"][key]` via an atomic `jsonb_set` (concurrent distinct-key writes both survive). All 7 worker templates carry `compaction: [mode: :auto]`, and spawned/handoff/workflow sub-agents get their durable transcripts *completed* (task `:user` + terminal `:assistant`/`:system` turns, stamped sub-agent identity, written by `JidoClaw.Conversations.SubagentTranscript`), so each agent compacts a coherent per-agent slice. The summarizer retries transient failures (`:summarizer_timeout|:summarizer_exit|:summarizer_backend`, `summarizer_max_retries` additional attempts with `summarizer_retry_backoff_ms` backoff; `:summarizer_exception` is never retried). The handoff worker's reason/summary is injected additively into its system prompt (`Startup.inject_handoff_prompt/4`) so the transformer always keeps it. Lives in `lib/jido_claw/reasoning/compactor*`; hooks into the agent lifecycle via `JidoClaw.Agent.Defaults`'s `on_before_cmd/2` override on `{:ai_react_start, _}`. Cold readers (`Session.Worker`, `AgentView`, `Inspection`, `JidoClaw.history/3`) use the `for_session_primary` view so sub-agent rows never surface in the chat-visible transcript; exports stay full-fidelity. Real `context_ref` lanes remain a no-op follow-up (the key shape is `"<identity>::<context_ref|default>"`).
 
 Key divergences from Jidoka's shape:
 
@@ -64,7 +64,7 @@ Key divergences from Jidoka's shape:
 * **Boundary discipline**: turn-grouped (by `request_id`), not role-adjacency-based, because `:tool_call` / `:tool_result` rows are standalone in this codebase.
 * **Forward-tagging**: `on_before_cmd` always injects `params[:extra_refs][:request_id]` so the live turn's projected messages will carry `refs.request_id` and be filterable by future compactions.
 * **Config**: opts-keyword via `compaction: [...]` on `use JidoClaw.Agent.Defaults`, not a Spark DSL (T3-7 decision).
-* **Summarizer bounds**: `Task.Supervisor.async_nolink(JidoClaw.TaskSupervisor, ...)` + 15s timeout + specific rescue clauses. No retries on v1.
+* **Summarizer bounds**: `Task.Supervisor.async_nolink(JidoClaw.TaskSupervisor, ...)` + 15s timeout + specific rescue clauses. Transient phases (`:summarizer_timeout|:summarizer_exit|:summarizer_backend`) retry up to `summarizer_max_retries` times with `summarizer_retry_backoff_ms` backoff; `:summarizer_exception` is never retried.
 * **Trace surface**: `[:jido_claw, :compaction, :event]` already pre-wired in `Trace.Collector` (status mapping for `:summarized`/`:skipped` → `:completed`).
 
 **Prior state (kept for historical context)**: `forge/context_builder.ex` has a hard-chop "max_chars trim" for resume prompts (compacting prior session history *into* a resume prompt — not the live thread). `conversations/tool_transcript.ex::result_summary/2` is a one-line preview of tool result content for DB storage.
@@ -84,7 +84,7 @@ Key divergences from Jidoka's shape:
 
 Pairs with the **hermes T1-2 `protect_first_n`** discipline (keep first N messages intact for tool-defining preambles) and the **hermes 3b3909690** historical-media-stripping pass.
 
-**Adoption sketch**: Lift `Jidoka.Compaction` shape nearly intact as `JidoClaw.Reasoning.Compactor` (the `reasoning/` subsystem is the natural home — it already has strategy, telemetry, certificates). Two adaptations: (1) jido_radclaw stores transcript in Postgres (`Conversations.Message`), so the compactor should write the `%Compaction{}` snapshot to `Conversations.Session.metadata["compaction"]` (already has JSONB metadata via `set_prompt_snapshot`); (2) pair with `protect_first_n` knob since prompt-snapshot freezing is already a discipline in this codebase (T1-7 PARTIAL on the hermes side). Use the worker's `model: :fast` for the summarizer call. Wire compaction events into the Trace from T1-1.
+**Adoption sketch**: Lift `Jidoka.Compaction` shape nearly intact as `JidoClaw.Reasoning.Compactor` (the `reasoning/` subsystem is the natural home — it already has strategy, telemetry, certificates). Two adaptations: (1) jido_radclaw stores transcript in Postgres (`Conversations.Message`), so the compactor should write the `%Compaction{}` snapshot to `Conversations.Session.metadata["compaction"]` (already has JSONB metadata via `set_prompt_snapshot`) — *shipped as per-agent `metadata["compactions"][key]`, `key = "<agent_id>::<context_ref|default>"`*; (2) pair with `protect_first_n` knob since prompt-snapshot freezing is already a discipline in this codebase (T1-7 PARTIAL on the hermes side). Use the worker's `model: :fast` for the summarizer call. Wire compaction events into the Trace from T1-1.
 
 This entry **deprecates hermes T1-2** as the adoption sketch — Jidoka's Elixir-native shape is closer to the BEAM/Ash idiom than hermes's Python `ContextEngine` ABC translation.
 
@@ -351,13 +351,13 @@ Small polish to consider: the `Session.chat_opts/2` helper that merges per-turn 
 
 ## Cross-references and dependencies
 
-The Tier 1 four and the first Tier 2 borrows cluster into a dependency graph. Under the strict ADOPTED standard (any deferral demotes to PARTIAL — ◐), the fully-adopted set is T1-1 Trace, T1-3 Output, T1-4 Error, T2-1 Handoff, T2-3 Subagent context-visibility, and T2-4 Inspection (✓); T1-2 Compaction and T2-2 AgentView remain PARTIAL (◐). (T2-3 stands outside the Trace cluster below — it depends on `ToolContext` + `Templates`, not Trace.)
+The Tier 1 four and the first Tier 2 borrows cluster into a dependency graph. Under the strict ADOPTED standard (any deferral demotes to PARTIAL — ◐), the fully-adopted set is T1-1 Trace, T1-2 Compaction, T1-3 Output, T1-4 Error, T2-1 Handoff, T2-3 Subagent context-visibility, and T2-4 Inspection (✓); only T2-2 AgentView remains PARTIAL (◐). (T2-3 stands outside the Trace cluster below — it depends on `ToolContext` + `Templates`, not Trace.)
 
 ```
 T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView ◐ (data layer done; remaining surfaces are a redesign, not a migration)
                │                    ├──> T2-4 Inspection ✓ (:memory now sourced)
                │                    └──> T2-1 Handoff ✓ (emits trace events)
-               ├──> T1-2 Compaction ◐ (main-agent path; per-agent keying + retries → v2)
+               ├──> T1-2 Compaction ✓ (per-agent keying + retries; all 7 workers + sub-agents compact)
                └──> T1-3 Output ✓ (emits trace events)
 ```
 
@@ -365,10 +365,10 @@ T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView �
 
 1. **T1-4 Error** — ADOPTED. Splode root with four classes (`invalid`, `execution`, `config`, `internal`), merging with `Ash.Error`.
 2. **T1-1 Trace** — ADOPTED. `JidoClaw.Trace` + `Trace.Collector` + `TraceRun`/`TraceEvent` Ash resources for durable replay.
-3. **T1-2 Compaction** — PARTIAL (landed 2026-05-20; reclassified 2026-05-28). `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; Postgres-backed snapshot in `Session.metadata["compaction"]`. Main-agent path live and load-bearing; per-`{agent_id, context_ref}` keying and summarizer retries deferred to v2.
+3. **T1-2 Compaction** — ADOPTED 2026-05-30. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; per-key Postgres snapshots in `Session.metadata["compactions"][key]`. Per-`{agent_id, context_ref}` keying + summarizer retries closed; all 7 workers + handoff/spawned sub-agents compact on their own slices (durable transcripts completed via `SubagentTranscript`).
 4. **T1-3 Output** — ADOPTED 2026-05-26. All 7 worker templates carry structured-output contracts via upstream `Jido.AI.Output`.
 
-**Tier 2 sequencing** (T1-1/T1-3/T1-4 ADOPTED, T1-2 PARTIAL; T2-1 ADOPTED 2026-05-27; T2-3 + T2-4 ADOPTED 2026-05-29; T2-2 PARTIAL; remaining items unblocked):
+**Tier 2 sequencing** (T1-1/T1-2/T1-3/T1-4 ADOPTED; T2-1 ADOPTED 2026-05-27; T2-3 + T2-4 ADOPTED 2026-05-29; T2-2 PARTIAL; remaining items unblocked):
 
 - **T2-4 Inspection** — ADOPTED 2026-05-29. Agent-axis summary (`JidoClaw.inspect_*` delegates + `inspect_agent` tool); the four-source stitching is unified inside one function and works across all input kinds. The last placeholder, `:memory`, is now sourced from `Memory.namespace_info/1` on the three rich builders (the thin map path / MCP `kind: "session"` stays `nil` by design, parallel to `:compaction`; MCP slims `:memory` to `{scope_kind, blocks_count}` — no raw FK/UUID).
 - **T2-3 Subagent context-visibility** — ADOPTED 2026-05-29. Operator-controlled `forward_context` policy on the template, enforced at spawn / follow-up / workflow-step via `ToolContext.apply_visibility/2`; structural keys (`tenant_id`/`session_*`/`project_dir`) are always forwarded; handoff routing is exempt; fail-closed validation in `hydrate_template`; `:public` default = zero behavior change on landing.
@@ -384,7 +384,7 @@ This doc and `docs/exploration/hermes/FEATURES-WORTH-BORROWING.md` are complemen
 - **hermes T1-4 (FailoverReason)** → **layers above Jidoka T1-4 Error**. Splode classes are taxonomy; FailoverReason is recovery-action policy.
 - **hermes T2-9 (diagnostic registry)** → **builds on Jidoka T1-1 Trace** as the backing store.
 
-Jidoka T1-1, T1-3, and T1-4 are ADOPTED; T1-2 Compaction is PARTIAL (main-agent path live; v2 deferrals outstanding) — re-evaluate hermes T1-2 (`protect_first_n` paired discipline), T1-4 (FailoverReason recovery-action layer above Splode), and T2-9 (diagnostic registry backed by the trace surface) next.
+Jidoka T1-1, T1-2, T1-3, and T1-4 are all ADOPTED — re-evaluate hermes T1-2 (`protect_first_n` paired discipline), T1-4 (FailoverReason recovery-action layer above Splode), and T2-9 (diagnostic registry backed by the trace surface) next.
 
 ## Notes on upstream alignment
 

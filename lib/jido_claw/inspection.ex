@@ -29,6 +29,7 @@ defmodule JidoClaw.Inspection do
   alias JidoClaw.MCPServer
   alias JidoClaw.Memory
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.Compactor.Storage, as: CompactorStorage
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Trace
@@ -107,9 +108,11 @@ defmodule JidoClaw.Inspection do
     case Trace.for_request({:request, request_id}, request_id, tenant_id: tenant_id) do
       {:ok, %Trace{} = trace} ->
         case resolve_correlation(request_id, tenant_id) do
-          {:ok, session_uuid} ->
+          {:ok, session_uuid, agent_id} ->
             actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
-            {:ok, build_request_summary(trace, request_id, tenant_id, actor, session_uuid)}
+
+            {:ok,
+             build_request_summary(trace, request_id, tenant_id, actor, session_uuid, agent_id)}
 
           {:error, :not_found} ->
             {:error, :not_found}
@@ -120,7 +123,7 @@ defmodule JidoClaw.Inspection do
     end
   end
 
-  defp build_request_summary(trace, request_id, tenant_id, actor, session_uuid) do
+  defp build_request_summary(trace, request_id, tenant_id, actor, session_uuid, agent_id) do
     %Summary{
       request_id: request_id,
       input_kind: :request_id,
@@ -130,7 +133,7 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       context_preview: context_preview_for_request(session_uuid, request_id, tenant_id, actor),
-      compaction: compaction_for(session_uuid, tenant_id, actor),
+      compaction: compaction_for(session_uuid, agent_id, tenant_id, actor),
       memory: memory_for(session_uuid, tenant_id)
     }
   end
@@ -145,9 +148,9 @@ defmodule JidoClaw.Inspection do
   #   * no row           → `{:ok, nil}` (missing correlation; nil session fields)
   defp resolve_correlation(request_id, tenant_id) do
     case lookup_correlation(request_id) do
-      %{session_id: uuid, tenant_id: ^tenant_id} -> {:ok, uuid}
+      %{session_id: uuid, tenant_id: ^tenant_id} = row -> {:ok, uuid, Map.get(row, :agent_id)}
       %{tenant_id: _other} -> {:error, :not_found}
-      nil -> {:ok, nil}
+      nil -> {:ok, nil, nil}
     end
   end
 
@@ -495,7 +498,7 @@ defmodule JidoClaw.Inspection do
       tool_names: tool_names_for_module(module),
       mcp_tools: mcp_tool_names(),
       handoffs: handoff_view(owner),
-      compaction: compaction_for(session.id, tenant_id, actor),
+      compaction: compaction_for(session.id, trace_id, tenant_id, actor),
       memory: memory_for(session.id, tenant_id),
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
@@ -518,7 +521,8 @@ defmodule JidoClaw.Inspection do
       skills: skills_summary(),
       tool_names: tool_names_for_module(JidoClaw.Agent),
       mcp_tools: mcp_tool_names(),
-      compaction: compaction_for(session.id, tenant_id, actor),
+      # Plain (no-handoff) session → the main agent's slice.
+      compaction: compaction_for(session.id, CompactionIdentity.main(), tenant_id, actor),
       memory: memory_for(session.id, tenant_id),
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
@@ -697,10 +701,20 @@ defmodule JidoClaw.Inspection do
   defp memory_for(session_uuid, tenant_id),
     do: safe(fn -> Memory.namespace_info(%{tenant_id: tenant_id, session_uuid: session_uuid}) end)
 
-  defp compaction_for(nil, _tenant_id, _actor), do: nil
+  defp compaction_for(nil, _agent_id, _tenant_id, _actor), do: nil
 
-  defp compaction_for(session_uuid, tenant_id, actor) do
-    case safe(fn -> CompactorStorage.latest(session_uuid, tenant: tenant_id, actor: actor) end) do
+  defp compaction_for(session_uuid, agent_id, tenant_id, actor) do
+    # Key the snapshot read by the inspected agent's compaction identity,
+    # run through the shared helper so a raw runtime session id normalizes to
+    # `"main"`. Falls back to the main agent when no identity is in scope.
+    identity =
+      CompactionIdentity.resolve(nil, agent_id, session_uuid) || CompactionIdentity.main()
+
+    key = "#{identity}::default"
+
+    case safe(fn ->
+           CompactorStorage.latest(session_uuid, tenant: tenant_id, actor: actor, key: key)
+         end) do
       nil -> nil
       %_{} = snap -> Map.from_struct(snap)
       other when is_map(other) -> other

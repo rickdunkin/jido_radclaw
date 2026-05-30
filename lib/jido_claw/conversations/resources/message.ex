@@ -79,6 +79,7 @@ defmodule JidoClaw.Conversations.Message do
 
     custom_indexes do
       index([:session_id, :sequence])
+      index([:session_id, :agent_id, :sequence])
       index([:request_id])
       index([:session_id, :role])
       index([:tool_call_id], where: "tool_call_id IS NOT NULL")
@@ -108,7 +109,15 @@ defmodule JidoClaw.Conversations.Message do
     define(:append, action: :append)
     define(:import, action: :import)
     define(:for_session, action: :for_session, args: [:session_id])
+    define(:for_session_primary, action: :for_session_primary, args: [:session_id])
+    define(:for_session_agent, action: :for_session_agent, args: [:session_id, :agent_id])
     define(:since_watermark, action: :since_watermark, args: [:session_id, :watermark])
+
+    define(:since_watermark_for_agent,
+      action: :since_watermark_for_agent,
+      args: [:session_id, :agent_id, :watermark]
+    )
+
     define(:by_tool_call, action: :by_tool_call, args: [:session_id, :tool_call_id])
     define(:by_request, action: :by_request, args: [:session_id, :request_id])
     define(:for_consolidator, action: :for_consolidator)
@@ -136,6 +145,8 @@ defmodule JidoClaw.Conversations.Message do
       accept([
         :session_id,
         :request_id,
+        :agent_id,
+        :subagent,
         :role,
         :content,
         :metadata,
@@ -157,6 +168,8 @@ defmodule JidoClaw.Conversations.Message do
       accept([
         :session_id,
         :request_id,
+        :agent_id,
+        :subagent,
         :role,
         :sequence,
         :content,
@@ -185,6 +198,47 @@ defmodule JidoClaw.Conversations.Message do
       argument(:session_id, :uuid, allow_nil?: false)
       argument(:watermark, :integer, allow_nil?: false)
       filter(expr(session_id == ^arg(:session_id) and sequence > ^arg(:watermark)))
+      prepare(build(sort: [sequence: :asc]))
+    end
+
+    # Per-agent compaction slice: every row stamped with this compaction
+    # identity (main / a handoff worker / a spawned sub-agent). Backed by the
+    # `(session_id, agent_id, sequence)` index. The Compactor filters slices
+    # by identity so each agent compacts only its own durable transcript.
+    read :for_session_agent do
+      argument(:session_id, :uuid, allow_nil?: false)
+      argument(:agent_id, :string, allow_nil?: false)
+      filter(expr(session_id == ^arg(:session_id) and agent_id == ^arg(:agent_id)))
+      prepare(build(sort: [sequence: :asc]))
+    end
+
+    # Watermarked per-agent slice. The watermark is a per-session `sequence`
+    # (sequences are session-monotonic), so `sequence > watermark` combined
+    # with the agent filter returns this agent's rows newer than its last
+    # summarized point.
+    read :since_watermark_for_agent do
+      argument(:session_id, :uuid, allow_nil?: false)
+      argument(:agent_id, :string, allow_nil?: false)
+      argument(:watermark, :integer, allow_nil?: false)
+
+      filter(
+        expr(
+          session_id == ^arg(:session_id) and agent_id == ^arg(:agent_id) and
+            sequence > ^arg(:watermark)
+        )
+      )
+
+      prepare(build(sort: [sequence: :asc]))
+    end
+
+    # Primary conversation view: owner rows only (main + handoff workers),
+    # excluding spawned sub-agent / workflow-step rows. Every cold reader of
+    # the chat-visible transcript uses this so sub-agent turns never surface
+    # in the rendered conversation. `subagent == false` (not `!= true`) is
+    # safe because the column is NOT NULL with a `false` default.
+    read :for_session_primary do
+      argument(:session_id, :uuid, allow_nil?: false)
+      filter(expr(session_id == ^arg(:session_id) and subagent == false))
       prepare(build(sort: [sequence: :asc]))
     end
 
@@ -280,6 +334,26 @@ defmodule JidoClaw.Conversations.Message do
     attribute :request_id, :string do
       allow_nil?(true)
       public?(true)
+    end
+
+    # Durable compaction identity (see `JidoClaw.Reasoning.Compactor.Identity`):
+    # `"main"` for both main surfaces, `"handoff:<uuid>:<tpl>"` for a routed
+    # worker, the spawn tag for a sub-agent. Drives the agent-scoped slice
+    # reads the Compactor filters on. NOT NULL, defaults to `"main"` so any
+    # append that omits it is attributed to the main agent.
+    attribute :agent_id, :string do
+      allow_nil?(false)
+      public?(true)
+      default("main")
+    end
+
+    # `true` for spawned sub-agent / workflow-step rows. Drives the
+    # `for_session_primary` cold-read filter so the chat-visible view never
+    # surfaces sub-agent turns.
+    attribute :subagent, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
     end
 
     attribute :role, :atom do

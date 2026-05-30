@@ -15,10 +15,11 @@ defmodule JidoClaw.Reasoning.Compactor.Storage do
   alias JidoClaw.Error.Normalize
   alias JidoClaw.Reasoning.Compactor.Snapshot
 
-  @type opts :: [tenant: String.t(), actor: term() | nil]
+  @type opts :: [tenant: String.t(), actor: term() | nil, key: String.t()]
 
   @doc """
-  Persist a `%Snapshot{}` for the given session.
+  Persist a `%Snapshot{}` for the given session under `opts[:key]` (the
+  per-agent compaction key, e.g. `"main::default"`).
 
   Returns `{:ok, %Snapshot{}}` (passing through the same snapshot you gave
   it) or `{:error, %JidoClaw.Error.*{}}`.
@@ -29,26 +30,29 @@ defmodule JidoClaw.Reasoning.Compactor.Storage do
       when is_binary(session_uuid) and is_list(opts) do
     tenant = Keyword.fetch!(opts, :tenant)
     actor = Keyword.get(opts, :actor)
+    key = Keyword.fetch!(opts, :key)
 
     with {:ok, session} <- load_session(session_uuid, tenant, actor) do
       jsonb = Snapshot.to_jsonb(snapshot)
-      do_persist(session, jsonb, tenant, actor, session_uuid, snapshot)
+      do_persist(session, key, jsonb, tenant, actor, session_uuid, snapshot)
     end
   end
 
   @doc """
-  Read the latest persisted snapshot for the given session.
+  Read the latest persisted snapshot for the given session under
+  `opts[:key]`.
 
   Returns `{:ok, %Snapshot{} | nil}` on success (nil when no snapshot is
-  stored) or `{:error, %JidoClaw.Error.*{}}`.
+  stored under that key) or `{:error, %JidoClaw.Error.*{}}`.
   """
   @spec latest(String.t(), opts()) :: {:ok, Snapshot.t() | nil} | {:error, Exception.t()}
   def latest(session_uuid, opts) when is_binary(session_uuid) and is_list(opts) do
     tenant = Keyword.fetch!(opts, :tenant)
     actor = Keyword.get(opts, :actor)
+    key = Keyword.fetch!(opts, :key)
 
     case load_session(session_uuid, tenant, actor) do
-      {:ok, session} -> {:ok, parse_snapshot(session)}
+      {:ok, session} -> {:ok, parse_snapshot(session, key)}
       {:error, _} = err -> err
     end
   end
@@ -72,8 +76,11 @@ defmodule JidoClaw.Reasoning.Compactor.Storage do
     end
   end
 
-  defp do_persist(session, jsonb, tenant, actor, session_uuid, snapshot) do
-    case SessionResource.set_compaction_snapshot(session, jsonb, tenant: tenant, actor: actor) do
+  defp do_persist(session, key, jsonb, tenant, actor, session_uuid, snapshot) do
+    case SessionResource.set_compaction_snapshot(session, key, jsonb,
+           tenant: tenant,
+           actor: actor
+         ) do
       {:ok, _updated} ->
         {:ok, snapshot}
 
@@ -88,16 +95,25 @@ defmodule JidoClaw.Reasoning.Compactor.Storage do
     end
   end
 
-  defp parse_snapshot(%SessionResource{metadata: metadata}) when is_map(metadata) do
-    metadata |> fetch_compaction() |> normalize_snapshot()
+  defp parse_snapshot(%SessionResource{metadata: metadata}, key) when is_map(metadata) do
+    metadata |> fetch_compaction(key) |> normalize_snapshot()
   end
 
-  defp parse_snapshot(_), do: nil
+  defp parse_snapshot(_, _key), do: nil
 
-  defp fetch_compaction(metadata) do
-    case Map.fetch(metadata, "compaction") do
+  # Per-agent snapshots live under `metadata["compactions"][key]`. (DB-backed
+  # metadata is always string-keyed; the atom fallbacks guard in-memory maps.)
+  defp fetch_compaction(metadata, key) do
+    case fetch_either(metadata, "compactions", :compactions) do
+      compactions when is_map(compactions) -> fetch_either(compactions, key, key)
+      _ -> nil
+    end
+  end
+
+  defp fetch_either(map, string_key, atom_key) do
+    case Map.fetch(map, string_key) do
       {:ok, value} -> value
-      :error -> Map.get(metadata, :compaction)
+      :error -> Map.get(map, atom_key)
     end
   end
 

@@ -102,12 +102,21 @@ defmodule JidoClaw.Tools.HandoffTest do
 
       assert fresh.metadata["current_agent_template"] == "reviewer"
 
-      # Durable :system message.
+      # Durable :system message — worker-scoped identity (R2) + enriched body.
       assert {:ok, rows} = Message.for_session(session.id, tenant: t, actor: actor_for(t))
 
-      assert Enum.any?(rows, fn row ->
-               row.role == :system and row.content =~ "Handed off from main to reviewer"
-             end)
+      system_row =
+        Enum.find(rows, fn row ->
+          row.role == :system and row.content =~ "[HANDOFF main → reviewer]"
+        end)
+
+      assert system_row, "expected an enriched handoff :system row"
+      # Stamped with the TARGET worker's compaction identity, not main.
+      assert system_row.agent_id == "handoff:#{session.id}:reviewer"
+      assert system_row.subagent == false
+      # Body enriched with reason + summary + message.
+      assert system_row.content =~ "Summary: User wants a review"
+      assert system_row.content =~ "Message: Please review the recent diff"
 
       # Telemetry event carries every correlation field.
       assert_receive {:telemetry, _measurements, metadata}, 1_000

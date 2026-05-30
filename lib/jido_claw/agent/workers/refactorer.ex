@@ -20,7 +20,7 @@ defmodule JidoClaw.Agent.Workers.Refactorer do
     max_iterations: 25,
     streaming: false,
     tool_timeout_ms: 30_000,
-    compaction: [mode: :off],
+    compaction: [mode: :auto],
     output: %{
       schema:
         Zoi.object(%{

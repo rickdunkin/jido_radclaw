@@ -86,9 +86,12 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       # Compaction is only populated on the request-inspection path
       # (`session` dispatch skips it), so seed a snapshot on the session,
       # correlate a request to it, and inspect by request id.
+      # The correlation below registers with no agent_id, so inspection
+      # resolves the snapshot under the main agent's key.
       {:ok, _} =
         Session.set_compaction_snapshot(
           session,
+          "main::default",
           %{"summary" => "rolled up", "summarized_request_ids" => [], "version" => 1},
           tenant: tid,
           actor: actor

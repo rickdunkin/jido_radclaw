@@ -125,6 +125,11 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   end
 
   defp do_export(session, output_path, opts) do
+    # Deliberately `for_session` (NOT `for_session_primary`): exports are
+    # full-fidelity and intentionally include spawned sub-agent rows. The
+    # exported records carry `agent_id` + `subagent` (and the `:import`
+    # action accepts both) so a re-import preserves each row's compaction
+    # identity rather than collapsing everything onto the main agent.
     case Message.for_session(session.id, tenant: session.tenant_id, authorize?: false) do
       {:ok, rows} ->
         File.mkdir_p!(Path.dirname(output_path))
@@ -157,7 +162,9 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
         %{
           role: Atom.to_string(row.role),
           content: row.content,
-          timestamp: DateTime.to_unix(row.inserted_at, :millisecond)
+          timestamp: DateTime.to_unix(row.inserted_at, :millisecond),
+          agent_id: row.agent_id,
+          subagent: row.subagent
         }
       end)
 

@@ -90,11 +90,12 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     {:ok, fresh} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
     assert fresh.metadata["current_agent_template"] == "reviewer"
 
-    # Durable :system message.
+    # Durable :system message — worker-scoped identity + enriched body.
     {:ok, rows} = Message.for_session(session.id, tenant: t, actor: actor)
 
     assert Enum.any?(rows, fn r ->
-             r.role == :system and r.content =~ "Handed off from main to reviewer"
+             r.role == :system and r.content =~ "[HANDOFF main → reviewer]" and
+               r.agent_id == "handoff:#{session.id}:reviewer" and r.subagent == false
            end)
 
     # Trace event.

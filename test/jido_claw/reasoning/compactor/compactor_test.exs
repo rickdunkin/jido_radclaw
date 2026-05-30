@@ -1,7 +1,7 @@
 defmodule JidoClaw.Reasoning.CompactorTest do
   use JidoClaw.TenantCase, async: false
 
-  alias JidoClaw.Conversations.Message
+  alias JidoClaw.Conversations.{Message, Session}
   alias JidoClaw.Reasoning.Compactor
   alias JidoClaw.Reasoning.Compactor.{Config, RequestTransformer, Snapshot}
 
@@ -191,6 +191,53 @@ defmodule JidoClaw.Reasoning.CompactorTest do
 
       assert {:ok, %Snapshot{}} =
                Compactor.compact(session.id, tenant_id, actor: actor, agent_id: "main")
+    end
+
+    test ":agent_id (no :compaction_id) targets that agent's slice, key, and label" do
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "force-agent")
+      actor = actor_for(tenant_id)
+
+      # A main slice and a coder sub-agent slice in the same session.
+      for i <- 1..4 do
+        append!(session, tenant_id, actor, %{
+          agent_id: "main",
+          subagent: false,
+          role: :user,
+          content: "m#{i}",
+          request_id: "req_m#{i}"
+        })
+      end
+
+      for i <- 1..4 do
+        append!(session, tenant_id, actor, %{
+          agent_id: "coder_1",
+          subagent: true,
+          role: :user,
+          content: "c#{i}",
+          request_id: "req_c#{i}"
+        })
+      end
+
+      config = Config.new!(max_messages: 4, keep_last_turns: 1, protect_first_n_turns: 0)
+
+      assert {:ok, snap} =
+               Compactor.compact(session.id, tenant_id,
+                 actor: actor,
+                 agent_id: "coder_1",
+                 config: config
+               )
+
+      # The snapshot is labelled with — and summarized only — the coder slice.
+      assert snap.agent_id == "coder_1"
+      assert snap.summarized_request_ids != []
+      assert Enum.all?(snap.summarized_request_ids, &String.starts_with?(&1, "req_c"))
+      refute Enum.any?(snap.summarized_request_ids, &String.starts_with?(&1, "req_m"))
+
+      # Persisted under the coder key — NOT the main key.
+      {:ok, fresh} = Session.by_id(session.id, tenant: tenant_id, actor: actor)
+      compactions = fresh.metadata["compactions"]
+      assert Map.has_key?(compactions, "coder_1::default")
+      refute Map.has_key?(compactions, "main::default")
     end
   end
 

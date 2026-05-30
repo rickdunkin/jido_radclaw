@@ -34,6 +34,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   alias JidoClaw.Agent.Templates
   alias JidoClaw.AgentTracker
+  alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
 
   @impl true
@@ -79,21 +80,16 @@ defmodule JidoClaw.Tools.SpawnAgent do
     case agent_tracker().register(tag, pid, template_name, task, request_id: request_id) do
       :ok ->
         spawn(fn ->
-          try do
-            case template.module.ask_sync(pid, task,
-                   timeout: 120_000,
-                   request_id: request_id,
-                   tool_context: child_tool_context
-                 ) do
-              {:ok, _result} -> agent_tracker().mark_complete(tag, :done)
-              {:error, _reason} -> agent_tracker().mark_complete(tag, :error)
-              _other -> agent_tracker().mark_complete(tag, :done)
-            end
-          rescue
-            _ -> agent_tracker().mark_complete(tag, :error)
-          catch
-            _, _ -> agent_tracker().mark_complete(tag, :error)
-          end
+          SubagentTranscript.record_task(child_tool_context, request_id, task)
+
+          outcome =
+            SubagentTranscript.run(template.module, pid, task, request_id, child_tool_context)
+
+          # Persist the terminal row BEFORE marking the tracker complete, so
+          # get_agent_result / inspection never observe a completed tracker
+          # racing missing durable history.
+          status = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
+          agent_tracker().mark_complete(tag, status)
         end)
 
         {:ok,

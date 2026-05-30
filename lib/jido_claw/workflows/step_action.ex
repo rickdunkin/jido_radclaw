@@ -50,7 +50,9 @@ defmodule JidoClaw.Workflows.StepAction do
 
   alias Jido.AgentServer
   alias JidoClaw.Agent.Templates
+  alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Reasoning.Output
+  alias JidoClaw.Workflows.StepResult
 
   defp agent_server_module do
     Application.get_env(:jido_claw, :step_agent_server, AgentServer)
@@ -72,17 +74,46 @@ defmodule JidoClaw.Workflows.StepAction do
          tool_context = JidoClaw.ToolContext.build(scoped),
          {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
       request_id = JidoClaw.register_child_correlation(tool_context)
+      SubagentTranscript.record_task(tool_context, request_id, task)
 
       try do
-        run_step(template.module, pid, request_id, task, tool_context, step_name, template_name)
+        result =
+          run_step(template.module, pid, request_id, task, tool_context, step_name, template_name)
+
+        record_step_terminal(tool_context, request_id, result)
+        result
       rescue
-        e -> {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
+        e ->
+          SubagentTranscript.record_terminal(
+            tool_context,
+            request_id,
+            :system,
+            "[step crashed] " <> Exception.message(e)
+          )
+
+          {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
       after
         if Process.alive?(pid), do: Process.exit(pid, :normal)
       end
     else
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
     end
+  end
+
+  # Persist the step's terminal turn (`:assistant` with the extracted step
+  # text on success, `:system` on failure) — completing the sub-agent's
+  # durable slice so the Compactor sees task → tools → terminal.
+  defp record_step_terminal(tool_context, request_id, {:ok, %StepResult{result: text}}) do
+    SubagentTranscript.record_terminal(tool_context, request_id, :assistant, text)
+  end
+
+  defp record_step_terminal(tool_context, request_id, {:error, reason}) do
+    SubagentTranscript.record_terminal(
+      tool_context,
+      request_id,
+      :system,
+      SubagentTranscript.failure_text(reason)
+    )
   end
 
   # Async path captures typed output + meta from `state.requests[rid]` by
@@ -281,7 +312,8 @@ defmodule JidoClaw.Workflows.StepAction do
       user_id: pick(params, context, :user_id, nil),
       actor: pick(params, context, :actor, nil),
       project_dir: pick(params, context, :project_dir, File.cwd!()),
-      agent_id: tag
+      agent_id: tag,
+      subagent: true
     }
   end
 

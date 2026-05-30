@@ -65,7 +65,7 @@ defmodule JidoClaw.Agent.DefaultsCompactionTest do
   end
 
   describe "wired workers" do
-    test "all worker templates carry :off compaction config" do
+    test "all worker templates compact on :auto (per-agent keying landed in T1-2)" do
       workers = [
         JidoClaw.Agent.Workers.Coder,
         JidoClaw.Agent.Workers.Reviewer,
@@ -78,7 +78,7 @@ defmodule JidoClaw.Agent.DefaultsCompactionTest do
 
       for mod <- workers do
         cfg = mod.__compaction_config__()
-        assert %Config{mode: :off} = cfg, "expected #{inspect(mod)} to opt out of compaction"
+        assert %Config{mode: :auto} = cfg, "expected #{inspect(mod)} to compact on :auto"
       end
     end
 

@@ -92,17 +92,45 @@ defmodule JidoClaw.Startup do
   def inject_system_prompt(pid, project_dir, session)
       when is_pid(pid) and is_binary(project_dir) do
     system_prompt = resolve_prompt(session, project_dir)
+    do_inject(pid, system_prompt, project_dir, source_of(session), %{})
+  end
 
-    case Jido.AI.set_system_prompt(pid, system_prompt) do
+  @doc """
+  Inject a handoff-routed worker's system prompt: the resolved base prompt
+  PLUS an additive handoff-context block (message + reason + summary).
+
+  This is deliberately separate from `inject_system_prompt/3` — it does NOT
+  replace the base prompt with the handoff context, it appends to it, so the
+  routed worker carries BOTH its base instructions AND its assignment
+  context. Because the result lands in the agent's *system prompt*, the
+  compaction `RequestTransformer` keeps it across every compaction (system
+  rows are never dropped), giving the worker an always-retained handoff
+  context independent of the per-turn preamble (consumed once) and the
+  durable `:system` row (which only feeds the summarized source).
+
+  `handoff_context` is a map with optional `:message`, `:reason`,
+  `:summary`, and `:from_template` keys.
+  """
+  @spec inject_handoff_prompt(
+          pid(),
+          String.t(),
+          JidoClaw.Conversations.Session.t() | nil,
+          map()
+        ) :: :ok | {:error, term()}
+  def inject_handoff_prompt(pid, project_dir, session, handoff_context)
+      when is_pid(pid) and is_binary(project_dir) and is_map(handoff_context) do
+    base = resolve_prompt(session, project_dir)
+    combined = base <> "\n\n" <> handoff_block(handoff_context)
+    do_inject(pid, combined, project_dir, source_of(session), %{handoff: true})
+  end
+
+  defp do_inject(pid, prompt, project_dir, source, extra_metadata) do
+    case Jido.AI.set_system_prompt(pid, prompt) do
       {:ok, _} ->
         :telemetry.execute(
           [:jido_claw, :agent, :prompt_injected],
-          %{bytes: byte_size(system_prompt)},
-          %{
-            pid: pid,
-            project_dir: project_dir,
-            source: source_of(session)
-          }
+          %{bytes: byte_size(prompt)},
+          Map.merge(%{pid: pid, project_dir: project_dir, source: source}, extra_metadata)
         )
 
         :ok
@@ -111,6 +139,26 @@ defmodule JidoClaw.Startup do
         {:error, reason}
     end
   end
+
+  defp handoff_block(handoff_context) do
+    message = handoff_context |> Map.get(:message) |> present_or("not provided")
+    reason = handoff_context |> Map.get(:reason) |> present_or("not provided")
+    summary = handoff_context |> Map.get(:summary) |> present_or("not provided")
+    from = handoff_context |> Map.get(:from_template) |> present_or("main")
+
+    """
+    [HANDOFF CONTEXT — you have been assigned this conversation.
+    Handing-off agent: #{from}
+    Reason: #{reason}
+    Summary: #{summary}
+    Message: #{message}
+    Treat this as standing context for the remainder of the conversation.]
+    """
+    |> String.trim_trailing()
+  end
+
+  defp present_or(value, _default) when is_binary(value) and value != "", do: value
+  defp present_or(_value, default), do: default
 
   defp resolve_prompt(%{metadata: %{"prompt_snapshot" => snap}}, _project_dir)
        when is_binary(snap) and snap != "" do

@@ -48,7 +48,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:close, action: :close)
     define(:set_next_sequence, action: :set_next_sequence, args: [:next_sequence])
     define(:set_prompt_snapshot, action: :set_prompt_snapshot, args: [:snapshot])
-    define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:snapshot])
+    define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:key, :snapshot])
     define(:set_current_agent_template, action: :set_current_agent_template, args: [:template])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
@@ -135,21 +135,23 @@ defmodule JidoClaw.Conversations.Session do
       end)
     end
 
+    # Per-agent compaction snapshots are keyed under
+    # `metadata["compactions"][key]` (note the plural — distinct from the
+    # legacy single `metadata["compaction"]` slot). The write is ATOMIC: a
+    # `jsonb_set` in the UPDATE itself, so two agents persisting different
+    # keys concurrently both survive (Postgres serializes the row update, and
+    # each `jsonb_set` operates on the other's committed value). The path arg
+    # is an explicit `::text[]` and the snapshot is `Jason.encode!`-ed then
+    # cast `::jsonb`.
+    # Atomic per-key write via a named change implementing `atomic/3`, so the
+    # action runs fully atomically (a function change would force the
+    # non-atomic path, which silently drops the SQL expression).
     update :set_compaction_snapshot do
       accept([])
+      argument(:key, :string, allow_nil?: false)
       argument(:snapshot, :map, allow_nil?: false)
-      require_atomic?(false)
 
-      change(fn changeset, _ctx ->
-        snap = Ash.Changeset.get_argument(changeset, :snapshot)
-        md = Ash.Changeset.get_attribute(changeset, :metadata) || %{}
-
-        Ash.Changeset.force_change_attribute(
-          changeset,
-          :metadata,
-          Map.put(md, "compaction", snap)
-        )
-      end)
+      change({__MODULE__.Changes.SetCompactionSnapshot, []})
     end
 
     update :set_current_agent_template do
@@ -294,5 +296,61 @@ defmodule JidoClaw.Conversations.Session do
 
   identities do
     identity(:unique_external, [:tenant_id, :workspace_id, :kind, :external_id])
+  end
+
+  # ---------------------------------------------------------------------------
+  # Inline change modules
+  # ---------------------------------------------------------------------------
+
+  defmodule Changes.SetCompactionSnapshot do
+    @moduledoc """
+    Atomically writes a per-agent compaction snapshot under
+    `metadata["compactions"][key]` via a single `jsonb_set`.
+
+    Implemented as an `atomic/3` change (not a function change) so the
+    action runs fully atomically: the expression is applied in the UPDATE
+    itself, and two agents persisting different keys concurrently both
+    survive (Postgres serializes the row update; each `jsonb_set` operates
+    on the other's committed value).
+    """
+    use Ash.Resource.Change
+
+    import Ash.Expr
+
+    @impl true
+    def atomic(changeset, _opts, _context) do
+      key = Ash.Changeset.get_argument(changeset, :key)
+      # Encode the snapshot to a JSON text literal and parse it back with
+      # `::text::jsonb`. Passing the raw map (or a `Jason`-encoded string) to a
+      # `::jsonb` param double-encodes it into a jsonb *string*; forcing the
+      # param to `text` first makes Postgres parse the JSON into an object.
+      encoded = Jason.encode!(Ash.Changeset.get_argument(changeset, :snapshot))
+
+      # The inner `{:atomic, expr}` value skips `Ash.Type.Map.cast_atomic/3`
+      # (which refuses expression-based atomic updates); the fragment already
+      # produces valid jsonb.
+      #
+      # NOTE: a naive `jsonb_set(metadata, array['compactions', key], …)` is a
+      # no-op when the `compactions` parent is absent — `jsonb_set` does not
+      # create intermediate objects. So we set the top-level `compactions` key
+      # to `(existing compactions OR {}) || {key: snapshot}`: `||` preserves
+      # sibling keys and overwrites only this one. Reading `metadata` inside
+      # the UPDATE keeps it atomic (concurrent distinct-key writes both
+      # survive — Postgres serializes the row update).
+      {:atomic,
+       %{
+         metadata:
+           {:atomic,
+            expr(
+              fragment(
+                "jsonb_set(coalesce(?, '{}'::jsonb), array['compactions']::text[], coalesce(? -> 'compactions', '{}'::jsonb) || jsonb_build_object(?::text, ?::text::jsonb), true)",
+                metadata,
+                metadata,
+                ^key,
+                ^encoded
+              )
+            )}
+       }}
+    end
   end
 end

@@ -20,7 +20,7 @@ defmodule JidoClaw.Agent.Workers.Verifier do
     max_iterations: 20,
     streaming: false,
     tool_timeout_ms: 60_000,
-    compaction: [mode: :off],
+    compaction: [mode: :auto],
     output: %{
       schema:
         Zoi.object(%{

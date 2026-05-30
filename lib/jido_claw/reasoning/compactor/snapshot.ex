@@ -2,10 +2,11 @@ defmodule JidoClaw.Reasoning.Compactor.Snapshot do
   @moduledoc """
   Snapshot of a single compaction run.
 
-  Persisted in `Session.metadata["compaction"]` as plain JSON (string keys,
-  string status values). The struct itself is the canonical in-memory form;
-  `to_jsonb/1` converts it to a JSONB-safe map and `from_jsonb/1` parses
-  the round-trip back into a struct.
+  Persisted under `Session.metadata["compactions"][key]` as plain JSON
+  (string keys, string status values), where `key` is
+  `"<agent_id>::<context_ref|default>"`. The struct itself is the canonical
+  in-memory form; `to_jsonb/1` converts it to a JSONB-safe map and
+  `from_jsonb/1` parses the round-trip back into a struct.
 
   Two-handle watermarking:
 

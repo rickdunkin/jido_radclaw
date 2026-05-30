@@ -485,17 +485,19 @@ defmodule JidoClaw.Conversations.Recorder do
       envelope = ToolTranscript.envelope(arguments)
       content = ToolTranscript.summarize_args(tool_name, arguments)
 
-      attrs = %{
-        session_id: scope.session_id,
-        request_id: request_id,
-        role: :tool_call,
-        content: content,
-        metadata: %{
-          tool_name: tool_name,
-          arguments: envelope
-        },
-        tool_call_id: tool_call_id
-      }
+      attrs =
+        %{
+          session_id: scope.session_id,
+          request_id: request_id,
+          role: :tool_call,
+          content: content,
+          metadata: %{
+            tool_name: tool_name,
+            arguments: envelope
+          },
+          tool_call_id: tool_call_id
+        }
+        |> Map.merge(identity_attrs(scope))
 
       attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
@@ -529,18 +531,20 @@ defmodule JidoClaw.Conversations.Recorder do
 
       content = ToolTranscript.result_summary(tool_name, raw_result)
 
-      attrs = %{
-        session_id: scope.session_id,
-        request_id: request_id,
-        role: :tool_result,
-        content: content,
-        metadata: %{
-          tool_name: tool_name,
-          result: envelope
-        },
-        tool_call_id: tool_call_id,
-        parent_message_id: parent
-      }
+      attrs =
+        %{
+          session_id: scope.session_id,
+          request_id: request_id,
+          role: :tool_result,
+          content: content,
+          metadata: %{
+            tool_name: tool_name,
+            result: envelope
+          },
+          tool_call_id: tool_call_id,
+          parent_message_id: parent
+        }
+        |> Map.merge(identity_attrs(scope))
 
       attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
@@ -563,13 +567,15 @@ defmodule JidoClaw.Conversations.Recorder do
 
       true ->
         with {:ok, scope} <- resolve_scope(request_id) do
-          attrs = %{
-            session_id: scope.session_id,
-            request_id: request_id,
-            role: :reasoning,
-            content: thinking,
-            metadata: %{}
-          }
+          attrs =
+            %{
+              session_id: scope.session_id,
+              request_id: request_id,
+              role: :reasoning,
+              content: thinking,
+              metadata: %{}
+            }
+            |> Map.merge(identity_attrs(scope))
 
           attempt_append(attrs, scope.tenant_id, actor_for(scope))
         end
@@ -726,6 +732,16 @@ defmodule JidoClaw.Conversations.Recorder do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  # Durable compaction identity stamped onto every Recorder-written row.
+  # `agent_id` falls back to the message resource's `"main"` default when
+  # the resolved scope carries none; `subagent` is `false`/`true` (never
+  # nil) once the correlation row exists, so it survives `maybe_put`.
+  defp identity_attrs(scope) do
+    %{}
+    |> maybe_put(:agent_id, Map.get(scope, :agent_id))
+    |> maybe_put(:subagent, Map.get(scope, :subagent))
+  end
+
   defp reply_waiters(state, request_id) do
     {pending, waiters} = Map.pop(state.waiters, request_id, [])
     Enum.each(pending, &GenServer.reply(&1, :ok))
@@ -772,7 +788,9 @@ defmodule JidoClaw.Conversations.Recorder do
               session_id: row.session_id,
               tenant_id: row.tenant_id,
               workspace_id: row.workspace_id,
-              user_id: row.user_id
+              user_id: row.user_id,
+              agent_id: row.agent_id,
+              subagent: row.subagent
             }
 
             Cache.put(request_id, scope)

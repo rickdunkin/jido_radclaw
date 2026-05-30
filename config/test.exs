@@ -16,6 +16,13 @@ config :jido_claw, :reasoning_telemetry_sync, true
 # `Ecto.Adapters.SQL.Sandbox` owner.
 config :jido_claw, :trace, persist?: false
 
+# Recorder flush barrier: tests rarely emit the real `ai.request.completed`
+# terminal signal (LLM calls are stubbed), so the dispatcher / sub-agent
+# transcript flush would otherwise block on the 30s production default. A
+# short timeout keeps the best-effort flush from stalling test runs; tests
+# that need a specific value override it locally.
+config :jido_claw, :recorder_flush_timeout, 200
+
 # Tests don't have VOYAGE_API_KEY set; the per-call defense in
 # `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`
 # at the call site, which is what test fixtures rely on.

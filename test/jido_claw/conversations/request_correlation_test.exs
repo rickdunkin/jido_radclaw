@@ -45,6 +45,12 @@ defmodule JidoClaw.Conversations.RequestCorrelationTest do
                  tenant_id: tenant
                })
 
+      # agent_id omitted → resource default "main" (it is now NOT NULL, so an
+      # omitted value must fall back to the main slice, never a NULL);
+      # subagent omitted → false.
+      assert row.agent_id == "main"
+      refute row.subagent
+
       now = DateTime.utc_now()
       delta_seconds = DateTime.diff(row.expires_at, now, :second)
 

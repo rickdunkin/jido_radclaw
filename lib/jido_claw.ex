@@ -27,6 +27,7 @@ defmodule JidoClaw do
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache, as: CorrelationCache
   alias JidoClaw.Conversations.Session, as: ConversationsSession
+  alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Tenant.Manager, as: TenantManager
   alias JidoClaw.Workspaces
@@ -182,8 +183,6 @@ defmodule JidoClaw do
     user_id = Keyword.get(opts, :user_id)
     request_id = Ecto.UUID.generate()
 
-    register_correlation(request_id, session.id, tenant_id, workspace.id, user_id)
-
     actor =
       Keyword.get(opts, :actor) ||
         if user_id,
@@ -201,6 +200,15 @@ defmodule JidoClaw do
         session_record: session,
         default_agent_id: session_id
       )
+
+    # Register correlation AFTER routing so the stamped compaction identity
+    # reflects the resolved owner (main vs handoff worker). Still precedes
+    # the user-message append and `ask_sync`, so the Recorder can resolve
+    # scope for any tool signal during the turn.
+    register_correlation(request_id, session.id, tenant_id, workspace.id, user_id,
+      agent_id: CompactionIdentity.resolve(routed_template, routed_agent_id, session_id),
+      subagent: false
+    )
 
     preamble =
       if first_post_handoff? do
@@ -222,6 +230,7 @@ defmodule JidoClaw do
         user_id: user_id,
         agent_id: routed_agent_id,
         agent_template: routed_template,
+        subagent: false,
         actor: actor
       })
 
@@ -264,12 +273,12 @@ defmodule JidoClaw do
   @doc """
   Convenience entry point for child requests (sub-agents, workflows): pulls
   `session_uuid`, `tenant_id`, `workspace_uuid`, and `user_id` out of a
-  tool_context map and forwards to `register_correlation/5`. Returns a fresh
+  tool_context map and forwards to `register_correlation/6`. Returns a fresh
   `request_id` regardless — if the context is missing `session_uuid` or
   `tenant_id`, registration is skipped but the caller still gets an id to
   thread through.
 
-  See the note on `register_correlation/5` about eventual relocation.
+  See the note on `register_correlation/6` about eventual relocation.
   """
   def register_child_correlation(ctx) do
     request_id = Ecto.UUID.generate()
@@ -282,7 +291,14 @@ defmodule JidoClaw do
           session_uuid,
           tenant_id,
           Map.get(c, :workspace_uuid),
-          Map.get(c, :user_id)
+          Map.get(c, :user_id),
+          agent_id:
+            CompactionIdentity.resolve(
+              Map.get(c, :agent_template),
+              Map.get(c, :agent_id),
+              Map.get(c, :session_id)
+            ),
+          subagent: Map.get(c, :subagent, true)
         )
 
       _ ->
@@ -306,12 +322,28 @@ defmodule JidoClaw do
   > `JidoClaw.Conversations.RequestCorrelation` alongside the Ash resource it
   > wraps. It lives here for historical reasons.
   """
-  def register_correlation(request_id, session_uuid, tenant_id, workspace_uuid, user_id) do
+  def register_correlation(
+        request_id,
+        session_uuid,
+        tenant_id,
+        workspace_uuid,
+        user_id,
+        opts \\ []
+      ) do
+    # Default to the main agent so the `:register` create never receives an
+    # explicit nil for the now-NOT-NULL `agent_id` (mirrors `subagent`'s
+    # default below). Routed call sites already pass a non-nil identity via
+    # `CompactionIdentity.resolve/3`.
+    agent_id = Keyword.get(opts, :agent_id) || CompactionIdentity.main()
+    subagent = Keyword.get(opts, :subagent, false)
+
     scope = %{
       session_id: session_uuid,
       tenant_id: tenant_id,
       workspace_id: workspace_uuid,
-      user_id: user_id
+      user_id: user_id,
+      agent_id: agent_id,
+      subagent: subagent
     }
 
     case RequestCorrelation.register(%{
@@ -319,7 +351,9 @@ defmodule JidoClaw do
            session_id: session_uuid,
            tenant_id: tenant_id,
            workspace_id: workspace_uuid,
-           user_id: user_id
+           user_id: user_id,
+           agent_id: agent_id,
+           subagent: subagent
          }) do
       {:ok, _} ->
         CorrelationCache.put(request_id, scope)
@@ -433,7 +467,7 @@ defmodule JidoClaw do
              actor: actor
            ),
          {:ok, rows} <-
-           ConversationsMessage.for_session(session.id,
+           ConversationsMessage.for_session_primary(session.id,
              tenant: tenant_id,
              actor: actor
            ) do
