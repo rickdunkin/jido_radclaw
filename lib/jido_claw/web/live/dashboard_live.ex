@@ -90,7 +90,7 @@ defmodule JidoClaw.Web.DashboardLive do
     {:noreply, assign(socket, forge_sessions: length(JidoClaw.Forge.list_sessions()))}
   end
 
-  # Run events (RunPubSub — not yet broadcast, but matches the intended contract)
+  # Run events (RunPubSub — broadcast by JidoClaw.Orchestration.WorkflowRunner)
   @impl true
   def handle_info({:run_started, _id, _info}, socket) do
     {:noreply, assign(socket, workflow_summary: RunSummaryFeed.get_summary())}

@@ -30,12 +30,16 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
           schedule_str = format_schedule(job.schedule)
           next_str = if job.next_run, do: DateTime.to_iso8601(job.next_run), else: "N/A"
 
-          "- #{job.id} [#{job.status}]: \"#{job.task}\" | #{schedule_str} | mode: #{job.mode} | next: #{next_str} | failures: #{job.failure_count}"
+          "- #{job.id} [#{job.status}]: \"#{job.task}\" | #{schedule_str} | mode: #{job.mode} | target: #{format_target(job)} | next: #{next_str} | failures: #{job.failure_count}"
         end)
 
       {:ok, %{result: "Scheduled tasks (#{length(jobs)}):\n#{formatted}"}}
     end
   end
+
+  defp format_target(%{target: :workflow, workflow_name: name}), do: "workflow (#{name})"
+  defp format_target(%{target: target}) when not is_nil(target), do: to_string(target)
+  defp format_target(_), do: "agent"
 
   defp format_schedule({:cron, expr}), do: "cron: #{expr}"
   defp format_schedule({:every, ms}) when ms >= 86_400_000, do: "every #{div(ms, 86_400_000)}d"

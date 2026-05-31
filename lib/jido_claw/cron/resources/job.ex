@@ -14,11 +14,21 @@ defmodule JidoClaw.Cron.Job do
   `mode: :system_job` rows are config-driven in v0.6.4 and don't
   flow through this resource yet — kept on the schema for forward
   compatibility.
+
+  `target` (`:agent | :workflow | :mfa`) is the execution-target
+  dimension, orthogonal to `mode`. Dispatch is legacy-first:
+  `Cron.Dispatcher` routes `mode: :system_job` to MFA *before*
+  consulting `target`, so every pre-`target` row keeps working and
+  new rows default to `target: :agent`. `:workflow` rows carry a
+  `workflow_name` (a skill) and drive a tracked
+  `JidoClaw.Orchestration.WorkflowRun`. `run_count`/`last_run_at`
+  are system-managed durability counters stamped by `:record_run`.
   """
 
   use JidoClaw.Resource, domain: JidoClaw.Cron
 
   @modes [:main, :isolated, :system_job]
+  @targets [:agent, :workflow, :mfa]
   @schedule_kinds [:cron, :every, :at]
 
   postgres do
@@ -44,6 +54,7 @@ defmodule JidoClaw.Cron.Job do
     define(:remove, action: :remove)
     define(:disable, action: :disable)
     define(:enable, action: :enable)
+    define(:record_run, action: :record_run)
     define(:for_tenant, action: :for_tenant)
   end
 
@@ -58,6 +69,9 @@ defmodule JidoClaw.Cron.Job do
       upsert_fields([
         :task,
         :mode,
+        :target,
+        :workflow_name,
+        :workflow_input,
         :schedule_kind,
         :schedule_value,
         :mfa_module,
@@ -71,6 +85,9 @@ defmodule JidoClaw.Cron.Job do
         :job_id,
         :task,
         :mode,
+        :target,
+        :workflow_name,
+        :workflow_input,
         :schedule_kind,
         :schedule_value,
         :mfa_module,
@@ -78,6 +95,16 @@ defmodule JidoClaw.Cron.Job do
         :mfa_args,
         :metadata
       ])
+
+      # Defense in depth: a bad row can't silently always-fail at dispatch.
+      # `where:` ANDs its conditions, so the MFA requirement is two separate
+      # statements (target == :mfa OR mode == :system_job) to get OR semantics.
+      validate(present(:workflow_name), where: [attribute_equals(:target, :workflow)])
+      validate(present([:mfa_module, :mfa_function]), where: [attribute_equals(:target, :mfa)])
+
+      validate(present([:mfa_module, :mfa_function]),
+        where: [attribute_equals(:mode, :system_job)]
+      )
     end
 
     update :disable do
@@ -88,6 +115,15 @@ defmodule JidoClaw.Cron.Job do
     update :enable do
       accept([])
       change(set_attribute(:disabled_at, nil))
+    end
+
+    # Durability counters, stamped best-effort by Cron.Worker after each
+    # tick. Both changes are atomic (single-writer per job), so no
+    # `require_atomic? false` and no record load inside the action.
+    update :record_run do
+      accept([])
+      change(atomic_update(:run_count, expr(run_count + 1)))
+      change(atomic_update(:last_run_at, expr(now())))
     end
 
     destroy :remove do
@@ -143,6 +179,24 @@ defmodule JidoClaw.Cron.Job do
       constraints(one_of: @modes)
     end
 
+    attribute :target, :atom do
+      allow_nil?(false)
+      public?(true)
+      default(:agent)
+      constraints(one_of: @targets)
+    end
+
+    attribute :workflow_name, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :workflow_input, :map do
+      allow_nil?(true)
+      public?(true)
+      default(%{})
+    end
+
     attribute :schedule_kind, :atom do
       allow_nil?(false)
       public?(true)
@@ -171,6 +225,17 @@ defmodule JidoClaw.Cron.Job do
     end
 
     attribute :disabled_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    attribute :run_count, :integer do
+      allow_nil?(false)
+      public?(true)
+      default(0)
+    end
+
+    attribute :last_run_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
     end

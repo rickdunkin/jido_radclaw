@@ -8,6 +8,7 @@ defmodule JidoClaw.Cron.Worker do
 
   alias Crontab.CronExpression.Parser
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.Dispatcher
   alias JidoClaw.Cron.Job
   alias JidoClaw.Telemetry
 
@@ -21,6 +22,9 @@ defmodule JidoClaw.Cron.Worker do
     :schedule,
     :task,
     :mode,
+    :target,
+    :workflow_name,
+    :workflow_input,
     :mfa,
     status: :active,
     failure_count: 0,
@@ -61,6 +65,9 @@ defmodule JidoClaw.Cron.Worker do
       schedule: Keyword.fetch!(opts, :schedule),
       task: Keyword.get(opts, :task),
       mode: Keyword.get(opts, :mode, :main),
+      target: Keyword.get(opts, :target, :agent),
+      workflow_name: Keyword.get(opts, :workflow_name),
+      workflow_input: Keyword.get(opts, :workflow_input),
       mfa: Keyword.get(opts, :mfa),
       created_at: DateTime.utc_now()
     }
@@ -119,27 +126,7 @@ defmodule JidoClaw.Cron.Worker do
 
     result =
       try do
-        case state.mode do
-          :main ->
-            JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
-              kind: :cron,
-              external_id: state.agent_id,
-              actor: Actor.system(state.tenant_id)
-            )
-
-          :isolated ->
-            session_id = "cron_#{state.id}_#{System.system_time(:second)}"
-
-            JidoClaw.chat(state.tenant_id, session_id, state.task,
-              kind: :cron,
-              external_id: session_id,
-              actor: Actor.system(state.tenant_id)
-            )
-
-          :system_job ->
-            {m, f, a} = state.mfa
-            apply(m, f, a)
-        end
+        Dispatcher.dispatch(state)
       rescue
         e ->
           Telemetry.emit_cron_exception(%{job_id: state.id}, :error)
@@ -148,6 +135,7 @@ defmodule JidoClaw.Cron.Worker do
 
     duration = System.monotonic_time() - start_time
     Telemetry.emit_cron_stop(%{job_id: state.id, tenant_id: state.tenant_id}, duration)
+    record_run(state)
 
     case result do
       :ok ->
@@ -240,5 +228,27 @@ defmodule JidoClaw.Cron.Worker do
     end
   rescue
     e -> Logger.warning("[Cron] disable persistence raised: #{Exception.message(e)}")
+  end
+
+  # Best-effort durability counters. Increments run_count / stamps
+  # last_run_at on the persisted row after every tick — for any persisted
+  # job (agent/workflow/mfa, including persisted :system_job rows). Jobs
+  # with no DB row (the in-memory memory-consolidator) are skipped via the
+  # {:error, _} branch. A transient DB error must never crash the worker.
+  defp record_run(state) do
+    actor = Actor.system(state.tenant_id)
+
+    case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+      {:ok, job} ->
+        case Job.record_run(job, tenant: state.tenant_id, actor: actor) do
+          {:ok, _} -> :ok
+          err -> Logger.debug("[Cron] record_run persistence failed: #{inspect(err)}")
+        end
+
+      {:error, _} ->
+        :ok
+    end
+  rescue
+    e -> Logger.debug("[Cron] record_run raised: #{Exception.message(e)}")
   end
 end

@@ -690,8 +690,6 @@ defmodule JidoClaw.Inspection do
     end
   end
 
-  defp model_from_trace(_), do: nil
-
   defp usage_from(%{tokens: tokens}, nil) when is_integer(tokens) and tokens > 0 do
     %{input_tokens: 0, output_tokens: tokens, cost: nil}
   end

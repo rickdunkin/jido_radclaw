@@ -3,7 +3,10 @@ defmodule JidoClaw.Tools.ScheduleTask do
   Agent tool for scheduling recurring tasks.
 
   The agent should ask the user for task details and schedule before calling this.
-  Persists to `.jido/cron.yaml` so jobs survive restarts.
+  Persisted to Postgres (`cron_jobs`) so jobs survive restarts.
+
+  `target: "agent"` (default) fires a chat turn; `target: "workflow"` runs a
+  named skill as a tracked `JidoClaw.Orchestration.WorkflowRun`.
   """
 
   use JidoClaw.Tools.Action,
@@ -40,6 +43,17 @@ defmodule JidoClaw.Tools.ScheduleTask do
         required: false,
         doc:
           "Execution mode: 'main' (shared session, default) or 'isolated' (separate session per run)"
+      ],
+      target: [
+        type: :string,
+        required: false,
+        doc:
+          "'agent' (default, runs a chat turn) or 'workflow' (runs a named skill as a tracked workflow run)"
+      ],
+      workflow: [
+        type: :string,
+        required: false,
+        doc: "Skill name to run when target is 'workflow' (see /skills)"
       ]
     ]
 
@@ -49,60 +63,108 @@ defmodule JidoClaw.Tools.ScheduleTask do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Scheduler
+  alias JidoClaw.Skills
 
   @impl true
   def run(params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
-
-    actor =
-      get_in(context, [:tool_context, :actor]) ||
-        Actor.system(tenant_id)
-
-    id = params[:id] || generate_id(params.task)
-    mode = parse_mode(params[:mode])
+    actor = get_in(context, [:tool_context, :actor]) || Actor.system(tenant_id)
+    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
     schedule_str = String.trim(params.schedule)
 
+    with {:ok, target} <- parse_target(params[:target]),
+         {:ok, target_attrs} <- build_target_attrs(target, params, project_dir),
+         {:ok, schedule_tuple} <- parse_schedule_for(schedule_str) do
+      schedule_and_persist(%{
+        tenant_id: tenant_id,
+        actor: actor,
+        id: params[:id] || generate_id(params.task),
+        task: params.task,
+        mode: parse_mode(params[:mode]),
+        schedule_str: schedule_str,
+        schedule_tuple: schedule_tuple,
+        target_attrs: target_attrs
+      })
+    end
+  end
+
+  defp schedule_and_persist(req) do
+    opts =
+      [id: req.id, task: req.task, schedule: req.schedule_tuple, mode: req.mode] ++
+        Map.to_list(req.target_attrs)
+
+    case Scheduler.schedule(req.tenant_id, opts) do
+      {:ok, _id, _pid} -> persist(req)
+      {:error, reason} -> {:error, "Failed to schedule task: #{inspect(reason)}"}
+    end
+  end
+
+  defp persist(req) do
+    {kind, value} = persistable_schedule(req.schedule_tuple)
+
+    persist_attrs =
+      %{
+        job_id: req.id,
+        task: req.task,
+        mode: req.mode,
+        schedule_kind: kind,
+        schedule_value: value
+      }
+      |> Map.merge(req.target_attrs)
+
+    case Job.upsert(persist_attrs, tenant: req.tenant_id, actor: req.actor) do
+      {:ok, _job} -> {:ok, %{result: success_message(req)}}
+      {:error, reason} -> {:error, "Failed to persist job: #{inspect(reason)}"}
+    end
+  end
+
+  defp success_message(req) do
+    "Scheduled task '#{req.id}': \"#{req.task}\"\n" <>
+      "Schedule: #{format_schedule(req.schedule_str)}\n" <>
+      "Mode: #{req.mode}\n" <>
+      target_line(req.target_attrs) <>
+      "Persisted — will reload on restart."
+  end
+
+  defp target_line(%{target: :workflow, workflow_name: name}), do: "Target: workflow (#{name})\n"
+  defp target_line(_), do: "Target: agent\n"
+
+  # Strict: agents may schedule only :agent or :workflow targets (never
+  # :mfa / :system_job). Unlike parse_mode/1's silent fallback, an
+  # unrecognised target errors so a typo can't quietly schedule an agent job.
+  defp parse_target(nil), do: {:ok, :agent}
+  defp parse_target("agent"), do: {:ok, :agent}
+  defp parse_target("workflow"), do: {:ok, :workflow}
+
+  defp parse_target(other),
+    do: {:error, "Invalid target '#{other}'. Use 'agent' (default) or 'workflow'."}
+
+  defp build_target_attrs(:agent, _params, _project_dir), do: {:ok, %{target: :agent}}
+
+  defp build_target_attrs(:workflow, params, project_dir) do
+    workflow = params[:workflow] |> to_string() |> String.trim()
+
+    cond do
+      workflow == "" ->
+        {:error, "target 'workflow' requires a 'workflow' skill name. Use /skills to list them."}
+
+      match?({:error, _}, Skills.get(workflow, project_dir)) ->
+        {:error, "Skill '#{workflow}' not found. Use /skills to list available skills."}
+
+      true ->
+        {:ok,
+         %{
+           target: :workflow,
+           workflow_name: workflow,
+           workflow_input: %{"context" => params.task}
+         }}
+    end
+  end
+
+  defp parse_schedule_for(schedule_str) do
     case parse_schedule(schedule_str) do
-      {:ok, schedule_tuple} ->
-        opts = [
-          id: id,
-          task: params.task,
-          schedule: schedule_tuple,
-          mode: mode
-        ]
-
-        case Scheduler.schedule(tenant_id, opts) do
-          {:ok, ^id, _pid} ->
-            {kind, value} = persistable_schedule(schedule_tuple)
-
-            persist_attrs = %{
-              job_id: id,
-              task: params.task,
-              mode: mode,
-              schedule_kind: kind,
-              schedule_value: value
-            }
-
-            case Job.upsert(persist_attrs, tenant: tenant_id, actor: actor) do
-              {:ok, _job} ->
-                schedule_desc = format_schedule(schedule_str)
-
-                {:ok,
-                 %{
-                   result:
-                     "Scheduled task '#{id}': \"#{params.task}\"\n" <>
-                       "Schedule: #{schedule_desc}\n" <>
-                       "Mode: #{mode}\n" <>
-                       "Persisted — will reload on restart."
-                 }}
-
-              {:error, reason} ->
-                {:error, "Failed to persist job: #{inspect(reason)}"}
-            end
-
-          {:error, reason} ->
-            {:error, "Failed to schedule task: #{inspect(reason)}"}
-        end
+      {:ok, tuple} ->
+        {:ok, tuple}
 
       {:error, reason} ->
         {:error,

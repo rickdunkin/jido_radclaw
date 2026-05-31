@@ -57,12 +57,21 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
+  # A persisted :workflow row with no skill name can only ever fail at
+  # dispatch — skip it on reload (logged by try_schedule_job/2's
+  # {:error, :build_opts, _} branch) rather than booting a doomed worker.
+  defp build_persistent_opts(%Job{target: :workflow, workflow_name: nil}),
+    do: {:error, :missing_workflow_name}
+
   defp build_persistent_opts(%Job{} = job) do
     base = [
       id: job.job_id,
       task: job.task,
       schedule: hydrate_schedule(job.schedule_kind, job.schedule_value),
-      mode: job.mode
+      mode: job.mode,
+      target: job.target,
+      workflow_name: job.workflow_name,
+      workflow_input: job.workflow_input
     ]
 
     case build_mfa(job) do
@@ -72,8 +81,11 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
-  # Non-system_job rows don't need an MFA.
-  defp build_mfa(%Job{mode: mode}) when mode != :system_job, do: {:ok, nil}
+  # Rows that dispatch via MFA — mode: :system_job OR target: :mfa — REQUIRE
+  # an MFA. Any other combination doesn't, so resolve none.
+  defp build_mfa(%Job{mode: mode, target: target})
+       when mode != :system_job and target != :mfa,
+       do: {:ok, nil}
 
   # system_job rows REQUIRE an MFA. Missing it on reload = data corruption,
   # don't schedule.

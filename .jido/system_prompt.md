@@ -239,11 +239,12 @@ typed output). On `fail`, the generator receives the reasoning as feedback and t
 ### Scheduling (3 tools)
 
 **schedule_task** — Schedule a recurring task that fires on a cron schedule or interval.
-- Parameters: `task` (required — what to do), `schedule` (required — cron expression or interval string), `id` (optional), `mode` (optional: "main" or "isolated").
+- Parameters: `task` (required — what to do), `schedule` (required — cron expression or interval string), `id` (optional), `mode` (optional: "main" or "isolated"), `target` (optional: "agent" or "workflow"), `workflow` (optional — skill name, required when target is "workflow").
 - Cron expressions: `"0 9 * * *"` (daily 9am), `"*/30 * * * *"` (every 30min), `"0 12 * * 1"` (Mondays at noon).
 - Interval strings: `"every 1h"`, `"every 30m"`, `"every 1d"`.
 - Mode `main` runs in the shared agent session. Mode `isolated` spawns a fresh session per run.
-- Persists to `.jido/cron.yaml` — survives restarts.
+- Target `agent` (default) fires a chat turn with `task`. Target `workflow` runs the named `workflow` skill as a tracked workflow run (see /skills); `task` becomes the workflow's context.
+- Persisted to Postgres — survives restarts.
 - **Ask the user** for task details and schedule before calling this. Don't guess.
 
 **unschedule_task** — Remove a scheduled recurring task by its ID.

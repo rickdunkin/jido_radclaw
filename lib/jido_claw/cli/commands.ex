@@ -1620,8 +1620,15 @@ defmodule JidoClaw.CLI.Commands do
     next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
 
     IO.puts("  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{next_str}")
-    IO.puts("    \e[2m\"#{job.task}\"\e[0m  failures: #{job.failure_count}")
+
+    IO.puts(
+      "    \e[2m\"#{job.task}\"\e[0m  #{cron_target_label(job)}failures: #{job.failure_count}"
+    )
   end
+
+  defp cron_target_label(%{target: :workflow, workflow_name: name}), do: "workflow: #{name}  "
+  defp cron_target_label(%{target: target}) when not is_nil(target), do: "target: #{target}  "
+  defp cron_target_label(_), do: ""
 
   defp cron_status_icon(:active), do: "\e[32m●\e[0m"
   defp cron_status_icon(:disabled), do: "\e[31m✗\e[0m"

@@ -118,6 +118,13 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
       not is_binary(schedule_str) ->
         :invalid
 
+      # The cron_jobs :system_job invariant now requires MFA fields, which
+      # legacy YAML never carried — such a row would fail the upsert
+      # mid-batch. Legacy cron YAML only ever held agent-mode tasks, so a
+      # clean skip is the correct semantics.
+      mode_str == "system_job" ->
+        :invalid
+
       true ->
         {kind, value} = parse_schedule(schedule_str)
 

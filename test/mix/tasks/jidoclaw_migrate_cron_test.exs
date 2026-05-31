@@ -60,6 +60,21 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
       {:ok, jobs} = Job.for_tenant(tenant: tenant_c, authorize?: false)
       assert jobs == []
     end
+
+    test "a legacy system_job entry is skipped while agent jobs still migrate" do
+      tenant_d = "migrate-cron-sysjob-#{System.unique_integer([:positive])}"
+      project_dir = unique_project_dir("migrate-cron-sysjob")
+      write_mixed_cron_yaml(project_dir)
+
+      reenable!("jidoclaw.migrate.cron")
+      Mix.Task.run("jidoclaw.migrate.cron", ["--project", project_dir, "--tenant", tenant_d])
+
+      {:ok, jobs} = Job.for_tenant(tenant: tenant_d, authorize?: false)
+      job_ids = Enum.map(jobs, & &1.job_id)
+
+      assert "agent_job" in job_ids
+      refute "sysjob" in job_ids
+    end
   end
 
   defp write_cron_yaml(project_dir, job_id, schedule) do
@@ -72,6 +87,28 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
         task: noop
         schedule: #{schedule}
         mode: main
+    """
+
+    File.write!(Path.join(yaml_dir, "cron.yaml"), yaml)
+  end
+
+  # A valid agent job alongside a legacy system_job entry — the latter is
+  # skipped (the cron_jobs :system_job invariant now requires MFA fields
+  # that legacy YAML never carried) without aborting the agent upsert.
+  defp write_mixed_cron_yaml(project_dir) do
+    yaml_dir = Path.join(project_dir, ".jido")
+    File.mkdir_p!(yaml_dir)
+
+    yaml = """
+    jobs:
+      - id: agent_job
+        task: noop
+        schedule: every 5m
+        mode: main
+      - id: sysjob
+        task: tick
+        schedule: every 6h
+        mode: system_job
     """
 
     File.write!(Path.join(yaml_dir, "cron.yaml"), yaml)
