@@ -4,10 +4,19 @@ defmodule JidoClaw.Inspection.Summary do
   `inspect_request/2`, and `inspect_workflow/1`.
 
   Matches the spirit of Jidoka's `Debug.summary` shape — a single struct
-  unifying agent definition (`system_prompt`, `skills`, `tool_names`,
-  `mcp_tools`, `context_preview`) with current running state (`memory`,
-  `compaction`, `subagents`, `workflows`, `handoffs`, `usage`,
-  `duration_ms`, `interrupt`, `error`, `message_count`).
+  unifying agent definition (`system_prompt`, `model`, `skills`,
+  `tool_names`, `mcp_tools`, `context_preview`, `user_message`) with
+  current running state (`memory`, `compaction`, `subagents`,
+  `workflows`, `handoffs`, `usage`, `duration_ms`, `status`,
+  `interrupt`, `error`, `message_count`).
+
+  `model` reports the configured alias (e.g. `:fast`) on the
+  definition/agent paths and the resolved label that actually ran
+  (e.g. `"claude-sonnet-4-5"`) on the request path. `status` is the
+  trace lifecycle status and stays `nil` on no-trace paths (module,
+  `session_map`) — like `usage`/`duration_ms`. `user_message` is the
+  request path's user-role context preview, the sibling of
+  `context_preview` (which previews the assistant role).
 
   `:subagents` and `:workflows` are populated from process-global sources
   (`JidoClaw.AgentTracker.get_state/0` and `WorkflowRun.list_active/0`)
@@ -46,10 +55,12 @@ defmodule JidoClaw.Inspection.Summary do
 
   @type t :: %__MODULE__{
           system_prompt: String.t() | nil,
+          model: String.t() | atom() | nil,
           skills: [skill_summary()],
           tool_names: [String.t()],
           mcp_tools: [String.t()],
           context_preview: String.t() | nil,
+          user_message: String.t() | nil,
           memory: nil | %{namespace: String.t(), blocks_count: non_neg_integer(), scope: map()},
           compaction: map() | nil,
           subagents: [subagent()],
@@ -57,6 +68,7 @@ defmodule JidoClaw.Inspection.Summary do
           handoffs: handoff() | nil,
           usage: usage(),
           duration_ms: non_neg_integer() | nil,
+          status: atom() | String.t() | nil,
           interrupt: map() | nil,
           error: map() | nil,
           message_count: non_neg_integer() | nil,
@@ -66,10 +78,12 @@ defmodule JidoClaw.Inspection.Summary do
         }
 
   defstruct system_prompt: nil,
+            model: nil,
             skills: [],
             tool_names: [],
             mcp_tools: [],
             context_preview: nil,
+            user_message: nil,
             memory: nil,
             compaction: nil,
             subagents: [],
@@ -77,6 +91,7 @@ defmodule JidoClaw.Inspection.Summary do
             handoffs: nil,
             usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
             duration_ms: nil,
+            status: nil,
             interrupt: nil,
             error: nil,
             message_count: nil,

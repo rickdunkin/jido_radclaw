@@ -7,6 +7,7 @@ defmodule JidoClaw.InspectionTest do
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Workers.Reviewer
   alias JidoClaw.AgentTracker
+  alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Inspection
   alias JidoClaw.Inspection.Summary
@@ -52,6 +53,8 @@ defmodule JidoClaw.InspectionTest do
       assert s.input_kind == :module
       assert is_list(s.tool_names)
       assert "read_file" in s.tool_names
+      # model is sourced from strategy_opts[:model] (the configured alias).
+      assert s.model == :fast
     end
 
     test "worker module dispatch sees the worker's declared tools" do
@@ -97,6 +100,8 @@ defmodule JidoClaw.InspectionTest do
         |> Enum.map(&to_string(&1.name()))
 
       assert MapSet.new(s.tool_names) == MapSet.new(expected)
+      # model resolves through the same worker module as the tools.
+      assert s.model == Reviewer.strategy_opts()[:model]
     end
   end
 
@@ -182,6 +187,8 @@ defmodule JidoClaw.InspectionTest do
 
       assert {:ok, %Summary{input_kind: :session} = s} = Inspection.inspect_agent(session)
       assert is_list(s.tool_names)
+      # Plain session → main agent's configured model alias.
+      assert s.model == :fast
 
       # `:memory` is sourced via Memory.namespace_info/1 on the rich
       # plain_session_summary path (parallel to :compaction).
@@ -232,11 +239,12 @@ defmodule JidoClaw.InspectionTest do
                Inspection.inspect_request(request_id, tenant_id: other_tenant)
     end
 
-    test "happy path returns request_id summary with usage", %{
+    test "happy path returns request_id summary with usage, model, status, user_message", %{
       tenant_id: tid,
       session: session,
       workspace: workspace,
-      runtime_session_id: rsid
+      runtime_session_id: rsid,
+      actor: actor
     } do
       request_id = Ecto.UUID.generate()
 
@@ -249,6 +257,20 @@ defmodule JidoClaw.InspectionTest do
           user_id: nil
         })
 
+      # Seed a user-role message so user_message (the role: :user sibling of
+      # context_preview) has something to preview.
+      {:ok, _} =
+        ConversationsMessage.append(
+          %{
+            session_id: session.id,
+            request_id: request_id,
+            role: :user,
+            content: "summarize the readme"
+          },
+          tenant: tid,
+          actor: actor
+        )
+
       :telemetry.execute(
         [:jido, :ai, :request, :start],
         %{},
@@ -258,16 +280,39 @@ defmodule JidoClaw.InspectionTest do
       :telemetry.execute(
         [:jido, :ai, :llm, :complete],
         %{input_tokens: 10, output_tokens: 20},
+        %{
+          agent_id: rsid,
+          request_id: request_id,
+          tenant_id: tid,
+          run_id: request_id,
+          model: "claude-test"
+        }
+      )
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :complete],
+        %{duration_ms: 5},
         %{agent_id: rsid, request_id: request_id, tenant_id: tid, run_id: request_id}
       )
 
       :ok = sync_collector()
 
-      assert {:ok, %Summary{usage: usage, input_kind: :request_id, request_id: ^request_id}} =
-               Inspection.inspect_request(request_id, tenant_id: tid)
+      assert {:ok,
+              %Summary{
+                usage: usage,
+                input_kind: :request_id,
+                request_id: ^request_id,
+                model: model,
+                status: status,
+                user_message: user_message
+              }} = Inspection.inspect_request(request_id, tenant_id: tid)
 
       assert usage.input_tokens == 10
       assert usage.output_tokens == 20
+      # model is the resolved label that actually ran (from the :model event).
+      assert model == "claude-test"
+      assert status == :completed
+      assert user_message == "summarize the readme"
     end
 
     test "correlation found under a different tenant returns :not_found", %{
@@ -385,6 +430,103 @@ defmodule JidoClaw.InspectionTest do
       assert usage.input_tokens == 10
       assert usage.output_tokens == 20
     end
+
+    test "durable-rehydrated trace with string-keyed :model metadata resolves model", %{
+      tenant_id: tid
+    } do
+      # Regression guard for `model_from_trace/1`: seed `trace_runs` +
+      # a `:model` `trace_events` row directly (never through the in-memory
+      # collector) with STRING-keyed metadata — exactly what the Postgres
+      # round-trip leaves behind. `inspect_request` must route through
+      # `Trace.for_request -> rehydrate_from_postgres` and still resolve the
+      # model via `coalesce_field`. Direct row seeding avoids ring-eviction
+      # timing noise; the essential assertion is the string-keyed resolve.
+      request_id = Ecto.UUID.generate()
+      trace_id = "trace-model-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        TraceRun.upsert_run(
+          %{
+            trace_id: trace_id,
+            tenant_id: tid,
+            request_id: request_id,
+            run_id: request_id,
+            status: "completed",
+            started_at_ms: 1_000,
+            completed_at_ms: 1_500,
+            incoming_last_seq: 1
+          },
+          tenant: tid
+        )
+
+      {:ok, _} =
+        TraceEvent.append_event(
+          %{
+            tenant_id: tid,
+            trace_id: trace_id,
+            seq: 1,
+            at_ms: 1_000,
+            source: "jido_ai",
+            category: "model",
+            event: "complete",
+            metadata: %{"model" => "claude-sonnet-4-5"}
+          },
+          tenant: tid
+        )
+
+      assert {:ok, %Summary{model: model, status: status}} =
+               Inspection.inspect_request(request_id, tenant_id: tid)
+
+      assert model == "claude-sonnet-4-5"
+      assert status == :completed
+    end
+
+    test "structured :model metadata never leaks a map into Summary.model", %{tenant_id: tid} do
+      # Defensive guard: some providers stamp a structured model value into
+      # :model metadata (a struct becomes a plain string-keyed map after the
+      # JSONB round-trip). `model_from_trace/1` must NOT surface the map — it
+      # would violate Summary.model's `String.t() | atom() | nil` type and
+      # later crash `to_string/1` at the MCP boundary. It falls back to the
+      # event's string `name` label instead.
+      request_id = Ecto.UUID.generate()
+      trace_id = "trace-structmodel-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        TraceRun.upsert_run(
+          %{
+            trace_id: trace_id,
+            tenant_id: tid,
+            request_id: request_id,
+            run_id: request_id,
+            status: "completed",
+            incoming_last_seq: 1
+          },
+          tenant: tid
+        )
+
+      {:ok, _} =
+        TraceEvent.append_event(
+          %{
+            tenant_id: tid,
+            trace_id: trace_id,
+            seq: 1,
+            at_ms: 1_000,
+            source: "jido_ai",
+            category: "model",
+            event: "complete",
+            name: "claude-from-name",
+            metadata: %{"model" => %{"provider" => "anthropic", "id" => "claude-x"}}
+          },
+          tenant: tid
+        )
+
+      assert {:ok, %Summary{model: model}} =
+               Inspection.inspect_request(request_id, tenant_id: tid)
+
+      # The structured map is dropped; the string `name` label is used.
+      assert model == "claude-from-name"
+      assert is_binary(model) or is_nil(model)
+    end
   end
 
   describe "inspect_workflow/1" do
@@ -396,10 +538,13 @@ defmodule JidoClaw.InspectionTest do
         started_at: DateTime.utc_now()
       }
 
-      assert {:ok, %Summary{input_kind: :workflow_id, workflows: [w]}} =
+      assert {:ok, %Summary{input_kind: :workflow_id, workflows: [w]} = s} =
                Inspection.inspect_workflow(run)
 
       assert w.name == "test-flow"
+      # The workflow path has no agent module and no trace, so both stay nil.
+      assert s.model == nil
+      assert s.status == nil
     end
 
     test "with UUID string of a created run" do

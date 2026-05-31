@@ -53,6 +53,57 @@ defmodule JidoClaw.Trace.PersistenceTest do
       assert {:ok, events} = TraceEvent.for_trace(run.trace_id)
       assert length(events) == 2
       assert Enum.all?(events, &is_binary(&1.category))
+      assert Enum.all?(events, &(&1.schema_version == 1))
+    end
+  end
+
+  describe "pre-migration row coercion" do
+    test "Trace.for_request rehydrates a NULL schema_version row as 1" do
+      tenant_id = "premig-tenant-#{System.unique_integer([:positive])}"
+      trace_id = "trace-premig-#{System.unique_integer([:positive])}"
+      request_id = "premig-req-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        TraceRun.upsert_run(
+          %{
+            trace_id: trace_id,
+            tenant_id: tenant_id,
+            request_id: request_id,
+            run_id: request_id,
+            status: "completed",
+            incoming_last_seq: 1
+          },
+          tenant: tenant_id
+        )
+
+      {:ok, _} =
+        TraceEvent.append_event(
+          %{
+            tenant_id: tenant_id,
+            trace_id: trace_id,
+            seq: 1,
+            at_ms: 100,
+            source: "jido_claw",
+            category: "request",
+            event: "start"
+          },
+          tenant: tenant_id
+        )
+
+      # Simulate a row written before the migration added the column.
+      # The resource `default(1)` coerces any omitted/explicit input to 1,
+      # so the only way to get a genuine NULL is to mutate the persisted
+      # row directly — this is what exercises `trace.ex`'s `row.schema_version || 1`.
+      JidoClaw.Repo.query!(
+        "UPDATE trace_events SET schema_version = NULL WHERE trace_id = $1",
+        [trace_id]
+      )
+
+      # Never emitted through the collector, so for_request falls through to
+      # the Postgres rehydration path.
+      assert {:ok, trace} = Trace.for_request({:request, request_id}, request_id)
+      assert [event] = trace.events
+      assert event.schema_version == 1
     end
   end
 
@@ -221,6 +272,8 @@ defmodule JidoClaw.Trace.PersistenceTest do
         assert trace.request_id == target_req
         # Events have been rehydrated from trace_events.
         assert trace.events != []
+        # The version stamp survives the Postgres round-trip.
+        assert Enum.all?(trace.events, &(&1.schema_version == 1))
       after
         if previous do
           Application.put_env(:jido_claw, :trace, previous)

@@ -30,14 +30,17 @@ defmodule JidoClaw.Tools.InspectAgent do
     tags: ["agent", "read"],
     output_schema: [
       system_prompt: [type: :string, required: false],
+      model: [type: :string, required: false],
       tool_names: [type: {:list, :string}, required: true],
       mcp_tools: [type: {:list, :string}, required: true],
       context_preview: [type: :string, required: false],
+      user_message: [type: :string, required: false],
       handoffs: [type: :map, required: false],
       compaction: [type: :map, required: false],
       memory: [type: :map, required: false],
       usage: [type: :map, required: true],
       duration_ms: [type: :integer, required: false],
+      status: [type: :string, required: false],
       error: [type: :map, required: false],
       message_count: [type: :integer, required: false],
       request_id: [type: :string, required: false],
@@ -124,20 +127,30 @@ defmodule JidoClaw.Tools.InspectAgent do
   defp project(%Inspection.Summary{} = s) do
     %{
       system_prompt: s.system_prompt,
+      model: stringify_nilable(s.model),
       tool_names: s.tool_names,
       mcp_tools: s.mcp_tools,
       context_preview: s.context_preview,
+      # Already clamped to `@context_preview_limit` in `Inspection`; passed
+      # through verbatim like `context_preview`, no duplicate length logic.
+      user_message: s.user_message,
       handoffs: JsonSafe.encode(s.handoffs),
       compaction: JsonSafe.encode(s.compaction),
       memory: s.memory |> slim_memory() |> JsonSafe.encode(),
       usage: JsonSafe.encode(s.usage),
       duration_ms: s.duration_ms,
+      status: stringify_nilable(s.status),
       error: JsonSafe.encode(s.error),
       message_count: s.message_count,
       request_id: s.request_id,
       input_kind: Atom.to_string(s.input_kind)
     }
   end
+
+  # `model`/`status` are atom-or-string-or-nil. A bare `to_string/1` would
+  # emit `"nil"` (nil is an atom) at the MCP boundary, so preserve nil.
+  defp stringify_nilable(nil), do: nil
+  defp stringify_nilable(value), do: to_string(value)
 
   # Expose only the scope *kind* + block count at the MCP boundary — never
   # an FK or raw UUID. Both the `scope` sub-map and the FK embedded in

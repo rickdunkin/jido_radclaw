@@ -342,6 +342,9 @@ defmodule JidoClaw.Trace do
 
   defp durable_event_to_struct(row) do
     %Event{
+      # NULL-coerce pre-migration rows so the rehydrated struct always
+      # satisfies the `pos_integer()` type (never `nil`).
+      schema_version: row.schema_version || 1,
       seq: row.seq,
       at_ms: row.at_ms,
       source: maybe_atom(row.source),

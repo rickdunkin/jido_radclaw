@@ -128,11 +128,14 @@ defmodule JidoClaw.Inspection do
       request_id: request_id,
       input_kind: :request_id,
       resolved_at_ms: System.system_time(:millisecond),
+      model: model_from_trace(trace),
       usage: usage_from_trace(trace),
       duration_ms: duration_from_trace(trace),
+      status: trace_field(trace, :status),
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       context_preview: context_preview_for_request(session_uuid, request_id, tenant_id, actor),
+      user_message: user_message_for_request(session_uuid, request_id, tenant_id, actor),
       compaction: compaction_for(session_uuid, agent_id, tenant_id, actor),
       memory: memory_for(session_uuid, tenant_id)
     }
@@ -180,6 +183,29 @@ defmodule JidoClaw.Inspection do
           rows
           |> Enum.reverse()
           |> Enum.find(&(&1.role == :assistant))
+          |> message_content_preview()
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  # Sibling of `context_preview_for_request/4`: previews the latest
+  # user-role message for the request (the caller's own input) instead
+  # of the assistant reply. Same `@context_preview_limit` clamp.
+  defp user_message_for_request(nil, _request_id, _tenant_id, _actor), do: nil
+
+  defp user_message_for_request(session_uuid, request_id, tenant_id, actor) do
+    safe(fn ->
+      case ConversationsMessage.by_request(session_uuid, request_id,
+             tenant: tenant_id,
+             actor: actor
+           ) do
+        {:ok, rows} when is_list(rows) ->
+          rows
+          |> Enum.reverse()
+          |> Enum.find(&(&1.role == :user))
           |> message_content_preview()
 
         _ ->
@@ -256,6 +282,7 @@ defmodule JidoClaw.Inspection do
 
     %Summary{
       system_prompt: safe(fn -> AgentPrompt.build_snapshot(File.cwd!(), nil) end),
+      model: model_from_module(module),
       skills: skills_summary(),
       tool_names: tool_names(tools),
       mcp_tools: mcp_tool_names(),
@@ -266,6 +293,39 @@ defmodule JidoClaw.Inspection do
 
   defp tools_from_opts(opts) when is_list(opts), do: Keyword.get(opts, :tools, [])
   defp tools_from_opts(_), do: []
+
+  # The configured model alias (e.g. `:fast`) declared in the agent
+  # module's `strategy_opts`. Definition/agent paths report this alias;
+  # the request path reports the resolved label that actually ran
+  # (see `model_from_trace/1`).
+  defp model_from_module(module) when is_atom(module) and not is_nil(module) do
+    if module_with_strategy_opts?(module) do
+      safe(fn -> apply(module, :strategy_opts, []) end)
+      |> model_from_opts()
+      |> normalize_model_label()
+    else
+      nil
+    end
+  end
+
+  defp model_from_module(_), do: nil
+
+  defp model_from_opts(opts) when is_list(opts), do: Keyword.get(opts, :model)
+  defp model_from_opts(_), do: nil
+
+  # Guarantees the `Summary.model` contract (`String.t() | atom() | nil`). A
+  # model value can arrive as a structured term — a `{provider, opts}` tuple
+  # or inline map in config, or a `%LLMDB.Model{}`/map in trace metadata
+  # (which becomes a plain string-keyed map after a Postgres round-trip).
+  # Such a value would otherwise reach `to_string/1` in
+  # `JidoClaw.Tools.InspectAgent.project/1` and raise. Collapse anything that
+  # isn't a binary or a non-nil atom to `nil` so callers fall back to a
+  # string label (e.g. `event.name`) or `nil`. Deliberately does NOT route
+  # through `Jido.AI.model_label/1`: that raises `ArgumentError` on an
+  # unregistered atom alias, and the request path is a non-`safe/1` caller.
+  defp normalize_model_label(value) when is_binary(value), do: value
+  defp normalize_model_label(value) when is_atom(value) and not is_nil(value), do: value
+  defp normalize_model_label(_), do: nil
 
   defp tool_names(tools) when is_list(tools) do
     Enum.map(tools, fn module ->
@@ -333,6 +393,9 @@ defmodule JidoClaw.Inspection do
 
   defp agent_state_request_id(_), do: nil
 
+  defp agent_state_model(%{agent: %{state: %{model: model}}}), do: normalize_model_label(model)
+  defp agent_state_model(_), do: nil
+
   defp pid_summary(pid, opts) do
     state = safe_agent_state(pid)
     agent_id = agent_state_agent_id(state)
@@ -344,11 +407,13 @@ defmodule JidoClaw.Inspection do
       resolved_at_ms: System.system_time(:millisecond),
       request_id: agent_state_request_id(state) || trace_field(trace, :request_id),
       system_prompt: safe(fn -> AgentPrompt.build_snapshot(File.cwd!(), nil) end),
+      model: agent_state_model(state) || model_from_module(module),
       tool_names: tool_names_for_module(module),
       mcp_tools: mcp_tool_names(),
       skills: skills_summary(),
       usage: usage_from(nil, trace),
       duration_ms: duration_from_trace(trace),
+      status: trace_field(trace, :status),
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
@@ -406,35 +471,30 @@ defmodule JidoClaw.Inspection do
   defp agent_id_summary(agent_id, opts) when is_binary(agent_id) do
     tracker = safe(fn -> AgentTracker.get_agent(agent_id) end)
     trace = fetch_trace(agent_id, Keyword.get(opts, :tenant_id))
+    module = module_from_tracker(tracker)
 
-    base = %Summary{
+    %Summary{
       input_kind: :agent_id,
       resolved_at_ms: System.system_time(:millisecond),
-      tool_names: agent_tools_for(tracker, opts),
+      tool_names: tool_names_for_module(module),
+      model: model_from_module(module),
       mcp_tools: mcp_tool_names(),
       skills: skills_summary(),
       system_prompt: safe(fn -> AgentPrompt.build_snapshot(File.cwd!(), nil) end),
       usage: usage_from(tracker, trace),
       duration_ms: duration_from_trace(trace),
+      status: trace_field(trace, :status),
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
       workflows: active_workflows(),
       request_id: tracker_request_id(tracker, trace)
     }
-
-    base
   end
 
   defp tracker_request_id(%{request_id: rid}, _trace) when is_binary(rid), do: rid
   defp tracker_request_id(_, %Trace{request_id: rid}) when is_binary(rid), do: rid
   defp tracker_request_id(_, _), do: nil
-
-  defp agent_tools_for(tracker, _opts) do
-    tracker
-    |> module_from_tracker()
-    |> tool_names_for_module()
-  end
 
   # `AgentEntry` carries only `:template` (no `:module`), so resolve the
   # worker module through the template registry. No tracker entry / unknown
@@ -476,6 +536,7 @@ defmodule JidoClaw.Inspection do
       input_kind: :session,
       resolved_at_ms: System.system_time(:millisecond),
       tool_names: tool_names_for_module(module),
+      model: model_from_module(module),
       mcp_tools: mcp_tool_names(),
       skills: skills_summary(),
       handoffs: handoff_view(owner),
@@ -494,6 +555,7 @@ defmodule JidoClaw.Inspection do
       input_kind: :session,
       resolved_at_ms: System.system_time(:millisecond),
       system_prompt: safe(fn -> session_prompt(session) end),
+      model: model_from_module(module),
       skills: skills_summary(),
       tool_names: tool_names_for_module(module),
       mcp_tools: mcp_tool_names(),
@@ -503,6 +565,7 @@ defmodule JidoClaw.Inspection do
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
       duration_ms: duration_from_trace(trace),
+      status: trace_field(trace, :status),
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
@@ -518,6 +581,7 @@ defmodule JidoClaw.Inspection do
       input_kind: :session,
       resolved_at_ms: System.system_time(:millisecond),
       system_prompt: safe(fn -> session_prompt(session) end),
+      model: model_from_module(JidoClaw.Agent),
       skills: skills_summary(),
       tool_names: tool_names_for_module(JidoClaw.Agent),
       mcp_tools: mcp_tool_names(),
@@ -527,6 +591,7 @@ defmodule JidoClaw.Inspection do
       message_count: safe_worker_message_count(tenant_id, session.external_id),
       usage: usage_from(nil, trace),
       duration_ms: duration_from_trace(trace),
+      status: trace_field(trace, :status),
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
@@ -608,6 +673,24 @@ defmodule JidoClaw.Inspection do
   end
 
   defp usage_from_trace(_), do: %{input_tokens: 0, output_tokens: 0, cost: nil}
+
+  # The resolved model label that actually ran, taken from the latest
+  # `:model`-category event (a request may make multiple LLM calls /
+  # future per-turn routing, so the last one wins). Reads `coalesce_field`
+  # — like `usage_from_trace/1` — because durable-rehydrated metadata comes
+  # back string-keyed; falls back to `event.name`, where the collector
+  # already stores the model label for `:model` events.
+  defp model_from_trace(%Trace{events: events}) when is_list(events) do
+    case events |> Enum.reverse() |> Enum.find(&(&1.category == :model)) do
+      %Event{} = ev ->
+        normalize_model_label(MapKeys.coalesce_field(ev.metadata || %{}, :model)) || ev.name
+
+      _ ->
+        nil
+    end
+  end
+
+  defp model_from_trace(_), do: nil
 
   defp usage_from(%{tokens: tokens}, nil) when is_integer(tokens) and tokens > 0 do
     %{input_tokens: 0, output_tokens: tokens, cost: nil}

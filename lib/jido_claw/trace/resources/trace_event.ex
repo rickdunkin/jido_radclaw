@@ -57,6 +57,7 @@ defmodule JidoClaw.Trace.Resources.TraceEvent do
         :trace_id,
         :seq,
         :at_ms,
+        :schema_version,
         :source,
         :category,
         :event,
@@ -109,6 +110,15 @@ defmodule JidoClaw.Trace.Resources.TraceEvent do
 
     attribute :at_ms, :integer do
       allow_nil?(false)
+      public?(true)
+    end
+
+    # Normalized-event contract version (mirrors `JidoClaw.Trace.Event`).
+    # Nullable + default 1 so the additive migration is O(1) metadata-only
+    # on a populated table and pre-migration rows coerce cleanly on read.
+    attribute :schema_version, :integer do
+      allow_nil?(true)
+      default(1)
       public?(true)
     end
 

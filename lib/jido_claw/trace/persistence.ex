@@ -139,6 +139,7 @@ defmodule JidoClaw.Trace.Persistence do
       trace_id: event.trace_id,
       seq: event.seq,
       at_ms: event.at_ms,
+      schema_version: event.schema_version || Event.schema_version(),
       source: Atom.to_string(event.source),
       category: Atom.to_string(event.category),
       event: Atom.to_string(event.event),

@@ -71,6 +71,17 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       assert output.usage["input_tokens"] == 0
       assert output.usage["output_tokens"] == 0
 
+      # New fields. `model` is the resolved module's configured alias,
+      # stringified by the nil-preserving helper (→ "fast", never "nil").
+      # `status`/`user_message` are absent on the session_map path and must
+      # stay `nil` — proving stringify_nilable(nil) does NOT emit the string
+      # "nil" at the boundary.
+      assert output.model == "fast"
+      assert is_nil(output.status) or is_binary(output.status)
+      assert is_nil(output.user_message) or is_binary(output.user_message)
+      assert output.status == nil
+      assert output.user_message == nil
+
       # handoffs is nil for plain session — but if present, values are stringified
       if output.handoffs do
         Enum.each(output.handoffs, fn {k, _} -> assert is_binary(k) end)

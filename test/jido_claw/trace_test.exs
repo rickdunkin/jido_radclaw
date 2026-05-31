@@ -139,6 +139,38 @@ defmodule JidoClaw.TraceTest do
     end
   end
 
+  describe "schema_version stamp" do
+    test "schema_version/0 is 1 and every ingested event carries it" do
+      agent_id = unique_id("schema-agent")
+      request_id = unique_id("req")
+
+      assert Trace.Event.schema_version() == 1
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{agent_id: agent_id, request_id: request_id, run_id: request_id}
+      )
+
+      :telemetry.execute(
+        [:jido, :ai, :llm, :complete],
+        %{duration_ms: 1, input_tokens: 1, output_tokens: 1},
+        %{
+          agent_id: agent_id,
+          request_id: request_id,
+          run_id: request_id,
+          model: "anthropic:test",
+          llm_call_id: "llm-1"
+        }
+      )
+
+      :ok = H.sync_collector()
+      assert {:ok, trace} = Trace.for_request(agent_id, request_id)
+      assert trace.events != []
+      assert Enum.all?(trace.events, &(&1.schema_version == 1))
+    end
+  end
+
   describe "spans/2" do
     test "groups events by category + correlation key" do
       agent_id = unique_id("span-agent")
