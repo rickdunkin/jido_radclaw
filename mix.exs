@@ -160,7 +160,7 @@ defmodule JidoClaw.MixProject do
       {:jido_messaging, "~> 1.0", override: true},
       {:jido_shell,
        github: "agentjido/jido_shell",
-       ref: "0ba8d672b778f6c88831e9c01176da5ec6a13005",
+       ref: "76eb4b7ae94e1dd7aa14f4a96beeaaaacd033cd9",
        override: true},
       # jido_shell's Bash backend (Jido.Shell.Backend.Bash.JidoInterop)
       # unconditionally `use Bash.Interop`, so `:bash` is a hard compile-time
