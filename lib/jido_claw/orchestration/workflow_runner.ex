@@ -7,7 +7,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   row, runs the skill through the existing workflow drivers
   (Skill/Plan/Iterative), then completes or fails the run — broadcasting
   `:run_started` / `:run_completed` / `:run_failed` over `RunPubSub` for
-  the dashboard's `RunSummaryFeed`.
+  tenant-scoped workflow projections.
 
   ## Shared per-run scope
 
@@ -100,9 +100,13 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
       config: config
     }
 
-    with {:ok, created} <- WorkflowRun.create(attrs),
-         {:ok, started} <- WorkflowRun.start(created) do
+    tenant_id = state.tenant_id
+    actor = Actor.system(tenant_id)
+
+    with {:ok, created} <- WorkflowRun.create(attrs, tenant: tenant_id, actor: actor),
+         {:ok, started} <- WorkflowRun.start(created, tenant: tenant_id, actor: actor) do
       broadcast(:run_started, started.id, %{
+        tenant_id: tenant_id,
         name: started.name,
         workflow_type: started.workflow_type,
         status: :running,
@@ -158,9 +162,15 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   end
 
   defp finalize_complete(started, result, cron_job_id) do
-    case WorkflowRun.complete(started, %{result: result}) do
+    tenant_id = started.tenant_id
+
+    case WorkflowRun.complete(started, %{result: result},
+           tenant: tenant_id,
+           actor: Actor.system(tenant_id)
+         ) do
       {:ok, done} ->
         broadcast(:run_completed, done.id, %{
+          tenant_id: tenant_id,
           name: done.name,
           workflow_type: done.workflow_type,
           status: :completed,
@@ -179,9 +189,15 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   defp finalize_fail(started, reason, cron_job_id) do
     formatted = format_reason(reason)
 
-    case WorkflowRun.fail(started, %{error: formatted}) do
+    tenant_id = started.tenant_id
+
+    case WorkflowRun.fail(started, %{error: formatted},
+           tenant: tenant_id,
+           actor: Actor.system(tenant_id)
+         ) do
       {:ok, failed} ->
         broadcast(:run_failed, failed.id, %{
+          tenant_id: tenant_id,
           name: failed.name,
           workflow_type: failed.workflow_type,
           error: formatted,

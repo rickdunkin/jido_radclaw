@@ -1,30 +1,25 @@
 defmodule JidoClaw.Tools.InspectAgent do
   @moduledoc """
   Return a `%JidoClaw.Inspection.Summary{}` for the given target — module,
-  agent id (including `"handoff:<uuid>:<template>"`), session id, or
-  request id.
+  session id, or request id.
 
   Tenant is read strictly from `context.tool_context.tenant_id` (not an
-  MCP-overridable param). The MCP projection drops `:subagents` and
-  `:workflows` because both underlying sources (`AgentTracker`,
-  `WorkflowRun`) are not tenant-scoped today; surfacing them through a
-  tenant-facing tool would leak cross-tenant runtime state. Workflow-run
-  inspection is intentionally not exposed here for the same reason — use
-  `JidoClaw.Inspection.inspect_workflow/1` from trusted local callers.
+  MCP-overridable param). Bare child-agent ids are intentionally not accepted
+  at this MCP boundary; child-agent status is exposed through `swarm_status`,
+  which proves tenant ownership before reading `AgentTracker`.
 
   `:memory` IS exposed (it is tenant-scoped via `Memory.Scope.resolve`,
   tenant read strictly from `tool_context.tenant_id`) but is slimmed to
   `%{scope_kind, blocks_count}` — both the raw-UUID `scope` sub-map and
   the FK embedded in `namespace` (`"session:<uuid>"` would leak the
   session UUID, e.g. on `kind: "request"`) are dropped at the boundary.
-  Local Elixir callers keep the full `namespace`/`scope`. Contrast with
-  the fully-dropped `:subagents`/`:workflows`.
+  Local Elixir callers keep the full `namespace`/`scope`.
   """
 
   use JidoClaw.Tools.Action,
     name: "inspect_agent",
     description:
-      "Inspect an agent target (module name, agent id, session id, or request id) " <>
+      "Inspect an agent target (module name, session id, or request id) " <>
         "and return a summary of definition + current running state.",
     category: "introspection",
     tags: ["agent", "read"],
@@ -50,15 +45,13 @@ defmodule JidoClaw.Tools.InspectAgent do
       target: [
         type: :string,
         required: true,
-        doc:
-          "Module name (\"JidoClaw.Agent\"), agent id (\"main\", \"handoff:<uuid>:<template>\"), session id, or request id."
+        doc: "Module name (\"JidoClaw.Agent\"), session id, or request id."
       ],
       kind: [
-        type: {:in, ~w(auto module agent_id session request)},
+        type: {:in, ~w(module session request)},
         required: false,
-        default: "auto",
-        doc:
-          "Dispatch hint. \"auto\" probes module → agent_id; \"request\" routes to inspect_request."
+        default: "session",
+        doc: "Dispatch hint. \"request\" routes to inspect_request."
       ]
     ]
 
@@ -69,7 +62,7 @@ defmodule JidoClaw.Tools.InspectAgent do
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
     tenant_id = Map.get(tool_context, :tenant_id)
-    kind = Map.get(params, :kind, "auto")
+    kind = Map.get(params, :kind, "session")
     target = params.target
 
     case dispatch(kind, target, tenant_id) do
@@ -85,10 +78,6 @@ defmodule JidoClaw.Tools.InspectAgent do
     end
   end
 
-  defp dispatch("agent_id", target, tenant_id) do
-    Inspection.inspect_agent(target, tenant_opts(tenant_id))
-  end
-
   defp dispatch("session", target, tenant_id) when is_binary(tenant_id) do
     Inspection.inspect_agent(%{tenant_id: tenant_id, session_id: target})
   end
@@ -101,13 +90,6 @@ defmodule JidoClaw.Tools.InspectAgent do
 
   defp dispatch("request", _target, _), do: {:error, :tenant_required}
 
-  defp dispatch("auto", target, tenant_id) do
-    case to_module(target) do
-      {:ok, module} -> Inspection.inspect_agent(module)
-      :error -> Inspection.inspect_agent(target, tenant_opts(tenant_id))
-    end
-  end
-
   defp dispatch(_kind, _target, _tenant_id), do: {:error, :unknown_kind}
 
   defp to_module(target) when is_binary(target) do
@@ -115,9 +97,6 @@ defmodule JidoClaw.Tools.InspectAgent do
   rescue
     ArgumentError -> :error
   end
-
-  defp tenant_opts(nil), do: []
-  defp tenant_opts(tenant_id) when is_binary(tenant_id), do: [tenant_id: tenant_id]
 
   # Projection rule: top-level keys stay atoms (required by `output_schema`
   # and the tool tests), but every nested term is normalized through

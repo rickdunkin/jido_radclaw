@@ -3,6 +3,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
   alias JidoClaw.Tools.SendToAgent
 
+  @tenant_id "tenant-send-to-agent-test"
+
   defmodule FakeJido do
     @moduledoc false
 
@@ -15,12 +17,21 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
     def get_agent("untracked_123"), do: nil
+    def get_agent("missing"), do: %{template: "docs_writer"}
+
+    def get_agent("docs_writer_123", opts), do: scoped(opts, %{template: "docs_writer"})
+    def get_agent("missing", opts), do: scoped(opts, %{template: "docs_writer"})
+    def get_agent(_agent_id, _opts), do: nil
 
     # send_to_agent now calls update_request_id/2 to overwrite the
     # tracked request_id after each follow-up turn. Default to a no-op
     # for the existing assertions that don't care about the call —
     # CapturingTracker (below) exercises the wired call.
     def update_request_id(_agent_id, _request_id), do: :ok
+
+    defp scoped(opts, entry) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test", do: entry
+    end
   end
 
   defmodule CapturingTracker do
@@ -28,6 +39,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
     def get_agent("untracked_123"), do: nil
+    def get_agent("docs_writer_123", opts), do: scoped(opts, %{template: "docs_writer"})
+    def get_agent(_agent_id, _opts), do: nil
 
     def update_request_id(agent_id, request_id) do
       send(
@@ -36,6 +49,10 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       )
 
       :ok
+    end
+
+    defp scoped(opts, entry) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test", do: entry
     end
   end
 
@@ -96,7 +113,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert {:ok, %{status: "message_sent"}} =
              SendToAgent.run(
                %{agent_id: "docs_writer_123", message: "please expand docs"},
-               %{tool_context: %{agent_id: "main"}}
+               ctx(%{agent_id: "main"})
              )
 
     assert_receive {:ask_sync, FakeWorker, pid, "please expand docs", opts}
@@ -106,19 +123,36 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert opts[:request_id]
   end
 
-  test "does not fall back to the main agent when tracker metadata is missing" do
-    assert {:error, %{code: :execution_error, message: message, details: details}} =
-             SendToAgent.run(%{agent_id: "untracked_123", message: "hello"}, %{})
+  test "does not touch the runtime when scoped tracker metadata is missing" do
+    assert {:error, %{code: :validation_error, message: message, details: details}} =
+             SendToAgent.run(%{agent_id: "untracked_123", message: "hello"}, ctx())
 
-    assert message =~ "not registered in AgentTracker"
-    assert details.phase == :tracker_lookup
-    assert details.reason == :not_registered
-    assert details.agent_id == "untracked_123"
+    assert message == "Agent 'untracked_123' not found."
+    assert details.reason == :not_found
+    assert details.value == "untracked_123"
+  end
+
+  test "requires tenant scope before resolving tracker or runtime state" do
+    assert {:error, %{code: :tenant_required}} =
+             SendToAgent.run(%{agent_id: "docs_writer_123", message: "hello"}, %{})
   end
 
   test "returns error when the agent process is missing" do
     assert {:error, %{message: "Agent 'missing' not found."}} =
-             SendToAgent.run(%{agent_id: "missing", message: "hello"}, %{})
+             SendToAgent.run(%{agent_id: "missing", message: "hello"}, ctx())
+  end
+
+  test "returns not_found when the agent exists but in another tenant" do
+    # docs_writer_123 is tracked under @tenant_id; a caller in another tenant
+    # must see it as not_found (the fake tracker tenant-gates get_agent/2).
+    assert {:error, %{code: :validation_error, details: details}} =
+             SendToAgent.run(
+               %{agent_id: "docs_writer_123", message: "hello"},
+               ctx(%{tenant_id: "intruder-tenant"})
+             )
+
+    assert details.reason == :not_found
+    assert details.value == "docs_writer_123"
   end
 
   test "re-applies the template's forward_context policy on every follow-up" do
@@ -126,8 +160,9 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     # No tenant_id → register_child_correlation skips the DB write.
     tool_context = %{
+      tenant_id: @tenant_id,
       agent_id: "main",
-      session_uuid: "s",
+      session_id: "s",
       user_id: "u",
       workspace_uuid: "w",
       actor: %{kind: :system}
@@ -145,7 +180,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert child_ctx.user_id == nil
     assert child_ctx.workspace_uuid == nil
     assert child_ctx.actor == nil
-    assert child_ctx.session_uuid == "s"
+    assert child_ctx.session_id == "s"
   end
 
   test "updates AgentTracker with the follow-up request_id" do
@@ -154,7 +189,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert {:ok, %{status: "message_sent"}} =
              SendToAgent.run(
                %{agent_id: "docs_writer_123", message: "follow-up"},
-               %{tool_context: %{agent_id: "main"}}
+               ctx(%{agent_id: "main"})
              )
 
     assert_receive {:ask_sync, FakeWorker, _pid, "follow-up", opts}
@@ -166,4 +201,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)
   defp restore_env(key, value), do: Application.put_env(:jido_claw, key, value)
+
+  defp ctx(extra \\ %{}) do
+    %{tool_context: Map.merge(%{tenant_id: @tenant_id}, extra)}
+  end
 end

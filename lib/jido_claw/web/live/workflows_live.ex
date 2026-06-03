@@ -8,14 +8,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
   @impl true
   def mount(_params, _session, socket) do
     {runs, runs_error} =
-      case WorkflowRun.list(actor: socket.assigns.current_user, authorize?: false) do
-        {:ok, items} ->
-          {items, nil}
-
-        {:error, e} ->
-          Logger.warning("[WorkflowsLive] runs list failed: #{inspect(e)}")
-          {[], "Could not load workflow runs"}
-      end
+      list_runs(socket)
 
     {:ok, assign(socket, page_title: "Workflows", runs: runs, runs_error: runs_error)}
   end
@@ -59,4 +52,17 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   defp format_time(nil), do: "—"
   defp format_time(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
+
+  defp list_runs(%{assigns: %{current_actor: %{tenant_id: tenant_id} = actor}}) do
+    case WorkflowRun.list(tenant: tenant_id, actor: actor) do
+      {:ok, items} ->
+        {items, nil}
+
+      {:error, e} ->
+        Logger.warning("[WorkflowsLive] runs list failed: #{inspect(e)}")
+        {[], "Could not load workflow runs"}
+    end
+  end
+
+  defp list_runs(_socket), do: {[], "Could not load workflow runs"}
 end

@@ -35,7 +35,7 @@ defmodule JidoClaw.Shell.Commands.Jido do
   alias Jido.Shell.Error
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Presenters
-  alias JidoClaw.Forge.Resources.Session, as: ForgeSession
+  alias JidoClaw.RuntimeOverview
   alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Shell.SessionManager, as: ShellSessionManager
   alias JidoClaw.Solutions.Solution
@@ -81,10 +81,17 @@ defmodule JidoClaw.Shell.Commands.Jido do
   end
 
   defp emit_status(state, emit) do
+    {tenant_id, workspace_uuid} = default_scope()
+
+    {:ok, overview} =
+      RuntimeOverview.snapshot(%{
+        tenant_id: tenant_id,
+        workspace_id: workspace_uuid,
+        workspace_uuid: workspace_uuid
+      })
+
     snapshot = %{
-      tracker: JidoClaw.AgentTracker.get_state(),
-      sessions: fetch_active_sessions(),
-      stats: JidoClaw.Stats.get(),
+      overview: overview,
       profile: active_profile(state),
       ssh_sessions: ssh_session_count(state)
     }
@@ -170,15 +177,6 @@ defmodule JidoClaw.Shell.Commands.Jido do
   end
 
   # -- Helpers ---------------------------------------------------------------
-
-  defp fetch_active_sessions do
-    case ForgeSession.list_active() do
-      {:ok, sessions} -> {:ok, sessions}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
 
   # Thread the session's workspace_id into the status snapshot so we
   # show the profile active for *this* shell session (multi-workspace

@@ -503,9 +503,6 @@ JidoClaw.Supervisor
 │   ├── Forge.Manager (GenServer — concurrency control)
 │   └── Sandbox.Local or Sandbox.Docker (configurable)
 │
-├── Orchestration
-│   └── RunSummaryFeed (GenServer — workflow status aggregator)
-│
 ├── Code Server
 │   ├── Registry (RuntimeRegistry)
 │   └── RuntimeSupervisor (DynamicSupervisor)
@@ -552,7 +549,6 @@ JidoClaw.Supervisor
 | `JidoClaw.Platform.Messaging`           | Supervisor  | jido_messaging runtime (rooms, agents, bridges)                         | Application               |
 | `JidoClaw.Forge.Manager`                | GenServer   | Session registry, concurrency limits (50 total)                         | Application               |
 | `JidoClaw.Forge.Harness`                | GenServer   | Per-session state machine (per session)                                 | HarnessSupervisor         |
-| `JidoClaw.Orchestration.RunSummaryFeed` | GenServer   | Workflow run status aggregator (50-entry ring buffer)                   | Application               |
 | `JidoClaw.CodeServer.Runtime`           | GenServer   | Per-project conversation runtime                                        | RuntimeSupervisor         |
 | `JidoClaw.AgentTracker`                 | GenServer   | Per-agent stats: tokens, cost, tool calls, status                       | Application               |
 | `JidoClaw.Display`                      | GenServer   | Live terminal display (spinner, tool calls, swarm box)                  | Application               |
@@ -1053,8 +1049,7 @@ lib/jido_claw/
 │   ├── workflow_run.ex         # AshStateMachine (6 states, retry lineage)
 │   ├── workflow_step.ex        # Step status, output, timing (5 states)
 │   ├── approval_gate.ex        # Approver, decision, timestamp
-│   ├── run_pubsub.ex           # Workflow event broadcasting
-│   └── run_summary_feed.ex     # Status aggregator GenServer (50-entry ring buffer)
+│   └── run_pubsub.ex           # Workflow event broadcasting
 ├── github.ex                   # Ash.Domain — issue analysis
 ├── github/
 │   ├── issue_analysis.ex       # github_issue_analyses table

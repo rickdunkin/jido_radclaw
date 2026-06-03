@@ -4,9 +4,11 @@ defmodule JidoClaw.Forge.Persistence do
   require Ash.Query
 
   alias Ash.Query
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge.Resources.Checkpoint
   alias JidoClaw.Forge.Resources.Event
+  alias JidoClaw.Forge.Resources.Session
   alias JidoClaw.Security.Redaction.Patterns
 
   def enabled? do
@@ -16,28 +18,31 @@ defmodule JidoClaw.Forge.Persistence do
 
   def record_session_started(session_id, spec) do
     if enabled?() do
-      attrs = %{
-        name: session_id,
-        runner_type: to_string(Map.get(spec, :runner, :shell)),
-        runner_config: Map.get(spec, :runner_config, %{}),
-        spec: redact_map(spec),
-        started_at: DateTime.utc_now()
-      }
+      with {:ok, scope} <- scope_from_spec(spec) do
+        attrs =
+          session_attrs(session_id, spec)
+          |> Map.put(:workspace_id, scope.workspace_id)
 
-      try do
-        case Ash.create(JidoClaw.Forge.Resources.Session, attrs,
-               action: :start,
-               authorize?: false
-             ) do
-          {:ok, session} ->
-            session
+        try do
+          case Ash.create(Session, attrs,
+                 action: :start,
+                 tenant: scope.tenant_id,
+                 actor: scope.actor
+               ) do
+            {:ok, session} ->
+              session
 
-          {:error, e} ->
-            Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
-            nil
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
+              nil
+          end
+        rescue
+          e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
         end
-      rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
+      else
+        {:error, reason} ->
+          Logger.warning("[Forge.Persistence] Missing Forge session scope: #{inspect(reason)}")
+          nil
       end
     end
   end
@@ -60,60 +65,74 @@ defmodule JidoClaw.Forge.Persistence do
       an active phase (the process crashed, leaving stale state).
       Without this flag, active-phase rows are rejected as a safety net.
 
-  Returns `:ok` or `{:error, :already_claimed}`.
+  Returns `:ok`, `{:error, :already_claimed}`, or `{:error, :scope_required}`
+  when the spec carries no tenant/workspace scope (callers must handle the
+  latter — see `JidoClaw.Forge.Harness.stop_unclaimed_session/2`).
   When persistence is disabled (tests), returns `:ok` unconditionally.
   """
   def claim_session(session_id, spec, opts \\ []) do
-    if enabled?() do
-      recovery? = Keyword.get(opts, :recovery, false)
-      attrs = session_attrs(session_id, spec)
-
-      Ash.transaction(JidoClaw.Forge.Resources.Session, fn ->
-        # Advisory lock serializes all claim attempts for this session_id
-        # across every node connected to the same database.
-        JidoClaw.Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [session_id])
-
-        case find_session(session_id) do
-          nil ->
-            # No existing row — create fresh (upsert just inserts when
-            # no matching row exists, so :start is safe for both paths)
-            claim_via_start(attrs)
-
-          %{phase: phase} when phase in @terminal_phases ->
-            # Terminal session — reuse the name via upsert (preserves row
-            # ID so FK relationships to events/checkpoints are maintained)
-            claim_via_start(attrs)
-
-          %{phase: phase} when recovery? and phase in @recoverable_phases ->
-            # Recovery: stale active phase from a crashed process.
-            # The advisory lock prevents two recovery attempts from both
-            # succeeding. :created is excluded — it means another node
-            # just claimed in this cycle.
-            claim_via_start(attrs)
-
-          %{} ->
-            # Either a fresh start seeing an active row, or recovery
-            # seeing :created (another node just claimed). Reject.
-            Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, :already_claimed)
-        end
-      end)
-      |> case do
-        {:ok, :ok} -> :ok
-        {:error, _} -> {:error, :already_claimed}
-      end
-    else
-      :ok
-    end
+    if enabled?(), do: do_claim_session(session_id, spec, opts), else: :ok
   rescue
     e ->
       Logger.warning("[Forge.Persistence] claim_session failed: #{inspect(e)}")
       {:error, :already_claimed}
   end
 
-  defp claim_via_start(attrs) do
-    case Ash.create(JidoClaw.Forge.Resources.Session, attrs, action: :start, authorize?: false) do
+  defp do_claim_session(session_id, spec, opts) do
+    with {:ok, scope} <- scope_from_spec(spec) do
+      recovery? = Keyword.get(opts, :recovery, false)
+
+      attrs =
+        session_attrs(session_id, spec)
+        |> Map.put(:workspace_id, scope.workspace_id)
+
+      session_id
+      |> claim_transaction(attrs, scope, recovery?)
+      |> normalize_claim_result()
+    end
+  end
+
+  defp claim_transaction(session_id, attrs, scope, recovery?) do
+    Ash.transaction(Session, fn ->
+      JidoClaw.Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [session_id])
+      claim_after_lock(find_session(session_id, scope), attrs, scope, recovery?)
+    end)
+  end
+
+  defp normalize_claim_result({:ok, :ok}), do: :ok
+  defp normalize_claim_result({:error, _}), do: {:error, :already_claimed}
+
+  # No existing row — create fresh. Upsert just inserts when no matching row
+  # exists, so :start is safe for both paths.
+  defp claim_after_lock(nil, attrs, scope, _recovery?), do: claim_via_start(attrs, scope)
+
+  # Terminal session — reuse the name via upsert, preserving the row ID so FK
+  # relationships to events/checkpoints are maintained.
+  defp claim_after_lock(%{phase: phase}, attrs, scope, _recovery?)
+       when phase in @terminal_phases do
+    claim_via_start(attrs, scope)
+  end
+
+  # Recovery: stale active phase from a crashed process. :created is excluded
+  # from @recoverable_phases because it means another node just claimed.
+  defp claim_after_lock(%{phase: phase}, attrs, scope, true)
+       when phase in @recoverable_phases do
+    claim_via_start(attrs, scope)
+  end
+
+  # Either a fresh start seeing an active row, or recovery seeing :created.
+  defp claim_after_lock(%{}, _attrs, _scope, _recovery?) do
+    Ash.DataLayer.rollback(Session, :already_claimed)
+  end
+
+  defp claim_via_start(attrs, scope) do
+    case Ash.create(Session, attrs,
+           action: :start,
+           tenant: scope.tenant_id,
+           actor: scope.actor
+         ) do
       {:ok, _} -> :ok
-      {:error, e} -> Ash.DataLayer.rollback(JidoClaw.Forge.Resources.Session, {:start_failed, e})
+      {:error, e} -> Ash.DataLayer.rollback(Session, {:start_failed, e})
     end
   end
 
@@ -233,7 +252,7 @@ defmodule JidoClaw.Forge.Persistence do
         if session do
           session
           |> Ash.Changeset.for_update(:update_phase, %{phase: phase})
-          |> Ash.update(authorize?: false)
+          |> Ash.update(session_action_opts(session))
           |> case do
             {:ok, updated} ->
               updated
@@ -257,7 +276,7 @@ defmodule JidoClaw.Forge.Persistence do
         if session do
           session
           |> Ash.Changeset.for_update(:set_sandbox_id, %{sandbox_id: sandbox_id})
-          |> Ash.update(authorize?: false)
+          |> Ash.update(session_action_opts(session))
           |> case do
             {:ok, updated} ->
               updated
@@ -436,11 +455,16 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   def find_session(session_id) do
-    JidoClaw.Forge.Resources.Session
+    find_session_global(session_id)
+  end
+
+  def find_session(session_id, %{tenant_id: tenant_id, actor: actor})
+      when is_binary(tenant_id) do
+    Session
     |> Query.filter(name == ^session_id)
     |> Query.sort(inserted_at: :desc)
     |> Query.limit(1)
-    |> Ash.read(authorize?: false)
+    |> Ash.read(tenant: tenant_id, actor: actor)
     |> case do
       {:ok, sessions} -> List.first(sessions)
       {:error, _} -> nil
@@ -456,6 +480,56 @@ defmodule JidoClaw.Forge.Persistence do
     ] ->
       nil
   end
+
+  def find_session(session_id, opts) when is_list(opts) do
+    with {:ok, scope} <- scope_from_opts(opts) do
+      find_session(session_id, scope)
+    else
+      _ -> nil
+    end
+  end
+
+  defp find_session_global(session_id) do
+    case Session.by_name_global(session_id, authorize?: false) do
+      {:ok, session} -> session
+      {:error, _} -> nil
+    end
+  rescue
+    _ in [
+      Ash.Error.Invalid,
+      Ash.Error.Unknown,
+      Ash.Error.Query.NotFound,
+      DBConnection.ConnectionError,
+      DBConnection.OwnershipError,
+      Postgrex.Error
+    ] ->
+      nil
+  end
+
+  defp scope_from_spec(spec) when is_map(spec) do
+    tenant_id = Map.get(spec, :tenant_id) || get_in(spec, [:tool_context, :tenant_id])
+
+    workspace_id =
+      Map.get(spec, :workspace_id) ||
+        Map.get(spec, :workspace_uuid) ||
+        get_in(spec, [:tool_context, :workspace_uuid])
+
+    scope_from_values(tenant_id, workspace_id)
+  end
+
+  defp scope_from_spec(_), do: {:error, :scope_required}
+
+  defp scope_from_opts(opts) when is_list(opts) do
+    scope_from_values(Keyword.get(opts, :tenant_id), Keyword.get(opts, :workspace_id))
+  end
+
+  defp scope_from_values(tenant_id, workspace_id)
+       when is_binary(tenant_id) and tenant_id != "" and is_binary(workspace_id) and
+              workspace_id != "" do
+    {:ok, %{tenant_id: tenant_id, workspace_id: workspace_id, actor: Actor.system(tenant_id)}}
+  end
+
+  defp scope_from_values(_tenant_id, _workspace_id), do: {:error, :scope_required}
 
   defp redact_map(map) when is_map(map) do
     Map.new(map, fn
@@ -514,4 +588,8 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   defp iteration_error?(_), do: false
+
+  defp session_action_opts(%Session{tenant_id: tenant_id}) when is_binary(tenant_id) do
+    [tenant: tenant_id, actor: Actor.system(tenant_id), authorize?: false]
+  end
 end

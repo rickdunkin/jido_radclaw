@@ -398,11 +398,15 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     runner_module = Keyword.get(state.opts, :runner_module)
     spec_runner = runner_module || harness
 
-    spec = %{
-      runner: spec_runner,
-      runner_config: runner_config,
-      sandbox: sandbox_mode
-    }
+    spec =
+      %{
+        runner: spec_runner,
+        runner_config: runner_config,
+        sandbox: sandbox_mode,
+        tenant_id: state.scope.tenant_id,
+        workspace_id: state.scope.workspace_id
+      }
+      |> maybe_run_without_claim(state.scope.workspace_id)
 
     parent = self()
 
@@ -544,6 +548,16 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp maybe_add_fake_proposals(config, _, _), do: config
+
+  # `:user`/`:project` scopes have no workspace_id to satisfy the Forge
+  # session scope, so the run goes through the Harness ephemerally: `claim:
+  # false` skips the DB claim, history row, recovery, and :pg ownership. The
+  # trade-off (no DB-backed recovery/history/ForgeView entry) is acceptable
+  # for the random-UUID consolidator session. Keeping the flag explicit means
+  # a genuinely-missing scope on a *normal* spec still fails loudly via the
+  # Harness `:scope_required` path.
+  defp maybe_run_without_claim(spec, nil), do: Map.put(spec, :claim, false)
+  defp maybe_run_without_claim(spec, _workspace_id), do: spec
 
   defp write_mcp_config(run_id, url) do
     path = Path.join(System.tmp_dir!(), "consolidator-#{run_id}.json")

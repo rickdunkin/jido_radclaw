@@ -25,6 +25,12 @@ defmodule JidoClaw.AgentTracker do
       :pid,
       :template,
       :task,
+      :tenant_id,
+      :session_id,
+      :session_uuid,
+      :workspace_id,
+      :workspace_uuid,
+      :parent_agent_id,
       :started_at,
       :finished_at,
       :error,
@@ -54,10 +60,14 @@ defmodule JidoClaw.AgentTracker do
       so request-scoped `await_completion` callers (Tools.GetAgentResult)
       can read the request map at `state.requests[request_id]` instead of
       falling back to `:last_answer`.
+    * `:tenant_id`, `:session_id`, `:session_uuid`, `:workspace_id`,
+      `:workspace_uuid`, `:parent_agent_id` — ownership scope used by public
+      projections and tenant-facing swarm tools before they touch the global
+      runtime registry.
   """
   def register(id, pid, template, task \\ nil, opts \\ []) do
-    request_id = Keyword.get(opts, :request_id)
-    GenServer.call(__MODULE__, {:register, id, pid, template, task, request_id})
+    scope = scope_from_opts(opts)
+    GenServer.call(__MODULE__, {:register, id, pid, template, task, scope})
   end
 
   @doc "Record a tool call for an agent."
@@ -85,19 +95,31 @@ defmodule JidoClaw.AgentTracker do
     GenServer.call(__MODULE__, {:update_request_id, id, request_id})
   end
 
-  @doc "Return the full tracker state (agents map + order)."
-  def get_state do
-    GenServer.call(__MODULE__, :get_state)
+  @doc """
+  Return tracker state (agents map + order).
+
+  `get_state/0` is the trusted local/admin shape. Tenant-facing callers must
+  pass `tenant_id: ...` (and optional session/workspace filters); unscoped
+  entries are excluded from scoped reads.
+  """
+  def get_state(opts \\ []) do
+    GenServer.call(__MODULE__, {:get_state, opts})
   end
 
-  @doc "Return stats for a single agent."
-  def get_agent(id) do
-    GenServer.call(__MODULE__, {:get_agent, id})
+  @doc """
+  Return stats for a single agent.
+
+  When scope opts are supplied, a real agent in another tenant/session returns
+  `nil`, making "wrong tenant" indistinguishable from "unknown id" at public
+  boundaries.
+  """
+  def get_agent(id, opts \\ []) do
+    GenServer.call(__MODULE__, {:get_agent, id, opts})
   end
 
-  @doc "Return count of non-main agents."
-  def child_count do
-    GenServer.call(__MODULE__, :child_count)
+  @doc "Return count of non-main agents, optionally filtered by tenant/session/workspace scope."
+  def child_count(opts \\ []) do
+    GenServer.call(__MODULE__, {:child_count, opts})
   end
 
   @doc "Reset tracker state (e.g. between conversations)."
@@ -169,7 +191,7 @@ defmodule JidoClaw.AgentTracker do
   def handle_telemetry_event(_, _, _, _), do: :ok
 
   @impl true
-  def handle_call({:register, id, pid, template, task, request_id}, _from, state) do
+  def handle_call({:register, id, pid, template, task, scope}, _from, state) do
     if Map.has_key?(state.agents, id) do
       {:reply, {:error, :agent_id_taken}, state}
     else
@@ -178,7 +200,13 @@ defmodule JidoClaw.AgentTracker do
         pid: pid,
         template: template,
         task: task,
-        request_id: request_id,
+        request_id: scope.request_id,
+        tenant_id: scope.tenant_id,
+        session_id: scope.session_id,
+        session_uuid: scope.session_uuid,
+        workspace_id: scope.workspace_id,
+        workspace_uuid: scope.workspace_uuid,
+        parent_agent_id: scope.parent_agent_id,
         started_at: System.monotonic_time(:millisecond)
       }
 
@@ -197,17 +225,25 @@ defmodule JidoClaw.AgentTracker do
     end
   end
 
-  def handle_call(:get_state, _from, state) do
-    {:reply, %{agents: state.agents, order: Enum.reverse(state.order)}, state}
+  def handle_call({:get_state, opts}, _from, state) do
+    agents = filter_agents(state.agents, opts)
+    ordered_ids = state.order |> Enum.reverse() |> Enum.filter(&Map.has_key?(agents, &1))
+    {:reply, %{agents: agents, order: ordered_ids}, state}
   end
 
-  def handle_call({:get_agent, id}, _from, state) do
-    {:reply, Map.get(state.agents, id), state}
+  def handle_call({:get_agent, id, opts}, _from, state) do
+    entry =
+      state.agents
+      |> Map.get(id)
+      |> filter_agent(opts)
+
+    {:reply, entry, state}
   end
 
-  def handle_call(:child_count, _from, state) do
+  def handle_call({:child_count, opts}, _from, state) do
     count =
       state.agents
+      |> filter_agents(opts)
       |> Enum.count(fn {id, _} -> id != "main" end)
 
     {:reply, count, state}
@@ -295,6 +331,57 @@ defmodule JidoClaw.AgentTracker do
       nil -> state
       entry -> %{state | agents: Map.put(state.agents, agent_id, fun.(entry))}
     end
+  end
+
+  defp scope_from_opts(opts) do
+    %{
+      request_id: Keyword.get(opts, :request_id),
+      tenant_id: Keyword.get(opts, :tenant_id),
+      session_id: Keyword.get(opts, :session_id),
+      session_uuid: Keyword.get(opts, :session_uuid),
+      workspace_id: Keyword.get(opts, :workspace_id),
+      workspace_uuid: Keyword.get(opts, :workspace_uuid),
+      parent_agent_id: Keyword.get(opts, :parent_agent_id)
+    }
+  end
+
+  defp filter_agents(agents, []), do: agents
+
+  defp filter_agents(agents, opts) when is_list(opts) do
+    agents
+    |> Enum.filter(fn {_id, entry} -> scoped_entry?(entry, opts) end)
+    |> Map.new()
+  end
+
+  defp filter_agent(nil, _opts), do: nil
+  defp filter_agent(entry, []), do: entry
+  defp filter_agent(entry, opts), do: if(scoped_entry?(entry, opts), do: entry)
+
+  defp scoped_entry?(entry, opts) do
+    Enum.all?(scope_keys(), fn key ->
+      case Keyword.fetch(opts, key) do
+        {:ok, nil} -> false
+        {:ok, ""} -> false
+        {:ok, value} -> Map.get(entry, key) == value
+        :error -> true
+      end
+    end)
+  end
+
+  @doc """
+  Canonical ownership scope keys used to **filter** tenant-facing reads
+  (`scoped_entry?/2`). The overloaded runtime `:workspace_id` is
+  intentionally absent — swarm ownership keys on the durable
+  `:workspace_uuid` instead. `JidoClaw.SwarmView` and
+  `JidoClaw.Tools.SwarmScope` delegate here so the set is defined once.
+
+  This governs filtering only. `scope_from_opts/1` and the `AgentEntry`
+  shape still carry registration metadata (`:request_id`, and the
+  vestigial `:workspace_id`) that is not an ownership key.
+  """
+  @spec scope_keys() :: [atom()]
+  def scope_keys do
+    [:tenant_id, :session_id, :session_uuid, :workspace_uuid, :parent_agent_id]
   end
 
   @impl true

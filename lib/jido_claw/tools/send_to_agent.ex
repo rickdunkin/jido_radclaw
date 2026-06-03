@@ -17,20 +17,24 @@ defmodule JidoClaw.Tools.SendToAgent do
 
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
+  alias JidoClaw.Tools.SwarmScope
 
   @impl true
   def run(params, context) do
-    case jido_runtime().whereis(params.agent_id) do
-      nil ->
-        {:error, Error.not_found(:agent, params.agent_id)}
+    with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
+         {:ok, entry} <- SwarmScope.scoped_agent(agent_tracker(), params.agent_id, scope_opts) do
+      case jido_runtime().whereis(params.agent_id) do
+        nil ->
+          {:error, Error.not_found(:agent, params.agent_id)}
 
-      pid ->
-        send_to_agent(pid, params, context)
+        pid ->
+          send_to_agent(pid, params, context, entry)
+      end
     end
   end
 
-  defp send_to_agent(pid, params, context) do
-    case template_for_agent(params.agent_id) do
+  defp send_to_agent(pid, params, context, entry) do
+    case template_for_agent(params.agent_id, entry) do
       {:ok, template} ->
         # Re-apply the template's forward_context on every follow-up so a
         # child can't be re-widened mid-conversation.
@@ -70,8 +74,8 @@ defmodule JidoClaw.Tools.SendToAgent do
     end
   end
 
-  defp template_for_agent(agent_id) do
-    case agent_tracker().get_agent(agent_id) do
+  defp template_for_agent(agent_id, entry) do
+    case entry do
       %{template: template_name} when is_binary(template_name) ->
         case templates().get(template_name) do
           {:ok, template} ->
@@ -89,14 +93,6 @@ defmodule JidoClaw.Tools.SendToAgent do
                }
              )}
         end
-
-      nil ->
-        {:error,
-         Error.execution_error(
-           "Agent '#{agent_id}' is running but is not registered in AgentTracker.",
-           phase: :tracker_lookup,
-           details: %{agent_id: agent_id, reason: :not_registered}
-         )}
 
       other ->
         {:error,

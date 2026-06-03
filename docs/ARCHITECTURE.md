@@ -51,9 +51,6 @@ JidoClaw.Supervisor (rest_for_one)
 │   ├── JidoClaw.Forge.Manager             — forge lifecycle
 │   └── Forge.SandboxInit OR Forge.Runner.HostShell — execution backend (conditional)
 │
-├── Orchestration
-│   └── JidoClaw.Orchestration.RunSummaryFeed — workflow event streaming
-│
 ├── Code Server
 │   ├── Registry (CodeServer.RuntimeRegistry) — runtime lookup
 │   └── DynamicSupervisor (CodeServer.RuntimeSupervisor) — runtime processes
@@ -238,11 +235,8 @@ JidoClaw.Orchestration
 │   ├── Human-in-the-loop approval points
 │   └── Blocks workflow execution until approved/rejected
 │
-├── RunPubSub
-│   └── PubSub coordination for workflow state changes
-│
-└── RunSummaryFeed (GenServer, started in supervision tree)
-    └── Streams workflow events for display/logging
+└── RunPubSub
+    └── PubSub coordination for workflow state changes
 ```
 
 ## Security
@@ -729,7 +723,6 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
    └── Start supervision tree (rest_for_one):
        ├── InfraSupervisor (Registries, TaskSupervisor, Repo, Vault, PubSub, SignalBus)
        ├── Forge engine (SessionRegistry, HarnessSupervisor, ExecSessionSupervisor, Manager, Sandbox)
-       ├── Orchestration (RunSummaryFeed)
        ├── Code Server (RuntimeRegistry, RuntimeSupervisor)
        ├── Finch HTTP pools
        ├── Core services (Telemetry, Stats, Approval, Jido, Shell.SessionManager, etc.)

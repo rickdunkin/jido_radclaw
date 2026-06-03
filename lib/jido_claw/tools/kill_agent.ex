@@ -20,27 +20,41 @@ defmodule JidoClaw.Tools.KillAgent do
     ]
 
   alias JidoClaw.Error
+  alias JidoClaw.Tools.SwarmScope
 
   @impl true
-  def run(%{agent_id: "all"}, _context) do
-    agents = JidoClaw.Jido.list_agents()
-    # Don't kill the main agent
-    children = Enum.reject(agents, fn {id, _pid} -> id == "main" end)
+  def run(%{agent_id: "all"}, context) do
+    with {:ok, scope_opts} <- SwarmScope.tracker_scope(context) do
+      tracker_state = agent_tracker().get_state(scope_opts)
+      children = Enum.reject(tracker_state.agents, fn {id, _entry} -> id == "main" end)
 
-    Enum.each(children, fn {id, _pid} ->
-      JidoClaw.Jido.stop_agent(id)
-    end)
+      stopped =
+        Enum.count(children, fn {id, _entry} ->
+          jido_runtime().stop_agent(id) == :ok
+        end)
 
-    {:ok, %{stopped: length(children), message: "Stopped #{length(children)} child agent(s)."}}
+      {:ok, %{stopped: stopped, message: "Stopped #{stopped} child agent(s)."}}
+    end
   end
 
-  def run(params, _context) do
-    case JidoClaw.Jido.stop_agent(params.agent_id) do
-      :ok ->
-        {:ok, %{agent_id: params.agent_id, status: "stopped"}}
+  def run(params, context) do
+    with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
+         {:ok, _entry} <- SwarmScope.scoped_agent(agent_tracker(), params.agent_id, scope_opts) do
+      case jido_runtime().stop_agent(params.agent_id) do
+        :ok ->
+          {:ok, %{agent_id: params.agent_id, status: "stopped"}}
 
-      {:error, :not_found} ->
-        {:error, Error.not_found(:agent, params.agent_id)}
+        {:error, :not_found} ->
+          {:error, Error.not_found(:agent, params.agent_id)}
+      end
     end
+  end
+
+  defp jido_runtime do
+    Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp agent_tracker do
+    Application.get_env(:jido_claw, :agent_tracker, JidoClaw.AgentTracker)
   end
 end

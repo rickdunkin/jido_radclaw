@@ -22,19 +22,23 @@ defmodule JidoClaw.Tools.GetAgentResult do
   alias JidoClaw.AgentTracker
   alias JidoClaw.Error
   alias JidoClaw.Reasoning.Output
+  alias JidoClaw.Tools.SwarmScope
 
   @impl true
-  def run(params, _context) do
+  def run(params, context) do
     agent_id = params.agent_id
     timeout = Map.get(params, :timeout, 60_000)
 
-    case jido_runtime().whereis(agent_id) do
-      nil ->
-        {:error, Error.not_found(:agent, agent_id)}
+    with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
+         {:ok, entry} <- SwarmScope.scoped_agent(agent_tracker(), agent_id, scope_opts) do
+      case jido_runtime().whereis(agent_id) do
+        nil ->
+          {:error, Error.not_found(:agent, agent_id)}
 
-      pid ->
-        request_id = lookup_request_id(agent_id)
-        await_and_handle(pid, agent_id, timeout, request_id)
+        pid ->
+          request_id = lookup_request_id(entry)
+          await_and_handle(pid, agent_id, timeout, request_id)
+      end
     end
   end
 
@@ -156,12 +160,8 @@ defmodule JidoClaw.Tools.GetAgentResult do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp lookup_request_id(agent_id) do
-    case agent_tracker().get_agent(agent_id) do
-      %{request_id: request_id} when is_binary(request_id) -> request_id
-      _ -> nil
-    end
-  end
+  defp lookup_request_id(%{request_id: request_id}) when is_binary(request_id), do: request_id
+  defp lookup_request_id(_), do: nil
 
   defp failure_reason(%{error: error}) when is_binary(error), do: error
   defp failure_reason(%{error: error}), do: inspect(error)

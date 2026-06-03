@@ -1,11 +1,15 @@
 defmodule JidoClaw.Forge.ContextBuilderTest do
-  use ExUnit.Case, async: false
+  use JidoClaw.TenantCase, async: false
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Forge.{ContextBuilder, Persistence}
 
   setup do
-    :ok = Sandbox.checkout(JidoClaw.Repo)
+    tenant_id = seed_tenant("forge-context")
+    {:ok, workspace} = seed_workspace(tenant_id)
+    Process.put(:forge_context_scope, %{tenant_id: tenant_id, workspace_id: workspace.id})
+
+    on_exit(fn -> Process.delete(:forge_context_scope) end)
+
     :ok
   end
 
@@ -85,7 +89,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "returns structured context for a session with events" do
       sid = "ctx-test-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
       Persistence.log_event(sid, "sandbox.provisioned", %{sandbox_id: "sbx-1"})
 
       Persistence.log_event(sid, "iteration.completed", %{
@@ -110,7 +114,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "scopes events_since_checkpoint to after checkpoint timestamp" do
       sid = "ctx-cp-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       Persistence.log_event(sid, "iteration.completed", %{
         iteration: 1,
@@ -142,7 +146,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "captures runner errors in error_history" do
       sid = "ctx-err-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
       Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :error})
       Persistence.log_event(sid, "bootstrap.failed", %{reason: "timeout"})
 
@@ -157,7 +161,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "last_output reflects runner error status via runner_status param" do
       sid = "ctx-status-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
       # Runner.error() produces status: :error, no exit_code
       Persistence.record_execution_complete(sid, "error output", 0, 1, :error)
 
@@ -178,7 +182,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "builds prompt with session header and progress" do
       sid = "prompt-test-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       Persistence.log_event(sid, "iteration.completed", %{
         iteration: 1,
@@ -200,7 +204,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "includes checkpoint section when checkpoint exists" do
       sid = "prompt-cp-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :workflow})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :workflow}))
 
       Persistence.log_event(sid, "iteration.completed", %{
         iteration: 1,
@@ -218,7 +222,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "includes error section for runner errors" do
       sid = "prompt-err-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
       Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :error})
       Persistence.log_event(sid, "sandbox.provision_failed", %{reason: "docker timeout"})
 
@@ -231,7 +235,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "reports failed status for runner error iterations" do
       sid = "prompt-fail-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
       # Log the iteration event so iteration_count > 0 and progress_section renders
       Persistence.log_event(sid, "iteration.completed", %{iteration: 1, status: :error})
       # Simulates Runner.error/2 path: exit_code defaults to 0, runner_status is :error
@@ -244,7 +248,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "respects max_tokens option" do
       sid = "prompt-tok-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       # Create a checkpoint early so events after it populate "Activity Since Checkpoint"
       Persistence.save_checkpoint(sid, 0, %{}, %{})
@@ -264,7 +268,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "bounds output excerpt size via max_tokens" do
       sid = "prompt-big-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       Persistence.log_event(sid, "iteration.completed", %{
         iteration: 1,
@@ -288,7 +292,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       sid = "prompt-bound-#{System.unique_integer([:positive])}"
       max_tokens = 200
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       Persistence.log_event(sid, "iteration.completed", %{
         iteration: 1,
@@ -323,7 +327,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
     test "truncates large error reasons within budget" do
       sid = "prompt-bigerr-#{System.unique_integer([:positive])}"
 
-      Persistence.record_session_started(sid, %{runner: :shell})
+      Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
       big_reason = String.duplicate("R", 5_000)
       Persistence.log_event(sid, "bootstrap.failed", %{reason: big_reason})
@@ -334,5 +338,9 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       # The full 5k reason should not appear
       refute prompt =~ big_reason
     end
+  end
+
+  defp forge_spec(attrs) do
+    Map.merge(Process.get(:forge_context_scope), attrs)
   end
 end

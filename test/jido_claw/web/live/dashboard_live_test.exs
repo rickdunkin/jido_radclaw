@@ -3,13 +3,22 @@ defmodule JidoClaw.Web.DashboardLiveTest do
 
   alias JidoClaw.Web.DashboardLive
 
-  @stale_summary %{active_count: 999, active_runs: [:stale], recent_completions: [:stale]}
+  @stale_overview %JidoClaw.RuntimeOverview{
+    tenant_id: nil,
+    forge: %JidoClaw.ForgeView{active_count: 999},
+    workflows: %JidoClaw.WorkflowView{
+      active_count: 999,
+      active_runs: [:stale],
+      recent_completions: [:stale]
+    },
+    uptime: %{seconds: 999}
+  }
 
   defp build_socket do
     assigns = %{
       __changed__: %{},
-      forge_sessions: 999,
-      workflow_summary: @stale_summary,
+      overview: @stale_overview,
+      overview_refresh_pending: false,
       uptime: "2h 15m",
       page_title: "Dashboard",
       flash: %{}
@@ -22,80 +31,110 @@ defmodule JidoClaw.Web.DashboardLiveTest do
     test "unknown atom" do
       socket = build_socket()
       assert {:noreply, returned} = DashboardLive.handle_info(:totally_unknown, socket)
-      assert returned.assigns.forge_sessions == 999
-      assert returned.assigns.workflow_summary == @stale_summary
+      assert returned.assigns.overview == @stale_overview
+      refute returned.assigns.overview_refresh_pending
     end
 
     test "unknown tuple" do
       socket = build_socket()
       assert {:noreply, returned} = DashboardLive.handle_info({:nope, "x"}, socket)
-      assert returned.assigns.forge_sessions == 999
-      assert returned.assigns.workflow_summary == @stale_summary
+      assert returned.assigns.overview == @stale_overview
+      refute returned.assigns.overview_refresh_pending
     end
   end
 
-  describe "handle_info/2 — forge events update only forge_sessions" do
-    test "session_started refreshes forge_sessions, not workflow_summary" do
-      socket = build_socket()
-      assert {:noreply, returned} = DashboardLive.handle_info({:session_started, "s1"}, socket)
-      assert returned.assigns.forge_sessions != 999
-      assert returned.assigns.workflow_summary == @stale_summary
-    end
-
-    test "session_recovering refreshes forge_sessions, not workflow_summary" do
+  describe "handle_info/2 — forge events arm a coalesced refresh" do
+    test "session_started schedules a deferred refresh (overview unchanged until it fires)" do
       socket = build_socket()
 
       assert {:noreply, returned} =
-               DashboardLive.handle_info({:session_recovering, "s1"}, socket)
+               DashboardLive.handle_info({:session_started, "s1", %{}}, socket)
 
-      assert returned.assigns.workflow_summary == @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
     end
 
-    test "session_recovery_exhausted refreshes forge_sessions, not workflow_summary" do
+    test "session_recovering schedules a deferred refresh" do
       socket = build_socket()
 
       assert {:noreply, returned} =
-               DashboardLive.handle_info({:session_recovery_exhausted, "s1"}, socket)
+               DashboardLive.handle_info({:session_recovering, "s1", %{}}, socket)
 
-      assert returned.assigns.workflow_summary == @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
     end
 
-    test "session_stopped refreshes forge_sessions, not workflow_summary" do
+    test "session_recovery_exhausted schedules a deferred refresh" do
       socket = build_socket()
 
       assert {:noreply, returned} =
-               DashboardLive.handle_info({:session_stopped, "s1", :normal}, socket)
+               DashboardLive.handle_info({:session_recovery_exhausted, "s1", %{}}, socket)
 
-      assert returned.assigns.workflow_summary == @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
+    end
+
+    test "session_stopped schedules a deferred refresh" do
+      socket = build_socket()
+
+      assert {:noreply, returned} =
+               DashboardLive.handle_info({:session_stopped, "s1", :normal, %{}}, socket)
+
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
+    end
+
+    test "a second event while a refresh is pending coalesces (still pending, unchanged)" do
+      socket = build_socket()
+
+      assert {:noreply, once} =
+               DashboardLive.handle_info({:session_started, "s1", %{}}, socket)
+
+      assert {:noreply, twice} =
+               DashboardLive.handle_info({:run_started, "r1", %{}}, once)
+
+      assert twice.assigns.overview_refresh_pending
+      assert twice.assigns.overview == @stale_overview
     end
   end
 
-  describe "handle_info/2 — run events update only workflow_summary" do
-    test "run_started refreshes workflow_summary, not forge_sessions" do
+  describe "handle_info/2 — run events arm a coalesced refresh" do
+    test "run_started schedules a deferred refresh" do
       socket = build_socket()
       assert {:noreply, returned} = DashboardLive.handle_info({:run_started, "r1", %{}}, socket)
-      assert returned.assigns.forge_sessions == 999
-      assert returned.assigns.workflow_summary != @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
     end
 
-    test "run_completed refreshes workflow_summary, not forge_sessions" do
+    test "run_completed schedules a deferred refresh" do
       socket = build_socket()
 
       assert {:noreply, returned} =
                DashboardLive.handle_info({:run_completed, "r1", %{}}, socket)
 
-      assert returned.assigns.forge_sessions == 999
-      assert returned.assigns.workflow_summary != @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
     end
 
-    test "run_failed refreshes workflow_summary, not forge_sessions" do
+    test "run_failed schedules a deferred refresh" do
       socket = build_socket()
 
       assert {:noreply, returned} =
                DashboardLive.handle_info({:run_failed, "r1", %{error: "boom"}}, socket)
 
-      assert returned.assigns.forge_sessions == 999
-      assert returned.assigns.workflow_summary != @stale_summary
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
+    end
+  end
+
+  describe "handle_info/2 — :refresh_overview rebuilds once" do
+    test "rebuilds the overview and clears the pending flag" do
+      socket = build_socket()
+
+      assert {:noreply, returned} = DashboardLive.handle_info(:refresh_overview, socket)
+
+      assert returned.assigns.overview != @stale_overview
+      refute returned.assigns.overview_refresh_pending
     end
   end
 end

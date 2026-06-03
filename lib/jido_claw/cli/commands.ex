@@ -19,9 +19,11 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.Memory.Scope, as: MemoryScope
   alias JidoClaw.Reasoning.Statistics, as: ReasoningStatistics
   alias JidoClaw.Reasoning.StrategyRegistry
+  alias JidoClaw.RuntimeOverview
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.SessionManager, as: ShellSessionManager
   alias JidoClaw.Solutions.Matcher, as: SolutionsMatcher
+  alias JidoClaw.SwarmView
   alias JidoClaw.Tenant.Manager, as: TenantManager
   alias JidoClaw.Workspaces.PolicyTransitions
   alias JidoClaw.Workspaces.Workspace
@@ -65,9 +67,8 @@ defmodule JidoClaw.CLI.Commands do
 
     provider = Config.provider_label(state.config)
     live = JidoClaw.Stats.get()
-    tracker = JidoClaw.AgentTracker.get_state()
-    children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
-    running = Enum.count(children, fn {_, a} -> a.status == :running end)
+    overview = runtime_overview(state)
+    swarm = overview.swarm
 
     IO.puts("")
 
@@ -86,17 +87,21 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("  \e[33m⚙\e[0m  tokens      \e[1m#{StatusBar.format_tokens(live.tokens)}\e[0m")
 
     IO.puts(
-      "  \e[33m⚙\e[0m  agents      \e[1m#{running} running / #{live.agents_spawned} total\e[0m"
+      "  \e[33m⚙\e[0m  agents      \e[1m#{swarm.running_count} running / #{live.agents_spawned} total\e[0m"
     )
+
+    IO.puts("  \e[33m⚙\e[0m  forge       \e[1m#{overview.forge.active_count} active\e[0m")
+
+    IO.puts("  \e[33m⚙\e[0m  workflows   \e[1m#{overview.workflows.active_count} active\e[0m")
 
     elapsed = System.monotonic_time(:second) - state.started_at
     IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{Formatter.format_elapsed(elapsed)}\e[0m")
 
     # Show per-agent breakdown if any children exist
-    if children != [] do
+    if swarm.agents != [] do
       IO.puts("")
-      IO.puts(SwarmBox.render_header(tracker.agents, terminal_cols()))
-      IO.puts(SwarmBox.render_agents(tracker.agents, tracker.order))
+      IO.puts(SwarmBox.render_header(swarm, terminal_cols()))
+      IO.puts(SwarmBox.render_agents(swarm))
     end
 
     IO.puts("")
@@ -167,17 +172,16 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/agents", state) do
-    tracker = JidoClaw.AgentTracker.get_state()
-    children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
+    swarm = swarm_view(state)
 
     IO.puts("")
 
-    if children == [] do
+    if swarm.agents == [] do
       IO.puts("  \e[1mSwarm Dashboard\e[0m")
       IO.puts("  \e[2mNo child agents running.\e[0m")
     else
-      IO.puts(SwarmBox.render_header(tracker.agents, terminal_cols()))
-      IO.puts(SwarmBox.render_agents(tracker.agents, tracker.order))
+      IO.puts(SwarmBox.render_header(swarm, terminal_cols()))
+      IO.puts(SwarmBox.render_agents(swarm))
     end
 
     IO.puts("")
@@ -853,6 +857,39 @@ defmodule JidoClaw.CLI.Commands do
       user_id: Map.get(state, :user_id),
       workspace_uuid: Map.get(state, :workspace_uuid),
       session_uuid: Map.get(state, :session_uuid)
+    }
+  end
+
+  defp swarm_view(state) do
+    runtime_overview(state).swarm
+  end
+
+  defp runtime_overview(state) do
+    scope = %{
+      tenant_id: state.tenant_id,
+      session_id: state.session_id,
+      session_uuid: Map.get(state, :session_uuid),
+      workspace_uuid: Map.get(state, :workspace_uuid),
+      workspace_id: Map.get(state, :workspace_uuid)
+    }
+
+    case RuntimeOverview.snapshot(scope) do
+      {:ok, overview} ->
+        overview
+
+      {:error, _} ->
+        empty_runtime_overview(Map.get(state, :tenant_id))
+    end
+  end
+
+  defp empty_runtime_overview(tenant_id) do
+    %RuntimeOverview{
+      tenant_id: tenant_id,
+      swarm: %SwarmView{tenant_id: tenant_id, generated_at: DateTime.utc_now()},
+      forge: %JidoClaw.ForgeView{tenant_id: tenant_id, generated_at: DateTime.utc_now()},
+      workflows: %JidoClaw.WorkflowView{tenant_id: tenant_id, generated_at: DateTime.utc_now()},
+      uptime: %{seconds: 0, agents_spawned: 0},
+      generated_at: DateTime.utc_now()
     }
   end
 

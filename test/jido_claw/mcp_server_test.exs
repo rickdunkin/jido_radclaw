@@ -56,8 +56,8 @@ defmodule JidoClaw.MCPServerTest do
       assert is_list(publish.tools)
     end
 
-    test "publishes 17 tools" do
-      assert length(MCPServer.__publish__().tools) == 17
+    test "publishes 20 tools" do
+      assert length(MCPServer.__publish__().tools) == 20
     end
 
     test "includes introspection tools" do
@@ -65,6 +65,9 @@ defmodule JidoClaw.MCPServerTest do
 
       assert JidoClaw.Tools.AgentStatus in tools
       assert JidoClaw.Tools.InspectAgent in tools
+      assert JidoClaw.Tools.SwarmStatus in tools
+      assert JidoClaw.Tools.ForgeStatus in tools
+      assert JidoClaw.Tools.WorkflowStatus in tools
     end
 
     test "includes core file tools" do

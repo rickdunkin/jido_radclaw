@@ -1,13 +1,21 @@
 defmodule JidoClaw.Orchestration.WorkflowRun do
   @moduledoc false
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Orchestration,
-    data_layer: AshPostgres.DataLayer
+  use JidoClaw.Resource, domain: JidoClaw.Orchestration
 
   postgres do
     table("workflow_runs")
     repo(JidoClaw.Repo)
+
+    custom_indexes do
+      index([:tenant_id, :status])
+      index([:tenant_id, :completed_at])
+    end
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:tenant_id)
+    global?(false)
   end
 
   code_interface do
@@ -23,6 +31,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:list_active)
     define(:list_by_project, action: :by_project)
     define(:by_id, action: :read, get_by: [:id])
+    define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
 
   actions do
@@ -91,6 +100,13 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       filter(expr(status in [:pending, :running, :awaiting_approval]))
     end
 
+    read :by_id_global do
+      get?(true)
+      multitenancy(:bypass)
+      argument(:id, :uuid, allow_nil?: false)
+      filter(expr(id == ^arg(:id)))
+    end
+
     read :by_project do
       description("List workflow runs belonging to a project.")
       argument(:project_id, :uuid, allow_nil?: false)
@@ -100,6 +116,11 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
   attributes do
     uuid_primary_key(:id)
+
+    attribute :tenant_id, :string do
+      allow_nil?(false)
+      public?(true)
+    end
 
     attribute :name, :string do
       allow_nil?(false)
@@ -172,6 +193,12 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
   end
 
   relationships do
+    belongs_to :tenant, JidoClaw.Tenants.Tenant do
+      define_attribute?(false)
+      attribute_writable?(true)
+      allow_nil?(false)
+    end
+
     belongs_to(:user, JidoClaw.Accounts.User,
       define_attribute?: false,
       attribute_writable?: true,

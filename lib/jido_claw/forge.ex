@@ -27,13 +27,15 @@ defmodule JidoClaw.Forge do
     end
   end
 
-  def wake(session_id) do
-    with db_session when not is_nil(db_session) <- Persistence.find_session(session_id),
+  def wake(session_id, opts \\ []) do
+    with db_session when not is_nil(db_session) <- find_session_for_wake(session_id, opts),
          true <- db_session.phase not in [:completed, :cancelled],
          checkpoint when not is_nil(checkpoint) <- Persistence.latest_checkpoint(session_id) do
       spec =
         db_session.spec
         |> Map.put(:resume_checkpoint_id, checkpoint.id)
+        |> Map.put(:tenant_id, db_session.tenant_id)
+        |> Map.put(:workspace_id, db_session.workspace_id)
 
       Manager.start_session(session_id, spec)
     else
@@ -102,4 +104,7 @@ defmodule JidoClaw.Forge do
   end
 
   defp shell_escape(arg), do: shell_escape(to_string(arg))
+
+  defp find_session_for_wake(session_id, []), do: Persistence.find_session(session_id)
+  defp find_session_for_wake(session_id, opts), do: Persistence.find_session(session_id, opts)
 end

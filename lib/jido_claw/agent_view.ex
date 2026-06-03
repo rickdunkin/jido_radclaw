@@ -144,6 +144,25 @@ defmodule JidoClaw.AgentView do
   end
 
   @doc """
+  List live session-axis snapshots for a tenant.
+
+  This keeps UI consumers from knowing how session workers are enumerated.
+  Failed or racing sessions are omitted from the collection; callers that need
+  a specific error should use `snapshot/2`.
+  """
+  @spec list(String.t(), opts()) :: [t()]
+  def list(tenant_id, opts \\ []) when is_binary(tenant_id) do
+    tenant_id
+    |> JidoClaw.Session.Supervisor.list_sessions()
+    |> Enum.flat_map(fn {session_id, _pid} ->
+      case snapshot(%{tenant_id: tenant_id, session_id: session_id}, opts) do
+        {:ok, view} -> [view]
+        {:error, _} -> []
+      end
+    end)
+  end
+
+  @doc """
   Project an `%AgentView{}` into a JSON-safe map suitable for MCP output.
 
   Atoms become strings, `DateTime` / `NaiveDateTime` become ISO-8601

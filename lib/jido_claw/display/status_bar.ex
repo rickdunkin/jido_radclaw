@@ -12,20 +12,11 @@ defmodule JidoClaw.Display.StatusBar do
     model = display_state.model || "unknown"
     provider = display_state.provider || "unknown"
     context_window = display_state.context_window || 131_072
-
-    # Sum tokens across all agents
-    total_tokens =
-      tracker_state.agents
-      |> Enum.reduce(0, fn {_id, agent}, acc -> acc + agent.tokens end)
+    {total_tokens, child_count} = metrics(tracker_state)
+    elapsed = session_elapsed(display_state)
 
     pct = if context_window > 0, do: round(total_tokens / context_window * 100), else: 0
     pct = min(pct, 100)
-
-    child_count =
-      tracker_state.agents
-      |> Enum.count(fn {id, _} -> id != "main" end)
-
-    elapsed = elapsed_string(tracker_state)
     # TODO: wire Config.estimated_cost
     cost = "$0.00"
 
@@ -142,15 +133,29 @@ defmodule JidoClaw.Display.StatusBar do
     "#{color}[#{bar}]\e[0m"
   end
 
-  defp elapsed_string(tracker_state) do
-    case get_in(tracker_state, [:agents, "main"]) do
-      nil ->
-        "0s"
+  # Session elapsed comes from the Display state's session_started_at (set
+  # when the REPL establishes a session), not from process/tracker timers.
+  defp session_elapsed(%{session_started_at: started_at}) when is_integer(started_at) do
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    format_elapsed(div(elapsed_ms, 1000))
+  end
 
-      main ->
-        elapsed_ms = System.monotonic_time(:millisecond) - main.started_at
-        format_elapsed(div(elapsed_ms, 1000))
-    end
+  defp session_elapsed(_), do: "0s"
+
+  defp metrics(%JidoClaw.SwarmView{} = view) do
+    {view.total_tokens, length(view.agents)}
+  end
+
+  defp metrics(%{agents: agents}) when is_map(agents) do
+    total_tokens =
+      agents
+      |> Enum.reduce(0, fn {_id, agent}, acc -> acc + agent.tokens end)
+
+    child_count =
+      agents
+      |> Enum.count(fn {id, _} -> id != "main" end)
+
+    {total_tokens, child_count}
   end
 
   defp format_elapsed(s) when s < 60, do: "#{s}s"

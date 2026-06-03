@@ -79,14 +79,7 @@ defmodule JidoClaw.Web.AgentsLive do
   defp list_views(nil), do: []
 
   defp list_views(tenant_id) when is_binary(tenant_id) do
-    tenant_id
-    |> JidoClaw.Session.Supervisor.list_sessions()
-    |> Enum.flat_map(fn {session_id, _pid} ->
-      case AgentView.snapshot(%{tenant_id: tenant_id, session_id: session_id}) do
-        {:ok, view} -> [view]
-        {:error, _} -> []
-      end
-    end)
+    AgentView.list(tenant_id)
   end
 
   defp latest_event_name(%AgentView{events: []}), do: "-"

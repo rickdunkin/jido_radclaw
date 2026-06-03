@@ -6,7 +6,22 @@ defmodule JidoClaw.Display.SwarmBox do
   alias JidoClaw.Display.StatusBar
 
   @doc "Render the full swarm box header with summary stats."
-  def render_header(agents_map, width \\ 60) do
+  def render_header(target, width \\ 60)
+
+  def render_header(%JidoClaw.SwarmView{} = view, width) do
+    total = length(view.agents)
+    tokens_str = StatusBar.format_tokens(view.total_tokens)
+
+    status_parts =
+      []
+      |> prepend_if(view.error_count > 0, "\e[31m#{view.error_count} error\e[0m")
+      |> prepend_if(view.done_count > 0, "\e[32m#{view.done_count} done\e[0m")
+      |> prepend_if(view.running_count > 0, "\e[33m#{view.running_count} running\e[0m")
+
+    render_header_box(total, Enum.join(status_parts, "  "), tokens_str, width)
+  end
+
+  def render_header(agents_map, width) do
     children = agents_map |> Enum.reject(fn {id, _} -> id == "main" end)
     total = length(children)
     running = Enum.count(children, fn {_, a} -> a.status == :running end)
@@ -24,39 +39,32 @@ defmodule JidoClaw.Display.SwarmBox do
 
     status_str = Enum.join(status_parts, "  ")
 
-    inner_width = max(width - 4, 40)
-    pad_char = "─"
-
-    summary = "  #{total} agents  │  #{status_str}  │  #{tokens_str} tokens"
-
-    [
-      "",
-      "  \e[36m┌─ SWARM #{String.duplicate(pad_char, max(inner_width - 9, 1))}┐\e[0m",
-      "  \e[36m│\e[0m#{summary}  \e[36m│\e[0m",
-      "  \e[36m└#{String.duplicate(pad_char, inner_width)}┘\e[0m"
-    ]
-    |> Enum.join("\n")
+    render_header_box(total, status_str, tokens_str, width)
   end
 
   @doc "Render a single agent status line."
   def render_agent_line(agent) do
-    icon = status_icon(agent.status)
-    template_str = if agent.template, do: " [\e[2m#{agent.template}\e[0m]", else: ""
-    status_str = status_label(agent.status)
-    tokens_str = StatusBar.format_tokens(agent.tokens)
+    icon = status_icon(status(agent))
+    template_str = if template(agent), do: " [\e[2m#{template(agent)}\e[0m]", else: ""
+    status_str = status_label(status(agent))
+    tokens_str = StatusBar.format_tokens(tokens(agent))
 
     tools_list =
-      agent.tool_names
-      |> MapSet.to_list()
+      agent
+      |> tool_names()
       |> Enum.take(5)
       |> Enum.join(", ")
 
     tools_str = if tools_list != "", do: " │ #{tools_list}", else: ""
 
-    "  #{icon} \e[1m@#{agent.id}\e[0m#{template_str} #{status_str} │ #{tokens_str} │ #{agent.tool_calls} calls#{tools_str}"
+    "  #{icon} \e[1m@#{agent_id(agent)}\e[0m#{template_str} #{status_str} │ #{tokens_str} │ #{tool_calls(agent)} calls#{tools_str}"
   end
 
   @doc "Render all agent lines for the swarm."
+  def render_agents(%JidoClaw.SwarmView{} = view) do
+    Enum.map_join(view.agents, "\n", &render_agent_line/1)
+  end
+
   def render_agents(agents_map, order) do
     order
     |> Enum.reject(&(&1 == "main"))
@@ -71,6 +79,15 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   @doc "Render a final swarm summary after all agents complete."
+  def render_summary(%JidoClaw.SwarmView{} = view) do
+    status =
+      if view.error_count > 0,
+        do: "\e[33m#{view.done_count} done, #{view.error_count} failed\e[0m",
+        else: "\e[32mall #{view.done_count} done\e[0m"
+
+    "\n  \e[36m⚡\e[0m Swarm complete: #{status} · #{StatusBar.format_tokens(view.total_tokens)} tokens · #{view.total_tool_calls} tool calls\n"
+  end
+
   def render_summary(agents_map) do
     children = agents_map |> Enum.reject(fn {id, _} -> id == "main" end)
     done = Enum.count(children, fn {_, a} -> a.status == :done end)
@@ -97,6 +114,40 @@ defmodule JidoClaw.Display.SwarmBox do
   defp status_label(:done), do: "\e[32mdone\e[0m"
   defp status_label(:error), do: "\e[31merror\e[0m"
   defp status_label(_), do: "\e[2munknown\e[0m"
+
+  defp render_header_box(total, status_str, tokens_str, width) do
+    inner_width = max(width - 4, 40)
+    pad_char = "─"
+
+    summary = "  #{total} agents  │  #{status_str}  │  #{tokens_str} tokens"
+
+    [
+      "",
+      "  \e[36m┌─ SWARM #{String.duplicate(pad_char, max(inner_width - 9, 1))}┐\e[0m",
+      "  \e[36m│\e[0m#{summary}  \e[36m│\e[0m",
+      "  \e[36m└#{String.duplicate(pad_char, inner_width)}┘\e[0m"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp agent_id(%{agent_id: id}), do: id
+  defp agent_id(%{id: id}), do: id
+
+  defp template(%{template: template}), do: template
+  defp template(_), do: nil
+
+  defp status(%{status: status}), do: status
+  defp status(_), do: :unknown
+
+  defp tokens(%{tokens: tokens}) when is_integer(tokens), do: tokens
+  defp tokens(_), do: 0
+
+  defp tool_calls(%{tool_calls: calls}) when is_integer(calls), do: calls
+  defp tool_calls(_), do: 0
+
+  defp tool_names(%{tool_names: %MapSet{} = names}), do: MapSet.to_list(names)
+  defp tool_names(%{tool_names: names}) when is_list(names), do: names
+  defp tool_names(_), do: []
 
   defp prepend_if(list, true, item), do: [item | list]
   defp prepend_if(list, false, _item), do: list

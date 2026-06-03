@@ -547,9 +547,9 @@ defmodule JidoClaw.InspectionTest do
       assert s.status == nil
     end
 
-    test "with UUID string of a created run" do
+    test "with UUID string of a created run", %{tenant_id: tid, actor: actor} do
       {:ok, run} =
-        WorkflowRun.create(%{name: "by-id-test"})
+        WorkflowRun.create(%{name: "by-id-test"}, tenant: tid, actor: actor)
 
       assert {:ok, %Summary{input_kind: :workflow_id, workflows: [w]}} =
                Inspection.inspect_workflow(run.id)
@@ -559,6 +559,38 @@ defmodule JidoClaw.InspectionTest do
 
     test "unknown UUID returns :not_found" do
       assert {:error, :not_found} = Inspection.inspect_workflow(Ecto.UUID.generate())
+    end
+  end
+
+  describe "active_workflows scoping" do
+    test "session-path summary lists the tenant's active runs and excludes other tenants'", %{
+      tenant_id: tid,
+      session: session,
+      actor: actor
+    } do
+      {:ok, run_a} = WorkflowRun.create(%{name: "wf-mine"}, tenant: tid, actor: actor)
+
+      tenant_b = seed_tenant("wf-other")
+
+      {:ok, run_b} =
+        WorkflowRun.create(%{name: "wf-theirs"}, tenant: tenant_b, actor: actor_for(tenant_b))
+
+      assert {:ok, %Summary{input_kind: :session, workflows: workflows}} =
+               Inspection.inspect_agent(session)
+
+      ids = Enum.map(workflows, & &1.id)
+      assert run_a.id in ids
+      refute run_b.id in ids
+    end
+
+    test "a tenant-less agent_id path yields no workflows even when active runs exist", %{
+      tenant_id: tid,
+      actor: actor
+    } do
+      {:ok, _run} = WorkflowRun.create(%{name: "wf-unseen"}, tenant: tid, actor: actor)
+
+      assert {:ok, %Summary{input_kind: :agent_id, workflows: []}} =
+               Inspection.inspect_agent("untracked-#{System.unique_integer([:positive])}")
     end
   end
 

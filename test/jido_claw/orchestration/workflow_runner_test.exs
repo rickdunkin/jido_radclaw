@@ -87,7 +87,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
 
     assert is_map(result)
 
-    {:ok, run} = WorkflowRun.by_id(run_id)
+    {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :completed
     assert is_map(run.result)
   end
@@ -114,7 +114,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     assert_receive {:run_started, run_id, %{cron_job_id: ^unique_id}}
     assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id, error: "boom step failed"}}
 
-    {:ok, run} = WorkflowRun.by_id(run_id)
+    {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
     assert run.error == "boom step failed"
   end
@@ -137,7 +137,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     assert_receive {:run_started, run_id, _info}
     assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id}}
 
-    {:ok, run} = WorkflowRun.by_id(run_id)
+    {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
   end
 
@@ -159,7 +159,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     assert_receive {:run_started, run_id, _info}
     assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id, error: ^reason}}
 
-    {:ok, run} = WorkflowRun.by_id(run_id)
+    {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
     assert run.error == reason
   end
@@ -178,7 +178,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
 
     refute_received {:run_started, _id, _info}
 
-    {:ok, runs} = WorkflowRun.list()
+    {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor_for(tenant))
     refute Enum.any?(runs, fn run -> run.config["cron_job_id"] == unique_id end)
   end
 

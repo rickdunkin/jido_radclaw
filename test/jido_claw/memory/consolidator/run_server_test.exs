@@ -12,6 +12,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias Ecto.Adapters.SQL
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Forge.Manager, as: ForgeManager
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
@@ -493,7 +494,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
         ForgePubSub.subscribe_sessions()
 
         receive do
-          {:session_started, _session_id} ->
+          {:session_started, _session_id, _scope} ->
             send(test_pid, {:dirs_at_start, File.ls!(forge_home)})
         after
           10_000 -> send(test_pid, :watcher_timeout)
@@ -569,6 +570,38 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
           empty_run.forge_session_id not in ForgeManager.list_sessions()
         end)
     end
+
+    test ":user-scope run completes without a Forge claim and writes no forge_sessions row", %{
+      tenant_id: tenant_id
+    } do
+      # Enable Forge persistence so a workspace-less spec would otherwise reach
+      # the claim path. `claim: false` (RunServer.maybe_run_without_claim/2)
+      # must skip the claim entirely — proving the run no longer crashes on
+      # :scope_required (#2) and writes no forge_sessions row (#3). The setup's
+      # on_exit restores the disabled default.
+      Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: true)
+
+      before = forge_session_count()
+
+      scope = user_scope(tenant_id)
+
+      assert {:ok, run} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run.status == :succeeded
+
+      # Let the harness finish unwinding (its best-effort persistence reads run
+      # during stop) while the sandbox owner is still alive, to avoid teardown
+      # connection races.
+      :ok = eventually(fn -> run.forge_session_id not in ForgeManager.list_sessions() end)
+
+      # The workspace-less run never claimed, so no Forge session row was written.
+      assert forge_session_count() == before
+    end
   end
 
   # -- helpers ----------------------------------------------------------------
@@ -625,6 +658,47 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
     }
 
     {ws, session, scope}
+  end
+
+  # A workspace-less `:user` scope. `PolicyResolver.gate/1` for `:user`
+  # aggregates `consolidation_policy` across the tenant's workspaces keyed to
+  # this user, so register one with `:default` to make the gate return `:ok`.
+  # The workspace's `user_id` FKs to `users`, so seed a real user first
+  # (Ash.Seed bypasses the auth/policy registration machinery). The run itself
+  # carries `workspace_id: nil` — the point of the test.
+  defp user_scope(tenant_id) do
+    user =
+      Ash.Seed.seed!(JidoClaw.Accounts.User, %{
+        email: "user-#{System.unique_integer([:positive])}@test.local"
+      })
+
+    {:ok, _ws} =
+      Workspace.register(
+        %{
+          name: "user-scope-ws-#{System.unique_integer([:positive])}",
+          path: "/tmp/user_scope_test_#{System.unique_integer([:positive])}",
+          user_id: user.id,
+          consolidation_policy: :default
+        },
+        tenant: tenant_id,
+        actor: actor_for(tenant_id)
+      )
+
+    %{
+      tenant_id: tenant_id,
+      scope_kind: :user,
+      user_id: user.id,
+      workspace_id: nil,
+      project_id: nil,
+      session_id: nil
+    }
+  end
+
+  defp forge_session_count do
+    %{rows: [[count]]} =
+      SQL.query!(JidoClaw.Repo, "SELECT count(*) FROM forge_sessions", [])
+
+    count
   end
 
   # `:model_remember` keeps seeded facts inside

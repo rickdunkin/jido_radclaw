@@ -3,6 +3,8 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
 
   alias JidoClaw.Tools.GetAgentResult
 
+  @tenant_id "tenant-get-agent-result-test"
+
   defmodule FakeJido do
     @moduledoc false
 
@@ -44,6 +46,12 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
   defmodule FakeTracker do
     @moduledoc false
     def get_agent(_agent_id), do: Process.get(:fake_tracker_entry)
+
+    def get_agent(_agent_id, opts) do
+      if Keyword.get(opts, :tenant_id) == "tenant-get-agent-result-test" do
+        Process.get(:fake_tracker_entry) || %{}
+      end
+    end
   end
 
   setup do
@@ -71,14 +79,14 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
     Process.put(:fake_await_result, {:ok, %{status: :completed, last_answer: "done"}})
 
     assert {:ok, %{status: "completed", result: "done"}} =
-             GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+             GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
   end
 
   test "returns error when the agent is still running" do
     Process.put(:fake_await_result, {:error, :timeout})
 
     assert {:error, %{code: :execution_error, message: message, details: details}} =
-             GetAgentResult.run(%{agent_id: "agent-1", timeout: 1}, %{})
+             GetAgentResult.run(%{agent_id: "agent-1", timeout: 1}, ctx())
 
     assert message =~ "hasn't finished"
     assert details.agent_id == "agent-1"
@@ -91,7 +99,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
     Process.put(:fake_await_result, {:error, :crashed})
 
     assert {:error, %{code: :execution_error, message: "Agent failed.", details: details}} =
-             GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+             GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
 
     assert details.agent_id == "agent-1"
     assert details.status == "failed"
@@ -103,7 +111,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
     Process.put(:fake_await_result, {:ok, %{status: :failed, error: :tool_failed}})
 
     assert {:error, %{code: :execution_error, message: "Agent failed.", details: details}} =
-             GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+             GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
 
     assert details.agent_id == "agent-1"
     assert details.status == "failed"
@@ -115,7 +123,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
     Process.put(:fake_await_result, {:raise, RuntimeError.exception("boom")})
 
     assert {:error, %{code: :execution_error, message: "boom", details: details}} =
-             GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+             GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
 
     assert details.agent_id == "agent-1"
     assert details.status == "error"
@@ -124,11 +132,28 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
 
   test "returns error when agent is not found" do
     assert {:error, %{code: :validation_error, message: message, details: details}} =
-             GetAgentResult.run(%{agent_id: "missing"}, %{})
+             GetAgentResult.run(%{agent_id: "missing"}, ctx(%{tenant_id: "other-tenant"}))
 
     assert message =~ "not found"
     assert details.field == :agent
     assert details.value == "missing"
+  end
+
+  test "returns not_found when the agent exists but in another tenant" do
+    # Entry exists in @tenant_id, but the fake tracker tenant-gates get_agent/2,
+    # so a caller in another tenant must see it as not_found.
+    Process.put(:fake_tracker_entry, %{template: "coder"})
+
+    assert {:error, %{code: :validation_error, details: details}} =
+             GetAgentResult.run(%{agent_id: "agent-1"}, ctx(%{tenant_id: "intruder-tenant"}))
+
+    assert details.reason == :not_found
+    assert details.value == "agent-1"
+  end
+
+  test "requires tenant scope before resolving tracker or runtime state" do
+    assert {:error, %{code: :tenant_required}} =
+             GetAgentResult.run(%{agent_id: "agent-1"}, %{})
   end
 
   describe "request-scoped path (tracker carries :request_id)" do
@@ -151,7 +176,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
         {:ok, %{status: :completed, result: request}}
       )
 
-      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
       assert response.agent_id == "agent-1"
       assert response.status == "completed"
       assert response.result == typed
@@ -174,7 +199,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
         {:ok, %{status: :completed, result: request}}
       )
 
-      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+      assert {:ok, response} = GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
       assert response.result == "free-form answer"
       refute Map.has_key?(response, :output_meta)
     end
@@ -189,21 +214,26 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
       )
 
       assert {:error, %{code: :execution_error, details: details}} =
-               GetAgentResult.run(%{agent_id: "agent-1"}, %{})
+               GetAgentResult.run(%{agent_id: "agent-1"}, ctx())
 
       assert details.status == "failed"
       assert details.error =~ ":crashed"
     end
 
     test "fallback path (no request_id) still works via 2-arity completion" do
-      # Tracker has no entry → no request_id → 2-arity completion path
-      Process.put(:fake_tracker_entry, nil)
+      # Tracker entry has no request_id → 2-arity completion path.
+      Process.put(:fake_tracker_entry, %{})
       Process.put(:fake_await_result, {:ok, %{status: :completed, last_answer: "legacy"}})
 
-      assert {:ok, %{result: "legacy"}} = GetAgentResult.run(%{agent_id: "legacy-agent"}, %{})
+      assert {:ok, %{result: "legacy"}} =
+               GetAgentResult.run(%{agent_id: "legacy-agent"}, ctx())
     end
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)
   defp restore_env(key, value), do: Application.put_env(:jido_claw, key, value)
+
+  defp ctx(extra \\ %{}) do
+    %{tool_context: Map.merge(%{tenant_id: @tenant_id}, extra)}
+  end
 end

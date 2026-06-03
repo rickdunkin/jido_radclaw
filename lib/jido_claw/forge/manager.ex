@@ -13,6 +13,7 @@ defmodule JidoClaw.Forge.Manager do
 
   defstruct sessions: MapSet.new(),
             session_runners: %{},
+            session_scopes: %{},
             runner_counts: %{},
             recovery_attempts: %{},
             max_sessions: 50,
@@ -110,8 +111,9 @@ defmodule JidoClaw.Forge.Manager do
         # graceful stops from crashes
         Persistence.update_session_phase(session_id, :cancelled)
         DynamicSupervisor.terminate_child(@supervisor, pid)
+        scope = scope_for_session(state, session_id)
         new_state = decrement_session(state, session_id)
-        ForgePubSub.broadcast_session_event({:session_stopped, session_id, reason})
+        ForgePubSub.broadcast_session_event({:session_stopped, session_id, reason, scope})
         {:reply, :ok, new_state}
 
       [] ->
@@ -154,7 +156,9 @@ defmodule JidoClaw.Forge.Manager do
         "[Forge.Manager] Attempting recovery for #{session_id} (attempt #{attempts + 1}/#{@max_recovery_attempts})"
       )
 
-      ForgePubSub.broadcast_session_event({:session_recovering, session_id})
+      ForgePubSub.broadcast_session_event(
+        {:session_recovering, session_id, scope_for_session(state, session_id)}
+      )
 
       new_attempts = Map.put(state.recovery_attempts, session_id, attempts + 1)
 
@@ -179,7 +183,9 @@ defmodule JidoClaw.Forge.Manager do
           "[Forge.Manager] Recovery exhausted for #{session_id} after #{attempts} attempts"
         )
 
-        ForgePubSub.broadcast_session_event({:session_recovery_exhausted, session_id})
+        ForgePubSub.broadcast_session_event(
+          {:session_recovery_exhausted, session_id, scope_for_session(state, session_id)}
+        )
       end
 
       {:noreply, state}
@@ -201,10 +207,11 @@ defmodule JidoClaw.Forge.Manager do
             state
             | sessions: MapSet.put(state.sessions, session_id),
               session_runners: Map.put(state.session_runners, session_id, runner_type),
+              session_scopes: Map.put(state.session_scopes, session_id, event_scope(spec)),
               runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
           }
 
-          ForgePubSub.broadcast_session_event({:session_started, session_id})
+          ForgePubSub.broadcast_session_event({:session_started, session_id, event_scope(spec)})
           {:reply, {:ok, handle}, new_state}
 
         {:error, :already_claimed} ->
@@ -247,6 +254,7 @@ defmodule JidoClaw.Forge.Manager do
       state
       | sessions: MapSet.delete(state.sessions, session_id),
         session_runners: Map.delete(state.session_runners, session_id),
+        session_scopes: Map.delete(state.session_scopes, session_id),
         runner_counts:
           if(runner_type,
             do: Map.update(state.runner_counts, runner_type, 0, &max(&1 - 1, 0)),
@@ -254,4 +262,29 @@ defmodule JidoClaw.Forge.Manager do
           )
     }
   end
+
+  defp event_scope(spec) when is_map(spec) do
+    %{}
+    |> put_present(:tenant_id, Map.get(spec, :tenant_id))
+    |> put_present(:workspace_id, Map.get(spec, :workspace_id) || Map.get(spec, :workspace_uuid))
+  end
+
+  defp scope_for_session(state, session_id) do
+    case Map.get(state.session_scopes, session_id) do
+      %{} = scope when map_size(scope) > 0 ->
+        scope
+
+      _ ->
+        case Persistence.find_session(session_id) do
+          %{tenant_id: tenant_id, workspace_id: workspace_id} ->
+            event_scope(%{tenant_id: tenant_id, workspace_id: workspace_id})
+
+          _ ->
+            %{}
+        end
+    end
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 end

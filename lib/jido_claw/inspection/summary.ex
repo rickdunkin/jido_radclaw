@@ -18,11 +18,10 @@ defmodule JidoClaw.Inspection.Summary do
   request path's user-role context preview, the sibling of
   `context_preview` (which previews the assistant role).
 
-  `:subagents` and `:workflows` are populated from process-global sources
-  (`JidoClaw.AgentTracker.get_state/0` and `WorkflowRun.list_active/0`)
-  and are **not** tenant-scoped today. They are documented as
-  "global best-effort" — local Elixir consumers see them, but the MCP
-  `inspect_agent` tool drops both fields before returning output.
+  `:subagents` and `:workflows` are local best-effort inspection fields.
+  Tenant-facing runtime status lives in `JidoClaw.SwarmView` and
+  `JidoClaw.WorkflowView`; the MCP `inspect_agent` tool drops both fields
+  before returning output.
   """
 
   @type tool_summary :: %{name: String.t(), description: String.t() | nil, version: term()}

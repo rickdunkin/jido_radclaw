@@ -4,6 +4,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   alias JidoClaw.AgentTracker
   alias JidoClaw.Tools.SpawnAgent
 
+  @tenant_id "tenant-spawn-agent-test"
+
   defmodule FakeRuntime do
     def start_agent(_module, opts) do
       pid = spawn(fn -> Process.sleep(:infinity) end)
@@ -75,14 +77,21 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     Application.put_env(:jido_claw, :spawn_agent_max_children, 0)
 
     assert {:error, wire} =
-             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: %{}})
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
 
     assert wire.code == :execution_error
-    assert wire.message =~ "Maximum concurrent child agents reached (0/0)"
+    assert wire.message =~ "Maximum concurrent child agents for this scope reached (0/0)"
     assert wire.details.reason == :max_children
     assert wire.details.limit == 0
     assert wire.details.current == 0
     assert wire.details.phase == :spawn_limit
+  end
+
+  test "requires tenant scope before checking spawn limits" do
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 0)
+
+    assert {:error, %{code: :tenant_required}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: %{}})
   end
 
   test "rejects spawning when swarm depth is reached" do
@@ -92,7 +101,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert {:error, wire} =
              SpawnAgent.run(
                %{template: "coder", task: "do work"},
-               %{tool_context: %{swarm_depth: 1}}
+               ctx(%{swarm_depth: 1})
              )
 
     assert wire.code == :execution_error
@@ -107,7 +116,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     configure_fake_spawn()
 
     assert {:ok, %{agent_id: agent_id}} =
-             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: %{}})
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
 
     assert agent_id =~
              ~r/^coder_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -123,7 +132,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert is_binary(request_id)
 
     assert %{id: ^agent_id, template: "coder", request_id: ^request_id} =
-             AgentTracker.get_agent(agent_id)
+             AgentTracker.get_agent(agent_id, tenant_id: @tenant_id)
 
     Process.exit(pid, :kill)
   end
@@ -132,11 +141,9 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     configure_fake_spawn()
     Application.put_env(:jido_claw, :agent_templates, RestrictedTemplates)
 
-    # No tenant_id here so register_child_correlation skips the DB write
-    # (this test has no sandbox); session_uuid still proves a structural
-    # key survives the policy.
     tool_context = %{
-      session_uuid: "s",
+      tenant_id: @tenant_id,
+      session_id: "s",
       user_id: "u",
       workspace_uuid: "w",
       actor: %{kind: :system}
@@ -152,7 +159,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert child_ctx.user_id == nil
     assert child_ctx.workspace_uuid == nil
     assert child_ctx.actor == nil
-    assert child_ctx.session_uuid == "s"
+    assert child_ctx.session_id == "s"
 
     Process.exit(pid, :kill)
   end
@@ -160,7 +167,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   test "default template (no forward_context) forwards the full scope" do
     configure_fake_spawn()
 
-    tool_context = %{session_uuid: "s", user_id: "u", workspace_uuid: "w"}
+    tool_context = %{tenant_id: @tenant_id, session_id: "s", user_id: "u", workspace_uuid: "w"}
 
     assert {:ok, %{agent_id: agent_id}} =
              SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: tool_context})
@@ -171,7 +178,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     child_ctx = opts[:tool_context]
     assert child_ctx.user_id == "u"
     assert child_ctx.workspace_uuid == "w"
-    assert child_ctx.session_uuid == "s"
+    assert child_ctx.session_id == "s"
 
     Process.exit(pid, :kill)
   end
@@ -180,12 +187,15 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     configure_fake_spawn()
     pid = spawn(fn -> Process.sleep(:infinity) end)
 
-    assert :ok = AgentTracker.register("coder_existing", pid, "coder", "existing task")
+    assert :ok =
+             AgentTracker.register("coder_existing", pid, "coder", "existing task",
+               tenant_id: @tenant_id
+             )
 
     assert {:error, %{code: :validation_error, message: message, details: details}} =
              SpawnAgent.run(
                %{template: "coder", task: "do work", tag: "coder_existing"},
-               %{tool_context: %{}}
+               ctx()
              )
 
     assert message == "Agent ID 'coder_existing' is already in use."
@@ -204,7 +214,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert {:error, %{message: "Agent ID 'runtime_busy' is already in use."}} =
              SpawnAgent.run(
                %{template: "coder", task: "do work", tag: "runtime_busy"},
-               %{tool_context: %{}}
+               ctx()
              )
 
     refute_receive {:start_agent, _opts, _pid}
@@ -267,6 +277,10 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
     Application.put_env(:jido_claw, :agent_templates, FakeTemplates)
     Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+  end
+
+  defp ctx(extra \\ %{}) do
+    %{tool_context: Map.merge(%{tenant_id: @tenant_id}, extra)}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)

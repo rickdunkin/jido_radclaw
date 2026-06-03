@@ -16,6 +16,7 @@ defmodule JidoClaw.Display do
 
   alias JidoClaw.CLI.{Branding, Formatter, Terminal}
   alias JidoClaw.Display.{StatusBar, SwarmBox}
+  alias JidoClaw.SwarmView
 
   @spinner_interval 150
   @status_bar_interval 1000
@@ -45,6 +46,15 @@ defmodule JidoClaw.Display do
     :status_bar_ref,
     :last_render,
     :swarm_header_timer,
+    :tenant_id,
+    :session_id,
+    :session_uuid,
+    :workspace_id,
+    :workspace_uuid,
+    # Monotonic ms when the REPL session was established (set in
+    # {:set_scope, _}, with an init fallback). Drives the status-bar
+    # elapsed segment — session uptime, not BEAM process uptime.
+    :session_started_at,
     mode: :single,
     thinking: false,
     spinner_tick: 0,
@@ -81,6 +91,14 @@ defmodule JidoClaw.Display do
   """
   def set_profile(profile) when is_binary(profile) do
     GenServer.cast(__MODULE__, {:set_profile, profile})
+  end
+
+  # REPL-boot-only: the REPL (`JidoClaw.CLI.REPL`) is the sole caller, setting
+  # the swarm-projection scope once when a session starts. Not a per-request
+  # / multi-tenant entrypoint — there's no scope switching after boot.
+  @doc false
+  def set_scope(scope) when is_map(scope) do
+    GenServer.cast(__MODULE__, {:set_scope, scope})
   end
 
   @doc "Start the thinking spinner (kaomoji animation)."
@@ -172,7 +190,13 @@ defmodule JidoClaw.Display do
   @impl true
   def init(_opts) do
     width = Terminal.terminal_cols()
-    {:ok, %__MODULE__{terminal_width: width}}
+    # Fallback start time so the status bar shows real elapsed even before
+    # the REPL calls set_scope/1; overwritten when the session is established.
+    {:ok,
+     %__MODULE__{
+       terminal_width: width,
+       session_started_at: System.monotonic_time(:millisecond)
+     }}
   end
 
   @impl true
@@ -182,6 +206,20 @@ defmodule JidoClaw.Display do
 
   def handle_cast({:set_profile, profile}, state) do
     {:noreply, %{state | profile: profile}}
+  end
+
+  def handle_cast({:set_scope, scope}, state) do
+    {:noreply,
+     %{
+       state
+       | tenant_id: Map.get(scope, :tenant_id),
+         session_id: Map.get(scope, :session_id),
+         session_uuid: Map.get(scope, :session_uuid),
+         workspace_id: Map.get(scope, :workspace_id),
+         workspace_uuid: Map.get(scope, :workspace_uuid),
+         # A session is established here — stamp its start for elapsed.
+         session_started_at: System.monotonic_time(:millisecond)
+     }}
   end
 
   def handle_cast(:start_thinking, state) do
@@ -384,15 +422,13 @@ defmodule JidoClaw.Display do
 
     # If header already rendered, append agent line immediately
     if state.swarm_header_rendered do
-      tracker_state = JidoClaw.AgentTracker.get_state()
-
-      case Map.get(tracker_state.agents, id) do
-        nil ->
-          {:noreply, state}
-
-        entry ->
-          IO.puts(SwarmBox.render_agent_line(entry))
+      case SwarmView.snapshot(id, swarm_scope(state)) do
+        {:ok, agent} ->
+          IO.puts(SwarmBox.render_agent_line(agent))
           {:noreply, %{state | swarm_lines_rendered: state.swarm_lines_rendered + 1}}
+
+        {:error, _} ->
+          {:noreply, state}
       end
     else
       # Header not yet rendered — agents will be rendered when debounce fires
@@ -406,23 +442,20 @@ defmodule JidoClaw.Display do
 
   # Debounced swarm header render — fires after all rapid agent registrations settle
   def handle_info(:render_swarm_header, state) do
-    tracker_state = JidoClaw.AgentTracker.get_state()
-    header = SwarmBox.render_header(tracker_state.agents, state.terminal_width)
+    swarm = current_swarm_view(state)
+    header = SwarmBox.render_header(swarm, state.terminal_width)
     IO.puts(header)
 
     # Render all agent lines registered so far
-    agents_output = SwarmBox.render_agents(tracker_state.agents, tracker_state.order)
+    agents_output = SwarmBox.render_agents(swarm)
     if agents_output != "", do: IO.puts(agents_output)
-
-    children_count =
-      tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end) |> length()
 
     {:noreply,
      %{
        state
        | swarm_header_rendered: true,
          swarm_header_timer: nil,
-         swarm_lines_rendered: children_count
+         swarm_lines_rendered: length(swarm.agents)
      }}
   end
 
@@ -752,17 +785,12 @@ defmodule JidoClaw.Display do
   end
 
   defp render_swarm_update(state) do
-    tracker_state = JidoClaw.AgentTracker.get_state()
-    children = tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end)
+    swarm = current_swarm_view(state)
 
-    if children != [] do
+    if swarm.agents != [] do
       # Print a compact status line
-      _running = Enum.count(children, fn {_, a} -> a.status == :running end)
-      done = Enum.count(children, fn {_, a} -> a.status == :done end)
-      total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
-
       status =
-        "\e[2m  [swarm: #{done}/#{length(children)} done · #{StatusBar.format_tokens(total_tokens)} tokens]\e[0m"
+        "\e[2m  [swarm: #{swarm.done_count}/#{length(swarm.agents)} done · #{StatusBar.format_tokens(swarm.total_tokens)} tokens]\e[0m"
 
       IO.write("\e[2K\r#{status}")
     end
@@ -770,19 +798,38 @@ defmodule JidoClaw.Display do
     state
   end
 
-  defp check_swarm_complete(_state) do
-    tracker_state = JidoClaw.AgentTracker.get_state()
-    children = tracker_state.agents |> Enum.reject(fn {id, _} -> id == "main" end)
+  defp check_swarm_complete(state) do
+    swarm = current_swarm_view(state)
+    children = swarm.agents
 
-    all_done = Enum.all?(children, fn {_, a} -> a.status in [:done, :error] end)
+    all_done = Enum.all?(children, fn agent -> agent.status in [:done, :error] end)
 
     if all_done and children != [] do
-      IO.puts(SwarmBox.render_summary(tracker_state.agents))
+      IO.puts(SwarmBox.render_summary(swarm))
     end
   end
 
   defp render_status_bar_string(state) do
-    tracker_state = JidoClaw.AgentTracker.get_state()
-    StatusBar.render(state, tracker_state, state.terminal_width)
+    StatusBar.render(state, current_swarm_view(state), state.terminal_width)
+  end
+
+  defp current_swarm_view(state) do
+    case SwarmView.list(swarm_scope(state)) do
+      {:ok, view} ->
+        view
+
+      {:error, _} ->
+        %SwarmView{agents: [], generated_at: DateTime.utc_now()}
+    end
+  end
+
+  defp swarm_scope(state) do
+    %{
+      tenant_id: state.tenant_id,
+      session_id: state.session_id,
+      session_uuid: state.session_uuid,
+      workspace_id: state.workspace_id,
+      workspace_uuid: state.workspace_uuid
+    }
   end
 end

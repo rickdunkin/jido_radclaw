@@ -57,5 +57,22 @@ defmodule JidoClaw.Tools.AgentStatusTest do
 
       assert code == :session_not_resolved
     end
+
+    test "existing live session is hidden from another tenant", %{
+      tenant_id: tid,
+      session: session
+    } do
+      other_tenant = seed_tenant("agent-status-other")
+
+      {:ok, _pid} =
+        JidoClaw.Session.Supervisor.ensure_session(tid, session.external_id,
+          actor: actor_for(tid)
+        )
+
+      :ok = SessionWorker.set_session_uuid(tid, session.external_id, session.id)
+
+      assert {:error, %{code: :session_not_resolved}} =
+               AgentStatus.run(%{session_id: session.external_id}, ctx(other_tenant))
+    end
   end
 end

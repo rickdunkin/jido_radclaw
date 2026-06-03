@@ -36,24 +36,26 @@ defmodule JidoClaw.Tools.SpawnAgent do
   alias JidoClaw.AgentTracker
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
+  alias JidoClaw.Tools.SwarmScope
 
   @impl true
   def run(params, context) do
     template_name = params.template
     task = params.task
 
-    with :ok <- enforce_spawn_limits(context),
+    with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
+         :ok <- enforce_spawn_limits(context, scope_opts),
          {:ok, tag} <- agent_id_for(template_name, params) do
-      spawn_from_template(template_name, task, tag, context)
+      spawn_from_template(template_name, task, tag, context, scope_opts)
     end
   end
 
-  defp spawn_from_template(template_name, task, tag, context) do
+  defp spawn_from_template(template_name, task, tag, context, scope_opts) do
     case templates().get(template_name) do
       {:ok, template} ->
         case jido_runtime().start_agent(template.module, id: tag) do
           {:ok, pid} ->
-            register_spawned_agent(pid, template, template_name, task, tag, context)
+            register_spawned_agent(pid, template, template_name, task, tag, context, scope_opts)
 
           {:error, reason} ->
             {:error,
@@ -68,7 +70,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
     end
   end
 
-  defp register_spawned_agent(pid, template, template_name, task, tag, context) do
+  defp register_spawned_agent(pid, template, template_name, task, tag, context, scope_opts) do
     visibility = Map.get(template, :forward_context, :public)
 
     child_tool_context =
@@ -77,7 +79,9 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
     request_id = JidoClaw.register_child_correlation(child_tool_context)
 
-    case agent_tracker().register(tag, pid, template_name, task, request_id: request_id) do
+    tracker_opts = Keyword.put(scope_opts, :request_id, request_id)
+
+    case agent_tracker().register(tag, pid, template_name, task, tracker_opts) do
       :ok ->
         spawn(fn ->
           SubagentTranscript.record_task(child_tool_context, request_id, task)
@@ -144,8 +148,8 @@ defmodule JidoClaw.Tools.SpawnAgent do
     )
   end
 
-  defp enforce_spawn_limits(context) do
-    current_children = agent_tracker().child_count()
+  defp enforce_spawn_limits(context, scope_opts) do
+    current_children = agent_tracker().child_count(scope_opts)
     child_limit = max_children()
     current_depth = swarm_depth(context)
     depth_limit = max_depth()
@@ -154,7 +158,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
       current_children >= child_limit ->
         {:error,
          Error.execution_error(
-           "Maximum concurrent child agents reached (#{current_children}/#{child_limit}).",
+           "Maximum concurrent child agents for this scope reached (#{current_children}/#{child_limit}).",
            phase: :spawn_limit,
            details: %{reason: :max_children, limit: child_limit, current: current_children}
          )}

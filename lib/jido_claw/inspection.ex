@@ -237,7 +237,7 @@ defmodule JidoClaw.Inspection do
   end
 
   def inspect_workflow(id) when is_binary(id) do
-    case safe(fn -> WorkflowRun.by_id(id) end) do
+    case safe(fn -> WorkflowRun.by_id_global(id) end) do
       %WorkflowRun{} = run -> {:ok, workflow_summary(run)}
       _ -> {:error, :not_found}
     end
@@ -417,7 +417,7 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
-      workflows: active_workflows()
+      workflows: active_workflows(Keyword.get(opts, :tenant_id))
     }
   end
 
@@ -487,7 +487,7 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
-      workflows: active_workflows(),
+      workflows: active_workflows(Keyword.get(opts, :tenant_id)),
       request_id: tracker_request_id(tracker, trace)
     }
   end
@@ -542,7 +542,7 @@ defmodule JidoClaw.Inspection do
       handoffs: handoff_view(owner),
       message_count: safe_worker_message_count(tenant_id, session_id),
       subagents: child_subagents(),
-      workflows: active_workflows()
+      workflows: active_workflows(tenant_id)
     }
   end
 
@@ -569,7 +569,7 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
-      workflows: active_workflows(),
+      workflows: active_workflows(tenant_id, actor),
       request_id: trace_field(trace, :request_id)
     }
   end
@@ -595,7 +595,7 @@ defmodule JidoClaw.Inspection do
       interrupt: latest_interrupt(trace),
       error: latest_error(trace),
       subagents: child_subagents(),
-      workflows: active_workflows(),
+      workflows: active_workflows(tenant_id, actor),
       request_id: trace_field(trace, :request_id)
     }
   end
@@ -755,21 +755,31 @@ defmodule JidoClaw.Inspection do
     end
   end
 
-  defp active_workflows do
-    case safe(fn -> WorkflowRun.list_active() end) do
-      runs when is_list(runs) ->
-        Enum.map(runs, fn run ->
-          %{
-            id: run.id,
-            name: run.name,
-            status: run.status,
-            started_at: run.started_at
-          }
-        end)
+  # `WorkflowRun` is tenant-required (`global? false` + the standard read
+  # policy), so the listing must be scoped. A binary tenant derives a system
+  # actor when none is threaded in; genuinely tenant-less inspection paths
+  # (a bare pid, or a map input with no `:tenant_id`) can't scope the read,
+  # so they stay empty (best-effort, like the other safe/1 fields).
+  defp active_workflows(tenant_id, actor \\ nil)
 
-      _ ->
-        []
+  defp active_workflows(tenant_id, actor) when is_binary(tenant_id) do
+    actor = actor || Actor.system(tenant_id)
+
+    case safe(fn -> WorkflowRun.list_active(tenant: tenant_id, actor: actor) end) do
+      runs when is_list(runs) -> Enum.map(runs, &workflow_entry/1)
+      _ -> []
     end
+  end
+
+  defp active_workflows(_tenant_id, _actor), do: []
+
+  defp workflow_entry(run) do
+    %{
+      id: run.id,
+      name: run.name,
+      status: run.status,
+      started_at: run.started_at
+    }
   end
 
   # `:memory` is sourced from `Memory.namespace_info/1`, which resolves the

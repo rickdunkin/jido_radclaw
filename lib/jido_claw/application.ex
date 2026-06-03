@@ -159,9 +159,6 @@ defmodule JidoClaw.Application do
       # Forge sandbox execution engine
       supervisor_child(JidoClaw.Forge.Supervisor, forge_children(), :rest_for_one),
 
-      # Orchestration workflow feed
-      JidoClaw.Orchestration.RunSummaryFeed,
-
       # Code Server runtime management
       supervisor_child(JidoClaw.CodeServer.Supervisor, code_server_children(), :rest_for_one),
 

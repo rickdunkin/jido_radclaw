@@ -213,8 +213,21 @@ defmodule JidoClaw.CLI.Repl do
     # Bind agent process to session for crash tracking
     bind_agent_to_worker(tenant_id, session_id, pid)
 
-    AgentTracker.register("main", pid, nil, nil)
+    AgentTracker.register("main", pid, nil, nil,
+      tenant_id: tenant_id,
+      session_id: session_id,
+      session_uuid: session_uuid,
+      workspace_uuid: workspace_uuid
+    )
+
     configure_display_from_config(config, model)
+
+    Display.set_scope(%{
+      tenant_id: tenant_id,
+      session_id: session_id,
+      session_uuid: session_uuid,
+      workspace_uuid: workspace_uuid
+    })
 
     profile = resolve_profile(session_id)
     Display.set_profile(profile)

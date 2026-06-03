@@ -126,9 +126,11 @@ defmodule JidoClaw.Forge.Harness do
 
     state = kickoff_session(state, spec, resume_checkpoint_id)
 
-    # Join :pg group for cluster-wide session discovery.
-    # Only after a successful claim — failed claims must not appear in :pg.
-    maybe_pg_join(session_id)
+    # Join :pg group for cluster-wide session discovery — but only for
+    # sessions that actually claimed ownership. Failed claims never reach
+    # here, and ephemeral no-claim runs (`claim: false`) must not advertise
+    # ownership they don't hold, so `maybe_pg_join/2` skips them.
+    maybe_pg_join(session_id, spec)
 
     {:ok, state}
   end
@@ -136,6 +138,16 @@ defmodule JidoClaw.Forge.Harness do
   defp stop_unclaimed_session(session_id, :already_claimed) do
     Logger.warning("[Forge.Harness] Session #{session_id} already claimed by another node")
     {:stop, :already_claimed}
+  end
+
+  # `Persistence.claim_session/3` returns `{:error, :scope_required}` when the
+  # spec carries no tenant/workspace scope. A normal (claiming) spec missing
+  # its scope is a programmer error — stop loudly rather than crash with a
+  # FunctionClauseError. (Workspace-less runs opt out of claiming entirely via
+  # `claim: false`; see `maybe_claim_session/3`.)
+  defp stop_unclaimed_session(session_id, :scope_required) do
+    Logger.error("[Forge.Harness] Session #{session_id} spec is missing tenant/workspace scope")
+    {:stop, {:invalid_spec, :scope_required}}
   end
 
   defp stop_invalid_resources(session_id, reasons) do
@@ -1305,6 +1317,15 @@ defmodule JidoClaw.Forge.Harness do
   # Session claim — atomic ownership via advisory lock + unique constraint.
   # Both fresh starts and recovery must go through the claim to prevent
   # duplicate owners across the cluster.
+  #
+  # Ephemeral no-claim run: a workspace-less spec (e.g. user/project-scope
+  # memory consolidation) has no workspace_id to satisfy the Forge session
+  # scope, so it opts out of claiming entirely. No DB row, no recovery, no
+  # history, no ForgeView entry, and no :pg ownership (see
+  # start_claimed_session). The sandbox still runs; every persist/2 call
+  # no-ops because find_session never finds a row.
+  defp maybe_claim_session(_session_id, %{claim: false}, _resume_checkpoint_id), do: :ok
+
   defp maybe_claim_session(session_id, spec, nil = _fresh_start) do
     Persistence.claim_session(session_id, spec)
   end
@@ -1315,7 +1336,11 @@ defmodule JidoClaw.Forge.Harness do
 
   # Clustering helpers — :pg group membership for cross-node session discovery
 
-  defp maybe_pg_join(session_id) do
+  # No-claim ephemeral runs don't own the session, so they must not join the
+  # ownership group — a cluster lookup must never route to them.
+  defp maybe_pg_join(_session_id, %{claim: false}), do: :ok
+
+  defp maybe_pg_join(session_id, _spec) do
     if Application.get_env(:jido_claw, :cluster_enabled, false) do
       :pg.join(:jido_claw, {:forge_session, session_id}, self())
     end

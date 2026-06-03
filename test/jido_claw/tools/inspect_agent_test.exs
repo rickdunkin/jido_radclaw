@@ -31,19 +31,6 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       assert "read_file" in output.tool_names
     end
 
-    test "kind: auto falls back to agent_id when not a module", %{tenant_id: tid} do
-      assert {:ok, output} =
-               InspectAgent.run(
-                 %{
-                   target: "not-a-real-module-#{System.unique_integer([:positive])}",
-                   kind: "auto"
-                 },
-                 ctx(tid)
-               )
-
-      assert output.input_kind == "agent_id"
-    end
-
     test "kind: request routes through inspect_request and surfaces tenant_required when missing",
          %{tenant_id: _tid} do
       assert {:error, %{code: :tenant_required}} =
@@ -201,18 +188,22 @@ defmodule JidoClaw.Tools.InspectAgentTest do
     end
   end
 
-  describe "run/2 — kind: workflow is no longer dispatchable" do
-    test "calling run/2 directly with kind: workflow falls through to :unknown_kind", %{
+  describe "run/2 — removed kinds are no longer dispatchable" do
+    test "calling run/2 directly with removed kinds falls through to :unknown_kind", %{
       tenant_id: tid
     } do
       # Direct run/2 bypasses Jido schema validation, so this exercises the
-      # removed dispatch("workflow", ...) clause → catch-all → normalized.
-      assert {:error, %{code: :unknown_kind}} =
-               InspectAgent.run(%{target: "anything", kind: "workflow"}, ctx(tid))
+      # removed dispatch clauses → catch-all → normalized.
+      for kind <- ["auto", "agent_id", "workflow"] do
+        assert {:error, %{code: :unknown_kind}} =
+                 InspectAgent.run(%{target: "anything", kind: kind}, ctx(tid))
+      end
     end
 
-    test "validate_params rejects kind: workflow at the schema enum layer" do
-      assert {:error, _} = InspectAgent.validate_params(%{target: "anything", kind: "workflow"})
+    test "validate_params rejects removed kinds at the schema enum layer" do
+      for kind <- ["auto", "agent_id", "workflow"] do
+        assert {:error, _} = InspectAgent.validate_params(%{target: "anything", kind: kind})
+      end
     end
   end
 

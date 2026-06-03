@@ -36,7 +36,10 @@ defmodule JidoClaw.MCPServer do
 
         # Introspection tools
         JidoClaw.Tools.AgentStatus,
-        JidoClaw.Tools.InspectAgent
+        JidoClaw.Tools.InspectAgent,
+        JidoClaw.Tools.SwarmStatus,
+        JidoClaw.Tools.ForgeStatus,
+        JidoClaw.Tools.WorkflowStatus
       ]
     }
 end

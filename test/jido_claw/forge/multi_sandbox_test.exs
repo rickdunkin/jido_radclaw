@@ -600,9 +600,13 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       # Re-enable persistence for these tests and check out the DB
       Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: true)
       :ok = Sandbox.checkout(JidoClaw.Repo)
+      tenant_id = JidoClaw.TenantCase.seed_tenant("forge-multi")
+      {:ok, workspace} = JidoClaw.TenantCase.seed_workspace(tenant_id)
+      Process.put(:forge_multi_scope, %{tenant_id: tenant_id, workspace_id: workspace.id})
 
       on_exit(fn ->
         Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
+        Process.delete(:forge_multi_scope)
       end)
 
       :ok
@@ -613,6 +617,8 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
 
       Persistence.record_session_started(session_id, %{
         runner: :shell,
+        tenant_id: forge_multi_scope().tenant_id,
+        workspace_id: forge_multi_scope().workspace_id,
         resources: [
           %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
         ]
@@ -640,7 +646,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       session_id = "multi_sbx_ckpt_#{:erlang.unique_integer([:positive])}"
 
       # Record a session so checkpoint has a parent
-      Persistence.record_session_started(session_id, %{runner: :shell})
+      Persistence.record_session_started(session_id, forge_multi_spec(%{runner: :shell}))
 
       extra = %{worker: %{sandbox: :fake}, gpu: %{sandbox: :docker_sandbox}}
 
@@ -662,6 +668,14 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert Map.has_key?(recovered_extra, "worker") or Map.has_key?(recovered_extra, :worker)
       assert Map.has_key?(recovered_extra, "gpu") or Map.has_key?(recovered_extra, :gpu)
     end
+  end
+
+  defp forge_multi_spec(attrs) do
+    Map.merge(forge_multi_scope(), attrs)
+  end
+
+  defp forge_multi_scope do
+    Process.get(:forge_multi_scope)
   end
 
   describe "multiple sandbox operations" do

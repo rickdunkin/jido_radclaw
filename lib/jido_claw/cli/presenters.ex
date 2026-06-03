@@ -8,7 +8,7 @@ defmodule JidoClaw.CLI.Presenters do
   `[String.t()]`. No direct reads of globally named processes — fetching
   data is the caller's responsibility. That keeps the module
   unit-testable without standing up `JidoClaw.Memory`,
-  `JidoClaw.AgentTracker`, `JidoClaw.Solutions.Solution`, or
+  `JidoClaw.RuntimeOverview`, `JidoClaw.Solutions.Solution`, or
   `JidoClaw.Stats` fixtures.
 
   The REPL slash commands in `lib/jido_claw/cli/commands.ex`
@@ -24,25 +24,38 @@ defmodule JidoClaw.CLI.Presenters do
 
   `snapshot`:
 
-    * `:tracker`  — `JidoClaw.AgentTracker.get_state/0` (map with
-      `:agents` and `:order`).
-    * `:sessions` — `{:ok, list} | {:error, reason}`. On error the
-      per-session breakdown is replaced with a single
-      `"sessions unavailable: <reason>"` line.
-    * `:stats`    — `JidoClaw.Stats.get/0` snapshot. `:uptime_seconds`
-      and `:agents_spawned` are read from here rather than recomputed.
+    * `:overview` — `JidoClaw.RuntimeOverview.snapshot/1`, carrying the
+      tenant-scoped swarm, Forge, workflow, session-count, and uptime
+      projections.
     * `:profile`  — optional active profile name for the session this
       status is being emitted for. Defaults to `"default"` when
       absent so callers that don't have per-session plumbing aren't
       forced to pass it.
   """
   @spec status_lines(%{
-          :tracker => %{agents: map(), order: list()},
-          :sessions => {:ok, list()} | {:error, term()},
-          :stats => map(),
+          :overview => JidoClaw.RuntimeOverview.t(),
           optional(:profile) => String.t(),
           optional(:ssh_sessions) => non_neg_integer()
         }) :: [String.t()]
+  def status_lines(%JidoClaw.RuntimeOverview{} = overview) do
+    status_lines(%{overview: overview, profile: "default", ssh_sessions: 0})
+  end
+
+  def status_lines(%{overview: %JidoClaw.RuntimeOverview{} = overview} = snapshot) do
+    spawned = get_in(overview.uptime, [:agents_spawned]) || 0
+    uptime = get_in(overview.uptime, [:seconds]) || 0
+    profile = Map.get(snapshot, :profile, "default")
+    ssh_count = Map.get(snapshot, :ssh_sessions, 0)
+
+    [
+      "JidoClaw Status",
+      "  agents      #{overview.swarm.running_count} running / #{spawned} spawned",
+      "  uptime      #{format_elapsed(uptime)}",
+      "  profile     #{profile}",
+      "  ssh         #{ssh_count} active session(s)"
+    ] ++ forge_lines(overview.forge)
+  end
+
   def status_lines(%{tracker: tracker, sessions: sessions, stats: stats} = snapshot) do
     children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
     running = Enum.count(children, fn {_, a} -> a.status == :running end)
@@ -136,6 +149,19 @@ defmodule JidoClaw.CLI.Presenters do
 
   defp session_lines({:error, reason}) do
     ["  forge       sessions unavailable: #{format_reason(reason)}"]
+  end
+
+  defp forge_lines(%JidoClaw.ForgeView{sessions: sessions}) do
+    header = "  forge       #{length(sessions)} active session(s)"
+
+    body =
+      Enum.map(sessions, fn session ->
+        name = Map.get(session, :session_id, "—")
+        phase = Map.get(session, :phase, :unknown)
+        "    - #{name} (#{phase})"
+      end)
+
+    [header | body]
   end
 
   defp format_reason(reason) when is_binary(reason), do: reason
