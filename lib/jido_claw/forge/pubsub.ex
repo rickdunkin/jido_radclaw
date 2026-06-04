@@ -2,7 +2,6 @@ defmodule JidoClaw.Forge.PubSub do
   @moduledoc false
   alias JidoClaw.Security.Redaction.ChannelRedaction
   alias JidoClaw.Security.Redaction.Patterns
-  require Logger
 
   @sessions_topic "forge:sessions"
 

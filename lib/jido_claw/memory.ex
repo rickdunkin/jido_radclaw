@@ -281,7 +281,6 @@ defmodule JidoClaw.Memory do
 
     tags =
       case type do
-        nil -> []
         binary when is_binary(binary) -> [binary]
         _ -> []
       end
@@ -312,8 +311,6 @@ defmodule JidoClaw.Memory do
       ])
     end)
   end
-
-  defp duplicate_key?(_), do: false
 
   # ---------------------------------------------------------------------------
   # Internal forget / list helpers — case-by-case scope dispatch since

@@ -46,8 +46,6 @@ defmodule JidoClaw.Workflows.StepAction do
       ]
     ]
 
-  require Logger
-
   alias Jido.AgentServer
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript

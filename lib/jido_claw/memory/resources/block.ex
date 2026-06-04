@@ -52,7 +52,6 @@ defmodule JidoClaw.Memory.Block do
 
   use JidoClaw.Resource, domain: JidoClaw.Memory.Domain, primary_read_warning?: false
 
-  require Ash.Query
   import Ash.Expr
 
   alias Ash.Changeset
@@ -437,7 +436,6 @@ defmodule JidoClaw.Memory.Block do
     using `Memory.Scope.chain/1` order.
     """
     use Ash.Resource.Preparation
-    require Ash.Query
 
     alias JidoClaw.Memory.Block
 
@@ -455,7 +453,6 @@ defmodule JidoClaw.Memory.Block do
   defmodule Preparations.HistoryForLabel do
     @moduledoc false
     use Ash.Resource.Preparation
-    require Ash.Query
 
     alias JidoClaw.Memory.Block
 

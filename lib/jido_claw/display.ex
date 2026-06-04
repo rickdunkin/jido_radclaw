@@ -12,7 +12,6 @@ defmodule JidoClaw.Display do
   """
 
   use GenServer
-  require Logger
 
   alias JidoClaw.CLI.{Branding, Formatter, Terminal}
   alias JidoClaw.Display.{StatusBar, SwarmBox}

@@ -42,7 +42,6 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
   """
 
   use GenServer
-  require Logger
 
   @table :jido_claw_request_correlations
 

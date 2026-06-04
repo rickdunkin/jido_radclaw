@@ -227,8 +227,6 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
     |> Enum.any?(&String.contains?(&1, "unique_import_hash"))
   end
 
-  defp duplicate_import_hash?(_), do: false
-
   defp parse_role("user"), do: :user
   defp parse_role("assistant"), do: :assistant
   defp parse_role("system"), do: :system

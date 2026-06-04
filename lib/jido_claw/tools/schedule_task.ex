@@ -65,8 +65,6 @@ defmodule JidoClaw.Tools.ScheduleTask do
       ]
     ]
 
-  require Logger
-
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.NextRun

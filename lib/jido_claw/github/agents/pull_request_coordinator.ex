@@ -18,6 +18,11 @@ defmodule JidoClaw.GitHub.Agents.PullRequestCoordinator do
       "[PRCoordinator] Attempt #{attempt}/#{@max_attempts} for #{event.repo.full_name}##{event.issue.number}"
     )
 
+    # NOTE: generate_patch/validate_quality/submit_pr are still stubs that always
+    # return {:ok, _}, so on Elixir 1.20 the `else` branches below are flagged as
+    # currently-unreachable (`--warnings-as-errors` trips on them). They are kept
+    # intentionally — they encode the retry-on-quality-failure contract for when
+    # those helpers are implemented with real, fallible work.
     with {:ok, patch} <- generate_patch(event, triage, research),
          {:ok, quality} <- validate_quality(patch),
          {:ok, pr} <- submit_pr(event, patch) do

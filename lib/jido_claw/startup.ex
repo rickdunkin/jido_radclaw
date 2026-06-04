@@ -7,8 +7,6 @@ defmodule JidoClaw.Startup do
   injection path.
   """
 
-  require Logger
-
   alias JidoClaw.Agent.Prompt
   alias JidoClaw.Reasoning.PipelineStore
   alias JidoClaw.Reasoning.StrategyStore

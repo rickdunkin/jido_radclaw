@@ -19,8 +19,6 @@ defmodule JidoClaw.VFS.Resolver do
   compatibility in tool modules.
   """
 
-  require Logger
-
   alias Jido.Shell.VFS, as: ShellVFS
   alias Jido.Shell.VFS.MountTable
   alias Jido.VFS, as: JidoVFS

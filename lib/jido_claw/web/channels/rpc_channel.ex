@@ -1,7 +1,6 @@
 defmodule JidoClaw.Web.RpcChannel do
   @moduledoc false
   use Phoenix.Channel
-  require Logger
 
   @impl true
   def join("rpc:lobby", _payload, socket) do

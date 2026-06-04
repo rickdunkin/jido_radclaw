@@ -21,8 +21,6 @@ defmodule JidoClaw.Audit.Event do
     authorizers: [Ash.Policy.Authorizer],
     primary_read_warning?: false
 
-  require Ash.Query
-
   alias Ash.Changeset
 
   @event_kinds [

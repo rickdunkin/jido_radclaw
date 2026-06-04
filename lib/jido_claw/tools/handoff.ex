@@ -132,7 +132,7 @@ defmodule JidoClaw.Tools.Handoff do
   # (the helper shape) or merged flat into the call context. Read from both,
   # preferring nested.
   defp extract_context(context) do
-    tc = Map.get(context, :tool_context) || context || %{}
+    tc = Map.get(context, :tool_context) || context
 
     raw = %{
       tenant_id: lookup(tc, context, :tenant_id),

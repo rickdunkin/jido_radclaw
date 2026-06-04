@@ -70,6 +70,10 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
 
   test "registered agent tools use the shared redaction wrapper" do
     for module <- JidoClaw.Agent.tool_modules() do
+      # function_exported?/3 does not load the module, and tool modules are
+      # loaded lazily — ensure each is loaded before introspecting its markers.
+      Code.ensure_loaded!(module)
+
       assert function_exported?(module, :__jidoclaw_tool_output_redacted__, 0),
              "#{inspect(module)} must use JidoClaw.Tools.Action"
     end
@@ -77,6 +81,8 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
 
   test "registered agent tools use the shared MCP scope wrapper" do
     for module <- JidoClaw.Agent.tool_modules() do
+      Code.ensure_loaded!(module)
+
       assert function_exported?(module, :__jidoclaw_tool_mcp_scoped__, 0),
              "#{inspect(module)} must use JidoClaw.Tools.Action"
     end

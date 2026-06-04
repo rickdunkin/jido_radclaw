@@ -154,7 +154,7 @@ defmodule JidoClaw.Reasoning.Compactor.Snapshot do
     if byte_size(string) <= limit do
       string
     else
-      <<head::binary-size(limit), _rest::binary>> = string
+      <<head::binary-size(^limit), _rest::binary>> = string
       head <> "…"
     end
   end

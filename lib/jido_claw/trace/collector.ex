@@ -54,7 +54,6 @@ defmodule JidoClaw.Trace.Collector do
   """
 
   use GenServer
-  require Logger
 
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache

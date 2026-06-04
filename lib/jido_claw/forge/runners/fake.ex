@@ -22,8 +22,6 @@ defmodule JidoClaw.Forge.Runners.Fake do
 
   alias JidoClaw.Forge.Runner
 
-  require Logger
-
   @impl true
   def init(_client, config) do
     proposals = Map.get(config, :fake_proposals, [])

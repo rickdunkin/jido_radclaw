@@ -274,7 +274,6 @@ defmodule JidoClaw.AgentView do
   end
 
   defp workspace_id_from(%ConversationsSession{workspace_id: id}), do: id
-  defp workspace_id_from(_), do: nil
 
   # ---------------------------------------------------------------------------
   # Snapshot assembly

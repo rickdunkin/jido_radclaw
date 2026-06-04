@@ -243,7 +243,7 @@ defmodule JidoClaw.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ash.setup --quiet", "test"],
       precommit: [
-        "compile --warnings-as-errors",
+        "jidoclaw.compile_check",
         "jidoclaw.system_prompt.check",
         "deps.unlock --unused",
         "format",

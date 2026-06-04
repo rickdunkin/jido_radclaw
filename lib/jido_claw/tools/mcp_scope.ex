@@ -246,8 +246,6 @@ defmodule JidoClaw.Tools.MCPScope do
     |> Enum.any?(&String.contains?(&1, "unique_live_tool_row"))
   end
 
-  defp duplicate_key?(_), do: false
-
   defp mcp_default_scope do
     case Application.get_env(:jido_claw, :jido_claw_mcp_default_scope) do
       scope when is_map(scope) ->

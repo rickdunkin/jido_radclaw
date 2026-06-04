@@ -44,8 +44,6 @@ defmodule JidoClaw.Security.CrossTenantFk do
   bypass cross-tenant validation while the debt is outstanding.
   """
 
-  require Logger
-
   @type fk_spec ::
           {atom(), module(), module()}
           | {atom(), :no_tenant_column, nil}

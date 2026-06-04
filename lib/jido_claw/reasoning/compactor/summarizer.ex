@@ -44,8 +44,6 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
   `summarizer_max_retries * (summarizer_timeout_ms + summarizer_retry_backoff_ms)`.
   """
 
-  require Logger
-
   alias JidoClaw.Error
   alias JidoClaw.Error.ExecutionError
   alias JidoClaw.Reasoning.Compactor.Config
@@ -206,7 +204,7 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
     if byte_size(text) <= limit do
       text
     else
-      <<head::binary-size(limit), _rest::binary>> = text
+      <<head::binary-size(^limit), _rest::binary>> = text
       head
     end
   end
