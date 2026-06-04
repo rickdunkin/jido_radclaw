@@ -38,11 +38,17 @@ defmodule JidoClaw.Telemetry do
       summary("jido_claw.tool.execute.duration", unit: {:native, :millisecond}),
       counter("jido_claw.tool.execute.exception.total"),
 
-      # Cron metrics
-      counter("jido_claw.cron.job.start.total"),
-      counter("jido_claw.cron.job.stop.total"),
-      summary("jido_claw.cron.job.duration", unit: {:native, :millisecond}),
-      counter("jido_claw.cron.job.exception.total"),
+      # Cron metrics — tags resolve from the shared event metadata
+      # Cron.Worker stamps on every tick (see emit_cron_* below).
+      # `dispatch_target` is the *effective* path, so a :system_job whose
+      # `target` defaults to :agent still tags `dispatch_target: :mfa`.
+      counter("jido_claw.cron.job.start.total", tags: [:mode, :target, :dispatch_target]),
+      counter("jido_claw.cron.job.stop.total", tags: [:mode, :target, :dispatch_target]),
+      summary("jido_claw.cron.job.duration",
+        unit: {:native, :millisecond},
+        tags: [:mode, :target, :dispatch_target]
+      ),
+      counter("jido_claw.cron.job.exception.total", tags: [:mode, :target, :dispatch_target]),
 
       # Memory consolidator metrics
       counter("jido_claw.memory.consolidator.run.total",
@@ -162,6 +168,10 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  # Cron emit helpers pass metadata through unchanged. Cron.Worker builds one
+  # map per tick — `job_id`, `tenant_id`, `mode`, `target`, `dispatch_target` —
+  # and reuses it for start/stop/exception, so the `tags:` on the cron metrics
+  # above always resolve and exceptions carry `tenant_id` too.
   def emit_cron_start(metadata) do
     :telemetry.execute(
       [:jido_claw, :cron, :job, :start],

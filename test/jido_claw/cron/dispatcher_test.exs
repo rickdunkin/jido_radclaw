@@ -140,6 +140,27 @@ defmodule JidoClaw.Cron.DispatcherTest do
     refute_received {:mfa_ran, _}
   end
 
+  describe "dispatch_target/1 (effective path; single source of truth for routing + telemetry)" do
+    test "mode: :system_job => :mfa regardless of target (legacy precedence)" do
+      assert Dispatcher.dispatch_target(%{mode: :system_job, target: :agent}) == :mfa
+      assert Dispatcher.dispatch_target(%{mode: :system_job, target: :workflow}) == :mfa
+      assert Dispatcher.dispatch_target(%{mode: :system_job, target: :mfa}) == :mfa
+    end
+
+    test "target: :workflow => :workflow" do
+      assert Dispatcher.dispatch_target(%{mode: :main, target: :workflow}) == :workflow
+    end
+
+    test "target: :mfa => :mfa" do
+      assert Dispatcher.dispatch_target(%{mode: :main, target: :mfa}) == :mfa
+    end
+
+    test "otherwise => :agent" do
+      assert Dispatcher.dispatch_target(%{mode: :main, target: :agent}) == :agent
+      assert Dispatcher.dispatch_target(%{mode: :isolated, target: :agent}) == :agent
+    end
+  end
+
   defp restore_env(key, :error), do: Application.delete_env(:jido_claw, key)
   defp restore_env(key, {:ok, value}), do: Application.put_env(:jido_claw, key, value)
 end

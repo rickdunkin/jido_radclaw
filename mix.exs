@@ -191,6 +191,11 @@ defmodule JidoClaw.MixProject do
 
       # Scheduling
       {:crontab, "~> 1.1"},
+      # Timezone database for cron firing (JidoClaw.Cron.NextRun). Transitive
+      # via :jido; declared explicitly to decouple from jido's tree. Ships
+      # priv/data.etf (IANA v2026b) and defaults to `update: :disabled` — no
+      # network/fs at runtime. Already resolved, so `deps.unlock --unused` keeps it.
+      {:time_zone_info, "~> 0.7"},
 
       # Clustering
       {:libcluster, "~> 3.4"},

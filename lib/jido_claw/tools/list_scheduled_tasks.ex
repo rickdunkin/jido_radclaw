@@ -30,7 +30,7 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
           schedule_str = format_schedule(job.schedule)
           next_str = if job.next_run, do: DateTime.to_iso8601(job.next_run), else: "N/A"
 
-          "- #{job.id} [#{job.status}]: \"#{job.task}\" | #{schedule_str} | mode: #{job.mode} | target: #{format_target(job)} | next: #{next_str} | failures: #{job.failure_count}"
+          "- #{job.id} [#{job.status}]: \"#{job.task}\" | #{schedule_str} | mode: #{job.mode} | target: #{format_target(job)} | next: #{next_str} | failures: #{job.failure_count}#{format_tz(job)}"
         end)
 
       {:ok, %{result: "Scheduled tasks (#{length(jobs)}):\n#{formatted}"}}
@@ -40,6 +40,11 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
   defp format_target(%{target: :workflow, workflow_name: name}), do: "workflow (#{name})"
   defp format_target(%{target: target}) when not is_nil(target), do: to_string(target)
   defp format_target(_), do: "agent"
+
+  # Non-UTC only, mirroring the CLI /cron display — keeps default output clean.
+  # Worker state carries :timezone, so jobs scheduled with one surface it here.
+  defp format_tz(%{timezone: tz}) when is_binary(tz) and tz != "Etc/UTC", do: " | tz: #{tz}"
+  defp format_tz(_), do: ""
 
   defp format_schedule({:cron, expr}), do: "cron: #{expr}"
   defp format_schedule({:every, ms}) when ms >= 86_400_000, do: "every #{div(ms, 86_400_000)}d"

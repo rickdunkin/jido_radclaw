@@ -266,17 +266,29 @@ Key facts:
 
 ### T2-5. Schedule kind switch (`:agent | :workflow`)
 
-**Status (2026-05-26)**: PARTIAL on the execution-target axis. `lib/jido_claw/cron/` + `lib/jido_claw/platform/cron/` is much more production-shaped than Jidoka's beta in-memory scheduler (multi-tenant, durable, Postgres-backed, failure-tolerant, auto-disable after 3 failures, stuck detection at 2h). `Cron.Job` has `@schedule_kinds [:cron, :every, :at]` — but those are *schedule-expression* shapes (cron string vs interval vs absolute time), not the *execution-target* shape Jidoka uses. Today the resource carries `mfa_module`/`mfa_function`/`mfa_args` attributes and dispatches MFA only. Tools `ScheduleTask`/`UnscheduleTask`/`ListScheduledTasks` are mature. Jidoka's `kind: :agent | :workflow` shape (chat-turn vs workflow-input dispatch) is the gap.
+**Status (ADOPTED 2026-06-04)**: ADOPTED on the narrowed borrowed capability (scope below). `lib/jido_claw/cron/` + `lib/jido_claw/platform/cron/` is far more production-shaped than Jidoka's beta in-memory scheduler (multi-tenant, durable, Postgres-backed, failure-tolerant, auto-disable after 3 failures). The execution-target axis shipped in `77d852c`: `Cron.Job` carries `target :: :agent | :workflow | :mfa` orthogonal to `mode`, and `Cron.Dispatcher` routes legacy-first (`mode: :system_job` → MFA *before* `target` is read), so every pre-`target` row keeps working and new rows default to `target: :agent`. `:workflow` rows carry a skill name and drive a tracked `JidoClaw.Orchestration.WorkflowRun`. This plan closed the remaining items:
+
+- **Durability counters across dispatch targets** — `run_count`/`last_run_at` stamped by the `:record_run` action after every tick for any persisted job (agent/workflow/mfa), best-effort so a DB hiccup never crashes the worker. (Durability = per-job counters across dispatch targets, not per-kind.)
+- **Timezone-aware cron firing** — found during adoption: the worker hardcoded `DateTime.from_naive!(naive, "Etc/UTC")`, so `"0 9 * * *"` fired at 09:00 **UTC** regardless of the operator's zone. `Cron.Job.timezone` (IANA, default `"Etc/UTC"`) is now read through the pure `JidoClaw.Cron.NextRun` — a hard `try/rescue` boundary around crontab (which parses `@reboot` but then *raises* in the scheduler), with DST-correct fall-back (first occurrence) / spring-forward (instant after the gap) resolution. `"Etc/UTC"` short-circuits to byte-identical legacy behavior. Threaded through the `schedule_task` tool (strict validation), scheduler hydration, and both display surfaces (CLI `/cron`, `list_scheduled_tasks` — non-UTC only).
+- **Target-aware telemetry** — cron events now carry `mode`, `target`, and the *effective* `dispatch_target` (via `Dispatcher.dispatch_target/1`, the single source of truth shared with routing), plus `tenant_id` on exceptions; the four cron metrics tag on `[:mode, :target, :dispatch_target]`. Fixes the consolidator (`mode: :system_job`, `target` defaulting to `:agent`) reporting `:agent` while actually running MFA.
+- **Dead stuck-detection removed** — the `:check_stuck` handler could never fire (no timer scheduled it, status was never set `:running`, and synchronous dispatch blocks the GenServer during a tick); removed along with its misleading moduledoc claim.
+
+**Borrowed capability (narrowed → ADOPTED)**: the execution-target dispatch axis (`:agent | :workflow | :mfa`), per-job durability counters across dispatch targets (`run_count`/`last_run_at`), and — closing the UTC-only bug found during adoption — timezone-aware cron firing. All shipped; the borrowed capability has no in-scope deferrals.
+
+**NOT borrowed from Jidoka's `schedule/2` (out of scope, with rationale)**:
+
+- `overlap: :skip | :allow` + `skip_count` — cannot occur under synchronous single-worker dispatch (a busy worker can't re-tick; the next `:tick` just queues). N/A by architecture.
+- schedule history retention — low value; workflow-target runs are already recorded as `WorkflowRun`.
+
+**Operational notes (not Jidoka features, so not "deferrals" of the borrow)**:
+
+- stuck-detection — removed here (dead code); a real watchdog needs async dispatch (future work).
+- multi-tenant boot-reload — single-user / `"default"`-tenant deployment; not wired for other tenants.
+- rich `/cron add … tz=…` input — deferred; the positional CLI syntax has no tz slot, so the timezone-aware entry point is the `schedule_task` agent tool (the CLI `/cron` help points there).
 
 **Where in jidoka**: `lib/jidoka/schedule.ex` (~375 lines), `lib/jidoka/schedule/{executor,manager}.ex`
 
-**What**: `Jidoka.schedule/2` registers a chat schedule (calls `Jidoka.chat/3` on fire) or workflow schedule (calls `Jidoka.Workflow.run/3` on fire). `prompt`/`input`/`context` resolvers can be a function or MFA tuple. `overlap: :skip|:allow`, `timezone`, history retention.
-
-**Gap**: jido_radclaw's `Cron.Job` dispatches MFA only. Distinguishing agent-turn schedules from workflow schedules at the Ash resource level would clean up consumer code.
-
-**Why it matters**: Small ergonomic win, makes the cron UI clearer. Per-kind observability shapes (run_count/skip_count/last_started_at_ms) are useful enrichments to `Cron.Job` attributes.
-
-**Adoption sketch**: Add a separate `target :: :agent | :workflow | :mfa` attribute to `Cron.Job` (the existing `kind` attribute is taken by the schedule expression). Dispatch through a small adapter that maps target to runtime entrypoint. Extend the `ScheduleTask` tool surface to expose the target. Add the `run_count`/`skip_count` fields if not already present.
+**What (jidoka)**: `Jidoka.schedule/2` registers a chat schedule (calls `Jidoka.chat/3` on fire) or workflow schedule (calls `Jidoka.Workflow.run/3` on fire). `prompt`/`input`/`context` resolvers can be a function or MFA tuple. `overlap: :skip|:allow`, `timezone`, history retention.
 
 ---
 
@@ -374,7 +386,7 @@ T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView/p
 - **T2-4 Inspection** — ADOPTED 2026-05-29. Agent-axis summary (`JidoClaw.inspect_*` delegates + `inspect_agent` tool); the four-source stitching is unified inside one function and works across all input kinds. The last placeholder, `:memory`, is now sourced from `Memory.namespace_info/1` on the three rich builders (the thin map path / MCP `kind: "session"` stays `nil` by design, parallel to `:compaction`; MCP slims `:memory` to `{scope_kind, blocks_count}` — no raw FK/UUID).
 - **T2-3 Subagent context-visibility** — ADOPTED 2026-05-29. Operator-controlled `forward_context` policy on the template, enforced at spawn / follow-up / workflow-step via `ToolContext.apply_visibility/2`; structural keys (`tenant_id`/`session_*`/`project_dir`) are always forwarded; handoff routing is exempt; fail-closed validation in `hydrate_template`; `:public` default = zero behavior change on landing.
 - **T2-2 AgentView/projections** — ADOPTED 2026-05-31. Session-axis `AgentView` remains canonical for conversations; sibling `SwarmView`, `ForgeView`, `WorkflowView`, and `RuntimeOverview` cover the remaining axes. UI/CLI/shell/MCP surfaces now consume tenant-scoped views or scoped ownership checks, and MCP exposes `agent_status`, `swarm_status`, `forge_status`, and `workflow_status`.
-- **T2-5 Schedule kind** — small ergonomic win, can ship anytime.
+- **T2-5 Schedule kind** — ADOPTED 2026-06-04. Execution-target axis (`:agent | :workflow | :mfa`) + per-job durability counters + timezone-aware cron firing (`Cron.NextRun`) + target-aware telemetry; dead stuck-detection removed. Borrowed capability narrowed so it has no in-scope deferrals (overlap/`skip_count` + schedule-history retention explicitly out of scope — see T2-5).
 - **T2-6 Imported agents** — defer until tenant-builder UI is on the roadmap.
 
 ## Relationship to hermes exploration

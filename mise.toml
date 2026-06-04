@@ -1,3 +1,3 @@
 [tools]
 elixir = { version = "latest", install_env = { MIX_HOME = "~/.mix" } }
-erlang = { version = "28.5", install_env = { KERL_CONFIGURE_OPTIONS = "--without-javac" } }
+erlang = { version = "latest", install_env = { KERL_CONFIGURE_OPTIONS = "--without-javac" } }

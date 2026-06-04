@@ -1,19 +1,28 @@
 defmodule JidoClaw.Cron.Worker do
   @moduledoc """
-  GenServer per scheduled job. Supports :at, :every, and :cron schedule types.
-  Auto-disables after 3 consecutive failures. Stuck detection at 2 hours.
+  GenServer per scheduled job. Supports `:at`, `:every`, and `:cron` schedule
+  types. `:cron` expressions are interpreted in the job's `:timezone` (default
+  `"Etc/UTC"`) via `JidoClaw.Cron.NextRun`.
+
+  Auto-disables after 3 consecutive failures. A permanent config error on a
+  `:cron` schedule (invalid expression / unknown timezone) disables the job
+  immediately and persists `disabled_at`, so the bad row is not reloaded on
+  restart.
+
+  Dispatch is synchronous — a tick blocks this GenServer until the target
+  returns — so there is intentionally no stuck-detection watchdog; a real one
+  would require async dispatch and is deferred.
   """
   use GenServer
   require Logger
 
-  alias Crontab.CronExpression.Parser
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Dispatcher
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.NextRun
   alias JidoClaw.Telemetry
 
   @max_failures 3
-  @stuck_threshold_ms 2 * 60 * 60 * 1000
 
   defstruct [
     :id,
@@ -26,6 +35,7 @@ defmodule JidoClaw.Cron.Worker do
     :workflow_name,
     :workflow_input,
     :mfa,
+    timezone: "Etc/UTC",
     status: :active,
     failure_count: 0,
     last_run: nil,
@@ -69,6 +79,7 @@ defmodule JidoClaw.Cron.Worker do
       workflow_name: Keyword.get(opts, :workflow_name),
       workflow_input: Keyword.get(opts, :workflow_input),
       mfa: Keyword.get(opts, :mfa),
+      timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
       created_at: DateTime.utc_now()
     }
 
@@ -99,29 +110,18 @@ defmodule JidoClaw.Cron.Worker do
     {:noreply, state}
   end
 
+  # A disabled worker swallows any stale timer tick.
+  # NOTE: dispatch is synchronous, so a hung target blocks this process; a real
+  # stuck-detection watchdog would need async dispatch and is deferred.
   def handle_info(:tick, state) do
     {:noreply, state}
-  end
-
-  def handle_info(:check_stuck, state) do
-    if state.last_run && state.status == :running do
-      elapsed = DateTime.diff(DateTime.utc_now(), state.last_run, :millisecond)
-
-      if elapsed > @stuck_threshold_ms do
-        Logger.warning("[Cron] Job #{state.id} appears stuck (#{elapsed}ms)")
-        {:noreply, %{state | status: :stuck}}
-      else
-        {:noreply, state}
-      end
-    else
-      {:noreply, state}
-    end
   end
 
   # -- Private --
 
   defp execute_job(state) do
-    Telemetry.emit_cron_start(%{job_id: state.id, tenant_id: state.tenant_id})
+    meta = telemetry_meta(state)
+    Telemetry.emit_cron_start(meta)
     start_time = System.monotonic_time()
 
     result =
@@ -129,12 +129,12 @@ defmodule JidoClaw.Cron.Worker do
         Dispatcher.dispatch(state)
       rescue
         e ->
-          Telemetry.emit_cron_exception(%{job_id: state.id}, :error)
+          Telemetry.emit_cron_exception(meta, :error)
           {:error, Exception.message(e)}
       end
 
     duration = System.monotonic_time() - start_time
-    Telemetry.emit_cron_stop(%{job_id: state.id, tenant_id: state.tenant_id}, duration)
+    Telemetry.emit_cron_stop(meta, duration)
     record_run(state)
 
     case result do
@@ -173,6 +173,19 @@ defmodule JidoClaw.Cron.Worker do
     end
   end
 
+  # Shared metadata for every cron telemetry event of one tick. `dispatch_target`
+  # is the *effective* path (`Dispatcher.dispatch_target/1`), so a :system_job
+  # whose `target` defaults to :agent still reports `dispatch_target: :mfa`.
+  defp telemetry_meta(state) do
+    %{
+      job_id: state.id,
+      tenant_id: state.tenant_id,
+      mode: state.mode,
+      target: state.target,
+      dispatch_target: Dispatcher.dispatch_target(state)
+    }
+  end
+
   defp schedule_next(%{schedule: {:at, %DateTime{} = dt}} = state) do
     delay = max(DateTime.diff(dt, DateTime.utc_now(), :millisecond), 0)
     Process.send_after(self(), :tick, delay)
@@ -186,23 +199,28 @@ defmodule JidoClaw.Cron.Worker do
   end
 
   defp schedule_next(%{schedule: {:cron, expression}} = state) do
-    case Parser.parse(expression) do
-      {:ok, cron} ->
-        case Crontab.Scheduler.get_next_run_date(cron) do
-          {:ok, next_dt} ->
-            naive = next_dt
-            dt = DateTime.from_naive!(naive, "Etc/UTC")
-            delay = max(DateTime.diff(dt, DateTime.utc_now(), :millisecond), 1000)
-            Process.send_after(self(), :tick, delay)
-            %{state | next_run: dt}
+    case NextRun.compute_next_cron_utc(expression, state.timezone) do
+      {:ok, dt} ->
+        delta = DateTime.diff(dt, DateTime.utc_now(), :millisecond)
 
-          _ ->
-            Logger.error("[Cron] Failed to compute next run for #{state.id}")
-            state
+        if delta < 0 do
+          Logger.warning(
+            "[Cron] Job #{state.id} computed a next run in the past (#{delta}ms); firing in 1s"
+          )
         end
 
+        Process.send_after(self(), :tick, max(delta, 1000))
+        %{state | next_run: dt}
+
       {:error, reason} ->
-        Logger.error("[Cron] Invalid cron expression for #{state.id}: #{inspect(reason)}")
+        # :invalid_expression | :unknown_timezone | :calc_error are all
+        # deterministic, permanent config errors. Disable and persist
+        # disabled_at so for_tenant excludes the bad row on the next boot.
+        Logger.error(
+          "[Cron] Disabling job #{state.id}: cannot compute next run (#{inspect(reason)})"
+        )
+
+        persist_disabled(state)
         %{state | status: :disabled}
     end
   end

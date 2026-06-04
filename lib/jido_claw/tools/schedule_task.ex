@@ -54,14 +54,22 @@ defmodule JidoClaw.Tools.ScheduleTask do
         type: :string,
         required: false,
         doc: "Skill name to run when target is 'workflow' (see /skills)"
+      ],
+      timezone: [
+        type: :string,
+        required: false,
+        doc:
+          "IANA timezone for interpreting a cron expression (e.g. 'America/New_York'). " <>
+            "ONLY affects cron-expression schedules — it is inert for 'every <interval>' " <>
+            "and absolute schedules. Defaults to 'Etc/UTC'."
       ]
     ]
 
   require Logger
 
-  alias Crontab.CronExpression.Parser
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.NextRun
   alias JidoClaw.Cron.Scheduler
   alias JidoClaw.Skills
 
@@ -74,6 +82,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
 
     with {:ok, target} <- parse_target(params[:target]),
          {:ok, target_attrs} <- build_target_attrs(target, params, project_dir),
+         {:ok, timezone} <- parse_timezone(params[:timezone]),
          {:ok, schedule_tuple} <- parse_schedule_for(schedule_str) do
       schedule_and_persist(%{
         tenant_id: tenant_id,
@@ -83,14 +92,21 @@ defmodule JidoClaw.Tools.ScheduleTask do
         mode: parse_mode(params[:mode]),
         schedule_str: schedule_str,
         schedule_tuple: schedule_tuple,
-        target_attrs: target_attrs
+        target_attrs: target_attrs,
+        timezone: timezone
       })
     end
   end
 
   defp schedule_and_persist(req) do
     opts =
-      [id: req.id, task: req.task, schedule: req.schedule_tuple, mode: req.mode] ++
+      [
+        id: req.id,
+        task: req.task,
+        schedule: req.schedule_tuple,
+        mode: req.mode,
+        timezone: req.timezone
+      ] ++
         Map.to_list(req.target_attrs)
 
     case Scheduler.schedule(req.tenant_id, opts) do
@@ -108,7 +124,8 @@ defmodule JidoClaw.Tools.ScheduleTask do
         task: req.task,
         mode: req.mode,
         schedule_kind: kind,
-        schedule_value: value
+        schedule_value: value,
+        timezone: req.timezone
       }
       |> Map.merge(req.target_attrs)
 
@@ -123,11 +140,22 @@ defmodule JidoClaw.Tools.ScheduleTask do
       "Schedule: #{format_schedule(req.schedule_str)}\n" <>
       "Mode: #{req.mode}\n" <>
       target_line(req.target_attrs) <>
+      timezone_line(req) <>
       "Persisted — will reload on restart."
   end
 
   defp target_line(%{target: :workflow, workflow_name: name}), do: "Target: workflow (#{name})\n"
   defp target_line(_), do: "Target: agent\n"
+
+  # A non-default timezone only shifts :cron firing — state that plainly so the
+  # agent never expects it to move an `every`/`:at` schedule. UTC stays silent.
+  defp timezone_line(%{timezone: "Etc/UTC"}), do: ""
+
+  defp timezone_line(%{schedule_tuple: {:cron, _}, timezone: tz}),
+    do: "Timezone: #{tz} (applies to cron firing)\n"
+
+  defp timezone_line(%{timezone: tz}),
+    do: "Timezone: #{tz} (ignored — only cron schedules use a timezone)\n"
 
   # Strict: agents may schedule only :agent or :workflow targets (never
   # :mfa / :system_job). Unlike parse_mode/1's silent fallback, an
@@ -161,6 +189,29 @@ defmodule JidoClaw.Tools.ScheduleTask do
     end
   end
 
+  # Strict, in the style of parse_target/1: an unrecognised zone errors rather
+  # than silently falling back to UTC, so a typo can't quietly schedule in the
+  # wrong zone. Validated against the configured tz database via DateTime.now/1.
+  # Note: timezone only affects :cron schedules (see timezone_line/1).
+  defp parse_timezone(nil), do: {:ok, "Etc/UTC"}
+
+  defp parse_timezone(tz) when is_binary(tz) do
+    trimmed = String.trim(tz)
+
+    cond do
+      trimmed == "" ->
+        {:ok, "Etc/UTC"}
+
+      match?({:ok, _}, DateTime.now(trimmed)) ->
+        {:ok, trimmed}
+
+      true ->
+        {:error,
+         "Invalid timezone '#{trimmed}'. Use an IANA name like 'America/New_York', " <>
+           "or omit it for UTC."}
+    end
+  end
+
   defp parse_schedule_for(schedule_str) do
     case parse_schedule(schedule_str) do
       {:ok, tuple} ->
@@ -183,11 +234,14 @@ defmodule JidoClaw.Tools.ScheduleTask do
   end
 
   defp parse_schedule(expr) do
-    # Try as cron expression (5 fields: min hour dom month dow)
+    # Try as cron expression (5 fields: min hour dom month dow). The 5-field
+    # guard already rejects @reboot (1 field); routing the inner check through
+    # NextRun.compute_next_cron_utc/2 additionally rejects uncomputable crons and
+    # never lets a Parser raise escape. No timezone input here, so validate UTC.
     fields = String.split(expr)
 
     if length(fields) == 5 do
-      case Parser.parse(expr) do
+      case NextRun.compute_next_cron_utc(expr, "Etc/UTC") do
         {:ok, _} -> {:ok, {:cron, expr}}
         {:error, _} -> {:error, "invalid cron expression"}
       end

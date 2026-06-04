@@ -5,8 +5,8 @@ defmodule JidoClaw.Tools.ScheduleTaskTest do
   skill-existence validation before scheduling, and that a valid
   workflow job persists with `target: :workflow` + `workflow_name`.
 
-  Scheduling uses a far-future daily cron so the started worker never
-  ticks during the test.
+  Scheduling uses a 1-day interval so the started worker never ticks during
+  the test (its first tick is ~1 day out, independent of wall-clock time).
   """
   use JidoClaw.TenantCase, async: false
 
@@ -15,7 +15,7 @@ defmodule JidoClaw.Tools.ScheduleTaskTest do
   alias JidoClaw.Tenant.Manager
   alias JidoClaw.Tools.ScheduleTask
 
-  @far_future "0 4 * * *"
+  @far_future "every 1d"
 
   setup do
     tenant = seed_tenant("schedule-task")
@@ -86,5 +86,49 @@ defmodule JidoClaw.Tools.ScheduleTaskTest do
     {:ok, row} = Job.by_job_id(id, tenant: tenant, actor: actor_for(tenant))
     assert row.target == :agent
     assert is_nil(row.workflow_name)
+  end
+
+  test "a 5-field but uncomputable cron errors and persists no row", %{tenant: tenant, ctx: ctx} do
+    id = "bad-cron-#{System.unique_integer([:positive])}"
+    # 5 fields (so it clears the field-count guard) but every field is out of
+    # range — the rewired NextRun cron branch rejects it.
+    params = %{id: id, task: "x", schedule: "99 99 99 99 99"}
+
+    assert {:error, wire} = ScheduleTask.run(params, ctx)
+    assert wire.message =~ "invalid cron expression"
+
+    assert {:error, _} = Job.by_job_id(id, tenant: tenant, actor: actor_for(tenant))
+  end
+
+  describe "timezone param" do
+    test "a valid IANA timezone persists on the row", %{tenant: tenant, ctx: ctx} do
+      id = "tz-job-#{System.unique_integer([:positive])}"
+      params = %{id: id, task: "morning", schedule: @far_future, timezone: "America/New_York"}
+
+      assert {:ok, %{result: result}} = ScheduleTask.run(params, ctx)
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, id) end)
+      assert result =~ "America/New_York"
+
+      {:ok, row} = Job.by_job_id(id, tenant: tenant, actor: actor_for(tenant))
+      assert row.timezone == "America/New_York"
+    end
+
+    test "an invalid timezone errors before scheduling", %{ctx: ctx} do
+      params = %{task: "x", schedule: @far_future, timezone: "Not/AZone"}
+
+      assert {:error, wire} = ScheduleTask.run(params, ctx)
+      assert wire.message =~ "Invalid timezone"
+    end
+
+    test "an omitted timezone defaults to Etc/UTC", %{tenant: tenant, ctx: ctx} do
+      id = "tz-default-#{System.unique_integer([:positive])}"
+      params = %{id: id, task: "noop", schedule: @far_future}
+
+      assert {:ok, _} = ScheduleTask.run(params, ctx)
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, id) end)
+
+      {:ok, row} = Job.by_job_id(id, tenant: tenant, actor: actor_for(tenant))
+      assert row.timezone == "Etc/UTC"
+    end
   end
 end

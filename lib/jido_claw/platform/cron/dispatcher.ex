@@ -24,11 +24,28 @@ defmodule JidoClaw.Cron.Dispatcher do
 
   alias JidoClaw.Authorization.Actor
 
+  @doc """
+  The effective dispatch path for a worker state — the single source of truth
+  for both routing (`dispatch/1`) and telemetry enrichment (`Cron.Worker`).
+
+  Legacy-first precedence: `mode: :system_job` resolves to `:mfa` *before*
+  `target` is read, so a `:system_job` row whose `target` defaults to `:agent`
+  (e.g. the memory consolidator) reports — and runs — `:mfa`, not `:agent`.
+  """
+  @spec dispatch_target(map()) :: :agent | :workflow | :mfa
+  def dispatch_target(%{mode: :system_job}), do: :mfa
+  def dispatch_target(%{target: :workflow}), do: :workflow
+  def dispatch_target(%{target: :mfa}), do: :mfa
+  def dispatch_target(_), do: :agent
+
   @spec dispatch(map()) :: term()
-  def dispatch(%{mode: :system_job} = state), do: run_mfa(state)
-  def dispatch(%{target: :workflow} = state), do: run_workflow(state)
-  def dispatch(%{target: :mfa} = state), do: run_mfa(state)
-  def dispatch(state), do: run_agent(state)
+  def dispatch(state) do
+    case dispatch_target(state) do
+      :mfa -> run_mfa(state)
+      :workflow -> run_workflow(state)
+      :agent -> run_agent(state)
+    end
+  end
 
   # Lifted verbatim from the former Worker.execute_job/1 `:isolated` arm.
   defp run_agent(%{mode: :isolated} = state) do

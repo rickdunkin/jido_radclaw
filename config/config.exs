@@ -268,6 +268,13 @@ config :ash,
 
 config :phoenix, :json_library, Jason
 
+# Timezone database for cron scheduling (JidoClaw.Cron.NextRun). Provided by
+# :time_zone_info — data pre-shipped (priv/data.etf), `update: :disabled` so it
+# never touches the network or filesystem. Set in all envs (above the trailing
+# import_config), so :test resolves zones too. `"Etc/UTC"` short-circuits via
+# Elixir's built-in UTCOnlyTimeZoneDatabase and never consults this database.
+config :elixir, :time_zone_database, TimeZoneInfo.TimeZoneDatabase
+
 # -- Memory consolidator (v0.6.3 phase 3b) --
 #
 # Pool sizing note: with `max_concurrent_scopes: 4` the Repo pool

@@ -71,7 +71,8 @@ defmodule JidoClaw.Cron.Scheduler do
       mode: job.mode,
       target: job.target,
       workflow_name: job.workflow_name,
-      workflow_input: job.workflow_input
+      workflow_input: job.workflow_input,
+      timezone: job.timezone
     ]
 
     case build_mfa(job) do

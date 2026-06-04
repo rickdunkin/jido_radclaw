@@ -23,6 +23,10 @@ defmodule JidoClaw.Cron.Job do
   `workflow_name` (a skill) and drive a tracked
   `JidoClaw.Orchestration.WorkflowRun`. `run_count`/`last_run_at`
   are system-managed durability counters stamped by `:record_run`.
+
+  `timezone` (IANA name, default `"Etc/UTC"`) is the wall-clock zone a
+  `:cron` expression is read in — `"0 9 * * *"` with `"America/New_York"`
+  fires at 09:00 local. It is inert for `:every` / `:at` schedules.
   """
 
   use JidoClaw.Resource, domain: JidoClaw.Cron
@@ -74,6 +78,7 @@ defmodule JidoClaw.Cron.Job do
         :workflow_input,
         :schedule_kind,
         :schedule_value,
+        :timezone,
         :mfa_module,
         :mfa_function,
         :mfa_args,
@@ -90,6 +95,7 @@ defmodule JidoClaw.Cron.Job do
         :workflow_input,
         :schedule_kind,
         :schedule_value,
+        :timezone,
         :mfa_module,
         :mfa_function,
         :mfa_args,
@@ -206,6 +212,15 @@ defmodule JidoClaw.Cron.Job do
     attribute :schedule_value, :string do
       allow_nil?(false)
       public?(true)
+    end
+
+    # IANA wall-clock zone for interpreting :cron expressions. Only the :cron
+    # kind reads it (`JidoClaw.Cron.NextRun`); :every / :at are tz-inert.
+    # Default "Etc/UTC" keeps pre-timezone rows firing exactly as before.
+    attribute :timezone, :string do
+      allow_nil?(false)
+      public?(true)
+      default("Etc/UTC")
     end
 
     attribute :mfa_module, :string do

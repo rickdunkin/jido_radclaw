@@ -239,7 +239,7 @@ typed output). On `fail`, the generator receives the reasoning as feedback and t
 ### Scheduling (3 tools)
 
 **schedule_task** — Schedule a recurring task that fires on a cron schedule or interval.
-- Parameters: `task` (required — what to do), `schedule` (required — cron expression or interval string), `id` (optional), `mode` (optional: "main" or "isolated"), `target` (optional: "agent" or "workflow"), `workflow` (optional — skill name, required when target is "workflow").
+- Parameters: `task` (required — what to do), `schedule` (required — cron expression or interval string), `id` (optional), `mode` (optional: "main" or "isolated"), `target` (optional: "agent" or "workflow"), `workflow` (optional — skill name, required when target is "workflow"), `timezone` (optional — IANA zone like "America/New_York"; only affects cron-expression schedules, inert for intervals).
 - Cron expressions: `"0 9 * * *"` (daily 9am), `"*/30 * * * *"` (every 30min), `"0 12 * * 1"` (Mondays at noon).
 - Interval strings: `"every 1h"`, `"every 30m"`, `"every 1d"`.
 - Mode `main` runs in the shared agent session. Mode `isolated` spawns a fresh session per run.
@@ -252,7 +252,7 @@ typed output). On `fail`, the generator receives the reasoning as feedback and t
 - Use `list_scheduled_tasks` first to see available IDs.
 
 **list_scheduled_tasks** — List all scheduled recurring tasks with status, schedule, next run, and failure count.
-- No parameters. Returns all active, disabled, and stuck jobs.
+- No parameters. Returns all active and disabled jobs.
 
 ### Reasoning (2 tools)
 

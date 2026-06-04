@@ -186,4 +186,21 @@ defmodule JidoClaw.Cron.JobTest do
       end
     end
   end
+
+  describe "timezone" do
+    test "round-trips a non-default zone via :upsert" do
+      tenant_id = seed_tenant("cron-tz")
+
+      attrs = Map.put(upsert_attrs(job_id: "tz-row"), :timezone, "America/New_York")
+      assert {:ok, row} = Job.upsert(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert row.timezone == "America/New_York"
+    end
+
+    test "defaults to Etc/UTC when omitted" do
+      tenant_id = seed_tenant("cron-tz-default")
+
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
+      assert row.timezone == "Etc/UTC"
+    end
+  end
 end

@@ -9,6 +9,7 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.CLI.Formatter
   alias JidoClaw.CLI.Setup, as: CLISetup
   alias JidoClaw.Cron.Job, as: CronJob
+  alias JidoClaw.Cron.NextRun
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
   alias JidoClaw.Cron.Worker, as: CronWorker
   alias JidoClaw.Display.StatusBar
@@ -601,6 +602,10 @@ defmodule JidoClaw.CLI.Commands do
 
     IO.puts(
       "  \e[2mCommands: /cron add | /cron remove <id> | /cron trigger <id> | /cron disable <id>\e[0m"
+    )
+
+    IO.puts(
+      "  \e[2m/cron add fires cron expressions in UTC; for a timezone, ask the agent to schedule_task with a timezone.\e[0m"
     )
 
     IO.puts("")
@@ -1579,12 +1584,20 @@ defmodule JidoClaw.CLI.Commands do
   # -- /cron add helpers --
 
   defp add_cron_job(state, id, schedule, task) do
-    schedule_tuple = parse_cron_schedule(schedule)
-    opts = [id: id, task: task, schedule: schedule_tuple, mode: :main]
+    # Validate before scheduling — same discipline as the schedule_task tool.
+    # An invalid cron must not start a worker AND persist an active bad row
+    # (whose worker-side disable no-ops because the row doesn't exist yet).
+    case parse_cron_schedule(schedule) do
+      {:ok, schedule_tuple} ->
+        opts = [id: id, task: task, schedule: schedule_tuple, mode: :main]
 
-    case CronScheduler.schedule("default", opts) do
-      {:ok, ^id, _pid} -> persist_cron_job(id, task, schedule, schedule_tuple)
-      {:error, reason} -> print_cron_schedule_error(reason)
+        case CronScheduler.schedule("default", opts) do
+          {:ok, ^id, _pid} -> persist_cron_job(id, task, schedule, schedule_tuple)
+          {:error, reason} -> print_cron_schedule_error(reason)
+        end
+
+      {:error, reason} ->
+        print_cron_schedule_error(reason)
     end
 
     {:ok, state}
@@ -1594,14 +1607,25 @@ defmodule JidoClaw.CLI.Commands do
     case Regex.run(~r/^every\s+(\d+)\s*(s|m|h|d)$/i, schedule) do
       [_, amount, unit] ->
         ms = String.to_integer(amount) * cron_unit_ms(String.downcase(unit))
-        {:every, ms}
+        {:ok, {:every, ms}}
 
       nil ->
-        {:cron, schedule}
+        validate_cron(schedule)
     end
   end
 
-  defp parse_cron_schedule(schedule), do: {:cron, schedule}
+  defp parse_cron_schedule(schedule), do: validate_cron(schedule)
+
+  # Validate through the same hard crontab boundary the worker uses
+  # (NextRun.compute_next_cron_utc/2). This rejects @reboot — which Parser.parse/1
+  # accepts but the scheduler raises on — and never lets a Parser raise escape.
+  # CLI /cron add has no timezone input, so validating against "Etc/UTC" is correct.
+  defp validate_cron(schedule) do
+    case NextRun.compute_next_cron_utc(schedule, "Etc/UTC") do
+      {:ok, _next_run} -> {:ok, {:cron, schedule}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp persist_cron_job(id, task, schedule, schedule_tuple) do
     {kind, value} = persistable_schedule(schedule_tuple)
@@ -1656,7 +1680,9 @@ defmodule JidoClaw.CLI.Commands do
     schedule_str = format_cron_schedule(job.schedule)
     next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
 
-    IO.puts("  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{next_str}")
+    IO.puts(
+      "  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{cron_tz_label(job)}#{next_str}"
+    )
 
     IO.puts(
       "    \e[2m\"#{job.task}\"\e[0m  #{cron_target_label(job)}failures: #{job.failure_count}"
@@ -1667,9 +1693,13 @@ defmodule JidoClaw.CLI.Commands do
   defp cron_target_label(%{target: target}) when not is_nil(target), do: "target: #{target}  "
   defp cron_target_label(_), do: ""
 
+  # Non-UTC only — keeps the default /cron listing clean (worker state carries
+  # :timezone). Mirrors the ListScheduledTasks tool's tz segment.
+  defp cron_tz_label(%{timezone: tz}) when is_binary(tz) and tz != "Etc/UTC", do: "  tz: #{tz}"
+  defp cron_tz_label(_), do: ""
+
   defp cron_status_icon(:active), do: "\e[32m●\e[0m"
   defp cron_status_icon(:disabled), do: "\e[31m✗\e[0m"
-  defp cron_status_icon(:stuck), do: "\e[33m⚠\e[0m"
   defp cron_status_icon(_), do: "\e[2m○\e[0m"
 
   # -- /channels helpers --
