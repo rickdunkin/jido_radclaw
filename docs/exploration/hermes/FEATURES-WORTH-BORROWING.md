@@ -1,8 +1,19 @@
 # Features Worth Borrowing from Hermes-Agent
 
-Exploration notes — not a plan, not a commitment. Source: `~/workspace/claws/hermes-agent` (Nous Research, Python 3.11+ self-improving agent platform). Initial inventory 2026-04-28; **re-reviewed 2026-05-18** against current state of both projects.
+Exploration notes — not a plan, not a commitment. Source: `~/workspace/claws/hermes-agent` (Nous Research, Python 3.11+ self-improving agent platform). Initial inventory 2026-04-28; **re-reviewed 2026-05-18**, then **re-reviewed again 2026-06-04** against current state of both projects.
 
-## Re-review summary (2026-05-18)
+## Re-review summary (2026-06-04)
+
+Second re-review pass. The numbered inventory now stands at 46 items (11 Tier-1, 17 Tier-2, 18 Tier-3) plus 7 Open Questions and five appendices. Since the 2026-05-18 pass:
+
+- **jido_radclaw — biggest movement is T1-2 (layered context compaction): NOT_ADOPTED → PARTIAL.** A full native `JidoClaw.Reasoning.Compactor` subsystem landed (10 modules under `reasoning/compactor/`; main agent + all 7 workers carry `compaction: [mode: :auto]`; per-agent keyed `%Snapshot{}` records persisted on `Session.metadata["compactions"]`; a `RequestTransformer` reshapes the LLM-facing request). This is the largest single borrow to land — the prior pass's "0 items adopted" no longer holds.
+- **jido_radclaw — a cluster of adjacent new subsystems shipped** that don't fully close a tracked gap but change its framing: a Splode-backed structured error contract (`JidoClaw.Error`, T1-4-adjacent), a unified runtime Trace surface (T3-2 / T3-16 / OQ-6-adjacent), AgentView + session-axis Inspection, Structured Final Output across all workers, Conversation-Ownership Handoff (T3-17-adjacent but **scope-divergent** — same-surface worker-template ownership, not hermes's cross-platform transfer), and cron `schedule_kind`/`target`/`timezone` hardening (T2-10-adjacent). All catalogued in Appendix C.
+- **jido_radclaw — everything else holds.** Remaining Tier-1/2/3 and OQ statuses are unchanged on our side (refreshed and dated 2026-06-04). OQ-5 re-quantified: hermes now ships 37 vendor key-prefix redaction patterns to our 9.
+- **hermes — ~1900 commits since 2026-05-18.** Most tracked features are stable or hardened. Material refreshes: T1-1 (Vercel Sandbox reverted; RPC approval-context propagation), T1-5 (**shared `tools/threat_patterns.py` library + `<untrusted_tool_result>` delimiters** — the biggest hermes-side change), T2-2 (terminal `STATUS_DEAD` credential state), T2-3 (universal main-model safety net), T2-8 (frozen-at-import YOLO + expanded dangerous-pattern set), T2-15 (curator now prunes built-in skills — "only agent-created" invariant relaxed), T2-16 (`goal.py` → `goals.py` + kanban `goal_mode`), T3-11 (platform-plugin migration absorbed Discord/Mattermost/ntfy), T1-9 (`state.db` FTS5/WAL hardening).
+
+The first/second/third-wave adoption sequencing near the bottom is unchanged in shape, but T1-2 is now substantially in-hand rather than pending.
+
+## Re-review summary (2026-05-18, prior pass)
 
 Original inventory had 39 numbered items (10 Tier-1, 10 Tier-2, 12 Tier-3, 7 Open Questions) plus three appendices. Since 2026-04-28:
 
@@ -17,14 +28,14 @@ The full first-wave recommendation has shifted: see "Cross-references and depend
 
 For each entry, two new header lines appear under the title:
 
-- **`Status (2026-05-18)`** — jido_radclaw side. One of:
+- **`Status (2026-06-04)`** — jido_radclaw side. One of:
   - **ADOPTED** — feature or clear functional equivalent now lives in jido_radclaw
   - **PARTIAL** — some pieces landed; refreshed "Gap" tracks what's left
   - **NOT_ADOPTED** — no evidence of the feature; entry stands as written
   - **SUPERSEDED** — gap closed by a different approach (often a jido_radclaw-native shape that doesn't translate hermes's design)
   - **N/A** — original entry was a skip recommendation
 
-- **`Hermes (2026-05-18)`** — only present when hermes-side code changed materially since 2026-04-28. Points at the new location and notes any behavior delta. If absent, the entry's file paths and behavior are unchanged.
+- **`Hermes (2026-06-04)`** — only present when hermes-side code changed materially since the prior review. Points at the new location and notes any behavior delta. If absent, the entry's file paths and behavior are unchanged.
 
 ## How to read this document
 
@@ -50,9 +61,9 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-1. Programmatic Tool Calling (PTC)
 
-**Status (2026-05-18)**: NOT_ADOPTED. No `JidoClaw.Tools.RunScript`, no `jido_tools.{ex,exs,py}` stub generator. Forge runners (`claude_code.ex`, `codex.ex`, `shell.ex`, `custom.ex`, `fake.ex`, `workflow.ex`) host external CLI tools but no LLM-authored-script-batches-its-own-tool-calls pattern.
+**Status (2026-06-04)**: NOT_ADOPTED. No `JidoClaw.Tools.RunScript`, no `jido_tools.{ex,exs,py}` stub generator. Forge runners (`claude_code.ex`, `codex.ex`, `shell.ex`, `custom.ex`, `fake.ex`, `workflow.ex`) host external CLI tools but no LLM-authored-script-batches-its-own-tool-calls pattern.
 
-**Hermes (2026-05-18)**: UNCHANGED. RPC calls in `tools/hermes_tools` are now serialized to prevent races (19f9be1df); Vercel Sandbox was added as a 6th execution backend alongside Local/Docker/Modal/SSH/Daytona/Singularity (5a1d4f680).
+**Hermes (2026-06-04)**: REFACTORED. **Vercel Sandbox was reverted** (`febc4cfec`) — current backends are local/docker/modal/ssh/daytona/singularity. RPC threads now propagate gateway-session approval context so non-interactive auto-approve no longer fires (`108397726`); a one-shot `check_execute_code_guard` fail-closes the whole script in gateway/ask/cron-deny before child spawn. HERMES_* env passthrough narrowed to an operational allowlist with diagnosable scrub (`317184547`).
 
 **Where**: `tools/code_execution_tool.py`
 
@@ -68,9 +79,9 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-2. Layered context compaction with structured handoff
 
-**Status (2026-05-18)**: NOT_ADOPTED. No `JidoClaw.Reasoning.ContextEngine`, no compactor, no model-facing tool-result summarizer. `conversations/tool_transcript.ex::result_summary/2` is a one-line preview for the Postgres transcript `content` column, not a compaction handoff. The Forge `context_builder.ex::max_chars` trim ("truncated to fit token budget") is a hard chop, not a structured handoff.
+**Status (2026-06-04)**: PARTIAL. Live-thread summary compaction landed end-to-end — `JidoClaw.Reasoning.Compactor` runs on `:ai_react_start` via the `JidoClaw.Agent.Defaults` macro, groups messages into turns, preserves a `protect_first_n_turns` head + `keep_last_turns` tail, summarizes the middle via a bounded `Summarizer`, and persists per-agent `%Snapshot{}` records under `Session.metadata["compactions"][key]` (`"main"` / `"handoff:<uuid>:<tpl>"` / spawn tag — `compactor/identity.ex`). The main agent and all 7 workers carry `compaction: [mode: :auto]` (`agent/agent.ex:54–62`). `Compactor.RequestTransformer` (`compactor/request_transformer.ex`) is what actually reshapes the LLM-facing request — drops messages whose `refs.request_id` is in `snapshot.summarized_request_ids` and injects a single delimited user-role summary block after any leading system messages. Failures are non-fatal: logged + emitted via `:compaction` Trace events, never block forward progress. **Missing**: no hermes-style "Resolved/Pending/Active Task/Remaining Work" structured summary fields (`compactor/prompt.ex` asks for dense prose plus a bullet list); no behaviour-pluggable engine (only `strategy: :summary` is accepted — `config.ex:243`); no historical-media-strip pass before compression.
 
-**Hermes (2026-05-18)**: REFACTORED. New `protect_first_n` configurable knob on the `ContextEngine` ABC (dee71a31e, 4ceab1689). Historical media stripping after compression added (3b3909690 — port of Kilo-Org/kilocode#9434) — adoption sketch should include this as a paired discipline. Iterative summary-continuity, content-filter softening, and tail-protection fixes; nothing structural changed.
+**Hermes (2026-06-04)**: REFACTORED. New generic host contract for external context engines (`9b5dae17a`) — a `_transition_context_engine_session()` lifecycle (`on_session_end → on_session_reset → on_session_start → optional carry_over_new_session_context`) so engines like `hermes-lcm` can plug in. SUMMARY_PREFIX hardened: stale handoff-prefix stripping on resume (`42bbd221e`), unanswered user questions now classified as Active Task instead of 'None' (`56b8dccf2`), and the conflicting "resume Active Task" directive in the prefix was dropped (`020601d41`). Defensive surface added: preserve original context when summary generation fails (`e785c0ad7`, +177 LOC), avoid repeat preflight compaction from rough estimates (`e38b0b55d`), broader deterministic-fallback coverage (`6dc068ef0`); `context_compressor.py` is now ~2078 LOC, `protect_first_n` defaults to 3. Adoption sketch should also pull in the generic-engine lifecycle hooks (as the pluggable-strategy seam) and the Active-Task/unanswered-question prompt discipline before borrowing the Resolved/Pending labels.
 
 **Where**: `agent/context_compressor.py`, `agent/context_engine.py`, `agent/manual_compression_feedback.py`
 
@@ -86,7 +97,7 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-3. Subdirectory hint discovery
 
-**Status (2026-05-18)**: NOT_ADOPTED. `agent/prompt.ex::load_jido_md/1` loads exactly one project file (`.jido/JIDO.md`) at session start. No ancestor walking, no AGENTS.md/CLAUDE.md/.cursorrules discovery, no HintTracker, no path events from `Tools.ReadFile`/`Tools.RunCommand`/etc.
+**Status (2026-06-04)**: NOT_ADOPTED. `agent/prompt.ex::load_jido_md/1` (lines 442–449) still loads exactly one project file (`.jido/JIDO.md`) at session start. No ancestor walking, no AGENTS.md/CLAUDE.md/.cursorrules discovery, no `HintTracker`, no path events from `Tools.ReadFile`/`Tools.RunCommand`/etc.
 
 **Where**: `agent/subdirectory_hints.py`
 
@@ -102,9 +113,9 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-4. Structured error classifier with `FailoverReason` taxonomy
 
-**Status (2026-05-18)**: NOT_ADOPTED. `grep -rli "FailoverReason\|classify_error\|ErrorClassifier"` over `lib/` returns nothing. `lib/jido_claw/providers/` contains only `ollama.ex` (a thin `use ReqLLM.Provider` wrapper). No `%ClassifiedError{}` struct anywhere.
+**Status (2026-06-04)**: NOT_ADOPTED for the `FailoverReason` provider taxonomy. A **structural error contract** landed in `0ad7dc3` (`JidoClaw.Error` — a Splode tree with `:invalid`/`:execution`/`:config`/`:internal` classes, plus a `Normalize` boundary module at `lib/jido_claw/error/normalize.ex`), and `lib/jido_claw/forge/error.ex:47-65` exposes a small forge-local `classify/1` returning `{kind, recovery}` tuples — but no provider-level classifier emits action flags (`retryable?`, `should_compress?`, `should_rotate_credential?`, `should_fallback?`); `grep` for those over `lib/` returns nothing. `forge/error.ex:8-9` explicitly notes "hermes T1-4's `FailoverReason` composes on top of this layer later." `lib/jido_claw/providers/` is still just `ollama.ex`.
 
-**Hermes (2026-05-18)**: REFACTORED. New timeout-message pattern catalog: `_TIMEOUT_MESSAGE_PATTERNS` classifies "timed out", "deadline exceeded", "request timed out", "upstream timed out", "turn timed out" as `FailoverReason.timeout` (4f8d8ad91). Taxonomy is otherwise unchanged.
+**Hermes (2026-06-04)**: REFACTORED. New `FailoverReason.content_policy_blocked` (non-retryable + `should_fallback=True`) routes OpenAI Codex / Anthropic safety / Azure content_filter refusals through immediate fallback instead of burning paid retries (`0554ef1aa`). 5xx-with-request-validation-signal is now classified non-retryable `format_error` to stop retry floods on OpenAI-compatible gateways that 502 on unknown params (`6212e9ade`). The timeout-pattern catalog and the rest of the taxonomy carry forward; `agent/error_classifier.py` is now ~1319 LOC.
 
 **Where**: `agent/error_classifier.py` (1000+ lines)
 
@@ -120,9 +131,9 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-5. Context-file injection scanning
 
-**Status (2026-05-18)**: NOT_ADOPTED. No `JidoClaw.Security.PromptScrubber`. `lib/jido_claw/security/redaction/` has scrubbers for *outbound* secrets (Patterns/Env/PromptRedaction/Embedding/Memory/Transcript/UI/Channel) but no *inbound* prompt-injection detector. VFS resolver (`lib/jido_claw/vfs/resolver.ex`) returns fetched content directly without scanning.
+**Status (2026-06-04)**: NOT_ADOPTED. No `JidoClaw.Security.PromptScrubber`. `lib/jido_claw/security/redaction/` has scrubbers for *outbound* secrets (Patterns/Env/PromptRedaction/Embedding/Memory/Transcript/UI/Channel/LogRedactor) but no *inbound* prompt-injection detector. `vfs/resolver.ex` returns fetched content directly without scanning, and `Tools.Remember` writes memory without an inbound scan.
 
-**Hermes (2026-05-18)**: UNCHANGED. Adjacent: tool-use enforcement guidance was extended to GLM (afa5b8191) and Grok / xai-oauth (9b91377be); system prompt now enriches environment hints with host + terminal-backend info (40e7a71c3). Scrubber itself is unchanged.
+**Hermes (2026-06-04)**: REFACTORED. The scrubber is no longer ad-hoc in `prompt_builder.py` — patterns moved to a shared `tools/threat_patterns.py` library with three scopes (`all` / `context` / `strict`, ~15 new Brainworm/C2 patterns added) and `prompt_builder._scan_context_content` is now a thin wrapper (`0dee92df2`). Two paired defenses landed alongside: `MemoryStore.load_from_disk()` scans entries at snapshot-build time and replaces poisoned ones with `[BLOCKED:...]` placeholders in the frozen system-prompt (keeping live state intact for user removal); and `make_tool_result_message()` wraps high-risk tool results (`web_extract`, `web_search`, `browser_*`, `mcp_*`) in `<untrusted_tool_result source="...">…</untrusted_tool_result>` delimiters with framing prose, as an architectural defense against indirect injection that doesn't regex-scan results. Adoption sketch should pull in the scoped-pattern library and the untrusted-tool-result delimiter discipline alongside the scrubber.
 
 **Where**: `agent/prompt_builder.py::_scan_context_content`, threat patterns at top of file
 
@@ -138,11 +149,11 @@ Hermes is a single-process Python agent — its concurrency model is `ThreadPool
 
 ### T1-6. Anthropic-style SKILL.md with progressive disclosure
 
-**Status (2026-05-18)**: PARTIAL. SKILL.md files with YAML frontmatter (name/description/metadata) and `references/` trees exist under `.agents/skills/<name>/SKILL.md` (ash-framework, jido-framework, phoenix-framework, skill-creator, update-elixir-deps, react-doctor, ...) — managed by `usage-rules`. But these are consumed by Claude Code's harness `Skill` tool, not by the JidoClaw agent. JidoClaw skills (`.jido/skills/*.yaml`) remain DAG pipelines via `platform/skills.ex`. No `knowledge_list`/`knowledge_view` tools on the JidoClaw side.
+**Status (2026-06-04)**: PARTIAL. SKILL.md files with YAML frontmatter (name/description/metadata) and `references/` trees exist under `.agents/skills/<name>/SKILL.md` (ash-framework, jido-framework, phoenix-framework, skill-creator, update-elixir-deps, react-doctor, ...) — managed by `usage-rules`. But these are consumed by Claude Code's harness `Skill` tool, not by the JidoClaw agent. JidoClaw skills (`.jido/skills/*.yaml`, 10 files) remain DAG pipelines via `platform/skills.ex`. No `knowledge_list`/`knowledge_view` tools on the JidoClaw side and no `.jido/knowledge/` directory; the main agent tool list in `agent/agent.ex:7-48` lists `Tools.RunSkill` (DAG executor) but no knowledge-disclosure pair.
 
 **Gap (refreshed)**: SKILL.md format is in use locally for Claude Code, but the JidoClaw agent has no progressive-disclosure surface into it. Need JidoClaw-side `Tools.KnowledgeList`/`Tools.KnowledgeView` (or a similar pair) and a registry path the JidoClaw agent can consult, distinct from the existing DAG-skill registry.
 
-**Hermes (2026-05-18)**: UNCHANGED in structure. Reload-cache plumbing added (`/reload-skills` slash command + `skills_reload` agent tool, 7966560fb). Symlinked skill slash commands now load (ff078738e). New trusted registries default — `huggingface/skills` added alongside `openai/skills` and `anthropics/skills` (e0e4856d4). Write-protection on pinned skills (c61b2e0af).
+**Hermes (2026-06-04)**: UNCHANGED in shape. The progressive-disclosure tier system (`skills_list` → `skill_view` → `skill_view(name, "references/…")`) and SKILL.md frontmatter contract are stable. What changed since 2026-05-18: catalog explosion — skills.sh (858 → 19,932) and ClawHub (200 → 20k+) are now fully indexed (`7050c052e`, `fb9f3a4ef`), a `BrowseShSource` adapter added for 169+ site-specific SKILL.md files (`57145ca14`), a new `environments:` relevance gate (`38d3c49aa`), and the tap registry hardened — reject symlinks in bundles, path-traversal guards on uninstall, prune dep/venv dirs from scanners (`c26af4681`, `b82608a6f`, `3fde8c153`). NVIDIA/skills bounced in and out of the trusted-tap default; ended up included.
 
 **Where**: `tools/skills_tool.py`, `tools/skills_hub.py`, hundreds of `skills/<name>/SKILL.md` files
 
@@ -162,11 +173,11 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T1-7. Anthropic prompt-caching discipline
 
-**Status (2026-05-18)**: PARTIAL. **Frozen-snapshot half landed** in the "Memory: Consolidator Runtime & Frozen-Snapshot Prompt" + "Conversations: chat transcripts in Postgres" commits: `agent/prompt.ex::build_snapshot/2` (lines 287–315) drops "fields that change between turns or sessions (active-agent count, current git branch)" and is persisted on `Conversations.Session.metadata["prompt_snapshot"]` via the `set_prompt_snapshot` action (`conversations/resources/session.ex:119–134`) at session creation (`resolver.ex:23–30`). Worker template opts into Anthropic prompt caching at `agent/agent.ex:51` (`llm_opts: [provider_options: [anthropic_prompt_cache: true]]`). **Missing**: explicit `cache_control` breakpoint placement code; AGENTS.md "Prompt cache invariants" section; slash commands defaulting to deferred with `--now` opt-in.
+**Status (2026-06-04)**: PARTIAL. **Frozen-snapshot half remains landed**: `agent/prompt.ex::build_snapshot/2` (lines 300–315) still drops "fields that change between turns or sessions (active-agent count, current git branch)" and is persisted on `Conversations.Session.metadata["prompt_snapshot"]` via the `set_prompt_snapshot` action (`conversations/resources/session.ex:121–136`) at session creation (`resolver.ex:95–110`, with the module docstring 20–30 describing the policy). The **main agent** opts into Anthropic prompt caching at `agent/agent.ex:53` (`llm_opts: [provider_options: [anthropic_prompt_cache: true]]`). **Still missing**: workers in `agent/workers/*.ex` do NOT carry the same `llm_opts` opt-in (the Full Worker Compaction commit added compaction across all 7 workers but left cache opt-in untouched); explicit `cache_control` breakpoint placement code; AGENTS.md "Prompt cache invariants" section; slash commands defaulting to deferred with `--now` opt-in.
 
 **Gap (refreshed)**: The snapshot is built and persisted, but breakpoint placement is whatever `Jido.AI` defaults to — no audit that the 4 Anthropic breakpoints are being used optimally. Slash commands in `cli/commands.ex` mutate session state directly without deferred-by-default discipline. The cultural invariant isn't codified in AGENTS.md so PRs aren't reviewed for cache hygiene.
 
-**Hermes (2026-05-18)**: REFACTORED. The "system_and_3" name in the original entry is out of date. A 1h cross-session prefix-cache layout shipped (7b7636655: `tools[-1] 1h + system[0] 1h + messages[-2] 5m + messages[-1] 5m`; within-session rolling shrank from 3 to 2 to free a breakpoint) — then b06e99930 **removed** the long-lived prefix layout once the system prompt was made byte-static within a session. Net current discipline: keep the system prompt byte-stable, use the 4 breakpoints at the rolling positions, rely on Anthropic's full-prefix cache for cross-turn hits.
+**Hermes (2026-06-04)**: REFACTORED (no further `prompt_caching.py` commits since 2026-05-18). The "system_and_3" name in the original entry is out of date. A 1h cross-session prefix-cache layout shipped (7b7636655: `tools[-1] 1h + system[0] 1h + messages[-2] 5m + messages[-1] 5m`; within-session rolling shrank from 3 to 2 to free a breakpoint) — then b06e99930 **removed** the long-lived prefix layout once the system prompt was made byte-static within a session. Net current discipline: keep the system prompt byte-stable, use the 4 breakpoints at the rolling positions, rely on Anthropic's full-prefix cache for cross-turn hits.
 
 **Where**: `agent/prompt_caching.py` + AGENTS.md "Prompt Caching Must Not Break" policy
 
@@ -183,7 +194,7 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T1-8. Mixture-of-Agents worker template
 
-**Status (2026-05-18)**: NOT_ADOPTED. `agent/workers/` contains coder, docs_writer, refactorer, researcher, reviewer, test_runner, verifier — no `mixture_of_agents.ex`. `grep` for "mixture_of_agents\|MixtureOfAgents\|ensemble" returns nothing.
+**Status (2026-06-04)**: NOT_ADOPTED. `agent/workers/` contains coder, docs_writer, refactorer, researcher, reviewer, test_runner, verifier — no `mixture_of_agents.ex`. `grep` for "mixture_of_agents\|MixtureOfAgents\|ensemble" returns nothing (and `tools/mixture_of_agents_tool.py` is unchanged in hermes since 2026-05-18).
 
 **Where**: `tools/mixture_of_agents_tool.py`
 
@@ -199,11 +210,11 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T1-9. Session search via FTS
 
-**Status (2026-05-18)**: PARTIAL. **FTS infrastructure landed**: `conversations/resources/message.ex:363–368` declares an `AshPostgres.Tsvector` generated column with a GIN index `messages_search_vector_idx` (line 93–97). The Solutions side has full hybrid retrieval (FTS+pgvector+pg_trgm with RRF combine) at `solutions/hybrid_search_sql.ex` exposed via `Tools.FindSolution`, and Memory has the equivalent at `memory/hybrid_search_sql.ex` exposed via `Tools.Recall`. **Missing**: `Tools.RecallSession`/session-search action; no read action on Message that groups hits by session.
+**Status (2026-06-04)**: PARTIAL. **FTS infrastructure still landed**: `conversations/resources/message.ex:437–442` declares an `AshPostgres.Tsvector` generated column with a GIN index `messages_search_vector_idx` (line 94–98). The Solutions side has full hybrid retrieval (FTS+pgvector+pg_trgm with RRF combine) at `solutions/hybrid_search_sql.ex` exposed via `Tools.FindSolution`, and Memory has the equivalent at `memory/hybrid_search_sql.ex` exposed via `Tools.Recall`. **Still missing**: `Tools.RecallSession`/session-search action; no FTS read action on Message that groups hits by session (existing read actions cover `for_session`, watermark scans, etc., but no `search_with_windows`).
 
 **Gap (refreshed)**: FTS infrastructure on Message rows is built and the hybrid-search patterns are proven elsewhere — adoption is now a new tool + a read action that groups hits by `session_id` and returns anchored windows or summaries.
 
-**Hermes (2026-05-18)**: REFACTORED significantly — entry **rewritten below**. The aux-LLM summarizer path was **deleted** (abf1af540, 94c523f0c). Tool is now single-shape with three calling modes (discovery / scroll / browse) inferred from args, NO LLM calls anywhere, every shape returns byte-for-byte SQLite content. ~20ms discovery vs ~90s before. Discovery returns FTS5 hits + ±5 message window + bookend_start (first 3) + bookend_end (last 3) per session, all in one call. Scroll uses `around_message_id`; browse returns recent sessions chronologically. The "summarize-not-transcript" framing in the original entry is no longer the design. T2-3 (auxiliary client) is **no longer a prerequisite** for T1-9.
+**Hermes (2026-06-04)**: REFACTORED (design unchanged since 2026-05-18; only hardening). The aux-LLM summarizer path was **deleted** (abf1af540, 94c523f0c). Tool is now single-shape with three calling modes (discovery / scroll / browse) inferred from args, NO LLM calls anywhere, every shape returns byte-for-byte SQLite content. ~20ms discovery vs ~90s before. Discovery returns FTS5 hits + ±5 message window + bookend_start (first 3) + bookend_end (last 3) per session, all in one call. Scroll uses `around_message_id`; browse returns recent sessions chronologically. The "summarize-not-transcript" framing in the original entry is no longer the design. T2-3 (auxiliary client) is **no longer a prerequisite** for T1-9. Since 2026-05-18, ongoing `hermes_state.py` hardening (graceful FTS5 degradation when SQLite lacks it, WAL `TRUNCATE` checkpoint to bound growth, FTS5 segment-merge perf, new `messages.active` flag for rewind) — but the session-search calling shape is unchanged.
 
 **Where**: `tools/session_search_tool.py` (single-shape, post-rewrite), `hermes_state.py`
 
@@ -219,7 +230,7 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T1-10. Cross-cluster rate-limit guard via `:pg`
 
-**Status (2026-05-18)**: PARTIAL. The pattern is **proven for Voyage embeddings**: `embeddings/rate_pacer.ex` is a per-node bucket + cluster-global Postgres-row admit-gate (`embedding_dispatch_window` table via `embeddings/resources/dispatch_window.ex`). It's a cluster-shared rate budget — but only for one provider class. **Missing**: `providers/rate_guard.ex` for LLM 429s; no `:pg` group `:rate_limits`; LLM calls still retry independently per node.
+**Status (2026-06-04)**: PARTIAL. The pattern is **proven for Voyage embeddings**: `embeddings/rate_pacer.ex` is a per-node bucket + cluster-global Postgres-row admit-gate (`embedding_dispatch_window` table via `embeddings/resources/dispatch_window.ex`). It's a cluster-shared rate budget — but only for one provider class. **Missing**: `providers/rate_guard.ex` for LLM 429s (the only file in `providers/` is still `ollama.ex`); no `:pg` group `:rate_limits`; LLM calls still retry independently per node. (Hermes's `nous_rate_guard.py` + `rate_limit_tracker.py` are themselves unchanged since 2026-05-18.)
 
 **Gap (refreshed)**: We chose Postgres rows over `:pg` for embeddings (probably right — durable across node restarts). The remaining work is to generalize the same shape to all LLM provider 429/Retry-After handling. Decision required: keep Postgres-row shape (matches existing pattern, durable) or use `:pg` (faster, in-memory) for LLM rate limits.
 
@@ -235,7 +246,9 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T1-11. NEW — Orchestrator-driven auto-decomposition (kanban triage → task graph)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED. No `Workflow.Decompose`, no `Workflow.Task` Ash resource, no parent/child task model, no LLM-driven decomposition path. `workflows/plan_workflow.ex` ships user-authored skill-DAG execution with `depends_on`, but that's caller-declared topology, not orchestrator-driven decomposition. `orchestration/` is `WorkflowRun` + `WorkflowRunner` + `ApprovalGate` only.
+
+**Hermes (2026-06-04)**: STABLE (no design change since 2026-05-18; ongoing hardening). `kanban_decompose.py`, `profile_describer.py`, and `kanban_db.decompose_triage_task` still implement the design below. Since 2026-05-18: decompose children inherit the root task's workspace instead of forcing `scratch` (`72e82f88c`), single-task decompositions get auto-assigned (`4da4133d3`), an `auto_promote_children` toggle was added (`2e09d2567`), and parent-child completion-gate semantics were sharpened (`917e51858` / `40c1decb3` / `b7ea62e5d` — the exact "root wakes when leaves complete" gate the entry already describes).
 
 **Where in hermes**: `hermes_cli/kanban_decompose.py` (440 LOC, new), `hermes_cli/profile_describer.py` (299 LOC, new), `hermes_cli/kanban_db.py::decompose_triage_task` (atomic helper), `gateway/run.py` (auto-decompose tick), `plugins/kanban/dashboard/plugin_api.py` (profiles endpoints), `hermes_cli/profiles.py` (new `description` + `description_auto` fields). Introduced in commit 1345dda0c.
 
@@ -253,9 +266,9 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T2-1. Subagent delegation discipline (blocklist + summary-only)
 
-**Status (2026-05-18)**: NOT_ADOPTED. `agent/templates.ex` registers worker templates with `module`/`description`/`model`/`max_iterations` keys only — no `:blocked_tools` or `:summary_only?` options. `tools/spawn_agent.ex` spawns children without stripping a blocklist; parent receives full child output via `AgentTracker`.
+**Status (2026-06-04)**: NOT_ADOPTED. `agent/templates.ex:24-61` still registers worker templates with `module`/`description`/`model` only (plus hydrated `:max_iterations` and the new `:forward_context` policy); no `:blocked_tools`, no `:summary_only?`. `tools/spawn_agent.ex` spawns children without stripping a blocklist; the parent receives the child's full final outcome via `AgentTracker`. The `forward_context` policy (`tool_context.ex:57-176`, `templates.ex:110-135`) shipped post-2026-05-18 and nulls parent tool-context keys on spawn — it closes the cross-scope-privacy half but is orthogonal to tool blocklist + summary-only output. Worker tool lists also omit `SpawnAgent` (e.g. `workers/coder.ex:7-18`), so recursion is blocked implicitly per-template rather than via a first-class contract.
 
-**Hermes (2026-05-18)**: UNCHANGED. `DELEGATE_BLOCKED_TOOLS` contract unchanged. Several hardening fixes (heartbeat guards, provider override honoring, JSON string batch tasks, ACP guidance) but no design change.
+**Hermes (2026-06-04)**: UNCHANGED. `DELEGATE_BLOCKED_TOOLS` contract still the same five tools (`tools/delegate_tool.py:45-53`). The only recent commit (`0d9b7132f`, Jun 3) adds observability (`subagent_start` hook + `_parent_turn_id`), not a design change.
 
 **Where**: `tools/delegate_tool.py`
 
@@ -271,9 +284,9 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T2-2. Multi-credential pool with strategy + cooldowns
 
-**Status (2026-05-18)**: NOT_ADOPTED. `security/vault.ex` is a one-line Cloak vault. `security/runtime_secrets.ex` only handles SECRET_KEY_BASE/TOKEN_SIGNING_SECRET. No `CredentialPool` GenServer, no `PooledCredential` struct, no rotation strategies.
+**Status (2026-06-04)**: NOT_ADOPTED. `security/vault.ex` is still the one-line Cloak vault. `security/runtime_secrets.ex` only handles SECRET_KEY_BASE/TOKEN_SIGNING_SECRET. No `CredentialPool` GenServer, no `PooledCredential` struct, no rotation strategies anywhere under `lib/`.
 
-**Hermes (2026-05-18)**: UNCHANGED. ISO-string `last_status_at` rehydration fix (1a4e64ba0); shorter 401 cooldown; pooled auth rotation after quota failures (17d891485). No design change.
+**Hermes (2026-06-04)**: REFACTORED. New terminal **`STATUS_DEAD`** state for OAuth 401s that cannot recover (`token_invalidated`/`token_revoked`/`invalid_token`/`invalid_grant`/`unauthorized_client`/`refresh_token_reused`) — bypasses TTL retry and is excluded from rotation until an explicit re-auth sync clears it (`86a389fee`, May 28). New `agent/credential_persistence.py` (174 LOC) avoids persisting borrowed credential secrets (`d7c5d5dee`). Weekly-usage-limit rotation fix passes `explicit_api_key`/`api_key_hint` through to pin the active entry under concurrent CLI+gateway calls (`4117fc364`). The status-machine sketch in the original entry needs the new terminal state at adoption time.
 
 **Where**: `agent/credential_pool.py`, `agent/credential_sources.py`
 
@@ -289,9 +302,9 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T2-3. Auxiliary client router for side tasks
 
-**Status (2026-05-18)**: NOT_ADOPTED. `grep` for "AuxiliaryClient\|auxiliary_client" returns nothing. `lib/jido_claw/providers/` holds only `ollama.ex`. The consolidator (`memory/consolidator.ex`) drives a separate harness (Claude Code or Codex CLI) — different shape, not a per-task LLM router.
+**Status (2026-06-04)**: NOT_ADOPTED. `grep` for "AuxiliaryClient\|auxiliary_client\|fallback_chain" across `lib/` still returns nothing. `lib/jido_claw/providers/` holds only `ollama.ex`. The consolidator (`memory/consolidator.ex`) drives a separate harness (Claude Code or Codex CLI) — different shape, not a per-task LLM router.
 
-**Hermes (2026-05-18)**: REFACTORED significantly. 4-step **layered auxiliary fallback ladder** landed (a57424683 + 43e566f77, May 16–17): (1) primary aux provider → (2) user-configured `auxiliary.<task>.fallback_chain` → (3) **main agent provider+model as last-resort safety net** → (4) warn user + re-raise original error. Capacity-error gating (24c209f11) classifies quota exhaustion as a payment error so it can walk the chain. The fixed chain in the original entry (OpenRouter → Nous Portal → Custom → Codex OAuth → Anthropic) still describes the auto-mode flow, but the new principles are: **per-task config-driven fallback_chain** and **main-agent always-available safety net**. Read `website/docs/user-guide/features/fallback-providers.md` for the canonical spec.
+**Hermes (2026-06-04)**: REFACTORED further (`agent/auxiliary_client.py` now ~5800 LOC). The 4-step layered fallback ladder is still the shape — primary aux → user `fallback_chain` → main-agent safety net → warn — but: (a) `dbe5d8497` (May 25) closed a hole where OAuth providers (xai-oauth, openai-codex) silently fell through to OpenRouter/Nous instead of the main model, so the "main-agent safety net" invariant is now actually universal; (b) `2062a8400` (May 29) stops sending `max_tokens` on OpenAI-compatible aux calls by default; (c) `ab2472e69` (Jun 2) self-heals Nous-routed calls when a pinned model leaves the catalog (one-shot force-refresh + retry); (d) `e752c9454` (May 20) externalised aux-task registration via `PluginContext.register_auxiliary_task()` — so adoption should make per-task slots plugin-registerable, not hardcoded. Canonical spec: `website/docs/user-guide/features/fallback-providers.md`.
 
 **Where**: `agent/auxiliary_client.py` (~5100 LOC now)
 
@@ -307,7 +320,9 @@ Tier 1 = `skills_list` (metadata only — budget-friendly). Tier 2 = `skill_view
 
 ### T2-4. Skill security guard with trust-level matrix
 
-**Status (2026-05-18)**: N/A. Prerequisite (external skill registry) hasn't materialized. JidoClaw's `.jido/skills/` is still local YAML DAGs. `.agents/skills/` SKILL.md tree is `usage-rules`-managed reference docs for Claude Code, not user-installed third-party skills.
+**Status (2026-06-04)**: N/A. Prerequisite (external skill registry) hasn't materialized. JidoClaw's `.jido/skills/` is still local YAML DAGs. `.agents/skills/` SKILL.md tree is `usage-rules`-managed reference docs for Claude Code, not user-installed third-party skills.
+
+**Hermes (2026-06-04)**: REFACTORED (trust matrix + false-positive trim). Trusted tap list grew: `NVIDIA/skills` joins `openai/skills` and `anthropics/skills` (`9992e32db`/`4de8009ce`, May 28-29) — the verdict matrix below should show three trusted publishers, not two, at adoption time. False-positive patterns trimmed in `ba6ffd4ff` (Jun 1): heredocs-into-`.env` no longer match `read_secrets_file`; `allowed-tools` frontmatter demoted from HIGH to LOW informational; non-secret `os.environ.get()` exempted. Multi-word prompt-pattern matcher hardened in `7ebebfbb8` (May 25).
 
 **Where**: `tools/skills_guard.py`, `tools/skill_manager_tool.py`
 
@@ -331,11 +346,11 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-5. Shadow-git checkpoint manager
 
-**Status (2026-05-18)**: PARTIAL. `forge/resources/checkpoint.ex` defines an Ash resource for Forge sandbox checkpoints with `sandbox_checkpoint_id`, `exec_session_sequence`, `runner_state_snapshot`, and a `:latest_for_session` read action. Checkpointing **exists inside Forge sessions** (sandboxed execution domain). **Missing**: transparent pre-write hook on `Tools.WriteFile`/`Tools.EditFile` against the user's working tree; no `/restore <checkpoint-id>` CLI command.
+**Status (2026-06-04)**: PARTIAL. `forge/resources/checkpoint.ex` still defines an Ash resource for Forge sandbox checkpoints with `sandbox_checkpoint_id`, `exec_session_sequence`, `runner_state_snapshot`, and a `:latest_for_session` read action. Checkpointing **exists inside Forge sessions** (sandboxed execution domain). **Missing**: transparent pre-write hook on `Tools.WriteFile`/`Tools.EditFile` against the user's working tree (`tools/write_file.ex` writes directly via `VFS.Resolver`); no `/restore <checkpoint-id>` CLI command (`cli/commands/` only holds `solutions_stats.ex`).
 
 **Gap (refreshed)**: We have checkpoint primitives for sandboxed sessions but no automatic pre-mutation snapshot of the user's actual project tree. The choice is whether to extend Forge's checkpoint shape to non-sandboxed file mutations or add a separate shadow-git-style mechanism.
 
-**Hermes (2026-05-18)**: REFACTORED. v2 single-store rewrite (a0fedfbb1: "v2 single-store rewrite with real pruning + disk guardrails"). The per-directory `~/.hermes/checkpoints/{sha256(dir)[:16]}/` model in the original entry is the v1 description. v2 keeps per-dir keying but adds real pruning + disk guardrails — re-read `checkpoint_manager.py` before adoption.
+**Hermes (2026-06-04)**: UNCHANGED since the v2 single-store rewrite (a0fedfbb1: "v2 single-store rewrite with real pruning + disk guardrails") — no commits to `tools/checkpoint_manager.py` in this window. The per-directory `~/.hermes/checkpoints/{sha256(dir)[:16]}/` model in the original entry is the v1 description; v2 keeps per-dir keying but adds real pruning + disk guardrails — re-read `checkpoint_manager.py` before adoption.
 
 **Where**: `tools/checkpoint_manager.py`
 
@@ -349,11 +364,11 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-6. Pluggable memory provider ABC + frozen snapshots
 
-**Status (2026-05-18)**: PARTIAL. **Frozen-snapshot half fully adopted** (see T1-7 status): `agent/prompt.ex::build_snapshot/2` is persisted on `Conversations.Session.metadata["prompt_snapshot"]` at session creation, block-tier memory rendered at snapshot time, memory writes (`Tools.Remember`) persist via `lib/jido_claw/memory.ex` but the in-context snapshot doesn't refresh until the next session. **Missing**: `JidoClaw.Memory.Provider` behaviour, `lib/jido_claw/memory/providers/` directory, `BuiltinMemoryProvider` vs `HonchoProvider` etc. Memory subsystem is a single Ash-backed implementation (`memory/resources/` — Fact/Block/Episode/Link/ConsolidationRun/...).
+**Status (2026-06-04)**: PARTIAL. **Frozen-snapshot half fully adopted** (see T1-7 status): `agent/prompt.ex::build_snapshot/2` is persisted on `Conversations.Session.metadata["prompt_snapshot"]` at session creation, block-tier memory rendered at snapshot time, memory writes (`Tools.Remember`) persist via `lib/jido_claw/memory.ex` but the in-context snapshot doesn't refresh until the next session. **Missing**: `JidoClaw.Memory.Provider` behaviour, `lib/jido_claw/memory/providers/` directory, `BuiltinMemoryProvider` vs `HonchoProvider` etc. — `grep` for `Memory.Provider`/`Memory.Providers` under `lib/` still returns nothing. Memory subsystem is a single Ash-backed implementation (`memory/resources/` — Fact/Block/Episode/Link/ConsolidationRun/...).
 
 **Gap (refreshed)**: The discipline is in place; the extension surface is not. There's exactly one memory implementation (Ash-backed) with no behaviour or registry to swap in external providers (honcho/mem0/supermemory/byterover/...).
 
-**Hermes (2026-05-18)**: REFACTORED. New optional hook `on_session_switch(new_session_id, *, parent_session_id, reset, **kwargs)` (13683c084) — fires on `/resume`, `/branch`, `/reset`, `/new`, and context compression. Doc listed 5 optional hooks; this adds a 6th. Frozen-snapshot discipline unchanged.
+**Hermes (2026-06-04)**: REFACTORED. `MemoryProvider.sync_turn` gained an optional `messages` kwarg (`5a95fb2e1`, May 29) — when the provider signature accepts it, dispatch forwards the full OpenAI-style turn (assistant tool calls + tool results), not just the final text; in-tree providers keep the legacy text-only signature via `inspect.signature` gating. `on_session_switch` `rewound` kwarg semantics tightened (`e1951ce70`, May 31): only forwarded when truthy (`/undo` sets it explicitly), so the common `/resume`/`/branch`/`/new`/compression paths stay clean. Provider loader now registers a `_hermes_user_memory.<name>` synthetic parent namespace so user-installed providers using relative imports load (`de60bf40c`, Jun 2). Doc's ABC sketch should include the optional `messages` parameter and the signature-inspection dispatch.
 
 **Where**: `agent/memory_provider.py`, `agent/memory_manager.py`, `plugins/memory/<name>/`
 
@@ -367,7 +382,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-7. OSV malware check before MCP server launch
 
-**Status (2026-05-18)**: NOT_ADOPTED. `grep` for "osv\|OSV\|malware" returns nothing. `mcp_scope/initializer.ex` configures MCP scope mappings but doesn't query osv.dev before launching servers.
+**Status (2026-06-04)**: NOT_ADOPTED. `grep` for "osv\|OSV\|malware" across `lib/` still returns nothing. `mcp_scope/initializer.ex` configures MCP scope mappings but doesn't query osv.dev before launching servers. (Hermes's `tools/osv_check.py` is unchanged since 2026-05-18.)
 
 **Where**: `tools/osv_check.py`
 
@@ -383,9 +398,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-8. Approval system with auxiliary-LLM auto-classifier
 
-**Status (2026-05-18)**: PARTIAL. `platform/approval.ex` implements a per-session approval GenServer with `:off | :on_miss | :always` modes, ETS-backed allowlist, pending requests with 120s timeout — but uses a **pattern-match-allowlist** gate, NOT an auxiliary-LLM risk classifier. **Missing**: `JidoClaw.Security.RiskClassifier`, the `classify/1 :: :safe | :caution | :dangerous` surface, DANGEROUS_PATTERNS regex pre-filter.
+**Status (2026-06-04)**: PARTIAL. `platform/approval.ex` (150 lines, unchanged) implements a per-session approval GenServer with `:off | :on_miss | :always` modes, ETS-backed `(session_id, tool_name)` allowlist, pending requests with 120s timeout and PubSub broadcast — still a **pattern-match-allowlist** gate, NOT an auxiliary-LLM risk classifier. **Missing**: `JidoClaw.Security.RiskClassifier`, the `classify/1 :: :safe | :caution | :dangerous` surface, `DANGEROUS_PATTERNS` regex pre-filter (`grep` for any of these still returns nothing).
 
-**Hermes (2026-05-18)**: REFACTORED (small). Tightened dangerous-command detection (6ba35ec33 — "Inspired by Claude Code"); precompiled patterns for perf (cd7150a19); `sudo -S` / stdin / askpass / shell privilege flag catches (976d8e27a, 9520a1ccd); cron jobs no longer treated as gateway context (839cdd1b0); DELETE pattern DOTALL bypass fix (80374d4dd). API-server now exposes approval events (526c0e018). Design unchanged; pattern set grew.
+**Hermes (2026-06-04)**: REFACTORED further. Design still pattern-match → optional LLM classifier, but ten+ commits since 2026-05-18 tightened the pattern set and the wider approval-flow security model. Notable: `_YOLO_MODE_FROZEN` freezes `HERMES_YOLO_MODE` at module import to defeat runtime prompt-injection bypass, and `_smart_approve` now requires `answer == "APPROVE"` (exact match, not substring) (`4cb3eb03c`, May 25); docker `restart`/`stop`/`kill` added to DANGEROUS_PATTERNS to stop a self-termination loop (`54bf79876`, May 29); `~/.hermes/config.yaml` is treated as security policy and gated on the terminal side (echo/tee/cp/mv/`sed -i`/`perl -i`/`ruby -i`) (`4e9d886d9`/`a6a4e6f9d`/`b04c6e95f`); `execute_code` RPC threads propagate approval context via `propagate_context_to_thread` + a one-shot `check_execute_code_guard` (`108397726`, 371-line change); "silence is not consent" pinned on timeout/deny (`7f1b2b456`); pending result now returns `status: pending_approval` + `approval_pending: True` (`6d495d9e7`). Adoption should lift the frozen-at-import YOLO defense and explicit thread-context propagation alongside the precompiled pattern set.
 
 **Where**: `tools/approval.py`
 
@@ -401,11 +416,11 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-9. Process registry with strikes + global circuit breaker
 
-**Status (2026-05-18)**: PARTIAL. `platform/background_process/registry.ex` tracks spawned OS processes with a 200KB output buffer (`@buffer_max_bytes 200 * 1024` — same as hermes), two-phase SIGTERM→5s→SIGKILL termination, auto-cleanup after 1h. **Missing**: per-session strike system, global 10s/15-hit circuit breaker, watch-pattern tracker, JSON checkpoint recovery.
+**Status (2026-06-04)**: PARTIAL. `platform/background_process/registry.ex` (218 lines, unchanged) still tracks spawned OS processes with a 200KB output buffer (`@buffer_max_bytes 200 * 1024` — same as hermes), two-phase SIGTERM→5s→SIGKILL termination, auto-cleanup after 1h. **Missing**: per-session strike system, global 10s/15-hit circuit breaker, watch-pattern tracker, JSON checkpoint recovery.
 
 **Gap (refreshed)**: Tracking and buffering exist; the strike + circuit-breaker anti-flooding layer doesn't. Watch-pattern subscription is also absent — currently a `tail -f` would dump unbounded into the buffer.
 
-**Hermes (2026-05-18)**: UNCHANGED. Orphaned Popen killed on post-spawn setup failure (53ec32819); psutil-based cross-platform PID management (cc38282b0). Strike + global circuit breaker design unchanged.
+**Hermes (2026-06-04)**: REFACTORED (cross-platform + UX hardening; strike/circuit-breaker design unchanged). Windows tree-kill now uses `taskkill /PID <pid> /T /F` to walk descendants (`7ce6b504a`, May 23); background subprocesses get `stdin=subprocess.DEVNULL` to avoid keyboard-freeze contention with the parent TUI (`214b95392`, May 18); non-local backends (SSH/Docker/Modal/Daytona/Singularity) skip the `_rewrite_compound_background` rewrite of the `spawn_via_env` wrapper (`6f8975dcd`, Jun 1). New lock-free `ProcessRegistry.count_running()` powers a live `⚙ N` indicator in the CLI status bar (`1c3c36428`, May 25); Telegram gateway routes background-process completion notifications back into the originating DM topic (`fbabd560f`). The per-session strike + global 10s/15-hit circuit breaker is still the load-bearing idea for adoption.
 
 **Where**: `tools/process_registry.py`
 
@@ -419,9 +434,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-10. Cron with delivery targets + scripted preprocessor
 
-**Status (2026-05-18)**: NOT_ADOPTED. `cron/resources/job.ex` defines a persistent `Cron.Job` resource (job_id/task/mode/schedule_kind/schedule_value/mfa_*/metadata) scheduled via `platform/cron/scheduler.ex`. `platform/channel/` has discord + telegram adapters. **Missing**: `pre_script` field, `delivery_targets` list, `silent_when_match`, `[SILENT]` sentinel, cron-to-channel dispatch glue.
+**Status (2026-06-04)**: NOT_ADOPTED. `cron/resources/job.ex` defines a persistent `Cron.Job` resource scheduled via `platform/cron/scheduler.ex` and routed by `platform/cron/dispatcher.ex`. The schedule layer was hardened since the doc was last touched — `schedule_kind ∈ [:cron, :every, :at]` + `schedule_value`, an orthogonal `target ∈ [:agent, :workflow, :mfa]` dimension (with `workflow_name`/`workflow_input` for Orchestration workflows), per-job IANA `timezone` for `:cron` rows, and `run_count`/`last_run_at` durability counters — but the borrowed feature is still missing. `platform/channel/` has discord + telegram adapters. **Missing**: `pre_script` field, `delivery_targets` list, `silent_when_match`, `[SILENT]` sentinel, `no_agent` mode, cron-to-channel dispatch glue.
 
-**Hermes (2026-05-18)**: REFACTORED. New **`no_agent=True` mode** for script-only cron jobs (3db6b9cc8, May 4) — the classic watchdog pattern (script stdout → channel, no LLM, no tokens). New name-based lookup for job ops (6682f91b8). `deliver=all` fan-out intent (486b14b42). `[SILENT]` sentinel design unchanged. Adoption sketch should add `no_agent` mode — cheapest tier, different use case.
+**Hermes (2026-06-04)**: STABLE. The May design (`no_agent` mode, `[SILENT]` sentinel, multi-target `deliver`, name-based lookup, fan-out intent) is intact in `cron/jobs.py` + `cron/scheduler.py`. Recent commits are hardening only — non-blocking sequential dispatch (`9fbfeb31b`), tick/completion decoupling (`eb9cde734`), stale cron-output re-validation before deletion (`30412a977`) — plus a new **ntfy delivery target** as a platform plugin (`b10f17bf1`/`6a8e131a0`) and a `TELEGRAM_CRON_THREAD_ID` topic-routing option (`a4fb0a3ac`). Adoption sketch still stands; consider adding `ntfy` to the delivery-target list.
 
 **Where**: `cron/jobs.py`, `cron/scheduler.py`
 
@@ -437,7 +452,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-11. NEW — Gateway deliverable mode (artifact uploads as native attachments)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). `platform/channel/behaviour.ex` still defines only `init`/`connect`/`handle_inbound`/`send_message`/`disconnect` — no `upload_artifact/3` callback; file paths in agent responses go out as text.
+
+**Hermes (2026-06-04)**: STABLE. `extract_local_files` + `_deliver_kanban_artifacts` intact; recent commits harden the path (producer-tool allowlist `521d06975`, config-file denylist `4ec0adebe`/`bdfba4524`, Windows paths `51d165a8e`, MEDIA-in-code-block guard `3ccf4fdc6`, `$HOME` root-run fix `2982122be`).
 
 **Where in hermes**: `gateway/platforms/base.py::extract_local_files` (line 2158), `gateway/run.py::_deliver_kanban_artifacts`, `tools/kanban_tools.py` (`kanban_complete` `artifacts` param), `hermes_cli/kanban_db.py` (metadata.artifacts propagation), `website/docs/user-guide/features/deliverable-mode.md`. Commit f2fdb9a17.
 
@@ -453,7 +470,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-12. NEW — ACP edit approval (pre-execution diff + session-scoped auto-approval)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry). jido_radclaw has `platform/approval.ex` (T2-8 PARTIAL) but not the structured pre-execution diff flow.
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). jido_radclaw has `platform/approval.ex` (T2-8 PARTIAL) but not the structured pre-execution diff flow; `grep` for `EditProposal`/`approval_scope` in `lib/` returns nothing.
+
+**Hermes (2026-06-04)**: STABLE. `acp_adapter/edit_approval.py` design intact (`EditProposal`, `ContextVar` requester, `ask`/`workspace_session`/`session` scopes). Recent commits are mac `/tmp`-symlink hardening (`5cbf86f1c`), cross-platform tempdir fix (`7f253f555`), ACP `session_id` stamping on kanban tasks (`31fe22903`), and post-stream `final_response` delivery (`60d20a37c`/`7eb6c7f48`).
 
 **Where in hermes**: `acp_adapter/edit_approval.py` (278 LOC, new), `acp_adapter/server.py` (1894 LOC, expanded), `model_tools.py` (approval hooks). Commits 9592e595a, f70e0b85d, 49b28d164, 029239860.
 
@@ -469,7 +488,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-13. NEW — Codex app-server runtime (alternate transport for OpenAI/Codex models)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry). jido_radclaw has a Codex sibling runner inside Forge (`forge/runners/codex.ex`) — a *harness* sibling, NOT the in-Jido.AI transport adapter described here.
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). jido_radclaw has a Codex sibling runner inside Forge (`forge/runners/codex.ex`) — a *harness* sibling over `codex exec`, NOT the in-Jido.AI JSON-RPC transport adapter described here. `lib/jido_claw/providers/` only holds `ollama.ex`.
+
+**Hermes (2026-06-04)**: STABLE. The three-file transport (`codex_app_server.py` / `_session.py` / `_event_projector.py`) and `runtime_provider.py::codex_app_server` API mode are intact. Recent commits are housekeeping (TUI image handling `83f6a83b2`, import pruning `66827f894`). The broader codex_responses adapter saw separate fixes, but the app-server transport's JSON-RPC speaker / session machine is unchanged.
 
 **Where in hermes**: `agent/transports/codex_app_server.py` (JSON-RPC 2.0 stdio speaker), `agent/transports/codex_app_server_session.py` (810 LOC session adapter), `agent/transports/codex_event_projector.py`, `hermes_cli/runtime_provider.py` (`codex_app_server` API mode). Commits 091d8e103, d5a0815c3 (monotonic deadlines), 12f755c9e (wedge watchdog + OAuth refresh classify).
 
@@ -485,7 +506,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-14. NEW — ABC-plus-registry plugin pattern (from browser-provider migration)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). `lib/jido_claw/providers/` still holds only `ollama.ex`; channel adapters and VFS backends remain ad-hoc, no ABC + selection-registry standardization.
+
+**Hermes (2026-06-04)**: STABLE. The three browser plugins (`browser_use`, `browserbase`, `firecrawl`) remain in `plugins/browser/` behind the ABC + registry. Recent commits are housekeeping (dead-code pruning across 16 files `ddaf2f671`/`dc235e93c`, docs unit fix, Nous OAuth-refresh isolation `6a72af044`); no new vendor plugins, pattern unchanged.
 
 **Where in hermes**: `agent/browser_provider.py` (BrowserProvider ABC), `agent/browser_registry.py` (selection registry), `plugins/browser/browserbase/`, `plugins/browser/browser_use/`, `plugins/browser/firecrawl/`, `hermes_cli/plugins.py::register_browser_provider`, `tools/browser_tool.py` (dispatcher dispatches via registry). Commits c6e6909e5 (ABC), b8138ac40 (browserbase spike), a15cdfb05 (browser-use + firecrawl), 40fde853f (dispatcher cutover), 250caebeb (delete legacy dir).
 
@@ -501,7 +524,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-15. NEW — Curator (periodic auxiliary-model maintenance of agent-authored artifacts)
 
-**Status (2026-05-18)**: NOT_ADOPTED for skills. **Adjacent**: jido_radclaw has `memory/consolidator.ex` + `memory/consolidator/` directory ("Memory: Consolidator Runtime & Frozen-Snapshot Prompt") — but that's *memory* consolidation specifically, not the general curator pattern.
+**Status (2026-06-04)**: NOT_ADOPTED for skills. **Adjacent**: jido_radclaw has `memory/consolidator.ex` + `memory/consolidator/` directory ("Memory: Consolidator Runtime & Frozen-Snapshot Prompt") — but that's *memory* consolidation specifically, not the general curator pattern.
+
+**Hermes (2026-06-04)**: EXTENDED. The auxiliary-model periodic-review shape is unchanged, but the "only touches agent-created skills" invariant was relaxed: new `curator.prune_builtins` config (`70e1571d8`, Jun 1) lets the curator archive bundled built-in skills after inactivity, with a `.curator_suppressed` list the update-time re-seeder honors so the prune survives `hermes update`; hub-installed skills are still never pruned. Telemetry (view/use/patch) is decoupled from curation-eligibility so built-ins and hub skills are tracked too. Consolidation hardened to preserve skill packages (`ee80dfdea`). Read "never auto-deletes" as "archive only, recoverable" — the built-in restore path clears suppression.
 
 **Where in hermes**: `agent/curator.py` (1781 LOC), `agent/curator_backup.py`, plus curator hooks in `gateway/run.py` (cron-ticker thread integration, 019d4c1c3). Commits bc79e227e (initial), fa9383d27 (umbrella-first + inherit parent config + unbounded iterations), c8b7e7268 (review prompt → existing tools), 0d31864e3 (defense-in-depth bundled/hub skill gates), a12f7aa8b (7-day default), 8b290a590 (consolidated vs pruned).
 
@@ -517,9 +542,11 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-16. NEW — Persistent cross-turn goals (`/goal` — "Ralph loop")
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). No `JidoClaw.Workflow.Goal` Ash resource, no `/goal` slash command, no between-turn judge hook (`grep` for `Goal`/`/goal`/`Ralph` in `lib/` returns nothing).
 
-**Where in hermes**: `hermes_cli/goal.py`, `hermes_cli/commands.py` (CommandDef registry entries), AIAgent integration in agent loop. Commit 265bd59c1.
+**Hermes (2026-06-04)**: EXTENDED. The CLI primitive moved from `hermes_cli/goal.py` to `hermes_cli/goals.py` (plural; same shape — fail-open judge, parse-failure auto-pause, subgoal criteria). New surface in `0cd7d54b0`: **kanban `goal_mode` cards run workers in a `/goal` loop** — the primitive now drives both interactive CLI goals and kanban-card worker loops. Adoption sketch should split the loop driver from the surface (CLI command vs. workflow row) to mirror this.
+
+**Where in hermes**: `hermes_cli/goals.py` (renamed from `goal.py`), `hermes_cli/commands.py` (CommandDef registry entries), AIAgent integration in agent loop. Commit 265bd59c1; kanban `goal_mode` in 0cd7d54b0.
 
 **What**: Standing-goal slash command that keeps the agent working toward a user-stated objective across turns until satisfied, paused, or the turn budget runs out. After each turn, a lightweight auxiliary-model judge asks "is this goal satisfied by the assistant's last response?". If not, and we're under the turn budget (default 20), the system feeds a continuation prompt back into the same session as a normal user message. Real user input preempts automatically. Judge failures **fail open** (budget is the real backstop).
 
@@ -533,7 +560,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-17. NEW — Post-write delta-lint discipline (write_file + patch)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED (new entry). `Tools.WriteFile`/`Tools.EditFile` still have no post-write lint hook (`grep` for `post_write_lint`/`delta_lint` in `lib/` returns nothing).
+
+**Hermes (2026-06-04)**: STABLE. `_check_lint_delta` + post-first/pre-lazy pattern intact. Recent file-operations work is complementary: atomic write via temp+rename (`39f6b6e9d`), UTF-8 BOM handling (`5f84c9144`), patch indentation/CRLF preservation (`6bd0be30b`), LSP-aware shell-linter skip (`5e743559e`).
 
 **Where in hermes**: `tools/file_operations.py::_check_lint`, `_check_lint_delta` (in-process linters for `.py/.json/.yaml/.toml`; shell linter fallback for languages without an in-process equivalent). Commit 5168226d6.
 
@@ -551,7 +580,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-1. Single command registry across surfaces
 
-**Status (2026-05-18)**: NOT_ADOPTED. `cli/commands.ex` dispatches via `handle/2` clauses (`/help`, `/quit`, `/clear`, `/status`, `/model`, ...) — no central `COMMAND_REGISTRY` list, no `%CommandDef{}` struct shared with the Discord adapter. `platform/channel/discord_consumer.ex` is a separate dispatch path.
+**Status (2026-06-04)**: NOT_ADOPTED. `cli/commands.ex` dispatches via `handle/2` clauses (`/help`, `/quit`, `/clear`, `/reset`, `/status`, `/model`, ...) — no central `COMMAND_REGISTRY` list, no `%CommandDef{}` struct shared with the Discord adapter. `platform/channel/discord_consumer.ex` is a separate dispatch path.
 
 **Where**: `hermes_cli/commands.py`
 
@@ -565,7 +594,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-2. Insights engine
 
-**Status (2026-05-18)**: NOT_ADOPTED. `web/live/dashboard_live.ex` exists but doesn't surface per-model cost breakdowns / day-of-week heatmaps / streaks. `core/telemetry.ex` exists but isn't surfaced as a dashboard.
+**Status (2026-06-04)**: NOT_ADOPTED for the user-facing insights surface. `web/live/dashboard_live.ex` still surfaces only generic counters (Forge sessions, workflows, uptime) — no per-model cost breakdown, day-of-week heatmap, or streaks. **Adjacent progress** since 2026-05-18: `web/live/agents_live.ex` lists live `%JidoClaw.AgentView{}` snapshots; `trace/{collector,event,persistence}.ex` + `trace/resources/{trace_run,trace_event}.ex` (the Unified Runtime Trace Surface) capture per-request events to the DB; `inspection.ex` + `inspection/summary.ex` expose `inspect_agent`/`inspect_request`/`inspect_workflow` (with a `usage: %{input_tokens, output_tokens, cost: nil}` slot wired in but `cost` always `nil`). The telemetry plumbing for an insights view now exists; the dashboard/page that aggregates it does not.
 
 **Where**: `agent/insights.py` (~39k chars)
 
@@ -579,7 +608,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-3. Tirith pre-exec security scanner
 
-**Status (2026-05-18)**: NOT_ADOPTED (intentional). `grep` for "tirith\|cosign" returns nothing in lib/ and test/.
+**Status (2026-06-04)**: NOT_ADOPTED (intentional). `grep` for "tirith\|cosign" returns nothing in lib/, test/, or config/. (Hermes added one hardening fix to `tools/tirith_security.py` — reject non-regular tar members on auto-install — but the design is unchanged.)
 
 **Where**: `tools/tirith_security.py`
 
@@ -593,9 +622,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-4. Shell-script hooks bridging plugin lifecycle events
 
-**Status (2026-05-18)**: NOT_ADOPTED.
+**Status (2026-06-04)**: NOT_ADOPTED. `grep` for `shell_hooks`/`hooks.yaml`/`pre_tool_call` in `lib/` returns nothing.
 
-**Hermes (2026-05-18)**: REFACTORED (small). Shell hook block handler now honors blocks even when message/reason absent (aeda14611, 63805965e, dbeaaa47f).
+**Hermes (2026-06-04)**: UNCHANGED in shape. One robustness fix (`62573f44c`) hardens `yaml.safe_load`, flock unlock, TOCTOU races, and atomic writes in the hooks loader.
 
 **Where**: `agent/shell_hooks.py`
 
@@ -609,9 +638,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-5. Profile system via `HERMES_HOME`
 
-**Status (2026-05-18)**: NOT_ADOPTED. `grep` for "JIDO_HOME" returns nothing. Project-level `.jido/` is resolved from cwd via `JidoClaw.Startup.resolve_project_dir_from_argv/1`.
+**Status (2026-06-04)**: NOT_ADOPTED. `grep` for "JIDO_HOME" returns nothing. Project-level `.jido/` is resolved from cwd via `JidoClaw.Startup.resolve_project_dir_from_argv/1`.
 
-**Hermes (2026-05-18)**: UNCHANGED at the API level. New: when `HERMES_HOME` is unset but `active_profile` indicates a non-default profile, hermes logs a one-shot warning to `errors.log` so cross-profile data corruption is diagnosable. Subprocess spawners (systemd template in `hermes_cli/gateway.py`, kanban dispatcher) propagate `HERMES_HOME` explicitly.
+**Hermes (2026-06-04)**: UNCHANGED at the API level. Recent fix uses the Windows-native default home path (`40fbb0f3c`) so `get_hermes_home()` falls back correctly outside Unix; the profile-redirect rule and subprocess-propagation discipline are unchanged.
 
 **Where**: `hermes_constants.py::get_hermes_home()`
 
@@ -625,7 +654,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-6. `@file:`/`@folder:`/`@diff` context references
 
-**Status (2026-05-18)**: NOT_ADOPTED. `cli/repl.ex` passes user input through unchanged — no preprocessor.
+**Status (2026-06-04)**: NOT_ADOPTED. `cli/repl.ex` passes user input through unchanged — no preprocessor.
 
 **Where**: `agent/context_references.py`
 
@@ -639,7 +668,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-7. Onboarding first-touch hints
 
-**Status (2026-05-18)**: NOT_ADOPTED. `setup/wizard.ex` is a blocking first-run check; no `.jido/config.yaml` `onboarding.seen.<flag>` map; no contextual "first time you do X" hint system.
+**Status (2026-06-04)**: NOT_ADOPTED. `setup/wizard.ex` is a blocking first-run check; no `.jido/config.yaml` `onboarding.seen.<flag>` map; no contextual "first time you do X" hint system.
 
 **Where**: `agent/onboarding.py`
 
@@ -653,7 +682,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-8. Auto-titled sessions
 
-**Status (2026-05-18)**: NOT_ADOPTED. `conversations/resources/session.ex` has workspace_id/user_id/kind/external_id/tenant_id/metadata but **no `title` field**. No title-generator background task.
+**Status (2026-06-04)**: NOT_ADOPTED. `conversations/resources/session.ex` has workspace_id/user_id/kind/external_id/tenant_id/metadata but **no `title` field**. No title-generator background task.
 
 **Where**: `agent/title_generator.py`
 
@@ -667,7 +696,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-9. "Don't write change-detector tests" doctrine
 
-**Status (2026-05-18)**: NOT_ADOPTED. AGENTS.md doesn't codify this.
+**Status (2026-06-04)**: NOT_ADOPTED. AGENTS.md doesn't codify this.
 
 **Where**: AGENTS.md
 
@@ -681,7 +710,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-10. CI-parity test wrapper
 
-**Status (2026-05-18)**: NOT_ADOPTED. No `scripts/test.sh` wrapper that scrubs API keys / pins timezone.
+**Status (2026-06-04)**: NOT_ADOPTED. No `scripts/test.sh` wrapper that scrubs API keys / pins timezone (no `scripts/` directory at the repo root).
 
 **Where**: `scripts/run_tests.sh`, `tests/conftest.py`
 
@@ -695,9 +724,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-11. Multi-platform gateway abstraction
 
-**Status (2026-05-18)**: NOT_ADOPTED for the abstraction. **Adjacent**: `platform/channel/` has behaviour.ex + discord.ex + telegram.ex + worker.ex + supervisor.ex — a per-channel adapter pattern but no unified gateway and no busy-input modes.
+**Status (2026-06-04)**: NOT_ADOPTED for the abstraction. **Adjacent**: `platform/channel/` has behaviour.ex + discord.ex + discord_consumer.ex + telegram.ex + worker.ex + supervisor.ex — a per-channel adapter pattern but no unified gateway, no plugin registry, and no busy-input modes.
 
-**Hermes (2026-05-18)**: REFACTORED. The abstraction is now realized as a **plugin registry** (`plugins/platforms/<name>/`, bundled platform plugins auto-load by default, 4d363499d). Generic plugin hooks for env enablement + cron delivery (af9336d57). Microsoft Teams added as a platform plugin (b3137d758); SimpleX Chat (09d9724a0); IRC interactive setup (868bc1c24). "Platform-as-adapter" is now plug-and-play, not just internal abstraction. Strengthens the adoption case if we ever expand beyond Discord+Telegram.
+**Hermes (2026-06-04)**: STILL REFACTORING — the plugin-registry pattern (`plugins/platforms/<name>/`) has absorbed Discord, Mattermost, and ntfy in addition to the original IRC/Teams/LINE/Google Chat/SimpleX set; current bundled set is `{discord, google_chat, irc, line, mattermost, ntfy, simplex, teams}` (`cc8e5ec2a`, `af973e407`, `6a8e131a0`). New: Feishu meeting invites (`f3bbfda6d`), BlueBubbles group-mention gating (`05022066e`), Matrix bang-command aliases (`0022e94d7`), a structured stream-event protocol with Telegram draft-formatting parity (`787936d13`), observer-grade telemetry hooks + NeMo-Relay plugin (`0d9b7132f`), cross-platform `/undo [N]` parity (`0622a70eb`). The plugin-as-platform pattern is now hermes's dominant integration surface, strengthening the adoption case if jido_radclaw expands beyond Discord+Telegram.
 
 **Where**: `gateway/` + `plugins/platforms/`
 
@@ -711,9 +740,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-12. Skin/theme engine
 
-**Status (2026-05-18)**: NOT_ADOPTED. `cli/branding.ex` has hard-coded colors; no `.jido/skins/`.
+**Status (2026-06-04)**: NOT_ADOPTED. `cli/branding.ex` has hard-coded colors; no `.jido/skins/`.
 
-**Hermes (2026-05-18)**: UNCHANGED in design. Skin YAML parsing hardened for invalid section types (5f234d405).
+**Hermes (2026-06-04)**: UNCHANGED in design. Minor cosmetic fix: charizard skin's TUI completion-menu contrast tightened (`50158a60f`).
 
 **Where**: `hermes_cli/skin_engine.py`
 
@@ -727,7 +756,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-13. NEW — Install-method stamping + Docker detection
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED. No `.jido/.install_method` file, no `mix.exs` aliases that stamp install method, no `mix jidoclaw.upgrade` task. (Hermes's `detect_install_method`/`stamp_install_method` are unchanged since 2026-05-18.)
 
 **Where in hermes**: `hermes_cli/config.py::detect_install_method` (line 204), `stamp_install_method` (line 234), `Dockerfile`, `docker/entrypoint.sh`, `scripts/install.sh`. Commit 6f5ec929a.
 
@@ -743,7 +772,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-14. NEW — Windows bootstrap discipline (dep_ensure, install.ps1, footgun catalog)
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED. No `.ps1` installer, no Windows-portability section in AGENTS.md, no audit of `:os.cmd`/`Port` callers for Windows-hostile assumptions. (Hermes keeps bug-fixing this layer — requires-python cap, dirty-worktree handling, Node version floor — but the footgun-catalog pattern is unchanged.)
 
 **Where in hermes**: `hermes_cli/dep_ensure.py` (Windows awareness, PowerShell invocation, `(path, shell)` tuple returns), `scripts/install.ps1` (`-Ensure`/`-PostInstall` modes), `tools/browser_tool.py` (Windows `.cmd` shim candidates), `agent/async_utils.py` and assorted call sites (psutil-based PID/process management replacing POSIX-only `os.kill`/`os.killpg`/`os.setsid`/`SIGKILL`). Commits e3a254d65, cc38282b0, e93bfc6c9, 9de893e3b, 8bf09455d.
 
@@ -759,7 +788,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-15. NEW — Multi-project boards (per-board isolation for unrelated work streams)
 
-**Status (2026-05-18)**: NOT_ADOPTED for the pattern; **adjacent**: jido_radclaw uses Ash multi-tenancy which gives logical isolation, but not the env-pinned-subprocess-isolation hermes uses.
+**Status (2026-06-04)**: NOT_ADOPTED for the pattern; **adjacent**: jido_radclaw uses Ash multi-tenancy (`Cron.Job:48-50`, `Conversations.Session:39-43`) for logical isolation, but child agents spawned by `Tools.SpawnAgent` still inherit tenancy via `tool_context` rather than via env-pinned subprocess isolation (`spawn_agent.ex` calls `start_agent` with no env-var pin).
 
 **Where in hermes**: `hermes_cli/kanban_db.py` (board isolation: `~/.hermes/kanban/boards/<slug>/`), worker env pins (`HERMES_KANBAN_BOARD`, `HERMES_KANBAN_DB`, `HERMES_KANBAN_WORKSPACES_ROOT`). Commit 5ec6baa40.
 
@@ -775,7 +804,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-16. NEW — Diagnostic registry (pluggable rule engine for distress signals)
 
-**Status (2026-05-18)**: NOT_ADOPTED. **Adjacent**: jido_radclaw's reasoning subsystem has classifier/strategy_store/pipeline_validator which are conceptually similar pure-function shapes but operate over reasoning context, not task/event/run distress signals.
+**Status (2026-06-04)**: NOT_ADOPTED. The new `JidoClaw.Trace` surface (commit `c699b7e`, `lib/jido_claw/trace.ex`) gives a unified event projection (categories + measurements + metadata across reasoning/hooks/guardrails/memory/MCP/compaction/etc.) but it's a *projection* over telemetry, not a pluggable diagnostic-rule engine — no `Rule` behaviour, no `(task, events, runs, now, config) -> [Diagnostic]` registry, no typed-distress-kind shape. **Adjacent** as before: `reasoning/auto_select.ex` carries an ad-hoc `diagnostics` map (a single function), and the new Trace events are the raw signal such a registry would aggregate over.
 
 **Where in hermes**: `hermes_cli/kanban_diagnostics.py` (new, stateless rule engine). Commit f67063ba8.
 
@@ -791,7 +820,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-17. NEW — `/handoff` cross-platform live session transfer
 
-**Status (2026-05-18)**: NOT_ADOPTED (new entry).
+**Status (2026-06-04)**: NOT_ADOPTED for hermes's cross-platform pattern, but a **scope-divergent feature shipped**. Commit `6f93c2a` (2026-05-27) landed `JidoClaw.Tools.Handoff` + `JidoClaw.Agent.Handoff{,/Registry,/Router}` — a sub-agent **conversation-ownership** handoff that routes the next user turn to a specialized worker template (coder/reviewer/researcher/...) on the *same* surface, with a registry-keyed owner record (`{tenant_id, runtime_session_id}`), a bounded preamble of recent history, and a metadata mirror on `Conversations.Session`. `/reset` returns ownership to main. Hermes's pattern — a `None → 'pending' → 'running' → ('completed' | 'failed')` state machine for *cross-platform surface* transfer, with a watcher GenServer claiming pending rows and an adapter callback that spawns a fresh thread on the destination platform — is still not built; `Conversations.Session` has only a single `kind` attribute, no `handoff_state`/`handoff_platform`. The registry + metadata-mirror shape we already have is a reasonable substrate to extend if cross-surface transfer becomes a goal.
 
 **Where in hermes**: `hermes_cli/cli.py` (`/handoff <platform>` command), `gateway/run.py::_handoff_watcher` (state machine on sessions table), state transitions: `None → 'pending' → 'running' → ('completed' | 'failed')`. Commit 00ce5f04d.
 
@@ -807,7 +836,9 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-18. NEW — xAI OAuth + cross-vendor execution-guidance principle
 
-**Status (2026-05-18)**: NOT_ADOPTED.
+**Status (2026-06-04)**: NOT_ADOPTED. `lib/jido_claw/security/vault.ex` and `security/redaction/` still only handle API keys; the only OAuth in the tree is `core/anubis_tools_handler_patch.ex`, an MCP-server OAuth 2.1 backport (not LLM subscription auth). No xAI/Grok provider, no `family`-keyed prompt-template organization.
+
+**Hermes (2026-06-04)**: UNCHANGED in shape, slightly broadened. The OAuth-PKCE flow lives in `hermes_cli/auth.py` (not `agent/xai_oauth.py` as the entry indicated — the file path was always approximate). The "execution guidance applies to model families" insight was further validated: `TOOL_USE_ENFORCEMENT_MODELS` is now an 8-entry tuple (`gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`) at `agent/prompt_builder.py:274`; `OPENAI_MODEL_EXECUTION_GUIDANCE` remains gated on `gpt`/`codex`/`grok`.
 
 **Where in hermes**: `agent/xai_oauth.py` + xai-oauth provider modules (b62c99797), `agent/transports/codex.py` (xAI Responses API), `agent/system_prompt.py` + `agent/prompt_builder.py` (`TOOL_USE_ENFORCEMENT_GUIDANCE` + `OPENAI_MODEL_EXECUTION_GUIDANCE` now extended to Grok). Commits b62c99797, 9b91377be, 31ba2b0cb, ad1aa1a03.
 
@@ -827,9 +858,9 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 
 ### OQ-1. `run_agent.py` budget grace + interrupt loop semantics
 
-**Status (2026-05-18)**: NOT_ADOPTED. `agent/agent.ex` is a thin 58-line shim delegating the loop to `Jido.AI.Agent`; no budget-grace-call or interrupt-loop changes.
+**Status (2026-06-04)**: NOT_ADOPTED. `agent/agent.ex` is a 69-line shim — tools list + `max_iterations: 25` + `compaction: [...]` — that delegates the loop to `Jido.AI.Agent` via the `JidoClaw.Agent.Defaults` macro. The macro's only loop hook is the compaction `on_before_cmd/2` override on `{:ai_react_start, _}`. No budget-grace-call, no interrupt-check loop.
 
-**Hermes (2026-05-18)**: REFACTORED significantly — file decomposed. Multi-commit refactor (May 6–7) extracted: `agent/agent_init.py` (1381 LOC `__init__`), `agent/conversation_loop.py` (`run_conversation`), `agent/chat_completion_helpers.py` (893 LOC streaming caller), `agent/tool_executor.py`, `agent/system_prompt.py`, `agent/conversation_compression.py`, `agent/background_review.py`, `agent/tool_dispatch_helpers.py`, `agent/message_sanitization.py`, `agent/stream_diag.py`, `agent/codex_runtime.py`, `agent/iteration_budget.py`, `agent/agent_runtime_helpers.py`. The "12k LOC has many failure-recovery branches" framing is dated — patterns are now distributed across ~13 dedicated modules. Budget grace + interrupt-check semantics now live primarily in `agent/conversation_loop.py` and `agent/iteration_budget.py`.
+**Hermes (2026-06-04)**: REFACTORED, then stabilized. The May 6–7 decomposition still holds — `agent/conversation_loop.py` (now ~4836 LOC), `agent/iteration_budget.py` (62 LOC), `agent/agent_init.py` (~1657 LOC), `agent/chat_completion_helpers.py` (~2457 LOC), plus the other dedicated modules. Budget-grace-call (`_budget_grace_call`) + iteration-budget consume/refund + per-iteration interrupt-check live primarily in `agent/conversation_loop.py:485-801`. `conversation_loop.py` has re-accreted complexity since the original split (~12k-LOC `run_agent.py` → ~4.8k-LOC `conversation_loop.py`), so it's no longer "much shorter" — but the per-concern extraction is intact.
 
 **Applicability: HIGH**. Still relevant alongside T1-2 (compaction with explicit budgets) or T2-2 (credential rotation triggered by exhaustion). On its own, the patterns are general-purpose agent-loop hygiene.
 
@@ -839,9 +870,9 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 
 ### OQ-2. `auxiliary_client.py` exact 402/429/5xx fallback ordering
 
-**Status (2026-05-18)**: NOT_ADOPTED. Depends on T2-3 (auxiliary client) which is NOT_ADOPTED.
+**Status (2026-06-04)**: NOT_ADOPTED. Depends on T2-3 (auxiliary client) which is still NOT_ADOPTED; no `JidoClaw.AuxClient` or per-task `fallback_chain` config.
 
-**Hermes (2026-05-18)**: REFACTORED. The fallback ordering is now documented at `website/docs/user-guide/features/fallback-providers.md`. The 4-step layered ladder (primary → user-configured chain → main-agent safety net → warn) **is** the canonical model. See T2-3 above for the full description.
+**Hermes (2026-06-04)**: UNCHANGED. The 4-step layered ladder (primary → user-configured chain → main-agent safety net → warn) remains the canonical model, documented at `website/docs/user-guide/features/fallback-providers.md` (one docs-alignment commit, `175885218`, since the prior entry). `agent/auxiliary_client.py` saw hardening (Nous self-heal, custom-provider runtime, max_tokens cap removal) but no structural change. See T2-3 for the full description.
 
 **Applicability: MEDIUM**. Only relevant alongside T2-3. The general principle (402 = walk down chain; 429 = same-provider cooldown; 5xx = retry-then-walk; main-agent as last-resort safety net) is the lift, alongside the per-task configurable `fallback_chain`.
 
@@ -851,23 +882,23 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 
 ### OQ-3. `_summarize_tool_result` per-tool 1-line summary catalog
 
-**Status (2026-05-18)**: PARTIAL. `conversations/tool_transcript.ex::result_summary/2` has a catalog of tool-name → one-line summaries (`tool_name → ok` / `tool_name → error: reason`), but it's strictly for the Postgres transcript `content` column (one-line preview), NOT a model-facing compaction summary like `[terminal] ran 'X' -> exit 0, N lines output`. The catalog is too thin to satisfy OQ-3's prompt-engineering bar.
+**Status (2026-06-04)**: PARTIAL — substrate richer, catalog still not built. `conversations/tool_transcript.ex::result_summary/2` is unchanged: 4-clause `tool → ok` / `tool → error: reason` dispatch, still strictly for the Postgres `content` column preview. **NEW** since 2026-05-18: `e58ae07 Summary-Based Context Compaction` added `reasoning/compactor/summarizer.ex` + `compactor/prompt.ex` — but this is an *LLM-backed transcript-level* summarizer (one dense prose summary per compaction pass), not a per-tool catalog. The per-tool model-facing format (`[terminal] ran 'X' -> exit 0, N lines output`) hermes carries in `agent/context_compressor.py:400-513` (15+ tool branches) has no jido_radclaw analog in either module.
 
 **Gap (refreshed)**: The terse one-liners would need to be expanded into model-facing summaries (exit codes, line counts, search-result counts) as part of any future T1-2 implementation. Foundation exists — the dispatch shape is right, just the content depth differs.
 
-**Hermes (2026-05-18)**: UNCHANGED.
+**Hermes (2026-06-04)**: UNCHANGED in pattern. `agent/context_compressor.py:400-513` still carries the per-tool catalog (15+ branches: `terminal`, `read_file`, `write_file`, `search_files`, `patch`, `browser_*`, `web_search`, `web_extract`, `delegate_task`, `execute_code`, `skill_*`, `vision_analyze`, `memory`, `todo`, `clarify`, `text_to_speech`, `cronjob`, `process`) with the same model-facing one-liner format.
 
-**Applicability: HIGH**. If we adopt T1-2 (context compaction), we need per-tool summarization formats. Hermes's catalog is the result of months of prompt engineering. Most can lift directly with tool-name swap.
+**Applicability: HIGH**. Now that T1-2 (context compaction) has substantially landed, the per-tool summarization format is the remaining missing piece. Hermes's catalog is the result of months of prompt engineering. Most can lift directly with tool-name swap.
 
-**Recommendation**: Extend the existing `tool_transcript.ex::result_summary/2` catalog with model-facing details (exit codes, line counts, search result counts) and reuse it as the basis for T1-2's `summarize_tool_result/2`. Test that the model doesn't try to re-execute summarized work.
+**Recommendation**: Read alongside both `tool_transcript.ex::result_summary/2` AND the new `compactor/summarizer.ex` — the new module handles the LLM-summary leg; the per-tool catalog would slot in as a deterministic pre-pass before the summarizer runs. Extend `result_summary/2` with model-facing details (exit codes, line counts, search-result counts) and feed it in. Test that the model doesn't try to re-execute summarized work.
 
 ---
 
 ### OQ-4. `gateway/run.py` busy-input semantics (interrupt/queue/steer)
 
-**Status (2026-05-18)**: NOT_ADOPTED. `cli/repl.ex` reads stdin synchronously — no "user types while agent is mid-tool-call, injected after next tool call" steer mode.
+**Status (2026-06-04)**: NOT_ADOPTED. `cli/repl.ex` (`loop/1`) reads stdin synchronously via `IO.gets`; no `interrupt`/`queue`/`steer` modes, no mid-tool-call message injection.
 
-**Hermes (2026-05-18)**: UNCHANGED in design. TUI v2 now also honors `display.busy_input_mode` (af6b1a334) — the steer/queue/interrupt modes apply across CLI, TUI, and gateway surfaces. Strengthens the case slightly.
+**Hermes (2026-06-04)**: UNCHANGED in design. CLI (`cli.py`), TUI, and gateway (`gateway/run.py`) all honor `display.busy_input_mode` with the three modes (`interrupt`/`queue`/`steer`); the mid-run injection path lives at `gateway/run.py:3401-3425` (steer mode dispatches via `running_agent.steer()` rather than interrupting).
 
 **Applicability: LOW-MEDIUM, with one extractable gem**. The "steer" mode — user types a new message while the agent is mid-tool-call; the message is injected after the next tool call **without** interrupting the in-flight work — is a notably good UX pattern. Applies to the CLI REPL today.
 
@@ -877,11 +908,11 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 
 ### OQ-5. `agent/redact.py` vendor key-prefix regexes
 
-**Status (2026-05-18)**: PARTIAL. `security/redaction/patterns.ex` has 9 patterns (Anthropic key, OpenAI/generic sk-, jidoclaw_, ghp_/github_pat_, Bearer, JWT, URL-with-userinfo, generic password/secret/token kv, AWS AKIA). `security/redaction/env.ex` adds suffix-match (_KEY/_TOKEN/_SECRET/_PASSWORD/_PASS/_PAT) and AWS-specific names. Coverage is solid but narrower than hermes's 24+ vendor prefixes.
+**Status (2026-06-04)**: PARTIAL — gap wider than the prior estimate. `security/redaction/patterns.ex` still has the same 9 patterns (Anthropic sk-ant-, OpenAI sk-, jidoclaw_, ghp_/github_pat_, Bearer, JWT, URL-with-userinfo, generic password/secret/token kv, AWS AKIA). `security/redaction/env.ex` adds suffix-match (_KEY/_TOKEN/_SECRET/_PASSWORD/_PASS/_PAT) and AWS-specific names. Hermes's `_PREFIX_PATTERNS` is now **37 vendor prefixes** at `agent/redact.py:70-107` — realistic gap is ~28 patterns to lift, not the "24+" the original estimated.
 
-**Gap (refreshed)**: ~15+ vendor-prefix patterns still missing — no Slack `xoxb-`/`xoxp-`, no Google service-account, no Perplexity `pplx-`, no Fal, no Firecrawl `fc-`, no BrowserBase, no SendGrid `SG.`, no Stripe `sk_live_`/`pk_live_`, no Mailgun, no Heroku. The additions are mechanical lifts from `hermes/agent/redact.py`.
+**Gap (refreshed)**: ~28 vendor-prefix patterns missing vs hermes's 37 — including the GitHub OAuth family (`gho_`/`ghu_`/`ghs_`/`ghr_`), Slack `xox[baprs]-`, Google `AIza`, Perplexity `pplx-`, Fal `fal_`, Firecrawl `fc-`, BrowserBase `bb_live_`, Codex encrypted `gAAAA`, Stripe `sk_live_`/`sk_test_`/`rk_live_`, SendGrid `SG.`, HuggingFace `hf_`, Replicate `r8_`, npm `npm_`, PyPI `pypi-`, DigitalOcean `dop_v1_`/`doo_v1_`, ElevenLabs, Tavily `tvly-`, Exa `exa_`, Groq `gsk_`, Matrix `syt_`, xAI `xai-`. The additions are mechanical lifts from `hermes/agent/redact.py`.
 
-**Hermes (2026-05-18)**: UNCHANGED in pattern set. Secret redaction is now **enabled by default** (`HERMES_REDACT_SECRETS=true` is the install default, fb1ce793e). Canonical `mask_secret` helper extracted (8c892c145). The "direct lift" recommendation is still valid; patterns are well-tested-in-production now.
+**Hermes (2026-06-04)**: UNCHANGED in default-on posture; the pattern set keeps growing (`_PREFIX_PATTERNS` now 37 entries at `agent/redact.py:70-107`). Recent commits to `agent/redact.py` are tuning (BlueBubbles webhook secrets, web-URL pass-through, perf) rather than new vendor adds. `HERMES_REDACT_SECRETS=true` is still the install default. The "direct lift" recommendation is still valid.
 
 **Applicability: HIGH, direct lift**.
 
@@ -891,21 +922,21 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 
 ### OQ-6. `agent/insights.py` terminal bar chart approach
 
-**Status (2026-05-18)**: NOT_ADOPTED. Same as T3-2.
+**Status (2026-06-04)**: NOT_ADOPTED. Same as T3-2. **Adjacent shift**: the new Trace persistence (`c699b7e Unified Runtime Trace Surface`, `trace/resources/trace_event.ex` + `trace_run.ex`) is now a richer substrate for the insight SQL queries — request_id/tenant_id/status/timing/measurements/metadata all durably indexed.
 
-**Hermes (2026-05-18)**: UNCHANGED.
+**Hermes (2026-06-04)**: UNCHANGED. `agent/insights.py` has no commits since 2026-05-18; `_bar_chart` + `InsightsEngine` shape preserved.
 
 **Applicability: HIGH**. T3-2 (insights engine) is where this lives. SQL/aggregation logic transfers directly (Postgres has all the same operators); rendering layer is different (LiveView HTML vs terminal `█` bars) but trivial. The genuinely useful part is **what to aggregate**: tokens by model, cost estimate (per-model pricing snapshot), activity by day-of-week + hour, daily streak.
 
-**Recommendation**: Read alongside any T3-2 implementation. Lift the SQL queries; rewrite the rendering for LiveView.
+**Recommendation**: Read alongside any T3-2 implementation. Lift the SQL queries (now able to run over the durable `trace_run`/`trace_event` tables); rewrite the rendering for LiveView.
 
 ---
 
 ### OQ-7. `_validate_commit_hash` defensive validation
 
-**Status (2026-05-18)**: NOT_ADOPTED. `tools/git_commit.ex` accepts `message` and `files` from agent input — `files` passes through `git add --` (line 44) which gives `--`-stop-flag-parsing protection, but `git commit -m message` does not validate `message` against `--patch`-style injection. No commit-hash-accepting tool exists yet, but the validator pattern isn't applied to any current git tool input either.
+**Status (2026-06-04)**: NOT_ADOPTED. `tools/git_commit.ex` is unchanged — `files` passes through `git add --` (line 44, `--`-stop-flag-parsing protection), but `git commit -m message` (line 31) does not validate `message` against `--patch`-style injection. `grep` for `_validate_commit_hash`/`validate_commit_hash` over `*.ex` returns zero hits; no commit-hash-accepting git tool exists, and the validator pattern isn't applied to any current git tool input.
 
-**Hermes (2026-05-18)**: UNCHANGED (v2 single-store rewrite preserved the validator).
+**Hermes (2026-06-04)**: UNCHANGED. `tools/checkpoint_manager.py:155-168` `_validate_commit_hash` preserved verbatim — `commit_hash.startswith("-")` reject + hex regex match; no commits since 2026-05-18.
 
 **Applicability: HIGH, focused borrow**. Defensive against `--patch`-as-commit-hash injection (a "commit hash" string that's actually a git flag). Directly applicable to `Tools.GitCommit`, `Tools.GitDiff`, `Tools.GitStatus`. Short, easy to apply, eliminates an attack vector. Bonus: aligns with the LLM-misbehavior threat-model focus.
 
@@ -916,6 +947,8 @@ The cross-pollination report flagged seven items as "things worth a closer look 
 ## Cross-references and dependencies
 
 Some items compose. Refreshed dependency graph for adoption sequencing (changes vs the 2026-04-28 graph noted inline):
+
+> **Update (2026-06-04)**: **T1-2 (compaction) has substantially landed**, so it shifts from a first-wave dependency to a refinement target (structured Resolved/Pending fields + per-tool summary catalog from OQ-3 + a pluggable engine). The new `JidoClaw.Error` contract partially seeds **T1-4** (the `FailoverReason` classifier composes on top of it), and the new Trace surface partially seeds **T3-2/T3-16/OQ-6**. Otherwise the wave ordering below still holds — read T1-2 as "polish what's there" rather than "build from scratch."
 
 - **T2-3** (auxiliary client) is a prerequisite for **T1-2** (compaction summaries on cheap models), **T2-8** (risk classifier), **T2-15** (curator), **T2-16** (`/goal` judge), **T3-8** (auto-title). ~~**T1-9** (recall summaries)~~ — **REMOVED**: hermes deleted the aux-LLM summarizer; T1-9 is no longer downstream of T2-3.
 - **T1-4** (error classifier) sets flags consumed by **T1-10** (rate guard), **T2-2** (credential pool), **T1-2** (should-compress flag), **T2-3** (capacity-error fallback gating).
@@ -968,6 +1001,14 @@ For orientation when comparing — these are jido_radclaw advantages, not borrow
 - Native Discord and Telegram via Nostrum-style adapters (BEAM-native bots, not discord.py wrappers).
 - Forge as a first-class sandboxed-execution engine. **Expanded**: Codex sibling runner (`forge/runners/codex.ex`) added; checkpoint persistence on `forge/resources/checkpoint.ex`; multiple sandbox backends.
 - **NEW since 2026-04-28**: Audit log + tenant FK promotion (`audit/`); Workspaces + Sessions as first-class resources (`workspaces/`, `conversations/`); MCP scope subsystem (`mcp_scope/`); embeddings rate-pacer with cluster-shared dispatch window (`embeddings/`); per-tenant authorization layer (`authorization/`); cross-tenant FK enforcement (`security/cross_tenant_fk.ex`).
+- **NEW since 2026-05-18**: a wave of agent-runtime subsystems landed —
+  - **Context-compaction subsystem** (`reasoning/compactor/` — `compactor.ex` + `config`/`identity`/`prompt`/`request_transformer`/`snapshot`/`storage`/`summarizer`(+`/llm_backend`)/`telemetry`/`turn_grouping`). Native Elixir implementation of T1-2-in-spirit: per-agent keyed snapshots on `Session.metadata["compactions"]`, a `RequestTransformer` reshaping the LLM-facing request, best-effort with `:compaction` Trace events. (Tracked as the T1-2 borrow — listed here because it's now a jido_radclaw subsystem.)
+  - **Unified runtime Trace surface** (`trace.ex` + `trace/{collector,domain,event,limit,persistence,sanitize}.ex` + `trace/resources/{trace_event,trace_run}.ex`). A bounded projection over Jido/Jido.AI telemetry plus JidoClaw lifecycle events (hooks/guardrails/memory/workflows/subagents/handoffs/MCP/structured-output/schedules/compaction/reasoning), consumed identically by LiveView, REPL, MCP server, and certificate verifier — one `request_id` answers the same way everywhere.
+  - **AgentView + session-axis Inspection** (`agent_view.ex`, `swarm_view.ex`, `forge_view.ex`, `runtime_overview.ex`, `runtime_scope.ex`, `inspection.ex` + `inspection/summary.ex`, tools `agent_status.ex` + `inspect_agent.ex`). Surface-neutral read structs aggregating Trace + Session.Worker + Handoff.Registry + Compactor.Storage; `Inspection` never raises (every extraction `safe/1`-wrapped). Includes the `:memory` namespace + `forward_context` plumbing.
+  - **Structured Final Output** (`reasoning/output.ex`). `extract_output/1` coerces heterogeneous reasoning/workflow results (string, wrapped map, typed `Jido.AI.Output`) into a display string; all 7 workers gained typed output schemas; flows through `GetAgentResult`/`SendToAgent`/`SpawnAgent` and `Workflows.StepAction`.
+  - **Conversation-Ownership Handoff** (`agent/handoff.ex` + `agent/handoff/{registry,router}.ex` + `tools/handoff.ex` + `conversations/subagent_transcript.ex`). Same-surface ownership transfer to a worker template, keyed `{tenant_id, runtime_session_id}`, mirrored to `Session` metadata, emitted as `[:jido_claw, :handoff, :event]`. (Scope-divergent from hermes's cross-platform T3-17.)
+  - **Splode-backed structured error contract** (`error.ex` + `error/normalize.ex` + leaves). Three leaves (`ValidationError`/`ConfigError`/`ExecutionError`) + `Internal.UnknownError`; `Normalize.<domain>_error/2` is the explicit boundary converting foreign trees (Ash/Jido/Jido.AI/Reactor) into a guaranteed `%JidoClaw.Error.*{}`. (Foundation layer T1-4's `FailoverReason` would compose on top of.)
+  - **Cron `schedule_kind`/`target`/`timezone` model** (`cron/resources/job.ex` + `cron/next_run.ex` + `platform/cron/dispatcher.ex`). Orthogonal `mode`/`target`/`schedule_kind` axes, per-job IANA timezone for `:cron` rows, legacy-first dispatch, `:workflow` rows driving a tracked `Orchestration.WorkflowRun`, auto-disable after 3 consecutive failures.
 
 ## Appendix D: Re-review changelog (2026-05-18)
 
@@ -987,3 +1028,21 @@ Summary of changes from the 2026-04-28 baseline:
 **Appendix changes**: Two Appendix A items moved to SUPERSEDED (Forge runners; Postgres-row checkpoints). Appendix C expanded with new jido_radclaw subsystems since 2026-04-28.
 
 **Dependency graph rewritten**: T1-9 no longer depends on T2-3 (hermes deleted the dependency); new dependencies added for T1-11, T2-11..T2-17, T3-13..T3-18. First/second/third-wave recommendations revised.
+
+## Appendix E: Re-review changelog (2026-06-04)
+
+Summary of changes from the 2026-05-18 baseline. Every entry's `Status` (and `Hermes`, where present) line was re-verified against both trees and dated 2026-06-04; ~1900 hermes commits and 21 jido_radclaw commits landed in the window.
+
+**jido_radclaw status changes**:
+
+- **T1-2 (layered context compaction): NOT_ADOPTED → PARTIAL** — full native `JidoClaw.Reasoning.Compactor` subsystem (the headline change; invalidates the prior pass's "0 items adopted").
+- **T1-4**: refined — a structural error contract (`JidoClaw.Error`) landed, but not the `FailoverReason` provider taxonomy.
+- **T3-2 / T3-16 / OQ-6**: still NOT_ADOPTED, but the new Trace/Inspection surface is now an adjacent substrate.
+- **T3-17**: a scope-divergent Conversation-Ownership Handoff shipped (same-surface worker-template ownership ≠ hermes's cross-platform transfer).
+- **OQ-3**: refined (transcript-level summarizer landed; per-tool catalog still missing). **OQ-5**: gap re-quantified (hermes now 37 vendor prefixes vs our 9). **T2-10**: cron hardened (schedule_kind/target/timezone), borrowed feature still absent. **T1-7 / T1-9**: line-number drift corrected; workers still lack the cache opt-in.
+
+**Hermes-side material refreshes**: T1-1 (Vercel reverted; RPC approval-context), T1-5 (shared `threat_patterns.py` + `<untrusted_tool_result>` delimiters), T2-2 (`STATUS_DEAD`), T2-3 (universal main-model safety net), T2-4 (NVIDIA trusted tap + false-positive trim), T2-6 (`sync_turn` `messages` kwarg), T2-8 (frozen-at-import YOLO + pattern set), T2-15 (curator prunes built-ins — invariant relaxed), T2-16 (`goal.py`→`goals.py` + kanban `goal_mode`), T3-11 (platform-plugin migration), plus hardening across most other entries. Entries whose referenced hermes files were untouched (T1-7 `prompt_caching.py`, T1-10 `nous_rate_guard.py`, T2-5 `checkpoint_manager.py`, OQ-7 `_validate_commit_hash`) are flagged as such.
+
+**Appendix C expanded** with seven new jido_radclaw subsystems (compactor, Trace surface, AgentView/Inspection, Structured Final Output, Handoff, error contract, cron model).
+
+**Hermes lines added to NEW entries** where hermes changed materially since 2026-05-18 (T1-11, T2-4, T2-11..T2-16, T3-13, T3-14, T3-18).
