@@ -77,8 +77,10 @@ defmodule JidoClaw.Solutions.Matcher do
         ]
   def find_solutions(problem_description, opts \\ [])
 
+  def find_solutions("", _opts), do: []
+
   def find_solutions(problem_description, _opts)
-      when not is_binary(problem_description) or problem_description == "" do
+      when not is_binary(problem_description) do
     []
   end
 

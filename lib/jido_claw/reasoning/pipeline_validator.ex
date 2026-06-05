@@ -157,10 +157,7 @@ defmodule JidoClaw.Reasoning.PipelineValidator do
   @doc "Returns true when `strategy` resolves (alias-aware) to the `:react` base."
   @spec resolves_to_react?(String.t()) :: boolean()
   def resolves_to_react?(strategy) do
-    case StrategyRegistry.atom_for(strategy) do
-      {:ok, :react} -> true
-      _ -> false
-    end
+    match?({:ok, :react}, StrategyRegistry.atom_for(strategy))
   end
 
   defp fetch_key(map, key), do: Map.get(map, key)

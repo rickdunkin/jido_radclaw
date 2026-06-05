@@ -589,7 +589,7 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp last_request_id([_ | _] = turns) do
-    turns |> Enum.reverse() |> hd() |> Map.get(:request_id)
+    turns |> List.last() |> Map.get(:request_id)
   end
 
   defp threshold_for(%Config{max_messages: m}, nil), do: m

@@ -1037,10 +1037,10 @@ defmodule JidoClaw.Shell.SessionManager do
           acc
 
         {:error, reason} ->
-          Logger.warning(
-            "[SessionManager] SSH env update failed for #{workspace_id}/#{server}: " <>
-              "#{inspect(reason)} — evicting cache entry"
-          )
+          Logger.warning([
+            "[SessionManager] SSH env update failed for #{workspace_id}/#{server}: ",
+            "#{inspect(reason)} — evicting cache entry"
+          ])
 
           _ = ShellSession.stop(entry.session_id)
           put_ssh_sessions(acc, Map.delete(acc.ssh_sessions, key))

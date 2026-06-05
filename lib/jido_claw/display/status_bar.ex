@@ -84,7 +84,7 @@ defmodule JidoClaw.Display.StatusBar do
 
   defp trim_optional(optional, required, sep_len, width) do
     all = required ++ optional
-    visible_len = all |> Enum.map(&strip_ansi_length/1) |> Enum.sum()
+    visible_len = Enum.sum_by(all, &strip_ansi_length/1)
     total_sep = (length(all) - 1) * sep_len
 
     if visible_len + total_sep <= width do

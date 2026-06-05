@@ -250,10 +250,7 @@ defmodule JidoClaw.Reasoning.Classifier do
   end
 
   defp enumerated?(prompt) do
-    case Regex.scan(@numbered_list, prompt) do
-      [_, _ | _] -> true
-      _ -> false
-    end
+    match?([_, _ | _], Regex.scan(@numbered_list, prompt))
   end
 
   defp mentions_multiple_files?(prompt) do
@@ -317,10 +314,7 @@ defmodule JidoClaw.Reasoning.Classifier do
   end
 
   defp primary_task?(prefers, task_type) do
-    case Map.get(prefers, :task_types, []) do
-      [^task_type | _] -> true
-      _ -> false
-    end
+    match?([^task_type | _], Map.get(prefers, :task_types, []))
   end
 
   # ---------------------------------------------------------------------------

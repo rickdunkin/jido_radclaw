@@ -86,9 +86,6 @@ defmodule JidoClaw.Core.JsonSafe do
   defp encode_key(k), do: inspect(k)
 
   defp module?(atom) when is_atom(atom) do
-    case Atom.to_string(atom) do
-      "Elixir." <> _ -> true
-      _ -> false
-    end
+    match?("Elixir." <> _, Atom.to_string(atom))
   end
 end

@@ -135,10 +135,7 @@ defmodule JidoClaw.Platform.Approval do
   # -- Private --
 
   defp allowed?(session_id, tool_name) do
-    case :ets.lookup(:jido_claw_tool_approvals, {session_id, tool_name}) do
-      [{_, true}] -> true
-      _ -> false
-    end
+    match?([{_, true}], :ets.lookup(:jido_claw_tool_approvals, {session_id, tool_name}))
   catch
     :error, :badarg -> false
   end

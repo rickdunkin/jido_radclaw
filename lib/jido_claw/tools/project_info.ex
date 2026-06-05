@@ -55,6 +55,11 @@ defmodule JidoClaw.Tools.ProjectInfo do
     end
   end
 
+  # Enum.sort |> Enum.take(30) intentionally yields the lexicographically-first
+  # 30 entries; no idiomatic partial top-k reproduces that exact ordering for
+  # such tiny input, so the full sort is the simplest correct form. File-level
+  # scope (the only eager_pattern finding here) survives anchor drift.
+  # reach:disable-for-this-file eager_pattern
   defp detect_top_level_files(cwd) do
     case File.ls(cwd) do
       {:ok, files} ->

@@ -221,12 +221,13 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
   defp max_dep_depth([], _step_map, _known_depths, _visiting), do: -1
 
   defp max_dep_depth(deps, step_map, known_depths, visiting) do
-    deps
-    |> Enum.map(fn dep ->
+    # Fold the per-dep depths into their max without materializing the list.
+    # Seeded at -1 (the empty-list base case); every step_depth/4 is >= 0, so
+    # this is exactly `deps |> Enum.map(&step_depth/_) |> Enum.max()`.
+    Enum.reduce(deps, -1, fn dep, acc ->
       dep_step = Map.fetch!(step_map, dep)
-      step_depth(dep_step, step_map, known_depths, visiting)
+      max(step_depth(dep_step, step_map, known_depths, visiting), acc)
     end)
-    |> Enum.max()
   end
 
   # ---------------------------------------------------------------------------
@@ -256,6 +257,10 @@ defmodule JidoClaw.Workflows.PlanWorkflow do
              scope_context
            ) do
         {:ok, phase_results} ->
+          # acc_results is threaded into every later phase (execute_phase ->
+          # execute_step needs the full ordered prior-results list), so it must
+          # remain a flat list here; a prepend+reverse cannot reduce the cost.
+          # reach:disable-next-line suboptimal
           {:cont, {:ok, acc_results ++ phase_results}}
 
         {:error, _} = err ->

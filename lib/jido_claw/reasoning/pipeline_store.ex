@@ -141,8 +141,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
         # reproducibly across filesystems (File.ls returns undefined order).
         |> Enum.sort()
         |> Enum.filter(&String.ends_with?(&1, ".yaml"))
-        |> Enum.map(&Path.join(dir, &1))
-        |> Enum.flat_map(&parse_pipeline_file/1)
+        |> Enum.flat_map(fn file -> parse_pipeline_file(Path.join(dir, file)) end)
         |> dedupe_by_name()
 
       {:error, _} ->

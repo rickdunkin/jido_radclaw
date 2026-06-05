@@ -56,8 +56,8 @@ defmodule JidoClaw.Solutions.Fingerprint do
   @spec generate(String.t(), keyword()) :: t()
   def generate(problem_description, opts \\ []) when is_binary(problem_description) do
     language = Keyword.get(opts, :language, "")
-    framework = Keyword.get(opts, :framework, nil)
-    error_class = Keyword.get(opts, :error_class, nil)
+    framework = Keyword.get(opts, :framework)
+    error_class = Keyword.get(opts, :error_class)
     ecosystem = Keyword.get(opts, :ecosystem, [])
     versions = Keyword.get(opts, :versions, %{})
 

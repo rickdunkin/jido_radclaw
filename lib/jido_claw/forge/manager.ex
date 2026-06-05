@@ -236,10 +236,7 @@ defmodule JidoClaw.Forge.Manager do
 
   defp cluster_session_exists?(session_id) do
     if Application.get_env(:jido_claw, :cluster_enabled, false) do
-      case :pg.get_members(:jido_claw, {:forge_session, session_id}) do
-        [_ | _] -> true
-        [] -> false
-      end
+      match?([_ | _], :pg.get_members(:jido_claw, {:forge_session, session_id}))
     else
       false
     end

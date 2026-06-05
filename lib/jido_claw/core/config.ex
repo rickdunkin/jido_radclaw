@@ -148,14 +148,15 @@ defmodule JidoClaw.Config do
 
   def api_key(config) do
     env_var = api_key_env(config)
-
-    case System.get_env(env_var) do
-      nil -> nil
-      "" -> nil
-      "ollama" when env_var == "OLLAMA_API_KEY" -> nil
-      key -> key
-    end
+    normalize_api_key(env_var, System.get_env(env_var))
   end
+
+  # "ollama" is the placeholder key the Ollama provider ships with; treat it as
+  # "no key" only for that provider's env var so a real "ollama" elsewhere stays.
+  defp normalize_api_key(_env_var, nil), do: nil
+  defp normalize_api_key(_env_var, ""), do: nil
+  defp normalize_api_key("OLLAMA_API_KEY", "ollama"), do: nil
+  defp normalize_api_key(_env_var, key), do: key
 
   def base_url(config) do
     pc = provider_config(config)

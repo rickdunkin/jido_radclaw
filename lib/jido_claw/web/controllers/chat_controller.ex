@@ -15,7 +15,18 @@ defmodule JidoClaw.Web.ChatController do
     user_id = conn.assigns.current_user.id
     tenant_id = to_string(user_id)
     actor = conn.assigns[:current_actor]
-    content = messages |> Enum.at(-1) |> Map.get("content", "")
+
+    # The OpenAI request `messages` array is positional and bounded; the last
+    # entry is the current turn. reach prefers List.last to Enum.at(-1), and
+    # ExSlop's O(n)-last advisory doesn't apply to a short request body.
+    # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
+    last_message = List.last(messages)
+
+    content =
+      case last_message do
+        %{} = msg -> Map.get(msg, "content", "")
+        _ -> ""
+      end
 
     if stream do
       stream_response(conn, tenant_id, user_id, actor, model, content)

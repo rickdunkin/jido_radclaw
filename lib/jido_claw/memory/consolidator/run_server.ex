@@ -828,11 +828,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
           acc + 1
 
         err ->
-          Logger.warning(
-            "[Consolidator] block update skipped: " <>
-              "label=#{inspect(Map.get(args, :label))} " <>
-              "error=#{inspect(err)}"
-          )
+          Logger.warning([
+            "[Consolidator] block update skipped: ",
+            "label=#{inspect(Map.get(args, :label))} ",
+            "error=#{inspect(err)}"
+          ])
 
           acc
       end
@@ -906,11 +906,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
           {count + 1, [fact.id | ids]}
 
         err ->
-          Logger.warning(
-            "[Consolidator] fact add skipped: " <>
-              "label=#{inspect(Map.get(args, :label))} " <>
-              "error=#{inspect(err)}"
-          )
+          Logger.warning([
+            "[Consolidator] fact add skipped: ",
+            "label=#{inspect(Map.get(args, :label))} ",
+            "error=#{inspect(err)}"
+          ])
 
           {count, ids}
       end
@@ -928,11 +928,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
           {added + 1, invalidated + 1, links + link_inc, [replacement.id | ids]}
 
         err ->
-          Logger.warning(
-            "[Consolidator] fact update skipped: " <>
-              "fact_id=#{inspect(Map.get(args, :fact_id))} " <>
-              "error=#{inspect(err)}"
-          )
+          Logger.warning([
+            "[Consolidator] fact update skipped: ",
+            "fact_id=#{inspect(Map.get(args, :fact_id))} ",
+            "error=#{inspect(err)}"
+          ])
 
           {added, invalidated, links, ids}
       end
@@ -984,20 +984,20 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp supersedes_link(new_id, old_id, tenant_id) do
-    case Link.create_link(
-           %{
-             from_fact_id: new_id,
-             to_fact_id: old_id,
-             relation: :supersedes,
-             reason: "consolidator_update",
-             written_by: "consolidator"
-           },
-           tenant: tenant_id,
-           actor: Actor.system(tenant_id)
-         ) do
-      {:ok, _} -> true
-      _ -> false
-    end
+    match?(
+      {:ok, _},
+      Link.create_link(
+        %{
+          from_fact_id: new_id,
+          to_fact_id: old_id,
+          relation: :supersedes,
+          reason: "consolidator_update",
+          written_by: "consolidator"
+        },
+        tenant: tenant_id,
+        actor: Actor.system(tenant_id)
+      )
+    )
   end
 
   defp apply_fact_deletes(state) do
@@ -1014,11 +1014,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         acc + 1
       else
         err ->
-          Logger.warning(
-            "[Consolidator] fact delete skipped: " <>
-              "fact_id=#{inspect(Map.get(args, :fact_id))} " <>
-              "error=#{inspect(err)}"
-          )
+          Logger.warning([
+            "[Consolidator] fact delete skipped: ",
+            "fact_id=#{inspect(Map.get(args, :fact_id))} ",
+            "error=#{inspect(err)}"
+          ])
 
           acc
       end
@@ -1036,13 +1036,13 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         acc + 1
       else
         err ->
-          Logger.warning(
-            "[Consolidator] link create skipped: " <>
-              "from=#{inspect(Map.get(args, :from_fact_id))} " <>
-              "to=#{inspect(Map.get(args, :to_fact_id))} " <>
-              "relation=#{inspect(Map.get(args, :relation))} " <>
-              "error=#{inspect(err)}"
-          )
+          Logger.warning([
+            "[Consolidator] link create skipped: ",
+            "from=#{inspect(Map.get(args, :from_fact_id))} ",
+            "to=#{inspect(Map.get(args, :to_fact_id))} ",
+            "relation=#{inspect(Map.get(args, :relation))} ",
+            "error=#{inspect(err)}"
+          ])
 
           acc
       end

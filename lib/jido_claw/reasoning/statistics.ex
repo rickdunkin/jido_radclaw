@@ -141,7 +141,7 @@ defmodule JidoClaw.Reasoning.Statistics do
   end
 
   defp success_rate(_ok, 0), do: 0.0
-  defp success_rate(ok, samples), do: ok / samples * 1.0
+  defp success_rate(ok, samples), do: ok / samples
 
   # ---------------------------------------------------------------------------
   # Private

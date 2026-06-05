@@ -87,8 +87,9 @@ defmodule JidoClaw.Reasoning.LLMTiebreaker do
       end
     rescue
       e ->
-        emit_failed({:raised, Exception.message(e)}, candidates)
-        {:error, {:raised, Exception.message(e)}}
+        msg = Exception.message(e)
+        emit_failed({:raised, msg}, candidates)
+        {:error, {:raised, msg}}
     catch
       :exit, reason ->
         emit_failed({:exit, reason}, candidates)

@@ -723,8 +723,9 @@ defmodule JidoClaw.Display do
   defp render_tool_result_preview("edit_file", %{diff: diff, path: path}) when is_binary(diff) do
     IO.puts("    \e[2m#{Path.basename(path)}\e[0m")
 
-    diff
-    |> String.split("\n")
+    split_lines = String.split(diff, "\n")
+
+    split_lines
     |> Enum.take(12)
     |> Enum.each(fn
       "- " <> rest -> IO.puts("    \e[31m- #{rest}\e[0m")
@@ -732,7 +733,7 @@ defmodule JidoClaw.Display do
       line -> IO.puts("    \e[2m#{line}\e[0m")
     end)
 
-    lines = diff |> String.split("\n") |> length()
+    lines = length(split_lines)
     if lines > 12, do: IO.puts("    \e[2m... #{lines - 12} more lines\e[0m")
   end
 

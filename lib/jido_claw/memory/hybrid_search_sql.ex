@@ -273,7 +273,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
     clauses = Enum.reverse(clauses_rev)
     params = Enum.reverse(params_rev)
-    %{sql: "(" <> Enum.join(clauses, " OR ") <> ")", params: params, next: next}
+    %{sql: "(#{Enum.join(clauses, " OR ")})", params: params, next: next}
   end
 
   # Returns %{sql: <bitemporal predicate>, params: [<world_t/system_t>], next: <next $N>}.
@@ -773,13 +773,14 @@ defmodule JidoClaw.Memory.HybridSearchSql do
 
     {ranked, shadows_by_id} =
       Enum.reduce(rows, {[], %{}}, fn row, {ranked_acc, shadows_acc} ->
-        raw_id = Enum.at(row, id_index)
-        score = Enum.at(row, score_index) || 0.0
+        row_tuple = List.to_tuple(row)
+        raw_id = elem(row_tuple, id_index)
+        score = elem(row_tuple, score_index) || 0.0
         id = Ecto.UUID.cast!(raw_id)
 
         shadows_acc =
           if shadow_index do
-            shadows = decode_shadowed_by(Enum.at(row, shadow_index))
+            shadows = decode_shadowed_by(elem(row_tuple, shadow_index))
             Map.put(shadows_acc, id, shadows)
           else
             shadows_acc

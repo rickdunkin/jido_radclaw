@@ -149,13 +149,15 @@ defmodule JidoClaw.Tools.RunSkill do
         "## Step #{idx}: #{step_name}\n\n#{result}"
       end)
 
+    steps_completed = length(tuples)
+
     %{
       skill: skill.name,
-      steps_completed: length(tuples),
+      steps_completed: steps_completed,
       synthesis_prompt: skill.synthesis,
       results: steps_output,
       message:
-        "Skill '#{skill.name}' completed #{length(tuples)} steps. " <>
+        "Skill '#{skill.name}' completed #{steps_completed} steps. " <>
           "Synthesis directive: #{skill.synthesis}\n\n#{steps_output}"
     }
   end

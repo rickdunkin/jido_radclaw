@@ -52,12 +52,9 @@ defmodule JidoClaw.CLI.Formatter do
   def start_spinner do
     parent = self()
 
-    pid =
-      spawn_link(fn ->
-        spinner_loop(parent, 0)
-      end)
-
-    pid
+    spawn_link(fn ->
+      spinner_loop(parent, 0)
+    end)
   end
 
   def stop_spinner(pid) do

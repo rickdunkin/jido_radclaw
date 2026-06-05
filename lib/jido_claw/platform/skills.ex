@@ -400,8 +400,7 @@ defmodule JidoClaw.Skills do
       {:ok, files} ->
         files
         |> Enum.filter(&String.ends_with?(&1, ".yaml"))
-        |> Enum.map(&Path.join(dir, &1))
-        |> Enum.flat_map(&parse_skill_file/1)
+        |> Enum.flat_map(fn file -> parse_skill_file(Path.join(dir, file)) end)
 
       {:error, _} ->
         []

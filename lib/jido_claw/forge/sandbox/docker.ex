@@ -373,16 +373,18 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   defp add_extra_mounts(args) do
     mounts = config() |> Keyword.get(:extra_mounts, [])
 
-    Enum.reduce(mounts, args, fn {host_path, container_path, mode}, acc ->
-      acc ++ ["--mount", "#{host_path}:#{container_path}:#{mode}"]
-    end)
+    args ++
+      Enum.flat_map(mounts, fn {host_path, container_path, mode} ->
+        ["--mount", "#{host_path}:#{container_path}:#{mode}"]
+      end)
   end
 
   defp add_spec_mounts(args, spec) do
     mounts = Map.get(spec, :extra_mounts, [])
 
-    Enum.reduce(mounts, args, fn {host_path, container_path, mode}, acc ->
-      acc ++ ["--mount", "#{host_path}:#{container_path}:#{mode}"]
-    end)
+    args ++
+      Enum.flat_map(mounts, fn {host_path, container_path, mode} ->
+        ["--mount", "#{host_path}:#{container_path}:#{mode}"]
+      end)
   end
 end

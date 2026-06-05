@@ -202,14 +202,11 @@ defmodule Jido.Shell.ShellSession do
     DynamicSupervisor.which_children(Jido.Shell.SessionSupervisor)
     |> Enum.any?(fn
       {_id, pid, :worker, [Jido.Shell.ShellSessionServer]} when is_pid(pid) ->
-        case safe_get_state(pid) do
+        match?(
           {:ok, %State{id: session_id, workspace_id: current_workspace}}
-          when session_id != stopping_session_id and current_workspace == workspace_id ->
-            true
-
-          _ ->
-            false
-        end
+          when session_id != stopping_session_id and current_workspace == workspace_id,
+          safe_get_state(pid)
+        )
 
       _ ->
         false

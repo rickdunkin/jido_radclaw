@@ -80,6 +80,9 @@ defmodule JidoClaw.Tools.MCPScope do
     if Map.get(enriched, @wrapped_key) do
       fun.(enriched)
     else
+      # `@wrapped_key` is a constant marker flag on the rich tool-context map
+      # (not set membership tracking), so MapSet does not apply here.
+      # reach:disable-next-line suboptimal
       wrapped = Map.put(enriched, @wrapped_key, true)
 
       if record?(tc) do
@@ -138,16 +141,17 @@ defmodule JidoClaw.Tools.MCPScope do
     rescue
       err ->
         stacktrace = __STACKTRACE__
+        err_msg = Exception.message(err)
 
         result_attrs =
           %{
             session_id: tc.session_uuid,
             request_id: request_id,
             role: :tool_result,
-            content: "#{tool_name} → exception: #{Exception.message(err)}",
+            content: "#{tool_name} → exception: #{err_msg}",
             metadata: %{
               tool_name: to_string(tool_name),
-              result: %{error: Exception.message(err)}
+              result: %{error: err_msg}
             },
             tool_call_id: tool_call_id,
             parent_message_id: parent_id

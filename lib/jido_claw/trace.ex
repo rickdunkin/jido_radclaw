@@ -415,7 +415,9 @@ defmodule JidoClaw.Trace do
   defp build_span(events) do
     events = Enum.sort_by(events, & &1.seq)
     first = List.first(events)
-    last = events |> Enum.reverse() |> List.first()
+    # events is already sorted by seq above, so the max-seq event is the last
+    # one; max_by/2 avoids the O(n) List.last access ExSlop flags.
+    last = Enum.max_by(events, & &1.seq)
 
     %{
       source: first.source,

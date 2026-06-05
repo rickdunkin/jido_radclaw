@@ -213,13 +213,13 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   defp already_imported?(nil), do: false
 
   defp already_imported?(import_hash) when is_binary(import_hash) do
-    case JidoClaw.Repo.query(
-           "SELECT 1 FROM memory_facts WHERE import_hash = $1 LIMIT 1",
-           [import_hash]
-         ) do
-      {:ok, %Postgrex.Result{rows: [_ | _]}} -> true
-      _ -> false
-    end
+    match?(
+      {:ok, %Postgrex.Result{rows: [_ | _]}},
+      JidoClaw.Repo.query(
+        "SELECT 1 FROM memory_facts WHERE import_hash = $1 LIMIT 1",
+        [import_hash]
+      )
+    )
   rescue
     _ -> false
   end

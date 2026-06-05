@@ -85,9 +85,7 @@ defmodule JidoClaw.Web.AgentsLive do
   defp latest_event_name(%AgentView{events: []}), do: "-"
 
   defp latest_event_name(%AgentView{events: events}) do
-    case events |> Enum.reverse() |> hd() do
-      nil -> "-"
-      ev -> ev.name || to_string(ev.event)
-    end
+    ev = Enum.max_by(events, & &1.seq)
+    ev.name || to_string(ev.event)
   end
 end

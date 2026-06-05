@@ -52,21 +52,22 @@ defmodule JidoClaw.Export.Canonical do
     value
     |> canonicalize()
     |> sorted_encode!()
+    |> IO.iodata_to_binary()
   end
 
   defp sorted_encode!(value) when is_map(value) and not is_struct(value) do
     pairs =
       value
       |> Enum.sort_by(fn {k, _} -> to_string(k) end)
-      |> Enum.map_join(",", fn {k, v} ->
-        Jason.encode!(to_string(k)) <> ":" <> sorted_encode!(v)
-      end)
+      |> Enum.map(fn {k, v} -> [Jason.encode!(to_string(k)), ":", sorted_encode!(v)] end)
+      |> Enum.intersperse(",")
 
-    "{" <> pairs <> "}"
+    ["{", pairs, "}"]
   end
 
   defp sorted_encode!(value) when is_list(value) do
-    "[" <> Enum.map_join(value, ",", &sorted_encode!/1) <> "]"
+    inner = value |> Enum.map(&sorted_encode!/1) |> Enum.intersperse(",")
+    ["[", inner, "]"]
   end
 
   defp sorted_encode!(value), do: Jason.encode!(value)
@@ -78,6 +79,6 @@ defmodule JidoClaw.Export.Canonical do
   @spec to_jsonl([any()]) :: String.t()
   def to_jsonl(records) when is_list(records) do
     records
-    |> Enum.map_join("", fn r -> encode!(r) <> "\n" end)
+    |> Enum.map_join(fn r -> encode!(r) <> "\n" end)
   end
 end

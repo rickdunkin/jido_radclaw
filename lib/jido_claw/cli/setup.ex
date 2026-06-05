@@ -391,8 +391,8 @@ defmodule JidoClaw.CLI.Setup do
     raw = IO.gets("#{label} [#{default}]: ")
     input = if is_binary(raw), do: String.trim(raw), else: ""
 
-    case Integer.parse(input) do
-      {n, ""} when is_integer(n) ->
+    case {input, Integer.parse(input)} do
+      {_input, {n, ""}} when is_integer(n) ->
         if n in range do
           n
         else
@@ -400,7 +400,7 @@ defmodule JidoClaw.CLI.Setup do
           prompt_choice(label, range, default)
         end
 
-      _ when input == "" ->
+      {"", _} ->
         default
 
       _ ->

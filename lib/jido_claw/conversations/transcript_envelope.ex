@@ -115,9 +115,6 @@ defmodule JidoClaw.Conversations.TranscriptEnvelope do
   defp normalize_key(k), do: inspect(k)
 
   defp jason_encoder?(value) do
-    case Jason.Encoder.impl_for(value) do
-      Jason.Encoder.Any -> false
-      _ -> true
-    end
+    not match?(Jason.Encoder.Any, Jason.Encoder.impl_for(value))
   end
 end

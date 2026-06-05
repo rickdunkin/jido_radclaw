@@ -538,7 +538,7 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp tc_result(tc) when is_map(tc) do
-    result = Map.get(tc, :result, Map.get(tc, "result", nil))
+    result = Map.get(tc, :result, Map.get(tc, "result"))
     if is_map(result), do: result, else: nil
   end
 

@@ -148,7 +148,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
       agent_id: Map.get(entry, "agent_id"),
       tags: Map.get(entry, "tags", []),
       verification: Map.get(entry, "verification", %{}),
-      trust_score: Map.get(entry, "trust_score", 0.0) * 1.0,
+      trust_score: :erlang.float(Map.get(entry, "trust_score", 0.0)),
       sharing: coerce_sharing(Map.get(entry, "sharing", "local")),
       tenant_id: workspace.tenant_id,
       workspace_id: workspace.id,
@@ -181,13 +181,13 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
   defp parse_dt(_), do: nil
 
   defp row_exists?(:solutions, id) do
-    case JidoClaw.Repo.query(
-           "SELECT 1 FROM solutions WHERE id = $1 LIMIT 1",
-           [Ecto.UUID.dump!(id)]
-         ) do
-      {:ok, %Postgrex.Result{rows: [_ | _]}} -> true
-      _ -> false
-    end
+    match?(
+      {:ok, %Postgrex.Result{rows: [_ | _]}},
+      JidoClaw.Repo.query(
+        "SELECT 1 FROM solutions WHERE id = $1 LIMIT 1",
+        [Ecto.UUID.dump!(id)]
+      )
+    )
   rescue
     _ -> false
   end

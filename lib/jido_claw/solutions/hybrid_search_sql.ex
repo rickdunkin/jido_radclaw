@@ -246,8 +246,9 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     ranked =
       rows
       |> Enum.map(fn row ->
-        raw_id = Enum.at(row, id_index)
-        score = Enum.at(row, score_index) || 0.0
+        row_tuple = List.to_tuple(row)
+        raw_id = elem(row_tuple, id_index)
+        score = elem(row_tuple, score_index) || 0.0
         {Ecto.UUID.cast!(raw_id), score}
       end)
 

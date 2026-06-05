@@ -73,12 +73,9 @@ defmodule JidoClaw.Audit.Producers do
           do: Map.put(payload, :relation, relation),
           else: payload
 
-      payload =
-        if revision_id = metadata(result, :block_revision_id),
-          do: Map.put(payload, :block_revision_id, to_string(revision_id)),
-          else: payload
-
-      payload
+      if revision_id = metadata(result, :block_revision_id),
+        do: Map.put(payload, :block_revision_id, to_string(revision_id)),
+        else: payload
     end
 
     defp field(map, key) when is_map(map), do: Map.get(map, key)

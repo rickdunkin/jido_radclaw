@@ -205,7 +205,7 @@ defmodule JidoClaw.Error.Normalize do
     is_exception(error) and function_exported?(struct, :splode_error?, 0) and
       try do
         struct.splode_error?() and not struct.error_class?() and
-          inspect(struct) |> String.starts_with?("Ash.")
+          match?(["Ash" | _], Module.split(struct))
       rescue
         _ -> false
       end

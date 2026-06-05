@@ -87,7 +87,16 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
   # Walk the FSM: at each non-terminal state, run the corresponding step's action,
   # apply the result, and transition.
   defp execute_machine(machine, steps, extra_context, project_dir, workspace_id, scope_context) do
-    execute_loop(machine, steps, extra_context, project_dir, workspace_id, scope_context, [])
+    # Index steps as a tuple so the per-state lookup in execute_loop/7 is O(1).
+    execute_loop(
+      machine,
+      List.to_tuple(steps),
+      extra_context,
+      project_dir,
+      workspace_id,
+      scope_context,
+      []
+    )
   end
 
   defp execute_loop(
@@ -108,7 +117,7 @@ defmodule JidoClaw.Workflows.SkillWorkflow do
     else
       # Current state is :step_N — extract the step index
       step_idx = state_to_index(machine.status)
-      step = Enum.at(steps, step_idx - 1)
+      step = elem(steps, step_idx - 1)
 
       template_name = Map.get(step, :template)
       task = Map.get(step, :task)

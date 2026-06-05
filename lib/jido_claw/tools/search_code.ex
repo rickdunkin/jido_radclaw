@@ -74,10 +74,14 @@ defmodule JidoClaw.Tools.SearchCode do
         |> Enum.sort()
         |> Enum.reduce_while({:ok, []}, fn name, {:ok, acc} ->
           case search_path(join_path(path, name), regex, glob, opts) do
-            {:ok, matches} -> {:cont, {:ok, acc ++ matches}}
+            {:ok, matches} -> {:cont, {:ok, [matches | acc]}}
             {:error, _reason} = error -> {:halt, error}
           end
         end)
+        |> case do
+          {:ok, chunks} -> {:ok, chunks |> Enum.reverse() |> Enum.concat()}
+          error -> error
+        end
 
       {:error, _reason} ->
         search_file(path, regex, glob, opts)

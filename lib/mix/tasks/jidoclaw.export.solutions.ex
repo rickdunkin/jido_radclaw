@@ -110,7 +110,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
     Enum.map(rows, fn row ->
       cols
       |> Enum.zip(row)
-      |> Enum.into(%{})
+      |> Map.new()
       |> Map.new(fn
         {"id", v} when is_binary(v) ->
           {:id, format_id(v)}
