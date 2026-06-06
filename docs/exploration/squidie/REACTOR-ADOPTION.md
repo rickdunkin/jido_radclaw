@@ -330,6 +330,18 @@ This is the cleanest marriage. A human-approval step **halts** the reactor. Then
 Reactor supplies the pause/resume primitive; the envelope supplies the durability and
 the decision domain it lacks.
 
+> **Design input — Alp River AR-1.** The decision-kind list in step 3 (`tool_call` / `plan` /
+> `irreversible_write`) already lines up with Alp River's working gate taxonomy
+> ([`../alp-river/FEATURES-WORTH-BORROWING.md`](../alp-river/FEATURES-WORTH-BORROWING.md) AR-1:
+> plan-approval / tool-call / safety-irreversible), where a `while/until` lock is precisely a
+> declarative `{:halt}` guard with multiple guards AND-ing on one step. Borrow its two
+> lifecycle rules **verbatim** while designing the DSL *here*, rather than bolting them on
+> later: **`abandon` is a run-terminal** (it drops every stage still held behind the abandoned
+> gate instead of waiting forever for an `until` that never fires — maps onto
+> `after_rejected → terminal`, step 4), and **stale-approval retraction** (a
+> *pre-implementation* re-plan removes the approval signal so the revised plan must re-earn it
+> — the §4.8 decision-recorded-vs-unresolved branch already leans on exactly this distinction).
+
 ### 4.6 Retry, compensation, undo
 
 All native to Reactor (§2). Guidance: prefer `Ash.Reactor` actions over hand-rolled
@@ -551,8 +563,9 @@ complete, correct event timeline and a forced step failure triggers compensation
 that's visible in the log.
 
 **Phase 2 — Human gate (halt → persist → resume).** Build `AgentCase` + `AgentCaseEvent`
-+ the human-gate Spark DSL on **one** gate (e.g. `irreversible_write`). Implement the
-chosen §7 resume strategy. *Done when:* a run halts at the gate, survives an app
++ the human-gate Spark DSL on **one** gate (e.g. `irreversible_write`) — folding in Alp
+River AR-1's gate lifecycle (`abandon`→terminal, stale-approval retraction) per §4.5.
+Implement the chosen §7 resume strategy. *Done when:* a run halts at the gate, survives an app
 restart, and resumes correctly on approval; rejection routes through `after_rejected`.
 
 **Phase 3 — Skills on Reactor.** Build the `Skills.Compiler` (YAML → `Reactor.Builder`),
