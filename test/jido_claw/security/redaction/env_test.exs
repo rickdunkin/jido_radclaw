@@ -20,6 +20,20 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
       assert Env.sensitive_key?("DB_URL")
     end
 
+    test "matches bare password/secret/token/authorization/credential exactly (case-insensitive)" do
+      for key <- ~w(password secret token authorization credential) do
+        assert Env.sensitive_key?(key)
+        assert Env.sensitive_key?(String.upcase(key))
+        assert Env.sensitive_key?(String.capitalize(key))
+      end
+    end
+
+    test "bare-key match is exact, not substring — tokenizer/session_id/description stay safe" do
+      refute Env.sensitive_key?("tokenizer")
+      refute Env.sensitive_key?("session_id")
+      refute Env.sensitive_key?("description")
+    end
+
     test "does not match SESSION_ID / USER_ID / CLIENT_ID (documented false negatives)" do
       refute Env.sensitive_key?("SESSION_ID")
       refute Env.sensitive_key?("USER_ID")

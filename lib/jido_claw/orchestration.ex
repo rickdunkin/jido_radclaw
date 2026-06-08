@@ -18,6 +18,7 @@ defmodule JidoClaw.Orchestration do
 
   resources do
     resource(JidoClaw.Orchestration.WorkflowRun)
+    resource(JidoClaw.Orchestration.WorkflowEvent)
     resource(JidoClaw.Orchestration.WorkflowStep)
     resource(JidoClaw.Orchestration.ApprovalGate)
   end

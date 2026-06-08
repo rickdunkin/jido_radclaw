@@ -3,9 +3,10 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   First producer of the `JidoClaw.Orchestration.WorkflowRun` state machine.
 
   Driven by `Cron.Dispatcher` for `target: :workflow` cron jobs. On a tick
-  it resolves the named skill, creates + starts a durable `WorkflowRun`
-  row, runs the skill through the existing workflow drivers
-  (Skill/Plan/Iterative), then completes or fails the run — broadcasting
+  it resolves the named skill, creates a durable `WorkflowRun` row and
+  appends a `run_started` event (which flips status to `:running`), runs
+  the skill through the existing workflow drivers (Skill/Plan/Iterative),
+  then appends a `run_completed` or `run_failed` event — broadcasting
   `:run_started` / `:run_completed` / `:run_failed` over `RunPubSub` for
   tenant-scoped workflow projections.
 
@@ -35,11 +36,14 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
 
   `run/1` is `:ok | {:error, term()}`. The executor call is wrapped in
   `try/rescue`, and every error shape (tuple, map, exception, binary) is
-  normalized through `format_reason/1` before `WorkflowRun.fail/2`.
-  Terminal Ash transitions are validated against `status == :running`, so
-  the runner threads the *started* (`:running`) record into finalization,
-  and broadcasts a terminal event only after the Ash update returns
-  `{:ok, _}` — never against a row still `:running`.
+  normalized through `format_reason/1` before
+  `WorkflowLog.append(.., :run_failed, ..)`. Status is projection-owned:
+  the runner records lifecycle *events* (`run_started`/`run_completed`/
+  `run_failed`) via `WorkflowLog`, and the append path folds each into the
+  `WorkflowRun.status` column in the same transaction. Transition legality
+  lives in `WorkflowEvent.Projection.next_status/2`, so the runner threads
+  the created record (its `id`/`tenant_id` are stable) into finalization
+  and broadcasts a terminal event only after the append returns `{:ok, _}`.
   """
 
   # `run/1` is contractually `:ok | {:error, term()}`; every rescue here
@@ -51,6 +55,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Skills
   alias JidoClaw.Tools.RunSkill
@@ -109,16 +114,21 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
     actor = Actor.system(tenant_id)
 
     with {:ok, created} <- WorkflowRun.create(attrs, tenant: tenant_id, actor: actor),
-         {:ok, started} <- WorkflowRun.start(created, tenant: tenant_id, actor: actor) do
-      broadcast(:run_started, started.id, %{
+         {:ok, _event} <-
+           WorkflowLog.append(created, :run_started, %{cron_job_id: state.id, skill: name},
+             tenant: tenant_id,
+             actor: actor
+           ) do
+      broadcast(:run_started, created.id, %{
         tenant_id: tenant_id,
-        name: started.name,
-        workflow_type: started.workflow_type,
+        name: created.name,
+        workflow_type: created.workflow_type,
         status: :running,
         cron_job_id: state.id
       })
 
-      {:ok, started}
+      # `id`/`tenant_id` are stable; finalization only reads those + name.
+      {:ok, created}
     end
   end
 
@@ -169,18 +179,18 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   defp finalize_complete(started, result, cron_job_id) do
     tenant_id = started.tenant_id
 
-    case WorkflowRun.complete(started, %{result: result},
+    case WorkflowLog.append(started, :run_completed, %{result: result},
            tenant: tenant_id,
            actor: Actor.system(tenant_id)
          ) do
-      {:ok, done} ->
-        broadcast(:run_completed, done.id, %{
+      {:ok, event} ->
+        broadcast(:run_completed, started.id, %{
           tenant_id: tenant_id,
-          name: done.name,
-          workflow_type: done.workflow_type,
+          name: started.name,
+          workflow_type: started.workflow_type,
           status: :completed,
           result: result,
-          completed_at: done.completed_at,
+          completed_at: event.occurred_at,
           cron_job_id: cron_job_id
         })
 
@@ -196,17 +206,17 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
 
     tenant_id = started.tenant_id
 
-    case WorkflowRun.fail(started, %{error: formatted},
+    case WorkflowLog.append(started, :run_failed, %{error: formatted},
            tenant: tenant_id,
            actor: Actor.system(tenant_id)
          ) do
-      {:ok, failed} ->
-        broadcast(:run_failed, failed.id, %{
+      {:ok, event} ->
+        broadcast(:run_failed, started.id, %{
           tenant_id: tenant_id,
-          name: failed.name,
-          workflow_type: failed.workflow_type,
+          name: started.name,
+          workflow_type: started.workflow_type,
           error: formatted,
-          completed_at: failed.completed_at,
+          completed_at: event.occurred_at,
           cron_job_id: cron_job_id
         })
 

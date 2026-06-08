@@ -41,6 +41,17 @@ defmodule JidoClaw.Security.Redaction.TranscriptTest do
       assert out[:my_secret] == "[REDACTED]"
       assert out[:name] == "alice"
     end
+
+    test "bare sensitive keys (password/secret/token/...) are redacted" do
+      assert Transcript.redact(%{"password" => "hunter2"}) == %{"password" => "[REDACTED]"}
+
+      out =
+        Transcript.redact(%{"token" => "abc", "authorization" => "Bearer x", "user" => "alice"})
+
+      assert out["token"] == "[REDACTED]"
+      assert out["authorization"] == "[REDACTED]"
+      assert out["user"] == "alice"
+    end
   end
 
   describe "redact/2 — lists" do

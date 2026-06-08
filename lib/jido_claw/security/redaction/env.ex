@@ -15,6 +15,11 @@ defmodule JidoClaw.Security.Redaction.Env do
     * Key name ending in `_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`,
       `_PASS`, or `_PAT` (case-insensitive) → whole value masked as
       `[REDACTED]`.
+    * Bare key name exactly (case-insensitive) `password`, `secret`,
+      `token`, `authorization`, or `credential` → whole value masked.
+      These carry no suffix but are the canonical shape of secret-bearing
+      map keys (e.g. an event/JSON payload `%{"token" => "..."}`). Matched
+      *exactly*, not as a substring, so `tokenizer`/`session_id` stay safe.
     * Specific names — `AWS_SECRET_*`, `AWS_SESSION_TOKEN`,
       `DATABASE_URL`, `DB_URL` → whole value masked (user/host in a
       connection URL can be sensitive on its own).
@@ -24,16 +29,17 @@ defmodule JidoClaw.Security.Redaction.Env do
 
   ## Documented false negatives
 
-  Suffix-only matching leaves `SESSION_ID`, `USER_ID`, `CLIENT_ID` etc.
-  untouched. Over-redacting identifiers that show up in legitimate
-  tracing/debugging output is worse than under-redacting for a dev
-  tool — the trade-off is explicit.
+  Matching leaves identifier keys like `SESSION_ID`, `USER_ID`,
+  `CLIENT_ID` untouched. Over-redacting identifiers that show up in
+  legitimate tracing/debugging output is worse than under-redacting for a
+  dev tool — the trade-off is explicit.
   """
 
   alias JidoClaw.Security.Redaction.Patterns
 
   @sensitive_suffix ~r/_(KEY|TOKEN|SECRET|PASSWORD|PASS|PAT)$/i
   @sensitive_specific ~r/^(AWS_SECRET_.*|AWS_SESSION_TOKEN|DATABASE_URL|DB_URL)$/i
+  @sensitive_exact ~w(password secret token authorization credential)
   @url_with_creds ~r{(\w+://)([^:@/]+):([^@/]+)(@)}
 
   @doc """
@@ -81,7 +87,8 @@ defmodule JidoClaw.Security.Redaction.Env do
   """
   @spec sensitive_key?(String.t()) :: boolean()
   def sensitive_key?(key) when is_binary(key) do
-    String.match?(key, @sensitive_suffix) or String.match?(key, @sensitive_specific)
+    String.match?(key, @sensitive_suffix) or String.match?(key, @sensitive_specific) or
+      String.downcase(key) in @sensitive_exact
   end
 
   def sensitive_key?(_), do: false

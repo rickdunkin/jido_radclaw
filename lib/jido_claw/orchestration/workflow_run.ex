@@ -20,16 +20,11 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
   code_interface do
     define(:create)
-    define(:start)
-    define(:await_approval)
-    define(:resume)
-    define(:complete)
-    define(:fail)
-    define(:cancel)
     define(:list, action: :read)
     define(:destroy, action: :destroy)
     define(:list_active)
     define(:list_by_project, action: :by_project)
+    define(:list_non_terminal_global)
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
   end
@@ -44,59 +39,27 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       change(set_attribute(:status, :pending))
     end
 
-    update :start do
-      description("Transition a pending workflow run to running and stamp started_at.")
-      primary?(true)
-      accept([])
-      validate(attribute_equals(:status, :pending))
-      change(set_attribute(:status, :running))
-      change(set_attribute(:started_at, &DateTime.utc_now/0))
-    end
-
-    update :await_approval do
-      description("Pause a running workflow run while it waits for human approval.")
-      accept([])
-      validate(attribute_equals(:status, :running))
-      change(set_attribute(:status, :awaiting_approval))
-    end
-
-    update :resume do
-      description("Resume a workflow run after its approval gate clears.")
-      accept([])
-      validate(attribute_equals(:status, :awaiting_approval))
-      change(set_attribute(:status, :running))
-    end
-
-    update :complete do
-      description("Mark a running workflow run completed and record its result.")
-      accept([])
-      argument(:result, :map)
-      validate(attribute_equals(:status, :running))
-      change(set_attribute(:status, :completed))
-      change(set_attribute(:result, arg(:result)))
-      change(set_attribute(:completed_at, &DateTime.utc_now/0))
-    end
-
-    update :fail do
-      description("Mark a workflow run failed and record the error.")
-      accept([])
-      argument(:error, :string)
-      validate(attribute_in(:status, [:running, :awaiting_approval]))
-      change(set_attribute(:status, :failed))
-      change(set_attribute(:error, arg(:error)))
-      change(set_attribute(:completed_at, &DateTime.utc_now/0))
-    end
-
-    update :cancel do
-      description("Cancel a workflow run that has not yet reached a terminal state.")
-      accept([])
-      validate(negate(attribute_in(:status, [:completed, :failed, :cancelled])))
-      change(set_attribute(:status, :cancelled))
-      change(set_attribute(:completed_at, &DateTime.utc_now/0))
+    # Projection-owned status write — the ONLY writer of `status` and its
+    # stamps. Called solely by `WorkflowEvent.Changes.Allocate` in the append
+    # transaction. It carries no status precondition because legality is
+    # enforced upstream by `WorkflowEvent.Projection.next_status/2` before this
+    # action is ever reached. `public?(false)` keeps it out of code_interface
+    # and Ash API extensions (e.g. AshAdmin); the change invokes it via
+    # `Ash.Changeset.for_update/3` + `Ash.update`.
+    update :set_status do
+      description("Internal projection write of status + stamps from the event log.")
+      public?(false)
+      accept([:status, :started_at, :completed_at, :result, :error])
     end
 
     read :list_active do
       description("List workflow runs that have not yet reached a terminal state.")
+      filter(expr(status in [:pending, :running, :awaiting_approval]))
+    end
+
+    read :list_non_terminal_global do
+      description("Cross-tenant scan of non-terminal runs for boot recovery.")
+      multitenancy(:bypass)
       filter(expr(status in [:pending, :running, :awaiting_approval]))
     end
 
@@ -213,5 +176,6 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
 
     has_many(:steps, JidoClaw.Orchestration.WorkflowStep)
     has_many(:approval_gates, JidoClaw.Orchestration.ApprovalGate)
+    has_many(:events, JidoClaw.Orchestration.WorkflowEvent)
   end
 end

@@ -188,6 +188,12 @@ config :jido_claw,
   tool_approval_mode: :off,
   embeddings_strict_boot: true
 
+# Boot-time workflow recovery (JidoClaw.Orchestration.WorkflowRecovery).
+# Enabled by default; gated off at runtime when clustered or in MCP mode so
+# only the single owning node reconciles stranded runs. Disabled in test —
+# tests drive WorkflowRecovery.reconcile_all/0 directly inside the sandbox.
+config :jido_claw, :workflow_recovery, enabled?: true
+
 # Phoenix endpoint
 config :jido_claw, JidoClaw.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,

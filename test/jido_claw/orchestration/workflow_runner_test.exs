@@ -15,8 +15,14 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowRunner
+
+  defp event_kinds(run_id, tenant) do
+    {:ok, events} = WorkflowEvent.for_run(run_id, tenant: tenant, actor: actor_for(tenant))
+    Enum.map(events, & &1.kind)
+  end
 
   defmodule StubExecutor do
     @moduledoc false
@@ -90,6 +96,8 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :completed
     assert is_map(run.result)
+
+    assert event_kinds(run_id, tenant) == [:run_started, :run_completed]
   end
 
   test "executor error drives the run to :failed and broadcasts run_failed",
@@ -117,6 +125,8 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
     assert run.error == "boom step failed"
+
+    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
   end
 
   test "executor that raises still drives the run to :failed (never stranded :running)",
@@ -139,6 +149,8 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
 
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
+
+    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
   end
 
   test "unexpected executor return drives the run to :failed (never stranded :running)",
@@ -162,6 +174,8 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
     assert run.error == reason
+
+    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
   end
 
   test "unknown skill returns an error and creates no run row", %{tenant: tenant} do

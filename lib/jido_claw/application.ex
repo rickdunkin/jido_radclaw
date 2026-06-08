@@ -217,6 +217,17 @@ defmodule JidoClaw.Application do
         restart: :transient
       },
 
+      # Boot-time workflow recovery: reconcile runs stranded non-terminal by
+      # a crash. Self-gates off unless this node owns workflow execution
+      # (single-node, non-MCP, non-clustered). Transient so a failure surfaces
+      # without cascading. Runs after Repo (InfraSupervisor, above).
+      %{
+        id: JidoClaw.Orchestration.WorkflowRecovery,
+        start: {JidoClaw.Orchestration.WorkflowRecovery, :start_link, [[]]},
+        type: :worker,
+        restart: :transient
+      },
+
       # Solutions engine — Store + Reputation GenServers retired
       # in v0.6.1; Solutions live in Postgres now (see
       # JidoClaw.Solutions.Solution and JidoClaw.Solutions.Reputation
