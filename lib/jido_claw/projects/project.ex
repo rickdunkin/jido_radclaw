@@ -37,6 +37,20 @@ defmodule JidoClaw.Projects.Project do
 
     destroy :destroy do
       description("Delete a project.")
+      primary?(true)
+    end
+
+    # Additive undo seam for `Ash.Reactor` create-step rollback. The Reactor
+    # undo path calls `Changeset.for_destroy(:reactor_undo, %{changeset: stored})`,
+    # and the create-step builder verifier requires the undo action to take
+    # exactly one `:changeset` argument — the default `:destroy` does not, so a
+    # dedicated action is required. `public?(false)` keeps it off
+    # code-interface / AshAdmin surfaces without affecting the internal undo
+    # path (which authorizes via `policy always()`).
+    destroy :reactor_undo do
+      description("Undo action for Ash.Reactor create-step rollback.")
+      public?(false)
+      argument(:changeset, :term)
     end
   end
 

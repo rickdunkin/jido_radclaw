@@ -33,7 +33,20 @@
           {AshCredo.Check.Refactor.RaisingCall, []},
           {AshCredo.Check.Refactor.UseCodeInterface, []},
           {AshCredo.Check.Design.MissingCodeInterface,
-           [files: %{excluded: ["lib/jido_claw/accounts/user.ex", "lib/jido_claw/accounts/token.ex"]}]},
+           [
+             files: %{
+               excluded: ["lib/jido_claw/accounts/user.ex", "lib/jido_claw/accounts/token.ex"]
+             },
+             # Internal `Ash.Reactor` create-step undo actions (`public?(false)`):
+             # invoked only via the saga undo path (`Changeset.for_destroy/3`),
+             # never through a code interface by design. See
+             # `JidoClaw.Orchestration.ReactorMiddleware` /
+             # `JidoClaw.Orchestration.Reactors.ProjectRegistration`.
+             excluded_actions: [
+               "JidoClaw.Projects.Project.reactor_undo",
+               "JidoClaw.Workspaces.Workspace.reactor_undo"
+             ]
+           ]},
           {AshCredo.Check.Design.MissingIdentity, []},
           {AshCredo.Check.Design.MissingPrimaryAction,
            [files: %{excluded: ["lib/jido_claw/accounts/token.ex"]}]},

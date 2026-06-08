@@ -139,6 +139,19 @@ defmodule JidoClaw.Workspaces.Workspace do
       argument(:user_id, :uuid, allow_nil?: false)
       filter(expr(user_id == ^arg(:user_id)))
     end
+
+    # Additive undo seam for `Ash.Reactor` create-step rollback. The Reactor
+    # undo path calls `Changeset.for_destroy(:reactor_undo, %{changeset: stored})`,
+    # and the create-step builder verifier requires the undo action to take
+    # exactly one `:changeset` argument — the default `:destroy` does not. The
+    # tenant write policy (`action_type :destroy` -> `ActorTenantMatches`) still
+    # authorizes this destroy; `public?(false)` only keeps it off
+    # code-interface / AshAdmin surfaces, not the internal undo path.
+    destroy :reactor_undo do
+      description("Undo action for Ash.Reactor create-step rollback.")
+      public?(false)
+      argument(:changeset, :term)
+    end
   end
 
   attributes do
