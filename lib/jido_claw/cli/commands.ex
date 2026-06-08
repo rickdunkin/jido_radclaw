@@ -5,6 +5,7 @@ defmodule JidoClaw.CLI.Commands do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Branding
+  alias JidoClaw.CLI.Commands.Approvals
   alias JidoClaw.CLI.Commands.SolutionsStats
   alias JidoClaw.CLI.Formatter
   alias JidoClaw.CLI.Setup, as: CLISetup
@@ -585,6 +586,18 @@ defmodule JidoClaw.CLI.Commands do
     IO.puts("")
     {:ok, state}
   end
+
+  def handle("/gates " <> rest, state) do
+    case String.split(String.trim(rest), " ", parts: 3) do
+      ["approve", id] -> Approvals.decide(state, :approve, id, nil)
+      ["approve", id, comment] -> Approvals.decide(state, :approve, id, comment)
+      ["reject", id] -> Approvals.decide(state, :reject, id, nil)
+      ["reject", id, comment] -> Approvals.decide(state, :reject, id, comment)
+      _ -> Approvals.list(state)
+    end
+  end
+
+  def handle("/gates", state), do: Approvals.list(state)
 
   def handle("/cron", state) do
     jobs = CronScheduler.list_jobs("default")

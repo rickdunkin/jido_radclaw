@@ -51,6 +51,14 @@ defmodule Mix.Tasks.Jidoclaw.CompileCheck do
     {_status, diagnostics} =
       Mix.Task.rerun("compile.elixir", ["--return-errors"])
 
+    # `clean` removed `_build/<env>/lib/<app>` (including the `priv`/`include`
+    # symlinks), and `compile.elixir` rebuilds only `ebin` — not the app
+    # structure. Restore the symlinks so later **same-session** `precommit`
+    # steps (notably `test`, which reads `:code.priv_dir/1`) still find `priv`.
+    # A fresh `mix` session rebuilds the structure on its own; the single
+    # `mix precommit` session does not, because Mix only builds it once per run.
+    Mix.Project.build_structure()
+
     {tolerated, blocking} = Enum.split_with(diagnostics, &allowed?/1)
 
     for d <- tolerated do

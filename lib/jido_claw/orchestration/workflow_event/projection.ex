@@ -24,15 +24,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   payload access tolerates both (`payload[:result] || payload["result"]`).
   """
 
-  # Phase 0 status-authority set. `run_recovered`/`run_halted`/`step_*`/gate
-  # kinds are NOT authority here — gate kinds gain mappings when human gates
-  # land (Reactor doc §4.5).
+  # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
+  # authority — `run_halted` is provenance only (the in-txn `approval_requested`
+  # is what flips the run to `:awaiting_approval`). The two gate kinds carry
+  # authority: `approval_requested` (→ `:awaiting_approval`) and
+  # `approval_resolved` (approve = "decision recorded, resuming" → `:running`).
   @status_authority_kinds [
     :run_started,
     :run_resumed,
     :run_completed,
     :run_failed,
-    :run_cancelled
+    :run_cancelled,
+    :approval_requested,
+    :approval_resolved
   ]
 
   @non_terminal [:pending, :running, :awaiting_approval]
@@ -57,7 +61,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     * `run_completed` only from `:running`
     * `run_failed` from any non-terminal
     * `run_cancelled` from any non-terminal
-    * `run_resumed` only from `:awaiting_approval`
+    * `approval_requested` only from `:running` (a gate step pauses the run)
+    * `approval_resolved` only from `:awaiting_approval` (approve = resuming)
+    * `run_resumed` from `:awaiting_approval` **or** `:running` — the latter is
+      idempotent: on the operator approve path `approval_resolved` already set
+      `:running`, and `init/1` then appends `run_resumed` (Decision 6), so the
+      resume's own `run_resumed` must not be `:illegal`.
 
   Any terminal -> terminal or out-of-order kind is `:illegal`.
   """
@@ -66,7 +75,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def next_status(:running, :run_completed), do: {:ok, :completed}
   def next_status(status, :run_failed) when status in @non_terminal, do: {:ok, :failed}
   def next_status(status, :run_cancelled) when status in @non_terminal, do: {:ok, :cancelled}
+  def next_status(:running, :approval_requested), do: {:ok, :awaiting_approval}
+  def next_status(:awaiting_approval, :approval_resolved), do: {:ok, :running}
   def next_status(:awaiting_approval, :run_resumed), do: {:ok, :running}
+  def next_status(:running, :run_resumed), do: {:ok, :running}
   def next_status(_current, _kind), do: :illegal
 
   @doc """
@@ -76,19 +88,45 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   `completed_at` always equal the event time. `result`/`error` come from
   the **raw** (unredacted) payload so the run columns keep raw values —
   only the durable event payload is redacted.
+
+  ## Checkpoint lifecycle (Decision 7)
+
+  The three **terminal** clauses (`run_completed`/`run_failed`/`run_cancelled`)
+  set `resume_checkpoint: nil` so a run's frozen halt blob is cleared in the
+  *same transaction* as the terminal status flip — on completion, failure,
+  reject, or recovery cancellation, with no per-call cleanup. The non-terminal
+  clauses (`approval_requested` → `:awaiting_approval`, `approval_resolved` /
+  `run_resumed` → `:running`) leave it untouched: the checkpoint is written by
+  the runner on pause and must survive until the run terminates.
   """
   @spec status_attrs(atom(), map(), DateTime.t()) :: map()
   def status_attrs(:run_started, _payload, occurred_at),
     do: %{status: :running, started_at: occurred_at}
 
   def status_attrs(:run_completed, payload, occurred_at),
-    do: %{status: :completed, completed_at: occurred_at, result: fetch(payload, :result)}
+    do: %{
+      status: :completed,
+      completed_at: occurred_at,
+      result: fetch(payload, :result),
+      resume_checkpoint: nil
+    }
 
   def status_attrs(:run_failed, payload, occurred_at),
-    do: %{status: :failed, completed_at: occurred_at, error: fetch(payload, :error)}
+    do: %{
+      status: :failed,
+      completed_at: occurred_at,
+      error: fetch(payload, :error),
+      resume_checkpoint: nil
+    }
 
   def status_attrs(:run_cancelled, _payload, occurred_at),
-    do: %{status: :cancelled, completed_at: occurred_at}
+    do: %{status: :cancelled, completed_at: occurred_at, resume_checkpoint: nil}
+
+  def status_attrs(:approval_requested, _payload, _occurred_at),
+    do: %{status: :awaiting_approval}
+
+  def status_attrs(:approval_resolved, _payload, _occurred_at),
+    do: %{status: :running}
 
   def status_attrs(:run_resumed, _payload, _occurred_at),
     do: %{status: :running}

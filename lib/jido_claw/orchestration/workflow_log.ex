@@ -9,6 +9,7 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   """
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -77,6 +78,88 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
     )
   end
 
-  defp tenant(run, opts), do: Keyword.get(opts, :tenant, run.tenant_id)
-  defp actor(run, opts), do: Keyword.get(opts, :actor, Actor.system(run.tenant_id))
+  @doc """
+  Open a human approval gate for `run` in **one transaction**: create the
+  operator-facing `AgentCase` (pending) and append the `approval_requested`
+  status event, which flips the run to `:awaiting_approval` in the same
+  transaction. Either both persist or neither does.
+
+  Returns `{:ok, agent_case}` on success or `{:error, reason}` on the first
+  failure (whole transaction rolled back). Like `append_all/3`, the
+  transaction function returns the bare record on success — `Ash.transact`
+  wraps it `{:ok, _}` — and any `{:error, reason}` from the `with` bubbles up
+  to roll back cleanly (never a match-fail).
+
+  Deliberately does **NOT** broadcast: a gate is announced only after its
+  durable resume checkpoint exists, so the runner's `finalize` broadcasts
+  `{:gate_requested, …}` *after* persisting the checkpoint (Step 5) — closing
+  the approve-before-checkpoint race from the producer side.
+  """
+  @spec gate_open(WorkflowRun.t(), map(), keyword()) ::
+          {:ok, AgentCase.t()} | {:error, term()}
+  def gate_open(run, agent_case_attrs, opts \\ []) do
+    tenant = tenant(run, opts)
+    actor = actor(run, opts)
+
+    Ash.transact([AgentCase, WorkflowEvent], fn ->
+      with {:ok, gate} <- AgentCase.create(agent_case_attrs, tenant: tenant, actor: actor),
+           {:ok, _event} <-
+             append(
+               run,
+               :approval_requested,
+               %{agent_case_id: gate.id, step_name: gate.step_name, kind: gate.kind},
+               tenant: tenant,
+               actor: actor
+             ) do
+        gate
+      end
+    end)
+  end
+
+  @doc """
+  Terminate `run` AND cancel its pending `AgentCase`(s) in one transaction:
+  cancel every pending case with `case_reason`, then append `kind` (a terminal
+  event the projection folds to a terminal status, clearing the checkpoint per
+  Decision 7). Either both persist or neither does, so run status and the
+  operator inbox never disagree. Shared by the runner's gate-pause failure path
+  and recovery's dangling-gate branch.
+  """
+  @spec terminate_cancelling_cases(WorkflowRun.t(), atom(), map(), String.t(), keyword()) ::
+          {:ok, WorkflowEvent.t()} | {:error, term()}
+  def terminate_cancelling_cases(run, kind, payload, case_reason, opts \\ []) do
+    tenant = tenant(run, opts)
+    actor = actor(run, opts)
+
+    Ash.transact([AgentCase, WorkflowEvent], fn ->
+      with {:ok, _} <- cancel_pending_cases(run, case_reason, tenant, actor),
+           {:ok, event} <- append(run, kind, payload, tenant: tenant, actor: actor) do
+        event
+      end
+    end)
+  end
+
+  defp cancel_pending_cases(run, reason, tenant, actor) do
+    case AgentCase.pending_for_run(run.id, tenant: tenant, actor: actor) do
+      {:ok, cases} ->
+        Enum.reduce_while(cases, {:ok, :done}, fn agent_case, _acc ->
+          case AgentCase.cancel(agent_case, %{cancellation_reason: reason},
+                 tenant: tenant,
+                 actor: actor
+               ) do
+            {:ok, _} -> {:cont, {:ok, :done}}
+            {:error, r} -> {:halt, {:error, r}}
+          end
+        end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The 3-arg `Keyword.get/3` applies the default only when the key is *absent*,
+  # so an explicit `actor: nil` (which the runner passes via
+  # `Keyword.get(opts, :actor)`) would defeat the `Actor.system/1` fallback. The
+  # `|| default` form falls back on `nil` too.
+  defp tenant(run, opts), do: Keyword.get(opts, :tenant) || run.tenant_id
+  defp actor(run, opts), do: Keyword.get(opts, :actor) || Actor.system(run.tenant_id)
 end

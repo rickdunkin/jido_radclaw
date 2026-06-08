@@ -1,11 +1,12 @@
 defmodule JidoClaw.Orchestration do
   @moduledoc """
-  Ash Domain for the Orchestration subsystem — workflow runs, steps, and approval gates.
+  Ash Domain for the Orchestration subsystem — workflow runs, events, steps,
+  and human approval gates (`AgentCase`).
 
   Persists the state machine that coordinates multi-step agent workflows,
-  including each `WorkflowRun`, its `WorkflowStep` children, and any human
-  `ApprovalGate` checkpoints. Surfaced in AshAdmin so operators can audit
-  and intervene in active runs.
+  including each `WorkflowRun`, its append-only `WorkflowEvent` log,
+  `WorkflowStep` children, and any human `AgentCase` approval gates. Surfaced
+  in AshAdmin so operators can audit and intervene in active runs.
   """
 
   use Ash.Domain,
@@ -20,6 +21,6 @@ defmodule JidoClaw.Orchestration do
     resource(JidoClaw.Orchestration.WorkflowRun)
     resource(JidoClaw.Orchestration.WorkflowEvent)
     resource(JidoClaw.Orchestration.WorkflowStep)
-    resource(JidoClaw.Orchestration.ApprovalGate)
+    resource(JidoClaw.Orchestration.AgentCase)
   end
 end

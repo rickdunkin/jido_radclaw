@@ -18,10 +18,53 @@
       "generated?": false,
       "precision": null,
       "primary_key?": false,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "agent_cases_tenant_id_fkey",
+        "on_delete": null,
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "tenants"
+      },
+      "scale": null,
+      "size": null,
+      "source": "tenant_id",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
       "references": null,
       "scale": null,
       "size": null,
       "source": "step_name",
+      "type": "text"
+    },
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "kind",
       "type": "text"
     },
     {
@@ -33,7 +76,7 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "reason",
+      "source": "gate_module",
       "type": "text"
     },
     {
@@ -50,15 +93,15 @@
     },
     {
       "allow_nil?": true,
-      "default": "nil",
+      "default": "%{}",
       "generated?": false,
       "precision": null,
       "primary_key?": false,
       "references": null,
       "scale": null,
       "size": null,
-      "source": "approver_id",
-      "type": "uuid"
+      "source": "details",
+      "type": "map"
     },
     {
       "allow_nil?": true,
@@ -69,20 +112,20 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "requested_by_id",
-      "type": "uuid"
-    },
-    {
-      "allow_nil?": true,
-      "default": "nil",
-      "generated?": false,
-      "precision": null,
-      "primary_key?": false,
-      "references": null,
-      "scale": null,
-      "size": null,
-      "source": "comment",
+      "source": "decision",
       "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "decided_by_id",
+      "type": "uuid"
     },
     {
       "allow_nil?": true,
@@ -95,6 +138,30 @@
       "size": null,
       "source": "decided_at",
       "type": "utc_datetime_usec"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "decision_comment",
+      "type": "text"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "cancellation_reason",
+      "type": "text"
     },
     {
       "allow_nil?": false,
@@ -135,11 +202,11 @@
         "match_type": null,
         "match_with": null,
         "multitenancy": {
-          "attribute": null,
-          "global": null,
-          "strategy": null
+          "attribute": "tenant_id",
+          "global": false,
+          "strategy": "attribute"
         },
-        "name": "approval_gates_workflow_run_id_fkey",
+        "name": "agent_cases_workflow_run_id_fkey",
         "on_delete": null,
         "on_update": null,
         "primary_key?": true,
@@ -155,17 +222,72 @@
   "base_filter": null,
   "check_constraints": [],
   "create_table_options": null,
-  "custom_indexes": [],
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "tenant_id",
+        "status"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "tenant_id"
+        },
+        {
+          "type": "atom",
+          "value": "status"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": null,
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    },
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "workflow_run_id",
+        "status"
+      ],
+      "fields": [
+        {
+          "type": "atom",
+          "value": "workflow_run_id"
+        },
+        {
+          "type": "atom",
+          "value": "status"
+        }
+      ],
+      "include": null,
+      "message": null,
+      "name": null,
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": null,
+      "where": null
+    }
+  ],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "DD458467A5FFFD7F81D69CD70AA7681E1293006283FECF4CDCD1198099DF755F",
+  "hash": "838989AFEB608B4F41868F55834C21E73D05EE5B3850F36E16684B5CFB57D24B",
   "identities": [],
   "multitenancy": {
-    "attribute": null,
-    "global": null,
-    "strategy": null
+    "attribute": "tenant_id",
+    "global": false,
+    "strategy": "attribute"
   },
   "repo": "Elixir.JidoClaw.Repo",
   "schema": null,
-  "table": "approval_gates"
+  "table": "agent_cases"
 }

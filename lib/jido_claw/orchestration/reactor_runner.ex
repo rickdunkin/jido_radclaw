@@ -52,9 +52,24 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   the rescue calls the non-raising `ensure_failed/3` and returns the in-memory
   run without reloading (avoiding a second raise if the DB is the cause).
 
-  Phase 1 forbids halts: the run options pin `async?: false`,
-  `max_iterations: :infinity`, `timeout: :infinity`, and the reactor declares
-  no halt steps. `halt/1` / `run_halted` / `run_resumed` land with human gates.
+  ## Gate pause (human approval)
+
+  A gate-bearing reactor's `GateStep` returns `{:halt, _}`, so `Reactor.run`
+  returns `{:halted, reactor}`. `finalize/3` treats a halt as a **legitimate
+  gate pause iff the reloaded run is `:awaiting_approval`** (only the gate's
+  in-transaction `approval_requested` reaches that status). On a legit pause it
+  persists the serialized halted reactor as the run's durable
+  `resume_checkpoint`, looks up the pending `AgentCase`, broadcasts
+  `{:gate_requested, …}` (only *after* the checkpoint exists — closing the
+  approve-before-checkpoint race), and returns `{:ok, {:paused, case_id}, run}`
+  — the same 3-element envelope, with `{:paused, id}` as the value (Decision 4).
+  Any other halt (status unchanged, or `{:halted}` from `max_iterations`) stays
+  a defensive failure via `ensure_failed/3`.
+
+  `finalize/3` is the **shared finalizer**: `JidoClaw.Orchestration.GateResume`
+  reuses it so the initial run and every resume complete/fail/re-pause through
+  one path. The terminal-clears-checkpoint rule lives in the projection
+  (Decision 7), so the runner never clears a checkpoint by hand.
   """
 
   # run/3 is a never-raises seam (mirrors WorkflowRunner): a body-level rescue
@@ -67,8 +82,10 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
   require Logger
 
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.Reason
+  alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias Reactor.Builder
@@ -76,6 +93,17 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # Statuses from which a `run_failed` transition is legal — i.e. the run has
   # not yet reached a terminal state (mirrors `Projection`'s non-terminal set).
   @non_terminal [:pending, :running, :awaiting_approval]
+
+  # Checkpoint envelope version. The encoded blob is
+  # `term_to_binary({@checkpoint_version, module_string, inner_binary})` — an
+  # all-builtin outer tuple so `GateResume` can decode it with `[:safe]`
+  # *before* the gate-reactor module's atoms are loaded. Bump on any envelope
+  # shape change; `GateResume` rejects unknown versions.
+  @checkpoint_version 1
+
+  # Cancellation reason stamped on a pending case when a gate pause fails to
+  # persist; also the human-facing `run_failed` error context.
+  @gate_pause_reason "gate pause failed"
 
   @type run_result ::
           {:ok, term(), WorkflowRun.t()}
@@ -158,7 +186,16 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
       reactor: inspect(reactor_module)
     }
 
-    finalize_opts = [tenant: tenant, actor: actor]
+    # `inputs` + `reactor_module` ride in the finalizer opts so the halted
+    # clause can serialize a checkpoint (Reactor re-validates declared inputs
+    # on resume, and the module string keys the safe decode). `reactor_module`
+    # is also needed to re-encode if a *resumed* run halts again at a later gate.
+    finalize_opts = [
+      tenant: tenant,
+      actor: actor,
+      inputs: inputs,
+      reactor_module: reactor_module
+    ]
 
     try do
       runnable
@@ -179,19 +216,136 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
     end
   end
 
-  defp finalize({:ok, value}, run, opts), do: {:ok, value, reload(run, opts)}
-  defp finalize({:ok, value, _reactor}, run, opts), do: {:ok, value, reload(run, opts)}
+  @doc false
+  # The shared finalizer: the initial `run/3` and every `GateResume.resume/2`
+  # route their `Reactor.run` result through here, so completion, failure, and
+  # gate-pause are handled identically. `opts` carries `:tenant`, `:actor`,
+  # `:inputs`, and `:reactor_module`.
+  @spec finalize(
+          {:ok, term()} | {:ok, term(), Reactor.t()} | {:error, term()} | {:halted, Reactor.t()},
+          WorkflowRun.t(),
+          keyword()
+        ) :: run_result()
+  def finalize({:ok, value}, run, opts), do: {:ok, value, reload(run, opts)}
+  def finalize({:ok, value, _reactor}, run, opts), do: {:ok, value, reload(run, opts)}
 
-  defp finalize({:error, reason}, run, opts) do
+  def finalize({:error, reason}, run, opts) do
     ensure_failed(run, reason, opts)
     {:error, reason, reload(run, opts)}
   end
 
-  # No halts in this slice (forbidden via run options + no halt steps); treat a
-  # halt defensively as a failure so the run never strands non-terminal.
-  defp finalize({:halted, _reactor}, run, opts) do
-    ensure_failed(run, :unexpected_halt, opts)
-    {:error, :unexpected_halt, reload(run, opts)}
+  # A halt is a legitimate gate pause iff the reloaded run is
+  # `:awaiting_approval` — only the gate step's in-transaction
+  # `approval_requested` flips it there. Any other halt (status unchanged, or
+  # `{:halted}` from `max_iterations`) is defensively failed so a run never
+  # strands non-terminal.
+  def finalize({:halted, reactor}, run, opts) do
+    reloaded = reload(run, opts)
+
+    if reloaded.status == :awaiting_approval do
+      handle_gate_pause(reactor, reloaded, opts)
+    else
+      ensure_failed(run, :unexpected_halt, opts)
+      {:error, :unexpected_halt, reload(run, opts)}
+    end
+  end
+
+  # Persist the durable checkpoint, capture the pending case id *before*
+  # broadcasting (so the broadcast→approve→resume race can't clear the case out
+  # from under the lookup), then announce the gate now that its checkpoint
+  # exists.
+  defp handle_gate_pause(reactor, run, opts) do
+    with {:ok, checkpoint} <- safe_encode_checkpoint(reactor, opts),
+         {:ok, updated} <-
+           WorkflowRun.set_checkpoint(run, %{resume_checkpoint: checkpoint},
+             tenant: Keyword.get(opts, :tenant, run.tenant_id),
+             actor: Keyword.get(opts, :actor)
+           ),
+         {:ok, case_id} <- pending_case_id(updated, opts) do
+      RunPubSub.broadcast_gate(
+        {:gate_requested, updated.id, %{tenant_id: updated.tenant_id, agent_case_id: case_id}}
+      )
+
+      {:ok, {:paused, case_id}, updated}
+    else
+      {:error, reason} ->
+        # Checkpoint encode/write failed, or the (just-committed) pending case
+        # vanished — none should happen. Cancel the pending case AND fail the run
+        # in one transaction so a terminal run never leaves a stale :pending case
+        # in the inbox.
+        cancel_pending_and_fail(run, reason, opts)
+        {:error, {:gate_pause_failed, reason}, reload(run, opts)}
+    end
+  end
+
+  # Fold the checkpoint serialization into the gate-pause `with` so a
+  # `term_to_binary` raise (the 4th, otherwise-leaking failure path — it would
+  # escape to execute/6's rescue → ensure_failed → stale :pending case) takes
+  # the same cancellation path as a checkpoint-write or pending-case failure.
+  # The rescue here is covered by the file-level bare_rescue pragma.
+  defp safe_encode_checkpoint(reactor, opts) do
+    {:ok,
+     encode_checkpoint(
+       reactor,
+       Keyword.get(opts, :inputs, %{}),
+       Keyword.fetch!(opts, :reactor_module)
+     )}
+  rescue
+    error -> {:error, {:encode_failed, Exception.message(error)}}
+  end
+
+  # On any gate-pause failure, cancel the pending case(s) AND fail the run in one
+  # transaction (the shared WorkflowLog helper), so a terminal run never leaves a
+  # stale :pending case behind. The cancellation MUST be in the terminal's
+  # transaction: failing the run alone while leaving the case :pending is
+  # strictly worse than today, because a terminal run is never re-scanned by
+  # recovery → permanent orphan.
+  defp cancel_pending_and_fail(run, reason, opts) do
+    case WorkflowLog.terminate_cancelling_cases(
+           run,
+           :run_failed,
+           %{error: Reason.format({:gate_pause_failed, reason})},
+           @gate_pause_reason,
+           tenant: Keyword.get(opts, :tenant, run.tenant_id),
+           actor: Keyword.get(opts, :actor)
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, cleanup_error} ->
+        # Cleanup transaction rolled back. Do NOT fall back to a run-only
+        # ensure_failed — a terminal run + still-:pending case is never
+        # re-scanned. Leaving the run :awaiting_approval (no checkpoint, or
+        # checkpoint-but-no-case) lets recovery's dangling-gate / parked-orphan
+        # branch reap it on the next boot.
+        Logger.warning(
+          "[ReactorRunner] gate-pause cleanup failed for run #{run.id}: " <>
+            "#{inspect(cleanup_error)} — leaving for recovery"
+        )
+
+        :ok
+    end
+  end
+
+  defp pending_case_id(run, opts) do
+    case AgentCase.pending_for_run(run.id,
+           tenant: Keyword.get(opts, :tenant, run.tenant_id),
+           actor: Keyword.get(opts, :actor)
+         ) do
+      {:ok, [%AgentCase{id: id} | _]} -> {:ok, id}
+      {:ok, []} -> {:error, :pending_case_missing}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Two-layer envelope: the outer tuple is all-builtin
+  # (`{integer, string, binary}`) so `GateResume` can `binary_to_term/[:safe]`
+  # it without the gate-reactor module's atoms loaded; the inner binary holds
+  # the halted `%Reactor{}` + the original inputs and is decoded only once the
+  # module is confirmed loaded.
+  defp encode_checkpoint(reactor, inputs, module) do
+    inner = :erlang.term_to_binary({reactor, inputs})
+    :erlang.term_to_binary({@checkpoint_version, Atom.to_string(module), inner})
   end
 
   # Appends `run_failed` only when the reloaded run is still non-terminal (else

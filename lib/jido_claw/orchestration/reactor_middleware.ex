@@ -3,14 +3,35 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   The sole event producer for reactor-driven `WorkflowRun`s.
 
   A `Reactor.Middleware` that translates the Reactor execution lifecycle into
-  the durable `WorkflowEvent` log: the run-level `init`/`complete`/`error`
-  hooks append `run_started`/`run_completed`/`run_failed`, and the per-step
-  `event/3` hook appends the `step_*` timeline (including `step_undone` when a
-  saga undo fires). `JidoClaw.Orchestration.ReactorRunner` injects this
-  middleware into the reactor it runs (dedup-safe), so a reactor *may* declare
-  it in its `middlewares` block but need not; the runner also seeds the run
-  identity into the Reactor context as
+  the durable `WorkflowEvent` log: the run-level `init`/`halt`/`complete`/`error`
+  hooks append `run_started` (or `run_resumed`) / `run_halted` /
+  `run_completed` / `run_failed`, and the per-step `event/3` hook appends the
+  `step_*` timeline (including `step_undone` when a saga undo fires).
+  `JidoClaw.Orchestration.ReactorRunner` injects this middleware into the
+  reactor it runs (dedup-safe), so a reactor *may* declare it in its
+  `middlewares` block but need not; the runner also seeds the run identity into
+  the Reactor context as
   `%{tenant: ..., actor: ..., workflow_run: %WorkflowRun{}, reactor: ...}`.
+
+  ## `init/1` is the single producer of `run_started`/`run_resumed`
+
+  Reactor injects `context.__reactor__.initial_state` — `:pending` on a fresh
+  run, `:halted` on **every** resume (operator approve **and** boot recovery).
+  `init/1` branches on it: `:pending` appends `run_started`, `:halted` appends
+  `run_resumed`. This makes `init/1` the sole producer of both for every resume
+  path — callers (`ReactorRunner`, `GateResume`) never append them. A failed
+  `run_started` on the **initial** start fails loudly (aborting before any step
+  drops events); a failed `run_resumed` on **resume** is best-effort
+  (provenance — the decision is already durable).
+
+  ## `halt/1` always succeeds
+
+  A gate step returns `{:halt, _}`, pausing the reactor. `halt/1` appends
+  `run_halted` (provenance only — the in-transaction `approval_requested` from
+  `WorkflowLog.gate_open/3` is the authoritative status event) and **always
+  returns `{:ok, context}`**, even when the append fails: a `halt/1` error
+  would turn the paused run into `Reactor.run`'s `{:error, _}` rather than the
+  `{:halted, _}` the runner needs to persist a checkpoint.
 
   ## Synchronous in this slice
 
@@ -51,17 +72,54 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   @spec init(Reactor.context()) :: {:ok, Reactor.context()} | {:error, term()}
   def init(context) do
     case run_from(context) do
-      {:ok, run} ->
-        # A misconfigured caller fails loudly rather than dropping events: a
-        # failed run_started append aborts the run before any step executes.
-        case append(run, :run_started, %{reactor: context[:reactor]}, context) do
-          {:ok, _event} -> {:ok, context}
-          {:error, reason} -> {:error, reason}
-        end
-
-      :error ->
-        {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
+      {:ok, run} -> init_for_state(run, context)
+      :error -> {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
     end
+  end
+
+  # Resume (operator approve OR boot recovery): `run_resumed` is provenance; the
+  # decision (`approval_resolved`/`run_cancelled`) is already durable, so a
+  # failed append is best-effort.
+  defp init_for_state(run, %{__reactor__: %{initial_state: :halted}} = context) do
+    case append(run, :run_resumed, %{reactor: context[:reactor]}, context) do
+      {:ok, _event} ->
+        {:ok, context}
+
+      {:error, reason} ->
+        Logger.warning("[ReactorMiddleware] run_resumed append failed: #{inspect(reason)}")
+        {:ok, context}
+    end
+  end
+
+  # Initial start (`:pending`, or any non-resume state): a misconfigured caller
+  # fails loudly rather than dropping events — a failed run_started append
+  # aborts the run before any step executes.
+  defp init_for_state(run, context) do
+    case append(run, :run_started, %{reactor: context[:reactor]}, context) do
+      {:ok, _event} -> {:ok, context}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
+  @spec halt(Reactor.context()) :: {:ok, Reactor.context()}
+  def halt(context) do
+    with {:ok, run} <- run_from(context),
+         {:ok, _event} <- append(run, :run_halted, %{reactor: context[:reactor]}, context) do
+      :ok
+    else
+      :error ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[ReactorMiddleware] run_halted append failed: #{inspect(reason)}")
+        :ok
+    end
+
+    # ALWAYS {:ok, context} — a halt/1 error would turn the paused run into
+    # Reactor.run's {:error, _} (executor.ex), losing the {:halted, _} the
+    # runner needs. `approval_requested` already carries the status authority.
+    {:ok, context}
   end
 
   @impl true

@@ -81,6 +81,7 @@ defmodule JidoClaw.Web.Router do
       live("/dashboard", DashboardLive)
       live("/forge", ForgeLive)
       live("/workflows", WorkflowsLive)
+      live("/approvals", ApprovalsLive)
       live("/agents", AgentsLive)
       live("/projects", ProjectsLive)
       live("/settings", SettingsLive)

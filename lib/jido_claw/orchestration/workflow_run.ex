@@ -27,6 +27,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:list_non_terminal_global)
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
+    define(:set_checkpoint, action: :set_checkpoint)
   end
 
   actions do
@@ -49,7 +50,22 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     update :set_status do
       description("Internal projection write of status + stamps from the event log.")
       public?(false)
-      accept([:status, :started_at, :completed_at, :result, :error])
+      # `:resume_checkpoint` is accepted so the projection's terminal
+      # `status_attrs/3` can null the checkpoint blob in the same status-flip
+      # transaction (Decision 7).
+      accept([:status, :started_at, :completed_at, :result, :error, :resume_checkpoint])
+    end
+
+    # Private write of the durable resume checkpoint blob. Called by
+    # `ReactorRunner.finalize` on a legitimate gate halt, *after* the gate
+    # step's in-txn `approval_requested` has flipped the run to
+    # `:awaiting_approval`. No status precondition: the column is a plain
+    # `:binary` blob (the encoded checkpoint envelope), cleared centrally by
+    # the projection on every terminal (Decision 7).
+    update :set_checkpoint do
+      description("Internal write of the durable resume checkpoint blob on gate pause.")
+      public?(false)
+      accept([:resume_checkpoint])
     end
 
     read :list_active do
@@ -142,6 +158,18 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       default(%{})
     end
 
+    # Durable resume checkpoint: a single `:erlang.term_to_binary` blob (the
+    # two-layer envelope encoded by `ReactorRunner.encode_checkpoint/3` and
+    # decoded only by `GateResume`), NOT an Elixir map. Present *only* while a
+    # run is `:awaiting_approval` or `:running` (resume in flight); every
+    # terminal clears it via the projection (Decision 7). `public?(false)` —
+    # it holds unredacted reactor inputs/results; encryption-at-rest is a
+    # documented fast-follow (Decision 2).
+    attribute :resume_checkpoint, :binary do
+      allow_nil?(true)
+      public?(false)
+    end
+
     attribute :started_at, :utc_datetime_usec do
       allow_nil?(true)
       public?(true)
@@ -175,7 +203,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     )
 
     has_many(:steps, JidoClaw.Orchestration.WorkflowStep)
-    has_many(:approval_gates, JidoClaw.Orchestration.ApprovalGate)
+    has_many(:agent_cases, JidoClaw.Orchestration.AgentCase)
     has_many(:events, JidoClaw.Orchestration.WorkflowEvent)
   end
 end
