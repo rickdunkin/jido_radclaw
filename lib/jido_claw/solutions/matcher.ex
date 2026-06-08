@@ -165,7 +165,11 @@ defmodule JidoClaw.Solutions.Matcher do
 
         nil
     end
+
+    # External embedding API + rate pacer — any HTTP/JSON/transport failure
+    # must fall back to FTS+lexical, never tear down the matcher entry point.
   rescue
+    # reach:disable-next-line bare_rescue
     err ->
       Logger.info(
         "[Matcher] Voyage embedding crashed (#{inspect(err)}) — falling back to FTS+lexical"

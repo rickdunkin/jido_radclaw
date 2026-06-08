@@ -13,6 +13,10 @@ defmodule JidoClaw.Cron.Worker do
   returns — so there is intentionally no stuck-detection watchdog; a real one
   would require async dispatch and is deferred.
   """
+  # Cron worker GenServer: dispatch + persistence rescues are deliberate
+  # never-crash boundaries — a hung target or transient DB error must
+  # become an error tuple / debug log, not a worker crash.
+  # reach:disable-for-this-file bare_rescue
   use GenServer
   require Logger
 

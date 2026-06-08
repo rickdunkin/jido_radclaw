@@ -91,7 +91,9 @@ defmodule JidoClaw.Audit.AsyncWriter do
 
   defp safe_record(attrs, mode) do
     do_record(attrs)
+    # losing an audit row is preferable to dropping the request
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       if sandbox_shutdown?(e) do
         # `DBConnection.ConnectionError` is raised (not thrown) when

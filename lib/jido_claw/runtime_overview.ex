@@ -3,6 +3,10 @@ defmodule JidoClaw.RuntimeOverview do
   Dashboard-level runtime projection composed from the tenant-scoped views.
   """
 
+  # Dashboard projection: a session-supervisor lookup or stats fetch raise
+  # must degrade to 0 / empty rather than crash the dashboard render.
+  # reach:disable-for-this-file bare_rescue
+
   alias JidoClaw.ForgeView
   alias JidoClaw.SwarmView
   alias JidoClaw.WorkflowView

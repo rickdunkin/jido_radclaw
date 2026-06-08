@@ -85,7 +85,10 @@ defmodule JidoClaw.Reasoning.LLMTiebreaker do
           emit_failed({:unexpected_result, other}, candidates)
           {:error, {:unexpected_result, other}}
       end
+
+      # tie-breaker is an optional refinement; any LLM fault falls back to heuristic
     rescue
+      # reach:disable-next-line bare_rescue
       e ->
         msg = Exception.message(e)
         emit_failed({:raised, msg}, candidates)

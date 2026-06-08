@@ -19,7 +19,12 @@ defmodule JidoClaw.GitHub.Agents.ResearchCoordinator do
        root_cause: Enum.at(results, 2),
        related_prs: Enum.at(results, 3)
      }}
+
+    # Research coordinator entry: any sub-task crash (`Task.await_many` exit)
+    # must surface as `{:error, :research_failed}` to the GitHub event pipeline
+    # rather than escape and abort the issue handler.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.error("[ResearchCoordinator] Failed: #{inspect(e)}")
       {:error, :research_failed}

@@ -1,4 +1,8 @@
 defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
+  # One-shot migration: row-existence probe degrades to `false` so a
+  # transient Repo.query fault never aborts the operator-run task mid-stream.
+  # reach:disable-for-this-file bare_rescue
+
   @moduledoc """
   One-shot migration: copy v0.5.x `.jido/solutions.json` and
   `.jido/reputation.json` rows into the v0.6.1 Postgres-backed

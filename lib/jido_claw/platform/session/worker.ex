@@ -47,6 +47,10 @@ defmodule JidoClaw.Session.Worker do
   If a future policy enforces user_id matching, the safer pattern is
   per-call actor passing rather than the state-stored shape used here.
   """
+  # GenServer per-session worker: hydration, cache lookups, and handoff
+  # rehydration are best-effort recoveries that must never crash the
+  # worker — a raise becomes a warning log and a degraded read.
+  # reach:disable-for-this-file bare_rescue
   use GenServer
   require Logger
 

@@ -4,6 +4,7 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
 
   alias AshAuthentication.Strategy.ApiKey.Actions
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
   alias JidoClaw.Authorization.Actor
 
   @behaviour Plug
@@ -58,14 +59,16 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
   end
 
   defp emit_auth_event(kind, actor_id, payload) do
-    AsyncWriter.cast(%{
-      tenant_id: "default",
-      event_kind: :auth_event,
-      actor_kind: if(actor_id, do: :user, else: :system),
-      actor_id: actor_id,
-      target_kind: :auth,
-      target_id: Atom.to_string(kind),
-      payload: payload
-    })
+    AsyncWriter.cast(
+      EventAttrs.new(
+        tenant_id: "default",
+        event_kind: :auth_event,
+        actor_kind: if(actor_id, do: :user, else: :system),
+        actor_id: actor_id,
+        target_kind: :auth,
+        target_id: Atom.to_string(kind),
+        payload: payload
+      )
+    )
   end
 end

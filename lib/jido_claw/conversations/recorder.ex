@@ -62,6 +62,16 @@ defmodule JidoClaw.Conversations.Recorder do
   request already terminated, otherwise blocks until the terminal
   signal is processed.
 
+  ## Never-crash contract
+
+  Every rescue in this module is a deliberate catch-all on a
+  GenServer signal/telemetry boundary or its safe-handle wrappers:
+  the Recorder is the durable record-of-truth for messages and must
+  keep accepting signals through transient persistence faults — a
+  crash here would lose ordering for the entire request stream. See
+  `terminate/2`, `safe_handle/2`, `resolve_scope/1`, `attempt_append/3`,
+  and the telemetry handler for the specific surfaces.
+
   ## Relationship to `JidoClaw.Trace`
 
   Recorder writes the **durable record-of-truth** for messages — every
@@ -87,6 +97,10 @@ defmodule JidoClaw.Conversations.Recorder do
   after the Recorder has reattached (worst case the flush call times
   out and the dispatcher proceeds with a logged warning).
   """
+
+  # Every rescue here is a deliberate never-crash boundary on GenServer
+  # signal / telemetry handlers and best-effort persistence wrappers.
+  # reach:disable-for-this-file bare_rescue
 
   use GenServer
   require Logger

@@ -1,4 +1,9 @@
 defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
+  # One-shot migration: tenant-verification probe degrades to a warning so
+  # an unreachable `Tenant.Manager` never aborts the operator-run task
+  # mid-stream — Phase 4 will harden tenant lifecycle.
+  # reach:disable-for-this-file bare_rescue
+
   @moduledoc """
   One-shot migration: copy `.jido/sessions/<tenant>/*.jsonl` rows into
   the v0.6 Postgres-backed `Conversations.Message` table.

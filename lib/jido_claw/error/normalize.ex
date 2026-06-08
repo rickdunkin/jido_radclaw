@@ -206,7 +206,11 @@ defmodule JidoClaw.Error.Normalize do
       try do
         struct.splode_error?() and not struct.error_class?() and
           match?(["Ash" | _], Module.split(struct))
+
+        # Structural classifier probing foreign modules: a stub `error_class?/0`
+        # or unexpected callback shape must answer "not an Ash leaf", not crash.
       rescue
+        # reach:disable-next-line bare_rescue
         _ -> false
       end
   end

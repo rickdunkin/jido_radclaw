@@ -42,6 +42,18 @@ defmodule JidoClaw.Memory do
   require Logger
   require Ash.Query
 
+  # Ash CRUD + Postgrex faults the Block scope-chain read can hit; narrowing
+  # keeps unexpected bugs surfacing instead of silently swallowed by `[]`.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Memory.{Block, Fact, Retrieval, Scope}
@@ -200,7 +212,9 @@ defmodule JidoClaw.Memory do
         []
     end
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   catch
     :exit, _ -> []
   end

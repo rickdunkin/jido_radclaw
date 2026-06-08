@@ -21,6 +21,10 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
   persistence hiccup must never break the spawn path.
   """
 
+  # Every rescue here is a deliberate never-crash boundary on the
+  # sub-agent's best-effort durable transcript writes and Recorder flush.
+  # reach:disable-for-this-file bare_rescue
+
   require Logger
 
   alias JidoClaw.Authorization.Actor

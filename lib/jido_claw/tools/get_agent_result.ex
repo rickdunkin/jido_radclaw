@@ -1,4 +1,7 @@
 defmodule JidoClaw.Tools.GetAgentResult do
+  # The agent-result payload maps are this tool's LLM-facing return contract,
+  # assembled and returned here only.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc false
   use JidoClaw.Tools.Action,
     name: "get_agent_result",
@@ -45,7 +48,10 @@ defmodule JidoClaw.Tools.GetAgentResult do
   defp await_and_handle(pid, agent_id, timeout, request_id) do
     result = await(pid, timeout, request_id)
     handle_result(result, agent_id, timeout, request_id)
+    # Tool entry point: an Agent server fault must surface as a normalized
+    # `{:error, ExecutionError}` to the LLM, not crash the calling tool.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       {:error,
        Error.execution_error(Exception.message(e),

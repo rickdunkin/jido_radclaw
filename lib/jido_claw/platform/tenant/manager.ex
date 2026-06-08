@@ -1,5 +1,8 @@
 defmodule JidoClaw.Tenant.Manager do
   @moduledoc "Manages tenant lifecycle: create, suspend, destroy, list."
+  # Tenant Manager GenServer: best-effort Postgres row sync must never
+  # crash the cluster-wide manager — a transient DB raise becomes a log.
+  # reach:disable-for-this-file bare_rescue
   use GenServer
   require Logger
 

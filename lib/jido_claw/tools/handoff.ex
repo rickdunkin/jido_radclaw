@@ -56,6 +56,19 @@ defmodule JidoClaw.Tools.Handoff do
 
   require Logger
 
+  # Ash CRUD + Postgrex faults the best-effort metadata-mirror can hit when
+  # writing the `current_agent_template` mirror — narrowed so a real bug
+  # surfaces rather than being logged-and-swallowed.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
@@ -250,7 +263,8 @@ defmodule JidoClaw.Tools.Handoff do
         :ok
     end
   rescue
-    e ->
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
       Logger.warning("[handoff] metadata mirror raised: #{Exception.message(e)}")
       :ok
   end
@@ -285,6 +299,10 @@ defmodule JidoClaw.Tools.Handoff do
         :ok
     end
   rescue
+    # Best-effort durable system row: a SessionWorker hiccup must not block
+    # the handoff (the Registry mutation is the only routing-critical state
+    # change). Paired with `catch :exit` for non-existent worker GenServer.
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[handoff] system message write raised: #{Exception.message(e)}")
       :ok

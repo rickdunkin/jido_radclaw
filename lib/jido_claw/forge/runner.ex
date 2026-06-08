@@ -1,4 +1,7 @@
 defmodule JidoClaw.Forge.Runner do
+  # The {status, output, summary, question, error, metadata} map is the
+  # @type iteration_result contract, built by this module's own constructors.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc false
   @type sandbox :: struct()
   @type config :: map()

@@ -16,6 +16,19 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
   require Logger
 
+  # Ash CRUD + Postgrex faults the metadata-read/clear paths can hit; the
+  # rescues narrow to these so an unexpected error surfaces instead of
+  # being swallowed.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Templates
@@ -278,7 +291,8 @@ defmodule JidoClaw.Agent.Handoff.Router do
         :none
     end
   rescue
-    e ->
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
       Logger.warning(
         "[handoff.router] metadata read raised for #{inspect(session_uuid)}: #{Exception.message(e)}"
       )
@@ -303,6 +317,9 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
     :ok
   rescue
+    # Registry/Handoff struct construction is in-process; a crash here must
+    # not take down the cold-start path — log and fall back to the default.
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning(
         "[handoff.router] synthesize_owner raised for #{template_name}: #{Exception.message(e)}"
@@ -332,7 +349,9 @@ defmodule JidoClaw.Agent.Handoff.Router do
         :ok
     end
   rescue
-    _ -> :ok
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      :ok
   end
 
   # ---- Routed path ----
@@ -406,6 +425,8 @@ defmodule JidoClaw.Agent.Handoff.Router do
     runtime = Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
     runtime.whereis(agent_id)
   rescue
+    # Test seam: configurable runtime module may be a stub raising anything.
+    # reach:disable-next-line bare_rescue
     _ -> nil
   end
 
@@ -496,6 +517,9 @@ defmodule JidoClaw.Agent.Handoff.Router do
     end)
     |> Enum.take(-@history_window)
   rescue
+    # Best-effort preamble history: a SessionWorker hiccup must not crash the
+    # turn dispatcher. Paired with `catch :exit, _` for GenServer non-exists.
+    # reach:disable-next-line bare_rescue
     _ -> []
   catch
     :exit, _ -> []

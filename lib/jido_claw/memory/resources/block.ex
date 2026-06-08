@@ -58,6 +58,7 @@ defmodule JidoClaw.Memory.Block do
   alias Ash.Query
   alias JidoClaw.Audit.ActorClassifier
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
   alias JidoClaw.Memory.BlockRevision
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
@@ -678,22 +679,24 @@ defmodule JidoClaw.Memory.Block do
   defp emit_revise_audit(prior, new_block, rev, actor) do
     {actor_kind, actor_id} = ActorClassifier.classify(actor)
 
-    AsyncWriter.sync(%{
-      tenant_id: prior.tenant_id,
-      event_kind: :memory_write,
-      actor_kind: actor_kind,
-      actor_id: actor_id,
-      target_kind: :memory_block,
-      target_id: to_string(prior.id),
-      payload: %{
-        operation: :revise,
-        source: prior.source,
-        scope_kind: prior.scope_kind,
-        label: prior.label,
-        prior_block_id: to_string(prior.id),
-        new_block_id: to_string(new_block.id),
-        block_revision_id: to_string(rev.id)
-      }
-    })
+    AsyncWriter.sync(
+      EventAttrs.new(
+        tenant_id: prior.tenant_id,
+        event_kind: :memory_write,
+        actor_kind: actor_kind,
+        actor_id: actor_id,
+        target_kind: :memory_block,
+        target_id: to_string(prior.id),
+        payload: %{
+          operation: :revise,
+          source: prior.source,
+          scope_kind: prior.scope_kind,
+          label: prior.label,
+          prior_block_id: to_string(prior.id),
+          new_block_id: to_string(new_block.id),
+          block_revision_id: to_string(rev.id)
+        }
+      )
+    )
   end
 end

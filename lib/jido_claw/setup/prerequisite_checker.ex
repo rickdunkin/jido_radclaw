@@ -31,7 +31,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
         %{ok?: false, version: nil, name: "PostgreSQL"}
     end
   rescue
-    _ -> %{ok?: false, version: nil, name: "PostgreSQL"}
+    _ in [ErlangError] ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      %{ok?: false, version: nil, name: "PostgreSQL"}
   end
 
   defp check_git do
@@ -44,7 +46,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
         %{ok?: false, version: nil, name: "Git"}
     end
   rescue
-    _ -> %{ok?: false, version: nil, name: "Git"}
+    _ in [ErlangError] ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      %{ok?: false, version: nil, name: "Git"}
   end
 
   defp check_ollama do
@@ -57,7 +61,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
         %{ok?: false, version: nil, name: "Ollama"}
     end
   rescue
-    _ -> %{ok?: false, version: nil, name: "Ollama (optional)"}
+    _ in [ErlangError] ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      %{ok?: false, version: nil, name: "Ollama (optional)"}
   end
 
   defp check_node do
@@ -69,6 +75,8 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
         %{ok?: false, version: nil, name: "Node.js (optional)"}
     end
   rescue
-    _ -> %{ok?: false, version: nil, name: "Node.js (optional)"}
+    _ in [ErlangError] ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      %{ok?: false, version: nil, name: "Node.js (optional)"}
   end
 end

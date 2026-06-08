@@ -1,4 +1,7 @@
 defmodule JidoClaw.Tools.Error do
+  # The {code, details, message} map is the LLM-facing wire-error contract
+  # (@type t) — an explicit API surface, not incidental duplication.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   Normalizes tool failures into one agent-facing error shape.
 
@@ -341,7 +344,10 @@ defmodule JidoClaw.Tools.Error do
 
   defp safe_exception_message(exception) do
     Exception.message(exception)
+    # Defensive helper: a foreign `message/1` callback can itself raise; fall
+    # back to `inspect/1` so error sanitization stays robust.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> inspect(exception)
   end
 

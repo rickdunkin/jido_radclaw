@@ -1,4 +1,11 @@
 defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
+  # The {inserted, skipped, failed} map is one-off migration-stats bookkeeping
+  # local to this task.
+  # reach:disable-for-this-file fixed_shape_map
+  # One-shot migration: lookup/probe rescues degrade to safe defaults
+  # (`:would_create`, `false`) so a missing DB / dropped row never aborts
+  # the operator-run task mid-stream.
+  # reach:disable-for-this-file bare_rescue
   @moduledoc """
   One-shot migration: copy v0.5.x `.jido/memory.json` rows into the
   v0.6.3 Postgres-backed Memory corpus.

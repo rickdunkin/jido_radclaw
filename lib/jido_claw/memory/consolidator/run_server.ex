@@ -25,6 +25,18 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   use GenServer
   require Logger
 
+  # Ash CRUD + Postgrex faults the watermark/history Ash reads can hit;
+  # narrowing keeps unexpected bugs surfacing instead of silently swallowed.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Forge.Harness
@@ -206,7 +218,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     blocks =
       try do
         JidoClaw.Memory.list_blocks_for_scope_chain(state.scope)
+        # MCP tool handler — must never crash the per-run GenServer mid-pass.
       rescue
+        # reach:disable-next-line bare_rescue
         _ -> []
       end
 
@@ -219,7 +233,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     facts =
       try do
         JidoClaw.Memory.recall(q, tool_context: tool_context_from(state.scope), limit: limit)
+        # MCP tool handler — must never crash the per-run GenServer mid-pass.
       rescue
+        # reach:disable-next-line bare_rescue
         _ -> []
       end
 
@@ -446,7 +462,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
                    Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
               result
             end
+
+            # Forge harness wrapper — every external runner failure path must
+            # normalize to {:error, _} so the per-run server can finalise.
           rescue
+            # reach:disable-next-line bare_rescue
             e -> {:error, Exception.message(e)}
           catch
             :exit, reason -> {:error, inspect(reason)}
@@ -655,7 +675,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       _ -> []
     end
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   end
 
   defp pick_or_walk_history([latest | _] = _runs, stream, tenant_id, scope_kind, fk) do
@@ -687,7 +709,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       _ -> {nil, nil}
     end
   rescue
-    _ -> {nil, nil}
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      {nil, nil}
   end
 
   defp first_non_null_watermark(runs, stream) do

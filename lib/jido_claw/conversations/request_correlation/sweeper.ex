@@ -53,7 +53,11 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Sweeper do
 
   defp sweep do
     RequestCorrelation.sweep_expired()
+    # Background sweeper GenServer — any sweep failure must reschedule
+    # cleanly so the next tick can drain. Crashing here would stall the
+    # entire correlation expiry pipeline.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[RequestCorrelation.Sweeper] sweep raised: #{Exception.message(e)}")
       {:ok, 0}

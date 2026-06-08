@@ -103,7 +103,9 @@ defmodule JidoClaw.Heartbeat do
 
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, content)
+    # heartbeat is a status-file observability sidecar; never crash the tick loop
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[Heartbeat] Failed to write: #{Exception.message(e)}")
   end

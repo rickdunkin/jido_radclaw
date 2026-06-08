@@ -1,4 +1,7 @@
 defmodule JidoClaw.Memory.HybridSearchSql do
+  # The {next, params, sql} map is this module's internal SQL-fragment-builder
+  # accumulator, never crossing a module boundary.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   Hybrid retrieval for `Memory.Fact` over three CTE pools:
 

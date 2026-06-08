@@ -147,7 +147,10 @@ defmodule JidoClaw.Reasoning.AutoSelect do
       task_type,
       Keyword.merge([execution_kind: :strategy_run], query_opts)
     )
+
+    # history is an optional heuristic input; a DB fault must not block selection
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> []
   catch
     :exit, _ -> []

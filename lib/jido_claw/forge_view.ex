@@ -136,6 +136,10 @@ defmodule JidoClaw.ForgeView do
     Manager.list_sessions()
     |> MapSet.new()
   rescue
+    # Read-only projection: a Manager GenServer hiccup must not crash the
+    # ForgeView assembly. Paired with `catch :exit, _` for non-existent
+    # Manager process (e.g. during early boot or tests).
+    # reach:disable-next-line bare_rescue
     _ -> MapSet.new()
   catch
     :exit, _ -> MapSet.new()

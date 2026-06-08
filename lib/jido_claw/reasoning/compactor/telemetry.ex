@@ -60,7 +60,9 @@ defmodule JidoClaw.Reasoning.Compactor.Telemetry do
     result =
       try do
         fun.()
+        # emit terminal :error event before reraising so the trace lifecycle stays complete
       rescue
+        # reach:disable-next-line bare_rescue
         e ->
           Logger.debug("[Compactor.Telemetry] compaction #{name} raised: #{Exception.message(e)}")
           duration_ms = elapsed_ms(started_mono)

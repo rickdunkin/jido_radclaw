@@ -30,6 +30,18 @@ defmodule JidoClaw.Memory.Consolidator do
   require Logger
   require Ash.Query
 
+  # Ash CRUD + Postgrex faults the workspace/session Ash reads can hit;
+  # narrowing keeps unexpected bugs surfacing instead of silently swallowed.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Conversations.Session, as: ConversationSession
   alias JidoClaw.Memory.Consolidator.RunServer
   alias JidoClaw.Memory.Scope
@@ -95,7 +107,11 @@ defmodule JidoClaw.Memory.Consolidator do
     |> Stream.run()
 
     :ok
+
+    # Periodic cron entry point — must always return :ok so the system
+    # cron worker doesn't crash-loop on a transient subsystem fault.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[Consolidator.tick] failed: #{inspect(e)}")
       :ok
@@ -152,7 +168,9 @@ defmodule JidoClaw.Memory.Consolidator do
     |> Enum.uniq_by(fn s -> {s.tenant_id, s.scope_kind, Scope.primary_fk(s)} end)
     |> Enum.take(max_candidates)
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   end
 
   defp read_workspaces do
@@ -237,6 +255,8 @@ defmodule JidoClaw.Memory.Consolidator do
       }
     end)
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   end
 end

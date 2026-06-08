@@ -539,7 +539,10 @@ defmodule JidoClaw.Trace.Collector do
       {:ok, %{tenant_id: tid}} when is_binary(tid) and tid != "" -> tid
       _ -> nil
     end
+
+    # tenant lookup is best-effort attribution; any DB fault means "no tenant"
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> nil
   catch
     :exit, _ -> nil

@@ -256,7 +256,11 @@ defmodule JidoClaw.Embeddings.RatePacer do
         "DELETE FROM embedding_dispatch_window WHERE window_started_at < now() - ($1 || ' seconds')::interval",
         [Integer.to_string(cutoff)]
       )
+
+      # GenServer handle_info background GC tick — never let a stale
+      # connection / Postgrex fault tear down the rate pacer.
     rescue
+      # reach:disable-next-line bare_rescue
       _ -> :ok
     end
 

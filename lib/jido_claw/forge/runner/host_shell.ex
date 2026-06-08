@@ -8,6 +8,12 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   `JidoClaw.Forge.Sandbox.Docker` when Forge execution needs a real sandbox.
   """
 
+  # Runner backend boundary: every bare rescue wraps a `System.cmd`/`Port`
+  # call and must always return the Behaviour-required `{output, status}`
+  # tuple so the caller (Forge runner) gets a well-formed result regardless
+  # of what posix/erlang error the host shell throws.
+  # reach:disable-for-this-file bare_rescue
+
   use Agent
 
   @behaviour JidoClaw.Forge.Sandbox.Behaviour

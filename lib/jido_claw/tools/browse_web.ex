@@ -53,11 +53,15 @@ defmodule JidoClaw.Tools.BrowseWeb do
       {:error, reason} ->
         degraded_error(reason)
     end
+
+    # Tool entry point: browser-driver faults (missing binary, runtime crash)
+    # surface as `{:error, _}` to the LLM rather than escape as exceptions.
   rescue
     e in UndefinedFunctionError ->
       {:error,
        "browser not available: #{Exception.message(e)}. Install the browser driver with: mix jido_browser.install vibium"}
 
+    # reach:disable-next-line bare_rescue
     e ->
       {:error, "browser error: #{Exception.message(e)}"}
   end

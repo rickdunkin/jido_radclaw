@@ -951,7 +951,9 @@ defmodule JidoClaw.Memory.Fact do
     worker = JidoClaw.Embeddings.BackfillWorker
     if Process.whereis(worker), do: send(worker, {:hint_pending_memory_fact, id})
     :ok
+    # Best-effort worker hint — never break the caller's write path.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> :ok
   end
 end

@@ -3,6 +3,11 @@ defmodule JidoClaw.CLI.Repl do
   The main REPL loop: reads input, routes to agent or commands, displays output.
   """
 
+  # CLI top-level loop: every rescue here is a deliberate "never crash the REPL"
+  # boundary — fetch/poll/persistence faults degrade to nil/error/{nil,nil,nil}
+  # so the user sees a warning, not a stack trace.
+  # reach:disable-for-this-file bare_rescue
+
   alias JidoClaw.{Agent, AgentTracker, Config, Display, Session.Worker, Startup, Stats}
   alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Authorization.Actor

@@ -61,7 +61,8 @@ defmodule JidoClaw.SwarmView do
   """
   @spec list(map() | keyword()) :: {:ok, t()} | {:error, :tenant_required}
   def list(scope_or_opts) do
-    with {:ok, opts} <- JidoClaw.RuntimeScope.require_tenant(scope_or_opts, scope_keys()) do
+    with {:ok, opts} <-
+           JidoClaw.RuntimeScope.require_tenant(scope_or_opts, AgentTracker.scope_keys()) do
       {:ok, build(opts)}
     end
   end
@@ -71,7 +72,7 @@ defmodule JidoClaw.SwarmView do
   """
   @spec snapshot(String.t(), map() | keyword()) :: {:ok, agent()} | {:error, atom()}
   def snapshot(agent_id, scope_or_opts) when is_binary(agent_id) do
-    case JidoClaw.RuntimeScope.require_tenant(scope_or_opts, scope_keys()) do
+    case JidoClaw.RuntimeScope.require_tenant(scope_or_opts, AgentTracker.scope_keys()) do
       {:ok, opts} ->
         case tracker().get_agent(agent_id, opts) do
           nil -> {:error, :not_found}
@@ -151,8 +152,6 @@ defmodule JidoClaw.SwarmView do
   defp tool_names(%MapSet{} = set), do: set |> MapSet.to_list() |> Enum.sort()
   defp tool_names(list) when is_list(list), do: Enum.sort(list)
   defp tool_names(_), do: []
-
-  defp scope_keys, do: AgentTracker.scope_keys()
 
   defp tracker do
     Application.get_env(:jido_claw, :agent_tracker, AgentTracker)

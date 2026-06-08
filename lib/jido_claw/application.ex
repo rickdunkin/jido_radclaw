@@ -1,4 +1,7 @@
 defmodule JidoClaw.Application do
+  # The {id, start, restart, type} maps are OTP child_spec descriptors, an
+  # enforced framework contract rather than incidental domain duplication.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   OTP `Application` callback for JidoClaw.
 

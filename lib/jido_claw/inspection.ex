@@ -16,6 +16,12 @@ defmodule JidoClaw.Inspection do
   bad target shape).
   """
 
+  # Read-only introspection view: every rescue is the documented
+  # "raise becomes nil" contract above — partial data is preferred to
+  # a crashed inspector. Narrowing would couple the view to every
+  # subsystem's exception surface.
+  # reach:disable-for-this-file bare_rescue
+
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Prompt, as: AgentPrompt
   alias JidoClaw.Agent.Templates

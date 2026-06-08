@@ -65,6 +65,10 @@ defmodule JidoClaw.Startup do
     e in File.Error ->
       {:error, {step, %{reason: e.reason, path: e.path, action: e.action}}}
 
+    # Boot-path catch-all: a bang-op bootstrap step (JidoMd/Prompt/Skills)
+    # raising anything other than File.Error must still surface as a
+    # uniform `{:error, {step, reason}}` to every entry point.
+    # reach:disable-next-line bare_rescue
     e ->
       {:error, {step, Exception.message(e)}}
   end

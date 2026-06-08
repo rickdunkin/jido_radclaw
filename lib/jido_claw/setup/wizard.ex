@@ -1,6 +1,10 @@
 defmodule JidoClaw.Setup.Wizard do
   @moduledoc false
 
+  # Setup-wizard probes must never crash — they paint a status table for the
+  # user; any DB/driver fault means "not connected".
+  # reach:disable-for-this-file bare_rescue
+
   alias Ecto.Adapters.SQL
   alias JidoClaw.Setup.CredentialValidator
   alias JidoClaw.Setup.PrerequisiteChecker

@@ -80,7 +80,11 @@ defmodule JidoClaw.Workflows.StepAction do
 
         record_step_terminal(tool_context, request_id, result)
         result
+        # Workflow step entry: a spawned sub-agent's fault must record a
+        # terminal `:system` row and surface as `{:error, _}` to the workflow
+        # runner — never escape and kill the parent.
       rescue
+        # reach:disable-next-line bare_rescue
         e ->
           SubagentTranscript.record_terminal(
             tool_context,

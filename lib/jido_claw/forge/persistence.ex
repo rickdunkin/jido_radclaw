@@ -3,6 +3,18 @@ defmodule JidoClaw.Forge.Persistence do
   require Logger
   require Ash.Query
 
+  # Ash CRUD + Postgrex faults this best-effort persistence layer can hit;
+  # rescues narrow to these so an unexpected error (a real bug) surfaces
+  # instead of being logged-and-swallowed.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias Ash.Query
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
@@ -37,7 +49,9 @@ defmodule JidoClaw.Forge.Persistence do
               nil
           end
         rescue
-          e -> Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
+          e in @db_errors ->
+            # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+            Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
         end
       else
         {:error, reason} ->
@@ -73,7 +87,8 @@ defmodule JidoClaw.Forge.Persistence do
   def claim_session(session_id, spec, opts \\ []) do
     if enabled?(), do: do_claim_session(session_id, spec, opts), else: :ok
   rescue
-    e ->
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
       Logger.warning("[Forge.Persistence] claim_session failed: #{inspect(e)}")
       {:error, :already_claimed}
   end
@@ -180,7 +195,9 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to record execution: #{inspect(e)}")
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to record execution: #{inspect(e)}")
       end
     end
   end
@@ -239,7 +256,9 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to log event: #{inspect(e)}")
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to log event: #{inspect(e)}")
       end
     end
   end
@@ -263,7 +282,9 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to update session phase: #{inspect(e)}")
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to update session phase: #{inspect(e)}")
       end
     end
   end
@@ -287,7 +308,9 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to record sandbox_id: #{inspect(e)}")
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to record sandbox_id: #{inspect(e)}")
       end
     end
   end
@@ -315,7 +338,9 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e -> Logger.warning("[Forge.Persistence] Failed to save checkpoint: #{inspect(e)}")
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to save checkpoint: #{inspect(e)}")
       end
     end
   end
@@ -390,7 +415,8 @@ defmodule JidoClaw.Forge.Persistence do
           []
         end
       rescue
-        e ->
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
           Logger.warning("[Forge.Persistence] Failed to get events: #{inspect(e)}")
           []
       end
@@ -579,7 +605,7 @@ defmodule JidoClaw.Forge.Persistence do
         nil
     end
   rescue
-    _ -> nil
+    _ in @db_errors -> nil
   end
 
   defp iteration_error?(%{event_type: "iteration.completed", data: data}) do

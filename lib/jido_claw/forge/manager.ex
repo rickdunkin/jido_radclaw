@@ -3,6 +3,19 @@ defmodule JidoClaw.Forge.Manager do
   use GenServer
   require Logger
 
+  # Ash CRUD + Postgrex faults `recoverable?/1` can hit while consulting the
+  # session phase / latest checkpoint; narrowed so a real bug surfaces
+  # instead of silently treating every session as unrecoverable.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   alias JidoClaw.Forge.Persistence
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
 
@@ -231,7 +244,9 @@ defmodule JidoClaw.Forge.Manager do
       checkpoint != nil &&
       db_session.phase in [:running, :ready, :needs_input, :resuming, :failed]
   rescue
-    _ -> false
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      false
   end
 
   defp cluster_session_exists?(session_id) do

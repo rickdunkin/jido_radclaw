@@ -142,7 +142,11 @@ defmodule Anubis.Server.Handlers.Tools do
       message = Schema.format_errors(errors)
       {:error, Error.protocol(:invalid_params, %{message: message}), frame}
     end
+
+    # Peri can raise any of FunctionClauseError/KeyError/ArgumentError on a
+    # JSON-Schema-shaped descriptor; bypass to Jido.Exec's own validation.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> {:ok, params}
   end
 

@@ -4,6 +4,12 @@ defmodule JidoClaw.Config do
   Supports multiple LLM providers: Ollama (local/cloud), Anthropic, OpenAI, Google, Groq, xAI.
   """
 
+  # Reachability/metadata reads with a default fallback — any raise from
+  # `:httpc`, LLMDB, or YAML parsing collapses to `{:error, :unreachable}` /
+  # `{:error, :llm_db_unavailable}` so a misconfigured provider never
+  # crashes boot or the setup wizard.
+  # reach:disable-for-this-file bare_rescue
+
   @providers %{
     "ollama" => %{
       "base_url" => "http://localhost:11434",

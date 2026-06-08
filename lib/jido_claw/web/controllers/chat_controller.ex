@@ -1,4 +1,7 @@
 defmodule JidoClaw.Web.ChatController do
+  # The {id, object, created, choices} map is the OpenAI-compatible response
+  # shape — an external API contract, fixed by the spec.
+  # reach:disable-for-this-file fixed_shape_map
   use Phoenix.Controller, formats: [:json]
   require Logger
 

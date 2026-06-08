@@ -21,6 +21,12 @@ defmodule JidoClaw.Tools.MCPScope do
   to distinguish callers.
   """
 
+  # MCP boundary: wrap/append/fetch/reresolve all use deliberate catch-alls —
+  # one path reraises after recording an error envelope; the rest swallow to
+  # `:error`/`:ok` so an Ash/DB fault on the durable transcript never crashes
+  # the wrapped tool's `run/2`.
+  # reach:disable-for-this-file bare_rescue
+
   require Logger
 
   alias JidoClaw.Authorization.Actor

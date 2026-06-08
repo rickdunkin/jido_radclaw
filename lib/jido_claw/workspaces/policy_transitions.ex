@@ -39,6 +39,9 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
 
     Repo.transaction(fn ->
       Enum.each(@embedding_tables, fn table ->
+        # table is a compile-time constant from @embedding_tables; the only
+        # user value (workspace_uuid) is $1-bound — not an injection vector.
+        # reach:disable-next-line ecto_interpolated_repo_query
         Repo.query!(
           """
           UPDATE #{table}
@@ -53,6 +56,9 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
         )
 
         if purge? do
+          # table is a compile-time constant from @embedding_tables; the only
+          # user value (workspace_uuid) is $1-bound — not an injection vector.
+          # reach:disable-next-line ecto_interpolated_repo_query
           Repo.query!(
             """
             UPDATE #{table}
@@ -77,6 +83,9 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
 
     Repo.transaction(fn ->
       Enum.each(@embedding_tables, fn table ->
+        # table is a compile-time constant from @embedding_tables; the only
+        # user value (workspace_uuid) is $1-bound — not an injection vector.
+        # reach:disable-next-line ecto_interpolated_repo_query
         Repo.query!(
           """
           UPDATE #{table}

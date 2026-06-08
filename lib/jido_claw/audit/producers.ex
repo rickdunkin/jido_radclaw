@@ -13,7 +13,11 @@ defmodule JidoClaw.Audit.Producers do
   event_kind at once.
   """
 
+  # audit after_action writes must never fail the producer transaction
+  # reach:disable-for-this-file bare_rescue
+
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
 
   defmodule MemoryWrite do
     @moduledoc false
@@ -33,15 +37,17 @@ defmodule JidoClaw.Audit.Producers do
 
           actor_id = field(result, :written_by) || field(result, :written_by_user_id)
 
-          AsyncWriter.sync(%{
-            tenant_id: tenant_id,
-            event_kind: event_kind,
-            actor_kind: actor_kind,
-            actor_id: actor_id && to_string(actor_id),
-            target_kind: target_kind,
-            target_id: result.id && to_string(result.id),
-            payload: build_payload(result)
-          })
+          AsyncWriter.sync(
+            EventAttrs.new(
+              tenant_id: tenant_id,
+              event_kind: event_kind,
+              actor_kind: actor_kind,
+              actor_id: actor_id && to_string(actor_id),
+              target_kind: target_kind,
+              target_id: result.id && to_string(result.id),
+              payload: build_payload(result)
+            )
+          )
         rescue
           _ -> :ok
         end
@@ -95,21 +101,23 @@ defmodule JidoClaw.Audit.Producers do
           tenant_id = cs.tenant || Map.get(result, :tenant_id)
 
           if Map.get(result, :status) in [:succeeded, :failed, :skipped] do
-            AsyncWriter.sync(%{
-              tenant_id: tenant_id,
-              event_kind: :memory_consolidation,
-              actor_kind: :system,
-              actor_id: "consolidator",
-              target_kind: :memory_consolidation_run,
-              target_id: result.id && to_string(result.id),
-              payload: %{
-                status: result.status,
-                scope_kind: result.scope_kind,
-                facts_added: result.facts_added,
-                blocks_written: result.blocks_written,
-                links_added: result.links_added
-              }
-            })
+            AsyncWriter.sync(
+              EventAttrs.new(
+                tenant_id: tenant_id,
+                event_kind: :memory_consolidation,
+                actor_kind: :system,
+                actor_id: "consolidator",
+                target_kind: :memory_consolidation_run,
+                target_id: result.id && to_string(result.id),
+                payload: %{
+                  status: result.status,
+                  scope_kind: result.scope_kind,
+                  facts_added: result.facts_added,
+                  blocks_written: result.blocks_written,
+                  links_added: result.links_added
+                }
+              )
+            )
           end
         rescue
           _ -> :ok
@@ -131,21 +139,23 @@ defmodule JidoClaw.Audit.Producers do
           if Map.get(result, :sharing) in [:shared, :public] do
             tenant_id = cs.tenant || Map.get(result, :tenant_id)
 
-            AsyncWriter.sync(%{
-              tenant_id: tenant_id,
-              event_kind: :solution_share,
-              actor_kind: :agent,
-              actor_id: result.agent_id,
-              target_kind: :solution,
-              target_id: result.id && to_string(result.id),
-              payload: %{
-                problem_signature: result.problem_signature,
-                sharing: result.sharing,
-                language: result.language,
-                framework: result.framework,
-                workspace_id: result.workspace_id && to_string(result.workspace_id)
-              }
-            })
+            AsyncWriter.sync(
+              EventAttrs.new(
+                tenant_id: tenant_id,
+                event_kind: :solution_share,
+                actor_kind: :agent,
+                actor_id: result.agent_id,
+                target_kind: :solution,
+                target_id: result.id && to_string(result.id),
+                payload: %{
+                  problem_signature: result.problem_signature,
+                  sharing: result.sharing,
+                  language: result.language,
+                  framework: result.framework,
+                  workspace_id: result.workspace_id && to_string(result.workspace_id)
+                }
+              )
+            )
           end
         rescue
           _ -> :ok
@@ -166,19 +176,21 @@ defmodule JidoClaw.Audit.Producers do
         try do
           tenant_id = cs.tenant || Map.get(result, :tenant_id)
 
-          AsyncWriter.sync(%{
-            tenant_id: tenant_id,
-            event_kind: :session_start,
-            actor_kind: :system,
-            actor_id: result.user_id && to_string(result.user_id),
-            target_kind: :session,
-            target_id: result.id && to_string(result.id),
-            payload: %{
-              kind: result.kind,
-              workspace_id: result.workspace_id && to_string(result.workspace_id),
-              external_id: result.external_id
-            }
-          })
+          AsyncWriter.sync(
+            EventAttrs.new(
+              tenant_id: tenant_id,
+              event_kind: :session_start,
+              actor_kind: :system,
+              actor_id: result.user_id && to_string(result.user_id),
+              target_kind: :session,
+              target_id: result.id && to_string(result.id),
+              payload: %{
+                kind: result.kind,
+                workspace_id: result.workspace_id && to_string(result.workspace_id),
+                external_id: result.external_id
+              }
+            )
+          )
         rescue
           _ -> :ok
         end
@@ -198,18 +210,20 @@ defmodule JidoClaw.Audit.Producers do
         try do
           tenant_id = cs.tenant || Map.get(result, :tenant_id)
 
-          AsyncWriter.sync(%{
-            tenant_id: tenant_id,
-            event_kind: :session_end,
-            actor_kind: :system,
-            actor_id: result.user_id && to_string(result.user_id),
-            target_kind: :session,
-            target_id: result.id && to_string(result.id),
-            payload: %{
-              kind: result.kind,
-              workspace_id: result.workspace_id && to_string(result.workspace_id)
-            }
-          })
+          AsyncWriter.sync(
+            EventAttrs.new(
+              tenant_id: tenant_id,
+              event_kind: :session_end,
+              actor_kind: :system,
+              actor_id: result.user_id && to_string(result.user_id),
+              target_kind: :session,
+              target_id: result.id && to_string(result.id),
+              payload: %{
+                kind: result.kind,
+                workspace_id: result.workspace_id && to_string(result.workspace_id)
+              }
+            )
+          )
         rescue
           _ -> :ok
         end

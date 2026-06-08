@@ -1,4 +1,7 @@
 defmodule JidoClaw.Conversations.TranscriptEnvelope do
+  # The {status, value, error, effects, raw_inspect} map is this module's
+  # internal normalized-envelope shape (defined and consumed here only).
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   JSON-safe normalizer for tool result tuples and arbitrary metadata.
 

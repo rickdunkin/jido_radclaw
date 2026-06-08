@@ -61,7 +61,9 @@ defmodule JidoClaw.AgentServerPlugin.Recorder do
 
   defp publish(signal) do
     Bus.publish(JidoClaw.SignalBus, [signal])
+    # a bus crash here must not stall the agent's signal processing pipeline
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[Recorder.Plugin] publish raised: #{Exception.message(e)}")
       :error

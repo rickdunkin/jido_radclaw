@@ -3,6 +3,7 @@ defmodule JidoClaw.Web.AuthController do
   import AshAuthentication.Plug.Helpers
 
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
 
   def sign_in(conn, %{"email" => email, "password" => password}) do
     strategy = AshAuthentication.Info.strategy!(JidoClaw.Accounts.User, :password)
@@ -40,15 +41,17 @@ defmodule JidoClaw.Web.AuthController do
   end
 
   defp emit_auth_event(kind, actor_id, payload) do
-    AsyncWriter.cast(%{
-      tenant_id: tenant_for_auth(),
-      event_kind: :auth_event,
-      actor_kind: if(actor_id, do: :user, else: :system),
-      actor_id: actor_id,
-      target_kind: :auth,
-      target_id: Atom.to_string(kind),
-      payload: payload
-    })
+    AsyncWriter.cast(
+      EventAttrs.new(
+        tenant_id: tenant_for_auth(),
+        event_kind: :auth_event,
+        actor_kind: if(actor_id, do: :user, else: :system),
+        actor_id: actor_id,
+        target_kind: :auth,
+        target_id: Atom.to_string(kind),
+        payload: payload
+      )
+    )
   end
 
   # Auth events are emitted under the "default" tenant since users are

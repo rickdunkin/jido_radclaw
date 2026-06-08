@@ -22,6 +22,10 @@ defmodule JidoClaw.Reasoning.Telemetry do
   :strategy`.
   """
 
+  # reasoning telemetry/persistence is best-effort; strategy execution must
+  # never be disrupted by an emit/write fault
+  # reach:disable-for-this-file bare_rescue
+
   require Logger
 
   alias JidoClaw.Core.MapKeys

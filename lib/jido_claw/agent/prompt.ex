@@ -18,6 +18,18 @@ defmodule JidoClaw.Agent.Prompt do
 
   require Logger
 
+  # Ash CRUD + Postgrex faults the Block tier read can hit; narrowed so a
+  # real bug surfaces instead of silently producing an empty Block tier.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   # Embed the default system prompt at compile time so the escript/binary is self-contained
   @priv_prompt Path.join([__DIR__, "..", "..", "..", "priv", "defaults", "system_prompt.md"])
   @external_resource @priv_prompt
@@ -319,7 +331,9 @@ defmodule JidoClaw.Agent.Prompt do
   defp render_block_tier(scope) do
     JidoClaw.Memory.list_blocks_for_scope_chain(scope)
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   catch
     :exit, _ -> []
   end
@@ -413,6 +427,9 @@ defmodule JidoClaw.Agent.Prompt do
       project_dir: project_dir
     })
   rescue
+    # Best-effort signal emit: a SignalBus hiccup must not crash sync/1.
+    # Paired with `catch :exit, _` for non-existent bus GenServer.
+    # reach:disable-next-line bare_rescue
     _ -> :ok
   catch
     :exit, _ -> :ok
@@ -434,6 +451,9 @@ defmodule JidoClaw.Agent.Prompt do
   defp load_skills(_project_dir) do
     JidoClaw.Skills.all()
   rescue
+    # Best-effort prompt assembly: a Skills GenServer hiccup must not crash
+    # build/1. Paired with `catch :exit, _` for non-existent skills server.
+    # reach:disable-next-line bare_rescue
     _ -> []
   catch
     :exit, _ -> []

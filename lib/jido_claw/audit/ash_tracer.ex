@@ -21,6 +21,7 @@ defmodule JidoClaw.Audit.AshTracer do
 
   alias JidoClaw.Audit.ActorClassifier
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
   alias JidoClaw.Core.MapKeys
 
   @process_key :jido_claw_audit_tracer_metadata
@@ -93,7 +94,10 @@ defmodule JidoClaw.Audit.AshTracer do
     else
       :ok
     end
+
+    # tracer callback must never raise back into Ash's action pipeline
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> :ok
   end
 
@@ -127,15 +131,17 @@ defmodule JidoClaw.Audit.AshTracer do
       tenant_id ->
         {actor_kind, actor_id} = ActorClassifier.classify(metadata[:actor])
 
-        AsyncWriter.cast(%{
-          tenant_id: tenant_id,
-          event_kind: :policy_denied,
-          actor_kind: actor_kind,
-          actor_id: actor_id,
-          target_kind: target_kind_for(metadata[:resource]),
-          target_id: nil,
-          payload: build_payload(metadata, error)
-        })
+        AsyncWriter.cast(
+          EventAttrs.new(
+            tenant_id: tenant_id,
+            event_kind: :policy_denied,
+            actor_kind: actor_kind,
+            actor_id: actor_id,
+            target_kind: target_kind_for(metadata[:resource]),
+            target_id: nil,
+            payload: build_payload(metadata, error)
+          )
+        )
     end
   end
 

@@ -107,7 +107,11 @@ defmodule JidoClaw.Conversations.Resolver do
       _ ->
         {:ok, s}
     end
+
+    # Best-effort snapshot persistence — an unhealthy Memory/Prompt subsystem
+    # must never block session creation, so swallow + log + return the session.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[Conversations.Resolver] snapshot persistence raised: #{inspect(e)}")
       {:ok, s}

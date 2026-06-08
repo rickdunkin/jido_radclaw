@@ -281,7 +281,12 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
       :default ->
         embed_via_voyage(kind, id, content)
     end
+
+    # Supervised dispatch under Task.async_stream / Task.Supervisor — any
+    # external Voyage / Repo / policy failure must be logged-and-swallowed
+    # so a single bad row never poisons the rest of the batch.
   rescue
+    # reach:disable-next-line bare_rescue
     err ->
       Logger.warning("[BackfillWorker] dispatch crashed: #{inspect(err)}")
       :ok
@@ -319,6 +324,9 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   defp on_success(kind, id, vector) do
     {^kind, table, _} = lookup_resource!(kind)
 
+    # table comes from lookup_resource!/1 → the @resources allowlist; all user
+    # data is $N-bound, so the table interpolation is not injectable.
+    # reach:disable-next-line ecto_interpolated_repo_query
     Repo.query!(
       """
       UPDATE #{table}
@@ -364,6 +372,9 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   defp reschedule_without_attempt(kind, id, retry_after, err_str) do
     {^kind, table, _} = lookup_resource!(kind)
 
+    # table comes from lookup_resource!/1 → the @resources allowlist; all user
+    # data is $N-bound, so the table interpolation is not injectable.
+    # reach:disable-next-line ecto_interpolated_repo_query
     Repo.query!(
       """
       UPDATE #{table}
@@ -381,6 +392,9 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   defp backoff_failure(kind, id, err_str) do
     {^kind, table, _} = lookup_resource!(kind)
 
+    # table comes from lookup_resource!/1 → the @resources allowlist; all user
+    # data is $N-bound, so the table interpolation is not injectable.
+    # reach:disable-next-line ecto_interpolated_repo_query
     Repo.query!(
       """
       UPDATE #{table}

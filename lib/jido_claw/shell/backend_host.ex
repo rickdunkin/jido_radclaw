@@ -136,7 +136,11 @@ defmodule JidoClaw.Shell.BackendHost do
 
     result = collect_port_output(port, session_pid, timeout, output_limit, 0)
     send(session_pid, {:command_finished, result})
+    # Backend task contract: always send `:command_finished` so the caller
+    # never deadlocks. Port.open / port mailbox faults are normalized into
+    # `{:error, msg}` instead of crashing the supervised task silently.
   rescue
+    # reach:disable-next-line bare_rescue
     error ->
       send(session_pid, {:command_finished, {:error, Exception.message(error)}})
   end

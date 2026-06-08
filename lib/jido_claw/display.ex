@@ -651,7 +651,10 @@ defmodule JidoClaw.Display do
 
   defp error_message(%_{} = err) do
     Exception.message(err)
+    # Defensive helper: a foreign exception's `message/1` callback can itself
+    # raise; fall back to `inspect/1` so the streaming-shell renderer stays up.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> inspect(err)
   end
 

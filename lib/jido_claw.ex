@@ -264,7 +264,10 @@ defmodule JidoClaw do
     )
 
     handle_response(response, tenant_id, session_id, request_id)
+    # Public API turn entry — any unexpected fault is normalized to {:error, _}
+    # so callers never see an exception escape.
   rescue
+    # reach:disable-next-line bare_rescue
     e -> {:error, Exception.message(e)}
   catch
     :exit, reason -> {:error, inspect(reason)}
@@ -422,7 +425,10 @@ defmodule JidoClaw do
   """
   def history(tenant_id, session_id) do
     SessionWorker.get_messages(tenant_id, session_id)
+    # Public read API — degrade to `[]` rather than crash the caller when the
+    # worker is dead/unreachable.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> []
   end
 
@@ -475,7 +481,11 @@ defmodule JidoClaw do
       |> Enum.filter(&(&1.role in [:user, :assistant, :system]))
       |> Enum.map(&cold_view/1)
     end
+
+    # Public cold-cache read API — any fault from resolver/Ash/Repo is normalized
+    # to `{:error, _}` so callers never see an exception escape.
   rescue
+    # reach:disable-next-line bare_rescue
     e -> {:error, Exception.message(e)}
   end
 
@@ -539,7 +549,11 @@ defmodule JidoClaw do
     else
       :ok
     end
+
+    # Public reset API — registry clear is done; durable mirror update is
+    # best-effort, so DB/Ash faults swallow to :ok.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> :ok
   end
 

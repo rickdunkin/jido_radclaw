@@ -149,7 +149,10 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
 
   defp run_backend(backend, prompt, backend_opts) do
     {:ok, backend.summarize(prompt, backend_opts)}
+    # supervised task body converts any backend fault to a tagged tuple so
+    # the parent finalize/4 can produce a structured ExecutionError
   rescue
+    # reach:disable-next-line bare_rescue
     e -> {:exception, e, __STACKTRACE__}
   catch
     :exit, reason -> {:exit, reason}

@@ -640,7 +640,9 @@ defmodule JidoClaw.Solutions.Solution do
       try do
         if Process.whereis(worker), do: send(worker, {:hint_pending, id})
         :ok
+        # Best-effort worker hint — never break the caller's write path.
       rescue
+        # reach:disable-next-line bare_rescue
         _ -> :ok
       end
     end

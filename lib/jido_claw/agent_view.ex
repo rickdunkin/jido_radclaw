@@ -43,6 +43,19 @@ defmodule JidoClaw.AgentView do
   alias JidoClaw.Trace
   alias JidoClaw.Trace.Event
 
+  # Ash CRUD + Postgrex faults the cold-read paths can hit; narrowed so a
+  # genuine bug surfaces instead of being swallowed as "session not found"
+  # or an empty projection.
+  @db_errors [
+    Ash.Error.Invalid,
+    Ash.Error.Unknown,
+    Ash.Error.Forbidden,
+    Ash.Error.Query.NotFound,
+    DBConnection.ConnectionError,
+    DBConnection.OwnershipError,
+    Postgrex.Error
+  ]
+
   @default_events_categories [:request, :model, :tool, :output, :handoff, :reasoning]
   @default_events_limit 100
   @default_messages_limit 50
@@ -270,7 +283,9 @@ defmodule JidoClaw.AgentView do
         {:error, :session_not_found}
     end
   rescue
-    _ -> {:error, :session_not_found}
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      {:error, :session_not_found}
   end
 
   defp workspace_id_from(%ConversationsSession{workspace_id: id}), do: id
@@ -417,6 +432,9 @@ defmodule JidoClaw.AgentView do
       {:error, _} -> nil
     end
   rescue
+    # Read-only projection: a Trace lookup hiccup must not crash the
+    # snapshot. Paired with `catch :exit, _` for non-existent target pids.
+    # reach:disable-next-line bare_rescue
     _ -> nil
   catch
     :exit, _ -> nil
@@ -476,7 +494,9 @@ defmodule JidoClaw.AgentView do
         []
     end
   rescue
-    _ -> []
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      []
   end
 
   defp cold_message_view(%{role: role, content: content, inserted_at: inserted_at}) do
@@ -507,7 +527,9 @@ defmodule JidoClaw.AgentView do
       _ -> 0
     end
   rescue
-    _ -> 0
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      0
   end
 
   defp derive_status(trace, owner, worker_info) do
@@ -586,6 +608,9 @@ defmodule JidoClaw.AgentView do
       _ -> nil
     end
   rescue
+    # Read-only projection: compaction storage hiccup must not crash the
+    # snapshot. Paired with `catch :exit, _` for storage-GenServer non-exists.
+    # reach:disable-next-line bare_rescue
     _ -> nil
   catch
     :exit, _ -> nil

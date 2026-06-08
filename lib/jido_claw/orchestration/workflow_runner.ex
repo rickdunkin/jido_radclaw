@@ -42,6 +42,11 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   `{:ok, _}` — never against a row still `:running`.
   """
 
+  # `run/1` is contractually `:ok | {:error, term()}`; every rescue here
+  # normalizes a driver/executor raise into the error tuple. Narrowing
+  # would require enumerating the open set of skill-driver exceptions.
+  # reach:disable-for-this-file bare_rescue
+
   require Logger
 
   alias JidoClaw.Authorization.Actor

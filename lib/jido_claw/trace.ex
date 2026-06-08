@@ -270,7 +270,9 @@ defmodule JidoClaw.Trace do
 
   defp agent_server_state(target) do
     Jido.AgentServer.state(target)
+    # trace-target lookup is best-effort; any AgentServer fault means "no trace"
   rescue
+    # reach:disable-next-line bare_rescue
     _error -> {:error, :not_found}
   catch
     :exit, _reason -> {:error, :not_found}

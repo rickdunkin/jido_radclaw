@@ -103,7 +103,10 @@ defmodule JidoClaw.Trace.Persistence do
       {:error, reason} ->
         Logger.warning("[Trace.Persistence] run upsert failed: #{inspect(reason)}")
     end
+
+    # trace persistence write must never crash the serialized writer GenServer
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       Logger.warning("[Trace.Persistence] persistence raised: #{Exception.message(e)}")
   end

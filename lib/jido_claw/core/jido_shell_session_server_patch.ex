@@ -39,6 +39,11 @@ defmodule Jido.Shell.ShellSessionServer do
   transport subscriptions for streaming command output.
   """
 
+  # Runtime patch of an upstream GenServer: every `safe_backend_*` helper
+  # must convert any backend raise/throw into an error tuple, otherwise
+  # a buggy backend would crash the shell-session process supervisor.
+  # reach:disable-for-this-file bare_rescue
+
   use GenServer
 
   alias Jido.Shell.Error

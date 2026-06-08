@@ -289,7 +289,12 @@ defmodule JidoClaw.VFS.Workspace do
         log_mount_warning(path, adapter, reason)
         :ok
     end
+
+    # Fail-soft mount per @moduledoc: any `jido_vfs` adapter (e.g. Git) can
+    # raise from `configure/1`; we log and continue so one bad mount doesn't
+    # block the workspace from coming up.
   rescue
+    # reach:disable-next-line bare_rescue
     e ->
       log_mount_warning(path, adapter, Exception.message(e))
       :ok

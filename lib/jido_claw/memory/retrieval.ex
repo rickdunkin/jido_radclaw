@@ -138,7 +138,11 @@ defmodule JidoClaw.Memory.Retrieval do
       {:ok, vec} -> vec
       _ -> nil
     end
+
+    # External embedding API — any HTTP/JSON/transport failure must fall
+    # back to FTS+lexical, never tear down the surrounding search call.
   rescue
+    # reach:disable-next-line bare_rescue
     _ -> nil
   end
 

@@ -38,6 +38,12 @@ defmodule JidoClaw.Cron.NextRun do
   skipped time.
   """
 
+  # Crontab is a partial function at this boundary (raises on `@reboot`,
+  # malformed fields, unsatisfiable expressions). The rescues are the
+  # documented "library raise → tagged error" funnel; the worker treats
+  # the tag as a permanent config error and disables the job.
+  # reach:disable-for-this-file bare_rescue
+
   alias Crontab.CronExpression
   alias Crontab.CronExpression.Parser
   alias Crontab.Scheduler

@@ -1,4 +1,14 @@
 defmodule JidoClaw.Forge.Harness do
+  # The {client, sandbox_id, spec} map is this module's internal runner-state
+  # shape, threaded between harness callbacks — not cross-module domain data.
+  # reach:disable-for-this-file fixed_shape_map
+  #
+  # GenServer harness boundary: every bare rescue here wraps best-effort
+  # cleanup (sandbox destroy in detach_sandbox / safe_destroy_sandbox) or
+  # the persistence side-channel (persist/1). A typed rescue would let an
+  # unrelated process crash propagate up and kill the live Forge session
+  # — that is exactly the failure mode this harness exists to prevent.
+  # reach:disable-for-this-file bare_rescue
   @moduledoc false
   use GenServer, restart: :temporary
   require Logger

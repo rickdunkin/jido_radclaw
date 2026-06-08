@@ -14,11 +14,15 @@ defmodule JidoClaw.Audit.SignalListener do
   latency doesn't gate the request.
   """
 
+  # audit/telemetry signal handling must never crash the listener
+  # reach:disable-for-this-file bare_rescue
+
   use GenServer
   require Logger
 
   alias Jido.Signal.Bus
   alias JidoClaw.Audit.AsyncWriter
+  alias JidoClaw.Audit.EventAttrs
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Conversations.ToolTranscript
@@ -102,20 +106,22 @@ defmodule JidoClaw.Audit.SignalListener do
         {:ok, scope} ->
           agent_id = MapKeys.field(data, :agent_id) || metadata_field(data, :agent_id)
 
-          AsyncWriter.cast(%{
-            tenant_id: scope.tenant_id,
-            event_kind: :tool_call,
-            actor_kind: :agent,
-            actor_id: agent_id && to_string(agent_id),
-            target_kind: :tool,
-            target_id: tool_name && to_string(tool_name),
-            payload: %{
-              request_id: request_id,
-              session_id: scope.session_id && to_string(scope.session_id),
-              arguments: ToolTranscript.envelope(arguments),
-              tool_name: tool_name
-            }
-          })
+          AsyncWriter.cast(
+            EventAttrs.new(
+              tenant_id: scope.tenant_id,
+              event_kind: :tool_call,
+              actor_kind: :agent,
+              actor_id: agent_id && to_string(agent_id),
+              target_kind: :tool,
+              target_id: tool_name && to_string(tool_name),
+              payload: %{
+                request_id: request_id,
+                session_id: scope.session_id && to_string(scope.session_id),
+                arguments: ToolTranscript.envelope(arguments),
+                tool_name: tool_name
+              }
+            )
+          )
 
         :error ->
           skip(:correlation_missing, tool_name)
