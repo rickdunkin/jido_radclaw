@@ -1,50 +1,27 @@
-defmodule JidoClaw.Workflows.StepAction do
+defmodule JidoClaw.Skills.Steps.AgentRunner do
   @moduledoc """
-  A Jido.Action that executes a single skill step by spawning an agent
-  from a template, running a task via ask_sync, and returning the result.
+  Spawn a templated agent, run a task, and capture the result as a
+  `%JidoClaw.Workflows.StepResult{}`.
 
-  Used as a node in jido_composer Workflows to replace the hand-rolled
-  sequential agent spawning in RunSkill.
+  The shared "spawn → ask → await → record" core for compiled skill steps
+  (`JidoClaw.Skills.Steps.AgentStep` and `JidoClaw.Skills.Steps.IterativeStep`),
+  ported from the retired `JidoClaw.Workflows.StepAction`. It resolves the
+  child agent's scope from the **Reactor context** the
+  `JidoClaw.Orchestration.ReactorRunner` seeds (`context[:tenant]` →
+  `tenant_id`, `context[:actor]` → `actor`, plus the merged
+  `workspace_id`/`project_dir`/`session_*`/`user_id` scope keys), with the same
+  precedence/fallback semantics the old driver used.
+
+  Always writes the sub-agent's durable transcript turns
+  (`SubagentTranscript.record_task`/`record_terminal`) + a child correlation,
+  so any caller running it with real tenant/session UUIDs hits the DB from
+  spawned processes — tests that run it need a shared sandbox.
   """
 
-  use Jido.Action,
-    name: "skill_step",
-    description: "Execute a skill step by spawning a templated agent and running a task",
-    schema: [
-      template: [type: :string, required: true, doc: "Agent template name (e.g. coder, reviewer)"],
-      task: [type: :string, required: true, doc: "Task prompt for the agent"],
-      project_dir: [type: :string, required: false, doc: "Project directory for tool context"],
-      workspace_id: [
-        type: :string,
-        required: false,
-        doc: "Workspace ID for shared VFS/shell state across steps"
-      ],
-      tenant_id: [
-        type: :string,
-        required: false,
-        doc: "Tenant id for downstream FK attribution (Phase 0)"
-      ],
-      session_id: [
-        type: :string,
-        required: false,
-        doc: "Runtime session id for downstream FK attribution (Phase 0)"
-      ],
-      session_uuid: [
-        type: :string,
-        required: false,
-        doc: "Conversations.Session UUID for downstream FK attribution (Phase 0)"
-      ],
-      workspace_uuid: [
-        type: :string,
-        required: false,
-        doc: "Workspaces.Workspace UUID for downstream FK attribution (Phase 0)"
-      ],
-      user_id: [
-        type: :string,
-        required: false,
-        doc: "Authenticated user UUID for downstream FK attribution (Phase 0)"
-      ]
-    ]
+  # A spawned sub-agent's fault must record a terminal `:system` transcript row
+  # and surface as `{:error, _}` to the step — never escape and kill the parent.
+  # Mirrors the retired StepAction's deliberate never-crash boundary.
+  # reach:disable-for-this-file bare_rescue
 
   alias Jido.AgentServer
   alias JidoClaw.Agent.Templates
@@ -52,21 +29,26 @@ defmodule JidoClaw.Workflows.StepAction do
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.Workflows.StepResult
 
+  @step_timeout_ms 180_000
+
   defp agent_server_module do
     Application.get_env(:jido_claw, :step_agent_server, AgentServer)
   end
 
-  @step_timeout_ms 180_000
+  @doc """
+  Spawn `template_name`, run `task`, and capture the result.
 
-  @impl true
-  def run(params, context) do
-    template_name = params.template
-    task = params.task
-    step_name = Map.get(params, :name, template_name)
-
+  `step_name` becomes `StepResult.name` verbatim — the YAML step name, or
+  `nil` for an unnamed step (so downstream label rendering falls back to the
+  template). `context` is the Reactor context. Returns
+  `{:ok, %StepResult{}}` or `{:error, binary()}`.
+  """
+  @spec run(String.t(), String.t(), String.t() | nil, map()) ::
+          {:ok, StepResult.t()} | {:error, binary()}
+  def run(template_name, task, step_name, context) do
     with {:ok, template} <- Templates.get(template_name),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
-         scope = resolve_scope(params, context, tag),
+         scope = resolve_scope(context, tag),
          visibility = Map.get(template, :forward_context, :public),
          scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
          tool_context = JidoClaw.ToolContext.build(scoped),
@@ -80,9 +62,6 @@ defmodule JidoClaw.Workflows.StepAction do
 
         record_step_terminal(tool_context, request_id, result)
         result
-        # Workflow step entry: a spawned sub-agent's fault must record a
-        # terminal `:system` row and surface as `{:error, _}` to the workflow
-        # runner — never escape and kill the parent.
       rescue
         # reach:disable-next-line bare_rescue
         e ->
@@ -102,9 +81,9 @@ defmodule JidoClaw.Workflows.StepAction do
     end
   end
 
-  # Persist the step's terminal turn (`:assistant` with the extracted step
-  # text on success, `:system` on failure) — completing the sub-agent's
-  # durable slice so the Compactor sees task → tools → terminal.
+  # Persist the step's terminal turn (`:assistant` with the extracted step text
+  # on success, `:system` on failure) — completing the sub-agent's durable slice
+  # so the Compactor sees task → tools → terminal.
   defp record_step_terminal(tool_context, request_id, {:ok, %StepResult{result: text}}) do
     SubagentTranscript.record_terminal(tool_context, request_id, :assistant, text)
   end
@@ -119,10 +98,9 @@ defmodule JidoClaw.Workflows.StepAction do
   end
 
   # Async path captures typed output + meta from `state.requests[rid]` by
-  # awaiting the full request map. Plain `Jido.Agent` modules without
-  # `ask/3` (test stubs) fall back to the synchronous `ask_sync` path,
-  # which can't surface meta but preserves existing scope-propagation
-  # contracts.
+  # awaiting the full request map. Plain `Jido.Agent` modules without `ask/3`
+  # (test stubs) fall back to the synchronous `ask_sync` path, which can't
+  # surface meta but preserves existing scope-propagation contracts.
   defp run_step(module, pid, request_id, task, tool_context, step_name, template_name) do
     Code.ensure_loaded(module)
 
@@ -156,7 +134,7 @@ defmodule JidoClaw.Workflows.StepAction do
         text = Output.extract_result(result)
 
         {:ok,
-         %JidoClaw.Workflows.StepResult{
+         %StepResult{
            name: step_name,
            template: template_name,
            result: text,
@@ -168,7 +146,7 @@ defmodule JidoClaw.Workflows.StepAction do
 
       other ->
         {:ok,
-         %JidoClaw.Workflows.StepResult{
+         %StepResult{
            name: step_name,
            template: template_name,
            result: inspect(other)
@@ -197,7 +175,7 @@ defmodule JidoClaw.Workflows.StepAction do
           Map.merge(extract_artifacts(raw_text), normalize_artifacts(typed_artifacts))
 
         {:ok,
-         %JidoClaw.Workflows.StepResult{
+         %StepResult{
            name: step_name,
            template: template_name,
            result: text,
@@ -220,9 +198,9 @@ defmodule JidoClaw.Workflows.StepAction do
   end
 
   @doc """
-  Append an ARTIFACTS output contract to the task prompt when the step
-  has a `produces` block. Without this instruction, agents won't emit
-  the fenced block that `extract_artifacts/1` looks for.
+  Append an ARTIFACTS output contract to the task prompt when the step has a
+  `produces` block. Without this instruction, agents won't emit the fenced
+  block that `extract_artifacts/1` looks for.
   """
   @spec inject_produces_instruction(String.t(), map() | nil) :: String.t()
   def inject_produces_instruction(task, nil), do: task
@@ -271,6 +249,34 @@ defmodule JidoClaw.Workflows.StepAction do
 
   def extract_artifacts(_), do: %{}
 
+  @doc """
+  Resolve the canonical `tool_context` scope for a step from the Reactor
+  context.
+
+  `tenant_id`/`actor` come from the run-identity keys the runner seeds
+  (`context[:tenant]`/`context[:actor]`); the rest of the scope
+  (`session_*`/`workspace_*`/`user_id`/`project_dir`) comes from the merged
+  `:context` opt. `workspace_id` keeps the legacy per-step `"wf_<tag>"`
+  fallback (a deterministic VFS key) and `project_dir` falls back to
+  `File.cwd!()`; the Phase 0 UUIDs fall back to `nil`. `agent_id` is always
+  the supplied `tag`.
+  """
+  @spec resolve_scope(map(), String.t()) :: map()
+  def resolve_scope(context, tag) do
+    %{
+      tenant_id: context[:tenant] || context[:tenant_id],
+      session_id: context[:session_id],
+      session_uuid: context[:session_uuid],
+      workspace_id: context[:workspace_id] || "wf_#{tag}",
+      workspace_uuid: context[:workspace_uuid],
+      user_id: context[:user_id],
+      actor: context[:actor],
+      project_dir: context[:project_dir] || File.cwd!(),
+      agent_id: tag,
+      subagent: true
+    }
+  end
+
   defp typed_artifacts(%{artifacts: artifacts}), do: artifacts
   defp typed_artifacts(%{"artifacts" => artifacts}), do: artifacts
   defp typed_artifacts(_), do: %{}
@@ -287,42 +293,4 @@ defmodule JidoClaw.Workflows.StepAction do
   defp to_string_safe(v) when is_list(v), do: Enum.join(v, ", ")
   defp to_string_safe(v) when is_map(v), do: inspect(v)
   defp to_string_safe(v), do: to_string(v)
-
-  @doc """
-  Test seam: resolve the canonical `tool_context` scope for a step.
-
-  Source order is params (workflow driver passed-through `scope_context`)
-  → context (the second arg of `Jido.Action.run/2`) → `context.tool_context`
-  (parent agent's threaded scope) → fallback.
-
-  `workspace_id` keeps its existing per-step fallback (`"wf_\#{tag}"`) so
-  unit tests and ad-hoc `StepAction.run/2` callers still get a
-  deterministic VFS key. The Phase 0 UUIDs fall back to `nil`; the
-  downstream resolver/telemetry code handles missing UUIDs gracefully.
-  `project_dir` flows through the same `pick/4` chain so direct
-  `StepAction.run/2` callers that pass a parent `tool_context` (without
-  also setting `params.project_dir`) inherit the parent's anchor instead
-  of silently falling back to `File.cwd!()`.
-  """
-  def resolve_scope(params, context, tag) do
-    %{
-      tenant_id: pick(params, context, :tenant_id, nil),
-      session_id: pick(params, context, :session_id, nil),
-      session_uuid: pick(params, context, :session_uuid, nil),
-      workspace_id: pick(params, context, :workspace_id, "wf_#{tag}"),
-      workspace_uuid: pick(params, context, :workspace_uuid, nil),
-      user_id: pick(params, context, :user_id, nil),
-      actor: pick(params, context, :actor, nil),
-      project_dir: pick(params, context, :project_dir, File.cwd!()),
-      agent_id: tag,
-      subagent: true
-    }
-  end
-
-  defp pick(params, context, key, fallback) do
-    Map.get(params, key) ||
-      Map.get(context, key) ||
-      get_in(context, [:tool_context, key]) ||
-      fallback
-  end
 end

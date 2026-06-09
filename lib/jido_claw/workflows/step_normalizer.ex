@@ -10,10 +10,10 @@ defmodule JidoClaw.Workflows.StepNormalizer do
     * Tests that build `%JidoClaw.Skills{steps: [%{"name" => ...}]}`
       structs by hand and invoke a workflow driver directly.
 
-  Both flow into `SkillWorkflow.run/4`, `PlanWorkflow.run/4`,
-  `IterativeWorkflow.run/4`, and `IterativeWorkflow.extract_roles/1`.
-  Normalizing at every public entry (plus the YAML loader) makes
-  downstream readers see atoms exclusively.
+  Both flow into `JidoClaw.Skills.Compiler.compile/1` and
+  `JidoClaw.Skills.Steps.IterativeStep.extract_roles/1`. Normalizing at
+  every public entry (plus the YAML loader) makes downstream readers see
+  atoms exclusively.
 
   ## Canonical keys
 

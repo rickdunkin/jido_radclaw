@@ -5,7 +5,7 @@ defmodule JidoClaw.Reasoning.Output do
 
   Reasoning tools (`Tools.Reason`, `Tools.RunPipeline`,
   `Tools.VerifyCertificate`) and the agent tools that pull intermediate
-  outputs from sub-agents (`Tools.GetAgentResult`, `Workflows.StepAction`)
+  outputs from sub-agents (`Tools.GetAgentResult`, `Skills.Steps.AgentRunner`)
   all receive heterogeneous result shapes — sometimes a string, sometimes
   a wrapped map, sometimes a struct. This module hides the dispatch.
   """

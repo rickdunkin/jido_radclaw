@@ -6,7 +6,7 @@ defmodule JidoClaw.Workflows.StepResult do
   (populated when the spawning worker carried a structured `:output`
   schema and validation succeeded), and any dynamic artifacts discovered
   at runtime. Converted to `{label, text}` tuples at the workflow output
-  boundary by `RunSkill.build_result/2`.
+  boundary by `JidoClaw.Skills.Result.build/3`.
   """
 
   @type t :: %__MODULE__{

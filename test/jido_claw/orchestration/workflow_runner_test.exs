@@ -1,16 +1,17 @@
 defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
   @moduledoc """
-  Pins the `WorkflowRunner` — the first `WorkflowRun` producer — driven
-  by a stubbed executor (`:cron_workflow_executor`) so the workflow
-  drivers don't actually run:
+  Pins the cron `WorkflowRunner` — now a thin adapter that compiles the named
+  skill to a Reactor and runs it through the `ReactorRunner` envelope. Drives a
+  real cached skill (`explore_codebase`) with its templates stubbed via
+  `:agent_templates_override`, re-expressing the original behaviors:
 
-    * success → row reaches `:completed` with a result; `:run_started` +
-      `:run_completed` broadcast; the executor receives a shared
-      `"cron:<job>:<run>"` workspace_id (in both the opt and scope);
-    * executor error → row `:failed` with the error + `:run_failed`;
-    * executor that *raises* → still `:failed`, never stranded `:running`;
-    * unexpected executor return → still `:failed`, never stranded `:running`;
-    * unknown skill → `{:error, _}` and no run row created.
+    * success → `:completed`, `WorkflowRun.result` populated, the timeline now
+      includes `step_*` events, the steps share a `cron:<job>:<n>` workspace_id,
+      and `:run_started`/`:run_completed` broadcast;
+    * a step error → `:failed` + `:run_failed`, the failing step running once
+      (`max_retries: 0`), never stranded `:running`;
+    * a step that *raises* → still `:failed` (AgentRunner's never-crash boundary);
+    * unknown skill → `{:error, _}`, no run row, no broadcast.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -18,58 +19,40 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowRunner
+  alias JidoClaw.Test.{CrashStub, EchoStub, ErrorStub}
 
   defp event_kinds(run_id, tenant) do
     {:ok, events} = WorkflowEvent.for_run(run_id, tenant: tenant, actor: actor_for(tenant))
     Enum.map(events, & &1.kind)
   end
 
-  defmodule StubExecutor do
-    @moduledoc false
-    def dispatch(_skill, _extra, _project_dir, opts) do
-      send(
-        Application.fetch_env!(:jido_claw, :workflow_runner_test_pid),
-        {:executor_called, opts}
-      )
+  defp template(module) do
+    %{module: module, description: "stub", model: :fast, max_iterations: 1}
+  end
 
-      case Application.fetch_env!(:jido_claw, :workflow_runner_executor_response) do
-        {:raise, message} -> raise message
-        other -> other
-      end
-    end
+  defp put_templates(map) do
+    Application.put_env(:jido_claw, :agent_templates_override, map)
   end
 
   setup do
     tenant = seed_tenant("wfrunner")
-
-    previous = %{
-      executor: Application.fetch_env(:jido_claw, :cron_workflow_executor),
-      response: Application.fetch_env(:jido_claw, :workflow_runner_executor_response),
-      test_pid: Application.fetch_env(:jido_claw, :workflow_runner_test_pid)
-    }
-
-    Application.put_env(:jido_claw, :cron_workflow_executor, StubExecutor)
-    Application.put_env(:jido_claw, :workflow_runner_test_pid, self())
+    Application.put_env(:jido_claw, :echo_stub_target, self())
 
     on_exit(fn ->
-      restore_env(:cron_workflow_executor, previous.executor)
-      restore_env(:workflow_runner_executor_response, previous.response)
-      restore_env(:workflow_runner_test_pid, previous.test_pid)
+      Application.delete_env(:jido_claw, :agent_templates_override)
+      Application.delete_env(:jido_claw, :echo_stub_target)
     end)
 
     RunPubSub.subscribe_all()
     {:ok, tenant: tenant}
   end
 
-  test "success drives the run to :completed, broadcasts, and shares the cron workspace_id",
+  test "success drives the run to :completed with a result, step_* timeline, shared workspace_id",
        %{tenant: tenant} do
-    unique_id = "wfrun-#{System.unique_integer([:positive])}"
+    # explore_codebase = explore(researcher) → document(docs_writer).
+    put_templates(%{"researcher" => template(EchoStub), "docs_writer" => template(EchoStub)})
 
-    Application.put_env(
-      :jido_claw,
-      :workflow_runner_executor_response,
-      {:ok, [{"explore", "found things"}]}
-    )
+    unique_id = "wfrun-#{System.unique_integer([:positive])}"
 
     state = %{
       id: unique_id,
@@ -80,35 +63,31 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
 
     assert :ok = WorkflowRunner.run(state)
 
-    assert_receive {:executor_called, opts}
-    workspace_id = Keyword.fetch!(opts, :workspace_id)
-    assert String.starts_with?(workspace_id, "cron:#{unique_id}:")
-    scope = Keyword.fetch!(opts, :scope_context)
-    assert scope.workspace_id == workspace_id
-
-    assert_receive {:run_started, run_id, %{cron_job_id: ^unique_id, status: :running}}
-
-    assert_receive {:run_completed, ^run_id,
-                    %{cron_job_id: ^unique_id, status: :completed, result: result}}
-
-    assert is_map(result)
+    assert_receive {:run_started, run_id, %{status: :running}}, 5_000
+    assert_receive {:run_completed, ^run_id, %{status: :completed}}, 5_000
 
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :completed
     assert is_map(run.result)
+    assert run.result["steps_completed"] == 2
 
-    assert event_kinds(run_id, tenant) == [:run_started, :run_completed]
+    kinds = event_kinds(run_id, tenant)
+    assert match?([:run_started | _], kinds)
+    assert match?([:run_completed | _], Enum.reverse(kinds))
+    assert :step_started in kinds
+    assert :step_completed in kinds
+
+    # Both steps share the deterministic cron workspace_id.
+    workspace_ids = for tc <- collect_tool_contexts(2), do: tc.workspace_id
+    assert Enum.uniq(workspace_ids) |> length() == 1
+    assert [ws | _] = workspace_ids
+    assert String.starts_with?(ws, "cron:#{unique_id}:")
   end
 
-  test "executor error drives the run to :failed and broadcasts run_failed",
-       %{tenant: tenant} do
-    unique_id = "wfrun-#{System.unique_integer([:positive])}"
+  test "a step error drives the run to :failed (and the step runs once)", %{tenant: tenant} do
+    put_templates(%{"researcher" => template(ErrorStub), "docs_writer" => template(EchoStub)})
 
-    Application.put_env(
-      :jido_claw,
-      :workflow_runner_executor_response,
-      {:error, "boom step failed"}
-    )
+    unique_id = "wfrun-#{System.unique_integer([:positive])}"
 
     state = %{
       id: unique_id,
@@ -117,22 +96,28 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
       workflow_input: %{}
     }
 
-    assert {:error, "boom step failed"} = WorkflowRunner.run(state)
+    assert {:error, _reason} = WorkflowRunner.run(state)
 
-    assert_receive {:run_started, run_id, %{cron_job_id: ^unique_id}}
-    assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id, error: "boom step failed"}}
+    assert_receive {:run_started, run_id, _info}, 5_000
+    assert_receive {:run_failed, ^run_id, %{status: :failed}}, 5_000
 
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
-    assert run.error == "boom step failed"
 
-    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
+    kinds = event_kinds(run_id, tenant)
+    assert :step_failed in kinds
+    assert match?([:run_failed | _], Enum.reverse(kinds))
+
+    # max_retries: 0 — the failing step ran exactly once, not 100×.
+    assert_receive {:stub_invoked, :error}, 5_000
+    refute_receive {:stub_invoked, :error}, 200
   end
 
-  test "executor that raises still drives the run to :failed (never stranded :running)",
+  test "a step that raises still drives the run to :failed (never stranded :running)",
        %{tenant: tenant} do
+    put_templates(%{"researcher" => template(CrashStub), "docs_writer" => template(EchoStub)})
+
     unique_id = "wfrun-#{System.unique_integer([:positive])}"
-    Application.put_env(:jido_claw, :workflow_runner_executor_response, {:raise, "kaboom"})
 
     state = %{
       id: unique_id,
@@ -141,41 +126,14 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
       workflow_input: %{}
     }
 
-    assert {:error, reason} = WorkflowRunner.run(state)
-    assert reason =~ "kaboom"
+    assert {:error, _reason} = WorkflowRunner.run(state)
+    assert_receive {:stub_invoked, :crash}, 5_000
 
-    assert_receive {:run_started, run_id, _info}
-    assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id}}
-
-    {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
-    assert run.status == :failed
-
-    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
-  end
-
-  test "unexpected executor return drives the run to :failed (never stranded :running)",
-       %{tenant: tenant} do
-    unique_id = "wfrun-#{System.unique_integer([:positive])}"
-    Application.put_env(:jido_claw, :workflow_runner_executor_response, :ok)
-
-    state = %{
-      id: unique_id,
-      tenant_id: tenant,
-      workflow_name: "explore_codebase",
-      workflow_input: %{}
-    }
-
-    assert {:error, reason} = WorkflowRunner.run(state)
-    assert reason =~ "unexpected_executor_return"
-
-    assert_receive {:run_started, run_id, _info}
-    assert_receive {:run_failed, ^run_id, %{cron_job_id: ^unique_id, error: ^reason}}
+    assert_receive {:run_started, run_id, _info}, 5_000
+    assert_receive {:run_failed, ^run_id, _info}, 5_000
 
     {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
     assert run.status == :failed
-    assert run.error == reason
-
-    assert event_kinds(run_id, tenant) == [:run_started, :run_failed]
   end
 
   test "unknown skill returns an error and creates no run row", %{tenant: tenant} do
@@ -193,9 +151,20 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     refute_received {:run_started, _id, _info}
 
     {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor_for(tenant))
-    refute Enum.any?(runs, fn run -> run.config["cron_job_id"] == unique_id end)
+    refute Enum.any?(runs, fn run -> run.name == "does_not_exist_skill" end)
   end
 
-  defp restore_env(key, :error), do: Application.delete_env(:jido_claw, key)
-  defp restore_env(key, {:ok, value}), do: Application.put_env(:jido_claw, key, value)
+  test "a state without :workflow_name fails cleanly", %{tenant: _tenant} do
+    assert {:error, :missing_workflow_name} = WorkflowRunner.run(%{})
+  end
+
+  defp collect_tool_contexts(n) do
+    for _ <- 1..n do
+      receive do
+        {:echo_stub, :tool_context, tc} -> tc
+      after
+        5_000 -> flunk("did not receive #{n} tool_context messages")
+      end
+    end
+  end
 end

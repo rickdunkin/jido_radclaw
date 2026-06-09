@@ -22,7 +22,7 @@ defmodule JidoClaw.ToolContextShapeTest do
     "lib/jido_claw/cli/repl.ex",
     "lib/jido_claw/tools/spawn_agent.ex",
     "lib/jido_claw/tools/send_to_agent.ex",
-    "lib/jido_claw/workflows/step_action.ex"
+    "lib/jido_claw/skills/steps/agent_runner.ex"
   ]
 
   describe "ToolContext.build/1" do

@@ -1,22 +1,21 @@
 defmodule JidoClaw.Tools.RunSkill do
   @moduledoc """
-  Runs a named multi-step skill through a jido_composer Workflow FSM.
+  Runs a named multi-step skill by compiling its YAML to a Reactor and running
+  it through the durable `WorkflowRun` envelope.
 
-  Each skill step becomes a state in the FSM backed by `StepAction`, with
-  transitions wired as step_1 -> step_2 -> ... -> done. Errors transition
-  to :failed. The workflow is built dynamically from the cached YAML
-  skill definition at runtime.
-
-  Supports three execution modes:
-  - `:sequential` — steps run one after another via SkillWorkflow FSM
-  - `:dag` — steps with `depends_on` run in parallel phases via PlanWorkflow
-  - `:iterative` — generator-evaluator loop via IterativeWorkflow
+  The cached skill (`.jido/skills/*.yaml`) is compiled to a `%Reactor{}` by
+  `JidoClaw.Skills.Compiler` and executed via
+  `JidoClaw.Orchestration.ReactorRunner`, so every chat-initiated skill run
+  gains a `WorkflowRun` row + event timeline + dashboard visibility + crash
+  recovery — uniformly with developer-authored reactors. The compiler picks the
+  construction from the skill's mode (`:sequential` | `:dag` | `:iterative`);
+  the reactor's terminal `CollectStep` produces the tool's result map.
   """
 
   use JidoClaw.Tools.Action,
     name: "run_skill",
     description:
-      "Run a named multi-step skill that orchestrates multiple agents via a Workflow FSM. Each step spawns an agent, waits for completion, then transitions to the next step. Use /skills to list available skills.",
+      "Run a named multi-step skill that orchestrates multiple agents. Each step spawns an agent; the skill is compiled to a Reactor and every run is a durable WorkflowRun (tracked in /workflows). Use /skills to list available skills.",
     category: "skills",
     tags: ["skills", "exec"],
     output_schema: [
@@ -39,11 +38,10 @@ defmodule JidoClaw.Tools.RunSkill do
       ]
     ]
 
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Orchestration.ReactorRunner
+  alias JidoClaw.Skills.Compiler
   alias JidoClaw.Tools.MCPScope
-  alias JidoClaw.Workflows.IterativeWorkflow
-  alias JidoClaw.Workflows.PlanWorkflow
-  alias JidoClaw.Workflows.SkillWorkflow
-  alias JidoClaw.Workflows.StepResult
 
   @impl true
   def run(params, context) do
@@ -52,64 +50,41 @@ defmodule JidoClaw.Tools.RunSkill do
 
   defp do_run(params, context) do
     skill_name = params.skill
-    extra_context = Map.get(params, :context, "")
+    extra_context = Map.get(params, :context, "") || ""
     tool_context = Map.get(context, :tool_context, %{}) || %{}
     project_dir = Map.get(tool_context, :project_dir) || File.cwd!()
-    workspace_id = Map.get(tool_context, :workspace_id)
+    scope = scope_context(tool_context)
 
-    scope_context = scope_context(tool_context)
-
-    case JidoClaw.Skills.get(skill_name, project_dir) do
-      {:error, reason} ->
-        {:error, reason}
-
-      {:ok, skill} ->
-        result =
-          case JidoClaw.Skills.execution_mode(skill) do
-            :iterative ->
-              IterativeWorkflow.run(
-                skill,
-                extra_context,
-                project_dir,
-                workspace_id: workspace_id,
-                scope_context: scope_context
-              )
-
-            :dag ->
-              PlanWorkflow.run(
-                skill,
-                extra_context,
-                project_dir,
-                workspace_id: workspace_id,
-                scope_context: scope_context
-              )
-
-            :sequential ->
-              SkillWorkflow.run(
-                skill,
-                extra_context,
-                project_dir,
-                workspace_id: workspace_id,
-                scope_context: scope_context
-              )
-          end
-
-        case result do
-          {:ok, results} ->
-            {:ok, build_result(skill, results)}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+    with {:ok, skill} <- JidoClaw.Skills.get(skill_name, project_dir),
+         {:ok, reactor} <- Compiler.compile(skill),
+         {:ok, tenant} <- resolve_tenant(tool_context),
+         actor = resolve_actor(tool_context, tenant),
+         {:ok, value, _run} <-
+           ReactorRunner.run(reactor, %{extra_context: extra_context},
+             tenant: tenant,
+             actor: actor,
+             name: skill.name,
+             async?: true,
+             context: scope
+           ) do
+      {:ok, value}
+    else
+      # Missing tenant — never call Actor.system(nil); fail cleanly.
+      {:error, :missing_tenant} -> {:error, :missing_tenant}
+      # ReactorRunner's run-carrying error envelope.
+      {:error, reason, _run} -> {:error, reason}
+      # Skills.get / Compiler.compile error.
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc """
   Test seam: pluck the canonical scope keys out of `tool_context` for
-  forwarding into every workflow driver. The full set (minus
-  `:agent_id`, which each step assigns) propagates so child agents
-  inherit the parent's tenant/session/workspace/user UUIDs and
-  `:actor` for tenant-actor policy enforcement on Ash writes/reads.
+  forwarding into the compiled reactor's context (and from there into every
+  spawned child agent). The full set (minus `:agent_id`, which each step
+  assigns) propagates so child agents inherit the parent's
+  tenant/session/workspace/user UUIDs and `:actor` for tenant-actor policy
+  enforcement on Ash writes/reads.
   """
   def scope_context(tool_context) when is_map(tool_context) do
     Map.take(tool_context, [
@@ -124,41 +99,18 @@ defmodule JidoClaw.Tools.RunSkill do
     ])
   end
 
-  @doc """
-  Test seam: assemble the final tool-result map from a skill plus the
-  list of step results emitted by the workflow. Converts
-  `%StepResult{}` structs to `{label, text}` tuples and renders the
-  numbered step transcript that the synthesis prompt references.
-  """
-  def build_result(skill, results) do
-    # Convert %StepResult{} structs to {label, text} tuples at the boundary
-    tuples =
-      Enum.map(results, fn
-        %StepResult{name: name, template: template, result: result} ->
-          label = name || template
-          {label, result}
+  # Tenant is required for the WorkflowRun. `MCPScope.wrap/4` injects the MCP
+  # default scope (which carries tenant_id) and the chat main agent threads its
+  # own; if it's genuinely absent, fail cleanly rather than call
+  # `Actor.system(nil)`.
+  defp resolve_tenant(tool_context) do
+    case Map.get(tool_context, :tenant_id) do
+      tenant when is_binary(tenant) and tenant != "" -> {:ok, tenant}
+      _ -> {:error, :missing_tenant}
+    end
+  end
 
-        {label, result} ->
-          {label, result}
-      end)
-
-    steps_output =
-      tuples
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n\n---\n\n", fn {{step_name, result}, idx} ->
-        "## Step #{idx}: #{step_name}\n\n#{result}"
-      end)
-
-    steps_completed = length(tuples)
-
-    %{
-      skill: skill.name,
-      steps_completed: steps_completed,
-      synthesis_prompt: skill.synthesis,
-      results: steps_output,
-      message:
-        "Skill '#{skill.name}' completed #{steps_completed} steps. " <>
-          "Synthesis directive: #{skill.synthesis}\n\n#{steps_output}"
-    }
+  defp resolve_actor(tool_context, tenant) do
+    Map.get(tool_context, :actor) || Actor.system(tenant)
   end
 end

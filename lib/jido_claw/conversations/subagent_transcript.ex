@@ -14,7 +14,7 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
   is the spawn tag and `subagent: true` — read from the child
   `tool_context` (`JidoClaw.ToolContext.child/2,3` / the workflow scope set
   both). This is the single shared stamping path for `SpawnAgent`,
-  `SendToAgent`, and `Workflows.StepAction`, so they can't drift.
+  `SendToAgent`, and `Skills.Steps.AgentRunner`, so they can't drift.
 
   All writes are best-effort: failures are logged and never propagated,
   and a missing `session_uuid` (e.g. a non-session spawn) is a no-op — a
@@ -90,7 +90,7 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
   @doc """
   Flush the Recorder for `request_id`, then persist a terminal turn with an
   explicit `role` (`:assistant` | `:system`) and `content`. Used by
-  `Workflows.StepAction`, which already has the extracted step text.
+  `Skills.Steps.AgentRunner`, which already has the extracted step text.
   """
   @spec record_terminal(map(), String.t() | nil, :assistant | :system, term()) :: :ok
   def record_terminal(tool_context, request_id, role, content)

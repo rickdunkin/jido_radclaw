@@ -14,6 +14,24 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep do
   def run(_arguments, _context, _options), do: {:error, :boom}
 end
 
+defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.MapStep do
+  @moduledoc false
+  use Reactor.Step
+
+  @impl true
+  def run(_arguments, _context, _options), do: {:ok, %{answer: 42, note: "hi"}}
+end
+
+defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep do
+  @moduledoc false
+  use Reactor.Step
+
+  # Returns an Ash-record-like struct — NOT json-safe, so the middleware must
+  # store %{} (result stays nil), never persist-then-blow-up on JSON encode.
+  @impl true
+  def run(_arguments, _context, _options), do: {:ok, %{workspace: ~D[2024-01-01]}}
+end
+
 defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   @moduledoc """
   Unit-tests the event-producing middleware in isolation, driving a one-step
@@ -34,7 +52,9 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
 
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep
+  alias JidoClaw.Orchestration.ReactorMiddlewareTest.MapStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.OkStep
+  alias JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias Reactor.Builder
@@ -80,6 +100,64 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
              Reactor.run(build(OkStep), %{}, bad_context, async?: false, run_id: run.id)
 
     assert events_for(run, ctx) == []
+  end
+
+  test "captures a json-safe return value into run.result (closes the regression)", ctx do
+    run = create_run("mw-result", ctx)
+
+    assert {:ok, %{answer: 42, note: "hi"}} =
+             Reactor.run(build(MapStep), %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    %{tenant: tenant, actor: actor} = ctx
+    {:ok, reloaded} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
+    # Persisted result round-trips through JSONB → string keys.
+    assert reloaded.result == %{"answer" => 42, "note" => "hi"}
+  end
+
+  test "a non-json-safe return value leaves run.result nil (stores %{})", ctx do
+    run = create_run("mw-struct", ctx)
+
+    assert {:ok, %{workspace: _date}} =
+             Reactor.run(build(StructStep), %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    %{tenant: tenant, actor: actor} = ctx
+    {:ok, reloaded} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
+    assert reloaded.result == nil
+    # The run still completed cleanly — the guard prevents the crash, not the run.
+    assert reloaded.status == :completed
+  end
+
+  describe "json_safe?/1 (persistence boundary)" do
+    test "accepts the CollectStep-shaped build_result map" do
+      build_result = %{
+        skill: "full_review",
+        steps_completed: 3,
+        synthesis_prompt: "present",
+        results: "## Step 1: …",
+        message: "Skill 'full_review' completed 3 steps. …"
+      }
+
+      assert ReactorMiddleware.json_safe?(build_result)
+    end
+
+    test "accepts nested lists/maps of binaries, numbers, booleans, nil" do
+      assert ReactorMiddleware.json_safe?(%{a: [1, "two", %{b: nil, c: true}], d: 3.5})
+      assert ReactorMiddleware.json_safe?([])
+      assert ReactorMiddleware.json_safe?(%{})
+    end
+
+    test "rejects a map containing a tuple" do
+      refute ReactorMiddleware.json_safe?(%{a: {:x, 1}})
+    end
+
+    test "rejects a struct (and a map containing one)" do
+      refute ReactorMiddleware.json_safe?(~D[2024-01-01])
+      refute ReactorMiddleware.json_safe?(%{date: ~D[2024-01-01]})
+    end
+
+    test "rejects a pid" do
+      refute ReactorMiddleware.json_safe?(%{p: self()})
+    end
   end
 
   defp build(step_module) do

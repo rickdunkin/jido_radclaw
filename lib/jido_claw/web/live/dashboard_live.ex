@@ -94,7 +94,8 @@ defmodule JidoClaw.Web.DashboardLive do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  # Run events (RunPubSub — broadcast by JidoClaw.Orchestration.WorkflowRunner)
+  # Run events (RunPubSub — broadcast by JidoClaw.Orchestration.ReactorMiddleware,
+  # with a terminal backstop in JidoClaw.Orchestration.ReactorRunner)
   @impl true
   def handle_info({:run_started, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}

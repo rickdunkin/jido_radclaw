@@ -13,6 +13,17 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   the Reactor context as
   `%{tenant: ..., actor: ..., workflow_run: %WorkflowRun{}, reactor: ...}`.
 
+  ## Run-lifecycle broadcasts (dashboard)
+
+  This middleware also owns the `RunPubSub` run-lifecycle broadcasts, fired
+  **after** each durable append succeeds: `init/1`'s initial-start branch →
+  `{:run_started, …}` (so the run is already `:running`, never broadcast while
+  still `:pending`), `complete/2` → `{:run_completed, …}`, `error/2` →
+  `{:run_failed, …}`. The resume path does not broadcast (`Cases.decide`
+  already emits `{:gate_resolved, …}`). The runner's terminal backstop also
+  appends `run_failed` for pre-`init/1` failures and broadcasts there — mutually
+  exclusive with `error/2` via its non-terminal guard, so no double-fire.
+
   ## `init/1` is the single producer of `run_started`/`run_resumed`
 
   Reactor injects `context.__reactor__.initial_state` — `:pending` on a fresh
@@ -50,13 +61,21 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   any non-terminal run after `Reactor.run` returns, and boot recovery is the
   final net. This middleware never blocks the reactor's forward progress.
 
-  ## JSON-safe payloads
+  ## JSON-safe payloads + result capture
 
   The `WorkflowEvent.payload` column is jsonb and the projection copies
-  `run_completed`'s payload into the run's `result` map column, so payloads
-  here carry only identifiers (`inspect(step.name)`) and formatted error
-  strings — never raw Ash record structs. Structured result capture is a
-  follow-up.
+  `run_completed`'s payload into the run's `result` map column. Step-timeline
+  payloads carry only identifiers (`inspect(step.name)`) and formatted error
+  strings. `complete/2` captures the reactor's **return value** into the
+  `run_completed` payload as `%{result: value}` — but only when `value` passes
+  the recursive `json_safe?/1` guard (binary/number/boolean/nil; lists thereof;
+  maps with binary/atom keys and json-safe values — no structs, tuples, pids,
+  refs, funs); otherwise it stores `%{}`. A bare `is_map` check is insufficient
+  because `Transcript.redact/1` leaves non-JSON terms unchanged, so a dev
+  reactor returning `%{workspace: %Workspace{}}` (or a tuple) would persist and
+  then blow up on JSON encode. A compiled skill's `CollectStep` returns a
+  strings/ints/nil map (json-safe → persisted); dev reactors returning Ash
+  structs store `%{}` (result stays nil).
   """
 
   use Reactor.Middleware
@@ -65,6 +84,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.Reason
+  alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -93,11 +113,16 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
 
   # Initial start (`:pending`, or any non-resume state): a misconfigured caller
   # fails loudly rather than dropping events — a failed run_started append
-  # aborts the run before any step executes.
+  # aborts the run before any step executes. Broadcast only AFTER the durable
+  # append, so subscribers never see `run_started` while the run is `:pending`.
   defp init_for_state(run, context) do
     case append(run, :run_started, %{reactor: context[:reactor]}, context) do
-      {:ok, _event} -> {:ok, context}
-      {:error, reason} -> {:error, reason}
+      {:ok, _event} ->
+        broadcast(run, {:run_started, run.id, lifecycle_info(run, status: :running)})
+        {:ok, context}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -127,7 +152,13 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
           {:ok, Reactor.Middleware.result()} | {:error, term()}
   def complete(result, context) do
     with {:ok, run} <- run_from(context),
-         {:ok, _event} <- append(run, :run_completed, %{}, context) do
+         {:ok, event} <- append(run, :run_completed, result_payload(result), context) do
+      broadcast(
+        run,
+        {:run_completed, run.id,
+         lifecycle_info(run, status: :completed, completed_at: event.occurred_at)}
+      )
+
       {:ok, result}
     else
       :error -> {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
@@ -135,11 +166,27 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     end
   end
 
+  # Capture the reactor's return value into the run_completed payload only when
+  # it is JSON-safe (the projection copies payload[:result] into the jsonb
+  # result column, then it round-trips through JSON encode). A skill's
+  # CollectStep map qualifies; a dev reactor returning an Ash struct does not.
+  defp result_payload(result) do
+    if json_safe?(result), do: %{result: result}, else: %{}
+  end
+
   @impl true
   @spec error(Reactor.Middleware.error_or_errors(), Reactor.context()) :: :ok
   def error(errors, context) do
+    formatted = Reason.format(errors)
+
     with {:ok, run} <- run_from(context),
-         {:ok, _event} <- append(run, :run_failed, %{error: Reason.format(errors)}, context) do
+         {:ok, event} <- append(run, :run_failed, %{error: formatted}, context) do
+      broadcast(
+        run,
+        {:run_failed, run.id,
+         lifecycle_info(run, status: :failed, error: formatted, completed_at: event.occurred_at)}
+      )
+
       :ok
     else
       :error ->
@@ -209,4 +256,39 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
 
   defp context_actor(%{actor: actor}, _run) when not is_nil(actor), do: actor
   defp context_actor(_context, run), do: Actor.system(run.tenant_id)
+
+  # The run-lifecycle broadcast payload. The dashboard subscribes for the tag +
+  # run id and refreshes; these fields are for projections/tests.
+  defp lifecycle_info(run, extra) do
+    Map.merge(
+      %{tenant_id: run.tenant_id, name: run.name, workflow_type: run.workflow_type},
+      Map.new(extra)
+    )
+  end
+
+  defp broadcast(run, event), do: RunPubSub.broadcast(run.id, event)
+
+  @doc """
+  Recursive JSON-safety guard for a reactor's return value before it is
+  persisted into the `run_completed` payload (and thence `WorkflowRun.result`).
+
+  Accepts binaries, numbers, booleans, and `nil`; lists of safe values; and
+  maps with binary/atom keys and safe values. Rejects structs, tuples, pids,
+  refs, and functions — terms `Transcript.redact/1` leaves intact but that
+  would crash on JSON encode.
+  """
+  @spec json_safe?(term()) :: boolean()
+  def json_safe?(value)
+      when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
+      do: true
+
+  def json_safe?(value) when is_list(value), do: Enum.all?(value, &json_safe?/1)
+
+  def json_safe?(value) when is_struct(value), do: false
+
+  def json_safe?(value) when is_map(value) do
+    Enum.all?(value, fn {k, v} -> (is_binary(k) or is_atom(k)) and json_safe?(v) end)
+  end
+
+  def json_safe?(_value), do: false
 end

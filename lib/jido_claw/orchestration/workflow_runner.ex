@@ -1,236 +1,85 @@
 defmodule JidoClaw.Orchestration.WorkflowRunner do
   @moduledoc """
-  First producer of the `JidoClaw.Orchestration.WorkflowRun` state machine.
+  Thin cron adapter for `target: :workflow` jobs.
 
-  Driven by `Cron.Dispatcher` for `target: :workflow` cron jobs. On a tick
-  it resolves the named skill, creates a durable `WorkflowRun` row and
-  appends a `run_started` event (which flips status to `:running`), runs
-  the skill through the existing workflow drivers (Skill/Plan/Iterative),
-  then appends a `run_completed` or `run_failed` event — broadcasting
-  `:run_started` / `:run_completed` / `:run_failed` over `RunPubSub` for
-  tenant-scoped workflow projections.
+  Driven by `Cron.Dispatcher`. On a tick it resolves the named skill, compiles
+  it to a `%Reactor{}` via `JidoClaw.Skills.Compiler`, and runs it through
+  `JidoClaw.Orchestration.ReactorRunner` — the same durable envelope that drives
+  developer-authored reactors. The `WorkflowRun` row, event timeline, status
+  projection, and `RunPubSub` broadcasts are all owned by the envelope
+  (`ReactorMiddleware`); this module just maps the envelope result to the
+  dispatcher's `:ok | {:error, term()}` contract.
 
   ## Shared per-run scope
 
-  Builds a deterministic `workspace_id = "cron:<job_id>:<run_id>"` and
-  passes it as both the `:workspace_id` driver opt and the
-  `scope_context[:workspace_id]` key (exactly as `Tools.RunSkill` does).
-  Without it every step would fall back to a unique per-step `"wf_<tag>"`
-  key and steps in the same cron workflow would not share shell/VFS state.
-
-  ## Minimal identity scope
-
-  Beyond `workspace_id`, the runner uses
-  `%{tenant_id, project_dir: File.cwd!(), actor: Actor.system(tenant_id)}`
-  and does NOT resolve a `Conversations.Session` / `Workspaces.Workspace`.
-  Trade-off: cron workflows produce no `Conversations.Message` /
-  correlation rows — observability lives in the `WorkflowRun` row +
-  `RunPubSub` + cron telemetry, matching the "drive WorkflowRun" intent.
-
-  `project_dir` is the app's boot-time `File.cwd!()`, which makes cron
-  workflow execution project-global. Acceptable for v1 (cron is a
-  single-project concern today); persisting a per-job `project_dir` is a
-  follow-up.
+  Builds a deterministic `workspace_id = "cron:<job_id>:<n>"` and passes it via
+  the runner's `:context`, so every step in the cron workflow shares
+  shell/VFS state (without it each step would fall back to a unique per-step
+  key). `project_dir` is the app's boot-time `File.cwd!()` (cron is a
+  single-project concern today). Cron workflows produce no
+  `Conversations.Session`/correlation rows — observability lives in the
+  `WorkflowRun` + event log + cron telemetry.
 
   ## Never raises
 
-  `run/1` is `:ok | {:error, term()}`. The executor call is wrapped in
-  `try/rescue`, and every error shape (tuple, map, exception, binary) is
-  normalized through `format_reason/1` before
-  `WorkflowLog.append(.., :run_failed, ..)`. Status is projection-owned:
-  the runner records lifecycle *events* (`run_started`/`run_completed`/
-  `run_failed`) via `WorkflowLog`, and the append path folds each into the
-  `WorkflowRun.status` column in the same transaction. Transition legality
-  lives in `WorkflowEvent.Projection.next_status/2`, so the runner threads
-  the created record (its `id`/`tenant_id` are stable) into finalization
-  and broadcasts a terminal event only after the append returns `{:ok, _}`.
+  `run/1` is `:ok | {:error, term()}`. `ReactorRunner.run/3` is itself a
+  never-raises seam; the body-level rescue covers a `Skills.get`/`Compiler`
+  raise so a misconfigured job can't crash the dispatcher.
   """
 
-  # `run/1` is contractually `:ok | {:error, term()}`; every rescue here
-  # normalizes a driver/executor raise into the error tuple. Narrowing
-  # would require enumerating the open set of skill-driver exceptions.
+  # `run/1` is contractually `:ok | {:error, term()}`; the body rescue
+  # normalizes any pre-run raise (skill lookup / compile) into the error tuple.
   # reach:disable-for-this-file bare_rescue
 
-  require Logger
-
   alias JidoClaw.Authorization.Actor
-  alias JidoClaw.Orchestration.RunPubSub
-  alias JidoClaw.Orchestration.WorkflowLog
-  alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Skills
-  alias JidoClaw.Tools.RunSkill
-  alias JidoClaw.Workflows.IterativeWorkflow
-  alias JidoClaw.Workflows.PlanWorkflow
-  alias JidoClaw.Workflows.SkillWorkflow
+  alias JidoClaw.Skills.Compiler
 
   @spec run(map()) :: :ok | {:error, term()}
   def run(%{workflow_name: name} = state) do
-    input = Map.get(state, :workflow_input) || %{}
+    tenant_id = state.tenant_id
 
     with {:ok, skill} <- Skills.get(name, File.cwd!()),
-         {:ok, started} <- create_and_start(name, skill, state, input) do
-      execute_and_finalize(skill, input, state, started)
+         {:ok, reactor} <- Compiler.compile(skill) do
+      reactor
+      |> run_reactor(skill, state, tenant_id)
+      |> finalize()
     else
-      # Unknown skill / create / start failure — no orphan run created.
+      # Unknown skill / compile failure — no run created.
       {:error, reason} -> {:error, format_reason(reason)}
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  # Defensive: a state map with no :workflow_name can never reach here from
-  # the dispatcher (the Job invariant + reload guard + ScheduleTask
-  # validation all require it), but honor the never-raises contract anyway.
+  # Defensive: a state map with no :workflow_name can never reach here from the
+  # dispatcher (Job invariant + reload guard + ScheduleTask validation all
+  # require it), but honor the never-raises contract anyway.
   def run(_state), do: {:error, :missing_workflow_name}
-
-  @doc false
-  @spec dispatch(Skills.t(), String.t(), String.t(), keyword()) ::
-          {:ok, list()} | {:error, term()}
-  def dispatch(skill, extra, project_dir, opts) do
-    case Skills.execution_mode(skill) do
-      :iterative -> IterativeWorkflow.run(skill, extra, project_dir, opts)
-      :dag -> PlanWorkflow.run(skill, extra, project_dir, opts)
-      :sequential -> SkillWorkflow.run(skill, extra, project_dir, opts)
-    end
-  end
 
   # -- Internal --
 
-  defp create_and_start(name, skill, state, input) do
-    config = %{
-      trigger: "cron",
-      cron_job_id: state.id,
-      skill: name,
-      input: input
-    }
+  defp run_reactor(reactor, skill, state, tenant_id) do
+    workspace_id = "cron:#{state.id}:#{System.unique_integer([:positive])}"
 
-    attrs = %{
-      name: name,
-      workflow_type: to_string(Skills.execution_mode(skill)),
-      config: config
-    }
-
-    tenant_id = state.tenant_id
-    actor = Actor.system(tenant_id)
-
-    with {:ok, created} <- WorkflowRun.create(attrs, tenant: tenant_id, actor: actor),
-         {:ok, _event} <-
-           WorkflowLog.append(created, :run_started, %{cron_job_id: state.id, skill: name},
-             tenant: tenant_id,
-             actor: actor
-           ) do
-      broadcast(:run_started, created.id, %{
-        tenant_id: tenant_id,
-        name: created.name,
-        workflow_type: created.workflow_type,
-        status: :running,
-        cron_job_id: state.id
-      })
-
-      # `id`/`tenant_id` are stable; finalization only reads those + name.
-      {:ok, created}
-    end
+    ReactorRunner.run(reactor, %{extra_context: extra_context(state)},
+      tenant: tenant_id,
+      actor: Actor.system(tenant_id),
+      name: skill.name,
+      async?: true,
+      context: %{workspace_id: workspace_id, project_dir: File.cwd!()}
+    )
   end
 
-  defp execute_and_finalize(skill, input, state, started) do
-    cron_job_id = state.id
+  defp finalize({:ok, _value, _run}), do: :ok
+  defp finalize({:error, reason, _run}), do: {:error, format_reason(reason)}
 
-    try do
-      do_execute_and_finalize(skill, input, state, started, cron_job_id)
-    rescue
-      e -> finalize_fail(started, e, cron_job_id)
-    end
-  end
-
-  defp do_execute_and_finalize(skill, input, state, started, cron_job_id) do
-    workspace_id = "cron:#{cron_job_id}:#{started.id}"
-    extra = Map.get(input, "context", "")
-
-    scope = %{
-      tenant_id: state.tenant_id,
-      workspace_id: workspace_id,
-      project_dir: File.cwd!(),
-      actor: Actor.system(state.tenant_id)
-    }
-
-    opts = [workspace_id: workspace_id, scope_context: scope]
-
-    case run_executor(skill, extra, opts) do
-      {:ok, steps} -> finalize_complete(started, RunSkill.build_result(skill, steps), cron_job_id)
-      {:error, reason} -> finalize_fail(started, reason, cron_job_id)
-    end
-  end
-
-  # The executor seam (default = this module's dispatch/4). Wrapped so a
-  # raising driver becomes a fail-transition rather than an escaped error.
-  defp run_executor(skill, extra, opts) do
-    executor =
-      Application.get_env(:jido_claw, :cron_workflow_executor, __MODULE__)
-
-    case executor.dispatch(skill, extra, File.cwd!(), opts) do
-      {:ok, steps} when is_list(steps) -> {:ok, steps}
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:unexpected_executor_return, other}}
-    end
-  rescue
-    e -> {:error, e}
-  end
-
-  defp finalize_complete(started, result, cron_job_id) do
-    tenant_id = started.tenant_id
-
-    case WorkflowLog.append(started, :run_completed, %{result: result},
-           tenant: tenant_id,
-           actor: Actor.system(tenant_id)
-         ) do
-      {:ok, event} ->
-        broadcast(:run_completed, started.id, %{
-          tenant_id: tenant_id,
-          name: started.name,
-          workflow_type: started.workflow_type,
-          status: :completed,
-          result: result,
-          completed_at: event.occurred_at,
-          cron_job_id: cron_job_id
-        })
-
-        :ok
-
-      {:error, reason} ->
-        {:error, {:terminal_persist_failed, reason}}
-    end
-  end
-
-  defp finalize_fail(started, reason, cron_job_id) do
-    formatted = format_reason(reason)
-
-    tenant_id = started.tenant_id
-
-    case WorkflowLog.append(started, :run_failed, %{error: formatted},
-           tenant: tenant_id,
-           actor: Actor.system(tenant_id)
-         ) do
-      {:ok, event} ->
-        broadcast(:run_failed, started.id, %{
-          tenant_id: tenant_id,
-          name: started.name,
-          workflow_type: started.workflow_type,
-          error: formatted,
-          completed_at: event.occurred_at,
-          cron_job_id: cron_job_id
-        })
-
-      {:error, e} ->
-        Logger.warning(
-          "[WorkflowRunner] fail-state persist failed for run #{started.id}: #{inspect(e)}"
-        )
-    end
-
-    {:error, formatted}
-  end
-
-  defp broadcast(event, run_id, info) do
-    RunPubSub.broadcast(run_id, {event, run_id, info})
+  # The workflow input's "context" key is the extra instructions string appended
+  # to every step's task; default to "" so ContextBuilder.build_task drops it.
+  defp extra_context(state) do
+    (Map.get(state, :workflow_input) || %{})
+    |> Map.get("context", "")
   end
 
   defp format_reason(%{__exception__: true} = e), do: Exception.message(e)

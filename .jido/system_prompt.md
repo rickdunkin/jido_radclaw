@@ -114,9 +114,11 @@ Agent templates and their exact tool access:
 ### Skills (1 tool)
 
 **run_skill** — Execute a named multi-step workflow defined in `.jido/skills/*.yaml`.
-- Skills support **DAG execution**: steps with `depends_on` annotations run in the correct
-  dependency order, with independent steps executing **in parallel** via `Task.async_stream`.
-- Skills without `depends_on` run sequentially (backward compatible).
+- Each skill is compiled to a Reactor; every run is a durable WorkflowRun (tracked in `/workflows`)
+  with a full event timeline and crash recovery.
+- Skills support **DAG execution**: steps with `depends_on` run in dependency order, with
+  independent steps executing **in parallel** (Reactor resolves topology + concurrency).
+- Skills without `depends_on` run sequentially.
 
 Default skills (always available):
 

@@ -12,15 +12,19 @@ defmodule JidoClaw.Test.EchoStub do
     description: "Test-only echo agent that captures the tool_context"
 
   @doc """
-  Override of the default ask_sync interface. Captures the supplied
-  `tool_context` opt and forwards it to the configured target process
-  (`Application.get_env(:jido_claw, :echo_stub_target, self())`) so the
-  test can `assert_receive` against it. The pid argument is ignored —
-  the AgentServer it points to is harmless infrastructure for this stub.
+  Override of the default ask_sync interface. Forwards the supplied
+  `tool_context` opt **and** the query (task) to the configured target
+  process (`Application.get_env(:jido_claw, :echo_stub_target, self())`) as two
+  separate messages — `{:echo_stub, :tool_context, tc}` and
+  `{:echo_stub, :task, query}` — so a test can `assert_receive` against either
+  without the other interfering (selective receive). The pid argument is
+  ignored — the AgentServer it points to is harmless infrastructure for this
+  stub.
   """
-  def ask_sync(_pid, _query, opts) when is_list(opts) do
+  def ask_sync(_pid, query, opts) when is_list(opts) do
     target = Application.get_env(:jido_claw, :echo_stub_target, self())
     send(target, {:echo_stub, :tool_context, Keyword.get(opts, :tool_context)})
+    send(target, {:echo_stub, :task, query})
     {:ok, %{last_answer: "echoed"}}
   end
 end

@@ -1,24 +1,47 @@
 defmodule JidoClaw.Orchestration.ReactorRunner do
   @moduledoc """
-  Invocation seam that runs an `Ash.Reactor` under the `WorkflowRun` event
-  envelope. Sibling to `JidoClaw.Orchestration.WorkflowRunner` (the cron
-  skill-DAG producer); this one drives reactor-authored workflows.
+  Invocation seam that runs a reactor under the `WorkflowRun` event envelope.
+  It is the single front-door for both shapes of reactor: developer-authored
+  `Ash.Reactor` **modules** (e.g. `Reactors.ProjectRegistration`) and
+  LLM-authored YAML skills compiled to `%Reactor{}` **structs** at runtime by
+  `JidoClaw.Skills.Compiler`. `JidoClaw.Orchestration.WorkflowRunner` (the cron
+  adapter) and `JidoClaw.Tools.RunSkill` (the chat tool) both compile their
+  skill and hand the struct here.
 
   `run/3` creates the durable `WorkflowRun` (genesis `:pending`) *before*
   `Reactor.run/4`, then seeds the run identity into the Reactor context as
-  `%{tenant:, actor:, workflow_run:, reactor:}`. `ReactorMiddleware.init/1`
-  appends `run_started` (flipping the run to `:running` in the same
-  transaction) and the step/terminal timeline. The reactor never creates the
-  run — the envelope does.
+  `%{tenant:, actor:, workflow_run:, reactor:}` (merged over any caller
+  `:context` map, base wins). `ReactorMiddleware.init/1` appends `run_started`
+  (flipping the run to `:running` in the same transaction) and the
+  step/terminal timeline. The reactor never creates the run — the envelope does.
 
   ## Middleware auto-wiring
 
-  The runner is the envelope authority: `run/3` resolves the reactor module to
-  a struct and injects `ReactorMiddleware` into it (dedup-safe via an explicit
-  membership check — a reactor that already declares the middleware runs its
-  original struct unchanged). This guarantees a `run_started`/`run_completed`
-  pair, so a *successful* run can never strand the `WorkflowRun` in `:pending`
-  for want of a producer. A reactor *may* declare the middleware but need not.
+  The runner is the envelope authority: `run/3` resolves the reactor (a module
+  → its struct, or a struct passed through as-is) and injects
+  `ReactorMiddleware` into it (dedup-safe via an explicit membership check — a
+  reactor that already declares the middleware runs its original struct
+  unchanged). This guarantees a `run_started`/`run_completed` pair, so a
+  *successful* run can never strand the `WorkflowRun` in `:pending` for want of
+  a producer. A reactor *may* declare the middleware but need not.
+
+  ## Ungated struct support (compiled skills)
+
+  `run/3` accepts a `%Reactor{}` struct for compiled skills, which **never
+  halt** (no `GateStep`). For a struct the `reactor:` context string is the
+  `:name` opt and `finalize_opts[:reactor_module]` is `nil`, so a `{:halted, _}`
+  from a struct is out of scope — it falls through `finalize/3`'s defensive
+  `:unexpected_halt` → fail-with-audit. This is **not** general gated-struct
+  support: a gated struct reactor would need checkpoint-identity design (the
+  resume allowlist keys on a *module* name) and is a separate future item.
+
+  ## Options
+
+  `:tenant`/`:actor` are required. `:name` overrides the run name. `:async?`
+  (default `false`; compiled skills pass `true`) is threaded into
+  `Reactor.run/4`. `:context` is an extra map merged into the base Reactor
+  context — **base wins**, so `tenant`/`actor`/`workflow_run`/`reactor` can't be
+  clobbered (compiled skills pass the agent scope here).
 
   ## Terminal-durability backstop
 
@@ -27,9 +50,11 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   `Reactor.run` without `run_started` or `run_failed` ever firing — which
   would strand the fresh run in `:pending`. `finalize/3` closes this: after
   `Reactor.run` returns, it reloads the run and, if the status is still
-  non-terminal, appends `run_failed` (legal from `:pending`/`:running`). This
-  one mechanism also covers a failed terminal append in the middleware. Boot
-  recovery (`WorkflowRecovery`) is the final net.
+  non-terminal, appends `run_failed` (legal from `:pending`/`:running`) and
+  broadcasts `{:run_failed, …}` — the one lifecycle broadcast the middleware
+  can't have fired (its `error/2` never ran). This one mechanism also covers a
+  failed terminal append in the middleware. Boot recovery (`WorkflowRecovery`)
+  is the final net.
 
   ## Never raises
 
@@ -110,17 +135,24 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
           | {:error, term(), WorkflowRun.t() | nil}
 
   @doc """
-  Run `reactor_module` with `inputs` under a fresh `WorkflowRun`.
+  Run `reactor` (a reactor module or a compiled `%Reactor{}` struct) with
+  `inputs` under a fresh `WorkflowRun`.
 
   Required opts: `:tenant` (a tenant id) and `:actor`. Optional `:name`
-  overrides the run name (defaults to `inspect(reactor_module)`). Returns the
-  never-raises envelope described in the moduledoc.
+  overrides the run name (defaults to `inspect(reactor)`), `:async?` (default
+  `false`) is threaded into `Reactor.run/4`, and `:context` is an extra map
+  merged into the base Reactor context (base wins). Returns the never-raises
+  envelope described in the moduledoc.
   """
-  @spec run(module(), map(), keyword()) :: run_result()
-  def run(reactor_module, inputs, opts) do
-    name = Keyword.get(opts, :name, inspect(reactor_module))
+  @spec run(module() | Reactor.t(), map(), keyword()) :: run_result()
+  def run(reactor, inputs, opts) do
+    reactor_module = if is_atom(reactor), do: reactor, else: nil
+    identity = reactor_identity(reactor, opts)
+    name = Keyword.get(opts, :name, identity)
+    async? = Keyword.get(opts, :async?, false)
+    extra_context = Keyword.get(opts, :context) || %{}
 
-    with {:ok, runnable} <- build_runnable(reactor_module),
+    with {:ok, runnable} <- build_runnable(reactor),
          {:ok, tenant} <- Keyword.fetch(opts, :tenant),
          {:ok, actor} <- Keyword.fetch(opts, :actor),
          {:ok, run} <-
@@ -128,15 +160,33 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
              %{
                name: name,
                workflow_type: "reactor",
-               config: %{reactor: inspect(reactor_module)}
+               config: %{reactor: identity}
              },
              tenant: tenant,
              actor: actor
            ) do
-      execute(run, runnable, reactor_module, inputs, tenant, actor)
+      # Build the merged context (run-identity base wins over the caller's
+      # extra `:context`) and the finalizer opts here, so `execute/6` stays
+      # within the arity budget.
+      context =
+        Map.merge(extra_context, %{
+          tenant: tenant,
+          actor: actor,
+          workflow_run: run,
+          reactor: identity
+        })
+
+      finalize_opts = [
+        tenant: tenant,
+        actor: actor,
+        inputs: inputs,
+        reactor_module: reactor_module
+      ]
+
+      execute(run, runnable, inputs, context, finalize_opts, async?)
     else
       # Module is not a reactor — no run created yet.
-      {:error, :not_a_reactor} -> {:error, {:not_a_reactor, reactor_module}, nil}
+      {:error, :not_a_reactor} -> {:error, {:not_a_reactor, reactor}, nil}
       # Missing :tenant / :actor opt — no run created yet.
       :error -> {:error, :missing_required_opt, nil}
       # build_runnable / WorkflowRun.create failed — no run created yet.
@@ -160,60 +210,56 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # middleware (e.g. ProjectRegistration) runs its original struct, while a
   # genuine add_middleware/2 failure surfaces as a pre-run {:error, reason, nil}
   # rather than silently running an un-augmented, strand-prone reactor.
-  @spec build_runnable(module()) :: {:ok, Reactor.t()} | {:error, term()}
-  defp build_runnable(reactor_module) do
-    if Spark.Dsl.is?(reactor_module, Reactor) do
-      base = reactor_module.reactor()
-
-      if ReactorMiddleware in base.middleware do
-        {:ok, base}
-      else
-        Builder.add_middleware(base, ReactorMiddleware)
-      end
+  @spec build_runnable(module() | Reactor.t()) :: {:ok, Reactor.t()} | {:error, term()}
+  defp build_runnable(reactor) when is_atom(reactor) do
+    if Spark.Dsl.is?(reactor, Reactor) do
+      ensure_middleware(reactor.reactor())
     else
       {:error, :not_a_reactor}
     end
   end
 
-  # One try/rescue around BOTH Reactor.run AND finalize, so a raise can't skip
-  # finalization. `runnable` is the auto-wired struct; `reactor_module` is kept
-  # only for the context/config identity string.
-  defp execute(run, runnable, reactor_module, inputs, tenant, actor) do
-    context = %{
-      tenant: tenant,
-      actor: actor,
-      workflow_run: run,
-      reactor: inspect(reactor_module)
-    }
+  # A compiled-skill struct is passed through as-is (struct path skips the
+  # `Spark.Dsl.is?` module check); middleware is added via the same dedup check.
+  defp build_runnable(%Reactor{} = reactor), do: ensure_middleware(reactor)
 
-    # `inputs` + `reactor_module` ride in the finalizer opts so the halted
-    # clause can serialize a checkpoint (Reactor re-validates declared inputs
-    # on resume, and the module string keys the safe decode). `reactor_module`
-    # is also needed to re-encode if a *resumed* run halts again at a later gate.
-    finalize_opts = [
-      tenant: tenant,
-      actor: actor,
-      inputs: inputs,
-      reactor_module: reactor_module
-    ]
+  defp build_runnable(_reactor), do: {:error, :not_a_reactor}
 
-    try do
-      runnable
-      |> Reactor.run(inputs, context,
-        run_id: run.id,
-        async?: false,
-        timeout: :infinity,
-        max_iterations: :infinity
-      )
-      |> finalize(run, finalize_opts)
-    rescue
-      error ->
-        reason = {:exception, Exception.message(error)}
-        ensure_failed(run, reason, finalize_opts)
-        # In-memory run; do not reload here — a fresh read could raise again if
-        # the DB is the cause of the rescue.
-        {:error, reason, run}
+  defp ensure_middleware(base) do
+    if ReactorMiddleware in base.middleware do
+      {:ok, base}
+    else
+      Builder.add_middleware(base, ReactorMiddleware)
     end
+  end
+
+  # Identity string for the run name / config / context `reactor:` key: a module
+  # inspects to its name; a compiled struct uses the caller-supplied `:name`.
+  defp reactor_identity(reactor, _opts) when is_atom(reactor), do: inspect(reactor)
+  defp reactor_identity(_struct, opts), do: Keyword.get(opts, :name, "reactor")
+
+  # One try/rescue around BOTH Reactor.run AND finalize, so a raise can't skip
+  # finalization. `context` is the merged Reactor context (run-identity base
+  # already won over the caller's extra `:context`); `finalize_opts` carries
+  # `inputs` + `reactor_module` so the halted clause can serialize a checkpoint
+  # (for a compiled struct `reactor_module` is nil — a halt is out of scope and
+  # defensively fails via finalize/3's :unexpected_halt clause).
+  defp execute(run, runnable, inputs, context, finalize_opts, async?) do
+    runnable
+    |> Reactor.run(inputs, context,
+      run_id: run.id,
+      async?: async?,
+      timeout: :infinity,
+      max_iterations: :infinity
+    )
+    |> finalize(run, finalize_opts)
+  rescue
+    error ->
+      reason = {:exception, Exception.message(error)}
+      ensure_failed(run, reason, finalize_opts)
+      # In-memory run; do not reload here — a fresh read could raise again if
+      # the DB is the cause of the rescue.
+      {:error, reason, run}
   end
 
   @doc false
@@ -367,11 +413,30 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   end
 
   defp append_failed(run, reason, opts) do
-    case WorkflowLog.append(run, :run_failed, %{error: Reason.format(reason)},
+    formatted = Reason.format(reason)
+
+    case WorkflowLog.append(run, :run_failed, %{error: formatted},
            tenant: Keyword.get(opts, :tenant, run.tenant_id),
            actor: Keyword.get(opts, :actor)
          ) do
-      {:ok, _event} ->
+      {:ok, event} ->
+        # Backstop broadcast: fires ONLY when this actually writes the terminal,
+        # i.e. the run was still non-terminal (the middleware's error/2 never
+        # fired — e.g. an input-validation failure before init/1). Mutually
+        # exclusive with the middleware's run_failed broadcast, so no double-fire.
+        RunPubSub.broadcast(
+          run.id,
+          {:run_failed, run.id,
+           %{
+             tenant_id: run.tenant_id,
+             name: run.name,
+             workflow_type: run.workflow_type,
+             status: :failed,
+             error: formatted,
+             completed_at: event.occurred_at
+           }}
+        )
+
         :ok
 
       {:error, append_error} ->

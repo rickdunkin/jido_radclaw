@@ -14,6 +14,19 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest.NoMiddlewareReactor do
   return(:only)
 end
 
+defmodule JidoClaw.Orchestration.ReactorRunnerTest.ContextEchoStep do
+  @moduledoc false
+  use Reactor.Step
+
+  # Returns a json-safe projection of the (merged) context so a test can assert
+  # the caller's `:context` map reached the step and the run-identity base won.
+  @impl true
+  def run(_args, context, _opts) do
+    {:ok,
+     %{tenant: context[:tenant], workspace_id: context[:workspace_id], reactor: context[:reactor]}}
+  end
+end
+
 defmodule JidoClaw.Orchestration.ReactorRunnerTest do
   @moduledoc """
   Proves the two `ReactorRunner.run/3` review-finding fixes as a reusable seam:
@@ -31,9 +44,13 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.ReactorRunner
+  alias JidoClaw.Orchestration.ReactorRunnerTest.ContextEchoStep
   alias JidoClaw.Orchestration.ReactorRunnerTest.NoMiddlewareReactor
   alias JidoClaw.Orchestration.Reactors.ProjectRegistration
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowRun
+  alias Reactor.Argument
+  alias Reactor.Builder
 
   setup do
     tenant = seed_tenant("reactor-runner")
@@ -88,6 +105,55 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
       kinds = kinds(run, ctx)
       assert Enum.count(kinds, &(&1 == :run_started)) == 1
       assert Enum.count(kinds, &(&1 == :run_completed)) == 1
+    end
+  end
+
+  describe "ungated struct support (compiled skills) + :async? / :context opts" do
+    test "runs a %Reactor{} struct, threads :context (base wins), captures result", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      struct =
+        Builder.new()
+        |> Builder.add_input!(:extra_context)
+        |> Builder.add_step!(
+          :echo,
+          ContextEchoStep,
+          [Argument.from_input(:extra_context, :extra_context)],
+          async?: true,
+          max_retries: 0
+        )
+        |> Builder.return!(:echo)
+
+      assert {:ok, value, run} =
+               ReactorRunner.run(struct, %{extra_context: "go"},
+                 tenant: tenant,
+                 actor: actor,
+                 name: "my_skill",
+                 async?: true,
+                 context: %{workspace_id: "ws-123", tenant: "SHOULD_NOT_WIN"}
+               )
+
+      # :context reached the step; the run-identity base won the tenant clash;
+      # the struct's identity is the :name opt.
+      assert value == %{tenant: tenant, workspace_id: "ws-123", reactor: "my_skill"}
+
+      assert run.status == :completed
+      assert run.name == "my_skill"
+      # json-safe result persisted (round-trips to string keys).
+      assert run.result == %{
+               "tenant" => tenant,
+               "workspace_id" => "ws-123",
+               "reactor" => "my_skill"
+             }
+
+      assert kinds(run, ctx) == [:run_started, :step_started, :step_completed, :run_completed]
+    end
+
+    test "a non-reactor struct value is not a reactor (pre-run envelope)", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:error, {:not_a_reactor, _}, nil} =
+               ReactorRunner.run(%WorkflowRun{}, %{}, tenant: tenant, actor: actor)
     end
   end
 

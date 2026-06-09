@@ -20,7 +20,8 @@ defmodule JidoClaw.Workflows.ContextBuilder do
   Format results from dependency steps only.
 
   Filters `prior_results` to those whose `.name` appears in `depends_on`,
-  then formats as structured markdown sections. Used by PlanWorkflow.
+  then formats as structured markdown sections. Used by the dag-mode
+  `JidoClaw.Skills.Steps.AgentStep`.
   """
   @spec format_for_deps([StepResult.t()], [String.t()], keyword()) :: String.t()
   def format_for_deps(prior_results, depends_on, opts \\ [])
@@ -41,7 +42,8 @@ defmodule JidoClaw.Workflows.ContextBuilder do
   Format ALL prior results in chronological order.
 
   Since workflow accumulators prepend with `[new | rest]`, this reverses
-  the list to present results oldest-first. Used by SkillWorkflow.
+  the list to present results oldest-first. Used by the sequential-mode
+  `JidoClaw.Skills.Steps.AgentStep`.
   """
   @spec format_preceding_all([StepResult.t()], keyword()) :: String.t()
   def format_preceding_all(results, opts \\ [])
@@ -58,7 +60,8 @@ defmodule JidoClaw.Workflows.ContextBuilder do
   @doc """
   Format all results as-is (no reversal).
 
-  Used by IterativeWorkflow where results are already in the desired order.
+  Used by `JidoClaw.Skills.Steps.IterativeStep` where results are already in
+  the desired order.
   """
   @spec format_all([StepResult.t()], keyword()) :: String.t()
   def format_all(results, opts \\ [])
