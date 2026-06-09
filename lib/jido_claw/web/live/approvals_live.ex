@@ -51,28 +51,113 @@ defmodule JidoClaw.Web.ApprovalsLive do
         style="margin-bottom: 1rem;"
       >
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-          <span style="font-weight: 600;">{gate.step_name}</span>
+          <span style="font-weight: 600;">{gate_title(gate)}</span>
           <.status_badge status={gate.status} />
         </div>
-        <div style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem;">
-          {gate.kind}
+        <div style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.25rem;">
+          {gate.step_name} · {gate.kind}
         </div>
-        <div style="display: flex; gap: 0.5rem;">
-          <button class="btn btn-primary" phx-click="approve" phx-value-id={gate.id}>
-            Approve
-          </button>
-          <button class="btn" phx-click="reject" phx-value-id={gate.id}>
-            Reject
-          </button>
+        <div
+          :if={gate_description(gate)}
+          style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem;"
+        >
+          {gate_description(gate)}
         </div>
+
+        <form phx-submit="decide" id={"gate-form-#{gate.id}"}>
+          <input type="hidden" name="case_id" value={gate.id} />
+
+          <div :for={field <- gate_fields(gate)} style="margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.875rem; margin-bottom: 0.25rem;">
+              {field["label"]}
+              <span :if={field["required"]} style="color: var(--muted);">(required)</span>
+            </label>
+            <.gate_field_input field={field} />
+          </div>
+
+          <div style="display: flex; gap: 0.5rem;">
+            <button type="submit" name="decision" value="approve" class="btn btn-primary">
+              Approve
+            </button>
+            <button type="submit" name="decision" value="reject" class="btn">
+              Reject
+            </button>
+            <button
+              type="button"
+              class="btn"
+              style="margin-left: auto; color: var(--muted);"
+              phx-click="abandon"
+              phx-value-id={gate.id}
+            >
+              Abandon run
+            </button>
+          </div>
+        </form>
       </div>
     </div>
     """
   end
 
+  # One typed input per declared gate DSL field (`details["fields"]`, seeded
+  # by GateStep from Gate.Info). Values land in the decision comment.
+  defp gate_field_input(%{field: %{"type" => "textarea"}} = assigns) do
+    ~H"""
+    <textarea name={"fields[#{@field["name"]}]"} rows="2" style="width: 100%;"></textarea>
+    """
+  end
+
+  defp gate_field_input(%{field: %{"type" => "select"}} = assigns) do
+    ~H"""
+    <select name={"fields[#{@field["name"]}]"}>
+      <option :for={option <- @field["options"] || []} value={option}>{option}</option>
+    </select>
+    """
+  end
+
+  defp gate_field_input(%{field: %{"type" => "number"}} = assigns) do
+    ~H"""
+    <input type="number" name={"fields[#{@field["name"]}]"} />
+    """
+  end
+
+  defp gate_field_input(%{field: %{"type" => "boolean"}} = assigns) do
+    ~H"""
+    <input type="checkbox" name={"fields[#{@field["name"]}]"} value="true" />
+    """
+  end
+
+  defp gate_field_input(assigns) do
+    ~H"""
+    <input type="text" name={"fields[#{@field["name"]}]"} style="width: 100%;" />
+    """
+  end
+
   @impl true
+  def handle_event("decide", %{"case_id" => id} = params, socket) do
+    decision = if params["decision"] == "reject", do: :reject, else: :approve
+    decide(socket, decision, id, comment_from_fields(params["fields"]))
+  end
+
   def handle_event("approve", %{"id" => id}, socket), do: decide(socket, :approve, id)
   def handle_event("reject", %{"id" => id}, socket), do: decide(socket, :reject, id)
+
+  # Operator abandon (AR-1): deliberately give up on the parked run. Only
+  # legal from :awaiting_approval — a live run refuses (illegal transition).
+  def handle_event("abandon", %{"id" => id}, socket) do
+    actor = socket.assigns[:current_actor]
+    attrs = %{decided_by_id: actor && actor.user_id}
+
+    case Cases.abandon(id, attrs, tenant: tenant_id(socket), actor: actor) do
+      {:ok, run} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Run #{run.name} abandoned")
+         |> assign(gates: load_gates(socket))}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not abandon run: #{inspect(reason)}")}
+    end
+  end
 
   # Gate lifecycle events (RunPubSub gates channel) — each arms a coalesced
   # inbox reload.
@@ -89,9 +174,14 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  defp decide(socket, decision, id) do
+  defp decide(socket, decision, id, comment \\ nil) do
     actor = socket.assigns[:current_actor]
-    attrs = %{decided_by_id: actor && actor.user_id}
+
+    attrs =
+      %{decided_by_id: actor && actor.user_id}
+      |> then(fn attrs ->
+        if comment, do: Map.put(attrs, :decision_comment, comment), else: attrs
+      end)
 
     case Cases.decide(id, decision, attrs, tenant: tenant_id(socket), actor: actor) do
       {:ok, run} ->
@@ -104,6 +194,37 @@ defmodule JidoClaw.Web.ApprovalsLive do
         {:noreply, put_flash(socket, :error, "Could not #{decision} gate: #{inspect(reason)}")}
     end
   end
+
+  # -- Gate DSL presentation (seeded into details by GateStep) --
+
+  defp gate_title(gate), do: details_value(gate, "gate_title") || gate.step_name
+
+  defp gate_description(gate), do: details_value(gate, "gate_description")
+
+  defp gate_fields(gate) do
+    case details_value(gate, "fields") do
+      fields when is_list(fields) -> Enum.filter(fields, &is_map/1)
+      _ -> []
+    end
+  end
+
+  defp details_value(%{details: details}, key) when is_map(details), do: Map.get(details, key)
+  defp details_value(_gate, _key), do: nil
+
+  # The typed field values, folded into the decision comment audit line
+  # ("name: value", non-empty values only).
+  defp comment_from_fields(fields) when is_map(fields) do
+    fields
+    |> Enum.filter(fn {_name, value} -> is_binary(value) and String.trim(value) != "" end)
+    |> Enum.sort_by(fn {name, _value} -> name end)
+    |> Enum.map_join("\n", fn {name, value} -> "#{name}: #{String.trim(value)}" end)
+    |> case do
+      "" -> nil
+      comment -> comment
+    end
+  end
+
+  defp comment_from_fields(_fields), do: nil
 
   defp load_gates(socket) do
     case socket.assigns[:current_actor] do

@@ -22,5 +22,6 @@ defmodule JidoClaw.Orchestration do
     resource(JidoClaw.Orchestration.WorkflowEvent)
     resource(JidoClaw.Orchestration.WorkflowStep)
     resource(JidoClaw.Orchestration.AgentCase)
+    resource(JidoClaw.Orchestration.AgentCaseEvent)
   end
 end

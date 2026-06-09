@@ -349,8 +349,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp cancel_pending_and_fail(run, reason, opts) do
     case WorkflowLog.terminate_cancelling_cases(
            run,
-           :run_failed,
-           %{error: Reason.format({:gate_pause_failed, reason})},
+           [{:run_failed, %{error: Reason.format({:gate_pause_failed, reason})}}],
            @gate_pause_reason,
            tenant: Keyword.get(opts, :tenant, run.tenant_id),
            actor: Keyword.get(opts, :actor)

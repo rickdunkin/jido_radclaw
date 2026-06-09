@@ -13,9 +13,19 @@ defmodule JidoClaw.Gates.TestIrreversibleWrite do
   isolated, timed supervised task). Default `:ok` records the marker as before.
   """
 
-  use JidoClaw.Orchestration.Gates, kind: :irreversible_write
+  use JidoClaw.Orchestration.HumanGate
 
   alias JidoClaw.Orchestration.GateContext
+
+  gate do
+    kind(:irreversible_write)
+    title("Approve irreversible write (test)")
+    description("Test gate for the human-approval slice.")
+
+    fields do
+      field(:comment, type: :textarea, label: "Comment")
+    end
+  end
 
   @table :gate_test_markers
 

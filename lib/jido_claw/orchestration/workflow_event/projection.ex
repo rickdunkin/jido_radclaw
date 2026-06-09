@@ -26,17 +26,22 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
 
   # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
   # authority — `run_halted` is provenance only (the in-txn `approval_requested`
-  # is what flips the run to `:awaiting_approval`). The two gate kinds carry
-  # authority: `approval_requested` (→ `:awaiting_approval`) and
-  # `approval_resolved` (approve = "decision recorded, resuming" → `:running`).
+  # is what flips the run to `:awaiting_approval`). The gate kinds carry
+  # authority: `approval_requested` (→ `:awaiting_approval`),
+  # `approval_resolved` (approve = "decision recorded, resuming" → `:running`),
+  # `approval_retracted` (stale approval withdrawn pre-resume →
+  # `:awaiting_approval`), and `run_abandoned` (operator gave up on a parked
+  # gate → terminal `:abandoned`).
   @status_authority_kinds [
     :run_started,
     :run_resumed,
     :run_completed,
     :run_failed,
     :run_cancelled,
+    :run_abandoned,
     :approval_requested,
-    :approval_resolved
+    :approval_resolved,
+    :approval_retracted
   ]
 
   @non_terminal [:pending, :running, :awaiting_approval]
@@ -61,8 +66,17 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     * `run_completed` only from `:running`
     * `run_failed` from any non-terminal
     * `run_cancelled` from any non-terminal
+    * `run_abandoned` **only from `:awaiting_approval`** — the parked-gate
+      state, where nothing is executing by construction. The catch-all
+      `:illegal` (rolling back the append) is the guard against abandoning a
+      live run; widening to in-flight runs is future work gated on
+      lease/cancellation semantics (§4.11).
     * `approval_requested` only from `:running` (a gate step pauses the run)
     * `approval_resolved` only from `:awaiting_approval` (approve = resuming)
+    * `approval_retracted` only from `:running` — a recorded-but-not-yet-acted
+      approval is withdrawn pre-resume, parking the run back at
+      `:awaiting_approval` so a revised plan must re-earn its approval. The
+      pre-resume race fence lives in `Cases.retract/3`.
     * `run_resumed` from `:awaiting_approval` **or** `:running` — the latter is
       idempotent: on the operator approve path `approval_resolved` already set
       `:running`, and `init/1` then appends `run_resumed` (Decision 6), so the
@@ -75,8 +89,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def next_status(:running, :run_completed), do: {:ok, :completed}
   def next_status(status, :run_failed) when status in @non_terminal, do: {:ok, :failed}
   def next_status(status, :run_cancelled) when status in @non_terminal, do: {:ok, :cancelled}
+  def next_status(:awaiting_approval, :run_abandoned), do: {:ok, :abandoned}
   def next_status(:running, :approval_requested), do: {:ok, :awaiting_approval}
   def next_status(:awaiting_approval, :approval_resolved), do: {:ok, :running}
+  def next_status(:running, :approval_retracted), do: {:ok, :awaiting_approval}
   def next_status(:awaiting_approval, :run_resumed), do: {:ok, :running}
   def next_status(:running, :run_resumed), do: {:ok, :running}
   def next_status(_current, _kind), do: :illegal
@@ -91,13 +107,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
 
   ## Checkpoint lifecycle (Decision 7)
 
-  The three **terminal** clauses (`run_completed`/`run_failed`/`run_cancelled`)
-  set `resume_checkpoint: nil` so a run's frozen halt blob is cleared in the
-  *same transaction* as the terminal status flip — on completion, failure,
-  reject, or recovery cancellation, with no per-call cleanup. The non-terminal
-  clauses (`approval_requested` → `:awaiting_approval`, `approval_resolved` /
-  `run_resumed` → `:running`) leave it untouched: the checkpoint is written by
-  the runner on pause and must survive until the run terminates.
+  The **terminal** clauses (`run_completed`/`run_failed`/`run_cancelled`/
+  `run_abandoned`) set `clear_checkpoint: true` — `:set_status`'s explicit
+  clear argument, which force-changes the **real encrypted column**
+  (`encrypted_resume_checkpoint`) to true SQL NULL — so a run's frozen halt
+  blob is cleared in the *same transaction* as the terminal status flip, with
+  no per-call cleanup. Deliberately NOT the cloaked `resume_checkpoint`
+  argument: routing `nil` through AshCloak's encrypt rewrite would store
+  ciphertext-of-nil, and every presence check (recovery classification,
+  `guard_resumable`, `GateResume`) would read it as "checkpoint present". The
+  non-terminal clauses (`approval_requested` / `approval_retracted` →
+  `:awaiting_approval`, `approval_resolved` / `run_resumed` → `:running`)
+  leave it untouched: the checkpoint is written by the runner on pause and
+  must survive until the run terminates.
   """
   @spec status_attrs(atom(), map(), DateTime.t()) :: map()
   def status_attrs(:run_started, _payload, occurred_at),
@@ -108,7 +130,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       status: :completed,
       completed_at: occurred_at,
       result: fetch(payload, :result),
-      resume_checkpoint: nil
+      clear_checkpoint: true
     }
 
   def status_attrs(:run_failed, payload, occurred_at),
@@ -116,17 +138,25 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       status: :failed,
       completed_at: occurred_at,
       error: fetch(payload, :error),
-      resume_checkpoint: nil
+      clear_checkpoint: true
     }
 
   def status_attrs(:run_cancelled, _payload, occurred_at),
-    do: %{status: :cancelled, completed_at: occurred_at, resume_checkpoint: nil}
+    do: %{status: :cancelled, completed_at: occurred_at, clear_checkpoint: true}
+
+  def status_attrs(:run_abandoned, _payload, occurred_at),
+    do: %{status: :abandoned, completed_at: occurred_at, clear_checkpoint: true}
 
   def status_attrs(:approval_requested, _payload, _occurred_at),
     do: %{status: :awaiting_approval}
 
   def status_attrs(:approval_resolved, _payload, _occurred_at),
     do: %{status: :running}
+
+  # Retraction parks the run back at the gate; the checkpoint is deliberately
+  # untouched — it is exactly what the eventual (re-)resume needs.
+  def status_attrs(:approval_retracted, _payload, _occurred_at),
+    do: %{status: :awaiting_approval}
 
   def status_attrs(:run_resumed, _payload, _occurred_at),
     do: %{status: :running}

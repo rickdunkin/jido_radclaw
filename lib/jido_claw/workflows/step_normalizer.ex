@@ -18,7 +18,7 @@ defmodule JidoClaw.Workflows.StepNormalizer do
   ## Canonical keys
 
   Normalization is **shallow** (top-level step keys only) and is
-  driven by an in-module allowlist. The seven canonical keys are:
+  driven by an in-module allowlist. The ten canonical keys are:
 
     * `:name`
     * `:template`
@@ -27,6 +27,9 @@ defmodule JidoClaw.Workflows.StepNormalizer do
     * `:depends_on`
     * `:produces`
     * `:consumes`
+    * `:retry` — non-negative integer retry budget (compiler-validated)
+    * `:compensate` — cleanup task string run on failure / saga unwind
+    * `:irreversible` — boolean; declares the step's effects un-undoable
 
   The literal `@canonical_keys` map in this module ensures these
   atoms are interned at compile time of `StepNormalizer` itself, so
@@ -45,7 +48,10 @@ defmodule JidoClaw.Workflows.StepNormalizer do
     "role" => :role,
     "depends_on" => :depends_on,
     "produces" => :produces,
-    "consumes" => :consumes
+    "consumes" => :consumes,
+    "retry" => :retry,
+    "compensate" => :compensate,
+    "irreversible" => :irreversible
   }
 
   @canonical_atoms Map.values(@canonical_keys)

@@ -12,7 +12,9 @@ defmodule JidoClaw.Orchestration.AgentCase do
 
   Run-level gate *facts* live in the append-only `WorkflowEvent` log; this row
   is the durable, queryable operator record (the inbox source, the decision
-  audit). A separate `AgentCaseEvent` timeline table is a deferred follow-up.
+  audit). Each case transition additionally appends an immutable
+  `AgentCaseEvent` timeline row in the same transaction (opened / approved /
+  rejected / cancelled / abandoned / retracted).
 
   ## Concurrency fence
 
@@ -32,6 +34,8 @@ defmodule JidoClaw.Orchestration.AgentCase do
   """
 
   use JidoClaw.Resource, domain: JidoClaw.Orchestration
+
+  alias JidoClaw.Orchestration.Gate
 
   postgres do
     table("agent_cases")
@@ -60,6 +64,8 @@ defmodule JidoClaw.Orchestration.AgentCase do
     define(:approve)
     define(:reject)
     define(:cancel)
+    define(:abandon)
+    define(:reopen)
   end
 
   actions do
@@ -111,6 +117,32 @@ defmodule JidoClaw.Orchestration.AgentCase do
       change(set_attribute(:decided_at, &DateTime.utc_now/0))
     end
 
+    # Operator-initiated abandon of a parked gate (AR-1): deliberately giving
+    # up on the run ≠ crash-reaped (`cancel`) ≠ gate-reject. Pending-fenced
+    # like the decisions.
+    update :abandon do
+      description("Abandon a pending case (operator gave up on the parked run).")
+      accept([:cancellation_reason, :decided_by_id])
+      change(filter(expr(status == :pending)))
+      change(set_attribute(:status, :abandoned))
+      change(set_attribute(:decided_at, &DateTime.utc_now/0))
+    end
+
+    # Stale-approval retraction (AR-1): a recorded-but-not-yet-acted approval
+    # is withdrawn pre-resume, so the reopened case carries NO stale decision
+    # data. DB-fenced on `status == :approved` (the retract race fence's case
+    # half); the event-log half lives in `Cases.retract/3`.
+    update :reopen do
+      description("Reopen an approved case whose approval was retracted pre-resume.")
+      accept([])
+      change(filter(expr(status == :approved)))
+      change(set_attribute(:status, :pending))
+      change(set_attribute(:decision, nil))
+      change(set_attribute(:decided_at, nil))
+      change(set_attribute(:decision_comment, nil))
+      change(set_attribute(:decided_by_id, nil))
+    end
+
     read :by_id_global do
       get?(true)
       multitenancy(:bypass)
@@ -154,10 +186,11 @@ defmodule JidoClaw.Orchestration.AgentCase do
     attribute :kind, :atom do
       allow_nil?(false)
       public?(true)
-      constraints(one_of: [:irreversible_write])
+      # Single-sourced from the gate DSL's kind enum so the two never drift.
+      constraints(one_of: Gate.Kinds.all())
     end
 
-    # The gate behaviour module (`JidoClaw.Orchestration.Gates` impl) whose
+    # The gate module (`use JidoClaw.Orchestration.HumanGate`) whose
     # `after_approved`/`after_rejected` notifications fire on the decision path.
     attribute :gate_module, :atom do
       allow_nil?(true)
@@ -168,7 +201,7 @@ defmodule JidoClaw.Orchestration.AgentCase do
       allow_nil?(false)
       public?(true)
       default(:pending)
-      constraints(one_of: [:pending, :approved, :rejected, :cancelled])
+      constraints(one_of: [:pending, :approved, :rejected, :cancelled, :abandoned])
     end
 
     # Operator-visible context for the decision (must be redactor-safe — it is

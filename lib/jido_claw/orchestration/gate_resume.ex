@@ -39,15 +39,19 @@ defmodule JidoClaw.Orchestration.GateResume do
 
   ## Safe decode (the only place DB content becomes an atom)
 
-  The checkpoint is the two-layer envelope `ReactorRunner` writes. The outer
-  layer `{version, module_string, inner}` is all-builtin, so it decodes with
-  `[:safe]` before any gate-reactor atom exists. The module string is accepted
-  **only** if it starts with an allowlisted gate-reactor prefix — bounding atom
-  creation to our own namespace — and the module must be loaded
-  (`Code.ensure_loaded?/1`). Only *then* is the inner binary (the halted
-  `%Reactor{}` + inputs) decoded with `[:safe]`, its atoms now resolvable. Any
-  corrupt / undecodable / disallowed / unknown-version / unloaded-module blob
-  fails-with-audit (appends `run_failed`, logs) — it never resumes.
+  The checkpoint is the two-layer envelope `ReactorRunner` writes, encrypted
+  at rest by AshCloak (`encrypted_resume_checkpoint`); this module is the
+  **only** consumer that decrypts it (loading the `resume_checkpoint`
+  calculation — every other consumer checks presence on the encrypted column).
+  The decrypted outer layer `{version, module_string, inner}` is all-builtin,
+  so it decodes with `[:safe]` before any gate-reactor atom exists. The module
+  string is accepted **only** if it starts with an allowlisted gate-reactor
+  prefix — bounding atom creation to our own namespace — and the module must
+  be loaded (`Code.ensure_loaded?/1`). Only *then* is the inner binary (the
+  halted `%Reactor{}` + inputs) decoded with `[:safe]`, its atoms now
+  resolvable. Any undecryptable / corrupt / undecodable / disallowed /
+  unknown-version / unloaded-module blob fails-with-audit (appends
+  `run_failed`, logs) — it never resumes.
   """
 
   require Logger
@@ -87,7 +91,10 @@ defmodule JidoClaw.Orchestration.GateResume do
       reloaded.status != :running ->
         {:error, {:not_resumable, reloaded.status}, reloaded}
 
-      is_nil(reloaded.resume_checkpoint) ->
+      # Presence is the ENCRYPTED column — the `resume_checkpoint` calculation
+      # is `%Ash.NotLoaded{}` on a plain read; only the decode path below
+      # loads/decrypts it.
+      is_nil(reloaded.encrypted_resume_checkpoint) ->
         {:error, :not_resumable_no_checkpoint, reloaded}
 
       true ->
@@ -98,12 +105,32 @@ defmodule JidoClaw.Orchestration.GateResume do
   # -- Internal --
 
   defp do_resume(run, tenant, actor) do
-    with {:ok, module, reactor, inputs} <- decode_checkpoint(run.resume_checkpoint),
+    with {:ok, blob} <- decrypt_checkpoint(run, tenant, actor),
+         {:ok, module, reactor, inputs} <- decode_checkpoint(blob),
          {:ok, decision} <- approved_decision(run, tenant, actor) do
       run_reactor(run, module, reactor, inputs, decision, tenant, actor)
     else
       {:error, reason} -> fail_with_audit(run, reason, tenant, actor)
     end
+  end
+
+  # The one place the checkpoint is decrypted: load the AshCloak
+  # `resume_checkpoint` calculation, which returns the original envelope blob
+  # (vault-decrypted). A vault failure (key rotation, corrupt ciphertext)
+  # raises inside the calculation — mapped to the same fail-with-audit path as
+  # a corrupt envelope, never resumed.
+  defp decrypt_checkpoint(run, tenant, actor) do
+    case Ash.load(run, :resume_checkpoint, tenant: tenant, actor: actor) do
+      {:ok, %WorkflowRun{resume_checkpoint: blob}} when is_binary(blob) -> {:ok, blob}
+      {:ok, _} -> {:error, :no_checkpoint}
+      {:error, reason} -> {:error, {:checkpoint_decrypt_failed, reason}}
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    error ->
+      # Cloak raises (Cloak.MissingCipher / decrypt failures) are an open set;
+      # any of them means the blob can never be resumed -> fail-with-audit.
+      {:error, {:checkpoint_decrypt_failed, Exception.message(error)}}
   end
 
   defp run_reactor(run, module, reactor, inputs, decision, tenant, actor) do
@@ -132,6 +159,7 @@ defmodule JidoClaw.Orchestration.GateResume do
 
   # Two-stage `[:safe]` decode. The outer tuple needs no custom atoms; the
   # inner reactor's atoms exist only after its module is loaded.
+  # `decrypt_checkpoint/3` guarantees a binary by construction.
   defp decode_checkpoint(blob) when is_binary(blob) do
     with {:ok, {version, module_string, inner}} <- safe_decode_outer(blob),
          :ok <- check_version(version),
@@ -141,8 +169,6 @@ defmodule JidoClaw.Orchestration.GateResume do
       {:ok, module, reactor, inputs}
     end
   end
-
-  defp decode_checkpoint(_), do: {:error, :no_checkpoint}
 
   # `:erlang.binary_to_term/2` with `[:safe]` raises `ArgumentError` on a
   # malformed/truncated blob or an atom that does not currently exist — a

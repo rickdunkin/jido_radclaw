@@ -34,3 +34,34 @@ defmodule JidoClaw.Test.CrashStub do
     raise "kaboom"
   end
 end
+
+defmodule JidoClaw.Test.FlakyStub do
+  @moduledoc false
+
+  # Jido.Agent stub that fails the first
+  # `:flaky_stub_failures_remaining` invocations and then succeeds —
+  # exercising the per-step `retry:` policy end-to-end (a real
+  # compensate-driven retry followed by a recovery, not just the
+  # max_retries plumbing). Sends `{:stub_invoked, :flaky_fail}` /
+  # `{:stub_invoked, :flaky_ok}` so a test can count the attempts.
+  #
+  # The countdown lives in app env (single-step, `async: false` tests only —
+  # not safe under concurrent flaky steps).
+  use Jido.Agent,
+    name: "flaky_stub",
+    description: "Test-only stub that fails N times then echoes"
+
+  def ask_sync(_pid, _query, opts) when is_list(opts) do
+    target = Application.get_env(:jido_claw, :echo_stub_target, self())
+    remaining = Application.get_env(:jido_claw, :flaky_stub_failures_remaining, 0)
+
+    if remaining > 0 do
+      Application.put_env(:jido_claw, :flaky_stub_failures_remaining, remaining - 1)
+      send(target, {:stub_invoked, :flaky_fail})
+      {:error, :flaky}
+    else
+      send(target, {:stub_invoked, :flaky_ok})
+      {:ok, %{last_answer: "recovered"}}
+    end
+  end
+end

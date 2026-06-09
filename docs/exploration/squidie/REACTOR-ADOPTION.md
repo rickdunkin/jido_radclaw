@@ -6,6 +6,79 @@ Architecture direction — not a commitment. Baseline **2026-06-04**. Builds on
 [`FEATURES-WORTH-BORROWING.md`](FEATURES-WORTH-BORROWING.md) and the
 [`T1-1-WORKFLOW-EVENT-LOG-PLAN.md`](T1-1-WORKFLOW-EVENT-LOG-PLAN.md).
 
+---
+
+## Status reconciliation — 2026-06-09 (Phases 0–3 complete)
+
+Phases 0–3 are **implemented and tested**, including the items the original
+phase commits claimed but deferred. What shipped beyond the durable spine:
+
+- **§4.11 claim/fencing data model** — `claimed_by` / `claim_expires_at` /
+  `claim_token` columns + the two **global** (`all_tenants?: true`) scan
+  indexes landed on `WorkflowRun`. The Pooler/Lease *implementation*
+  (`:claim_next`, heartbeat, reclaim, live-process cancellation) remains
+  deferred — columns only, no behavior.
+- **Step projection (T1-1 #3)** — `WorkflowStep` is tenant-scoped (the
+  `WorkflowEvent` policy shape) and projected from enriched `step_*` events
+  (YAML name + `step_type` + JSON-safe output summary) inside the append
+  transaction, via identity-keyed upserts under a savepoint (best-effort:
+  never rolls back the append). The dashboard run view expands per-run steps.
+- **T1-2 per-step `retry:` / `compensate:` / `irreversible:`** — YAML surface
+  → compiler validation → Reactor `max_retries` + the `compensate/4 → :retry`
+  policy on `AgentStep`/`IterativeStep`; `can?/2` derives capability per step;
+  `irreversible: true` rides into `step_*` payloads for the Phase-4 replay
+  gates.
+- **T2-5 gate Spark DSL** — `JidoClaw.Orchestration.Gate.Dsl`
+  (+ `HumanGate` base, `Gate.Info`, select-options verifier), with **all
+  three kinds declared** (`tool_call`, `plan`, `irreversible_write`); only
+  `irreversible_write` has a live producer. `GateStep` derives `kind` solely
+  from the DSL; `Gate.Kinds` single-sources the enum shared with
+  `AgentCase.kind`.
+- **T1-4 `AgentCaseEvent`** — the immutable per-case timeline (per-case `seq`
+  under `FOR UPDATE`, unique `(agent_case_id, seq)` fence), appended in the
+  same transaction as every case transition (opened/approved/rejected/
+  cancelled/abandoned/retracted).
+- **AR-1 gate lifecycle** — operator `abandon` (`run_abandoned` →
+  `:abandoned`, **only** from `:awaiting_approval`; the projection guard
+  refuses live runs) and stale-approval `retract` (`approval_retracted`:
+  `:running → :awaiting_approval`, case reopened with decision data cleared,
+  fenced on no-`run_resumed`-after-`approval_resolved` under the per-run
+  lock). `Cases.decide/4` gained the `resume: false` commit-only seam that
+  makes the pre-resume window real; the live re-plan trigger arrives with the
+  future `plan`-gate producer.
+- **§4.8 recovery fixes** — dangling gate now reconciles to **`:failed`**
+  with the full audit (`run_recovered` + `run_failed` + case cancelled, one
+  transaction); the `:running`+checkpoint branch is re-keyed on the recorded
+  `approval_resolved` event (no decision → fail-with-audit, never
+  blind-resume).
+- **Checkpoint encryption (Decision 2 fast-follow)** — `resume_checkpoint`
+  is AshCloak-encrypted at rest (`encrypted_resume_checkpoint`); presence
+  checks read the encrypted column; only `GateResume` decrypts; terminal
+  clears force true SQL NULL (never ciphertext-of-nil).
+- **Trace overlay** — the middleware emits `[:jido_claw, :workflow, :event]`
+  via `JidoClaw.Trace.emit/3` on every run-lifecycle hook.
+
+**Accepted limitations (deliberate, recorded):**
+
+- An `iterative` skill projects as **one** `WorkflowStep` row (`step_type:
+  "iterative"`) — its inner generator/evaluator turns are invisible to
+  Reactor `event/3`. The hand-rolled `iterate/5` loop stays (no `map`/
+  `recurse` rewrite).
+- The async step-timeline `Writer` + barrier (§4.3) remains deferred —
+  appends are synchronous under the per-run `FOR UPDATE` lock, which is
+  strictly safer at current scale.
+- T2-2 actor-visibility read-model: `WorkflowRun.result`/`error` stay
+  `public?: true`; that redaction scope is Phase 5.
+- A gate step's row stays `:running` after resume (the halted step is
+  dropped from the plan and never re-runs; `{:run_halt, _}` is unmapped).
+
+**Next-phase scope (NOT started):** Phase 4 (definition fingerprint, replay)
+and Phase 5 (deadline read-model, cron idempotency, actor-visibility
+redaction, graph-layout visualization), plus the §4.11 lease *implementation*
+and live-run cancellation.
+
+---
+
 **Premise (from the project owner):** this is greenfield under heavy development.
 There is **no concern for compatibility layers, data migration, or backwards
 compatibility.** The existing skill-DAG drivers (`IterativeWorkflow`,

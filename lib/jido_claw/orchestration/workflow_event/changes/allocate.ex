@@ -32,24 +32,47 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     2. Update the run via its private `:set_status` action, sourcing
        `occurred_at` from the created event and `result`/`error` from the
        raw stashed payload, in the same transaction.
+
+  ## after_action (step kinds only) — best-effort step projection
+
+  `step_started`/`step_completed`/`step_failed` additionally upsert the
+  per-step `WorkflowStep` read-model row (identity `(workflow_run_id, name)`),
+  in the same transaction so rows ride the per-run `FOR UPDATE` lock. Unlike
+  the status projection this **never rolls back the append**: the write is
+  deterministic-safe by construction (identity upsert — no unique-violation
+  class; parent-run FK held under the lock) and wrapped in an explicit
+  savepoint, because a surprise SQL error would otherwise poison the whole
+  append transaction. Failures log and are repairable by replaying the run's
+  `step_*` events.
   """
 
   use Ash.Resource.Change
 
   require Ash.Query, as: Query
+  require Logger
 
   alias Ash.Changeset
   alias Ash.Error.Changes.InvalidChanges
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Orchestration.WorkflowStep
+  alias JidoClaw.Repo
   alias JidoClaw.Security.Redaction.Transcript
+
+  # The kinds that project a WorkflowStep row. `step_retried` deliberately
+  # does NOT write (the retry's own `step_started` resets the row);
+  # `step_compensated`/`step_undone` are saga provenance, not row status.
+  @step_projection_kinds [:step_started, :step_completed, :step_failed]
+
+  @savepoint "workflow_step_projection"
 
   @impl true
   def change(changeset, _opts, _context) do
     changeset
     |> Changeset.before_action(&allocate/1)
     |> Changeset.after_action(&maybe_update_status/2)
+    |> Changeset.after_action(&maybe_project_step/2)
   end
 
   defp allocate(changeset) do
@@ -152,5 +175,147 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
       {:ok, %WorkflowRun{} = run} -> {:ok, run}
       _ -> :error
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # WorkflowStep projection (read-model, best-effort)
+  # ---------------------------------------------------------------------------
+
+  # Always `{:ok, event}` — the step row is a read model; only the status
+  # projection keeps rollback-on-error semantics.
+  defp maybe_project_step(changeset, event) do
+    if event.kind in @step_projection_kinds do
+      project_step(changeset, event)
+    end
+
+    {:ok, event}
+  end
+
+  # Projects from the RAW stashed payload (atom keys; the persisted event
+  # payload is redacted), tolerating string keys for foreign producers. A
+  # payload with no usable identity (`name` nor `step`) is skipped — there is
+  # nothing to key the row on.
+  defp project_step(changeset, event) do
+    raw_payload =
+      case changeset.context[:workflow_event] do
+        %{raw_payload: payload} when is_map(payload) -> payload
+        _ -> %{}
+      end
+
+    case step_name(raw_payload) do
+      nil ->
+        :ok
+
+      name ->
+        attrs = step_attrs(event, name, raw_payload)
+        upsert_step(event, step_action(event.kind), attrs, changeset.tenant)
+    end
+  end
+
+  defp step_action(:step_started), do: :record_started
+  defp step_action(:step_completed), do: :record_completed
+  defp step_action(:step_failed), do: :record_failed
+
+  # The human YAML name when the middleware threaded one; the positional
+  # Reactor id (`":step_1"`) as the documented fallback identity.
+  defp step_name(payload) do
+    case fetch(payload, :name) do
+      name when is_binary(name) and name != "" -> name
+      _ -> fallback_step_name(payload)
+    end
+  end
+
+  defp fallback_step_name(payload) do
+    case fetch(payload, :step) do
+      step when is_binary(step) and step != "" -> step
+      _ -> nil
+    end
+  end
+
+  defp step_attrs(event, name, payload) do
+    %{name: name, workflow_run_id: event.workflow_run_id}
+    |> put_valid(:step_type, fetch(payload, :step_type), &is_binary/1)
+    |> put_valid(:sequence, parse_sequence(fetch(payload, :step)), &is_integer/1)
+    |> Map.merge(kind_attrs(event, payload))
+  end
+
+  defp kind_attrs(%{kind: :step_started} = event, _payload),
+    do: %{started_at: event.occurred_at}
+
+  defp kind_attrs(%{kind: :step_completed} = event, payload) do
+    %{completed_at: event.occurred_at}
+    |> put_valid(:output, fetch(payload, :output), &(is_map(&1) and not is_struct(&1)))
+  end
+
+  defp kind_attrs(%{kind: :step_failed} = event, payload) do
+    %{completed_at: event.occurred_at}
+    |> put_valid(:error, fetch(payload, :error), &is_binary/1)
+  end
+
+  # `":step_N"` (the inspect'd positional id) -> N; anything else has no
+  # derivable sequence and keeps the column default.
+  defp parse_sequence(":step_" <> rest) do
+    case Integer.parse(rest) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_sequence(_), do: nil
+
+  # The savepoint fence: a surprise SQL error inside the upsert would poison
+  # the append transaction (aborted until rollback), so the attempt is bracketed
+  # by SAVEPOINT/ROLLBACK TO SAVEPOINT on the same connection. A failure to even
+  # create the savepoint skips the projection entirely (append unharmed).
+  defp upsert_step(event, action, attrs, tenant) do
+    case Repo.query("SAVEPOINT #{@savepoint}", []) do
+      {:ok, _} ->
+        attempt_step_upsert(event, action, attrs, tenant)
+
+      {:error, reason} ->
+        log_step_projection_failure(event, {:savepoint_failed, reason})
+    end
+  end
+
+  defp attempt_step_upsert(event, action, attrs, tenant) do
+    WorkflowStep
+    |> Changeset.for_create(action, attrs, tenant: tenant, authorize?: false)
+    |> Ash.create()
+    |> case do
+      {:ok, _step} ->
+        Repo.query("RELEASE SAVEPOINT #{@savepoint}", [])
+        :ok
+
+      {:error, reason} ->
+        Repo.query("ROLLBACK TO SAVEPOINT #{@savepoint}", [])
+        log_step_projection_failure(event, reason)
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    error ->
+      # Best-effort invariant: ANY raise (Postgrex/DBConnection/Ash) must roll
+      # back to the savepoint — the txn is aborted until then — and must never
+      # escape into the append path.
+      Repo.query("ROLLBACK TO SAVEPOINT #{@savepoint}", [])
+      log_step_projection_failure(event, error)
+  end
+
+  defp log_step_projection_failure(event, reason) do
+    Logger.warning(
+      "[WorkflowEvent.Allocate] step projection failed for run " <>
+        "#{event.workflow_run_id} (#{event.kind} seq #{event.seq}): #{inspect(reason)}"
+    )
+
+    :ok
+  end
+
+  defp put_valid(map, _key, nil, _valid?), do: map
+
+  defp put_valid(map, key, value, valid?) do
+    if valid?.(value), do: Map.put(map, key, value), else: map
+  end
+
+  defp fetch(payload, key) when is_map(payload) do
+    Map.get(payload, key) || Map.get(payload, Atom.to_string(key))
   end
 end

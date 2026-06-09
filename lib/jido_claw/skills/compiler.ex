@@ -29,17 +29,30 @@ defmodule JidoClaw.Skills.Compiler do
       its producer); Reactor derives topology + concurrency.
     * `:iterative` — a single `IterativeStep` (the generator/evaluator loop).
 
-  Every agent step runs `async?: true` (preserving parallel-phase behavior) with
-  `max_retries: 0` (the legacy drivers never retried). A terminal `CollectStep`
-  depends on **every** agent step and produces the run's JSON-safe result map.
-  The compiler does **not** add `ReactorMiddleware` — `ReactorRunner` is the sole
-  wirer.
+  Every agent step runs `async?: true` (preserving parallel-phase behavior).
+  A terminal `CollectStep` depends on **every** agent step and produces the
+  run's JSON-safe result map. The compiler does **not** add
+  `ReactorMiddleware` — `ReactorRunner` is the sole wirer.
+
+  ## Per-step `retry:` / `compensate:` / `irreversible:`
+
+  A YAML step may declare `retry: N` (non-negative integer retry budget),
+  `compensate: "cleanup task"` (run via `AgentRunner` on terminal failure /
+  saga unwind), and `irreversible: true` (the step's effects cannot be
+  undone). `retry:` threads into the Reactor step's `max_retries`, but the
+  actual retry *decision* lives in `AgentStep.compensate/4` — Reactor only
+  retries on a `:retry` return, never on a bare `{:error, _}`. The flags ride
+  in the impl options; `AgentStep.can?/2` derives the step's
+  compensate/undo capability from them. For an `:iterative` skill the
+  generator's `retry:` budget applies to the whole loop step. `irreversible:`
+  additionally rides into the `step_*` event payloads as durable metadata.
 
   ## Validation
 
   Rejects duplicate non-nil YAML step names, missing `depends_on`/`consumes`
-  targets, and cycles up front — a clean `{:error, _}` from `compile/1` instead
-  of a raw `Reactor.Planner` `PlanError` at run time.
+  targets, cycles, and malformed `retry:`/`compensate:`/`irreversible:` values
+  up front — a clean `{:error, _}` from `compile/1` instead of a raw
+  `Reactor.Planner` `PlanError` (or a silently inert option) at run time.
   """
 
   alias JidoClaw.Skills
@@ -62,7 +75,8 @@ defmodule JidoClaw.Skills.Compiler do
     steps = StepNormalizer.normalize(skill.steps)
     mode = Skills.execution_mode(skill)
 
-    with :ok <- validate(skill, steps, mode) do
+    with :ok <- validate_step_metadata(steps),
+         :ok <- validate(skill, steps, mode) do
       build(skill, steps, mode)
     end
   end
@@ -70,6 +84,51 @@ defmodule JidoClaw.Skills.Compiler do
   # ---------------------------------------------------------------------------
   # Validation
   # ---------------------------------------------------------------------------
+
+  # Per-step saga metadata, validated for every mode (graph AND iterative —
+  # the iterative generator/evaluator are steps too). Without the up-front
+  # rejection a malformed value would either crash the planner or, worse,
+  # silently disable the feature it claims to configure.
+  defp validate_step_metadata(steps) do
+    Enum.reduce_while(steps, :ok, fn step, :ok ->
+      case step_metadata_error(step) do
+        nil -> {:cont, :ok}
+        message -> {:halt, {:error, message}}
+      end
+    end)
+  end
+
+  defp step_metadata_error(step) when is_map(step) do
+    label = Map.get(step, :name) || "(unnamed)"
+
+    cond do
+      not valid_retry?(Map.get(step, :retry)) ->
+        "Step '#{label}': retry must be a non-negative integer, got: #{inspect(Map.get(step, :retry))}"
+
+      not valid_compensate?(Map.get(step, :compensate)) ->
+        "Step '#{label}': compensate must be a non-empty task string, got: #{inspect(Map.get(step, :compensate))}"
+
+      not valid_irreversible?(Map.get(step, :irreversible)) ->
+        "Step '#{label}': irreversible must be a boolean, got: #{inspect(Map.get(step, :irreversible))}"
+
+      true ->
+        nil
+    end
+  end
+
+  defp step_metadata_error(_step), do: nil
+
+  # Deliberately integers only — no :infinity through YAML (it would arrive as
+  # the string "infinity", and unbounded retries on LLM steps are a spend
+  # footgun regardless).
+  defp valid_retry?(nil), do: true
+  defp valid_retry?(retry), do: is_integer(retry) and retry >= 0
+
+  defp valid_compensate?(nil), do: true
+  defp valid_compensate?(task), do: is_binary(task) and String.trim(task) != ""
+
+  defp valid_irreversible?(nil), do: true
+  defp valid_irreversible?(flag), do: is_boolean(flag)
 
   defp validate(skill, [], _mode), do: {:error, "Skill '#{skill.name}' has no steps"}
 
@@ -168,10 +227,17 @@ defmodule JidoClaw.Skills.Compiler do
              reactor,
              :step_1,
              {IterativeStep,
-              [generator: gen, evaluator: eval, max_iterations: skill.max_iterations]},
+              [
+                generator: gen,
+                evaluator: eval,
+                max_iterations: skill.max_iterations,
+                # The generator's retry budget governs the whole loop step:
+                # IterativeStep.compensate/4 returns :retry against it.
+                retry: step_retry(gen)
+              ]},
              [input_arg()],
              async?: true,
-             max_retries: 0
+             max_retries: step_retry(gen)
            ),
          {:ok, reactor} <- add_collect(reactor, skill, [{nil, 1}]),
          {:ok, reactor} <- Builder.return(reactor, @collect_id) do
@@ -221,7 +287,7 @@ defmodule JidoClaw.Skills.Compiler do
         consumes: []
       )
 
-    add_step(reactor, step_id(idx), {AgentStep, options}, args)
+    add_step(reactor, step_id(idx), {AgentStep, options}, args, step_retry(step))
   end
 
   defp add_agent_step(reactor, step, idx, indexed, index, :dag) do
@@ -249,7 +315,7 @@ defmodule JidoClaw.Skills.Compiler do
         consumes: consumes_tuples
       )
 
-    add_step(reactor, step_id(idx), {AgentStep, options}, args)
+    add_step(reactor, step_id(idx), {AgentStep, options}, args, step_retry(step))
   end
 
   defp step_options(step, extra) do
@@ -257,7 +323,13 @@ defmodule JidoClaw.Skills.Compiler do
       template: Map.get(step, :template),
       task: Map.get(step, :task),
       produces: step_produces(step),
-      step_name: Map.get(step, :name)
+      step_name: Map.get(step, :name),
+      # Saga metadata (validated up front): AgentStep.compensate/4 reads
+      # :retry/:compensate, can?/2 derives capability from all three, and the
+      # middleware copies :irreversible into step_* event payloads.
+      retry: step_retry(step),
+      compensate: Map.get(step, :compensate),
+      irreversible: Map.get(step, :irreversible, false)
     ] ++ extra
   end
 
@@ -273,8 +345,11 @@ defmodule JidoClaw.Skills.Compiler do
     )
   end
 
-  defp add_step(reactor, name, impl, args) do
-    Builder.add_step(reactor, name, impl, args, async?: true, max_retries: 0)
+  # `max_retries` caps the attempts Reactor will allow; the retry *decision*
+  # is the step's compensate/4 policy (a bare {:error, _} stays terminal).
+  # The synthetic collect step never retries.
+  defp add_step(reactor, name, impl, args, max_retries \\ 0) do
+    Builder.add_step(reactor, name, impl, args, async?: true, max_retries: max_retries)
   end
 
   # ---------------------------------------------------------------------------
@@ -305,6 +380,14 @@ defmodule JidoClaw.Skills.Compiler do
     case Map.get(step, :produces) do
       v when is_map(v) -> v
       _ -> nil
+    end
+  end
+
+  # Validated up front (`validate_step_metadata/1`); absent -> 0 (no retry).
+  defp step_retry(step) do
+    case Map.get(step, :retry) do
+      retry when is_integer(retry) and retry >= 0 -> retry
+      _ -> 0
     end
   end
 

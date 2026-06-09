@@ -15,8 +15,11 @@
       color: true,
       checks: %{
         enabled: [
-          # ex_dna — AI code-duplication detector
-          {ExDNA.Credo, []},
+          # ex_dna — AI code-duplication detector. Ash `relationships` blocks
+          # are declarative config (the same belongs_to shape recurs across
+          # tenant-scoped resources by design, like Ecto `schema` bodies) —
+          # not copy-pasted logic — so their bodies are skipped.
+          {ExDNA.Credo, [excluded_macros: [:relationships]]},
           # ash_credo — Ash framework code-quality checks
           # {AshCredo.Check.Warning.AuthorizeFalse, []},
           {AshCredo.Check.Warning.AuthorizerWithoutPolicies, []},
@@ -42,14 +45,29 @@
              # never through a code interface by design. See
              # `JidoClaw.Orchestration.ReactorMiddleware` /
              # `JidoClaw.Orchestration.Reactors.ProjectRegistration`.
+             # `WorkflowRun.set_status` is the projection-owned status write
+             # (`public?(false)`), invoked only by
+             # `WorkflowEvent.Changes.Allocate` via `Changeset.for_update/3` —
+             # a code interface would invite bypassing the event log.
              excluded_actions: [
                "JidoClaw.Projects.Project.reactor_undo",
-               "JidoClaw.Workspaces.Workspace.reactor_undo"
+               "JidoClaw.Workspaces.Workspace.reactor_undo",
+               "JidoClaw.Orchestration.WorkflowRun.set_status"
              ]
            ]},
           {AshCredo.Check.Design.MissingIdentity, []},
+          # workflow_run.ex: both update actions (`set_status`,
+          # `set_checkpoint`) are internal projection/runner writes
+          # (`public?(false)`) — none should be the primary update.
           {AshCredo.Check.Design.MissingPrimaryAction,
-           [files: %{excluded: ["lib/jido_claw/accounts/token.ex"]}]},
+           [
+             files: %{
+               excluded: [
+                 "lib/jido_claw/accounts/token.ex",
+                 "lib/jido_claw/orchestration/workflow_run.ex"
+               ]
+             }
+           ]},
           {AshCredo.Check.Design.MissingTimestamps,
            [
              files: %{

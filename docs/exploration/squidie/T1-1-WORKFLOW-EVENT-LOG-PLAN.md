@@ -9,6 +9,33 @@ what "done" means and the phased work to get there.
 
 Baseline date: 2026-06-04.
 
+> **Status (2026-06-09): COMPLETE, including the deferred completion-bar
+> items.** The durable spine shipped in the Phase 0–3 commits; the follow-up
+> pass closed the gaps that had been claimed-but-skipped:
+>
+> - **Completion-bar #3 (step rows)** — `WorkflowStep` is now tenant-scoped
+>   and projected from `step_*` events in the append transaction
+>   (identity-keyed upserts, savepoint-fenced best-effort; the dashboard step
+>   view renders). The middleware enriches `step_*` payloads with the YAML
+>   step name, `step_type`, an `irreversible` marker, and a JSON-safe output
+>   summary.
+> - **Recovery §4.8 divergences** — dangling gates reconcile to `:failed`
+>   with `run_recovered` + `run_failed` (+ the case cancelled, one
+>   transaction), and the decision-recorded branch is re-keyed on the
+>   recorded `approval_resolved` event (forbidden no-decision pairs
+>   fail-with-audit).
+> - **New event kinds** — `run_abandoned` (operator abandon, terminal
+>   `:abandoned`) and `approval_retracted` (stale-approval retraction,
+>   `:running → :awaiting_approval`) joined the vocabulary, both
+>   status-authority; `AgentCaseEvent` is the per-case immutable timeline.
+> - **Deliberately still deferred:** the async step-timeline `Writer` +
+>   barrier (§4.3) — synchronous appends under the per-run `FOR UPDATE` lock
+>   stay; an `iterative` skill projects as one step row; Phase 4/5 items
+>   (fingerprint/replay, deadlines, cron idempotency, actor-visibility
+>   redaction) are next-phase scope.
+>
+> See `REACTOR-ADOPTION.md` § "Status reconciliation" for the full ledger.
+
 > **Scope.** This plan assumes the decision recorded in
 > [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md): **Reactor is the workflow engine**, a
 > `Reactor.Middleware` is the **primary** event producer (non-middleware writers in §4.4/§4.5 are deliberate exceptions), and the bespoke skill-DAG drivers

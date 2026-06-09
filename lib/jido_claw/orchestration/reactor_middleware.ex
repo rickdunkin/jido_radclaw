@@ -24,6 +24,24 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   appends `run_failed` for pre-`init/1` failures and broadcasts there — mutually
   exclusive with `error/2` via its non-terminal guard, so no double-fire.
 
+  ## Live trace overlay
+
+  The same lifecycle hooks emit `[:jido_claw, :workflow, :event]` telemetry via
+  `JidoClaw.Trace.emit(:workflow, …)` (the collector pre-attaches this event),
+  so in-flight workflow runs appear in the live trace inspection surface.
+  Fired after each durable append succeeds, same policy as the broadcasts;
+  metadata carries `event`/`status`/`name`/`run_id`/`tenant_id` and the
+  terminal events add `%{duration_ms: …}`.
+
+  ## Enriched step payloads
+
+  `step_*` payloads always carry the positional Reactor id (`step:
+  inspect(step.name)`), and additionally the human YAML `name` plus
+  `step_type` when the skills compiler threaded them into the impl options.
+  `step_completed` includes a JSON-safe `output` summary of the step's return
+  value. `WorkflowEvent.Changes.Allocate` projects these into per-step
+  `WorkflowStep` rows keyed on the human name.
+
   ## `init/1` is the single producer of `run_started`/`run_resumed`
 
   Reactor injects `context.__reactor__.initial_state` — `:pending` on a fresh
@@ -87,6 +105,8 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Trace
+  alias JidoClaw.Workflows.StepResult
 
   @impl true
   @spec init(Reactor.context()) :: {:ok, Reactor.context()} | {:error, term()}
@@ -103,6 +123,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   defp init_for_state(run, %{__reactor__: %{initial_state: :halted}} = context) do
     case append(run, :run_resumed, %{reactor: context[:reactor]}, context) do
       {:ok, _event} ->
+        trace(run, :run_resumed, :running)
         {:ok, context}
 
       {:error, reason} ->
@@ -119,6 +140,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     case append(run, :run_started, %{reactor: context[:reactor]}, context) do
       {:ok, _event} ->
         broadcast(run, {:run_started, run.id, lifecycle_info(run, status: :running)})
+        trace(run, :run_started, :running)
         {:ok, context}
 
       {:error, reason} ->
@@ -131,6 +153,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   def halt(context) do
     with {:ok, run} <- run_from(context),
          {:ok, _event} <- append(run, :run_halted, %{reactor: context[:reactor]}, context) do
+      trace(run, :run_halted, :awaiting_approval)
       :ok
     else
       :error ->
@@ -159,6 +182,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
          lifecycle_info(run, status: :completed, completed_at: event.occurred_at)}
       )
 
+      trace(run, :run_completed, :completed, duration_measurements(run, event.occurred_at))
       {:ok, result}
     else
       :error -> {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
@@ -187,6 +211,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
          lifecycle_info(run, status: :failed, error: formatted, completed_at: event.occurred_at)}
       )
 
+      trace(run, :run_failed, :failed, duration_measurements(run, event.occurred_at))
       :ok
     else
       :error ->
@@ -212,13 +237,22 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   # The per-step timeline mapping. Unmapped events (halts, guard events,
   # undo_start, ...) are ignored — they gain meaning in later phases.
   defp map_event({:run_start, _args}, step), do: {:step_started, step_payload(step)}
-  defp map_event({:run_complete, _result}, step), do: {:step_completed, step_payload(step)}
+
+  defp map_event({:run_complete, result}, step),
+    do: {:step_completed, Map.merge(step_payload(step), result_summary(result))}
 
   defp map_event({:run_error, errors}, step),
     do: {:step_failed, Map.put(step_payload(step), :error, Reason.format(errors))}
 
   defp map_event({:run_retry, _value}, step), do: {:step_retried, step_payload(step)}
   defp map_event(:run_retry, step), do: {:step_retried, step_payload(step)}
+
+  # A compensate-driven retry (`compensate/4` -> `:retry`, the skill `retry:`
+  # policy in `AgentStep`) emits `compensate_retry`, NOT `run_retry`
+  # (step_runner.ex handle_compensate_result) — without these clauses the
+  # catch-all would silently drop every policy-driven retry.
+  defp map_event({:compensate_retry, _reason}, step), do: {:step_retried, step_payload(step)}
+  defp map_event(:compensate_retry, step), do: {:step_retried, step_payload(step)}
   defp map_event(:compensate_complete, step), do: {:step_compensated, step_payload(step)}
 
   defp map_event({:compensate_continue, _value}, step),
@@ -227,7 +261,80 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   defp map_event(:undo_complete, step), do: {:step_undone, step_payload(step)}
   defp map_event(_step_event, _step), do: :ignore
 
-  defp step_payload(step), do: %{step: inspect(step.name)}
+  # Map a compiled-skill step impl to the durable `step_type` recorded on the
+  # projected `WorkflowStep` row. Dev-reactor steps (arbitrary impls) map to
+  # nil and the key is omitted.
+  @step_types %{
+    JidoClaw.Skills.Steps.AgentStep => "agent",
+    JidoClaw.Skills.Steps.IterativeStep => "iterative",
+    JidoClaw.Skills.Steps.CollectStep => "collect",
+    JidoClaw.Orchestration.GateStep => "gate"
+  }
+
+  # The enriched per-step payload: `:step` is always the positional Reactor id
+  # (`inspect(step.name)`, e.g. `":step_1"` — the fallback identity); `:name`
+  # is the human YAML step name when the compiler threaded one into the impl
+  # options (`step_name:`); `:step_type` is derived from the impl module; an
+  # `irreversible: true` flag rides along as durable metadata for the Phase-4
+  # replay gates.
+  defp step_payload(step) do
+    %{step: inspect(step.name)}
+    |> put_present(:name, yaml_name(step))
+    |> put_present(:step_type, step_type(step))
+    |> put_present(:irreversible, irreversible_flag(step))
+  end
+
+  defp yaml_name(%{impl: {_mod, opts}}) when is_list(opts), do: Keyword.get(opts, :step_name)
+  defp yaml_name(_step), do: nil
+
+  # `true` or nil (omitted) — only an explicit declaration is recorded.
+  defp irreversible_flag(%{impl: {_mod, opts}}) when is_list(opts) do
+    if Keyword.get(opts, :irreversible, false) == true, do: true
+  end
+
+  defp irreversible_flag(_step), do: nil
+
+  defp step_type(%{impl: {mod, opts}}) when is_atom(mod) and is_list(opts),
+    do: Map.get(@step_types, mod)
+
+  defp step_type(%{impl: mod}) when is_atom(mod), do: Map.get(@step_types, mod)
+  defp step_type(_step), do: nil
+
+  # JSON-safe summary of a completed step's return value, carried on the
+  # `step_completed` payload (and projected into `WorkflowStep.output`):
+  # an `AgentStep` `%StepResult{}` is summarized field-wise; an
+  # `IterativeStep`'s `[%StepResult{}, ...]` becomes a results list; a
+  # JSON-safe map (`CollectStep`) is stored as-is; any other JSON-safe value is
+  # wrapped under `:result`; everything else is omitted.
+  defp result_summary(%StepResult{} = result) do
+    output =
+      %{result: result.result}
+      |> put_present(:template, result.template)
+      |> put_present(:typed_output, json_safe_or_nil(result.typed_output))
+
+    %{output: output}
+  end
+
+  defp result_summary([%StepResult{} | _] = results) do
+    if Enum.all?(results, &match?(%StepResult{}, &1)) do
+      %{output: %{results: Enum.map(results, &%{name: &1.name, result: &1.result})}}
+    else
+      %{}
+    end
+  end
+
+  defp result_summary(value) when is_map(value) and not is_struct(value) do
+    if json_safe?(value), do: %{output: value}, else: %{}
+  end
+
+  defp result_summary(value) do
+    if json_safe?(value), do: %{output: %{result: value}}, else: %{}
+  end
+
+  defp json_safe_or_nil(value), do: if(json_safe?(value), do: value)
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   # Best-effort append for the step timeline: never blocks the reactor.
   defp emit(kind, payload, context) do
@@ -267,6 +374,33 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   end
 
   defp broadcast(run, event), do: RunPubSub.broadcast(run.id, event)
+
+  # Live in-flight overlay: `[:jido_claw, :workflow, :event]` telemetry the
+  # Trace collector already attaches. Fired after each durable append succeeds
+  # (same policy as the RunPubSub broadcasts); `run_id` correlates events to
+  # the durable WorkflowRun.
+  defp trace(run, event, status, measurements \\ %{}) do
+    Trace.emit(
+      :workflow,
+      %{
+        event: event,
+        status: status,
+        name: run.name,
+        workflow_type: run.workflow_type,
+        run_id: run.id,
+        tenant_id: run.tenant_id
+      },
+      measurements
+    )
+  end
+
+  # Wall-clock from run creation to the terminal event. The context-seeded run
+  # struct is the genesis snapshot, so `inserted_at` (not the projected
+  # `started_at`, which is nil on that snapshot) is the stable anchor.
+  defp duration_measurements(%WorkflowRun{inserted_at: %DateTime{} = at}, %DateTime{} = ended),
+    do: %{duration_ms: DateTime.diff(ended, at, :millisecond)}
+
+  defp duration_measurements(_run, _ended), do: %{}
 
   @doc """
   Recursive JSON-safety guard for a reactor's return value before it is

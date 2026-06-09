@@ -32,7 +32,12 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     end
 
     IO.puts("")
-    IO.puts("  \e[2mDecide: /gates approve <id> [comment]  ·  /gates reject <id> [comment]\e[0m")
+
+    IO.puts(
+      "  \e[2mDecide: /gates approve <id> [comment]  ·  /gates reject <id> [comment]" <>
+        "  ·  /gates abandon <id> [reason]\e[0m"
+    )
+
     IO.puts("")
     {:ok, state}
   end
@@ -65,6 +70,41 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     IO.puts("")
     {:ok, state}
   end
+
+  @doc """
+  Abandon the parked run behind a pending gate (AR-1) — only legal while the
+  run is `:awaiting_approval`; a live run is refused.
+  """
+  @spec abandon(map(), String.t(), String.t() | nil) :: {:ok, map()}
+  def abandon(state, id, reason) do
+    id = String.trim(id)
+    actor = Actor.system(state.tenant_id)
+    attrs = abandon_attrs(reason)
+
+    IO.puts("")
+
+    case Cases.abandon(id, attrs, tenant: state.tenant_id, actor: actor) do
+      {:ok, run} ->
+        IO.puts("  \e[32m✓\e[0m  Run \e[1m#{run.name}\e[0m abandoned")
+
+      {:error, :not_found} ->
+        IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
+
+      {:error, :not_pending} ->
+        IO.puts("  \e[33m⚠\e[0m  Gate already decided — abandon applies to pending gates only.")
+
+      {:error, reason} ->
+        IO.puts("  \e[31m✗\e[0m  Could not abandon run: #{inspect(reason)}")
+    end
+
+    IO.puts("")
+    {:ok, state}
+  end
+
+  defp abandon_attrs(nil), do: %{}
+
+  defp abandon_attrs(reason) when is_binary(reason),
+    do: %{cancellation_reason: String.trim(reason)}
 
   defp decision_attrs(nil), do: %{}
 

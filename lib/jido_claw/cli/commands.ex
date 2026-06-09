@@ -593,6 +593,8 @@ defmodule JidoClaw.CLI.Commands do
       ["approve", id, comment] -> Approvals.decide(state, :approve, id, comment)
       ["reject", id] -> Approvals.decide(state, :reject, id, nil)
       ["reject", id, comment] -> Approvals.decide(state, :reject, id, comment)
+      ["abandon", id] -> Approvals.abandon(state, id, nil)
+      ["abandon", id, reason] -> Approvals.abandon(state, id, reason)
       _ -> Approvals.list(state)
     end
   end

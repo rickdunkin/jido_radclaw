@@ -1,6 +1,50 @@
 defmodule JidoClaw.Orchestration.WorkflowRun do
-  @moduledoc false
-  use JidoClaw.Resource, domain: JidoClaw.Orchestration
+  @moduledoc """
+  The durable envelope of one reactor execution: status (a projection of the
+  `WorkflowEvent` log), result/error, the encrypted resume checkpoint, and the
+  (data-model-only) claim/fencing columns for the deferred multi-node lease.
+
+  Hand-rolls `use Ash.Resource` + the standard 13-line tenant policy block
+  (rather than `use JidoClaw.Resource`) so the `AshCloak` extension can be
+  declared — the macro does not forward `extensions:`, and teaching it to
+  would touch every tenant-scoped resource (the `WorkflowEvent`/`SecretRef`
+  precedent).
+  """
+
+  use Ash.Resource,
+    otp_app: :jido_claw,
+    domain: JidoClaw.Orchestration,
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshCloak]
+
+  policies do
+    bypass action(:by_id_global) do
+      authorize_if(always())
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+    end
+  end
+
+  # Encryption-at-rest for the resume checkpoint (Decision 2 fast-follow): the
+  # blob holds UNREDACTED reactor inputs/results. AshCloak renames the column
+  # to `encrypted_resume_checkpoint` and exposes `resume_checkpoint` as a
+  # decrypting calculation; `set_checkpoint`'s accepted attribute is rewritten
+  # into an argument + encrypt change. Presence checks read the encrypted
+  # column directly (the calculation is `%Ash.NotLoaded{}` unless loaded);
+  # only `GateResume`'s decode path loads/decrypts. Terminal clears write
+  # `encrypted_resume_checkpoint: nil` directly — encrypting `nil` would store
+  # ciphertext-of-nil, not SQL NULL, and break every presence check.
+  cloak do
+    vault(JidoClaw.Security.Vault)
+    attributes([:resume_checkpoint])
+  end
 
   postgres do
     table("workflow_runs")
@@ -9,6 +53,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     custom_indexes do
       index([:tenant_id, :status])
       index([:tenant_id, :completed_at])
+
+      # Claim/fencing scan indexes (§4.11 data model — implementation
+      # deferred). Deliberately global, NOT tenant-prefixed: the future
+      # `:claim_next` lease scanner is a system-level cross-tenant poller
+      # (like recovery's `list_non_terminal_global`), and AshPostgres would
+      # otherwise auto-prefix attribute-multitenant indexes with `tenant_id`.
+      index([:status, :claim_expires_at], all_tenants?: true)
+      index([:claimed_by], all_tenants?: true)
     end
   end
 
@@ -50,10 +102,28 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     update :set_status do
       description("Internal projection write of status + stamps from the event log.")
       public?(false)
-      # `:resume_checkpoint` is accepted so the projection's terminal
-      # `status_attrs/3` can null the checkpoint blob in the same status-flip
-      # transaction (Decision 7).
-      accept([:status, :started_at, :completed_at, :result, :error, :resume_checkpoint])
+      # The clear_checkpoint function change below cannot be expressed
+      # atomically; this action only ever runs inside the append transaction
+      # under the per-run FOR UPDATE lock, so atomicity comes from the caller.
+      require_atomic?(false)
+      accept([:status, :started_at, :completed_at, :result, :error])
+
+      # Terminal checkpoint clear (Decision 7): force the REAL encrypted
+      # column to true SQL NULL — deliberately NOT the cloaked
+      # `:resume_checkpoint` argument, whose encrypt rewrite would store
+      # ciphertext-of-nil and break every presence check. An argument +
+      # force_change (not `accept`) because the `encrypted_resume_checkpoint`
+      # attribute only exists after AshCloak's transformer runs — accept-list
+      # validation happens earlier in the compile pipeline.
+      argument(:clear_checkpoint, :boolean, default: false)
+
+      change(fn changeset, _context ->
+        if Ash.Changeset.get_argument(changeset, :clear_checkpoint) do
+          Ash.Changeset.force_change_attribute(changeset, :encrypted_resume_checkpoint, nil)
+        else
+          changeset
+        end
+      end)
     end
 
     # Private write of the durable resume checkpoint blob. Called by
@@ -80,6 +150,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     read :by_id_global do
+      description("Cross-tenant lookup of one run by id (policy-bypassed).")
       get?(true)
       multitenancy(:bypass)
       argument(:id, :uuid, allow_nil?: false)
@@ -117,7 +188,15 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       default(:pending)
 
       constraints(
-        one_of: [:pending, :running, :awaiting_approval, :completed, :failed, :cancelled]
+        one_of: [
+          :pending,
+          :running,
+          :awaiting_approval,
+          :completed,
+          :failed,
+          :cancelled,
+          :abandoned
+        ]
       )
     end
 
@@ -162,10 +241,31 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     # two-layer envelope encoded by `ReactorRunner.encode_checkpoint/3` and
     # decoded only by `GateResume`), NOT an Elixir map. Present *only* while a
     # run is `:awaiting_approval` or `:running` (resume in flight); every
-    # terminal clears it via the projection (Decision 7). `public?(false)` —
-    # it holds unredacted reactor inputs/results; encryption-at-rest is a
-    # documented fast-follow (Decision 2).
+    # terminal clears it via the projection (Decision 7). Encrypted at rest by
+    # the `cloak` block above (the stored column is
+    # `encrypted_resume_checkpoint`; this declaration becomes a decrypting
+    # calculation) — it holds unredacted reactor inputs/results.
     attribute :resume_checkpoint, :binary do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    # §4.11 claim/fencing data model: which node owns the run, until when,
+    # and the fencing token a claimant must present. Columns land now
+    # (greenfield — no later migration); the Pooler/Lease implementation
+    # (`:claim_next`, heartbeat, reclaim) is deliberately deferred. All three
+    # stay nil until that ships.
+    attribute :claimed_by, :string do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    attribute :claim_expires_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    attribute :claim_token, :uuid do
       allow_nil?(true)
       public?(false)
     end

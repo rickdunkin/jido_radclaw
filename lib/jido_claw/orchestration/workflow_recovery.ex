@@ -21,14 +21,21 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
       decision → no terminal, forever), so it is cancelled (`run_cancelled`); a
       transient lookup error is left for the next boot.
     * `:awaiting_approval` **+ no checkpoint** → **dangling gate** (crash between
-      the `gate_open` commit and the checkpoint persist): cancel the run
-      (`run_cancelled`) and the pending `AgentCase`, in one transaction.
-    * `:running` **+ checkpoint** → **decision already recorded** (approve
-      committed `approval_resolved` → `:running`, then crashed before/within
-      resume): `GateResume.resume(recovered: true)` re-runs the durable
-      downstream steps. `init/1` appends `run_resumed`; the gate's
-      `after_approved` hook is **skipped** (Decision 8); downstream steps must
-      be idempotent (Decision 7 caveat).
+      the `gate_open` commit and the checkpoint persist): fail the run with the
+      full recovery audit (`run_recovered` + `run_failed`) and cancel the
+      pending `AgentCase` (+ its `:cancelled` timeline event), in one
+      transaction. A crash-reaped gate is a *failure* — `run_cancelled` is
+      reserved for deliberate operator decisions.
+    * `:running` **+ checkpoint** → re-keyed on the **recorded
+      `approval_resolved` event** (§4.8): only when one exists in the run's
+      log is this **decision already recorded** (approve committed
+      `approval_resolved` → `:running`, then crashed before/within resume) —
+      `GateResume.resume(recovered: true)` re-runs the durable downstream
+      steps. `init/1` appends `run_resumed`; the gate's `after_approved` hook
+      is **skipped** (Decision 8); downstream steps must be idempotent
+      (Decision 7 caveat). With **no** `approval_resolved` in the log the
+      pair is forbidden — fail-with-audit, never blind-resume past a gate.
+      A transient log-read error is left for the next boot.
     * `:running` **+ no checkpoint** → genuinely stranded → `run_recovered` +
       `run_failed`.
     * `:pending` **+ no checkpoint** → never started → `run_recovered` +
@@ -59,6 +66,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.GateResume
+  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -102,20 +110,25 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   # Classify on (status, checkpoint presence) and dispatch. Nothing is live at
   # boot, so the branch is decidable from DB state alone (no event fold).
+  # Presence is the ENCRYPTED column (a real attribute, always selected) — the
+  # `resume_checkpoint` calculation is `%Ash.NotLoaded{}` on a plain read,
+  # which `not is_nil/1` would misclassify as "present" on every run.
   defp reconcile_run(run), do: reconcile_branch(classify(run), run)
 
-  defp classify(%WorkflowRun{status: :awaiting_approval, resume_checkpoint: cp})
+  defp classify(%WorkflowRun{status: :awaiting_approval, encrypted_resume_checkpoint: cp})
        when not is_nil(cp),
        do: :parked
 
-  defp classify(%WorkflowRun{status: :awaiting_approval, resume_checkpoint: nil}),
+  defp classify(%WorkflowRun{status: :awaiting_approval, encrypted_resume_checkpoint: nil}),
     do: :dangling_gate
 
-  defp classify(%WorkflowRun{status: :running, resume_checkpoint: cp}) when not is_nil(cp),
-    do: :decision_recorded
+  defp classify(%WorkflowRun{status: :running, encrypted_resume_checkpoint: cp})
+       when not is_nil(cp),
+       do: :decision_recorded
 
-  defp classify(%WorkflowRun{status: :pending, resume_checkpoint: cp}) when not is_nil(cp),
-    do: :corrupt_pending
+  defp classify(%WorkflowRun{status: :pending, encrypted_resume_checkpoint: cp})
+       when not is_nil(cp),
+       do: :corrupt_pending
 
   defp classify(%WorkflowRun{}), do: :stranded
 
@@ -146,14 +159,20 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     end
   end
 
-  # Dangling gate: cancel the run + the orphaned pending case, atomically, via
-  # the shared WorkflowLog helper (the same choreography the runner's gate-pause
-  # failure path uses).
+  # Dangling gate: the full recovery audit — `run_recovered` (provenance) +
+  # the terminal `run_failed`, PLUS the orphaned pending case cancelled (with
+  # its `:cancelled` timeline event), all in one transaction via the shared
+  # WorkflowLog helper (the same choreography the runner's gate-pause failure
+  # path uses). `run_failed` legally folds `:awaiting_approval -> :failed` and
+  # clears the checkpoint. A crash-reaped gate is a *failure*, not an operator
+  # cancel — `run_cancelled` is reserved for deliberate decisions.
   defp reconcile_branch(:dangling_gate, run) do
     run
     |> WorkflowLog.terminate_cancelling_cases(
-      :run_cancelled,
-      %{reason: @dangling_gate_reason},
+      [
+        {:run_recovered, %{reason: @dangling_gate_reason, prior_status: run.status}},
+        {:run_failed, %{error: @dangling_gate_reason}}
+      ],
       @dangling_gate_reason,
       tenant: run.tenant_id,
       actor: Actor.system(run.tenant_id)
@@ -161,17 +180,31 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     |> finish(run, :dangling_gate)
   end
 
-  # Decision already recorded: re-run the persisted reactor's durable downstream
-  # steps. The after_approved hook is NOT run (Decision 8) — recovery never
-  # routes through Cases.decide, so the hook is skipped by construction.
+  # `:running` + checkpoint: resume ONLY on the recorded `approval_resolved`
+  # event — the explicit decision key, not the (status, checkpoint) pair alone.
+  # No recorded decision -> forbidden pair -> fail-with-audit, never
+  # blind-resume past the gate. A transient log-read error is left for the
+  # next boot (like the parked-case lookup).
   defp reconcile_branch(:decision_recorded, run) do
-    case GateResume.resume(run, recovered: true) do
-      {:ok, _value, _resumed} ->
-        emit(run, :decision_recorded)
+    tenant = run.tenant_id
+    actor = Actor.system(tenant)
 
-      {:error, reason, _run} ->
-        Logger.warning("[WorkflowRecovery] resume failed for run #{run.id}: #{inspect(reason)}")
-        emit(run, :decision_recorded)
+    case decision_recorded?(run, tenant, actor) do
+      {:ok, true} ->
+        resume_recorded_decision(run)
+
+      {:ok, false} ->
+        Logger.warning(
+          "[WorkflowRecovery] forbidden state: :running run #{run.id} carries a checkpoint " <>
+            "but no approval_resolved event — failing, not resuming"
+        )
+
+        fail_stranded(run, :running_checkpoint_no_decision)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[WorkflowRecovery] decision lookup failed for run #{run.id}: #{inspect(reason)}"
+        )
     end
   end
 
@@ -187,6 +220,26 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   # Genuinely stranded (the original bug fix): run_recovered + run_failed.
   defp reconcile_branch(:stranded, run), do: fail_stranded(run, :stranded)
+
+  # The after_approved hook is NOT run (Decision 8) — recovery never routes
+  # through Cases.decide, so the hook is skipped by construction.
+  defp resume_recorded_decision(run) do
+    case GateResume.resume(run, recovered: true) do
+      {:ok, _value, _resumed} ->
+        emit(run, :decision_recorded)
+
+      {:error, reason, _run} ->
+        Logger.warning("[WorkflowRecovery] resume failed for run #{run.id}: #{inspect(reason)}")
+        emit(run, :decision_recorded)
+    end
+  end
+
+  defp decision_recorded?(run, tenant, actor) do
+    case WorkflowEvent.for_run(run.id, tenant: tenant, actor: actor) do
+      {:ok, events} -> {:ok, Enum.any?(events, &(&1.kind == :approval_resolved))}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp fail_stranded(run, branch) do
     finish(WorkflowLog.append_recovery(run, run.status), run, branch)

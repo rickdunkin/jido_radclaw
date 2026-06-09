@@ -13,6 +13,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.AgentCaseEvent
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
@@ -34,7 +35,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
       assert {:ok, {:paused, case_id}, run} = result
       assert run.status == :awaiting_approval
-      assert is_binary(run.resume_checkpoint)
+      assert is_binary(run.encrypted_resume_checkpoint)
 
       # The pre-decision timeline, in seq order.
       kinds = kinds(run, ctx)
@@ -49,7 +50,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       # Approve → resume runs the durable downstream write.
       assert {:ok, completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
       assert completed.status == :completed
-      assert is_nil(completed.resume_checkpoint)
+      assert is_nil(completed.encrypted_resume_checkpoint)
 
       after_kinds = kinds(completed, ctx)
       assert :run_resumed in after_kinds
@@ -81,7 +82,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
       assert {:ok, completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
       assert completed.status == :completed
-      assert is_nil(completed.resume_checkpoint)
+      assert is_nil(completed.encrypted_resume_checkpoint)
       assert workspace_exists?(inputs.workspace_path, ctx)
     end
 
@@ -98,7 +99,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       # decide returns on the synchronous resume; it never waits on the hook.
       assert {:ok, completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
       assert completed.status == :completed
-      assert is_nil(completed.resume_checkpoint)
+      assert is_nil(completed.encrypted_resume_checkpoint)
       assert workspace_exists?(inputs.workspace_path, ctx)
     end
   end
@@ -110,7 +111,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
       assert {:ok, cancelled} = Cases.decide(case_id, :reject, %{}, scope(ctx))
       assert cancelled.status == :cancelled
-      assert is_nil(cancelled.resume_checkpoint)
+      assert is_nil(cancelled.encrypted_resume_checkpoint)
 
       kinds = kinds(cancelled, ctx)
       assert :run_cancelled in kinds
@@ -125,13 +126,21 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
     test "parked gate (awaiting + checkpoint) survives recovery untouched", ctx do
       {result, _inputs} = run_gated(ctx.tenant, ctx.actor)
       assert {:ok, {:paused, case_id}, run} = result
+      kinds_before = kinds(run, ctx)
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
       reloaded = reload(run, ctx)
       assert reloaded.status == :awaiting_approval
-      assert is_binary(reloaded.resume_checkpoint)
+      assert is_binary(reloaded.encrypted_resume_checkpoint)
       assert {:ok, %AgentCase{status: :pending}} = AgentCase.by_id(case_id, scope(ctx))
+
+      # Negative invariants: recovery must not have touched the parked run's
+      # log — no new run_failed / approval_resolved (or any event at all).
+      kinds_after = kinds(reloaded, ctx)
+      assert kinds_after == kinds_before
+      refute :run_failed in kinds_after
+      refute :approval_resolved in kinds_after
     end
 
     test "parked gate with a missing pending case is cancelled on recovery", ctx do
@@ -141,33 +150,42 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       # The run stays :awaiting_approval + checkpoint, but its inbox row is gone
       # — it can never be decided, so the parked branch must reap it (Fix 2).
       {:ok, agent_case} = AgentCase.by_id(case_id, scope(ctx))
-      Ash.destroy!(agent_case, tenant: ctx.tenant, authorize?: false)
+      destroy_case!(agent_case, ctx.tenant)
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
       cancelled = reload(run, ctx)
       assert cancelled.status == :cancelled
       assert :run_cancelled in kinds(cancelled, ctx)
-      assert is_nil(cancelled.resume_checkpoint)
+      assert is_nil(cancelled.encrypted_resume_checkpoint)
     end
 
-    test "dangling gate (awaiting + no checkpoint) is cancelled on recovery", ctx do
+    test "dangling gate (awaiting + no checkpoint) fails with full audit on recovery", ctx do
       %{tenant: tenant, actor: actor} = ctx
       {run, gate} = open_gate_without_checkpoint(tenant, actor)
 
       assert reload(run, ctx).status == :awaiting_approval
-      assert is_nil(reload(run, ctx).resume_checkpoint)
+      assert is_nil(reload(run, ctx).encrypted_resume_checkpoint)
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
-      cancelled = reload(run, ctx)
-      assert cancelled.status == :cancelled
-      assert :run_cancelled in kinds(cancelled, ctx)
+      # Decision 3: a crash-reaped gate is a FAILURE with the full recovery
+      # audit pair — not an operator-style cancel.
+      failed = reload(run, ctx)
+      assert failed.status == :failed
+      failed_kinds = kinds(failed, ctx)
+      assert :run_recovered in failed_kinds
+      assert :run_failed in failed_kinds
+      refute :run_cancelled in failed_kinds
 
       assert {:ok, %AgentCase{status: :cancelled, cancellation_reason: reason}} =
                AgentCase.by_id(gate.id, scope(ctx))
 
       assert reason =~ "dangling gate"
+
+      # The case timeline records the cancel in the same transaction.
+      assert {:ok, case_events} = AgentCaseEvent.for_case(gate.id, scope(ctx))
+      assert Enum.any?(case_events, &(&1.type == :cancelled))
     end
 
     test "decision-already-recorded resumes on boot (hook NOT re-run)", ctx do
@@ -175,24 +193,81 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       {result, inputs} = run_gated(tenant, actor)
       assert {:ok, {:paused, case_id}, run} = result
 
-      # Drive approve to the approval_resolved commit, but skip the resume.
-      record_approval_without_resume(case_id, run, tenant, actor)
+      # Drive approve to the approval_resolved commit, but skip the resume —
+      # the commit-only seam (resume: false).
+      assert {:ok, _run} =
+               Cases.decide(case_id, :approve, %{}, Keyword.put(scope(ctx), :resume, false))
 
       running = reload(run, ctx)
       assert running.status == :running
-      assert is_binary(running.resume_checkpoint)
+      assert is_binary(running.encrypted_resume_checkpoint)
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
       completed = reload(run, ctx)
       assert completed.status == :completed
-      assert is_nil(completed.resume_checkpoint)
+      assert is_nil(completed.encrypted_resume_checkpoint)
       assert :run_resumed in kinds(completed, ctx)
       assert workspace_exists?(inputs.workspace_path, ctx)
+    end
 
-      # The hook is skipped on the recovery path (Decision 8); durability comes
-      # from the reactor's downstream steps, not the hook.
-      refute TestIrreversibleWrite.approved?(case_id)
+    test "forbidden :running + checkpoint + NO decision fails with audit, never resumes", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      {result, inputs} = run_gated(tenant, actor)
+      assert {:ok, {:paused, _case_id}, run} = result
+
+      # Corrupt the pair by hand: flip the run to :running with NO
+      # approval_resolved in the log (bypassing the projection guard via the
+      # private :set_status action, exactly what a bug/corruption would do).
+      {:ok, parked} = WorkflowRun.by_id(run.id, scope(ctx))
+
+      {:ok, _} =
+        parked
+        |> Ash.Changeset.for_update(:set_status, %{status: :running},
+          tenant: tenant,
+          authorize?: false
+        )
+        |> Ash.update()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = WorkflowRecovery.reconcile_all()
+        end)
+
+      assert log =~ "no approval_resolved"
+
+      failed = reload(run, ctx)
+      assert failed.status == :failed
+      failed_kinds = kinds(failed, ctx)
+      assert :run_recovered in failed_kinds
+      assert :run_failed in failed_kinds
+      # Never blind-resumed past the gate: no resume event, no downstream write.
+      refute :run_resumed in failed_kinds
+      refute workspace_exists?(inputs.workspace_path, ctx)
+    end
+
+    test "a non-gate halt (run not :awaiting_approval) fails with audit", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      {:ok, run} =
+        WorkflowRun.create(%{name: "halt-#{System.unique_integer([:positive])}"},
+          tenant: tenant,
+          actor: actor
+        )
+
+      {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+
+      result =
+        ReactorRunner.finalize({:halted, %{stub: true}}, run,
+          tenant: tenant,
+          actor: actor,
+          inputs: %{},
+          reactor_module: GatedTestReactor
+        )
+
+      assert {:error, :unexpected_halt, failed} = result
+      assert failed.status == :failed
+      assert :run_failed in kinds(failed, ctx)
     end
   end
 
@@ -205,15 +280,14 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       assert {:ok, _event} =
                WorkflowLog.terminate_cancelling_cases(
                  run,
-                 :run_failed,
-                 %{error: "boom"},
+                 [{:run_failed, %{error: "boom"}}],
                  "gate pause failed",
                  scope(ctx)
                )
 
       failed = reload(run, ctx)
       assert failed.status == :failed
-      assert is_nil(failed.resume_checkpoint)
+      assert is_nil(failed.encrypted_resume_checkpoint)
 
       assert {:ok, %AgentCase{status: :cancelled, cancellation_reason: "gate pause failed"}} =
                AgentCase.by_id(gate.id, scope(ctx))
@@ -225,7 +299,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
       # The pending case vanishes before finalize captures it.
       {:ok, agent_case} = AgentCase.by_id(gate.id, scope(ctx))
-      Ash.destroy!(agent_case, tenant: tenant, authorize?: false)
+      destroy_case!(agent_case, tenant)
 
       result =
         ReactorRunner.finalize({:halted, %{stub: true}}, run,
@@ -237,7 +311,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
 
       assert {:error, {:gate_pause_failed, :pending_case_missing}, failed} = result
       assert failed.status == :failed
-      assert is_nil(failed.resume_checkpoint)
+      assert is_nil(failed.encrypted_resume_checkpoint)
       # No stale :pending row left behind in the operator inbox.
       assert {:ok, []} = AgentCase.pending_for_run(run.id, scope(ctx))
     end
@@ -256,8 +330,20 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       {result, inputs} = run_gated(ctx.tenant, ctx.actor)
       assert {:ok, {:paused, _id}, run} = result
 
+      # The stored column is ciphertext (WS9): the raw bytes must NOT decode
+      # as the envelope. Only the AshCloak calculation decrypts to the blob.
+      assert is_binary(run.encrypted_resume_checkpoint)
+
+      assert_raise ArgumentError, fn ->
+        :erlang.binary_to_term(run.encrypted_resume_checkpoint, [:safe])
+      end
+
+      {:ok, loaded} = Ash.load(run, :resume_checkpoint, scope(ctx))
+      blob = loaded.resume_checkpoint
+      assert is_binary(blob)
+
       # Two-stage decode of the real checkpoint envelope (see GateResume).
-      assert {1, module_string, inner} = :erlang.binary_to_term(run.resume_checkpoint, [:safe])
+      assert {1, module_string, inner} = :erlang.binary_to_term(blob, [:safe])
       assert module_string == "Elixir.JidoClaw.Orchestration.Reactors.GatedTestReactor"
       assert Code.ensure_loaded?(String.to_existing_atom(module_string))
 
@@ -343,29 +429,6 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
     {running, gate}
   end
 
-  # Replicates Cases' approve transaction (case decision + approval_resolved)
-  # without the follow-on GateResume — the "decision recorded, crash before
-  # resume" state.
-  defp record_approval_without_resume(case_id, run, tenant, actor) do
-    {:ok, agent_case} = AgentCase.by_id(case_id, tenant: tenant, actor: actor)
-
-    {:ok, _} =
-      Ash.transact([AgentCase, WorkflowEvent], fn ->
-        {:ok, gate} = AgentCase.approve(agent_case, %{}, tenant: tenant, actor: actor)
-
-        {:ok, _} =
-          WorkflowLog.append(
-            run,
-            :approval_resolved,
-            %{agent_case_id: gate.id, decision: :approve},
-            tenant: tenant,
-            actor: actor
-          )
-
-        gate
-      end)
-  end
-
   # Poll `fun` until it returns truthy or `timeout` ms elapse. Used for the
   # async gate hook, whose marker is set off the decision/resume critical path.
   defp eventually(fun, timeout \\ 1_000) do
@@ -399,6 +462,19 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
         _ -> Application.put_env(:jido_claw, :gate_hook_timeout, prev)
       end
     end)
+  end
+
+  # Simulate a vanished/corrupt inbox row. The append-only AgentCaseEvent has
+  # no destroy action by design, so its rows (FK children) are removed with a
+  # raw delete before the case row itself.
+  defp destroy_case!(agent_case, tenant) do
+    import Ecto.Query
+
+    JidoClaw.Repo.delete_all(
+      from(e in JidoClaw.Orchestration.AgentCaseEvent, where: e.agent_case_id == ^agent_case.id)
+    )
+
+    Ash.destroy!(agent_case, tenant: tenant, authorize?: false)
   end
 
   defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]

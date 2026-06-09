@@ -11,8 +11,17 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
   output.
 
   `options` (the impl tuple's keyword list) carries `:generator` and
-  `:evaluator` (normalized step maps extracted by `extract_roles/1`) and
-  `:max_iterations`. The only argument is `:extra_context`.
+  `:evaluator` (normalized step maps extracted by `extract_roles/1`),
+  `:max_iterations`, and `:retry` (the generator's retry budget, threaded by
+  the compiler). The only argument is `:extra_context`.
+
+  ## Retry policy
+
+  Like `AgentStep`, a bare `{:error, _}` is terminal in Reactor regardless of
+  `max_retries`, so the `retry:` budget is a `compensate/4` policy: while
+  `context[:retries_remaining]` is positive, `:retry` re-runs the whole loop
+  from iteration 1. Capability is per-step via `can?/2` (`:compensate` iff
+  `retry > 0`); the loop declares no cleanup, so it never reports `:undo`.
   """
 
   use Reactor.Step
@@ -43,6 +52,41 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
     iterate(generator, evaluator, config, 1, nil)
   end
+
+  # Per-step capability from the impl options — the generated
+  # `function_exported?` default would report every iterative step
+  # compensate-capable because this module exports compensate/4.
+  @impl true
+  def can?(%{impl: {_mod, options}}, :compensate) when is_list(options),
+    do: retry_budget(options) > 0
+
+  def can?(step, capability), do: super(step, capability)
+
+  # Reactor dispatches `compensate(reason, arguments, context, options)` —
+  # options LAST. `:retry` while budget remains; otherwise the error stands.
+  @impl true
+  @spec compensate(term(), Reactor.inputs(), Reactor.context(), keyword()) ::
+          :retry | {:error, term()}
+  def compensate(reason, _arguments, context, options) do
+    remaining = Map.get(context, :retries_remaining, 0)
+
+    if retry_budget(options) > 0 and positive_remaining?(remaining) do
+      :retry
+    else
+      {:error, reason}
+    end
+  end
+
+  defp retry_budget(options) do
+    case Keyword.get(options, :retry, 0) do
+      retry when is_integer(retry) and retry >= 0 -> retry
+      _ -> 0
+    end
+  end
+
+  defp positive_remaining?(:infinity), do: true
+  defp positive_remaining?(remaining) when is_integer(remaining), do: remaining > 0
+  defp positive_remaining?(_), do: false
 
   @doc """
   Extract generator and evaluator steps from a skill by `role` field.

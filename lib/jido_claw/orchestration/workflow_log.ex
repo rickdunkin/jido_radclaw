@@ -10,6 +10,7 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.AgentCaseEvent
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -80,9 +81,9 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
 
   @doc """
   Open a human approval gate for `run` in **one transaction**: create the
-  operator-facing `AgentCase` (pending) and append the `approval_requested`
-  status event, which flips the run to `:awaiting_approval` in the same
-  transaction. Either both persist or neither does.
+  operator-facing `AgentCase` (pending), append the `approval_requested`
+  status event (which flips the run to `:awaiting_approval`), and append the
+  case's `:opened` timeline event. Either all three persist or none do.
 
   Returns `{:ok, agent_case}` on success or `{:error, reason}` on the first
   failure (whole transaction rolled back). Like `append_all/3`, the
@@ -101,7 +102,7 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
     tenant = tenant(run, opts)
     actor = actor(run, opts)
 
-    Ash.transact([AgentCase, WorkflowEvent], fn ->
+    Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
       with {:ok, gate} <- AgentCase.create(agent_case_attrs, tenant: tenant, actor: actor),
            {:ok, _event} <-
              append(
@@ -110,6 +111,14 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
                %{agent_case_id: gate.id, step_name: gate.step_name, kind: gate.kind},
                tenant: tenant,
                actor: actor
+             ),
+           {:ok, _case_event} <-
+             case_event(
+               gate,
+               :opened,
+               %{step_name: gate.step_name, kind: gate.kind, workflow_run_id: run.id},
+               tenant,
+               actor
              ) do
         gate
       end
@@ -117,23 +126,54 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   end
 
   @doc """
-  Terminate `run` AND cancel its pending `AgentCase`(s) in one transaction:
-  cancel every pending case with `case_reason`, then append `kind` (a terminal
-  event the projection folds to a terminal status, clearing the checkpoint per
-  Decision 7). Either both persist or neither does, so run status and the
-  operator inbox never disagree. Shared by the runner's gate-pause failure path
-  and recovery's dangling-gate branch.
+  Append one immutable `AgentCaseEvent` to `gate`'s timeline. Must be called
+  inside the same transaction as the case-status flip it records — every
+  caller is one of the single-transaction choke-points (`gate_open/3`,
+  `Cases` decision/abandon/retract commits, `terminate_cancelling_cases/5`).
   """
-  @spec terminate_cancelling_cases(WorkflowRun.t(), atom(), map(), String.t(), keyword()) ::
+  @spec case_event(AgentCase.t(), atom(), map(), String.t(), term()) ::
+          {:ok, AgentCaseEvent.t()} | {:error, term()}
+  def case_event(gate, type, data, tenant, actor) do
+    AgentCaseEvent.append(
+      %{agent_case_id: gate.id, type: type, data: data || %{}},
+      tenant: tenant,
+      actor: actor
+    )
+  end
+
+  @doc """
+  Terminate `run` AND cancel its pending `AgentCase`(s) in one transaction:
+  cancel every pending case with `case_reason` (each appending a `:cancelled`
+  timeline event), then append `events` — a `{kind, payload}` list whose final
+  element must be a terminal event the projection folds to a terminal status
+  (clearing the checkpoint per Decision 7). Either everything persists or
+  nothing does, so run status, the operator inbox, and the case timelines
+  never disagree. Shared by the runner's gate-pause failure path and
+  recovery's dangling-gate branch (which passes the
+  `[{:run_recovered, …}, {:run_failed, …}]` recovery pair).
+  """
+  @spec terminate_cancelling_cases(WorkflowRun.t(), [{atom(), map()}], String.t(), keyword()) ::
           {:ok, WorkflowEvent.t()} | {:error, term()}
-  def terminate_cancelling_cases(run, kind, payload, case_reason, opts \\ []) do
+  def terminate_cancelling_cases(run, events, case_reason, opts \\ []) when is_list(events) do
     tenant = tenant(run, opts)
     actor = actor(run, opts)
 
-    Ash.transact([AgentCase, WorkflowEvent], fn ->
+    Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
       with {:ok, _} <- cancel_pending_cases(run, case_reason, tenant, actor),
-           {:ok, event} <- append(run, kind, payload, tenant: tenant, actor: actor) do
+           {:ok, event} <- append_each(run, events, tenant: tenant, actor: actor) do
         event
+      end
+    end)
+  end
+
+  # Sequential appends inside the caller's transaction; returns the last event.
+  defp append_each(_run, [], _opts), do: {:error, :no_events}
+
+  defp append_each(run, events, opts) do
+    Enum.reduce_while(events, {:error, :no_events}, fn {kind, payload}, _acc ->
+      case append(run, kind, payload, opts) do
+        {:ok, event} -> {:cont, {:ok, event}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
@@ -142,10 +182,7 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
     case AgentCase.pending_for_run(run.id, tenant: tenant, actor: actor) do
       {:ok, cases} ->
         Enum.reduce_while(cases, {:ok, :done}, fn agent_case, _acc ->
-          case AgentCase.cancel(agent_case, %{cancellation_reason: reason},
-                 tenant: tenant,
-                 actor: actor
-               ) do
+          case cancel_case(agent_case, reason, tenant, actor) do
             {:ok, _} -> {:cont, {:ok, :done}}
             {:error, r} -> {:halt, {:error, r}}
           end
@@ -153,6 +190,20 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Cancel one pending case + its `:cancelled` timeline event, atomically with
+  # the surrounding transaction.
+  defp cancel_case(agent_case, reason, tenant, actor) do
+    with {:ok, cancelled} <-
+           AgentCase.cancel(agent_case, %{cancellation_reason: reason},
+             tenant: tenant,
+             actor: actor
+           ),
+         {:ok, _case_event} <-
+           case_event(cancelled, :cancelled, %{reason: reason}, tenant, actor) do
+      {:ok, cancelled}
     end
   end
 

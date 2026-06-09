@@ -12,11 +12,32 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   `:extra_context`. `options` (the impl tuple's keyword list) carries the
   step's static config: `:template`, `:task`, `:produces`, `:step_name` (the
   YAML name or `nil`), `:context_format` (`:deps` | `:preceding`), `:upstream`
-  (`[{step_id, yaml_name}]`, the `depends_on` set), and `:consumes`
-  (`[{step_id, yaml_name, produces_map}]`).
+  (`[{step_id, yaml_name}]`, the `depends_on` set), `:consumes`
+  (`[{step_id, yaml_name, produces_map}]`), and the saga metadata `:retry` /
+  `:compensate` / `:irreversible`.
+
+  ## Saga callbacks (`retry:` / `compensate:` / `irreversible:`)
+
+  Reactor retries a step **only** on a `:retry` return — a bare `{:error, _}`
+  is terminal regardless of `max_retries` — so the YAML `retry:` budget is a
+  *policy* implemented in `compensate/4`: while `context[:retries_remaining]`
+  is positive it returns `:retry` (Reactor caps attempts via the step's
+  `max_retries`); once exhausted, a declared `compensate:` cleanup task runs
+  via `AgentRunner` (`:ok` = compensated), otherwise the original error stands.
+  `undo/4` runs the same cleanup task when a *later* step fails and the saga
+  unwinds this completed step.
+
+  Capability is per-step via the `can?/2` override (not blanket module
+  exports): `:compensate` iff `retry > 0` or `compensate:` declared; `:undo`
+  iff `compensate:` declared **and not** `irreversible: true`. A step with
+  neither flag reports no capability — Reactor skips the callbacks entirely,
+  which is operationally different from a no-op `:ok` undo (undo stack,
+  `fully_reversible?`, replay gates).
   """
 
   use Reactor.Step
+
+  require Logger
 
   alias JidoClaw.Skills.Steps.AgentRunner
   alias JidoClaw.Workflows.ContextBuilder
@@ -44,6 +65,93 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
 
     AgentRunner.run(template, full_task, step_name, context)
   end
+
+  # Per-step capability, derived from the impl options — NOT the generated
+  # `function_exported?` default, which would make every agent step report
+  # compensate/undo-capable because this module exports both.
+  @impl true
+  def can?(%{impl: {_mod, options}}, :compensate) when is_list(options),
+    do: retry_budget(options) > 0 or cleanup_declared?(options)
+
+  def can?(%{impl: {_mod, options}}, :undo) when is_list(options),
+    do: cleanup_declared?(options) and not irreversible?(options)
+
+  def can?(step, capability), do: super(step, capability)
+
+  # The `retry:` policy + `compensate:` cleanup. Reactor dispatches this as
+  # `compensate(reason, arguments, context, options)` — options LAST.
+  @impl true
+  @spec compensate(term(), Reactor.inputs(), Reactor.context(), keyword()) ::
+          :retry | :ok | {:error, term()}
+  def compensate(reason, _arguments, context, options) do
+    retries_remaining = Map.get(context, :retries_remaining, 0)
+
+    cond do
+      retry_budget(options) > 0 and positive_remaining?(retries_remaining) ->
+        :retry
+
+      cleanup_declared?(options) ->
+        run_cleanup(options, context, "compensate")
+
+      true ->
+        {:error, reason}
+    end
+  end
+
+  # Saga unwind of a *completed* step (a later step failed). Runs the declared
+  # cleanup task; only reachable when `can?(:undo)` (cleanup declared and not
+  # irreversible).
+  @impl true
+  @spec undo(term(), Reactor.inputs(), Reactor.context(), keyword()) :: :ok | {:error, term()}
+  def undo(_value, _arguments, context, options) do
+    run_cleanup(options, context, "undo")
+  end
+
+  defp retry_budget(options) do
+    case Keyword.get(options, :retry, 0) do
+      retry when is_integer(retry) and retry >= 0 -> retry
+      _ -> 0
+    end
+  end
+
+  defp positive_remaining?(:infinity), do: true
+  defp positive_remaining?(remaining) when is_integer(remaining), do: remaining > 0
+  defp positive_remaining?(_), do: false
+
+  defp cleanup_declared?(options) do
+    case Keyword.get(options, :compensate) do
+      task when is_binary(task) -> String.trim(task) != ""
+      _ -> false
+    end
+  end
+
+  defp irreversible?(options), do: Keyword.get(options, :irreversible, false) == true
+
+  # The declared cleanup task, run through the same spawn/run/capture core as
+  # the step itself. Success -> :ok (compensated/undone); failure -> an honest
+  # {:error, _} — reporting "compensated" for a failed cleanup would put a lie
+  # in the durable event log.
+  defp run_cleanup(options, context, phase) do
+    template = Keyword.fetch!(options, :template)
+    task = Keyword.fetch!(options, :compensate)
+    step_name = Keyword.get(options, :step_name)
+
+    case AgentRunner.run(template, task, cleanup_name(step_name, phase), context) do
+      {:ok, %StepResult{}} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[AgentStep] #{phase} cleanup failed for step #{step_name || "(unnamed)"}: " <>
+            inspect(reason)
+        )
+
+        {:error, {:cleanup_failed, reason}}
+    end
+  end
+
+  defp cleanup_name(nil, phase), do: "(#{phase})"
+  defp cleanup_name(step_name, phase), do: "#{step_name} (#{phase})"
 
   # The dependency / preceding results, ordered oldest-first from `upstream`.
   defp build_dep_context(arguments, upstream, :preceding) do

@@ -59,7 +59,7 @@ defmodule JidoClaw.Web.CoreComponents do
       case assigns.status do
         s when s in [:completed, :ready, :active, :approved] -> "badge-green"
         s when s in [:running, :pending, :awaiting_approval] -> "badge-yellow"
-        s when s in [:failed, :error, :rejected, :cancelled] -> "badge-red"
+        s when s in [:failed, :error, :rejected, :cancelled, :abandoned] -> "badge-red"
         _ -> "badge-blue"
       end
 

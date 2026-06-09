@@ -7,15 +7,46 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
   use JidoClaw.TenantCase
 
   alias JidoClaw.Gates.TestIrreversibleWrite
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Web.ApprovalsLive
+  alias Phoenix.HTML.Safe
 
   setup do
     TestIrreversibleWrite.reset()
     tenant = seed_tenant("gates-live")
     {:ok, tenant: tenant, actor: actor_for(tenant)}
+  end
+
+  test "render shows the gate DSL's typed fields (title, label, widgets)", %{
+    tenant: tenant,
+    actor: actor
+  } do
+    uniq = System.unique_integer([:positive])
+    inputs = %{workspace_name: "render-ws-#{uniq}", workspace_path: "/tmp/render-ws-#{uniq}"}
+
+    {:ok, {:paused, case_id}, _run} =
+      ReactorRunner.run(GatedTestReactor, inputs, tenant: tenant, actor: actor)
+
+    {:ok, gate} = AgentCase.by_id(case_id, tenant: tenant, actor: actor)
+
+    html =
+      %{
+        __changed__: %{},
+        gates: [gate],
+        flash: %{}
+      }
+      |> ApprovalsLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    # DSL-seeded title + the declared :comment textarea with its label.
+    assert html =~ "Approve irreversible write (test)"
+    assert html =~ "Comment"
+    assert html =~ ~s(<textarea name="fields[comment]")
+    assert html =~ "Abandon run"
   end
 
   test "approve handle_event resumes the paused run", %{tenant: tenant, actor: actor} do
