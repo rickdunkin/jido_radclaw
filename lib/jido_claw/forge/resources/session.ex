@@ -21,7 +21,7 @@ defmodule JidoClaw.Forge.Resources.Session do
   `JidoClaw.Trace.Resources.TraceEvent` (`(trace_id, seq)`), both of which
   document global identities for globally-unique-by-construction keys.
   """
-  use JidoClaw.Resource, domain: JidoClaw.Forge.Domain
+  use JidoClaw.Resource, domain: JidoClaw.Forge.Domain, global_actions: [:by_name_global]
 
   postgres do
     table("forge_sessions")

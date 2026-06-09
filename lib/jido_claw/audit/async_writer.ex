@@ -17,6 +17,7 @@ defmodule JidoClaw.Audit.AsyncWriter do
   """
 
   alias JidoClaw.Audit.Event
+  alias JidoClaw.Authorization.Actor
   require Logger
 
   @sup JidoClaw.Audit.TaskSupervisor
@@ -135,7 +136,7 @@ defmodule JidoClaw.Audit.AsyncWriter do
   defp do_record(%{tenant_id: tenant_id} = attrs) when is_binary(tenant_id) do
     attrs
     |> Map.delete(:tenant_id)
-    |> Event.record(tenant: tenant_id, authorize?: false)
+    |> Event.record(tenant: tenant_id, actor: Actor.system(tenant_id))
     |> case do
       {:ok, _} ->
         :ok

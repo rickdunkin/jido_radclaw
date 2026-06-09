@@ -21,12 +21,12 @@
           # not copy-pasted logic — so their bodies are skipped.
           {ExDNA.Credo, [excluded_macros: [:relationships]]},
           # ash_credo — Ash framework code-quality checks
-          # {AshCredo.Check.Warning.AuthorizeFalse, []},
+          {AshCredo.Check.Warning.AuthorizeFalse, []},
           {AshCredo.Check.Warning.AuthorizerWithoutPolicies, []},
           {AshCredo.Check.Warning.EmptyDomain, []},
           {AshCredo.Check.Warning.MissingDomain, []},
           {AshCredo.Check.Warning.NoActions, []},
-          # {AshCredo.Check.Warning.OverlyPermissivePolicy, []},
+          {AshCredo.Check.Warning.OverlyPermissivePolicy, []},
           {AshCredo.Check.Warning.SensitiveAttributeExposed, []},
           {AshCredo.Check.Warning.SensitiveFieldInAccept, []},
           {AshCredo.Check.Warning.UnknownAction, []},

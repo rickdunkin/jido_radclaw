@@ -35,6 +35,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
 
   require Ash.Query
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Export.Canonical
   alias JidoClaw.Memory.Fact
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
@@ -58,13 +59,13 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
       Resolver.ensure_workspace("default", project_dir)
 
     query =
-      Fact.query_to_list(%{}, tenant: tenant_id, authorize?: false)
+      Fact.query_to_list(%{}, tenant: tenant_id, actor: Actor.system(tenant_id))
       |> Ash.Query.filter(
         workspace_id == ^workspace_id and
           is_nil(invalid_at) and is_nil(expired_at)
       )
 
-    case Ash.read(query, tenant: tenant_id, authorize?: false) do
+    case Ash.read(query, tenant: tenant_id) do
       {:ok, raw_facts} ->
         facts = Enum.sort_by(raw_facts, & &1.id)
         write_export(facts, out, tenant_id, workspace_id, with_delta?)

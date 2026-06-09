@@ -15,6 +15,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Tenants.Tenant
 
@@ -90,7 +91,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Cron do
             {ok_count + 1, fail_count}
 
           true ->
-            case Job.upsert(attrs, tenant: tenant, authorize?: false) do
+            case Job.upsert(attrs, tenant: tenant, actor: Actor.system(tenant)) do
               {:ok, _} ->
                 {ok_count + 1, fail_count}
 

@@ -21,7 +21,9 @@ defmodule JidoClaw.Conversations.Session do
   already has both the Workspace UUID and the tenant in hand.
   """
 
-  use JidoClaw.Resource, domain: JidoClaw.Conversations
+  use JidoClaw.Resource,
+    domain: JidoClaw.Conversations,
+    global_actions: [:list_open_for_workspaces_global]
 
   alias JidoClaw.Conversations.Resources.GlobalLookup
   alias JidoClaw.Workspaces.Workspace
@@ -52,6 +54,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_current_agent_template, action: :set_current_agent_template, args: [:template])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
+    define(:list_open_for_workspaces_global, args: [:workspace_ids])
 
     define(:by_external,
       action: :by_external,
@@ -203,6 +206,16 @@ defmodule JidoClaw.Conversations.Session do
       multitenancy(:bypass)
       argument(:id, :uuid, allow_nil?: false)
       filter(expr(id == ^arg(:id)))
+    end
+
+    # The Memory.Consolidator tick's per-session discovery seam: a
+    # system-level scan over the (already cross-tenant) workspace candidate
+    # set, policy-bypassed via the macro's `global_actions:` option.
+    read :list_open_for_workspaces_global do
+      description("Cross-tenant scan of open sessions belonging to the given workspaces.")
+      multitenancy(:bypass)
+      argument(:workspace_ids, {:array, :uuid}, allow_nil?: false)
+      filter(expr(workspace_id in ^arg(:workspace_ids) and is_nil(closed_at)))
     end
   end
 

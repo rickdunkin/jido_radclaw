@@ -5,13 +5,15 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   `WorkflowRun.status` writer. Runs entirely inside the `:append` action's
   transaction.
 
-  ## Tenant threading
+  ## Tenant & actor threading
 
   Every internal read/update threads `tenant: changeset.tenant` (the tenant
-  the append was called with, which equals the event's `tenant_id`).
-  `authorize?: false` drops the *policy* but NOT the multitenancy *filter*,
-  so an attribute-multitenant read/update without `tenant:` would fail or
-  silently cross the tenant boundary.
+  the append was called with, which equals the event's `tenant_id`) plus the
+  appending caller's actor, falling back to a tenant-bound system actor when
+  the caller supplied none. Any actor that reached `:append` already passed
+  the event's own `ActorTenantMatches` create policy for this tenant, so the
+  internal reads/writes authorize identically; the multitenancy *filter*
+  still comes solely from `tenant:`.
 
   ## before_action
 
@@ -53,6 +55,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
 
   alias Ash.Changeset
   alias Ash.Error.Changes.InvalidChanges
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowRun
@@ -68,18 +71,25 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   @savepoint "workflow_step_projection"
 
   @impl true
-  def change(changeset, _opts, _context) do
+  def change(changeset, _opts, context) do
+    caller_actor = context.actor
+
     changeset
-    |> Changeset.before_action(&allocate/1)
-    |> Changeset.after_action(&maybe_update_status/2)
-    |> Changeset.after_action(&maybe_project_step/2)
+    |> Changeset.before_action(&allocate(&1, effective_actor(&1, caller_actor)))
+    |> Changeset.after_action(&maybe_update_status(&1, &2, effective_actor(&1, caller_actor)))
+    |> Changeset.after_action(&maybe_project_step(&1, &2, effective_actor(&1, caller_actor)))
   end
 
-  defp allocate(changeset) do
+  # Preserve the real caller for the internal reads/writes; a tenant-bound
+  # system actor only covers actor-less internal callers.
+  defp effective_actor(changeset, caller_actor),
+    do: caller_actor || Actor.system(changeset.tenant)
+
+  defp allocate(changeset, actor) do
     run_id = Changeset.get_attribute(changeset, :workflow_run_id)
     tenant = changeset.tenant
 
-    case lock_run(run_id, tenant) do
+    case lock_run(run_id, tenant, actor) do
       {:ok, run} ->
         raw_payload = Changeset.get_attribute(changeset, :payload) || %{}
         raw_metadata = Changeset.get_attribute(changeset, :metadata) || %{}
@@ -88,7 +98,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
         |> Changeset.set_context(%{
           workflow_event: %{current_status: run.status, raw_payload: raw_payload}
         })
-        |> Changeset.force_change_attribute(:seq, next_seq(run_id, tenant))
+        |> Changeset.force_change_attribute(:seq, next_seq(run_id, tenant, actor))
         |> Changeset.force_change_attribute(:payload, Transcript.redact(raw_payload))
         |> Changeset.force_change_attribute(:metadata, Transcript.redact(raw_metadata))
 
@@ -103,45 +113,45 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   # FOR UPDATE on the parent run row is the per-run serialization point:
   # concurrent appends for one run block here until the prior append commits,
   # so seq allocation is gap-free and strictly increasing in commit order.
-  defp lock_run(run_id, tenant) do
+  defp lock_run(run_id, tenant, actor) do
     WorkflowRun
     |> Query.filter(id == ^run_id)
     |> Query.lock("FOR UPDATE")
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %WorkflowRun{} = run} -> {:ok, run}
       _ -> :error
     end
   end
 
-  defp next_seq(run_id, tenant) do
+  defp next_seq(run_id, tenant, actor) do
     WorkflowEvent
     |> Query.filter(workflow_run_id == ^run_id)
     |> Query.sort(seq: :desc)
     |> Query.limit(1)
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %WorkflowEvent{seq: seq}} -> seq + 1
       _ -> 1
     end
   end
 
-  defp maybe_update_status(changeset, event) do
+  defp maybe_update_status(changeset, event, actor) do
     if Projection.status_authority?(event.kind) do
       %{current_status: current_status, raw_payload: raw_payload} =
         changeset.context[:workflow_event]
 
-      update_status(event, current_status, raw_payload, changeset.tenant)
+      update_status(event, current_status, raw_payload, changeset.tenant, actor)
     else
       {:ok, event}
     end
   end
 
-  defp update_status(event, current_status, raw_payload, tenant) do
+  defp update_status(event, current_status, raw_payload, tenant, actor) do
     case Projection.next_status(current_status, event.kind) do
       {:ok, _new_status} ->
         attrs = Projection.status_attrs(event.kind, raw_payload, event.occurred_at)
-        apply_status(event, attrs, tenant)
+        apply_status(event, attrs, tenant, actor)
 
       :illegal ->
         {:error,
@@ -152,11 +162,11 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     end
   end
 
-  defp apply_status(event, attrs, tenant) do
-    with {:ok, run} <- load_run(event.workflow_run_id, tenant),
+  defp apply_status(event, attrs, tenant, actor) do
+    with {:ok, run} <- load_run(event.workflow_run_id, tenant, actor),
          {:ok, _updated} <-
            run
-           |> Changeset.for_update(:set_status, attrs, tenant: tenant, authorize?: false)
+           |> Changeset.for_update(:set_status, attrs, tenant: tenant, actor: actor)
            |> Ash.update() do
       {:ok, event}
     else
@@ -167,10 +177,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
 
   # Re-read within the held FOR UPDATE lock (same transaction) for the
   # status update; cheap and avoids stashing a struct through context.
-  defp load_run(run_id, tenant) do
+  defp load_run(run_id, tenant, actor) do
     WorkflowRun
     |> Query.filter(id == ^run_id)
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %WorkflowRun{} = run} -> {:ok, run}
       _ -> :error
@@ -183,9 +193,9 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
 
   # Always `{:ok, event}` — the step row is a read model; only the status
   # projection keeps rollback-on-error semantics.
-  defp maybe_project_step(changeset, event) do
+  defp maybe_project_step(changeset, event, actor) do
     if event.kind in @step_projection_kinds do
-      project_step(changeset, event)
+      project_step(changeset, event, actor)
     end
 
     {:ok, event}
@@ -195,7 +205,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   # payload is redacted), tolerating string keys for foreign producers. A
   # payload with no usable identity (`name` nor `step`) is skipped — there is
   # nothing to key the row on.
-  defp project_step(changeset, event) do
+  defp project_step(changeset, event, actor) do
     raw_payload =
       case changeset.context[:workflow_event] do
         %{raw_payload: payload} when is_map(payload) -> payload
@@ -208,7 +218,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
 
       name ->
         attrs = step_attrs(event, name, raw_payload)
-        upsert_step(event, step_action(event.kind), attrs, changeset.tenant)
+        upsert_step(event, step_action(event.kind), attrs, changeset.tenant, actor)
     end
   end
 
@@ -267,19 +277,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   # the append transaction (aborted until rollback), so the attempt is bracketed
   # by SAVEPOINT/ROLLBACK TO SAVEPOINT on the same connection. A failure to even
   # create the savepoint skips the projection entirely (append unharmed).
-  defp upsert_step(event, action, attrs, tenant) do
+  defp upsert_step(event, action, attrs, tenant, actor) do
     case Repo.query("SAVEPOINT #{@savepoint}", []) do
       {:ok, _} ->
-        attempt_step_upsert(event, action, attrs, tenant)
+        attempt_step_upsert(event, action, attrs, tenant, actor)
 
       {:error, reason} ->
         log_step_projection_failure(event, {:savepoint_failed, reason})
     end
   end
 
-  defp attempt_step_upsert(event, action, attrs, tenant) do
+  defp attempt_step_upsert(event, action, attrs, tenant, actor) do
     WorkflowStep
-    |> Changeset.for_create(action, attrs, tenant: tenant, authorize?: false)
+    |> Changeset.for_create(action, attrs, tenant: tenant, actor: actor)
     |> Ash.create()
     |> case do
       {:ok, _step} ->

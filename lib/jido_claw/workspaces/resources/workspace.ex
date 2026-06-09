@@ -17,7 +17,9 @@ defmodule JidoClaw.Workspaces.Workspace do
   repeat resolver calls.
   """
 
-  use JidoClaw.Resource, domain: JidoClaw.Workspaces
+  use JidoClaw.Resource,
+    domain: JidoClaw.Workspaces,
+    global_actions: [:list_consolidatable_global]
 
   postgres do
     table("workspaces")
@@ -51,6 +53,7 @@ defmodule JidoClaw.Workspaces.Workspace do
     )
 
     define(:list, action: :read)
+    define(:list_consolidatable_global)
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
     define(:by_path, action: :by_path, args: [:user_id, :path], get?: true)
@@ -120,6 +123,15 @@ defmodule JidoClaw.Workspaces.Workspace do
       multitenancy(:bypass)
       argument(:id, :uuid, allow_nil?: false)
       filter(expr(id == ^arg(:id)))
+    end
+
+    # The Memory.Consolidator tick's discovery seam: a system-level scan
+    # that must see every tenant's workspaces, policy-bypassed via the
+    # macro's `global_actions:` option.
+    read :list_consolidatable_global do
+      description("Cross-tenant scan of workspaces eligible for memory consolidation.")
+      multitenancy(:bypass)
+      filter(expr(consolidation_policy != :disabled))
     end
 
     read :by_path do

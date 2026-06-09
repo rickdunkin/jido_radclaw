@@ -28,7 +28,6 @@ defmodule JidoClaw.Memory.Consolidator do
   """
 
   require Logger
-  require Ash.Query
 
   # Ash CRUD + Postgrex faults the workspace/session Ash reads can hit;
   # narrowing keeps unexpected bugs surfacing instead of silently swallowed.
@@ -146,16 +145,26 @@ defmodule JidoClaw.Memory.Consolidator do
     |> Kernel.+(60_000)
   end
 
-  # Phase 3b candidate discovery fans out across every scope kind
-  # (`:workspace`, `:user`, `:project`, `:session`) reachable from
-  # workspaces with a non-`:disabled` consolidation policy. The
-  # PolicyResolver inside the per-scope RunServer filters opted-out
-  # scopes at run time, and the min-input-count gate (now comparing
-  # facts + messages against the watermark-anchored loaders)
-  # short-circuits empty scopes. Watermark-anchored optimisation at
-  # the discovery layer is deferred — its absence costs operator
-  # noise (skip rows for stale scopes), not correctness.
-  defp candidate_scopes(max_candidates) do
+  @doc """
+  The tick's discovery seam: cross-tenant candidate scopes for this pass.
+
+  Phase 3b candidate discovery fans out across every scope kind
+  (`:workspace`, `:user`, `:project`, `:session`) reachable from
+  workspaces with a non-`:disabled` consolidation policy, via the
+  dedicated cross-tenant read actions
+  (`Workspace.list_consolidatable_global`,
+  `ConversationSession.list_open_for_workspaces_global`). The
+  PolicyResolver inside the per-scope RunServer filters opted-out
+  scopes at run time, and the min-input-count gate (now comparing
+  facts + messages against the watermark-anchored loaders)
+  short-circuits empty scopes. Watermark-anchored optimisation at
+  the discovery layer is deferred — its absence costs operator
+  noise (skip rows for stale scopes), not correctness.
+
+  Public so the discovery path `tick/0` drives is directly testable.
+  """
+  @spec candidate_scopes(non_neg_integer()) :: [map()]
+  def candidate_scopes(max_candidates) do
     workspaces = read_workspaces()
     workspace_scopes = Enum.map(workspaces, &workspace_scope/1)
     user_scopes = unique_user_scopes(workspaces)
@@ -174,10 +183,7 @@ defmodule JidoClaw.Memory.Consolidator do
   end
 
   defp read_workspaces do
-    Workspace.query_to_list(%{}, authorize?: false)
-    |> Ash.Query.filter(consolidation_policy != :disabled)
-    |> Ash.read(domain: JidoClaw.Workspaces, authorize?: false)
-    |> case do
+    case Workspace.list_consolidatable_global() do
       {:ok, workspaces} -> workspaces
       {:error, _} -> []
     end
@@ -233,10 +239,7 @@ defmodule JidoClaw.Memory.Consolidator do
     workspace_index = Map.new(workspaces, fn ws -> {ws.id, ws} end)
 
     sessions =
-      ConversationSession.query_to_list(%{}, authorize?: false)
-      |> Ash.Query.filter(workspace_id in ^workspace_ids and is_nil(closed_at))
-      |> Ash.read(domain: JidoClaw.Conversations, authorize?: false)
-      |> case do
+      case ConversationSession.list_open_for_workspaces_global(workspace_ids) do
         {:ok, list} -> list
         {:error, _} -> []
       end

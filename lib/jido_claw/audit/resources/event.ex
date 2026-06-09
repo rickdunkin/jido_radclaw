@@ -88,11 +88,10 @@ defmodule JidoClaw.Audit.Event do
   end
 
   policies do
-    # Tenant-actor matching for both creates and reads. The
-    # AsyncWriter (Audit.Producers, SignalListener) bypasses with
-    # `authorize?: false` since it operates as internal infrastructure
-    # — the audit row's tenant is already established by the producer
-    # action's tenant: opt.
+    # Tenant-actor matching for both creates and reads. The AsyncWriter
+    # (Audit.Producers, SignalListener) writes as a tenant-bound system
+    # actor (`Authorization.Actor.system/1`) built from the same tenant_id
+    # it threads via the `tenant:` opt, so the create policy passes.
     policy action_type(:create) do
       authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
     end

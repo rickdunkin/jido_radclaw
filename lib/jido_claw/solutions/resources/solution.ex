@@ -577,9 +577,9 @@ defmodule JidoClaw.Solutions.Solution do
     defp resolve_status_from_policy(cs, workspace_id, actor) do
       tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
 
-      # System imports (`authorize?: false` migration tasks) may reach
-      # here without an actor. Workspace.by_id is policy-protected, so
-      # fall back to a tenant-bound system actor that satisfies the
+      # Internal callers may reach here without an actor.
+      # Workspace.by_id is policy-protected, so fall back to a
+      # tenant-bound system actor that satisfies the
       # `tenant_id == ^actor(:tenant_id)` policy without granting
       # cross-tenant access.
       effective_actor =

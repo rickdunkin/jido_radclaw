@@ -769,7 +769,7 @@ defmodule JidoClaw.Forge.Harness do
   # Recovery helpers
 
   defp load_checkpoint(checkpoint_id) do
-    case Checkpoint.get_by_id(checkpoint_id, authorize?: false) do
+    case Checkpoint.get_by_id(checkpoint_id) do
       {:ok, checkpoint} -> checkpoint
       {:error, _} -> nil
     end

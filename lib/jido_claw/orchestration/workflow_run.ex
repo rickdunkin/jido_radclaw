@@ -19,7 +19,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     extensions: [AshCloak]
 
   policies do
-    bypass action(:by_id_global) do
+    bypass action([:by_id_global, :list_non_terminal_global]) do
       authorize_if(always())
     end
 

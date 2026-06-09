@@ -228,13 +228,13 @@ defmodule JidoClaw.Orchestration.Cases do
   # P1: case decision, status event, and case timeline event commit together
   # or not at all. The `with` returns the bare gate on success (transact wraps
   # `{:ok, _}`); any `{:error, _}` (incl. the pending-guard stale-record loss)
-  # rolls back. Every commit takes the RUN lock first (`lock_run/2`) so all
+  # rolls back. Every commit takes the RUN lock first (`lock_run/3`) so all
   # case transactions acquire locks in one global order (run -> case) — the
   # case-row UPDATE before the run-row event lock would otherwise invert
   # `commit_retract`'s order and open a deadlock window.
   defp commit_approve(agent_case, run, attrs, tenant, actor) do
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant),
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
            {:ok, gate} <- AgentCase.approve(agent_case, attrs, tenant: tenant, actor: actor),
            {:ok, _event} <-
              WorkflowLog.append(
@@ -255,7 +255,7 @@ defmodule JidoClaw.Orchestration.Cases do
     reason = Map.get(attrs, :decision_comment) || "rejected by operator"
 
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant),
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
            {:ok, gate} <- AgentCase.reject(agent_case, attrs, tenant: tenant, actor: actor),
            {:ok, _event} <-
              WorkflowLog.append(run, :run_cancelled, %{agent_case_id: gate.id, reason: reason},
@@ -277,7 +277,7 @@ defmodule JidoClaw.Orchestration.Cases do
     attrs = Map.put(attrs, :cancellation_reason, reason)
 
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant),
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
            {:ok, cases} <- AgentCase.pending_for_run(run.id, tenant: tenant, actor: actor),
            :ok <- ensure_pending_present(cases, agent_case),
            {:ok, _} <- abandon_cases(cases, attrs, reason, tenant, actor),
@@ -333,7 +333,7 @@ defmodule JidoClaw.Orchestration.Cases do
     comment = Map.get(attrs, :decision_comment)
 
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant),
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
            :ok <- ensure_not_resumed(run.id, tenant, actor),
            {:ok, gate} <- AgentCase.reopen(agent_case, %{}, tenant: tenant, actor: actor),
            {:ok, _event} <-
@@ -355,11 +355,11 @@ defmodule JidoClaw.Orchestration.Cases do
   # rest of the transaction means a concurrent resume's `run_resumed` append
   # (which must take this lock) serializes strictly before or after this
   # retraction, never interleaved.
-  defp lock_run(run_id, tenant) do
+  defp lock_run(run_id, tenant, actor) do
     WorkflowRun
     |> Query.filter(id == ^run_id)
     |> Query.lock("FOR UPDATE")
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %WorkflowRun{} = locked} -> {:ok, locked}
       _ -> {:error, :not_found}

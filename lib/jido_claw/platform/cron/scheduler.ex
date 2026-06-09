@@ -2,6 +2,7 @@ defmodule JidoClaw.Cron.Scheduler do
   @moduledoc "API for managing cron jobs within a tenant."
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Worker
   alias JidoClaw.Tenant.InstanceSupervisor
@@ -15,7 +16,7 @@ defmodule JidoClaw.Cron.Scheduler do
   """
   @spec load_persistent_jobs(String.t(), String.t()) :: {:ok, non_neg_integer()}
   def load_persistent_jobs(tenant_id \\ "default", _project_dir) do
-    case Job.for_tenant(tenant: tenant_id, authorize?: false) do
+    case Job.for_tenant(tenant: tenant_id, actor: Actor.system(tenant_id)) do
       {:ok, jobs} ->
         count =
           Enum.reduce(jobs, 0, fn job, acc ->

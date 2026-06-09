@@ -97,7 +97,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   """
   @spec reconcile_all() :: :ok
   def reconcile_all do
-    case WorkflowRun.list_non_terminal_global(authorize?: false) do
+    case WorkflowRun.list_non_terminal_global() do
       {:ok, runs} ->
         Enum.each(runs, &reconcile_run/1)
 

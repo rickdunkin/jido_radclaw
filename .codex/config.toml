@@ -1,0 +1,21 @@
+[mcp_servers.code-reasoning]
+command = "npx"
+args = [
+    "-y",
+    "@mettamatt/code-reasoning",
+]
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_servers.tidewave]
+url = "http://localhost:4000/tidewave/mcp"
+
+[mcp_servers.tidewave.tools.get_ash_resources]
+approval_mode = "approve"
+
+[mcp_servers.tidewave.tools.project_eval]
+approval_mode = "approve"
+
+[mcp_servers.tidewave.tools.get_docs]
+approval_mode = "approve"

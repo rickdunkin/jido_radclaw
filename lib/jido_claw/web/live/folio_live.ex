@@ -9,10 +9,10 @@ defmodule JidoClaw.Web.FolioLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    actor = socket.assigns.current_user
+    actor = socket.assigns.current_actor
 
     {inbox, inbox_error} =
-      case InboxItem.list_unprocessed(actor: actor, authorize?: false) do
+      case InboxItem.list_unprocessed(actor: actor) do
         {:ok, items} ->
           {items, nil}
 
@@ -22,7 +22,7 @@ defmodule JidoClaw.Web.FolioLive do
       end
 
     {actions, actions_error} =
-      case FolioAction.list_next_actions(actor: actor, authorize?: false) do
+      case FolioAction.list_next_actions(actor: actor) do
         {:ok, items} ->
           {items, nil}
 
@@ -32,7 +32,7 @@ defmodule JidoClaw.Web.FolioLive do
       end
 
     {projects, projects_error} =
-      case FolioProject.list_active(actor: actor, authorize?: false) do
+      case FolioProject.list_active(actor: actor) do
         {:ok, items} ->
           {items, nil}
 

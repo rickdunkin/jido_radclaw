@@ -50,6 +50,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, Resolver, Session}
   alias JidoClaw.Tenant.Manager
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
@@ -147,7 +148,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
       if max_seq > 0 do
         next = max_seq + 1
 
-        case Session.set_next_sequence(session, next, authorize?: false) do
+        case Session.set_next_sequence(session, next,
+               tenant: tenant_id,
+               actor: Actor.system(tenant_id)
+             ) do
           {:ok, _} ->
             Mix.shell().info("    imported up to sequence=#{max_seq}; next_sequence=#{next}")
 
@@ -207,7 +211,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
       inserted_at: inserted_at
     }
 
-    case Message.import(attrs, tenant: session.tenant_id, authorize?: false) do
+    case Message.import(attrs,
+           tenant: session.tenant_id,
+           actor: Actor.system(session.tenant_id)
+         ) do
       {:ok, _} ->
         :ok
 

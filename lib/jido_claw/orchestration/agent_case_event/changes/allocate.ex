@@ -20,25 +20,33 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent.Changes.Allocate do
   require Ash.Query, as: Query
 
   alias Ash.Changeset
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
   alias JidoClaw.Security.Redaction.Transcript
 
   @impl true
-  def change(changeset, _opts, _context) do
-    Changeset.before_action(changeset, &allocate/1)
+  def change(changeset, _opts, context) do
+    caller_actor = context.actor
+    Changeset.before_action(changeset, &allocate(&1, effective_actor(&1, caller_actor)))
   end
 
-  defp allocate(changeset) do
+  # Preserve the real caller for the internal reads; a tenant-bound system
+  # actor only covers actor-less internal callers (any actor that reached
+  # `:append` already tenant-matched its create policy).
+  defp effective_actor(changeset, caller_actor),
+    do: caller_actor || Actor.system(changeset.tenant)
+
+  defp allocate(changeset, actor) do
     case_id = Changeset.get_attribute(changeset, :agent_case_id)
     tenant = changeset.tenant
 
-    case lock_case(case_id, tenant) do
+    case lock_case(case_id, tenant, actor) do
       {:ok, _agent_case} ->
         raw_data = Changeset.get_attribute(changeset, :data) || %{}
 
         changeset
-        |> Changeset.force_change_attribute(:seq, next_seq(case_id, tenant))
+        |> Changeset.force_change_attribute(:seq, next_seq(case_id, tenant, actor))
         |> Changeset.force_change_attribute(:data, Transcript.redact(raw_data))
 
       :error ->
@@ -52,23 +60,23 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent.Changes.Allocate do
   # FOR UPDATE on the parent case row: concurrent appends for one case block
   # here until the prior append commits, so seq allocation is gap-free and
   # strictly increasing in commit order.
-  defp lock_case(case_id, tenant) do
+  defp lock_case(case_id, tenant, actor) do
     AgentCase
     |> Query.filter(id == ^case_id)
     |> Query.lock("FOR UPDATE")
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %AgentCase{} = agent_case} -> {:ok, agent_case}
       _ -> :error
     end
   end
 
-  defp next_seq(case_id, tenant) do
+  defp next_seq(case_id, tenant, actor) do
     AgentCaseEvent
     |> Query.filter(agent_case_id == ^case_id)
     |> Query.sort(seq: :desc)
     |> Query.limit(1)
-    |> Ash.read_one(tenant: tenant, authorize?: false)
+    |> Ash.read_one(tenant: tenant, actor: actor)
     |> case do
       {:ok, %AgentCaseEvent{seq: seq}} -> seq + 1
       _ -> 1

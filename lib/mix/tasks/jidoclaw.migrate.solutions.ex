@@ -37,6 +37,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Solutions.{Reputation, ReputationImport, Solution}
   alias JidoClaw.Workspaces.Resolver
 
@@ -131,7 +132,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
   end
 
   defp do_import_solution(attrs_minus_tenant, tenant_id) do
-    case Solution.import_legacy(attrs_minus_tenant, tenant: tenant_id, authorize?: false) do
+    case Solution.import_legacy(attrs_minus_tenant,
+           tenant: tenant_id,
+           actor: Actor.system(tenant_id)
+         ) do
       {:ok, _} ->
         true
 
@@ -207,7 +211,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
       {:ok, body} ->
         sha = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
-        case ReputationImport.find_by_hash(sha, tenant: workspace.tenant_id, authorize?: false) do
+        case ReputationImport.find_by_hash(sha,
+               tenant: workspace.tenant_id,
+               actor: Actor.system(workspace.tenant_id)
+             ) do
           {:ok, %ReputationImport{} = existing} ->
             Mix.shell().info(
               "reputation.json: already imported at #{DateTime.to_iso8601(existing.imported_at)}; skipping"
@@ -253,7 +260,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
                 metadata: %{}
               },
               tenant: workspace.tenant_id,
-              authorize?: false
+              actor: Actor.system(workspace.tenant_id)
             )
 
           merged
@@ -280,7 +287,10 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
   defp merge_reputation_row(row, workspace) do
     existing =
-      case Reputation.get(row.agent_id, tenant: workspace.tenant_id, authorize?: false) do
+      case Reputation.get(row.agent_id,
+             tenant: workspace.tenant_id,
+             actor: Actor.system(workspace.tenant_id)
+           ) do
         {:ok, %Reputation{} = r} -> r
         _ -> nil
       end
@@ -298,7 +308,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
              last_active: summed.last_active
            },
            tenant: workspace.tenant_id,
-           authorize?: false
+           actor: Actor.system(workspace.tenant_id)
          ) do
       {:ok, _} ->
         :telemetry.execute(

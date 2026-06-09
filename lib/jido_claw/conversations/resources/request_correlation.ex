@@ -72,11 +72,11 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   @sweep_batch 1_000
 
   # RequestCorrelation has internal callers with no actor in scope
-  # (Recorder telemetry callbacks, Session.Worker durable lookups, and
-  # JidoClaw.chat's correlation registration). The 60s sweeper bypasses
-  # explicitly via `authorize?: false` in `sweep_expired/0`; the others
-  # rely on this permissive policy. Closing the broader gap requires
-  # the v0.7+ agent-identity work.
+  # (Recorder telemetry callbacks, Session.Worker durable lookups,
+  # JidoClaw.chat's correlation registration, and the 60s sweeper in
+  # `sweep_expired/0`). All of them rely on this deliberately permissive
+  # action-type-scoped policy. Closing the broader gap requires the
+  # v0.7+ agent-identity work.
   policies do
     policy action_type([:read, :create, :update, :destroy]) do
       authorize_if(always())
@@ -282,7 +282,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
       __MODULE__.query_to_expired()
       |> Query.limit(@sweep_batch)
 
-    case Ash.read(query, authorize?: false) do
+    case Ash.read(query) do
       {:ok, []} ->
         {:ok, 0}
 
@@ -296,7 +296,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   end
 
   defp do_bulk_destroy(expired) do
-    case Ash.bulk_destroy(expired, :complete, %{}, authorize?: false, return_errors?: true) do
+    case Ash.bulk_destroy(expired, :complete, %{}, return_errors?: true) do
       %Ash.BulkResult{status: :success, records: records} ->
         {:ok, length(records || expired)}
 

@@ -46,7 +46,8 @@ defmodule JidoClaw.Projects.Project do
     # exactly one `:changeset` argument — the default `:destroy` does not, so a
     # dedicated action is required. `public?(false)` keeps it off
     # code-interface / AshAdmin surfaces without affecting the internal undo
-    # path (which authorizes via `policy always()`).
+    # path (which authorizes as the saga's actor — `ReactorRunner` requires
+    # and seeds one — under the `actor_present()` policy).
     destroy :reactor_undo do
       description("Undo action for Ash.Reactor create-step rollback.")
       public?(false)
@@ -54,9 +55,17 @@ defmodule JidoClaw.Projects.Project do
     end
   end
 
+  # Project is deliberately global (no tenant attribute) — every project is
+  # visible to every authenticated surface. The actor requirement is the
+  # entire policy. Actor-less *writes* are hard-denied with
+  # `Ash.Error.Forbidden`; actor-less *reads* run under the default
+  # `access_type :filter` and so return `{:ok, []}` / `NotFound` instead
+  # (pinned in `ProjectPolicyTest`). Production callers always have an
+  # actor: the `:require_auth` LiveViews pass `current_actor`, and
+  # `ReactorRunner` requires/seeds `:actor` for sagas.
   policies do
     policy always() do
-      authorize_if(always())
+      authorize_if(actor_present())
     end
   end
 

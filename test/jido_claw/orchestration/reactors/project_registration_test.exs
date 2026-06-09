@@ -36,7 +36,7 @@ defmodule JidoClaw.Orchestration.Reactors.ProjectRegistrationTest do
       assert run.status == :completed
 
       # The two rows exist and are FK-linked.
-      {:ok, project} = Project.get_by_github_full_name(inputs.github_full_name)
+      {:ok, project} = Project.get_by_github_full_name(inputs.github_full_name, actor: actor)
       assert workspace.project_id == project.id
 
       events = events_for(run, ctx)
@@ -69,7 +69,7 @@ defmodule JidoClaw.Orchestration.Reactors.ProjectRegistrationTest do
       assert run.status == :failed
 
       # Project row rolled back via the saga undo; no workspace persisted.
-      {:ok, projects} = Project.read()
+      {:ok, projects} = Project.read(actor: actor)
       refute Enum.any?(projects, &(&1.github_full_name == inputs.github_full_name))
       assert {:ok, []} = Workspace.list(tenant: tenant, actor: actor)
 

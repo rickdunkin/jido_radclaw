@@ -45,6 +45,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
 
   use Mix.Task
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, Session}
   alias JidoClaw.Export.Canonical
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
@@ -98,7 +99,10 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
 
     with {:ok, workspace} <- WorkspaceResolver.ensure_workspace(tenant, workspace_dir),
          {:ok, session} <-
-           Session.by_external(workspace.id, kind, external, tenant: tenant, authorize?: false) do
+           Session.by_external(workspace.id, kind, external,
+             tenant: tenant,
+             actor: Actor.system(tenant)
+           ) do
       output_path = output_path(opts, session)
       {:ok, session, output_path}
     else
@@ -130,7 +134,10 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
     # exported records carry `agent_id` + `subagent` (and the `:import`
     # action accepts both) so a re-import preserves each row's compaction
     # identity rather than collapsing everything onto the main agent.
-    case Message.for_session(session.id, tenant: session.tenant_id, authorize?: false) do
+    case Message.for_session(session.id,
+           tenant: session.tenant_id,
+           actor: Actor.system(session.tenant_id)
+         ) do
       {:ok, rows} ->
         File.mkdir_p!(Path.dirname(output_path))
         write_jsonl(output_path, rows)

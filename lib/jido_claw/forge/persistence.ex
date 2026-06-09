@@ -185,7 +185,7 @@ defmodule JidoClaw.Forge.Persistence do
               do: Map.put(start_attrs, :started_at, started_at),
               else: start_attrs
 
-          case Ash.create(JidoClaw.Forge.Resources.ExecSession, start_attrs, authorize?: false) do
+          case Ash.create(JidoClaw.Forge.Resources.ExecSession, start_attrs) do
             {:ok, exec_session} ->
               finish_execution(exec_session, output, exit_code, runner_status)
 
@@ -218,7 +218,7 @@ defmodule JidoClaw.Forge.Persistence do
       exit_code: exit_code,
       raw_output_bytes: raw_output_bytes
     })
-    |> Ash.update(authorize?: false)
+    |> Ash.update()
     |> case do
       {:ok, exec} ->
         exec
@@ -246,7 +246,7 @@ defmodule JidoClaw.Forge.Persistence do
               do: Map.put(attrs, :exec_session_sequence, exec_session_sequence),
               else: attrs
 
-          case Ash.create(JidoClaw.Forge.Resources.Event, attrs, authorize?: false) do
+          case Ash.create(JidoClaw.Forge.Resources.Event, attrs) do
             {:ok, event} ->
               event
 
@@ -328,7 +328,7 @@ defmodule JidoClaw.Forge.Persistence do
             metadata: metadata
           }
 
-          case Ash.create(JidoClaw.Forge.Resources.Checkpoint, attrs, authorize?: false) do
+          case Ash.create(JidoClaw.Forge.Resources.Checkpoint, attrs) do
             {:ok, checkpoint} ->
               checkpoint
 
@@ -352,7 +352,7 @@ defmodule JidoClaw.Forge.Persistence do
 
         if session do
           Checkpoint.query_to_latest_for_session(%{session_id: session.id})
-          |> Ash.read(authorize?: false)
+          |> Ash.read()
           |> case do
             {:ok, checkpoints} ->
               List.first(checkpoints)
@@ -402,7 +402,7 @@ defmodule JidoClaw.Forge.Persistence do
           args = if opts[:limit], do: Map.put(args, :limit, opts[:limit]), else: args
 
           Event.query_to_list_for_session(args)
-          |> Ash.read(authorize?: false)
+          |> Ash.read()
           |> case do
             {:ok, events} ->
               events
@@ -516,7 +516,7 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   defp find_session_global(session_id) do
-    case Session.by_name_global(session_id, authorize?: false) do
+    case Session.by_name_global(session_id) do
       {:ok, session} -> session
       {:error, _} -> nil
     end
@@ -588,7 +588,7 @@ defmodule JidoClaw.Forge.Persistence do
     |> Query.filter(session_id == ^session.id)
     |> Query.sort(sequence: :desc)
     |> Query.limit(1)
-    |> Ash.read(authorize?: false)
+    |> Ash.read()
     |> case do
       {:ok, [exec]} ->
         %{
@@ -616,6 +616,6 @@ defmodule JidoClaw.Forge.Persistence do
   defp iteration_error?(_), do: false
 
   defp session_action_opts(%Session{tenant_id: tenant_id}) when is_binary(tenant_id) do
-    [tenant: tenant_id, actor: Actor.system(tenant_id), authorize?: false]
+    [tenant: tenant_id, actor: Actor.system(tenant_id)]
   end
 end

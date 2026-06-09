@@ -8,7 +8,7 @@ defmodule JidoClaw.Web.ProjectsLive do
   @impl true
   def mount(_params, _session, socket) do
     {projects, projects_error} =
-      case Project.read(actor: socket.assigns.current_user, authorize?: false) do
+      case Project.read(actor: socket.assigns.current_actor) do
         {:ok, items} ->
           {items, nil}
 
