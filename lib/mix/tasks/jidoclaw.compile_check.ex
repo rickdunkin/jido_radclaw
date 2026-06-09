@@ -24,13 +24,6 @@ defmodule Mix.Tasks.Jidoclaw.CompileCheck do
   use Mix.Task
 
   @allowlist [
-    # Upstream / unfixable: the `Anubis.Server` macro (anubis_mcp 1.6.1, latest)
-    # generates a `child_spec/1` whose clauses Elixir 1.20 flags. Both modules
-    # are pure `use Jido.MCP.Server` declarations with no hand-written code, so a
-    # file-wide tolerance cannot mask a real warning of ours. Drop when anubis
-    # ships a 1.20-clean macro.
-    {"lib/jido_claw/core/mcp_server.ex", :file},
-    {"lib/jido_claw/memory/consolidator/mcp_server.ex", :file},
     # Intentional scaffolding: PullRequestCoordinator's stub helpers always
     # return {:ok, _}, so its retry `else` branches read as dead until those
     # helpers do real, fallible work. Matched narrowly by message so other

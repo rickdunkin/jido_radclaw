@@ -1,6 +1,6 @@
-# Patch for anubis_mcp 1.6.1 — Anubis.Server.Handlers.Tools
+# Patch for anubis_mcp 1.6.2 — Anubis.Server.Handlers.Tools
 #
-# Port of upstream 1.6.1's handler — including check_task_policy/3 (MCP spec
+# Port of upstream 1.6.2's handler — including check_task_policy/3 (MCP spec
 # 2025-11-25 task-augmentation semantics) and check_scopes/2 + visible?/2
 # (OAuth 2.1 authorization, added in 1.6.0 #158) — with two surgical changes
 # layered in:
@@ -22,7 +22,7 @@
 # are ported verbatim from 1.6.0's OAuth 2.1 feature so the patch preserves
 # upstream's authorization enforcement. Today every JidoClaw tool registers
 # with the struct default `scopes: []`, which short-circuits both helpers,
-# but porting them keeps the patch byte-equivalent in behavior to 1.6.1 for
+# but porting them keeps the patch byte-equivalent in behavior to 1.6.2 for
 # any future call site that does declare scopes.
 #
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`

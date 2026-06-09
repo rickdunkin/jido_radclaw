@@ -53,10 +53,10 @@ The `cwd` must be the absolute path to the JidoClaw project directory (where `mi
 
 **Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`.
 
-**Known limitations** (anubis_mcp 1.6.1 — patched in `lib/jido_claw/core/`):
+**Known limitations** (anubis_mcp 1.6.2 — patched in `lib/jido_claw/core/`):
 
 - Runtime patch overrides `Anubis.Server.Handlers.Tools` to rescue a Peri validation crash caused by jido_mcp's JSON-Schema-shaped tool schemas, and to atomize known string argument keys before dispatching to Jido actions. Remove once `jido_mcp` either emits Peri-compatible schemas or no longer routes those descriptors through Anubis's pre-dispatch Peri validation path.
-- On **Elixir 1.20 / OTP 29**, two `child_spec/1` "clause cannot match" warnings are emitted by the upstream `Anubis.Server` macro in every `use Jido.MCP.Server` module (`JidoClaw.MCPServer`, `JidoClaw.Memory.Consolidator.MCPServer`). Runtime is unaffected, and a local `defoverridable` override does not suppress them (the warning just moves to the `"child_spec (overridable 1)"` super clause). Because Elixir has no per-warning suppression, the `precommit` gate runs **`mix jidoclaw.compile_check`** instead of `compile --warnings-as-errors`: it clean-recompiles and fails on any warning/error **except** an explicit, documented allowlist. The allowlist (in `lib/mix/tasks/jidoclaw.compile_check.ex`) currently holds these two upstream `child_spec` warnings plus two intentional dead-`else` branches in `PullRequestCoordinator.do_attempt/5` (stub helpers that always succeed). Keep it short; drop the `child_spec` entries once `anubis_mcp` ships an Elixir 1.20-clean macro, and the `do_attempt` entries once those helpers do real work.
+- Because Elixir has no per-warning suppression, the `precommit` gate runs **`mix jidoclaw.compile_check`** instead of `compile --warnings-as-errors`: it clean-recompiles and fails on any warning/error **except** an explicit, documented allowlist. The allowlist (in `lib/mix/tasks/jidoclaw.compile_check.ex`) currently holds only the two intentional dead-`else` branches in `PullRequestCoordinator.do_attempt/5` (stub helpers that always succeed); drop them once those helpers do real work.
 
 ## Architecture
 

@@ -16,7 +16,7 @@ defmodule JidoClaw.MixProject do
       # resulting "redefining module" warnings globally so
       # `--warnings-as-errors` stays green:
       #   - lib/jido_claw/core/anubis_tools_handler_patch.ex
-      #     (Anubis.Server.Handlers.Tools 1.6.1 — rescues Peri crash on
+      #     (Anubis.Server.Handlers.Tools 1.6.2 — rescues Peri crash on
       #     jido_mcp JSON Schema, atomizes arguments for Jido actions)
       #   - lib/jido_claw/core/jido_shell_registry_patch.ex
       #     (Jido.Shell.Command.Registry — :extra_commands hook)
@@ -160,7 +160,7 @@ defmodule JidoClaw.MixProject do
       {:jido_messaging, "~> 1.0", override: true},
       {:jido_shell,
        github: "agentjido/jido_shell",
-       ref: "76eb4b7ae94e1dd7aa14f4a96beeaaaacd033cd9",
+       ref: "bace81abab9481e15723f4879f85eff5b14ea92d",
        override: true},
       # jido_shell's Bash backend (Jido.Shell.Backend.Bash.JidoInterop)
       # unconditionally `use Bash.Interop`, so `:bash` is a hard compile-time
