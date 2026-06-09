@@ -70,7 +70,7 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
     test "alternatives list contains ranked candidates" do
       {:ok, _, _, _, diag} = AutoSelect.select("Plan a new auth system", skip_history: true)
       assert is_list(diag.alternatives)
-      assert length(diag.alternatives) >= 2
+      assert [_, _ | _] = diag.alternatives
     end
   end
 

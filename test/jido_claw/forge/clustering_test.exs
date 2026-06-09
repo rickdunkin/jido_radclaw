@@ -171,7 +171,7 @@ defmodule JidoClaw.Forge.ClusteringTest do
       sid = start_session()
 
       members = :pg.get_members(:jido_claw, {:forge_session, sid})
-      assert length(members) == 1
+      assert [_] = members
 
       {:ok, pid} = Manager.get_session(sid)
       assert pid in members
@@ -226,9 +226,9 @@ defmodule JidoClaw.Forge.ClusteringTest do
       members1 = :pg.get_members(:jido_claw, {:forge_session, sid1})
       members2 = :pg.get_members(:jido_claw, {:forge_session, sid2})
 
-      assert length(members1) == 1
-      assert length(members2) == 1
-      refute hd(members1) == hd(members2)
+      assert [member1] = members1
+      assert [member2] = members2
+      refute member1 == member2
 
       stop_session(sid1)
       stop_session(sid2)

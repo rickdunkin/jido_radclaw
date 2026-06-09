@@ -23,7 +23,7 @@ defmodule JidoClaw.Audit.SessionStartIdempotencyTest do
 
     {:ok, events} = Event.for_target(:session, sess1.id, tenant: tenant, actor: actor_for(tenant))
     starts = Enum.filter(events, &(&1.event_kind == :session_start))
-    assert length(starts) == 1
+    assert [_] = starts
   end
 
   test "concurrent first-callers still yield exactly one :session_start" do
@@ -43,6 +43,6 @@ defmodule JidoClaw.Audit.SessionStartIdempotencyTest do
 
     {:ok, events} = Event.for_target(:session, sess.id, tenant: tenant, actor: actor_for(tenant))
     starts = Enum.filter(events, &(&1.event_kind == :session_start))
-    assert length(starts) == 1
+    assert [_] = starts
   end
 end

@@ -68,7 +68,7 @@ defmodule JidoClaw.Skills.CompilerIntegrationTest do
     assert run.result["steps_completed"] == 3
 
     tcs = collect_tool_contexts(3)
-    assert length(tcs) == 3
+    assert [_, _, _] = tcs
     assert_full_scope(tcs, ctx)
 
     assert_run_lifecycle(run.id)
@@ -96,7 +96,7 @@ defmodule JidoClaw.Skills.CompilerIntegrationTest do
     assert run.result["steps_completed"] == 3
 
     tcs = collect_tool_contexts(3)
-    assert length(tcs) == 3
+    assert [_, _, _] = tcs
     assert_full_scope(tcs, ctx)
 
     assert_run_lifecycle(run.id)
@@ -126,7 +126,7 @@ defmodule JidoClaw.Skills.CompilerIntegrationTest do
     assert run.result["steps_completed"] == 2
 
     tcs = collect_tool_contexts(2)
-    assert length(tcs) == 2
+    assert [_, _] = tcs
     assert_full_scope(tcs, ctx)
 
     assert_run_lifecycle(run.id)

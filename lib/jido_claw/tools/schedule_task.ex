@@ -238,7 +238,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
     # never lets a Parser raise escape. No timezone input here, so validate UTC.
     fields = String.split(expr)
 
-    if length(fields) == 5 do
+    if match?([_, _, _, _, _], fields) do
       case NextRun.compute_next_cron_utc(expr, "Etc/UTC") do
         {:ok, _} -> {:ok, {:cron, expr}}
         {:error, _} -> {:error, "invalid cron expression"}

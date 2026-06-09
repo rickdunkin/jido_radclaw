@@ -101,7 +101,7 @@ defmodule JidoClaw.Memory.ConsolidatorTest do
         {:ok, _ws} = seed_workspace(tenant_id, consolidation_policy: :default)
       end
 
-      assert length(Consolidator.candidate_scopes(2)) == 2
+      assert [_, _] = Consolidator.candidate_scopes(2)
     end
   end
 end

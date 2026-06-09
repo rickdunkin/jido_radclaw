@@ -85,9 +85,7 @@ defmodule JidoClaw.Tools.MCPScopeTest do
           actor: actor_for(session.tenant_id)
         )
 
-      assert length(rows) == 2
-
-      [call, result_row] = Enum.sort_by(rows, & &1.sequence)
+      assert [call, result_row] = Enum.sort_by(rows, & &1.sequence)
       assert call.role == :tool_call
       assert result_row.role == :tool_result
       assert call.request_id == result_row.request_id
@@ -110,11 +108,11 @@ defmodule JidoClaw.Tools.MCPScopeTest do
           actor: actor_for(session.tenant_id)
         )
 
-      assert length(rows) == 4
+      assert Enum.count(rows) == 4
 
       tool_calls = Enum.filter(rows, &(&1.role == :tool_call))
       ids = Enum.map(tool_calls, & &1.request_id)
-      assert length(Enum.uniq(ids)) == 2
+      assert [_, _] = Enum.uniq(ids)
     end
 
     test "explicit override IDs make repeated calls idempotent",
@@ -143,8 +141,8 @@ defmodule JidoClaw.Tools.MCPScopeTest do
       tool_calls = Enum.filter(rows, &(&1.role == :tool_call))
       tool_results = Enum.filter(rows, &(&1.role == :tool_result))
 
-      assert length(tool_calls) == 1
-      assert length(tool_results) == 1
+      assert [_] = tool_calls
+      assert [_] = tool_results
     end
 
     test "shared action wrapper records tools that do not call MCPScope.wrap directly",

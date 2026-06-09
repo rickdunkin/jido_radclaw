@@ -111,8 +111,8 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                })
 
       assert parsed.status == :completed
-      assert length(parsed.files_changed) == 2
-      assert length(parsed.improvements) == 2
+      assert [_, _] = parsed.files_changed
+      assert [_, _] = parsed.improvements
     end
   end
 

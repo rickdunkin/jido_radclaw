@@ -225,7 +225,7 @@ defmodule JidoClaw.Audit.ProducersTest do
             r.target_id == to_string(fact.id)
         end)
 
-      assert length(memory_writes) >= 3,
+      assert match?([_, _, _ | _], memory_writes),
              "expected three :memory_write audit rows (record + promote + invalidate)"
     end
 
@@ -289,7 +289,7 @@ defmodule JidoClaw.Audit.ProducersTest do
             r.target_id == to_string(block.id)
         end)
 
-      assert length(writes) >= 2,
+      assert match?([_, _ | _], writes),
              "expected :memory_write audit rows for both write and invalidate"
     end
 

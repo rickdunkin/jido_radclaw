@@ -364,8 +364,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
       results = Memory.recall("preference", tool_context: ws_ctx, limit: 5)
       preference_rows = Enum.filter(results, &(&1.key == "preference"))
 
-      assert length(preference_rows) == 1
-      assert hd(preference_rows).content == "imported-legacy-content"
+      assert [row] = preference_rows
+      assert row.content == "imported-legacy-content"
     end
 
     test "scope precedence wins over source: imported_legacy at workspace vs model_remember at session",
@@ -412,10 +412,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
       results = Memory.recall("content", tool_context: session_ctx, limit: 5)
       preference_rows = Enum.filter(results, &(&1.key == "preference"))
 
-      assert length(preference_rows) == 1
+      assert [row] = preference_rows
       # Session scope wins by scope_rank — closer wins regardless of
       # the workspace row's higher source_rank.
-      assert hd(preference_rows).content == "model-remember-content"
+      assert row.content == "model-remember-content"
     end
   end
 
@@ -585,8 +585,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         Retrieval.search(tool_context: tc, query: "content", limit: 5, dedup: :by_precedence)
 
       preference_rows = Enum.filter(results, &(&1.label == "preference"))
-      assert length(preference_rows) == 1
-      [winner] = preference_rows
+      assert [winner] = preference_rows
       assert winner.id == user_save.id
 
       shadows = Ash.Resource.get_metadata(winner, :shadowed_by) || []
@@ -603,7 +602,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
         Retrieval.search(tool_context: tc, query: "content", limit: 5, dedup: :none)
 
       none_pref = Enum.filter(none_results, &(&1.label == "preference"))
-      assert length(none_pref) == 3
+      assert [_, _, _] = none_pref
 
       Enum.each(none_pref, fn fact ->
         assert is_nil(Ash.Resource.get_metadata(fact, :shadowed_by))
@@ -649,8 +648,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       results = Retrieval.search(tool_context: tc, query: "content", limit: 5)
       preference = Enum.filter(results, &(&1.label == "preference"))
 
-      assert length(preference) == 1
-      [kept] = preference
+      assert [kept] = preference
       assert kept.id == winner_fact.id
 
       # `:by_precedence` ALWAYS attaches the `:shadowed_by` metadata
@@ -717,8 +715,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # NOT match any pool predicate for the query "qqqqqaaaa": no
       # FTS hit, no embedding, and trigram similarity below threshold.
       # Under SQL-derived candidates it never enters the candidate set.
-      assert length(preference) == 1
-      [kept] = preference
+      assert [kept] = preference
       assert kept.id == first_id
 
       shadows = Ash.Resource.get_metadata(kept, :shadowed_by) || []
@@ -821,8 +818,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # closer-distance row before its top-K; user_save survives. With
       # the wider ann_matches CTE, the model row is still in the
       # candidate set, so it surfaces in shadowed_by.
-      assert length(preference) == 1
-      [kept] = preference
+      assert [kept] = preference
       assert kept.id == user_id
 
       shadows = Ash.Resource.get_metadata(kept, :shadowed_by) || []
@@ -877,9 +873,9 @@ defmodule JidoClaw.Memory.RetrievalTest do
       results = Memory.list_recent(session_ctx, 20)
       preference_rows = Enum.filter(results, &(&1.key == "preference"))
 
-      assert length(preference_rows) == 1
+      assert [row] = preference_rows
       # SQL precedence cascade: session beats workspace for the same label.
-      assert hd(preference_rows).content == "session_X"
+      assert row.content == "session_X"
     end
 
     test "session-scoped row wins over workspace-scoped row at same label", %{
@@ -911,8 +907,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       results = Memory.list_recent(session_ctx, 5)
       preference_rows = Enum.filter(results, &(&1.key == "preference"))
 
-      assert length(preference_rows) == 1
-      [row] = preference_rows
+      assert [row] = preference_rows
       # Closer scope wins — the session-scoped row's content is "Y".
       assert row.content == "Y"
     end

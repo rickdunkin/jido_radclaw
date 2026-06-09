@@ -15,11 +15,11 @@ defmodule JidoClaw.Memory.Consolidator.StagingTest do
     {:ok, s} = Staging.add(s, :link_create, %{from_fact_id: "a", to_fact_id: "b", relation: "r"})
     {:ok, s} = Staging.add(s, :cluster_defer, %{cluster_id: "c"})
 
-    assert length(s.fact_adds) == 1
-    assert length(s.fact_updates) == 1
-    assert length(s.fact_deletes) == 1
-    assert length(s.link_creates) == 1
-    assert length(s.cluster_defers) == 1
+    assert [_] = s.fact_adds
+    assert [_] = s.fact_updates
+    assert [_] = s.fact_deletes
+    assert [_] = s.link_creates
+    assert [_] = s.cluster_defers
     assert Staging.total(s) == 5
   end
 
@@ -34,7 +34,7 @@ defmodule JidoClaw.Memory.Consolidator.StagingTest do
                  char_limit: 100
                })
 
-      assert length(s.block_updates) == 1
+      assert [_] = s.block_updates
     end
 
     test "returns structured overflow info for content exceeding char_limit" do

@@ -58,7 +58,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
       assert {:ok, result} = ReadFile.run(%{path: path, limit: 3}, context(dir))
 
       lines = String.split(result.content, "\n", trim: true)
-      assert length(lines) == 3
+      assert [_, _, _] = lines
     end
 
     test "should apply offset and limit together", %{dir: dir} do

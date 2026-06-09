@@ -47,7 +47,7 @@ defmodule JidoClaw.Forge.PersistenceRedactionTest do
       result = redact_map(input)
 
       assert is_list(result["tags"])
-      assert length(result["tags"]) == 3
+      assert [_, _, _] = result["tags"]
     end
 
     test "handles empty lists" do
@@ -59,7 +59,7 @@ defmodule JidoClaw.Forge.PersistenceRedactionTest do
 
       result = redact_map(input)
 
-      assert length(result["mixed"]) == 4
+      assert Enum.count(result["mixed"]) == 4
       assert Enum.at(result["mixed"], 1) == 42
       assert Enum.at(result["mixed"], 2) == true
     end

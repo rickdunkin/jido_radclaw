@@ -208,7 +208,7 @@ defmodule JidoClaw.SkillsTest do
       start_skills!(dir)
 
       {:ok, skill} = Skills.get("full_review")
-      assert length(skill.steps) >= 2
+      assert [_, _ | _] = skill.steps
     end
 
     test "refactor_safe skill has 3 steps", %{dir: dir} do
@@ -216,7 +216,7 @@ defmodule JidoClaw.SkillsTest do
       start_skills!(dir)
 
       {:ok, skill} = Skills.get("refactor_safe")
-      assert length(skill.steps) == 3
+      assert [_, _, _] = skill.steps
     end
 
     test "explore_codebase skill has 2 steps", %{dir: dir} do
@@ -224,7 +224,7 @@ defmodule JidoClaw.SkillsTest do
       start_skills!(dir)
 
       {:ok, skill} = Skills.get("explore_codebase")
-      assert length(skill.steps) == 2
+      assert [_, _] = skill.steps
     end
 
     test "loaded skill steps have atom keys (StepNormalizer fires at parse_skill_file/1)",

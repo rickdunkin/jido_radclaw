@@ -105,7 +105,7 @@ defmodule JidoClawTest.ErrorToolsWireFormatTest do
       assert wire.message =~ "Multiple JidoClaw errors"
       assert wire.details.class == :invalid
       assert is_list(wire.details.errors)
-      assert length(wire.details.errors) == 2
+      assert [_, _] = wire.details.errors
 
       assert Enum.all?(wire.details.errors, fn child ->
                child.code == :validation_error and is_binary(child.message)

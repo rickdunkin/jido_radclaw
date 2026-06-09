@@ -162,7 +162,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
 
     test "should return exactly 7 names" do
-      assert length(Templates.names()) == 7
+      assert Enum.count(Templates.names()) == 7
     end
 
     test "should include all 7 expected template names" do

@@ -183,7 +183,7 @@ defmodule JidoClaw.Reasoning.ClassifierTest do
 
       {:ok, ranked} = Classifier.recommend(profile, return: :ranked)
       assert is_list(ranked)
-      assert length(ranked) >= 2
+      assert [_, _ | _] = ranked
       scores = Enum.map(ranked, fn {_n, s} -> s end)
       assert scores == Enum.sort(scores, :desc)
       # adaptive is still filtered out.

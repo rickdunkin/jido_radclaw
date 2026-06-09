@@ -263,7 +263,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _} = Forge.attach_sandbox(sid, :extra2, %{sandbox: :fake})
 
       {:ok, status_before} = Forge.status(sid)
-      assert length(status_before.sandboxes) == 3
+      assert [_, _, _] = status_before.sandboxes
 
       # stop_session is synchronous — terminate/2 runs before it returns
       Forge.stop_session(sid)

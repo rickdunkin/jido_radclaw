@@ -22,7 +22,7 @@ defmodule JidoClaw.Workflows.ContextBuilderTest do
     test "assembles all parts when present" do
       result = ContextBuilder.build_task("task", "ctx", "deps", "art")
       parts = String.split(result, "\n\n")
-      assert length(parts) == 4
+      assert Enum.count(parts) == 4
     end
 
     test "preserves order of parts" do

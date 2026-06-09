@@ -24,8 +24,8 @@ defmodule Mix.Tasks.Jidoclaw.MigrateCronTest do
 
       assert {:ok, %Tenant{id: ^tenant_a}} = Tenant.by_id(tenant_a)
       {:ok, jobs} = Job.for_tenant(tenant: tenant_a, authorize?: false)
-      assert length(jobs) == 1
-      assert hd(jobs).job_id == "job_a"
+      assert [job] = jobs
+      assert job.job_id == "job_a"
     end
 
     test "--dry-run does not create the tenant row or any cron rows" do

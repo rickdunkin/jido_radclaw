@@ -121,7 +121,7 @@ defmodule JidoClaw.Tools.SearchCodeTest do
         |> String.split("\n", trim: true)
         |> Enum.reject(&String.contains?(&1, "truncated"))
 
-      assert length(lines) == 5
+      assert Enum.count(lines) == 5
       assert result.matches =~ "more matches truncated"
     end
 

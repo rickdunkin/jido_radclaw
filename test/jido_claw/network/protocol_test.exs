@@ -344,7 +344,7 @@ defmodule JidoClaw.Network.ProtocolTest do
       ]
 
       message = Protocol.response_message(solutions, "req-id", identity)
-      assert length(message["payload"]["solutions"]) == 2
+      assert [_, _] = message["payload"]["solutions"]
     end
   end
 end

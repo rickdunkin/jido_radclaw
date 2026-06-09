@@ -105,7 +105,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
       assert ctx.session.name == sid
       assert ctx.iteration_count == 1
       assert ctx.last_checkpoint == nil
-      assert length(ctx.events_since_checkpoint) >= 2
+      assert [_, _ | _] = ctx.events_since_checkpoint
       assert ctx.last_output.output == "hello world"
       assert ctx.last_output.status == :completed
       assert ctx.error_history == []
@@ -152,7 +152,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
 
       ctx = Persistence.context_for_resume(sid)
 
-      assert length(ctx.error_history) == 2
+      assert [_, _] = ctx.error_history
       types = Enum.map(ctx.error_history, & &1.event_type)
       assert "iteration.completed" in types
       assert "bootstrap.failed" in types

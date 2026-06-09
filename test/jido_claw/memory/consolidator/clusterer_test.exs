@@ -27,6 +27,6 @@ defmodule JidoClaw.Memory.Consolidator.ClustererTest do
   test "caps cluster count at max_clusters" do
     facts = for i <- 1..30, do: %{id: "#{i}", label: "label-#{i}"}
     clusters = Clusterer.cluster(facts, 5)
-    assert length(clusters) == 5
+    assert Enum.count(clusters) == 5
   end
 end

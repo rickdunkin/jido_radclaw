@@ -63,8 +63,7 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
       {:ok, %{messages: result}} =
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
-      assert length(result) == 3
-      [system_msg, summary_msg, last_user_msg] = result
+      assert [system_msg, summary_msg, last_user_msg] = result
       assert system_msg == atom_msg(:system, "sys")
       assert summary_msg.role == :user
       assert String.contains?(summary_msg.content, "earlier conversation")
@@ -85,8 +84,8 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
       {:ok, %{messages: result}} =
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
-      assert length(result) == 2
-      assert hd(result) == atom_msg(:system, "sys-nil-refs")
+      assert [first, _] = result
+      assert first == atom_msg(:system, "sys-nil-refs")
     end
 
     test "keeps non-system messages with nil refs (legacy untagged)" do
@@ -103,8 +102,7 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
       # untagged user kept, old user dropped, summary injected at front
-      assert length(result) == 2
-      [summary_msg, kept_msg] = result
+      assert [summary_msg, kept_msg] = result
       assert summary_msg.role == :user
       assert String.contains?(summary_msg.content, "[Compacted summary")
       assert kept_msg == atom_msg(:user, "untagged-user")
@@ -123,10 +121,10 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
       {:ok, %{messages: result}} =
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
-      assert length(result) == 3
-      assert Enum.at(result, 0) == string_msg("system", "sys")
-      assert Enum.at(result, 1).role == :user
-      assert Enum.at(result, 2) == string_msg("user", "new", %{"request_id" => "r2"})
+      assert [first, second, third] = result
+      assert first == string_msg("system", "sys")
+      assert second.role == :user
+      assert third == string_msg("user", "new", %{"request_id" => "r2"})
     end
 
     test "injects summary after leading system messages" do
@@ -162,8 +160,8 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
       # only the kept message; no injected summary
-      assert length(result) == 1
-      assert hd(result) == atom_msg(:user, "new", %{request_id: "r2"})
+      assert [kept] = result
+      assert kept == atom_msg(:user, "new", %{request_id: "r2"})
     end
 
     test "cumulative summarized_request_ids drop across calls" do
@@ -180,9 +178,9 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
         RequestTransformer.transform_request(request(msgs1), nil, nil, ctx)
 
       # only the summary message remains
-      assert length(result) == 1
-      assert hd(result).role == :user
-      assert String.contains?(hd(result).content, "[Compacted summary")
+      assert [summary] = result
+      assert summary.role == :user
+      assert String.contains?(summary.content, "[Compacted summary")
     end
 
     test "test capture receives the post-filter messages list" do
@@ -220,7 +218,7 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
       {:ok, %{messages: result}} =
         RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
 
-      assert length(result) == 9
+      assert Enum.count(result) == 9
       assert Enum.any?(result, fn m -> String.contains?(Map.get(m, :content, ""), "fixture") end)
 
       result_ids =

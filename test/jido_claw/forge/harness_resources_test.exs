@@ -16,7 +16,7 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
 
       mounts = ResourceProvisioner.file_mount_specs(resources)
 
-      assert length(mounts) == 2
+      assert [_, _] = mounts
       assert {"/data/models", "/workspace/models", :ro} in mounts
       assert {"/config", "/etc/app", :ro} in mounts
     end
@@ -72,9 +72,9 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
-      assert length(reasons) == 1
-      assert hd(reasons) =~ "DB_PASSWORD"
-      assert hd(reasons) =~ ":secrets"
+      assert [reason] = reasons
+      assert reason =~ "DB_PASSWORD"
+      assert reason =~ ":secrets"
     end
 
     test "rejects multiple sensitive keys with individual errors" do
@@ -90,7 +90,7 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
-      assert length(reasons) == 2
+      assert [_, _] = reasons
       key_names = Enum.join(reasons, " ")
       assert key_names =~ "SECRET_KEY_BASE"
       assert key_names =~ "AUTH_TOKEN"
@@ -145,7 +145,7 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
       ]
 
       assert {:error, reasons} = ResourceProvisioner.validate_resources(resources)
-      assert length(reasons) == 2
+      assert [_, _] = reasons
     end
 
     # Shape validation — required fields per type
@@ -169,7 +169,7 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
 
     test "rejects :file_mount missing :source and :mount_path" do
       assert {:error, reasons} = ResourceProvisioner.validate_resources([%{type: :file_mount}])
-      assert length(reasons) == 2
+      assert [_, _] = reasons
       joined = Enum.join(reasons, " ")
       assert joined =~ ":source"
       assert joined =~ ":mount_path"

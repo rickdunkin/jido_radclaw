@@ -177,8 +177,8 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
         })
 
       {:ok, rows} = Outcome.list_by_task_type(:qa)
-      assert length(rows) == 1
-      assert hd(rows).execution_kind == :strategy_run
+      assert [row] = rows
+      assert row.execution_kind == :strategy_run
     end
 
     test "can filter by specific execution_kind" do
@@ -196,7 +196,7 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
         })
 
       {:ok, rows} = Outcome.list_by_task_type(:verification, :certificate_verification)
-      assert length(rows) == 1
+      assert [_] = rows
     end
   end
 end

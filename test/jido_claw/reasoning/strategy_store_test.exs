@@ -161,7 +161,7 @@ defmodule JidoClaw.Reasoning.StrategyStoreTest do
       """)
 
       pid = start_store(tmp)
-      assert length(call(pid, :all)) == 1
+      assert [_] = call(pid, :all)
 
       write_yaml(dir, "two.yaml", """
       name: two
@@ -170,7 +170,7 @@ defmodule JidoClaw.Reasoning.StrategyStoreTest do
 
       # Use the same GenServer pid, not the global name
       :ok = GenServer.call(pid, :reload)
-      assert length(call(pid, :all)) == 2
+      assert [_, _] = call(pid, :all)
     end
 
     test "get/1 returns :not_found for missing name", %{tmp_dir: tmp} do

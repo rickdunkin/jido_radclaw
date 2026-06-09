@@ -51,7 +51,7 @@ defmodule JidoClaw.Trace.PersistenceTest do
       assert run.status in ["completed", "running"]
 
       assert {:ok, events} = TraceEvent.for_trace(run.trace_id)
-      assert length(events) == 2
+      assert [_, _] = events
       assert Enum.all?(events, &is_binary(&1.category))
       assert Enum.all?(events, &(&1.schema_version == 1))
     end
@@ -302,7 +302,7 @@ defmodule JidoClaw.Trace.PersistenceTest do
       :ok = H.sync_collector()
 
       assert {:ok, page} = Trace.history(page: [limit: 3])
-      assert length(page) <= 3
+      assert Enum.count(page) <= 3
     end
   end
 

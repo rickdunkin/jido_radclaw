@@ -154,7 +154,7 @@ defmodule JidoClaw.Reasoning.CompactorTest do
                Compactor.latest(session.id, tenant: tenant_id, actor: actor)
 
       # turn 1 protected, turns 11-12 retained, turns 2-10 in source
-      assert length(persisted.summarized_request_ids) == 9
+      assert Enum.count(persisted.summarized_request_ids) == 9
       assert "req_t1" not in persisted.summarized_request_ids
       assert "req_t11" not in persisted.summarized_request_ids
       assert "req_t12" not in persisted.summarized_request_ids

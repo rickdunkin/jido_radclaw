@@ -308,7 +308,7 @@ defmodule JidoClaw.AgentViewTest do
                )
 
       assert Enum.all?(view.events, &(&1.category == :model))
-      assert length(view.events) == 3
+      assert [_, _, _] = view.events
     end
 
     test "events_limit: :infinity returns all filtered events without arity crash", %{
@@ -333,7 +333,7 @@ defmodule JidoClaw.AgentViewTest do
                  events_limit: :infinity
                )
 
-      assert length(view.events) == 3
+      assert [_, _, _] = view.events
     end
   end
 
@@ -352,7 +352,7 @@ defmodule JidoClaw.AgentViewTest do
       end
 
       assert {:ok, view} = AgentView.snapshot(session, messages_limit: 3)
-      assert length(view.messages) == 3
+      assert [_, _, _] = view.messages
       assert view.message_count == 10
     end
 
@@ -370,7 +370,7 @@ defmodule JidoClaw.AgentViewTest do
       end
 
       assert {:ok, view} = AgentView.snapshot(session, messages_limit: :infinity)
-      assert length(view.messages) == 5
+      assert Enum.count(view.messages) == 5
     end
   end
 

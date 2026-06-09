@@ -255,7 +255,7 @@ defmodule JidoClaw.Reasoning.Classifier do
 
   defp mentions_multiple_files?(prompt) do
     Regex.match?(@multi_file_hint, prompt) or
-      length(Regex.scan(@path_pattern, prompt)) >= 2
+      match?([_, _ | _], Regex.scan(@path_pattern, prompt))
   end
 
   defp score_complexity(

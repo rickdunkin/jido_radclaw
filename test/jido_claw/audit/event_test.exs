@@ -126,8 +126,7 @@ defmodule JidoClaw.Audit.EventTest do
       {:ok, rows} =
         Event.for_target(:tool, "demo_tool", tenant: tenant_id, actor: actor_for(tenant_id))
 
-      assert length(rows) == 1
-      [row] = rows
+      assert [row] = rows
       assert row.target_id == "demo_tool"
     end
 
@@ -165,8 +164,7 @@ defmodule JidoClaw.Audit.EventTest do
       {:ok, rows} =
         Event.for_actor(:agent, "main", tenant: tenant_id, actor: actor_for(tenant_id))
 
-      assert length(rows) == 1
-      [row] = rows
+      assert [row] = rows
       assert row.actor_id == "main"
     end
   end

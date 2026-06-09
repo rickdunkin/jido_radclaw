@@ -191,9 +191,9 @@ defmodule JidoClaw.TraceTest do
       :ok = H.sync_collector()
       assert {:ok, trace} = Trace.for_request(agent_id, request_id)
       assert {:ok, spans} = Trace.spans(trace)
-      assert length(spans) == 1
-      assert hd(spans).category == :model
-      assert hd(spans).status == :completed
+      assert [span] = spans
+      assert span.category == :model
+      assert span.status == :completed
     end
   end
 
@@ -233,7 +233,7 @@ defmodule JidoClaw.TraceTest do
 
       :ok = H.sync_collector()
       assert {:ok, traces} = Trace.list(agent_id)
-      assert length(traces) <= 100
+      assert Enum.count(traces) <= 100
       refute Enum.any?(traces, &(&1.request_id == "#{agent_id}-req-1"))
     end
 
@@ -263,7 +263,7 @@ defmodule JidoClaw.TraceTest do
 
       :ok = H.sync_collector()
       assert {:ok, trace} = Trace.for_request(agent_id, request_id)
-      assert length(trace.events) == 300
+      assert Enum.count(trace.events) == 300
       # The earliest event was a request:start; it should have been pushed out.
       refute Enum.any?(trace.events, &(&1.category == :request and &1.event == :start))
     end
@@ -621,8 +621,8 @@ defmodule JidoClaw.TraceTest do
       :ok = H.sync_collector()
       assert {:ok, traces_a} = Trace.list({:tenant, tenant_a})
       assert {:ok, traces_b} = Trace.list({:tenant, tenant_b})
-      assert length(traces_a) == 2
-      assert length(traces_b) == 1
+      assert [_, _] = traces_a
+      assert [_] = traces_b
       assert Enum.all?(traces_a, &(&1.tenant_id == tenant_a))
       assert Enum.all?(traces_b, &(&1.tenant_id == tenant_b))
     end

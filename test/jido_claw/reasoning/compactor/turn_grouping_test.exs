@@ -28,9 +28,9 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGroupingTest do
 
       [t1, t2] = TurnGrouping.group(msgs)
       assert t1.request_id == "r1"
-      assert length(t1.messages) == 2
+      assert [_, _] = t1.messages
       assert t2.request_id == "r2"
-      assert length(t2.messages) == 1
+      assert [_] = t2.messages
     end
 
     test "sorts messages within a turn by sequence" do
@@ -54,8 +54,8 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGroupingTest do
 
       result = TurnGrouping.group(msgs)
       nil_turns = Enum.filter(result, &is_nil(&1.request_id))
-      assert length(nil_turns) == 1
-      assert length(List.first(nil_turns).messages) == 2
+      assert [nil_turn] = nil_turns
+      assert [_, _] = nil_turn.messages
     end
   end
 
@@ -177,7 +177,7 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGroupingTest do
       assert nil in protected_ids
       assert "r1" in protected_ids
       assert "r2" in protected_ids
-      assert length(protected_ids) == 3
+      assert [_, _, _] = protected_ids
       assert Enum.map(source, & &1.request_id) == ["r3"]
       assert Enum.map(retained, & &1.request_id) == ["r4"]
     end

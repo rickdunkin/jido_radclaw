@@ -215,15 +215,13 @@ defmodule JidoClaw.Tools.RunPipelineTest do
                )
 
       assert result.pipeline_name == name
-      assert length(result.stages) == 2
+      assert [_, _] = result.stages
       assert result.final_output =~ "OK:"
       assert result.usage.input_tokens == 20
       assert result.usage.output_tokens == 10
 
       rows = find_pipeline_rows(name)
-      assert length(rows) == 2
-
-      [r1, r2] = rows
+      assert [r1, r2] = rows
       assert r1.pipeline_stage == "001/002"
       assert r2.pipeline_stage == "002/002"
       assert r1.base_strategy == "cot"
@@ -270,8 +268,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       assert msg =~ "stage 2"
 
       rows = find_pipeline_rows(name)
-      assert length(rows) == 2
-      [r1, r2] = rows
+      assert [r1, r2] = rows
       assert r1.status == :ok
       assert r2.status == :error
       assert r1.pipeline_stage == "001/002"
@@ -444,12 +441,12 @@ defmodule JidoClaw.Tools.RunPipelineTest do
                      %{reasoning_runner: OkRunner}
                    )
 
-          assert length(result.stages) == 2
+          assert [_, _] = result.stages
 
           # Caller-supplied pipeline_name wins over the YAML `name` for
           # telemetry correlation.
           rows = find_pipeline_rows(caller_name)
-          assert length(rows) == 2
+          assert [_, _] = rows
           assert find_pipeline_rows("ref_only") == []
         end
       )
@@ -471,7 +468,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
                  %{reasoning_runner: OkRunner}
                )
 
-      assert length(result.stages) == 1
+      assert [_] = result.stages
     end
 
     test "empty inline stages + valid pipeline_ref — fails on empty-inline, never falls through" do
@@ -589,10 +586,10 @@ defmodule JidoClaw.Tools.RunPipelineTest do
                  %{reasoning_runner: FixedBodyRunner}
                )
 
-      assert length(result.stages) == 3
+      assert [_, _, _] = result.stages
 
       rows = find_pipeline_rows(name)
-      assert length(rows) == 3
+      assert [_, _, _] = rows
 
       stage_3_row = Enum.find(rows, fn r -> stage_index(r) == 3 end)
       assert stage_3_row
@@ -638,7 +635,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
 
       rows = find_pipeline_rows(name)
       # Stage 1 was successful; stage 2 failed via cap.
-      assert length(rows) == 2
+      assert [_, _] = rows
 
       s1 = Enum.find(rows, fn r -> stage_index(r) == 1 end)
       s2 = Enum.find(rows, fn r -> stage_index(r) == 2 end)
@@ -674,7 +671,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
                )
 
       # Both stages ran to completion — nothing was capped or dropped.
-      assert length(result.stages) == 2
+      assert [_, _] = result.stages
 
       rows = find_pipeline_rows(name)
       s2 = Enum.find(rows, fn r -> stage_index(r) == 2 end)
@@ -781,7 +778,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       assert msg =~ "stage 1: max_context_bytes (500) exceeded by initial prompt alone"
 
       rows = find_pipeline_rows(name)
-      assert length(rows) == 1
+      assert [_] = rows
       s1 = Enum.find(rows, fn r -> stage_index(r) == 1 end)
       assert s1.status == :error
 

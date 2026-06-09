@@ -89,7 +89,7 @@ defmodule JidoClaw.Orchestration.WorkflowStepProjectionTest do
 
     assert expanded.assigns.expanded_run_id == run.id
     assert expanded.assigns.steps_error == nil
-    assert length(expanded.assigns.steps) == 4
+    assert Enum.count(expanded.assigns.steps) == 4
     assert Enum.any?(expanded.assigns.steps, &(&1.name == "run_tests"))
 
     # Toggling again collapses.

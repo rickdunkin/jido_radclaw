@@ -111,7 +111,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
 
       listed_lines = result.entries |> String.split("\n") |> Enum.reject(&(&1 == ""))
       # 3 entry lines + 1 truncation note line
-      assert length(listed_lines) == 4
+      assert Enum.count(listed_lines) == 4
       assert result.entries =~ "more entries truncated"
       assert result.total == 10
     end

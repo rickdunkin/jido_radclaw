@@ -293,9 +293,7 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       events = result.metadata.tool_events
 
       # thread.started + turn.started are dropped as system noise.
-      assert length(events) == 3
-
-      [tool_use, tool_result, assistant] = events
+      assert [tool_use, tool_result, assistant] = events
       assert tool_use["type"] == "tool_use"
       assert tool_use["name"] == "list_clusters"
       assert tool_use["server"] == "consolidator"
@@ -350,7 +348,7 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
 
       assert {:ok, result} = Codex.run_iteration(client, state, [])
       assert result.status == :done
-      assert length(result.metadata.tool_events) == 1
+      assert [_] = result.metadata.tool_events
     end
   end
 

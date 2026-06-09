@@ -54,9 +54,7 @@ defmodule JidoClaw.Reasoning.PipelineStoreTest do
       [%PipelineStore{} = entry] = call(pid, :all)
       assert entry.name == "plan_then_summarize"
       assert entry.description == "CoT plan → CoD summary"
-      assert length(entry.stages) == 2
-
-      [s1, s2] = entry.stages
+      assert [s1, s2] = entry.stages
       # Normalization actually ran — stages are atom-keyed at load time.
       assert s1.strategy == "cot"
       assert s1.context_mode == "previous"
@@ -195,7 +193,7 @@ defmodule JidoClaw.Reasoning.PipelineStoreTest do
       """)
 
       pid = start_store(tmp)
-      assert length(call(pid, :all)) == 1
+      assert [_] = call(pid, :all)
 
       write_yaml(dir, "two.yaml", """
       name: two
@@ -204,7 +202,7 @@ defmodule JidoClaw.Reasoning.PipelineStoreTest do
       """)
 
       :ok = GenServer.call(pid, :reload)
-      assert length(call(pid, :all)) == 2
+      assert [_, _] = call(pid, :all)
     end
 
     test "get/1 returns :not_found for missing name", %{tmp_dir: tmp} do

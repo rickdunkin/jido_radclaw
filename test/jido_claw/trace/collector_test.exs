@@ -56,7 +56,7 @@ defmodule JidoClaw.Trace.CollectorTest do
 
       :ok = H.sync_collector()
       assert {:ok, traces} = Trace.list({:tenant, tenant_id})
-      assert length(traces) == 3
+      assert [_, _, _] = traces
       # Every retained trace should still carry the tenant stamp.
       assert Enum.all?(traces, &(&1.tenant_id == tenant_id))
     end
@@ -91,9 +91,7 @@ defmodule JidoClaw.Trace.CollectorTest do
 
       assert {:ok, trace} = Trace.for_request(%{agent_id: "out-agent"}, request_id)
       output_events = Enum.filter(trace.events, &(&1.category == :output))
-      assert length(output_events) == 2
-
-      [start_event, validated_event] = Enum.sort_by(output_events, & &1.seq)
+      assert [start_event, validated_event] = Enum.sort_by(output_events, & &1.seq)
       assert start_event.event == :start
       assert start_event.status == :running
 
@@ -120,9 +118,7 @@ defmodule JidoClaw.Trace.CollectorTest do
 
       assert {:ok, trace} = Trace.for_request(%{agent_id: "out-agent-2"}, request_id)
       output_events = Enum.filter(trace.events, &(&1.category == :output))
-      assert length(output_events) == 2
-
-      [repair_event, error_event] = Enum.sort_by(output_events, & &1.seq)
+      assert [repair_event, error_event] = Enum.sort_by(output_events, & &1.seq)
       assert repair_event.event == :repair
       assert repair_event.status == :running
 

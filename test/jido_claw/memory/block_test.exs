@@ -131,7 +131,7 @@ defmodule JidoClaw.Memory.BlockTest do
                  actor: actor_for(tenant_id)
                )
 
-      assert length(history) >= 2
+      assert [_, _ | _] = history
 
       sorted_inserted_ats = history |> Enum.map(& &1.inserted_at)
       assert sorted_inserted_ats == Enum.sort(sorted_inserted_ats, {:asc, DateTime})

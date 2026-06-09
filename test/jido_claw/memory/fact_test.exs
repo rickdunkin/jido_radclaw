@@ -58,7 +58,7 @@ defmodule JidoClaw.Memory.FactTest do
 
       facts = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
-      assert length(facts) == 2
+      assert [_, _] = facts
 
       old = Enum.find(facts, &(&1.content == "v1"))
       new = Enum.find(facts, &(&1.content == "v2"))

@@ -247,7 +247,7 @@ defmodule JidoClaw.VFS.WorkspaceTest do
     } do
       {:ok, pid} = Workspace.ensure_started(ws, tmp)
       :ok = Workspace.mount(ws, "/scratch", :in_memory, %{})
-      assert length(Workspace.mounts(ws)) == 2
+      assert [_, _] = Workspace.mounts(ws)
 
       ref = Process.monitor(pid)
       :ok = Workspace.teardown(ws)

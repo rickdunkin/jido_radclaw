@@ -38,7 +38,7 @@ defmodule JidoClaw.Agent.RecorderPluginCoverageTest do
       #{Enum.join(bad, "\n  ")}
     """
 
-    assert length(good) >= 8, """
+    assert Enum.count(good) >= 8, """
     Expected at least 8 agent declaration sites, found #{length(good)}.
     Did the agent_server_plugin coverage regress?
     """

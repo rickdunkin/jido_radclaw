@@ -57,7 +57,7 @@ defmodule JidoClaw.MCPServerTest do
     end
 
     test "publishes 20 tools" do
-      assert length(MCPServer.__publish__().tools) == 20
+      assert Enum.count(MCPServer.__publish__().tools) == 20
     end
 
     test "includes introspection tools" do

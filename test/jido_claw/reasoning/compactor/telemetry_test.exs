@@ -46,9 +46,7 @@ defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
       assert {:ok, :summarized, ^fake_snapshot, _} = result
 
       events = drain_events()
-      assert length(events) == 2
-
-      [{m1, md1}, {m2, md2}] = events
+      assert [{m1, md1}, {m2, md2}] = events
       assert md1.event == :start
       assert md1.category == :compaction
       assert m1[:system_time] != nil

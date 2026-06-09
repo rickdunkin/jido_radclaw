@@ -94,7 +94,7 @@
           {ExSlop.Check.Refactor.GraphemesLength, []},
           {ExSlop.Check.Refactor.IdentityMap, []},
           {ExSlop.Check.Refactor.IdentityPassthrough, []},
-          # {ExSlop.Check.Refactor.LengthComparison, []},
+          {ExSlop.Check.Refactor.LengthComparison, []},
           {ExSlop.Check.Refactor.LengthInGuard, []},
           {ExSlop.Check.Refactor.ListFold, []},
           {ExSlop.Check.Refactor.ListLast, []},

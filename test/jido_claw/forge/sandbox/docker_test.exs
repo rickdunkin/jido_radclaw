@@ -169,7 +169,7 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
       config = Application.get_env(:jido_claw, :onecli)
       assert config[:enabled] == true
       assert config[:gateway_url] == "http://localhost:10255"
-      assert length(config[:agent_tokens]) == 2
+      assert [_, _] = config[:agent_tokens]
     end
   end
 end

@@ -129,14 +129,12 @@ defmodule JidoClaw.ToolContextShapeTest do
   defp walk_calls(ast) do
     {_ast, acc} =
       Macro.prewalk(ast, [], fn
-        {{:., _, [_module, fn_name]}, _meta, args} = node, acc
-        when fn_name in [:ask, :ask_sync, :ask_stream] and length(args) == 3 ->
-          opts = Enum.at(args, -1)
-
+        {{:., _, [_module, fn_name]}, _meta, [_, _, opts]} = node, acc
+        when fn_name in [:ask, :ask_sync, :ask_stream] ->
           if has_tool_context_keyword?(opts) do
             {node, acc}
           else
-            {node, [{fn_name, length(args)} | acc]}
+            {node, [{fn_name, 3} | acc]}
           end
 
         node, acc ->

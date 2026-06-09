@@ -15,7 +15,7 @@ defmodule JidoClaw.Reasoning.CertificatesTest do
       assert :code_review in types
       assert :fault_localization in types
       assert :code_qa in types
-      assert length(types) == 4
+      assert Enum.count(types) == 4
     end
   end
 
