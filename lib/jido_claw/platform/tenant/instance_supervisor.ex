@@ -1,7 +1,7 @@
 defmodule JidoClaw.Tenant.InstanceSupervisor do
   @moduledoc """
-  Per-tenant supervisor. Each tenant gets isolated session, channel, cron,
-  and tool supervisors.
+  Per-tenant supervisor. Each tenant gets isolated session, cron, and tool
+  supervisors.
   """
   use Supervisor
 
@@ -36,7 +36,6 @@ defmodule JidoClaw.Tenant.InstanceSupervisor do
   def init(tenant_id) do
     children = [
       {DynamicSupervisor, name: session_sup(tenant_id), strategy: :one_for_one},
-      {DynamicSupervisor, name: channel_sup(tenant_id), strategy: :one_for_one},
       {DynamicSupervisor, name: cron_sup(tenant_id), strategy: :one_for_one},
       {Task.Supervisor, name: tool_sup(tenant_id)}
     ]
@@ -51,10 +50,6 @@ defmodule JidoClaw.Tenant.InstanceSupervisor do
   @spec session_sup(String.t()) :: via_name()
   def session_sup(tenant_id),
     do: {:via, Registry, {JidoClaw.TenantRegistry, {:session_sup, tenant_id}}}
-
-  @spec channel_sup(String.t()) :: via_name()
-  def channel_sup(tenant_id),
-    do: {:via, Registry, {JidoClaw.TenantRegistry, {:channel_sup, tenant_id}}}
 
   @spec cron_sup(String.t()) :: via_name()
   def cron_sup(tenant_id), do: {:via, Registry, {JidoClaw.TenantRegistry, {:cron_sup, tenant_id}}}

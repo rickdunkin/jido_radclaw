@@ -13,7 +13,6 @@
     data: [
       "JidoClaw.Repo",
       "JidoClaw.Accounts.*",
-      "JidoClaw.Folio.*",
       "JidoClaw.Audit.*",
       "JidoClaw.Trace.*"
     ]

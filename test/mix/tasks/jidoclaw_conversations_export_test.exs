@@ -195,4 +195,39 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
       assert File.exists?(out_path)
     end
   end
+
+  describe "legacy filename fallthrough" do
+    test "telegram_* archives import as :imported_legacy" do
+      tenant_id = "export-test-telegram-#{System.unique_integer([:positive])}"
+      project_dir = unique_project_dir("convo-telegram")
+
+      # The Telegram adapter and the telegram_* filename mapping were removed
+      # (kind enum no longer has :telegram); old archives must fall through to
+      # the :imported_legacy catch-all with the basename as external_id.
+      sessions_dir = Path.join([project_dir, ".jido", "sessions", tenant_id])
+      File.mkdir_p!(sessions_dir)
+
+      File.write!(
+        Path.join(sessions_dir, "telegram_123.jsonl"),
+        """
+        {"role":"user","content":"hello","timestamp":1725148800000}
+        {"role":"assistant","content":"hi","timestamp":1725148801000}
+        """
+      )
+
+      reenable!("jidoclaw.migrate.conversations")
+      Mix.Task.run("jidoclaw.migrate.conversations", ["--project", project_dir])
+
+      {:ok, workspace} = WorkspaceResolver.ensure_workspace(tenant_id, project_dir)
+
+      {:ok, session} =
+        Session.by_external(workspace.id, :imported_legacy, "telegram_123",
+          tenant: tenant_id,
+          authorize?: false
+        )
+
+      assert session.kind == :imported_legacy
+      assert session.external_id == "telegram_123"
+    end
+  end
 end

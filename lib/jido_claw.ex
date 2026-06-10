@@ -1,7 +1,7 @@
 defmodule JidoClaw do
   @moduledoc """
   JidoClaw - AI agent platform with CLI, HTTP gateway, multi-tenancy,
-  channel adapters (Discord, Telegram), cron scheduling, and swarm orchestration.
+  a Discord channel adapter, cron scheduling, and swarm orchestration.
   Powered by the Jido framework on BEAM/OTP.
 
   ## Quick Start
@@ -70,7 +70,7 @@ defmodule JidoClaw do
 
   ## Options
 
-    * `:kind` — required. One of `:repl, :discord, :telegram, :web_rpc, :cron, :api, :mcp`
+    * `:kind` — required. One of `:repl, :discord, :web_rpc, :cron, :api, :mcp`
     * `:external_id` — defaults to `session_id`
     * `:workspace_id` — project directory anchor; defaults to `File.cwd!()`
     * `:user_id` — UUID of the authenticated user; nil for unauthenticated surfaces
@@ -451,11 +451,11 @@ defmodule JidoClaw do
   ## Required opts
 
     * `:kind` — required. One of
-      `:repl, :discord, :telegram, :web_rpc, :cron, :api, :mcp, :imported_legacy`.
+      `:repl, :discord, :web_rpc, :cron, :api, :mcp, :imported_legacy`.
       A missing `:kind` raises `KeyError`. Required because the unique
       identity for sessions is `(tenant, workspace, kind, external_id)`
-      — defaulting `:kind` would silently mis-resolve REPL / Discord /
-      Telegram sessions.
+      — defaulting `:kind` would silently mis-resolve REPL / Discord
+      sessions.
 
   ## Optional opts
 

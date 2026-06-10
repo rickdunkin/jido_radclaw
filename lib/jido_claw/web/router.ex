@@ -97,7 +97,6 @@ defmodule JidoClaw.Web.Router do
       live("/agents", AgentsLive)
       live("/projects", ProjectsLive)
       live("/settings", SettingsLive)
-      live("/folio", FolioLive)
     end
   end
 

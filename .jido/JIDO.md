@@ -36,7 +36,7 @@ CLI (REPL) ──> Agent Engine ──> LLM Provider (Ollama/Anthropic/OpenAI/et
    |
 HTTP/WS (Phoenix) ──> Same agent engine, multi-tenant
    |
-Channels (Discord/Telegram) ──> Per-channel agent sessions
+Channels (Discord) ──> Per-channel agent sessions
 ```
 
 ### Supervision Tree
@@ -54,7 +54,7 @@ JidoClaw.Supervisor (one_for_one)
 ├── DynamicSupervisor (sessions)
 ├── JidoClaw.Jido (agent runtime)
 ├── JidoClaw.Tenant.Supervisor
-│   └── Per-tenant: DynamicSupervisor, Cron.Scheduler, Channel.Supervisor
+│   └── Per-tenant: DynamicSupervisor, Cron.Scheduler
 ├── JidoClaw.Tenant.Manager
 ├── JidoClaw.Solutions.Store
 ├── JidoClaw.Solutions.Reputation
@@ -74,7 +74,6 @@ All internal events use `jido_claw.*`:
 Each tenant gets isolated:
 - DynamicSupervisor for sessions
 - Cron scheduler
-- Channel supervisor (Discord/Telegram)
 - Separate config and memory
 
 ---

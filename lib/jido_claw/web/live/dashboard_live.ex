@@ -65,7 +65,6 @@ defmodule JidoClaw.Web.DashboardLive do
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             <.button navigate="/forge">New Forge Session</.button>
             <.button navigate="/workflows">View Workflows</.button>
-            <.button navigate="/folio">Folio Inbox</.button>
           </div>
         </div>
       </div>

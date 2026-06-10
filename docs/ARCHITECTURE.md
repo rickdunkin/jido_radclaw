@@ -105,11 +105,6 @@ JidoClaw.Repo (AshPostgres.Repo)
 │   ├── Token               — auth tokens (magic links, password resets)
 │   └── ApiKey              — API key authentication for REST/WS
 │
-├── JidoClaw.Folio (Ash Domain)
-│   ├── Project             — user projects (name, outcome, notes, status)
-│   ├── Action              — actions within projects
-│   └── InboxItem           — inbox system
-│
 ├── JidoClaw.Security (Ash Domain)
 │   └── SecretRef           — encrypted secret references (Cloak Vault)
 │
@@ -399,8 +394,7 @@ Phoenix.Router
   │   ├── /workflows     — WorkflowsLive
   │   ├── /agents        — AgentsLive
   │   ├── /projects      — ProjectsLive
-  │   ├── /settings      — SettingsLive
-  │   └── /folio         — FolioLive
+  │   └── /settings      — SettingsLive
   │
   ├── LiveView (public)
   │   ├── /sign-in       — SignInLive
@@ -594,7 +588,7 @@ JidoClaw.Config
 | `/cron remove` | Remove a cron job |
 | `/cron trigger` | Manually trigger a job |
 | `/cron disable` | Disable a job |
-| `/channels` | List channel adapters |
+| `/channels` | Show Discord consumer status |
 
 ## Events
 
@@ -670,7 +664,6 @@ JidoClaw.Tenant.Supervisor
   │
   ├── Tenant "default" (auto-created at boot)
   │   ├── SessionSupervisor → Session.Worker(session_1), Session.Worker(session_2)
-  │   ├── ChannelSupervisor → Channel.Worker(discord), Channel.Worker(telegram)
   │   ├── CronSupervisor → Cron.Worker(job_1), Cron.Worker(job_2)
   │   └── ToolSupervisor → Task.Supervisor for tool execution
   │
@@ -751,7 +744,7 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 
 3. Web.Endpoint (gateway mode)
    └── Phoenix starts on configured port (default: 4000)
-       ├── LiveView routes (dashboard, forge, workflows, agents, projects, settings, folio)
+       ├── LiveView routes (dashboard, forge, workflows, agents, projects, settings)
        ├── API routes (health, chat completions, webhooks)
        ├── Auth routes (sign-in, sign-out)
        ├── AshAdmin panel (/admin)
@@ -771,7 +764,6 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 | `core/`          | SignalBus, Stats, Telemetry                          |
 | `desktop/`       | Desktop sidecar (port finder)                        |
 | `display/`       | Terminal display coordinator                         |
-| `folio/`         | Ash domain: Project, Action, InboxItem               |
 | `forge/`         | Sandboxed execution (runners, sandbox backends)      |
 | `github/`        | Webhook pipeline, issue analysis, comment client     |
 | `network/`       | Agent-to-agent networking (Ed25519, PubSub peers)    |

@@ -1,6 +1,6 @@
 defmodule JidoClaw.Channel.Behaviour do
   @moduledoc """
-  Behaviour for platform channel adapters (Discord, Telegram, Slack, IRC, etc.).
+  Behaviour for platform channel adapters (Discord, Slack, IRC, etc.).
   Each adapter normalizes inbound messages and dispatches outbound responses.
   """
 

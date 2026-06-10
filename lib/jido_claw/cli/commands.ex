@@ -629,16 +629,27 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   def handle("/channels", state) do
-    channels = JidoClaw.Channel.Supervisor.list_channels("default")
-
     IO.puts("")
-    IO.puts("  \e[1mChannel Adapters\e[0m")
+    IO.puts("  \e[1mChannels\e[0m")
 
-    if channels == [] do
-      IO.puts("  \e[2mNo channels connected.\e[0m")
-      IO.puts("  \e[2mConfigure: DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN\e[0m")
+    # which_children proves the local consumer process exists, not that
+    # Discord is authenticated/online — hence "running", not "connected".
+    discord_running? =
+      JidoClaw.Supervisor
+      |> Supervisor.which_children()
+      |> Enum.any?(fn
+        {JidoClaw.Channel.DiscordConsumer, pid, _type, _modules} ->
+          is_pid(pid) and Process.alive?(pid)
+
+        _child ->
+          false
+      end)
+
+    if discord_running? do
+      IO.puts("  \e[33m▸\e[0m \e[1mdiscord\e[0m  \e[32mconsumer running\e[0m")
     else
-      Enum.each(channels, &print_channel_row/1)
+      IO.puts("  \e[2mDiscord consumer not running.\e[0m")
+      IO.puts("  \e[2mConfigure: DISCORD_BOT_TOKEN\e[0m")
     end
 
     IO.puts("")
@@ -1727,11 +1738,4 @@ defmodule JidoClaw.CLI.Commands do
   defp cron_status_icon(:active), do: "\e[32m●\e[0m"
   defp cron_status_icon(:disabled), do: "\e[31m✗\e[0m"
   defp cron_status_icon(_), do: "\e[2m○\e[0m"
-
-  # -- /channels helpers --
-
-  defp print_channel_row(ch) do
-    status_color = if ch.status == :connected, do: "\e[32m", else: "\e[33m"
-    IO.puts("  \e[33m▸\e[0m \e[1m#{ch.platform}\e[0m  #{status_color}#{ch.status}\e[0m")
-  end
 end

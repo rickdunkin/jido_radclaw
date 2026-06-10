@@ -2,8 +2,8 @@ defmodule JidoClaw.Workspaces.Resolver do
   @moduledoc """
   Lazy upserter for `JidoClaw.Workspaces.Workspace` rows.
 
-  Every surface (REPL, web controller, RPC channel, Discord/Telegram
-  adapter, cron worker, MCP — though MCP is enum-only in Phase 0) calls
+  Every surface (REPL, web controller, RPC channel, Discord adapter,
+  cron worker, MCP — though MCP is enum-only in Phase 0) calls
   `ensure_workspace/3` before dispatching to the agent so downstream
   consumers can attach to a real UUID rather than an opaque string.
 

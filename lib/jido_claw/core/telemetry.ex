@@ -74,10 +74,6 @@ defmodule JidoClaw.Telemetry do
       counter("jido_claw.tenant.destroy.total"),
       last_value("jido_claw.tenant.count", measurement: :count),
 
-      # Channel metrics
-      counter("jido_claw.channel.message.inbound.total", tags: [:adapter]),
-      counter("jido_claw.channel.message.outbound.total", tags: [:adapter]),
-
       # VM metrics
       last_value("vm.memory.total", unit: :byte),
       last_value("vm.total_run_queue_lengths.total"),
@@ -216,15 +212,5 @@ defmodule JidoClaw.Telemetry do
   @spec emit_tenant_destroy(map()) :: :ok
   def emit_tenant_destroy(metadata) do
     :telemetry.execute([:jido_claw, :tenant, :destroy], %{count: 1}, metadata)
-  end
-
-  @spec emit_channel_inbound(map()) :: :ok
-  def emit_channel_inbound(metadata) do
-    :telemetry.execute([:jido_claw, :channel, :message, :inbound], %{count: 1}, metadata)
-  end
-
-  @spec emit_channel_outbound(map()) :: :ok
-  def emit_channel_outbound(metadata) do
-    :telemetry.execute([:jido_claw, :channel, :message, :outbound], %{count: 1}, metadata)
   end
 end

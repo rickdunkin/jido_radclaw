@@ -3,7 +3,7 @@ defmodule JidoClaw.Conversations do
   Ash domain for conversation session records.
 
   A `Session` is the durable, tenant-scoped row that represents a single
-  REPL/Discord/Telegram/Web RPC/cron/api conversation. Sessions are
+  REPL/Discord/Web RPC/cron/api conversation. Sessions are
   created lazily by `JidoClaw.Conversations.Resolver.ensure_session/5` on
   every entry-point dispatch so later phases (Memory, Audit) can foreign-
   key to a real UUID instead of an opaque string.

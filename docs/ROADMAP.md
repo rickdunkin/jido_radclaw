@@ -4,7 +4,7 @@
 
 Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4), and `/servers` REPL command + workspace-scoped `jido status` SSH session count + bounded auto-reconnect on dropped SSH sessions (v0.5.3.1, post-v0.5.4 follow-up).
 
-Ash Framework 3.0 + PostgreSQL data layer with 7 domains (Accounts, Folio, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
+Ash Framework 3.0 + PostgreSQL data layer with 6 domains (Accounts, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
 Deferred items not yet scheduled into a release are tracked in [`docs/BACKLOG.md`](BACKLOG.md).
 
@@ -35,12 +35,11 @@ This milestone was not in the original roadmap but was delivered between v0.2 an
 
 ### Ash Framework 3.0 Integration
 
-Replaced the planned `jido_ecto` approach with `ash_postgres` directly. 12 migrations, 16+ Ash resources across 7 domains:
+Replaced the planned `jido_ecto` approach with `ash_postgres` directly. 12 migrations, 13+ Ash resources across 6 domains (originally 7 — the Folio GTD domain was removed in v0.6):
 
 | Domain        | Resources                               |
 | ------------- | --------------------------------------- |
 | Accounts      | User, Token, ApiKey                     |
-| Folio         | Project, Action, InboxItem              |
 | Forge         | Session, Event, Checkpoint, ExecSession |
 | GitHub        | IssueAnalysis                           |
 | Orchestration | WorkflowRun, WorkflowStep, ApprovalGate |
@@ -51,7 +50,7 @@ Replaced the planned `jido_ecto` approach with `ash_postgres` directly. 12 migra
 
 Full-stack web application with:
 
-- 8+ LiveViews: Dashboard, Forge, Setup, Workflows, Sign-in, Folio, Agents, Settings, Projects
+- 8+ LiveViews: Dashboard, Forge, Setup, Workflows, Sign-in, Agents, Settings, Projects
 - Authentication via `ash_authentication` + `ash_authentication_phoenix`
 - Admin UI via `ash_admin`
 - Router, endpoint, layouts, error handling

@@ -236,9 +236,7 @@ defmodule JidoClaw.Conversations.Session do
       allow_nil?(false)
       public?(true)
 
-      constraints(
-        one_of: [:repl, :discord, :telegram, :web_rpc, :cron, :api, :mcp, :imported_legacy]
-      )
+      constraints(one_of: [:repl, :discord, :web_rpc, :cron, :api, :mcp, :imported_legacy])
     end
 
     attribute :external_id, :string do

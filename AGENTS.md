@@ -102,7 +102,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 
 ### Data Layer
 
-Ash Framework 3.0 + PostgreSQL. Resources in `lib/jido_claw/accounts/` and `lib/jido_claw/folio/`. Test DB uses `Ecto.Adapters.SQL.Sandbox` for parallel isolation.
+Ash Framework 3.0 + PostgreSQL. Resources in `lib/jido_claw/accounts/`. Test DB uses `Ecto.Adapters.SQL.Sandbox` for parallel isolation.
 
 ### Configuration Cascade
 

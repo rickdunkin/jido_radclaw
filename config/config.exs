@@ -225,7 +225,6 @@ config :esbuild,
 
 # Channel adapters (configure via env vars)
 # Discord: DISCORD_BOT_TOKEN, DISCORD_GUILD_ID
-# Telegram: TELEGRAM_BOT_TOKEN
 
 # Nostrum (Discord) — only configured when DISCORD_BOT_TOKEN is present
 if System.get_env("DISCORD_BOT_TOKEN") do
@@ -245,7 +244,6 @@ config :jido_claw,
     JidoClaw.Forge.Domain,
     JidoClaw.Orchestration,
     JidoClaw.GitHub,
-    JidoClaw.Folio,
     JidoClaw.Reasoning.Domain,
     JidoClaw.Tenants,
     JidoClaw.Workspaces,

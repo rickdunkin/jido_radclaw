@@ -17,7 +17,7 @@ defmodule JidoClaw.ToolContext do
     * `:session_uuid`   — Phase 0 UUID FK target (`Conversations.Session.id`)
     * `:workspace_id`   — runtime per-session VFS/Shell/Profile key (overload)
     * `:workspace_uuid` — Phase 0 UUID FK target (`Workspaces.Workspace.id`)
-    * `:user_id`        — UUID of the authenticated user; nil for CLI/Discord/Telegram
+    * `:user_id`        — UUID of the authenticated user; nil for CLI/Discord
     * `:agent_id`       — runtime agent identity (e.g. `"main"` or a session id)
     * `:agent_template` — current routed template name (e.g., `"main"`,
                            `"reviewer"`). Distinct from `:agent_id`, which is

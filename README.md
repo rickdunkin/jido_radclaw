@@ -24,18 +24,17 @@
                  自動的に  ·  automatically
 ```
 
-JidoClaw is a full-stack AI agent orchestration platform built natively on the [Jido](https://github.com/agentjido/jido) framework for Elixir/OTP. It combines a CLI REPL, LiveView web dashboard, sandboxed code execution (Forge), persistent workflow orchestration with approval gates, a hierarchical GitHub issue bot, GTD task management, encrypted secret storage, and desktop app packaging — all in one Elixir application. Where closed platforms lock you into hosted infrastructure, JidoClaw runs anywhere Elixir runs: your laptop, a single VPS, or a distributed BEAM cluster.
+JidoClaw is a full-stack AI agent orchestration platform built natively on the [Jido](https://github.com/agentjido/jido) framework for Elixir/OTP. It combines a CLI REPL, LiveView web dashboard, sandboxed code execution (Forge), persistent workflow orchestration with approval gates, a hierarchical GitHub issue bot, encrypted secret storage, and desktop app packaging — all in one Elixir application. Where closed platforms lock you into hosted infrastructure, JidoClaw runs anywhere Elixir runs: your laptop, a single VPS, or a distributed BEAM cluster.
 
 ## Platform Overview
 
 | Layer             | What It Does                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------ |
 | **CLI REPL**      | Interactive terminal agent with 27 tools, swarm orchestration, live display                |
-| **Web Dashboard** | LiveView UI — dashboard, forge terminal, workflows, agents, projects, settings, GTD        |
+| **Web Dashboard** | LiveView UI — dashboard, forge terminal, workflows, agents, projects, settings             |
 | **Forge**         | Sandboxed code execution engine with 4 runner types (shell, claude_code, workflow, custom) |
 | **Orchestration** | Persistent workflow engine with state machine, approval gates, retry lineage               |
 | **GitHub Bot**    | Hierarchical multi-agent pipeline — triage → parallel research → PR generation             |
-| **Folio GTD**     | Getting Things Done task management — inbox capture, context/energy tracking               |
 | **Security**      | AES-256-GCM encryption at rest, multi-layer secret redaction (logs, prompts, UI, PubSub)   |
 | **Desktop App**   | Tauri packaging — native shell with embedded Phoenix server                                |
 | **Data Layer**    | Ash Framework 3.0 + PostgreSQL — resources, authentication, admin panel                    |
@@ -44,7 +43,7 @@ JidoClaw is a full-stack AI agent orchestration platform built natively on the [
 
 - **BEAM-native**: Lightweight processes, fault tolerance, hot code reload — no Kubernetes required for multi-agent workloads
 - **Full-stack**: CLI, REST API, WebSocket, LiveView dashboard, desktop app — one codebase, every interface
-- **Multi-interface**: CLI REPL, REST API (OpenAI-compatible), WebSocket RPC, Discord, Telegram
+- **Multi-interface**: CLI REPL, REST API (OpenAI-compatible), WebSocket RPC, Discord
 - **Multi-provider**: Ollama (local + cloud), Anthropic, OpenAI, Google, Groq, xAI, OpenRouter — 8 providers, 35+ models
 - **Multi-tenant**: Per-tenant supervision trees isolate resources and prevent cascading failures across teams
 - **Sandboxed execution**: Forge runs code in isolated sandboxes with session lifecycle, concurrency limits, and streaming output
@@ -170,7 +169,6 @@ JidoClaw uses [Ash Framework 3.0](https://ash-hq.org) as its resource layer, bac
 | **Forge**         | Session, ExecSession, Checkpoint, Event | Sandbox session audit trail                                |
 | **Orchestration** | WorkflowRun, WorkflowStep, ApprovalGate | Persistent workflow state machine                          |
 | **GitHub**        | IssueAnalysis                           | Issue triage and analysis records                          |
-| **Folio**         | InboxItem, Action, Project              | GTD task management                                        |
 
 ### Authentication
 
@@ -320,26 +318,6 @@ export GITHUB_WEBHOOK_SECRET=your-webhook-secret
 export GITHUB_APP_PRIVATE_KEY=...
 ```
 
-## Folio — GTD Task Management
-
-Getting Things Done workflow with inbox capture, clarification, and context-aware action tracking.
-
-### GTD Flow
-
-```
-Capture → Inbox → Clarify → Actionable?
-                              ├── Yes → Action (next, waiting, someday)
-                              └── No  → Discard / Reference
-```
-
-### Action Tracking
-
-Actions support context (`@phone`, `@computer`, `@office`), energy level (`low`, `normal`, `high`), time estimates, due dates, and waiting-for tracking.
-
-### Access
-
-Available through the LiveView UI at `/folio` and as AI agent tools for natural language task management.
-
 ## Security
 
 ### Encrypted Secrets
@@ -403,7 +381,6 @@ Signed-in users who aren't allowlisted get a 404 for `/admin`; signed-out users 
 | `/agents`         | Agents         | Agent configuration, templates, issue bot toggle |
 | `/projects`       | Projects       | Project list, GitHub repo linking                |
 | `/settings`       | Settings       | User settings, API key management                |
-| `/folio`          | Folio          | GTD inbox, actions, projects                     |
 | `/setup`          | Setup Wizard   | Prerequisite checks, credential validation       |
 | `/sign-in`        | Sign In        | Authentication                                   |
 | `/admin`          | Admin Panel    | AshAdmin resource browser                        |
@@ -536,7 +513,6 @@ JidoClaw.Supervisor
 ├── JidoClaw.Tenant.Supervisor
 │   └── per tenant:
 │       ├── Session.Supervisor (DynamicSupervisor)
-│       ├── Channel.Supervisor (DynamicSupervisor)
 │       ├── Cron.Supervisor (DynamicSupervisor)
 │       └── Tool.Supervisor (Task.Supervisor)
 ├── JidoClaw.Tenant.Manager
@@ -557,7 +533,6 @@ JidoClaw.Supervisor
 | Forge         | `JidoClaw.Forge.Domain`  | Session, ExecSession, Checkpoint, Event |
 | Orchestration | `JidoClaw.Orchestration` | WorkflowRun, WorkflowStep, ApprovalGate |
 | GitHub        | `JidoClaw.GitHub`        | IssueAnalysis                           |
-| Folio         | `JidoClaw.Folio`         | InboxItem, Action, Project              |
 
 ### OTP Process Overview
 
@@ -823,12 +798,11 @@ JidoClaw.tenants()
 
 ### Channel Adapters
 
-Connect your agent to Discord and Telegram:
+Connect your agent to Discord:
 
 ```bash
 export DISCORD_BOT_TOKEN=your-bot-token
 export DISCORD_GUILD_ID=your-guild-id
-export TELEGRAM_BOT_TOKEN=your-bot-token
 ```
 
 Adapters implement `JidoClaw.Channel.Behaviour` — add Slack, IRC, or any platform by implementing 5 callbacks.
@@ -951,7 +925,6 @@ model: 'openrouter:anthropic/claude-sonnet-4'
 | `OPENROUTER_API_KEY`      | —           | OpenRouter API key                            |
 | `DISCORD_BOT_TOKEN`       | —           | Discord bot token                             |
 | `DISCORD_GUILD_ID`        | —           | Discord guild ID                              |
-| `TELEGRAM_BOT_TOKEN`      | —           | Telegram bot token                            |
 | `GITHUB_TOKEN`            | —           | GitHub API token (for `github://` VFS paths)  |
 | `AWS_REGION`              | `us-east-1` | AWS region (for `s3://` VFS paths)            |
 | `CANOPY_WORKSPACE_URL`    | —           | Canopy workspace URL                          |
@@ -1085,11 +1058,6 @@ lib/jido_claw/
 │       ├── triage_agent.ex           # Keyword + label classification
 │       ├── research_coordinator.ex   # 4 parallel Task.async workers
 │       └── pull_request_coordinator.ex # 3-attempt retry with quality gate
-├── folio.ex                    # Ash.Domain — GTD
-├── folio/
-│   ├── inbox_item.ex           # Capture/process/discard workflow
-│   ├── action.ex               # Next/waiting/someday with context, energy, time_estimate
-│   └── project.ex              # GTD projects with has_many :actions
 ├── code_server.ex              # Project runtime facade
 ├── code_server/
 │   └── runtime.ex              # Per-project GenServer
@@ -1141,10 +1109,7 @@ lib/jido_claw/
 │   ├── channel/
 │   │   ├── behaviour.ex        # Channel adapter behaviour (5 callbacks)
 │   │   ├── discord.ex          # Discord adapter
-│   │   ├── discord_consumer.ex # Discord event consumer
-│   │   ├── telegram.ex         # Telegram adapter
-│   │   ├── supervisor.ex       # Channel DynamicSupervisor
-│   │   └── worker.ex           # Per-channel worker
+│   │   └── discord_consumer.ex # Discord event consumer
 │   ├── cron/
 │   │   ├── scheduler.ex        # Cron scheduling engine
 │   │   ├── worker.ex           # Per-job worker
@@ -1199,7 +1164,6 @@ lib/jido_claw/
     │   ├── agents_live.ex      # Agent config, templates
     │   ├── projects_live.ex    # Project list, import
     │   ├── settings_live.ex    # User settings, API keys
-    │   ├── folio_live.ex       # GTD inbox/actions/projects
     │   ├── setup_live.ex       # Setup wizard UI
     │   └── sign_in_live.ex     # Authentication
     ├── controllers/
@@ -1258,8 +1222,7 @@ This release transforms JidoClaw from a CLI-only agent platform into a full-stac
 | **Sandbox execution** | None                    | Forge engine — 4 runner types, 50 concurrent sessions, Docker/local sandboxes                   |
 | **Workflows**         | Skills only (ephemeral) | Persistent state machine with approval gates, retry lineage                                     |
 | **GitHub automation** | None                    | Hierarchical agent pipeline — triage → 4 parallel research → PR with quality gate               |
-| **Task management**   | None                    | Folio GTD — inbox, actions with context/energy, projects                                        |
-| **Web UI**            | LiveDashboard only      | 8 LiveView pages — dashboard, forge terminal, workflows, agents, projects, settings, GTD, setup |
+| **Web UI**            | LiveDashboard only      | 7 LiveView pages — dashboard, forge terminal, workflows, agents, projects, settings, setup      |
 | **Desktop**           | CLI only                | Tauri native app with embedded Phoenix server                                                   |
 | **Admin**             | None                    | AshAdmin at `/admin` for all resources                                                          |
 

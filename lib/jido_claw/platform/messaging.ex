@@ -3,8 +3,8 @@ defmodule JidoClaw.Messaging do
   Messaging runtime powered by jido_messaging.
 
   Provides room-based messaging with agent registration, thread management,
-  and bridge support for external platforms (Discord, Telegram). Each tenant
-  gets its own messaging instance started under the tenant's channel_sup.
+  and bridge support for external platforms (Discord). A single instance is
+  started in the application supervision tree.
 
   ## Usage
 

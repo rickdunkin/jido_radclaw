@@ -225,7 +225,7 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m  \e[1mPlatform\e[0m                                        \e[36m│\e[0m
     \e[36m│\e[0m    /gateway         Show gateway status             \e[36m│\e[0m
     \e[36m│\e[0m    /tenants         List tenants                    \e[36m│\e[0m
-    \e[36m│\e[0m    /channels        List channel adapters           \e[36m│\e[0m
+    \e[36m│\e[0m    /channels        Discord consumer status         \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mServers\e[0m                                         \e[36m│\e[0m
     \e[36m│\e[0m    /servers         List declared servers           \e[36m│\e[0m

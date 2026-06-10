@@ -264,7 +264,6 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
   # The v0.5 writer used these filename prefixes:
   #
   #   discord_<channel_id>     → (:discord, <channel_id>)
-  #   telegram_<chat_id>       → (:telegram, <chat_id>)
   #   web_<rpc_id>             → (:web_rpc, <rpc_id>)
   #   cron_<job_id>            → (:cron, <job_id>)
   #   api_<external_id>        → (:api, <external_id>)
@@ -276,9 +275,6 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
     cond do
       String.starts_with?(base, "discord_") ->
         {:discord, strip_prefix(base, "discord_")}
-
-      String.starts_with?(base, "telegram_") ->
-        {:telegram, strip_prefix(base, "telegram_")}
 
       String.starts_with?(base, "web_") ->
         {:web_rpc, strip_prefix(base, "web_")}

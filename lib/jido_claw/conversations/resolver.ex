@@ -3,7 +3,7 @@ defmodule JidoClaw.Conversations.Resolver do
   Lazy upserter for `JidoClaw.Conversations.Session` rows.
 
   Every surface that opens a conversation (REPL, web controller, RPC
-  channel, Discord/Telegram adapter, cron worker) calls
+  channel, Discord adapter, cron worker) calls
   `ensure_session/5` immediately after resolving the parent Workspace.
   The Session resource's `:start` action runs a cross-tenant FK check
   inside the create transaction so this resolver doesn't need to

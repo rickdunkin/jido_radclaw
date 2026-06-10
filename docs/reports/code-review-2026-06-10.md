@@ -27,7 +27,7 @@ The May audit scored against a **single-user, Tailscale-only** deployment where 
 
 If the single-user/Tailscale assumptions still hold:
 
-- **Deprioritize:** H1 (AshAdmin), H3 (RpcChannel leak), H16 (Folio authorization) — all require a second authenticated user or an attacker already on the tailnet.
+- **Deprioritize:** H1 (AshAdmin), H3 (RpcChannel leak), H16 (Folio authorization) — all require a second authenticated user or an attacker already on the tailnet. *(H16 since closed by removing the Folio subsystem entirely — see the per-finding note.)*
 - **Keep at HIGH:** H2 (`check_origin: false`) — the attack vector is the *operator's own browser* visiting a malicious page, which the tailnet does not mitigate.
 - **Conditional:** H4/H5 (network/cluster) apply only when `:cluster_enabled` is true; H6 (trust gaming) is reachable by the LLM via the solution store even single-user.
 - **Keep:** all reliability/correctness highs (H10–H15) and the secrets-at-rest highs (H7–H9) — these are LLM-adversary or accidental-leakage findings, exactly the categories the May threat model keeps.
@@ -167,13 +167,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fix:** Re-port `trap_exit` as the first line of the patched `init/1` and the `{:EXIT, _pid, _reason} -> {:noreply, state}` clause, restoring equivalence to the shadowed dep version.
 
-### H14. Telegram channel adapter is non-functional ✓ verified
+### H14. Telegram channel adapter is non-functional ✓ verified — ✅ fixed 2026-06-10 (by removal)
 
 **Where:** `lib/jido_claw/platform/channel/telegram.ex:29`, `lib/jido_claw/platform/channel/worker.ex:56-84`
 
 **What:** `Telegram.connect/1` does `send(self(), :poll)` (self = the `Channel.Worker` process) and the moduledoc says polling is "called via handle_info in Worker" — but the worker has only `:connect` and `{:inbound, _}` clauses and no catch-all. The stray `:poll` raises `FunctionClauseError` (crashing the worker) or, at best, the poll loop never runs; `Telegram.poll/1` has no caller. Telegram receives no messages either way.
 
 **Fix:** Add the poll loop to `Channel.Worker` (handle `:poll`, call `adapter.poll/1`, dispatch updates through `handle_inbound`, re-arm with `Process.send_after`), or move polling into the adapter's own process.
+
+**Fixed (2026-06-10):** Resolved by removing the adapter rather than wiring it up — it never worked and was never going to be used. The dead channel scaffolding went with it: `Channel.Worker` and `Channel.Supervisor` (zero live callers — Discord runs via `DiscordConsumer` directly) and the producer-less per-tenant `channel_sup` DynamicSupervisor are deleted; `Channel.Behaviour` stays (Discord implements it). `/channels` now reports Discord consumer status instead of listing Workers that could never exist. `:telegram` is out of the Session `kind` enum, old `telegram_*.jsonl` archives import via the `:imported_legacy` catch-all (regression-tested), and a data migration reclassifies any existing telegram rows.
 
 ### H15. Forge timeout/brutal-kill orphans OS grandchildren — high|medium confidence
 
@@ -183,13 +185,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fix:** Spawn via a process-group wrapper (`setsid` + kill the negative pgid on timeout), or `exec` in the shell string so no intermediate `sh` remains, and kill via `Port.info(port, :os_pid)` on the timeout branch.
 
-### H16. Folio resources have no authorization — any user reads every user's data ✓ verified
+### H16. Folio resources have no authorization — any user reads every user's data ✓ verified — ✅ fixed 2026-06-10 (by removal)
 
 **Where:** `lib/jido_claw/folio/project.ex`, `lib/jido_claw/folio/action.ex`, `lib/jido_claw/folio/inbox_item.ex` (verified: zero `authorizers`/`policies` in all three; plain `use Ash.Resource`)
 
 **What:** The read actions filter only on `status`, never `user_id`. `FolioLive.mount` passes `actor:`, but with no authorizer it is inert — every authenticated web user sees (and can mutate) every other user's inbox items, next-actions, and projects.
 
 **Fix:** Add `authorizers: [Ash.Policy.Authorizer]` and policies scoping reads/writes to `actor.id == user_id` (or filter the read actions by `^actor(:id)`).
+
+**Fixed (2026-06-10):** Resolved by removing the Folio GTD subsystem outright rather than retrofitting authorization — the feature was unused. The Ash domain, all three resources, and `FolioLive` are deleted; `JidoClaw.Folio` is out of `ash_domains` (which also deregisters it from AshAdmin); the `/folio` route and nav/dashboard links are gone; and a generated migration (`drop_folio_tables`) drops the three `folio_*` tables.
 
 ---
 
@@ -208,8 +212,8 @@ If the single-user/Tailscale assumptions still hold:
 - **M6. `WorkflowView` omits `:abandoned` from terminal statuses** — `lib/jido_claw/workflow_view.ex:15` (✓ verified). Abandoned runs (a real terminal status) appear in neither `active_runs` nor `recent_completions`, so they vanish from the MCP `workflow_status` tool and `inspect_agent`; the dashboard (`workflows_live.ex:14`) gets it right. Add `:abandoned`.
 - **M7. Durable `trace_runs`/`trace_events` grow without bound** — `lib/jido_claw/trace/persistence.ex`. The in-memory ring is capped (100 traces × 300 events) but every event with `persist?: true` (prod default, `config.exs:242`) writes rows, and no prune/retention exists anywhere in the tree. Add a retention sweeper on the existing cron machinery.
 - **M8. Workflow step/run payloads persisted unbounded into the append-only log** — `lib/jido_claw/orchestration/reactor_middleware.ex:204, 339`. Full LLM-text step results land in `WorkflowEvent.payload` (redacted but never truncated); recovery/replay/retract all re-read `for_run`. Cap payload bytes at append time in `Allocate`.
-- **M9. Discord/Telegram hardcode the `"default"` tenant** — `lib/jido_claw/platform/channel/discord.ex:49-52`, `telegram.ex:47-50`. All external-channel traffic collapses into one tenant/session namespace despite the worker carrying a real `tenant_id`. Thread the worker's tenant (and per-author user) through `handle_inbound`/`chat`.
-- **M10. Discord/Telegram send failures swallowed; no message-size handling** — `discord.ex:64-75`, `telegram.ex:53`. `Message.create` result ignored (Discord rejects >2000 chars); Telegram uses `parse_mode: "Markdown"` on unescaped agent text (400s on stray `_`/`*`). Check returns, chunk to platform limits, drop/escape Markdown.
+- **M9. Discord hardcodes the `"default"` tenant** — `lib/jido_claw/platform/channel/discord.ex:49-52`. All external-channel traffic collapses into one tenant/session namespace. Thread a real tenant (and per-author user) through `handle_inbound`/`chat`. *(Originally also flagged Telegram; that adapter has since been removed — see H14.)*
+- **M10. Discord send failures swallowed; no message-size handling** — `discord.ex:64-75`. `Message.create` result ignored (Discord rejects >2000 chars). Check returns, chunk to platform limits. *(Originally also flagged Telegram's `parse_mode: "Markdown"`; that adapter has since been removed — see H14.)*
 - **M11. Cron `:at` jobs re-fire on every restart; `:cron`/`:every` miss fires while down** — `lib/jido_claw/platform/cron/worker.ex:244-254`. `next_run` is recomputed from the clock at `init` and never persisted; a past one-shot clamps delay to 0 and fires on each boot (restart loop ⇒ repeated execution). Persist last-fired/next-run; skip and disable elapsed one-shots.
 - **M12. Reputation migration double-counts on interrupted re-run** — `lib/mix/tasks/jidoclaw.migrate.solutions.ex:239-267`. Per-row counters are *summed* into existing rows but the SHA idempotency record is written only after the full reduce; a mid-run crash means re-running re-sums everything. Record the SHA in the same transaction, or make per-agent merges idempotent.
 - **M13. No CPU/memory limits on HostShell; unbounded output buffering** — `lib/jido_claw/forge/runner/host_shell.ex:40, 75`, `docker.ex:74`. The default consolidator path runs LLM CLIs with no `ulimit`/cgroup and `System.cmd(..., stderr_to_stdout: true)` accumulates entire stdout in BEAM memory (truncation to 10KB happens only at DB-persistence time). Cap output at the port-read layer; wrap HostShell in `ulimit`; prefer Docker when secrets are present.
@@ -269,7 +273,7 @@ If the single-user/Tailscale assumptions still hold:
 1. ~~**H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).~~ ✅ Done 2026-06-10 — `/admin` behind the `JIDOCLAW_ADMIN_EMAILS` allowlist (plug + on_mount); loopback bind + port-pinned origin allowlist in every env, `PHX_HOST` opt-in exposure.
 2. **H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes). **H10 + H11 fixed 2026-06-10** (see the per-finding notes); H12 remains open.
 3. **H7 + H8 + H9 + M1 + M2** — the secrets cluster (chmod, import redaction, env allowlist, block redaction, logger metadata).
-4. **H13 + H14 + H15** — patch drift, Telegram wiring, process-group reaping.
+4. **H13 + H15** — patch drift, process-group reaping. *(H14, Telegram wiring, was in this tier — since closed by removing the adapter and its dead scaffolding.)*
 5. **H4 + H5 + H6** — before ever enabling clustering: peer verification, gossip secret, trust-score hardening.
 6. Mediums opportunistically; the migration/CLI ones (M11, M12) before the next data migration; M7/M8 before long-running production use.
 
@@ -289,6 +293,6 @@ One-line test-coverage/risk impressions from the subsystem reviews:
 | CLI/mix tasks | Good error boundaries; real Display backpressure | Export test gives false redaction assurance (H8 note) |
 | shell/core patches | ETS-mirror deadlock avoidance exemplary; anubis patch safe | trap_exit drift documented in a test rather than fixed |
 | web | Auth defense-in-depth on mutating events | RpcChannel/UserSocket, WorkflowsLive, RequireAuth untested |
-| platform/conversations/cron | Conversations + cron strong; channel adapters scaffolding-grade | Channel adapters and Folio have no tests |
+| platform/conversations/cron | Conversations + cron strong; Discord adapter scaffolding-grade | Discord adapter has no tests (Telegram + dead channel scaffolding and Folio since removed) |
 | solutions/trace/error | Error taxonomy exemplary; trust pure-logic well tested | Trust *integrity* (who may assert it) is the gap, not the math |
 | infra/network | Supervision tree careful; webhook textbook | Network layer has stubbed security boundaries (H4/H5) |
