@@ -43,6 +43,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias Ash.Resource.Info
   alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.ReactorRunnerTest.ContextEchoStep
@@ -238,6 +239,140 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
       assert is_nil(run.definition_hash)
       assert run.config["definition_kind"] == "skill"
       refute Map.has_key?(run.config, "project_dir")
+    end
+  end
+
+  describe "run-level deadline opt (T2-1)" do
+    test "a valid :deadline opt stores the NORMALIZED policy in config", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:ok, :done, run} =
+               ReactorRunner.run(NoMiddlewareReactor, %{},
+                 tenant: tenant,
+                 actor: actor,
+                 deadline: %{"within" => 600, "due_soon" => 60}
+               )
+
+      # Normalized at write (atom-keyed), string-keyed on jsonb read.
+      assert run.config["deadline"] == %{"within" => 600, "due_soon" => 60}
+    end
+
+    test "an invalid :deadline opt is dropped, never a launch failure", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:ok, :done, run} =
+               ReactorRunner.run(NoMiddlewareReactor, %{},
+                 tenant: tenant,
+                 actor: actor,
+                 deadline: %{"within" => -1}
+               )
+
+      refute Map.has_key?(run.config, "deadline")
+    end
+
+    test "no :deadline opt stores no config key", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:ok, :done, run} =
+               ReactorRunner.run(NoMiddlewareReactor, %{}, tenant: tenant, actor: actor)
+
+      refute Map.has_key?(run.config, "deadline")
+    end
+  end
+
+  describe "launch idempotency (T2-3)" do
+    test "identity :unique_run_idempotency is declared with nils_distinct?", _ctx do
+      identity =
+        WorkflowRun
+        |> Info.identities()
+        |> Enum.find(&(&1.name == :unique_run_idempotency))
+
+      assert %{keys: [:idempotency_key], nils_distinct?: true} = identity
+    end
+
+    test "the same key twice resolves to one run; the second call does no launch work", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      key = "idem-#{System.unique_integer([:positive])}"
+
+      assert {:ok, :done, run} =
+               ReactorRunner.run(NoMiddlewareReactor, %{},
+                 tenant: tenant,
+                 actor: actor,
+                 idempotency_key: key
+               )
+
+      assert run.idempotency_key == key
+      events_after_first = kinds(run, ctx)
+
+      assert {:ok, {:existing_run, existing_id}, existing} =
+               ReactorRunner.run(NoMiddlewareReactor, %{},
+                 tenant: tenant,
+                 actor: actor,
+                 idempotency_key: key
+               )
+
+      # Same run, zero new events — the dedupe hit never reached Reactor.run.
+      assert existing_id == run.id
+      assert existing.id == run.id
+      assert kinds(run, ctx) == events_after_first
+    end
+
+    test "the dedupe read precedes build work: a key hit wins over a junk reactor arg", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      key = "idem-prebuild-#{System.unique_integer([:positive])}"
+
+      {:ok, seeded} =
+        WorkflowRun.create(%{name: "seeded", idempotency_key: key},
+          tenant: tenant,
+          actor: actor
+        )
+
+      # 42 is neither a reactor module nor a struct — build_runnable would
+      # reject it. The key hit must short-circuit FIRST: a duplicate launch
+      # whose definition no longer resolves/builds still dedupes to the
+      # existing run instead of erroring.
+      assert {:ok, {:existing_run, existing_id}, existing} =
+               ReactorRunner.run(42, %{}, tenant: tenant, actor: actor, idempotency_key: key)
+
+      assert existing_id == seeded.id
+      assert existing.id == seeded.id
+    end
+
+    test "concurrent same-key launches yield exactly one run", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      key = "idem-race-#{System.unique_integer([:positive])}"
+
+      launch = fn ->
+        ReactorRunner.run(NoMiddlewareReactor, %{},
+          tenant: tenant,
+          actor: actor,
+          idempotency_key: key
+        )
+      end
+
+      results = [Task.async(launch), Task.async(launch)] |> Task.await_many(15_000)
+
+      # Both callers get an ok-envelope carrying the SAME run id, whichever
+      # interleaving (read-hit or create-race backstop) each took.
+      assert [{:ok, _value_a, run_a}, {:ok, _value_b, run_b}] = results
+      assert run_a.id == run_b.id
+
+      {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor)
+      assert Enum.count(runs, &(&1.idempotency_key == key)) == 1
+    end
+
+    test "no key means no dedupe: repeat launches create distinct nil-key runs", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:ok, :done, run_a} =
+               ReactorRunner.run(NoMiddlewareReactor, %{}, tenant: tenant, actor: actor)
+
+      assert {:ok, :done, run_b} =
+               ReactorRunner.run(NoMiddlewareReactor, %{}, tenant: tenant, actor: actor)
+
+      refute run_a.id == run_b.id
+      assert is_nil(run_a.idempotency_key)
+      assert is_nil(run_b.idempotency_key)
     end
   end
 

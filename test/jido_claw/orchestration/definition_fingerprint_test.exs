@@ -96,6 +96,27 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprintTest do
                DefinitionFingerprint.for_skill(dag_skill())
     end
 
+    test "deadlines are excluded: a deadline-only edit never trips the replay gate (T2-1)" do
+      # Top-level run policy AND a per-step policy added/changed — the hash
+      # must not move (deadlines are observability, not execution semantics).
+      with_deadlines =
+        dag_skill(
+          deadline: %{within: 3600},
+          steps: [
+            %{
+              name: "one",
+              template: "t1",
+              task: "do one",
+              deadline: %{within: 300, due_soon: 60}
+            },
+            %{name: "two", template: "t2", task: "do two", depends_on: ["one"]}
+          ]
+        )
+
+      assert DefinitionFingerprint.for_skill(with_deadlines) ==
+               DefinitionFingerprint.for_skill(dag_skill())
+    end
+
     test "retry: 0 is equivalent to omitted" do
       explicit =
         dag_skill(

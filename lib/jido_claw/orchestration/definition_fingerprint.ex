@@ -50,6 +50,9 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
       Roleless iterative skills never compile (hence never store a hash);
       `for_skill/1` stays total by falling back to the generic step list.
     * `description` is excluded — documentation, not semantics.
+    * `deadline` (top-level and per-step) is excluded — observability
+      semantics (lateness evidence), not execution semantics; a deadline-only
+      edit must never trip replay's definition gate.
 
   The term is encoded with `:erlang.term_to_binary({:v1, term},
   [:deterministic])` and sha256-hashed. Caveat: deterministic external-term
@@ -87,6 +90,10 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
 
   # -- Canonicalization --
 
+  # `skill.deadline` (run-level) and per-step `:deadline` are deliberately
+  # EXCLUDED everywhere below: deadlines are observability semantics (lateness
+  # evidence), not execution semantics — editing one must never trip replay's
+  # definition gate. (`depends_on` IS execution semantics and is hashed.)
   defp canonical_term(%Skills{} = skill) do
     mode = Skills.execution_mode(skill)
 
@@ -151,8 +158,9 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
   defp mode_extras(_skill, _graph_mode), do: []
 
   # Fixed-order pair list over the canonical step-key allowlist
-  # (`StepNormalizer.@canonical_keys`), with the compiler's defaults applied so
-  # an omitted key and its explicit default hash identically.
+  # (`StepNormalizer.@canonical_keys`) MINUS `:deadline` (observability, not
+  # execution — see the canonical_term comment), with the compiler's defaults
+  # applied so an omitted key and its explicit default hash identically.
   defp canonical_step(step) when is_map(step) and not is_struct(step) do
     [
       compensate: Map.get(step, :compensate),

@@ -76,7 +76,17 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
       description("Projection upsert: a step (re-)started; clears prior-attempt fields.")
       upsert?(true)
       upsert_identity(:unique_step_per_run)
-      accept([:name, :step_type, :sequence, :workflow_run_id, :started_at])
+
+      accept([
+        :name,
+        :step_type,
+        :sequence,
+        :deadline,
+        :depends_on,
+        :workflow_run_id,
+        :started_at
+      ])
+
       change(set_attribute(:status, :running))
       change(set_attribute(:output, nil))
       change(set_attribute(:error, nil))
@@ -87,7 +97,18 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
       description("Projection upsert: a step completed (row created if started was missed).")
       upsert?(true)
       upsert_identity(:unique_step_per_run)
-      accept([:name, :step_type, :sequence, :workflow_run_id, :output, :completed_at])
+
+      accept([
+        :name,
+        :step_type,
+        :sequence,
+        :deadline,
+        :depends_on,
+        :workflow_run_id,
+        :output,
+        :completed_at
+      ])
+
       change(set_attribute(:status, :completed))
       change(set_attribute(:error, nil))
     end
@@ -96,7 +117,18 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
       description("Projection upsert: a step failed (row created if started was missed).")
       upsert?(true)
       upsert_identity(:unique_step_per_run)
-      accept([:name, :step_type, :sequence, :workflow_run_id, :error, :completed_at])
+
+      accept([
+        :name,
+        :step_type,
+        :sequence,
+        :deadline,
+        :depends_on,
+        :workflow_run_id,
+        :error,
+        :completed_at
+      ])
+
       change(set_attribute(:status, :failed))
     end
 
@@ -177,14 +209,39 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
       default(%{})
     end
 
-    attribute :output, :map do
+    # Per-step lateness policy (T2-1): the compiler-normalized
+    # `Deadline.parse/1` map (`within`/`due_soon`/`escalate_after`, seconds),
+    # projected from the step_* payloads. Static metadata — every projection
+    # upsert re-writes the same value. Read surfaces evaluate it via
+    # `Deadline.from_config/4`; never consulted by execution.
+    attribute :deadline, :map do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    # Declared upstream step names (T3-1): the YAML `depends_on ∪ consumes`
+    # union the compiler wires for :dag steps (collect lists every NAMED
+    # step), stamped by the middleware and projected like `deadline`.
+    # Sequential skills deliberately don't stamp (unnamed steps would leave
+    # partial edges) — the graph adapter renders their sequence chain instead.
+    attribute :depends_on, {:array, :string} do
       allow_nil?(true)
       public?(true)
+      default([])
+    end
+
+    # Payload visibility (T2-2): private like `WorkflowRun.result`/`error` —
+    # projection upserts still accept them; read surfaces project through
+    # `JidoClaw.Orchestration.Visibility` (operator scope carries no output
+    # at all).
+    attribute :output, :map do
+      allow_nil?(true)
+      public?(false)
     end
 
     attribute :error, :string do
       allow_nil?(true)
-      public?(true)
+      public?(false)
     end
 
     attribute :started_at, :utc_datetime_usec do

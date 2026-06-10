@@ -283,12 +283,17 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   # is the human YAML step name when the compiler threaded one into the impl
   # options (`step_name:`); `:step_type` is derived from the impl module; an
   # `irreversible: true` flag rides along as durable metadata for the Phase-4
-  # replay gates.
+  # replay gates; `:deadline` is the validated per-step lateness policy
+  # (T2-1). Static metadata deliberately rides EVERY step_* payload — a step
+  # row can be created by a completed/failed event when step_started was
+  # missed, and `Allocate.step_attrs/3` must still see it.
   defp step_payload(step) do
     %{step: inspect(step.name)}
     |> put_present(:name, yaml_name(step))
     |> put_present(:step_type, step_type(step))
     |> put_present(:irreversible, irreversible_flag(step))
+    |> put_present(:deadline, deadline_policy(step))
+    |> put_present(:depends_on, depends_on(step))
   end
 
   defp yaml_name(%{impl: {_mod, opts}}) when is_list(opts), do: Keyword.get(opts, :step_name)
@@ -300,6 +305,24 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   end
 
   defp irreversible_flag(_step), do: nil
+
+  # The compiler-normalized lateness policy, or nil (omitted) when the step
+  # declares none (dev-reactor steps always omit).
+  defp deadline_policy(%{impl: {_mod, opts}}) when is_list(opts), do: Keyword.get(opts, :deadline)
+  defp deadline_policy(_step), do: nil
+
+  # Declared upstream YAML step names (T3-1): the compiler-stamped
+  # depends_on ∪ consumes union. Empty lists map to nil (omitted) so
+  # edge-less steps stay payload-light; plain name strings pass `Transcript`
+  # untouched.
+  defp depends_on(%{impl: {_mod, opts}}) when is_list(opts) do
+    case Keyword.get(opts, :depends_on) do
+      [_ | _] = deps -> deps
+      _none_or_empty -> nil
+    end
+  end
+
+  defp depends_on(_step), do: nil
 
   defp step_type(%{impl: {mod, opts}}) when is_atom(mod) and is_list(opts),
     do: Map.get(@step_types, mod)

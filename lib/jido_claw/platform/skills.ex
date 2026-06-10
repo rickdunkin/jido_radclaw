@@ -45,7 +45,7 @@ defmodule JidoClaw.Skills do
 
   alias JidoClaw.Workflows.StepNormalizer
 
-  defstruct [:name, :description, :steps, :synthesis, :mode, :max_iterations]
+  defstruct [:name, :description, :steps, :synthesis, :mode, :max_iterations, :deadline]
 
   @type t :: %__MODULE__{
           name: String.t() | nil,
@@ -53,7 +53,11 @@ defmodule JidoClaw.Skills do
           steps: list() | nil,
           synthesis: String.t() | nil,
           mode: String.t() | atom() | nil,
-          max_iterations: pos_integer() | nil
+          max_iterations: pos_integer() | nil,
+          # Top-level run deadline policy (T2-1): a raw `deadline:` YAML map
+          # validated by `Compiler.compile/1` (`Deadline.parse` rules) and
+          # threaded into `WorkflowRun.config["deadline"]` by the launch sites.
+          deadline: map() | nil
         }
 
   @default_skills %{
@@ -443,7 +447,8 @@ defmodule JidoClaw.Skills do
           steps: StepNormalizer.normalize(Map.get(data, "steps", [])),
           synthesis: Map.get(data, "synthesis", ""),
           mode: Map.get(data, "mode"),
-          max_iterations: Map.get(data, "max_iterations")
+          max_iterations: Map.get(data, "max_iterations"),
+          deadline: Map.get(data, "deadline")
         }
 
         [skill]

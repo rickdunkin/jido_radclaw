@@ -8,6 +8,7 @@ defmodule JidoClaw.WorkflowView do
   alias Ash.Query
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Orchestration.WorkflowRun
 
   @active_statuses [:pending, :running, :awaiting_approval]
@@ -43,7 +44,7 @@ defmodule JidoClaw.WorkflowView do
 
         case WorkflowRun.by_id(run_id, tenant: tenant_id, actor: actor) do
           {:ok, nil} -> {:error, :not_found}
-          {:ok, run} -> {:ok, run_to_map(run)}
+          {:ok, run} -> {:ok, run_to_map(run, DateTime.utc_now())}
           {:error, _} -> {:error, :not_found}
         end
 
@@ -64,13 +65,16 @@ defmodule JidoClaw.WorkflowView do
     actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
     active_runs = read_runs(tenant_id, actor, @active_statuses, [started_at: :desc], 25)
     completions = read_runs(tenant_id, actor, @terminal_statuses, [completed_at: :desc], 10)
+    # One timestamp for the whole view: consistent deadline evidence across
+    # every projected run, and it doubles as generated_at.
+    now = DateTime.utc_now()
 
     %__MODULE__{
       tenant_id: tenant_id,
       active_count: length(active_runs),
-      active_runs: Enum.map(active_runs, &run_to_map/1),
-      recent_completions: Enum.map(completions, &run_to_map/1),
-      generated_at: DateTime.utc_now()
+      active_runs: Enum.map(active_runs, &run_to_map(&1, now)),
+      recent_completions: Enum.map(completions, &run_to_map(&1, now)),
+      generated_at: now
     }
   end
 
@@ -86,41 +90,11 @@ defmodule JidoClaw.WorkflowView do
     end
   end
 
-  defp run_to_map(%WorkflowRun{} = run) do
-    %{
-      run_id: run.id,
-      name: run.name,
-      workflow_type: run.workflow_type,
-      status: run.status,
-      started_at: run.started_at,
-      completed_at: run.completed_at,
-      duration_ms: duration_ms(run.started_at, run.completed_at),
-      error: run.error,
-      result_summary: result_summary(run.result)
-    }
-  end
-
-  defp duration_ms(%DateTime{} = started_at, %DateTime{} = completed_at) do
-    DateTime.diff(completed_at, started_at, :millisecond)
-  end
-
-  defp duration_ms(%DateTime{} = started_at, nil) do
-    DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
-  end
-
-  defp duration_ms(_, _), do: nil
-
-  defp result_summary(nil), do: nil
-  defp result_summary(value) when is_binary(value), do: String.slice(value, 0, 200)
-
-  defp result_summary(%{} = value) do
-    case Map.take(value, [:summary, "summary", :status, "status", :message, "message"]) do
-      empty when map_size(empty) == 0 -> nil
-      summary -> summary
-    end
-  end
-
-  defp result_summary(_), do: nil
+  # This is the LLM/MCP surface — permanently operator-scoped (T2-2): payloads
+  # are key-filtered/redacted/truncated by `Visibility`, with the `deadline`
+  # evidence (T2-1) additively extending the legacy key set. `to_mcp_map`'s
+  # JsonSafe.encode handles the evidence DateTimes.
+  defp run_to_map(%WorkflowRun{} = run, now), do: Visibility.run_view(run, :operator, now)
 
   defp scope_keys, do: [:tenant_id, :actor]
 end

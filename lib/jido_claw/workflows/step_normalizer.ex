@@ -32,6 +32,8 @@ defmodule JidoClaw.Workflows.StepNormalizer do
     * `:retry` — non-negative integer retry budget (compiler-validated)
     * `:compensate` — cleanup task string run on failure / saga unwind
     * `:irreversible` — boolean; declares the step's effects un-undoable
+    * `:deadline` — lateness-policy map (compiler-validated via
+      `JidoClaw.Orchestration.Deadline.parse/1`)
 
   The literal `@canonical_keys` map in this module ensures these
   atoms are interned at compile time of `StepNormalizer` itself, so
@@ -53,7 +55,8 @@ defmodule JidoClaw.Workflows.StepNormalizer do
     "consumes" => :consumes,
     "retry" => :retry,
     "compensate" => :compensate,
-    "irreversible" => :irreversible
+    "irreversible" => :irreversible,
+    "deadline" => :deadline
   }
 
   @canonical_atoms Map.values(@canonical_keys)

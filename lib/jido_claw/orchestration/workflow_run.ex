@@ -87,6 +87,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:list_non_terminal_global)
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
+    define(:by_idempotency_key, args: [:idempotency_key], get?: true)
     define(:set_checkpoint, action: :set_checkpoint)
   end
 
@@ -104,6 +105,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
         :definition_hash,
         :replay_inputs,
         :retry_of_id,
+        :idempotency_key,
         :user_id,
         :project_id,
         :metadata
@@ -182,6 +184,13 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       argument(:project_id, :uuid, allow_nil?: false)
       filter(expr(project_id == ^arg(:project_id)))
     end
+
+    read :by_idempotency_key do
+      description("Tenant-scoped lookup of the run owning a launch idempotency key.")
+      get?(true)
+      argument(:idempotency_key, :string, allow_nil?: false)
+      filter(expr(idempotency_key == ^arg(:idempotency_key)))
+    end
   end
 
   attributes do
@@ -226,14 +235,21 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       default(%{})
     end
 
+    # Payload visibility (T2-2): `result`/`error` are `public?(false)` so no
+    # Ash API extension (AshAdmin included — accepted consequence; the
+    # dashboard's per-run "Reveal payloads" toggle is the replacement surface)
+    # exposes raw payloads. Still written by the projection's `set_status`
+    # accept (the `set_checkpoint` private-attribute precedent) and readable
+    # on loaded structs — every struct reader routes through
+    # `JidoClaw.Orchestration.Visibility`.
     attribute :result, :map do
       allow_nil?(true)
-      public?(true)
+      public?(false)
     end
 
     attribute :error, :string do
       allow_nil?(true)
-      public?(true)
+      public?(false)
     end
 
     attribute :retry_of_id, :uuid do
@@ -265,6 +281,18 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       allow_nil?(true)
       public?(true)
       default(%{})
+    end
+
+    # Launch idempotency (T2-3): a caller-supplied dedupe key — today only
+    # scheduled cron ticks set one (`"cron:<job_id>:<iso8601 next_run>"`), so a
+    # double-delivered tick resolves to the existing run instead of starting a
+    # second reactor. Manual triggers and all other launch paths leave it nil
+    # (always run); the `:unique_run_idempotency` identity below keeps NULLs
+    # distinct so nil-key runs coexist freely.
+    attribute :idempotency_key, :string do
+      allow_nil?(true)
+      public?(false)
+      default(nil)
     end
 
     # Durable resume checkpoint: a single `:erlang.term_to_binary` blob (the
@@ -347,5 +375,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     has_many(:steps, JidoClaw.Orchestration.WorkflowStep)
     has_many(:agent_cases, JidoClaw.Orchestration.AgentCase)
     has_many(:events, JidoClaw.Orchestration.WorkflowEvent)
+  end
+
+  identities do
+    # Launch-dedupe identity for `ReactorRunner`'s read-first → create →
+    # unique-violation backstop. `nils_distinct?` is the Ash default but is
+    # explicit here because the semantics are load-bearing: almost every run
+    # has a NULL key, and they must never collide. Attribute multitenancy
+    # auto-prefixes the generated unique index with `tenant_id`.
+    identity(:unique_run_idempotency, [:idempotency_key], nils_distinct?: true)
   end
 end

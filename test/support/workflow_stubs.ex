@@ -35,6 +35,26 @@ defmodule JidoClaw.Test.CrashStub do
   end
 end
 
+defmodule JidoClaw.Test.SecretErrorStub do
+  @moduledoc false
+
+  # Jido.Agent stub whose `ask_sync/3` errors with a secret-shaped string
+  # embedded in the message — drives the T2-2 security pins that no MCP
+  # surface ever emits an unredacted run/step error. (`WorkflowRun.error`
+  # stores the RAW reason — only the event payload is redacted at append —
+  # so read-side `Visibility` scrubbing is what these pins exercise.)
+  use Jido.Agent,
+    name: "secret_error_stub",
+    description: "Test-only stub whose ask_sync errors with a secret in the message"
+
+  def secret, do: "sk-" <> String.duplicate("a", 24)
+
+  def ask_sync(_pid, _query, opts) when is_list(opts) do
+    send(Application.get_env(:jido_claw, :echo_stub_target, self()), {:stub_invoked, :secret})
+    {:error, "auth failed for key #{secret()}"}
+  end
+end
+
 defmodule JidoClaw.Test.FlakyStub do
   @moduledoc false
 

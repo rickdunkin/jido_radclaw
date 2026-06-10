@@ -9,6 +9,13 @@ defmodule JidoClaw.Cron.Worker do
   immediately and persists `disabled_at`, so the bad row is not reloaded on
   restart.
 
+  Timer ticks carry the `%DateTime{}` window they were armed for
+  (`{:tick, window}`), and a tick only fires when its window equals the
+  current `next_run` — a duplicate or stale tick is swallowed without
+  executing or re-arming. This binds each scheduled dispatch (and the
+  workflow idempotency key derived from its provenance) to the armed window,
+  so a double-delivered tick can never launch a second run early.
+
   Dispatch is synchronous — a tick blocks this GenServer until the target
   returns — so there is intentionally no stuck-detection watchdog; a real one
   would require async dispatch and is deferred.
@@ -45,7 +52,13 @@ defmodule JidoClaw.Cron.Worker do
     last_run: nil,
     last_result: nil,
     next_run: nil,
-    created_at: nil
+    created_at: nil,
+    # Firing provenance, stamped ONLY on the local dispatch copy inside
+    # execute_job/2 ({:scheduled, window} | :manual, where window is the
+    # armed window the timer message carried — never mutable state). Always
+    # nil in stored GenServer state — a manual trigger must never inherit
+    # (and consume) a scheduled window's workflow idempotency key.
+    fire: nil
   ]
 
   def start_link(opts) do
@@ -93,7 +106,7 @@ defmodule JidoClaw.Cron.Worker do
 
   @impl true
   def handle_cast(:trigger, state) do
-    {:noreply, execute_job(state)}
+    {:noreply, execute_job(state, :manual)}
   end
 
   def handle_cast(:disable, state) do
@@ -107,30 +120,41 @@ defmodule JidoClaw.Cron.Worker do
     {:reply, state, state}
   end
 
+  # The repeated `window` is the equality constraint: the tick fires only when
+  # the message's armed window equals the current `next_run` (the message
+  # carries the very struct stored in state, so pattern equality holds). This
+  # binds the dispatch provenance — and the idempotency key derived from it —
+  # to the window the timer was armed for, never to a freshly advanced one.
   @impl true
-  def handle_info(:tick, %{status: :active} = state) do
-    state = execute_job(state)
-    state = schedule_next(state)
-    {:noreply, state}
+  def handle_info({:tick, window}, %{status: :active, next_run: window} = state) do
+    state = execute_job(state, {:scheduled, window})
+    {:noreply, schedule_next(state)}
   end
 
-  # A disabled worker swallows any stale timer tick.
+  # Stale/duplicate window, or a disabled worker: swallow WITHOUT executing
+  # or re-arming — the matching-tick clause is the only re-arm point, so the
+  # timer for the current next_run (if active) is already in flight.
   # NOTE: dispatch is synchronous, so a hung target blocks this process; a real
   # stuck-detection watchdog would need async dispatch and is deferred.
-  def handle_info(:tick, state) do
+  def handle_info({:tick, _window}, state) do
     {:noreply, state}
   end
 
   # -- Private --
 
-  defp execute_job(state) do
+  # `fire` is the firing provenance ({:scheduled, window} from a timer tick,
+  # :manual from trigger/2). It rides a LOCAL dispatch copy only — every state
+  # update below derives from the original `state`, so provenance never
+  # persists into stored GenServer state (`get_state/2` always shows
+  # `fire: nil`). `WorkflowRunner` derives the launch idempotency key from it.
+  defp execute_job(state, fire) do
     meta = telemetry_meta(state)
     Telemetry.emit_cron_start(meta)
     start_time = System.monotonic_time()
 
     result =
       try do
-        Dispatcher.dispatch(state)
+        Dispatcher.dispatch(%{state | fire: fire})
       rescue
         e ->
           Telemetry.emit_cron_exception(meta, :error)
@@ -190,15 +214,18 @@ defmodule JidoClaw.Cron.Worker do
     }
   end
 
+  # Every arm sends {:tick, window} carrying the SAME DateTime struct stored
+  # in next_run, so handle_info can equality-match message against state and
+  # swallow duplicate/stale ticks.
   defp schedule_next(%{schedule: {:at, %DateTime{} = dt}} = state) do
     delay = max(DateTime.diff(dt, DateTime.utc_now(), :millisecond), 0)
-    Process.send_after(self(), :tick, delay)
+    Process.send_after(self(), {:tick, dt}, delay)
     %{state | next_run: dt}
   end
 
   defp schedule_next(%{schedule: {:every, ms}} = state) when is_integer(ms) do
-    Process.send_after(self(), :tick, ms)
     next = DateTime.add(DateTime.utc_now(), ms, :millisecond)
+    Process.send_after(self(), {:tick, next}, ms)
     %{state | next_run: next}
   end
 
@@ -213,7 +240,7 @@ defmodule JidoClaw.Cron.Worker do
           )
         end
 
-        Process.send_after(self(), :tick, max(delta, 1000))
+        Process.send_after(self(), {:tick, dt}, max(delta, 1000))
         %{state | next_run: dt}
 
       {:error, reason} ->

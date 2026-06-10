@@ -249,12 +249,23 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     end
   end
 
+  # Static step metadata (`step_type`/`sequence`/`deadline`/`depends_on`)
+  # projects on EVERY step kind, not just `step_started` — a row can be
+  # created by a completed/failed event when the started event was missed,
+  # and the metadata must survive that path. Re-writing the same static value
+  # per event is safe.
   defp step_attrs(event, name, payload) do
     %{name: name, workflow_run_id: event.workflow_run_id}
     |> put_valid(:step_type, fetch(payload, :step_type), &is_binary/1)
     |> put_valid(:sequence, parse_sequence(fetch(payload, :step)), &is_integer/1)
+    |> put_valid(:deadline, fetch(payload, :deadline), &valid_policy_map?/1)
+    |> put_valid(:depends_on, fetch(payload, :depends_on), &binary_list?/1)
     |> Map.merge(kind_attrs(event, payload))
   end
+
+  defp valid_policy_map?(value), do: is_map(value) and not is_struct(value)
+
+  defp binary_list?(value), do: is_list(value) and Enum.all?(value, &is_binary/1)
 
   defp kind_attrs(%{kind: :step_started} = event, _payload),
     do: %{started_at: event.occurred_at}

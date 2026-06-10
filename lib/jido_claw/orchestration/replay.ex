@@ -164,7 +164,15 @@ defmodule JidoClaw.Orchestration.Replay do
 
     with {:ok, skill} <- lookup_skill(name, skill_project_dir(original)),
          {:ok, reactor} <- compile_skill(skill) do
-      {:ok, %{kind: "skill", reactor: reactor, hash: DefinitionFingerprint.for_skill(skill)}}
+      {:ok,
+       %{
+         kind: "skill",
+         reactor: reactor,
+         hash: DefinitionFingerprint.for_skill(skill),
+         # The freshly re-resolved run-level deadline rides to launch/6 —
+         # see replay_deadline/2 for the skill/module source asymmetry.
+         deadline: skill.deadline
+       }}
     end
   end
 
@@ -342,6 +350,7 @@ defmodule JidoClaw.Orchestration.Replay do
            async?: resolved.kind == "skill",
            context: replay_context(extra_context, original),
            definition_hash: definition_hash_opt(resolved),
+           deadline: replay_deadline(resolved, original),
            retry_of_id: original.id
          ) do
       # A replay run exists — its outcome (completed / failed / paused at a
@@ -357,6 +366,16 @@ defmodule JidoClaw.Orchestration.Replay do
   # computed from the fresh skill; module reactors self-compute (nil).
   defp definition_hash_opt(%{kind: "skill", hash: hash}), do: hash
   defp definition_hash_opt(_resolved), do: nil
+
+  # Deadline-source asymmetry (T2-1): a skill replay carries the FRESHLY
+  # re-resolved `skill.deadline` — deadlines are excluded from the definition
+  # fingerprint, so a deadline-only YAML edit passes the gate un-forced and
+  # the replay should honor the edit. A module-reactor replay preserves the
+  # original run's policy (`config["deadline"]`, string-keyed jsonb —
+  # `ReactorRunner`'s `Deadline.parse/1` re-normalizes it): the runner is a
+  # generic deadline-capable API and module replays must not silently drop it.
+  defp replay_deadline(%{kind: "skill", deadline: deadline}, _original), do: deadline
+  defp replay_deadline(_resolved, original), do: original.config["deadline"]
 
   # Preserve the durable scope verbatim (tenant/session/workspace/user
   # identity keeps child transcript + correlation writes coherent), except:

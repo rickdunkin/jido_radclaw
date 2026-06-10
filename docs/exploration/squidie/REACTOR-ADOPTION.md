@@ -8,12 +8,14 @@ Architecture direction — not a commitment. Baseline **2026-06-04**. Builds on
 
 ---
 
-## Status reconciliation — 2026-06-09 (Phases 0–4 complete)
+## Status reconciliation — 2026-06-10 (Phases 0–5 complete)
 
 Phases 0–3 are **implemented and tested**, including the items the original
 phase commits claimed but deferred; **Phase 4 (definition fingerprint +
-replay, T1-3) shipped the same day** — see §4.7's implementation note for
-what diverged from the sketch. What shipped beyond the durable spine:
+replay, T1-3) shipped 2026-06-09** — see §4.7's implementation note for what
+diverged from the sketch; **Phase 5 (read-models + graph viz: T2-1, T2-2,
+T2-3, T3-1/T3-2) shipped 2026-06-10** — see the Phase 5 block below. What
+shipped beyond the durable spine:
 
 - **§4.11 claim/fencing data model** — `claimed_by` / `claim_expires_at` /
   `claim_token` columns + the two **global** (`all_tenants?: true`) scan
@@ -60,6 +62,66 @@ what diverged from the sketch. What shipped beyond the durable spine:
 - **Trace overlay** — the middleware emits `[:jido_claw, :workflow, :event]`
   via `JidoClaw.Trace.emit/3` on every run-lifecycle hook.
 
+**Phase 5 (2026-06-10) — read-models + graph viz, with what diverged:**
+
+- **T2-3 cron idempotency** — landed as a generic `:idempotency_key` opt on
+  `ReactorRunner.run/3` (read-first → create → `:unique_run_idempotency`
+  violation backstop → `{:ok, {:existing_run, id}, run}` with **zero** launch
+  work on a hit), NOT the sketched upsert-in-`WorkflowRunner` — the caller
+  must distinguish created-vs-existing to skip execution. Keys derive only
+  from explicit firing provenance: `Cron.Worker.execute_job/2` stamps
+  `fire: {:scheduled, next_run}` on a **local dispatch copy** (never stored
+  GenServer state), `WorkflowRunner` derives
+  `cron:<job_id>:<iso8601 window>`; manual triggers and non-worker callers
+  always run keyless. The unique index is tenant-prefixed with NULLS
+  DISTINCT.
+- **T2-1 deadlines** — pure `JidoClaw.Orchestration.Deadline`
+  (Squidie-faithful validation/math: required positive `within`, optional
+  non-negative `due_soon < within` / `escalate_after`, inclusive bounds,
+  undeclared thresholds unreachable) at run **and** step level,
+  explicit-declaration only. Units are **seconds** (Squidie's ms is an
+  internal unit; this YAML is human/LLM-edited). Run policy rides
+  `config["deadline"]` through all three launch sites (cron, `RunSkill`,
+  `Replay` — skill replays carry the freshly re-resolved `skill.deadline`,
+  module replays preserve the original's); step policy rides the
+  `irreversible:` rails into projected `WorkflowStep.deadline`; iterative
+  deadlines are loop-level only (declared on the generator). Evidence is
+  `%{status, due_at, due_soon_at, escalate_at, overdue_by_ms}` with an
+  always-present non-negative `overdue_by_ms` (deliberately not Squidie's
+  signed `remaining_ms`); terminal anchors freeze at `completed_at`.
+  Deadlines are **excluded from the definition fingerprint** (observability,
+  not execution semantics — a deadline-only YAML edit replays un-forced).
+  Dashboard gets Deadline badge columns + a 30s lateness-refresh timer;
+  `workflow_status` gains an additive `deadline` key.
+- **T2-2 actor-visibility** — `JidoClaw.Orchestration.Visibility`
+  (`run_view/3`, `step_view/3`, `redact_error/2`; scopes
+  `:operator | :auditor`, always explicit, with an explicit `now`).
+  `WorkflowRun.result`/`error` + `WorkflowStep.output`/`error` flipped
+  `public?(false)` (AshAdmin payload visibility is gone — accepted; the
+  dashboard's per-run "Reveal payloads" toggle is the replacement surface).
+  LLM/MCP surfaces are permanently operator-scoped: the legacy
+  `run_to_map` key set + `deadline`, key-filtered result summary, and
+  redact-**before**-truncate errors; operator step views carry **no output
+  key at all**. The auditor scope (reveal) returns full payloads still
+  `Transcript`/`Patterns`-scrubbed — defense in depth, because the run/step
+  columns store RAW values (only event payloads are redacted at append).
+- **T3-1/T3-2 graph viz** — `JidoClaw.Web.Components.GraphLayout` ported
+  from SquidSonar (Apache-2.0 attribution; deadline/recovery node-height
+  variants deleted), a `StepGraph` adapter, and a CSS-positioned-div
+  `workflow_graph/1` component behind a Graph/Table toggle (graph default).
+  Divergences from the sketch: edges come from a new **durable
+  `WorkflowStep.depends_on` column** (the compiler-stamped
+  `depends_on ∪ consumes` union; in **dag mode only**, the synthetic
+  collect additionally stamps its named-step list) rather than being derived
+  from `sequence` — the sequence chain is only the fallback when no step
+  declares an edge; sequential and iterative runs stamp nothing (sequential
+  skills are unnamed by construction — any named step routes to dag) and
+  take that fallback, chaining through the collect. The collect row projects
+  with `sequence 0`, so the adapter ranks it last to keep its incoming
+  edges forward (the layout drops back-edges). The second sketched adapter
+  (AgentTracker spawn lineage) was not built. Nodes carry metadata only —
+  never payloads (composes with T2-2).
+
 **Accepted limitations (deliberate, recorded):**
 
 - An `iterative` skill projects as **one** `WorkflowStep` row (`step_type:
@@ -69,14 +131,14 @@ what diverged from the sketch. What shipped beyond the durable spine:
 - The async step-timeline `Writer` + barrier (§4.3) remains deferred —
   appends are synchronous under the per-run `FOR UPDATE` lock, which is
   strictly safer at current scale.
-- T2-2 actor-visibility read-model: `WorkflowRun.result`/`error` stay
-  `public?: true`; that redaction scope is Phase 5.
 - A gate step's row stays `:running` after resume (the halted step is
   dropped from the plan and never re-runs; `{:run_halt, _}` is unmapped).
+- Dashboard lateness is timer-refreshed (30s re-render), not event-pushed —
+  deadline thresholds cross without any event, so a small poll is the honest
+  mechanism.
 
-**Next-phase scope (NOT started):** Phase 5 (deadline read-model, cron
-idempotency, actor-visibility redaction, graph-layout visualization), plus
-the §4.11 lease *implementation* and live-run cancellation.
+**Next-phase scope (NOT started):** the §4.11 lease *implementation*,
+live-run cancellation, and the async step-timeline `Writer`.
 
 ---
 
@@ -701,9 +763,14 @@ unresolved gates parked**, else fail-with-audit — §4.8). *Done when:* a stran
 a checkpoint is left parked (not resumed), and replay refuses a changed definition —
 all three are test-pinned (`workflow_recovery_test.exs`, `replay_test.exs`).
 
-**Phase 5 — Read-models.** Deadlines, actor-visibility redaction, cron idempotency over
-the event log. *Done when:* the dashboard shows lateness, payloads are scope-redacted by
-default, and a double cron tick yields one run.
+**Phase 5 — Read-models.** ✅ **Shipped 2026-06-10** (plus the T3-1/T3-2 graph
+viz per the reconciliation note — see the status banner's Phase 5 block for
+what diverged). Deadlines, actor-visibility redaction, cron idempotency over
+the event log. *Done when:* the dashboard shows lateness, payloads are
+scope-redacted by default, and a double cron tick yields one run — all three
+are test-pinned (`deadline_test.exs` + dashboard render pins,
+`visibility_test.exs` + the MCP security pins, `reactor_runner_test.exs` /
+`workflow_runner_test.exs` / `worker_fire_provenance_test.exs`).
 
 ## 9. Open questions / decisions to make
 

@@ -67,6 +67,7 @@ defmodule JidoClaw.Tools.RunSkill do
              name: skill.name,
              async?: true,
              definition_hash: DefinitionFingerprint.for_skill(skill),
+             deadline: skill.deadline,
              context: scope
            ) do
       {:ok, value}

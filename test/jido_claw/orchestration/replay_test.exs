@@ -25,6 +25,8 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   alias JidoClaw.Skills
   alias JidoClaw.Skills.Compiler
   alias JidoClaw.Test.EchoStub
+  alias JidoClaw.Test.SecretErrorStub
+  alias JidoClaw.Tools.ReplayWorkflow
   alias JidoClaw.Web.WorkflowsLive
   alias Phoenix.HTML.Safe
 
@@ -132,6 +134,27 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       assert {:ok, replayed} = Replay.replay(original.id, tenant: ctx.tenant, actor: ctx.actor)
       assert replayed.status == :completed
       assert replayed.definition_hash == original.definition_hash
+    end
+
+    test "a deadline-only edit passes un-forced; the replay carries the NEW deadline (T2-1)",
+         ctx do
+      dir = tmp_project_dir!()
+      write_fixture!(dir)
+      original = launch_fixture!(dir, ctx)
+      drain_echo_messages()
+      refute Map.has_key?(original.config, "deadline")
+
+      # Add ONLY a top-level deadline — observability semantics, excluded from
+      # the fingerprint, so the gate must pass without force:.
+      write_fixture!(dir, @fixture_yaml <> "deadline:\n  within: 1800\n  due_soon: 300\n")
+
+      assert {:ok, replayed} = Replay.replay(original.id, tenant: ctx.tenant, actor: ctx.actor)
+      assert replayed.status == :completed
+      assert replayed.definition_hash == original.definition_hash
+
+      # Skill replays use the FRESHLY re-resolved skill.deadline, not the
+      # original config's (which had none).
+      assert replayed.config["deadline"] == %{"within" => 1800, "due_soon" => 300}
     end
   end
 
@@ -345,6 +368,39 @@ defmodule JidoClaw.Orchestration.ReplayTest do
                Replay.replay(parked.id, tenant: ctx.tenant, actor: ctx.actor)
     end
 
+    test "a module replay preserves the ORIGINAL run's deadline policy (T2-1 asymmetry)", ctx do
+      # A module has no YAML to re-resolve a deadline from — the original
+      # config's policy must survive the replay (string-keyed jsonb in,
+      # re-normalized by the runner, string-keyed jsonb out).
+      run =
+        forge_terminal_run!(
+          %{
+            name: "forge-module-deadline",
+            config: Map.put(module_config(), :deadline, %{within: 600}),
+            definition_hash:
+              DefinitionFingerprint.for_module(JidoClaw.Orchestration.Reactors.GatedTestReactor),
+            replay_inputs:
+              :erlang.term_to_binary(
+                {1,
+                 %{
+                   workspace_name: "replay-mod-dl-#{System.unique_integer([:positive])}",
+                   workspace_path: "/tmp/replay-mod-dl"
+                 }, %{}}
+              )
+          },
+          ctx
+        )
+
+      assert run.config["deadline"] == %{"within" => 600}
+
+      # The gated module pauses at its gate — still {:ok, run}: a replay run
+      # came into existence, which is all this pin needs.
+      assert {:ok, replayed} = Replay.replay(run.id, tenant: ctx.tenant, actor: ctx.actor)
+      assert replayed.status == :awaiting_approval
+      assert replayed.config["deadline"] == %{"within" => 600}
+      assert replayed.retry_of_id == run.id
+    end
+
     test ":no_hash — a terminal run without a stored fingerprint", ctx do
       run =
         forge_terminal_run!(
@@ -432,6 +488,43 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       assert {:error, :missing_required_opt} =
                Replay.replay(Ash.UUID.generate(), tenant: ctx.tenant)
+    end
+  end
+
+  describe "MCP seam (ReplayWorkflow tool, T2-2 security pin)" do
+    test "a replay-run error carrying a secret never reaches MCP output", ctx do
+      dir = tmp_project_dir!()
+      write_fixture!(dir)
+      original = launch_fixture!(dir, ctx)
+      drain_echo_messages()
+
+      # The replay executes with a stub whose error embeds a secret-shaped
+      # string; the run row stores it RAW — the tool must scrub at read.
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "researcher" => template(SecretErrorStub),
+        "docs_writer" => template(SecretErrorStub)
+      })
+
+      secret = SecretErrorStub.secret()
+
+      # The Tools.Action wrapper normalizes a `status: "failed"` result into
+      # an error envelope; the summarized fields ride in details.context.
+      assert {:error, %{code: :failed, details: %{context: context}} = envelope} =
+               ReplayWorkflow.run(
+                 %{run_id: original.id},
+                 %{tool_context: %{tenant_id: ctx.tenant, actor: ctx.actor}}
+               )
+
+      assert context.status == "failed"
+      # Operator scope, not overridable here: redacted then truncated to 200.
+      assert String.length(context.error) <= 200
+      refute inspect(envelope) =~ secret
+
+      # The raw secret IS on the run row (defense-in-depth is read-side).
+      {:ok, replayed} =
+        WorkflowRun.by_id(context.new_run_id, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert replayed.error =~ secret
     end
   end
 
@@ -586,7 +679,10 @@ defmodule JidoClaw.Orchestration.ReplayTest do
         expanded_run_id: nil,
         steps: [],
         steps_error: nil,
-        replay_blocked: %{}
+        replay_blocked: %{},
+        reveal_runs: MapSet.new(),
+        steps_view: :graph,
+        step_graph: nil
       }
     }
   end
@@ -600,7 +696,10 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       expanded_run_id: nil,
       steps: [],
       steps_error: nil,
-      replay_blocked: replay_blocked
+      replay_blocked: replay_blocked,
+      reveal_runs: MapSet.new(),
+      steps_view: :graph,
+      step_graph: nil
     }
     |> WorkflowsLive.render()
     |> Safe.to_iodata()
@@ -619,7 +718,8 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   end
 
   # Launch exactly the way the production skill callers do: fresh-disk load,
-  # compile, run through the envelope with the skill hash + project_dir scope.
+  # compile, run through the envelope with the skill hash + run-level deadline
+  # + project_dir scope.
   defp launch_fixture!(dir, %{tenant: tenant, actor: actor}, context_overrides \\ %{}) do
     {:ok, skill} = Skills.load_skill(@fixture_name, dir)
     {:ok, reactor} = Compiler.compile(skill)
@@ -633,6 +733,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
                name: skill.name,
                async?: true,
                definition_hash: DefinitionFingerprint.for_skill(skill),
+               deadline: skill.deadline,
                context: context
              )
 

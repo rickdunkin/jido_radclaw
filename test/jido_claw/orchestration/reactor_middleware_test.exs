@@ -136,6 +136,47 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     refute Map.has_key?(started.payload, "definition_hash")
   end
 
+  test "step payloads carry compiler-stamped deadline + depends_on on every step kind", ctx do
+    run = create_run("mw-meta", ctx)
+
+    reactor =
+      Builder.new()
+      |> Builder.add_step!(:only, {OkStep, [deadline: %{within: 60}, depends_on: ["alpha"]]})
+      |> Builder.return!(:only)
+      |> Builder.add_middleware!(ReactorMiddleware)
+
+    assert {:ok, :done} =
+             Reactor.run(reactor, %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    events = events_for(run, ctx)
+
+    # Static metadata rides BOTH the started and completed payloads, so a
+    # missed step_started can't strand the projected row metadata-less.
+    for kind <- [:step_started, :step_completed] do
+      payload = Enum.find(events, &(&1.kind == kind)).payload
+      assert payload["deadline"] == %{"within" => 60}
+      assert payload["depends_on"] == ["alpha"]
+    end
+  end
+
+  test "step payloads omit deadline/depends_on when unstamped (incl. empty deps)", ctx do
+    run = create_run("mw-nometa", ctx)
+
+    reactor =
+      Builder.new()
+      |> Builder.add_step!(:only, {OkStep, [depends_on: []]})
+      |> Builder.return!(:only)
+      |> Builder.add_middleware!(ReactorMiddleware)
+
+    assert {:ok, :done} =
+             Reactor.run(reactor, %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    started = Enum.find(events_for(run, ctx), &(&1.kind == :step_started))
+    refute Map.has_key?(started.payload, "deadline")
+    # [] maps to nil (omitted) — edge-less steps stay payload-light.
+    refute Map.has_key?(started.payload, "depends_on")
+  end
+
   test "captures a json-safe return value into run.result (closes the regression)", ctx do
     run = create_run("mw-result", ctx)
 

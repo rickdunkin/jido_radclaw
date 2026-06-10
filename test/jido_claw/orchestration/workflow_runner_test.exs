@@ -158,6 +158,124 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     assert {:error, :missing_workflow_name} = WorkflowRunner.run(%{})
   end
 
+  describe "tick idempotency (T2-3)" do
+    defp workflow_state(tenant, fire_or_nil) do
+      state = %{
+        id: "wfrun-idem-#{System.unique_integer([:positive])}",
+        tenant_id: tenant,
+        workflow_name: "explore_codebase",
+        workflow_input: %{}
+      }
+
+      if fire_or_nil, do: Map.put(state, :fire, fire_or_nil), else: state
+    end
+
+    defp runs_for_job(tenant, job_id) do
+      {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor_for(tenant))
+      prefix = "cron:#{job_id}:"
+
+      Enum.filter(runs, fn run ->
+        is_binary(run.idempotency_key) and String.starts_with?(run.idempotency_key, prefix)
+      end)
+    end
+
+    test "the same scheduled window dispatched twice yields one run (second is :ok)",
+         %{tenant: tenant} do
+      put_templates(%{"researcher" => template(EchoStub), "docs_writer" => template(EchoStub)})
+
+      window = DateTime.utc_now()
+      state = workflow_state(tenant, {:scheduled, window})
+
+      assert :ok = WorkflowRunner.run(state)
+      assert_receive {:run_started, run_id, _info}, 5_000
+      assert_receive {:run_completed, ^run_id, _info}, 5_000
+
+      # The double-delivered tick dedupes to the existing run: still :ok (no
+      # cron failure-counter increment), no second run, no new lifecycle
+      # broadcast.
+      assert :ok = WorkflowRunner.run(state)
+      refute_receive {:run_started, _other, _info}, 300
+
+      assert [run] = runs_for_job(tenant, state.id)
+      assert run.id == run_id
+      assert run.idempotency_key == "cron:#{state.id}:#{DateTime.to_iso8601(window)}"
+    end
+
+    test "a duplicate tick whose skill has vanished still dedupes to :ok",
+         %{tenant: tenant} do
+      job_id = "wfrun-idem-#{System.unique_integer([:positive])}"
+      window = DateTime.utc_now()
+      key = "cron:#{job_id}:#{DateTime.to_iso8601(window)}"
+
+      {:ok, seeded} =
+        WorkflowRun.create(%{name: "seeded-tick-run", idempotency_key: key},
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      # The review's exact scenario: the job's skill was removed/broken
+      # between the first delivery and the duplicate. The dedupe must resolve
+      # BEFORE skill resolution — an {:error, _} here would feed the cron
+      # worker's failure counter (3 strikes → job auto-disabled). No template
+      # stubs on purpose: nothing may execute.
+      state = %{
+        id: job_id,
+        tenant_id: tenant,
+        workflow_name: "does_not_exist_skill",
+        workflow_input: %{},
+        fire: {:scheduled, window}
+      }
+
+      assert :ok = WorkflowRunner.run(state)
+
+      refute_received {:run_started, _id, _info}
+
+      # Exactly one run carries the exact key, and it is the seeded one —
+      # the dedupe resolved to it rather than creating anything.
+      {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor_for(tenant))
+      assert [run] = Enum.filter(runs, &(&1.idempotency_key == key))
+      assert run.id == seeded.id
+    end
+
+    test "manual triggers always run: two :manual dispatches create two nil-key runs",
+         %{tenant: tenant} do
+      put_templates(%{"researcher" => template(EchoStub), "docs_writer" => template(EchoStub)})
+
+      state = workflow_state(tenant, :manual)
+
+      assert :ok = WorkflowRunner.run(state)
+      assert_receive {:run_started, first_id, _info}, 5_000
+      assert_receive {:run_completed, ^first_id, _info}, 5_000
+
+      assert :ok = WorkflowRunner.run(state)
+      assert_receive {:run_started, second_id, _info}, 5_000
+      assert_receive {:run_completed, ^second_id, _info}, 5_000
+
+      refute first_id == second_id
+
+      {:ok, runs} = WorkflowRun.list(tenant: tenant, actor: actor_for(tenant))
+
+      for id <- [first_id, second_id] do
+        run = Enum.find(runs, &(&1.id == id))
+        assert is_nil(run.idempotency_key)
+      end
+    end
+
+    test "a state with no :fire derives no key (non-worker callers always run)",
+         %{tenant: tenant} do
+      put_templates(%{"researcher" => template(EchoStub), "docs_writer" => template(EchoStub)})
+
+      state = workflow_state(tenant, nil)
+
+      assert :ok = WorkflowRunner.run(state)
+      assert_receive {:run_started, run_id, _info}, 5_000
+      assert_receive {:run_completed, ^run_id, _info}, 5_000
+
+      {:ok, run} = WorkflowRun.by_id(run_id, tenant: tenant, actor: actor_for(tenant))
+      assert is_nil(run.idempotency_key)
+    end
+  end
+
   defp collect_tool_contexts(n) do
     for _ <- 1..n do
       receive do

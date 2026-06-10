@@ -72,6 +72,48 @@ defmodule JidoClaw.Skills.CompilerTest do
       assert Enum.sort(result_arg_sources(step_by_name(reactor, :step_3))) == [:step_1, :step_2]
     end
 
+    test "collect depends_on metadata is stamped in :dag mode only" do
+      # A true :sequential skill is unnamed by construction (any named step
+      # routes the skill to :dag via Skills.has_dag_steps?). The collect
+      # stamps NO edges — mode-gated, not merely nil-filtered — so the graph
+      # adapter's sequence-chain fallback stays enabled and renders the
+      # honest linear chain through the collect.
+      {:ok, sequential} = Compiler.compile(sequential_skill())
+      assert {CollectStep, seq_opts} = step_by_name(sequential, :__collect__).impl
+      assert seq_opts[:depends_on] == []
+
+      # Execution wiring is untouched: the collect still takes a from_result
+      # arg from every agent step.
+      assert Enum.sort(result_arg_sources(step_by_name(sequential, :__collect__))) ==
+               [:step_1, :step_2, :step_3]
+
+      # The iterative collect stamps no edges either ([{nil, 1}] order).
+      {:ok, iterative} = Compiler.compile(iterative_skill())
+      assert {CollectStep, iter_opts} = step_by_name(iterative, :__collect__).impl
+      assert iter_opts[:depends_on] == []
+
+      # The dag collect keeps its named-step list (the projection pin's input).
+      {:ok, dag} = Compiler.compile(dag_skill())
+      assert {CollectStep, dag_opts} = step_by_name(dag, :__collect__).impl
+      assert dag_opts[:depends_on] == ["run_tests", "review_code", "synthesize"]
+    end
+
+    test "named-but-no-deps routes to :dag — parallel fan-in, collect star is honest" do
+      # The review-flagged scenario: naming steps without declaring deps is a
+      # DAG (Skills.has_dag_steps? keys on :name too), never :sequential. The
+      # steps wire NO inter-step args — they genuinely run in parallel — so
+      # the collect's named-step list renders the honest fan-in star, not a
+      # falsified chain.
+      {:ok, reactor} = Compiler.compile(named_no_deps_skill())
+
+      for id <- [:step_1, :step_2, :step_3] do
+        assert result_arg_sources(step_by_name(reactor, id)) == []
+      end
+
+      assert {CollectStep, opts} = step_by_name(reactor, :__collect__).impl
+      assert opts[:depends_on] == ["one", "two", "three"]
+    end
+
     test "dag: a step wires from_result for depends_on ∪ consumes" do
       {:ok, reactor} = Compiler.compile(dag_consumes_skill())
       # synthesize depends_on [run_tests] and consumes [build] → both wired.
@@ -246,6 +288,120 @@ defmodule JidoClaw.Skills.CompilerTest do
     end
   end
 
+  describe "deadline: (T2-1)" do
+    test "a valid per-step deadline threads NORMALIZED onto the step options" do
+      skill = %Skills{
+        name: "deadlined",
+        synthesis: "present",
+        steps: [
+          %{
+            "name" => "slow_step",
+            "template" => "coder",
+            "task" => "x",
+            "deadline" => %{"within" => 300, "due_soon" => 60}
+          },
+          %{"name" => "free_step", "template" => "reviewer", "task" => "y"}
+        ]
+      }
+
+      {:ok, reactor} = Compiler.compile(skill)
+
+      assert {AgentStep, opts} = step_by_name(reactor, :step_1).impl
+      # Atom-keyed normalized policy, not the raw string-keyed YAML map.
+      assert opts[:deadline] == %{within: 300, due_soon: 60}
+
+      assert {AgentStep, free_opts} = step_by_name(reactor, :step_2).impl
+      assert free_opts[:deadline] == nil
+    end
+
+    test "a malformed per-step deadline is a compile error" do
+      for bad <- [
+            %{"within" => -5},
+            %{"due_soon" => 10},
+            %{"within" => 60, "due_soon" => 60},
+            "5m"
+          ] do
+        skill = %Skills{
+          name: "bad_deadline",
+          steps: [%{"name" => "a", "template" => "coder", "task" => "x", "deadline" => bad}]
+        }
+
+        assert {:error, msg} = Compiler.compile(skill)
+        assert msg =~ "Step 'a': deadline"
+      end
+    end
+
+    test "an invalid top-level skill deadline is a compile error" do
+      skill = %Skills{
+        name: "bad_run_deadline",
+        deadline: %{"within" => "soon"},
+        steps: [%{"name" => "a", "template" => "coder", "task" => "x"}]
+      }
+
+      assert {:error, msg} = Compiler.compile(skill)
+      assert msg =~ "Skill deadline"
+    end
+
+    test "a valid top-level skill deadline compiles (threading is the launch sites' job)" do
+      skill = %Skills{
+        name: "run_deadline",
+        deadline: %{"within" => 3600},
+        steps: [%{"name" => "a", "template" => "coder", "task" => "x"}]
+      }
+
+      assert {:ok, _reactor} = Compiler.compile(skill)
+    end
+
+    test "iterative: a deadline on a non-generator role is a compile error" do
+      skill = %Skills{
+        name: "iter_bad_deadline",
+        mode: "iterative",
+        steps: [
+          %{"name" => "implement", "role" => "generator", "template" => "coder", "task" => "b"},
+          %{
+            "name" => "verify",
+            "role" => "evaluator",
+            "template" => "verifier",
+            "task" => "c",
+            "deadline" => %{"within" => 60}
+          }
+        ]
+      }
+
+      assert {:error, msg} = Compiler.compile(skill)
+      assert msg =~ "loop-level"
+      assert msg =~ "generator"
+    end
+
+    test "iterative: the generator's deadline lands on the IterativeStep impl opts" do
+      skill = %Skills{
+        name: "iter_deadline",
+        mode: "iterative",
+        steps: [
+          %{
+            "name" => "implement",
+            "role" => "generator",
+            "template" => "coder",
+            "task" => "b",
+            "deadline" => %{"within" => 900, "escalate_after" => 0}
+          },
+          %{"name" => "verify", "role" => "evaluator", "template" => "verifier", "task" => "c"}
+        ]
+      }
+
+      {:ok, reactor} = Compiler.compile(skill)
+
+      assert {IterativeStep, opts} = step_by_name(reactor, :step_1).impl
+      assert opts[:deadline] == %{within: 900, escalate_after: 0}
+    end
+
+    test "iterative: no generator deadline yields nil on the loop opts" do
+      {:ok, reactor} = Compiler.compile(iterative_skill())
+      assert {IterativeStep, opts} = step_by_name(reactor, :step_1).impl
+      assert opts[:deadline] == nil
+    end
+  end
+
   describe "every committed skill compiles to a plannable reactor" do
     test "all .jido/skills/*.yaml compile and plan" do
       skills = Skills.all()
@@ -296,6 +452,20 @@ defmodule JidoClaw.Skills.CompilerTest do
         %{"template" => "coder", "task" => "a"},
         %{"template" => "reviewer", "task" => "b"},
         %{"template" => "test_runner", "task" => "c"}
+      ]
+    }
+  end
+
+  # Named but no depends_on/consumes anywhere → still :dag (names alone route
+  # there), compiling to a deps-less parallel fan-in joined by the collect.
+  defp named_no_deps_skill do
+    %Skills{
+      name: "named_no_deps",
+      synthesis: "summarize",
+      steps: [
+        %{"name" => "one", "template" => "coder", "task" => "a"},
+        %{"name" => "two", "template" => "reviewer", "task" => "b"},
+        %{"name" => "three", "template" => "test_runner", "task" => "c"}
       ]
     }
   end

@@ -45,6 +45,28 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   stamps the skill fingerprint computed by the caller (ignored for module
   reactors — those self-compute via `DefinitionFingerprint.for_module/1`);
   `:retry_of_id` records replay provenance (the original run's id).
+  `:idempotency_key` opts into launch dedupe (below); absent/nil means
+  "always run". `:deadline` is the run-level lateness policy
+  (`JidoClaw.Orchestration.Deadline.parse/1` shape) stored normalized in
+  `config["deadline"]` — pure read-model evidence; an invalid value is dropped
+  with a log, never a launch failure.
+
+  ## Launch idempotency (T2-3)
+
+  A present `:idempotency_key` makes the launch at-most-once per key:
+  **read-first → create → unique-violation backstop**. A key that already owns
+  a `WorkflowRun` short-circuits to `{:ok, {:existing_run, run.id}, run}`
+  before the launch work — it skips runnable build/middleware wiring, run
+  creation, replay-inputs encoding, and execution (only the cheap pure opt
+  reads before the `with` — `Keyword.get`s, identity/name derivation — still
+  run). Notably the hit wins even when the reactor argument would no longer
+  build: a duplicate tick whose skill has since been removed or broken still
+  resolves to the existing run. On a read miss the run is created with the
+  key; if a concurrent launch wins the create race, the `:unique_run_idempotency`
+  identity violation is caught and the winner is re-read and returned as the
+  same `{:existing_run, _}` envelope. Deliberately not an upsert: the caller
+  must know created-vs-existing so the dedupe path skips execution. Today only
+  scheduled cron ticks supply a key (`WorkflowRunner`).
 
   ## Replay provenance (Phase 4)
 
@@ -77,6 +99,8 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   `run/3` returns a run-carrying envelope and never raises:
 
     * `{:ok, value, run}` — the reactor's return value plus the reloaded run.
+      On a launch-dedupe hit `value` is `{:existing_run, run.id}` and `run` is
+      the pre-existing run (nothing was executed).
     * `{:error, reason, run}` — a failure with the reloaded run.
     * `{:error, reason, nil}` — a *pre-run* failure, before any run exists:
       `{:not_a_reactor, mod}` (the module is not a reactor), `:missing_required_opt`
@@ -124,6 +148,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   require Logger
 
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.Deadline
   alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.Reason
@@ -154,6 +179,8 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # persist; also the human-facing `run_failed` error context.
   @gate_pause_reason "gate pause failed"
 
+  # On a launch-dedupe hit the ok-value is `{:existing_run, run_id}` and the
+  # run slot carries the pre-existing run — same envelope, nothing executed.
   @type run_result ::
           {:ok, term(), WorkflowRun.t()}
           | {:error, term(), WorkflowRun.t() | nil}
@@ -175,27 +202,34 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
     name = Keyword.get(opts, :name, identity)
     async? = Keyword.get(opts, :async?, false)
     extra_context = Keyword.get(opts, :context) || %{}
+    idempotency_key = Keyword.get(opts, :idempotency_key)
 
-    # Encoded in the pre-run body, before the `with`: a term_to_binary raise
-    # (a non-serializable input, e.g. a local fun) lands in the body-level
-    # rescue → {:error, {:exception, msg}, nil}, preserving never-raises.
-    replay_inputs = :erlang.term_to_binary({@replay_version, inputs, extra_context})
-
-    with {:ok, runnable} <- build_runnable(reactor),
-         {:ok, tenant} <- Keyword.fetch(opts, :tenant),
+    with {:ok, tenant} <- Keyword.fetch(opts, :tenant),
          {:ok, actor} <- Keyword.fetch(opts, :actor),
+         # Dedupe read BEFORE build_runnable: a key hit must short-circuit even
+         # when the definition no longer resolves/builds (a duplicate tick must
+         # never become an error just because the skill changed underneath it).
+         :miss <- existing_for_key(idempotency_key, tenant, actor),
+         {:ok, runnable} <- build_runnable(reactor),
          {:ok, run} <-
-           WorkflowRun.create(
+           create_run(
              %{
                name: name,
                workflow_type: "reactor",
-               config: run_config(identity, reactor_module, extra_context),
+               config:
+                 run_config(identity, reactor_module, extra_context, Keyword.get(opts, :deadline)),
                definition_hash: definition_hash(reactor_module, opts),
-               replay_inputs: replay_inputs,
-               retry_of_id: Keyword.get(opts, :retry_of_id)
+               # Encoded here — BELOW the dedupe read — so a key hit never
+               # reaches the encode; a term_to_binary raise (a non-serializable
+               # input, e.g. a local fun) still lands in the body-level rescue
+               # → {:error, {:exception, msg}, nil}, preserving never-raises.
+               replay_inputs: :erlang.term_to_binary({@replay_version, inputs, extra_context}),
+               retry_of_id: Keyword.get(opts, :retry_of_id),
+               idempotency_key: idempotency_key
              },
-             tenant: tenant,
-             actor: actor
+             idempotency_key,
+             tenant,
+             actor
            ) do
       # Build the merged context (run-identity base wins over the caller's
       # extra `:context`) and the finalizer opts here, so `execute/6` stays
@@ -217,6 +251,9 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
       execute(run, runnable, inputs, context, finalize_opts, async?)
     else
+      # Launch dedupe: the key already owns a run (read-first hit, or the
+      # create race's winner re-read by create_run). Nothing was executed.
+      {:hit, %WorkflowRun{} = run} -> {:ok, {:existing_run, run.id}, run}
       # Module is not a reactor — no run created yet.
       {:error, :not_a_reactor} -> {:error, {:not_a_reactor, reactor}, nil}
       # Missing :tenant / :actor opt — no run created yet.
@@ -277,19 +314,97 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp definition_hash(nil, opts), do: Keyword.get(opts, :definition_hash)
   defp definition_hash(module, _opts), do: DefinitionFingerprint.for_module(module)
 
+  # Launch dedupe, read-first leg: a present key that already owns a run
+  # short-circuits the launch via the `with`'s else (`{:hit, run}` →
+  # `{:ok, {:existing_run, id}, run}`). A read error (not just not-found)
+  # also falls to :miss — the create's unique-violation backstop still
+  # guarantees at-most-one run per key.
+  defp existing_for_key(nil, _tenant, _actor), do: :miss
+
+  defp existing_for_key(key, tenant, actor) do
+    case WorkflowRun.by_idempotency_key(key, tenant: tenant, actor: actor) do
+      {:ok, %WorkflowRun{} = run} -> {:hit, run}
+      _ -> :miss
+    end
+  end
+
+  # Launch dedupe, create leg + race backstop. Deliberately NOT an upsert:
+  # the caller must distinguish created (execute) from existing (skip), and
+  # an upsert would hand back the winner indistinguishably. When two launches
+  # race past the read, the loser's create violates `:unique_run_idempotency`
+  # (an `%Ash.Error.Invalid{}` on field `:idempotency_key` — the declared
+  # identity makes Ash return the tuple instead of raising); re-read the
+  # winner and return it as `{:hit, run}`, which the `with` else maps to the
+  # existing-run envelope. Any other create failure propagates unchanged.
+  defp create_run(attrs, key, tenant, actor) do
+    case WorkflowRun.create(attrs, tenant: tenant, actor: actor) do
+      {:ok, run} ->
+        {:ok, run}
+
+      {:error, %Ash.Error.Invalid{} = error} when not is_nil(key) ->
+        if unique_key_violation?(error) do
+          recover_race_winner(key, tenant, actor, error)
+        else
+          {:error, error}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp unique_key_violation?(%Ash.Error.Invalid{errors: errors}) do
+    Enum.any?(errors, fn
+      %{field: :idempotency_key} -> true
+      _ -> false
+    end)
+  end
+
+  # The winner must exist (its create committed before ours failed); if the
+  # re-read still misses (e.g. a read error), surface the original create
+  # error rather than inventing a state.
+  defp recover_race_winner(key, tenant, actor, original_error) do
+    case existing_for_key(key, tenant, actor) do
+      {:hit, run} -> {:hit, run}
+      :miss -> {:error, original_error}
+    end
+  end
+
   # The replay-facing run config (string-keyed jsonb on read): the reactor
   # identity, which kind of definition to re-resolve (`"module"` →
   # allowlisted module lookup, `"skill"` → fresh-disk YAML lookup), and — when
   # the caller's scope carries one — the `project_dir` for that skill lookup,
   # so `Replay` can locate the skills dir WITHOUT first decoding the encrypted
-  # inputs blob (its resolve-before-decode ordering depends on this).
-  defp run_config(identity, reactor_module, extra_context) do
+  # inputs blob (its resolve-before-decode ordering depends on this). The
+  # run-level `deadline` policy (T2-1) rides here too.
+  defp run_config(identity, reactor_module, extra_context, deadline) do
     kind = if reactor_module, do: "module", else: "skill"
     config = %{reactor: identity, definition_kind: kind}
 
-    case Map.get(extra_context, :project_dir) do
-      dir when is_binary(dir) -> Map.put(config, :project_dir, dir)
-      _missing -> config
+    config =
+      case Map.get(extra_context, :project_dir) do
+        dir when is_binary(dir) -> Map.put(config, :project_dir, dir)
+        _missing -> config
+      end
+
+    put_deadline(config, deadline)
+  end
+
+  # Store the NORMALIZED `Deadline.parse/1` policy, not the raw input — a
+  # stable config shape across atom/string-keyed YAML/test inputs. Invalid
+  # values are dropped with a log rather than failing the run: the compiler
+  # already rejects invalid skill declarations, so this only guards direct
+  # runner callers.
+  defp put_deadline(config, nil), do: config
+
+  defp put_deadline(config, deadline) do
+    case Deadline.parse(deadline) do
+      {:ok, policy} ->
+        Map.put(config, :deadline, policy)
+
+      :none ->
+        Logger.warning("[ReactorRunner] dropping invalid :deadline opt: #{inspect(deadline)}")
+        config
     end
   end
 

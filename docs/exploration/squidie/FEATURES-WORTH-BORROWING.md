@@ -158,6 +158,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: Port as a small module or an Ash calculation over the T1-1 event log's `started_at`. Surface in the workflow read projection (`workflow_view.ex`).
 
+**Shipped (2026-06-10)** as the pure module `JidoClaw.Orchestration.Deadline` (not an Ash calculation), Squidie-faithful on validation and threshold math but at run **and** step level (explicit declaration only; iterative = loop-level, anchored on the generator) and in **seconds**, not ms (the YAML is human/LLM-edited). Run policy rides `WorkflowRun.config["deadline"]` through all three launch sites — cron, `run_skill`, and replay (skill replays re-resolve fresh; module replays preserve the original's) — and step policy rides the `irreversible:` rails into a `WorkflowStep.deadline` column. Evidence adds an always-present non-negative `overdue_by_ms` (instead of Squidie's signed `remaining_ms`), freezes at `completed_at`, and is deliberately **excluded from the T1-3 definition fingerprint**. Surfaces: `workflow_view.ex` (additive `deadline` key on `workflow_status`) and dashboard badge columns with a 30s lateness-refresh timer.
+
 ### T2-2. Actor-visibility read-model redaction
 
 **Recommendation**: BORROW-PATTERN (threat-model aligned).
@@ -172,6 +174,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: A visibility scope on the workflow read projection; default `:operator` sees metadata + status, `:auditor` sees payloads. For the actual scrubbing use the **recursive** `Redaction.Transcript.redact/2` — the run `result`/`error`/inputs are maps, and both `Redaction.Patterns.redact/1` and `Redaction.UiRedaction.redact/1` only scan binaries and pass maps through unchanged (`patterns.ex:44-51`, `ui_redaction.ex:7-8`), so on a payload map they redact nothing (same trap as T1-1; widen the sensitive-key set the same way).
 
+**Shipped (2026-06-10)** as `JidoClaw.Orchestration.Visibility` (`run_view/3` / `step_view/3` / `redact_error/2`; scope is always an explicit argument — no host policy callback, single-operator) with exactly the sketched split: `:operator` is metadata + status + deadline + a key-filtered summary and a redact-**before**-truncate error (operator step views carry **no output key at all**); `:auditor` adds full payloads still `Transcript`-scrubbed (defense in depth — the columns store raw values; only event payloads were redacted at append). The four payload attrs (`WorkflowRun.result`/`error`, `WorkflowStep.output`/`error`) flipped `public?(false)`. LLM/MCP surfaces (`workflow_status`, `replay_workflow`) are **permanently** operator-scoped (test-pinned); the elevated scope is a per-run dashboard "Reveal payloads" toggle — the replacement for the AshAdmin payload visibility the flip removed.
+
 ### T2-3. Cron idempotency / return-existing-run
 
 **Recommendation**: BORROW-PATTERN (small, high-hygiene).
@@ -185,6 +189,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 **Why it matters**: Cron at-least-once delivery + retries make duplicate firings a real possibility; idempotent run identity is cheap insurance against double side effects.
 
 **Adoption sketch**: Derive a deterministic key `cron:<job_id>:<window>` and add a unique index / upsert in `WorkflowRunner`; on conflict, return the existing run.
+
+**Shipped (2026-06-10)** with one structural correction to the sketch: the dedupe is a generic `:idempotency_key` opt on `ReactorRunner.run/3` (read-first → create → unique-violation backstop on the tenant-prefixed NULLS DISTINCT `:unique_run_idempotency` identity → `{:ok, {:existing_run, id}, run}`), **not an upsert** — the caller must know created-vs-existing so a dedupe hit does zero launch work (no inputs encoding, no `Reactor.run`, no events). The key is exactly the sketched `cron:<job_id>:<iso8601 window>`, derived only from explicit firing provenance: `Cron.Worker.execute_job/2` stamps `fire: {:scheduled, next_run}` on a local dispatch copy (never stored state, so a manual `/cron trigger` can never consume the upcoming window's key — manual and non-worker launches always run keyless).
 
 ### T2-4. Lease/fencing claim discipline for workers
 
@@ -232,6 +238,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: Copy as `JidoClaw.Web.Components.GraphLayout`, drop Squidie's deadline/recovery node-height variants, feed it from two adapters (one over `WorkflowStep` rows deriving edges from `sequence`, one over the `AgentTracker` spawn lineage). The upstream module is `@moduledoc false` and coupled to Squidie's node shape — copy + adapt, don't depend.
 
+**Shipped (2026-06-10)** as `JidoClaw.Web.Components.GraphLayout` (copied with Apache-2.0 attribution; deadline/recovery node-height variants deleted — every node is the fixed 210×58 box) behind a `StepGraph` adapter, with two sketch corrections: edges come from a new **durable `WorkflowStep.depends_on` column** (the compiler-stamped `depends_on ∪ consumes` union; in **dag mode only**, the synthetic collect step additionally stamps its named-step list) — the sequence chain is only the fallback when no step declares an edge; sequential and iterative runs stamp nothing (sequential skills are unnamed by construction — any named step routes to dag) and take that fallback, rendering their honest linear chain through the collect — and the collect row (projected `sequence 0`) is ranked last so its incoming edges survive the layout's forward-edge filter. Nodes are metadata-only (name/label/status/step_type — never payloads, composing with T2-2). The second sketched adapter (`AgentTracker` spawn lineage) was not built — borrow it when a dashboard tab needs the swarm tree.
+
 ### T3-2. CSS-positioned-div graph rendering
 
 **Recommendation**: BORROW-PATTERN (only if T3-1 is taken).
@@ -241,6 +249,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 **What**: Renders nodes/edges as absolutely-positioned HTML elements rather than SVG, keeping theming consistent and avoiding SVG/HTML interop. Trade-off: no cheap zoom/pan.
 
 **Why it matters**: If you adopt T3-1, adopt the rendering style with it — it slots into jido_radclaw's existing LiveView theming with no SVG machinery.
+
+**Shipped (2026-06-10)** with T3-1: the `workflow_graph/1` function component renders the prebuilt layout as absolutely-positioned divs (stage/segments/ports/nodes) on the repo's CSS variables, wrapped in `overflow-x: auto`, behind a Graph/Table toggle in the expanded run row (graph is the default; the table keeps timestamp/deadline/error detail).
 
 ---
 

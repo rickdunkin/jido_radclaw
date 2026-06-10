@@ -35,6 +35,7 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.Replay
+  alias JidoClaw.Orchestration.Visibility
 
   @impl true
   def run(params, context) do
@@ -51,7 +52,8 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
 
   # `{:ok, run}` means a replay run exists — surface its outcome; a run that
   # launched and then failed still reports success-with-status (callers read
-  # `status`/`error`), mirroring Replay's uniform envelope.
+  # `status`/`error`), mirroring Replay's uniform envelope. The error is
+  # operator-scoped (T2-2): MCP surfaces never see unredacted payloads.
   defp summarize(run) do
     base = %{
       new_run_id: run.id,
@@ -61,7 +63,11 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
       message: "Replay launched as run #{run.id} — status: #{run.status}."
     }
 
-    if run.error, do: Map.put(base, :error, run.error), else: base
+    if run.error do
+      Map.put(base, :error, Visibility.redact_error(run.error, :operator))
+    else
+      base
+    end
   end
 
   defp format_refusal(:missing_tenant), do: "no tenant in tool context"

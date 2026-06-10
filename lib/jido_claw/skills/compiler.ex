@@ -47,14 +47,28 @@ defmodule JidoClaw.Skills.Compiler do
   generator's `retry:` budget applies to the whole loop step. `irreversible:`
   additionally rides into the `step_*` event payloads as durable metadata.
 
+  ## Per-step / top-level `deadline:` (T2-1)
+
+  A YAML step may declare `deadline: %{within: secs, due_soon: secs,
+  escalate_after: secs}` (`JidoClaw.Orchestration.Deadline.parse/1` rules) —
+  pure lateness evidence for the dashboard, never an execution change. The
+  normalized policy rides the impl options like `irreversible:` and is
+  middleware-copied into `step_*` payloads. For an `:iterative` skill the
+  deadline is **loop-level only**: declared on the generator step (it anchors
+  the single loop step); any other role declaring one is a compile error. The
+  top-level `skill.deadline` (run-level policy) is validated here too, then
+  threaded into `WorkflowRun.config["deadline"]` by the launch sites.
+
   ## Validation
 
   Rejects duplicate non-nil YAML step names, missing `depends_on`/`consumes`
-  targets, cycles, and malformed `retry:`/`compensate:`/`irreversible:` values
-  up front — a clean `{:error, _}` from `compile/1` instead of a raw
-  `Reactor.Planner` `PlanError` (or a silently inert option) at run time.
+  targets, cycles, and malformed
+  `retry:`/`compensate:`/`irreversible:`/`deadline:` values up front — a clean
+  `{:error, _}` from `compile/1` instead of a raw `Reactor.Planner` `PlanError`
+  (or a silently inert option) at run time.
   """
 
+  alias JidoClaw.Orchestration.Deadline
   alias JidoClaw.Skills
   alias JidoClaw.Skills.Steps.AgentStep
   alias JidoClaw.Skills.Steps.CollectStep
@@ -75,7 +89,8 @@ defmodule JidoClaw.Skills.Compiler do
     steps = StepNormalizer.normalize(skill.steps)
     mode = Skills.execution_mode(skill)
 
-    with :ok <- validate_step_metadata(steps),
+    with :ok <- validate_skill_deadline(skill),
+         :ok <- validate_step_metadata(steps),
          :ok <- validate(skill, steps, mode) do
       build(skill, steps, mode)
     end
@@ -84,6 +99,19 @@ defmodule JidoClaw.Skills.Compiler do
   # ---------------------------------------------------------------------------
   # Validation
   # ---------------------------------------------------------------------------
+
+  # The top-level `deadline:` (run-level policy) bypasses per-step validation
+  # — it is parsed by `Skills.parse_skill_file/1`, not a step key — so it gets
+  # its own up-front check with the same error shape.
+  defp validate_skill_deadline(%Skills{deadline: nil}), do: :ok
+
+  defp validate_skill_deadline(%Skills{deadline: deadline}) do
+    if valid_deadline?(deadline) do
+      :ok
+    else
+      {:error, "Skill deadline #{deadline_requirements()}, got: #{inspect(deadline)}"}
+    end
+  end
 
   # Per-step saga metadata, validated for every mode (graph AND iterative —
   # the iterative generator/evaluator are steps too). Without the up-front
@@ -111,6 +139,9 @@ defmodule JidoClaw.Skills.Compiler do
       not valid_irreversible?(Map.get(step, :irreversible)) ->
         "Step '#{label}': irreversible must be a boolean, got: #{inspect(Map.get(step, :irreversible))}"
 
+      not valid_deadline?(Map.get(step, :deadline)) ->
+        "Step '#{label}': deadline #{deadline_requirements()}, got: #{inspect(Map.get(step, :deadline))}"
+
       true ->
         nil
     end
@@ -130,11 +161,21 @@ defmodule JidoClaw.Skills.Compiler do
   defp valid_irreversible?(nil), do: true
   defp valid_irreversible?(flag), do: is_boolean(flag)
 
+  # Absent is fine; a declared policy must pass `Deadline.parse/1`
+  # (Squidie-faithful rules — see that module's doc).
+  defp valid_deadline?(nil), do: true
+  defp valid_deadline?(deadline), do: match?({:ok, _}, Deadline.parse(deadline))
+
+  defp deadline_requirements do
+    "must declare within (positive integer seconds), optionally due_soon " <>
+      "(non-negative integer < within) and escalate_after (non-negative integer)"
+  end
+
   defp validate(skill, [], _mode), do: {:error, "Skill '#{skill.name}' has no steps"}
 
-  defp validate(skill, _steps, :iterative) do
+  defp validate(skill, steps, :iterative) do
     case IterativeStep.extract_roles(skill) do
-      {:ok, _gen, _eval} -> :ok
+      {:ok, _gen, _eval} -> validate_iterative_deadlines(steps)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -148,6 +189,26 @@ defmodule JidoClaw.Skills.Compiler do
     with :ok <- validate_unique_names(named),
          :ok <- validate_targets_exist(named) do
       validate_no_cycles(named)
+    end
+  end
+
+  # Iterative deadlines are loop-level only: the single projected step IS the
+  # loop, anchored on the generator's declaration. Declared on any other
+  # role, a deadline would be silently inert — reject it instead.
+  defp validate_iterative_deadlines(steps) do
+    steps
+    |> Enum.reject(&(Map.get(&1, :role) == "generator"))
+    |> Enum.find(&Map.get(&1, :deadline))
+    |> case do
+      nil ->
+        :ok
+
+      step ->
+        label = Map.get(step, :name) || "(unnamed)"
+
+        {:error,
+         "Step '#{label}': iterative deadlines are loop-level; " <>
+           "declare the deadline on the generator step"}
     end
   end
 
@@ -228,10 +289,10 @@ defmodule JidoClaw.Skills.Compiler do
   # Build
   # ---------------------------------------------------------------------------
 
-  defp build(skill, _steps, :iterative), do: build_iterative(skill)
+  defp build(skill, steps, :iterative), do: build_iterative(skill, steps)
   defp build(skill, steps, mode), do: build_graph(skill, steps, mode)
 
-  defp build_iterative(skill) do
+  defp build_iterative(skill, steps) do
     with {:ok, gen, eval} <- IterativeStep.extract_roles(skill),
          {:ok, reactor} <- new_with_input(),
          {:ok, reactor} <-
@@ -249,16 +310,26 @@ defmodule JidoClaw.Skills.Compiler do
                 # The loop step is the only execution-tracked unit — re-running
                 # it repeats every member step's effects, so it is irreversible
                 # iff ANY role step is.
-                irreversible: gen.irreversible or eval.irreversible
+                irreversible: gen.irreversible or eval.irreversible,
+                # Loop-level deadline (T2-1), anchored on the generator's
+                # declaration. Read from the NORMALIZED raw steps, never the
+                # extract_roles/1 maps — role normalization drops unknown keys.
+                deadline: generator_deadline(steps)
               ]},
              [input_arg()],
              async?: true,
              max_retries: step_retry(gen)
            ),
-         {:ok, reactor} <- add_collect(reactor, skill, [{nil, 1}]),
+         {:ok, reactor} <- add_collect(reactor, skill, [{nil, 1}], :iterative),
          {:ok, reactor} <- Builder.return(reactor, @collect_id) do
       {:ok, reactor}
     end
+  end
+
+  defp generator_deadline(steps) do
+    steps
+    |> Enum.find(%{}, &(Map.get(&1, :role) == "generator"))
+    |> step_deadline()
   end
 
   defp build_graph(skill, steps, mode) do
@@ -267,7 +338,7 @@ defmodule JidoClaw.Skills.Compiler do
 
     with {:ok, reactor} <- new_with_input(),
          {:ok, reactor} <- add_agent_steps(reactor, indexed, index, mode),
-         {:ok, reactor} <- add_collect(reactor, skill, indexed),
+         {:ok, reactor} <- add_collect(reactor, skill, indexed, mode),
          {:ok, reactor} <- Builder.return(reactor, @collect_id) do
       {:ok, reactor}
     end
@@ -328,7 +399,13 @@ defmodule JidoClaw.Skills.Compiler do
       step_options(step,
         context_format: :deps,
         upstream: upstream,
-        consumes: consumes_tuples
+        consumes: consumes_tuples,
+        # Durable edge metadata (T3-1): the same depends_on ∪ consumes union
+        # wired above (validated names), middleware-stamped into step_*
+        # payloads for the dashboard graph. Sequential steps deliberately
+        # don't stamp — unnamed steps would leave partial edges; the graph
+        # adapter falls back to their sequence chain.
+        depends_on: Enum.uniq(depends ++ consumes)
       )
 
     add_step(reactor, step_id(idx), {AgentStep, options}, args, step_retry(step))
@@ -345,21 +422,59 @@ defmodule JidoClaw.Skills.Compiler do
       # middleware copies :irreversible into step_* event payloads.
       retry: step_retry(step),
       compensate: Map.get(step, :compensate),
-      irreversible: Map.get(step, :irreversible, false)
+      irreversible: Map.get(step, :irreversible, false),
+      # Lateness policy (T2-1), middleware-copied into step_* payloads and
+      # projected onto the WorkflowStep row.
+      deadline: step_deadline(step)
     ] ++ extra
   end
 
-  defp add_collect(reactor, skill, indexed) do
+  # Validated up front; thread the NORMALIZED `Deadline.parse/1` policy
+  # (atom-keyed), matching `ReactorRunner.run_config/4`'s convention for the
+  # run-level policy — stable shape across atom/string-keyed YAML/test inputs.
+  defp step_deadline(step) do
+    case Deadline.parse(Map.get(step, :deadline)) do
+      {:ok, policy} -> policy
+      :none -> nil
+    end
+  end
+
+  defp add_collect(reactor, skill, indexed, mode) do
     args = Enum.map(indexed, fn {_step, idx} -> result_arg(step_id(idx)) end)
     order = Enum.map(indexed, fn {step, idx} -> {step_id(idx), step_display_name(step)} end)
 
     add_step(
       reactor,
       @collect_id,
-      {CollectStep, [order: order, skill_name: skill.name, synthesis: skill.synthesis]},
+      {CollectStep,
+       [
+         order: order,
+         skill_name: skill.name,
+         synthesis: skill.synthesis,
+         depends_on: collect_deps(order, mode)
+       ]},
       args
     )
   end
+
+  # Durable edge metadata only — the collect's execution wiring (args/order)
+  # is identical in every mode. In :dag mode the collect edges to every
+  # NAMED step (nil display names filtered: unnamed steps have no
+  # projectable identity), matching the agent steps' stamped edges, so the
+  # synthetic collect never renders isolated. Every other mode stamps
+  # NOTHING: agent steps don't stamp there, and a lone non-empty collect
+  # list would count as a declared edge and disable the graph adapter's
+  # sequence-chain fallback. Today non-dag modes are unnamed by construction
+  # (`Skills.has_dag_steps?` routes any named step to :dag), so the
+  # nil-filter alone would already yield [] — the mode gate pins fallback
+  # eligibility explicitly instead of leaving it an accident of that routing.
+  defp collect_deps(order, :dag) do
+    order
+    |> Enum.map(fn {_id, display} -> display end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp collect_deps(_order, _mode), do: []
 
   # `max_retries` caps the attempts Reactor will allow; the retry *decision*
   # is the step's compensate/4 policy (a bare {:error, _} stays terminal).

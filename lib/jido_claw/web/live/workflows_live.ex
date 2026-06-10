@@ -4,14 +4,25 @@ defmodule JidoClaw.Web.WorkflowsLive do
   require Logger
 
   alias JidoClaw.Orchestration.Replay
+  alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowStep
+  alias JidoClaw.Web.Components.GraphLayout
+  alias JidoClaw.Web.Components.StepGraph
 
   # Mirrors Replay's terminal set: only a finished run gets a Replay button.
   @terminal [:completed, :failed, :cancelled, :abandoned]
 
+  # Lateness crosses deadline thresholds without any event, so a timer
+  # re-renders the page periodically (re-fetching runs + expanded steps).
+  @deadline_refresh_ms 30_000
+
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      Process.send_after(self(), :refresh_deadlines, @deadline_refresh_ms)
+    end
+
     {runs, runs_error} =
       list_runs(socket)
 
@@ -23,18 +34,68 @@ defmodule JidoClaw.Web.WorkflowsLive do
        expanded_run_id: nil,
        steps: [],
        steps_error: nil,
-       replay_blocked: %{}
+       replay_blocked: %{},
+       reveal_runs: MapSet.new(),
+       steps_view: :graph,
+       step_graph: nil
      )}
+  end
+
+  # Periodic deadline refresh: re-arm, then re-fetch the runs (and the
+  # expanded run's steps) while PRESERVING the view state assigns
+  # (`expanded_run_id`, `replay_blocked`) — refresh/1 only replaces data.
+  @impl true
+  def handle_info(:refresh_deadlines, socket) do
+    Process.send_after(self(), :refresh_deadlines, @deadline_refresh_ms)
+    {:noreply, refresh(socket)}
   end
 
   @impl true
   def handle_event("toggle_steps", %{"id" => run_id}, socket) do
     if socket.assigns.expanded_run_id == run_id do
-      {:noreply, assign(socket, expanded_run_id: nil, steps: [], steps_error: nil)}
+      {:noreply,
+       assign(socket,
+         expanded_run_id: nil,
+         steps: [],
+         steps_error: nil,
+         step_graph: nil,
+         steps_view: :graph
+       )}
     else
       {steps, steps_error} = list_steps(socket, run_id)
-      {:noreply, assign(socket, expanded_run_id: run_id, steps: steps, steps_error: steps_error)}
+
+      {:noreply,
+       assign(socket,
+         expanded_run_id: run_id,
+         steps: steps,
+         steps_error: steps_error,
+         step_graph: build_graph(steps)
+       )}
     end
+  end
+
+  # Explicit literal matching — never String.to_atom on params.
+  def handle_event("set_steps_view", %{"view" => "graph"}, socket),
+    do: {:noreply, assign(socket, steps_view: :graph)}
+
+  def handle_event("set_steps_view", %{"view" => "table"}, socket),
+    do: {:noreply, assign(socket, steps_view: :table)}
+
+  def handle_event("set_steps_view", _params, socket), do: {:noreply, socket}
+
+  # Per-run payload reveal (T2-2): membership in `reveal_runs` flips that run
+  # (and its expanded steps) to `:auditor` scope at render — the dashboard's
+  # replacement surface for the `public?` payload flip. Toggling re-renders
+  # without a re-fetch; the 30s refresh preserves the set.
+  def handle_event("reveal", %{"id" => run_id}, socket) do
+    {:noreply,
+     update(socket, :reveal_runs, fn reveal_runs ->
+       if MapSet.member?(reveal_runs, run_id) do
+         MapSet.delete(reveal_runs, run_id)
+       else
+         MapSet.put(reveal_runs, run_id)
+       end
+     end)}
   end
 
   # Replay button (Phase 4). The two gate refusals are surfaced as a flash
@@ -86,6 +147,10 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   @impl true
   def render(assigns) do
+    # One clock read per render pass: consistent deadline evidence across all
+    # rows (the 30s timer re-renders as lateness crosses thresholds).
+    assigns = assign(assigns, :now, DateTime.utc_now())
+
     ~H"""
     <div>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
@@ -100,11 +165,17 @@ defmodule JidoClaw.Web.WorkflowsLive do
               <th>Type</th>
               <th>Status</th>
               <th>Started</th>
+              <th>Deadline</th>
               <th style="text-align: right;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <%= for run <- @runs do %>
+              <%!-- Payload cells render ONLY Visibility-projected values; the
+                    reveal toggle flips this run (and its expanded steps) to
+                    :auditor scope without a re-fetch. --%>
+              <% scope = scope_for(run.id, @reveal_runs) %>
+              <% run_view = Visibility.run_view(run, scope, @now) %>
               <%!-- The steps toggle rides on the data cells (not the row), so
                     the Actions cell's buttons never double-fire a toggle. --%>
               <tr id={"run-#{run.id}"}>
@@ -128,7 +199,19 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 >
                   {format_time(run.started_at)}
                 </td>
+                <td phx-click="toggle_steps" phx-value-id={run.id} style="cursor: pointer;">
+                  <.deadline_badge evidence={run_view.deadline} />
+                </td>
                 <td style="text-align: right; white-space: nowrap;">
+                  <button
+                    class="btn"
+                    style="font-size: 0.8125rem;"
+                    phx-click="reveal"
+                    phx-value-id={run.id}
+                    id={"reveal-#{run.id}"}
+                  >
+                    {if scope == :auditor, do: "Hide payloads", else: "Reveal payloads"}
+                  </button>
                   <%= if replayable?(run.status) do %>
                     <%!-- Each override button re-emits the flags its refusal's
                           click carried (HEEx omits false/nil attr values), so
@@ -171,7 +254,8 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 </td>
               </tr>
               <tr :if={@expanded_run_id == run.id} id={"steps-#{run.id}"}>
-                <td colspan="5" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
+                <td colspan="6" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
+                  <% step_views = Enum.map(@steps, &Visibility.step_view(&1, scope, @now)) %>
                   <p :if={@steps_error} style="color: var(--muted);">{@steps_error}</p>
                   <p
                     :if={is_nil(@steps_error) and @steps == []}
@@ -179,7 +263,40 @@ defmodule JidoClaw.Web.WorkflowsLive do
                   >
                     No steps recorded for this run
                   </p>
-                  <table :if={@steps != []} style="font-size: 0.875rem;">
+                  <div :if={result = run_view[:result]} style="margin-bottom: 0.75rem;">
+                    <div style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem;">
+                      Result (revealed)
+                    </div>
+                    <pre style="font-size: 0.8125rem; white-space: pre-wrap; margin: 0;">{inspect(result, pretty: true, limit: :infinity)}</pre>
+                  </div>
+                  <div :if={@steps != []} style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                    <button
+                      class={"btn #{if @steps_view == :graph, do: "btn-primary"}"}
+                      style="font-size: 0.8125rem;"
+                      phx-click="set_steps_view"
+                      phx-value-view="graph"
+                      id={"steps-view-graph-#{run.id}"}
+                    >
+                      Graph
+                    </button>
+                    <button
+                      class={"btn #{if @steps_view == :table, do: "btn-primary"}"}
+                      style="font-size: 0.8125rem;"
+                      phx-click="set_steps_view"
+                      phx-value-view="table"
+                      id={"steps-view-table-#{run.id}"}
+                    >
+                      Table
+                    </button>
+                  </div>
+                  <.workflow_graph
+                    :if={@steps_view == :graph and not is_nil(@step_graph)}
+                    layout={@step_graph}
+                  />
+                  <table
+                    :if={@steps_view == :table and step_views != []}
+                    style="font-size: 0.875rem;"
+                  >
                     <thead>
                       <tr>
                         <th>#</th>
@@ -188,18 +305,27 @@ defmodule JidoClaw.Web.WorkflowsLive do
                         <th>Status</th>
                         <th>Started</th>
                         <th>Completed</th>
+                        <th>Deadline</th>
                         <th>Error</th>
+                        <th :if={scope == :auditor}>Output</th>
                       </tr>
                     </thead>
                     <tbody>
-                      <tr :for={step <- @steps}>
-                        <td style="color: var(--muted);">{step.sequence}</td>
-                        <td>{step.name}</td>
-                        <td style="color: var(--muted);">{step.step_type || "—"}</td>
-                        <td><.status_badge status={step.status} /></td>
-                        <td style="color: var(--muted);">{format_time(step.started_at)}</td>
-                        <td style="color: var(--muted);">{format_time(step.completed_at)}</td>
-                        <td style="color: var(--muted);">{step.error || "—"}</td>
+                      <tr :for={step_view <- step_views}>
+                        <td style="color: var(--muted);">{step_view.sequence}</td>
+                        <td>{step_view.name}</td>
+                        <td style="color: var(--muted);">{step_view.step_type || "—"}</td>
+                        <td><.status_badge status={step_view.status} /></td>
+                        <td style="color: var(--muted);">{format_time(step_view.started_at)}</td>
+                        <td style="color: var(--muted);">{format_time(step_view.completed_at)}</td>
+                        <td><.deadline_badge evidence={step_view.deadline} /></td>
+                        <td style="color: var(--muted);">{step_view.error || "—"}</td>
+                        <td
+                          :if={scope == :auditor}
+                          style="color: var(--muted); font-size: 0.8125rem;"
+                        >
+                          {format_output(step_view[:output])}
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -207,7 +333,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
               </tr>
             <% end %>
             <tr :if={@runs == []}>
-              <td colspan="5" style="text-align: center; color: var(--muted); padding: 2rem;">
+              <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
                 No workflow runs yet
               </td>
             </tr>
@@ -236,6 +362,33 @@ defmodule JidoClaw.Web.WorkflowsLive do
   defp format_time(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
 
   defp replayable?(status), do: status in @terminal
+
+  # :auditor iff the operator clicked "Reveal payloads" for this run.
+  defp scope_for(run_id, reveal_runs) do
+    if MapSet.member?(reveal_runs, run_id), do: :auditor, else: :operator
+  end
+
+  defp format_output(nil), do: "—"
+  defp format_output(output), do: inspect(output, limit: :infinity)
+
+  # Replace the data assigns only — expanded_run_id / replay_blocked /
+  # reveal_runs / steps_view survive a refresh untouched.
+  defp refresh(socket) do
+    {runs, runs_error} = list_runs(socket)
+    socket = assign(socket, runs: runs, runs_error: runs_error)
+
+    case socket.assigns.expanded_run_id do
+      nil ->
+        socket
+
+      run_id ->
+        {steps, steps_error} = list_steps(socket, run_id)
+        assign(socket, steps: steps, steps_error: steps_error, step_graph: build_graph(steps))
+    end
+  end
+
+  defp build_graph([]), do: nil
+  defp build_graph(steps), do: GraphLayout.build(StepGraph.build(steps))
 
   defp list_runs(%{assigns: %{current_actor: %{tenant_id: tenant_id} = actor}}) do
     case WorkflowRun.list(tenant: tenant_id, actor: actor) do
