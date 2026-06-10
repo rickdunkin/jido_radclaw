@@ -24,15 +24,28 @@ defmodule JidoClaw.Desktop.Sidecar do
       port = port()
       Logger.info("[Desktop] Running as sidecar on port #{port}")
 
+      # Deep-merge :http so the base config's loopback ip survives —
+      # loopback is correct for a desktop sidecar, and a shallow merge
+      # would silently fall back to all-interfaces. check_origin must
+      # follow the chosen port: the base origins are pinned to the default
+      # gateway port and would 403 LiveView/WS connections on any other
+      # port. The sidecar binds loopback only, so the loopback trio at the
+      # bound port is exactly the valid origin set (replace, don't extend).
       Application.put_env(
         :jido_claw,
         JidoClaw.Web.Endpoint,
-        Keyword.merge(
-          Application.get_env(:jido_claw, JidoClaw.Web.Endpoint, []),
-          http: [port: port],
-          server: true,
-          check_origin: false
+        Application.get_env(:jido_claw, JidoClaw.Web.Endpoint, [])
+        |> Keyword.update(
+          :http,
+          [ip: {127, 0, 0, 1}, port: port],
+          &Keyword.merge(&1, ip: {127, 0, 0, 1}, port: port)
         )
+        |> Keyword.put(:server, true)
+        |> Keyword.put(:check_origin, [
+          "//localhost:#{port}",
+          "//127.0.0.1:#{port}",
+          "//[::1]:#{port}"
+        ])
       )
 
       {:ok, port}

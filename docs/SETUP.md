@@ -205,6 +205,8 @@ Starts Phoenix on port 4000 with:
 - LiveDashboard at `/dashboard`
 - Health check at `/health`
 
+The gateway binds `127.0.0.1` by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — this rebinds `0.0.0.0` and pins WebSocket origins to those hosts (append `:port` only when fronting with a proxy on a non-gateway port; bracket IPv6 addresses). To enable the `/admin` panel, allowlist emails with `JIDOCLAW_ADMIN_EMAILS=you@example.com` — signed-in users who aren't allowlisted get a 404 (signed-out users are redirected to `/sign-in`).
+
 ### Gateway Only (headless)
 
 ```bash

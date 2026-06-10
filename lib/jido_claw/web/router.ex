@@ -25,10 +25,22 @@ defmodule JidoClaw.Web.Router do
     plug(JidoClaw.Web.Plugs.RequireAuth)
   end
 
-  # Admin panel (requires browser auth)
+  pipeline :require_admin do
+    plug(JidoClaw.Web.Plugs.RequireAdmin)
+  end
+
+  # Admin panel — gated by the JIDOCLAW_ADMIN_EMAILS allowlist at two layers:
+  # the :require_admin plug gates the disconnected render (which mints the
+  # signed LiveView session used to join the live_session over WS), and the
+  # :live_admin_required on_mount hook independently gates WebSocket mounts
+  # and reconnects. This gate is the security boundary: AshAdmin's in-UI
+  # actor/authorizing toggles are client-controlled by design, so anything
+  # past this point runs unauthorized. Revocation: removing an email takes
+  # effect on the next HTTP request / LV mount / reconnect — an
+  # already-connected AshAdmin LiveView keeps its process until disconnect.
   scope "/" do
-    pipe_through([:browser, :require_browser_auth])
-    ash_admin("/admin")
+    pipe_through([:browser, :require_browser_auth, :require_admin])
+    ash_admin("/admin", on_mount: [{JidoClaw.Web.LiveUserAuth, :live_admin_required}])
   end
 
   # Unauthenticated API routes

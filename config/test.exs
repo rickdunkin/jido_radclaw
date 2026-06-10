@@ -3,8 +3,11 @@ import Config
 config :jido_claw, mode: :cli
 config :jido_claw, token_signing_secret: String.duplicate("test_token_signing_secret_", 4)
 
+# server: false lets route tests start_supervised the endpoint without
+# binding a port (mode: :cli already keeps it out of the app tree).
 config :jido_claw, JidoClaw.Web.Endpoint,
-  secret_key_base: String.duplicate("test_secret_key_base_", 4)
+  secret_key_base: String.duplicate("test_secret_key_base_", 4),
+  server: false
 
 config :jido_claw, :reasoning_telemetry_sync, true
 

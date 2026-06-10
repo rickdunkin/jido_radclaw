@@ -19,3 +19,9 @@ approval_mode = "approve"
 
 [mcp_servers.tidewave.tools.get_docs]
 approval_mode = "approve"
+
+[mcp_servers.tidewave.tools.get_source_location]
+approval_mode = "approve"
+
+[mcp_servers.tidewave.tools.search_package_docs]
+approval_mode = "approve"

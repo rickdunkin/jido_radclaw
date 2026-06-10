@@ -23,7 +23,7 @@ This review is a follow-up to [codebase-audit-2026-05-16.md](codebase-audit-2026
 
 ## Threat-model calibration
 
-The May audit scored against a **single-user, Tailscale-only** deployment where the primary adversary is the LLM itself. This review scored severities assuming the Phoenix gateway may be exposed and/or multi-user, because the default `serve_mode` is `:both` and the endpoint binds `0.0.0.0:4000` — the dashboard is on by default.
+The May audit scored against a **single-user, Tailscale-only** deployment where the primary adversary is the LLM itself. This review scored severities assuming the Phoenix gateway may be exposed and/or multi-user, because the default `serve_mode` is `:both` and the endpoint binds `0.0.0.0:4000` — the dashboard is on by default. *(Since fixed: the gateway now binds loopback in every env unless `PHX_HOST` opts in — see H2.)*
 
 If the single-user/Tailscale assumptions still hold:
 
@@ -39,13 +39,13 @@ If the single-user/Tailscale assumptions still hold:
 - The dominant pattern: the *data layer* enforces tenancy and authorization rigorously, but several *surfaces* in front of it (admin UI, a WebSocket channel, the clustered solution-sharing bus, the sandbox env boundary) don't gate as tightly as the layer behind them assumes.
 - The second pattern: a handful of "best-effort, never blocks the agent" paths that aren't as safe as their docs claim (compactor exception safety, memory duplicate-key retry, ResearchCoordinator rescue).
 
-**Most urgent given default `:both` serve mode:** H1 + H2 together make the privileged surface reachable. After that, H10 (spawn-cap lockout) and H11 (compactor exception safety) are the highest-value reliability fixes.
+**Most urgent given default `:both` serve mode:** H1 + H2 together make the privileged surface reachable. **Both fixed 2026-06-10** (see the per-finding notes). After that, H10 (spawn-cap lockout) and H11 (compactor exception safety) are the highest-value reliability fixes.
 
 ---
 
 ## HIGH — security: surfaces in front of the data layer
 
-### H1. AshAdmin is reachable by any authenticated user and runs with authorization disabled ✓ verified
+### H1. AshAdmin is reachable by any authenticated user and runs with authorization disabled ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/web/router.ex:29-31`, `lib/jido_claw/web/plugs/require_auth.ex:14-35`
 
@@ -53,13 +53,17 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fix:** Add an admin-role authorization plug in front of `ash_admin` (not mere "is authenticated"), and configure AshAdmin to enforce authorization with the request actor (set the actor session keys via `AshAdmin.Router` options, force `authorize?: true`) so the existing policies apply.
 
-### H2. `check_origin: false` is the base config; only prod overrides it ✓ verified
+**Fixed (2026-06-10):** Gated, with one deliberate deviation from the suggested fix: AshAdmin **cannot** be forced into `authorize?: true` server-side — `AshAdmin.Router.__session__/3` replicates client cookies *after* merging any custom session MFA, and `ActorPlug` prefers client-supplied LiveView connect params, so the actor/authorizing state is client-controlled by design. The sound fix is a hard gate in front of the route, applied at two layers: a `RequireAdmin` plug (`lib/jido_claw/web/plugs/require_admin.ex`, returns 404 to avoid advertising the surface) on the disconnected render, and a `:live_admin_required` on_mount hook (`lib/jido_claw/web/live_user_auth.ex`) gating WebSocket mounts/reconnects. Membership is the `JIDOCLAW_ADMIN_EMAILS` env allowlist (`lib/jido_claw/web/admin_access.ex`, read per-request so `.env` values work; default empty → `/admin` unreachable for everyone). Revocation applies on the next request/mount/reconnect; an already-connected LiveView keeps its process until disconnect. Covered by unit tests plus route-level integration tests (`test/jido_claw/web/admin_route_test.exs`) that dispatch through the real router with a signed-in session.
+
+### H2. `check_origin: false` is the base config; only prod overrides it ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `config/config.exs:206` (prod override at `config/runtime.exs:64`)
 
 **What:** In dev/staging/`:both`, WebSocket origin checks are off and the endpoint binds `0.0.0.0:4000`. With `same_site: "Lax"` session cookies (which do not block JS-initiated WebSocket upgrades), any site a logged-in operator visits can open an authenticated `/live` or `/ws` socket cross-origin (CSWSH) and drive privileged events — workflow replay/force-replay, gate decisions, `sessions.sendMessage`.
 
 **Fix:** Make `check_origin: true` (or a host allowlist) the base default in `config.exs`; opt into `false` only in `dev.exs` if needed; bind dev to `http: [ip: {127,0,0,1}, port: 4000]`.
+
+**Fixed (2026-06-10):** Secure-by-default in **every** env, not just dev: the base config now binds `http: [ip: {127,0,0,1}, port: 4000]` with `check_origin: ["//localhost:4000", "//127.0.0.1:4000", "//[::1]:4000"]` — an explicit port-pinned allowlist rather than `check_origin: true`, which compares only `url[:host]` and would reject a browser at `127.0.0.1` (and a port-less `//localhost` entry is an any-port wildcard in Phoenix). External exposure is opt-in via `PHX_HOST` (`lib/jido_claw/web/gateway_exposure.ex`), applied in `Application.start/2` after `.env` loads (runtime.exs evaluates too early to see it): rebinds `0.0.0.0` and extends the allowlist with the named hosts pinned to the gateway port; unparseable values warn and stay loopback. The now-redundant prod `check_origin`/`PHX_HOST` block in `runtime.exs` was removed (prod without `PHX_HOST` intentionally binds loopback). The dead sidecar's `check_origin: false` was also dropped and its shallow `http:` merge deep-merged to preserve the loopback ip (full L19 deletion still open). Verified live: forged/wrong-port origins → 403, allowlisted origins → 101, origin-less CLI connects unaffected; `PHX_HOST` rebinds and pins as documented (README + docs/SETUP.md).
 
 ### H3. `RpcChannel "sessions.list"` leaks every tenant's session IDs ✓ verified
 
@@ -215,7 +219,7 @@ If the single-user/Tailscale assumptions still hold:
 
 ## LOW
 
-- **L1. Tenant registry resource is default-allow for all action types** — `lib/jido_claw/tenants/resources/tenant.ex:37-41`. Documented as deferred to v0.7+, but combined with H1 it is a live cross-tenant lever (suspend/archive another tenant).
+- **L1. Tenant registry resource is default-allow for all action types** — `lib/jido_claw/tenants/resources/tenant.ex:37-41`. Documented as deferred to v0.7+, but combined with H1 it is a live cross-tenant lever (suspend/archive another tenant). *(The H1 fix narrows the lever to allowlisted admins; the resource itself remains default-allow.)*
 - **L2. `.env` parser does not strip `export ` prefix** — `lib/jido_claw/application.ex:453-468`. `docs/SETUP.md` and README show `export FOO=...` lines; pasting those into `.env` silently fails to set the key.
 - **L3. Byte-boundary truncations can emit invalid UTF-8** — `lib/jido_claw/forge/persistence.ex:598` (`binary_part` tail-slice; Postgres rejects the row, silently dropping the exec record) and `lib/jido_claw/agent/handoff/router.ex:537` (clamp bypasses `OutputLimit.valid_utf8_prefix/1`). Cut on codepoint boundaries.
 - **L4. Terminal escape-sequence injection** — `lib/jido_claw/cli/formatter.ex:9-14`, `lib/jido_claw/display.ex:583-600`, `cli/commands.ex:223-224,360-361`. Model output, streamed shell chunks, and memory/solution rows print raw — crafted content can move the cursor, clear the screen, or spoof a fake `jidoclaw>` prompt. Strip C0/C1 + CSI/OSC at the print chokepoints.
@@ -233,7 +237,7 @@ If the single-user/Tailscale assumptions still hold:
 - **L16. Webhook controller hard-matches a fallible body read** — `lib/jido_claw/web/controllers/webhook_controller.ex:10`. `{:ok, raw_body} = CacheBodyReader.raw_body(conn)` raises `MatchError` (opaque 500) if the cache plug didn't run. Handle `{:error, :not_cached}` with a 400.
 - **L17. `IssueCommentClient` posts with an empty Bearer token instead of failing fast** — `lib/jido_claw/github/issue_comment_client.ex:9-19,34-36`. Also a default-arg subtlety: explicit `github_token: nil` config overrides the env var. Return `{:error, :no_github_token}` when blank.
 - **L18. Network request opts atomized then merged into Matcher options** — `lib/jido_claw/network/node.ex:315-327`. `String.to_existing_atom` is rescue-guarded (no atom DoS), and `scope_opts` append-order protects tenancy, but a peer can inject arbitrary *known* option atoms. Whitelist permitted request-option keys.
-- **L19. `Desktop.Sidecar` is dead code that would set `check_origin: false`** — `lib/jido_claw/desktop/sidecar.ex:22-42`. No callers (verified); also `String.to_integer(JIDOCLAW_PORT)` crashes on non-numeric input. Delete or guard before wiring up.
+- **L19. `Desktop.Sidecar` is dead code that would set `check_origin: false`** — `lib/jido_claw/desktop/sidecar.ex:22-42`. No callers (verified); also `String.to_integer(JIDOCLAW_PORT)` crashes on non-numeric input. Delete or guard before wiring up. *(Partially defused with H2: `check_origin: false` removed and the `http:` merge now preserves the loopback ip; deletion and the port-parse guard still open.)*
 - **L20. Session worker mirrors full chat history in memory with O(n²) append** — `lib/jido_claw/platform/session/worker.ex:212` (`messages ++ to_view(message)`, never trimmed). Cap to a recent window; cold reads already hit Postgres.
 - **L21. `BackgroundProcess.Registry` is started but unused, with latent reaping bugs** — `lib/jido_claw/platform/background_process/registry.ex:133-190`. Nothing calls register/deregister; cleanup keys on `started_at` (not finish time) and no path sets `:exited`. Fix when wiring up.
 - **L22. `Platform.Approval.check/3` spec advertises a `{:pending, reference()}` return that never occurs** — `lib/jido_claw/platform/approval.ex:17-35`. The call blocks up to ~125s and returns bare atoms; the async-looking contract misleads callers.
@@ -258,7 +262,7 @@ If the single-user/Tailscale assumptions still hold:
 
 ## Suggested priority order
 
-1. **H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).
+1. ~~**H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).~~ ✅ Done 2026-06-10 — `/admin` behind the `JIDOCLAW_ADMIN_EMAILS` allowlist (plug + on_mount); loopback bind + port-pinned origin allowlist in every env, `PHX_HOST` opt-in exposure.
 2. **H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes).
 3. **H7 + H8 + H9 + M1 + M2** — the secrets cluster (chmod, import redaction, env allowlist, block redaction, logger metadata).
 4. **H13 + H14 + H15** — patch drift, Telegram wiring, process-group reaping.

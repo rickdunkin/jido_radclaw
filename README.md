@@ -154,6 +154,8 @@ JIDOCLAW_MODE=both mix jidoclaw
 
 The web dashboard is available at `http://localhost:4000`. On first launch, the setup wizard checks prerequisites and guides you through provider/model configuration.
 
+The gateway binds `127.0.0.1:4000` in **all** environments by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — see [Web Dashboard](#web-dashboard).
+
 ## Data Layer — Ash Framework + PostgreSQL
 
 JidoClaw uses [Ash Framework 3.0](https://ash-hq.org) as its resource layer, backed by PostgreSQL via AshPostgres.
@@ -372,6 +374,25 @@ Every output channel is filtered for secrets:
 
 LiveView-powered dark-themed web interface at `http://localhost:4000`.
 
+### Remote Access
+
+The gateway binds `127.0.0.1:4000` with a localhost-pinned WebSocket origin allowlist in **all** environments by default. To reach the dashboard from another machine (e.g. over Tailscale), set `PHX_HOST` in `.env` or the environment:
+
+```bash
+# MagicDNS name and/or tailnet IP, comma-separated
+PHX_HOST=mybox.tailnet-1234.ts.net,100.64.0.7
+```
+
+This rebinds the listener to `0.0.0.0` and pins WebSocket origins to those hosts on the gateway port. Append `:port` only when fronting with a proxy on a non-gateway port (e.g. `PHX_HOST=mybox.ts.net:443`); IPv6 addresses must be bracketed (`[fd7a::1]`). Unparseable values log a warning and the gateway stays on loopback.
+
+The `/admin` panel (AshAdmin) is disabled for everyone by default — grant access by allowlisting emails:
+
+```bash
+JIDOCLAW_ADMIN_EMAILS=you@example.com
+```
+
+Signed-in users who aren't allowlisted get a 404 for `/admin`; signed-out users are redirected to `/sign-in`, as on any authenticated route.
+
 ### Pages
 
 | Route             | Page           | Purpose                                          |
@@ -395,6 +416,7 @@ Session-based auth with `on_mount` hooks:
 - `:live_user_required` — redirects unauthenticated users to sign-in
 - `:live_user_optional` — allows anonymous access
 - `:live_no_user` — sign-in/setup pages only
+- `:live_admin_required` — `/admin` only; requires a `JIDOCLAW_ADMIN_EMAILS` allowlisted user
 
 ## Desktop App
 
@@ -404,7 +426,7 @@ JidoClaw can be packaged as a native desktop application using Tauri as a fronte
 
 1. The desktop sidecar detects `JIDOCLAW_DESKTOP=true`
 2. An available port is found via `:gen_tcp.listen(0, ...)`
-3. Phoenix starts as an embedded server with `check_origin: false`
+3. Phoenix starts as an embedded server bound to loopback, with `check_origin` pinned to the loopback origins on that port
 4. Tauri opens a webview pointing at `localhost:{port}`
 
 ```bash
@@ -914,6 +936,8 @@ model: 'openrouter:anthropic/claude-sonnet-4'
 | Variable                  | Default     | Description                                   |
 | ------------------------- | ----------- | --------------------------------------------- |
 | `JIDOCLAW_MODE`           | `both`      | Runtime mode: `cli`, `gateway`, or `both`     |
+| `PHX_HOST`                | —           | Comma-separated hosts for remote gateway access — rebinds `0.0.0.0` and pins WS origins (default: loopback only) |
+| `JIDOCLAW_ADMIN_EMAILS`   | —           | Comma-separated emails allowed to access `/admin` (default: nobody) |
 | `JIDOCLAW_ENCRYPTION_KEY` | —           | 32-byte hex key for Cloak Vault (AES-256-GCM) |
 | `JIDOCLAW_DESKTOP`        | —           | Set to `true` for desktop sidecar mode        |
 | `JIDOCLAW_PORT`           | —           | Override port for desktop mode                |

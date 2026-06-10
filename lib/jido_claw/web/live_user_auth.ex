@@ -5,6 +5,7 @@ defmodule JidoClaw.Web.LiveUserAuth do
 
   alias AshAuthentication.Plug.Helpers
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Web.AdminAccess
 
   @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) ::
           {:cont | :halt, Phoenix.LiveView.Socket.t()}
@@ -20,6 +21,21 @@ defmodule JidoClaw.Web.LiveUserAuth do
       {:cont, socket}
     else
       {:halt, redirect(socket, to: "/sign-in")}
+    end
+  end
+
+  def on_mount(:live_admin_required, _params, session, socket) do
+    socket = assign_current_user(socket, session)
+
+    cond do
+      is_nil(socket.assigns.current_user) ->
+        {:halt, redirect(socket, to: "/sign-in")}
+
+      not AdminAccess.admin?(socket.assigns.current_user) ->
+        {:halt, redirect(socket, to: "/dashboard")}
+
+      true ->
+        {:cont, socket}
     end
   end
 

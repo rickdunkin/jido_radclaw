@@ -22,6 +22,7 @@ defmodule JidoClaw.Application do
   alias JidoClaw.Security.Redaction.LogRedactor
   alias JidoClaw.Security.RuntimeSecrets
   alias JidoClaw.Security.VaultConfig
+  alias JidoClaw.Web.GatewayExposure
 
   @impl Application
   def start(_type, _args) do
@@ -36,6 +37,11 @@ defmodule JidoClaw.Application do
 
     # Load .env file if present (project root or cwd)
     load_dotenv()
+
+    # PHX_HOST exposure must apply here, after load_dotenv/0 —
+    # config/runtime.exs evaluates before Application.start/2 runs, so it
+    # can never see .env-supplied values.
+    GatewayExposure.configure!()
 
     RuntimeSecrets.ensure_configured!()
     VaultConfig.ensure_configured!()

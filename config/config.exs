@@ -194,16 +194,22 @@ config :jido_claw,
 # tests drive WorkflowRecovery.reconcile_all/0 directly inside the sandbox.
 config :jido_claw, :workflow_recovery, enabled?: true
 
-# Phoenix endpoint
+# Phoenix endpoint — secure-by-default in EVERY env: bind loopback and pin
+# WebSocket origins to local hosts. External exposure (e.g. Tailscale) is
+# opt-in via PHX_HOST, applied at app start by JidoClaw.Web.GatewayExposure
+# (after .env loads — runtime.exs evaluates too early to see it).
+# check_origin entries are scheme-agnostic but MUST stay pinned to
+# http[:port]: a port-less "//localhost" is an any-port wildcard in Phoenix,
+# letting a page on e.g. localhost:3000 open a cookie-bearing socket here.
 config :jido_claw, JidoClaw.Web.Endpoint,
   adapter: Bandit.PhoenixAdapter,
-  http: [port: 4000],
+  http: [ip: {127, 0, 0, 1}, port: 4000],
   url: [host: "localhost"],
   server: true,
   render_errors: [formats: [json: JidoClaw.Web.ErrorJSON]],
   pubsub_server: JidoClaw.PubSub,
   live_view: [signing_salt: "jidoclaw_lv"],
-  check_origin: false
+  check_origin: ["//localhost:4000", "//127.0.0.1:4000", "//[::1]:4000"]
 
 # Dashboard JS bundle (mix assets.build / the dev watcher). NODE_PATH=deps
 # resolves the bare "phoenix" / "phoenix_live_view" / "phoenix_html" imports

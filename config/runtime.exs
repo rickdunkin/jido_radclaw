@@ -57,11 +57,12 @@ if config_env() == :prod do
       pool_size: String.to_integer(System.get_env("POOL_SIZE", "10"))
   end
 
-  host = System.get_env("PHX_HOST", "localhost")
-
-  config :jido_claw, JidoClaw.Web.Endpoint,
-    secret_key_base: secret_key_base,
-    check_origin: ["https://#{host}", "http://#{host}"]
+  # check_origin / bind address are NOT set here: the base config is
+  # loopback + localhost-pinned origins in every env, and PHX_HOST opt-in
+  # exposure is applied by JidoClaw.Web.GatewayExposure at app start (after
+  # .env loads — this file evaluates too early to see it, and it would be
+  # overridden anyway). Without PHX_HOST, prod binds 127.0.0.1 on purpose.
+  config :jido_claw, JidoClaw.Web.Endpoint, secret_key_base: secret_key_base
 
   config :jido_claw, token_signing_secret: token_signing_secret
 else
