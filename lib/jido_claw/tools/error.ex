@@ -406,9 +406,7 @@ defmodule JidoClaw.Tools.Error do
   defp exception_message(reason), do: inspect(reason)
 
   defp details_from_map(reason, drop_keys) do
-    reason
-    |> Map.drop(drop_keys)
-    |> case do
+    case Map.drop(reason, drop_keys) do
       empty when map_size(empty) == 0 -> %{}
       details -> %{context: details}
     end

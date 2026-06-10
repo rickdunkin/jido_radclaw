@@ -90,9 +90,7 @@ defmodule JidoClaw.Forge.Runners.Fake do
     case http_post(url, body, []) do
       {:ok, _status, headers, _body} ->
         session_id =
-          headers
-          |> Enum.find(fn {k, _} -> String.downcase(k) == "mcp-session-id" end)
-          |> case do
+          case Enum.find(headers, fn {k, _} -> String.downcase(k) == "mcp-session-id" end) do
             {_, v} -> v
             _ -> nil
           end

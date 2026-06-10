@@ -197,9 +197,7 @@ defmodule JidoClaw.Startup do
   """
   @spec resolve_project_dir_from_argv([String.t()]) :: String.t()
   def resolve_project_dir_from_argv(args) when is_list(args) do
-    args
-    |> Enum.find(fn arg -> is_binary(arg) and not String.starts_with?(arg, "--") end)
-    |> case do
+    case Enum.find(args, fn arg -> is_binary(arg) and not String.starts_with?(arg, "--") end) do
       nil ->
         File.cwd!()
 

@@ -960,9 +960,7 @@ defmodule JidoClaw.CLI.Commands do
 
       [label, source_part] ->
         source =
-          source_part
-          |> String.trim()
-          |> case do
+          case String.trim(source_part) do
             "model" -> :model_remember
             "user" -> :user_save
             "all" -> :all

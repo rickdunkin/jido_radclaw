@@ -191,9 +191,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
   end
 
   defp swarm_depth(context) do
-    context
-    |> get_in([:tool_context, :swarm_depth])
-    |> case do
+    case get_in(context, [:tool_context, :swarm_depth]) do
       depth when is_integer(depth) and depth >= 0 -> depth
       _ -> 0
     end

@@ -224,9 +224,7 @@ defmodule JidoClaw.Reasoning.AutoSelect do
   end
 
   defp rank_for(ranked, name) do
-    ranked
-    |> Enum.find_index(fn {n, _} -> n == name end)
-    |> case do
+    case Enum.find_index(ranked, fn {n, _} -> n == name end) do
       nil -> 1
       idx -> idx + 1
     end

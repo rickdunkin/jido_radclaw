@@ -232,9 +232,7 @@ defmodule JidoClaw.Reasoning.Classifier do
       # to sort by atom name (which would be surprising for users).
       priority = [:debugging, :verification, :planning, :refactoring, :qa, :exploration]
 
-      priority
-      |> Enum.find(fn b -> Map.get(buckets, b, 0) == max_hits end)
-      |> case do
+      case Enum.find(priority, fn b -> Map.get(buckets, b, 0) == max_hits end) do
         nil -> :open_ended
         bucket -> bucket
       end

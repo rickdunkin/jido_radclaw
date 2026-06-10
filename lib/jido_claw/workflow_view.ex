@@ -114,9 +114,7 @@ defmodule JidoClaw.WorkflowView do
   defp result_summary(value) when is_binary(value), do: String.slice(value, 0, 200)
 
   defp result_summary(%{} = value) do
-    value
-    |> Map.take([:summary, "summary", :status, "status", :message, "message"])
-    |> case do
+    case Map.take(value, [:summary, "summary", :status, "status", :message, "message"]) do
       empty when map_size(empty) == 0 -> nil
       summary -> summary
     end

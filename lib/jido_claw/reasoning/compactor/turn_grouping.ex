@@ -134,9 +134,7 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGrouping do
   defp last_of([_ | rest], _acc), do: last_of(rest, hd(rest))
 
   defp primary_role(messages) do
-    messages
-    |> Enum.find(fn msg -> Map.get(msg, :role) in [:user, :assistant] end)
-    |> case do
+    case Enum.find(messages, fn msg -> Map.get(msg, :role) in [:user, :assistant] end) do
       nil ->
         messages
         |> List.first()

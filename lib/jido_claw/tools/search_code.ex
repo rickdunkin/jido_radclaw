@@ -98,9 +98,7 @@ defmodule JidoClaw.Tools.SearchCode do
 
   defp search_file(path, regex, glob, opts) do
     if glob_match?(glob, path) do
-      path
-      |> Resolver.read(opts)
-      |> case do
+      case Resolver.read(path, opts) do
         {:ok, content} when is_binary(content) ->
           {:ok, matching_lines(path, content, regex)}
 
@@ -128,9 +126,7 @@ defmodule JidoClaw.Tools.SearchCode do
   end
 
   defp join_path(parent, child) do
-    parent
-    |> String.trim_trailing("/")
-    |> case do
+    case String.trim_trailing(parent, "/") do
       "" -> child
       "/" -> "/" <> child
       path -> path <> "/" <> child
