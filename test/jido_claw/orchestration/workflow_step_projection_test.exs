@@ -140,11 +140,20 @@ defmodule JidoClaw.Orchestration.WorkflowStepProjectionTest do
 
     # Every append survived the projection (seq gap-free), and the rows are
     # one-per-logical-step.
-    seqs = results |> Enum.map(fn {:ok, e} -> e.seq end) |> Enum.sort()
+    seqs =
+      results
+      |> Enum.map(fn {:ok, e} -> e.seq end)
+      |> Enum.sort()
+
     assert seqs == Enum.to_list(2..11)
 
     {:ok, steps} = WorkflowStep.for_run(run.id, scope(ctx))
-    names = steps |> Enum.map(& &1.name) |> Enum.sort()
+
+    names =
+      steps
+      |> Enum.map(& &1.name)
+      |> Enum.sort()
+
     assert names == Enum.sort(["shared" | Enum.map(1..6, &"s#{&1}")])
   end
 

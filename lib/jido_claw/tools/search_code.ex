@@ -79,8 +79,16 @@ defmodule JidoClaw.Tools.SearchCode do
           end
         end)
         |> case do
-          {:ok, chunks} -> {:ok, chunks |> Enum.reverse() |> Enum.concat()}
-          error -> error
+          {:ok, chunks} ->
+            matches =
+              chunks
+              |> Enum.reverse()
+              |> Enum.concat()
+
+            {:ok, matches}
+
+          error ->
+            error
         end
 
       {:error, _reason} ->

@@ -92,7 +92,9 @@ defmodule JidoClaw.Memory.Consolidator.Staging do
   """
   @spec entries(t(), bucket()) :: [map()]
   def entries(%__MODULE__{} = staging, bucket) do
-    staging |> Map.fetch!(bucket) |> Enum.reverse()
+    staging
+    |> Map.fetch!(bucket)
+    |> Enum.reverse()
   end
 
   @doc "Total number of staged proposals across every type."

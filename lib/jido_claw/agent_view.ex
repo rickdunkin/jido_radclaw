@@ -552,7 +552,12 @@ defmodule JidoClaw.AgentView do
   defp derive_error_payload(nil), do: nil
 
   defp derive_error_payload(%Trace{events: events}) do
-    case events |> Enum.reverse() |> Enum.find(&(&1.status == :failed)) do
+    error_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1.status == :failed))
+
+    case error_event do
       nil ->
         nil
 

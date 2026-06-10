@@ -124,13 +124,21 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
   end
 
   defp migrate_session(tenant_id, file_path, project_dir, dry_run?) do
-    base = file_path |> Path.basename() |> Path.rootname()
+    base =
+      file_path
+      |> Path.basename()
+      |> Path.rootname()
+
     {kind, external_id} = parse_filename(base)
 
     Mix.shell().info("  #{base} (#{kind}, #{external_id})")
 
     if dry_run? do
-      lines = file_path |> File.stream!() |> Enum.count()
+      lines =
+        file_path
+        |> File.stream!()
+        |> Enum.count()
+
       Mix.shell().info("    would import #{lines} lines")
       :ok
     else

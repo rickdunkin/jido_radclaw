@@ -82,8 +82,17 @@ defmodule JidoClaw.Solutions.Fingerprint do
   def signature(description, language, framework \\ nil)
       when is_binary(description) and is_binary(language) do
     normalized = normalize(description)
-    lang = language |> String.downcase() |> String.trim()
-    fw = (framework || "") |> String.downcase() |> String.trim()
+
+    lang =
+      language
+      |> String.downcase()
+      |> String.trim()
+
+    fw =
+      (framework || "")
+      |> String.downcase()
+      |> String.trim()
+
     data = "#{normalized}|#{lang}|#{fw}"
     :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
   end

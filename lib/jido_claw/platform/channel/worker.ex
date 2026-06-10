@@ -35,11 +35,17 @@ defmodule JidoClaw.Channel.Worker do
 
   @impl true
   def handle_call(:get_info, _from, state) do
+    platform =
+      state.adapter
+      |> Module.split()
+      |> List.last()
+      |> String.downcase()
+
     info = %{
       adapter: state.adapter,
       tenant_id: state.tenant_id,
       status: state.status,
-      platform: state.adapter |> Module.split() |> List.last() |> String.downcase()
+      platform: platform
     }
 
     {:reply, info, state}

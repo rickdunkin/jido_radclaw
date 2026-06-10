@@ -152,7 +152,11 @@ defmodule JidoClaw.Skills.Compiler do
   end
 
   defp validate_unique_names(named) do
-    names = named |> Enum.map(& &1.name) |> Enum.reject(&is_nil/1)
+    names =
+      named
+      |> Enum.map(& &1.name)
+      |> Enum.reject(&is_nil/1)
+
     dups = (names -- Enum.uniq(names)) |> Enum.uniq()
 
     case dups do
@@ -162,7 +166,11 @@ defmodule JidoClaw.Skills.Compiler do
   end
 
   defp validate_targets_exist(named) do
-    known = named |> Enum.map(& &1.name) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    known =
+      named
+      |> Enum.map(& &1.name)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
 
     missing =
       for step <- named,
@@ -196,7 +204,11 @@ defmodule JidoClaw.Skills.Compiler do
   defp detect_cycle(name, edge_map, path) do
     cond do
       name in path ->
-        cycle = [name | path] |> Enum.reverse() |> Enum.join(" -> ")
+        cycle =
+          [name | path]
+          |> Enum.reverse()
+          |> Enum.join(" -> ")
+
         {:error, "Cyclic dependency detected: #{cycle}"}
 
       targets = Map.get(edge_map, name) ->

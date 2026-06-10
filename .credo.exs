@@ -144,7 +144,7 @@
           {Credo.Check.Readability.ModuleNames, []},
           {Credo.Check.Readability.NestedFunctionCalls, [min_pipeline_length: 99]},
           {Credo.Check.Readability.OneArityFunctionInPipe, []},
-          # {Credo.Check.Readability.OnePipePerLine, []},
+          {Credo.Check.Readability.OnePipePerLine, []},
           {Credo.Check.Readability.ParenthesesInCondition, []},
           {Credo.Check.Readability.ParenthesesOnZeroArityDefs, []},
           {Credo.Check.Readability.PipeIntoAnonymousFunctions, []},

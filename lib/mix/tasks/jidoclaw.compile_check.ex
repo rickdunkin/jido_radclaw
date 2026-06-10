@@ -94,5 +94,10 @@ defmodule Mix.Tasks.Jidoclaw.CompileCheck do
   defp line(l) when is_integer(l), do: l
   defp line(_), do: 0
 
-  defp first_line(message), do: message |> to_string() |> String.split("\n", parts: 2) |> hd()
+  defp first_line(message) do
+    message
+    |> to_string()
+    |> String.split("\n", parts: 2)
+    |> hd()
+  end
 end

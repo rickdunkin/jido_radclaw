@@ -226,7 +226,12 @@ defmodule JidoClaw.AgentTracker do
 
   def handle_call({:get_state, opts}, _from, state) do
     agents = filter_agents(state.agents, opts)
-    ordered_ids = state.order |> Enum.reverse() |> Enum.filter(&Map.has_key?(agents, &1))
+
+    ordered_ids =
+      state.order
+      |> Enum.reverse()
+      |> Enum.filter(&Map.has_key?(agents, &1))
+
     {:reply, %{agents: agents, order: ordered_ids}, state}
   end
 

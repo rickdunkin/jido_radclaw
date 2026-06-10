@@ -184,7 +184,13 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       end
 
       # Both steps share the single fresh replay workspace.
-      assert contexts |> Enum.map(& &1.workspace_id) |> Enum.uniq() |> length() == 1
+      workspace_count =
+        contexts
+        |> Enum.map(& &1.workspace_id)
+        |> Enum.uniq()
+        |> length()
+
+      assert workspace_count == 1
     end
   end
 

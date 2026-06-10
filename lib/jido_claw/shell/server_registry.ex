@@ -269,7 +269,12 @@ defmodule JidoClaw.Shell.ServerRegistry do
 
   @impl true
   def handle_call(:list, _from, state) do
-    {:reply, state.servers |> Map.keys() |> Enum.sort(), state}
+    names =
+      state.servers
+      |> Map.keys()
+      |> Enum.sort()
+
+    {:reply, names, state}
   end
 
   @impl true
@@ -308,7 +313,10 @@ defmodule JidoClaw.Shell.ServerRegistry do
   defp config_path(project_dir), do: Path.join([project_dir, ".jido", "config.yaml"])
 
   defp load_from_disk(project_dir) do
-    project_dir |> Config.load() |> Config.servers() |> parse_servers()
+    project_dir
+    |> Config.load()
+    |> Config.servers()
+    |> parse_servers()
   end
 
   defp parse_servers(list) when is_list(list) do

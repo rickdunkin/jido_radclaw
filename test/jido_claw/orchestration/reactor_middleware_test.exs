@@ -114,7 +114,11 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert {:ok, :done} =
              Reactor.run(build(OkStep), %{}, context(run, ctx), async?: false, run_id: run.id)
 
-    started = run |> events_for(ctx) |> Enum.find(&(&1.kind == :run_started))
+    started =
+      run
+      |> events_for(ctx)
+      |> Enum.find(&(&1.kind == :run_started))
+
     assert started.payload["definition_hash"] == "deadbeef"
   end
 
@@ -124,7 +128,11 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert {:ok, :done} =
              Reactor.run(build(OkStep), %{}, context(run, ctx), async?: false, run_id: run.id)
 
-    started = run |> events_for(ctx) |> Enum.find(&(&1.kind == :run_started))
+    started =
+      run
+      |> events_for(ctx)
+      |> Enum.find(&(&1.kind == :run_started))
+
     refute Map.has_key?(started.payload, "definition_hash")
   end
 
@@ -207,5 +215,9 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     events
   end
 
-  defp kinds(run, ctx), do: run |> events_for(ctx) |> Enum.map(& &1.kind)
+  defp kinds(run, ctx) do
+    run
+    |> events_for(ctx)
+    |> Enum.map(& &1.kind)
+  end
 end

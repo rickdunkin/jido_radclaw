@@ -43,7 +43,12 @@ defmodule JidoClaw.Orchestration.WorkflowEventTest do
         |> Task.await_many(15_000)
 
       assert Enum.all?(results, &match?({:ok, _}, &1))
-      seqs = results |> Enum.map(fn {:ok, e} -> e.seq end) |> Enum.sort()
+
+      seqs =
+        results
+        |> Enum.map(fn {:ok, e} -> e.seq end)
+        |> Enum.sort()
+
       assert seqs == Enum.to_list(1..n)
     end
   end

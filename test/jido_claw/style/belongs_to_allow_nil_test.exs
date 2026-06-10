@@ -21,7 +21,11 @@ defmodule JidoClaw.Style.BelongsToAllowNilTest do
   end
 
   defp scan_file(path) do
-    ast = path |> File.read!() |> Code.string_to_quoted!(columns: true)
+    ast =
+      path
+      |> File.read!()
+      |> Code.string_to_quoted!(columns: true)
+
     {_, found} = Macro.prewalk(ast, [], &collect/2)
 
     found

@@ -84,7 +84,12 @@ defmodule JidoClaw.Conversations.TranscriptEnvelope do
   defp walk(atom) when is_atom(atom), do: ":" <> Atom.to_string(atom)
 
   defp walk(tuple) when is_tuple(tuple) do
-    %{__tuple__: tuple |> Tuple.to_list() |> Enum.map(&walk/1)}
+    elements =
+      tuple
+      |> Tuple.to_list()
+      |> Enum.map(&walk/1)
+
+    %{__tuple__: elements}
   end
 
   defp walk(list) when is_list(list), do: Enum.map(list, &walk/1)

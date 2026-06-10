@@ -12,7 +12,9 @@ defmodule JidoClaw.Trace.Limit do
   def take(values, nil), do: as_list(values)
 
   def take(values, limit) when is_integer(limit) and limit >= 0 do
-    values |> as_list() |> Enum.take(limit)
+    values
+    |> as_list()
+    |> Enum.take(limit)
   end
 
   def take(values, _limit), do: as_list(values)

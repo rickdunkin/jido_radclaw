@@ -110,11 +110,20 @@ defmodule JidoClaw.Trace.Sanitize do
     |> String.slice(0, bytes)
   end
 
-  defp large_key?(key) when is_atom(key), do: key |> Atom.to_string() |> large_key?()
+  defp large_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> large_key?()
+  end
+
   defp large_key?(key) when is_binary(key), do: MapSet.member?(@large_keys, key)
   defp large_key?(_key), do: false
 
-  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
+  defp sensitive_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> sensitive_key?()
+  end
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)

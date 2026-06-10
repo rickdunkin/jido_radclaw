@@ -454,7 +454,12 @@ defmodule JidoClaw.Application do
     case String.split(line, "=", parts: 2) do
       [key, value] ->
         key = String.trim(key)
-        value = value |> String.trim() |> strip_quotes()
+
+        value =
+          value
+          |> String.trim()
+          |> strip_quotes()
+
         # env vars take precedence over .env entries
         if System.get_env(key) == nil, do: System.put_env(key, value)
 

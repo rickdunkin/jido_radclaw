@@ -143,10 +143,25 @@ defmodule JidoClaw.Startup do
   end
 
   defp handoff_block(handoff_context) do
-    message = handoff_context |> Map.get(:message) |> present_or("not provided")
-    reason = handoff_context |> Map.get(:reason) |> present_or("not provided")
-    summary = handoff_context |> Map.get(:summary) |> present_or("not provided")
-    from = handoff_context |> Map.get(:from_template) |> present_or("main")
+    message =
+      handoff_context
+      |> Map.get(:message)
+      |> present_or("not provided")
+
+    reason =
+      handoff_context
+      |> Map.get(:reason)
+      |> present_or("not provided")
+
+    summary =
+      handoff_context
+      |> Map.get(:summary)
+      |> present_or("not provided")
+
+    from =
+      handoff_context
+      |> Map.get(:from_template)
+      |> present_or("main")
 
     """
     [HANDOFF CONTEXT — you have been assigned this conversation.

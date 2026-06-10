@@ -545,28 +545,47 @@ defmodule JidoClaw.Tools.RunPipeline do
   end
 
   defp success_cap_meta(pre_cap, post_cap, dropped) do
+    dropped_indexes =
+      dropped
+      |> Enum.map(& &1.stage)
+      |> Enum.sort()
+
     %{
       accumulated_context_bytes_pre_cap: pre_cap,
       accumulated_context_bytes_post_cap: post_cap,
-      dropped_stage_indexes: dropped |> Enum.map(& &1.stage) |> Enum.sort()
+      dropped_stage_indexes: dropped_indexes
     }
   end
 
   defp failure_cap_meta(pre_cap, dropped) do
+    dropped_indexes =
+      dropped
+      |> Enum.map(& &1.stage)
+      |> Enum.sort()
+
     %{
       accumulated_context_bytes_pre_cap: pre_cap,
-      dropped_stage_indexes: dropped |> Enum.map(& &1.stage) |> Enum.sort()
+      dropped_stage_indexes: dropped_indexes
     }
   end
 
   # Zero-pad to 3 digits so "10/12" sorts after "02/12" as text. In addition,
   # metadata.stage_index carries the raw integer for numeric consumers.
   defp pad_stage(idx, total) do
-    width = max(3, total |> Integer.to_string() |> String.length())
+    total_digits =
+      total
+      |> Integer.to_string()
+      |> String.length()
+
+    width = max(3, total_digits)
     "#{pad(idx, width)}/#{pad(total, width)}"
   end
 
-  defp pad(n, width), do: n |> Integer.to_string() |> String.pad_leading(width, "0")
+  defp pad(n, width) do
+    n
+    |> Integer.to_string()
+    |> String.pad_leading(width, "0")
+  end
 
   defp empty_usage, do: %{input_tokens: 0, output_tokens: 0}
 

@@ -973,7 +973,12 @@ defmodule JidoClaw.CLI.Commands do
     end
   end
 
-  defp format_short_date(%DateTime{} = dt), do: dt |> DateTime.to_iso8601() |> String.slice(0, 10)
+  defp format_short_date(%DateTime{} = dt) do
+    dt
+    |> DateTime.to_iso8601()
+    |> String.slice(0, 10)
+  end
+
   defp format_short_date(other) when is_binary(other), do: String.slice(other, 0, 10)
   defp format_short_date(_), do: ""
 
@@ -1584,7 +1589,12 @@ defmodule JidoClaw.CLI.Commands do
 
   defp print_solution_result(%{solution: sol}) do
     lang = if sol.language, do: " \e[36m[#{sol.language}]\e[0m", else: ""
-    preview = sol.solution_content |> String.slice(0, 80) |> String.replace("\n", " ")
+
+    preview =
+      sol.solution_content
+      |> String.slice(0, 80)
+      |> String.replace("\n", " ")
+
     IO.puts("  \e[33m▸\e[0m \e[1m#{sol.id}\e[0m#{lang}")
     IO.puts("    \e[2m#{preview}\e[0m")
   end

@@ -391,8 +391,16 @@ defmodule JidoClaw.Solutions.TrustTest do
 
     test "atom updated_at wins over string updated_at in freshness" do
       now = DateTime.utc_now()
-      recent = now |> DateTime.add(-3 * 86_400, :second) |> DateTime.to_iso8601()
-      old = now |> DateTime.add(-400 * 86_400, :second) |> DateTime.to_iso8601()
+
+      recent =
+        now
+        |> DateTime.add(-3 * 86_400, :second)
+        |> DateTime.to_iso8601()
+
+      old =
+        now
+        |> DateTime.add(-400 * 86_400, :second)
+        |> DateTime.to_iso8601()
 
       solution = %{"updated_at" => old, :updated_at => recent}
 

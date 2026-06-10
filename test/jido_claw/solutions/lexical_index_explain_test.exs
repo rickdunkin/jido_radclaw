@@ -78,7 +78,10 @@ defmodule JidoClaw.Solutions.LexicalIndexExplainTest do
           )
 
         [[plan_json]] = rows
-        plan_json |> List.first() |> Map.fetch!("Plan")
+
+        plan_json
+        |> List.first()
+        |> Map.fetch!("Plan")
       end)
       |> case do
         {:ok, plan} -> plan

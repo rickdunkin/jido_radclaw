@@ -45,7 +45,11 @@ defmodule JidoClaw.Tools.WriteFile do
 
         case Resolver.write(path, content, workspace_id: workspace_id, project_dir: project_dir) do
           :ok ->
-            lines = content |> String.split("\n") |> length()
+            lines =
+              content
+              |> String.split("\n")
+              |> length()
+
             {:ok, %{path: path, lines_written: lines}}
 
           {:error, reason} ->

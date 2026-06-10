@@ -56,7 +56,11 @@ defmodule JidoClaw.Skills.CompilerTest do
       {:ok, reactor} = Compiler.compile(dag_skill())
       collect = step_by_name(reactor, :__collect__)
 
-      depended = collect |> result_arg_sources() |> Enum.sort()
+      depended =
+        collect
+        |> result_arg_sources()
+        |> Enum.sort()
+
       assert depended == [:step_1, :step_2, :step_3]
     end
 

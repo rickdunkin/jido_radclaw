@@ -149,7 +149,12 @@ defmodule JidoClaw.SwarmView do
     max(ended_at - started_at, 0)
   end
 
-  defp tool_names(%MapSet{} = set), do: set |> MapSet.to_list() |> Enum.sort()
+  defp tool_names(%MapSet{} = set) do
+    set
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
   defp tool_names(list) when is_list(list), do: Enum.sort(list)
   defp tool_names(_), do: []
 

@@ -313,7 +313,10 @@ defmodule JidoClaw.Solutions.Reputation do
     freshness = freshness_score(last_active)
 
     raw = 0.5 * 0.3 + success_rate * 0.5 + activity_bonus + freshness * 0.1
-    raw |> max(0.0) |> min(1.0)
+
+    raw
+    |> max(0.0)
+    |> min(1.0)
   end
 
   defp freshness_score(nil), do: 0.0

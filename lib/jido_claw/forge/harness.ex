@@ -386,7 +386,12 @@ defmodule JidoClaw.Forge.Harness do
     PubSub.broadcast(state.session_id, {:error, %{reason: failure}})
     reply_iteration_from(state, {:error, failure})
 
-    {:noreply, state |> clear_iteration_task() |> Map.put(:state, :ready)}
+    new_state =
+      state
+      |> clear_iteration_task()
+      |> Map.put(:state, :ready)
+
+    {:noreply, new_state}
   end
 
   @impl true

@@ -619,7 +619,9 @@ defmodule JidoClaw.Inspection do
 
   defp tool_names_for_module(module) when is_atom(module) do
     if module_with_strategy_opts?(module) do
-      safe(fn -> apply(module, :strategy_opts, []) end) |> tools_from_opts() |> tool_names()
+      safe(fn -> apply(module, :strategy_opts, []) end)
+      |> tools_from_opts()
+      |> tool_names()
     else
       []
     end
@@ -687,7 +689,12 @@ defmodule JidoClaw.Inspection do
   # back string-keyed; falls back to `event.name`, where the collector
   # already stores the model label for `:model` events.
   defp model_from_trace(%Trace{events: events}) when is_list(events) do
-    case events |> Enum.reverse() |> Enum.find(&(&1.category == :model)) do
+    model_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1.category == :model))
+
+    case model_event do
       %Event{} = ev ->
         normalize_model_label(MapKeys.coalesce_field(ev.metadata || %{}, :model)) || ev.name
 
@@ -709,7 +716,12 @@ defmodule JidoClaw.Inspection do
   defp duration_from_trace(_), do: nil
 
   defp latest_interrupt(%Trace{events: events}) do
-    case events |> Enum.reverse() |> Enum.find(&(&1.status == :interrupted)) do
+    interrupt_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1.status == :interrupted))
+
+    case interrupt_event do
       nil -> nil
       %Event{} = ev -> %{event: ev.event, category: ev.category, at_ms: ev.at_ms}
     end
@@ -718,7 +730,12 @@ defmodule JidoClaw.Inspection do
   defp latest_interrupt(_), do: nil
 
   defp latest_error(%Trace{events: events}) do
-    case events |> Enum.reverse() |> Enum.find(&(&1.status == :failed)) do
+    error_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1.status == :failed))
+
+    case error_event do
       nil ->
         nil
 

@@ -101,7 +101,10 @@ defmodule Mix.Tasks.Jidoclaw.MemoryExportTest do
         "--with-redaction-delta"
       ])
 
-      payload = out_path |> File.read!() |> Jason.decode!()
+      payload =
+        out_path
+        |> File.read!()
+        |> Jason.decode!()
 
       facts = payload["facts"]
       assert [_ | _] = facts

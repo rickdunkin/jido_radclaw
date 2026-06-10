@@ -45,12 +45,20 @@ defmodule JidoClaw.Tools.OutputRedaction do
     end
   end
 
-  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> Env.sensitive_key?()
+  defp sensitive_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> Env.sensitive_key?()
+  end
+
   defp sensitive_key?(key) when is_binary(key), do: Env.sensitive_key?(key)
   defp sensitive_key?(_key), do: false
 
-  defp binary_payload_key?(key) when is_atom(key),
-    do: key |> Atom.to_string() |> binary_payload_key?()
+  defp binary_payload_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> binary_payload_key?()
+  end
 
   defp binary_payload_key?(key) when is_binary(key), do: key in @binary_payload_keys
   defp binary_payload_key?(_key), do: false

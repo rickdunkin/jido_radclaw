@@ -152,7 +152,10 @@ defmodule JidoClaw.Reasoning.LLMTiebreaker do
   defp extract_text(other), do: inspect(other)
 
   defp parse_choice(text, candidates) when is_binary(text) do
-    normalized = text |> String.trim() |> String.downcase()
+    normalized =
+      text
+      |> String.trim()
+      |> String.downcase()
 
     # Prefer a last-token match (model may emit rationale before the answer).
     # Fall back to first-occurrence scan so single-word replies still work.

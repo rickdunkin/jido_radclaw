@@ -96,7 +96,9 @@ defmodule JidoClaw.Reasoning.Compactor.Storage do
   end
 
   defp parse_snapshot(%SessionResource{metadata: metadata}, key) when is_map(metadata) do
-    metadata |> fetch_compaction(key) |> normalize_snapshot()
+    metadata
+    |> fetch_compaction(key)
+    |> normalize_snapshot()
   end
 
   defp parse_snapshot(_, _key), do: nil

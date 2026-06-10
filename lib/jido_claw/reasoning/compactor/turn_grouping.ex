@@ -137,8 +137,13 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGrouping do
     messages
     |> Enum.find(fn msg -> Map.get(msg, :role) in [:user, :assistant] end)
     |> case do
-      nil -> messages |> List.first() |> Map.get(:role)
-      msg -> Map.get(msg, :role)
+      nil ->
+        messages
+        |> List.first()
+        |> Map.get(:role)
+
+      msg ->
+        Map.get(msg, :role)
     end
   end
 

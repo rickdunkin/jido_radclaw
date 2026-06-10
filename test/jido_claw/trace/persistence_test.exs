@@ -144,7 +144,13 @@ defmodule JidoClaw.Trace.PersistenceTest do
       seqs = Enum.map(events, & &1.seq)
       assert seqs == Enum.sort(seqs)
       assert run.status == "completed"
-      assert run.last_seq == seqs |> Enum.reverse() |> List.first()
+
+      last_seq =
+        seqs
+        |> Enum.reverse()
+        |> List.first()
+
+      assert run.last_seq == last_seq
     end
   end
 

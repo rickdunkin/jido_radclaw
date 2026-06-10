@@ -27,9 +27,14 @@ defmodule JidoClaw.Cluster do
 
   @doc "Get info about a specific node."
   def node_info(node_name \\ Node.self()) do
+    uptime =
+      :erlang.statistics(:wall_clock)
+      |> elem(0)
+      |> div(1000)
+
     %{
       name: node_name,
-      uptime: :erlang.statistics(:wall_clock) |> elem(0) |> div(1000),
+      uptime: uptime,
       process_count: :erlang.system_info(:process_count),
       memory: :erlang.memory(:total)
     }

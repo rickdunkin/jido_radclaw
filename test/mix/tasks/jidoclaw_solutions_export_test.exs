@@ -69,8 +69,15 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
         manifest_path
       ])
 
-      payload = out_path |> File.read!() |> Jason.decode!()
-      manifest = manifest_path |> File.read!() |> Jason.decode!()
+      payload =
+        out_path
+        |> File.read!()
+        |> Jason.decode!()
+
+      manifest =
+        manifest_path
+        |> File.read!()
+        |> Jason.decode!()
 
       assert is_map(payload)
       assert is_list(manifest)

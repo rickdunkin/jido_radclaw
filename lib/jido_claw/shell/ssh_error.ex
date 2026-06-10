@@ -164,7 +164,9 @@ defmodule JidoClaw.Shell.SSHError do
   end
 
   defp auth_reason?(reason) when is_binary(reason) do
-    reason |> String.downcase() |> String.contains?("auth")
+    reason
+    |> String.downcase()
+    |> String.contains?("auth")
   end
 
   defp auth_reason?(_), do: false

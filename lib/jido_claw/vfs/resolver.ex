@@ -88,7 +88,10 @@ defmodule JidoClaw.VFS.Resolver do
           ShellVFS.write_file(workspace_id, vfs_path, content)
 
         {:local, local_path} ->
-          local_path |> Path.dirname() |> File.mkdir_p!()
+          local_path
+          |> Path.dirname()
+          |> File.mkdir_p!()
+
           File.write(local_path, content)
 
         {:github, owner, repo, ref, file_path} ->
@@ -415,7 +418,9 @@ defmodule JidoClaw.VFS.Resolver do
         {:ok, path}
 
       under_path?(path, expanded_root) or under_path?(path, real_root) ->
-        path |> Path.dirname() |> nearest_existing_ancestor(expanded_root, real_root)
+        path
+        |> Path.dirname()
+        |> nearest_existing_ancestor(expanded_root, real_root)
 
       true ->
         {:error, {:path_outside_project, path}}
@@ -499,7 +504,10 @@ defmodule JidoClaw.VFS.Resolver do
   end
 
   defp local_atomic_write(local_path, content) do
-    local_path |> Path.dirname() |> File.mkdir_p!()
+    local_path
+    |> Path.dirname()
+    |> File.mkdir_p!()
+
     tmp_path = tmp_path_for(local_path)
 
     case File.write(tmp_path, content, [:binary]) do

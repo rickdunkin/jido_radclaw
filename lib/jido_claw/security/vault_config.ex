@@ -66,9 +66,16 @@ defmodule JidoClaw.Security.VaultConfig do
     path = System.get_env("CLOAK_KEY_FILE") || @default_key_file
 
     case File.read(Path.expand(path)) do
-      {:ok, key} -> key |> String.trim() |> decode_key()
-      {:error, :enoent} -> {:error, :missing}
-      {:error, reason} -> {:error, {:key_file, reason}}
+      {:ok, key} ->
+        key
+        |> String.trim()
+        |> decode_key()
+
+      {:error, :enoent} ->
+        {:error, :missing}
+
+      {:error, reason} ->
+        {:error, {:key_file, reason}}
     end
   end
 

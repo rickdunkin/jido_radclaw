@@ -104,7 +104,9 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
   end
 
   defp message_role(msg) do
-    msg |> dual_get(:role) |> coerce_role()
+    msg
+    |> dual_get(:role)
+    |> coerce_role()
   end
 
   defp coerce_role(nil), do: nil

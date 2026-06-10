@@ -18,8 +18,12 @@ defmodule JidoClaw.ReleaseTest do
 
     assert Keyword.fetch!(release, :include_executables_for) == [:unix]
 
-    assert release |> Keyword.fetch!(:applications) |> Keyword.fetch!(:runtime_tools) ==
-             :permanent
+    runtime_tools_mode =
+      release
+      |> Keyword.fetch!(:applications)
+      |> Keyword.fetch!(:runtime_tools)
+
+    assert runtime_tools_mode == :permanent
   end
 
   test "release patch compiler runs before app metadata is generated" do

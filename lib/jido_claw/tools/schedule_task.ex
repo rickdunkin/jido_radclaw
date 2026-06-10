@@ -168,7 +168,10 @@ defmodule JidoClaw.Tools.ScheduleTask do
   defp build_target_attrs(:agent, _params, _project_dir), do: {:ok, %{target: :agent}}
 
   defp build_target_attrs(:workflow, params, project_dir) do
-    workflow = params[:workflow] |> to_string() |> String.trim()
+    workflow =
+      params[:workflow]
+      |> to_string()
+      |> String.trim()
 
     cond do
       workflow == "" ->

@@ -327,7 +327,10 @@ defmodule JidoClaw.Shell.SessionManager do
       |> Enum.map(fn {key} -> key end)
       |> MapSet.new()
 
-    new_keys = new_map |> Map.keys() |> MapSet.new()
+    new_keys =
+      new_map
+      |> Map.keys()
+      |> MapSet.new()
 
     Enum.each(MapSet.difference(current_keys, new_keys), &:ets.delete(@ssh_sessions_ets, &1))
     Enum.each(MapSet.difference(new_keys, current_keys), &:ets.insert(@ssh_sessions_ets, {&1}))
@@ -1427,7 +1430,11 @@ defmodule JidoClaw.Shell.SessionManager do
   end
 
   defp finalize_output(acc, streaming?) do
-    output = acc |> Enum.reverse() |> Enum.join()
+    output =
+      acc
+      |> Enum.reverse()
+      |> Enum.join()
+
     cap = if streaming?, do: @streaming_capture_preview, else: @max_output_chars
 
     if byte_size(output) > cap do

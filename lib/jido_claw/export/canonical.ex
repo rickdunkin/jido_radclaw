@@ -22,11 +22,17 @@ defmodule JidoClaw.Export.Canonical do
   already JSON-friendly passes through.
   """
   @spec canonicalize(any()) :: any()
-  def canonicalize(%DateTime{} = dt),
-    do: dt |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+  def canonicalize(%DateTime{} = dt) do
+    dt
+    |> DateTime.truncate(:microsecond)
+    |> DateTime.to_iso8601()
+  end
 
-  def canonicalize(%NaiveDateTime{} = ndt),
-    do: ndt |> NaiveDateTime.truncate(:microsecond) |> NaiveDateTime.to_iso8601()
+  def canonicalize(%NaiveDateTime{} = ndt) do
+    ndt
+    |> NaiveDateTime.truncate(:microsecond)
+    |> NaiveDateTime.to_iso8601()
+  end
 
   def canonicalize(%Date{} = d), do: Date.to_iso8601(d)
   def canonicalize(%Time{} = t), do: Time.to_iso8601(t)
@@ -66,7 +72,11 @@ defmodule JidoClaw.Export.Canonical do
   end
 
   defp sorted_encode!(value) when is_list(value) do
-    inner = value |> Enum.map(&sorted_encode!/1) |> Enum.intersperse(",")
+    inner =
+      value
+      |> Enum.map(&sorted_encode!/1)
+      |> Enum.intersperse(",")
+
     ["[", inner, "]"]
   end
 

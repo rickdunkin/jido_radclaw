@@ -63,5 +63,9 @@ defmodule Mix.Tasks.Compile.JidoclawReleasePatches do
     ])
   end
 
-  defp format_file_error(reason), do: reason |> :file.format_error() |> List.to_string()
+  defp format_file_error(reason) do
+    reason
+    |> :file.format_error()
+    |> List.to_string()
+  end
 end

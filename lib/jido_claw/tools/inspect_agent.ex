@@ -104,6 +104,11 @@ defmodule JidoClaw.Tools.InspectAgent do
   # MCP boundary. Nested maps (`usage`, `compaction`, `handoffs`, `error`)
   # therefore come back string-keyed.
   defp project(%Inspection.Summary{} = s) do
+    memory =
+      s.memory
+      |> slim_memory()
+      |> JsonSafe.encode()
+
     %{
       system_prompt: s.system_prompt,
       model: stringify_nilable(s.model),
@@ -115,7 +120,7 @@ defmodule JidoClaw.Tools.InspectAgent do
       user_message: s.user_message,
       handoffs: JsonSafe.encode(s.handoffs),
       compaction: JsonSafe.encode(s.compaction),
-      memory: s.memory |> slim_memory() |> JsonSafe.encode(),
+      memory: memory,
       usage: JsonSafe.encode(s.usage),
       duration_ms: s.duration_ms,
       status: stringify_nilable(s.status),

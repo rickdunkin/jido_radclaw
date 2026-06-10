@@ -488,7 +488,12 @@ defmodule JidoClaw.Trace.Collector do
     # Bounded ring of last `max_events` — equivalent to `events ++ [event]` then
     # take the tail, expressed with Enum to satisfy ExSlop's
     # `Refactor.AppendSingleItem` check without changing semantics.
-    events = events |> Enum.reverse() |> then(&[event | &1]) |> Enum.reverse()
+    events =
+      events
+      |> Enum.reverse()
+      |> then(&[event | &1])
+      |> Enum.reverse()
+
     events = Enum.take(events, -max_events)
     status = terminal_status(event.status) || trace.status || event.status
 
@@ -592,9 +597,14 @@ defmodule JidoClaw.Trace.Collector do
   defp trace_key(%Event{seq: seq}), do: {:event, seq}
 
   defp append_order(order, key) do
-    if key in order,
-      do: order,
-      else: order |> Enum.reverse() |> then(&[key | &1]) |> Enum.reverse()
+    if key in order do
+      order
+    else
+      order
+      |> Enum.reverse()
+      |> then(&[key | &1])
+      |> Enum.reverse()
+    end
   end
 
   defp prune_traces(%__MODULE__{} = state) do

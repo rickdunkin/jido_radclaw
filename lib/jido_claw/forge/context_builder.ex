@@ -120,7 +120,12 @@ defmodule JidoClaw.Forge.ContextBuilder do
       if output && output != "" do
         # Reserve ~25% of the total token budget for the output excerpt
         max_excerpt_chars = div(max_tokens, 4) * 4
-        excerpt = output |> String.trim() |> String.slice(0, max_excerpt_chars)
+
+        excerpt =
+          output
+          |> String.trim()
+          |> String.slice(0, max_excerpt_chars)
+
         ["Last output (excerpt):", "```", excerpt, "```"]
       else
         []
@@ -219,6 +224,8 @@ defmodule JidoClaw.Forge.ContextBuilder do
         end
       end)
 
-    taken |> Enum.reverse() |> Enum.join("\n")
+    taken
+    |> Enum.reverse()
+    |> Enum.join("\n")
   end
 end

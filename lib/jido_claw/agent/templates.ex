@@ -95,8 +95,11 @@ defmodule JidoClaw.Agent.Templates do
   @spec exists?(String.t()) :: boolean()
   def exists?(name), do: Map.has_key?(@templates, name)
 
-  defp hydrate_template(template),
-    do: template |> ensure_max_iterations() |> ensure_forward_context()
+  defp hydrate_template(template) do
+    template
+    |> ensure_max_iterations()
+    |> ensure_forward_context()
+  end
 
   # Two clauses, NO catch-all — preserves today's behavior: a template
   # lacking both :module and a valid :max_iterations still raises

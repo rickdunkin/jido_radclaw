@@ -34,9 +34,17 @@ defmodule JidoClaw.Core.JsonSafe do
   def encode(value) when is_struct(value, NaiveDateTime), do: NaiveDateTime.to_iso8601(value)
   def encode(value) when is_struct(value, Date), do: Date.to_iso8601(value)
 
-  def encode(%MapSet{} = set), do: set |> MapSet.to_list() |> Enum.map(&encode/1)
+  def encode(%MapSet{} = set) do
+    set
+    |> MapSet.to_list()
+    |> Enum.map(&encode/1)
+  end
 
-  def encode(%_{} = struct), do: struct |> Map.from_struct() |> encode()
+  def encode(%_{} = struct) do
+    struct
+    |> Map.from_struct()
+    |> encode()
+  end
 
   def encode(map) when is_map(map) do
     map
@@ -58,7 +66,11 @@ defmodule JidoClaw.Core.JsonSafe do
 
   # Tuples have no JSON representation; encode them as lists so keyword lists,
   # `{:ok, _}` / `{:error, _}` shapes, etc. don't leak un-encodable terms.
-  def encode(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> Enum.map(&encode/1)
+  def encode(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&encode/1)
+  end
 
   def encode(atom) when is_atom(atom) and not is_nil(atom) and not is_boolean(atom) do
     if module?(atom), do: nil, else: Atom.to_string(atom)

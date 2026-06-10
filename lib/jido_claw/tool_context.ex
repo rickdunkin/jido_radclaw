@@ -181,7 +181,9 @@ defmodule JidoClaw.ToolContext do
   """
   @spec child(map() | nil, String.t(), visibility() | term()) :: map()
   def child(parent_tool_context, child_tag, visibility) when is_binary(child_tag) do
-    (parent_tool_context || %{}) |> apply_visibility(visibility) |> child(child_tag)
+    (parent_tool_context || %{})
+    |> apply_visibility(visibility)
+    |> child(child_tag)
   end
 
   @doc """

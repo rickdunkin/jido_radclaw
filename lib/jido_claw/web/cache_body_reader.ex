@@ -22,8 +22,16 @@ defmodule JidoClaw.Web.CacheBodyReader do
 
   def raw_body(conn) do
     case conn.private[:raw_body] do
-      nil -> {:error, :not_cached}
-      parts -> {:ok, parts |> Enum.reverse() |> IO.iodata_to_binary()}
+      nil ->
+        {:error, :not_cached}
+
+      parts ->
+        body =
+          parts
+          |> Enum.reverse()
+          |> IO.iodata_to_binary()
+
+        {:ok, body}
     end
   end
 

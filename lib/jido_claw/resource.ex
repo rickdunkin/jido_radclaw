@@ -40,7 +40,11 @@ defmodule JidoClaw.Resource do
   defmacro __using__(opts) do
     domain = Keyword.fetch!(opts, :domain)
     primary_read_warning? = Keyword.get(opts, :primary_read_warning?, true)
-    global_actions = opts |> Keyword.get(:global_actions, []) |> List.wrap()
+
+    global_actions =
+      opts
+      |> Keyword.get(:global_actions, [])
+      |> List.wrap()
 
     unless Enum.all?(global_actions, &is_atom/1) do
       raise ArgumentError,

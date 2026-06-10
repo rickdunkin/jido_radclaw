@@ -203,7 +203,10 @@ defmodule JidoClaw.Agent.PromptTest do
           Path.join([:code.priv_dir(:jido_claw) |> to_string(), "defaults", "system_prompt.md"])
         )
 
-      registered = JidoClaw.Agent.tool_modules() |> Enum.map(& &1.name()) |> Enum.sort()
+      registered =
+        JidoClaw.Agent.tool_modules()
+        |> Enum.map(& &1.name())
+        |> Enum.sort()
 
       documented =
         ~r/^\*\*([a-z0-9_]+)\*\*/m

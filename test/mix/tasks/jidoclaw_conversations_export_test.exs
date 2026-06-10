@@ -113,7 +113,11 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
       manifest_path = out_path <> ".redaction-manifest.json"
       assert File.exists?(manifest_path)
 
-      manifest = manifest_path |> File.read!() |> Jason.decode!()
+      manifest =
+        manifest_path
+        |> File.read!()
+        |> Jason.decode!()
+
       redactions = manifest["redactions"] || []
 
       # The migrate task redacts user/assistant content at the

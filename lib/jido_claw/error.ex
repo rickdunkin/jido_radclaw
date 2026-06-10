@@ -89,7 +89,10 @@ defmodule JidoClaw.Error do
   """
   @spec not_found(atom(), term(), keyword() | map()) :: Exception.t()
   def not_found(kind, identifier, opts \\ %{}) when is_atom(kind) do
-    label = kind |> Atom.to_string() |> String.capitalize()
+    label =
+      kind
+      |> Atom.to_string()
+      |> String.capitalize()
 
     validation_error("#{label} #{format_identifier(identifier)} not found.",
       field: kind,

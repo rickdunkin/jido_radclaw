@@ -376,7 +376,11 @@ defmodule JidoClaw.Tools.Error do
     end
   end
 
-  defp approximate_byte_size(value), do: value |> inspect() |> byte_size()
+  defp approximate_byte_size(value) do
+    value
+    |> inspect()
+    |> byte_size()
+  end
 
   defp describe(value) when is_map(value), do: "map with #{map_size(value)} keys"
   defp describe(value) when is_list(value), do: "list with #{length(value)} items"

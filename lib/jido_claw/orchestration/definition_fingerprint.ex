@@ -123,8 +123,11 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
 
   defp canonical_steps(skill, _graph_mode), do: generic_steps(skill)
 
-  defp generic_steps(skill),
-    do: skill.steps |> StepNormalizer.normalize() |> Enum.map(&canonical_step/1)
+  defp generic_steps(skill) do
+    skill.steps
+    |> StepNormalizer.normalize()
+    |> Enum.map(&canonical_step/1)
+  end
 
   # Exactly the role-map fields IterativeStep.run/3 + ContextBuilder consume —
   # no per-role retry/irreversible/compensate/depends_on (the loop-level
