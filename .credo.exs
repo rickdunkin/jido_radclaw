@@ -204,7 +204,7 @@
           {Credo.Check.Warning.OperationOnSameValues, []},
           {Credo.Check.Warning.OperationWithConstantResult, []},
           {Credo.Check.Warning.RaiseInsideRescue, []},
-          # {Credo.Check.Warning.SpecWithStruct, []},
+          {Credo.Check.Warning.SpecWithStruct, []},
           {Credo.Check.Warning.StructFieldAmount, []},
           {Credo.Check.Warning.UnsafeExec, []},
           # {Credo.Check.Warning.UnsafeToAtom, []},

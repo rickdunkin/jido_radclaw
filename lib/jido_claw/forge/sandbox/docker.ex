@@ -12,15 +12,16 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
 
+  @type t :: %__MODULE__{
+          sandbox_name: String.t(),
+          workspace_dir: String.t(),
+          sandbox_id: String.t()
+        }
+
   @impl true
   @spec create(map()) ::
           {:error, :sbx_not_found | {:sbx_create_failed, pos_integer(), any()}}
-          | {:ok,
-             %JidoClaw.Forge.Sandbox.Docker{
-               sandbox_name: <<_::48, _::_*8>>,
-               sandbox_id: binary(),
-               workspace_dir: binary()
-             }, binary()}
+          | {:ok, t(), binary()}
   def create(spec) do
     case System.find_executable("sbx") do
       nil ->
