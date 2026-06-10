@@ -33,6 +33,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     @spec update_request_id(String.t(), String.t()) :: :ok
     def update_request_id(_agent_id, _request_id), do: :ok
 
+    @spec mark_running(String.t(), pid()) :: :ok
+    def mark_running(_agent_id, _pid), do: :ok
+
+    @spec mark_complete(String.t(), :done | :error) :: :ok
+    def mark_complete(_agent_id, _status), do: :ok
+
     defp scoped(opts, entry) do
       if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test", do: entry
     end
@@ -58,6 +64,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
       :ok
     end
+
+    @spec mark_running(String.t(), pid()) :: :ok
+    def mark_running(_agent_id, _pid), do: :ok
+
+    @spec mark_complete(String.t(), :done | :error) :: :ok
+    def mark_complete(_agent_id, _status), do: :ok
 
     defp scoped(opts, entry) do
       if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test", do: entry
@@ -99,22 +111,54 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     end
   end
 
+  defmodule BlockingTemplates do
+    @moduledoc false
+
+    @spec get(String.t()) :: {:ok, map()}
+    def get("docs_writer"),
+      do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.BlockingWorker}}
+  end
+
+  defmodule BlockingWorker do
+    @moduledoc false
+
+    # Holds the follow-up dispatch open until the test releases it, so the
+    # in-flight tracker state can be asserted deterministically.
+    @spec ask_sync(pid(), String.t(), keyword()) :: :ok
+    def ask_sync(_pid, message, _opts) do
+      test_pid = Application.fetch_env!(:jido_claw, :send_to_agent_test_pid)
+      send(test_pid, {:ask_sync_started, self(), message})
+
+      receive do
+        :release -> :ok
+      after
+        5_000 -> :ok
+      end
+    end
+  end
+
   setup do
     original_jido = Application.get_env(:jido_claw, :jido_runtime)
     original_tracker = Application.get_env(:jido_claw, :agent_tracker)
     original_templates = Application.get_env(:jido_claw, :agent_templates)
     original_test_pid = Application.get_env(:jido_claw, :send_to_agent_test_pid)
+    original_flush_timeout = Application.get_env(:jido_claw, :recorder_flush_timeout)
 
     Application.put_env(:jido_claw, :jido_runtime, FakeJido)
     Application.put_env(:jido_claw, :agent_tracker, FakeTracker)
     Application.put_env(:jido_claw, :agent_templates, FakeTemplates)
     Application.put_env(:jido_claw, :send_to_agent_test_pid, self())
+    # The follow-up orchestration's terminal record flushes the Recorder; no
+    # ai.* signals flow in these tests, so shrink the wait from the 30s
+    # default to keep spawned orchestrators short-lived.
+    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       restore_env(:jido_runtime, original_jido)
       restore_env(:agent_tracker, original_tracker)
       restore_env(:agent_templates, original_templates)
       restore_env(:send_to_agent_test_pid, original_test_pid)
+      restore_env(:recorder_flush_timeout, original_flush_timeout)
     end)
 
     :ok
@@ -208,6 +252,90 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert is_binary(request_id)
 
     assert_receive {:update_request_id, "docs_writer_123", ^request_id}
+  end
+
+  describe "re-engagement of a finished agent (real tracker)" do
+    setup do
+      Application.put_env(:jido_claw, :agent_tracker, JidoClaw.AgentTracker)
+      JidoClaw.AgentTracker.reset()
+
+      on_exit(fn -> JidoClaw.AgentTracker.reset() end)
+
+      :ok
+    end
+
+    test "marks the entry running for the dispatch and completes it with the outcome" do
+      alias JidoClaw.AgentTracker
+
+      Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
+
+      # FakeJido.whereis returns self(), so track the test process as the
+      # child pid to satisfy mark_running's pid-identity check.
+      assert :ok =
+               AgentTracker.register("docs_writer_123", self(), "docs_writer", "initial task",
+                 tenant_id: @tenant_id
+               )
+
+      AgentTracker.mark_complete("docs_writer_123", :done)
+      _ = AgentTracker.get_state()
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+
+      assert {:ok, %{status: "message_sent"}} =
+               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round two"}, ctx())
+
+      assert_receive {:ask_sync_started, worker_pid, "round two"}, 1_000
+
+      # While the follow-up is in flight the entry is running again and
+      # re-consumes the spawn cap.
+      assert %{status: :running} = AgentTracker.get_agent("docs_writer_123")
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
+
+      send(worker_pid, :release)
+
+      wait_until(fn ->
+        match?(%{status: :done}, AgentTracker.get_agent("docs_writer_123"))
+      end)
+
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+    end
+
+    test "leaves the entry terminal when the template lookup fails" do
+      alias JidoClaw.AgentTracker
+
+      # The tracked template is unknown to the templates module, so the
+      # follow-up fails before the mark_running gate.
+      assert :ok =
+               AgentTracker.register("docs_writer_123", self(), "mystery_template", "initial",
+                 tenant_id: @tenant_id
+               )
+
+      AgentTracker.mark_complete("docs_writer_123", :done)
+      _ = AgentTracker.get_state()
+
+      assert {:error, %{code: :execution_error, details: %{phase: :template_lookup}}} =
+               SendToAgent.run(%{agent_id: "docs_writer_123", message: "hi"}, ctx())
+
+      assert %{status: :done} = AgentTracker.get_agent("docs_writer_123")
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+    end
+  end
+
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    wait_until_deadline(fun, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp wait_until_deadline(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("condition not met within timeout")
+
+      true ->
+        Process.sleep(20)
+        wait_until_deadline(fun, deadline)
+    end
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)

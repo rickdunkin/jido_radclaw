@@ -39,7 +39,7 @@ If the single-user/Tailscale assumptions still hold:
 - The dominant pattern: the *data layer* enforces tenancy and authorization rigorously, but several *surfaces* in front of it (admin UI, a WebSocket channel, the clustered solution-sharing bus, the sandbox env boundary) don't gate as tightly as the layer behind them assumes.
 - The second pattern: a handful of "best-effort, never blocks the agent" paths that aren't as safe as their docs claim (compactor exception safety, memory duplicate-key retry, ResearchCoordinator rescue).
 
-**Most urgent given default `:both` serve mode:** H1 + H2 together make the privileged surface reachable. **Both fixed 2026-06-10** (see the per-finding notes). After that, H10 (spawn-cap lockout) and H11 (compactor exception safety) are the highest-value reliability fixes.
+**Most urgent given default `:both` serve mode:** H1 + H2 together make the privileged surface reachable. **Both fixed 2026-06-10** (see the per-finding notes). After that, H10 (spawn-cap lockout) and H11 (compactor exception safety) are the highest-value reliability fixes — **both also fixed 2026-06-10**.
 
 ---
 
@@ -131,7 +131,7 @@ If the single-user/Tailscale assumptions still hold:
 
 ## HIGH — reliability / correctness
 
-### H10. AgentTracker never prunes terminal agents → spawn cap permanently consumed ✓ verified
+### H10. AgentTracker never prunes terminal agents → spawn cap permanently consumed ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/agent_tracker.ex:262-269, 300-337`, `lib/jido_claw/tools/spawn_agent.ex:153-182`
 
@@ -139,13 +139,17 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fix:** Count only `status == :running` in `child_count`, evict entries on `:DOWN`, and add a TTL sweep for `:done`/`:error` entries.
 
-### H11. Context compactor is not exception-safe — a raise crashes the live agent turn ✓ verified
+**Fixed (2026-06-10):** `child_count` now counts only `:running` non-main entries — the cap is a concurrency limit, ending the lockout. Eviction is deliberately **not** on `:DOWN` (that would break SwarmView counts, the Display "Swarm complete" summary, and swarm history); instead retain-and-sweep: a periodic sweep (60s) expires terminal entries older than 30min by first stopping a still-live child process (stop-by-pid via `Task.Supervisor`, deduplicated across sweeps with a 5min retry, failures logged) and evicting only once the pid is dead. Two invariants now hold: (1) a live runtime agent always has a tracker entry, so scoped tools can keep proving tenant ownership through it; (2) an entry is `:running` only while its pid is alive and monitored — both terminal writers (`mark_complete` + `:DOWN`) share a from-`:running`-only transition guard (closing the status-clobber race in both directions), and the new pid- and liveness-validating `mark_running/2` lets `send_to_agent` re-engage a finished agent status-coherently (fallible setup ordered before the gate, follow-up outcome recorded via `mark_complete`, re-engaged agents re-count toward the cap). Covered by `test/jido_claw/agent_tracker_test.exs` plus spawn-cap regression and TTL public-behavior tests in the tool suites.
+
+### H11. Context compactor is not exception-safe — a raise crashes the live agent turn ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/reasoning/compactor.ex` (zero `rescue`/`catch` in the file — verified), `lib/jido_claw/agent/defaults.ex:73-80`
 
 **What:** AGENTS.md and the moduledoc promise compaction "never blocks the agent's forward progress," but the `Defaults` hook only compensates for `{:ok,_}`/`{:error,_}` *return values*. `maybe_compact/3` has no `try/rescue`: `Storage.latest` and `load_slice_count` run uncaught, and `Reasoning.Telemetry.with_compaction` deliberately **reraises** exceptions. A raised `DBConnection`/pool error under load propagates through `on_before_cmd` and crashes the agent's ReAct turn.
 
 **Fix:** Wrap the non-`:off` body of `maybe_compact/3` in `try/rescue/catch` that logs + emits an error Trace event and returns `{:ok, action}`, mirroring `Reasoning.Telemetry.with_outcome/4`.
+
+**Fixed (2026-06-10):** the auto and manual I/O branches of `maybe_compact/3` now run inside a `compact_or_forward/3` containment wrapper: any raise, exit, or throw — including the exceptions `Compactor.Telemetry.with_compaction` deliberately reraises — is logged, emitted as an `:exception`-stage `:compaction` error trace through a non-throwing emit path (`safe_emit_error`), and the **original action** is forwarded, so a compaction fault can never crash the live ReAct turn. The `missing_context`/transformer-collision branches keep their existing return contracts. Storage calls route through an Application-env seam (`:compaction_storage`) for fault injection; tests cover raise/exit/throw containment in both modes plus the `with_compaction` reraise path (persist raise over a real seeded slice).
 
 ### H12. Session metadata: non-atomic writers clobber the atomic compaction snapshot ✓ verified
 
@@ -263,7 +267,7 @@ If the single-user/Tailscale assumptions still hold:
 ## Suggested priority order
 
 1. ~~**H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).~~ ✅ Done 2026-06-10 — `/admin` behind the `JIDOCLAW_ADMIN_EMAILS` allowlist (plug + on_mount); loopback bind + port-pinned origin allowlist in every env, `PHX_HOST` opt-in exposure.
-2. **H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes).
+2. **H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes). **H10 + H11 fixed 2026-06-10** (see the per-finding notes); H12 remains open.
 3. **H7 + H8 + H9 + M1 + M2** — the secrets cluster (chmod, import redaction, env allowlist, block redaction, logger metadata).
 4. **H13 + H14 + H15** — patch drift, Telegram wiring, process-group reaping.
 5. **H4 + H5 + H6** — before ever enabling clustering: peer verification, gossip secret, trust-score hardening.

@@ -13,9 +13,36 @@ defmodule JidoClaw.AgentTracker do
   this agent doing overall", Trace says "what happened during request
   R". Both attach to the same `[:jido, :ai, :tool, :execute, *]`
   events; telemetry is multi-listener, so they don't conflict.
+
+  ## Lifecycle & retention
+
+  `child_count/1` counts only `:running` non-main entries, so the spawn
+  cap is a *concurrency* limit, not a cumulative one. Terminal
+  (`:done`/`:error`) entries are retained for observability (swarm
+  status, display summaries, history) until a periodic sweep expires
+  them: once a terminal entry is older than the terminal TTL, the sweep
+  first stops the idle child process (deduplicated across sweeps), and
+  only evicts the entry once its pid is dead. Two invariants hold:
+
+    1. A live runtime agent always has a tracker entry — scoped tools
+       prove tenant ownership through the entry before touching the
+       runtime, so expiry stops the child first and never evicts a
+       live pid.
+    2. An entry is `:running` only while its pid is alive and
+       monitored — `mark_running/2` validates pid identity + liveness,
+       and both terminal writers (`mark_complete` + `:DOWN`) transition
+       only from `:running`, so a finished entry can never silently
+       consume the spawn cap with nothing left to complete it.
+
+  Config (code defaults, read per call):
+  `:agent_tracker_sweep_interval_ms` (60s),
+  `:agent_tracker_terminal_ttl_ms` (30min),
+  `:agent_tracker_stop_retry_ms` (5min).
   """
 
   use GenServer
+
+  require Logger
 
   defmodule AgentEntry do
     @moduledoc false
@@ -92,6 +119,24 @@ defmodule JidoClaw.AgentTracker do
   end
 
   @doc """
+  Re-activate an agent entry for a follow-up dispatch (`send_to_agent`).
+
+  Flips a terminal entry back to `:running` — making it count toward the
+  spawn cap and show as running again — but **only** when the entry
+  exists, its tracked pid equals `expected_pid` (the pid the caller is
+  about to dispatch to), and that pid is alive (alive ⟹ its monitor ref
+  is still armed, so a later death always lands in a `:DOWN` terminal
+  transition). Anything else returns `{:error, :not_found}` with no
+  mutation: a dead terminal entry stays terminal and sweepable — never
+  resurrect what the monitor can't watch. An already-`:running` entry
+  with a matching live pid returns `:ok` as a no-op.
+  """
+  @spec mark_running(String.t(), pid()) :: :ok | {:error, :not_found}
+  def mark_running(id, expected_pid) when is_binary(id) and is_pid(expected_pid) do
+    GenServer.call(__MODULE__, {:mark_running, id, expected_pid})
+  end
+
+  @doc """
   Update the tracked `:request_id` for an agent. Called by `send_to_agent`
   after each follow-up turn so `get_agent_result` reads the latest request's
   typed output, not the initial spawn's. No-op if the agent is not tracked.
@@ -128,7 +173,11 @@ defmodule JidoClaw.AgentTracker do
     GenServer.call(__MODULE__, {:get_agent, id, opts})
   end
 
-  @doc "Return count of non-main agents, optionally filtered by tenant/session/workspace scope."
+  @doc """
+  Return count of currently `:running` non-main agents, optionally filtered
+  by tenant/session/workspace scope. Terminal (`:done`/`:error`) entries are
+  retained for observability but do not count toward the spawn cap.
+  """
   @spec child_count(keyword()) :: non_neg_integer()
   def child_count(opts \\ []) do
     GenServer.call(__MODULE__, {:child_count, opts})
@@ -146,13 +195,15 @@ defmodule JidoClaw.AgentTracker do
 
   @impl GenServer
   def init(_opts) do
-    {:ok, %{agents: %{}, order: [], monitors: %{}}, {:continue, :setup}}
+    {:ok, %{agents: %{}, order: [], monitors: %{}, stopping: %{}}, {:continue, :setup}}
   end
 
   @impl GenServer
   def handle_continue(:setup, state) do
     JidoClaw.SignalBus.subscribe("jido_claw.tool.*")
     JidoClaw.SignalBus.subscribe("jido_claw.agent.*")
+
+    Process.send_after(self(), :sweep_terminal, sweep_interval_ms())
 
     :telemetry.attach(
       "agent-tracker-tool-stop",
@@ -263,13 +314,27 @@ defmodule JidoClaw.AgentTracker do
     count =
       state.agents
       |> filter_agents(opts)
-      |> Enum.count(fn {id, _} -> id != "main" end)
+      |> Enum.count(fn {id, entry} -> id != "main" and entry.status == :running end)
 
     {:reply, count, state}
   end
 
   def handle_call({:update_request_id, id, rid}, _from, state) do
     {:reply, :ok, update_agent(state, id, fn entry -> %{entry | request_id: rid} end)}
+  end
+
+  def handle_call({:mark_running, id, expected_pid}, _from, state) do
+    case Map.get(state.agents, id) do
+      %AgentEntry{pid: ^expected_pid} = entry ->
+        if Process.alive?(expected_pid) do
+          {:reply, :ok, reactivate_entry(state, id, entry)}
+        else
+          {:reply, {:error, :not_found}, state}
+        end
+
+      _ ->
+        {:reply, {:error, :not_found}, state}
+    end
   end
 
   @impl GenServer
@@ -298,17 +363,11 @@ defmodule JidoClaw.AgentTracker do
   end
 
   def handle_cast({:mark_complete, id, status}, state) do
-    state =
-      update_agent(state, id, fn entry ->
-        %{entry | status: status, finished_at: System.monotonic_time(:millisecond)}
-      end)
-
-    notify_display({:agent_completed, id, status})
-    {:noreply, state}
+    {:noreply, complete_entry(state, id, status)}
   end
 
   def handle_cast(:reset, _state) do
-    {:noreply, %{agents: %{}, order: [], monitors: %{}}}
+    {:noreply, %{agents: %{}, order: [], monitors: %{}, stopping: %{}}}
   end
 
   # Process crash detection
@@ -319,21 +378,15 @@ defmodule JidoClaw.AgentTracker do
         {:noreply, state}
 
       {agent_id, monitors} ->
-        state = %{state | monitors: monitors}
-
-        state =
-          update_agent(state, agent_id, fn entry ->
-            %{
-              entry
-              | status: :error,
-                finished_at: System.monotonic_time(:millisecond),
-                error: inspect(reason)
-            }
-          end)
-
-        notify_display({:agent_completed, agent_id, :error})
-        {:noreply, state}
+        state = %{state | monitors: monitors, stopping: Map.delete(state.stopping, agent_id)}
+        {:noreply, complete_entry(state, agent_id, :error, inspect(reason))}
     end
+  end
+
+  def handle_info(:sweep_terminal, state) do
+    state = sweep_terminal(state)
+    Process.send_after(self(), :sweep_terminal, sweep_interval_ms())
+    {:noreply, state}
   end
 
   # Signal bus events — we log but don't double-count since Stats handles global counters
@@ -350,6 +403,167 @@ defmodule JidoClaw.AgentTracker do
       nil -> state
       entry -> %{state | agents: Map.put(state.agents, agent_id, fun.(entry))}
     end
+  end
+
+  # Flip an entry back to `:running` for a follow-up dispatch (no-op when
+  # already running) and cancel any pending expiry stop for it. Liveness and
+  # pid identity are validated by the caller (`{:mark_running, ...}`).
+  defp reactivate_entry(state, id, %AgentEntry{status: :running}) do
+    %{state | stopping: Map.delete(state.stopping, id)}
+  end
+
+  defp reactivate_entry(state, id, _terminal_entry) do
+    state
+    |> update_agent(id, fn e -> %{e | status: :running, finished_at: nil, error: nil} end)
+    |> Map.update!(:stopping, &Map.delete(&1, id))
+  end
+
+  # Shared terminal transition for both writers (`mark_complete` cast and
+  # `:DOWN`). Transitions only from `:running`, so a late writer can never
+  # clobber an already-terminal entry in either direction, and the display
+  # gets exactly one completion event per run.
+  defp complete_entry(state, id, status, error \\ nil) do
+    case Map.get(state.agents, id) do
+      %AgentEntry{status: :running} = entry ->
+        completed = %{
+          entry
+          | status: status,
+            finished_at: System.monotonic_time(:millisecond),
+            error: error
+        }
+
+        state = %{
+          state
+          | agents: Map.put(state.agents, id, completed),
+            stopping: Map.delete(state.stopping, id)
+        }
+
+        notify_display({:agent_completed, id, status})
+        state
+
+      _ ->
+        state
+    end
+  end
+
+  # Expiry is stop-idle-child-then-evict: only dead pids are ever evicted,
+  # so a live runtime agent always keeps its tracker entry (scoped tools
+  # prove ownership through it). Live expired entries get a deduplicated
+  # stop request and are evicted by a later sweep once the pid is down.
+  defp sweep_terminal(state) do
+    now = System.monotonic_time(:millisecond)
+    ttl = terminal_ttl_ms()
+
+    expired =
+      Enum.filter(state.agents, fn {id, entry} ->
+        id != "main" and entry.status in [:done, :error] and
+          is_integer(entry.finished_at) and now - entry.finished_at >= ttl
+      end)
+
+    {dead, alive} =
+      Enum.split_with(expired, fn {_id, entry} ->
+        not (is_pid(entry.pid) and Process.alive?(entry.pid))
+      end)
+
+    state
+    |> evict_entries(Enum.map(dead, &elem(&1, 0)))
+    |> request_stops(alive, now)
+  end
+
+  defp evict_entries(state, []), do: state
+
+  defp evict_entries(state, ids) do
+    id_set = MapSet.new(ids)
+
+    {evicted_refs, kept_refs} =
+      Enum.split_with(state.monitors, fn {_ref, id} -> MapSet.member?(id_set, id) end)
+
+    Enum.each(evicted_refs, fn {ref, _id} -> Process.demonitor(ref, [:flush]) end)
+
+    %{
+      state
+      | agents: Map.drop(state.agents, ids),
+        order: Enum.reject(state.order, &MapSet.member?(id_set, &1)),
+        monitors: Map.new(kept_refs),
+        stopping: Map.drop(state.stopping, ids)
+    }
+  end
+
+  defp request_stops(state, [], _now), do: state
+
+  defp request_stops(state, alive_expired, now) do
+    retry_ms = stop_retry_ms()
+
+    Enum.reduce(alive_expired, state, fn {id, entry}, acc ->
+      case Map.get(acc.stopping, id) do
+        requested_at when is_integer(requested_at) and now - requested_at < retry_ms ->
+          acc
+
+        requested_at ->
+          if is_integer(requested_at) do
+            elapsed = now - requested_at
+
+            Logger.warning(
+              "[AgentTracker] expired agent #{id} still alive #{elapsed}ms after stop request; re-requesting stop"
+            )
+          end
+
+          start_stop_task(id, entry.pid)
+          %{acc | stopping: Map.put(acc.stopping, id, now)}
+      end
+    end)
+  end
+
+  # Stop by pid, not id: `Jido.stop_agent/2` accepts pids directly, and the
+  # monitored pid is authoritative even when a registry id lookup would miss.
+  defp start_stop_task(id, pid) do
+    runtime = jido_runtime()
+    Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn -> run_stop(runtime, id, pid) end)
+  end
+
+  defp run_stop(runtime, id, pid) do
+    case runtime.stop_agent(pid) do
+      :ok ->
+        :ok
+
+      {:error, :not_found} ->
+        Logger.debug("[AgentTracker] expired agent #{id} was already gone at stop time")
+
+      other ->
+        Logger.warning(
+          "[AgentTracker] stop request for expired agent #{id} returned #{inspect(other)}"
+        )
+    end
+  catch
+    kind, reason ->
+      Logger.warning(
+        "[AgentTracker] stop request for expired agent #{id} #{kind}: #{inspect(reason)}"
+      )
+  end
+
+  defp sweep_interval_ms do
+    case Application.get_env(:jido_claw, :agent_tracker_sweep_interval_ms, 60_000) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> 60_000
+    end
+  end
+
+  defp terminal_ttl_ms do
+    case Application.get_env(:jido_claw, :agent_tracker_terminal_ttl_ms, 1_800_000) do
+      ms when is_integer(ms) and ms >= 0 -> ms
+      _ -> 1_800_000
+    end
+  end
+
+  defp stop_retry_ms do
+    case Application.get_env(:jido_claw, :agent_tracker_stop_retry_ms, 300_000) do
+      ms when is_integer(ms) and ms >= 0 -> ms
+      _ -> 300_000
+    end
+  end
+
+  defp jido_runtime do
+    Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
   end
 
   defp scope_from_opts(opts) do

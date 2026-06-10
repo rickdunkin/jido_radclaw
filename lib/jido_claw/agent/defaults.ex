@@ -32,7 +32,10 @@ defmodule JidoClaw.Agent.Defaults do
 
   Compaction is best-effort. If `maybe_compact/3` returns `{:error, _}`,
   the override falls through with the original action so the agent
-  always makes forward progress.
+  always makes forward progress. That cover extends past error tuples:
+  `maybe_compact/3` contains its own raises/exits/throws internally
+  (forwarding the original action and emitting an `:exception`-stage
+  error trace), so a compaction fault can never crash the live turn.
 
   ## Why a macro
 

@@ -33,6 +33,13 @@ defmodule JidoClaw.Reasoning.Compactor do
   transformer that still applies the *previous* snapshot. The macro hook
   treats `{:error, _}` returns by falling through to the original action.
 
+  Containment goes beyond error tuples: any raise, exit, or throw out of
+  the compaction I/O path (storage reads, slice loads, summarize/persist —
+  including exceptions reraised by `Telemetry.with_compaction`) is rescued,
+  logged, emitted as an `:exception`-stage error trace, and the **original
+  action** is forwarded — a compaction fault can never crash the live
+  ReAct turn.
+
   ## Scope
 
   Every agent compacts its own slice. The main agent (and both main-surface
@@ -110,7 +117,8 @@ defmodule JidoClaw.Reasoning.Compactor do
   Other errors (Storage, Summarizer) are swallowed: emitted via Trace and
   logged, but `{:ok, _}` is still returned with the transformer (and
   prior snapshot, if any) installed so the live turn still benefits from
-  the previous compaction.
+  the previous compaction. Raises/exits/throws are contained the same way,
+  except the original action is returned untouched (no transformer install).
   """
   @spec maybe_compact(term(), action(), Config.t()) ::
           {:ok, action()} | {:error, term()}
@@ -141,15 +149,21 @@ defmodule JidoClaw.Reasoning.Compactor do
         {:error, :existing_request_transformer}
 
       true ->
-        manual_install(action, params, %{
+        meta = %{
           tenant_id: tenant_id,
           session_uuid: session_uuid,
-          actor: actor,
           agent_id: agent_id,
-          compaction_key:
-            compaction_key(compaction_id_from_context(ctx), Map.get(ctx, :context_ref)),
           request_id: request_id
-        })
+        }
+
+        compact_or_forward(action, meta, fn ->
+          manual_install(action, params, %{
+            actor: actor,
+            compaction_key:
+              compaction_key(compaction_id_from_context(ctx), Map.get(ctx, :context_ref)),
+            base_metadata: meta
+          })
+        end)
     end
   end
 
@@ -202,8 +216,45 @@ defmodule JidoClaw.Reasoning.Compactor do
           }
         }
 
-        run(action, params, compactor_ctx)
+        compact_or_forward(action, compactor_ctx.base_metadata, fn ->
+          run(action, params, compactor_ctx)
+        end)
     end
+  end
+
+  # Containment for the always-best-effort contract: any raise, exit, or
+  # throw out of the compaction path (including exceptions reraised by
+  # `Telemetry.with_compaction`) forwards the ORIGINAL action instead of
+  # crashing the live ReAct turn.
+  defp compact_or_forward(action, base_metadata, fun) do
+    fun.()
+  rescue
+    # reach:disable-next-line bare_rescue
+    e ->
+      Logger.warning(
+        "[Compactor] compaction raised; forwarding original action: " <> Exception.message(e)
+      )
+
+      safe_emit_error(:exception, e, base_metadata)
+      {:ok, action}
+  catch
+    kind, reason ->
+      Logger.warning(
+        "[Compactor] compaction #{kind}: #{inspect(reason)}; forwarding original action"
+      )
+
+      safe_emit_error(:exception, reason, base_metadata)
+      {:ok, action}
+  end
+
+  # The containment path itself must be non-throwing: a Trace emit fault
+  # here would defeat the wrapper.
+  defp safe_emit_error(stage, reason, base_metadata) do
+    emit_error(stage, reason, base_metadata)
+  catch
+    kind, emit_reason ->
+      Logger.debug("[Compactor] error trace emit #{kind}: #{inspect(emit_reason)}")
+      :ok
   end
 
   # Derive the durable compaction identity from the live tool_context — the
@@ -225,23 +276,26 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp manual_install(action, params, %{
-         tenant_id: tenant_id,
-         session_uuid: session_uuid,
          actor: actor,
-         agent_id: agent_id,
          compaction_key: compaction_key,
-         request_id: request_id
+         base_metadata: base_metadata
        }) do
-    base_metadata = %{
-      tenant_id: tenant_id,
-      session_uuid: session_uuid,
-      agent_id: agent_id,
-      request_id: request_id
-    }
+    %{session_uuid: session_uuid, request_id: request_id} = base_metadata
 
-    case Storage.latest(session_uuid, tenant: tenant_id, actor: actor, key: compaction_key) do
+    case storage().latest(session_uuid,
+           tenant: base_metadata.tenant_id,
+           actor: actor,
+           key: compaction_key
+         ) do
       {:ok, snap} ->
-        emit_skipped(:manual_mode, agent_id, tenant_id, session_uuid, request_id)
+        emit_skipped(
+          :manual_mode,
+          base_metadata.agent_id,
+          base_metadata.tenant_id,
+          session_uuid,
+          request_id
+        )
+
         {:ok, install_overrides(action, params, snap, request_id)}
 
       {:error, reason} ->
@@ -256,7 +310,7 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp run(action, params, %Ctx{} = ctx) do
-    case Storage.latest(ctx.session_uuid, ctx.storage_opts) do
+    case storage().latest(ctx.session_uuid, ctx.storage_opts) do
       {:ok, existing_snapshot} ->
         evaluate_and_run(action, params, ctx, existing_snapshot)
 
@@ -370,7 +424,7 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp persist_or_error(%Ctx{} = ctx, %Snapshot{} = snapshot) do
-    case Storage.persist(ctx.session_uuid, snapshot, ctx.storage_opts) do
+    case storage().persist(ctx.session_uuid, snapshot, ctx.storage_opts) do
       {:ok, _} ->
         {:ok, :summarized, snapshot, summarized_extras(snapshot)}
 
@@ -707,6 +761,13 @@ defmodule JidoClaw.Reasoning.Compactor do
     :ok
   end
 
+  # Application-env seam so tests can substitute a faulting storage backend
+  # (same pattern as `:compaction_summarizer`).
+  @spec storage() :: module()
+  defp storage do
+    Application.get_env(:jido_claw, :compaction_storage, Storage)
+  end
+
   defp generate_request_id do
     SignalID.generate!()
   end
@@ -744,7 +805,7 @@ defmodule JidoClaw.Reasoning.Compactor do
       when is_binary(session_uuid) and is_binary(tenant_id) and is_list(opts) do
     ctx = build_manual_ctx(session_uuid, tenant_id, opts)
 
-    with {:ok, existing} <- Storage.latest(session_uuid, ctx.storage_opts),
+    with {:ok, existing} <- storage().latest(session_uuid, ctx.storage_opts),
          {:ok, slice, slice_count} <-
            load_slice_count(session_uuid, ctx.compaction_id, existing, ctx.storage_opts) do
       run_manual(ctx, existing, slice, slice_count)
@@ -826,7 +887,7 @@ defmodule JidoClaw.Reasoning.Compactor do
   @spec latest(String.t(), keyword()) :: {:ok, Snapshot.t() | nil} | {:error, Exception.t()}
   def latest(session_uuid, opts) when is_binary(session_uuid) and is_list(opts) do
     opts = Keyword.put_new(opts, :key, compaction_key(Identity.main(), nil))
-    Storage.latest(session_uuid, opts)
+    storage().latest(session_uuid, opts)
   end
 
   defp empty_snapshot(%Ctx{} = ctx) do

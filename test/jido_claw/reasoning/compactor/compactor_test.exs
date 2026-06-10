@@ -657,4 +657,131 @@ defmodule JidoClaw.Reasoning.CompactorTest do
       assert String.contains?(prompt, "… (truncated, ")
     end
   end
+
+  describe "maybe_compact/3 — exception containment" do
+    defmodule RaisingStorage do
+      @moduledoc false
+      @spec latest(String.t(), keyword()) :: no_return()
+      def latest(_session_uuid, _opts), do: raise("boom-latest")
+    end
+
+    defmodule ExitingStorage do
+      @moduledoc false
+      @spec latest(String.t(), keyword()) :: no_return()
+      def latest(_session_uuid, _opts), do: exit(:boom_exit)
+    end
+
+    defmodule ThrowingStorage do
+      @moduledoc false
+      @spec latest(String.t(), keyword()) :: no_return()
+      def latest(_session_uuid, _opts), do: throw(:boom_throw)
+    end
+
+    defmodule PersistRaisingStorage do
+      @moduledoc false
+      defdelegate latest(session_uuid, opts), to: JidoClaw.Reasoning.Compactor.Storage
+
+      @spec persist(String.t(), term(), keyword()) :: no_return()
+      def persist(_session_uuid, _snapshot, _opts), do: raise("boom-persist")
+    end
+
+    setup do
+      test_pid = self()
+      handler_id = "compactor-exception-#{System.unique_integer([:positive])}"
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:jido_claw, :compaction, :event],
+          fn _, measurements, metadata, _ ->
+            send(test_pid, {:compaction_event, measurements, metadata})
+          end,
+          nil
+        )
+
+      original_storage = Application.get_env(:jido_claw, :compaction_storage)
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+        restore_env(:compaction_storage, original_storage)
+      end)
+
+      :ok
+    end
+
+    defp containment_action do
+      {:ai_react_start,
+       %{
+         query: "go",
+         tool_context: %{tenant_id: "t", session_uuid: Ecto.UUID.generate(), actor: nil}
+       }}
+    end
+
+    test "auto mode: a storage raise forwards the original action and emits :exception" do
+      Application.put_env(:jido_claw, :compaction_storage, RaisingStorage)
+      action = containment_action()
+
+      assert {:ok, ^action} = Compactor.maybe_compact(nil, action, Config.default())
+
+      assert_received {:compaction_event, _, %{event: :error, stage: :exception}}
+    end
+
+    test "auto mode: a storage exit forwards the original action and emits :exception" do
+      Application.put_env(:jido_claw, :compaction_storage, ExitingStorage)
+      action = containment_action()
+
+      assert {:ok, ^action} = Compactor.maybe_compact(nil, action, Config.default())
+
+      assert_received {:compaction_event, _, %{event: :error, stage: :exception}}
+    end
+
+    test "auto mode: a storage throw forwards the original action and emits :exception" do
+      Application.put_env(:jido_claw, :compaction_storage, ThrowingStorage)
+      action = containment_action()
+
+      assert {:ok, ^action} = Compactor.maybe_compact(nil, action, Config.default())
+
+      assert_received {:compaction_event, _, %{event: :error, stage: :exception}}
+    end
+
+    test "manual mode: a storage raise forwards the original action and emits :exception" do
+      Application.put_env(:jido_claw, :compaction_storage, RaisingStorage)
+      action = containment_action()
+
+      assert {:ok, ^action} = Compactor.maybe_compact(nil, action, Config.new!(mode: :manual))
+
+      assert_received {:compaction_event, _, %{event: :error, stage: :exception}}
+    end
+
+    test "a persist raise inside with_compaction is contained (the reraise is caught)" do
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "exc-persist")
+      actor = actor_for(tenant_id)
+
+      # Real slice above the threshold so the run reaches summarize + persist.
+      seed_turns(session, tenant_id, actor, 12, msgs_per_turn: 2)
+
+      Application.put_env(:jido_claw, :compaction_storage, PersistRaisingStorage)
+
+      config =
+        Config.new!(
+          mode: :auto,
+          max_messages: 20,
+          recompact_delta_threshold: 10,
+          keep_last_turns: 2,
+          protect_first_n_turns: 1,
+          summarizer_timeout_ms: 1_000
+        )
+
+      action =
+        {:ai_react_start,
+         %{
+           query: "go",
+           tool_context: %{tenant_id: tenant_id, session_uuid: session.id, actor: actor}
+         }}
+
+      assert {:ok, ^action} = Compactor.maybe_compact(nil, action, config)
+
+      assert_received {:compaction_event, _, %{event: :error, stage: :exception}}
+    end
+  end
 end

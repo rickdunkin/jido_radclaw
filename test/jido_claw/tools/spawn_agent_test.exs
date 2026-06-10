@@ -92,6 +92,31 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert wire.details.phase == :spawn_limit
   end
 
+  test "terminal children do not consume the spawn cap (H10 regression)" do
+    configure_fake_spawn()
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 1)
+
+    done_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    assert :ok =
+             AgentTracker.register("coder_done", done_pid, "coder", "finished task",
+               tenant_id: @tenant_id
+             )
+
+    AgentTracker.mark_complete("coder_done", :done)
+    flush_tracker()
+
+    # The cap is a concurrency limit: a completed child must not block the
+    # next spawn in the same scope.
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
+
+    assert_receive {:start_agent, [id: ^agent_id], pid}
+
+    Process.exit(pid, :kill)
+    Process.exit(done_pid, :kill)
+  end
+
   test "requires tenant scope before checking spawn limits" do
     Application.put_env(:jido_claw, :spawn_agent_max_children, 0)
 

@@ -15,6 +15,8 @@ defmodule JidoClaw.Tools.SendToAgent do
       message: [type: :string, required: true, doc: "The message to send"]
     ]
 
+  require Logger
+
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
   alias JidoClaw.Tools.SwarmScope
@@ -43,34 +45,65 @@ defmodule JidoClaw.Tools.SendToAgent do
         child_tool_context =
           JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id, visibility)
 
+        # Fallible setup (correlation registration touches Postgres) runs
+        # BEFORE the tracker gate, so a raise here leaves the entry untouched.
         request_id = JidoClaw.register_child_correlation(child_tool_context)
 
-        agent_tracker().update_request_id(params.agent_id, request_id)
+        dispatch(pid, params, template, child_tool_context, request_id)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp dispatch(pid, params, template, child_tool_context, request_id) do
+    agent_id = params.agent_id
+
+    # mark_running is the last gate before dispatch: it re-activates a
+    # terminal entry (follow-up to a finished agent) only while the tracked
+    # pid matches the dispatch target and is still alive — so a `:running`
+    # entry always has an armed monitor behind it, and an expired/dead agent
+    # reads as not_found instead of being resurrected.
+    case agent_tracker().mark_running(agent_id, pid) do
+      :ok ->
+        agent_tracker().update_request_id(agent_id, request_id)
 
         spawn(fn ->
-          SubagentTranscript.record_task(child_tool_context, request_id, params.message)
+          try do
+            SubagentTranscript.record_task(child_tool_context, request_id, params.message)
 
-          outcome =
-            SubagentTranscript.run(
-              template.module,
-              pid,
-              params.message,
-              request_id,
-              child_tool_context
-            )
+            outcome =
+              SubagentTranscript.run(
+                template.module,
+                pid,
+                params.message,
+                request_id,
+                child_tool_context
+              )
 
-          _ = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
+            status = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
+            agent_tracker().mark_complete(agent_id, status)
+          catch
+            # An orchestration crash must not strand the re-activated entry
+            # `:running` (it would consume the spawn cap until the child dies).
+            kind, reason ->
+              agent_tracker().mark_complete(agent_id, :error)
+
+              Logger.warning(
+                "[SendToAgent] follow-up orchestration for #{agent_id} #{kind}: #{inspect(reason)}"
+              )
+          end
         end)
 
         {:ok,
          %{
-           agent_id: params.agent_id,
+           agent_id: agent_id,
            status: "message_sent",
-           message: "Message sent to agent '#{params.agent_id}'"
+           message: "Message sent to agent '#{agent_id}'"
          }}
 
-      {:error, reason} ->
-        {:error, reason}
+      {:error, :not_found} ->
+        {:error, Error.not_found(:agent, agent_id)}
     end
   end
 
