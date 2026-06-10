@@ -42,11 +42,14 @@ defmodule JidoClaw.Orchestration.Cases do
   by construction (the reactor halted at the gate and returned). One
   transaction: every pending case flips to `:abandoned` (+ its `:abandoned`
   timeline event) and a `run_abandoned` event folds the run to the terminal
-  `:abandoned` (clearing the checkpoint). Abandoning a `:running` run is
-  refused — the projection's transition guard rolls the whole transaction
-  back. Widening to in-flight runs is future work gated on lease/cancellation
-  semantics (§4.11). Distinct from reject (a decision about the gate) and
-  from recovery's cancel (crash-reaped).
+  `:abandoned` (clearing the checkpoint). After commit the run-lifecycle
+  terminal `{:run_abandoned, …}` is broadcast on the runs topic (dashboard
+  refresh) alongside the gates-topic `{:gate_resolved, …}`. Abandoning a
+  `:running` run is refused — the projection's transition guard rolls the
+  whole transaction back. In-flight runs are stopped by
+  `JidoClaw.Orchestration.Cancellation.cancel/2`, which kills the live
+  executor and delegates *parked* runs here. Distinct from reject (a decision
+  about the gate) and from recovery's cancel (crash-reaped).
 
   ## Stale-approval retraction (AR-1)
 
@@ -138,6 +141,23 @@ defmodule JidoClaw.Orchestration.Cases do
          {:ok, gate} <- commit_abandon(agent_case, run, attrs, tenant, actor),
          {:ok, abandoned_run} <- WorkflowRun.by_id(run.id, tenant: tenant, actor: actor) do
       broadcast_resolved(run, gate, :abandon)
+
+      # Run-lifecycle terminal on the runs topic (the dashboard refresh),
+      # alongside the gates-topic resolution above. Payload from the RELOADED
+      # run — the decision-time snapshot predates the terminal flip, so its
+      # completed_at is still nil.
+      RunPubSub.broadcast(
+        run.id,
+        {:run_abandoned, run.id,
+         %{
+           tenant_id: abandoned_run.tenant_id,
+           name: abandoned_run.name,
+           workflow_type: abandoned_run.workflow_type,
+           status: :abandoned,
+           completed_at: abandoned_run.completed_at
+         }}
+      )
+
       {:ok, abandoned_run}
     end
   end

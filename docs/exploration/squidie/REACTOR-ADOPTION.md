@@ -20,8 +20,37 @@ shipped beyond the durable spine:
 - **§4.11 claim/fencing data model** — `claimed_by` / `claim_expires_at` /
   `claim_token` columns + the two **global** (`all_tenants?: true`) scan
   indexes landed on `WorkflowRun`. The Pooler/Lease *implementation*
-  (`:claim_next`, heartbeat, reclaim, live-process cancellation) remains
-  deferred — columns only, no behavior.
+  (`:claim_next`, heartbeat, reclaim — the multi-node story) remains
+  deferred — columns only, no behavior. **Kill-based single-node live-run
+  cancellation shipped separately 2026-06-10** (next bullet); the lease is
+  what would make it cluster-correct.
+- **Live-run cancellation (2026-06-10)** — every `Reactor.run` (both
+  chokepoints: `ReactorRunner.execute` and `GateResume.run_reactor`, so
+  `Replay`/`WorkflowRecovery`/cron inherit) now executes in a registered
+  killable task (`RunExecution.run_killable/4`: `RunRegistry` +
+  `RunTaskSupervisor`, registration **before** `Reactor.run`, duplicate
+  registration → `{:already_running, pid}` without touching the run).
+  `Cancellation.cancel/2` routes: terminal → `:already_terminal`; parked
+  `:awaiting_approval` → **delegates to `Cases.abandon/3`** (ends
+  `:abandoned`, not `:cancelled`); live `:pending`/`:running` →
+  **durable-decision-first** — `run_cancelled` + pending-case cancellation in
+  one transaction (`WorkflowLog.terminate_cancelling_cases/4`), *then* the
+  tenant-checked `Process.exit(pid, :kill)`, never a kill after a failed
+  append (a completion race reloads to a clean `:already_terminal`). The
+  caller side maps a killed/late-appending executor to
+  `{:error, :cancelled, run}` via reload-first finalize. Accepted
+  limitations: already-started async-step work may run to completion into
+  the void (nothing new schedules — a workflow kill switch, not a side-effect
+  interrupt), and the executor outlives a dead caller (`async_nolink`;
+  terminals land via middleware, skipped caller-side bookkeeping is reaped by
+  recovery's dangling-gate/stranded branches). Surface is **dashboard-only**
+  (`WorkflowsLive` Cancel button + `data-confirm`), matching the
+  replay-overrides precedent — no CLI/MCP cancel. Review follow-ups: the
+  cancel-before-register race is also closed on the **resume** path
+  (`ReactorMiddleware` hard-stops a resume whose `run_resumed` append fails
+  against a terminal run), `Cases.abandon/3` now emits the `{:run_abandoned,
+  …}` run-lifecycle broadcast (dashboard refresh for parked-run cancels), and
+  the parked-run delegation carries `decided_by_id` for audit parity.
 - **Step projection (T1-1 #3)** — `WorkflowStep` is tenant-scoped (the
   `WorkflowEvent` policy shape) and projected from enriched `step_*` events
   (YAML name + `step_type` + JSON-safe output summary) inside the append
@@ -137,8 +166,9 @@ shipped beyond the durable spine:
   deadline thresholds cross without any event, so a small poll is the honest
   mechanism.
 
-**Next-phase scope (NOT started):** the §4.11 lease *implementation*,
-live-run cancellation, and the async step-timeline `Writer`.
+**Next-phase scope (NOT started):** the §4.11 lease *implementation* (gated
+on clustering) and the async step-timeline `Writer`. (Live-run cancellation
+shipped 2026-06-10 — see the status bullet above.)
 
 ---
 

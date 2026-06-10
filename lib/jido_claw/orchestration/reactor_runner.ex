@@ -94,6 +94,23 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   failed terminal append in the middleware. Boot recovery (`WorkflowRecovery`)
   is the final net.
 
+  ## Killable execution
+
+  `execute/6` runs the reactor through
+  `JidoClaw.Orchestration.RunExecution.run_killable/4` — a registered task
+  `JidoClaw.Orchestration.Cancellation` can find and kill (see RunExecution's
+  moduledoc for the orphaned-async-work and caller-death semantics). The
+  caller-side mapping: a killed executor whose reloaded run is `:cancelled`
+  returns the clean `{:error, :cancelled, run}`; any other executor death is
+  a crash (`ensure_failed` + `{:error, {:exit, reason}, run}`); a registration
+  conflict returns `{:error, {:already_running, pid}, run}` **without**
+  `ensure_failed` — the run has a live, healthy executor and terminal-izing
+  it would wrongly fail a running workflow. A cancelled run can also surface
+  as `{:error, _}` from `Reactor.run` itself (a late `run_started`/
+  `run_completed` append fails as an illegal transition and propagates via
+  the middleware's `init`/`complete`), so the shared error finalize reloads
+  first and maps a `:cancelled` run to the same clean envelope.
+
   ## Never raises
 
   `run/3` returns a run-carrying envelope and never raises:
@@ -102,6 +119,11 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
       On a launch-dedupe hit `value` is `{:existing_run, run.id}` and `run` is
       the pre-existing run (nothing was executed).
     * `{:error, reason, run}` — a failure with the reloaded run.
+    * `{:error, :cancelled, run}` — the run was cancelled mid-flight
+      (`Cancellation.cancel/2`); the durable status is the truth.
+    * `{:error, {:already_running, pid}, run}` — a live executor already owns
+      this run id (resume race); nothing was executed and the run's status is
+      untouched.
     * `{:error, reason, nil}` — a *pre-run* failure, before any run exists:
       `{:not_a_reactor, mod}` (the module is not a reactor), `:missing_required_opt`
       (no `:tenant`/`:actor`), a `WorkflowRun.create` failure, or
@@ -152,6 +174,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.Reason
+  alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
@@ -410,21 +433,37 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
     end
   end
 
-  # One try/rescue around BOTH Reactor.run AND finalize, so a raise can't skip
-  # finalization. `context` is the merged Reactor context (run-identity base
-  # already won over the caller's extra `:context`); `finalize_opts` carries
-  # `inputs` + `reactor_module` so the halted clause can serialize a checkpoint
-  # (for a compiled struct `reactor_module` is nil — a halt is out of scope and
-  # defensively fails via finalize/3's :unexpected_halt clause).
+  # One try/rescue around BOTH the killable run AND finalize, so a raise can't
+  # skip finalization. `context` is the merged Reactor context (run-identity
+  # base already won over the caller's extra `:context`); `finalize_opts`
+  # carries `inputs` + `reactor_module` so the halted clause can serialize a
+  # checkpoint (for a compiled struct `reactor_module` is nil — a halt is out
+  # of scope and defensively fails via finalize/3's :unexpected_halt clause).
+  # `tenant_id:` is RunExecution-local registry metadata, popped there —
+  # it never reaches Reactor.run (whose executor state is struct!-strict).
   defp execute(run, runnable, inputs, context, finalize_opts, async?) do
-    runnable
-    |> Reactor.run(inputs, context,
-      run_id: run.id,
-      async?: async?,
-      timeout: :infinity,
-      max_iterations: :infinity
-    )
-    |> finalize(run, finalize_opts)
+    execution =
+      RunExecution.run_killable(runnable, inputs, context,
+        run_id: run.id,
+        tenant_id: run.tenant_id,
+        async?: async?,
+        timeout: :infinity,
+        max_iterations: :infinity
+      )
+
+    case execution do
+      {:reactor, result} ->
+        finalize(result, run, finalize_opts)
+
+      {:exit, reason} ->
+        handle_exit(run, reason, finalize_opts)
+
+      # A live executor already owns this run id (resume race). NO
+      # ensure_failed: the run is healthy and running — terminal-izing it
+      # would wrongly fail a live workflow.
+      {:duplicate, pid} ->
+        {:error, {:already_running, pid}, reload(run, finalize_opts)}
+    end
   rescue
     error ->
       reason = {:exception, Exception.message(error)}
@@ -434,11 +473,40 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
       {:error, reason, run}
   end
 
-  @doc false
-  # The shared finalizer: the initial `run/3` and every `GateResume.resume/2`
-  # route their `Reactor.run` result through here, so completion, failure, and
-  # gate-pause are handled identically. `opts` carries `:tenant`, `:actor`,
-  # `:inputs`, and `:reactor_module`.
+  # The executor task died. A reloaded `:cancelled` means Cancellation killed
+  # it — the clean cancellation envelope, not a crash. Anything else is a
+  # crash: `ensure_failed` appends the terminal iff the run is still
+  # non-terminal (a run that reached some *other* terminal in the
+  # append-then-kill gap no-ops there — durable status stays the truth).
+  defp handle_exit(run, reason, opts) do
+    reloaded = reload(run, opts)
+
+    if reloaded.status == :cancelled do
+      {:error, :cancelled, reloaded}
+    else
+      formatted = {:exit, Reason.format(reason)}
+      ensure_failed(reloaded, formatted, opts)
+      {:error, formatted, reload(run, opts)}
+    end
+  end
+
+  @doc """
+  GateResume's exit seam: route a resumed executor's death
+  (`RunExecution.run_killable/4`'s `{:exit, reason}`) through the same
+  cancelled-vs-crash mapping as the initial run's — a reloaded `:cancelled`
+  run returns the clean `{:error, :cancelled, run}`, anything else fails via
+  the `run_failed` backstop.
+  """
+  @spec finalize_exit(WorkflowRun.t(), term(), keyword()) :: run_result()
+  def finalize_exit(run, reason, opts), do: handle_exit(run, reason, opts)
+
+  @doc """
+  The shared finalizer: the initial `run/3` and every `GateResume.resume/2`
+  route their `Reactor.run` result through here, so completion, failure, and
+  gate-pause are handled identically (see the moduledoc's "Gate pause" and
+  "Killable execution" sections). `opts` carries `:tenant`, `:actor`,
+  `:inputs`, and `:reactor_module`.
+  """
   @spec finalize(
           {:ok, term()} | {:ok, term(), Reactor.t()} | {:error, term()} | {:halted, Reactor.t()},
           WorkflowRun.t(),
@@ -447,9 +515,21 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   def finalize({:ok, value}, run, opts), do: {:ok, value, reload(run, opts)}
   def finalize({:ok, value, _reactor}, run, opts), do: {:ok, value, reload(run, opts)}
 
+  # Reload-first: a cancelled run's late `run_started`/`run_completed` append
+  # fails as an illegal transition and PROPAGATES out of `Reactor.run` as
+  # `{:error, %Ash.Error.Invalid{}}` via the middleware's `init`/`complete` —
+  # when the durable status already says `:cancelled`, that error is the
+  # cancellation surfacing, not a recording failure. GateResume inherits this
+  # for free via the shared finalizer.
   def finalize({:error, reason}, run, opts) do
-    ensure_failed(run, reason, opts)
-    {:error, reason, reload(run, opts)}
+    reloaded = reload(run, opts)
+
+    if reloaded.status == :cancelled do
+      {:error, :cancelled, reloaded}
+    else
+      ensure_failed(reloaded, reason, opts)
+      {:error, reason, reload(run, opts)}
+    end
   end
 
   # A halt is a legitimate gate pause iff the reloaded run is

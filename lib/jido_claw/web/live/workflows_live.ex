@@ -3,6 +3,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   require Logger
 
+  alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.Replay
   alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Orchestration.WorkflowRun
@@ -145,6 +146,32 @@ defmodule JidoClaw.Web.WorkflowsLive do
     end
   end
 
+  # Cancel button (live-run cancellation). Flash reports the run's ACTUAL
+  # resulting status — Cancellation delegates a parked run to abandon, so the
+  # result is :abandoned there and :cancelled on the live path.
+  def handle_event("cancel", %{"id" => run_id}, socket) do
+    case Cancellation.cancel(run_id, cancel_opts(socket)) do
+      {:ok, run} ->
+        {runs, runs_error} = list_runs(socket)
+
+        {:noreply,
+         socket
+         |> assign(runs: runs, runs_error: runs_error)
+         |> put_flash(:info, "#{run.name} is now #{run.status}")}
+
+      {:error, :already_terminal} ->
+        {runs, runs_error} = list_runs(socket)
+
+        {:noreply,
+         socket
+         |> assign(runs: runs, runs_error: runs_error)
+         |> put_flash(:error, "This run already finished — nothing to cancel")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Cancel refused: #{inspect(reason)}")}
+    end
+  end
+
   @impl Phoenix.LiveView
   def render(assigns) do
     # One clock read per render pass: consistent deadline evidence across all
@@ -211,6 +238,17 @@ defmodule JidoClaw.Web.WorkflowsLive do
                     id={"reveal-#{run.id}"}
                   >
                     {if scope == :auditor, do: "Hide payloads", else: "Reveal payloads"}
+                  </button>
+                  <button
+                    :if={cancellable?(run.status)}
+                    class="btn"
+                    style="font-size: 0.8125rem;"
+                    phx-click="cancel"
+                    phx-value-id={run.id}
+                    data-confirm="Cancel this run? Already-started step work may not stop immediately."
+                    id={"cancel-#{run.id}"}
+                  >
+                    Cancel
                   </button>
                   <%= if replayable?(run.status) do %>
                     <%!-- Each override button re-emits the flags its refusal's
@@ -363,6 +401,10 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   defp replayable?(status), do: status in @terminal
 
+  # The inverse of replayable?: only a run that can still make progress has
+  # anything to cancel.
+  defp cancellable?(status), do: status in [:pending, :running, :awaiting_approval]
+
   # :auditor iff the operator clicked "Reveal payloads" for this run.
   defp scope_for(run_id, reveal_runs) do
     if MapSet.member?(reveal_runs, run_id), do: :auditor, else: :operator
@@ -430,4 +472,12 @@ defmodule JidoClaw.Web.WorkflowsLive do
   end
 
   defp replay_opts(_socket, _params), do: []
+
+  # Without a current_actor the empty opts make Cancellation refuse cleanly
+  # with :missing_required_opt (mirrors replay_opts).
+  defp cancel_opts(%{assigns: %{current_actor: %{tenant_id: tenant_id} = actor}}) do
+    [tenant: tenant_id, actor: actor]
+  end
+
+  defp cancel_opts(_socket), do: []
 end

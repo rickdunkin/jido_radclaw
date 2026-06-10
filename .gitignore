@@ -8,6 +8,9 @@
 erl_crash.dump
 .DS_Store
 
+# Bundled dashboard JS (mix assets.build output)
+/priv/static/assets/
+
 # Added by ex_harness
 /priv/plts/*.plt
 /priv/plts/*.plt.hash

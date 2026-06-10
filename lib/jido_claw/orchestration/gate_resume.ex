@@ -37,6 +37,18 @@ defmodule JidoClaw.Orchestration.GateResume do
       the frozen gate-halt checkpoint (Decision 7 caveat; per-step idempotency
       keys are a Phase-4 follow-up).
 
+  ## Killable execution
+
+  The resumed reactor runs through
+  `JidoClaw.Orchestration.RunExecution.run_killable/4` (same seam as
+  `ReactorRunner.execute`), so a resumed run is killable by
+  `JidoClaw.Orchestration.Cancellation` too. An executor death maps through
+  `ReactorRunner.finalize_exit/3` (cancelled vs crash); a registration
+  conflict — the realistic duplicate case, an operator approve racing boot
+  recovery on the *same* run id — returns
+  `{:error, {:already_running, pid}, run}` and must leave the winner's
+  `:running` run untouched (never `ensure_failed`).
+
   ## Safe decode (the only place DB content becomes an atom)
 
   The checkpoint is the two-layer envelope `ReactorRunner` writes, encrypted
@@ -59,6 +71,7 @@ defmodule JidoClaw.Orchestration.GateResume do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ReactorRunner
+  alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -133,6 +146,8 @@ defmodule JidoClaw.Orchestration.GateResume do
       {:error, {:checkpoint_decrypt_failed, Exception.message(error)}}
   end
 
+  # The killable-execution seam (mirrors ReactorRunner.execute): `tenant_id:`
+  # is RunExecution-local registry metadata and never reaches Reactor.run.
   defp run_reactor(run, module, reactor, inputs, decision, tenant, actor) do
     context = %{
       tenant: tenant,
@@ -142,19 +157,26 @@ defmodule JidoClaw.Orchestration.GateResume do
       approval: decision
     }
 
-    reactor
-    |> Reactor.run(inputs, context,
-      run_id: run.id,
-      async?: false,
-      timeout: :infinity,
-      max_iterations: :infinity
-    )
-    |> ReactorRunner.finalize(run,
-      tenant: tenant,
-      actor: actor,
-      inputs: inputs,
-      reactor_module: module
-    )
+    finalize_opts = [tenant: tenant, actor: actor, inputs: inputs, reactor_module: module]
+
+    case RunExecution.run_killable(reactor, inputs, context,
+           run_id: run.id,
+           tenant_id: run.tenant_id,
+           async?: false,
+           timeout: :infinity,
+           max_iterations: :infinity
+         ) do
+      {:reactor, result} ->
+        ReactorRunner.finalize(result, run, finalize_opts)
+
+      {:exit, reason} ->
+        ReactorRunner.finalize_exit(run, reason, finalize_opts)
+
+      # The loser of an approve-vs-boot-recovery race on the same run id must
+      # leave the winner's :running run untouched — report, never fail it.
+      {:duplicate, pid} ->
+        {:error, {:already_running, pid}, reload(run, tenant, actor)}
+    end
   end
 
   # Two-stage `[:safe]` decode. The outer tuple needs no custom atoms; the

@@ -12,7 +12,7 @@ defmodule JidoClaw.WorkflowView do
   alias JidoClaw.Orchestration.WorkflowRun
 
   @active_statuses [:pending, :running, :awaiting_approval]
-  @terminal_statuses [:completed, :failed, :cancelled]
+  @terminal_statuses [:completed, :failed, :cancelled, :abandoned]
 
   @type t :: %__MODULE__{
           tenant_id: String.t(),

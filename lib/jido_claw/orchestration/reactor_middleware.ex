@@ -50,8 +50,10 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   `run_resumed`. This makes `init/1` the sole producer of both for every resume
   path — callers (`ReactorRunner`, `GateResume`) never append them. A failed
   `run_started` on the **initial** start fails loudly (aborting before any step
-  drops events); a failed `run_resumed` on **resume** is best-effort
-  (provenance — the decision is already durable).
+  drops events); a failed `run_resumed` on **resume** is best-effort **while
+  the run is live** (provenance — the decision is already durable), but a run
+  that reloads **terminal** hard-stops the resume (the cancel-before-register
+  race: the durable decision wins, mirroring the fresh-start abort).
 
   ## `halt/1` always succeeds
 
@@ -108,6 +110,10 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Trace
   alias JidoClaw.Workflows.StepResult
 
+  # Mirrors `WorkflowEvent.Projection`'s terminal set — a resume whose run has
+  # already reached one of these must hard-stop, never execute a step.
+  @terminal [:completed, :failed, :cancelled, :abandoned]
+
   @impl Reactor.Middleware
   @spec init(Reactor.context()) :: {:ok, Reactor.context()} | {:error, term()}
   def init(context) do
@@ -119,7 +125,8 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
 
   # Resume (operator approve OR boot recovery): `run_resumed` is provenance; the
   # decision (`approval_resolved`/`run_cancelled`) is already durable, so a
-  # failed append is best-effort.
+  # failed append is best-effort while the run is live — but a run that reloads
+  # terminal hard-stops the resume (the cancel-before-register race).
   defp init_for_state(run, %{__reactor__: %{initial_state: :halted}} = context) do
     case append(run, :run_resumed, %{reactor: context[:reactor]}, context) do
       {:ok, _event} ->
@@ -127,8 +134,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
         {:ok, context}
 
       {:error, reason} ->
-        Logger.warning("[ReactorMiddleware] run_resumed append failed: #{inspect(reason)}")
-        {:ok, context}
+        explain_resume_append_failure(run, reason, context)
     end
   end
 
@@ -152,6 +158,24 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Only reached on a failed `run_resumed` append (zero cost on the happy
+  # path). A reload that reads terminal means the projection's transition
+  # guard refused the append — a cancel/abandon landed before the resumed
+  # executor registered — so abort before any downstream step executes,
+  # mirroring the fresh-start `run_started` abort. A still-live or unreadable
+  # reload keeps the best-effort contract: a transient DB blip on a provenance
+  # append must never fail a healthy run.
+  defp explain_resume_append_failure(run, reason, context) do
+    case WorkflowRun.by_id(run.id, tenant: run.tenant_id, actor: context_actor(context, run)) do
+      {:ok, %WorkflowRun{status: status}} when status in @terminal ->
+        {:error, {:run_already_terminal, status}}
+
+      _live_or_unreadable ->
+        Logger.warning("[ReactorMiddleware] run_resumed append failed: #{inspect(reason)}")
+        {:ok, context}
     end
   end
 

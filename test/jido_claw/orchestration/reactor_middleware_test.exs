@@ -32,6 +32,27 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep do
   def run(_arguments, _context, _options), do: {:ok, %{workspace: ~D[2024-01-01]}}
 end
 
+defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.HaltStep do
+  @moduledoc false
+  use Reactor.Step
+
+  @impl Reactor.Step
+  def run(_arguments, _context, _options), do: {:halt, :paused}
+end
+
+defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.NotifyStep do
+  @moduledoc false
+  use Reactor.Step
+
+  # Proof-of-execution probe: reports to the context-seeded test pid so a
+  # test can assert the downstream of a halt did (or did not) run.
+  @impl Reactor.Step
+  def run(_arguments, context, _options) do
+    send(context[:test_pid], {:downstream_ran, self()})
+    {:ok, :notified}
+  end
+end
+
 defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   @moduledoc """
   Unit-tests the event-producing middleware in isolation, driving a one-step
@@ -42,7 +63,11 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     * a `{:error, _}` step yields a terminal `run_failed` carrying the formatted
       error string;
     * a run whose context lacks a `%WorkflowRun{}` returns `{:error, _}` and
-      appends nothing (the misconfigured-caller guard).
+      appends nothing (the misconfigured-caller guard);
+    * resuming a halted reactor (`initial_state: :halted` — GateResume's
+      mechanics minus encryption) appends `run_resumed` and runs downstream,
+      but hard-stops with `{:error, _}` before any downstream work when the
+      run was cancelled while parked (the cancel-before-register race).
 
   Redaction is not re-asserted here — the middleware appends through
   `WorkflowLog.append` -> `Allocate`, whose redaction is already pinned by
@@ -52,11 +77,15 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
 
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep
+  alias JidoClaw.Orchestration.ReactorMiddlewareTest.HaltStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.MapStep
+  alias JidoClaw.Orchestration.ReactorMiddlewareTest.NotifyStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.OkStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias Reactor.Argument
   alias Reactor.Builder
 
   setup do
@@ -202,6 +231,66 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert reloaded.status == :completed
   end
 
+  describe "resume of a halted reactor (initial_state: :halted)" do
+    test "positive control: an un-cancelled halted reactor resumes downstream to run_completed",
+         ctx do
+      run = create_run("mw-resume-ok", ctx)
+      context = Map.put(context(run, ctx), :test_pid, self())
+
+      assert {:halted, halted_reactor} =
+               Reactor.run(build_halting(), %{}, context, async?: false, run_id: run.id)
+
+      assert {:ok, :notified} =
+               Reactor.run(halted_reactor, %{}, context, async?: false, run_id: run.id)
+
+      assert_received {:downstream_ran, _pid}
+
+      kinds = kinds(run, ctx)
+      assert :run_resumed in kinds
+      assert [:run_completed | _] = Enum.reverse(kinds)
+    end
+
+    test "a cancel landing before the resume hard-stops it before any downstream step", ctx do
+      run = create_run("mw-cancel-resume", ctx)
+      %{tenant: tenant, actor: actor} = ctx
+      context = Map.put(context(run, ctx), :test_pid, self())
+
+      assert {:halted, halted_reactor} =
+               Reactor.run(build_halting(), %{}, context, async?: false, run_id: run.id)
+
+      # run_halted is provenance-only, so the run is still :running — where
+      # run_cancelled is legal. This is the cancel-before-register race with
+      # the timing made deterministic.
+      {:ok, running} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
+      assert running.status == :running
+
+      {:ok, _} =
+        WorkflowLog.append(running, :run_cancelled, %{reason: "operator"},
+          tenant: tenant,
+          actor: actor
+        )
+
+      # Resume exactly as GateResume does (Reactor seeds initial_state:
+      # :halted): the run_resumed append is illegal from :cancelled and the
+      # middleware hard-stops on the terminal reload.
+      assert {:error, _} =
+               Reactor.run(halted_reactor, %{}, context, async?: false, run_id: run.id)
+
+      refute_received {:downstream_ran, _pid}
+
+      {:ok, reloaded} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
+      assert reloaded.status == :cancelled
+
+      # Nothing for the downstream :notify step landed after the cancel —
+      # filtered by that step's payload identity, not a blanket step_* sweep.
+      events = events_for(run, ctx)
+      cancelled_seq = Enum.find(events, &(&1.kind == :run_cancelled)).seq
+
+      assert Enum.filter(events, &(&1.seq > cancelled_seq and &1.payload["step"] == ":notify")) ==
+               []
+    end
+  end
+
   describe "json_safe?/1 (persistence boundary)" do
     test "accepts the CollectStep-shaped build_result map" do
       build_result = %{
@@ -239,6 +328,16 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     Builder.new()
     |> Builder.add_step!(:only, step_module)
     |> Builder.return!(:only)
+    |> Builder.add_middleware!(ReactorMiddleware)
+  end
+
+  # Halt-then-notify: the downstream :notify step waits on :halt via a result
+  # argument — the DSL's `wait_for` desugars to exactly this `:_` argument.
+  defp build_halting do
+    Builder.new()
+    |> Builder.add_step!(:halt, HaltStep)
+    |> Builder.add_step!(:notify, NotifyStep, [Argument.from_result(:_, :halt)])
+    |> Builder.return!(:notify)
     |> Builder.add_middleware!(ReactorMiddleware)
   end
 

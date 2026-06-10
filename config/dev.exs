@@ -12,3 +12,9 @@ config :jido_claw, JidoClaw.Repo,
   pool_size: 10
 
 config :jido_claw, dev_routes: true
+
+# Rebuild the dashboard JS bundle on change while the gateway runs in dev.
+config :jido_claw, JidoClaw.Web.Endpoint,
+  watchers: [
+    esbuild: {Esbuild, :install_and_run, [:jido_claw, ~w(--sourcemap=inline --watch)]}
+  ]

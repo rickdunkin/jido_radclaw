@@ -82,6 +82,35 @@ defmodule JidoClaw.WorkflowViewTest do
     refute Map.has_key?(leaky, "result")
   end
 
+  test "an abandoned run shows as terminal dashboard activity (recent_completions)",
+       %{tenant_a: tenant} do
+    {:ok, run} =
+      WorkflowRun.create(%{name: "given-up", workflow_type: "reactor"},
+        tenant: tenant,
+        actor: actor_for(tenant)
+      )
+
+    # Corruption-sim precedent: stamp the terminal via the private projection
+    # action. Both Cancel-button paths must surface as terminal activity —
+    # without :abandoned in the terminal set the run leaves active_runs and
+    # never enters recent_completions, vanishing from the dashboard entirely.
+    {:ok, _} =
+      run
+      |> Ash.Changeset.for_update(
+        :set_status,
+        %{status: :abandoned, completed_at: DateTime.utc_now()},
+        tenant: tenant,
+        authorize?: false
+      )
+      |> Ash.update()
+
+    assert {:ok, view} = WorkflowView.list(%{tenant_id: tenant})
+
+    abandoned = Enum.find(view.recent_completions, &(&1.run_id == run.id))
+    assert abandoned.status == :abandoned
+    refute Enum.any?(view.active_runs, &(&1.run_id == run.id))
+  end
+
   test "an overdue run reports deadline evidence; runs without a policy report nil (T2-1)",
        %{tenant_a: tenant} do
     {:ok, run} =

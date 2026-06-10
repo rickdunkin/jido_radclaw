@@ -177,6 +177,9 @@ defmodule JidoClaw.MixProject do
 
       # Phoenix gateway
       {:phoenix, "~> 1.7"},
+      # Dashboard JS bundler (mix assets.build / the dev watcher). The
+      # `mix esbuild` task auto-downloads the binary on first run.
+      {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:phoenix_html, "~> 4.0"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
@@ -238,7 +241,11 @@ defmodule JidoClaw.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get", "ash.setup"],
+      # assets.build is in setup because the gateway dashboard needs
+      # priv/static/assets/app.js to exist (the bundle is gitignored); any
+      # clean checkout must run it before the dashboard has working JS.
+      setup: ["deps.get", "ash.setup", "assets.build"],
+      "assets.build": ["esbuild jido_claw"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ash.setup --quiet", "test"],

@@ -10,6 +10,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecoveryTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
@@ -62,6 +63,22 @@ defmodule JidoClaw.Orchestration.WorkflowRecoveryTest do
 
     assert still.status == :completed
     assert length(after_events) == length(before)
+  end
+
+  test "a cancelled run is terminal — reconcile_all leaves it untouched" do
+    tenant = seed_tenant("recovery-cancelled")
+    run = strand_running(tenant)
+
+    assert {:ok, %WorkflowRun{status: :cancelled}} =
+             Cancellation.cancel(run.id, tenant: tenant, actor: actor_for(tenant))
+
+    assert :ok = WorkflowRecovery.reconcile_all()
+
+    {:ok, still} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor_for(tenant))
+    assert still.status == :cancelled
+
+    {:ok, events} = WorkflowEvent.for_run(run.id, tenant: tenant, actor: actor_for(tenant))
+    refute Enum.any?(events, &(&1.kind == :run_recovered))
   end
 
   test "reconciliation is tenant-blind — strands in two tenants both fail in one pass" do

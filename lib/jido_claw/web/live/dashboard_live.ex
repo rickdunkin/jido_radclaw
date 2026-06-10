@@ -95,7 +95,9 @@ defmodule JidoClaw.Web.DashboardLive do
   end
 
   # Run events (RunPubSub — broadcast by JidoClaw.Orchestration.ReactorMiddleware,
-  # with a terminal backstop in JidoClaw.Orchestration.ReactorRunner)
+  # with a terminal backstop in JidoClaw.Orchestration.ReactorRunner;
+  # run_cancelled by JidoClaw.Orchestration.Cancellation and run_abandoned by
+  # JidoClaw.Orchestration.Cases.abandon — both Cancel-button terminals)
   @impl Phoenix.LiveView
   def handle_info({:run_started, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
@@ -108,6 +110,16 @@ defmodule JidoClaw.Web.DashboardLive do
 
   @impl Phoenix.LiveView
   def handle_info({:run_failed, _id, _info}, socket) do
+    {:noreply, schedule_overview_refresh(socket)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:run_cancelled, _id, _info}, socket) do
+    {:noreply, schedule_overview_refresh(socket)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:run_abandoned, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 

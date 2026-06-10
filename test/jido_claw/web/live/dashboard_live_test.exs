@@ -125,6 +125,26 @@ defmodule JidoClaw.Web.DashboardLiveTest do
       assert returned.assigns.overview_refresh_pending
       assert returned.assigns.overview == @stale_overview
     end
+
+    test "run_cancelled schedules a deferred refresh" do
+      socket = build_socket()
+
+      assert {:noreply, returned} =
+               DashboardLive.handle_info({:run_cancelled, "r1", %{}}, socket)
+
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
+    end
+
+    test "run_abandoned schedules a deferred refresh" do
+      socket = build_socket()
+
+      assert {:noreply, returned} =
+               DashboardLive.handle_info({:run_abandoned, "r1", %{}}, socket)
+
+      assert returned.assigns.overview_refresh_pending
+      assert returned.assigns.overview == @stale_overview
+    end
   end
 
   describe "handle_info/2 — :refresh_overview rebuilds once" do

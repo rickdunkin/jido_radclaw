@@ -206,6 +206,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: A `WorkflowAttempt` Ash resource (`claim_id`, `claim_token_hash`, `lease_until`) + an atomic claim action with optimistic version. Defer until multi-worker execution is real.
 
+**Partially shipped (2026-06-10)** — not the lease itself (still deferred, gated on clustering), but the live-run **cancellation** that REACTOR-ADOPTION §4.11 originally bundled with it landed as a single-node kill switch: every `Reactor.run` executes in a registered killable task (`RunExecution.run_killable/4` over `RunRegistry`/`RunTaskSupervisor`), and `Cancellation.cancel/2` appends the durable `run_cancelled` (one transaction with pending-case cancellation) **before** the tenant-checked kill — parked runs delegate to `Cases.abandon/3` instead. Accepted limitation: already-started async-step work may run to completion (nothing new schedules). Dashboard-only surface (`WorkflowsLive` Cancel + `data-confirm`); the lease/fencing remains what would make cancellation cluster-correct.
+
 ### T2-5. Spark DSL for declaring human-gate kinds
 
 **Recommendation**: BORROW-PATTERN (pairs with T1-4 — from Rift).

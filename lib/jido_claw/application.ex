@@ -138,6 +138,13 @@ defmodule JidoClaw.Application do
       JidoClaw.Repo,
       JidoClaw.Security.Vault,
       {Phoenix.PubSub, name: JidoClaw.PubSub},
+      # Killable workflow execution (RunExecution): the run-id → executor-pid
+      # registry and the task supervisor the executor tasks run under. Started
+      # AFTER Repo/Vault/PubSub deliberately — supervisor shutdown is reverse
+      # start order, and executor tasks are DB-heavy and broadcast via PubSub,
+      # so they must be torn down before those services on app shutdown.
+      {Registry, keys: :unique, name: JidoClaw.Orchestration.RunRegistry},
+      {Task.Supervisor, name: JidoClaw.Orchestration.RunTaskSupervisor},
       # partition_count: 1 is REQUIRED for the Recorder's flush/1 barrier
       # to give per-request ordering. The Recorder's "all prior signals
       # processed" guarantee depends on per-sender FIFO from a single

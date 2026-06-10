@@ -205,6 +205,18 @@ config :jido_claw, JidoClaw.Web.Endpoint,
   live_view: [signing_salt: "jidoclaw_lv"],
   check_origin: false
 
+# Dashboard JS bundle (mix assets.build / the dev watcher). NODE_PATH=deps
+# resolves the bare "phoenix" / "phoenix_live_view" / "phoenix_html" imports
+# from the hex packages' shipped JS — no npm. Output is gitignored
+# (priv/static/assets/); `mix setup` builds it.
+config :esbuild,
+  version: "0.25.0",
+  jido_claw: [
+    args: ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets),
+    cd: Path.expand("../assets", __DIR__),
+    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
+  ]
+
 # Channel adapters (configure via env vars)
 # Discord: DISCORD_BOT_TOKEN, DISCORD_GUILD_ID
 # Telegram: TELEGRAM_BOT_TOKEN
