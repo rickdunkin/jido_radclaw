@@ -233,7 +233,11 @@ defmodule JidoClaw.Skills.Compiler do
                 max_iterations: skill.max_iterations,
                 # The generator's retry budget governs the whole loop step:
                 # IterativeStep.compensate/4 returns :retry against it.
-                retry: step_retry(gen)
+                retry: step_retry(gen),
+                # The loop step is the only execution-tracked unit — re-running
+                # it repeats every member step's effects, so it is irreversible
+                # iff ANY role step is.
+                irreversible: gen.irreversible or eval.irreversible
               ]},
              [input_arg()],
              async?: true,

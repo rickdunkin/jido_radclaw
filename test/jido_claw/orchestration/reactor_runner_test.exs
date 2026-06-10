@@ -43,6 +43,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.ReactorRunnerTest.ContextEchoStep
   alias JidoClaw.Orchestration.ReactorRunnerTest.NoMiddlewareReactor
@@ -154,6 +155,89 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
 
       assert {:error, {:not_a_reactor, _}, nil} =
                ReactorRunner.run(%WorkflowRun{}, %{}, tenant: tenant, actor: actor)
+    end
+  end
+
+  describe "replay provenance (Phase 4)" do
+    test "a module run self-computes definition_hash, records module kind + inputs blob", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      assert {:ok, :done, run} =
+               ReactorRunner.run(NoMiddlewareReactor, %{}, tenant: tenant, actor: actor)
+
+      assert run.definition_hash == DefinitionFingerprint.for_module(NoMiddlewareReactor)
+      assert run.config["definition_kind"] == "module"
+      assert is_nil(run.retry_of_id)
+
+      # The inputs blob is present and encrypted at rest: the stored column is
+      # ciphertext, NOT the raw term_to_binary envelope.
+      assert is_binary(run.encrypted_replay_inputs)
+
+      assert_raise ArgumentError, fn ->
+        :erlang.binary_to_term(run.encrypted_replay_inputs, [:safe])
+      end
+    end
+
+    test "a struct run stores the caller's definition_hash verbatim with skill kind", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      original_id = Ash.UUID.generate()
+
+      struct =
+        Builder.new()
+        |> Builder.add_input!(:extra_context)
+        |> Builder.add_step!(
+          :echo,
+          ContextEchoStep,
+          [Argument.from_input(:extra_context, :extra_context)],
+          async?: true,
+          max_retries: 0
+        )
+        |> Builder.return!(:echo)
+
+      assert {:ok, _value, run} =
+               ReactorRunner.run(struct, %{extra_context: "go"},
+                 tenant: tenant,
+                 actor: actor,
+                 name: "my_skill",
+                 definition_hash: "feedface",
+                 retry_of_id: original_id,
+                 context: %{project_dir: "/tmp/proj"}
+               )
+
+      assert run.definition_hash == "feedface"
+      assert run.retry_of_id == original_id
+      assert run.config["definition_kind"] == "skill"
+      # project_dir from the caller's :context rides into config so Replay can
+      # locate the skills dir without decoding the inputs blob first.
+      assert run.config["project_dir"] == "/tmp/proj"
+      assert is_binary(run.encrypted_replay_inputs)
+    end
+
+    test "a struct run without a definition_hash opt stores nil (no self-compute)", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      struct =
+        Builder.new()
+        |> Builder.add_input!(:extra_context)
+        |> Builder.add_step!(
+          :echo,
+          ContextEchoStep,
+          [Argument.from_input(:extra_context, :extra_context)],
+          async?: true,
+          max_retries: 0
+        )
+        |> Builder.return!(:echo)
+
+      assert {:ok, _value, run} =
+               ReactorRunner.run(struct, %{extra_context: "go"},
+                 tenant: tenant,
+                 actor: actor,
+                 name: "anon_skill"
+               )
+
+      assert is_nil(run.definition_hash)
+      assert run.config["definition_kind"] == "skill"
+      refute Map.has_key?(run.config, "project_dir")
     end
   end
 

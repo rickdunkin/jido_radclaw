@@ -102,6 +102,32 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert events_for(run, ctx) == []
   end
 
+  test "run_started payload carries definition_hash when one was stamped on the run", ctx do
+    %{tenant: tenant, actor: actor} = ctx
+
+    {:ok, run} =
+      WorkflowRun.create(%{name: "mw-hash", definition_hash: "deadbeef"},
+        tenant: tenant,
+        actor: actor
+      )
+
+    assert {:ok, :done} =
+             Reactor.run(build(OkStep), %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    started = run |> events_for(ctx) |> Enum.find(&(&1.kind == :run_started))
+    assert started.payload["definition_hash"] == "deadbeef"
+  end
+
+  test "run_started payload omits definition_hash when none was stamped", ctx do
+    run = create_run("mw-nohash", ctx)
+
+    assert {:ok, :done} =
+             Reactor.run(build(OkStep), %{}, context(run, ctx), async?: false, run_id: run.id)
+
+    started = run |> events_for(ctx) |> Enum.find(&(&1.kind == :run_started))
+    refute Map.has_key?(started.payload, "definition_hash")
+  end
+
   test "captures a json-safe return value into run.result (closes the regression)", ctx do
     run = create_run("mw-result", ctx)
 

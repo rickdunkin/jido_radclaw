@@ -8,10 +8,12 @@ Architecture direction — not a commitment. Baseline **2026-06-04**. Builds on
 
 ---
 
-## Status reconciliation — 2026-06-09 (Phases 0–3 complete)
+## Status reconciliation — 2026-06-09 (Phases 0–4 complete)
 
 Phases 0–3 are **implemented and tested**, including the items the original
-phase commits claimed but deferred. What shipped beyond the durable spine:
+phase commits claimed but deferred; **Phase 4 (definition fingerprint +
+replay, T1-3) shipped the same day** — see §4.7's implementation note for
+what diverged from the sketch. What shipped beyond the durable spine:
 
 - **§4.11 claim/fencing data model** — `claimed_by` / `claim_expires_at` /
   `claim_token` columns + the two **global** (`all_tenants?: true`) scan
@@ -72,10 +74,9 @@ phase commits claimed but deferred. What shipped beyond the durable spine:
 - A gate step's row stays `:running` after resume (the halted step is
   dropped from the plan and never re-runs; `{:run_halt, _}` is unmapped).
 
-**Next-phase scope (NOT started):** Phase 4 (definition fingerprint, replay)
-and Phase 5 (deadline read-model, cron idempotency, actor-visibility
-redaction, graph-layout visualization), plus the §4.11 lease *implementation*
-and live-run cancellation.
+**Next-phase scope (NOT started):** Phase 5 (deadline read-model, cron
+idempotency, actor-visibility redaction, graph-layout visualization), plus
+the §4.11 lease *implementation* and live-run cancellation.
 
 ---
 
@@ -436,6 +437,50 @@ carry `irreversible: true` / `compensatable: false` markers; replay and post-cra
 auto-resume are gated on them. `Ash.Reactor` resource mutations are side-effectful by
 nature → default them to irreversible unless they declare a durable undo.
 
+**Implementation note (shipped 2026-06-09).** The sketch above survived with
+five deliberate divergences:
+
+- **Skills hash a canonical semantic term, not YAML text.**
+  `Skills.parse_skill_file/1` doesn't retain raw text, tests/tools build
+  `%JidoClaw.Skills{}` structs directly, and a compiled `%Reactor{}` can't be
+  hashed (`Builder.new/1` stamps a fresh `make_ref()` per compile). So
+  `JidoClaw.Orchestration.DefinitionFingerprint.for_skill/1` hashes a
+  normalized term mirroring compiler semantics (mode via `execution_mode/1`,
+  compiler defaults applied, `depends_on`/`consumes` order preserved — it's
+  prompt-semantic — `description` excluded), encoded with
+  `term_to_binary({:v1, …}, [:deterministic])`. Module reactors use
+  `module_info(:md5)`. Comment/whitespace/description edits don't trip the
+  gate; semantic edits do.
+- **Replay is a module function, not an Ash action** —
+  `JidoClaw.Orchestration.Replay.replay/2` (the `Cases.decide/4` precedent),
+  one envelope: `{:ok, run}` whenever a replay run exists (inspect status),
+  `{:error, reason}` for refusals/pre-run failures. The hash also lands as a
+  `definition_hash` column on `WorkflowRun` (plus the `run_started` payload).
+- **Original inputs are durably stored** — the checkpoint is cleared on every
+  terminal, so replay needed its own blob: `replay_inputs`
+  (AshCloak-encrypted `encrypted_replay_inputs`), written at create, never
+  cleared, decoded only by `Replay` (`[:safe]`, after the definition is
+  re-resolved so its atoms are interned).
+- **Replay re-resolves skills from DISK** (`Skills.load_skill/2`, matched on
+  the `name:` field under `config["project_dir"]`) — the boot-time cache
+  would mask exactly the on-disk edit the gate exists to catch. Module
+  identities are fenced to the `JidoClaw.Orchestration.Reactors.` prefix
+  before `String.to_existing_atom/1`.
+- **The irreversible gate scans executed `step_*` event payloads**
+  (`irreversible == true` on `step_started/completed/failed`) — declaration
+  alone doesn't refuse; *execution* does. Override `allow_irreversible: true`.
+  Surfaces: dashboard button (both overrides) + MCP `replay_workflow` tool
+  (**no** override params — operator-only levers stay on the dashboard).
+
+Post-review fix (same day): the iterative loop step now carries
+`irreversible` OR-aggregated from its generator/evaluator roles (and the
+generator's declared `retry` budget actually threads onto the loop), so the
+replay irreversible gate covers iterative skills too. Correspondingly, the
+iterative fingerprint hashes the resolved loop semantics — gen/eval role
+maps, generator retry, OR'd irreversible, `max_iterations` — rather than the
+raw step list (compensate / evaluator retry / step order are runtime-inert
+there, so fingerprint-inert).
+
 ### 4.8 Recovery reconciler (boot)
 
 Reactor's in-memory run dies with the node, so recovery still matters. On boot, scan
@@ -647,12 +692,14 @@ map all execution modes, attach the middleware, and **delete** `IterativeWorkflo
 existing skill runs through Reactor with identical-or-better behavior and the old drivers
 are gone.
 
-**Phase 4 — Replay, fingerprint, recovery.** Definition fingerprint at `run_started`;
-`WorkflowRun.replay` with mismatch + irreversible gates; boot reconciler (resume
-decision-already-recorded runs, **leave unresolved gates parked**, else fail-with-audit —
-§4.8). *Done when:* a stranded `:running` run reconciles on boot (test proves it), an
-`:awaiting_approval` run with a checkpoint is left parked (not resumed), and replay refuses
-a changed definition.
+**Phase 4 — Replay, fingerprint, recovery.** ✅ **Shipped** (recovery landed with
+Phases 0–3; fingerprint + replay 2026-06-09 — see §4.7's implementation note).
+Definition fingerprint at `run_started`; `Replay.replay/2` with mismatch +
+irreversible gates; boot reconciler (resume decision-already-recorded runs, **leave
+unresolved gates parked**, else fail-with-audit — §4.8). *Done when:* a stranded
+`:running` run reconciles on boot (test proves it), an `:awaiting_approval` run with
+a checkpoint is left parked (not resumed), and replay refuses a changed definition —
+all three are test-pinned (`workflow_recovery_test.exs`, `replay_test.exs`).
 
 **Phase 5 — Read-models.** Deadlines, actor-visibility redaction, cron idempotency over
 the event log. *Done when:* the dashboard shows lateness, payloads are scope-redacted by

@@ -96,6 +96,47 @@ defmodule JidoClaw.Skills.CompilerTest do
       assert opts[:max_iterations] == 3
     end
 
+    test "iterative: generator retry + role irreversible thread onto the loop step" do
+      skill = %Skills{
+        name: "iterative_meta",
+        mode: "iterative",
+        steps: [
+          %{
+            "name" => "implement",
+            "role" => "generator",
+            "template" => "coder",
+            "task" => "build",
+            "retry" => 2
+          },
+          %{
+            "name" => "verify",
+            "role" => "evaluator",
+            "template" => "verifier",
+            "task" => "check",
+            "irreversible" => true
+          }
+        ]
+      }
+
+      {:ok, reactor} = Compiler.compile(skill)
+      loop = step_by_name(reactor, :step_1)
+
+      assert {IterativeStep, opts} = loop.impl
+      assert opts[:retry] == 2
+      # OR'd across the roles: the evaluator's flag marks the whole loop.
+      assert opts[:irreversible] == true
+      assert loop.max_retries == 2
+    end
+
+    test "iterative: absent saga metadata yields irreversible: false, max_retries: 0" do
+      {:ok, reactor} = Compiler.compile(iterative_skill())
+      loop = step_by_name(reactor, :step_1)
+
+      assert {IterativeStep, opts} = loop.impl
+      assert opts[:irreversible] == false
+      assert loop.max_retries == 0
+    end
+
     test "all compiled skills plan cleanly" do
       for skill <- [sequential_skill(), dag_skill(), dag_consumes_skill(), iterative_skill()] do
         {:ok, reactor} = Compiler.compile(skill)

@@ -47,6 +47,39 @@ defmodule JidoClaw.Skills.Steps.IterativeStepTest do
       assert eval.template == "verifier"
     end
 
+    test "role maps preserve saga metadata: retry raw, irreversible strict boolean" do
+      # The generator is string-keyed to show StepNormalizer canonicalization
+      # feeds through to the preserved fields.
+      skill = %JidoClaw.Skills{
+        name: "meta",
+        steps: [
+          %{
+            "name" => "implement",
+            "role" => "generator",
+            "template" => "coder",
+            "task" => "build",
+            "retry" => 2
+          },
+          %{
+            name: "verify",
+            role: "evaluator",
+            template: "verifier",
+            task: "check",
+            irreversible: true
+          }
+        ]
+      }
+
+      assert {:ok, gen, eval} = IterativeStep.extract_roles(skill)
+      assert gen.retry == 2
+      assert eval.irreversible == true
+
+      # Absent metadata: retry stays nil (the compiler normalizes), and
+      # irreversible normalizes to a strict false.
+      assert eval.retry == nil
+      assert gen.irreversible == false
+    end
+
     test "errors when a role is missing or a named step lacks a name" do
       no_gen = %JidoClaw.Skills{
         name: "x",

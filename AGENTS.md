@@ -35,7 +35,7 @@ find module/function definitions.
 
 ### MCP Server Mode
 
-JidoClaw exposes 15 tools over MCP stdio transport for use with Claude Code, Cursor, and other MCP-compatible editors. To add it to a project, create or edit `.mcp.json` in the project root:
+JidoClaw exposes 21 tools over MCP stdio transport for use with Claude Code, Cursor, and other MCP-compatible editors. To add it to a project, create or edit `.mcp.json` in the project root:
 
 ```json
 {
@@ -51,7 +51,7 @@ JidoClaw exposes 15 tools over MCP stdio transport for use with Claude Code, Cur
 
 The `cwd` must be the absolute path to the JidoClaw project directory (where `mix.exs` lives). The server requires PostgreSQL to be running and `mix ecto.setup` to have been run at least once.
 
-**Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`.
+**Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`, `agent_status`, `inspect_agent`, `swarm_status`, `forge_status`, `workflow_status`, `replay_workflow`. (`replay_workflow` is MCP-only by design — it is not in the in-REPL agent's tool list, and it exposes no `force`/`allow_irreversible` overrides; replay-gate overrides are dashboard-only.)
 
 **Known limitations** (anubis_mcp 1.6.2 — patched in `lib/jido_claw/core/`):
 

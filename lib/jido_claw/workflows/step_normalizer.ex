@@ -18,7 +18,9 @@ defmodule JidoClaw.Workflows.StepNormalizer do
   ## Canonical keys
 
   Normalization is **shallow** (top-level step keys only) and is
-  driven by an in-module allowlist. The ten canonical keys are:
+  driven by an in-module allowlist. The `@canonical_keys` map below is
+  the single source of truth for the step shape; the canonical keys
+  are:
 
     * `:name`
     * `:template`

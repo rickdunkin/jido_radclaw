@@ -1,7 +1,9 @@
 defmodule JidoClaw.Orchestration.WorkflowRun do
   @moduledoc """
   The durable envelope of one reactor execution: status (a projection of the
-  `WorkflowEvent` log), result/error, the encrypted resume checkpoint, and the
+  `WorkflowEvent` log), result/error, the encrypted resume checkpoint, the
+  replay columns (`definition_hash` + encrypted `replay_inputs` +
+  `retry_of_id` provenance — see `JidoClaw.Orchestration.Replay`), and the
   (data-model-only) claim/fencing columns for the deferred multi-node lease.
 
   Hand-rolls `use Ash.Resource` + the standard 13-line tenant policy block
@@ -41,9 +43,15 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
   # only `GateResume`'s decode path loads/decrypts. Terminal clears write
   # `encrypted_resume_checkpoint: nil` directly — encrypting `nil` would store
   # ciphertext-of-nil, not SQL NULL, and break every presence check.
+  #
+  # `replay_inputs` (Phase 4) gets the same treatment for the same reason —
+  # it holds the run's unredacted original inputs — but a different lifecycle:
+  # written once at create, NEVER cleared (the terminal `clear_checkpoint`
+  # force-clear touches only `encrypted_resume_checkpoint`). Only
+  # `Replay`'s decode path loads/decrypts it.
   cloak do
     vault(JidoClaw.Security.Vault)
-    attributes([:resume_checkpoint])
+    attributes([:resume_checkpoint, :replay_inputs])
   end
 
   postgres do
@@ -88,7 +96,19 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     create :create do
       description("Create a new workflow run in pending status.")
       primary?(true)
-      accept([:name, :workflow_type, :config, :retry_of_id, :user_id, :project_id, :metadata])
+
+      accept([
+        :name,
+        :workflow_type,
+        :config,
+        :definition_hash,
+        :replay_inputs,
+        :retry_of_id,
+        :user_id,
+        :project_id,
+        :metadata
+      ])
+
       change(set_attribute(:status, :pending))
     end
 
@@ -221,6 +241,16 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       public?(true)
     end
 
+    # Fingerprint of the workflow definition at launch (Phase 4): sha256 hex of
+    # a skill's canonical semantic term, or a module's BEAM md5 hex — see
+    # `JidoClaw.Orchestration.DefinitionFingerprint`. Replay's definition gate
+    # refuses when the freshly recomputed fingerprint differs (skills are
+    # LLM-edited YAML; re-running changed semantics silently is the footgun).
+    attribute :definition_hash, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
     attribute :user_id, :uuid do
       allow_nil?(true)
       public?(true)
@@ -246,6 +276,18 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     # `encrypted_resume_checkpoint`; this declaration becomes a decrypting
     # calculation) — it holds unredacted reactor inputs/results.
     attribute :resume_checkpoint, :binary do
+      allow_nil?(true)
+      public?(false)
+    end
+
+    # Durable replay inputs (Phase 4): `term_to_binary({version, inputs,
+    # extra_context})` encoded by `ReactorRunner` at create and decoded only by
+    # `JidoClaw.Orchestration.Replay` — an all-data, `[:safe]`-decodable blob
+    # preserving atom keys. Unlike `resume_checkpoint` it is NEVER cleared:
+    # replay needs the original inputs after the run is terminal, which is
+    # exactly when the checkpoint is gone. Encrypted at rest by the `cloak`
+    # block above (stored column: `encrypted_replay_inputs`).
+    attribute :replay_inputs, :binary do
       allow_nil?(true)
       public?(false)
     end

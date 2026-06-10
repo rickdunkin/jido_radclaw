@@ -32,6 +32,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   # reach:disable-for-this-file bare_rescue
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Skills
   alias JidoClaw.Skills.Compiler
@@ -68,6 +69,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
       actor: Actor.system(tenant_id),
       name: skill.name,
       async?: true,
+      definition_hash: DefinitionFingerprint.for_skill(skill),
       context: %{workspace_id: workspace_id, project_dir: File.cwd!()}
     )
   end

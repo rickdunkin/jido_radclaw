@@ -122,6 +122,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: Hash the resolved skill YAML at run start; persist it in the `run_started` event payload. A `WorkflowRun.replay` Ash action recomputes the hash and refuses on mismatch (or warns + requires `force: true`). Add `irreversible:` / `compensatable:` markers to skill step metadata; gate replay on them.
 
+**Shipped (2026-06-09)** with two sketch corrections: "hash the resolved skill YAML" landed as **canonical-semantic-term hashing** (`JidoClaw.Orchestration.DefinitionFingerprint`) — raw YAML text isn't retained by the parser and comment/description edits shouldn't invalidate replay, so the hash is over a normalized term mirroring the compiler's semantics (module reactors use `module_info(:md5)`); and the entry point is a **module function**, `JidoClaw.Orchestration.Replay.replay/2`, not an Ash action (the `Cases.decide/4` precedent). Both gates shipped as sketched (`force:` / `allow_irreversible:`), original inputs persist in an AshCloak-encrypted `replay_inputs` blob, and skills re-resolve from disk at replay time. See [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md) §4.7's implementation note.
+
 ---
 
 ### T1-4. Human-decision case + immutable event-log model

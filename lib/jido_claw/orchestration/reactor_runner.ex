@@ -41,7 +41,23 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   (default `false`; compiled skills pass `true`) is threaded into
   `Reactor.run/4`. `:context` is an extra map merged into the base Reactor
   context — **base wins**, so `tenant`/`actor`/`workflow_run`/`reactor` can't be
-  clobbered (compiled skills pass the agent scope here).
+  clobbered (compiled skills pass the agent scope here). `:definition_hash`
+  stamps the skill fingerprint computed by the caller (ignored for module
+  reactors — those self-compute via `DefinitionFingerprint.for_module/1`);
+  `:retry_of_id` records replay provenance (the original run's id).
+
+  ## Replay provenance (Phase 4)
+
+  Every created run durably carries what `JidoClaw.Orchestration.Replay`
+  needs later: `definition_hash` (module reactors self-compute the BEAM md5;
+  skill callers pass `definition_hash:` since only they hold the `%Skills{}`
+  struct — a compiled `%Reactor{}` can't be hashed, its `id` is a fresh
+  `make_ref()` per compile), `config.definition_kind` (`"module" | "skill"`,
+  with `config.project_dir` riding along when the caller's `:context` carries
+  one, so replay can locate the skills dir without decoding the inputs blob),
+  `retry_of_id`, and the AshCloak-encrypted `replay_inputs` blob —
+  `term_to_binary({@replay_version, inputs, extra_context})`, encoded in the
+  pre-run body so an encode raise lands in the body-level rescue.
 
   ## Terminal-durability backstop
 
@@ -108,6 +124,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   require Logger
 
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunPubSub
@@ -125,6 +142,13 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # *before* the gate-reactor module's atoms are loaded. Bump on any envelope
   # shape change; `GateResume` rejects unknown versions.
   @checkpoint_version 1
+
+  # Replay-inputs envelope version. The encoded blob is
+  # `term_to_binary({@replay_version, inputs, extra_context})` — all-data and
+  # `[:safe]`-decodable (after `Replay` re-resolves the definition, interning
+  # its atoms). Bump on any envelope shape change; `Replay` rejects unknown
+  # versions.
+  @replay_version 1
 
   # Cancellation reason stamped on a pending case when a gate pause fails to
   # persist; also the human-facing `run_failed` error context.
@@ -152,6 +176,11 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
     async? = Keyword.get(opts, :async?, false)
     extra_context = Keyword.get(opts, :context) || %{}
 
+    # Encoded in the pre-run body, before the `with`: a term_to_binary raise
+    # (a non-serializable input, e.g. a local fun) lands in the body-level
+    # rescue → {:error, {:exception, msg}, nil}, preserving never-raises.
+    replay_inputs = :erlang.term_to_binary({@replay_version, inputs, extra_context})
+
     with {:ok, runnable} <- build_runnable(reactor),
          {:ok, tenant} <- Keyword.fetch(opts, :tenant),
          {:ok, actor} <- Keyword.fetch(opts, :actor),
@@ -160,7 +189,10 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
              %{
                name: name,
                workflow_type: "reactor",
-               config: %{reactor: identity}
+               config: run_config(identity, reactor_module, extra_context),
+               definition_hash: definition_hash(reactor_module, opts),
+               replay_inputs: replay_inputs,
+               retry_of_id: Keyword.get(opts, :retry_of_id)
              },
              tenant: tenant,
              actor: actor
@@ -237,6 +269,29 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # inspects to its name; a compiled struct uses the caller-supplied `:name`.
   defp reactor_identity(reactor, _opts) when is_atom(reactor), do: inspect(reactor)
   defp reactor_identity(_struct, opts), do: Keyword.get(opts, :name, "reactor")
+
+  # Module reactors self-compute the fingerprint (build_runnable has already
+  # confirmed the module is a loaded reactor by the time this evaluates in the
+  # `with`); a compiled skill struct can't be fingerprinted here — only the
+  # caller holds the `%Skills{}` — so the struct branch takes the opt as-is.
+  defp definition_hash(nil, opts), do: Keyword.get(opts, :definition_hash)
+  defp definition_hash(module, _opts), do: DefinitionFingerprint.for_module(module)
+
+  # The replay-facing run config (string-keyed jsonb on read): the reactor
+  # identity, which kind of definition to re-resolve (`"module"` →
+  # allowlisted module lookup, `"skill"` → fresh-disk YAML lookup), and — when
+  # the caller's scope carries one — the `project_dir` for that skill lookup,
+  # so `Replay` can locate the skills dir WITHOUT first decoding the encrypted
+  # inputs blob (its resolve-before-decode ordering depends on this).
+  defp run_config(identity, reactor_module, extra_context) do
+    kind = if reactor_module, do: "module", else: "skill"
+    config = %{reactor: identity, definition_kind: kind}
+
+    case Map.get(extra_context, :project_dir) do
+      dir when is_binary(dir) -> Map.put(config, :project_dir, dir)
+      _missing -> config
+    end
+  end
 
   # One try/rescue around BOTH Reactor.run AND finalize, so a raise can't skip
   # finalization. `context` is the merged Reactor context (run-identity base

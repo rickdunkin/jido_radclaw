@@ -56,8 +56,8 @@ defmodule JidoClaw.MCPServerTest do
       assert is_list(publish.tools)
     end
 
-    test "publishes 20 tools" do
-      assert Enum.count(MCPServer.__publish__().tools) == 20
+    test "publishes 21 tools" do
+      assert Enum.count(MCPServer.__publish__().tools) == 21
     end
 
     test "includes introspection tools" do
@@ -68,6 +68,10 @@ defmodule JidoClaw.MCPServerTest do
       assert JidoClaw.Tools.SwarmStatus in tools
       assert JidoClaw.Tools.ForgeStatus in tools
       assert JidoClaw.Tools.WorkflowStatus in tools
+    end
+
+    test "includes the workflow replay tool (MCP-only surface)" do
+      assert JidoClaw.Tools.ReplayWorkflow in MCPServer.__publish__().tools
     end
 
     test "includes core file tools" do

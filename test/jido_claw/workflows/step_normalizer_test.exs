@@ -66,14 +66,28 @@ defmodule JidoClaw.Workflows.StepNormalizerTest do
           "template" => "tmpl",
           "depends_on" => ["a"],
           "produces" => %{x: 1},
-          "consumes" => ["b"]
+          "consumes" => ["b"],
+          "retry" => 2,
+          "compensate" => "clean up",
+          "irreversible" => true
         }
       ]
 
       [out] = StepNormalizer.normalize(steps)
 
       assert Enum.sort(Map.keys(out)) ==
-               [:consumes, :depends_on, :name, :produces, :role, :task, :template]
+               [
+                 :compensate,
+                 :consumes,
+                 :depends_on,
+                 :irreversible,
+                 :name,
+                 :produces,
+                 :retry,
+                 :role,
+                 :task,
+                 :template
+               ]
 
       # Lock values too — Map.keys/1 alone only proves the key shape survived,
       # not that values landed under the right atoms.
@@ -84,6 +98,28 @@ defmodule JidoClaw.Workflows.StepNormalizerTest do
       assert out.depends_on == ["a"]
       assert out.produces == %{x: 1}
       assert out.consumes == ["b"]
+      assert out.retry == 2
+      assert out.compensate == "clean up"
+      assert out.irreversible == true
+    end
+
+    test "normalizes the saga-metadata keys (retry/compensate/irreversible) string→atom" do
+      steps = [%{"name" => "s", "retry" => 3, "compensate" => "undo", "irreversible" => false}]
+
+      assert StepNormalizer.normalize(steps) ==
+               [%{name: "s", retry: 3, compensate: "undo", irreversible: false}]
+    end
+
+    test "saga-metadata normalization is idempotent" do
+      steps = [%{"name" => "s", "retry" => 1, "compensate" => "undo", "irreversible" => true}]
+      once = StepNormalizer.normalize(steps)
+      assert StepNormalizer.normalize(once) == once
+      assert [%{retry: 1, compensate: "undo", irreversible: true}] = once
+    end
+
+    test "unknown keys are dropped even alongside saga-metadata keys" do
+      steps = [%{"name" => "s", "irreversible" => true, "timeout_not_a_key" => 99}]
+      assert StepNormalizer.normalize(steps) == [%{name: "s", irreversible: true}]
     end
 
     test "drops unknown string keys" do

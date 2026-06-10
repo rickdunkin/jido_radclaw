@@ -12,8 +12,10 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
   `options` (the impl tuple's keyword list) carries `:generator` and
   `:evaluator` (normalized step maps extracted by `extract_roles/1`),
-  `:max_iterations`, and `:retry` (the generator's retry budget, threaded by
-  the compiler). The only argument is `:extra_context`.
+  `:max_iterations`, `:retry` (the generator's retry budget, threaded by
+  the compiler), and `:irreversible` (OR over the two role steps — re-running
+  the loop repeats every member step's effects). The only argument is
+  `:extra_context`.
 
   ## Retry policy
 
@@ -93,7 +95,12 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
   Returns `{:ok, generator, evaluator}` or `{:error, reason}`. The compiler
   calls this to validate an iterative skill at compile time and to build the
-  step's options.
+  step's options. The role maps carry the fields the loop consumes
+  (`name`/`template`/`task`/`role`/`produces`/`consumes`) plus the saga
+  metadata the compiler threads onto the loop step: `retry` (raw — the
+  compiler normalizes) and `irreversible` (strict boolean). `compensate` is
+  deliberately dropped (the loop has no undo), as is `depends_on`
+  (meaningless for the fixed gen→eval order).
   """
   @spec extract_roles(JidoClaw.Skills.t()) :: {:ok, map(), map()} | {:error, String.t()}
   def extract_roles(skill) do
@@ -247,7 +254,11 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
       task: Map.get(step, :task),
       role: Map.get(step, :role),
       produces: normalize_map_field(step, :produces),
-      consumes: normalize_list_field(step, :consumes)
+      consumes: normalize_list_field(step, :consumes),
+      # Saga metadata — preserved so the compiler can thread retry/irreversible
+      # onto the loop step (values validated by Compiler.validate_step_metadata/1).
+      retry: Map.get(step, :retry),
+      irreversible: Map.get(step, :irreversible) == true
     }
   end
 

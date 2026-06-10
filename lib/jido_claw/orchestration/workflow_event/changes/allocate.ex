@@ -68,7 +68,14 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   # `step_compensated`/`step_undone` are saga provenance, not row status.
   @step_projection_kinds [:step_started, :step_completed, :step_failed]
 
+  # SAVEPOINT names cannot be bound as SQL parameters, and the name is a
+  # compile-time constant — so the three statements are pre-built here, and
+  # the `Repo.query` call sites take literal strings (no runtime
+  # interpolation).
   @savepoint "workflow_step_projection"
+  @savepoint_sql "SAVEPOINT #{@savepoint}"
+  @release_savepoint_sql "RELEASE SAVEPOINT #{@savepoint}"
+  @rollback_savepoint_sql "ROLLBACK TO SAVEPOINT #{@savepoint}"
 
   @impl true
   def change(changeset, _opts, context) do
@@ -278,7 +285,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   # by SAVEPOINT/ROLLBACK TO SAVEPOINT on the same connection. A failure to even
   # create the savepoint skips the projection entirely (append unharmed).
   defp upsert_step(event, action, attrs, tenant, actor) do
-    case Repo.query("SAVEPOINT #{@savepoint}", []) do
+    case Repo.query(@savepoint_sql, []) do
       {:ok, _} ->
         attempt_step_upsert(event, action, attrs, tenant, actor)
 
@@ -293,11 +300,11 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     |> Ash.create()
     |> case do
       {:ok, _step} ->
-        Repo.query("RELEASE SAVEPOINT #{@savepoint}", [])
+        Repo.query(@release_savepoint_sql, [])
         :ok
 
       {:error, reason} ->
-        Repo.query("ROLLBACK TO SAVEPOINT #{@savepoint}", [])
+        Repo.query(@rollback_savepoint_sql, [])
         log_step_projection_failure(event, reason)
     end
   rescue
@@ -306,7 +313,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
       # Best-effort invariant: ANY raise (Postgrex/DBConnection/Ash) must roll
       # back to the savepoint — the txn is aborted until then — and must never
       # escape into the append path.
-      Repo.query("ROLLBACK TO SAVEPOINT #{@savepoint}", [])
+      Repo.query(@rollback_savepoint_sql, [])
       log_step_projection_failure(event, error)
   end
 

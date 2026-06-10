@@ -136,8 +136,15 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   # fails loudly rather than dropping events — a failed run_started append
   # aborts the run before any step executes. Broadcast only AFTER the durable
   # append, so subscribers never see `run_started` while the run is `:pending`.
+  # The payload carries the run's `definition_hash` when one was stamped
+  # (durable provenance for the Phase-4 replay gates); the context-seeded run
+  # is the genesis snapshot from `WorkflowRun.create`, so the column is
+  # already populated.
   defp init_for_state(run, context) do
-    case append(run, :run_started, %{reactor: context[:reactor]}, context) do
+    payload =
+      put_present(%{reactor: context[:reactor]}, :definition_hash, run.definition_hash)
+
+    case append(run, :run_started, payload, context) do
       {:ok, _event} ->
         broadcast(run, {:run_started, run.id, lifecycle_info(run, status: :running)})
         trace(run, :run_started, :running)

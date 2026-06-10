@@ -8,6 +8,8 @@ defmodule JidoClaw.Skills do
   wait for their prerequisites.
 
   Parsed once at boot and cached in GenServer state — no disk I/O on lookups.
+  The one deliberate exception is `load_skill/2`, the cache-bypassing
+  fresh-disk lookup used by workflow replay (see its doc).
 
   Sequential YAML format:
 
@@ -344,6 +346,31 @@ defmodule JidoClaw.Skills do
 
   @spec get(String.t(), String.t()) :: {:ok, %__MODULE__{}} | {:error, String.t()}
   def get(name, _project_dir), do: get(name)
+
+  @doc """
+  Load a skill by its `name:` field directly from `.jido/skills/*.yaml` on
+  disk, bypassing the boot-time GenServer cache.
+
+  This is the replay-path lookup (`JidoClaw.Orchestration.Replay`): the
+  definition-hash gate compares the *current on-disk* skill against the hash
+  recorded when the run started, so it must read fresh disk state — `get/2`
+  serves the boot-time cache and would mask any YAML edit made since. Normal
+  launch paths keep using the cached `get/2`.
+
+  Matches on the skill's `name:` field, never the filename — replay must not
+  construct a path from a user-controlled run name. `File.ls/1` enumerates in
+  no defined order, so two files declaring the same `name:` would make the
+  pick nondeterministic; that case is rejected explicitly instead.
+  """
+  @spec load_skill(String.t(), String.t()) ::
+          {:ok, %__MODULE__{}} | {:error, :not_found | {:duplicate_skill_name, String.t()}}
+  def load_skill(name, project_dir) do
+    case Enum.filter(load_from_disk(project_dir), &(&1.name == name)) do
+      [skill] -> {:ok, skill}
+      [] -> {:error, :not_found}
+      [_ | _] -> {:error, {:duplicate_skill_name, name}}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Server Callbacks

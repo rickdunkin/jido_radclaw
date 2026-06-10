@@ -39,7 +39,11 @@ defmodule JidoClaw.MCPServer do
         JidoClaw.Tools.InspectAgent,
         JidoClaw.Tools.SwarmStatus,
         JidoClaw.Tools.ForgeStatus,
-        JidoClaw.Tools.WorkflowStatus
+        JidoClaw.Tools.WorkflowStatus,
+
+        # Workflow replay (Phase 4) — MCP-only by design: the in-REPL agent's
+        # tool list deliberately does NOT carry this side-effect lever.
+        JidoClaw.Tools.ReplayWorkflow
       ]
     }
 end

@@ -39,6 +39,7 @@ defmodule JidoClaw.Tools.RunSkill do
     ]
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Skills.Compiler
   alias JidoClaw.Tools.MCPScope
@@ -65,6 +66,7 @@ defmodule JidoClaw.Tools.RunSkill do
              actor: actor,
              name: skill.name,
              async?: true,
+             definition_hash: DefinitionFingerprint.for_skill(skill),
              context: scope
            ) do
       {:ok, value}

@@ -299,6 +299,64 @@ defmodule JidoClaw.SkillsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # load_skill/2 (fresh-disk lookup — cache bypass, used by workflow replay)
+  # ---------------------------------------------------------------------------
+
+  describe "load_skill/2" do
+    # No start_skills!/1 in this block: load_skill/2 must work without (and
+    # independently of) the GenServer cache — that is its entire point.
+
+    defp write_skill!(dir, filename, name, task) do
+      skills_dir = Path.join([dir, ".jido", "skills"])
+      File.mkdir_p!(skills_dir)
+
+      yaml = """
+      name: #{name}
+      description: test skill
+      steps:
+        - name: only
+          template: t1
+          task: "#{task}"
+      synthesis: done
+      """
+
+      File.write!(Path.join(skills_dir, filename), yaml)
+    end
+
+    test "finds a skill by its name: field regardless of filename", %{dir: dir} do
+      write_skill!(dir, "totally_unrelated_filename.yaml", "my_skill", "do it")
+
+      assert {:ok, skill} = Skills.load_skill("my_skill", dir)
+      assert skill.name == "my_skill"
+      assert [%{name: "only", task: "do it"}] = skill.steps
+    end
+
+    test "returns {:error, :not_found} for an unknown name", %{dir: dir} do
+      write_skill!(dir, "a.yaml", "a_skill", "t")
+
+      assert {:error, :not_found} = Skills.load_skill("missing_skill", dir)
+    end
+
+    test "rejects duplicate name: declarations across files", %{dir: dir} do
+      write_skill!(dir, "first.yaml", "dup_skill", "t1")
+      write_skill!(dir, "second.yaml", "dup_skill", "t2")
+
+      assert {:error, {:duplicate_skill_name, "dup_skill"}} =
+               Skills.load_skill("dup_skill", dir)
+    end
+
+    test "reads fresh disk state after an edit (no cache)", %{dir: dir} do
+      write_skill!(dir, "edited.yaml", "edited_skill", "before")
+      assert {:ok, %Skills{steps: [%{task: "before"}]}} = Skills.load_skill("edited_skill", dir)
+
+      # Overwrite on disk; a second lookup must see the new content even while
+      # the (unrelated) GenServer cache, had it been started, would not.
+      write_skill!(dir, "edited.yaml", "edited_skill", "after")
+      assert {:ok, %Skills{steps: [%{task: "after"}]}} = Skills.load_skill("edited_skill", dir)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # list/0 (GenServer-backed; list/1 compat wrapper delegates to it)
   # ---------------------------------------------------------------------------
 
