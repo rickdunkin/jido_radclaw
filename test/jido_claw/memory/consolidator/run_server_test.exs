@@ -207,7 +207,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       # Truncate to microseconds — the Ash attributes are
       # `:utc_datetime_usec` and an unrounded `DateTime.utc_now/0` can
       # produce equality surprises after Postgres round-trip.
-      t0 = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      t0 = DateTime.truncate(DateTime.utc_now(), :microsecond)
       a = seed_fact_at!(scope, "label_a", t0)
       b = seed_fact_at!(scope, "label_b", DateTime.add(t0, 1, :second))
       _c = seed_fact_at!(scope, "label_c", DateTime.add(t0, 2, :second))
@@ -235,7 +235,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
     } do
       {_ws, session, scope} = session_scope(tenant_id)
 
-      t0 = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      t0 = DateTime.truncate(DateTime.utc_now(), :microsecond)
       _ = seed_message_at!(session, "msg one", t0, 1)
       _ = seed_message_at!(session, "msg two", DateTime.add(t0, 1, :second), 2)
       _ = seed_message_at!(session, "msg three", DateTime.add(t0, 2, :second), 3)
@@ -615,7 +615,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
     # Resolver creates with `consolidation_policy: :disabled` — flip to
     # `:default` so `PolicyResolver.gate/1` returns `:ok` for this scope.
-    {:ok, ws} =
+    {:ok, updated_ws} =
       Workspace.set_consolidation_policy(ws, :default,
         tenant: tenant_id,
         actor: actor_for(tenant_id)
@@ -625,12 +625,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       tenant_id: tenant_id,
       scope_kind: :workspace,
       user_id: nil,
-      workspace_id: ws.id,
+      workspace_id: updated_ws.id,
       project_id: nil,
       session_id: nil
     }
 
-    {ws, scope}
+    {updated_ws, scope}
   end
 
   defp session_scope(tenant_id) do

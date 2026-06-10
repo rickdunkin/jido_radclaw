@@ -21,7 +21,7 @@ defmodule JidoClaw.Solutions.Reads.HybridSearch do
   alias Ash.Query
   alias JidoClaw.Solutions.HybridSearchSql
 
-  @impl true
+  @impl Ash.Resource.ManualRead
   def read(query, _module, _opts, _context) do
     args = build_args(query)
     threshold = Map.get(args, :threshold, 0.0)

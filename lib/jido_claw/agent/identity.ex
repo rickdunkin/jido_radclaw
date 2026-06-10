@@ -38,7 +38,7 @@ defmodule JidoClaw.Agent.Identity do
           agent_id: agent_id,
           public_key: pub,
           private_key: priv,
-          created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+          created_at: DateTime.to_iso8601(DateTime.utc_now())
         }
 
         case save(identity, project_dir) do

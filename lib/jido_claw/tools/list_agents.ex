@@ -13,7 +13,7 @@ defmodule JidoClaw.Tools.ListAgents do
 
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(_params, context) do
     with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
          {:ok, view} <- JidoClaw.SwarmView.list(scope_opts) do

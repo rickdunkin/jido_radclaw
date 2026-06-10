@@ -101,9 +101,11 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
     defmodule StubServer do
       @moduledoc false
 
+      @spec __components__(atom()) :: list()
       def __components__(:tool), do: []
       def __components__(_other), do: []
 
+      @spec handle_tool_call(term(), term(), term()) :: {:reply, term(), term()}
       def handle_tool_call(name, params, frame) do
         send(Map.fetch!(frame.assigns, :test_pid), {:called, name, params})
         {:reply, %Response{type: :tool, content: [], isError: false}, frame}

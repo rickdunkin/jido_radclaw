@@ -3,6 +3,7 @@ defmodule JidoClaw.Web.HealthController do
 
   alias JidoClaw.Tenant.Manager
 
+  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _params) do
     uptime =
       System.monotonic_time(:second) -

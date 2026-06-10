@@ -17,9 +17,10 @@ defmodule JidoClaw.Tools.ProjectInfo do
     schema: []
 
   alias JidoClaw.ProjectType
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:project_info, params, context, fn enriched ->
       enriched
@@ -41,14 +42,22 @@ defmodule JidoClaw.Tools.ProjectInfo do
   end
 
   defp detect_git_branch(cwd) do
-    case System.cmd("git", ["branch", "--show-current"], cd: cwd, stderr_to_stdout: true) do
+    case System.cmd("git", ["branch", "--show-current"],
+           cd: cwd,
+           stderr_to_stdout: true,
+           env: Env.scrubbed_cmd_env()
+         ) do
       {b, 0} -> String.trim(b)
       _ -> "not a git repo"
     end
   end
 
   defp detect_git_dirty(cwd) do
-    case System.cmd("git", ["status", "--porcelain"], cd: cwd, stderr_to_stdout: true) do
+    case System.cmd("git", ["status", "--porcelain"],
+           cd: cwd,
+           stderr_to_stdout: true,
+           env: Env.scrubbed_cmd_env()
+         ) do
       {"", 0} -> false
       {_, 0} -> true
       _ -> false

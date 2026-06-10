@@ -8,7 +8,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.CommitProposals do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(_args, ctx) do
     Helpers.dispatch(ctx, :commit_proposals)
   end

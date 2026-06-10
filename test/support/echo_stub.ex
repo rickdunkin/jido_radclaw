@@ -21,6 +21,7 @@ defmodule JidoClaw.Test.EchoStub do
   ignored — the AgentServer it points to is harmless infrastructure for this
   stub.
   """
+  @spec ask_sync(pid(), term(), keyword()) :: {:ok, map()}
   def ask_sync(_pid, query, opts) when is_list(opts) do
     target = Application.get_env(:jido_claw, :echo_stub_target, self())
     send(target, {:echo_stub, :tool_context, Keyword.get(opts, :tool_context)})

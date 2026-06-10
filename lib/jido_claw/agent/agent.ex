@@ -64,6 +64,6 @@ defmodule JidoClaw.Agent do
   @doc "Canonical tool module list. Derived from the `tools:` option above via `strategy_opts/0`; REPL banner + branding call this for accurate counts."
   @spec tool_modules() :: [module()]
   def tool_modules do
-    strategy_opts() |> Keyword.fetch!(:tools)
+    Keyword.fetch!(strategy_opts(), :tools)
   end
 end

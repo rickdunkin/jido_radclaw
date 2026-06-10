@@ -7,16 +7,17 @@ defmodule JidoClaw.Forge.ClusteringTest.MockHarness do
   # Harness.call/2 and Manager.get_session_cluster/1 actually fall through
   # to the :pg lookup path.
 
+  @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(session_id) do
     GenServer.start_link(__MODULE__, session_id)
   end
 
-  @impl true
+  @impl GenServer
   def init(session_id) do
     {:ok, %{session_id: session_id}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:status, _from, state) do
     status = %{
       session_id: state.session_id,
@@ -450,8 +451,8 @@ defmodule JidoClaw.Forge.ClusteringTest do
       # Reclaiming a terminal session should succeed (upsert resets it)
       assert :ok = Persistence.claim_session(sid, claim_spec(%{runner: :workflow}))
 
-      session = Persistence.find_session(sid)
-      assert session.phase == :created
+      reclaimed_session = Persistence.find_session(sid)
+      assert reclaimed_session.phase == :created
     end
 
     test "claim_session allows reuse of a cancelled session" do

@@ -204,7 +204,7 @@ defmodule JidoClaw.Memory.Episode do
 
     alias JidoClaw.Memory.Episode
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         scope_kind = Changeset.get_attribute(cs, :scope_kind)
@@ -228,7 +228,7 @@ defmodule JidoClaw.Memory.Episode do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
@@ -247,7 +247,7 @@ defmodule JidoClaw.Memory.Episode do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         cs
@@ -278,7 +278,7 @@ defmodule JidoClaw.Memory.Episode do
 
     alias JidoClaw.Memory.Episode
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       kind = Query.get_argument(query, :scope_kind)
       fk = Query.get_argument(query, :scope_fk_id)
@@ -302,7 +302,7 @@ defmodule JidoClaw.Memory.Episode do
     use Ash.Resource.Preparation
     require Ash.Query
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       fact_id_arg = Query.get_argument(query, :fact_id)
 
@@ -324,6 +324,7 @@ defmodule JidoClaw.Memory.Episode do
   Delegate to `Fact.scope_fk_for/2` — shared scope FK resolution.
   Public so inline change modules can reference it.
   """
+  @spec scope_fk_for(Ash.Changeset.t(), atom()) :: {:ok, term()} | :missing
   def scope_fk_for(changeset, kind) do
     Fact.scope_fk_for(changeset, kind)
   end
@@ -338,6 +339,7 @@ defmodule JidoClaw.Memory.Episode do
   Narrow `query` to rows newer than `since_at`. A `nil` `since_at` skips
   the filter.
   """
+  @spec apply_since_filter(Ash.Query.t(), DateTime.t() | nil) :: Ash.Query.t()
   def apply_since_filter(query, nil), do: query
 
   def apply_since_filter(query, since_at) do

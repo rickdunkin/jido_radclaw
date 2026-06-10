@@ -4,7 +4,7 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
   inbox: an approve `handle_event` routes through `Cases.decide/4` and resumes
   the paused run to completion.
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase

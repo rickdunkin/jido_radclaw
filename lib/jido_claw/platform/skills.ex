@@ -269,6 +269,7 @@ defmodule JidoClaw.Skills do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -380,30 +381,30 @@ defmodule JidoClaw.Skills do
   # Server Callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     {:ok, %{project_dir: project_dir, skills: []}, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, state) do
     skills = load_from_disk(state.project_dir)
     Logger.debug("[Skills] Cached #{length(skills)} skills from #{skills_dir(state.project_dir)}")
     {:noreply, %{state | skills: skills}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:all, _from, state) do
     {:reply, state.skills, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:list, _from, state) do
     {:reply, Enum.map(state.skills, & &1.name), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:get, name}, _from, state) do
     case Enum.find(state.skills, &(&1.name == name)) do
       nil -> {:reply, {:error, "Skill '#{name}' not found"}, state}
@@ -411,7 +412,7 @@ defmodule JidoClaw.Skills do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:reload, _from, state) do
     skills = load_from_disk(state.project_dir)
     Logger.info("[Skills] Reloaded #{length(skills)} skills")

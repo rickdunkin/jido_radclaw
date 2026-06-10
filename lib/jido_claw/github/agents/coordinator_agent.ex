@@ -4,6 +4,7 @@ defmodule JidoClaw.GitHub.Agents.CoordinatorAgent do
 
   alias JidoClaw.GitHub.Agents.{PullRequestCoordinator, ResearchCoordinator, TriageAgent}
 
+  @spec run(map()) :: {:ok, map()} | {:error, term()}
   def run(event) do
     Logger.info(
       "[CoordinatorAgent] Starting pipeline for #{event.repo.full_name}##{event.issue.number}"

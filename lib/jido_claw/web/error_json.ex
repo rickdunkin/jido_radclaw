@@ -1,6 +1,7 @@
 defmodule JidoClaw.Web.ErrorJSON do
   @moduledoc "JSON error responses for the Phoenix endpoint."
 
+  @spec render(String.t(), map()) :: %{error: map()}
   def render("404.json", _assigns) do
     %{error: %{status: 404, message: "Not Found"}}
   end

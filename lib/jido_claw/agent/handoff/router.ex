@@ -193,8 +193,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
     closing = "END HANDOFF CONTEXT]\n\n"
     history_budget = max(@max_preamble_bytes - byte_size(base) - byte_size(closing), 0)
-    history_block = format_history(history, history_budget)
-    history_block = clamp_history(history_block, base, closing)
+    history_block = clamp_history(format_history(history, history_budget), base, closing)
 
     base <> history_block <> closing
   end

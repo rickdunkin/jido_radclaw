@@ -192,7 +192,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
       # row is rank 42 and falls out under the pre-fix shape; under
       # the fix the cross-workspace :local privates are excluded at
       # WHERE-time and visible becomes the sole top-40 candidate.
-      filler = List.duplicate("zorbox", 30) |> Enum.join(" ")
+      filler = Enum.join(List.duplicate("zorbox", 30), " ")
 
       visible =
         solution_fixture(

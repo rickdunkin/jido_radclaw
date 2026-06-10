@@ -47,8 +47,7 @@ defmodule JidoClaw.Core.JsonSafe do
   end
 
   def encode(map) when is_map(map) do
-    map
-    |> Enum.reduce(%{}, fn {k, v}, acc ->
+    Enum.reduce(map, %{}, fn {k, v}, acc ->
       cond do
         is_pid(v) or is_reference(v) or is_function(v) or is_port(v) ->
           acc

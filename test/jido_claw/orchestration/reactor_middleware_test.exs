@@ -2,7 +2,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.OkStep do
   @moduledoc false
   use Reactor.Step
 
-  @impl true
+  @impl Reactor.Step
   def run(_arguments, _context, _options), do: {:ok, :done}
 end
 
@@ -10,7 +10,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep do
   @moduledoc false
   use Reactor.Step
 
-  @impl true
+  @impl Reactor.Step
   def run(_arguments, _context, _options), do: {:error, :boom}
 end
 
@@ -18,7 +18,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.MapStep do
   @moduledoc false
   use Reactor.Step
 
-  @impl true
+  @impl Reactor.Step
   def run(_arguments, _context, _options), do: {:ok, %{answer: 42, note: "hi"}}
 end
 
@@ -28,7 +28,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep do
 
   # Returns an Ash-record-like struct — NOT json-safe, so the middleware must
   # store %{} (result stays nil), never persist-then-blow-up on JSON encode.
-  @impl true
+  @impl Reactor.Step
   def run(_arguments, _context, _options), do: {:ok, %{workspace: ~D[2024-01-01]}}
 end
 
@@ -48,7 +48,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   `WorkflowLog.append` -> `Allocate`, whose redaction is already pinned by
   `WorkflowEventTest`; the Phase-1 payloads are fixed identifier/error shapes.
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.ReactorMiddleware
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep

@@ -52,7 +52,7 @@ defmodule JidoClaw.Tools.FindSolution do
   alias JidoClaw.Solutions.Matcher
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:find_solution, params, context, fn enriched ->
       tool_context = Map.get(enriched, :tool_context, %{})
@@ -70,17 +70,17 @@ defmodule JidoClaw.Tools.FindSolution do
   defp search(params, tenant_id, workspace_uuid) do
     limit = Map.get(params, :limit, 5)
 
-    opts =
-      [
-        language: Map.get(params, :language),
-        framework: Map.get(params, :framework),
-        limit: limit,
-        tenant_id: tenant_id,
-        workspace_id: workspace_uuid,
-        local_visibility: [:local, :shared, :public],
-        cross_workspace_visibility: [:public]
-      ]
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    all_opts = [
+      language: Map.get(params, :language),
+      framework: Map.get(params, :framework),
+      limit: limit,
+      tenant_id: tenant_id,
+      workspace_id: workspace_uuid,
+      local_visibility: [:local, :shared, :public],
+      cross_workspace_visibility: [:public]
+    ]
+
+    opts = Enum.reject(all_opts, fn {_k, v} -> is_nil(v) end)
 
     results = Matcher.find_solutions(params.problem_description, opts)
 

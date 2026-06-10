@@ -77,10 +77,10 @@ defmodule JidoClaw.Trace.Persistence do
     end
   end
 
-  @impl true
+  @impl GenServer
   def init(_opts), do: {:ok, %{}}
 
-  @impl true
+  @impl GenServer
   def handle_call({:append, event, trace}, _from, state) do
     do_persist(event, trace)
     {:reply, :ok, state}
@@ -89,7 +89,7 @@ defmodule JidoClaw.Trace.Persistence do
   # Test-only mailbox sync barrier.
   def handle_call(:__sync__, _from, state), do: {:reply, :ok, state}
 
-  @impl true
+  @impl GenServer
   def handle_cast({:append, event, trace}, state) do
     do_persist(event, trace)
     {:noreply, state}
@@ -165,7 +165,6 @@ defmodule JidoClaw.Trace.Persistence do
   defp maybe_string(value), do: to_string(value)
 
   defp persist_sync? do
-    Application.get_env(:jido_claw, :trace, [])
-    |> Keyword.get(:persist_sync?, false)
+    Keyword.get(Application.get_env(:jido_claw, :trace, []), :persist_sync?, false)
   end
 end

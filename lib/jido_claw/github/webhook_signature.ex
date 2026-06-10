@@ -9,7 +9,7 @@ defmodule JidoClaw.GitHub.WebhookSignature do
         {:error, :missing_webhook_secret}
 
       secret ->
-        expected = :crypto.mac(:hmac, :sha256, secret, payload) |> Base.encode16(case: :lower)
+        expected = Base.encode16(:crypto.mac(:hmac, :sha256, secret, payload), case: :lower)
 
         if Plug.Crypto.secure_compare(expected, String.downcase(hex_digest)) do
           :ok

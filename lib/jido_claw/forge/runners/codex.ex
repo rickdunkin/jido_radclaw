@@ -46,7 +46,7 @@ defmodule JidoClaw.Forge.Runners.Codex do
   @auth_file "auth.json"
   @consolidator_server_name "consolidator"
 
-  @impl true
+  @impl Runner
   def init(client, config) do
     forge_home = Map.get(config, :forge_home, default_forge_home())
     codex_home = Map.get(config, :codex_home, "#{forge_home}/.codex")
@@ -86,7 +86,7 @@ defmodule JidoClaw.Forge.Runners.Codex do
     end
   end
 
-  @impl true
+  @impl Runner
   def run_iteration(client, state, opts) do
     redacted_prompt = PromptRedaction.redact(Keyword.get(opts, :prompt, state.prompt))
 
@@ -116,8 +116,12 @@ defmodule JidoClaw.Forge.Runners.Codex do
     args = ["exec" | consolidator_mcp_override(state) ++ base_args]
 
     timeout_ms = Keyword.get(opts, :timeout, state.timeout_ms)
-    run_opts = [timeout: timeout_ms]
-    run_opts = if state.session_name, do: [{:name, state.session_name} | run_opts], else: run_opts
+    base_run_opts = [timeout: timeout_ms]
+
+    run_opts =
+      if state.session_name,
+        do: [{:name, state.session_name} | base_run_opts],
+        else: base_run_opts
 
     case Sandbox.run(client, "codex", args, run_opts) do
       {output, 0} -> parse_output(output)
@@ -132,7 +136,7 @@ defmodule JidoClaw.Forge.Runners.Codex do
 
   defp consolidator_mcp_override(_), do: []
 
-  @impl true
+  @impl Runner
   def apply_input(client, input, state) do
     Sandbox.write_file(
       client,
@@ -325,5 +329,5 @@ defmodule JidoClaw.Forge.Runners.Codex do
     do: Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
 
   defp host_codex_dir,
-    do: Application.get_env(:jido_claw, :codex_home_dir, "~/.codex") |> Path.expand()
+    do: Path.expand(Application.get_env(:jido_claw, :codex_home_dir, "~/.codex"))
 end

@@ -4,6 +4,7 @@ defmodule JidoClaw.JidoMd do
   and the .jido/config.yaml with documented defaults.
   """
 
+  @spec ensure(String.t()) :: :ok | nil
   def ensure(project_dir) do
     path = Path.join([project_dir, ".jido", "JIDO.md"])
 
@@ -12,6 +13,7 @@ defmodule JidoClaw.JidoMd do
     end
   end
 
+  @spec generate(String.t()) :: :ok
   def generate(project_dir) do
     dir = Path.join(project_dir, ".jido")
     File.mkdir_p!(dir)
@@ -411,17 +413,19 @@ defmodule JidoClaw.JidoMd do
     ]
 
     # Look for application.ex or main entry files
-    app_files =
-      [
-        Path.join([dir, "lib", "**", "application.ex"]),
-        Path.join([dir, "lib", "**", "main.ex"])
-      ]
-      |> Enum.flat_map(&wildcard_relative(dir, &1))
+    patterns = [
+      Path.join([dir, "lib", "**", "application.ex"]),
+      Path.join([dir, "lib", "**", "main.ex"])
+    ]
+
+    app_files = Enum.flat_map(patterns, &wildcard_relative(dir, &1))
 
     explicit =
-      Enum.filter(candidates, fn {path, _} -> File.exists?(path) end) |> Enum.map(&elem(&1, 1))
+      candidates
+      |> Enum.filter(fn {path, _} -> File.exists?(path) end)
+      |> Enum.map(&elem(&1, 1))
 
-    (explicit ++ app_files) |> Enum.uniq()
+    Enum.uniq(explicit ++ app_files)
   end
 
   defp detect_entry_points(dir, "JavaScript/TypeScript") do
@@ -434,10 +438,12 @@ defmodule JidoClaw.JidoMd do
       end
 
     candidates =
-      ["src/index.ts", "src/index.js", "index.ts", "index.js", "src/app.ts", "src/server.ts"]
-      |> Enum.filter(&File.exists?(Path.join(dir, &1)))
+      Enum.filter(
+        ["src/index.ts", "src/index.js", "index.ts", "index.js", "src/app.ts", "src/server.ts"],
+        &File.exists?(Path.join(dir, &1))
+      )
 
-    (main ++ candidates) |> Enum.uniq()
+    Enum.uniq(main ++ candidates)
   end
 
   defp detect_entry_points(dir, "Rust") do

@@ -42,6 +42,7 @@ defmodule JidoClaw.Network.Node do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -130,7 +131,7 @@ defmodule JidoClaw.Network.Node do
   # Server Callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     relay_url = Keyword.get(opts, :relay_url)
@@ -156,7 +157,7 @@ defmodule JidoClaw.Network.Node do
     {:ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:connect, _from, state) do
     case Identity.init(state.project_dir) do
       {:ok, identity} ->
@@ -180,7 +181,7 @@ defmodule JidoClaw.Network.Node do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:disconnect, _from, state) do
     if state.status == :connected do
       Phoenix.PubSub.unsubscribe(@pubsub, @topic)
@@ -191,7 +192,7 @@ defmodule JidoClaw.Network.Node do
     {:reply, :ok, %{state | status: :disconnected}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:status, _from, state) do
     result = %{
       status: state.status,
@@ -202,12 +203,12 @@ defmodule JidoClaw.Network.Node do
     {:reply, result, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:peers, _from, state) do
     {:reply, MapSet.to_list(state.peers), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:broadcast_solution, solution_id}, _from, state) do
     if state.status != :connected or is_nil(state.identity) do
       {:reply, {:error, :not_connected}, state}
@@ -234,7 +235,7 @@ defmodule JidoClaw.Network.Node do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:request_solutions, description, opts}, _from, state) do
     if state.status != :connected or is_nil(state.identity) do
       {:reply, {:error, :not_connected}, state}
@@ -249,7 +250,7 @@ defmodule JidoClaw.Network.Node do
   # PubSub message handling
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def handle_info({:solution_shared, message}, state) do
     # Ignore messages we broadcast ourselves
     if same_agent?(message, state) do
@@ -260,7 +261,7 @@ defmodule JidoClaw.Network.Node do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:solution_requested, message}, state) do
     if same_agent?(message, state) or state.status != :connected do
       {:noreply, state}
@@ -270,7 +271,7 @@ defmodule JidoClaw.Network.Node do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:solution_response, message}, state) do
     if same_agent?(message, state) do
       {:noreply, state}
@@ -280,7 +281,7 @@ defmodule JidoClaw.Network.Node do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ---------------------------------------------------------------------------
@@ -309,34 +310,35 @@ defmodule JidoClaw.Network.Node do
   end
 
   defp handle_solution_requested(message, state) do
-    with %{"payload" => %{"description" => description}, "id" => request_id, "from" => from} <-
-           message do
-      opts_raw = get_in(message, ["payload", "opts"]) || %{}
-      opts = Enum.map(opts_raw, fn {k, v} -> {String.to_existing_atom(k), v} end)
+    case message do
+      %{"payload" => %{"description" => description}, "id" => request_id, "from" => from} ->
+        opts_raw = get_in(message, ["payload", "opts"]) || %{}
+        opts = Enum.map(opts_raw, fn {k, v} -> {String.to_existing_atom(k), v} end)
 
-      # Thread the node's tenant + workspace into Matcher so cross-
-      # tenant rows are not exposed via network responses.
-      scope_opts = [
-        tenant_id: state.tenant_id,
-        workspace_id: state.workspace_id,
-        local_visibility: [:local, :shared, :public],
-        cross_workspace_visibility: [:public]
-      ]
+        # Thread the node's tenant + workspace into Matcher so cross-
+        # tenant rows are not exposed via network responses.
+        scope_opts = [
+          tenant_id: state.tenant_id,
+          workspace_id: state.workspace_id,
+          local_visibility: [:local, :shared, :public],
+          cross_workspace_visibility: [:public]
+        ]
 
-      solutions = Matcher.find_solutions(description, opts ++ scope_opts)
+        solutions = Matcher.find_solutions(description, opts ++ scope_opts)
 
-      if solutions != [] and not is_nil(state.identity) do
-        solution_maps = Enum.map(solutions, fn %{solution: s} -> NetworkFacade.to_wire(s) end)
-        response = Protocol.response_message(solution_maps, request_id, state.identity)
+        if solutions != [] and not is_nil(state.identity) do
+          solution_maps = Enum.map(solutions, fn %{solution: s} -> NetworkFacade.to_wire(s) end)
+          response = Protocol.response_message(solution_maps, request_id, state.identity)
 
-        Logger.debug(
-          "[Network.Node] Responding to request #{request_id} from #{from} with #{length(solution_maps)} solutions"
-        )
+          Logger.debug(
+            "[Network.Node] Responding to request #{request_id} from #{from} with #{length(solution_maps)} solutions"
+          )
 
-        Phoenix.PubSub.broadcast(@pubsub, @topic, {:solution_response, response})
-      end
-    else
-      _ -> :ok
+          Phoenix.PubSub.broadcast(@pubsub, @topic, {:solution_response, response})
+        end
+
+      _ ->
+        :ok
     end
   rescue
     # String.to_existing_atom may raise for unknown option keys

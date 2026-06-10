@@ -10,6 +10,7 @@ defmodule JidoClaw.Setup.Wizard do
   alias JidoClaw.Setup.PrerequisiteChecker
 
   @doc "Run the full setup check and return overall status."
+  @spec run() :: map()
   def run do
     prerequisites = PrerequisiteChecker.check_all()
     credentials = CredentialValidator.validate_all()
@@ -24,6 +25,7 @@ defmodule JidoClaw.Setup.Wizard do
     }
   end
 
+  @spec setup_needed?() :: boolean()
   def setup_needed? do
     not run().ready?
   end

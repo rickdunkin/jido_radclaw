@@ -23,7 +23,7 @@ defmodule JidoClaw.Tools.NetworkShare do
 
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:network_share, params, context, fn _enriched ->
       case JidoClaw.Network.Node.broadcast_solution(params.solution_id) do

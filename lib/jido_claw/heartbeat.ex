@@ -14,13 +14,14 @@ defmodule JidoClaw.Heartbeat do
 
   # -- Public API --
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   # -- GenServer --
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
 
@@ -33,13 +34,13 @@ defmodule JidoClaw.Heartbeat do
     {:ok, state, {:continue, :write}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:write, state) do
     write_heartbeat(state)
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:tick, state) do
     write_heartbeat(state)
     schedule_tick()

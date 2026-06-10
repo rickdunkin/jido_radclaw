@@ -774,7 +774,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
     score_index = Enum.find_index(cols, &(&1 == "combined_score"))
     shadow_index = Enum.find_index(cols, &(&1 == "shadowed_by"))
 
-    {ranked, shadows_by_id} =
+    {ranked_reversed, shadows_by_id} =
       Enum.reduce(rows, {[], %{}}, fn row, {ranked_acc, shadows_acc} ->
         row_tuple = List.to_tuple(row)
         raw_id = elem(row_tuple, id_index)
@@ -792,7 +792,7 @@ defmodule JidoClaw.Memory.HybridSearchSql do
         {[{id, score} | ranked_acc], shadows_acc}
       end)
 
-    ranked = Enum.reverse(ranked)
+    ranked = Enum.reverse(ranked_reversed)
 
     case ranked do
       [] ->

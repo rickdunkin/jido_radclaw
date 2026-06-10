@@ -76,6 +76,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   # Client
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -96,7 +97,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
   # Server
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     state = %__MODULE__{
       scan_interval_ms:
@@ -110,7 +111,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
     {:ok, schedule_scan(state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:scan, state) do
     do_scan(state)
     {:noreply, schedule_scan(state)}
@@ -136,7 +137,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  @impl true
+  @impl GenServer
   def handle_cast(:tick, state) do
     do_scan(state)
     {:noreply, state}
@@ -349,7 +350,7 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
         {:rate_limited, retry_after} -> "rate_limited: retry_after=#{retry_after}"
         :rate_limited_local -> "rate_limited: per-node bucket"
         :rate_limited_cluster -> "rate_limited: cluster window"
-        other -> inspect(other) |> String.slice(0, 500)
+        other -> String.slice(inspect(other), 0, 500)
       end
 
     case reason do

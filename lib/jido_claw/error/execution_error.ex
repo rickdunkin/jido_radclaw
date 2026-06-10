@@ -9,7 +9,7 @@ defmodule JidoClaw.Error.ExecutionError do
   """
   use Splode.Error, class: :execution, fields: [:message, :phase, :details]
 
-  @impl true
+  @impl Exception
   def exception(opts) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
 

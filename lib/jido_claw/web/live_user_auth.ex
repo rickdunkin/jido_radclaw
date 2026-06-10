@@ -6,6 +6,8 @@ defmodule JidoClaw.Web.LiveUserAuth do
   alias AshAuthentication.Plug.Helpers
   alias JidoClaw.Authorization.Actor
 
+  @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) ::
+          {:cont | :halt, Phoenix.LiveView.Socket.t()}
   def on_mount(:live_user_optional, _params, session, socket) do
     socket = assign_current_user(socket, session)
     {:cont, socket}

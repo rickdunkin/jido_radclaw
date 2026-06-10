@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.EditFileTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
   @max_content_bytes 5 * 1024 * 1024
   import JidoClaw.ToolSchemaHelpers
 

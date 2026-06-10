@@ -300,7 +300,7 @@ defmodule JidoClaw.Tools.RunCommandTest do
         display_pid =
           GenServer.whereis(JidoClaw.Display) || flunk("Display singleton not running")
 
-        original_gl = Process.info(display_pid, :group_leader) |> elem(1)
+        original_gl = elem(Process.info(display_pid, :group_leader), 1)
         Process.group_leader(display_pid, Process.group_leader())
 
         try do

@@ -53,4 +53,36 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
     assert {:error, :command_not_found} =
              HostShell.spawn(client, "definitely-not-a-real-command", [], [])
   end
+
+  describe "env scrubbing" do
+    setup do
+      var = "JIDO_TEST_#{System.unique_integer([:positive])}_TOKEN"
+      System.put_env(var, "leaked-secret")
+      on_exit(fn -> System.delete_env(var) end)
+      %{var: var}
+    end
+
+    test "exec does not leak sensitive parent env vars", %{client: client, var: var} do
+      assert {"", 0} = HostShell.exec(client, ~s(printf %s "$#{var}"), [])
+    end
+
+    test "injected sandbox env wins over scrubbing", %{client: client} do
+      assert :ok = HostShell.inject_env(client, %{"INJECTED_TOKEN" => "ok"})
+      assert {"ok", 0} = HostShell.exec(client, ~s(printf %s "$INJECTED_TOKEN"), [])
+    end
+
+    test "spawn port does not leak sensitive parent env vars", %{client: client, var: var} do
+      assert {:ok, port} = HostShell.spawn(client, "sh", ["-c", ~s(printf %s "$#{var}")], [])
+      assert collect_port_output(port) == ""
+    end
+  end
+
+  defp collect_port_output(port, acc \\ "") do
+    receive do
+      {^port, {:data, chunk}} -> collect_port_output(port, acc <> chunk)
+      {^port, {:exit_status, _status}} -> acc
+    after
+      5_000 -> flunk("timed out waiting for spawned port to exit")
+    end
+  end
 end

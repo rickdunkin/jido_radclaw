@@ -9,7 +9,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
   `WorkflowRecovery.reconcile_all/0` (boot recovery is disabled in test, so it
   is driven directly inside the sandbox).
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase

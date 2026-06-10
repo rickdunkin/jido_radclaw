@@ -58,7 +58,7 @@ defmodule JidoClaw.Tools.InspectAgent do
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Inspection
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
     tenant_id = Map.get(tool_context, :tenant_id)

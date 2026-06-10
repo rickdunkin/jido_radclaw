@@ -209,7 +209,7 @@ defmodule JidoClaw.Reasoning.Compactor.TurnGroupingTest do
 
     test "started_at and ended_at reflect first/last message timestamps" do
       [turn] = TurnGrouping.group([msg("r1", 5), msg("r1", 1), msg("r1", 3)])
-      assert turn.messages |> Enum.map(& &1.sequence) == [1, 3, 5]
+      assert Enum.map(turn.messages, & &1.sequence) == [1, 3, 5]
       assert turn.started_at_seq == 1
       assert turn.started_at == DateTime.from_unix!(1_000_000, :microsecond)
       assert turn.ended_at == DateTime.from_unix!(5_000_000, :microsecond)

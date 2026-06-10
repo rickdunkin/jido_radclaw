@@ -4,6 +4,8 @@ defmodule JidoClaw.GitHub.IssueCommentClient do
 
   @github_api "https://api.github.com"
 
+  @spec post_comment(String.t(), integer() | String.t(), String.t()) ::
+          :ok | {:error, {:api_error, integer()} | term()}
   def post_comment(repo_full_name, issue_number, body) do
     token = get_token()
     url = "#{@github_api}/repos/#{repo_full_name}/issues/#{issue_number}/comments"

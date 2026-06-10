@@ -42,7 +42,7 @@ defmodule JidoClaw.Tools.AgentStatus do
 
   alias JidoClaw.AgentView
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
 
@@ -56,9 +56,7 @@ defmodule JidoClaw.Tools.AgentStatus do
   end
 
   defp snapshot(tenant_id, params) do
-    opts =
-      []
-      |> maybe_put(:events_limit, Map.get(params, :events_limit))
+    opts = maybe_put([], :events_limit, Map.get(params, :events_limit))
 
     case AgentView.snapshot(
            %{tenant_id: tenant_id, session_id: params.session_id},

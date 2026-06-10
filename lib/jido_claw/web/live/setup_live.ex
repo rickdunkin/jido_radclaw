@@ -3,7 +3,7 @@ defmodule JidoClaw.Web.SetupLive do
 
   alias JidoClaw.Setup.Wizard
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     status = Wizard.run()
 
@@ -15,7 +15,7 @@ defmodule JidoClaw.Web.SetupLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div style="max-width: 640px; margin: 0 auto;">
@@ -106,14 +106,14 @@ defmodule JidoClaw.Web.SetupLive do
     """
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("step", %{"step" => step}, socket) do
     {:noreply, assign(socket, step: String.to_existing_atom(step))}
   rescue
     ArgumentError -> {:noreply, socket}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("recheck", _params, socket) do
     {:noreply, assign(socket, status: Wizard.run())}
   end

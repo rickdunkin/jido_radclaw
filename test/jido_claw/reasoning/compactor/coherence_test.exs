@@ -41,12 +41,13 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
   defmodule CapturingAgent do
     use GenServer
 
+    @spec start_link(pid()) :: GenServer.on_start()
     def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
 
-    @impl true
+    @impl GenServer
     def init(test_pid), do: {:ok, test_pid}
 
-    @impl true
+    @impl GenServer
     def handle_call(
           {:signal, %{type: "ai.react.set_system_prompt", data: %{system_prompt: prompt}}},
           _from,
@@ -60,8 +61,10 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
   end
 
   defmodule FakeRuntime do
+    @spec whereis(term()) :: nil
     def whereis(_id), do: nil
 
+    @spec start_agent(module(), keyword()) :: {:ok, pid()}
     def start_agent(_module, _opts) do
       {:ok, Application.fetch_env!(:jido_claw, :coherence_capturing_pid)}
     end

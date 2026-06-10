@@ -33,38 +33,39 @@ defmodule JidoClaw.Audit.SignalListener do
 
   defstruct bus_pid: nil, subscription: nil
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     {:ok, %__MODULE__{}, {:continue, :setup}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:setup, state) do
     {:noreply, do_setup(state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:retry_setup, state) do
     {:noreply, do_setup(state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     Process.send_after(self(), :retry_setup, @retry_after_ms)
     {:noreply, %{state | bus_pid: nil, subscription: nil}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:signal, %Jido.Signal{type: @topic} = signal}, state) do
     safe_handle(signal)
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(_other, state), do: {:noreply, state}
 
   defp do_setup(state) do

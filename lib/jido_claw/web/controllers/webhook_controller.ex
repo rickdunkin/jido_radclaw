@@ -5,6 +5,7 @@ defmodule JidoClaw.Web.WebhookController do
   alias JidoClaw.GitHub.WebhookPipeline
   alias JidoClaw.Web.CacheBodyReader
 
+  @spec github(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def github(conn, _params) do
     {:ok, raw_body} = CacheBodyReader.raw_body(conn)
 

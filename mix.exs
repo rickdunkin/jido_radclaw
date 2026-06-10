@@ -246,7 +246,7 @@ defmodule JidoClaw.MixProject do
         "jidoclaw.compile_check",
         "jidoclaw.system_prompt.check",
         "deps.unlock --unused",
-        "format",
+        "format --check-formatted",
         "reach.check --arch --smells --strict",
         "credo --strict",
         "dialyzer --format short",

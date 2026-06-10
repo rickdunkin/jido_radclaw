@@ -16,10 +16,12 @@ defmodule JidoClaw.Memory.Consolidator.SystemJobsInitializer do
   alias JidoClaw.Cron.Scheduler
   alias JidoClaw.Tenant.Manager
 
+  @spec start_link(term()) :: {:ok, pid()}
   def start_link(opts) do
     Task.start_link(__MODULE__, :run, [opts])
   end
 
+  @spec run(term()) :: :ok
   def run(_opts) do
     case Manager.ensure_tenant("system", name: "System") do
       {:ok, _tenant} ->

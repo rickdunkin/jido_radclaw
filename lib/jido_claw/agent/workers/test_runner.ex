@@ -19,8 +19,8 @@ defmodule JidoClaw.Agent.Workers.TestRunner do
         Zoi.object(%{
           status: Zoi.enum([:passed, :failed, :error]),
           summary: Zoi.string(),
-          passed_count: Zoi.integer() |> Zoi.gte(0),
-          failed_count: Zoi.integer() |> Zoi.gte(0),
+          passed_count: Zoi.gte(Zoi.integer(), 0),
+          failed_count: Zoi.gte(Zoi.integer(), 0),
           failures:
             Zoi.array(
               Zoi.object(
@@ -34,9 +34,9 @@ defmodule JidoClaw.Agent.Workers.TestRunner do
           artifacts:
             Zoi.object(
               %{
-                url: Zoi.string() |> Zoi.optional(),
-                port: Zoi.string() |> Zoi.optional(),
-                files: Zoi.string() |> Zoi.optional()
+                url: Zoi.optional(Zoi.string()),
+                port: Zoi.optional(Zoi.string()),
+                files: Zoi.optional(Zoi.string())
               },
               unrecognized_keys: :preserve
             )

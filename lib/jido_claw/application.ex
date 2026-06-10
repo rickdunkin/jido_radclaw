@@ -23,7 +23,7 @@ defmodule JidoClaw.Application do
   alias JidoClaw.Security.RuntimeSecrets
   alias JidoClaw.Security.VaultConfig
 
-  @impl true
+  @impl Application
   def start(_type, _args) do
     DependencyPatches.ensure_loaded!()
 
@@ -406,6 +406,7 @@ defmodule JidoClaw.Application do
   `cwd/.env` in that order. Each file is parsed with unset-only writes,
   so earlier (more specific) paths take precedence.
   """
+  @spec load_dotenv() :: :ok
   def load_dotenv do
     project_dir = Application.get_env(:jido_claw, :project_dir) || File.cwd!()
     cwd = File.cwd!()
@@ -414,13 +415,12 @@ defmodule JidoClaw.Application do
     # writes (parse_dotenv only writes when System.get_env returns nil),
     # so earlier paths take precedence over later ones.
     paths =
-      [
+      Enum.uniq([
         Path.join([project_dir, ".jido", ".env"]),
         Path.join(project_dir, ".env"),
         Path.join([cwd, ".jido", ".env"]),
         Path.join(cwd, ".env")
-      ]
-      |> Enum.uniq()
+      ])
 
     Enum.each(paths, fn path ->
       case File.read(path) do
@@ -474,6 +474,7 @@ defmodule JidoClaw.Application do
   Called from the `mix jidoclaw` task so framework log output does not
   contaminate stdout (which the CLI uses for the REPL/MCP transport).
   """
+  @spec redirect_logger_to_stderr() :: :ok | {:error, term()}
   def redirect_logger_to_stderr do
     :logger.remove_handler(:default)
 

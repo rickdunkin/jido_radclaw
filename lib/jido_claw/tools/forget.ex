@@ -40,7 +40,7 @@ defmodule JidoClaw.Tools.Forget do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Memory.Fact
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
 

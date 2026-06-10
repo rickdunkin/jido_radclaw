@@ -133,8 +133,7 @@ defmodule JidoClaw.ForgeView do
   end
 
   defp live_ids do
-    Manager.list_sessions()
-    |> MapSet.new()
+    MapSet.new(Manager.list_sessions())
   rescue
     # Read-only projection: a Manager GenServer hiccup must not crash the
     # ForgeView assembly. Paired with `catch :exit, _` for non-existent

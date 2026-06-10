@@ -71,7 +71,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
   alias JidoClaw.Cron.Scheduler
   alias JidoClaw.Skills
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
     actor = get_in(context, [:tool_context, :actor]) || Actor.system(tenant_id)
@@ -117,15 +117,17 @@ defmodule JidoClaw.Tools.ScheduleTask do
     {kind, value} = persistable_schedule(req.schedule_tuple)
 
     persist_attrs =
-      %{
-        job_id: req.id,
-        task: req.task,
-        mode: req.mode,
-        schedule_kind: kind,
-        schedule_value: value,
-        timezone: req.timezone
-      }
-      |> Map.merge(req.target_attrs)
+      Map.merge(
+        %{
+          job_id: req.id,
+          task: req.task,
+          mode: req.mode,
+          schedule_kind: kind,
+          schedule_value: value,
+          timezone: req.timezone
+        },
+        req.target_attrs
+      )
 
     case Job.upsert(persist_attrs, tenant: req.tenant_id, actor: req.actor) do
       {:ok, _job} -> {:ok, %{result: success_message(req)}}

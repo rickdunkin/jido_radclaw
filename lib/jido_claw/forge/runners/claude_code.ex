@@ -10,7 +10,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @syncable_entries ~w(settings.json credentials.json skills CLAUDE.md)
   @auth_file "credentials.json"
 
-  @impl true
+  @impl Runner
   def init(client, config) do
     prompt = Map.get(config, :prompt, "")
     model = Map.get(config, :model, "claude-sonnet-4-20250514")
@@ -51,7 +51,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     end
   end
 
-  @impl true
+  @impl Runner
   def run_iteration(client, state, opts) do
     prompt = Keyword.get(opts, :prompt, state.prompt)
     redacted_prompt = PromptRedaction.redact(prompt)
@@ -74,8 +74,12 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
       |> append_thinking_effort(state)
 
     timeout_ms = Keyword.get(opts, :timeout, Map.get(state, :timeout_ms) || 300_000)
-    run_opts = [timeout: timeout_ms]
-    run_opts = if state.session_name, do: [{:name, state.session_name} | run_opts], else: run_opts
+    base_run_opts = [timeout: timeout_ms]
+
+    run_opts =
+      if state.session_name,
+        do: [{:name, state.session_name} | base_run_opts],
+        else: base_run_opts
 
     case Sandbox.run(client, "claude", args, run_opts) do
       {output, 0} -> parse_output(output)
@@ -95,7 +99,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
   defp append_thinking_effort(args, _), do: args
 
-  @impl true
+  @impl Runner
   def apply_input(client, input, state) do
     forge_home = Map.get(state, :forge_home, default_forge_home())
 
@@ -216,5 +220,5 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     do: Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
 
   defp host_claude_dir,
-    do: Application.get_env(:jido_claw, :claude_home_dir, "~/.claude") |> Path.expand()
+    do: Path.expand(Application.get_env(:jido_claw, :claude_home_dir, "~/.claude"))
 end

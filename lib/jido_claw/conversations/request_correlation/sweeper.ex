@@ -24,17 +24,18 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Sweeper do
   @tick_ms 60_000
   @full_batch 1_000
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     schedule_next()
     {:ok, %{}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:sweep, state) do
     case sweep() do
       {:ok, count} when count >= @full_batch ->
@@ -48,7 +49,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Sweeper do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(_other, state), do: {:noreply, state}
 
   defp sweep do

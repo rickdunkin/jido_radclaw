@@ -1,6 +1,7 @@
 defmodule JidoClaw.Tools.GitProjectDirTest do
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.GitDiff
   alias JidoClaw.Tools.GitStatus
   alias JidoClaw.Tools.ProjectInfo
@@ -26,8 +27,13 @@ defmodule JidoClaw.Tools.GitProjectDirTest do
 
   test "git_diff runs in tool_context.project_dir", %{dir: dir} do
     File.write!(Path.join(dir, "tracked.txt"), "old\n")
-    assert {"", 0} = System.cmd("git", ["add", "--", "tracked.txt"], cd: dir)
-    assert {_output, 0} = System.cmd("git", ["commit", "-m", "base"], cd: dir)
+
+    assert {"", 0} =
+             System.cmd("git", ["add", "--", "tracked.txt"], cd: dir, env: Env.scrubbed_cmd_env())
+
+    assert {_output, 0} =
+             System.cmd("git", ["commit", "-m", "base"], cd: dir, env: Env.scrubbed_cmd_env())
+
     File.write!(Path.join(dir, "tracked.txt"), "changed\n")
 
     assert {:ok, %{diff: diff}} = GitDiff.run(%{path: "tracked.txt"}, context(dir))
@@ -47,9 +53,24 @@ defmodule JidoClaw.Tools.GitProjectDirTest do
   end
 
   defp init_repo!(dir) do
-    assert {_output, 0} = System.cmd("git", ["init"], cd: dir, stderr_to_stdout: true)
-    assert {"", 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: dir)
-    assert {"", 0} = System.cmd("git", ["config", "user.name", "Test User"], cd: dir)
+    assert {_output, 0} =
+             System.cmd("git", ["init"],
+               cd: dir,
+               stderr_to_stdout: true,
+               env: Env.scrubbed_cmd_env()
+             )
+
+    assert {"", 0} =
+             System.cmd("git", ["config", "user.email", "test@example.com"],
+               cd: dir,
+               env: Env.scrubbed_cmd_env()
+             )
+
+    assert {"", 0} =
+             System.cmd("git", ["config", "user.name", "Test User"],
+               cd: dir,
+               env: Env.scrubbed_cmd_env()
+             )
   end
 
   defp context(dir), do: %{tool_context: %{project_dir: dir}}

@@ -41,20 +41,20 @@ defmodule JidoClaw.Shell.Commands.Jido do
   alias JidoClaw.Solutions.Solution
   alias JidoClaw.Workspaces.Resolver
 
-  @impl true
+  @impl Jido.Shell.Command
   def name, do: "jido"
 
-  @impl true
+  @impl Jido.Shell.Command
   def summary, do: "JidoClaw introspection — status, memory search, solutions find"
 
-  @impl true
+  @impl Jido.Shell.Command
   def schema do
     Zoi.map(%{
-      args: Zoi.array(Zoi.string()) |> Zoi.default([])
+      args: Zoi.default(Zoi.array(Zoi.string()), [])
     })
   end
 
-  @impl true
+  @impl Jido.Shell.Command
   def run(_state, %{args: []}, emit), do: emit_usage_ok(emit)
   def run(_state, %{args: ["help"]}, emit), do: emit_usage_ok(emit)
   def run(state, %{args: ["status"]}, emit), do: emit_status(state, emit)

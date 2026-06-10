@@ -70,7 +70,7 @@ defmodule JidoClaw.Tools.StoreSolution do
   alias JidoClaw.Solutions.Solution
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:store_solution, params, context, fn enriched ->
       tool_context = Map.get(enriched, :tool_context, %{})

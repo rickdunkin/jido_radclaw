@@ -4,6 +4,7 @@ defmodule JidoClaw.GitHub.Agents.PullRequestCoordinator do
 
   @max_attempts 3
 
+  @spec create_pr(map(), map(), map()) :: {:ok, map()} | {:error, term()}
   def create_pr(event, triage, research) do
     do_attempt(event, triage, research, 1, [])
   end

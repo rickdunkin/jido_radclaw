@@ -9,6 +9,7 @@ defmodule JidoClaw.Test.HandoffDispatchCapture do
   # `{:ok, "captured"}`) so the failure-path test can flip to
   # `{:error, :timeout}` and assert that the dispatcher leaves
   # `preamble_consumed?` alone.
+  @spec ask_sync(pid(), term(), keyword()) :: term()
   def ask_sync(pid, query, opts) when is_list(opts) do
     target = Application.get_env(:jido_claw, :dispatch_capture_target, self())
     response = Application.get_env(:jido_claw, :dispatch_capture_response, {:ok, "captured"})

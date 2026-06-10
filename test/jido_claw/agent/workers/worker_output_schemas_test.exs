@@ -25,7 +25,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     Verifier
   }
 
-  defp output_for(module), do: module.strategy_opts() |> Keyword.fetch!(:output)
+  defp output_for(module), do: Keyword.fetch!(module.strategy_opts(), :output)
 
   describe "Coder schema" do
     test "parses a valid sample" do

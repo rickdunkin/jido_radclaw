@@ -86,16 +86,27 @@ defmodule JidoClaw.Memory.Scope do
   def resolve(nil), do: {:error, :tenant_required}
 
   defp do_resolve(tenant_id, ctx) do
-    user_id = Map.get(ctx, :user_id)
-    workspace_id = Map.get(ctx, :workspace_uuid)
+    ctx_user_id = Map.get(ctx, :user_id)
+    ctx_workspace_id = Map.get(ctx, :workspace_uuid)
     session_id = Map.get(ctx, :session_uuid)
-    project_id = Map.get(ctx, :project_id)
+    ctx_project_id = Map.get(ctx, :project_id)
+
+    {session_workspace_id, session_user_id, session_project_id} =
+      maybe_load_session_ancestors(
+        tenant_id,
+        session_id,
+        ctx_workspace_id,
+        ctx_user_id,
+        ctx_project_id
+      )
 
     {workspace_id, user_id, project_id} =
-      maybe_load_session_ancestors(tenant_id, session_id, workspace_id, user_id, project_id)
-
-    {workspace_id, user_id, project_id} =
-      maybe_load_workspace_ancestors(tenant_id, workspace_id, user_id, project_id)
+      maybe_load_workspace_ancestors(
+        tenant_id,
+        session_workspace_id,
+        session_user_id,
+        session_project_id
+      )
 
     scope_kind = derive_kind(session_id, project_id, workspace_id, user_id)
 

@@ -37,7 +37,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
         for i <- 1..5 do
           %{
             event_type: "iteration.completed",
-            timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i),
+            timestamp: DateTime.add(~U[2026-04-10 10:00:00Z], i),
             data: %{}
           }
         end
@@ -69,7 +69,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
         for i <- 1..200 do
           %{
             event_type: "event.type.#{i}",
-            timestamp: ~U[2026-04-10 10:00:00Z] |> DateTime.add(i),
+            timestamp: DateTime.add(~U[2026-04-10 10:00:00Z], i),
             data: %{}
           }
         end

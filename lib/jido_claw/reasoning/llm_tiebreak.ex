@@ -114,8 +114,7 @@ defmodule JidoClaw.Reasoning.LLMTiebreaker do
 
   defp build_prompt(user_prompt, candidates) do
     descriptions =
-      candidates
-      |> Enum.map_join("\n", fn name ->
+      Enum.map_join(candidates, "\n", fn name ->
         desc = strategy_description(name)
         "- #{name}: #{desc}"
       end)

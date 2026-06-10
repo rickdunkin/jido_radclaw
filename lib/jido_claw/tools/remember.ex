@@ -46,7 +46,7 @@ defmodule JidoClaw.Tools.Remember do
       ]
     ]
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     type = Map.get(params, :type, "fact")
     tool_context = Map.get(context, :tool_context, %{})

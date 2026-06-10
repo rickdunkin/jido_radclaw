@@ -17,6 +17,7 @@ defmodule JidoClaw.Test.FakeSSH do
 
   # -- :ssh API surface -------------------------------------------------------
 
+  @spec connect(term(), non_neg_integer(), list(), timeout()) :: {:ok, pid()} | {:error, term()}
   def connect(host, port, opts, _timeout) do
     case mode() do
       :connect_error ->
@@ -39,6 +40,7 @@ defmodule JidoClaw.Test.FakeSSH do
     end
   end
 
+  @spec close(pid()) :: :ok
   def close(conn) do
     notify({:close, conn})
     :ok
@@ -46,6 +48,7 @@ defmodule JidoClaw.Test.FakeSSH do
 
   # -- :ssh_connection API surface --------------------------------------------
 
+  @spec session_channel(pid(), timeout()) :: {:ok, integer()} | {:error, term()}
   def session_channel(conn, _timeout) do
     case mode() do
       :session_channel_error ->
@@ -67,8 +70,11 @@ defmodule JidoClaw.Test.FakeSSH do
     end
   end
 
+  @spec setenv(pid(), integer(), term(), term(), timeout()) :: :success
   def setenv(_conn, _channel_id, _var, _value, _timeout), do: :success
 
+  @spec exec(pid(), integer(), charlist() | String.t(), timeout()) ::
+          :success | :failure | {:error, term()}
   def exec(conn, channel_id, command, _timeout) do
     command_str = to_string(command)
     notify({:exec, conn, channel_id, command_str})
@@ -101,6 +107,7 @@ defmodule JidoClaw.Test.FakeSSH do
     end
   end
 
+  @spec close(pid(), integer()) :: :ok
   def close(conn, channel_id) do
     notify({:close_channel, conn, channel_id})
     :ok
@@ -170,17 +177,20 @@ defmodule JidoClaw.Test.FakeSSH do
   # -- Test support -----------------------------------------------------------
 
   @doc "Bind the current process as the observer for fake_ssh notifications."
+  @spec bind_test_pid(pid()) :: :ok
   def bind_test_pid(pid \\ self()) do
     :persistent_term.put({__MODULE__, :test_pid}, pid)
     :ok
   end
 
+  @spec clear_test_pid() :: :ok
   def clear_test_pid do
     :persistent_term.erase({__MODULE__, :test_pid})
     :ok
   end
 
   @doc "Set the FakeSSH behavioral mode for the current test."
+  @spec set_mode(atom()) :: :ok
   def set_mode(mode) when is_atom(mode) do
     :persistent_term.put({__MODULE__, :mode}, mode)
     :persistent_term.erase({__MODULE__, :first_call, :exec})
@@ -188,6 +198,7 @@ defmodule JidoClaw.Test.FakeSSH do
     :ok
   end
 
+  @spec clear_mode() :: :ok
   def clear_mode do
     :persistent_term.erase({__MODULE__, :mode})
     :persistent_term.erase({__MODULE__, :first_call, :exec})

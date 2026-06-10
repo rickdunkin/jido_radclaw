@@ -67,9 +67,7 @@ defmodule JidoClaw.Cron.JobTest do
     test "rejects writes that try to set tenant_id via attrs (not in accept list)" do
       tenant_id = seed_tenant("cron-reject-attr")
 
-      attrs =
-        upsert_attrs()
-        |> Map.put(:tenant_id, "wrong-tenant")
+      attrs = Map.put(upsert_attrs(), :tenant_id, "wrong-tenant")
 
       assert {:error, %Ash.Error.Invalid{} = err} =
                Job.upsert(attrs, tenant: tenant_id, actor: actor_for(tenant_id))

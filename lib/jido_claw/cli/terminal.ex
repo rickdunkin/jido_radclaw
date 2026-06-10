@@ -8,6 +8,8 @@ defmodule JidoClaw.CLI.Terminal do
   a hard-coded 120-column default.
   """
 
+  alias JidoClaw.Security.Redaction.Env
+
   @default_cols 120
 
   @doc """
@@ -21,7 +23,7 @@ defmodule JidoClaw.CLI.Terminal do
         cols
 
       _ ->
-        case System.cmd("tput", ["cols"], stderr_to_stdout: true) do
+        case System.cmd("tput", ["cols"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
           {output, 0} ->
             case Integer.parse(String.trim(output)) do
               {cols, _} -> cols

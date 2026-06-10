@@ -23,6 +23,7 @@ defmodule JidoClaw.Reasoning.StrategyTestHelper do
   The YAML filename is unique per invocation, so nesting calls in the
   same test is safe.
   """
+  @spec with_user_strategy(String.t(), (-> term())) :: term()
   def with_user_strategy(yaml, fun) when is_binary(yaml) and is_function(fun, 0) do
     with_user_yaml(
       "strategies",
@@ -40,6 +41,7 @@ defmodule JidoClaw.Reasoning.StrategyTestHelper do
 
   Mirror of `with_user_strategy/2` for pipeline fixtures.
   """
+  @spec with_user_pipeline(String.t(), (-> term())) :: term()
   def with_user_pipeline(yaml, fun) when is_binary(yaml) and is_function(fun, 0) do
     with_user_yaml(
       "pipelines",

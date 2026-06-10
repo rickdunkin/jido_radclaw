@@ -8,6 +8,7 @@ defmodule JidoClaw.Platform.Approval do
 
   @approval_timeout 120_000
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -34,35 +35,38 @@ defmodule JidoClaw.Platform.Approval do
   end
 
   @doc "Register a tool as pre-approved for a session."
+  @spec allow(String.t(), String.t()) :: :ok
   def allow(session_id, tool_name) do
     GenServer.cast(__MODULE__, {:allow, session_id, tool_name})
   end
 
   @doc "Respond to a pending approval request."
+  @spec respond(reference() | integer(), :approved | :denied) :: :ok | {:error, :not_found}
   def respond(request_id, decision) when decision in [:approved, :denied] do
     GenServer.call(__MODULE__, {:respond, request_id, decision})
   end
 
   @doc "List all pending approval requests."
+  @spec pending() :: [map()]
   def pending do
     GenServer.call(__MODULE__, :pending)
   end
 
   # -- Server --
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     table = :ets.new(:jido_claw_tool_approvals, [:set, :protected, :named_table])
     {:ok, %{table: table, pending: %{}}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast({:allow, session_id, tool_name}, state) do
     :ets.insert(state.table, {{session_id, tool_name}, true})
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:respond, request_id, decision}, _from, state) do
     case Map.pop(state.pending, request_id) do
       {nil, _} ->
@@ -77,8 +81,7 @@ defmodule JidoClaw.Platform.Approval do
 
   def handle_call(:pending, _from, state) do
     pending =
-      state.pending
-      |> Enum.map(fn {id, %{session_id: sid, tool_name: tool}} ->
+      Enum.map(state.pending, fn {id, %{session_id: sid, tool_name: tool}} ->
         %{id: id, session_id: sid, tool_name: tool}
       end)
 
@@ -109,7 +112,7 @@ defmodule JidoClaw.Platform.Approval do
     {:noreply, %{state | pending: pending}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:timeout, request_id}, state) do
     case Map.pop(state.pending, request_id) do
       {nil, _} ->
@@ -122,7 +125,7 @@ defmodule JidoClaw.Platform.Approval do
     end
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     Enum.each(state.pending, fn {_id, %{from: from, timer: timer}} ->
       Process.cancel_timer(timer)

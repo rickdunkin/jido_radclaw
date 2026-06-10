@@ -7,7 +7,7 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
       description: "Test-only action that returns secret-shaped output.",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(_params, _context) do
       {:ok,
        %{
@@ -25,7 +25,7 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
       description: "Test-only action that returns inconsistent error shapes.",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(%{shape: :string}, _context),
       do: {:error, "token sk-abcdefghijklmnopqrstuvwxyz01 leaked"}
 

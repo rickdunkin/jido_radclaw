@@ -168,7 +168,8 @@ defmodule JidoClawTest.ErrorToolsWireFormatTest do
 
     test "oversized details map stays a map with a truncated summary" do
       huge =
-        Map.new(1..200, fn i -> {:"k#{i}", String.duplicate("x", 100)} end)
+        1..200
+        |> Map.new(fn i -> {"k#{i}", String.duplicate("x", 100)} end)
         |> Map.put(:phase, :load)
 
       err = Error.execution_error("ok", phase: :load, details: huge)
@@ -205,7 +206,7 @@ defmodule JidoClawTest.ErrorToolsWireFormatTest do
 
     test "oversized nested map stays a map with a truncated summary" do
       nested =
-        Map.new(1..200, fn i -> {:"k#{i}", String.duplicate("x", 100)} end)
+        Map.new(1..200, fn i -> {"k#{i}", String.duplicate("x", 100)} end)
 
       err = Error.execution_error("Boom", details: %{nested: nested})
       wire = Wire.normalize(err)

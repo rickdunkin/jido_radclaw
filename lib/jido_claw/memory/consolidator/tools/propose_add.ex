@@ -12,7 +12,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.ProposeAdd do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(args, ctx) do
     Helpers.dispatch(ctx, {:propose_add, args})
   end

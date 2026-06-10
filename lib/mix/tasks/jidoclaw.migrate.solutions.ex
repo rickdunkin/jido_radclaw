@@ -41,7 +41,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
   alias JidoClaw.Solutions.{Reputation, ReputationImport, Solution}
   alias JidoClaw.Workspaces.Resolver
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args, switches: [dry_run: :boolean, project: :string])
@@ -209,7 +209,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Solutions do
 
     case File.read(path) do
       {:ok, body} ->
-        sha = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+        sha = Base.encode16(:crypto.hash(:sha256, body), case: :lower)
 
         case ReputationImport.find_by_hash(sha,
                tenant: workspace.tenant_id,

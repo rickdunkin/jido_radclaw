@@ -4,6 +4,7 @@ defmodule JidoClaw.Web.CoreComponents do
 
   attr(:flash, :map, required: true)
 
+  @spec flash_group(map()) :: Phoenix.LiveView.Rendered.t()
   def flash_group(assigns) do
     ~H"""
     <div :if={msg = Phoenix.Flash.get(@flash, :info)} class="flash flash-info">
@@ -20,6 +21,7 @@ defmodule JidoClaw.Web.CoreComponents do
   attr(:variant, :string, default: "default")
   slot(:inner_block, required: true)
 
+  @spec button(map()) :: Phoenix.LiveView.Rendered.t()
   def button(assigns) do
     ~H"""
     <.link
@@ -39,6 +41,7 @@ defmodule JidoClaw.Web.CoreComponents do
   attr(:value, :string, default: nil)
   slot(:inner_block)
 
+  @spec stat_card(map()) :: Phoenix.LiveView.Rendered.t()
   def stat_card(assigns) do
     ~H"""
     <div class="card" style="text-align: center;">
@@ -54,6 +57,7 @@ defmodule JidoClaw.Web.CoreComponents do
 
   attr(:status, :atom, required: true)
 
+  @spec status_badge(map()) :: Phoenix.LiveView.Rendered.t()
   def status_badge(assigns) do
     color =
       case assigns.status do
@@ -75,6 +79,7 @@ defmodule JidoClaw.Web.CoreComponents do
   # lateness amount once past due.
   attr(:evidence, :map, default: nil)
 
+  @spec deadline_badge(map()) :: Phoenix.LiveView.Rendered.t()
   def deadline_badge(assigns) do
     ~H"""
     <span :if={is_nil(@evidence)} style="color: var(--muted);">—</span>
@@ -103,6 +108,7 @@ defmodule JidoClaw.Web.CoreComponents do
   # classes; wide graphs scroll horizontally.
   attr(:layout, :map, required: true)
 
+  @spec workflow_graph(map()) :: Phoenix.LiveView.Rendered.t()
   def workflow_graph(assigns) do
     ~H"""
     <div style="overflow-x: auto;">

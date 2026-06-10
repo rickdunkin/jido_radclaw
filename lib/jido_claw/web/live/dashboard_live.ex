@@ -10,7 +10,7 @@ defmodule JidoClaw.Web.DashboardLive do
   # header debounce.
   @overview_debounce_ms 250
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     if connected?(socket) do
       ForgePubSub.subscribe_sessions()
@@ -25,7 +25,7 @@ defmodule JidoClaw.Web.DashboardLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>
@@ -74,50 +74,50 @@ defmodule JidoClaw.Web.DashboardLive do
   end
 
   # Forge session events — each schedules a coalesced overview rebuild.
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:session_started, _id, _scope}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:session_recovering, _id, _scope}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:session_recovery_exhausted, _id, _scope}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:session_stopped, _id, _reason, _scope}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
   # Run events (RunPubSub — broadcast by JidoClaw.Orchestration.ReactorMiddleware,
   # with a terminal backstop in JidoClaw.Orchestration.ReactorRunner)
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:run_started, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:run_completed, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:run_failed, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 
   # Coalesced rebuild — fires once after a burst of events settles.
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info(:refresh_overview, socket) do
     {:noreply, assign(socket, overview: overview(socket), overview_refresh_pending: false)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # Debounce: the first event in a burst arms a single timer + sets the

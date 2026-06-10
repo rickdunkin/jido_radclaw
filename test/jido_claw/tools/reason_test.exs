@@ -20,6 +20,7 @@ defmodule JidoClaw.Tools.ReasonTest do
 
     # Reflects the incoming strategy atom in :output so tests can assert the
     # resolved base was dispatched correctly (not just that *some* runner ran).
+    @spec run(map(), map()) :: {:ok, map()}
     def run(%{strategy: strategy}, _context) do
       {:ok,
        %{
@@ -35,6 +36,7 @@ defmodule JidoClaw.Tools.ReasonTest do
   defmodule ParamInspectingRunner do
     @moduledoc false
 
+    @spec run(map(), map()) :: {:ok, map()}
     def run(params, _context) do
       {:ok,
        %{

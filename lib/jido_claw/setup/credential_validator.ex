@@ -1,8 +1,15 @@
 defmodule JidoClaw.Setup.CredentialValidator do
   @moduledoc false
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Setup.CredentialCheck
 
   @doc "Validate that configured API credentials work."
+  @spec validate_all() :: %{
+          anthropic: CredentialCheck.t(),
+          openai: CredentialCheck.t(),
+          github: CredentialCheck.t(),
+          ollama: CredentialCheck.t()
+        }
   def validate_all do
     %{
       anthropic: validate_anthropic(),
@@ -52,7 +59,10 @@ defmodule JidoClaw.Setup.CredentialValidator do
   end
 
   defp validate_ollama do
-    case System.cmd("curl", ["-s", "http://localhost:11434/api/version"], stderr_to_stdout: true) do
+    case System.cmd("curl", ["-s", "http://localhost:11434/api/version"],
+           stderr_to_stdout: true,
+           env: Env.scrubbed_cmd_env()
+         ) do
       {body, 0} ->
         case Jason.decode(body) do
           {:ok, %{"version" => _}} ->

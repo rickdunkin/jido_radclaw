@@ -10,6 +10,8 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   @behaviour JidoClaw.Forge.Sandbox.Behaviour
   require Logger
 
+  alias JidoClaw.Security.Redaction.Env
+
   defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
 
   @type t :: %__MODULE__{
@@ -18,7 +20,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
           sandbox_id: String.t()
         }
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   @spec create(map()) ::
           {:error, :sbx_not_found | {:sbx_create_failed, pos_integer(), any()}}
           | {:ok, t(), binary()}
@@ -41,7 +43,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     agent_type = sandbox_agent_type(spec)
     args = build_create_args(sandbox_name, agent_type, workspace_dir, spec)
 
-    case System.cmd("sbx", args, stderr_to_stdout: true) do
+    case System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {_output, 0} ->
         client = %__MODULE__{
           sandbox_name: sandbox_name,
@@ -61,7 +63,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, command, opts) do
     args = build_exec_args(sandbox_name, workspace_dir, command)
     timeout = Keyword.get(opts, :timeout)
@@ -69,11 +71,11 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     if timeout do
       exec_with_timeout(args, timeout)
     else
-      System.cmd("sbx", args, stderr_to_stdout: true)
+      System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec_argv(
         %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
         command,
@@ -86,11 +88,11 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     if timeout do
       exec_with_timeout(sbx_args, timeout)
     else
-      System.cmd("sbx", sbx_args, stderr_to_stdout: true)
+      System.cmd("sbx", sbx_args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def run(
         %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
         agent_type,
@@ -104,11 +106,11 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     if timeout do
       exec_with_timeout(sbx_args, timeout)
     else
-      System.cmd("sbx", sbx_args, stderr_to_stdout: true)
+      System.cmd("sbx", sbx_args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def spawn(%__MODULE__{sandbox_name: sandbox_name}, command, args, _opts) do
     case System.find_executable("sbx") do
       nil ->
@@ -118,14 +120,19 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
         port =
           Port.open(
             {:spawn_executable, sbx_path},
-            [:binary, :exit_status, args: ["exec", sandbox_name, command | args]]
+            [
+              :binary,
+              :exit_status,
+              args: ["exec", sandbox_name, command | args],
+              env: Env.scrubbed_port_env()
+            ]
           )
 
         {:ok, port}
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def write_file(%__MODULE__{workspace_dir: workspace_dir}, path, content) do
     with {:ok, full_path} <- resolve_path(workspace_dir, path),
          :ok <- File.mkdir_p(Path.dirname(full_path)) do
@@ -133,14 +140,14 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def read_file(%__MODULE__{workspace_dir: workspace_dir}, path) do
     with {:ok, full_path} <- resolve_path(workspace_dir, path) do
       File.read(full_path)
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{workspace_dir: workspace_dir}, env) do
     env_file = env_file_path(workspace_dir)
 
@@ -158,9 +165,12 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     File.write(env_file, lines <> "\n")
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def destroy(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, _sandbox_id) do
-    case System.cmd("sbx", ["rm", "--force", sandbox_name], stderr_to_stdout: true) do
+    case System.cmd("sbx", ["rm", "--force", sandbox_name],
+           stderr_to_stdout: true,
+           env: Env.scrubbed_cmd_env()
+         ) do
       {_output, 0} ->
         :ok
 
@@ -175,68 +185,62 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def impl_module, do: __MODULE__
 
   # --- Private ---
 
   defp build_create_args(sandbox_name, agent_type, workspace_dir, spec) do
-    args = ["create", "--name", sandbox_name]
-
-    # Add OneCLI CA cert mount if configured
-    args = maybe_add_ca_cert_mount(args)
-
-    # Add any extra mounts from config
-    args = add_extra_mounts(args)
-
-    # Add resource-declared mounts from spec
-    args = add_spec_mounts(args, spec)
+    args =
+      ["create", "--name", sandbox_name]
+      # Add OneCLI CA cert mount if configured
+      |> maybe_add_ca_cert_mount()
+      # Add any extra mounts from config
+      |> add_extra_mounts()
+      # Add resource-declared mounts from spec
+      |> add_spec_mounts(spec)
 
     args ++ [agent_type, workspace_dir]
   end
 
   defp build_run_args(sandbox_name, agent_type, workspace_dir, args) do
-    sbx_args = ["run", agent_type, "--name", sandbox_name]
+    base_args = ["run", agent_type, "--name", sandbox_name]
 
     # Add --env-file if .forge_env exists
     env_file = env_file_path(workspace_dir)
 
     sbx_args =
       if File.exists?(env_file) do
-        sbx_args ++ ["--env-file", env_file]
+        base_args ++ ["--env-file", env_file]
       else
-        sbx_args
+        base_args
       end
 
     Enum.concat([sbx_args, ["--"], args])
   end
 
   defp build_exec_args(sandbox_name, workspace_dir, command) do
-    args = ["exec"]
-
     # Add --env-file if .forge_env exists
     env_file = env_file_path(workspace_dir)
 
     args =
       if File.exists?(env_file) do
-        args ++ ["--env-file", env_file]
+        ["exec", "--env-file", env_file]
       else
-        args
+        ["exec"]
       end
 
     args ++ [sandbox_name, "sh", "-c", command]
   end
 
   defp build_exec_argv_args(sandbox_name, workspace_dir, command, command_args) do
-    args = ["exec"]
-
     env_file = env_file_path(workspace_dir)
 
     args =
       if File.exists?(env_file) do
-        args ++ ["--env-file", env_file]
+        ["exec", "--env-file", env_file]
       else
-        args
+        ["exec"]
       end
 
     args ++ [sandbox_name, command | command_args]
@@ -245,7 +249,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   defp exec_with_timeout(args, timeout) do
     task =
       Task.async(fn ->
-        System.cmd("sbx", args, stderr_to_stdout: true)
+        System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
@@ -289,13 +293,11 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   defp workspace_base do
-    config()
-    |> Keyword.get(:workspace_base, "/tmp/jidoclaw_forge")
+    Keyword.get(config(), :workspace_base, "/tmp/jidoclaw_forge")
   end
 
   defp config_default_agent do
-    config()
-    |> Keyword.get(:default_agent, "shell")
+    Keyword.get(config(), :default_agent, "shell")
   end
 
   defp config do
@@ -372,7 +374,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   defp add_extra_mounts(args) do
-    mounts = config() |> Keyword.get(:extra_mounts, [])
+    mounts = Keyword.get(config(), :extra_mounts, [])
 
     args ++
       Enum.flat_map(mounts, fn {host_path, container_path, mode} ->

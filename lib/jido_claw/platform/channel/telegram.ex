@@ -10,7 +10,7 @@ defmodule JidoClaw.Channel.Telegram do
 
   @base_url "https://api.telegram.org/bot"
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def init(config) do
     state = %{
       bot_token: Map.fetch!(config, :bot_token),
@@ -23,7 +23,7 @@ defmodule JidoClaw.Channel.Telegram do
     {:ok, state}
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def connect(state) do
     # Start long-polling loop
     send(self(), :poll)
@@ -31,7 +31,7 @@ defmodule JidoClaw.Channel.Telegram do
     {:ok, %{state | connected: true}}
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def handle_inbound(%{"message" => message}, state) do
     chat_id = get_in(message, ["chat", "id"])
     text = Map.get(message, "text", "")
@@ -65,7 +65,7 @@ defmodule JidoClaw.Channel.Telegram do
     {:noreply, state}
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def send_message(chat_id, content, state) do
     url = "#{@base_url}#{state.bot_token}/sendMessage"
 
@@ -97,7 +97,7 @@ defmodule JidoClaw.Channel.Telegram do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def disconnect(_state) do
     Logger.info("[Telegram] Adapter disconnected")
     :ok
@@ -105,6 +105,7 @@ defmodule JidoClaw.Channel.Telegram do
 
   # -- Long Polling (called via handle_info in Worker) --
 
+  @spec poll(map()) :: {:ok, list(), map()}
   def poll(state) do
     url = "#{@base_url}#{state.bot_token}/getUpdates?offset=#{state.offset}&timeout=30"
 

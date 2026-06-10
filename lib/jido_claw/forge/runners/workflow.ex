@@ -3,13 +3,13 @@ defmodule JidoClaw.Forge.Runners.Workflow do
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.{Runner, Sandbox}
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(_client, config) do
     steps = Map.get(config, :steps, [])
     {:ok, %{current_step: 0, step_results: %{}, workflow: %{steps: steps}}}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(client, state, _opts) do
     steps = state.workflow.steps
     index = state.current_step
@@ -22,7 +22,7 @@ defmodule JidoClaw.Forge.Runners.Workflow do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(_client, input, state) do
     step = Enum.at(state.workflow.steps, state.current_step)
     step_id = Map.get(step, "id", "step_#{state.current_step}")
@@ -77,19 +77,30 @@ defmodule JidoClaw.Forge.Runners.Workflow do
   defp execute_step(client, %{"type" => "call", "handler" => handler_mod} = step, state) do
     args = interpolate_map(Map.get(step, "args", %{}), state.step_results)
     step_id = Map.get(step, "id", "step_#{state.current_step}")
-    handler = Module.concat([handler_mod])
 
-    case handler.execute(client, args, []) do
-      {:ok, result} ->
-        new_results = Map.put(state.step_results, step_id, result)
-        new_state = %{state | current_step: state.current_step + 1, step_results: new_results}
-        {:ok, Map.merge(Runner.continue(result), %{metadata: %{state: new_state}})}
+    case resolve_handler(handler_mod) do
+      {:ok, handler} ->
+        case handler.execute(client, args, []) do
+          {:ok, result} ->
+            new_results = Map.put(state.step_results, step_id, result)
 
-      {:needs_input, question} ->
-        {:ok, Runner.needs_input(question)}
+            new_state = %{
+              state
+              | current_step: state.current_step + 1,
+                step_results: new_results
+            }
 
-      {:error, reason} ->
-        {:ok, Runner.error(reason)}
+            {:ok, Map.merge(Runner.continue(result), %{metadata: %{state: new_state}})}
+
+          {:needs_input, question} ->
+            {:ok, Runner.needs_input(question)}
+
+          {:error, reason} ->
+            {:ok, Runner.error(reason)}
+        end
+
+      :error ->
+        {:ok, Runner.error({:unknown_handler, handler_mod})}
     end
   end
 
@@ -100,6 +111,15 @@ defmodule JidoClaw.Forge.Runners.Workflow do
 
   defp execute_step(_client, step, _state) do
     {:ok, Runner.error({:unknown_step_type, step})}
+  end
+
+  # `safe_concat` raises for a module atom that does not already exist —
+  # a workflow step is data, so it must not mint atoms; a handler that
+  # was never compiled could not be dispatched to anyway.
+  defp resolve_handler(handler_mod) do
+    {:ok, Module.safe_concat([handler_mod])}
+  rescue
+    ArgumentError -> :error
   end
 
   defp find_step_index(steps, target_id) do

@@ -11,7 +11,7 @@ defmodule JidoClaw.Orchestration.Reactors.ProjectRegistrationTest do
       runner's `finalize` backstop still fails the run (no `:pending` strand);
     * a missing `:tenant`/`:actor` opt returns the pre-run envelope with no run.
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.ProjectRegistration

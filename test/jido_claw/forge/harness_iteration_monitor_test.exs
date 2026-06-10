@@ -2,13 +2,13 @@ defmodule JidoClaw.Forge.HarnessIterationMonitorTest.CrashingRunner do
   @moduledoc false
   @behaviour JidoClaw.Forge.Runner
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(_client, _config), do: :ok
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(_client, _state, _opts), do: raise("runner boom")
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(_client, _input, _state), do: :ok
 end
 

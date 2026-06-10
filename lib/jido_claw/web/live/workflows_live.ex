@@ -17,7 +17,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
   # re-renders the page periodically (re-fetching runs + expanded steps).
   @deadline_refresh_ms 30_000
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Process.send_after(self(), :refresh_deadlines, @deadline_refresh_ms)
@@ -44,13 +44,13 @@ defmodule JidoClaw.Web.WorkflowsLive do
   # Periodic deadline refresh: re-arm, then re-fetch the runs (and the
   # expanded run's steps) while PRESERVING the view state assigns
   # (`expanded_run_id`, `replay_blocked`) — refresh/1 only replaces data.
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info(:refresh_deadlines, socket) do
     Process.send_after(self(), :refresh_deadlines, @deadline_refresh_ms)
     {:noreply, refresh(socket)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("toggle_steps", %{"id" => run_id}, socket) do
     if socket.assigns.expanded_run_id == run_id do
       {:noreply,
@@ -145,7 +145,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
     end
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     # One clock read per render pass: consistent deadline evidence across all
     # rows (the 30s timer re-renders as lateness crosses thresholds).

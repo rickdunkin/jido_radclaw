@@ -278,9 +278,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   """
   @spec sweep_expired() :: {:ok, non_neg_integer()}
   def sweep_expired do
-    query =
-      __MODULE__.query_to_expired()
-      |> Query.limit(@sweep_batch)
+    query = Query.limit(__MODULE__.query_to_expired(), @sweep_batch)
 
     case Ash.read(query) do
       {:ok, []} ->
@@ -322,7 +320,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     alias JidoClaw.Conversations.Session
     alias JidoClaw.Workspaces.Workspace
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         tenant_id = Changeset.get_attribute(cs, :tenant_id)

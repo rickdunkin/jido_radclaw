@@ -34,8 +34,9 @@ defmodule JidoClaw.Agent.Prompt do
   @priv_prompt Path.join([__DIR__, "..", "..", "..", "priv", "defaults", "system_prompt.md"])
   @external_resource @priv_prompt
   @default_system_prompt File.read!(@priv_prompt)
-  @default_system_prompt_sha :crypto.hash(:sha256, @default_system_prompt)
-                             |> Base.encode16(case: :lower)
+  @default_system_prompt_sha Base.encode16(:crypto.hash(:sha256, @default_system_prompt),
+                               case: :lower
+                             )
 
   @sync_filename ".system_prompt.sync"
   @default_marker_filename "system_prompt.md.default"
@@ -73,6 +74,7 @@ defmodule JidoClaw.Agent.Prompt do
   end
 
   @doc "Returns the path to the system prompt file for a project."
+  @spec system_prompt_path(String.t()) :: String.t()
   def system_prompt_path(project_dir) do
     Path.join([project_dir, ".jido", "system_prompt.md"])
   end
@@ -351,7 +353,7 @@ defmodule JidoClaw.Agent.Prompt do
   end
 
   defp sha(content) do
-    :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+    Base.encode16(:crypto.hash(:sha256, content), case: :lower)
   end
 
   defp load_sync(path) do

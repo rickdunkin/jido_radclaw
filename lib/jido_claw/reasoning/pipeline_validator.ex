@@ -46,13 +46,15 @@ defmodule JidoClaw.Reasoning.PipelineValidator do
   def normalize_stages([]), do: {:error, "stages must be a non-empty list"}
 
   def normalize_stages(stages) when is_list(stages) do
-    Enum.reduce_while(stages, {:ok, []}, fn stage, {:ok, acc} ->
-      case normalize_stage(stage) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
-    |> case do
+    reduced =
+      Enum.reduce_while(stages, {:ok, []}, fn stage, {:ok, acc} ->
+        case normalize_stage(stage) do
+          {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+
+    case reduced do
       {:ok, rev} -> {:ok, Enum.reverse(rev)}
       err -> err
     end

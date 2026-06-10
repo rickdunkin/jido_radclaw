@@ -55,6 +55,7 @@ defmodule JidoClaw.SolutionsCase do
   @doc """
   Return a unique tenant id (string) for this test run.
   """
+  @spec unique_tenant_id() :: String.t()
   def unique_tenant_id, do: "tenant-#{System.unique_integer([:positive])}"
 
   @doc """
@@ -74,6 +75,7 @@ defmodule JidoClaw.SolutionsCase do
   `actor_for(tenant_id)` so policy-enabled tests pass tenant-actor
   checks.
   """
+  @spec workspace_fixture(String.t(), keyword()) :: Workspace.t()
   def workspace_fixture(tenant_id, opts \\ []) do
     {:ok, _} = Tenant.ensure(tenant_id)
 
@@ -112,16 +114,19 @@ defmodule JidoClaw.SolutionsCase do
       needed in regression tests; matcher tests explicitly opt in)
     * `:embedding` — inject a pre-computed vector
   """
+  @spec solution_fixture(String.t(), String.t(), String.t(), keyword()) :: Solution.t()
   def solution_fixture(tenant_id, workspace_id, content, opts \\ []) do
     sig =
       Keyword.get(
         opts,
         :problem_signature,
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}-#{content}")
-        |> Base.encode16(case: :lower)
+        Base.encode16(
+          :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}-#{content}"),
+          case: :lower
+        )
       )
 
-    attrs = %{
+    base_attrs = %{
       problem_signature: sig,
       solution_content: content,
       language: Keyword.get(opts, :language, "elixir"),
@@ -136,8 +141,8 @@ defmodule JidoClaw.SolutionsCase do
 
     attrs =
       case Keyword.get(opts, :embedding) do
-        nil -> attrs
-        emb -> Map.put(attrs, :embedding, emb)
+        nil -> base_attrs
+        emb -> Map.put(base_attrs, :embedding, emb)
       end
 
     actor = Keyword.get(opts, :actor, actor_for(tenant_id))
@@ -168,6 +173,8 @@ defmodule JidoClaw.SolutionsCase do
     * `inserted_at` / `updated_at` are supplied as `%DateTime{}` —
       `insert_all` does not auto-populate them.
   """
+  @spec bulk_insert_solutions(String.t(), String.t(), non_neg_integer(), (pos_integer() -> map())) ::
+          non_neg_integer()
   def bulk_insert_solutions(tenant_id, workspace_id, count, builder)
       when is_binary(tenant_id) and is_integer(count) and is_function(builder, 1) do
     workspace_uuid = UUID.dump!(workspace_id)

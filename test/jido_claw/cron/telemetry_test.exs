@@ -20,11 +20,13 @@ defmodule JidoClaw.Cron.TelemetryTest do
 
   defmodule OkMFA do
     @moduledoc false
+    @spec ok() :: :ok
     def ok, do: :ok
   end
 
   defmodule RaiseMFA do
     @moduledoc false
+    @spec boom() :: no_return()
     def boom, do: raise("boom")
   end
 

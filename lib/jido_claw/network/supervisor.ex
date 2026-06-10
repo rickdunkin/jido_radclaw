@@ -8,11 +8,12 @@ defmodule JidoClaw.Network.Supervisor do
 
   use Supervisor
 
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
+  @impl Supervisor
   def init(opts) do
     children = [
       {JidoClaw.Network.Node, opts}

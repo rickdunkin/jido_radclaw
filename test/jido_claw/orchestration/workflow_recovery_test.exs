@@ -8,7 +8,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecoveryTest do
   `run_recovered` + `run_failed` audit pair; terminal runs are untouched; the
   scan is tenant-blind.
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection

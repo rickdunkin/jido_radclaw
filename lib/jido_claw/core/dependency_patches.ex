@@ -44,11 +44,13 @@ defmodule JidoClaw.Core.DependencyPatches do
   end
 
   defp candidate_beam_base_paths(module, dependency_app) do
-    [
-      beam_base_path(module, jido_claw_ebin_dir!()),
-      dependency_beam_base_path(module, dependency_app)
-    ]
-    |> Enum.reject(&is_nil/1)
+    Enum.reject(
+      [
+        beam_base_path(module, jido_claw_ebin_dir!()),
+        dependency_beam_base_path(module, dependency_app)
+      ],
+      &is_nil/1
+    )
   end
 
   defp dependency_beam_base_path(module, dependency_app) do

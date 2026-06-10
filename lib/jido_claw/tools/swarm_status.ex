@@ -44,7 +44,7 @@ defmodule JidoClaw.Tools.SwarmStatus do
   alias JidoClaw.SwarmView
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
 

@@ -56,7 +56,7 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   alias JidoClaw.Reasoning.{Certificates, Output, Telemetry}
   alias JidoClaw.Solutions.Solution
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     code = params.code
     specification = params.specification
@@ -157,10 +157,12 @@ defmodule JidoClaw.Tools.VerifyCertificate do
       timeout: 60_000
     }
 
-    Telemetry.with_outcome("cot", prompt, opts, fn ->
-      execute_cert(runner, run_params)
-    end)
-    |> case do
+    outcome =
+      Telemetry.with_outcome("cot", prompt, opts, fn ->
+        execute_cert(runner, run_params)
+      end)
+
+    case outcome do
       {:ok, %{certificate: _} = payload} ->
         {:ok, payload}
 

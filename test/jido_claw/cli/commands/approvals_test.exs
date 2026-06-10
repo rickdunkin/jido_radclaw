@@ -4,7 +4,7 @@ defmodule JidoClaw.CLI.Commands.ApprovalsTest do
   approve decision through `Cases.decide/4` (under a tenant system actor, since
   the REPL is unauthenticated).
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   import ExUnit.CaptureIO
 

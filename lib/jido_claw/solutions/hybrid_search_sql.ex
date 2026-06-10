@@ -244,8 +244,7 @@ defmodule JidoClaw.Solutions.HybridSearchSql do
     score_index = Enum.find_index(cols, &(&1 == "combined_score"))
 
     ranked =
-      rows
-      |> Enum.map(fn row ->
+      Enum.map(rows, fn row ->
         row_tuple = List.to_tuple(row)
         raw_id = elem(row_tuple, id_index)
         score = elem(row_tuple, score_index) || 0.0

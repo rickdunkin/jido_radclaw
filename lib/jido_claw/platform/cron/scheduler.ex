@@ -156,6 +156,7 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
+  @spec schedule(String.t(), keyword()) :: {:ok, String.t(), pid()} | {:error, term()}
   def schedule(tenant_id, opts) do
     id = Keyword.get(opts, :id, "job_#{:erlang.unique_integer([:positive])}")
     sup = InstanceSupervisor.cron_sup(tenant_id)
@@ -175,6 +176,7 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
+  @spec unschedule(String.t(), String.t()) :: :ok | {:error, :not_found}
   def unschedule(tenant_id, job_id) do
     name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
 
@@ -188,6 +190,7 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
+  @spec list_jobs(String.t()) :: [struct()]
   def list_jobs(tenant_id) do
     sup = InstanceSupervisor.cron_sup(tenant_id)
 
@@ -208,6 +211,7 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
+  @spec trigger(String.t(), String.t()) :: :ok
   def trigger(tenant_id, job_id) do
     Worker.trigger(tenant_id, job_id)
   end

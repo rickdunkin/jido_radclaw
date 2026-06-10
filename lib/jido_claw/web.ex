@@ -7,8 +7,10 @@ defmodule JidoClaw.Web do
   module. Also exposes the static-asset path list used by the endpoint.
   """
 
+  @spec static_paths() :: [String.t()]
   def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
 
+  @spec router() :: Macro.t()
   def router do
     quote do
       use Phoenix.Router, helpers: false
@@ -18,12 +20,14 @@ defmodule JidoClaw.Web do
     end
   end
 
+  @spec channel() :: Macro.t()
   def channel do
     quote do
       use Phoenix.Channel
     end
   end
 
+  @spec controller() :: Macro.t()
   def controller do
     quote do
       use Phoenix.Controller,
@@ -34,6 +38,7 @@ defmodule JidoClaw.Web do
     end
   end
 
+  @spec live_view() :: Macro.t()
   def live_view do
     quote do
       use Phoenix.LiveView,
@@ -44,6 +49,7 @@ defmodule JidoClaw.Web do
     end
   end
 
+  @spec live_component() :: Macro.t()
   def live_component do
     quote do
       use Phoenix.LiveComponent
@@ -52,6 +58,7 @@ defmodule JidoClaw.Web do
     end
   end
 
+  @spec html() :: Macro.t()
   def html do
     quote do
       use Phoenix.Component

@@ -85,7 +85,7 @@ defmodule JidoClaw.Reasoning.Statistics do
   def summary(opts \\ []) do
     execution_kind = Keyword.get(opts, :execution_kind, :strategy_run)
 
-    strategies_query =
+    base_strategies_query =
       from(o in "reasoning_outcomes",
         group_by: o.strategy,
         select: %{
@@ -95,9 +95,10 @@ defmodule JidoClaw.Reasoning.Statistics do
           avg_duration_ms: avg(o.duration_ms)
         }
       )
-      |> maybe_filter_execution_kind(execution_kind)
 
-    task_types_query =
+    strategies_query = maybe_filter_execution_kind(base_strategies_query, execution_kind)
+
+    base_task_types_query =
       from(o in "reasoning_outcomes",
         group_by: o.task_type,
         select: %{
@@ -106,7 +107,8 @@ defmodule JidoClaw.Reasoning.Statistics do
           ok_count: fragment("SUM(CASE WHEN ? = 'ok' THEN 1 ELSE 0 END)", o.status)
         }
       )
-      |> maybe_filter_execution_kind(execution_kind)
+
+    task_types_query = maybe_filter_execution_kind(base_task_types_query, execution_kind)
 
     strategies =
       JidoClaw.Repo.all(strategies_query)

@@ -22,7 +22,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.ProposeBlockUpdate do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(args, ctx) do
     case Helpers.call_run_server(ctx, {:propose_block_update, args}) do
       :ok ->

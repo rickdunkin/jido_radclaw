@@ -164,7 +164,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
       finalize_and_flush(sentinel_request)
 
       results = tool_results_for(sentinel_session.id, tenant)
-      tool_call_ids = Enum.map(results, & &1.tool_call_id) |> MapSet.new()
+      tool_call_ids = MapSet.new(Enum.map(results, & &1.tool_call_id))
 
       assert MapSet.member?(tool_call_ids, "real")
       refute MapSet.member?(tool_call_ids, "ghost")

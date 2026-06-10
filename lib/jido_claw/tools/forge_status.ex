@@ -25,7 +25,7 @@ defmodule JidoClaw.Tools.ForgeStatus do
 
   alias JidoClaw.ForgeView
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{})
 

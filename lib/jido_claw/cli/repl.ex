@@ -48,6 +48,7 @@ defmodule JidoClaw.CLI.Repl do
     stats: %{messages: 0, tokens: 0}
   ]
 
+  @spec start(String.t()) :: :ok
   def start(project_dir) do
     config = ensure_config(project_dir)
     model = Config.model(config)
@@ -288,13 +289,19 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   defp configure_display_from_config(config, model) do
-    context_window =
+    {context_window, model_meta} =
       case Config.model_info(config) do
-        {:ok, %{limits: %{context: cw}}} -> cw
-        _ -> 131_072
+        {:ok, %{limits: %{context: cw}} = meta} -> {cw, meta}
+        {:ok, meta} -> {131_072, meta}
+        _ -> {131_072, nil}
       end
 
-    Display.configure(model_name(model), Config.provider_label(config), context_window)
+    Display.configure(
+      model_name(model),
+      Config.provider_label(config),
+      context_window,
+      model_meta
+    )
   end
 
   defp load_cron_jobs(project_dir) do
@@ -561,6 +568,7 @@ defmodule JidoClaw.CLI.Repl do
   `"auto"` so the agent-facing hint can never inject a nonexistent
   strategy into the prompt.
   """
+  @spec resolve_strategy(term()) :: String.t()
   def resolve_strategy("auto"), do: "auto"
 
   def resolve_strategy(name) when is_binary(name) do
@@ -578,6 +586,7 @@ defmodule JidoClaw.CLI.Repl do
   workspace has no recorded switch. Mirrors `resolve_strategy/1`'s
   "never crash, always produce a reasonable default" contract.
   """
+  @spec resolve_profile(term()) :: String.t()
   def resolve_profile(workspace_id) when is_binary(workspace_id) do
     case Process.whereis(ProfileManager) do
       nil -> "default"
@@ -600,6 +609,7 @@ defmodule JidoClaw.CLI.Repl do
   `reason(strategy: "<name>")` on queries that benefit. Exposed for the
   REPL test suite so assertions can hit the exact string.
   """
+  @spec prepare_user_message(String.t(), String.t()) :: String.t()
   def prepare_user_message(message, "react"), do: message
 
   def prepare_user_message(message, "auto") do

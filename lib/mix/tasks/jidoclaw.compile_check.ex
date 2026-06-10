@@ -31,7 +31,7 @@ defmodule Mix.Tasks.Jidoclaw.CompileCheck do
     {"lib/jido_claw/github/agents/pull_request_coordinator.ex", "will never match"}
   ]
 
-  @impl true
+  @impl Mix.Task
   def run(_args) do
     # Clean the app build, then recompile its Elixir sources fresh. A clean
     # recompile (rather than `--force`) surfaces ALL warnings, not just those

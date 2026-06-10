@@ -444,7 +444,7 @@ defmodule JidoClaw.AgentViewTest do
         # `category` was an atom, must now be a string
         assert is_binary(ev["category"])
         # event keys are strings, not atoms
-        assert Map.keys(ev) |> Enum.all?(&is_binary/1)
+        assert Enum.all?(Map.keys(ev), &is_binary/1)
       end)
     end
   end
@@ -460,8 +460,10 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       pid =
-        JidoClaw.Session.Supervisor.list_sessions(tid)
-        |> Enum.find_value(fn {sid, p} -> if sid == rsid, do: p end)
+        Enum.find_value(
+          JidoClaw.Session.Supervisor.list_sessions(tid),
+          fn {sid, p} -> if sid == rsid, do: p end
+        )
 
       true = is_pid(pid)
       Process.exit(pid, :kill)

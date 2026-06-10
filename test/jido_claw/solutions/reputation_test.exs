@@ -58,8 +58,9 @@ defmodule JidoClaw.Solutions.ReputationTest do
       pre_update_reputation = 0.9
 
       sig =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
 
       {:ok, solution} =
         Solution.store(

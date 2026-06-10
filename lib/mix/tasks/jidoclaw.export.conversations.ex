@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   alias JidoClaw.Export.Canonical
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args,
@@ -209,8 +209,9 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
   defp redactions_in(%{content: nil}), do: []
 
   defp redactions_in(%{content: content, sequence: seq}) when is_binary(content) do
-    Regex.scan(~r/\[REDACTED([^\]]*)\]/, content, return: :index)
-    |> Enum.map(fn [{pos, _}, {_, _}] ->
+    matches = Regex.scan(~r/\[REDACTED([^\]]*)\]/, content, return: :index)
+
+    Enum.map(matches, fn [{pos, _}, {_, _}] ->
       %{
         sequence: seq,
         position: pos,

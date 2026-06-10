@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Jidoclaw do
   alias JidoClaw.CLI.Repl
   alias JidoClaw.CLI.Setup
 
-  @impl true
+  @impl Mix.Task
   def run(["--mcp" | _rest]) do
     Application.put_env(:jido_claw, :serve_mode, :mcp)
     # Skip Phoenix endpoint and Discord in MCP mode — stdio must stay clean.

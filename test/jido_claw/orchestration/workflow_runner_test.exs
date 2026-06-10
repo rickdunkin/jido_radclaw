@@ -79,7 +79,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
 
     # Both steps share the deterministic cron workspace_id.
     workspace_ids = for tc <- collect_tool_contexts(2), do: tc.workspace_id
-    assert Enum.uniq(workspace_ids) |> length() == 1
+    assert match?([_], Enum.uniq(workspace_ids))
     assert [ws | _] = workspace_ids
     assert String.starts_with?(ws, "cron:#{unique_id}:")
   end

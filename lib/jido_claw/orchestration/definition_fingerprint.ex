@@ -77,7 +77,7 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
   @spec for_skill(Skills.t()) :: String.t()
   def for_skill(%Skills{} = skill) do
     blob = :erlang.term_to_binary({:v1, canonical_term(skill)}, [:deterministic])
-    :crypto.hash(:sha256, blob) |> Base.encode16(case: :lower)
+    Base.encode16(:crypto.hash(:sha256, blob), case: :lower)
   end
 
   @doc """
@@ -85,7 +85,7 @@ defmodule JidoClaw.Orchestration.DefinitionFingerprint do
   """
   @spec for_module(module()) :: String.t()
   def for_module(module) when is_atom(module) do
-    module.module_info(:md5) |> Base.encode16(case: :lower)
+    Base.encode16(module.module_info(:md5), case: :lower)
   end
 
   # -- Canonicalization --

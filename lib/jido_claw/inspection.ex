@@ -284,7 +284,7 @@ defmodule JidoClaw.Inspection do
   end
 
   defp module_summary(module) do
-    tools = safe(fn -> apply(module, :strategy_opts, []) end) |> tools_from_opts()
+    tools = tools_from_opts(safe(fn -> module.strategy_opts() end))
 
     %Summary{
       system_prompt: safe(fn -> AgentPrompt.build_snapshot(File.cwd!(), nil) end),
@@ -306,7 +306,7 @@ defmodule JidoClaw.Inspection do
   # (see `model_from_trace/1`).
   defp model_from_module(module) when is_atom(module) and not is_nil(module) do
     if module_with_strategy_opts?(module) do
-      safe(fn -> apply(module, :strategy_opts, []) end)
+      safe(fn -> module.strategy_opts() end)
       |> model_from_opts()
       |> normalize_model_label()
     else
@@ -336,7 +336,7 @@ defmodule JidoClaw.Inspection do
   defp tool_names(tools) when is_list(tools) do
     Enum.map(tools, fn module ->
       if Code.ensure_loaded?(module) and function_exported?(module, :name, 0) do
-        to_string(apply(module, :name, []))
+        to_string(module.name())
       else
         to_string(module)
       end
@@ -450,8 +450,8 @@ defmodule JidoClaw.Inspection do
              owner when not is_nil(owner) <-
                safe(fn -> HandoffRegistry.owner(tenant_id, session.external_id) end),
              true <- owner.template == template do
-          {:ok,
-           handoff_session_summary(session, owner, tenant_id, actor) |> with_input_kind(:agent_id)}
+          summary = handoff_session_summary(session, owner, tenant_id, actor)
+          {:ok, with_input_kind(summary, :agent_id)}
         else
           _ -> {:error, :handoff_not_found}
         end
@@ -619,7 +619,7 @@ defmodule JidoClaw.Inspection do
 
   defp tool_names_for_module(module) when is_atom(module) do
     if module_with_strategy_opts?(module) do
-      safe(fn -> apply(module, :strategy_opts, []) end)
+      safe(fn -> module.strategy_opts() end)
       |> tools_from_opts()
       |> tool_names()
     else

@@ -34,6 +34,7 @@ defmodule JidoClaw do
 
   @version "0.6.4"
 
+  @spec version() :: String.t()
   def version, do: @version
 
   @doc """
@@ -283,6 +284,7 @@ defmodule JidoClaw do
 
   See the note on `register_correlation/6` about eventual relocation.
   """
+  @spec register_child_correlation(map()) :: String.t()
   def register_child_correlation(ctx) do
     request_id = Ecto.UUID.generate()
 
@@ -325,6 +327,14 @@ defmodule JidoClaw do
   > `JidoClaw.Conversations.RequestCorrelation` alongside the Ash resource it
   > wraps. It lives here for historical reasons.
   """
+  @spec register_correlation(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          keyword()
+        ) :: :ok
   def register_correlation(
         request_id,
         session_uuid,
@@ -412,6 +422,7 @@ defmodule JidoClaw do
   end
 
   @doc "List active sessions for a tenant."
+  @spec sessions(String.t()) :: [{String.t(), pid()}]
   def sessions(tenant_id \\ "default") do
     JidoClaw.Session.Supervisor.list_sessions(tenant_id)
   end
@@ -423,6 +434,7 @@ defmodule JidoClaw do
   Returns `[]` if no worker is alive — for cold-cache reads against a
   persisted session, use `history/3`.
   """
+  @spec history(String.t(), String.t()) :: [map()]
   def history(tenant_id, session_id) do
     SessionWorker.get_messages(tenant_id, session_id)
     # Public read API — degrade to `[]` rather than crash the caller when the
@@ -580,11 +592,13 @@ defmodule JidoClaw do
   defdelegate inspect_workflow(target), to: JidoClaw.Inspection
 
   @doc "Create a new tenant."
+  @spec create_tenant(keyword()) :: {:ok, JidoClaw.Tenant.t()} | {:error, term()}
   def create_tenant(attrs \\ []) do
     TenantManager.create_tenant(attrs)
   end
 
   @doc "List all tenants."
+  @spec tenants() :: [JidoClaw.Tenant.t()]
   def tenants do
     TenantManager.list_tenants()
   end

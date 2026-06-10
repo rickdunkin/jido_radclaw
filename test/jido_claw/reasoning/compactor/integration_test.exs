@@ -141,8 +141,7 @@ defmodule JidoClaw.Reasoning.Compactor.IntegrationTest do
       # the strategy would merge tool_context into runtime_context. Simulate
       # that merge here for the binding assertion.
       runtime_context =
-        params.tool_context
-        |> Map.put(RequestTransformer.test_capture_key(), self())
+        Map.put(params.tool_context, RequestTransformer.test_capture_key(), self())
 
       assert {:ok, %{messages: result_messages}} =
                RequestTransformer.transform_request(

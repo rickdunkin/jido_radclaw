@@ -70,6 +70,7 @@ defmodule JidoClaw.Embeddings.RatePacer do
   # Client
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -138,7 +139,7 @@ defmodule JidoClaw.Embeddings.RatePacer do
   # Server
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     config = Application.get_env(:jido_claw, __MODULE__, [])
 
@@ -194,7 +195,7 @@ defmodule JidoClaw.Embeddings.RatePacer do
     {:ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:acquire, _model, tokens}, from, state) do
     state = refill(state)
 
@@ -218,34 +219,32 @@ defmodule JidoClaw.Embeddings.RatePacer do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:refill_tick, state) do
-    state = refill(state)
-    state = drain_waiters(state)
+    drained = drain_waiters(refill(state))
 
-    state =
-      if :queue.is_empty(state.waiters) do
-        cancel_refill_tick(state)
+    next_state =
+      if :queue.is_empty(drained.waiters) do
+        cancel_refill_tick(drained)
       else
-        schedule_refill_tick(state)
+        schedule_refill_tick(drained)
       end
 
-    {:noreply, state}
+    {:noreply, next_state}
   end
 
   def handle_info({:acquire_timeout, timeout_ref}, state) do
     {removed?, waiters} = remove_waiter(state.waiters, timeout_ref)
+    pruned = %{state | waiters: waiters}
 
-    state = %{state | waiters: waiters}
-
-    state =
-      if removed? do
-        if :queue.is_empty(state.waiters), do: cancel_refill_tick(state), else: state
+    next_state =
+      if removed? and :queue.is_empty(pruned.waiters) do
+        cancel_refill_tick(pruned)
       else
-        state
+        pruned
       end
 
-    {:noreply, state}
+    {:noreply, next_state}
   end
 
   def handle_info(:gc_dispatch_window, state) do

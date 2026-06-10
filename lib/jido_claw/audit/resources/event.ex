@@ -205,6 +205,7 @@ defmodule JidoClaw.Audit.Event do
   end
 
   @doc false
+  @spec target_dispatch() :: %{atom() => module()}
   def target_dispatch, do: @target_dispatch
 
   defmodule Changes.ValidateCrossTenantTarget do
@@ -213,7 +214,7 @@ defmodule JidoClaw.Audit.Event do
 
     alias JidoClaw.Audit.Event
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         target_kind = Changeset.get_attribute(cs, :target_kind)

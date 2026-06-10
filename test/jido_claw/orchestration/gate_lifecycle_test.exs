@@ -5,7 +5,7 @@ defmodule JidoClaw.Orchestration.GateLifecycleTest do
   stale-approval `retract` (exercised through the `resume: false` commit-only
   seam).
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase

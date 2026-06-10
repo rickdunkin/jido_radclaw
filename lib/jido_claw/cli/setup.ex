@@ -14,6 +14,7 @@ defmodule JidoClaw.CLI.Setup do
   # ---------------------------------------------------------------------------
 
   @doc "Returns true if setup should be triggered (no config or no provider set)."
+  @spec needed?(String.t()) :: boolean()
   def needed?(project_dir) do
     path = config_path(project_dir)
 
@@ -33,6 +34,7 @@ defmodule JidoClaw.CLI.Setup do
   end
 
   @doc "Run the interactive setup wizard. Returns the loaded config map."
+  @spec run(String.t()) :: map()
   def run(project_dir) do
     print_welcome()
 
@@ -59,15 +61,18 @@ defmodule JidoClaw.CLI.Setup do
       |> Map.put("embedding_policy", "default")
       |> Map.put("consolidation_policy", Atom.to_string(consolidation_policy))
 
-    loaded = Config.deep_merge(Config.load(project_dir), config_map)
-    test_connection(loaded, provider_name)
-
     write_config(project_dir, config_map)
+
+    # Load AFTER the write: `write_config` replaces config.yaml wholesale, so
+    # this is the real post-setup effective config — testing a merge of the
+    # old file would probe keys that no longer exist.
+    loaded = Config.load(project_dir)
+    test_connection(loaded, provider_name)
 
     IO.puts("\n  \e[32m✓\e[0m  Configuration saved to #{config_path(project_dir)}")
     IO.puts("  \e[2m   Run /setup anytime to reconfigure.\e[0m\n")
 
-    Config.load(project_dir)
+    loaded
   end
 
   defp pick_consolidation_policy do
@@ -277,6 +282,7 @@ defmodule JidoClaw.CLI.Setup do
   # ---------------------------------------------------------------------------
 
   @doc "Write configuration map to .jido/config.yaml"
+  @spec write_config(String.t(), map()) :: :ok
   def write_config(project_dir, config_map) do
     dir = Path.join(project_dir, @config_dir)
     File.mkdir_p!(dir)
@@ -291,6 +297,7 @@ defmodule JidoClaw.CLI.Setup do
   line in place (preserving order, comments, and blank lines) or
   appends a new one. Atomic: writes via `<.env>.tmp` + rename.
   """
+  @spec persist_env_var(String.t(), String.t(), String.t()) :: :ok
   def persist_env_var(project_dir, key, value)
       when is_binary(project_dir) and is_binary(key) and is_binary(value) do
     env_path = Path.join(project_dir, ".env")

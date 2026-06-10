@@ -11,9 +11,8 @@ defmodule JidoClaw.Shell.Commands.JidoTest do
       tenant_id = unique_tenant_id()
       workspace = workspace_fixture(tenant_id, embedding_policy: :disabled)
 
-      fingerprint =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
+      hash = :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
+      fingerprint = Base.encode16(hash, case: :lower)
 
       _solution =
         solution_fixture(tenant_id, workspace.id, "the solution body",

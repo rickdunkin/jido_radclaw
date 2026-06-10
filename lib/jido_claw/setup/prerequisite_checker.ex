@@ -1,6 +1,15 @@
 defmodule JidoClaw.Setup.PrerequisiteChecker do
   @moduledoc false
+
+  alias JidoClaw.Security.Redaction.Env
   @doc "Check all prerequisites and return a map of results."
+  @spec check_all() :: %{
+          elixir: map(),
+          postgresql: map(),
+          git: map(),
+          ollama: map(),
+          node: map()
+        }
   def check_all do
     %{
       elixir: check_elixir(),
@@ -11,6 +20,7 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
     }
   end
 
+  @spec all_required_met?() :: boolean()
   def all_required_met? do
     results = check_all()
     results.elixir.ok? and results.postgresql.ok? and results.git.ok?
@@ -22,9 +32,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
   end
 
   defp check_postgresql do
-    case System.cmd("psql", ["--version"], stderr_to_stdout: true) do
+    case System.cmd("psql", ["--version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {output, 0} ->
-        version = Regex.run(~r/\d+\.\d+/, output) |> List.first() || "unknown"
+        version = List.first(Regex.run(~r/\d+\.\d+/, output)) || "unknown"
         %{ok?: true, version: version, name: "PostgreSQL"}
 
       _ ->
@@ -37,9 +47,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
   end
 
   defp check_git do
-    case System.cmd("git", ["--version"], stderr_to_stdout: true) do
+    case System.cmd("git", ["--version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {output, 0} ->
-        version = Regex.run(~r/\d+\.\d+\.\d+/, output) |> List.first() || "unknown"
+        version = List.first(Regex.run(~r/\d+\.\d+\.\d+/, output)) || "unknown"
         %{ok?: true, version: version, name: "Git"}
 
       _ ->
@@ -52,9 +62,9 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
   end
 
   defp check_ollama do
-    case System.cmd("ollama", ["--version"], stderr_to_stdout: true) do
+    case System.cmd("ollama", ["--version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {output, 0} ->
-        version = Regex.run(~r/\d+\.\d+\.\d+/, output) |> List.first() || "unknown"
+        version = List.first(Regex.run(~r/\d+\.\d+\.\d+/, output)) || "unknown"
         %{ok?: true, version: version, name: "Ollama"}
 
       _ ->
@@ -67,7 +77,7 @@ defmodule JidoClaw.Setup.PrerequisiteChecker do
   end
 
   defp check_node do
-    case System.cmd("node", ["--version"], stderr_to_stdout: true) do
+    case System.cmd("node", ["--version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {"v" <> version, 0} ->
         %{ok?: true, version: String.trim(version), name: "Node.js"}
 

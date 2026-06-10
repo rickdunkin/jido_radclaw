@@ -12,7 +12,9 @@ defmodule JidoClaw.Agent.RecorderPluginCoverageTest do
     lib_dir = Path.expand("../../../lib", __DIR__)
 
     files =
-      Path.wildcard(Path.join(lib_dir, "**/*.ex"))
+      lib_dir
+      |> Path.join("**/*.ex")
+      |> Path.wildcard()
       |> Enum.reject(&String.contains?(&1, "/lib/jido_claw/agent/defaults.ex"))
 
     {good, bad} =

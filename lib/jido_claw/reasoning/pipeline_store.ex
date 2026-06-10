@@ -52,6 +52,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -84,13 +85,13 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   # Server callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     {:ok, %{project_dir: project_dir, pipelines: []}, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, state) do
     pipelines = load_from_disk(state.project_dir)
 
@@ -101,15 +102,15 @@ defmodule JidoClaw.Reasoning.PipelineStore do
     {:noreply, %{state | pipelines: pipelines}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:all, _from, state), do: {:reply, state.pipelines, state}
 
-  @impl true
+  @impl GenServer
   def handle_call(:list, _from, state) do
     {:reply, Enum.map(state.pipelines, & &1.name), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:get, name}, _from, state) do
     case Enum.find(state.pipelines, &(&1.name == name)) do
       nil -> {:reply, {:error, :not_found}, state}
@@ -117,7 +118,7 @@ defmodule JidoClaw.Reasoning.PipelineStore do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:reload, _from, state) do
     pipelines = load_from_disk(state.project_dir)
     Logger.info("[PipelineStore] Reloaded #{length(pipelines)} user pipelines")

@@ -19,6 +19,7 @@ defmodule JidoClaw.AgentTracker do
 
   defmodule AgentEntry do
     @moduledoc false
+    @type t :: %__MODULE__{}
     defstruct [
       :id,
       :pid,
@@ -46,6 +47,7 @@ defmodule JidoClaw.AgentTracker do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -64,22 +66,27 @@ defmodule JidoClaw.AgentTracker do
       projections and tenant-facing swarm tools before they touch the global
       runtime registry.
   """
+  @spec register(String.t(), pid(), term(), term(), keyword()) ::
+          :ok | {:error, :agent_id_taken}
   def register(id, pid, template, task \\ nil, opts \\ []) do
     scope = scope_from_opts(opts)
     GenServer.call(__MODULE__, {:register, id, pid, template, task, scope})
   end
 
   @doc "Record a tool call for an agent."
+  @spec track_tool(String.t(), String.t()) :: :ok
   def track_tool(agent_id, tool_name) do
     GenServer.cast(__MODULE__, {:track_tool, agent_id, tool_name})
   end
 
   @doc "Add token usage for an agent."
+  @spec track_tokens(String.t(), non_neg_integer()) :: :ok
   def track_tokens(agent_id, count) when is_integer(count) and count >= 0 do
     GenServer.cast(__MODULE__, {:track_tokens, agent_id, count})
   end
 
   @doc "Mark an agent as completed."
+  @spec mark_complete(String.t(), :done | :error) :: :ok
   def mark_complete(id, status \\ :done) when status in [:done, :error] do
     GenServer.cast(__MODULE__, {:mark_complete, id, status})
   end
@@ -101,6 +108,10 @@ defmodule JidoClaw.AgentTracker do
   pass `tenant_id: ...` (and optional session/workspace filters); unscoped
   entries are excluded from scoped reads.
   """
+  @spec get_state(keyword()) :: %{
+          agents: %{optional(String.t()) => AgentEntry.t()},
+          order: [String.t()]
+        }
   def get_state(opts \\ []) do
     GenServer.call(__MODULE__, {:get_state, opts})
   end
@@ -112,16 +123,19 @@ defmodule JidoClaw.AgentTracker do
   `nil`, making "wrong tenant" indistinguishable from "unknown id" at public
   boundaries.
   """
+  @spec get_agent(String.t(), keyword()) :: AgentEntry.t() | nil
   def get_agent(id, opts \\ []) do
     GenServer.call(__MODULE__, {:get_agent, id, opts})
   end
 
   @doc "Return count of non-main agents, optionally filtered by tenant/session/workspace scope."
+  @spec child_count(keyword()) :: non_neg_integer()
   def child_count(opts \\ []) do
     GenServer.call(__MODULE__, {:child_count, opts})
   end
 
   @doc "Reset tracker state (e.g. between conversations)."
+  @spec reset() :: :ok
   def reset do
     GenServer.cast(__MODULE__, :reset)
   end
@@ -130,12 +144,12 @@ defmodule JidoClaw.AgentTracker do
   # Server Callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     {:ok, %{agents: %{}, order: [], monitors: %{}}, {:continue, :setup}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:setup, state) do
     JidoClaw.SignalBus.subscribe("jido_claw.tool.*")
     JidoClaw.SignalBus.subscribe("jido_claw.agent.*")
@@ -158,6 +172,7 @@ defmodule JidoClaw.AgentTracker do
   end
 
   @doc false
+  @spec handle_telemetry_event([atom()], map(), map(), term()) :: :ok | nil
   def handle_telemetry_event(
         [:jido, :ai, :tool, :execute, :start],
         _measurements,
@@ -189,7 +204,7 @@ defmodule JidoClaw.AgentTracker do
 
   def handle_telemetry_event(_, _, _, _), do: :ok
 
-  @impl true
+  @impl GenServer
   def handle_call({:register, id, pid, template, task, scope}, _from, state) do
     if Map.has_key?(state.agents, id) do
       {:reply, {:error, :agent_id_taken}, state}
@@ -257,7 +272,7 @@ defmodule JidoClaw.AgentTracker do
     {:reply, :ok, update_agent(state, id, fn entry -> %{entry | request_id: rid} end)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast({:track_tool, agent_id, tool_name}, state) do
     state =
       update_agent(state, agent_id, fn entry ->
@@ -297,7 +312,7 @@ defmodule JidoClaw.AgentTracker do
   end
 
   # Process crash detection
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case Map.pop(state.monitors, ref) do
       {nil, _} ->
@@ -388,7 +403,7 @@ defmodule JidoClaw.AgentTracker do
     [:tenant_id, :session_id, :session_uuid, :workspace_uuid, :parent_agent_id]
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, _state) do
     :telemetry.detach("agent-tracker-tool-stop")
     :telemetry.detach("agent-tracker-tool-start")

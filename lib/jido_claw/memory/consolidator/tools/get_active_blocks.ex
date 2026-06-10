@@ -8,7 +8,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.GetActiveBlocks do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(_args, ctx) do
     Helpers.dispatch(ctx, :get_active_blocks)
   end

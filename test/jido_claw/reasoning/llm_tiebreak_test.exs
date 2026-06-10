@@ -8,6 +8,7 @@ defmodule JidoClaw.Reasoning.LLMTiebreakerTest do
 
     # Return the tail candidate name as the LLM's answer. Used to prove
     # LLMTiebreaker actually parses the runner's output into the chosen name.
+    @spec run(map(), term()) :: {:ok, map()}
     def run(%{prompt: prompt}, _ctx) do
       # Pull the candidate CSV from the prompt's final instruction line.
       last =
@@ -28,6 +29,7 @@ defmodule JidoClaw.Reasoning.LLMTiebreakerTest do
 
   defmodule ErrorRunner do
     @moduledoc false
+    @spec run(term(), term()) :: {:error, :simulated_failure}
     def run(_params, _ctx), do: {:error, :simulated_failure}
   end
 
@@ -36,6 +38,7 @@ defmodule JidoClaw.Reasoning.LLMTiebreakerTest do
 
     # Emit a response with rationale before the final name — tiebreaker should
     # still parse the last token correctly.
+    @spec run(term(), term()) :: {:ok, map()}
     def run(_params, _ctx) do
       {:ok, %{output: "Given the complexity, the right pick is tot"}}
     end
@@ -44,6 +47,7 @@ defmodule JidoClaw.Reasoning.LLMTiebreakerTest do
   defmodule UnparseableRunner do
     @moduledoc false
 
+    @spec run(term(), term()) :: {:ok, map()}
     def run(_params, _ctx) do
       {:ok, %{output: "I am unsure — maybe neither works here, let me think more."}}
     end

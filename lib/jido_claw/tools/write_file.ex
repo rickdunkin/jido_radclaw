@@ -26,8 +26,9 @@ defmodule JidoClaw.Tools.WriteFile do
         path:
           Zoi.string(description: "File path to write, or remote URI (github://, s3://, git://)"),
         content:
-          Zoi.string(description: "File content")
-          |> Zoi.max(@max_content_bytes,
+          Zoi.max(
+            Zoi.string(description: "File content"),
+            @max_content_bytes,
             message: "content must be at most #{@max_content_bytes} bytes"
           )
       })
@@ -36,7 +37,7 @@ defmodule JidoClaw.Tools.WriteFile do
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
-  @impl true
+  @impl Jido.Action
   def run(%{path: path, content: content} = params, context) do
     with :ok <- FilePayloadLimit.validate(:content, content) do
       MCPScope.wrap(:write_file, params, context, fn enriched ->

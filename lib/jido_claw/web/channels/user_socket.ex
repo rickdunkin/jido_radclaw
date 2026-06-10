@@ -6,7 +6,7 @@ defmodule JidoClaw.Web.UserSocket do
 
   channel("rpc:*", JidoClaw.Web.RpcChannel)
 
-  @impl true
+  @impl Phoenix.Socket
   def connect(_params, socket, connect_info) do
     session = connect_info[:session] || %{}
 
@@ -31,6 +31,6 @@ defmodule JidoClaw.Web.UserSocket do
     end
   end
 
-  @impl true
+  @impl Phoenix.Socket
   def id(socket), do: "user_socket:#{socket.assigns.current_user.id}"
 end

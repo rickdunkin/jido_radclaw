@@ -434,7 +434,7 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         case Changeset.get_attribute(cs, :solution_content) do
@@ -462,7 +462,7 @@ defmodule JidoClaw.Solutions.Solution do
     """
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       changeset
       |> apply_argument(:id, :id)
@@ -482,7 +482,7 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
@@ -552,7 +552,7 @@ defmodule JidoClaw.Solutions.Solution do
 
     alias JidoClaw.Authorization.Actor
 
-    @impl true
+    @impl Ash.Resource.Change
     # ex_dna:disable-for-next-line
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
@@ -616,7 +616,7 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       # Use after_transaction so we only hint the worker AFTER the
       # transaction commits — running the hint inside after_action could
@@ -656,7 +656,7 @@ defmodule JidoClaw.Solutions.Solution do
     alias JidoClaw.Solutions.Reputation
     alias JidoClaw.Solutions.Trust
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, context) do
       context_actor = Map.get(context, :actor)
 
@@ -701,7 +701,7 @@ defmodule JidoClaw.Solutions.Solution do
 
     alias JidoClaw.Solutions.Reputation
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.after_transaction(changeset, fn _cs, result ->
         with {:ok, solution} <- result,

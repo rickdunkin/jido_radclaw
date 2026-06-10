@@ -16,7 +16,7 @@ defmodule JidoClaw.Tools.ListScheduledTasks do
 
   alias JidoClaw.Cron.Scheduler
 
-  @impl true
+  @impl Jido.Action
   def run(_params, context) do
     tenant_id = get_in(context, [:tool_context, :tenant_id]) || "default"
 

@@ -33,6 +33,7 @@ defmodule JidoClaw.Cron.WorkerFireProvenanceTest do
 
   defmodule CapturingRunner do
     @moduledoc false
+    @spec run(term()) :: :ok
     def run(state) do
       send(Application.fetch_env!(:jido_claw, :fire_provenance_test_pid), {:runner_ran, state})
       :ok

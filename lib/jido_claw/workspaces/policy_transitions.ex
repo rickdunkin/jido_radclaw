@@ -37,70 +37,74 @@ defmodule JidoClaw.Workspaces.PolicyTransitions do
     purge? = Keyword.get(opts, :purge_existing, false)
     workspace_uuid = Ecto.UUID.dump!(workspace_id)
 
-    Repo.transaction(fn ->
-      Enum.each(@embedding_tables, fn table ->
-        # table is a compile-time constant from @embedding_tables; the only
-        # user value (workspace_uuid) is $1-bound — not an injection vector.
-        # reach:disable-next-line ecto_interpolated_repo_query
-        Repo.query!(
-          """
-          UPDATE #{table}
-             SET embedding_status = 'disabled',
-                 embedding_attempt_count = 0,
-                 embedding_next_attempt_at = NULL,
-                 embedding_last_error = NULL
-           WHERE workspace_id = $1
-             AND embedding_status IN ('pending', 'processing', 'failed')
-          """,
-          [workspace_uuid]
-        )
-
-        if purge? do
+    result =
+      Repo.transaction(fn ->
+        Enum.each(@embedding_tables, fn table ->
           # table is a compile-time constant from @embedding_tables; the only
           # user value (workspace_uuid) is $1-bound — not an injection vector.
           # reach:disable-next-line ecto_interpolated_repo_query
           Repo.query!(
             """
             UPDATE #{table}
-               SET embedding = NULL,
-                   embedding_status = 'disabled',
+               SET embedding_status = 'disabled',
                    embedding_attempt_count = 0,
                    embedding_next_attempt_at = NULL,
                    embedding_last_error = NULL
              WHERE workspace_id = $1
-               AND embedding_status = 'ready'
+               AND embedding_status IN ('pending', 'processing', 'failed')
             """,
             [workspace_uuid]
           )
-        end
+
+          if purge? do
+            # table is a compile-time constant from @embedding_tables; the only
+            # user value (workspace_uuid) is $1-bound — not an injection vector.
+            # reach:disable-next-line ecto_interpolated_repo_query
+            Repo.query!(
+              """
+              UPDATE #{table}
+                 SET embedding = NULL,
+                     embedding_status = 'disabled',
+                     embedding_attempt_count = 0,
+                     embedding_next_attempt_at = NULL,
+                     embedding_last_error = NULL
+               WHERE workspace_id = $1
+                 AND embedding_status = 'ready'
+              """,
+              [workspace_uuid]
+            )
+          end
+        end)
       end)
-    end)
-    |> normalize_result()
+
+    normalize_result(result)
   end
 
   def apply_embedding(workspace_id, :default, _opts) do
     workspace_uuid = Ecto.UUID.dump!(workspace_id)
 
-    Repo.transaction(fn ->
-      Enum.each(@embedding_tables, fn table ->
-        # table is a compile-time constant from @embedding_tables; the only
-        # user value (workspace_uuid) is $1-bound — not an injection vector.
-        # reach:disable-next-line ecto_interpolated_repo_query
-        Repo.query!(
-          """
-          UPDATE #{table}
-             SET embedding_status = 'pending',
-                 embedding_attempt_count = 0,
-                 embedding_next_attempt_at = NULL,
-                 embedding_last_error = NULL
-           WHERE workspace_id = $1
-             AND embedding_status = 'disabled'
-          """,
-          [workspace_uuid]
-        )
+    result =
+      Repo.transaction(fn ->
+        Enum.each(@embedding_tables, fn table ->
+          # table is a compile-time constant from @embedding_tables; the only
+          # user value (workspace_uuid) is $1-bound — not an injection vector.
+          # reach:disable-next-line ecto_interpolated_repo_query
+          Repo.query!(
+            """
+            UPDATE #{table}
+               SET embedding_status = 'pending',
+                   embedding_attempt_count = 0,
+                   embedding_next_attempt_at = NULL,
+                   embedding_last_error = NULL
+             WHERE workspace_id = $1
+               AND embedding_status = 'disabled'
+            """,
+            [workspace_uuid]
+          )
+        end)
       end)
-    end)
-    |> normalize_result()
+
+    normalize_result(result)
   end
 
   def apply_embedding(_workspace_id, other, _opts), do: {:error, {:unknown_policy, other}}

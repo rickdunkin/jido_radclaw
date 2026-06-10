@@ -118,12 +118,12 @@ defmodule JidoClaw.Agent.Handoff.Registry do
 
   # ---- GenServer callbacks ----
 
-  @impl true
+  @impl GenServer
   def init(_state) do
     {:ok, %{}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:owner, key}, _from, state) do
     {:reply, Map.get(state, key), state}
   end

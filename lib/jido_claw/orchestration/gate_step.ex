@@ -75,11 +75,12 @@ defmodule JidoClaw.Orchestration.GateStep do
   # keys/values) so the in-memory map equals its jsonb round-trip — the
   # approval surfaces read one shape.
   defp dsl_details(gate_module) do
-    %{
+    details = %{
       "gate_title" => Gate.Info.gate_title!(gate_module),
       "fields" => Enum.map(Gate.Info.fields(gate_module), &field_to_map/1)
     }
-    |> put_description(gate_module)
+
+    put_description(details, gate_module)
   end
 
   defp put_description(details, gate_module) do

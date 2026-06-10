@@ -1,5 +1,7 @@
 defmodule JidoClaw.Security.Redaction.EnvTest do
-  use ExUnit.Case, async: true
+  # async: false — the scrubbed_* tests enumerate and mutate the global
+  # process env via System.put_env/get_env, which races concurrent tests.
+  use ExUnit.Case, async: false
 
   alias JidoClaw.Security.Redaction.Env
 
@@ -99,5 +101,66 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
       assert Env.redact_env(nil) == nil
       assert Env.redact_env("foo") == "foo"
     end
+  end
+
+  describe "scrubbed_cmd_env/1" do
+    test "emits an unset tuple for each currently-set sensitive var" do
+      name = put_fake_secret("TOKEN")
+
+      assert {name, nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "leaves non-sensitive vars alone" do
+      name = put_fake_secret("DIR")
+
+      refute Enum.any?(Env.scrubbed_cmd_env(), fn {key, _} -> key == name end)
+    end
+
+    test "an override with a sensitive name wins — no unset tuple emitted" do
+      name = put_fake_secret("TOKEN")
+
+      result = Env.scrubbed_cmd_env(%{name => "re-added"})
+
+      assert {name, "re-added"} in result
+      refute {name, nil} in result
+      assert Enum.count(result, fn {key, _} -> key == name end) == 1
+    end
+
+    test "non-sensitive overrides pass through with keys/values coerced to strings" do
+      assert {"SOME_PORT", "5432"} in Env.scrubbed_cmd_env(%{SOME_PORT: 5432})
+    end
+
+    test "explicit nil override value is preserved as an unset" do
+      assert {"FORCE_UNSET_VAR", nil} in Env.scrubbed_cmd_env(%{"FORCE_UNSET_VAR" => nil})
+    end
+  end
+
+  describe "scrubbed_port_env/1" do
+    test "emits charlist/false unset tuples for sensitive vars" do
+      name = put_fake_secret("TOKEN")
+
+      assert {String.to_charlist(name), false} in Env.scrubbed_port_env()
+    end
+
+    test "overrides win over the scrub and are charlist-coerced" do
+      name = put_fake_secret("TOKEN")
+      charlist_name = String.to_charlist(name)
+
+      result = Env.scrubbed_port_env(%{name => "re-added"})
+
+      assert {charlist_name, ~c"re-added"} in result
+      refute {charlist_name, false} in result
+    end
+
+    test "explicit nil override value becomes false (unset)" do
+      assert {~c"FORCE_UNSET_VAR", false} in Env.scrubbed_port_env(%{"FORCE_UNSET_VAR" => nil})
+    end
+  end
+
+  defp put_fake_secret(suffix) do
+    name = "JIDO_TEST_#{System.unique_integer([:positive])}_#{suffix}"
+    System.put_env(name, "fake-secret-value")
+    on_exit(fn -> System.delete_env(name) end)
+    name
   end
 end

@@ -1,7 +1,7 @@
 defmodule JidoClaw.Tools.WriteFileTest do
   # Not async — writes to tmp filesystem (isolated per test via unique dirs, but
   # keeping sync as a conservative default for file-mutating tests)
-  use ExUnit.Case
+  use ExUnit.Case, async: false
   @max_content_bytes 5 * 1024 * 1024
   import JidoClaw.ToolSchemaHelpers
 

@@ -94,7 +94,7 @@ defmodule JidoClaw.Solutions.Fingerprint do
       |> String.trim()
 
     data = "#{normalized}|#{lang}|#{fw}"
-    :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
+    Base.encode16(:crypto.hash(:sha256, data), case: :lower)
   end
 
   @doc """
@@ -216,12 +216,12 @@ defmodule JidoClaw.Solutions.Fingerprint do
     set1 = MapSet.new(list1)
     set2 = MapSet.new(list2)
 
-    union_size = MapSet.union(set1, set2) |> MapSet.size()
+    union_size = MapSet.size(MapSet.union(set1, set2))
 
     if union_size == 0 do
       0.0
     else
-      intersection_size = MapSet.intersection(set1, set2) |> MapSet.size()
+      intersection_size = MapSet.size(MapSet.intersection(set1, set2))
       intersection_size / union_size
     end
   end

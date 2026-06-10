@@ -1,5 +1,5 @@
 defmodule JidoClaw.StatsTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   # Not async: Stats is a singleton registered by JidoClaw.Application.
   # We cannot restart it safely between tests (hitting max_restarts limit),

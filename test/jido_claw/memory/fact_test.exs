@@ -223,8 +223,10 @@ defmodule JidoClaw.Memory.FactTest do
         tags: ["fact"],
         trust_score: 0.5,
         import_hash:
-          :crypto.hash(:sha256, "embed-policy-#{System.unique_integer([:positive])}")
-          |> Base.encode16(case: :lower)
+          Base.encode16(
+            :crypto.hash(:sha256, "embed-policy-#{System.unique_integer([:positive])}"),
+            case: :lower
+          )
       }
 
       # `authorize?: false` mirrors the migration task's call shape —

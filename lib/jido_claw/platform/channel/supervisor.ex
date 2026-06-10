@@ -3,6 +3,7 @@ defmodule JidoClaw.Channel.Supervisor do
 
   alias JidoClaw.Tenant.InstanceSupervisor
 
+  @spec start_channel(String.t(), module(), map()) :: DynamicSupervisor.on_start_child()
   def start_channel(tenant_id, adapter_module, config) do
     sup = InstanceSupervisor.channel_sup(tenant_id)
 
@@ -14,11 +15,13 @@ defmodule JidoClaw.Channel.Supervisor do
     DynamicSupervisor.start_child(sup, child_spec)
   end
 
+  @spec stop_channel(String.t(), pid()) :: :ok | {:error, :not_found}
   def stop_channel(tenant_id, pid) do
     sup = InstanceSupervisor.channel_sup(tenant_id)
     DynamicSupervisor.terminate_child(sup, pid)
   end
 
+  @spec list_channels(String.t()) :: [map()]
   def list_channels(tenant_id) do
     sup = InstanceSupervisor.channel_sup(tenant_id)
 

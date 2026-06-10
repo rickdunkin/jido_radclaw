@@ -94,16 +94,18 @@ defmodule JidoClaw.Memory.Consolidator do
 
     candidates = candidate_scopes(max_candidates)
 
-    Task.Supervisor.async_stream_nolink(
-      JidoClaw.Memory.Consolidator.TaskSupervisor,
-      candidates,
-      fn scope -> run_now(scope) end,
-      max_concurrency: max_concurrency,
-      on_timeout: :kill_task,
-      timeout: default_await_timeout() + 5_000,
-      ordered: false
-    )
-    |> Stream.run()
+    stream =
+      Task.Supervisor.async_stream_nolink(
+        JidoClaw.Memory.Consolidator.TaskSupervisor,
+        candidates,
+        fn scope -> run_now(scope) end,
+        max_concurrency: max_concurrency,
+        on_timeout: :kill_task,
+        timeout: default_await_timeout() + 5_000,
+        ordered: false
+      )
+
+    Stream.run(stream)
 
     :ok
 
@@ -244,8 +246,7 @@ defmodule JidoClaw.Memory.Consolidator do
         {:error, _} -> []
       end
 
-    sessions
-    |> Enum.map(fn session ->
+    Enum.map(sessions, fn session ->
       ws = Map.get(workspace_index, session.workspace_id)
 
       %{

@@ -2,7 +2,7 @@ defmodule JidoClaw.Error.ValidationError do
   @moduledoc "Invalid input or schema validation error leaf."
   use Splode.Error, class: :invalid, fields: [:message, :field, :value, :details]
 
-  @impl true
+  @impl Exception
   def exception(opts) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
 

@@ -2,6 +2,7 @@ defmodule JidoClaw.GitHub.Agents.ResearchCoordinator do
   @moduledoc false
   require Logger
 
+  @spec research(map(), map()) :: {:ok, map()} | {:error, :research_failed}
   def research(event, triage) do
     tasks = [
       Task.async(fn -> code_search(event) end),

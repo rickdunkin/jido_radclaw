@@ -108,7 +108,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Trace
   alias JidoClaw.Workflows.StepResult
 
-  @impl true
+  @impl Reactor.Middleware
   @spec init(Reactor.context()) :: {:ok, Reactor.context()} | {:error, term()}
   def init(context) do
     case run_from(context) do
@@ -155,7 +155,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     end
   end
 
-  @impl true
+  @impl Reactor.Middleware
   @spec halt(Reactor.context()) :: {:ok, Reactor.context()}
   def halt(context) do
     with {:ok, run} <- run_from(context),
@@ -177,7 +177,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     {:ok, context}
   end
 
-  @impl true
+  @impl Reactor.Middleware
   @spec complete(Reactor.Middleware.result(), Reactor.context()) ::
           {:ok, Reactor.Middleware.result()} | {:error, term()}
   def complete(result, context) do
@@ -205,7 +205,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     if json_safe?(result), do: %{result: result}, else: %{}
   end
 
-  @impl true
+  @impl Reactor.Middleware
   @spec error(Reactor.Middleware.error_or_errors(), Reactor.context()) :: :ok
   def error(errors, context) do
     formatted = Reason.format(errors)
@@ -230,7 +230,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
     end
   end
 
-  @impl true
+  @impl Reactor.Middleware
   @spec event(Reactor.Middleware.step_event(), Reactor.Step.t(), Reactor.context()) :: :ok
   def event(step_event, step, context) do
     case map_event(step_event, step) do

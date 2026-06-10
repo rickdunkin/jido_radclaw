@@ -1,12 +1,13 @@
 defmodule JidoClaw.Forge.Sandbox.DockerIntegrationTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   @moduletag :docker_sandbox
 
   alias JidoClaw.Forge.Sandbox.Docker
+  alias JidoClaw.Security.Redaction.Env
 
   setup_all do
-    case System.cmd("sbx", ["version"], stderr_to_stdout: true) do
+    case System.cmd("sbx", ["version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {_version, 0} ->
         :ok
 

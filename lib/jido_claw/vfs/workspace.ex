@@ -171,37 +171,39 @@ defmodule JidoClaw.VFS.Workspace do
   # -- GenServer --------------------------------------------------------------
 
   @doc false
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     workspace_id = Keyword.fetch!(opts, :workspace_id)
     GenServer.start_link(__MODULE__, opts, name: via(workspace_id))
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     workspace_id = Keyword.fetch!(opts, :workspace_id)
     project_dir = Keyword.fetch!(opts, :project_dir)
 
-    with :ok <- mount_default_project(workspace_id, project_dir) do
-      _ = mount_from_config(workspace_id, project_dir)
+    case mount_default_project(workspace_id, project_dir) do
+      :ok ->
+        _ = mount_from_config(workspace_id, project_dir)
 
-      {:ok,
-       %{
-         workspace_id: workspace_id,
-         project_dir: project_dir
-       }}
-    else
+        {:ok,
+         %{
+           workspace_id: workspace_id,
+           project_dir: project_dir
+         }}
+
       {:error, reason} ->
         {:stop, reason}
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:mount, path, adapter_key, user_opts}, _from, state) do
     result = do_mount(state.workspace_id, path, adapter_key, user_opts)
     {:reply, result, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get_project_dir, _from, state) do
     {:reply, {:ok, state.project_dir}, state}
   end
@@ -270,9 +272,10 @@ defmodule JidoClaw.VFS.Workspace do
   # -- Adapter translation + mount --------------------------------------------
 
   defp do_mount(workspace_id, path, adapter_key, user_opts) do
-    with {:ok, {adapter, adapter_opts}} <- to_adapter_spec(adapter_key, user_opts) do
-      do_vfs_mount(workspace_id, path, adapter, adapter_opts)
-    else
+    case to_adapter_spec(adapter_key, user_opts) do
+      {:ok, {adapter, adapter_opts}} ->
+        do_vfs_mount(workspace_id, path, adapter, adapter_opts)
+
       {:error, reason} ->
         log_mount_warning(path, adapter_key, reason)
         :ok

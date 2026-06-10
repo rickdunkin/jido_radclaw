@@ -41,34 +41,41 @@ defmodule JidoClaw.Forge.Harness do
     iteration_from: nil
   ]
 
+  @spec start_link({String.t(), map(), keyword()}) :: GenServer.on_start()
   def start_link({session_id, spec, _opts}) do
     GenServer.start_link(__MODULE__, {session_id, spec},
       name: {:via, Registry, {@registry, session_id}}
     )
   end
 
+  @spec run_iteration(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def run_iteration(session_id, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 300_000)
     call(session_id, {:run_iteration, opts}, timeout)
   end
 
+  @spec exec(String.t(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def exec(session_id, command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 300_000)
     call(session_id, {:exec, command, opts}, timeout)
   end
 
+  @spec apply_input(String.t(), term()) :: :ok | {:error, term()}
   def apply_input(session_id, input) do
     call(session_id, {:apply_input, input})
   end
 
+  @spec status(String.t()) :: {:ok, map()} | {:error, term()}
   def status(session_id) do
     call(session_id, :status)
   end
 
+  @spec attach_sandbox(String.t(), atom(), map()) :: {:ok, map()} | {:error, term()}
   def attach_sandbox(session_id, name, sandbox_spec) when is_atom(name) do
     call(session_id, {:attach_sandbox, name, sandbox_spec})
   end
 
+  @spec detach_sandbox(String.t(), atom()) :: :ok | {:error, term()}
   def detach_sandbox(session_id, name) when is_atom(name) do
     call(session_id, {:detach_sandbox, name})
   end
@@ -100,7 +107,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def init({session_id, spec}) do
     resources = Map.get(spec, :resources, [])
 
@@ -123,7 +130,7 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp start_claimed_session(session_id, spec, resume_checkpoint_id) do
-    state = %__MODULE__{
+    initial_state = %__MODULE__{
       session_id: session_id,
       spec: spec,
       started_at: DateTime.utc_now(),
@@ -132,9 +139,9 @@ defmodule JidoClaw.Forge.Harness do
       resume_checkpoint_id: resume_checkpoint_id
     }
 
-    persist(fn -> log_event(state, "session.started") end)
+    persist(fn -> log_event(initial_state, "session.started") end)
 
-    state = kickoff_session(state, spec, resume_checkpoint_id)
+    state = kickoff_session(initial_state, spec, resume_checkpoint_id)
 
     # Join :pg group for cluster-wide session discovery — but only for
     # sessions that actually claimed ownership. Failed claims never reach
@@ -194,7 +201,7 @@ defmodule JidoClaw.Forge.Harness do
     %{state | state: :ready}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:provision, state) do
     state = %{state | sandbox_status: :provisioning}
     persist(fn -> log_event(state, "sandbox.provisioning") end)
@@ -242,7 +249,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:bootstrap, state) do
     persist(fn -> log_event(state, "bootstrap.started") end)
     persist(fn -> update_phase(state, :bootstrapping) end)
@@ -288,7 +295,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:init_runner, state) do
     runner_module = resolve_runner(Map.get(state.spec, :runner, :shell))
     runner_config = Map.get(state.spec, :runner_config, %{})
@@ -331,7 +338,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:recover, checkpoint_id}, state) do
     persist(fn -> log_event(state, "recovery.started", %{checkpoint_id: checkpoint_id}) end)
 
@@ -366,7 +373,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(
         {:DOWN, ref, :process, _pid, :normal},
         %{iteration_task_ref: ref} = state
@@ -374,7 +381,7 @@ defmodule JidoClaw.Forge.Harness do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{iteration_task_ref: ref} = state
@@ -394,10 +401,10 @@ defmodule JidoClaw.Forge.Harness do
     {:noreply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(_msg, state), do: {:noreply, state}
 
-  @impl true
+  @impl GenServer
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
     case ensure_target_sandbox(state, opts) do
       {:ok, state, client} ->
@@ -452,12 +459,12 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:run_iteration, _opts}, _from, state) do
     {:reply, {:error, {:invalid_state, state.state}}, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:exec, command, opts}, _from, %{state: :ready} = state) do
     case ensure_target_sandbox(state, opts) do
       {:ok, state, client} ->
@@ -472,12 +479,12 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:exec, _command, _opts}, _from, state) do
     {:reply, {:error, {:invalid_state, state.state}}, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:apply_input, input}, _from, %{state: :needs_input} = state) do
     persist(fn -> log_event(state, "input.received") end)
 
@@ -517,12 +524,12 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:apply_input, _input}, _from, state) do
     {:reply, {:error, {:invalid_state, state.state}}, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:status, _from, state) do
     status = %{
       session_id: state.session_id,
@@ -539,7 +546,7 @@ defmodule JidoClaw.Forge.Harness do
     {:reply, {:ok, status}, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:attach_sandbox, name, sandbox_spec}, _from, state) do
     if Map.has_key?(state.clients, name) do
       {:reply, {:error, :already_attached}, state}
@@ -548,7 +555,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:detach_sandbox, name}, _from, state) do
     cond do
       name == state.default_client and state.state in [:running, :bootstrapping, :provisioning] ->
@@ -576,7 +583,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast(
         {:iteration_complete, task_pid, {:ok, result}, from, _iteration, target_sandbox,
          iteration_started_at},
@@ -655,7 +662,7 @@ defmodule JidoClaw.Forge.Harness do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast(
         {:iteration_complete, task_pid, {:error, reason}, from, _iteration, _target_sandbox,
          _iteration_started_at},
@@ -687,7 +694,7 @@ defmodule JidoClaw.Forge.Harness do
   defp reply_iteration_from(%{iteration_from: nil}, _reply), do: :ok
   defp reply_iteration_from(%{iteration_from: from}, reply), do: GenServer.reply(from, reply)
 
-  @impl true
+  @impl GenServer
   def terminate(reason, state) do
     persist(fn -> log_event(state, "session.stopped", %{reason: inspect(reason)}) end)
 

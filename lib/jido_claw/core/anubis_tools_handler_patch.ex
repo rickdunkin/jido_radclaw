@@ -43,13 +43,13 @@ defmodule Anubis.Server.Handlers.Tools do
   @spec handle_list(map, Frame.t(), module()) ::
           {:reply, map(), Frame.t()} | {:error, Error.t(), Frame.t()}
   def handle_list(request, frame, server_module) do
-    tools =
+    visible_tools =
       server_module
       |> Handlers.get_server_tools(frame)
       |> Enum.filter(&visible?(&1, frame))
 
     limit = frame.pagination_limit
-    {tools, cursor} = Handlers.maybe_paginate(request, tools, limit)
+    {tools, cursor} = Handlers.maybe_paginate(request, visible_tools, limit)
 
     {:reply,
      then(

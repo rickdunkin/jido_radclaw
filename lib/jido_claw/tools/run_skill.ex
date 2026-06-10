@@ -44,7 +44,7 @@ defmodule JidoClaw.Tools.RunSkill do
   alias JidoClaw.Skills.Compiler
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:run_skill, params, context, fn enriched -> do_run(params, enriched) end)
   end
@@ -89,6 +89,7 @@ defmodule JidoClaw.Tools.RunSkill do
   tenant/session/workspace/user UUIDs and `:actor` for tenant-actor policy
   enforcement on Ash writes/reads.
   """
+  @spec scope_context(map()) :: map()
   def scope_context(tool_context) when is_map(tool_context) do
     Map.take(tool_context, [
       :tenant_id,

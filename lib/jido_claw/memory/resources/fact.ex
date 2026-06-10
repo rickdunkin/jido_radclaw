@@ -548,7 +548,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       changeset
       |> apply_argument(:inserted_at, :inserted_at)
@@ -567,7 +567,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.force_change_attribute(changeset, :source, :imported_legacy)
     end
@@ -577,7 +577,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     # ex_dna:disable-for-next-line
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
@@ -596,7 +596,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         case Changeset.get_attribute(cs, :content) do
@@ -627,7 +627,7 @@ defmodule JidoClaw.Memory.Fact do
     alias JidoClaw.Authorization.Actor
     alias JidoClaw.Workspaces.Workspace
 
-    @impl true
+    @impl Ash.Resource.Change
     # ex_dna:disable-for-next-line
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
@@ -702,7 +702,7 @@ defmodule JidoClaw.Memory.Fact do
 
     alias JidoClaw.Memory.Fact
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
@@ -730,7 +730,7 @@ defmodule JidoClaw.Memory.Fact do
 
     alias JidoClaw.Memory.Fact
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       if Changeset.get_argument(changeset, :skip_backfill_hint?) do
         changeset
@@ -754,7 +754,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         promoted_at =
@@ -771,7 +771,7 @@ defmodule JidoClaw.Memory.Fact do
     @moduledoc false
     use Ash.Resource.Validation
 
-    @impl true
+    @impl Ash.Resource.Validation
     def validate(changeset, _opts, _context) do
       case Changeset.get_argument(changeset, :source) do
         :model_remember ->
@@ -816,7 +816,7 @@ defmodule JidoClaw.Memory.Fact do
 
     alias JidoClaw.Memory.Fact
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       kind = Query.get_argument(query, :scope_kind)
       fk = Query.get_argument(query, :scope_fk_id)
@@ -845,6 +845,7 @@ defmodule JidoClaw.Memory.Fact do
   or `:missing` for unknown `scope_kind`. Public because Ash `change`
   modules in the same file reference it before the resource compiles.
   """
+  @spec scope_fk_for(Ash.Changeset.t(), atom()) :: {:ok, term()} | :missing
   def scope_fk_for(changeset, :user) do
     nullable_attr(changeset, :user_id)
   end
@@ -914,6 +915,7 @@ defmodule JidoClaw.Memory.Fact do
   `since_id` for stable cursor pagination. A `nil` `since_at` skips the
   filter.
   """
+  @spec apply_since_filter(Ash.Query.t(), DateTime.t() | nil, String.t() | nil) :: Ash.Query.t()
   def apply_since_filter(query, nil, _), do: query
 
   def apply_since_filter(query, since_at, nil) do
@@ -931,6 +933,7 @@ defmodule JidoClaw.Memory.Fact do
   Narrow `query` to facts whose `source` is in `sources`. `nil` and `[]`
   skip the filter.
   """
+  @spec apply_sources_filter(Ash.Query.t(), [atom()] | nil) :: Ash.Query.t()
   def apply_sources_filter(query, nil), do: query
   def apply_sources_filter(query, []), do: query
 

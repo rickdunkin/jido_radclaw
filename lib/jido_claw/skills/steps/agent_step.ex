@@ -43,7 +43,7 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   alias JidoClaw.Workflows.ContextBuilder
   alias JidoClaw.Workflows.StepResult
 
-  @impl true
+  @impl Reactor.Step
   @spec run(Reactor.inputs(), Reactor.context(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def run(arguments, context, options) do
@@ -69,7 +69,7 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   # Per-step capability, derived from the impl options — NOT the generated
   # `function_exported?` default, which would make every agent step report
   # compensate/undo-capable because this module exports both.
-  @impl true
+  @impl Reactor.Step
   def can?(%{impl: {_mod, options}}, :compensate) when is_list(options),
     do: retry_budget(options) > 0 or cleanup_declared?(options)
 
@@ -80,7 +80,7 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
 
   # The `retry:` policy + `compensate:` cleanup. Reactor dispatches this as
   # `compensate(reason, arguments, context, options)` — options LAST.
-  @impl true
+  @impl Reactor.Step
   @spec compensate(term(), Reactor.inputs(), Reactor.context(), keyword()) ::
           :retry | :ok | {:error, term()}
   def compensate(reason, _arguments, context, options) do
@@ -101,7 +101,7 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   # Saga unwind of a *completed* step (a later step failed). Runs the declared
   # cleanup task; only reachable when `can?(:undo)` (cleanup declared and not
   # irreversible).
-  @impl true
+  @impl Reactor.Step
   @spec undo(term(), Reactor.inputs(), Reactor.context(), keyword()) :: :ok | {:error, term()}
   def undo(_value, _arguments, context, options) do
     run_cleanup(options, context, "undo")

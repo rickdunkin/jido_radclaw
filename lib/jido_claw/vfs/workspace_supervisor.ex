@@ -9,11 +9,12 @@ defmodule JidoClaw.VFS.WorkspaceSupervisor do
 
   use DynamicSupervisor
 
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
+  @impl DynamicSupervisor
   def init(_opts) do
     DynamicSupervisor.init(strategy: :one_for_one)
   end

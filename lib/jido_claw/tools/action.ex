@@ -33,7 +33,7 @@ defmodule JidoClaw.Tools.Action do
       alias JidoClaw.Tools.OutputLimit
       alias JidoClaw.Tools.OutputRedaction
 
-      @impl true
+      @impl Jido.Action
       def run(params, context) do
         MCPScope.wrap(@jidoclaw_tool_name, params, context, fn enriched_context ->
           super(params, enriched_context)

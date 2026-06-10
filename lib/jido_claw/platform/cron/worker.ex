@@ -61,6 +61,27 @@ defmodule JidoClaw.Cron.Worker do
     fire: nil
   ]
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          tenant_id: String.t() | nil,
+          agent_id: String.t(),
+          schedule: term(),
+          task: term(),
+          mode: atom(),
+          target: atom(),
+          workflow_name: String.t() | nil,
+          workflow_input: term(),
+          mfa: mfa() | nil,
+          timezone: String.t(),
+          status: :active | :disabled,
+          failure_count: non_neg_integer(),
+          last_run: DateTime.t() | nil,
+          last_result: term(),
+          next_run: DateTime.t() | nil,
+          created_at: DateTime.t() | nil
+        }
+
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     id = Keyword.fetch!(opts, :id)
     tenant_id = Keyword.fetch!(opts, :tenant_id)
@@ -68,43 +89,46 @@ defmodule JidoClaw.Cron.Worker do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @spec trigger(String.t(), String.t()) :: :ok
   def trigger(tenant_id, job_id) do
     name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
     GenServer.cast(name, :trigger)
   end
 
+  @spec disable(String.t(), String.t()) :: :ok
   def disable(tenant_id, job_id) do
     name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
     GenServer.cast(name, :disable)
   end
 
+  @spec get_state(String.t(), String.t()) :: t()
   def get_state(tenant_id, job_id) do
     name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
     GenServer.call(name, :get_state)
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
-    state = %__MODULE__{
-      id: Keyword.fetch!(opts, :id),
-      tenant_id: Keyword.fetch!(opts, :tenant_id),
-      agent_id: Keyword.get(opts, :agent_id, "main"),
-      schedule: Keyword.fetch!(opts, :schedule),
-      task: Keyword.get(opts, :task),
-      mode: Keyword.get(opts, :mode, :main),
-      target: Keyword.get(opts, :target, :agent),
-      workflow_name: Keyword.get(opts, :workflow_name),
-      workflow_input: Keyword.get(opts, :workflow_input),
-      mfa: Keyword.get(opts, :mfa),
-      timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
-      created_at: DateTime.utc_now()
-    }
+    state =
+      schedule_next(%__MODULE__{
+        id: Keyword.fetch!(opts, :id),
+        tenant_id: Keyword.fetch!(opts, :tenant_id),
+        agent_id: Keyword.get(opts, :agent_id, "main"),
+        schedule: Keyword.fetch!(opts, :schedule),
+        task: Keyword.get(opts, :task),
+        mode: Keyword.get(opts, :mode, :main),
+        target: Keyword.get(opts, :target, :agent),
+        workflow_name: Keyword.get(opts, :workflow_name),
+        workflow_input: Keyword.get(opts, :workflow_input),
+        mfa: Keyword.get(opts, :mfa),
+        timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
+        created_at: DateTime.utc_now()
+      })
 
-    state = schedule_next(state)
     {:ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast(:trigger, state) do
     {:noreply, execute_job(state, :manual)}
   end
@@ -115,7 +139,7 @@ defmodule JidoClaw.Cron.Worker do
     {:noreply, %{state | status: :disabled}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get_state, _from, state) do
     {:reply, state, state}
   end
@@ -125,7 +149,7 @@ defmodule JidoClaw.Cron.Worker do
   # carries the very struct stored in state, so pattern equality holds). This
   # binds the dispatch provenance — and the idempotency key derived from it —
   # to the window the timer was armed for, never to a freshly advanced one.
-  @impl true
+  @impl GenServer
   def handle_info({:tick, window}, %{status: :active, next_run: window} = state) do
     state = execute_job(state, {:scheduled, window})
     {:noreply, schedule_next(state)}

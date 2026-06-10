@@ -133,7 +133,7 @@ defmodule JidoClaw.Memory.BlockTest do
 
       assert [_, _ | _] = history
 
-      sorted_inserted_ats = history |> Enum.map(& &1.inserted_at)
+      sorted_inserted_ats = Enum.map(history, & &1.inserted_at)
       assert sorted_inserted_ats == Enum.sort(sorted_inserted_ats, {:asc, DateTime})
     end
   end

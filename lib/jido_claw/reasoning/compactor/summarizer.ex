@@ -112,8 +112,8 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
         run_backend(backend, prompt, backend_opts)
       end)
 
-    Task.yield(task, timeout_ms)
-    |> finalize(task, config, timeout_ms)
+    yield_result = Task.yield(task, timeout_ms)
+    finalize(yield_result, task, config, timeout_ms)
   end
 
   defp retryable?(%ExecutionError{phase: phase})

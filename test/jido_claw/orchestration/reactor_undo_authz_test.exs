@@ -11,7 +11,7 @@ defmodule JidoClaw.Orchestration.ReactorUndoAuthzTest do
   actor is denied. (`Project`'s `always()` undo is exercised by the keystone
   failure test in `ProjectRegistrationTest`.)
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Workspaces.Workspace
 

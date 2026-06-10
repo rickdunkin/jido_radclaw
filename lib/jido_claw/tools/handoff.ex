@@ -77,7 +77,7 @@ defmodule JidoClaw.Tools.Handoff do
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Session.Worker, as: SessionWorker
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     started_mono = System.monotonic_time()
 
@@ -315,13 +315,14 @@ defmodule JidoClaw.Tools.Handoff do
   defp system_message_body(%Handoff{} = handoff) do
     # `handoff.message` is `String.t()` (non-nil per the struct's type);
     # `reason`/`summary`/`from_template` are nilable, so they keep fallbacks.
-    """
+    body = """
     [HANDOFF #{handoff.from_template || "main"} → #{handoff.to_template}]
     Reason: #{handoff.reason || "not provided"}
     Summary: #{handoff.summary || "not provided"}
     Message: #{handoff.message}
     """
-    |> String.trim_trailing()
+
+    String.trim_trailing(body)
   end
 
   # Stamp the row with the target worker's compaction identity when the

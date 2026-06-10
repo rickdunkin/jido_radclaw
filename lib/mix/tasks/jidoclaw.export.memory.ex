@@ -42,7 +42,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
   alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Workspaces.Resolver
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args,
@@ -58,9 +58,11 @@ defmodule Mix.Tasks.Jidoclaw.Export.Memory do
     {:ok, %{id: workspace_id, tenant_id: tenant_id}} =
       Resolver.ensure_workspace("default", project_dir)
 
+    base_query = Fact.query_to_list(%{}, tenant: tenant_id, actor: Actor.system(tenant_id))
+
     query =
-      Fact.query_to_list(%{}, tenant: tenant_id, actor: Actor.system(tenant_id))
-      |> Ash.Query.filter(
+      Ash.Query.filter(
+        base_query,
         workspace_id == ^workspace_id and
           is_nil(invalid_at) and is_nil(expired_at)
       )

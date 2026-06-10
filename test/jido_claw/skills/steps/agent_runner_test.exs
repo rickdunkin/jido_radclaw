@@ -271,6 +271,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ValidatedFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok,
      %{
@@ -286,6 +287,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ErrorFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok,
      %{
@@ -301,6 +303,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.SummaryFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok,
      %{
@@ -316,6 +319,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ArtifactsFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok,
      %{
@@ -337,6 +341,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.FreeFormFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok,
      %{
@@ -351,6 +356,7 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.FailedFakeAgentServer do
   @moduledoc false
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, _opts) do
     {:ok, %{status: :failed, result: :boom}}
   end

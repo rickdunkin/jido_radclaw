@@ -189,9 +189,8 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
          :ok <- check_positive(config, :max_summary_chars),
          :ok <- check_positive(config, :summarizer_timeout_ms),
          :ok <- check_non_negative(config, :summarizer_max_retries),
-         :ok <- check_positive(config, :summarizer_retry_backoff_ms),
-         :ok <- check_capacity(config) do
-      :ok
+         :ok <- check_positive(config, :summarizer_retry_backoff_ms) do
+      check_capacity(config)
     end
   end
 

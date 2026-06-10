@@ -6,6 +6,7 @@ defmodule JidoClaw.Display.SwarmBox do
   alias JidoClaw.Display.StatusBar
 
   @doc "Render the full swarm box header with summary stats."
+  @spec render_header(JidoClaw.SwarmView.t() | map(), non_neg_integer()) :: String.t()
   def render_header(target, width \\ 60)
 
   def render_header(%JidoClaw.SwarmView{} = view, width) do
@@ -22,13 +23,13 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   def render_header(agents_map, width) do
-    children = agents_map |> Enum.reject(fn {id, _} -> id == "main" end)
+    children = Enum.reject(agents_map, fn {id, _} -> id == "main" end)
     total = length(children)
     running = Enum.count(children, fn {_, a} -> a.status == :running end)
     done = Enum.count(children, fn {_, a} -> a.status == :done end)
     errored = Enum.count(children, fn {_, a} -> a.status == :error end)
 
-    total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
+    total_tokens = Enum.reduce(children, 0, fn {_, a}, acc -> acc + a.tokens end)
     tokens_str = StatusBar.format_tokens(total_tokens)
 
     status_parts =
@@ -43,6 +44,7 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   @doc "Render a single agent status line."
+  @spec render_agent_line(map()) :: String.t()
   def render_agent_line(agent) do
     icon = status_icon(status(agent))
     template_str = if template(agent), do: " [\e[2m#{template(agent)}\e[0m]", else: ""
@@ -61,10 +63,12 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   @doc "Render all agent lines for the swarm."
+  @spec render_agents(JidoClaw.SwarmView.t()) :: String.t()
   def render_agents(%JidoClaw.SwarmView{} = view) do
     Enum.map_join(view.agents, "\n", &render_agent_line/1)
   end
 
+  @spec render_agents(%{optional(String.t()) => map()}, [String.t()]) :: String.t()
   def render_agents(agents_map, order) do
     order
     |> Enum.reject(&(&1 == "main"))
@@ -79,6 +83,7 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   @doc "Render a final swarm summary after all agents complete."
+  @spec render_summary(JidoClaw.SwarmView.t() | map()) :: String.t()
   def render_summary(%JidoClaw.SwarmView{} = view) do
     status =
       if view.error_count > 0,
@@ -89,11 +94,11 @@ defmodule JidoClaw.Display.SwarmBox do
   end
 
   def render_summary(agents_map) do
-    children = agents_map |> Enum.reject(fn {id, _} -> id == "main" end)
+    children = Enum.reject(agents_map, fn {id, _} -> id == "main" end)
     done = Enum.count(children, fn {_, a} -> a.status == :done end)
     errored = Enum.count(children, fn {_, a} -> a.status == :error end)
-    total_tokens = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tokens end)
-    total_tools = children |> Enum.reduce(0, fn {_, a}, acc -> acc + a.tool_calls end)
+    total_tokens = Enum.reduce(children, 0, fn {_, a}, acc -> acc + a.tokens end)
+    total_tools = Enum.reduce(children, 0, fn {_, a}, acc -> acc + a.tool_calls end)
 
     status =
       if errored > 0,
@@ -121,13 +126,15 @@ defmodule JidoClaw.Display.SwarmBox do
 
     summary = "  #{total} agents  │  #{status_str}  │  #{tokens_str} tokens"
 
-    [
-      "",
-      "  \e[36m┌─ SWARM #{String.duplicate(pad_char, max(inner_width - 9, 1))}┐\e[0m",
-      "  \e[36m│\e[0m#{summary}  \e[36m│\e[0m",
-      "  \e[36m└#{String.duplicate(pad_char, inner_width)}┘\e[0m"
-    ]
-    |> Enum.join("\n")
+    Enum.join(
+      [
+        "",
+        "  \e[36m┌─ SWARM #{String.duplicate(pad_char, max(inner_width - 9, 1))}┐\e[0m",
+        "  \e[36m│\e[0m#{summary}  \e[36m│\e[0m",
+        "  \e[36m└#{String.duplicate(pad_char, inner_width)}┘\e[0m"
+      ],
+      "\n"
+    )
   end
 
   defp agent_id(%{agent_id: id}), do: id

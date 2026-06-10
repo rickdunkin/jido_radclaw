@@ -4,13 +4,13 @@ defmodule JidoClaw.Forge.Runners.Custom do
 
   alias JidoClaw.Forge.Runner
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(client, config) do
     init_fn = Map.get(config, :init_fn)
     if init_fn, do: init_fn.(client, config), else: :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(client, state, opts) do
     run_fn = Map.get(state, :run_fn)
 
@@ -21,7 +21,7 @@ defmodule JidoClaw.Forge.Runners.Custom do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(client, input, state) do
     input_fn = Map.get(state, :input_fn)
     if input_fn, do: input_fn.(client, input, state), else: :ok

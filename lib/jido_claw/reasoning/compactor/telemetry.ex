@@ -113,8 +113,7 @@ defmodule JidoClaw.Reasoning.Compactor.Telemetry do
 
   defp emit_error(name, base_metadata, duration_ms, reason) do
     metadata =
-      base_metadata
-      |> Map.merge(%{
+      Map.merge(base_metadata, %{
         event: :error,
         phase: :compaction,
         name: name,

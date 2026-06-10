@@ -20,6 +20,7 @@ defmodule JidoClaw.Cron.DispatcherTest do
 
   defmodule StubRunner do
     @moduledoc false
+    @spec run(term()) :: :ok
     def run(state) do
       send(Application.fetch_env!(:jido_claw, :dispatcher_test_pid), {:runner_ran, state})
       :ok
@@ -28,6 +29,7 @@ defmodule JidoClaw.Cron.DispatcherTest do
 
   defmodule RecordingMFA do
     @moduledoc false
+    @spec run(pid(), term()) :: {:ok, term()}
     def run(pid, tag) do
       send(pid, {:mfa_ran, tag})
       {:ok, tag}

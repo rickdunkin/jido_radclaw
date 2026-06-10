@@ -8,20 +8,24 @@ defmodule JidoClaw.Tenant.Manager do
 
   alias JidoClaw.Tenant.InstanceSupervisor
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   # Client API
 
+  @spec create_tenant(keyword()) :: {:ok, JidoClaw.Tenant.t()} | {:error, term()}
   def create_tenant(attrs \\ []) do
     GenServer.call(__MODULE__, {:create, attrs})
   end
 
+  @spec get_tenant(String.t()) :: {:ok, JidoClaw.Tenant.t()} | {:error, :not_found}
   def get_tenant(id) do
     GenServer.call(__MODULE__, {:get, id})
   end
 
+  @spec list_tenants() :: [JidoClaw.Tenant.t()]
   def list_tenants do
     GenServer.call(__MODULE__, :list)
   end
@@ -36,25 +40,29 @@ defmodule JidoClaw.Tenant.Manager do
     GenServer.call(__MODULE__, {:ensure, id, attrs})
   end
 
+  @spec suspend_tenant(String.t()) :: {:ok, JidoClaw.Tenant.t()} | {:error, :not_found}
   def suspend_tenant(id) do
     GenServer.call(__MODULE__, {:update_status, id, :suspended})
   end
 
+  @spec resume_tenant(String.t()) :: {:ok, JidoClaw.Tenant.t()} | {:error, :not_found}
   def resume_tenant(id) do
     GenServer.call(__MODULE__, {:update_status, id, :active})
   end
 
+  @spec destroy_tenant(String.t()) :: :ok | {:error, :not_found}
   def destroy_tenant(id) do
     GenServer.call(__MODULE__, {:destroy, id})
   end
 
+  @spec count() :: non_neg_integer()
   def count do
     GenServer.call(__MODULE__, :count)
   end
 
   # Server
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     tenants = :ets.new(:jido_claw_tenants, [:set, :named_table, :public, read_concurrency: true])
     # Schedule default tenant creation after init completes (no race condition)
@@ -62,7 +70,7 @@ defmodule JidoClaw.Tenant.Manager do
     {:ok, %{table: tenants}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:create_default_tenant, state) do
     case :ets.lookup(state.table, "default") do
       [] ->
@@ -86,7 +94,7 @@ defmodule JidoClaw.Tenant.Manager do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:ensure, id, attrs}, _from, state) do
     case :ets.lookup(state.table, id) do
       [{^id, existing}] ->
@@ -141,7 +149,7 @@ defmodule JidoClaw.Tenant.Manager do
   end
 
   def handle_call(:list, _from, state) do
-    tenants = :ets.tab2list(state.table) |> Enum.map(fn {_id, t} -> t end)
+    tenants = Enum.map(:ets.tab2list(state.table), fn {_id, t} -> t end)
     {:reply, tenants, state}
   end
 

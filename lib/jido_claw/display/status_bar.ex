@@ -4,10 +4,13 @@ defmodule JidoClaw.Display.StatusBar do
   Width-adaptive — drops segments right-to-left when terminal is narrow.
   """
 
+  alias JidoClaw.Config
+
   @doc """
   Render the status bar string for the given display and tracker state.
   Returns an ANSI-formatted string.
   """
+  @spec render(map(), map(), non_neg_integer()) :: String.t()
   def render(display_state, tracker_state, width \\ 120) do
     model = display_state.model || "unknown"
     provider = display_state.provider || "unknown"
@@ -15,34 +18,46 @@ defmodule JidoClaw.Display.StatusBar do
     {total_tokens, child_count} = metrics(tracker_state)
     elapsed = session_elapsed(display_state)
 
-    pct = if context_window > 0, do: round(total_tokens / context_window * 100), else: 0
-    pct = min(pct, 100)
-    # TODO: wire Config.estimated_cost
-    cost = "$0.00"
+    pct =
+      if context_window > 0,
+        do: min(round(total_tokens / context_window * 100), 100),
+        else: 0
 
     # Build segments from left (required) to right (optional)
-    segments =
-      [
-        {:required, " \e[36m⚕\e[0m #{model}"},
-        {:required, provider},
-        {:required, "#{format_tokens(total_tokens)}/#{format_tokens(context_window)}"},
-        profile_segment(display_state),
-        {:optional, "#{progress_bar(pct, 10)} #{pct}%"},
-        streaming_segment(display_state),
-        {:optional, cost},
-        {:optional, elapsed},
-        {:optional, "#{child_count} agents"}
-      ]
-      |> Enum.reject(&is_nil/1)
+    segments = [
+      {:required, " \e[36m⚕\e[0m #{model}"},
+      {:required, provider},
+      {:required, "#{format_tokens(total_tokens)}/#{format_tokens(context_window)}"},
+      profile_segment(display_state),
+      {:optional, "#{progress_bar(pct, 10)} #{pct}%"},
+      streaming_segment(display_state),
+      cost_segment(total_tokens, display_state),
+      {:optional, elapsed},
+      {:optional, "#{child_count} agents"}
+    ]
 
-    build_bar(segments, width)
+    build_bar(Enum.reject(segments, &is_nil/1), width)
   end
+
+  # Estimated session cost from LLMDB model metadata; `nil` (segment
+  # dropped) for local/unknown models without cost data. Format mirrors
+  # the goodbye banner (`JidoClaw.CLI.Branding.goodbye/1`).
+  defp cost_segment(tokens, %{model_meta: meta}) do
+    case Config.estimated_cost(tokens, meta) do
+      nil -> nil
+      cost when cost < 0.001 -> {:optional, "~$0.00"}
+      cost -> {:optional, "~$#{:erlang.float_to_binary(cost, decimals: 4)}"}
+    end
+  end
+
+  defp cost_segment(_tokens, _display_state), do: nil
 
   @doc """
   Streaming-shell-output segment — cyan `⟲ streaming` (with active
   count when more than one stream is live). `nil` when no streams
   are active so non-streaming UX is unchanged.
   """
+  @spec streaming_segment(map()) :: {:optional, String.t()} | nil
   def streaming_segment(%{streaming_sessions: %{} = sessions}) do
     case map_size(sessions) do
       0 -> nil
@@ -58,6 +73,7 @@ defmodule JidoClaw.Display.StatusBar do
   from the default, `nil` otherwise so the bar stays unchanged for
   non-profile users.
   """
+  @spec profile_segment(map()) :: {:optional, String.t()} | nil
   def profile_segment(%{profile: profile, default_profile: default})
       when is_binary(profile) and profile != default do
     {:optional, " \e[33m⚑ #{profile}\e[0m"}
@@ -104,6 +120,7 @@ defmodule JidoClaw.Display.StatusBar do
   end
 
   @doc "Format a token count for display (e.g. 24100 → 24.1K)"
+  @spec format_tokens(number()) :: String.t()
   def format_tokens(n) when n < 1000, do: "#{n}"
 
   def format_tokens(n) when n < 1_000_000 do
@@ -114,6 +131,7 @@ defmodule JidoClaw.Display.StatusBar do
   def format_tokens(n), do: "#{Float.round(n / 1_000_000, 1)}M"
 
   @doc "Render a progress bar: [██████░░░░]"
+  @spec progress_bar(number(), non_neg_integer()) :: String.t()
   def progress_bar(pct, width) do
     filled = round(pct / 100 * width)
     empty = width - filled
@@ -148,12 +166,9 @@ defmodule JidoClaw.Display.StatusBar do
 
   defp metrics(%{agents: agents}) when is_map(agents) do
     total_tokens =
-      agents
-      |> Enum.reduce(0, fn {_id, agent}, acc -> acc + agent.tokens end)
+      Enum.reduce(agents, 0, fn {_id, agent}, acc -> acc + agent.tokens end)
 
-    child_count =
-      agents
-      |> Enum.count(fn {id, _} -> id != "main" end)
+    child_count = Enum.count(agents, fn {id, _} -> id != "main" end)
 
     {total_tokens, child_count}
   end

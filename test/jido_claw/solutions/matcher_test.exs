@@ -21,8 +21,10 @@ defmodule JidoClaw.Solutions.MatcherTest do
 
   defmodule StubResolver do
     @moduledoc false
+    @spec resolve(term()) :: :default
     def resolve(_), do: :default
 
+    @spec model_for_query(:default | :disabled) :: map() | :disabled
     def model_for_query(:default),
       do: %{provider: :voyage, request_model: "voyage-4", stored_model: "voyage-4-large"}
 
@@ -31,13 +33,16 @@ defmodule JidoClaw.Solutions.MatcherTest do
 
   defmodule DisabledResolver do
     @moduledoc false
+    @spec resolve(term()) :: :disabled
     def resolve(_), do: :disabled
+    @spec model_for_query(term()) :: :disabled
     def model_for_query(:disabled), do: :disabled
     def model_for_query(_), do: :disabled
   end
 
   defmodule SpyVoyage do
     @moduledoc false
+    @spec embed_for_query(term(), term()) :: {:error, :should_not_be_called}
     def embed_for_query(_query, _model) do
       send(self(), {:voyage_called_at, System.unique_integer([:monotonic])})
       {:error, :should_not_be_called}
@@ -46,7 +51,9 @@ defmodule JidoClaw.Solutions.MatcherTest do
 
   defmodule NoopRatePacer do
     @moduledoc false
+    @spec acquire(term(), term()) :: :ok
     def acquire(_, _), do: :ok
+    @spec try_admit(term(), term()) :: :ok
     def try_admit(_, _), do: :ok
   end
 

@@ -10,10 +10,14 @@ defmodule JidoClaw.Forge.SandboxInit do
   use Task, restart: :temporary
   require Logger
 
+  alias JidoClaw.Security.Redaction.Env
+
+  @spec start_link(term()) :: {:ok, pid()}
   def start_link(_opts) do
     Task.start_link(__MODULE__, :run, [])
   end
 
+  @spec run() :: term()
   def run do
     check_sbx_binary()
     cleanup_orphaned_sandboxes()
@@ -31,7 +35,7 @@ defmodule JidoClaw.Forge.SandboxInit do
       path ->
         Logger.info("[Forge.SandboxInit] sbx CLI found at #{path}")
 
-        case System.cmd(path, ["version"], stderr_to_stdout: true) do
+        case System.cmd(path, ["version"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
           {version_output, 0} ->
             Logger.info("[Forge.SandboxInit] #{String.trim(version_output)}")
 
@@ -44,6 +48,7 @@ defmodule JidoClaw.Forge.SandboxInit do
   end
 
   @doc false
+  @spec cleanup_orphaned_sandboxes() :: term()
   def cleanup_orphaned_sandboxes do
     case System.find_executable("sbx") do
       nil ->
@@ -55,7 +60,7 @@ defmodule JidoClaw.Forge.SandboxInit do
   end
 
   defp do_cleanup_orphaned_sandboxes do
-    case System.cmd("sbx", ["ls", "--json"], stderr_to_stdout: true) do
+    case System.cmd("sbx", ["ls", "--json"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, sandboxes} when is_list(sandboxes) ->
@@ -67,7 +72,11 @@ defmodule JidoClaw.Forge.SandboxInit do
             for sb <- orphans do
               name = sb["name"]
               Logger.info("[Forge.SandboxInit] Removing orphaned sandbox: #{name}")
-              System.cmd("sbx", ["rm", "--force", name], stderr_to_stdout: true)
+
+              System.cmd("sbx", ["rm", "--force", name],
+                stderr_to_stdout: true,
+                env: Env.scrubbed_cmd_env()
+              )
             end
 
             if orphans != [] do

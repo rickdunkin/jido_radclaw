@@ -7,17 +7,17 @@ defmodule JidoClaw.Repo do
   # migrating to schema-based tenants.
   @dialyzer {:nowarn_function, all_tenants: 0}
 
-  @impl true
+  @impl AshPostgres.Repo
   def installed_extensions do
     ["ash-functions", "citext", "pg_trgm", "pgcrypto", "vector"]
   end
 
-  @impl true
+  @impl AshPostgres.Repo
   def prefer_transaction? do
     false
   end
 
-  @impl true
+  @impl AshPostgres.Repo
   def min_pg_version do
     %Version{major: 14, minor: 0, patch: 0}
   end

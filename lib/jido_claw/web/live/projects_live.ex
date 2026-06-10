@@ -5,7 +5,7 @@ defmodule JidoClaw.Web.ProjectsLive do
 
   alias JidoClaw.Projects.Project
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     {projects, projects_error} =
       case Project.read(actor: socket.assigns.current_actor) do
@@ -21,7 +21,7 @@ defmodule JidoClaw.Web.ProjectsLive do
      assign(socket, page_title: "Projects", projects: projects, projects_error: projects_error)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>

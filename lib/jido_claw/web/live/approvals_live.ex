@@ -19,7 +19,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
   # delayed :refresh_gates, mirroring DashboardLive's overview debounce.
   @refresh_debounce_ms 250
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     if connected?(socket), do: RunPubSub.subscribe_gates()
 
@@ -31,7 +31,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>
@@ -132,7 +132,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
     """
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("decide", %{"case_id" => id} = params, socket) do
     decision = if params["decision"] == "reject", do: :reject, else: :approve
     decide(socket, decision, id, comment_from_fields(params["fields"]))
@@ -161,7 +161,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   # Gate lifecycle events (RunPubSub gates channel) — each arms a coalesced
   # inbox reload.
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:gate_requested, _run_id, _info}, socket),
     do: {:noreply, schedule_refresh(socket)}
 
@@ -176,12 +176,10 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   defp decide(socket, decision, id, comment \\ nil) do
     actor = socket.assigns[:current_actor]
+    base_attrs = %{decided_by_id: actor && actor.user_id}
 
     attrs =
-      %{decided_by_id: actor && actor.user_id}
-      |> then(fn attrs ->
-        if comment, do: Map.put(attrs, :decision_comment, comment), else: attrs
-      end)
+      if comment, do: Map.put(base_attrs, :decision_comment, comment), else: base_attrs
 
     case Cases.decide(id, decision, attrs, tenant: tenant_id(socket), actor: actor) do
       {:ok, run} ->

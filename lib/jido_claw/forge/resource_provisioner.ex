@@ -33,9 +33,7 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
   """
   @spec validate_resources([map()]) :: :ok | {:error, [String.t()]}
   def validate_resources(resources) do
-    errors =
-      resources
-      |> Enum.flat_map(&validate_resource/1)
+    errors = Enum.flat_map(resources, &validate_resource/1)
 
     case errors do
       [] -> :ok

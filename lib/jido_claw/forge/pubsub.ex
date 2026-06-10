@@ -5,21 +5,28 @@ defmodule JidoClaw.Forge.PubSub do
 
   @sessions_topic "forge:sessions"
 
+  @spec sessions_topic() :: String.t()
   def sessions_topic, do: @sessions_topic
+
+  @spec session_topic(String.t()) :: String.t()
   def session_topic(session_id), do: "forge:session:#{session_id}"
 
+  @spec subscribe_sessions() :: :ok | {:error, term()}
   def subscribe_sessions do
     Phoenix.PubSub.subscribe(JidoClaw.PubSub, @sessions_topic)
   end
 
+  @spec subscribe(String.t()) :: :ok | {:error, term()}
   def subscribe(session_id) do
     Phoenix.PubSub.subscribe(JidoClaw.PubSub, session_topic(session_id))
   end
 
+  @spec broadcast_session_event(term()) :: :ok | {:error, term()}
   def broadcast_session_event(event) do
     safe_broadcast(@sessions_topic, event)
   end
 
+  @spec broadcast(String.t(), term()) :: :ok | {:error, term()}
   def broadcast(session_id, event) do
     safe_broadcast(session_topic(session_id), event)
   end

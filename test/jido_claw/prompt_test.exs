@@ -200,7 +200,7 @@ defmodule JidoClaw.Agent.PromptTest do
     test "bundled tool catalog matches registered agent tools" do
       prompt =
         File.read!(
-          Path.join([:code.priv_dir(:jido_claw) |> to_string(), "defaults", "system_prompt.md"])
+          Path.join([to_string(:code.priv_dir(:jido_claw)), "defaults", "system_prompt.md"])
         )
 
       registered =
@@ -292,7 +292,7 @@ defmodule JidoClaw.Agent.PromptTest do
       # Simulate a pre-0.4 install: file present, no sync sidecar.
       body =
         File.read!(
-          Path.join([:code.priv_dir(:jido_claw) |> to_string(), "defaults", "system_prompt.md"])
+          Path.join([to_string(:code.priv_dir(:jido_claw)), "defaults", "system_prompt.md"])
         )
 
       File.mkdir_p!(Path.join(dir, ".jido"))
@@ -444,7 +444,7 @@ defmodule JidoClaw.Agent.PromptTest do
     )
   end
 
-  defp sha(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+  defp sha(content), do: Base.encode16(:crypto.hash(:sha256, content), case: :lower)
 
   defp parse_sync(content) do
     content

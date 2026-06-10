@@ -23,9 +23,7 @@ defmodule JidoClaw.Skills.Steps.CollectStep do
   alias JidoClaw.Skills.Result
   alias JidoClaw.Workflows.StepResult
 
-  @impl true
-  @spec run(Reactor.inputs(), Reactor.context(), keyword()) ::
-          {:ok, term()} | {:error, term()}
+  @impl Reactor.Step
   def run(arguments, _context, options) do
     order = Keyword.fetch!(options, :order)
     skill_name = Keyword.fetch!(options, :skill_name)

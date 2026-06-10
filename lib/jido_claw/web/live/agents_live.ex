@@ -13,7 +13,7 @@ defmodule JidoClaw.Web.AgentsLive do
 
   @refresh_interval_ms 5_000
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     tenant_id = current_tenant_id(socket)
 
@@ -30,13 +30,13 @@ defmodule JidoClaw.Web.AgentsLive do
     {:ok, socket}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info(:refresh, socket) do
     Process.send_after(self(), :refresh, @refresh_interval_ms)
     {:noreply, assign(socket, :agent_views, list_views(socket.assigns.tenant_id))}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>

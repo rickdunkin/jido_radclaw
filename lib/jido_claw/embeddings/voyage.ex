@@ -90,7 +90,7 @@ defmodule JidoClaw.Embeddings.Voyage do
       "output_dtype" => "float"
     }
 
-    response =
+    request =
       Req.new(
         url: @endpoint,
         finch: JidoClaw.Finch,
@@ -101,7 +101,8 @@ defmodule JidoClaw.Embeddings.Voyage do
         json: body,
         retry: false
       )
-      |> Req.post()
+
+    response = Req.post(request)
 
     latency_ms = System.monotonic_time(:millisecond) - started
 

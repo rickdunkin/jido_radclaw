@@ -9,7 +9,7 @@ defmodule JidoClaw.Channel.Discord do
   alias JidoClaw.Authorization.Actor
   alias Nostrum.Api.Message
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def init(config) do
     state = %{
       bot_token: Map.fetch!(config, :bot_token),
@@ -21,7 +21,7 @@ defmodule JidoClaw.Channel.Discord do
     {:ok, state}
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def connect(state) do
     # Nostrum connects via its own supervision tree.
     # This adapter relies on Nostrum.Consumer for events.
@@ -29,7 +29,7 @@ defmodule JidoClaw.Channel.Discord do
     {:ok, %{state | connected: true}}
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def handle_inbound(message, state) do
     normalized = %{
       text: message.content,
@@ -60,7 +60,7 @@ defmodule JidoClaw.Channel.Discord do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def send_message(channel_id, content, _state) do
     # Nostrum API call
     case Code.ensure_loaded(Nostrum.Api.Message) do
@@ -74,7 +74,7 @@ defmodule JidoClaw.Channel.Discord do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Channel.Behaviour
   def disconnect(_state) do
     Logger.info("[Discord] Adapter disconnected")
     :ok

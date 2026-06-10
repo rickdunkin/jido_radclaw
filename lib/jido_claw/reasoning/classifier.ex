@@ -163,9 +163,7 @@ defmodule JidoClaw.Reasoning.Classifier do
 
     case return_shape do
       :ranked ->
-        ranked =
-          candidates
-          |> Enum.sort_by(fn {name, score} -> {-score, name} end)
+        ranked = Enum.sort_by(candidates, fn {name, score} -> {-score, name} end)
 
         {:ok, ranked}
 
@@ -211,8 +209,7 @@ defmodule JidoClaw.Reasoning.Classifier do
   # ---------------------------------------------------------------------------
 
   defp keyword_buckets(lower) do
-    @task_keywords
-    |> Enum.into(%{}, fn {bucket, kws} ->
+    Enum.into(@task_keywords, %{}, fn {bucket, kws} ->
       {bucket, Enum.count(kws, &String.contains?(lower, &1))}
     end)
   end

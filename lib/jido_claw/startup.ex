@@ -163,7 +163,7 @@ defmodule JidoClaw.Startup do
       |> Map.get(:from_template)
       |> present_or("main")
 
-    """
+    preamble = """
     [HANDOFF CONTEXT — you have been assigned this conversation.
     Handing-off agent: #{from}
     Reason: #{reason}
@@ -171,7 +171,8 @@ defmodule JidoClaw.Startup do
     Message: #{message}
     Treat this as standing context for the remainder of the conversation.]
     """
-    |> String.trim_trailing()
+
+    String.trim_trailing(preamble)
   end
 
   defp present_or(value, _default) when is_binary(value) and value != "", do: value

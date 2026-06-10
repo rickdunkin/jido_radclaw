@@ -152,13 +152,11 @@ defmodule JidoClaw.Reasoning.StrategyRegistry do
       end)
 
     users =
-      user_all()
-      |> Enum.map(fn entry ->
+      Enum.map(user_all(), fn entry ->
         %{name: entry.name, description: entry.description, display_name: entry.display_name}
       end)
 
-    (builtins ++ users)
-    |> Enum.sort_by(& &1.name)
+    Enum.sort_by(builtins ++ users, & &1.name)
   end
 
   @doc "Returns true if the strategy name is known (built-in or user alias)."

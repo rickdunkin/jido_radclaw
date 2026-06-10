@@ -22,6 +22,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
   defmodule OkRunner do
     @moduledoc false
 
+    @spec run(map(), term()) :: {:ok, map()}
     def run(%{prompt: prompt}, _ctx) do
       {:ok,
        %{
@@ -34,6 +35,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
   defmodule ErrorAtStageTwoRunner do
     @moduledoc false
 
+    @spec run(map(), term()) :: {:ok, map()} | {:error, map()}
     def run(%{prompt: prompt}, _ctx) do
       if String.contains?(prompt, "Prior stage output") do
         {:error, %{output: "stage 2 boom", usage: %{input_tokens: 2, output_tokens: 0}}}
@@ -283,6 +285,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
   defmodule EchoRunner do
     @moduledoc false
 
+    @spec run(map(), term()) :: {:ok, map()}
     def run(%{prompt: prompt}, _ctx) do
       {:ok, %{output: prompt, usage: %{input_tokens: 0, output_tokens: 0}}}
     end
@@ -551,6 +554,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       @moduledoc false
       # Emits a 400-byte body regardless of prompt. Stage output = body.
       @body_400 String.duplicate("a", 400)
+      @spec run(map(), term()) :: {:ok, map()}
       def run(%{prompt: _}, _ctx) do
         {:ok, %{output: @body_400, usage: %{input_tokens: 0, output_tokens: 0}}}
       end
@@ -560,6 +564,7 @@ defmodule JidoClaw.Tools.RunPipelineTest do
       @moduledoc false
       # Emits a 5 KB body — useful for irreducible-cap failure cases.
       @body_5k String.duplicate("a", 5_000)
+      @spec run(map(), term()) :: {:ok, map()}
       def run(%{prompt: _}, _ctx) do
         {:ok, %{output: @body_5k, usage: %{input_tokens: 0, output_tokens: 0}}}
       end

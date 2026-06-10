@@ -2,7 +2,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest.OkStep do
   @moduledoc false
   use Reactor.Step
 
-  @impl true
+  @impl Reactor.Step
   def run(_args, _context, _opts), do: {:ok, :done}
 end
 
@@ -20,7 +20,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest.ContextEchoStep do
 
   # Returns a json-safe projection of the (merged) context so a test can assert
   # the caller's `:context` map reached the step and the run-identity base won.
-  @impl true
+  @impl Reactor.Step
   def run(_args, context, _opts) do
     {:ok,
      %{tenant: context[:tenant], workspace_id: context[:workspace_id], reactor: context[:reactor]}}
@@ -350,7 +350,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
         )
       end
 
-      results = [Task.async(launch), Task.async(launch)] |> Task.await_many(15_000)
+      results = Task.await_many([Task.async(launch), Task.async(launch)], 15_000)
 
       # Both callers get an ok-envelope carrying the SAME run id, whichever
       # interleaving (read-hit or create-race backstop) each took.

@@ -27,31 +27,44 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
 
   defmodule SpyVoyage do
     @moduledoc false
+    @spec embed_for_storage(term(), term()) :: {:ok, [float()]}
     def embed_for_storage(_content, _model) do
       pid = :persistent_term.get({__MODULE__, :test_pid}, nil)
       if pid, do: send(pid, :voyage_called)
       {:ok, List.duplicate(0.01, 1024)}
     end
 
+    @spec install(pid()) :: :ok
     def install(pid), do: :persistent_term.put({__MODULE__, :test_pid}, pid)
+
+    @spec uninstall() :: boolean()
     def uninstall, do: :persistent_term.erase({__MODULE__, :test_pid})
   end
 
   defmodule LocalRateLimit do
     @moduledoc false
+    @spec acquire(term(), term()) :: {:error, :timeout}
     def acquire(_, _), do: {:error, :timeout}
+
+    @spec try_admit(term(), term()) :: :ok
     def try_admit(_, _), do: :ok
   end
 
   defmodule ClusterRateLimit do
     @moduledoc false
+    @spec acquire(term(), term()) :: :ok
     def acquire(_, _), do: :ok
+
+    @spec try_admit(term(), term()) :: {:error, :budget_exhausted}
     def try_admit(_, _), do: {:error, :budget_exhausted}
   end
 
   defmodule PassRatePacer do
     @moduledoc false
+    @spec acquire(term(), term()) :: :ok
     def acquire(_, _), do: :ok
+
+    @spec try_admit(term(), term()) :: :ok
     def try_admit(_, _), do: :ok
   end
 

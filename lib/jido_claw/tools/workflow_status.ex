@@ -19,7 +19,7 @@ defmodule JidoClaw.Tools.WorkflowStatus do
 
   alias JidoClaw.WorkflowView
 
-  @impl true
+  @impl Jido.Action
   def run(_params, context) do
     tool_context = Map.get(context, :tool_context, %{})
 

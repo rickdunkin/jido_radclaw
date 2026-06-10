@@ -7,7 +7,7 @@ defmodule JidoClaw.Web.FolioLive do
   alias JidoClaw.Folio.InboxItem
   alias JidoClaw.Folio.Project, as: FolioProject
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     actor = socket.assigns.current_actor
 
@@ -54,7 +54,7 @@ defmodule JidoClaw.Web.FolioLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>
@@ -139,7 +139,7 @@ defmodule JidoClaw.Web.FolioLive do
     """
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("tab", %{"tab" => tab}, socket) do
     {:noreply, assign(socket, tab: String.to_existing_atom(tab))}
   rescue

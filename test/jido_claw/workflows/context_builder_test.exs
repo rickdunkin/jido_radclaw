@@ -85,8 +85,8 @@ defmodule JidoClaw.Workflows.ContextBuilderTest do
       formatted = ContextBuilder.format_preceding_all(results)
 
       # Should appear in chronological order (step_1 before step_2)
-      first_pos = :binary.match(formatted, "first") |> elem(0)
-      second_pos = :binary.match(formatted, "second") |> elem(0)
+      first_pos = elem(:binary.match(formatted, "first"), 0)
+      second_pos = elem(:binary.match(formatted, "second"), 0)
       assert first_pos < second_pos
     end
 
@@ -108,8 +108,8 @@ defmodule JidoClaw.Workflows.ContextBuilderTest do
       results = [make_result("first", nil, "AAA"), make_result("second", nil, "BBB")]
       formatted = ContextBuilder.format_all(results)
 
-      first_pos = :binary.match(formatted, "AAA") |> elem(0)
-      second_pos = :binary.match(formatted, "BBB") |> elem(0)
+      first_pos = elem(:binary.match(formatted, "AAA"), 0)
+      second_pos = elem(:binary.match(formatted, "BBB"), 0)
       assert first_pos < second_pos
     end
   end

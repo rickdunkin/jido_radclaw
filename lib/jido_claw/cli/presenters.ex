@@ -57,7 +57,7 @@ defmodule JidoClaw.CLI.Presenters do
   end
 
   def status_lines(%{tracker: tracker, sessions: sessions, stats: stats} = snapshot) do
-    children = tracker.agents |> Enum.reject(fn {id, _} -> id == "main" end)
+    children = Enum.reject(tracker.agents, fn {id, _} -> id == "main" end)
     running = Enum.count(children, fn {_, a} -> a.status == :running end)
     spawned = Map.get(stats, :agents_spawned, 0)
     uptime = Map.get(stats, :uptime_seconds, 0)
@@ -170,7 +170,7 @@ defmodule JidoClaw.CLI.Presenters do
   defp format_trust(nil), do: "—"
 
   defp format_trust(score) when is_number(score) do
-    :io_lib.format("~.2f", [score * 1.0]) |> IO.iodata_to_binary()
+    IO.iodata_to_binary(:io_lib.format("~.2f", [score * 1.0]))
   end
 
   defp format_trust(other), do: inspect(other)

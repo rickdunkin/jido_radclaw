@@ -1,7 +1,7 @@
 defmodule JidoClaw.Web.SignInLive do
   use JidoClaw.Web, :live_view
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
@@ -13,7 +13,7 @@ defmodule JidoClaw.Web.SignInLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div style="display: flex; justify-content: center; align-items: center; min-height: 80vh;">
@@ -55,12 +55,12 @@ defmodule JidoClaw.Web.SignInLive do
     """
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("validate", %{"email" => email}, socket) do
     {:noreply, assign(socket, email: email)}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_event("sign_in", %{"email" => email, "password" => _password}, socket) do
     if String.trim(email) == "" do
       {:noreply, assign(socket, error: "Email is required")}

@@ -70,6 +70,7 @@ defmodule JidoClaw.Config do
   # Loading
   # ---------------------------------------------------------------------------
 
+  @spec load(String.t()) :: map()
   def load(project_dir \\ File.cwd!()) do
     config_path = Path.join([project_dir, ".jido", "config.yaml"])
 
@@ -105,10 +106,15 @@ defmodule JidoClaw.Config do
   # Accessors
   # ---------------------------------------------------------------------------
 
+  @spec provider(map()) :: String.t()
   def provider(config), do: Map.get(config, "provider", "ollama")
+  @spec model(map()) :: String.t()
   def model(config), do: Map.get(config, "model", @defaults["model"])
+  @spec strategy(map()) :: String.t()
   def strategy(config), do: Map.get(config, "strategy", @defaults["strategy"])
+  @spec max_iterations(map()) :: integer()
   def max_iterations(config), do: Map.get(config, "max_iterations", @defaults["max_iterations"])
+  @spec timeout(map()) :: integer()
   def timeout(config), do: Map.get(config, "timeout", @defaults["timeout"])
 
   @doc """
@@ -118,6 +124,7 @@ defmodule JidoClaw.Config do
   `JidoClaw.Shell.ProfileManager` — this accessor returns whatever is in
   the YAML so the manager can apply its own warn-and-skip logic.
   """
+  @spec profiles(map()) :: map()
   def profiles(config) do
     case Map.get(config, "profiles") do
       map when is_map(map) -> map
@@ -132,6 +139,7 @@ defmodule JidoClaw.Config do
   `JidoClaw.Shell.ServerRegistry` — this accessor returns whatever is in
   the YAML so the registry can apply its own warn-and-skip logic.
   """
+  @spec servers(map()) :: list()
   def servers(config) do
     case Map.get(config, "servers") do
       list when is_list(list) -> list
@@ -140,18 +148,22 @@ defmodule JidoClaw.Config do
   end
 
   @doc "Returns all available strategy names with descriptions."
+  @spec strategy_descriptions() :: %{String.t() => String.t()}
   def strategy_descriptions, do: @strategy_descriptions
 
+  @spec provider_config(map()) :: map()
   def provider_config(config) do
     prov = provider(config)
     get_in(config, ["providers", prov]) || Map.get(@providers, prov, %{})
   end
 
+  @spec api_key_env(map()) :: String.t()
   def api_key_env(config) do
     pc = provider_config(config)
     Map.get(pc, "api_key_env", "OLLAMA_API_KEY")
   end
 
+  @spec api_key(map()) :: String.t() | nil
   def api_key(config) do
     env_var = api_key_env(config)
     normalize_api_key(env_var, System.get_env(env_var))
@@ -164,12 +176,14 @@ defmodule JidoClaw.Config do
   defp normalize_api_key("OLLAMA_API_KEY", "ollama"), do: nil
   defp normalize_api_key(_env_var, key), do: key
 
+  @spec base_url(map()) :: String.t() | nil
   def base_url(config) do
     pc = provider_config(config)
     Map.get(pc, "base_url")
   end
 
   @doc "Returns the provider display name for boot sequence."
+  @spec provider_label(map()) :: String.t()
   def provider_label(config) do
     prov = provider(config)
 
@@ -180,16 +194,20 @@ defmodule JidoClaw.Config do
   end
 
   @doc "Is this an Ollama Cloud connection?"
+  @spec cloud?(map()) :: boolean()
   def cloud?(config) do
     provider(config) == "ollama" and
       get_in(config, ["providers", "ollama", "base_url"]) == @cloud_base_url
   end
 
   # Keep for backwards compat
+  @spec ollama_base_url(map()) :: String.t()
   def ollama_base_url(config) do
     get_in(config, ["providers", "ollama", "base_url"]) || "http://localhost:11434"
   end
 
+  # :httpc headers — both elements are charlists.
+  @spec auth_headers(map()) :: [{charlist(), charlist()}]
   def auth_headers(config) do
     case api_key(config) do
       nil -> []
@@ -202,6 +220,7 @@ defmodule JidoClaw.Config do
   # ---------------------------------------------------------------------------
 
   @doc "Check if the configured provider is reachable. Returns :ok | {:error, :unauthorized} | {:error, :unreachable}."
+  @spec check_provider(map()) :: :ok | {:error, :unauthorized | :unreachable}
   def check_provider(config) do
     case provider(config) do
       "ollama" -> check_ollama(config)
@@ -215,6 +234,7 @@ defmodule JidoClaw.Config do
     end
   end
 
+  @spec check_ollama(map()) :: :ok | {:error, :unauthorized | :unreachable}
   def check_ollama(config) do
     url = ollama_base_url(config) <> "/api/tags"
     headers = auth_headers(config)
@@ -251,6 +271,7 @@ defmodule JidoClaw.Config do
   # Available providers list (for setup wizard)
   # ---------------------------------------------------------------------------
 
+  @spec available_providers() :: [{String.t(), String.t(), String.t()}]
   def available_providers do
     [
       {"ollama", "Ollama (local)", "Run models locally with Ollama"},
@@ -264,6 +285,7 @@ defmodule JidoClaw.Config do
     ]
   end
 
+  @spec default_models_for_provider(String.t()) :: [String.t()]
   def default_models_for_provider(provider_key) do
     case provider_key do
       "ollama" ->
@@ -432,6 +454,7 @@ defmodule JidoClaw.Config do
   }
 
   @doc "Returns a short description string for a model (context window, notes)."
+  @spec model_description(String.t()) :: String.t()
   def model_description(model_string) do
     @model_descriptions[model_string] || ""
   end
@@ -480,6 +503,7 @@ defmodule JidoClaw.Config do
   # Helpers
   # ---------------------------------------------------------------------------
 
+  @spec deep_merge(term(), term()) :: term()
   def deep_merge(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, fn _key, lv, rv ->
       deep_merge(lv, rv)

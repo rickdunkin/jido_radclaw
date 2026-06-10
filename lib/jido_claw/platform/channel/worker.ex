@@ -5,11 +5,12 @@ defmodule JidoClaw.Channel.Worker do
 
   defstruct [:tenant_id, :adapter, :adapter_state, :config, status: :disconnected]
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     adapter = Keyword.fetch!(opts, :adapter)
@@ -33,7 +34,7 @@ defmodule JidoClaw.Channel.Worker do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get_info, _from, state) do
     platform =
       state.adapter
@@ -51,7 +52,7 @@ defmodule JidoClaw.Channel.Worker do
     {:reply, info, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:connect, state) do
     case state.adapter.connect(state.adapter_state) do
       {:ok, new_adapter_state} ->
@@ -82,7 +83,7 @@ defmodule JidoClaw.Channel.Worker do
     end
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     state.adapter.disconnect(state.adapter_state)
     :ok

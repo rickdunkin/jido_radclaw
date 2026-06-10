@@ -7,6 +7,8 @@ defmodule JidoClaw.GitHub.WebhookPipeline do
 
   @supported_events ["issues.opened", "issues.edited", "issue_comment.created"]
 
+  @spec process(Plug.Conn.t(), binary()) ::
+          {:ok, :ignored | :processed} | {:error, term()}
   def process(conn, raw_body) do
     signature = List.first(Conn.get_req_header(conn, "x-hub-signature-256"))
     event = List.first(Conn.get_req_header(conn, "x-github-event"))

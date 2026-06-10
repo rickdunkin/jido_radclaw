@@ -355,9 +355,8 @@ defmodule JidoClaw.Reasoning.Certificates do
   defp validate_shape(decoded) do
     with :ok <- validate_type(decoded),
          :ok <- validate_verdict(decoded),
-         :ok <- validate_confidence(decoded),
-         :ok <- validate_payload(decoded) do
-      :ok
+         :ok <- validate_confidence(decoded) do
+      validate_payload(decoded)
     end
   end
 

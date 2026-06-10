@@ -11,6 +11,7 @@ defmodule JidoClaw.Test.EchoAskStub do
     name: "echo_ask_stub",
     description: "Test-only echo agent that exports ask/3 for async-path tests"
 
+  @spec ask(pid(), term(), keyword()) :: {:ok, %{id: term()}}
   def ask(_pid, _query, opts) when is_list(opts) do
     request_id = Keyword.fetch!(opts, :request_id)
     {:ok, %{id: request_id}}

@@ -32,22 +32,27 @@ defmodule JidoClaw.Forge.Manager do
             max_sessions: 50,
             max_per_runner: %{claude_code: 10, codex: 10, shell: 20, workflow: 10, fake: 10}
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @spec start_session(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def start_session(session_id, spec) do
     GenServer.call(__MODULE__, {:start_session, session_id, spec}, 30_000)
   end
 
+  @spec stop_session(String.t(), term()) :: :ok | {:error, :not_found}
   def stop_session(session_id, reason \\ :normal) do
     GenServer.call(__MODULE__, {:stop_session, session_id, reason})
   end
 
+  @spec list_sessions() :: [String.t()]
   def list_sessions do
     GenServer.call(__MODULE__, :list_sessions)
   end
 
+  @spec get_session(String.t()) :: {:ok, pid()} | {:error, :not_found}
   def get_session(session_id) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] -> {:ok, pid}
@@ -59,6 +64,7 @@ defmodule JidoClaw.Forge.Manager do
   Cluster-aware session lookup. Tries local Registry first, then falls back
   to :pg process groups for cross-node discovery when clustering is enabled.
   """
+  @spec get_session_cluster(String.t()) :: {:ok, pid()} | {:error, :not_found}
   def get_session_cluster(session_id) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] ->
@@ -78,7 +84,7 @@ defmodule JidoClaw.Forge.Manager do
     _, _ -> {:error, :not_found}
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     state = %__MODULE__{
       max_sessions: Keyword.get(opts, :max_sessions, 50),
@@ -95,7 +101,7 @@ defmodule JidoClaw.Forge.Manager do
     {:ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:start_session, session_id, spec}, _from, state) do
     runner_type = Map.get(spec, :runner, :shell)
     runner_count = Map.get(state.runner_counts, runner_type, 0)
@@ -116,7 +122,7 @@ defmodule JidoClaw.Forge.Manager do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:stop_session, session_id, reason}, _from, state) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] ->
@@ -134,12 +140,12 @@ defmodule JidoClaw.Forge.Manager do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:list_sessions, _from, state) do
     {:reply, MapSet.to_list(state.sessions), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     dead =
       Enum.filter(MapSet.to_list(state.sessions), fn sid ->
@@ -160,7 +166,7 @@ defmodule JidoClaw.Forge.Manager do
     {:noreply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:attempt_recovery, session_id}, state) do
     attempts = Map.get(state.recovery_attempts, session_id, 0)
 

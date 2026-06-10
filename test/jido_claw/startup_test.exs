@@ -11,12 +11,13 @@ defmodule JidoClaw.StartupTest do
   defmodule CapturingAgent do
     use GenServer
 
+    @spec start_link(pid()) :: GenServer.on_start()
     def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
 
-    @impl true
+    @impl GenServer
     def init(test_pid), do: {:ok, test_pid}
 
-    @impl true
+    @impl GenServer
     def handle_call(
           {:signal, %{type: "ai.react.set_system_prompt", data: %{system_prompt: prompt}}},
           _from,

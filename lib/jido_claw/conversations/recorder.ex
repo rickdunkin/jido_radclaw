@@ -146,6 +146,7 @@ defmodule JidoClaw.Conversations.Recorder do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -180,36 +181,36 @@ defmodule JidoClaw.Conversations.Recorder do
   # Server
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     {:ok, %__MODULE__{}, {:continue, :setup}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:setup, state) do
     {:noreply, do_setup(state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:retry_setup, state) do
     {:noreply, do_setup(state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     Process.send_after(self(), :retry_setup, @retry_after_ms)
     {:noreply, %{state | bus_pid: nil, subscriptions: []}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:signal, %Jido.Signal{} = signal}, state) do
     {:noreply, handle_signal(signal, state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(_other, state), do: {:noreply, state}
 
-  @impl true
+  @impl GenServer
   def handle_call({:flush, request_id}, from, state) do
     if MapSet.member?(state.recent_completed_set, request_id) do
       {:reply, :ok, state}
@@ -219,7 +220,7 @@ defmodule JidoClaw.Conversations.Recorder do
     end
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, _state) do
     # Best-effort detach. The defensive detach in `do_setup/1` is the
     # actual contract — a dirty exit (no terminate/2) cannot leave a
@@ -273,6 +274,7 @@ defmodule JidoClaw.Conversations.Recorder do
   end
 
   @doc false
+  @spec handle_telemetry([atom()], map(), map(), term()) :: :ok
   def handle_telemetry(_event, measurements, metadata, _config) do
     request_id = MapKeys.coalesce_field(metadata, :request_id)
     duration = MapKeys.coalesce_field(measurements, :duration_ms)
@@ -499,19 +501,19 @@ defmodule JidoClaw.Conversations.Recorder do
       envelope = ToolTranscript.envelope(arguments)
       content = ToolTranscript.summarize_args(tool_name, arguments)
 
-      attrs =
-        %{
-          session_id: scope.session_id,
-          request_id: request_id,
-          role: :tool_call,
-          content: content,
-          metadata: %{
-            tool_name: tool_name,
-            arguments: envelope
-          },
-          tool_call_id: tool_call_id
-        }
-        |> Map.merge(identity_attrs(scope))
+      base_attrs = %{
+        session_id: scope.session_id,
+        request_id: request_id,
+        role: :tool_call,
+        content: content,
+        metadata: %{
+          tool_name: tool_name,
+          arguments: envelope
+        },
+        tool_call_id: tool_call_id
+      }
+
+      attrs = Map.merge(base_attrs, identity_attrs(scope))
 
       attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
@@ -545,20 +547,20 @@ defmodule JidoClaw.Conversations.Recorder do
 
       content = ToolTranscript.result_summary(tool_name, raw_result)
 
-      attrs =
-        %{
-          session_id: scope.session_id,
-          request_id: request_id,
-          role: :tool_result,
-          content: content,
-          metadata: %{
-            tool_name: tool_name,
-            result: envelope
-          },
-          tool_call_id: tool_call_id,
-          parent_message_id: parent
-        }
-        |> Map.merge(identity_attrs(scope))
+      base_attrs = %{
+        session_id: scope.session_id,
+        request_id: request_id,
+        role: :tool_result,
+        content: content,
+        metadata: %{
+          tool_name: tool_name,
+          result: envelope
+        },
+        tool_call_id: tool_call_id,
+        parent_message_id: parent
+      }
+
+      attrs = Map.merge(base_attrs, identity_attrs(scope))
 
       attempt_append(attrs, scope.tenant_id, actor_for(scope))
     end
@@ -581,15 +583,15 @@ defmodule JidoClaw.Conversations.Recorder do
 
       true ->
         with {:ok, scope} <- resolve_scope(request_id) do
-          attrs =
-            %{
-              session_id: scope.session_id,
-              request_id: request_id,
-              role: :reasoning,
-              content: thinking,
-              metadata: %{}
-            }
-            |> Map.merge(identity_attrs(scope))
+          base_attrs = %{
+            session_id: scope.session_id,
+            request_id: request_id,
+            role: :reasoning,
+            content: thinking,
+            metadata: %{}
+          }
+
+          attrs = Map.merge(base_attrs, identity_attrs(scope))
 
           attempt_append(attrs, scope.tenant_id, actor_for(scope))
         end
@@ -867,7 +869,6 @@ defmodule JidoClaw.Conversations.Recorder do
       is_struct(err) and
         (Map.get(err, :__struct__) == Ash.Error.Changes.InvalidAttribute or
            Map.get(err, :__struct__) == Ash.Error.Invalid)
-        |> Kernel.&&(true)
     end) and
       errors
       |> Enum.map(&inspect/1)

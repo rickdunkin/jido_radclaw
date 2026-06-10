@@ -20,7 +20,7 @@ defmodule JidoClaw.Memory.Changes.ValidateScopeFk do
     session: :session_id
   }
 
-  @impl true
+  @impl Ash.Resource.Change
   def change(changeset, _opts, _context) do
     Changeset.before_action(changeset, fn cs ->
       scope_kind = Changeset.get_attribute(cs, :scope_kind)

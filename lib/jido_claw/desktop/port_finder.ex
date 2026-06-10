@@ -2,6 +2,7 @@ defmodule JidoClaw.Desktop.PortFinder do
   @moduledoc false
 
   @doc "Find an available TCP port."
+  @spec find() :: :inet.port_number()
   def find do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, port} = :inet.port(socket)
@@ -10,6 +11,7 @@ defmodule JidoClaw.Desktop.PortFinder do
   end
 
   @doc "Check if a port is available."
+  @spec available?(:inet.port_number()) :: boolean()
   def available?(port) when is_integer(port) do
     case :gen_tcp.listen(port, [:binary, active: false, reuseaddr: true]) do
       {:ok, socket} ->

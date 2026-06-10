@@ -88,6 +88,7 @@ defmodule JidoClaw.Shell.SessionManager do
 
   # -- Client API -------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -295,7 +296,7 @@ defmodule JidoClaw.Shell.SessionManager do
 
   # -- Server Callbacks -------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     ensure_ssh_sessions_ets()
     {:ok, %__MODULE__{}}
@@ -337,7 +338,7 @@ defmodule JidoClaw.Shell.SessionManager do
     :ok
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:run, workspace_id, command, timeout, opts}, _from, state) do
     project_dir = Keyword.fetch!(opts, :project_dir)
 
@@ -350,7 +351,7 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:cwd, workspace_id, which}, _from, state) do
     reply =
       case Map.get(state.sessions, workspace_id) do
@@ -367,7 +368,7 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, reply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:stop_session, workspace_id}, _from, state) do
     had_local? = Map.has_key?(state.sessions, workspace_id)
     had_ssh_only? = not had_local? and workspace_has_ssh?(state.ssh_sessions, workspace_id)
@@ -397,7 +398,7 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, :ok, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:drop_sessions, workspace_id}, _from, state) do
     new_sessions =
       case Map.pop(state.sessions, workspace_id) do
@@ -416,7 +417,7 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, :ok, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:invalidate_ssh_sessions, names}, _from, state) do
     targets = MapSet.new(names)
 
@@ -434,7 +435,7 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, :ok, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(
         {:update_env, workspace_id, keys_to_drop, new_overlay, opts},
         _from,
@@ -444,7 +445,7 @@ defmodule JidoClaw.Shell.SessionManager do
     {:reply, reply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:host_env_for_test, workspace_id}, _from, state) do
     reply =
       case Map.get(state.sessions, workspace_id) do
@@ -456,12 +457,12 @@ defmodule JidoClaw.Shell.SessionManager do
   end
 
   # Silently ignore stale session events that arrive outside collect loops
-  @impl true
+  @impl GenServer
   def handle_info({:jido_shell_session, _session_id, _event}, state) do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     {:noreply, state}
   end
@@ -1096,6 +1097,7 @@ defmodule JidoClaw.Shell.SessionManager do
   back to `:host` for anything else. Exposed for the classifier test
   suite — production callers go through `resolve_target/3`.
   """
+  @spec classify(String.t(), String.t()) :: :vfs | :host
   def classify(command, workspace_id) do
     # v0.5.1: `check_allowlist_or_extension/1` admits registry-extension
     # commands and `help`, and `check_extension_only_or_paths_mount/2`

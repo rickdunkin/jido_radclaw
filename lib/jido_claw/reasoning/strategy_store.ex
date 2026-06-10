@@ -96,6 +96,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -128,13 +129,13 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   # Server callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     {:ok, %{project_dir: project_dir, strategies: []}, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, state) do
     strategies = load_from_disk(state.project_dir)
 
@@ -145,15 +146,15 @@ defmodule JidoClaw.Reasoning.StrategyStore do
     {:noreply, %{state | strategies: strategies}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:all, _from, state), do: {:reply, state.strategies, state}
 
-  @impl true
+  @impl GenServer
   def handle_call(:list, _from, state) do
     {:reply, Enum.map(state.strategies, & &1.name), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:get, name}, _from, state) do
     case Enum.find(state.strategies, &(&1.name == name)) do
       nil -> {:reply, {:error, :not_found}, state}
@@ -161,7 +162,7 @@ defmodule JidoClaw.Reasoning.StrategyStore do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:reload, _from, state) do
     strategies = load_from_disk(state.project_dir)
     Logger.info("[StrategyStore] Reloaded #{length(strategies)} user strategies")

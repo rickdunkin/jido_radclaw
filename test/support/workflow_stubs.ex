@@ -9,6 +9,7 @@ defmodule JidoClaw.Test.ErrorStub do
     name: "error_stub",
     description: "Test-only stub whose ask_sync returns an error"
 
+  @spec ask_sync(pid(), term(), keyword()) :: {:error, :boom}
   def ask_sync(_pid, _query, opts) when is_list(opts) do
     send(Application.get_env(:jido_claw, :echo_stub_target, self()), {:stub_invoked, :error})
     {:error, :boom}
@@ -29,6 +30,7 @@ defmodule JidoClaw.Test.CrashStub do
   # dialyzer infers `no_return`; that's intentional for this stub.
   @dialyzer {:nowarn_function, ask_sync: 3}
 
+  @spec ask_sync(pid(), term(), keyword()) :: no_return()
   def ask_sync(_pid, _query, opts) when is_list(opts) do
     send(Application.get_env(:jido_claw, :echo_stub_target, self()), {:stub_invoked, :crash})
     raise "kaboom"
@@ -47,8 +49,10 @@ defmodule JidoClaw.Test.SecretErrorStub do
     name: "secret_error_stub",
     description: "Test-only stub whose ask_sync errors with a secret in the message"
 
+  @spec secret() :: String.t()
   def secret, do: "sk-" <> String.duplicate("a", 24)
 
+  @spec ask_sync(pid(), term(), keyword()) :: {:error, String.t()}
   def ask_sync(_pid, _query, opts) when is_list(opts) do
     send(Application.get_env(:jido_claw, :echo_stub_target, self()), {:stub_invoked, :secret})
     {:error, "auth failed for key #{secret()}"}
@@ -71,6 +75,7 @@ defmodule JidoClaw.Test.FlakyStub do
     name: "flaky_stub",
     description: "Test-only stub that fails N times then echoes"
 
+  @spec ask_sync(pid(), term(), keyword()) :: {:ok, map()} | {:error, :flaky}
   def ask_sync(_pid, _query, opts) when is_list(opts) do
     target = Application.get_env(:jido_claw, :echo_stub_target, self())
     remaining = Application.get_env(:jido_claw, :flaky_stub_failures_remaining, 0)

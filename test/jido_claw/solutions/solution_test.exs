@@ -13,8 +13,9 @@ defmodule JidoClaw.Solutions.SolutionTest do
       workspace = workspace_fixture(tenant_id, embedding_policy: :disabled)
 
       sig =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
 
       # Omit :embedding_status so the change's resolution path runs.
       # Setting it would short-circuit the change and pass the test
@@ -48,8 +49,9 @@ defmodule JidoClaw.Solutions.SolutionTest do
       actor_b = actor_for(tenant_b)
 
       sig =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
 
       attrs = %{
         problem_signature: sig,
@@ -80,8 +82,9 @@ defmodule JidoClaw.Solutions.SolutionTest do
       _workspace_b_setup = workspace_fixture(tenant_b, embedding_policy: :disabled)
 
       sig =
-        :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}")
-        |> Base.encode16(case: :lower)
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
 
       attrs = %{
         problem_signature: sig,

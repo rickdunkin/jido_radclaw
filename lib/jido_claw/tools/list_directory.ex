@@ -35,7 +35,7 @@ defmodule JidoClaw.Tools.ListDirectory do
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:list_directory, params, context, fn enriched ->
       do_list(params, enriched)

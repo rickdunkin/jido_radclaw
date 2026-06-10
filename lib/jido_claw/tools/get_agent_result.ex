@@ -27,7 +27,7 @@ defmodule JidoClaw.Tools.GetAgentResult do
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     agent_id = params.agent_id
     timeout = Map.get(params, :timeout, 60_000)
@@ -81,12 +81,15 @@ defmodule JidoClaw.Tools.GetAgentResult do
     output_meta = Output.request_meta_output(request)
 
     response =
-      %{
-        agent_id: agent_id,
-        status: "completed",
-        result: typed || Output.extract_result(Output.request_result(request))
-      }
-      |> maybe_put(:output_meta, output_meta)
+      maybe_put(
+        %{
+          agent_id: agent_id,
+          status: "completed",
+          result: typed || Output.extract_result(Output.request_result(request))
+        },
+        :output_meta,
+        output_meta
+      )
 
     {:ok, response}
   end

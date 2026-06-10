@@ -41,6 +41,9 @@ defmodule JidoClaw.Display do
     :model,
     :provider,
     :context_window,
+    # `%LLMDB.Model{}` for the configured model (nil for local/unknown
+    # models). Drives the status-bar estimated-cost segment.
+    :model_meta,
     :spinner_ref,
     :status_bar_ref,
     :last_render,
@@ -75,19 +78,22 @@ defmodule JidoClaw.Display do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Configure the display with model/provider info (called at REPL boot)."
-  def configure(model, provider, context_window \\ 131_072) do
-    GenServer.cast(__MODULE__, {:configure, model, provider, context_window})
+  @spec configure(String.t(), String.t(), non_neg_integer(), map() | nil) :: :ok
+  def configure(model, provider, context_window \\ 131_072, model_meta \\ nil) do
+    GenServer.cast(__MODULE__, {:configure, model, provider, context_window, model_meta})
   end
 
   @doc """
   Update the active profile name surfaced in the status bar. Called at
   REPL boot and after every `/profile switch`.
   """
+  @spec set_profile(String.t()) :: :ok
   def set_profile(profile) when is_binary(profile) do
     GenServer.cast(__MODULE__, {:set_profile, profile})
   end
@@ -96,46 +102,55 @@ defmodule JidoClaw.Display do
   # the swarm-projection scope once when a session starts. Not a per-request
   # / multi-tenant entrypoint — there's no scope switching after boot.
   @doc false
+  @spec set_scope(map()) :: :ok
   def set_scope(scope) when is_map(scope) do
     GenServer.cast(__MODULE__, {:set_scope, scope})
   end
 
   @doc "Start the thinking spinner (kaomoji animation)."
+  @spec start_thinking() :: :ok
   def start_thinking do
     GenServer.cast(__MODULE__, :start_thinking)
   end
 
   @doc "Stop the thinking spinner."
+  @spec stop_thinking() :: :ok
   def stop_thinking do
     GenServer.cast(__MODULE__, :stop_thinking)
   end
 
   @doc "Display a tool call starting (⟳ icon)."
+  @spec tool_start(String.t(), String.t(), map()) :: :ok
   def tool_start(agent_id, tool_name, args \\ %{}) do
     GenServer.cast(__MODULE__, {:tool_start, agent_id, tool_name, args})
   end
 
   @doc "Display a tool call completing (✓ icon). Pass optional result for rich preview."
+  @spec tool_complete(String.t(), String.t(), term()) :: :ok
   def tool_complete(agent_id, tool_name, result \\ nil) do
     GenServer.cast(__MODULE__, {:tool_complete, agent_id, tool_name, result})
   end
 
   @doc "Signal that the REPL is waiting for user input (suppress display updates)."
+  @spec enter_input_mode() :: :ok
   def enter_input_mode do
     GenServer.cast(__MODULE__, :enter_input_mode)
   end
 
   @doc "Signal that the REPL has received input and is processing."
+  @spec exit_input_mode() :: :ok
   def exit_input_mode do
     GenServer.cast(__MODULE__, :exit_input_mode)
   end
 
   @doc "Reset display state (e.g. between conversations)."
+  @spec reset_mode() :: :ok
   def reset_mode do
     GenServer.cast(__MODULE__, :reset_mode)
   end
 
   @doc "Render the status bar immediately (for /status command)."
+  @spec render_status_bar() :: String.t()
   def render_status_bar do
     GenServer.call(__MODULE__, :render_status_bar)
   end
@@ -186,7 +201,7 @@ defmodule JidoClaw.Display do
   # Server Callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     width = Terminal.terminal_cols()
     # Fallback start time so the status bar shows real elapsed even before
@@ -198,9 +213,16 @@ defmodule JidoClaw.Display do
      }}
   end
 
-  @impl true
-  def handle_cast({:configure, model, provider, context_window}, state) do
-    {:noreply, %{state | model: model, provider: provider, context_window: context_window}}
+  @impl GenServer
+  def handle_cast({:configure, model, provider, context_window, model_meta}, state) do
+    {:noreply,
+     %{
+       state
+       | model: model,
+         provider: provider,
+         context_window: context_window,
+         model_meta: model_meta
+     }}
   end
 
   def handle_cast({:set_profile, profile}, state) do
@@ -312,7 +334,7 @@ defmodule JidoClaw.Display do
     {:noreply, drop_streaming(state, session_id)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:render_status_bar, _from, state) do
     bar = render_status_bar_string(state)
     {:reply, bar, state}
@@ -354,7 +376,7 @@ defmodule JidoClaw.Display do
   end
 
   # -- Spinner tick --
-  @impl true
+  @impl GenServer
   def handle_info(:spinner_tick, %{thinking: false} = state) do
     {:noreply, state}
   end

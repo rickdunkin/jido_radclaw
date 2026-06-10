@@ -5,6 +5,7 @@ defmodule JidoClaw.CLI.Formatter do
 
   alias JidoClaw.CLI.Branding
 
+  @spec print_answer(term()) :: :ok
   def print_answer(answer) when is_binary(answer) do
     cleaned = strip_think_tags(answer)
     IO.puts("")
@@ -18,10 +19,12 @@ defmodule JidoClaw.CLI.Formatter do
     IO.puts("")
   end
 
+  @spec print_error(String.t()) :: :ok
   def print_error(message) do
     IO.puts("\n  \e[31m✗\e[0m #{message}\n")
   end
 
+  @spec print_tool_call(String.t(), map()) :: :ok
   def print_tool_call(name, args) when is_map(args) do
     args_str =
       Enum.map_join(args, " ", fn {k, v} ->
@@ -32,10 +35,12 @@ defmodule JidoClaw.CLI.Formatter do
     IO.puts("  \e[33m⟳\e[0m \e[1m#{name}\e[0m #{args_str}")
   end
 
+  @spec print_tool_result(String.t(), term()) :: :ok
   def print_tool_result(name, _result) do
     IO.puts("  \e[32m✓\e[0m \e[2m#{name}\e[0m")
   end
 
+  @spec render_diff(String.t()) :: String.t()
   def render_diff(diff_text) when is_binary(diff_text) do
     diff_text
     |> String.split("\n")
@@ -49,6 +54,7 @@ defmodule JidoClaw.CLI.Formatter do
 
   # -- Thinking Spinner (runs in a separate process) --
 
+  @spec start_spinner() :: pid()
   def start_spinner do
     parent = self()
 
@@ -57,6 +63,7 @@ defmodule JidoClaw.CLI.Formatter do
     end)
   end
 
+  @spec stop_spinner(pid()) :: :ok
   def stop_spinner(pid) do
     send(pid, :stop)
     # Clear the spinner line
@@ -80,6 +87,7 @@ defmodule JidoClaw.CLI.Formatter do
   with `limit: 3`. Wrapped in dim ANSI so it doesn't compete with the
   surrounding label.
   """
+  @spec truncate_value(term()) :: String.t()
   def truncate_value(v) when is_binary(v) do
     if String.length(v) > 80 do
       "\e[2m\"#{String.slice(v, 0, 77)}...\"\e[0m"
@@ -94,6 +102,7 @@ defmodule JidoClaw.CLI.Formatter do
   Format an elapsed-time value (integer seconds) as `Ns`, `Nm Ns`, or
   `Nh Nm` depending on magnitude.
   """
+  @spec format_elapsed(integer()) :: String.t()
   def format_elapsed(seconds) when seconds < 60, do: "#{seconds}s"
 
   def format_elapsed(seconds) when seconds < 3600,

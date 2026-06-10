@@ -62,10 +62,10 @@ defmodule JidoClaw.Skills.Compiler do
   ## Validation
 
   Rejects duplicate non-nil YAML step names, missing `depends_on`/`consumes`
-  targets, cycles, and malformed
-  `retry:`/`compensate:`/`irreversible:`/`deadline:` values up front — a clean
-  `{:error, _}` from `compile/1` instead of a raw `Reactor.Planner` `PlanError`
-  (or a silently inert option) at run time.
+  targets, cycles, malformed `retry:`/`compensate:`/`irreversible:`/`deadline:`
+  values, and graph skills above the step cap up front — a clean `{:error, _}`
+  from `compile/1` instead of a raw `Reactor.Planner` `PlanError` (or a
+  silently inert option) at run time.
   """
 
   alias JidoClaw.Orchestration.Deadline
@@ -78,6 +78,12 @@ defmodule JidoClaw.Skills.Compiler do
   alias Reactor.Builder
 
   @collect_id :__collect__
+
+  # Hard cap on graph-skill steps. Step ids come from this compile-time
+  # table so compiling LLM-authored YAML never mints atoms at runtime;
+  # `validate/3` rejects larger skills up front.
+  @max_steps 256
+  @step_ids List.to_tuple(Enum.map(1..@max_steps, &:"step_#{&1}"))
 
   @doc """
   Compile `skill` to a runnable `%Reactor{}` struct, or return `{:error, _}`
@@ -180,13 +186,14 @@ defmodule JidoClaw.Skills.Compiler do
     end
   end
 
-  defp validate(_skill, steps, _graph_mode) do
+  defp validate(skill, steps, _graph_mode) do
     named =
       Enum.map(steps, fn step ->
         %{name: Map.get(step, :name), depends_on: step_deps(step), consumes: step_consumes(step)}
       end)
 
-    with :ok <- validate_unique_names(named),
+    with :ok <- validate_step_count(skill, steps),
+         :ok <- validate_unique_names(named),
          :ok <- validate_targets_exist(named) do
       validate_no_cycles(named)
     end
@@ -212,13 +219,21 @@ defmodule JidoClaw.Skills.Compiler do
     end
   end
 
+  defp validate_step_count(skill, steps) do
+    if Enum.count_until(steps, @max_steps + 1) > @max_steps do
+      {:error, "Skill '#{skill.name}' has more than #{@max_steps} steps"}
+    else
+      :ok
+    end
+  end
+
   defp validate_unique_names(named) do
     names =
       named
       |> Enum.map(& &1.name)
       |> Enum.reject(&is_nil/1)
 
-    dups = (names -- Enum.uniq(names)) |> Enum.uniq()
+    dups = Enum.uniq(names -- Enum.uniq(names))
 
     case dups do
       [] -> :ok
@@ -320,9 +335,8 @@ defmodule JidoClaw.Skills.Compiler do
              async?: true,
              max_retries: step_retry(gen)
            ),
-         {:ok, reactor} <- add_collect(reactor, skill, [{nil, 1}], :iterative),
-         {:ok, reactor} <- Builder.return(reactor, @collect_id) do
-      {:ok, reactor}
+         {:ok, reactor} <- add_collect(reactor, skill, [{nil, 1}], :iterative) do
+      Builder.return(reactor, @collect_id)
     end
   end
 
@@ -338,9 +352,8 @@ defmodule JidoClaw.Skills.Compiler do
 
     with {:ok, reactor} <- new_with_input(),
          {:ok, reactor} <- add_agent_steps(reactor, indexed, index, mode),
-         {:ok, reactor} <- add_collect(reactor, skill, indexed, mode),
-         {:ok, reactor} <- Builder.return(reactor, @collect_id) do
-      {:ok, reactor}
+         {:ok, reactor} <- add_collect(reactor, skill, indexed, mode) do
+      Builder.return(reactor, @collect_id)
     end
   end
 
@@ -388,10 +401,9 @@ defmodule JidoClaw.Skills.Compiler do
 
     # Wire a from_result arg for each edge (depends_on ∪ consumes). Derive the
     # ids from upstream/consumes_tuples (already resolved) rather than re-fetching.
-    edge_ids =
-      (Enum.map(upstream, fn {id, _name} -> id end) ++
-         Enum.map(consumes_tuples, fn {id, _name, _produces} -> id end))
-      |> Enum.uniq()
+    upstream_ids = Enum.map(upstream, fn {id, _name} -> id end)
+    consumes_ids = Enum.map(consumes_tuples, fn {id, _name, _produces} -> id end)
+    edge_ids = Enum.uniq(upstream_ids ++ consumes_ids)
 
     args = [input_arg() | Enum.map(edge_ids, &result_arg/1)]
 
@@ -487,7 +499,8 @@ defmodule JidoClaw.Skills.Compiler do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp step_id(idx), do: :"step_#{idx}"
+  defp step_id(idx) when is_integer(idx) and idx >= 1 and idx <= @max_steps,
+    do: elem(@step_ids, idx - 1)
 
   defp input_arg, do: Argument.from_input(:extra_context, :extra_context)
 

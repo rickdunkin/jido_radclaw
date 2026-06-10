@@ -342,6 +342,7 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
     defmodule BigBodyRunner do
       @moduledoc false
       @body String.duplicate("a", 5_000)
+      @spec run(map(), term()) :: {:ok, map()}
       def run(%{prompt: _}, _ctx) do
         {:ok, %{output: @body, usage: %{input_tokens: 0, output_tokens: 0}}}
       end

@@ -14,8 +14,10 @@ defmodule JidoClaw.Memory.Consolidator.Plug.RunForward do
 
   alias Anubis.Server.Transport.StreamableHTTP.Plug, as: AnubisPlug
 
+  @spec init(Plug.opts()) :: Plug.opts()
   def init(opts), do: opts
 
+  @spec call(Plug.Conn.t(), Plug.opts()) :: Plug.Conn.t()
   def call(conn, opts) do
     run_id = conn.path_params["run_id"]
     conn = Plug.Conn.assign(conn, :consolidator_run_id, run_id)

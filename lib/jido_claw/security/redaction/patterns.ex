@@ -59,7 +59,7 @@ defmodule JidoClaw.Security.Redaction.Patterns do
   @spec redact_with_count(String.t() | term()) :: {String.t() | term(), non_neg_integer()}
   def redact_with_count(text) when is_binary(text) do
     Enum.reduce(@patterns, {text, 0}, fn {pattern, replacement}, {acc, n} ->
-      matches = Regex.scan(pattern, acc) |> length()
+      matches = length(Regex.scan(pattern, acc))
       {Regex.replace(pattern, acc, replacement), n + matches}
     end)
   end

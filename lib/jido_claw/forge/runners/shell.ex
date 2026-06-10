@@ -4,10 +4,10 @@ defmodule JidoClaw.Forge.Runners.Shell do
   alias JidoClaw.Forge.Runner
   alias JidoClaw.Forge.Sandbox
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(_client, _config), do: :ok
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(client, state, opts) do
     command = Keyword.get(opts, :command, Map.get(state, :command, "echo 'no command'"))
 
@@ -17,6 +17,6 @@ defmodule JidoClaw.Forge.Runners.Shell do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(_client, _input, _state), do: :ok
 end

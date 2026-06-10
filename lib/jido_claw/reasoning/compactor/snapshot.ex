@@ -127,7 +127,7 @@ defmodule JidoClaw.Reasoning.Compactor.Snapshot do
       protected_message_count: get(map, :protected_message_count, 0),
       protected_turn_count: get(map, :protected_turn_count, 0),
       last_summarized_sequence: get(map, :last_summarized_sequence),
-      summarized_request_ids: get(map, :summarized_request_ids, []) |> List.wrap(),
+      summarized_request_ids: List.wrap(get(map, :summarized_request_ids, [])),
       last_summarized_request_id: get(map, :last_summarized_request_id),
       last_summarized_at_ms: get(map, :last_summarized_at_ms),
       started_at_ms: get(map, :started_at_ms),

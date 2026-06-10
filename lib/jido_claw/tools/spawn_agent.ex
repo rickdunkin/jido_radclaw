@@ -38,7 +38,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
   alias JidoClaw.Error
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     template_name = params.template
     task = params.task
@@ -73,9 +73,11 @@ defmodule JidoClaw.Tools.SpawnAgent do
   defp register_spawned_agent(pid, template, template_name, task, tag, context, scope_opts) do
     visibility = Map.get(template, :forward_context, :public)
 
-    child_tool_context =
+    base_tool_context =
       JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag, visibility)
-      |> Map.put(:swarm_depth, swarm_depth(context) + 1)
+
+    child_tool_context =
+      Map.put(base_tool_context, :swarm_depth, swarm_depth(context) + 1)
 
     request_id = JidoClaw.register_child_correlation(child_tool_context)
 

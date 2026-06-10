@@ -285,7 +285,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         CrossTenantFk.validate(cs, [
@@ -307,7 +307,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     alias JidoClaw.Memory.ConsolidationRun
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       kind = Query.get_argument(query, :scope_kind)
       fk = Query.get_argument(query, :scope_fk_id)
@@ -328,7 +328,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
 
     alias JidoClaw.Memory.ConsolidationRun
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       kind = Query.get_argument(query, :scope_kind)
       fk = Query.get_argument(query, :scope_fk_id)
@@ -351,6 +351,7 @@ defmodule JidoClaw.Memory.ConsolidationRun do
   Narrow `query` to runs with the given `status`. A `nil` `status`
   skips the filter.
   """
+  @spec apply_status_filter(Ash.Query.t(), atom() | nil) :: Ash.Query.t()
   def apply_status_filter(query, nil), do: query
 
   def apply_status_filter(query, status) do

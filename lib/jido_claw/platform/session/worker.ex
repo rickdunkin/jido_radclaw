@@ -78,6 +78,7 @@ defmodule JidoClaw.Session.Worker do
     status: :active
   ]
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     session_id = Keyword.fetch!(opts, :session_id)
@@ -93,22 +94,27 @@ defmodule JidoClaw.Session.Worker do
   handoff `:system` row, which is written during main's turn but must be
   stamped with the *target worker's* compaction identity.
   """
+  @spec add_message(String.t(), String.t(), atom(), String.t(), String.t() | nil, keyword()) ::
+          :ok | {:error, term()}
   def add_message(tenant_id, session_id, role, content, request_id \\ nil, opts \\ []) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, {:add_message, role, content, request_id, opts})
   end
 
+  @spec get_messages(String.t(), String.t()) :: [map()]
   def get_messages(tenant_id, session_id) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, :get_messages)
   end
 
+  @spec get_info(String.t(), String.t()) :: map()
   def get_info(tenant_id, session_id) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, :get_info)
   end
 
   @doc "Bind an agent process to this session. Monitors the agent for crash detection."
+  @spec set_agent(String.t(), String.t(), pid()) :: :ok
   def set_agent(tenant_id, session_id, agent_pid) when is_pid(agent_pid) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, {:set_agent, agent_pid})
@@ -123,6 +129,8 @@ defmodule JidoClaw.Session.Worker do
   Hydrates `state.messages` from Postgres on first call, so
   `get_messages/2` reflects pre-existing history immediately.
   """
+  @spec set_session_uuid(String.t(), String.t(), String.t()) ::
+          :ok | {:error, :session_uuid_already_set}
   def set_session_uuid(tenant_id, session_id, session_uuid) when is_binary(session_uuid) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, {:set_session_uuid, session_uuid})
@@ -135,12 +143,13 @@ defmodule JidoClaw.Session.Worker do
   already-running worker is reused — the most recent caller's actor
   wins. Internal trust path; never accept actor from end-user input.
   """
+  @spec set_actor(String.t(), String.t(), term()) :: :ok
   def set_actor(tenant_id, session_id, actor) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
     GenServer.call(name, {:set_actor, actor})
   end
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     session_id = Keyword.fetch!(opts, :session_id)
@@ -161,7 +170,7 @@ defmodule JidoClaw.Session.Worker do
     {:ok, state, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, %{session_uuid: nil} = state) do
     # Worker started without a session_uuid — wait for set_session_uuid to
     # arrive before loading. This is the normal boot path.
@@ -173,7 +182,7 @@ defmodule JidoClaw.Session.Worker do
     {:noreply, %{state | messages: messages}, @idle_timeout}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(
         {:add_message, _role, _content, _request_id, _opts},
         _from,
@@ -218,7 +227,7 @@ defmodule JidoClaw.Session.Worker do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get_messages, _from, state) do
     {:reply, state.messages, state, @idle_timeout}
   end
@@ -238,7 +247,7 @@ defmodule JidoClaw.Session.Worker do
     {:reply, info, state, @idle_timeout}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:set_agent, agent_pid}, _from, state) do
     # Demonitor previous agent if one was bound
     if state.agent_ref, do: Process.demonitor(state.agent_ref, [:flush])
@@ -248,7 +257,7 @@ defmodule JidoClaw.Session.Worker do
     {:reply, :ok, new_state, @idle_timeout}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:set_session_uuid, uuid}, _from, %{session_uuid: nil} = state) do
     messages = load_messages(uuid, state.tenant_id, state.actor)
     _ = seed_handoff_from_metadata(state.tenant_id, state.id, uuid, state.actor)
@@ -271,20 +280,20 @@ defmodule JidoClaw.Session.Worker do
     {:reply, :ok, %{state | actor: actor}, @idle_timeout}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, ref, :process, pid, reason}, %{agent_ref: ref, agent_pid: pid} = state) do
     Logger.warning("[Session] #{state.id} agent #{inspect(pid)} died: #{inspect(reason)}")
     new_state = %{state | agent_pid: nil, agent_ref: nil, status: :agent_lost}
     {:noreply, new_state, @idle_timeout}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info(:timeout, state) do
     Logger.debug("[Session] #{state.id} idle timeout, hibernating")
     {:noreply, %{state | status: :hibernated}, :hibernate}
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     duration = DateTime.diff(DateTime.utc_now(), state.created_at, :millisecond)
 
@@ -386,13 +395,16 @@ defmodule JidoClaw.Session.Worker do
   end
 
   defp request_attrs_subset(source) do
-    [:agent_id, :subagent, :run_id, :model, :input_tokens, :output_tokens, :latency_ms]
-    |> Enum.reduce(%{}, fn k, acc ->
-      case Map.get(source, k) do
-        nil -> acc
-        v -> Map.put(acc, k, v)
+    Enum.reduce(
+      [:agent_id, :subagent, :run_id, :model, :input_tokens, :output_tokens, :latency_ms],
+      %{},
+      fn k, acc ->
+        case Map.get(source, k) do
+          nil -> acc
+          v -> Map.put(acc, k, v)
+        end
       end
-    end)
+    )
   end
 
   # Caller-supplied `:agent_id` / `:subagent` win over the looked-up

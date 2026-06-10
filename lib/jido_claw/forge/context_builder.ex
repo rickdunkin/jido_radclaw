@@ -80,14 +80,13 @@ defmodule JidoClaw.Forge.ContextBuilder do
     runner = session.runner_type || "unknown"
     phase = session.phase || :unknown
 
-    """
+    String.trim("""
     ## Session Context
     Session: #{session.name}
     Runner: #{runner}
     Current phase: #{phase}
     Completed iterations: #{n}\
-    """
-    |> String.trim()
+    """)
   end
 
   defp checkpoint_section(%{last_checkpoint: nil}), do: nil
@@ -95,11 +94,10 @@ defmodule JidoClaw.Forge.ContextBuilder do
   defp checkpoint_section(%{last_checkpoint: cp}) do
     seq = cp.exec_session_sequence || 0
 
-    """
+    String.trim("""
     ## Last Checkpoint
     Checkpoint at iteration #{seq} (#{format_timestamp(cp.created_at)}).\
-    """
-    |> String.trim()
+    """)
   end
 
   defp progress_section(%{iteration_count: 0}, _max_tokens), do: nil
@@ -145,7 +143,7 @@ defmodule JidoClaw.Forge.ContextBuilder do
 
   defp error_section(%{error_history: errors}, max_tokens) do
     # Budget ~10% of tokens for the error section, split across up to 5 entries
-    max_reason_chars = div(max_tokens * 4, 50) |> max(80)
+    max_reason_chars = max(div(max_tokens * 4, 50), 80)
 
     lines =
       errors

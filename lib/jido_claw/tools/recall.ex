@@ -39,7 +39,7 @@ defmodule JidoClaw.Tools.Recall do
       ]
     ]
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     limit = Map.get(params, :limit, 10)
     tool_context = Map.get(context, :tool_context, %{})

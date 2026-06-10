@@ -23,7 +23,7 @@ defmodule JidoClaw.Audit.Producers do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, opts, _context) do
       target_kind = Keyword.get(opts, :target_kind, :memory_fact)
       event_kind = Keyword.get(opts, :event_kind, :memory_write)
@@ -57,31 +57,19 @@ defmodule JidoClaw.Audit.Producers do
     end
 
     defp build_payload(result) do
-      payload = %{}
+      entries = [
+        {:source, field(result, :source)},
+        {:scope_kind, field(result, :scope_kind)},
+        {:label, field(result, :label)},
+        {:relation, field(result, :relation)},
+        {:block_revision_id,
+         case metadata(result, :block_revision_id) do
+           nil -> nil
+           revision_id -> to_string(revision_id)
+         end}
+      ]
 
-      payload =
-        if source = field(result, :source),
-          do: Map.put(payload, :source, source),
-          else: payload
-
-      payload =
-        if scope = field(result, :scope_kind),
-          do: Map.put(payload, :scope_kind, scope),
-          else: payload
-
-      payload =
-        if label = field(result, :label),
-          do: Map.put(payload, :label, label),
-          else: payload
-
-      payload =
-        if relation = field(result, :relation),
-          do: Map.put(payload, :relation, relation),
-          else: payload
-
-      if revision_id = metadata(result, :block_revision_id),
-        do: Map.put(payload, :block_revision_id, to_string(revision_id)),
-        else: payload
+      for {key, value} when not is_nil(value) <- entries, into: %{}, do: {key, value}
     end
 
     defp field(map, key) when is_map(map), do: Map.get(map, key)
@@ -94,7 +82,7 @@ defmodule JidoClaw.Audit.Producers do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Ash.Changeset.after_action(changeset, fn cs, result ->
         try do
@@ -132,7 +120,7 @@ defmodule JidoClaw.Audit.Producers do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Ash.Changeset.after_action(changeset, fn cs, result ->
         try do
@@ -170,7 +158,7 @@ defmodule JidoClaw.Audit.Producers do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Ash.Changeset.after_action(changeset, fn cs, result ->
         try do
@@ -204,7 +192,7 @@ defmodule JidoClaw.Audit.Producers do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Ash.Changeset.after_action(changeset, fn cs, result ->
         try do

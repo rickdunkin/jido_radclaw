@@ -49,9 +49,8 @@ defmodule JidoClaw.Security.VaultConfig do
   end
 
   defp load_key do
-    with {:error, :missing} <- load_env_key(),
-         {:error, :missing} <- load_file_key() do
-      {:error, :missing}
+    with {:error, :missing} <- load_env_key() do
+      load_file_key()
     end
   end
 

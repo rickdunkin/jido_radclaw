@@ -173,9 +173,8 @@ defmodule JidoClaw.Tools.HandoffTest do
       # If a worker (someday) opted in to the handoff tool, agent_id would be
       # the opaque "handoff:<uuid>:<template>" form but agent_template would
       # carry the bare template name. Verify the tool reads the template name.
-      ctx =
-        build_context(t, rsid, session.id, agent_template: "researcher")
-        |> put_in([:tool_context, :agent_id], "handoff:opaque:researcher")
+      base_ctx = build_context(t, rsid, session.id, agent_template: "researcher")
+      ctx = put_in(base_ctx, [:tool_context, :agent_id], "handoff:opaque:researcher")
 
       assert {:ok, _} =
                HandoffTool.run(

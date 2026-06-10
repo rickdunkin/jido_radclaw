@@ -4,11 +4,12 @@ defmodule JidoClaw.Telemetry do
 
   alias JidoClaw.Tenant.Manager
 
+  @spec start_link(term()) :: Supervisor.on_start()
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
   end
 
-  @impl true
+  @impl Supervisor
   def init(_arg) do
     children = [
       {:telemetry_poller, measurements: periodic_measurements(), period: 10_000}
@@ -17,6 +18,7 @@ defmodule JidoClaw.Telemetry do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
+  @spec metrics() :: [Telemetry.Metrics.t()]
   def metrics do
     [
       # Session metrics
@@ -92,6 +94,7 @@ defmodule JidoClaw.Telemetry do
   end
 
   # Periodic measurement: emit current tenant count
+  @spec emit_tenant_count() :: :ok
   def emit_tenant_count do
     count =
       case Process.whereis(Manager) do
@@ -104,6 +107,7 @@ defmodule JidoClaw.Telemetry do
 
   # -- Emit helpers --
 
+  @spec emit_session_start(map()) :: :ok
   def emit_session_start(metadata) do
     :telemetry.execute(
       [:jido_claw, :session, :start],
@@ -112,14 +116,17 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_session_stop(map(), number()) :: :ok
   def emit_session_stop(metadata, duration) do
     :telemetry.execute([:jido_claw, :session, :stop], %{duration: duration}, metadata)
   end
 
+  @spec emit_session_message(map()) :: :ok
   def emit_session_message(metadata) do
     :telemetry.execute([:jido_claw, :session, :message], %{count: 1}, metadata)
   end
 
+  @spec emit_provider_request_start(map()) :: :ok
   def emit_provider_request_start(metadata) do
     :telemetry.execute(
       [:jido_claw, :provider, :request, :start],
@@ -128,10 +135,12 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_provider_request_stop(map(), number()) :: :ok
   def emit_provider_request_stop(metadata, duration) do
     :telemetry.execute([:jido_claw, :provider, :request, :stop], %{duration: duration}, metadata)
   end
 
+  @spec emit_provider_exception(map(), term()) :: :ok
   def emit_provider_exception(metadata, kind) do
     :telemetry.execute(
       [:jido_claw, :provider, :request, :exception],
@@ -140,6 +149,7 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_provider_tokens(map(), number(), term()) :: :ok
   def emit_provider_tokens(metadata, count, type) do
     :telemetry.execute(
       [:jido_claw, :provider, :tokens],
@@ -148,6 +158,7 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_tool_start(map()) :: :ok
   def emit_tool_start(metadata) do
     :telemetry.execute(
       [:jido_claw, :tool, :execute, :start],
@@ -156,10 +167,12 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_tool_stop(map(), number()) :: :ok
   def emit_tool_stop(metadata, duration) do
     :telemetry.execute([:jido_claw, :tool, :execute, :stop], %{duration: duration}, metadata)
   end
 
+  @spec emit_tool_exception(map(), term()) :: :ok
   def emit_tool_exception(metadata, kind) do
     :telemetry.execute(
       [:jido_claw, :tool, :execute, :exception],
@@ -172,6 +185,7 @@ defmodule JidoClaw.Telemetry do
   # map per tick — `job_id`, `tenant_id`, `mode`, `target`, `dispatch_target` —
   # and reuses it for start/stop/exception, so the `tags:` on the cron metrics
   # above always resolve and exceptions carry `tenant_id` too.
+  @spec emit_cron_start(map()) :: :ok
   def emit_cron_start(metadata) do
     :telemetry.execute(
       [:jido_claw, :cron, :job, :start],
@@ -180,10 +194,12 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_cron_stop(map(), number()) :: :ok
   def emit_cron_stop(metadata, duration) do
     :telemetry.execute([:jido_claw, :cron, :job, :stop], %{duration: duration}, metadata)
   end
 
+  @spec emit_cron_exception(map(), term()) :: :ok
   def emit_cron_exception(metadata, kind) do
     :telemetry.execute(
       [:jido_claw, :cron, :job, :exception],
@@ -192,18 +208,22 @@ defmodule JidoClaw.Telemetry do
     )
   end
 
+  @spec emit_tenant_create(map()) :: :ok
   def emit_tenant_create(metadata) do
     :telemetry.execute([:jido_claw, :tenant, :create], %{count: 1}, metadata)
   end
 
+  @spec emit_tenant_destroy(map()) :: :ok
   def emit_tenant_destroy(metadata) do
     :telemetry.execute([:jido_claw, :tenant, :destroy], %{count: 1}, metadata)
   end
 
+  @spec emit_channel_inbound(map()) :: :ok
   def emit_channel_inbound(metadata) do
     :telemetry.execute([:jido_claw, :channel, :message, :inbound], %{count: 1}, metadata)
   end
 
+  @spec emit_channel_outbound(map()) :: :ok
   def emit_channel_outbound(metadata) do
     :telemetry.execute([:jido_claw, :channel, :message, :outbound], %{count: 1}, metadata)
   end

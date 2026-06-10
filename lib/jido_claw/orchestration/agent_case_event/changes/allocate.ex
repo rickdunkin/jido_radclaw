@@ -25,7 +25,7 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent.Changes.Allocate do
   alias JidoClaw.Orchestration.AgentCaseEvent
   alias JidoClaw.Security.Redaction.Transcript
 
-  @impl true
+  @impl Ash.Resource.Change
   def change(changeset, _opts, context) do
     caller_actor = context.actor
     Changeset.before_action(changeset, &allocate(&1, effective_actor(&1, caller_actor)))

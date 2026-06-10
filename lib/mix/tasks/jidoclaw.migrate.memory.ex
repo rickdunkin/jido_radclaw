@@ -45,7 +45,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
   alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
   alias JidoClaw.Workspaces.{Resolver, Workspace}
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args, switches: [dry_run: :boolean, project: :string])
@@ -246,12 +246,13 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Memory do
 
     inserted_at_ms = DateTime.to_unix(inserted_at, :millisecond)
 
-    import_hash =
+    hash =
       :crypto.hash(
         :sha256,
         "#{workspace.id}|#{label}|#{content}|#{inserted_at_ms}"
       )
-      |> Base.encode16(case: :lower)
+
+    import_hash = Base.encode16(hash, case: :lower)
 
     %{
       tenant_id: workspace.tenant_id,

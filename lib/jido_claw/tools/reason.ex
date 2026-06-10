@@ -40,7 +40,7 @@ defmodule JidoClaw.Tools.Reason do
 
   alias JidoClaw.Reasoning.{AutoSelect, Output, StrategyRegistry, Telemetry}
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     strategy_name = params.strategy
     prompt = params.prompt
@@ -74,8 +74,10 @@ defmodule JidoClaw.Tools.Reason do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
     run_params =
-      %{strategy: base_atom, prompt: prompt, timeout: 60_000}
-      |> Map.merge(StrategyRegistry.run_strategy_params_for(concrete_strategy))
+      Map.merge(
+        %{strategy: base_atom, prompt: prompt, timeout: 60_000},
+        StrategyRegistry.run_strategy_params_for(concrete_strategy)
+      )
 
     metadata =
       if concrete_strategy != base_name do
@@ -92,10 +94,12 @@ defmodule JidoClaw.Tools.Reason do
         metadata: metadata
       )
 
-    Telemetry.with_outcome(base_name, prompt, opts, fn ->
-      runner.run(run_params, %{})
-    end)
-    |> format_runner_result(base_name)
+    runner_result =
+      Telemetry.with_outcome(base_name, prompt, opts, fn ->
+        runner.run(run_params, %{})
+      end)
+
+    format_runner_result(runner_result, base_name)
   end
 
   # Dispatches on the *resolved base* of the strategy. User aliases whose base
@@ -156,8 +160,10 @@ defmodule JidoClaw.Tools.Reason do
     runner = Map.get(context, :reasoning_runner, Jido.AI.Actions.Reasoning.RunStrategy)
 
     run_params =
-      %{strategy: base_atom, prompt: prompt, timeout: 60_000}
-      |> Map.merge(StrategyRegistry.run_strategy_params_for(strategy_name))
+      Map.merge(
+        %{strategy: base_atom, prompt: prompt, timeout: 60_000},
+        StrategyRegistry.run_strategy_params_for(strategy_name)
+      )
 
     opts =
       base_telemetry_opts(context,
@@ -165,13 +171,15 @@ defmodule JidoClaw.Tools.Reason do
         base_strategy: base_name
       )
 
-    Telemetry.with_outcome(
-      strategy_name,
-      prompt,
-      opts,
-      fn -> runner.run(run_params, %{}) end
-    )
-    |> format_runner_result(strategy_name)
+    runner_result =
+      Telemetry.with_outcome(
+        strategy_name,
+        prompt,
+        opts,
+        fn -> runner.run(run_params, %{}) end
+      )
+
+    format_runner_result(runner_result, strategy_name)
   end
 
   # Pull workspace_id / project_dir / agent_id / forge_session_key /
@@ -182,15 +190,17 @@ defmodule JidoClaw.Tools.Reason do
   defp base_telemetry_opts(context, extra) do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 
-    [
-      request_id: Map.get(context, :request_id),
-      agent_id: Map.get(tool_context, :agent_id),
-      workspace_uuid: Map.get(tool_context, :workspace_uuid),
-      session_uuid: Map.get(tool_context, :session_uuid),
-      project_dir: Map.get(tool_context, :project_dir),
-      forge_session_key: Map.get(tool_context, :forge_session_key)
-    ]
-    |> Keyword.merge(extra)
+    Keyword.merge(
+      [
+        request_id: Map.get(context, :request_id),
+        agent_id: Map.get(tool_context, :agent_id),
+        workspace_uuid: Map.get(tool_context, :workspace_uuid),
+        session_uuid: Map.get(tool_context, :session_uuid),
+        project_dir: Map.get(tool_context, :project_dir),
+        forge_session_key: Map.get(tool_context, :forge_session_key)
+      ],
+      extra
+    )
   end
 
   defp format_runner_result({:ok, result}, strategy_name) do

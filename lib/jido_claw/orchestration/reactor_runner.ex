@@ -379,15 +379,17 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # run-level `deadline` policy (T2-1) rides here too.
   defp run_config(identity, reactor_module, extra_context, deadline) do
     kind = if reactor_module, do: "module", else: "skill"
-    config = %{reactor: identity, definition_kind: kind}
 
-    config =
-      case Map.get(extra_context, :project_dir) do
-        dir when is_binary(dir) -> Map.put(config, :project_dir, dir)
-        _missing -> config
-      end
+    %{reactor: identity, definition_kind: kind}
+    |> put_project_dir(extra_context)
+    |> put_deadline(deadline)
+  end
 
-    put_deadline(config, deadline)
+  defp put_project_dir(config, extra_context) do
+    case Map.get(extra_context, :project_dir) do
+      dir when is_binary(dir) -> Map.put(config, :project_dir, dir)
+      _missing -> config
+    end
   end
 
   # Store the NORMALIZED `Deadline.parse/1` policy, not the raw input — a

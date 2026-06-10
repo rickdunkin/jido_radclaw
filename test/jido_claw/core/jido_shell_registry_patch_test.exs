@@ -84,13 +84,13 @@ defmodule JidoClaw.Core.JidoShellRegistryPatchTest do
     @moduledoc false
     @behaviour Jido.Shell.Command
 
-    @impl true
+    @impl Jido.Shell.Command
     def name, do: "ls"
-    @impl true
+    @impl Jido.Shell.Command
     def summary, do: "fake"
-    @impl true
-    def schema, do: Zoi.map(%{args: Zoi.array(Zoi.string()) |> Zoi.default([])})
-    @impl true
+    @impl Jido.Shell.Command
+    def schema, do: Zoi.map(%{args: Zoi.default(Zoi.array(Zoi.string()), [])})
+    @impl Jido.Shell.Command
     def run(_state, _args, emit) do
       emit.({:output, "fake\n"})
       {:ok, nil}

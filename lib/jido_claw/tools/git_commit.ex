@@ -19,13 +19,14 @@ defmodule JidoClaw.Tools.GitCommit do
       ]
     ]
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(%{message: message, files: files} = params, context) do
     MCPScope.wrap(:git_commit, params, context, fn enriched ->
       project_dir = JidoClaw.ToolContext.project_dir(enriched)
-      cmd_opts = [cd: project_dir, stderr_to_stdout: true]
+      cmd_opts = [cd: project_dir, stderr_to_stdout: true, env: Env.scrubbed_cmd_env()]
 
       with :ok <- stage_files(files, cmd_opts) do
         case System.cmd("git", ["commit", "-m", message], cmd_opts) do

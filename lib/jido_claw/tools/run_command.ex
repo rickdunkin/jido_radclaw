@@ -72,7 +72,7 @@ defmodule JidoClaw.Tools.RunCommand do
       ]
     ]
 
-  @impl true
+  @impl Jido.Action
   def on_before_validate_params(params) do
     params
     |> coerce_backend_param(:backend)
@@ -83,7 +83,7 @@ defmodule JidoClaw.Tools.RunCommand do
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(%{command: command} = params, context) do
     MCPScope.wrap(:run_command, params, context, fn enriched ->
       timeout = Map.get(params, :timeout, 30_000)
@@ -137,8 +137,11 @@ defmodule JidoClaw.Tools.RunCommand do
 
     if session_manager_available?() do
       opts =
-        [project_dir: project_dir, backend: :ssh, server: server]
-        |> maybe_put_streaming(stream?, agent_id)
+        maybe_put_streaming(
+          [project_dir: project_dir, backend: :ssh, server: server],
+          stream?,
+          agent_id
+        )
 
       SessionManager.run(workspace_id, command, timeout, opts)
     else

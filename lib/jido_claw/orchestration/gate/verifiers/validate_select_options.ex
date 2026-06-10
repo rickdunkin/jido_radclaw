@@ -11,7 +11,7 @@ defmodule JidoClaw.Orchestration.Gate.Verifiers.ValidateSelectOptions do
   alias Spark.Dsl.Verifier
   alias Spark.Error.DslError
 
-  @impl true
+  @impl Spark.Dsl.Verifier
   def verify(dsl_state) do
     dsl_state
     |> Verifier.get_entities([:gate, :fields])

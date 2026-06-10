@@ -12,7 +12,7 @@ defmodule JidoClaw.Test.StubSandbox do
   defstruct [:agent_pid]
 
   @doc "Create a new stub-sandbox client with an empty event log."
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def create(_spec \\ %{}) do
     {:ok, agent} =
       Agent.start_link(fn ->
@@ -23,22 +23,27 @@ defmodule JidoClaw.Test.StubSandbox do
   end
 
   @doc "Return the recorded events in chronological order."
+  @spec events(%__MODULE__{}) :: list()
   def events(%__MODULE__{agent_pid: pid}),
     do: Agent.get(pid, fn s -> Enum.reverse(s.events) end)
 
   @doc "Return the file contents written to `path`, or `nil`."
+  @spec file(%__MODULE__{}, String.t()) :: binary() | nil
   def file(%__MODULE__{agent_pid: pid}, path),
     do: Agent.get(pid, fn s -> Map.get(s.files, path) end)
 
   @doc "Return the injected env map."
+  @spec env(%__MODULE__{}) :: map()
   def env(%__MODULE__{agent_pid: pid}),
     do: Agent.get(pid, fn s -> s.env end)
 
   @doc "Program the next return value of `run/4` (and any subsequent calls)."
+  @spec program_run(%__MODULE__{}, term()) :: :ok
   def program_run(%__MODULE__{agent_pid: pid}, response),
     do: Agent.update(pid, fn s -> %{s | run_response: response} end)
 
   @doc "Return the most recent recorded `run/4` argv."
+  @spec last_run_args(%__MODULE__{}) :: list() | nil
   def last_run_args(%__MODULE__{agent_pid: pid}) do
     Agent.get(pid, fn s ->
       Enum.find_value(s.events, fn
@@ -48,19 +53,19 @@ defmodule JidoClaw.Test.StubSandbox do
     end)
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec(%__MODULE__{agent_pid: pid} = _client, command, _opts) do
     Agent.update(pid, fn s -> %{s | events: [{:exec, command} | s.events]} end)
     {"", 0}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec_argv(%__MODULE__{agent_pid: pid} = _client, command, args, _opts) do
     Agent.update(pid, fn s -> %{s | events: [{:exec_argv, [command | args]} | s.events]} end)
     {"", 0}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def write_file(%__MODULE__{agent_pid: pid} = _client, path, content) do
     Agent.update(pid, fn s ->
       %{s | files: Map.put(s.files, path, content), events: [{:write, path} | s.events]}
@@ -69,7 +74,7 @@ defmodule JidoClaw.Test.StubSandbox do
     :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def read_file(%__MODULE__{agent_pid: pid}, path) do
     case Agent.get(pid, fn s -> Map.get(s.files, path) end) do
       nil -> {:error, :enoent}
@@ -77,7 +82,7 @@ defmodule JidoClaw.Test.StubSandbox do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{agent_pid: pid}, env_map) do
     Agent.update(pid, fn s ->
       %{
@@ -90,21 +95,21 @@ defmodule JidoClaw.Test.StubSandbox do
     :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def run(%__MODULE__{agent_pid: pid} = _client, agent_type, args, _opts) do
     Agent.update(pid, fn s -> %{s | events: [{:run, [agent_type | args]} | s.events]} end)
     Agent.get(pid, fn s -> s.run_response end)
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def spawn(_, _, _, _), do: {:error, :not_supported}
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def destroy(%__MODULE__{agent_pid: pid}, _sandbox_id) do
     if Process.alive?(pid), do: Agent.stop(pid)
     :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def impl_module, do: __MODULE__
 end

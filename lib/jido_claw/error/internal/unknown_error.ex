@@ -5,7 +5,7 @@ defmodule JidoClaw.Error.Internal.UnknownError do
   """
   use Splode.Error, class: :internal, fields: [:message, :details, :error]
 
-  @impl true
+  @impl Exception
   def exception(opts) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
     message = Keyword.get(opts, :message) || unknown_message(opts[:error])

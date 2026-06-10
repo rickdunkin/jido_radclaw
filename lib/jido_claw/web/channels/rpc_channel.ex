@@ -2,7 +2,7 @@ defmodule JidoClaw.Web.RpcChannel do
   @moduledoc false
   use Phoenix.Channel
 
-  @impl true
+  @impl Phoenix.Channel
   def join("rpc:lobby", _payload, socket) do
     {:ok, %{status: "connected"}, socket}
   end
@@ -11,22 +11,24 @@ defmodule JidoClaw.Web.RpcChannel do
     {:ok, socket}
   end
 
-  @impl true
+  @impl Phoenix.Channel
   def handle_in("gateway.status", _payload, socket) do
     uptime =
       System.monotonic_time(:second) -
         Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
 
     sessions =
-      Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]) |> length()
+      length(Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]))
 
     {:reply, {:ok, %{uptime: uptime, sessions: sessions, node: to_string(Node.self())}}, socket}
   end
 
   def handle_in("sessions.list", _payload, socket) do
-    sessions =
+    registered =
       Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
-      |> Enum.map(fn {key, _pid} ->
+
+    sessions =
+      Enum.map(registered, fn {key, _pid} ->
         case key do
           {tenant_id, session_id} -> %{tenant_id: tenant_id, session_id: session_id}
           _ -> %{id: inspect(key)}

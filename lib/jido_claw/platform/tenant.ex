@@ -19,6 +19,7 @@ defmodule JidoClaw.Tenant do
     created_at: nil
   ]
 
+  @spec new(keyword()) :: t()
   def new(attrs) do
     %__MODULE__{
       id: attrs[:id] || generate_id(),
@@ -30,6 +31,6 @@ defmodule JidoClaw.Tenant do
   end
 
   defp generate_id do
-    "tenant_" <> (:crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false))
+    "tenant_" <> Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
   end
 end

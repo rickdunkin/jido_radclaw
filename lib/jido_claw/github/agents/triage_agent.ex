@@ -4,6 +4,8 @@ defmodule JidoClaw.GitHub.Agents.TriageAgent do
   @feature_keywords ~w(feature request add implement support enhance improve)
   @doc_keywords ~w(docs documentation typo readme guide example)
 
+  @spec classify(map()) ::
+          {:ok, %{classification: String.t(), confidence: float(), issue_number: term()}}
   def classify(issue) do
     text = String.downcase("#{issue.title} #{issue.body}")
     labels = Enum.map(issue.labels || [], &String.downcase/1)

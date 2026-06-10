@@ -154,14 +154,14 @@ defmodule JidoClaw.Orchestration.WorkflowStepProjectionTest do
 
     # Forge an overdue active run: 60s policy, started 5 minutes ago
     # (set_status corruption-sim precedent — bypasses the event log).
-    {:ok, late} =
+    {:ok, created} =
       WorkflowRun.create(%{name: "late-run", config: %{deadline: %{within: 60}}},
         tenant: ctx.tenant,
         actor: actor_for(ctx.tenant)
       )
 
     {:ok, late} =
-      late
+      created
       |> Ash.Changeset.for_update(
         :set_status,
         %{status: :running, started_at: DateTime.add(DateTime.utc_now(), -300, :second)},

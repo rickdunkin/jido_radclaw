@@ -19,7 +19,7 @@ defmodule JidoClaw.Security.Redaction.LogRedactorTest do
     assert :ok = LogRedactor.install!()
     assert :ok = LogRedactor.install!()
 
-    filters = :logger.get_primary_config() |> Map.fetch!(:filters)
+    filters = Map.fetch!(:logger.get_primary_config(), :filters)
 
     assert Keyword.has_key?(filters, :jidoclaw_redact_secrets)
   end

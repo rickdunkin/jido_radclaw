@@ -8,7 +8,7 @@ defmodule JidoClaw.Forge.Sandbox.Behaviour do
               command :: String.t(),
               args :: [String.t()],
               opts :: keyword()
-            ) :: {String.t(), integer()}
+            ) :: {String.t(), integer() | :timeout}
   @callback spawn(client :: struct(), command :: String.t(), args :: list(), opts :: keyword()) ::
               {:ok, term()} | {:error, term()}
   @callback write_file(client :: struct(), path :: String.t(), content :: binary()) ::
@@ -21,7 +21,7 @@ defmodule JidoClaw.Forge.Sandbox.Behaviour do
               agent_type :: String.t(),
               args :: [String.t()],
               opts :: keyword()
-            ) :: {String.t(), integer()}
+            ) :: {String.t(), integer() | :timeout}
   @callback destroy(client :: struct(), sandbox_id :: String.t()) :: :ok | {:error, term()}
   @callback impl_module() :: module()
 

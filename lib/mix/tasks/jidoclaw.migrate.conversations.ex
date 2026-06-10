@@ -55,7 +55,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
   alias JidoClaw.Tenant.Manager
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args, switches: [dry_run: :boolean, project: :string])
@@ -254,7 +254,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
 
   defp compute_hash(session_id, sequence, role, ts, content) do
     payload = "#{session_id}|#{sequence}|#{role}|#{ts}|#{content}"
-    :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
   end
 
   # ---------------------------------------------------------------------------

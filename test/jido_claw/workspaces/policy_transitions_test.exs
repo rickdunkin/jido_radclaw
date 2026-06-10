@@ -127,11 +127,14 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
 
   defp ws(tenant_id, label, opts \\ []) do
     attrs =
-      %{
-        path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
-        name: label
-      }
-      |> maybe_put(opts, :embedding_policy)
+      maybe_put(
+        %{
+          path: "/tmp/policy-transitions-#{label}-#{System.unique_integer([:positive])}",
+          name: label
+        },
+        opts,
+        :embedding_policy
+      )
 
     Workspace.register(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
   end
@@ -144,9 +147,8 @@ defmodule JidoClaw.Workspaces.PolicyTransitionsTest do
   end
 
   defp seed_solution(workspace, tenant_id, content) do
-    sig =
-      :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}-#{content}")
-      |> Base.encode16(case: :lower)
+    hash = :crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}-#{content}")
+    sig = Base.encode16(hash, case: :lower)
 
     {:ok, sol} =
       Solution.store(

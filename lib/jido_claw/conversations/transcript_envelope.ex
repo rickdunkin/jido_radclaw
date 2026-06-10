@@ -102,7 +102,7 @@ defmodule JidoClaw.Conversations.TranscriptEnvelope do
   defp walk(%_struct{} = value) do
     if jason_encoder?(value) do
       case Jason.encode(value) do
-        {:ok, json} -> Jason.decode!(json) |> walk()
+        {:ok, json} -> walk(Jason.decode!(json))
         _ -> %{status: :error, value: nil, error: nil, effects: nil, raw_inspect: inspect(value)}
       end
     else

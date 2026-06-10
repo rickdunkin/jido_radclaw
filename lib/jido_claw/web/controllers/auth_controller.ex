@@ -5,6 +5,7 @@ defmodule JidoClaw.Web.AuthController do
   alias JidoClaw.Audit.AsyncWriter
   alias JidoClaw.Audit.EventAttrs
 
+  @spec sign_in(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def sign_in(conn, %{"email" => email, "password" => password}) do
     strategy = AshAuthentication.Info.strategy!(JidoClaw.Accounts.User, :password)
 
@@ -28,6 +29,7 @@ defmodule JidoClaw.Web.AuthController do
     end
   end
 
+  @spec sign_out(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def sign_out(conn, _params) do
     # Read current_user BEFORE clear_session/1 — otherwise actor_id is nil.
     user = conn.assigns[:current_user]

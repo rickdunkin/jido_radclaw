@@ -32,6 +32,7 @@ defmodule JidoClaw.Forge.Runner do
 
   @optional_callbacks [handle_output: 3, terminate: 2, serialize_state: 1, restore_state: 2]
 
+  @spec continue(term()) :: iteration_result()
   def continue(output),
     do: %{
       status: :continue,
@@ -42,9 +43,11 @@ defmodule JidoClaw.Forge.Runner do
       metadata: %{}
     }
 
+  @spec done(term()) :: iteration_result()
   def done(output),
     do: %{status: :done, output: output, summary: nil, question: nil, error: nil, metadata: %{}}
 
+  @spec needs_input(String.t(), term()) :: iteration_result()
   def needs_input(question, output \\ nil),
     do: %{
       status: :needs_input,
@@ -55,6 +58,7 @@ defmodule JidoClaw.Forge.Runner do
       metadata: %{}
     }
 
+  @spec blocked(term()) :: iteration_result()
   def blocked(output),
     do: %{
       status: :blocked,
@@ -65,6 +69,7 @@ defmodule JidoClaw.Forge.Runner do
       metadata: %{}
     }
 
+  @spec error(term(), term()) :: iteration_result()
   def error(reason, output \\ nil),
     do: %{
       status: :error,

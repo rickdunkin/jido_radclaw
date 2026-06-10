@@ -33,7 +33,7 @@ defmodule JidoClaw.Tools.BrowseWeb do
 
   @max_content_bytes 10_240
 
-  @impl true
+  @impl Jido.Action
   def run(%{url: url} = params, _context) do
     action = Map.get(params, :action, "get_content")
     do_browse(url, action)
@@ -67,24 +67,18 @@ defmodule JidoClaw.Tools.BrowseWeb do
   end
 
   defp execute(session, url, action) do
-    with {:ok, session, _nav} <- Jido.Browser.navigate(session, url) do
-      case action do
-        "get_content" ->
-          get_content(session, url)
-
-        "extract_links" ->
-          extract_links(session, url)
-
-        "screenshot" ->
-          take_screenshot(session, url)
-
-        other ->
-          {:error,
-           "unknown action #{inspect(other)}. Valid: get_content, extract_links, screenshot"}
-      end
-    else
+    case Jido.Browser.navigate(session, url) do
+      {:ok, session, _nav} -> dispatch_action(action, session, url)
       {:error, reason} -> {:error, format_error(reason)}
     end
+  end
+
+  defp dispatch_action("get_content", session, url), do: get_content(session, url)
+  defp dispatch_action("extract_links", session, url), do: extract_links(session, url)
+  defp dispatch_action("screenshot", session, url), do: take_screenshot(session, url)
+
+  defp dispatch_action(other, _session, _url) do
+    {:error, "unknown action #{inspect(other)}. Valid: get_content, extract_links, screenshot"}
   end
 
   defp get_content(session, url) do

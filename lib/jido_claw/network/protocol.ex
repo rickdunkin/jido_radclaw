@@ -152,18 +152,20 @@ defmodule JidoClaw.Network.Protocol do
     <<a::32, b::16, 4::4, c::12, 2::2, d::30, e::32>>
     |> Base.encode16(case: :lower)
     |> then(fn hex ->
-      [
-        binary_part(hex, 0, 8),
-        binary_part(hex, 8, 4),
-        binary_part(hex, 12, 4),
-        binary_part(hex, 16, 4),
-        binary_part(hex, 20, 12)
-      ]
-      |> Enum.join("-")
+      Enum.join(
+        [
+          binary_part(hex, 0, 8),
+          binary_part(hex, 8, 4),
+          binary_part(hex, 12, 4),
+          binary_part(hex, 16, 4),
+          binary_part(hex, 20, 12)
+        ],
+        "-"
+      )
     end)
   end
 
-  defp utc_now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp utc_now_iso, do: DateTime.to_iso8601(DateTime.utc_now())
 
   defp fetch_valid_type(map) do
     case Map.fetch(map, "type") do

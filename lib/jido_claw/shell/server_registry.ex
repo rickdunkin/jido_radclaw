@@ -117,6 +117,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -249,14 +250,14 @@ defmodule JidoClaw.Shell.ServerRegistry do
   # Server callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     state = %__MODULE__{project_dir: project_dir}
     {:ok, state, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, state) do
     servers = load_from_disk(state.project_dir)
 
@@ -267,7 +268,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     {:noreply, %{state | servers: servers}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:list, _from, state) do
     names =
       state.servers
@@ -277,7 +278,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     {:reply, names, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:get, name}, _from, state) do
     reply =
       case Map.fetch(state.servers, name) do
@@ -288,7 +289,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     {:reply, reply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:reload, _from, state) do
     new_servers = load_from_disk(state.project_dir)
     diff = diff_servers(state.servers, new_servers)
@@ -301,7 +302,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     {:reply, {:ok, diff}, %{state | servers: new_servers}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:replace_servers_for_test, servers}, _from, state) do
     {:reply, :ok, %{state | servers: servers}}
   end
@@ -510,8 +511,8 @@ defmodule JidoClaw.Shell.ServerRegistry do
     old_names = MapSet.new(Map.keys(old))
     new_names = MapSet.new(Map.keys(new))
 
-    added = MapSet.difference(new_names, old_names) |> Enum.sort()
-    removed = MapSet.difference(old_names, new_names) |> Enum.sort()
+    added = Enum.sort(MapSet.difference(new_names, old_names))
+    removed = Enum.sort(MapSet.difference(old_names, new_names))
 
     changed =
       new_names
@@ -531,7 +532,9 @@ defmodule JidoClaw.Shell.ServerRegistry do
   end
 
   defp test_module_overrides do
-    Application.get_env(:jido_claw, :ssh_test_modules, %{})
-    |> Map.take([:ssh_module, :ssh_connection_module])
+    Map.take(
+      Application.get_env(:jido_claw, :ssh_test_modules, %{}),
+      [:ssh_module, :ssh_connection_module]
+    )
   end
 end

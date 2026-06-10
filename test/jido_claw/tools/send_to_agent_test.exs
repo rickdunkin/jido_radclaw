@@ -8,6 +8,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule FakeJido do
     @moduledoc false
 
+    @spec whereis(String.t()) :: pid() | nil
     def whereis("missing"), do: nil
     def whereis(_agent_id), do: self()
   end
@@ -15,10 +16,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule FakeTracker do
     @moduledoc false
 
+    @spec get_agent(String.t()) :: map() | nil
     def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
     def get_agent("untracked_123"), do: nil
     def get_agent("missing"), do: %{template: "docs_writer"}
 
+    @spec get_agent(String.t(), keyword()) :: map() | nil
     def get_agent("docs_writer_123", opts), do: scoped(opts, %{template: "docs_writer"})
     def get_agent("missing", opts), do: scoped(opts, %{template: "docs_writer"})
     def get_agent(_agent_id, _opts), do: nil
@@ -27,6 +30,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     # tracked request_id after each follow-up turn. Default to a no-op
     # for the existing assertions that don't care about the call —
     # CapturingTracker (below) exercises the wired call.
+    @spec update_request_id(String.t(), String.t()) :: :ok
     def update_request_id(_agent_id, _request_id), do: :ok
 
     defp scoped(opts, entry) do
@@ -37,11 +41,15 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule CapturingTracker do
     @moduledoc false
 
+    @spec get_agent(String.t()) :: map() | nil
     def get_agent("docs_writer_123"), do: %{template: "docs_writer"}
     def get_agent("untracked_123"), do: nil
+
+    @spec get_agent(String.t(), keyword()) :: map() | nil
     def get_agent("docs_writer_123", opts), do: scoped(opts, %{template: "docs_writer"})
     def get_agent(_agent_id, _opts), do: nil
 
+    @spec update_request_id(String.t(), String.t()) :: :ok
     def update_request_id(agent_id, request_id) do
       send(
         Application.fetch_env!(:jido_claw, :send_to_agent_test_pid),
@@ -59,6 +67,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule FakeTemplates do
     @moduledoc false
 
+    @spec get(String.t()) :: {:ok, map()} | {:error, {:unknown_template, String.t()}}
     def get("docs_writer"), do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.FakeWorker}}
     def get(name), do: {:error, {:unknown_template, name}}
   end
@@ -66,6 +75,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule RestrictedTemplates do
     @moduledoc false
 
+    @spec get(String.t()) :: {:ok, map()} | {:error, {:unknown_template, String.t()}}
     def get("docs_writer"),
       do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.FakeWorker, forward_context: :none}}
 
@@ -75,6 +85,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule FakeWorker do
     @moduledoc false
 
+    @spec ask_sync(pid(), String.t(), keyword()) :: :ok
     def ask_sync(pid, message, opts) do
       send(Application.fetch_env!(:jido_claw, :send_to_agent_test_pid), {
         :ask_sync,

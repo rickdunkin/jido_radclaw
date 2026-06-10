@@ -23,42 +23,43 @@ defmodule JidoClaw.Forge.Persistence do
   alias JidoClaw.Forge.Resources.Session
   alias JidoClaw.Security.Redaction.Patterns
 
+  @spec enabled?() :: boolean()
   def enabled? do
-    Application.get_env(:jido_claw, __MODULE__, [])
-    |> Keyword.get(:enabled, true)
+    Keyword.get(Application.get_env(:jido_claw, __MODULE__, []), :enabled, true)
   end
 
+  @spec record_session_started(String.t(), map()) :: Session.t() | nil
   def record_session_started(session_id, spec) do
     if enabled?() do
-      with {:ok, scope} <- scope_from_spec(spec) do
-        attrs =
-          session_attrs(session_id, spec)
-          |> Map.put(:workspace_id, scope.workspace_id)
+      case scope_from_spec(spec) do
+        {:ok, scope} ->
+          attrs = Map.put(session_attrs(session_id, spec), :workspace_id, scope.workspace_id)
+          create_session_record(attrs, scope)
 
-        try do
-          case Ash.create(Session, attrs,
-                 action: :start,
-                 tenant: scope.tenant_id,
-                 actor: scope.actor
-               ) do
-            {:ok, session} ->
-              session
-
-            {:error, e} ->
-              Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
-              nil
-          end
-        rescue
-          e in @db_errors ->
-            # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
-            Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
-        end
-      else
         {:error, reason} ->
           Logger.warning("[Forge.Persistence] Missing Forge session scope: #{inspect(reason)}")
           nil
       end
     end
+  end
+
+  defp create_session_record(attrs, scope) do
+    case Ash.create(Session, attrs,
+           action: :start,
+           tenant: scope.tenant_id,
+           actor: scope.actor
+         ) do
+      {:ok, session} ->
+        session
+
+      {:error, e} ->
+        Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
+        nil
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] Failed to record session: #{inspect(e)}")
   end
 
   @terminal_phases [:completed, :cancelled, :failed]
@@ -84,6 +85,8 @@ defmodule JidoClaw.Forge.Persistence do
   latter — see `JidoClaw.Forge.Harness.stop_unclaimed_session/2`).
   When persistence is disabled (tests), returns `:ok` unconditionally.
   """
+  @spec claim_session(String.t(), map(), keyword()) ::
+          :ok | {:error, :already_claimed} | {:error, :scope_required}
   def claim_session(session_id, spec, opts \\ []) do
     if enabled?(), do: do_claim_session(session_id, spec, opts), else: :ok
   rescue
@@ -97,9 +100,7 @@ defmodule JidoClaw.Forge.Persistence do
     with {:ok, scope} <- scope_from_spec(spec) do
       recovery? = Keyword.get(opts, :recovery, false)
 
-      attrs =
-        session_attrs(session_id, spec)
-        |> Map.put(:workspace_id, scope.workspace_id)
+      attrs = Map.put(session_attrs(session_id, spec), :workspace_id, scope.workspace_id)
 
       session_id
       |> claim_transaction(attrs, scope, recovery?)
@@ -161,6 +162,14 @@ defmodule JidoClaw.Forge.Persistence do
     }
   end
 
+  @spec record_execution_complete(
+          String.t(),
+          String.t() | nil,
+          integer() | nil,
+          non_neg_integer(),
+          atom() | nil,
+          DateTime.t() | nil
+        ) :: map() | nil
   def record_execution_complete(
         session_id,
         output,
@@ -174,7 +183,7 @@ defmodule JidoClaw.Forge.Persistence do
         session = find_session(session_id)
 
         if session do
-          start_attrs = %{
+          base_attrs = %{
             session_id: session.id,
             sequence: sequence,
             command: "iteration"
@@ -182,8 +191,8 @@ defmodule JidoClaw.Forge.Persistence do
 
           start_attrs =
             if started_at,
-              do: Map.put(start_attrs, :started_at, started_at),
-              else: start_attrs
+              do: Map.put(base_attrs, :started_at, started_at),
+              else: base_attrs
 
           case Ash.create(JidoClaw.Forge.Resources.ExecSession, start_attrs) do
             {:ok, exec_session} ->
@@ -229,13 +238,15 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec log_event(String.t(), atom() | String.t(), map(), non_neg_integer() | nil) ::
+          Event.t() | nil
   def log_event(session_id, event_type, data \\ %{}, exec_session_sequence \\ nil) do
     if enabled?() do
       try do
         session = find_session(session_id)
 
         if session do
-          attrs = %{
+          base_attrs = %{
             session_id: session.id,
             event_type: to_string(event_type),
             data: redact_map(data)
@@ -243,8 +254,8 @@ defmodule JidoClaw.Forge.Persistence do
 
           attrs =
             if exec_session_sequence,
-              do: Map.put(attrs, :exec_session_sequence, exec_session_sequence),
-              else: attrs
+              do: Map.put(base_attrs, :exec_session_sequence, exec_session_sequence),
+              else: base_attrs
 
           case Ash.create(JidoClaw.Forge.Resources.Event, attrs) do
             {:ok, event} ->
@@ -263,6 +274,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec update_session_phase(String.t(), atom()) :: Session.t() | nil
   def update_session_phase(session_id, phase) do
     if enabled?() do
       try do
@@ -289,6 +301,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec record_sandbox_id(String.t(), String.t()) :: Session.t() | nil
   def record_sandbox_id(session_id, sandbox_id) do
     if enabled?() do
       try do
@@ -315,6 +328,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec save_checkpoint(String.t(), non_neg_integer(), map(), map()) :: Checkpoint.t() | nil
   def save_checkpoint(session_id, sequence, runner_state_snapshot, metadata \\ %{}) do
     if enabled?() do
       try do
@@ -345,6 +359,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec latest_checkpoint(String.t()) :: Checkpoint.t() | nil
   def latest_checkpoint(session_id) do
     if enabled?() do
       try do
@@ -378,6 +393,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec get_events(String.t(), keyword()) :: [Event.t()]
   def get_events(session_id, opts \\ []) do
     if enabled?() do
       try do
@@ -425,6 +441,7 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec context_for_resume(String.t()) :: map() | nil
   def context_for_resume(session_id) do
     if enabled?() do
       try do
@@ -480,10 +497,12 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  @spec find_session(String.t()) :: Session.t() | nil
   def find_session(session_id) do
     find_session_global(session_id)
   end
 
+  @spec find_session(String.t(), map() | keyword()) :: Session.t() | nil
   def find_session(session_id, %{tenant_id: tenant_id, actor: actor})
       when is_binary(tenant_id) do
     Session
@@ -508,9 +527,8 @@ defmodule JidoClaw.Forge.Persistence do
   end
 
   def find_session(session_id, opts) when is_list(opts) do
-    with {:ok, scope} <- scope_from_opts(opts) do
-      find_session(session_id, scope)
-    else
+    case scope_from_opts(opts) do
+      {:ok, scope} -> find_session(session_id, scope)
       _ -> nil
     end
   end

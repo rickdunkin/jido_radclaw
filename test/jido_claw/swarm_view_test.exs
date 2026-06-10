@@ -8,6 +8,7 @@ defmodule JidoClaw.SwarmViewTest do
   defmodule FakeRuntime do
     @moduledoc false
 
+    @spec stop_agent(term()) :: :ok
     def stop_agent(agent_id) do
       send(Application.fetch_env!(:jido_claw, :swarm_view_test_pid), {:stop_agent, agent_id})
       :ok

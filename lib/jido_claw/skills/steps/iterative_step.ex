@@ -37,7 +37,7 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
   @default_max_iterations 3
 
-  @impl true
+  @impl Reactor.Step
   @spec run(Reactor.inputs(), Reactor.context(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def run(arguments, context, options) do
@@ -58,7 +58,7 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
   # Per-step capability from the impl options — the generated
   # `function_exported?` default would report every iterative step
   # compensate-capable because this module exports compensate/4.
-  @impl true
+  @impl Reactor.Step
   def can?(%{impl: {_mod, options}}, :compensate) when is_list(options),
     do: retry_budget(options) > 0
 
@@ -66,7 +66,7 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
   # Reactor dispatches `compensate(reason, arguments, context, options)` —
   # options LAST. `:retry` while budget remains; otherwise the error stands.
-  @impl true
+  @impl Reactor.Step
   @spec compensate(term(), Reactor.inputs(), Reactor.context(), keyword()) ::
           :retry | {:error, term()}
   def compensate(reason, _arguments, context, options) do
@@ -156,7 +156,7 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
         # "Last VERDICT wins" is intentional (see comment above); Regex.scan
         # results are bounded by the small number of verdict tokens an LLM emits.
         # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
-        if String.upcase(List.last(matches) |> List.last()) == "PASS", do: :pass, else: :fail
+        if String.upcase(List.last(List.last(matches))) == "PASS", do: :pass, else: :fail
     end
   end
 

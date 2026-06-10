@@ -9,6 +9,7 @@ defmodule JidoClaw.Web.ChatController do
   OpenAI-compatible chat completions endpoint.
   Accepts POST with {model, messages, stream, ...}.
   """
+  @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, %{"messages" => messages} = params) do
     stream = Map.get(params, "stream", false)
     model = Map.get(params, "model", "default")

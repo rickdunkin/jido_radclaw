@@ -39,19 +39,19 @@ defmodule JidoClaw.Audit.AshTracer do
     JidoClaw.Cron.Job => :cron_job
   }
 
-  @impl true
+  @impl Ash.Tracer
   def start_span(_type, _name), do: :ok
 
-  @impl true
+  @impl Ash.Tracer
   def stop_span do
     Process.delete(@process_key)
     :ok
   end
 
-  @impl true
+  @impl Ash.Tracer
   def get_span_context, do: nil
 
-  @impl true
+  @impl Ash.Tracer
   def set_span_context(_context), do: :ok
 
   # Ash dispatches `set_metadata(tracer, :action, meta)` from inside
@@ -62,7 +62,7 @@ defmodule JidoClaw.Audit.AshTracer do
   # the real action metadata captured by the outer action span and
   # leave the next `set_handled_error` with no action to attribute
   # the denial to. Require the action key to discriminate.
-  @impl true
+  @impl Ash.Tracer
   def set_metadata(:action, %{action: _} = metadata) do
     Process.put(@process_key, metadata)
     :ok
@@ -70,14 +70,14 @@ defmodule JidoClaw.Audit.AshTracer do
 
   def set_metadata(_type, _metadata), do: :ok
 
-  @impl true
+  @impl Ash.Tracer
   def set_error(_error), do: :ok
 
-  @impl true
+  @impl Ash.Tracer
   def trace_type?(:action), do: true
   def trace_type?(_), do: false
 
-  @impl true
+  @impl Ash.Tracer
   def set_handled_error(error, _opts) when is_exception(error) do
     if forbidden?(error) do
       case Process.get(@process_key) do

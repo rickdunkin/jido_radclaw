@@ -29,11 +29,12 @@ defmodule JidoClaw.MCPScope.Initializer do
 
   alias JidoClaw.Authorization.Actor
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     ensure_default_scope()
     :ignore

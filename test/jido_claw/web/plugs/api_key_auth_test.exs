@@ -27,8 +27,11 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
       {user, plaintext} = create_user_with_api_key()
 
       conn =
-        Phoenix.ConnTest.build_conn(:get, "/v1/anything", %{})
-        |> Plug.Conn.put_req_header("authorization", "Bearer " <> plaintext)
+        Plug.Conn.put_req_header(
+          Phoenix.ConnTest.build_conn(:get, "/v1/anything", %{}),
+          "authorization",
+          "Bearer " <> plaintext
+        )
 
       _ = ApiKeyAuth.call(conn, ApiKeyAuth.init([]))
 
@@ -51,8 +54,11 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
   describe "invalid API key" do
     test "emits :api_key_sign_in_failure with reason: invalid_api_key", %{baseline: baseline} do
       conn =
-        Phoenix.ConnTest.build_conn(:get, "/v1/anything", %{})
-        |> Plug.Conn.put_req_header("authorization", "Bearer not-a-real-key")
+        Plug.Conn.put_req_header(
+          Phoenix.ConnTest.build_conn(:get, "/v1/anything", %{}),
+          "authorization",
+          "Bearer not-a-real-key"
+        )
 
       _ = ApiKeyAuth.call(conn, ApiKeyAuth.init([]))
 

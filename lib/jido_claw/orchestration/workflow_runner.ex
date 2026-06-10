@@ -141,8 +141,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   # The workflow input's "context" key is the extra instructions string appended
   # to every step's task; default to "" so ContextBuilder.build_task drops it.
   defp extra_context(state) do
-    (Map.get(state, :workflow_input) || %{})
-    |> Map.get("context", "")
+    Map.get(Map.get(state, :workflow_input) || %{}, "context", "")
   end
 
   defp format_reason(%{__exception__: true} = e), do: Exception.message(e)

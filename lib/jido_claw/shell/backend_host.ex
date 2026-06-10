@@ -17,12 +17,13 @@ defmodule JidoClaw.Shell.BackendHost do
   @behaviour Jido.Shell.Backend
 
   alias Jido.Shell.Backend.OutputLimiter
+  alias JidoClaw.Security.Redaction.Env
 
   @default_task_supervisor Jido.Shell.CommandTaskSupervisor
 
   # -- Backend callbacks ------------------------------------------------------
 
-  @impl true
+  @impl Jido.Shell.Backend
   def init(config) when is_map(config) do
     case Map.fetch(config, :session_pid) do
       {:ok, pid} when is_pid(pid) ->
@@ -39,7 +40,7 @@ defmodule JidoClaw.Shell.BackendHost do
     end
   end
 
-  @impl true
+  @impl Jido.Shell.Backend
   def execute(state, command, args, exec_opts) when is_binary(command) and is_list(args) do
     line = command_line(command, args)
     cwd = Keyword.get(exec_opts, :dir, state.cwd)
@@ -66,6 +67,7 @@ defmodule JidoClaw.Shell.BackendHost do
   # config override so overflow tests don't have to generate megabytes
   # of output. Non-streaming is fixed at 50 KB to keep existing
   # overflow-test expectations stable.
+  @spec max_output_bytes(keyword()) :: pos_integer()
   def max_output_bytes(opts) do
     if Keyword.get(opts, :streaming, false) do
       Application.get_env(:jido_claw, :test_streaming_max_output_bytes_override) ||
@@ -75,7 +77,7 @@ defmodule JidoClaw.Shell.BackendHost do
     end
   end
 
-  @impl true
+  @impl Jido.Shell.Backend
   def cancel(_state, command_ref) when is_pid(command_ref) do
     if Process.alive?(command_ref) do
       Process.exit(command_ref, :shutdown)
@@ -86,13 +88,13 @@ defmodule JidoClaw.Shell.BackendHost do
 
   def cancel(_state, _ref), do: {:error, :invalid_command_ref}
 
-  @impl true
+  @impl Jido.Shell.Backend
   def terminate(_state), do: :ok
 
-  @impl true
+  @impl Jido.Shell.Backend
   def cwd(state), do: {:ok, state.cwd, state}
 
-  @impl true
+  @impl Jido.Shell.Backend
   def cd(state, path) when is_binary(path) do
     # Resolve relative paths against current cwd
     resolved =
@@ -120,10 +122,7 @@ defmodule JidoClaw.Shell.BackendHost do
         File.cwd!()
       end
 
-    port_env =
-      Enum.map(env, fn {k, v} ->
-        {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
-      end)
+    port_env = Env.scrubbed_port_env(env)
 
     port =
       Port.open({:spawn, "sh -c #{shell_escape(line)}"}, [

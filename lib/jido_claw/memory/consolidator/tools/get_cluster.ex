@@ -10,7 +10,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.GetCluster do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(args, ctx) do
     Helpers.dispatch(ctx, {:get_cluster, args})
   end

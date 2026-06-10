@@ -1,5 +1,5 @@
 defmodule JidoClaw.SignalBusTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   alias Jido.Signal.Bus
   alias JidoClaw.Core.MapKeys

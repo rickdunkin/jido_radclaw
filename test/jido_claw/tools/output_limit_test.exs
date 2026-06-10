@@ -12,7 +12,7 @@ defmodule JidoClaw.Tools.OutputLimitTest do
       description: "Test-only action that returns oversized output.",
       schema: []
 
-    @impl true
+    @impl Jido.Action
     def run(%{kind: :ok}, _context) do
       {:ok,
        %{

@@ -4,6 +4,7 @@ defmodule JidoClaw.Session.Supervisor do
   alias JidoClaw.Session.Worker
   alias JidoClaw.Tenant.InstanceSupervisor
 
+  @spec start_session(String.t(), String.t(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_session(tenant_id, session_id, opts \\ []) do
     # Try tenant-specific supervisor first, fall back to global
     sup = InstanceSupervisor.session_sup(tenant_id)
@@ -23,6 +24,8 @@ defmodule JidoClaw.Session.Supervisor do
     end
   end
 
+  @spec ensure_session(String.t(), String.t(), keyword()) ::
+          DynamicSupervisor.on_start_child() | {:ok, pid()}
   def ensure_session(tenant_id, session_id, opts \\ []) do
     name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
 
@@ -43,10 +46,13 @@ defmodule JidoClaw.Session.Supervisor do
     {:ok, pid}
   end
 
+  @spec list_sessions(String.t()) :: [{String.t(), pid()}]
   def list_sessions(tenant_id) do
-    Registry.select(JidoClaw.SessionRegistry, [
-      {{{:"$1", :"$2"}, :"$3", :_}, [{:==, :"$1", tenant_id}], [{{:"$1", :"$2", :"$3"}}]}
-    ])
-    |> Enum.map(fn {_tid, sid, pid} -> {sid, pid} end)
+    entries =
+      Registry.select(JidoClaw.SessionRegistry, [
+        {{{:"$1", :"$2"}, :"$3", :_}, [{:==, :"$1", tenant_id}], [{{:"$1", :"$2", :"$3"}}]}
+      ])
+
+    Enum.map(entries, fn {_tid, sid, pid} -> {sid, pid} end)
   end
 end

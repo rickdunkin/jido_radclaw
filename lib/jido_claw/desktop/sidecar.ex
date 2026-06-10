@@ -3,11 +3,13 @@ defmodule JidoClaw.Desktop.Sidecar do
   require Logger
 
   @doc "Detect if running as a desktop sidecar (Burrito/Tauri)."
+  @spec desktop_mode?() :: boolean()
   def desktop_mode? do
     System.get_env("BURRITO_TARGET") != nil or System.get_env("JIDOCLAW_DESKTOP") == "true"
   end
 
   @doc "Get the port to bind the embedded Phoenix server to."
+  @spec port() :: :inet.port_number()
   def port do
     case System.get_env("JIDOCLAW_PORT") do
       nil -> find_available_port()
@@ -16,6 +18,7 @@ defmodule JidoClaw.Desktop.Sidecar do
   end
 
   @doc "Configure the endpoint for desktop mode if applicable."
+  @spec maybe_configure_endpoint() :: {:ok, :inet.port_number()} | :not_desktop
   def maybe_configure_endpoint do
     if desktop_mode?() do
       port = port()

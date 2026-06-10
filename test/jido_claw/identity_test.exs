@@ -243,7 +243,7 @@ defmodule JidoClaw.Agent.IdentityTest do
         agent_id: Identity.derive_agent_id(pub),
         public_key: pub,
         private_key: priv,
-        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        created_at: DateTime.to_iso8601(DateTime.utc_now())
       }
 
       :ok = Identity.save(identity, tmp_dir)
@@ -260,7 +260,7 @@ defmodule JidoClaw.Agent.IdentityTest do
         agent_id: Identity.derive_agent_id(pub),
         public_key: pub,
         private_key: priv,
-        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        created_at: DateTime.to_iso8601(DateTime.utc_now())
       }
 
       :ok = Identity.save(identity, subdir)
@@ -275,7 +275,7 @@ defmodule JidoClaw.Agent.IdentityTest do
         agent_id: agent_id,
         public_key: pub,
         private_key: priv,
-        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        created_at: DateTime.to_iso8601(DateTime.utc_now())
       }
 
       :ok = Identity.save(identity, tmp_dir)
@@ -293,7 +293,7 @@ defmodule JidoClaw.Agent.IdentityTest do
         agent_id: Identity.derive_agent_id(pub),
         public_key: pub,
         private_key: priv,
-        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        created_at: DateTime.to_iso8601(DateTime.utc_now())
       }
 
       assert :ok = Identity.save(identity, tmp_dir)

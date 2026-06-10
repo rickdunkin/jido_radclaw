@@ -17,18 +17,17 @@ defmodule JidoClaw.Tools.NetworkStatus do
 
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:network_status, params, context, fn _enriched ->
       status = JidoClaw.Network.Node.status()
 
       formatted =
-        """
+        String.trim("""
         Network Status: #{status.status}
         Agent ID: #{status.agent_id || "none"}
         Peers: #{status.peer_count}
-        """
-        |> String.trim()
+        """)
 
       {:ok,
        %{

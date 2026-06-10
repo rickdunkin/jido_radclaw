@@ -9,6 +9,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Main Logo --
 
+  @spec logo(:full | :compact | :minimal) :: String.t()
   def logo(:full) do
     """
     \e[36m
@@ -32,6 +33,7 @@ defmodule JidoClaw.CLI.Branding do
 
   def logo(:minimal), do: "\e[36m⚡ JIDOCLAW\e[0m"
 
+  @spec logo() :: String.t()
   def logo do
     cols = Terminal.terminal_cols()
 
@@ -44,6 +46,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Boot Sequence --
 
+  @spec boot_sequence(Path.t(), keyword()) :: :ok
   def boot_sequence(project_dir, opts \\ []) do
     info = %{
       project_dir: project_dir,
@@ -150,10 +153,12 @@ defmodule JidoClaw.CLI.Branding do
 
   @tool_spinner_frames ["⟳", "⟲", "◐", "◓", "◑", "◒"]
 
+  @spec spinner_frame(non_neg_integer()) :: String.t()
   def spinner_frame(tick) do
     Enum.at(@spinner_frames, rem(tick, length(@spinner_frames)))
   end
 
+  @spec tool_spinner_frame(non_neg_integer(), String.t()) :: String.t()
   def tool_spinner_frame(tick, tool_name) do
     frame = Enum.at(@tool_spinner_frames, rem(tick, length(@tool_spinner_frames)))
     "  \e[33m#{frame}\e[0m \e[2m#{tool_name}...\e[0m"
@@ -161,6 +166,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Help Screen --
 
+  @spec help_text() :: String.t()
   def help_text do
     """
     \e[36m╭─── JIDOCLAW ─── Commands ─────────────────────────╮\e[0m
@@ -231,6 +237,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Goodbye --
 
+  @spec goodbye(map()) :: String.t()
   def goodbye(stats \\ %{}) do
     messages = Map.get(stats, :messages, 0)
     tool_calls = Map.get(stats, :tool_calls, 0)
@@ -249,15 +256,17 @@ defmodule JidoClaw.CLI.Branding do
     tokens_str = StatusBar.format_tokens(tokens)
 
     parts =
-      [
-        "#{messages} msgs",
-        "#{tool_calls} tools",
-        "#{agents_spawned} agents",
-        "#{tokens_str} tokens",
-        elapsed,
-        cost_part
-      ]
-      |> Enum.reject(&is_nil/1)
+      Enum.reject(
+        [
+          "#{messages} msgs",
+          "#{tool_calls} tools",
+          "#{agents_spawned} agents",
+          "#{tokens_str} tokens",
+          elapsed,
+          cost_part
+        ],
+        &is_nil/1
+      )
 
     summary = Enum.join(parts, " · ")
 
@@ -275,6 +284,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Divider --
 
+  @spec divider() :: String.t()
   def divider do
     cols = Terminal.terminal_cols()
     "\e[2m  " <> String.duplicate("─", min(cols - 4, 60)) <> "\e[0m"
@@ -282,6 +292,7 @@ defmodule JidoClaw.CLI.Branding do
 
   # -- Tool Result Display --
 
+  @spec tool_start(String.t(), Enumerable.t()) :: :ok
   def tool_start(tool_name, params) do
     params_str =
       Enum.map_join(params, ", ", fn {k, v} ->
@@ -296,12 +307,14 @@ defmodule JidoClaw.CLI.Branding do
     IO.puts("  \e[33m⟳\e[0m \e[2m#{tool_name}\e[0m #{params_str}")
   end
 
+  @spec tool_done(String.t()) :: :ok
   def tool_done(tool_name) do
     IO.puts("  \e[32m✓\e[0m \e[2m#{tool_name}\e[0m")
   end
 
   # -- Gateway Config --
 
+  @spec gateway_port() :: term()
   def gateway_port do
     Application.get_env(:jido_claw, :gateway_port, 4000)
   end

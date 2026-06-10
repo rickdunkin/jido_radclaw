@@ -5,6 +5,8 @@ defmodule JidoClaw.Web.CacheBodyReader do
   # This avoids doubling memory for every parsed request.
   @cached_path_prefixes ["/webhooks"]
 
+  @spec read_body(Plug.Conn.t(), keyword()) ::
+          {:ok | :more, binary(), Plug.Conn.t()} | {:error, term()}
   def read_body(conn, opts) do
     case Plug.Conn.read_body(conn, opts) do
       {:ok, body, conn} ->
@@ -20,6 +22,7 @@ defmodule JidoClaw.Web.CacheBodyReader do
     end
   end
 
+  @spec raw_body(Plug.Conn.t()) :: {:ok, binary()} | {:error, :not_cached}
   def raw_body(conn) do
     case conn.private[:raw_body] do
       nil ->

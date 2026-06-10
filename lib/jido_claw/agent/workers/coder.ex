@@ -31,9 +31,9 @@ defmodule JidoClaw.Agent.Workers.Coder do
           artifacts:
             Zoi.object(
               %{
-                url: Zoi.string() |> Zoi.optional(),
-                port: Zoi.string() |> Zoi.optional(),
-                files: Zoi.string() |> Zoi.optional()
+                url: Zoi.optional(Zoi.string()),
+                port: Zoi.optional(Zoi.string()),
+                files: Zoi.optional(Zoi.string())
               },
               unrecognized_keys: :preserve
             )

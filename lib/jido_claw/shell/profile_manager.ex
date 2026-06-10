@@ -74,6 +74,7 @@ defmodule JidoClaw.Shell.ProfileManager do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -225,7 +226,7 @@ defmodule JidoClaw.Shell.ProfileManager do
   # Server callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     project_dir = Keyword.fetch!(opts, :project_dir)
     ets_mirror? = Keyword.get(opts, :ets_mirror, false) == true
@@ -242,7 +243,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {:ok, state, {:continue, :load}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_continue(:load, state) do
     {profiles, default_env} = load_from_disk(state.project_dir)
 
@@ -257,7 +258,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {:noreply, %{state | profiles: profiles, default_env: default_env}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:list, _from, state) do
     names =
       state.profiles
@@ -268,7 +269,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {:reply, [@magic_default | names], state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:get, name}, _from, state) do
     case Map.fetch(state.profiles, name) do
       {:ok, env} ->
@@ -283,36 +284,38 @@ defmodule JidoClaw.Shell.ProfileManager do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:current, workspace_id}, _from, state) do
     {:reply, Map.get(state.active_by_workspace, workspace_id, @magic_default), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:active_env, workspace_id}, _from, state) do
     active = Map.get(state.active_by_workspace, workspace_id, @magic_default)
     {:reply, compose_env(state, active), state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:switch, workspace_id, name, reason}, _from, state) do
-    with :ok <- validate_profile_name(state, name) do
-      current = Map.get(state.active_by_workspace, workspace_id, @magic_default)
+    case validate_profile_name(state, name) do
+      :ok ->
+        current = Map.get(state.active_by_workspace, workspace_id, @magic_default)
 
-      if current == name do
-        {:reply, {:ok, name}, state}
-      else
-        case apply_switch(state, workspace_id, current, name, reason) do
-          {:ok, new_state} -> {:reply, {:ok, name}, new_state}
-          {:error, _} = error -> {:reply, error, state}
+        if current == name do
+          {:reply, {:ok, name}, state}
+        else
+          case apply_switch(state, workspace_id, current, name, reason) do
+            {:ok, new_state} -> {:reply, {:ok, name}, new_state}
+            {:error, _} = error -> {:reply, error, state}
+          end
         end
-      end
-    else
-      {:error, _} = error -> {:reply, error, state}
+
+      {:error, _} = error ->
+        {:reply, error, state}
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:replace_profiles_for_test, profiles}, _from, state) do
     default_env = Map.get(profiles, @magic_default, %{})
 
@@ -323,7 +326,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {:reply, :ok, %{state | profiles: profiles, default_env: default_env}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:clear_active_for_test, _from, state) do
     if state.ets_mirror? do
       # Never leave the table without the default sentinel — later
@@ -336,7 +339,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {:reply, :ok, %{state | active_by_workspace: %{}}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:reload, _from, state) do
     {new_profiles, new_default_env} = load_from_disk(state.project_dir)
 
@@ -502,8 +505,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     raw = Config.profiles(config)
 
     profiles =
-      raw
-      |> Enum.reduce(%{}, fn {name, env}, acc -> parse_profile(acc, name, env) end)
+      Enum.reduce(raw, %{}, fn {name, env}, acc -> parse_profile(acc, name, env) end)
 
     default_env = Map.get(profiles, @magic_default, %{})
     {profiles, default_env}

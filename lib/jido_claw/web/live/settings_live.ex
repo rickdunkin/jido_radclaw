@@ -1,7 +1,7 @@
 defmodule JidoClaw.Web.SettingsLive do
   use JidoClaw.Web, :live_view
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
@@ -12,7 +12,7 @@ defmodule JidoClaw.Web.SettingsLive do
      )}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>

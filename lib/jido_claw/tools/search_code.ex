@@ -20,7 +20,7 @@ defmodule JidoClaw.Tools.SearchCode do
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
-  @impl true
+  @impl Jido.Action
   def run(%{pattern: pattern} = params, context) do
     MCPScope.wrap(:search_code, params, context, fn enriched ->
       with {:ok, regex} <- compile_pattern(pattern),

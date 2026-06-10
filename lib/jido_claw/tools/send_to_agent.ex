@@ -19,7 +19,7 @@ defmodule JidoClaw.Tools.SendToAgent do
   alias JidoClaw.Error
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     with {:ok, scope_opts} <- SwarmScope.tracker_scope(context),
          {:ok, entry} <- SwarmScope.scoped_agent(agent_tracker(), params.agent_id, scope_opts) do

@@ -9,13 +9,13 @@ defmodule JidoClaw.Forge.MultiSandboxTest.InputRunner do
   # then :done on subsequent calls. Writes a marker file via apply_input
   # so we can verify which sandbox received the input.
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(client, _config) do
     Sandbox.exec(client, "echo initialized > runner_init.txt", [])
     {:ok, %{asked: false}}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(_client, %{asked: false} = _state, _opts) do
     {:ok, Runner.needs_input("what is your name?")}
   end
@@ -27,7 +27,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest.InputRunner do
     {:ok, Runner.done(output)}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(client, input, state) do
     Sandbox.write_file(client, "input_received.txt", input)
     {:ok, %{state | asked: true}}
@@ -149,8 +149,8 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       {:ok, _result} = Forge.attach_sandbox(sid, :temp, %{sandbox: :fake})
 
       # Get the sandbox's working directory so we can verify filesystem cleanup
-      {:ok, {dir, 0}} = Forge.exec(sid, "pwd", sandbox: :temp)
-      dir = String.trim(dir)
+      {:ok, {raw_dir, 0}} = Forge.exec(sid, "pwd", sandbox: :temp)
+      dir = String.trim(raw_dir)
 
       # Write a marker file inside the sandbox dir to prove it has state
       {:ok, {_, 0}} = Forge.exec(sid, "echo marker > cleanup_test.txt", sandbox: :temp)
@@ -239,8 +239,8 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert result.output =~ "other_data"
 
       # run_iteration on default cannot see the file
-      {:ok, result} = Forge.run_iteration(sid, command: "cat marker.txt 2>&1")
-      assert result.status == :error
+      {:ok, default_result} = Forge.run_iteration(sid, command: "cat marker.txt 2>&1")
+      assert default_result.status == :error
     end
   end
 
@@ -248,8 +248,8 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
     test "detaching a sandbox cleans up its temp dir", %{session_id: sid} do
       {:ok, _result} = Forge.attach_sandbox(sid, :cleanup_test, %{sandbox: :fake})
 
-      {:ok, {dir, 0}} = Forge.exec(sid, "pwd", sandbox: :cleanup_test)
-      dir = String.trim(dir)
+      {:ok, {raw_dir, 0}} = Forge.exec(sid, "pwd", sandbox: :cleanup_test)
+      dir = String.trim(raw_dir)
       assert File.exists?(dir)
 
       # Detach triggers Sandbox.destroy directly in the handle_call — no async
@@ -391,9 +391,11 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert result.output =~ "default_works"
 
       # Pre-attached sandbox should also be usable for run_iteration
-      {:ok, result} = Forge.run_iteration(sid, command: "echo early_works", sandbox: :early_bird)
-      assert result.status == :done
-      assert result.output =~ "early_works"
+      {:ok, early_result} =
+        Forge.run_iteration(sid, command: "echo early_works", sandbox: :early_bird)
+
+      assert early_result.status == :done
+      assert early_result.output =~ "early_works"
 
       # Exec also works on both
       {:ok, {output, 0}} = Forge.exec(sid, "echo exec_early", sandbox: :early_bird)
@@ -504,9 +506,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert :ok = Forge.apply_input(sid, "Alice")
 
       # Next iteration reads back the input — it should be in :input_target's sandbox
-      {:ok, result} = Forge.run_iteration(sid, sandbox: :input_target)
-      assert result.status == :done
-      assert result.output =~ "Alice"
+      {:ok, read_result} = Forge.run_iteration(sid, sandbox: :input_target)
+      assert read_result.status == :done
+      assert read_result.output =~ "Alice"
 
       # Default sandbox should NOT have the input file
       {:ok, {output, code}} = Forge.exec(sid, "cat input_received.txt 2>&1")
@@ -543,9 +545,9 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
       assert :ok = Forge.apply_input(sid, "Bob")
 
       # Next iteration reads back the input from the default sandbox
-      {:ok, result} = Forge.run_iteration(sid)
-      assert result.status == :done
-      assert result.output =~ "Bob"
+      {:ok, read_result} = Forge.run_iteration(sid)
+      assert read_result.status == :done
+      assert read_result.output =~ "Bob"
     end
 
     test "detach_sandbox is refused while that sandbox is awaiting input", _context do

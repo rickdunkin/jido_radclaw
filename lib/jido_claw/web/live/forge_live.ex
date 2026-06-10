@@ -4,14 +4,14 @@ defmodule JidoClaw.Web.ForgeLive do
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.ForgeView
 
-  @impl true
+  @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
     if connected?(socket), do: ForgePubSub.subscribe_sessions()
 
     {:ok, assign(socket, page_title: "Forge", sessions: sessions(socket))}
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
     <div>
@@ -49,7 +49,7 @@ defmodule JidoClaw.Web.ForgeLive do
     """
   end
 
-  @impl true
+  @impl Phoenix.LiveView
   def handle_info({:session_started, _id, _scope}, socket) do
     {:noreply, assign(socket, sessions: sessions(socket))}
   end

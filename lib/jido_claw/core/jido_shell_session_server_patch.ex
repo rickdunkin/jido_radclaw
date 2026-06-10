@@ -118,7 +118,7 @@ defmodule Jido.Shell.ShellSessionServer do
 
   # === Server Callbacks ===
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     workspace_id = Keyword.fetch!(opts, :workspace_id)
@@ -151,37 +151,37 @@ defmodule Jido.Shell.ShellSessionServer do
     end
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     _ = safe_backend_terminate(state.backend, state.backend_state)
     :ok
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:subscribe, transport_pid, _opts}, _from, state) do
     Process.monitor(transport_pid)
     new_state = State.add_transport(state, transport_pid)
     {:reply, {:ok, :subscribed}, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:unsubscribe, transport_pid}, _from, state) do
     new_state = State.remove_transport(state, transport_pid)
     {:reply, {:ok, :unsubscribed}, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get_state, _from, state) do
     {:reply, {:ok, state}, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:run_command, line, opts}, _from, state) do
     {reply, new_state} = do_run_command(state, line, opts)
     {:reply, reply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:cancel, _from, state) do
     {reply, new_state} = do_cancel(state)
     {:reply, reply, new_state}
@@ -191,41 +191,41 @@ defmodule Jido.Shell.ShellSessionServer do
   # callers (SessionManager.update_env/3) are responsible for computing
   # the desired final map (drop+merge against the old env). String-coerces
   # keys and values so downstream Port `:env` options accept them.
-  @impl true
+  @impl GenServer
   def handle_call({:update_env, env}, _from, state) when is_map(env) do
     coerced = Enum.into(env, %{}, fn {k, v} -> {to_string(k), to_string(v)} end)
     {:reply, {:ok, coerced}, %{state | env: coerced}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast({:run_command, line, opts}, state) do
     {_reply, new_state} = do_run_command(state, line, opts)
     {:noreply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast(:cancel, state) do
     {_reply, new_state} = do_cancel(state)
     {:noreply, new_state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:command_event, _event}, %{current_command: nil} = state) do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:command_event, event}, state) do
     broadcast(state, event)
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:command_finished, _result}, %{current_command: nil} = state) do
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:command_finished, result}, state) do
     new_state =
       case result do
@@ -251,7 +251,7 @@ defmodule Jido.Shell.ShellSessionServer do
     {:noreply, State.clear_current_command(new_state)}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     cond do
       state.current_command && state.current_command.ref == ref ->
@@ -278,7 +278,7 @@ defmodule Jido.Shell.ShellSessionServer do
   # === Private ===
 
   defp apply_state_updates(state, changes) do
-    updated_state =
+    reduced_state =
       Enum.reduce(changes, state, fn {key, value}, acc ->
         case key do
           :cwd -> State.set_cwd(acc, value)
@@ -287,7 +287,7 @@ defmodule Jido.Shell.ShellSessionServer do
         end
       end)
 
-    updated_state = maybe_sync_backend_cwd(updated_state, Map.get(changes, :cwd))
+    updated_state = maybe_sync_backend_cwd(reduced_state, Map.get(changes, :cwd))
     {updated_state, Map.has_key?(changes, :cwd)}
   end
 

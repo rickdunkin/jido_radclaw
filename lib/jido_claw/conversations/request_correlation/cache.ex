@@ -49,6 +49,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -82,7 +83,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
   # Server
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     table =
       :ets.new(@table, [
@@ -96,19 +97,19 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
     {:ok, %{table: table}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:put, request_id, scope}, _from, state) do
     :ets.insert(state.table, {request_id, scope})
     {:reply, :ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:delete, request_id}, _from, state) do
     :ets.delete(state.table, request_id)
     {:reply, :ok, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:clear, _from, state) do
     :ets.delete_all_objects(state.table)
     {:reply, :ok, state}

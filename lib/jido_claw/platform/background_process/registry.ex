@@ -16,55 +16,64 @@ defmodule JidoClaw.BackgroundProcess.Registry do
   use GenServer
   require Logger
 
+  alias JidoClaw.Security.Redaction.Env
+
   @buffer_max_bytes 200 * 1024
   @cleanup_interval 3_600_000
   @kill_delay 5_000
 
   defstruct processes: %{}
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Register a background process."
+  @spec register(term(), port() | pid(), String.t(), map()) :: :ok
   def register(id, port_or_pid, command, metadata \\ %{}) do
     GenServer.call(__MODULE__, {:register, id, port_or_pid, command, metadata})
   end
 
   @doc "Append output to a process buffer."
+  @spec append_output(term(), binary()) :: :ok
   def append_output(id, data) do
     GenServer.cast(__MODULE__, {:append_output, id, data})
   end
 
   @doc "Get process info and buffered output."
+  @spec get(term()) :: {:ok, map()} | {:error, :not_found}
   def get(id) do
     GenServer.call(__MODULE__, {:get, id})
   end
 
   @doc "List all tracked processes."
+  @spec list() :: [map()]
   def list do
     GenServer.call(__MODULE__, :list)
   end
 
   @doc "Terminate a process with two-phase shutdown."
+  @spec terminate_process(term()) :: :ok | {:error, :not_found}
   def terminate_process(id) do
     GenServer.call(__MODULE__, {:terminate, id})
   end
 
   @doc "Remove a completed/exited process from tracking."
+  @spec deregister(term()) :: :ok
   def deregister(id) do
     GenServer.cast(__MODULE__, {:deregister, id})
   end
 
   # -- Server --
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     schedule_cleanup()
     {:ok, %__MODULE__{}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:register, id, port_or_pid, command, metadata}, _from, state) do
     entry = %{
       port_or_pid: port_or_pid,
@@ -88,8 +97,7 @@ defmodule JidoClaw.BackgroundProcess.Registry do
 
   def handle_call(:list, _from, state) do
     list =
-      state.processes
-      |> Enum.map(fn {id, entry} ->
+      Enum.map(state.processes, fn {id, entry} ->
         %{id: id, command: entry.command, status: entry.status, started_at: entry.started_at}
       end)
 
@@ -122,7 +130,7 @@ defmodule JidoClaw.BackgroundProcess.Registry do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast({:append_output, id, data}, state) do
     case Map.get(state.processes, id) do
       nil ->
@@ -148,11 +156,11 @@ defmodule JidoClaw.BackgroundProcess.Registry do
     {:noreply, %{state | processes: Map.delete(state.processes, id)}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({:force_kill, id, port}, state) do
     try do
       {:os_pid, os_pid} = Port.info(port, :os_pid)
-      System.cmd("kill", ["-9", to_string(os_pid)])
+      System.cmd("kill", ["-9", to_string(os_pid)], env: Env.scrubbed_cmd_env())
     catch
       _, _ -> :ok
     end
@@ -181,7 +189,7 @@ defmodule JidoClaw.BackgroundProcess.Registry do
     {:noreply, %{state | processes: cleaned}}
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     Enum.each(state.processes, fn {id, %{port_or_pid: port_or_pid, status: status}} ->
       if status in [:running, :terminating] do

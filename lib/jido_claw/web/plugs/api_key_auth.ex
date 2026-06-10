@@ -9,10 +9,10 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuth do
 
   @behaviour Plug
 
-  @impl true
+  @impl Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Plug
   def call(conn, _opts) do
     with {:ok, api_key} <- extract_api_key(conn),
          {:ok, user} <- authenticate(api_key) do

@@ -486,7 +486,7 @@ defmodule JidoClaw.Conversations.Message do
     alias JidoClaw.Conversations.Resources.GlobalLookup
     alias JidoClaw.Conversations.Session
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         tenant_id = cs.tenant || Changeset.get_attribute(cs, :tenant_id)
@@ -515,7 +515,7 @@ defmodule JidoClaw.Conversations.Message do
 
     alias Ecto.Adapters.SQL
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         case cs.errors do
@@ -560,7 +560,7 @@ defmodule JidoClaw.Conversations.Message do
 
     alias JidoClaw.Security.Redaction.Transcript
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         cs
@@ -591,7 +591,7 @@ defmodule JidoClaw.Conversations.Message do
     alias JidoClaw.Conversations.Resources.GlobalLookup
     alias JidoClaw.Conversations.Session
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         session_id = Changeset.get_attribute(cs, :session_id)
@@ -628,7 +628,7 @@ defmodule JidoClaw.Conversations.Message do
     use Ash.Resource.Preparation
     require Ash.Query
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       fk = Query.get_argument(query, :scope_fk_id)
       since_at = Query.get_argument(query, :since_inserted_at)

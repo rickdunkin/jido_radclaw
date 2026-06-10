@@ -13,9 +13,10 @@ defmodule JidoClaw.Tools.GitDiff do
       path: [type: :string, doc: "Optional file path to limit diff"]
     ]
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:git_diff, params, context, fn enriched ->
       project_dir = JidoClaw.ToolContext.project_dir(enriched)
@@ -30,7 +31,11 @@ defmodule JidoClaw.Tools.GitDiff do
             p -> ["--", p]
           end
 
-      case System.cmd("git", args, cd: project_dir, stderr_to_stdout: true) do
+      case System.cmd("git", args,
+             cd: project_dir,
+             stderr_to_stdout: true,
+             env: Env.scrubbed_cmd_env()
+           ) do
         {output, 0} ->
           truncated =
             if byte_size(output) > 15_000 do

@@ -83,6 +83,45 @@ defmodule JidoClaw.Security.Redaction.Env do
   def redact_value(_key, value), do: coerce(value)
 
   @doc """
+  `:env` option for `System.cmd` call sites: unsets every currently-set
+  sensitive variable (per `sensitive_key?/1`) so child processes don't
+  inherit secrets, then appends the given overrides. An override always
+  wins over the scrub list — a child that genuinely needs a secret must
+  re-add it explicitly. Override keys/values are coerced via
+  `to_string/1`; an explicit `nil` value still means "unset".
+
+  `Port.open` call sites need `scrubbed_port_env/1` instead — port env
+  entries take charlists, and unset is `false` rather than `nil`.
+  """
+  @spec scrubbed_cmd_env(Enumerable.t()) :: [{String.t(), String.t() | nil}]
+  def scrubbed_cmd_env(overrides \\ []) do
+    override_map =
+      Map.new(overrides, fn {k, v} ->
+        {to_string(k), if(is_nil(v), do: nil, else: to_string(v))}
+      end)
+
+    unsets =
+      for {key, _value} <- System.get_env(),
+          sensitive_key?(key),
+          not Map.has_key?(override_map, key),
+          do: {key, nil}
+
+    unsets ++ Map.to_list(override_map)
+  end
+
+  @doc """
+  `:env` option for `Port.open` call sites — same scrub-then-override
+  semantics as `scrubbed_cmd_env/1`, shaped for ports: charlist
+  keys/values, `false` to unset.
+  """
+  @spec scrubbed_port_env(Enumerable.t()) :: [{charlist(), charlist() | false}]
+  def scrubbed_port_env(overrides \\ []) do
+    for {k, v} <- scrubbed_cmd_env(overrides) do
+      {String.to_charlist(k), if(is_nil(v), do: false, else: String.to_charlist(v))}
+    end
+  end
+
+  @doc """
   Returns `true` when the given key name matches a sensitive pattern.
   """
   @spec sensitive_key?(String.t()) :: boolean()

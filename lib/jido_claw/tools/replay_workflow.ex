@@ -37,7 +37,7 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
   alias JidoClaw.Orchestration.Replay
   alias JidoClaw.Orchestration.Visibility
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 

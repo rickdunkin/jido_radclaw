@@ -8,7 +8,7 @@ defmodule JidoClaw.Memory.Changes.MarkInvalidated do
 
   alias Ash.Changeset
 
-  @impl true
+  @impl Ash.Resource.Change
   def change(changeset, _opts, _context) do
     Changeset.before_action(changeset, fn cs ->
       now = DateTime.utc_now()

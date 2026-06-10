@@ -164,6 +164,7 @@ defmodule JidoClaw.Trace.Collector do
   end
 
   @doc false
+  @spec handle_telemetry([atom()], map(), map(), term()) :: :ok | tuple()
   def handle_telemetry(event_name, measurements, metadata, _config)
       when is_list(event_name) and is_map(measurements) and is_map(metadata) do
     case Process.whereis(__MODULE__) do
@@ -172,23 +173,23 @@ defmodule JidoClaw.Trace.Collector do
     end
   end
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     attach_handlers()
     {:ok, struct(__MODULE__, trace_config())}
   end
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, _state) do
     _ = :telemetry.detach(@handler_id)
     :ok
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:latest, ref, opts}, _from, state) do
     tenant_id = Keyword.get(opts, :tenant_id)
 
-    trace =
+    candidate_trace =
       case Map.get(ref, :request_id) do
         request_id when is_binary(request_id) ->
           trace_by_request(state, request_id)
@@ -200,7 +201,7 @@ defmodule JidoClaw.Trace.Collector do
           |> List.last()
       end
 
-    trace = enforce_tenant(trace, tenant_id)
+    trace = enforce_tenant(candidate_trace, tenant_id)
     {:reply, maybe_reply_trace(trace, opts), state}
   end
 
@@ -232,7 +233,7 @@ defmodule JidoClaw.Trace.Collector do
   # `{:telemetry_event, ...}` mailbox entry (FIFO).
   def handle_call(:__sync__, _from, state), do: {:reply, :ok, state}
 
-  @impl true
+  @impl GenServer
   def handle_info(
         {:telemetry_event, event_name, measurements, metadata},
         %{enabled?: true} = state
@@ -493,8 +494,8 @@ defmodule JidoClaw.Trace.Collector do
       |> Enum.reverse()
       |> then(&[event | &1])
       |> Enum.reverse()
+      |> Enum.take(-max_events)
 
-    events = Enum.take(events, -max_events)
     status = terminal_status(event.status) || trace.status || event.status
 
     %{
@@ -737,7 +738,6 @@ defmodule JidoClaw.Trace.Collector do
   end
 
   defp persist? do
-    Application.get_env(:jido_claw, :trace, [])
-    |> Keyword.get(:persist?, true)
+    Keyword.get(Application.get_env(:jido_claw, :trace, []), :persist?, true)
   end
 end

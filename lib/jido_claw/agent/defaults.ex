@@ -48,16 +48,16 @@ defmodule JidoClaw.Agent.Defaults do
   alias JidoClaw.Reasoning.Compactor.Config
 
   defmacro __using__(opts) do
-    {compaction_opts, opts} = Keyword.pop(opts, :compaction, [])
+    {compaction_opts, base_opts} = Keyword.pop(opts, :compaction, [])
 
     compaction_config = build_compaction_config!(compaction_opts)
     escaped_config = Macro.escape(compaction_config)
 
     base_plugins = [JidoClaw.AgentServerPlugin.Recorder]
-    opts = Keyword.update(opts, :plugins, base_plugins, &(base_plugins ++ &1))
+    opts_with_plugins = Keyword.update(base_opts, :plugins, base_plugins, &(base_plugins ++ &1))
 
     quote do
-      use Jido.AI.Agent, unquote(opts)
+      use Jido.AI.Agent, unquote(opts_with_plugins)
 
       @doc """
       Returns the compaction configuration this agent module was compiled
@@ -89,6 +89,7 @@ defmodule JidoClaw.Agent.Defaults do
   in the consuming module; not part of the runtime public API. Raises on
   invalid configuration so misconfigured agents fail at compile time.
   """
+  @spec build_compaction_config!(keyword() | map()) :: Config.t()
   def build_compaction_config!(compaction_opts) do
     normalized =
       cond do

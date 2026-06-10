@@ -14,10 +14,10 @@ defmodule JidoClaw.Authorization.Checks.ActorTenantMatches do
 
   use Ash.Policy.SimpleCheck
 
-  @impl true
+  @impl Ash.Policy.Check
   def describe(_opts), do: "actor's tenant_id matches the action tenant"
 
-  @impl true
+  @impl Ash.Policy.SimpleCheck
   def match?(actor, %{changeset: %Ash.Changeset{} = cs}, _opts) do
     tenant_match?(actor, cs.tenant || Ash.Changeset.get_attribute(cs, :tenant_id))
   end

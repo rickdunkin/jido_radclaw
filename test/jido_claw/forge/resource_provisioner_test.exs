@@ -143,11 +143,11 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
                  }
                })
 
-      {output, 0} = HostShell.exec(client, "echo $DATABASE_URL", [])
-      assert String.trim(output) == "resolved_database_url"
+      {database_url_output, 0} = HostShell.exec(client, "echo $DATABASE_URL", [])
+      assert String.trim(database_url_output) == "resolved_database_url"
 
-      {output, 0} = HostShell.exec(client, "echo $OPENAI_API_KEY", [])
-      assert String.trim(output) == "resolved_openai_api_key"
+      {openai_key_output, 0} = HostShell.exec(client, "echo $OPENAI_API_KEY", [])
+      assert String.trim(openai_key_output) == "resolved_openai_api_key"
     end
 
     test "returns error when resolver fails", %{client: client} do

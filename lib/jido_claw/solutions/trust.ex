@@ -85,18 +85,21 @@ defmodule JidoClaw.Solutions.Trust do
     base = 0.3
 
     bonus =
-      [
-        {present?(solution, :framework), 0.10},
-        {present?(solution, :runtime), 0.10},
-        {tags_present?(solution), 0.10},
-        {present?(solution, :agent_id), 0.10},
-        {verification_present?(solution), 0.15},
-        {sharing_not_local?(solution), 0.15}
-      ]
-      |> Enum.reduce(0.0, fn
-        {true, pts}, acc -> acc + pts
-        {false, _}, acc -> acc
-      end)
+      Enum.reduce(
+        [
+          {present?(solution, :framework), 0.10},
+          {present?(solution, :runtime), 0.10},
+          {tags_present?(solution), 0.10},
+          {present?(solution, :agent_id), 0.10},
+          {verification_present?(solution), 0.15},
+          {sharing_not_local?(solution), 0.15}
+        ],
+        0.0,
+        fn
+          {true, pts}, acc -> acc + pts
+          {false, _}, acc -> acc
+        end
+      )
 
     min(1.0, base + bonus)
   end

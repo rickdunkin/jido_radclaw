@@ -119,15 +119,17 @@ defmodule JidoClaw.Skills.Steps.AgentStepTest do
   defp context, do: %{tenant: "t", actor: %{kind: :system}, workspace_id: "ws-step"}
 
   defp base_options(overrides) do
-    [
-      template: "echo",
-      task: "do the thing",
-      produces: nil,
-      step_name: nil,
-      context_format: :deps,
-      upstream: [],
-      consumes: []
-    ]
-    |> Keyword.merge(overrides)
+    Keyword.merge(
+      [
+        template: "echo",
+        task: "do the thing",
+        produces: nil,
+        step_name: nil,
+        context_format: :deps,
+        upstream: [],
+        consumes: []
+      ],
+      overrides
+    )
   end
 end

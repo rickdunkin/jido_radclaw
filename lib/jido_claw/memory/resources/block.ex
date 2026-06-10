@@ -336,7 +336,7 @@ defmodule JidoClaw.Memory.Block do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     # ex_dna:disable-for-next-line
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
@@ -355,7 +355,7 @@ defmodule JidoClaw.Memory.Block do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         value = Changeset.get_attribute(cs, :value)
@@ -383,7 +383,7 @@ defmodule JidoClaw.Memory.Block do
     @moduledoc false
     use Ash.Resource.Change
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, context) do
       actor = Map.get(context, :actor)
 
@@ -440,7 +440,7 @@ defmodule JidoClaw.Memory.Block do
 
     alias JidoClaw.Memory.Block
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       chain = Query.get_argument(query, :scope_chain) || []
       filter_expr = Block.build_chain_filter(chain)
@@ -457,7 +457,7 @@ defmodule JidoClaw.Memory.Block do
 
     alias JidoClaw.Memory.Block
 
-    @impl true
+    @impl Ash.Resource.Preparation
     def prepare(query, _opts, _context) do
       kind = Query.get_argument(query, :scope_kind)
       fk = Query.get_argument(query, :scope_fk_id)
@@ -482,6 +482,7 @@ defmodule JidoClaw.Memory.Block do
   Public so the inline `change` modules in this file can reference it
   before the resource is fully compiled.
   """
+  @spec scope_fk_for(Changeset.t(), atom()) :: {:ok, Ecto.UUID.t()} | :missing
   def scope_fk_for(changeset, :user) do
     case Changeset.get_attribute(changeset, :user_id) do
       nil -> :missing
@@ -518,6 +519,7 @@ defmodule JidoClaw.Memory.Block do
   An empty chain compiles to `WHERE FALSE` (matches no rows). Public so
   inline preparation modules can call it.
   """
+  @spec build_chain_filter([map()]) :: Ash.Expr.t()
   def build_chain_filter([]), do: expr(false)
 
   def build_chain_filter(chain) do
@@ -547,6 +549,7 @@ defmodule JidoClaw.Memory.Block do
   pair — including invalidated rows. Public so inline preparation
   modules can call it.
   """
+  @spec build_history_filter(atom(), Ecto.UUID.t(), String.t()) :: Ash.Expr.t()
   def build_history_filter(:user, fk, arg_label) do
     expr(scope_kind == :user and user_id == ^fk and label == ^arg_label)
   end
@@ -595,8 +598,10 @@ defmodule JidoClaw.Memory.Block do
     actor = Keyword.get(opts, :actor)
 
     with {:ok, prior} <- load_prior(prior_block_or_id) do
-      write_opts = [tenant: prior.tenant_id]
-      write_opts = if actor, do: Keyword.put(write_opts, :actor, actor), else: write_opts
+      write_opts =
+        if actor,
+          do: [tenant: prior.tenant_id, actor: actor],
+          else: [tenant: prior.tenant_id]
 
       Ash.transact(__MODULE__, fn ->
         with :ok <- invalidate_prior_block(prior),
@@ -665,8 +670,10 @@ defmodule JidoClaw.Memory.Block do
       reason: Map.get(attrs, :reason)
     }
 
-    opts = [tenant: prior.tenant_id]
-    opts = if actor, do: Keyword.put(opts, :actor, actor), else: opts
+    opts =
+      if actor,
+        do: [tenant: prior.tenant_id, actor: actor],
+        else: [tenant: prior.tenant_id]
 
     BlockRevision.create_for_block(rev_attrs, opts)
   end

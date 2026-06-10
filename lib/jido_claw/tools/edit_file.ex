@@ -17,13 +17,15 @@ defmodule JidoClaw.Tools.EditFile do
       Zoi.object(%{
         path: Zoi.string(description: "File path to edit"),
         old_string:
-          Zoi.string(description: "Exact text to find (must be unique in file)")
-          |> Zoi.max(@max_content_bytes,
+          Zoi.max(
+            Zoi.string(description: "Exact text to find (must be unique in file)"),
+            @max_content_bytes,
             message: "old_string must be at most #{@max_content_bytes} bytes"
           ),
         new_string:
-          Zoi.string(description: "Replacement text")
-          |> Zoi.max(@max_content_bytes,
+          Zoi.max(
+            Zoi.string(description: "Replacement text"),
+            @max_content_bytes,
             message: "new_string must be at most #{@max_content_bytes} bytes"
           )
       })
@@ -33,7 +35,7 @@ defmodule JidoClaw.Tools.EditFile do
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
-  @impl true
+  @impl Jido.Action
   def run(%{path: path, old_string: old_str, new_string: new_str} = params, context) do
     with :ok <- FilePayloadLimit.validate(:old_string, old_str),
          :ok <- FilePayloadLimit.validate(:new_string, new_str) do
@@ -109,8 +111,8 @@ defmodule JidoClaw.Tools.EditFile do
   end
 
   defp build_diff(old_str, new_str) do
-    old_lines = String.split(old_str, "\n") |> Enum.map(&"- #{&1}")
-    new_lines = String.split(new_str, "\n") |> Enum.map(&"+ #{&1}")
+    old_lines = Enum.map(String.split(old_str, "\n"), &"- #{&1}")
+    new_lines = Enum.map(String.split(new_str, "\n"), &"+ #{&1}")
     Enum.join(old_lines ++ new_lines, "\n")
   end
 end

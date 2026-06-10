@@ -18,6 +18,7 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
   defmodule PickLastTiebreaker do
     @moduledoc false
 
+    @spec choose(String.t(), [term()], keyword()) :: {:ok, term()}
     def choose(_prompt, candidates, _opts) when is_list(candidates) and candidates != [] do
       # This stub deliberately picks the last candidate (see comment above).
       # credo:disable-for-next-line ExSlop.Check.Refactor.ListLast
@@ -27,6 +28,7 @@ defmodule JidoClaw.Reasoning.AutoSelectTest do
 
   defmodule FailingTiebreaker do
     @moduledoc false
+    @spec choose(String.t(), [term()], keyword()) :: {:error, :timeout}
     def choose(_prompt, _candidates, _opts), do: {:error, :timeout}
   end
 

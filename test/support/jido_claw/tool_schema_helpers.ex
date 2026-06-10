@@ -1,6 +1,7 @@
 defmodule JidoClaw.ToolSchemaHelpers do
   @moduledoc false
 
+  @spec tool_property_schema(module(), atom()) :: map()
   def tool_property_schema(action, field) do
     properties =
       action.to_tool()
@@ -11,6 +12,7 @@ defmodule JidoClaw.ToolSchemaHelpers do
     Map.fetch!(properties, Atom.to_string(field))
   end
 
+  @spec max_length(map()) :: integer()
   def max_length(schema) do
     schema
     |> stringify_keys()

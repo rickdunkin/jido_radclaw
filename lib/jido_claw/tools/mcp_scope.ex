@@ -109,15 +109,17 @@ defmodule JidoClaw.Tools.MCPScope do
     tool_call_id = enriched_ctx[:mcp_tool_call_id] || Ecto.UUID.generate()
 
     call_attrs =
-      %{
-        session_id: tc.session_uuid,
-        request_id: request_id,
-        role: :tool_call,
-        content: ToolTranscript.summarize_args(tool_name, params),
-        metadata: %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)},
-        tool_call_id: tool_call_id
-      }
-      |> Map.merge(identity_attrs(tc))
+      Map.merge(
+        %{
+          session_id: tc.session_uuid,
+          request_id: request_id,
+          role: :tool_call,
+          content: ToolTranscript.summarize_args(tool_name, params),
+          metadata: %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)},
+          tool_call_id: tool_call_id
+        },
+        identity_attrs(tc)
+      )
 
     actor = actor_for(tc)
 
@@ -131,16 +133,18 @@ defmodule JidoClaw.Tools.MCPScope do
       result = fun.(enriched_ctx)
 
       result_attrs =
-        %{
-          session_id: tc.session_uuid,
-          request_id: request_id,
-          role: :tool_result,
-          content: ToolTranscript.result_summary(tool_name, result),
-          metadata: %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)},
-          tool_call_id: tool_call_id,
-          parent_message_id: parent_id
-        }
-        |> Map.merge(identity_attrs(tc))
+        Map.merge(
+          %{
+            session_id: tc.session_uuid,
+            request_id: request_id,
+            role: :tool_result,
+            content: ToolTranscript.result_summary(tool_name, result),
+            metadata: %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)},
+            tool_call_id: tool_call_id,
+            parent_message_id: parent_id
+          },
+          identity_attrs(tc)
+        )
 
       _ = attempt_append(result_attrs, tc[:tenant_id], actor)
       result
@@ -150,19 +154,21 @@ defmodule JidoClaw.Tools.MCPScope do
         err_msg = Exception.message(err)
 
         result_attrs =
-          %{
-            session_id: tc.session_uuid,
-            request_id: request_id,
-            role: :tool_result,
-            content: "#{tool_name} → exception: #{err_msg}",
-            metadata: %{
-              tool_name: to_string(tool_name),
-              result: %{error: err_msg}
+          Map.merge(
+            %{
+              session_id: tc.session_uuid,
+              request_id: request_id,
+              role: :tool_result,
+              content: "#{tool_name} → exception: #{err_msg}",
+              metadata: %{
+                tool_name: to_string(tool_name),
+                result: %{error: err_msg}
+              },
+              tool_call_id: tool_call_id,
+              parent_message_id: parent_id
             },
-            tool_call_id: tool_call_id,
-            parent_message_id: parent_id
-          }
-          |> Map.merge(identity_attrs(tc))
+            identity_attrs(tc)
+          )
 
         _ = attempt_append(result_attrs, tc[:tenant_id], actor)
         reraise(err, stacktrace)

@@ -88,7 +88,6 @@ defmodule JidoClaw.Export.Canonical do
   """
   @spec to_jsonl([any()]) :: String.t()
   def to_jsonl(records) when is_list(records) do
-    records
-    |> Enum.map_join(fn r -> encode!(r) <> "\n" end)
+    Enum.map_join(records, fn r -> encode!(r) <> "\n" end)
   end
 end

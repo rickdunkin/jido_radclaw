@@ -12,6 +12,7 @@ defmodule JidoClaw.CodeServer do
   require Logger
 
   @doc "Ensure a project runtime is started for the given project path."
+  @spec ensure_project_runtime(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_project_runtime(project_path) when is_binary(project_path) do
     case Registry.lookup(JidoClaw.CodeServer.RuntimeRegistry, project_path) do
       [{pid, _}] -> {:ok, pid}
@@ -20,6 +21,7 @@ defmodule JidoClaw.CodeServer do
   end
 
   @doc "Start a conversation within a project runtime."
+  @spec start_conversation(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def start_conversation(project_path, opts \\ []) do
     with {:ok, _pid} <- ensure_project_runtime(project_path) do
       conv_id = Keyword.get(opts, :id, "conv_#{:erlang.unique_integer([:positive])}")
@@ -28,6 +30,8 @@ defmodule JidoClaw.CodeServer do
   end
 
   @doc "Send a user message to a conversation."
+  @spec send_user_message(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, term()}
   def send_user_message(project_path, conv_id, message, opts \\ []) do
     with {:ok, _pid} <- ensure_project_runtime(project_path) do
       Logger.debug("[CodeServer] Message to #{conv_id}: #{String.slice(message, 0, 100)}")
@@ -43,11 +47,13 @@ defmodule JidoClaw.CodeServer do
   end
 
   @doc "Subscribe to conversation events."
+  @spec subscribe(String.t(), String.t(), pid()) :: :ok | {:error, term()}
   def subscribe(project_path, conv_id, _pid \\ self()) do
     Phoenix.PubSub.subscribe(JidoClaw.PubSub, "code_server:#{project_path}:#{conv_id}")
   end
 
   @doc "Stop a conversation."
+  @spec stop_conversation(String.t(), String.t()) :: :ok
   def stop_conversation(project_path, conv_id) do
     Phoenix.PubSub.broadcast(
       JidoClaw.PubSub,

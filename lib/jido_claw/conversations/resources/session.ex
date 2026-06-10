@@ -330,7 +330,7 @@ defmodule JidoClaw.Conversations.Session do
 
     import Ash.Expr
 
-    @impl true
+    @impl Ash.Resource.Change
     def atomic(changeset, _opts, _context) do
       key = Ash.Changeset.get_argument(changeset, :key)
       # Encode the snapshot to a JSON text literal and parse it back with

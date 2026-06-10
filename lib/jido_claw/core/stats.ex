@@ -24,6 +24,7 @@ defmodule JidoClaw.Stats do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -94,7 +95,7 @@ defmodule JidoClaw.Stats do
   # Server callbacks
   # ---------------------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def init(_opts) do
     SignalBus.subscribe("jido_claw.tool.*")
     SignalBus.subscribe("jido_claw.agent.*")
@@ -103,7 +104,7 @@ defmodule JidoClaw.Stats do
     {:ok, %__MODULE__{started_at: System.monotonic_time(:second)}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast(:track_message, state) do
     {:noreply, %{state | messages: state.messages + 1}}
   end
@@ -138,13 +139,13 @@ defmodule JidoClaw.Stats do
 
   # Signal handlers — these receive signals from OTHER emitters (not self).
   # Stats itself emits signals in handle_cast, so we only log here to avoid double-counting.
-  @impl true
+  @impl GenServer
   def handle_info({:signal, %{type: type} = signal}, state) do
     Logger.debug("[Stats] Signal received: #{type} — #{inspect(Map.get(signal, :data, %{}))}")
     {:noreply, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_call(:get, _from, state) do
     uptime = System.monotonic_time(:second) - state.started_at
 

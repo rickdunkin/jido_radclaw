@@ -13,6 +13,7 @@ defmodule JidoClaw.CLI.Main do
   alias JidoClaw.CLI.Repl
   alias JidoClaw.CLI.Setup
 
+  @spec main([String.t()]) :: :ok | no_return()
   def main(["--mcp" | _rest]) do
     start_mcp()
   end

@@ -12,7 +12,7 @@ defmodule JidoClaw.Orchestration.WorkflowEventTest do
       event payload is redacted (the Phase 0 boundary);
     * `append_all/3` is atomic — a mid-batch failure persists nothing.
   """
-  use JidoClaw.TenantCase
+  use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection

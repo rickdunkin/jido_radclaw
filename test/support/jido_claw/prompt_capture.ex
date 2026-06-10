@@ -16,22 +16,24 @@ defmodule JidoClaw.Memory.Consolidator.TestSupport.PromptCapture do
   alias JidoClaw.Forge.Runner
 
   @doc "Start the Agent that holds the most recently captured prompt."
+  @spec start_link() :: Agent.on_start()
   def start_link do
     Agent.start_link(fn -> nil end, name: __MODULE__.Store)
   end
 
   @doc "Return the most recently captured prompt, or `nil`."
+  @spec last_prompt() :: String.t() | nil
   def last_prompt, do: Agent.get(__MODULE__.Store, & &1)
 
-  @impl true
+  @impl Runner
   def init(_client, config) do
     Agent.update(__MODULE__.Store, fn _ -> Map.get(config, :prompt) end)
     {:ok, %{prompt: Map.get(config, :prompt, "")}}
   end
 
-  @impl true
+  @impl Runner
   def run_iteration(_client, _state, _opts), do: {:ok, Runner.done("")}
 
-  @impl true
+  @impl Runner
   def apply_input(_client, _input, _state), do: :ok
 end

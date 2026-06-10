@@ -60,7 +60,7 @@ defmodule JidoClaw.Solutions.LexicalIndexExplainTest do
     # the planner has to consider the GIN bitmap. We omit the
     # tenant_id predicate so the cost comparison is purely against
     # the lexical-pool predicate.
-    plan =
+    transaction_result =
       Repo.transaction(fn ->
         Repo.query!("SET LOCAL enable_seqscan = off")
         Repo.query!("SET LOCAL enable_indexscan = off")
@@ -83,7 +83,9 @@ defmodule JidoClaw.Solutions.LexicalIndexExplainTest do
         |> List.first()
         |> Map.fetch!("Plan")
       end)
-      |> case do
+
+    plan =
+      case transaction_result do
         {:ok, plan} -> plan
         other -> flunk("EXPLAIN transaction failed: #{inspect(other)}")
       end

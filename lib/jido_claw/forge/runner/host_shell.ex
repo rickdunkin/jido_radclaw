@@ -20,6 +20,8 @@ defmodule JidoClaw.Forge.Runner.HostShell do
 
   require Logger
 
+  alias JidoClaw.Security.Redaction.Env
+
   defstruct [:agent_pid, :sandbox_id]
 
   @warning_key {__MODULE__, :warning_emitted}
@@ -29,12 +31,13 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   sandbox backend when running untrusted workloads.
   """
 
+  @spec start_link(keyword()) :: Agent.on_start()
   def start_link(_opts \\ []) do
     warn_once()
     Agent.start_link(fn -> %{} end, name: __MODULE__)
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def create(spec) do
     warn_once()
 
@@ -60,13 +63,13 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     {:ok, client, shell_id}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec(%__MODULE__{agent_pid: pid, sandbox_id: sid}, command, _opts) do
     sandbox =
       Agent.get(pid, fn state -> Map.get(state, sid) end) ||
         %{dir: System.tmp_dir!(), env: %{}}
 
-    env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
+    env = Env.scrubbed_cmd_env(sandbox.env)
 
     try do
       System.cmd("sh", ["-c", command],
@@ -79,7 +82,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec_argv(%__MODULE__{agent_pid: pid, sandbox_id: sid}, command, args, opts) do
     case System.find_executable(command) do
       nil ->
@@ -90,14 +93,14 @@ defmodule JidoClaw.Forge.Runner.HostShell do
           Agent.get(pid, fn state -> Map.get(state, sid) end) ||
             %{dir: System.tmp_dir!(), env: %{}}
 
-        env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
+        env = Env.scrubbed_cmd_env(sandbox.env)
         timeout = Keyword.get(opts, :timeout, :infinity)
 
         run_with_timeout(executable, args, sandbox.dir, env, timeout)
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def run(%__MODULE__{agent_pid: pid, sandbox_id: sid}, agent_type, args, opts) do
     case System.find_executable(agent_type) do
       nil ->
@@ -108,7 +111,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
           Agent.get(pid, fn state -> Map.get(state, sid) end) ||
             %{dir: System.tmp_dir!(), env: %{}}
 
-        env = Enum.map(sandbox.env, fn {k, v} -> {to_string(k), to_string(v)} end)
+        env = Env.scrubbed_cmd_env(sandbox.env)
         timeout = Keyword.get(opts, :timeout, :infinity)
 
         passthrough =
@@ -144,7 +147,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def spawn(%__MODULE__{}, command, args, _opts) do
     case System.find_executable(command) do
       nil ->
@@ -154,14 +157,14 @@ defmodule JidoClaw.Forge.Runner.HostShell do
         port =
           Port.open(
             {:spawn_executable, executable},
-            [:binary, :exit_status, args: args]
+            [:binary, :exit_status, args: args, env: Env.scrubbed_port_env()]
           )
 
         {:ok, port}
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def write_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path, content) do
     sandbox =
       Agent.get(pid, fn state -> Map.get(state, sid) end) ||
@@ -173,7 +176,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def read_file(%__MODULE__{agent_pid: pid, sandbox_id: sid}, path) do
     sandbox =
       Agent.get(pid, fn state -> Map.get(state, sid) end) ||
@@ -184,7 +187,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{agent_pid: pid, sandbox_id: sid}, env) do
     sandbox = Agent.get(pid, fn state -> Map.get(state, sid) end)
 
@@ -205,7 +208,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     |> Map.new(fn {k, v} -> {to_string(k), to_string(v)} end)
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def destroy(%__MODULE__{agent_pid: pid}, sandbox_id) do
     sandbox = Agent.get(pid, fn state -> Map.get(state, sandbox_id) end)
     if sandbox, do: File.rm_rf(sandbox.dir)
@@ -213,7 +216,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     :ok
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Sandbox.Behaviour
   def impl_module, do: __MODULE__
 
   defp resolve_path(workspace_dir, path) do

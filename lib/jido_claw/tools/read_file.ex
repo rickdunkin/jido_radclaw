@@ -33,7 +33,7 @@ defmodule JidoClaw.Tools.ReadFile do
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
-  @impl true
+  @impl Jido.Action
   def run(%{path: path} = params, context) do
     offset = Map.get(params, :offset, 0)
     limit = Map.get(params, :limit, 2000)

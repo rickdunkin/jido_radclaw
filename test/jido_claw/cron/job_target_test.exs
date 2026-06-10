@@ -10,14 +10,16 @@ defmodule JidoClaw.Cron.JobTargetTest do
   alias JidoClaw.Cron.Job
 
   defp base_attrs(overrides \\ %{}) do
-    %{
-      job_id: "job-#{System.unique_integer([:positive])}",
-      task: "say hello",
-      mode: :main,
-      schedule_kind: :cron,
-      schedule_value: "0 9 * * *"
-    }
-    |> Map.merge(overrides)
+    Map.merge(
+      %{
+        job_id: "job-#{System.unique_integer([:positive])}",
+        task: "say hello",
+        mode: :main,
+        schedule_kind: :cron,
+        schedule_value: "0 9 * * *"
+      },
+      overrides
+    )
   end
 
   describe "target attribute" do

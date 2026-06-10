@@ -18,9 +18,11 @@ defmodule JidoClaw.Core.AnubisToolsHandlerPatchTest do
   defmodule StubServer do
     @moduledoc false
 
+    @spec __components__(atom()) :: []
     def __components__(:tool), do: []
     def __components__(_), do: []
 
+    @spec handle_tool_call(String.t(), map(), Frame.t()) :: {:reply, Response.t(), Frame.t()}
     def handle_tool_call(name, params, frame) do
       send(Map.fetch!(frame.assigns, :test_pid), {:called, name, params})
       {:reply, %Response{type: :tool, content: [], isError: false}, frame}

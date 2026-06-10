@@ -8,6 +8,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
   defmodule FakeJido do
     @moduledoc false
 
+    @spec whereis(String.t()) :: pid() | nil
     def whereis("missing"), do: nil
     def whereis(_agent_id), do: self()
   end
@@ -15,6 +16,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
   defmodule FakeAwait do
     @moduledoc false
 
+    @spec completion(pid(), timeout()) :: term()
     def completion(_pid, _timeout) do
       case Process.get(:fake_await_result) do
         {:raise, exception} -> raise exception
@@ -22,6 +24,7 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
       end
     end
 
+    @spec completion(pid(), timeout(), keyword()) :: term()
     def completion(_pid, _timeout, _opts) do
       # 3-arity branch is used when the tracker carries a request_id and
       # request-scoped paths are passed in. Drive it from the same
@@ -45,8 +48,10 @@ defmodule JidoClaw.Tools.GetAgentResultTest do
 
   defmodule FakeTracker do
     @moduledoc false
+    @spec get_agent(String.t()) :: map() | nil
     def get_agent(_agent_id), do: Process.get(:fake_tracker_entry)
 
+    @spec get_agent(String.t(), keyword()) :: map() | nil
     def get_agent(_agent_id, opts) do
       if Keyword.get(opts, :tenant_id) == "tenant-get-agent-result-test" do
         Process.get(:fake_tracker_entry) || %{}

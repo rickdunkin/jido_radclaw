@@ -203,7 +203,7 @@ defmodule JidoClaw.Memory.Link do
 
     alias JidoClaw.Memory.Fact
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         from_id = Changeset.get_attribute(cs, :from_fact_id)

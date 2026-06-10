@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
     "deleted_at" => :deleted_at
   }
 
-  @impl true
+  @impl Mix.Task
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args,
@@ -163,10 +163,12 @@ defmodule Mix.Tasks.Jidoclaw.Export.Solutions do
     content = row[:solution_content] || ""
 
     matches =
-      ~w([REDACTED:ANTHROPIC_KEY] [REDACTED:API_KEY] [REDACTED:JIDOCLAW_KEY] [REDACTED:GITHUB_PAT] [REDACTED] [REDACTED:JWT] [REDACTED:AWS_KEY] [REDACTED:SECRET])
-      |> Enum.flat_map(fn label ->
-        find_all(content, label, 0, [])
-      end)
+      Enum.flat_map(
+        ~w([REDACTED:ANTHROPIC_KEY] [REDACTED:API_KEY] [REDACTED:JIDOCLAW_KEY] [REDACTED:GITHUB_PAT] [REDACTED] [REDACTED:JWT] [REDACTED:AWS_KEY] [REDACTED:SECRET]),
+        fn label ->
+          find_all(content, label, 0, [])
+        end
+      )
 
     %{
       "id" => row[:id],

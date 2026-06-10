@@ -17,6 +17,7 @@ defmodule JidoClaw.Conversations.SessionId do
   @spec new() :: String.t()
   def new do
     now = NaiveDateTime.utc_now()
-    "session_#{NaiveDateTime.to_iso8601(now) |> String.replace(~r/[^0-9]/, "")}"
+    iso8601 = NaiveDateTime.to_iso8601(now)
+    "session_#{String.replace(iso8601, ~r/[^0-9]/, "")}"
   end
 end

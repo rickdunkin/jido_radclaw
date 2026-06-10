@@ -138,7 +138,6 @@ defmodule JidoClaw.Agent.Templates do
   end
 
   defp module_max_iterations(module) do
-    module.strategy_opts()
-    |> Keyword.fetch!(:max_iterations)
+    Keyword.fetch!(module.strategy_opts(), :max_iterations)
   end
 end

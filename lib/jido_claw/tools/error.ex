@@ -263,6 +263,7 @@ defmodule JidoClaw.Tools.Error do
   #  * truncating large collections (>@max_collection_bytes serialized)
 
   @doc false
+  @spec sanitize_details(term()) :: map()
   def sanitize_details(value) when is_map(value) and not is_struct(value) do
     sanitized =
       value

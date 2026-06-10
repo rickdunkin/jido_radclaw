@@ -322,12 +322,14 @@ defmodule JidoClaw.Reasoning.Compactor do
   end
 
   defp execute(action, params, %Ctx{} = ctx, existing_snapshot, slice) do
-    Telemetry.with_compaction(
-      "summary",
-      ctx.base_metadata,
-      fn -> do_execute(ctx, existing_snapshot, slice) end
-    )
-    |> handle_result(action, params, existing_snapshot, ctx.request_id)
+    result =
+      Telemetry.with_compaction(
+        "summary",
+        ctx.base_metadata,
+        fn -> do_execute(ctx, existing_snapshot, slice) end
+      )
+
+    handle_result(result, action, params, existing_snapshot, ctx.request_id)
   end
 
   defp do_execute(%Ctx{} = ctx, existing_snapshot, slice) do

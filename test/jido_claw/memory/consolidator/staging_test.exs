@@ -8,19 +8,21 @@ defmodule JidoClaw.Memory.Consolidator.StagingTest do
   end
 
   test "add/3 appends per-type proposals" do
-    s = Staging.new()
-    {:ok, s} = Staging.add(s, :fact_add, %{content: "a"})
-    {:ok, s} = Staging.add(s, :fact_update, %{fact_id: "x", new_content: "b"})
-    {:ok, s} = Staging.add(s, :fact_delete, %{fact_id: "y"})
-    {:ok, s} = Staging.add(s, :link_create, %{from_fact_id: "a", to_fact_id: "b", relation: "r"})
-    {:ok, s} = Staging.add(s, :cluster_defer, %{cluster_id: "c"})
+    {:ok, with_add} = Staging.add(Staging.new(), :fact_add, %{content: "a"})
+    {:ok, with_update} = Staging.add(with_add, :fact_update, %{fact_id: "x", new_content: "b"})
+    {:ok, with_delete} = Staging.add(with_update, :fact_delete, %{fact_id: "y"})
 
-    assert [_] = s.fact_adds
-    assert [_] = s.fact_updates
-    assert [_] = s.fact_deletes
-    assert [_] = s.link_creates
-    assert [_] = s.cluster_defers
-    assert Staging.total(s) == 5
+    {:ok, with_link} =
+      Staging.add(with_delete, :link_create, %{from_fact_id: "a", to_fact_id: "b", relation: "r"})
+
+    {:ok, staging} = Staging.add(with_link, :cluster_defer, %{cluster_id: "c"})
+
+    assert [_] = staging.fact_adds
+    assert [_] = staging.fact_updates
+    assert [_] = staging.fact_deletes
+    assert [_] = staging.link_creates
+    assert [_] = staging.cluster_defers
+    assert Staging.total(staging) == 5
   end
 
   describe "add_block_update/2" do

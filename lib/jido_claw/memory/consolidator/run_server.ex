@@ -91,7 +91,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     GenServer.start_link(__MODULE__, {run_id, scope}, name: name)
   end
 
-  @impl true
+  @impl GenServer
   def init({run_id, scope}) do
     Process.flag(:trap_exit, true)
 
@@ -108,7 +108,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   # -- Public message handlers --------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def handle_call({:await_and_start, opts}, from, %{status: :idle} = state) do
     case resolve_effective_harness(opts) do
       {:ok, harness} ->
@@ -244,7 +244,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   # -- async work ---------------------------------------------------------------
 
-  @impl true
+  @impl GenServer
   def handle_info(:gate, state) do
     case PolicyResolver.gate(state.scope) do
       :ok -> {:noreply, state, {:continue, :acquire_lock}}
@@ -298,7 +298,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   def handle_info(_, state), do: {:noreply, state}
 
-  @impl true
+  @impl GenServer
   def handle_continue(:acquire_lock, state) do
     key =
       Scope.lock_key(state.scope.tenant_id, state.scope.scope_kind, Scope.primary_fk(state.scope))
@@ -353,7 +353,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   def handle_continue(:stop, state), do: {:stop, :normal, state}
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     cleanup(state)
     :ok
@@ -414,15 +414,15 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     runner_module = Keyword.get(state.opts, :runner_module)
     spec_runner = runner_module || harness
 
-    spec =
-      %{
-        runner: spec_runner,
-        runner_config: runner_config,
-        sandbox: sandbox_mode,
-        tenant_id: state.scope.tenant_id,
-        workspace_id: state.scope.workspace_id
-      }
-      |> maybe_run_without_claim(state.scope.workspace_id)
+    base_spec = %{
+      runner: spec_runner,
+      runner_config: runner_config,
+      sandbox: sandbox_mode,
+      tenant_id: state.scope.tenant_id,
+      workspace_id: state.scope.workspace_id
+    }
+
+    spec = maybe_run_without_claim(base_spec, state.scope.workspace_id)
 
     parent = self()
 
@@ -457,10 +457,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       case ForgeManager.start_session(forge_session_id, spec) do
         {:ok, %{pid: pid}} ->
           try do
-            with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)),
-                 result <-
-                   Harness.run_iteration(forge_session_id, timeout: timeout_ms) do
-              result
+            with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)) do
+              Harness.run_iteration(forge_session_id, timeout: timeout_ms)
             end
 
             # Forge harness wrapper — every external runner failure path must

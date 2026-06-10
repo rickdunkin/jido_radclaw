@@ -77,7 +77,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   @release_savepoint_sql "RELEASE SAVEPOINT #{@savepoint}"
   @rollback_savepoint_sql "ROLLBACK TO SAVEPOINT #{@savepoint}"
 
-  @impl true
+  @impl Ash.Resource.Change
   def change(changeset, _opts, context) do
     caller_actor = context.actor
 
@@ -271,13 +271,16 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     do: %{started_at: event.occurred_at}
 
   defp kind_attrs(%{kind: :step_completed} = event, payload) do
-    %{completed_at: event.occurred_at}
-    |> put_valid(:output, fetch(payload, :output), &(is_map(&1) and not is_struct(&1)))
+    put_valid(
+      %{completed_at: event.occurred_at},
+      :output,
+      fetch(payload, :output),
+      &(is_map(&1) and not is_struct(&1))
+    )
   end
 
   defp kind_attrs(%{kind: :step_failed} = event, payload) do
-    %{completed_at: event.occurred_at}
-    |> put_valid(:error, fetch(payload, :error), &is_binary/1)
+    put_valid(%{completed_at: event.occurred_at}, :error, fetch(payload, :error), &is_binary/1)
   end
 
   # `":step_N"` (the inspect'd positional id) -> N; anything else has no

@@ -7,12 +7,14 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   @tenant_id "tenant-spawn-agent-test"
 
   defmodule FakeRuntime do
+    @spec start_agent(module(), keyword()) :: {:ok, pid()}
     def start_agent(_module, opts) do
       pid = spawn(fn -> Process.sleep(:infinity) end)
       send(Application.fetch_env!(:jido_claw, :spawn_agent_test_pid), {:start_agent, opts, pid})
       {:ok, pid}
     end
 
+    @spec whereis(String.t()) :: pid() | nil
     def whereis(agent_id) do
       if MapSet.member?(
            Application.get_env(:jido_claw, :spawn_agent_busy_ids, MapSet.new()),
@@ -24,12 +26,14 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   end
 
   defmodule FakeTemplates do
+    @spec get(String.t()) :: {:ok, map()}
     def get("coder") do
       {:ok, %{module: JidoClaw.Tools.SpawnAgentTest.FakeWorker, description: "fake coder"}}
     end
   end
 
   defmodule RestrictedTemplates do
+    @spec get(String.t()) :: {:ok, map()}
     def get("coder") do
       {:ok,
        %{
@@ -41,6 +45,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   end
 
   defmodule FakeWorker do
+    @spec ask_sync(pid(), String.t(), keyword()) :: :ok
     def ask_sync(pid, task, opts) do
       send(
         Application.fetch_env!(:jido_claw, :spawn_agent_test_pid),

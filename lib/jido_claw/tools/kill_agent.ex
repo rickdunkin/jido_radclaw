@@ -22,7 +22,7 @@ defmodule JidoClaw.Tools.KillAgent do
   alias JidoClaw.Error
   alias JidoClaw.Tools.SwarmScope
 
-  @impl true
+  @impl Jido.Action
   def run(%{agent_id: "all"}, context) do
     with {:ok, scope_opts} <- SwarmScope.tracker_scope(context) do
       tracker_state = agent_tracker().get_state(scope_opts)

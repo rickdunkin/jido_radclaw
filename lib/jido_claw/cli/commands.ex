@@ -30,6 +30,7 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.Workspaces.PolicyTransitions
   alias JidoClaw.Workspaces.Workspace
 
+  @spec handle(String.t(), map()) :: {:ok, map()} | :quit
   def handle("/help", state) do
     IO.puts(Branding.help_text())
     {:ok, state}
@@ -662,7 +663,7 @@ defmodule JidoClaw.CLI.Commands do
                                  avg_duration_ms: dur
                                } ->
         pct = Float.round(sr * 100, 1)
-        dur_ms = Float.round(dur, 0) |> trunc()
+        dur_ms = trunc(Float.round(dur, 0))
 
         IO.puts("  \e[32m▸\e[0m \e[1m#{name}\e[0m")
 
@@ -727,9 +728,8 @@ defmodule JidoClaw.CLI.Commands do
     else
       IO.puts("  \e[31m✗\e[0m  Unknown strategy: \e[1m#{name}\e[0m")
 
-      available =
-        ["auto" | StrategyRegistry.list() |> Enum.map(& &1.name)]
-        |> Enum.join(", ")
+      strategy_names = Enum.map(StrategyRegistry.list(), & &1.name)
+      available = Enum.join(["auto" | strategy_names], ", ")
 
       IO.puts("  \e[2mAvailable: #{available}\e[0m")
 
@@ -1107,7 +1107,7 @@ defmodule JidoClaw.CLI.Commands do
       {:error, :unknown_profile} ->
         IO.puts("  \e[31m✗\e[0m  Unknown profile: \e[1m#{name}\e[0m")
 
-        available = ProfileManager.list() |> Enum.join(", ")
+        available = Enum.join(ProfileManager.list(), ", ")
 
         IO.puts("  \e[2mAvailable: #{available}\e[0m")
         {:ok, state}
@@ -1328,7 +1328,7 @@ defmodule JidoClaw.CLI.Commands do
   defp column_width(rows, key, header) do
     data_max =
       rows
-      |> Enum.map(&(Map.fetch!(&1, key) |> String.length()))
+      |> Enum.map(&String.length(Map.fetch!(&1, key)))
       |> Enum.max(fn -> 0 end)
 
     max(data_max, String.length(header))
@@ -1456,6 +1456,8 @@ defmodule JidoClaw.CLI.Commands do
   defp block_primary_fk(_), do: nil
 
   defp open_in_editor(initial_content, suffix) do
+    alias JidoClaw.Security.Redaction.Env, as: EnvRedaction
+
     [editor | extra_args] =
       (System.get_env("EDITOR") || "vi")
       |> String.split(~r/\s+/, trim: true)
@@ -1470,7 +1472,9 @@ defmodule JidoClaw.CLI.Commands do
     try do
       File.write!(tmp_path, initial_content)
 
-      case System.cmd(editor, Enum.concat(extra_args, [tmp_path]), into: IO.stream(:stdio, :line)) do
+      cmd_opts = [into: IO.stream(:stdio, :line), env: EnvRedaction.scrubbed_cmd_env()]
+
+      case System.cmd(editor, Enum.concat(extra_args, [tmp_path]), cmd_opts) do
         {_, 0} ->
           File.read(tmp_path)
 
@@ -1550,8 +1554,7 @@ defmodule JidoClaw.CLI.Commands do
 
   defp render_scope_blocks(scope) do
     chain =
-      MemoryScope.chain(scope)
-      |> Enum.map(&%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
+      Enum.map(MemoryScope.chain(scope), &%{scope_kind: elem(&1, 0), fk_id: elem(&1, 1)})
 
     case MemoryBlock.for_scope_chain(chain,
            tenant: scope.tenant_id,

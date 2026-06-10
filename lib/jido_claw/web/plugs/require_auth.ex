@@ -7,10 +7,10 @@ defmodule JidoClaw.Web.Plugs.RequireAuth do
 
   @behaviour Plug
 
-  @impl true
+  @impl Plug
   def init(opts), do: opts
 
-  @impl true
+  @impl Plug
   def call(conn, _opts) do
     session = get_session(conn)
 

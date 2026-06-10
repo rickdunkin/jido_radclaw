@@ -89,7 +89,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
   describe "ANN model resolution regression" do
     setup do
-      stub_voyage = Module.concat([__MODULE__, StubVoyage])
+      stub_voyage = __MODULE__.StubVoyage
 
       unless Code.ensure_loaded?(stub_voyage) do
         Code.compile_quoted(
@@ -223,8 +223,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       # by id rather than relying on a content marker (which would
       # itself increase the lex_text and shift workspace_pref's rank).
       [workspace_pref] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(fn f ->
+        Enum.filter(Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)), fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
 
@@ -293,8 +292,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       end)
 
       [workspace_pref] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(fn f ->
+        Enum.filter(Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)), fn f ->
           f.label == "preference" and f.scope_kind == :workspace
         end)
 
@@ -437,8 +435,9 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       future_fact =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.find(fn f -> f.label == "future_only" end)
+        Enum.find(Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)), fn f ->
+          f.label == "future_only"
+        end)
 
       # Push the future_only row's valid_at one hour into the future.
       JidoClaw.Repo.query!(
@@ -492,7 +491,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
       :ok = Memory.remember_from_user(%{key: "mode", content: "v1", type: "fact"}, tc)
       [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
 
-      t0 = DateTime.utc_now() |> DateTime.add(86_400, :second)
+      t0 = DateTime.add(DateTime.utc_now(), 86_400, :second)
       half_day_later = DateTime.add(t0, 12 * 3600, :second)
       half_day_earlier = DateTime.add(t0, -12 * 3600, :second)
 
@@ -563,8 +562,9 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(fn f -> f.id != cons_id and f.source == :model_remember end)
+        Enum.filter(Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)), fn f ->
+          f.id != cons_id and f.source == :model_remember
+        end)
 
       JidoClaw.Repo.query!(
         "UPDATE memory_facts SET invalid_at = $2 WHERE id = $1",
@@ -578,8 +578,9 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [user_save] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(fn f -> f.id not in [cons_id, model_id] and f.source == :user_save end)
+        Enum.filter(Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)), fn f ->
+          f.id not in [cons_id, model_id] and f.source == :user_save
+        end)
 
       results =
         Retrieval.search(tool_context: tc, query: "content", limit: 5, dedup: :by_precedence)
@@ -589,10 +590,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
       assert winner.id == user_save.id
 
       shadows = Ash.Resource.get_metadata(winner, :shadowed_by) || []
-      shadow_ids = Enum.map(shadows, & &1.id) |> MapSet.new()
+      shadow_ids = MapSet.new(Enum.map(shadows, & &1.id))
       assert MapSet.equal?(shadow_ids, MapSet.new([cons_id, model_id]))
 
-      sources = Enum.map(shadows, & &1.source) |> MapSet.new()
+      sources = MapSet.new(Enum.map(shadows, & &1.source))
       assert MapSet.equal?(sources, MapSet.new([:consolidator_promoted, :model_remember]))
 
       Enum.each(shadows, fn s -> assert s.scope_kind == :workspace end)
@@ -642,8 +643,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [winner_fact] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(&(&1.id != loser_id))
+        Enum.filter(
+          Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)),
+          &(&1.id != loser_id)
+        )
 
       results = Retrieval.search(tool_context: tc, query: "content", limit: 5)
       preference = Enum.filter(results, &(&1.label == "preference"))
@@ -704,8 +707,10 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: other_id}] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(&(&1.id != first_id))
+        Enum.filter(
+          Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)),
+          &(&1.id != first_id)
+        )
 
       results = Retrieval.search(tool_context: tc, query: "qqqqqaaaa", limit: 5)
       preference = Enum.filter(results, &(&1.label == "preference"))
@@ -725,7 +730,7 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
     test "ANN-precedence: precedence winner beats semantic-distance winner; loser surfaces in shadowed_by",
          %{tenant_id: tenant_id, tool_context: tc} do
-      stub_voyage = Module.concat([__MODULE__, AnnShadowVoyage])
+      stub_voyage = __MODULE__.AnnShadowVoyage
 
       unless Code.ensure_loaded?(stub_voyage) do
         Code.compile_quoted(
@@ -751,8 +756,8 @@ defmodule JidoClaw.Memory.RetrievalTest do
 
       far_vec = List.duplicate(0.999, 1024)
 
-      Fact.by_id!(user_id, tenant: tenant_id, actor: actor_for(tenant_id))
-      |> Fact.transition_embedding_status!(
+      Fact.transition_embedding_status!(
+        Fact.by_id!(user_id, tenant: tenant_id, actor: actor_for(tenant_id)),
         %{
           embedding: far_vec,
           embedding_status: :ready
@@ -774,13 +779,15 @@ defmodule JidoClaw.Memory.RetrievalTest do
         )
 
       [%{id: model_id}] =
-        Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
-        |> Enum.filter(&(&1.id != user_id))
+        Enum.filter(
+          Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id)),
+          &(&1.id != user_id)
+        )
 
       close_vec = stub_voyage.query_vec()
 
-      Fact.by_id!(model_id, tenant: tenant_id, actor: actor_for(tenant_id))
-      |> Fact.transition_embedding_status!(
+      Fact.transition_embedding_status!(
+        Fact.by_id!(model_id, tenant: tenant_id, actor: actor_for(tenant_id)),
         %{
           embedding: close_vec,
           embedding_status: :ready

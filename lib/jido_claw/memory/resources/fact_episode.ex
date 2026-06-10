@@ -146,7 +146,7 @@ defmodule JidoClaw.Memory.FactEpisode do
     alias JidoClaw.Memory.Episode
     alias JidoClaw.Memory.Fact
 
-    @impl true
+    @impl Ash.Resource.Change
     def change(changeset, _opts, _context) do
       Changeset.before_action(changeset, fn cs ->
         fact_id = Changeset.get_attribute(cs, :fact_id)

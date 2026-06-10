@@ -11,13 +11,14 @@ defmodule JidoClaw.Tools.GitStatus do
     ],
     schema: []
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:git_status, params, context, fn enriched ->
       project_dir = JidoClaw.ToolContext.project_dir(enriched)
-      cmd_opts = [cd: project_dir, stderr_to_stdout: true]
+      cmd_opts = [cd: project_dir, stderr_to_stdout: true, env: Env.scrubbed_cmd_env()]
 
       case System.cmd("git", ["status", "--porcelain"], cmd_opts) do
         {output, 0} ->

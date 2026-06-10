@@ -146,8 +146,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
 
     test "should return maps with all required keys as values" do
-      Templates.list()
-      |> Enum.each(fn {_name, template} ->
+      Enum.each(Templates.list(), fn {_name, template} ->
         assert Map.has_key?(template, :module)
         assert Map.has_key?(template, :description)
         assert Map.has_key?(template, :model)

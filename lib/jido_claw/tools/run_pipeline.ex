@@ -144,7 +144,7 @@ defmodule JidoClaw.Tools.RunPipeline do
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Output, PipelineStore, PipelineValidator, StrategyRegistry, Telemetry}
 
-  @impl true
+  @impl Jido.Action
   def run(params, context) do
     pipeline_name = params.pipeline_name
     prompt = params.prompt
@@ -392,8 +392,10 @@ defmodule JidoClaw.Tools.RunPipeline do
 
   defp run_stage(runner, base_atom, user_strategy, prompt) do
     run_params =
-      %{strategy: base_atom, prompt: prompt, timeout: 60_000}
-      |> Map.merge(StrategyRegistry.run_strategy_params_for(user_strategy))
+      Map.merge(
+        %{strategy: base_atom, prompt: prompt, timeout: 60_000},
+        StrategyRegistry.run_strategy_params_for(user_strategy)
+      )
 
     runner.run(run_params, %{})
   end

@@ -334,8 +334,7 @@ defmodule JidoClaw.Memory do
   # ---------------------------------------------------------------------------
 
   defp invalidate_at_label(scope, label, source, actor) do
-    facts_at_label(scope, label, source, actor)
-    |> Enum.each(fn fact ->
+    Enum.each(facts_at_label(scope, label, source, actor), fn fact ->
       case Fact.invalidate_by_id(fact, %{reason: "user_forget_#{source}"},
              tenant: scope.tenant_id,
              actor: actor
@@ -431,7 +430,7 @@ defmodule JidoClaw.Memory do
   defp fact_to_legacy_entry(other), do: other
 
   defp short_id(uuid) when is_binary(uuid) do
-    uuid |> String.slice(0, 8)
+    String.slice(uuid, 0, 8)
   end
 
   defp short_id(_), do: ""

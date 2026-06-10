@@ -22,7 +22,7 @@ defmodule JidoClaw.Forge.Runners.Fake do
 
   alias JidoClaw.Forge.Runner
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def init(_client, config) do
     proposals = Map.get(config, :fake_proposals, [])
     mcp_config_path = Map.get(config, :mcp_config_path)
@@ -37,7 +37,7 @@ defmodule JidoClaw.Forge.Runners.Fake do
      }}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def run_iteration(_client, state, _opts) do
     base =
       with {:ok, server_url} <- read_server_url(state.mcp_config_path),
@@ -54,7 +54,7 @@ defmodule JidoClaw.Forge.Runners.Fake do
     {:ok, %{base | metadata: metadata}}
   end
 
-  @impl true
+  @impl JidoClaw.Forge.Runner
   def apply_input(_client, _input, _state), do: :ok
 
   defp read_server_url(nil), do: {:error, :no_mcp_config_path}
@@ -135,13 +135,13 @@ defmodule JidoClaw.Forge.Runners.Fake do
     :inets.start()
     :ssl.start()
 
-    headers = [
+    base_headers = [
       {~c"content-type", ~c"application/json"},
       {~c"accept", ~c"application/json"}
     ]
 
     headers =
-      Enum.map(extra_headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end) ++ headers
+      Enum.map(extra_headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end) ++ base_headers
 
     request = {String.to_charlist(url), headers, ~c"application/json", body}
 

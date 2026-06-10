@@ -64,9 +64,7 @@ defmodule JidoClaw.Web.AuthControllerTest do
     test "with no current_user emits one :auth_event audit row (actor_kind: :system)", %{
       baseline: baseline
     } do
-      conn =
-        build_delete_conn(%{})
-        |> Plug.Conn.assign(:current_user, nil)
+      conn = Plug.Conn.assign(build_delete_conn(%{}), :current_user, nil)
 
       _ = AuthController.sign_out(conn, conn.params)
 
@@ -91,9 +89,7 @@ defmodule JidoClaw.Web.AuthControllerTest do
     } do
       user_id = Ecto.UUID.generate()
 
-      conn =
-        build_delete_conn(%{})
-        |> Plug.Conn.assign(:current_user, %{id: user_id})
+      conn = Plug.Conn.assign(build_delete_conn(%{}), :current_user, %{id: user_id})
 
       _ = AuthController.sign_out(conn, conn.params)
 
@@ -121,8 +117,7 @@ defmodule JidoClaw.Web.AuthControllerTest do
   end
 
   defp build_delete_conn(params) do
-    Phoenix.ConnTest.build_conn(:delete, "/sign-out", params)
-    |> Plug.Test.init_test_session(%{})
+    Plug.Test.init_test_session(Phoenix.ConnTest.build_conn(:delete, "/sign-out", params), %{})
   end
 
   defp eventually(fun, deadline_ms \\ 1_500) do

@@ -11,7 +11,7 @@ defmodule JidoClaw.Memory.Consolidator.Tools.DeferCluster do
 
   alias JidoClaw.Memory.Consolidator.Tools.Helpers
 
-  @impl true
+  @impl Jido.Action
   def run(args, ctx) do
     Helpers.dispatch(ctx, {:defer_cluster, args})
   end
