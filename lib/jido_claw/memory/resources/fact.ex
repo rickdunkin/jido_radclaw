@@ -693,10 +693,13 @@ defmodule JidoClaw.Memory.Fact do
     unique identity has room to land.
 
     The concurrent-writer race is bounded by the partial unique
-    identity itself: if two writers both pre-compute the same active
-    row and both try to insert, the second insert is rejected by
-    Postgres. Callers retry via `JidoClaw.Memory.remember_*`'s
-    `{:error, :duplicate_key}` path.
+    identity itself: if two writers both pass this pre-check and try
+    to insert, the loser is rejected by Postgres at commit time.
+    `JidoClaw.Memory.do_remember/4` classifies that violation via
+    `JidoClaw.Core.AshErrors.unique_violation?/2` and retries once —
+    the retry invalidates the winner's fresh row, so the outcome is
+    last-writer-wins rather than a silently dropped value. A second
+    consecutive duplicate is logged and skipped idempotently.
     """
     use Ash.Resource.Change
 

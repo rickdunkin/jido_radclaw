@@ -1,5 +1,62 @@
+defmodule JidoClaw.Memory.FactTest.DuplicateRecorder do
+  @moduledoc false
+  # Stateful double for the :memory_fact_recorder seam in
+  # JidoClaw.Memory.do_remember/4: fails the first `fail_count` record/2
+  # calls with a real-shaped commit-time unique violation, then
+  # delegates to Fact.record. record/2 takes (attrs, opts) exactly as
+  # the Fact.record code interface.
+
+  alias Ash.Error.Changes.InvalidAttribute
+  alias Ash.Error.Invalid
+  alias JidoClaw.Memory.Fact
+
+  @spec child_spec(non_neg_integer()) :: Supervisor.child_spec()
+  def child_spec(fail_count) do
+    %{
+      id: __MODULE__,
+      start:
+        {Agent, :start_link, [fn -> %{remaining: fail_count, calls: 0} end, [name: __MODULE__]]}
+    }
+  end
+
+  @spec calls() :: non_neg_integer()
+  def calls, do: Agent.get(__MODULE__, & &1.calls)
+
+  @spec record(map(), keyword()) :: {:ok, struct()} | {:error, term()}
+  def record(attrs, opts) do
+    action =
+      Agent.get_and_update(__MODULE__, fn state ->
+        action = if state.remaining > 0, do: :fail, else: :delegate
+        {action, %{state | calls: state.calls + 1, remaining: max(state.remaining - 1, 0)}}
+      end)
+
+    case action do
+      :fail -> {:error, duplicate_error()}
+      :delegate -> Fact.record(attrs, opts)
+    end
+  end
+
+  defp duplicate_error do
+    Invalid.exception(
+      errors: [
+        InvalidAttribute.exception(
+          field: :label,
+          message: "has already been taken",
+          private_vars: [
+            constraint: "memory_facts_unique_active_label_per_scope_workspace_index",
+            constraint_type: :unique,
+            detail: nil
+          ]
+        )
+      ]
+    )
+  end
+end
+
 defmodule JidoClaw.Memory.FactTest do
   use JidoClaw.TenantCase, async: false
+
+  alias JidoClaw.Memory.FactTest.DuplicateRecorder
 
   alias JidoClaw.Memory
   alias JidoClaw.Memory.Fact
@@ -71,7 +128,12 @@ defmodule JidoClaw.Memory.FactTest do
       assert new.invalid_at == nil
     end
 
-    test "active label uniqueness — concurrent writes collide", %{
+    # The true commit-time race (two writers, both past the
+    # InvalidatePriorActiveLabel pre-check) is unreproducible under the
+    # SQL sandbox — transactions never commit, so the partial unique
+    # index never fires. The retry path it triggers is covered by the
+    # seam-based "duplicate-key retry" tests below.
+    test "single active row per (scope, label)", %{
       tenant_id: tenant_id,
       tool_context: tc
     } do
@@ -95,6 +157,53 @@ defmodule JidoClaw.Memory.FactTest do
       assert fact.content =~ "[REDACTED:ANTHROPIC_KEY]"
       refute fact.content =~ "sk-ant-aaaabbbbccccddddeeeeffff"
     end
+  end
+
+  describe "duplicate-key retry (via :memory_fact_recorder seam)" do
+    test "retries once on duplicate; retry invalidates the racing winner's row",
+         %{tenant_id: tenant_id, tool_context: tc} do
+      # The "winner" of the simulated race landed first (real recorder).
+      :ok = Memory.remember_from_user(%{key: "race", content: "winner", type: "fact"}, tc)
+
+      install_recorder!(1)
+
+      # The "loser" hits the unique violation once, then the retry runs
+      # through the real Fact.record — InvalidatePriorActiveLabel
+      # invalidates the winner's fresh row: last-writer-wins.
+      assert :ok =
+               Memory.remember_from_user(
+                 %{key: "race", content: "second value", type: "fact"},
+                 tc
+               )
+
+      assert DuplicateRecorder.calls() == 2
+
+      facts = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert [active] = Enum.filter(facts, &is_nil(&1.invalid_at))
+      assert active.label == "race"
+      assert active.content == "second value"
+
+      winner = Enum.find(facts, &(&1.content == "winner"))
+      assert winner.invalid_at != nil
+    end
+
+    test "skips idempotently on a second duplicate — no third attempt",
+         %{tenant_id: tenant_id, tool_context: tc} do
+      install_recorder!(2)
+
+      assert :ok =
+               Memory.remember_from_user(%{key: "race2", content: "lost", type: "fact"}, tc)
+
+      assert DuplicateRecorder.calls() == 2
+      assert [] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
+    end
+  end
+
+  defp install_recorder!(fail_count) do
+    start_supervised!({DuplicateRecorder, fail_count})
+    Application.put_env(:jido_claw, :memory_fact_recorder, DuplicateRecorder)
+    on_exit(fn -> Application.delete_env(:jido_claw, :memory_fact_recorder) end)
   end
 
   describe "content_hash + search_vector generated columns" do

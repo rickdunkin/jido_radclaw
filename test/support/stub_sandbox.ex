@@ -11,6 +11,17 @@ defmodule JidoClaw.Test.StubSandbox do
 
   defstruct [:agent_pid]
 
+  @fail_inject_env_key "STUB_SANDBOX_FAIL_INJECT_ENV"
+
+  @doc """
+  Magic env key: when present in the map given to `inject_env/2`, the
+  call fails with `{:error, :inject_env_refused}` and records nothing.
+  Lets Harness tests drive the spec-env-injection failure path without
+  a real sandbox backend.
+  """
+  @spec fail_inject_env_key() :: String.t()
+  def fail_inject_env_key, do: @fail_inject_env_key
+
   @doc "Create a new stub-sandbox client with an empty event log."
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def create(_spec \\ %{}) do
@@ -84,15 +95,17 @@ defmodule JidoClaw.Test.StubSandbox do
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{agent_pid: pid}, env_map) do
-    Agent.update(pid, fn s ->
-      %{
-        s
-        | env: Map.merge(s.env, Map.new(env_map, fn {k, v} -> {to_string(k), to_string(v)} end)),
-          events: [{:inject_env, env_map} | s.events]
-      }
-    end)
+    env = Map.new(env_map, fn {k, v} -> {to_string(k), to_string(v)} end)
 
-    :ok
+    if Map.has_key?(env, @fail_inject_env_key) do
+      {:error, :inject_env_refused}
+    else
+      Agent.update(pid, fn s ->
+        %{s | env: Map.merge(s.env, env), events: [{:inject_env, env_map} | s.events]}
+      end)
+
+      :ok
+    end
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour

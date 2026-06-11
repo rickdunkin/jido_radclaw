@@ -55,6 +55,7 @@ defmodule JidoClaw.Memory do
   ]
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Memory.{Block, Fact, Retrieval, Scope}
 
@@ -264,28 +265,52 @@ defmodule JidoClaw.Memory do
   # Internal write path
   # ---------------------------------------------------------------------------
 
-  defp do_remember(attrs, tool_context, opts) do
+  defp do_remember(attrs, tool_context, opts, attempt \\ 1) do
     attrs = MapKeys.normalize_keys(attrs, :atom_existing)
 
     with {:ok, scope} <- Scope.resolve(tool_context),
          actor = actor_for(tool_context, scope.tenant_id),
          create_attrs = build_create_attrs(attrs, scope, opts),
-         {:ok, _fact} <- Fact.record(create_attrs, tenant: scope.tenant_id, actor: actor) do
+         {:ok, _fact} <- record_fact(create_attrs, scope, actor) do
       :ok
     else
       {:error, %Ash.Error.Invalid{} = err} ->
-        if duplicate_key?(err) do
-          Logger.debug("[Memory] duplicate key (idempotent skip): #{inspect(err)}")
-        else
-          Logger.warning("[Memory] write failed: #{inspect(err)}")
-        end
-
-        :ok
+        handle_invalid_write(err, attrs, tool_context, opts, attempt)
 
       {:error, reason} ->
         Logger.warning("[Memory] write failed: #{inspect(reason)}")
         :ok
     end
+  end
+
+  # Two writers racing the same (scope, label) both pass
+  # InvalidatePriorActiveLabel's pre-check; the loser hits the partial
+  # unique index at commit. One retry turns that into last-writer-wins
+  # (the loser's retry invalidates the winner's fresh row) instead of
+  # silently dropping the newer value. A second consecutive duplicate
+  # is skipped idempotently, preserving the always-:ok contract.
+  defp handle_invalid_write(err, attrs, tool_context, opts, attempt) do
+    cond do
+      duplicate_key?(err) and attempt == 1 ->
+        Logger.debug("[Memory] duplicate key — retrying once (last-writer-wins)")
+        do_remember(attrs, tool_context, opts, 2)
+
+      duplicate_key?(err) ->
+        Logger.debug("[Memory] duplicate key (idempotent skip): #{inspect(err)}")
+        :ok
+
+      true ->
+        Logger.warning("[Memory] write failed: #{inspect(err)}")
+        :ok
+    end
+  end
+
+  # Seam for the retry-path tests: the SQL sandbox never commits, so a
+  # real commit-time unique violation is unreproducible there. Tests
+  # swap in a stateful double (see FactTest).
+  defp record_fact(create_attrs, scope, actor) do
+    recorder = Application.get_env(:jido_claw, :memory_fact_recorder, Fact)
+    recorder.record(create_attrs, tenant: scope.tenant_id, actor: actor)
   end
 
   defp build_create_attrs(attrs, scope, opts) do
@@ -314,17 +339,19 @@ defmodule JidoClaw.Memory do
     }
   end
 
-  defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
-    Enum.any?(errors, fn err ->
-      msg = inspect(err)
+  # Index-name fragments — ash_postgres reports the *index* name, not
+  # the identity name. The four active-label identities use default
+  # names (memory_facts_unique_active_label_per_scope_<scope>_index);
+  # the promoted identities map to shortened mf_promoted_*_idx via
+  # identity_index_names on the resource. mf_promoted_/unique_import_hash
+  # are defensive: those identities are unreachable via remember_*.
+  @duplicate_index_fragments [
+    "unique_active_label_per_scope_",
+    "mf_promoted_",
+    "unique_import_hash"
+  ]
 
-      String.contains?(msg, [
-        "unique_active_label_per_scope_",
-        "unique_active_promoted_content_per_scope_",
-        "unique_import_hash"
-      ])
-    end)
-  end
+  defp duplicate_key?(err), do: AshErrors.unique_violation?(err, @duplicate_index_fragments)
 
   # ---------------------------------------------------------------------------
   # Internal forget / list helpers — case-by-case scope dispatch since

@@ -9,7 +9,8 @@ defmodule JidoClaw.Trace.Sanitize do
       flooding with prompts, messages, raw responses, and tool payloads.
       The `:params` key is included because Jido tool execution telemetry
       (`deps/jido_ai/lib/jido_ai/turn.ex`) carries tool arguments under
-      that key.
+      that key. `content`/`input`/`output`/`text`/`thinking_content`
+      cover the rest of that Turn-shaped upstream metadata.
 
     * **Sensitive keys** become `"[REDACTED]"`. Match is exact for a
       curated set, plus suffix (`_secret`, `_key`, `_token`, `_password`)
@@ -24,10 +25,13 @@ defmodule JidoClaw.Trace.Sanitize do
 
   @large_keys MapSet.new([
                 "arguments",
+                "content",
                 "context",
                 "data",
+                "input",
                 "llm_opts",
                 "messages",
+                "output",
                 "params",
                 "prompt",
                 "query",
@@ -39,7 +43,9 @@ defmodule JidoClaw.Trace.Sanitize do
                 "response",
                 "result",
                 "stacktrace",
-                "state"
+                "state",
+                "text",
+                "thinking_content"
               ])
 
   @sensitive_exact MapSet.new([

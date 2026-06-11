@@ -108,6 +108,7 @@ defmodule JidoClaw.Conversations.Recorder do
   alias Jido.Signal.Bus
   alias JidoClaw.Conversations.{Message, RequestCorrelation, ToolTranscript}
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.MapKeys
 
   @topics [
@@ -864,22 +865,15 @@ defmodule JidoClaw.Conversations.Recorder do
 
   defp actor_for(_), do: nil
 
-  defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
-    Enum.any?(errors, fn err ->
-      is_struct(err) and
-        (Map.get(err, :__struct__) == Ash.Error.Changes.InvalidAttribute or
-           Map.get(err, :__struct__) == Ash.Error.Invalid)
-    end) and
-      errors
-      |> Enum.map(&inspect/1)
-      |> Enum.any?(
-        &String.contains?(&1, [
-          "unique_session_sequence",
-          "unique_live_tool_row",
-          "unique_import_hash"
-        ])
-      )
-  end
+  # All three are substrings of Message's default index names (the
+  # resource sets no identity_index_names shortenings).
+  @duplicate_index_fragments [
+    "unique_session_sequence",
+    "unique_live_tool_row",
+    "unique_import_hash"
+  ]
+
+  defp duplicate_key?(err), do: AshErrors.unique_violation?(err, @duplicate_index_fragments)
 
   # ---------------------------------------------------------------------------
   # Helpers

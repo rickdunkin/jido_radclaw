@@ -254,17 +254,12 @@ defmodule JidoClaw.Forge.Harness do
     persist(fn -> log_event(state, "bootstrap.started") end)
     persist(fn -> update_phase(state, :bootstrapping) end)
 
-    env = Map.get(state.spec, :env, %{})
-
-    if map_size(env) > 0 do
-      Sandbox.inject_env(default_client(state), env)
-    end
-
     # Provision declarative resources (git repos, env vars, secrets)
     # File mounts are already handled at sandbox creation time.
     resources = Map.get(state.spec, :resources, [])
 
-    with :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
+    with :ok <- inject_spec_env(default_client(state), state.spec),
+         :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
          :ok <- run_bootstrap_steps(state) do
       persist(fn -> log_event(state, "bootstrap.completed") end)
       new_state = %{state | state: :initializing}
@@ -292,6 +287,14 @@ defmodule JidoClaw.Forge.Harness do
 
         Logger.error("[Forge.Harness] Resource provisioning failed: #{inspect(reason)}")
         {:stop, {:resource_provision_failed, reason}, state}
+
+      {:error, reason} ->
+        persist(fn ->
+          log_event(state, "bootstrap.failed", %{step: "inject_env", reason: inspect(reason)})
+        end)
+
+        Logger.error("[Forge.Harness] Spec env injection failed: #{inspect(reason)}")
+        {:stop, {:bootstrap_failed, reason}, state}
     end
   end
 
@@ -825,19 +828,15 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp recover_bootstrap(state) do
-    env = Map.get(state.spec, :env, %{})
-
-    if map_size(env) > 0 do
-      Sandbox.inject_env(default_client(state), env)
-    end
-
     resources = Map.get(state.spec, :resources, [])
 
-    with :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
+    with :ok <- inject_spec_env(default_client(state), state.spec),
+         :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
          :ok <- run_bootstrap_steps(state) do
       {:ok, %{state | state: :initializing}}
     else
       {:error, _resource_or_step, reason} -> {:error, {:bootstrap_failed, reason}}
+      {:error, reason} -> {:error, {:bootstrap_failed, reason}}
     end
   end
 
@@ -1140,15 +1139,10 @@ defmodule JidoClaw.Forge.Harness do
     persist(fn -> log_event(state, "bootstrap.started") end)
     persist(fn -> update_phase(state, :bootstrapping) end)
 
-    env = Map.get(state.spec, :env, %{})
-
-    if map_size(env) > 0 do
-      Sandbox.inject_env(default_client(state), env)
-    end
-
     resources = Map.get(state.spec, :resources, [])
 
-    with :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
+    with :ok <- inject_spec_env(default_client(state), state.spec),
+         :ok <- ResourceProvisioner.provision_all(default_client(state), resources),
          :ok <- run_bootstrap_steps(state) do
       persist(fn -> log_event(state, "bootstrap.completed") end)
       {:ok, %{state | state: :initializing}}
@@ -1169,6 +1163,13 @@ defmodule JidoClaw.Forge.Harness do
         end)
 
         {:error, {:resource_provision_failed, reason}}
+
+      {:error, reason} ->
+        persist(fn ->
+          log_event(state, "bootstrap.failed", %{step: "inject_env", reason: inspect(reason)})
+        end)
+
+        {:error, {:bootstrap_failed, reason}}
     end
   end
 
@@ -1294,21 +1295,29 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp bootstrap_client(state, client) do
-    env = Map.get(state.spec, :env, %{})
-
-    if map_size(env) > 0 do
-      Sandbox.inject_env(client, env)
-    end
-
     resources = Map.get(state.spec, :resources, [])
 
-    with :ok <- ResourceProvisioner.provision_all(client, resources),
+    with :ok <- inject_spec_env(client, state.spec),
+         :ok <- ResourceProvisioner.provision_all(client, resources),
          :ok <- run_bootstrap_steps(state, client),
          :ok <- init_runner_for_sandbox(state, client) do
       :ok
     else
       {:error, _resource_or_step, reason} -> {:error, reason}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Env is part of the sandbox spec: a failed injection means the sandbox
+  # does not match what was asked for, so every bootstrap path treats it
+  # as a bootstrap failure instead of running with silently missing env.
+  defp inject_spec_env(client, spec) do
+    env = Map.get(spec, :env, %{})
+
+    if map_size(env) > 0 do
+      Sandbox.inject_env(client, env)
+    else
+      :ok
     end
   end
 

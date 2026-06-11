@@ -52,6 +52,7 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, Resolver, Session}
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Tenant.Manager
   alias JidoClaw.Workspaces.Resolver, as: WorkspaceResolver
 
@@ -241,11 +242,8 @@ defmodule Mix.Tasks.Jidoclaw.Migrate.Conversations do
     end
   end
 
-  defp duplicate_import_hash?(%Ash.Error.Invalid{errors: errors}) do
-    errors
-    |> Enum.map(&inspect/1)
-    |> Enum.any?(&String.contains?(&1, "unique_import_hash"))
-  end
+  defp duplicate_import_hash?(err),
+    do: AshErrors.unique_violation?(err, ["unique_import_hash"])
 
   defp parse_role("user"), do: :user
   defp parse_role("assistant"), do: :assistant

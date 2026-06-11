@@ -76,6 +76,22 @@ defmodule JidoClaw.Trace.SanitizeTest do
                %{outer: %{prompt: "[OMITTED]", child: %{params: "[OMITTED]"}}}
     end
 
+    test "omits content-bearing keys from jido_ai Turn-shaped metadata" do
+      for key <- ["content", "input", "output", "text", "thinking_content"] do
+        assert Sanitize.payload(%{key => "conversation body"}) == %{key => "[OMITTED]"},
+               "expected top-level #{inspect(key)} to be omitted"
+
+        assert Sanitize.payload(%{"outer" => %{key => "conversation body"}}) ==
+                 %{"outer" => %{key => "[OMITTED]"}},
+               "expected nested #{inspect(key)} to be omitted"
+      end
+    end
+
+    test "omits content-bearing atom keys" do
+      assert Sanitize.payload(%{thinking_content: "chain of thought"}) ==
+               %{thinking_content: "[OMITTED]"}
+    end
+
     test "recurses into lists of maps" do
       input = [%{token: "x"}, %{normal: 1}]
 

@@ -31,6 +31,7 @@ defmodule JidoClaw.Tools.MCPScope do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, ToolTranscript}
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.MCPScope.Initializer
 
   @wrapped_key :__jidoclaw_mcp_scope_wrapped__
@@ -256,11 +257,7 @@ defmodule JidoClaw.Tools.MCPScope do
 
   defp fetch_existing_live_row(_, _, _), do: :error
 
-  defp duplicate_key?(%Ash.Error.Invalid{errors: errors}) do
-    errors
-    |> Enum.map(&inspect/1)
-    |> Enum.any?(&String.contains?(&1, "unique_live_tool_row"))
-  end
+  defp duplicate_key?(err), do: AshErrors.unique_violation?(err, ["unique_live_tool_row"])
 
   defp mcp_default_scope do
     case Application.get_env(:jido_claw, :jido_claw_mcp_default_scope) do

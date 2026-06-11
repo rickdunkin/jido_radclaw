@@ -23,7 +23,10 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
   @spec create(map()) ::
-          {:error, :sbx_not_found | {:sbx_create_failed, pos_integer(), any()}}
+          {:error,
+           :sbx_not_found
+           | {:sbx_create_failed, pos_integer(), any()}
+           | {:workspace_dir_failed, term()}}
           | {:ok, t(), binary()}
   def create(spec) do
     case System.find_executable("sbx") do
@@ -38,9 +41,17 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   defp do_create(spec) do
     sandbox_id = "#{:erlang.unique_integer([:positive])}"
     sandbox_name = "forge-#{sandbox_id}"
-    workspace_dir = Path.join(workspace_base(), sandbox_name)
-    File.mkdir_p!(workspace_dir)
 
+    case ensure_workspace_dir(workspace_base(), sandbox_name) do
+      {:ok, workspace_dir} ->
+        create_sandbox(spec, sandbox_id, sandbox_name, workspace_dir)
+
+      {:error, reason} ->
+        {:error, {:workspace_dir_failed, reason}}
+    end
+  end
+
+  defp create_sandbox(spec, sandbox_id, sandbox_name, workspace_dir) do
     agent_type = sandbox_agent_type(spec)
     args = build_create_args(sandbox_name, agent_type, workspace_dir, spec)
 
@@ -52,15 +63,66 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
           sandbox_id: sandbox_id
         }
 
-        # Inject OneCLI proxy env if configured
-        onecli_env = onecli_env(sandbox_id)
-        if map_size(onecli_env) > 0, do: inject_env(client, onecli_env)
+        inject_onecli_env(client, sandbox_id, sandbox_name)
 
         {:ok, client, sandbox_id}
 
       {error_output, code} ->
         File.rm_rf(workspace_dir)
         {:error, {:sbx_create_failed, code, error_output}}
+    end
+  end
+
+  # Inject OneCLI proxy env if configured. Trusted config, pre-bootstrap —
+  # a failure degrades proxying but must not fail sandbox creation.
+  defp inject_onecli_env(client, sandbox_id, sandbox_name) do
+    env = onecli_env(sandbox_id)
+
+    if map_size(env) > 0 do
+      case inject_env(client, env) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "[Forge.DockerSandbox] OneCLI env injection failed for #{sandbox_name}: " <>
+              inspect(reason)
+          )
+      end
+    end
+  end
+
+  # The base lives under /tmp and sandbox names are guessable
+  # (sequential unique_integer), so a pre-existing entry at the
+  # workspace path — including a planted symlink — is rejected rather
+  # than reused, and a symlinked base is rejected before mkdir/chmod
+  # can follow it. Public for tests: create/1 short-circuits when the
+  # sbx CLI is absent, so this is not reachable through the public API
+  # in CI.
+  @doc false
+  @spec ensure_workspace_dir(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def ensure_workspace_dir(base, sandbox_name) do
+    path = Path.join(base, sandbox_name)
+
+    with :ok <- File.mkdir_p(base),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(base),
+         :ok <- File.mkdir(path) do
+      chmod_workspace_dir(path)
+    else
+      {:ok, %File.Stat{type: type}} -> {:error, {:invalid_workspace_base, type}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp chmod_workspace_dir(path) do
+    case File.chmod(path, 0o700) do
+      :ok ->
+        {:ok, path}
+
+      {:error, reason} ->
+        # Never hand out a workspace dir we could not protect.
+        File.rm_rf(path)
+        {:error, {:chmod_failed, reason}}
     end
   end
 
@@ -148,22 +210,23 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     end
   end
 
+  # `.forge_env` carries resolved vault secrets onto host disk, so it gets
+  # the same treatment as `.env` (see CLI.Setup.persist_env_var/3): mode
+  # 0600 before any content lands, atomic tmp+rename writes, and a
+  # symlink at the path is rejected rather than followed. The merged map
+  # (legacy file content included) is validated before writing — the
+  # format has no escape syntax, so a key/value that cannot round-trip
+  # through `K=V\n` lines is rejected outright, never encoded.
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{workspace_dir: workspace_dir}, env) do
     env_file = env_file_path(workspace_dir)
+    incoming = Map.new(env, fn {k, v} -> {to_string(k), to_string(v)} end)
 
-    # Merge with existing env file if present
-    existing =
-      case File.read(env_file) do
-        {:ok, content} -> parse_env_file(content)
-        {:error, _} -> %{}
-      end
-
-    merged = Map.merge(existing, Map.new(env, fn {k, v} -> {to_string(k), to_string(v)} end))
-
-    lines = Enum.map_join(merged, "\n", fn {k, v} -> "#{k}=#{v}" end)
-
-    File.write(env_file, lines <> "\n")
+    with {:ok, existing} <- read_existing_env(env_file),
+         merged = Map.merge(existing, incoming),
+         :ok <- validate_env(merged) do
+      secure_write(env_file, render_env(merged))
+    end
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
@@ -287,15 +350,93 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     Path.join(workspace_dir, ".forge_env")
   end
 
+  # lstat (not read) first: a symlink (or anything else non-regular)
+  # sitting at .forge_env must never be followed — for the read here or
+  # the write later. A legacy regular file is tightened to 0600 before
+  # it is read; chmod or read failure is fatal rather than "no existing
+  # env", because merging past either would mean carrying forward (or
+  # silently dropping) content we could not protect or see.
+  defp read_existing_env(env_file) do
+    case File.lstat(env_file) do
+      {:error, :enoent} ->
+        {:ok, %{}}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        with :ok <- File.chmod(env_file, 0o600),
+             {:ok, content} <- File.read(env_file) do
+          {:ok, parse_env_file(content)}
+        end
+
+      {:ok, %File.Stat{type: type}} ->
+        {:error, {:invalid_env_file, type}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Verbatim parse — split on the first `=` only, no trimming. Trimming
+  # would hide exactly what validate_env/1 must catch in legacy content
+  # (a padded key like " BAD"), and would silently mutate padded values
+  # on round-trip.
   defp parse_env_file(content) do
     content
     |> String.split("\n", trim: true)
     |> Enum.reduce(%{}, fn line, acc ->
       case String.split(line, "=", parts: 2) do
-        [key, value] -> Map.put(acc, String.trim(key), String.trim(value))
+        [key, value] -> Map.put(acc, key, value)
         _ -> acc
       end
     end)
+  end
+
+  # Byte lists (not regex) so validation also holds for non-UTF-8 legacy
+  # file content. Whitespace edges are legal value content and round-trip
+  # faithfully; line breaks and NUL cannot be represented in the format.
+  @env_key_forbidden ["=", <<0>>, " ", "\t", "\n", "\r", "\v", "\f"]
+  @env_value_forbidden ["\n", "\r", <<0>>]
+
+  defp validate_env(env) do
+    Enum.find_value(env, :ok, fn {key, value} ->
+      if valid_env_key?(key) and valid_env_value?(value) do
+        nil
+      else
+        {:error, {:invalid_env, key}}
+      end
+    end)
+  end
+
+  defp valid_env_key?(key) do
+    key != "" and not String.contains?(key, @env_key_forbidden)
+  end
+
+  defp valid_env_value?(value) do
+    not String.contains?(value, @env_value_forbidden)
+  end
+
+  defp render_env(env) do
+    Enum.map_join(env, "\n", fn {k, v} -> "#{k}=#{v}" end) <> "\n"
+  end
+
+  # Atomic secret write (the H7 pattern from CLI.Setup.persist_env_var/3,
+  # adapted to error tuples — Sandbox.Behaviour callers expect
+  # :ok | {:error, term()} and a Harness GenServer must not crash): the
+  # tmp file is 0600 before any content lands in it, and rename preserves
+  # the mode, so the secrets are never world-readable, even transiently.
+  defp secure_write(path, content) do
+    tmp = "#{path}.#{System.unique_integer([:positive])}.tmp"
+
+    try do
+      with :ok <- File.touch(tmp),
+           :ok <- File.chmod(tmp, 0o600),
+           :ok <- File.write(tmp, content) do
+        File.rename(tmp, path)
+      end
+    after
+      # On any failure the secret-bearing tmp must not outlive the call;
+      # after a successful rename this is :enoent.
+      File.rm(tmp)
+    end
   end
 
   defp workspace_base do
