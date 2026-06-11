@@ -56,8 +56,11 @@ defmodule JidoClaw.Core.OsCmd do
       a wall-clock cap on total runtime — output activity does not
       extend it
     * `:env` — environment in `System.cmd/3` format
-      (`[{String.t(), String.t() | nil}]`), already scrubbed by the
-      caller; this function only converts the shape for the port
+      (`[{String.t(), String.t() | nil}]`); defaults to
+      `Env.scrubbed_cmd_env()` so a caller that forgets the option
+      never leaks parent secrets into the child. Pass `:env` built via
+      `Env.scrubbed_cmd_env(overrides)` to inject vars — an explicit
+      `:env` is used as-is
 
   stderr is merged into stdout, mirroring
   `System.cmd(..., stderr_to_stdout: true)`.
@@ -66,7 +69,7 @@ defmodule JidoClaw.Core.OsCmd do
   def run(executable, args, opts \\ []) when is_binary(executable) and is_list(args) do
     cd = Keyword.get(opts, :cd, File.cwd!())
     timeout = Keyword.get(opts, :timeout, :infinity)
-    env = Keyword.get(opts, :env, [])
+    env = Keyword.get_lazy(opts, :env, &Env.scrubbed_cmd_env/0)
 
     port =
       Port.open({:spawn_executable, executable}, [

@@ -66,6 +66,122 @@ defmodule JidoClaw.Memory.BlockTest do
     end
   end
 
+  describe ":write redaction" do
+    test "redacts secrets in value and description before persistence", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      attrs = %{
+        scope_kind: :workspace,
+        workspace_id: ws.id,
+        label: "creds",
+        value: "anthropic key is sk-ant-aaaabbbbccccddddeeeeffff",
+        description: "contains sk-ant-aaaabbbbccccddddeeeeffff too",
+        source: :user
+      }
+
+      assert {:ok, block} = Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert block.value =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute block.value =~ "sk-ant-aaaabbbbccccddddeeeeffff"
+      assert block.description =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute block.description =~ "sk-ant-aaaabbbbccccddddeeeeffff"
+    end
+
+    test "redaction runs before CapValueLength — cap validates the redacted value", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      # Raw secret: 31 bytes. Redacted form `[REDACTED:API_KEY]`:
+      # 18 bytes. With char_limit 25 the write succeeds only if the
+      # cap sees the redacted value — it would reject the raw one.
+      raw = "sk-abcdefghijklmnopqrstuvwxyz01"
+      assert byte_size(raw) == 31
+
+      attrs = %{
+        scope_kind: :workspace,
+        workspace_id: ws.id,
+        label: "cap_order",
+        value: raw,
+        char_limit: 25,
+        source: :user
+      }
+
+      assert {:ok, block} = Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert block.value == "[REDACTED:API_KEY]"
+    end
+
+    test "is idempotent — already-redacted content stores unchanged", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      attrs = %{
+        scope_kind: :workspace,
+        workspace_id: ws.id,
+        label: "already_redacted",
+        value: "key was [REDACTED:ANTHROPIC_KEY] all along",
+        source: :user
+      }
+
+      assert {:ok, block} = Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert block.value == "key was [REDACTED:ANTHROPIC_KEY] all along"
+    end
+
+    test "revise/3 routes through :write and redacts the new value", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      {:ok, block} =
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws.id,
+            label: "revise_redact",
+            value: "clean v1",
+            source: :user
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert {:ok, revised} =
+               Block.revise(block, %{value: "now with sk-ant-aaaabbbbccccddddeeeeffff"},
+                 actor: actor_for(tenant_id)
+               )
+
+      assert revised.value =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute revised.value =~ "sk-ant-aaaabbbbccccddddeeeeffff"
+    end
+
+    test "accepts the CLI cross-scope override attrs (source: :user, written_by: \"cli\")", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      # Mirrors Commands.apply_block_edit/3's override-write shape —
+      # pins source: :user against Block's @sources constraint
+      # (:user_save is Fact vocabulary and used to fail here).
+      attrs = %{
+        scope_kind: :workspace,
+        user_id: nil,
+        workspace_id: ws.id,
+        project_id: nil,
+        session_id: nil,
+        label: "cli_override",
+        description: nil,
+        value: "edited via cli",
+        char_limit: 2000,
+        pinned: true,
+        position: 0,
+        source: :user,
+        written_by: "cli"
+      }
+
+      assert {:ok, block} = Block.write(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert block.source == :user
+      assert block.written_by == "cli"
+    end
+  end
+
   describe ":revise" do
     test "updates value and writes a BlockRevision", %{tenant_id: tenant_id, workspace: ws} do
       {:ok, block} =

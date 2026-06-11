@@ -47,6 +47,25 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
       refute Env.sensitive_key?("PATH")
       refute Env.sensitive_key?("TERM")
     end
+
+    test "matches unconventionally-named secrets and credential suffixes" do
+      assert Env.sensitive_key?("SECRET_KEY_BASE")
+      assert Env.sensitive_key?("ONECLI_AGENT_TOKENS")
+      assert Env.sensitive_key?("AWS_ACCESS_KEY_ID")
+      assert Env.sensitive_key?("MY_CREDENTIALS")
+      assert Env.sensitive_key?("MY_CREDENTIAL")
+    end
+
+    test "no blanket _BASE suffix — URL_BASE/API_BASE stay safe" do
+      refute Env.sensitive_key?("URL_BASE")
+      refute Env.sensitive_key?("API_BASE")
+    end
+
+    test "no blanket _TOKENS suffix — LLM usage counters stay safe" do
+      refute Env.sensitive_key?("input_tokens")
+      refute Env.sensitive_key?("output_tokens")
+      refute Env.sensitive_key?("total_tokens")
+    end
   end
 
   describe "redact_value/2" do
@@ -110,10 +129,109 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
       assert {name, nil} in Env.scrubbed_cmd_env()
     end
 
-    test "leaves non-sensitive vars alone" do
+    test "drops non-allowlisted vars — inheritance is allowlist, not denylist" do
+      # An innocuously named var is still unset for children: only
+      # allowlisted names are inherited.
       name = put_fake_secret("DIR")
 
-      refute Enum.any?(Env.scrubbed_cmd_env(), fn {key, _} -> key == name end)
+      assert {name, nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "drops unconventionally-named secrets that a denylist would miss" do
+      put_named_env("SECRET_KEY_BASE", "super-secret")
+      put_named_env("ONECLI_AGENT_TOKENS", "tok1,tok2")
+
+      result = Env.scrubbed_cmd_env()
+
+      assert {"SECRET_KEY_BASE", nil} in result
+      assert {"ONECLI_AGENT_TOKENS", nil} in result
+    end
+
+    test "drops credential-capability vars by default (SSH_AUTH_SOCK)" do
+      put_named_env("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+
+      assert {"SSH_AUTH_SOCK", nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "allowlisted shell ergonomics survive (no unset tuple)" do
+      result = Env.scrubbed_cmd_env()
+
+      refute {"PATH", nil} in result
+      refute {"HOME", nil} in result
+      refute {"TERM", nil} in result
+    end
+
+    test "LC_* and XDG_* prefixed vars survive" do
+      put_named_env("LC_JIDO_TEST_COLLATE", "C")
+      put_named_env("XDG_JIDO_TEST_HOME", "/tmp/xdg")
+
+      result = Env.scrubbed_cmd_env()
+
+      refute {"LC_JIDO_TEST_COLLATE", nil} in result
+      refute {"XDG_JIDO_TEST_HOME", nil} in result
+    end
+
+    test "credential-free proxy vars survive; credentialed ones are dropped" do
+      put_named_env("http_proxy", "http://proxy.example.com:8080")
+      put_named_env("HTTPS_PROXY", "proxy.example.com:8080")
+
+      result = Env.scrubbed_cmd_env()
+
+      refute {"http_proxy", nil} in result
+      refute {"HTTPS_PROXY", nil} in result
+
+      put_named_env("HTTP_PROXY", "http://user:pass@proxy.example.com:8080")
+      assert {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+
+      # Scheme-less userinfo form is just as credentialed.
+      put_named_env("HTTP_PROXY", "user:pass@proxy.example.com:8080")
+      assert {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+
+      # Token-only userinfo (no password segment) is still a credential.
+      put_named_env("HTTP_PROXY", "http://token@proxy.example.com:8080")
+      assert {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+
+      put_named_env("HTTP_PROXY", "token@proxy.example.com:8080")
+      assert {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+
+      # An `@` past the authority — in the path or query — is not
+      # userinfo and must not drop the var.
+      put_named_env("HTTP_PROXY", "http://proxy.example.com:8080/p@th")
+      refute {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+
+      put_named_env("HTTP_PROXY", "http://proxy.example.com?x=a@b")
+      refute {"HTTP_PROXY", nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "app-config extension surface admits extra vars" do
+      name = put_fake_secret("DIR")
+
+      Application.put_env(:jido_claw, :extra_allowed_env_vars, [name])
+      on_exit(fn -> Application.delete_env(:jido_claw, :extra_allowed_env_vars) end)
+
+      refute {name, nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "app-config prefix extension surface admits prefixed vars" do
+      put_named_env("JIDO_KEEP_ME", "1")
+
+      Application.put_env(:jido_claw, :extra_allowed_env_prefixes, ["JIDO_KEEP_"])
+      on_exit(fn -> Application.delete_env(:jido_claw, :extra_allowed_env_prefixes) end)
+
+      refute {"JIDO_KEEP_ME", nil} in Env.scrubbed_cmd_env()
+    end
+
+    test "JIDOCLAW_EXTRA_ALLOWED_ENV_VARS System env extension admits extra vars" do
+      name_a = put_fake_secret("DIR")
+      name_b = put_fake_secret("DIR")
+
+      # Messy formatting — spaces and a trailing comma — parses predictably.
+      put_named_env("JIDOCLAW_EXTRA_ALLOWED_ENV_VARS", " #{name_a}, #{name_b},")
+
+      result = Env.scrubbed_cmd_env()
+
+      refute {name_a, nil} in result
+      refute {name_b, nil} in result
     end
 
     test "an override with a sensitive name wins — no unset tuple emitted" do
@@ -161,6 +279,22 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
     name = "JIDO_TEST_#{System.unique_integer([:positive])}_#{suffix}"
     System.put_env(name, "fake-secret-value")
     on_exit(fn -> System.delete_env(name) end)
+    name
+  end
+
+  # For tests that need a REAL var name (SECRET_KEY_BASE, HTTP_PROXY, ...):
+  # save and restore any pre-existing value instead of blindly deleting.
+  defp put_named_env(name, value) do
+    original = System.get_env(name)
+    System.put_env(name, value)
+
+    on_exit(fn ->
+      case original do
+        nil -> System.delete_env(name)
+        prior -> System.put_env(name, prior)
+      end
+    end)
+
     name
   end
 end

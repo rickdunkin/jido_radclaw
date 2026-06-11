@@ -152,6 +152,39 @@ defmodule JidoClaw.Conversations.MessageTest do
     end
   end
 
+  describe ":import redaction" do
+    test "redacts content and metadata at the storage boundary (persisted row, not just the return)" do
+      %{session: session, tenant_id: tenant_id} = seed()
+
+      raw_key = "sk-abcdef0123456789abcdef0123456789"
+
+      {:ok, imported} =
+        Message.import(
+          %{
+            session_id: session.id,
+            role: :user,
+            sequence: 1,
+            content: "legacy line with #{raw_key} inline",
+            metadata: %{"api_key" => raw_key},
+            inserted_at: DateTime.utc_now(),
+            import_hash: "redact-#{System.unique_integer([:positive])}"
+          },
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      # Re-read from Postgres — pins the persisted state, not the
+      # in-memory changeset result.
+      {:ok, [row]} =
+        Message.for_session(session.id, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert row.id == imported.id
+      assert row.content =~ "[REDACTED:API_KEY]"
+      refute row.content =~ raw_key
+      assert row.metadata["api_key"] == "[REDACTED]"
+    end
+  end
+
   describe "cross-tenant FK invariant" do
     test "import refuses tenant_id that doesn't match the parent session" do
       %{session: session} = seed()

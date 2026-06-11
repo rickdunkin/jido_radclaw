@@ -1,7 +1,8 @@
 defmodule JidoClaw.Security.Redaction.Env do
   @moduledoc """
   Environment-variable redaction for profile values in logs and
-  `/profile current` output.
+  `/profile current` output, plus the inheritance allowlist for env
+  passed to spawned child processes.
 
   Unlike `JidoClaw.Security.Redaction.Patterns` which scans value strings
   for known secret formats (`sk-...`, `ghp_...`, JWTs), this module
@@ -10,22 +11,69 @@ defmodule JidoClaw.Security.Redaction.Env do
   pattern. Falls through to `Patterns.redact/1` so values with embedded
   API keys still get scrubbed.
 
-  ## Rules
+  ## Redaction rules (`redact_value/2`, `redact_env/1`)
 
     * Key name ending in `_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`,
-      `_PASS`, or `_PAT` (case-insensitive) → whole value masked as
-      `[REDACTED]`.
+      `_PASS`, `_PAT`, `_CREDENTIAL`, or `_CREDENTIALS`
+      (case-insensitive) → whole value masked as `[REDACTED]`.
+      Deliberately NOT `_TOKENS`: `input_tokens`/`output_tokens`/
+      `total_tokens` are ubiquitous LLM usage counters (same false-
+      positive class as `_BASE`); the known plural-secret name
+      `ONECLI_AGENT_TOKENS` is matched specifically instead.
     * Bare key name exactly (case-insensitive) `password`, `secret`,
       `token`, `authorization`, or `credential` → whole value masked.
       These carry no suffix but are the canonical shape of secret-bearing
       map keys (e.g. an event/JSON payload `%{"token" => "..."}`). Matched
       *exactly*, not as a substring, so `tokenizer`/`session_id` stay safe.
     * Specific names — `AWS_SECRET_*`, `AWS_SESSION_TOKEN`,
+      `AWS_ACCESS_KEY_ID`, `SECRET_KEY_BASE`, `ONECLI_AGENT_TOKENS`,
       `DATABASE_URL`, `DB_URL` → whole value masked (user/host in a
       connection URL can be sensitive on its own).
     * Values matching `scheme://user:pass@host/...` → password segment
       masked, user/scheme/host preserved.
     * Otherwise → pass through `Patterns.redact/1`.
+
+  ## Child-process inheritance (`scrubbed_cmd_env/1`, `scrubbed_port_env/1`)
+
+  Children inherit by *allowlist*, not denylist: every parent var that
+  is not explicitly inheritable is unset, so an unconventionally named
+  secret (`SECRET_KEY_BASE`, `ONECLI_AGENT_TOKENS`) can't slip through
+  on naming alone. Inheritable are:
+
+    * shell/locale ergonomics — `PATH`, `HOME`, `USER`, `LOGNAME`,
+      `SHELL`, `TERM`, `COLORTERM`, `LANG`, `LANGUAGE`, `TZ`, `TMPDIR`,
+      `EDITOR`, `VISUAL`, `PAGER`, plus any `LC_*` / `XDG_*` var;
+    * TLS trust roots — `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+      `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`;
+    * proxy config — `NO_PROXY`/`no_proxy` unconditionally;
+      `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `FTP_PROXY` (and
+      lowercase forms) only when the value carries no userinfo — any
+      `@` in the authority drops the var, with or without a password
+      (`http://user:pass@proxy:8080`, `http://token@proxy:8080`, and
+      scheme-less forms); plain `proxy:8080` survives.
+
+  Deliberately NOT inheritable by default — credential-capability vars
+  that aren't secret strings themselves but grant auth/signing
+  capability to children: `SSH_AUTH_SOCK`, `GPG_TTY`, `GNUPGHOME`.
+  Known consequences: SSH-based `git clone` in the resource
+  provisioner and GPG-signed git commits stop working until opted back
+  in via the extension surfaces below.
+
+  ## Operator extension surfaces
+
+  Extra inheritable names/prefixes are read at call time from:
+
+    * `JIDOCLAW_EXTRA_ALLOWED_ENV_VARS` — comma-separated System env
+      var (settable from `.env`), e.g.
+      `JIDOCLAW_EXTRA_ALLOWED_ENV_VARS=SSH_AUTH_SOCK,KUBECONFIG`;
+    * `config :jido_claw, :extra_allowed_env_vars, ["SSH_AUTH_SOCK"]` —
+      app config (exact names);
+    * `config :jido_claw, :extra_allowed_env_prefixes, ["MYCO_"]` —
+      app config (prefixes).
+
+  An override passed to `scrubbed_cmd_env/1` always wins and bypasses
+  the allowlist entirely — a child that genuinely needs a secret must
+  be handed it explicitly.
 
   ## Documented false negatives
 
@@ -37,10 +85,25 @@ defmodule JidoClaw.Security.Redaction.Env do
 
   alias JidoClaw.Security.Redaction.Patterns
 
-  @sensitive_suffix ~r/_(KEY|TOKEN|SECRET|PASSWORD|PASS|PAT)$/i
-  @sensitive_specific ~r/^(AWS_SECRET_.*|AWS_SESSION_TOKEN|DATABASE_URL|DB_URL)$/i
+  @sensitive_suffix ~r/_(KEY|TOKEN|SECRET|PASSWORD|PASS|PAT|CREDENTIAL|CREDENTIALS)$/i
+  @sensitive_specific ~r/^(AWS_SECRET_.*|AWS_SESSION_TOKEN|AWS_ACCESS_KEY_ID|SECRET_KEY_BASE|ONECLI_AGENT_TOKENS|DATABASE_URL|DB_URL)$/i
   @sensitive_exact ~w(password secret token authorization credential)
   @url_with_creds ~r{(\w+://)([^:@/]+):([^@/]+)(@)}
+
+  @inherit_exact ~w(
+    PATH HOME USER LOGNAME SHELL TERM COLORTERM LANG LANGUAGE TZ TMPDIR
+    EDITOR VISUAL PAGER
+    SSL_CERT_FILE SSL_CERT_DIR NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE
+    CURL_CA_BUNDLE
+    NO_PROXY no_proxy
+  )
+
+  @inherit_prefixes ~w(LC_ XDG_)
+
+  # Inherited only when the value carries no credentials — see
+  # proxy_value_has_creds?/1.
+  @proxy_vars ~w(HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY
+                 http_proxy https_proxy all_proxy ftp_proxy)
 
   @doc """
   Redacts sensitive values in the given env map. Returns a new map with
@@ -84,10 +147,10 @@ defmodule JidoClaw.Security.Redaction.Env do
 
   @doc """
   `:env` option for `System.cmd` call sites: unsets every currently-set
-  sensitive variable (per `sensitive_key?/1`) so child processes don't
-  inherit secrets, then appends the given overrides. An override always
-  wins over the scrub list — a child that genuinely needs a secret must
-  re-add it explicitly. Override keys/values are coerced via
+  parent var that is not on the inheritance allowlist (see the
+  moduledoc), then appends the given overrides. An override always wins
+  and bypasses the allowlist — a child that genuinely needs a secret
+  must be handed it explicitly. Override keys/values are coerced via
   `to_string/1`; an explicit `nil` value still means "unset".
 
   `Port.open` call sites need `scrubbed_port_env/1` instead — port env
@@ -100,9 +163,12 @@ defmodule JidoClaw.Security.Redaction.Env do
         {to_string(k), if(is_nil(v), do: nil, else: to_string(v))}
       end)
 
+    extra_exact = extra_allowed_vars()
+    extra_prefixes = extra_allowed_prefixes()
+
     unsets =
-      for {key, _value} <- System.get_env(),
-          sensitive_key?(key),
+      for {key, value} <- System.get_env(),
+          not inheritable?(key, value, extra_exact, extra_prefixes),
           not Map.has_key?(override_map, key),
           do: {key, nil}
 
@@ -131,6 +197,58 @@ defmodule JidoClaw.Security.Redaction.Env do
   end
 
   def sensitive_key?(_), do: false
+
+  defp inheritable?(key, value, extra_exact, extra_prefixes) do
+    cond do
+      key in @inherit_exact -> true
+      key in @proxy_vars -> not proxy_value_has_creds?(value)
+      String.starts_with?(key, @inherit_prefixes) -> true
+      key in extra_exact -> true
+      extra_prefixes != [] and String.starts_with?(key, extra_prefixes) -> true
+      true -> false
+    end
+  end
+
+  # Any `@` in the authority (after an optional `scheme://`) is
+  # userinfo — token-only `token@host` is as credentialed as
+  # `user:pass@host`. Per RFC 3986 the authority ends at the first
+  # `/`, `?`, or `#`, so an `@` in the path or query doesn't count.
+  defp proxy_value_has_creds?(value) do
+    value
+    |> strip_scheme()
+    |> String.split(["/", "?", "#"], parts: 2)
+    |> hd()
+    |> String.contains?("@")
+  end
+
+  defp strip_scheme(value) do
+    case String.split(value, "://", parts: 2) do
+      [_scheme, rest] -> rest
+      [_] -> value
+    end
+  end
+
+  defp extra_allowed_vars do
+    from_app = Application.get_env(:jido_claw, :extra_allowed_env_vars, [])
+
+    from_system =
+      case System.get_env("JIDOCLAW_EXTRA_ALLOWED_ENV_VARS") do
+        nil ->
+          []
+
+        raw ->
+          raw
+          |> String.split(",")
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+      end
+
+    from_app ++ from_system
+  end
+
+  defp extra_allowed_prefixes do
+    Application.get_env(:jido_claw, :extra_allowed_env_prefixes, [])
+  end
 
   defp coerce(v) when is_binary(v), do: v
   defp coerce(v), do: to_string(v)

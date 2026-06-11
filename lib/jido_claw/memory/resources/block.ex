@@ -62,6 +62,7 @@ defmodule JidoClaw.Memory.Block do
   alias JidoClaw.Memory.BlockRevision
   alias JidoClaw.Repo
   alias JidoClaw.Security.CrossTenantFk
+  alias JidoClaw.Security.Redaction.Memory, as: MemoryRedaction
 
   @scope_kinds [:user, :workspace, :project, :session]
   @sources [:user, :consolidator]
@@ -133,6 +134,10 @@ defmodule JidoClaw.Memory.Block do
 
       change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
+      # RedactContent must run before CapValueLength: a redaction
+      # placeholder can be longer than the raw secret it replaces, so
+      # the cap has to validate the final stored value.
+      change({__MODULE__.Changes.RedactContent, []})
       change({__MODULE__.Changes.CapValueLength, []})
 
       change(
@@ -348,6 +353,30 @@ defmodule JidoClaw.Memory.Block do
           {:project_id, :no_tenant_column, nil}
         ])
       end)
+    end
+  end
+
+  defmodule Changes.RedactContent do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    @impl Ash.Resource.Change
+    def change(changeset, _opts, _context) do
+      Changeset.before_action(changeset, fn cs ->
+        cs
+        |> redact_attribute(:value)
+        |> redact_attribute(:description)
+      end)
+    end
+
+    defp redact_attribute(cs, attr) do
+      case Changeset.get_attribute(cs, attr) do
+        value when is_binary(value) ->
+          Changeset.force_change_attribute(cs, attr, MemoryRedaction.redact_fact!(value))
+
+        _ ->
+          cs
+      end
     end
   end
 

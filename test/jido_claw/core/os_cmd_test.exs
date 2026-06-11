@@ -45,6 +45,19 @@ defmodule JidoClaw.Core.OsCmdTest do
       assert {"", 0} = OsCmd.run(sh, ["-c", ~s(printf %s "$#{var}")], env: [{var, nil}])
     end
 
+    test "default env (no :env opt) is scrubbed — non-allowlisted parent vars don't leak",
+         %{sh: sh} do
+      var = "OS_CMD_TEST_LEAK_#{System.unique_integer([:positive])}"
+      System.put_env(var, "should-not-leak")
+      on_exit(fn -> System.delete_env(var) end)
+
+      assert {"", 0} = OsCmd.run(sh, ["-c", ~s(printf %s "$#{var}")])
+
+      # Allowlisted vars still flow through the default scrub.
+      assert {home, 0} = OsCmd.run(sh, ["-c", ~s(printf %s "$HOME")])
+      assert home == System.get_env("HOME")
+    end
+
     test "runs in the given cd", %{sh: sh, tmp: tmp} do
       File.write!(Path.join(tmp, "marker.txt"), "from-cd")
 

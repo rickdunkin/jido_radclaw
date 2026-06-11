@@ -80,6 +80,21 @@ defmodule JidoClaw.Memory.FactTest do
       [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
       assert fact.invalid_at == nil
     end
+
+    test "redacts secrets in content before persistence", %{
+      tenant_id: tenant_id,
+      tool_context: tc
+    } do
+      :ok =
+        Memory.remember_from_user(
+          %{key: "leaky", content: "my key is sk-ant-aaaabbbbccccddddeeeeffff", type: "fact"},
+          tc
+        )
+
+      [fact] = Fact.list!(tenant: tenant_id, actor: actor_for(tenant_id))
+      assert fact.content =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute fact.content =~ "sk-ant-aaaabbbbccccddddeeeeffff"
+    end
   end
 
   describe "content_hash + search_vector generated columns" do

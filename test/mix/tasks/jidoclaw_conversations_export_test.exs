@@ -81,12 +81,15 @@ defmodule Mix.Tasks.Jidoclaw.ConversationsExportTest do
       raw_fixture =
         File.read!(Path.join([project_dir, ".jido", "sessions", tenant_id, "api_secret.jsonl"]))
 
-      # The conversations migrate path imports content as-is — no
-      # storage-time redaction (unlike Memory/Solutions). The fixture
-      # is pre-scrubbed with `[REDACTED…]` markers so the export's
-      # redaction-manifest writer has something to scan and report.
-      assert raw_fixture =~ "[REDACTED:API_KEY]",
-             "fixture must contain a [REDACTED…] marker for the export manifest scanner"
+      # The fixture carries a RAW secret — Message :import redacts at
+      # the storage boundary (like Memory/Solutions), and this test
+      # proves it: the redaction markers asserted below exist only
+      # because the import scrubbed the raw key.
+      assert raw_fixture =~ ~r/sk-[A-Za-z0-9]{20,}/,
+             "fixture must contain a raw sk-... key so the import-time redaction is exercised"
+
+      refute raw_fixture =~ "[REDACTED",
+             "fixture must not be pre-scrubbed — that would let the assertions pass trivially"
 
       out_path = Path.join([project_dir, "convo-export.jsonl.exported"])
 

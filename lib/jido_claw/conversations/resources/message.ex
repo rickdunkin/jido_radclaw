@@ -49,7 +49,11 @@ defmodule JidoClaw.Conversations.Message do
 
   `:import` does NOT run the sequence-allocation hook — the migrator
   passes `sequence` explicitly so re-runs preserve the legacy file
-  order. `:import` runs only the cross-tenant FK validation hook.
+  order. `:import` runs the redaction hook (legacy JSONL lines can
+  carry raw secrets) and the cross-tenant FK validation hook.
+  Redaction is idempotent, so migrator re-runs converge; `import_hash`
+  is computed by the migrator from the raw line, so dedup is
+  unaffected.
 
   ## Cross-tenant FK invariant
 
@@ -185,6 +189,7 @@ defmodule JidoClaw.Conversations.Message do
         :latency_ms
       ])
 
+      change({__MODULE__.Changes.RedactContent, []})
       change({__MODULE__.Changes.ValidateCrossTenantFk, []})
     end
 

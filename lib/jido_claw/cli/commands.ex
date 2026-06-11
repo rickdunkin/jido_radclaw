@@ -1435,7 +1435,7 @@ defmodule JidoClaw.CLI.Commands do
           char_limit: block.char_limit,
           pinned: block.pinned,
           position: block.position,
-          source: :user_save,
+          source: :user,
           written_by: "cli"
         }
 

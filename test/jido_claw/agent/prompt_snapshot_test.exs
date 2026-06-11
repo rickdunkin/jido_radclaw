@@ -70,6 +70,43 @@ defmodule JidoClaw.Agent.PromptSnapshotTest do
     assert prompt =~ "Always run mix format"
   end
 
+  test "a block written with a raw secret never reaches the prompt unredacted",
+       %{project_dir: dir} do
+    {:ok, ws} = WorkspaceResolver.ensure_workspace("default", dir)
+
+    raw_key = "sk-ant-aaaabbbbccccddddeeeeffff"
+
+    {:ok, _block} =
+      Block.write(
+        %{
+          scope_kind: :workspace,
+          workspace_id: ws.id,
+          label: "leaky",
+          value: "anthropic key is #{raw_key}",
+          description: "also holds #{raw_key}",
+          source: :user
+        },
+        tenant: "default",
+        actor: Actor.system("default")
+      )
+
+    prompt =
+      Prompt.build_snapshot(dir, %{
+        tenant_id: "default",
+        scope_kind: :workspace,
+        workspace_id: ws.id,
+        user_id: nil,
+        project_id: nil,
+        session_id: nil
+      })
+
+    # Blocks render verbatim into the system prompt — the only thing
+    # standing between a pasted secret and the LLM is the :write-time
+    # redaction this pins.
+    refute prompt =~ raw_key
+    assert prompt =~ "[REDACTED:ANTHROPIC_KEY]"
+  end
+
   test "snapshot is byte-stable across reads", %{project_dir: dir} do
     {:ok, ws} = WorkspaceResolver.ensure_workspace("default", dir)
 

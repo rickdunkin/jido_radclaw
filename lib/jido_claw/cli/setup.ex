@@ -295,12 +295,23 @@ defmodule JidoClaw.CLI.Setup do
   @doc """
   Persist `KEY=value` to `<project_dir>/.env`. Updates an existing
   line in place (preserving order, comments, and blank lines) or
-  appends a new one. Atomic: writes via `<.env>.tmp` + rename.
+  appends a new one. Atomic: writes via a unique per-call tmp file +
+  rename. The file is created at — and an existing regular file is
+  tightened to — mode `0600`; the tmp file is `0600` before any
+  content lands in it, so the secret is never world-readable, even
+  transiently.
   """
   @spec persist_env_var(String.t(), String.t(), String.t()) :: :ok
   def persist_env_var(project_dir, key, value)
       when is_binary(project_dir) and is_binary(key) and is_binary(value) do
     env_path = Path.join(project_dir, ".env")
+
+    # lstat, not stat: stat follows symlinks, and a symlink (or
+    # directory) sitting at .env must never get its mode rewritten.
+    case File.lstat(env_path) do
+      {:ok, %File.Stat{type: :regular}} -> File.chmod(env_path, 0o600)
+      _ -> :ok
+    end
 
     existing =
       case File.read(env_path) do
@@ -310,10 +321,19 @@ defmodule JidoClaw.CLI.Setup do
 
     new_content = upsert_env_line(existing, key, value)
 
-    tmp = env_path <> ".tmp"
-    File.write!(tmp, new_content)
-    File.rename!(tmp, env_path)
-    :ok
+    tmp = env_path <> ".#{System.unique_integer([:positive])}.tmp"
+
+    try do
+      File.touch!(tmp)
+      File.chmod!(tmp, 0o600)
+      File.write!(tmp, new_content)
+      File.rename!(tmp, env_path)
+      :ok
+    after
+      # On write/rename failure the secret-bearing tmp must not
+      # outlive the call; after a successful rename this is :enoent.
+      File.rm(tmp)
+    end
   end
 
   defp upsert_env_line(content, key, value) do
