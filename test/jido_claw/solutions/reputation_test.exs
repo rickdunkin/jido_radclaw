@@ -72,9 +72,7 @@ defmodule JidoClaw.Solutions.ReputationTest do
             sharing: :local,
             workspace_id: workspace.id,
             agent_id: agent_id,
-            embedding_status: :disabled,
-            verification: %{},
-            trust_score: 0.0
+            embedding_status: :disabled
           },
           tenant: tenant_id,
           actor: actor

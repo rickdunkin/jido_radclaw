@@ -38,6 +38,59 @@ defmodule JidoClaw.Solutions.SolutionTest do
     end
   end
 
+  describe "trust is never caller-asserted at create (H6)" do
+    test ":store rejects trust_score/verification in attrs with NoSuchInput" do
+      tenant_id = unique_tenant_id()
+      workspace = workspace_fixture(tenant_id)
+
+      sig =
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
+
+      attrs = %{
+        problem_signature: sig,
+        solution_content: "x = 1",
+        language: "elixir",
+        sharing: :local,
+        workspace_id: workspace.id,
+        embedding_status: :disabled,
+        trust_score: 1.0,
+        verification: %{"status" => "passed"}
+      }
+
+      assert {:error, %Ash.Error.Invalid{} = err} =
+               Solution.store(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert inspect(err) =~ ~r/trust_score|verification/
+    end
+
+    test ":import_legacy still accepts trust_score (intentional contrast for the migrator)" do
+      tenant_id = unique_tenant_id()
+      workspace = workspace_fixture(tenant_id)
+
+      sig =
+        Base.encode16(:crypto.hash(:sha256, "sig-#{System.unique_integer([:positive])}"),
+          case: :lower
+        )
+
+      attrs = %{
+        problem_signature: sig,
+        solution_content: "x = 1",
+        language: "elixir",
+        sharing: :local,
+        workspace_id: workspace.id,
+        embedding_status: :disabled,
+        trust_score: 0.9
+      }
+
+      assert {:ok, solution} =
+               Solution.import_legacy(attrs, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert solution.trust_score == 0.9
+    end
+  end
+
   describe "cross-tenant FK rejection" do
     test ":store rejects a (tenant_id, workspace_id) pair where the workspace lives in a different tenant" do
       tenant_a = unique_tenant_id()

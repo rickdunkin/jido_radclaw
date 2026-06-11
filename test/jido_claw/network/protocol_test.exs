@@ -177,6 +177,11 @@ defmodule JidoClaw.Network.ProtocolTest do
       assert {:error, :not_a_map} = Protocol.decode([:list])
     end
 
+    test "should return {:error, :not_a_map} for a struct envelope" do
+      # Structs satisfy is_map but would crash MapKeys.normalize_keys/2.
+      assert {:error, :not_a_map} = Protocol.decode(DateTime.utc_now())
+    end
+
     test "should default missing payload to empty map", %{identity: identity} do
       encoded = Protocol.encode(:ping, %{}, identity)
       no_payload = Map.delete(encoded, "payload")
@@ -232,6 +237,111 @@ defmodule JidoClaw.Network.ProtocolTest do
     test "should return false when called with non-map or missing fields" do
       assert Protocol.verify_message(%{}, <<0::32>>) == false
       assert Protocol.verify_message("not a map", <<0::32>>) == false
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # verify_and_normalize/3
+  # ---------------------------------------------------------------------------
+
+  describe "verify_and_normalize/3" do
+    test "should canonicalize a signed atom-keyed payload to plain JSON data", %{
+      identity: identity,
+      pub: pub
+    } do
+      payload = %{agent_id: "spoof", nested: %{deep: 1}, list: [%{a: 1}]}
+      message = Protocol.encode(:share, payload, identity)
+
+      assert {:ok, canonical} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:ok, pub} end)
+
+      assert canonical["from"] == identity.agent_id
+
+      assert canonical["payload"] == %{
+               "agent_id" => "spoof",
+               "nested" => %{"deep" => 1},
+               "list" => [%{"a" => 1}]
+             }
+    end
+
+    test "should pass the decoded from to the key fetcher", %{identity: identity, pub: pub} do
+      message = Protocol.share_message(%{"a" => 1}, identity)
+      expected_from = identity.agent_id
+
+      assert {:ok, _} =
+               Protocol.verify_and_normalize(message, "share", fn from ->
+                 assert from == expected_from
+                 {:ok, pub}
+               end)
+    end
+
+    test "should reject a signed struct payload whose JSON form is not an object", %{
+      identity: identity,
+      pub: pub
+    } do
+      # DateTime is a map, Jason-encodes (to a string), and signs fine —
+      # but its JSON form is a scalar, not an object.
+      message = Protocol.share_message(DateTime.utc_now(), identity)
+
+      assert {:error, :malformed} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject a handcrafted payload that cannot encode to JSON", %{
+      identity: identity,
+      pub: pub
+    } do
+      # A reference has no Jason.Encoder impl — Jason.encode returns an
+      # error tuple (it does not raise), which the boundary maps to
+      # :malformed.
+      message =
+        %{Protocol.share_message(%{"a" => 1}, identity) | "payload" => %{"a" => make_ref()}}
+
+      assert {:error, :malformed} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject a handcrafted tuple-bearing payload", %{identity: identity, pub: pub} do
+      # Tuples ARE Jason-encodable in this project (tentacat ships a
+      # Jason.Encoder impl for Tuple), so this re-encodes to bytes that
+      # differ from the signed ones and dies at the signature check
+      # instead of the encode step. If that impl ever disappears, the
+      # reason flips to :malformed — either way the message is dropped
+      # without crashing.
+      message = %{Protocol.share_message(%{"a" => 1}, identity) | "payload" => %{"a" => {:t, 1}}}
+
+      assert {:error, :bad_signature} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject a type mismatch (cross-type replay)", %{identity: identity, pub: pub} do
+      message = Protocol.share_message(%{"a" => 1}, identity)
+
+      assert {:error, :type_mismatch} =
+               Protocol.verify_and_normalize(message, "response", fn _ -> {:ok, pub} end)
+    end
+
+    test "should propagate the key fetcher's error without verifying", %{identity: identity} do
+      message = Protocol.share_message(%{"a" => 1}, identity)
+
+      assert {:error, :unknown_peer} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:error, :unknown_peer} end)
+    end
+
+    test "should reject a tampered payload as :bad_signature", %{identity: identity, pub: pub} do
+      message = %{Protocol.share_message(%{"a" => 1}, identity) | "payload" => %{"a" => 2}}
+
+      assert {:error, :bad_signature} =
+               Protocol.verify_and_normalize(message, "share", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject non-map and struct envelopes before key lookup" do
+      fetch_key = fn _ -> flunk("key fetcher must not be called") end
+
+      assert {:error, :not_a_map} = Protocol.verify_and_normalize(42, "share", fetch_key)
+
+      assert {:error, :not_a_map} =
+               Protocol.verify_and_normalize(DateTime.utc_now(), "share", fetch_key)
     end
   end
 

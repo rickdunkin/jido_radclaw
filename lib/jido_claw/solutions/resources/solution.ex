@@ -83,8 +83,6 @@ defmodule JidoClaw.Solutions.Solution do
     )
 
     define(:stats, action: :stats, args: [:workspace_id])
-    define(:update_trust, action: :update_trust)
-    define(:update_verification, action: :update_verification)
     define(:update_verification_and_trust, action: :update_verification_and_trust)
     define(:soft_delete, action: :soft_delete)
     define(:transition_embedding_status, action: :transition_embedding_status)
@@ -111,6 +109,12 @@ defmodule JidoClaw.Solutions.Solution do
       # can supply them up-front. `Changes.ResolveInitialEmbeddingStatus`
       # respects an explicit `:embedding_status` and only resolves from
       # workspace policy when the caller didn't provide one.
+      #
+      # `:trust_score`/`:verification` are deliberately NOT accepted:
+      # trust is earned server-side via `:update_verification_and_trust`
+      # (RecomputeTrustScore), never caller-asserted at create. New rows
+      # start at the attribute defaults (0.0 / %{}). Only
+      # `:import_legacy` may carry them (v0.5.x migration).
       accept([
         :problem_signature,
         :solution_content,
@@ -119,8 +123,6 @@ defmodule JidoClaw.Solutions.Solution do
         :runtime,
         :agent_id,
         :tags,
-        :verification,
-        :trust_score,
         :sharing,
         :workspace_id,
         :session_id,
@@ -208,16 +210,6 @@ defmodule JidoClaw.Solutions.Solution do
 
     read :with_deleted do
       description("Replay/audit read that does NOT filter out soft-deleted rows.")
-    end
-
-    update :update_trust do
-      accept([:trust_score])
-      require_atomic?(false)
-    end
-
-    update :update_verification do
-      accept([:verification])
-      require_atomic?(false)
     end
 
     update :update_verification_and_trust do

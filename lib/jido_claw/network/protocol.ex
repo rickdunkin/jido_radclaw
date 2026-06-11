@@ -14,6 +14,14 @@ defmodule JidoClaw.Network.Protocol do
       signature: base64 string (Ed25519 over JSON-encoded payload),
       timestamp: ISO-8601 UTC string
     }
+
+  `verify_and_normalize/3` is the inbound boundary: receivers must not
+  consume raw transport terms directly — clustered PubSub delivers BEAM
+  terms verbatim, so an inbound message can carry shapes plain JSON
+  could never produce (atom keys, structs, tuples). The boundary
+  verifies the signature and then replaces the payload with its JSON
+  round-trip, so handlers only ever see canonical string-keyed plain
+  data.
   """
 
   alias JidoClaw.Agent.Identity
@@ -52,10 +60,11 @@ defmodule JidoClaw.Network.Protocol do
   Parse a raw message map (atom or string keys) into a validated map with
   string keys.
 
-  Returns `{:ok, message}` or `{:error, reason}`.
+  Returns `{:ok, message}` or `{:error, reason}`. Non-map input —
+  including structs — returns `{:error, :not_a_map}`.
   """
-  @spec decode(map()) :: {:ok, map()} | {:error, atom()}
-  def decode(raw) when is_map(raw) do
+  @spec decode(term()) :: {:ok, map()} | {:error, atom() | {:missing | :invalid, String.t()}}
+  def decode(raw) when is_map(raw) and not is_struct(raw) do
     normalised = MapKeys.normalize_keys(raw, :string)
 
     with {:ok, type} <- fetch_valid_type(normalised),
@@ -95,6 +104,74 @@ defmodule JidoClaw.Network.Protocol do
   end
 
   def verify_message(_, _), do: false
+
+  @doc """
+  Verify an inbound message and canonicalize it to plain JSON data —
+  the boundary every receiver must pass raw transport terms through
+  before handling them.
+
+  The signature only proves "this payload encodes to the signed JSON
+  bytes"; it says nothing about the term's BEAM shape, and clustered
+  PubSub delivers terms verbatim. Steps:
+
+    1. `decode/1` validates and string-normalizes the envelope,
+    2. the envelope `type` must equal `expected_type` — receivers
+       dispatch on an attacker-chosen transport tag, so without this a
+       validly signed "share" could be replayed as a "response",
+    3. `fetch_key.(from)` resolves the sender's trusted public key
+       (`{:ok, pubkey}` or a passed-through `{:error, reason}`),
+    4. the Ed25519 signature is verified over the payload's JSON
+       encoding (a payload that cannot encode was never signed —
+       `:malformed`),
+    5. the payload is replaced by its JSON round-trip: atom keys and
+       structs collapse into the plain string-keyed data a real wire
+       transport would have produced. A payload whose JSON form is not
+       an object (e.g. a struct that encodes to a scalar) is rejected
+       as `:malformed`.
+
+  Returns `{:ok, message}` with the canonicalized payload, or
+  `{:error, reason}`.
+  """
+  @spec verify_and_normalize(
+          term(),
+          String.t(),
+          (String.t() -> {:ok, binary()} | {:error, term()})
+        ) :: {:ok, map()} | {:error, term()}
+  def verify_and_normalize(raw, expected_type, fetch_key)
+      when is_binary(expected_type) and is_function(fetch_key, 1) do
+    with {:ok, decoded} <- decode(raw),
+         :ok <- check_expected_type(decoded, expected_type),
+         {:ok, pubkey} <- fetch_key.(decoded["from"]),
+         {:ok, payload_json} <- encode_payload(decoded["payload"]),
+         :ok <- check_payload_signature(payload_json, decoded["signature"], pubkey) do
+      canonicalize_payload(decoded, payload_json)
+    end
+  end
+
+  defp check_expected_type(%{"type" => type}, type), do: :ok
+  defp check_expected_type(_decoded, _expected_type), do: {:error, :type_mismatch}
+
+  defp encode_payload(payload) do
+    case Jason.encode(payload) do
+      {:ok, payload_json} -> {:ok, payload_json}
+      {:error, _} -> {:error, :malformed}
+    end
+  end
+
+  defp check_payload_signature(payload_json, signature, pubkey) do
+    if Identity.verify(payload_json, signature, pubkey) do
+      :ok
+    else
+      {:error, :bad_signature}
+    end
+  end
+
+  defp canonicalize_payload(decoded, payload_json) do
+    case Jason.decode(payload_json) do
+      {:ok, payload} when is_map(payload) -> {:ok, %{decoded | "payload" => payload}}
+      _ -> {:error, :malformed}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Convenience constructors

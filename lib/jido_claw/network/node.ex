@@ -18,6 +18,7 @@ defmodule JidoClaw.Network.Node do
   require Logger
 
   alias JidoClaw.Agent.Identity
+  alias JidoClaw.Network.PeerDirectory
   alias JidoClaw.Network.Protocol
   alias JidoClaw.SignalBus
   alias JidoClaw.Solutions.{Matcher, NetworkFacade}
@@ -42,9 +43,14 @@ defmodule JidoClaw.Network.Node do
   # Client API
   # ---------------------------------------------------------------------------
 
+  # `:name` defaults to the module singleton (the client API targets
+  # it); tests pass `name: nil` to start an unregistered instance.
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
   end
 
   @doc """
@@ -163,6 +169,13 @@ defmodule JidoClaw.Network.Node do
       {:ok, identity} ->
         :ok = Phoenix.PubSub.subscribe(@pubsub, @topic)
 
+        unless PeerDirectory.configured?() do
+          Logger.warning(
+            "[Network.Node] No trusted peer keys configured (JIDOCLAW_NETWORK_PEERS) — " <>
+              "all inbound network messages will be dropped; outbound sharing still works"
+          )
+        end
+
         new_state = %{
           state
           | identity: identity,
@@ -256,8 +269,7 @@ defmodule JidoClaw.Network.Node do
     if same_agent?(message, state) do
       {:noreply, state}
     else
-      new_state = handle_solution_shared(message, state)
-      {:noreply, new_state}
+      {:noreply, verified_dispatch(message, "share", state, &handle_solution_shared/2)}
     end
   end
 
@@ -266,8 +278,7 @@ defmodule JidoClaw.Network.Node do
     if same_agent?(message, state) or state.status != :connected do
       {:noreply, state}
     else
-      handle_solution_requested(message, state)
-      {:noreply, add_peer(state, message)}
+      {:noreply, verified_dispatch(message, "request", state, &handle_solution_requested/2)}
     end
   end
 
@@ -276,34 +287,81 @@ defmodule JidoClaw.Network.Node do
     if same_agent?(message, state) do
       {:noreply, state}
     else
-      new_state = handle_solution_response(message, state)
-      {:noreply, new_state}
+      {:noreply, verified_dispatch(message, "response", state, &handle_solution_response/2)}
     end
   end
 
   @impl GenServer
   def handle_info(_msg, state), do: {:noreply, state}
 
+  # Run `handler` only when the message passes the protocol boundary
+  # (Protocol.verify_and_normalize/3): envelope decode + validation,
+  # expected-type assertion (Node dispatches on the attacker-chosen
+  # PubSub tuple tag, so a peer's validly signed "share" could
+  # otherwise be re-wrapped as a response), trusted-peer signature
+  # verification, and payload canonicalization to plain JSON data —
+  # clustered PubSub delivers raw BEAM terms, so without the round-trip
+  # handlers would consume atom keys/structs/tuples that JSON decoding
+  # could never produce. Otherwise log and drop — no store, no response
+  # broadcast, no add_peer, no Reputation.record_share.
+  #
+  # Residual risk, accepted: the signature covers only "payload" — not
+  # "from"/"type"/"id"/"timestamp". The key is looked up *by* "from",
+  # so a cross-"from" spoof fails verification. Verbatim replay of a
+  # peer's old signed message remains possible (no nonce/timestamp
+  # window) — acceptable because PubSub injection requires BEAM cluster
+  # membership (gossip secret + distribution cookie), and a cluster
+  # member already has full RCE.
+  defp verified_dispatch(message, expected_type, state, handler) do
+    case Protocol.verify_and_normalize(message, expected_type, &fetch_peer_key/1) do
+      {:ok, canonical} ->
+        handler.(canonical, state)
+
+      {:error, reason} ->
+        log_drop(reason, expected_type, message)
+        state
+    end
+  end
+
+  defp log_drop(:bad_signature, expected_type, message) do
+    Logger.warning(
+      "[Network.Node] Dropped #{expected_type} message with invalid signature " <>
+        "from #{inspect(message_from(message))}"
+    )
+  end
+
+  # Unknown-peer drops log at debug — on a shared segment every
+  # unconfigured neighbour produces these, and warning-level would be
+  # pure noise.
+  defp log_drop(reason, expected_type, message) do
+    Logger.debug(
+      "[Network.Node] Dropped #{expected_type} message (#{inspect(reason)}) " <>
+        "from #{inspect(message_from(message))}"
+    )
+  end
+
+  # `:malformed` drops can carry any term — Access syntax
+  # (`message["from"]`) on non-maps raises, taking the Node down
+  # mid-log.
+  defp message_from(message) when is_map(message), do: Map.get(message, "from")
+  defp message_from(_), do: nil
+
   # ---------------------------------------------------------------------------
   # Message handlers
   # ---------------------------------------------------------------------------
 
+  # Only called with the canonical message from verify_and_normalize/3
+  # — "from" is a binary and "payload" is a plain JSON map, so the
+  # hard match cannot fail.
   defp handle_solution_shared(message, state) do
-    with %{"payload" => payload, "from" => from} <- message,
-         true <- valid_or_unverifiable?(message, from),
-         {:ok, solution} <- store_received_solution(payload, from, state) do
-      Logger.debug("[Network.Node] Stored shared solution #{solution.id} from #{from}")
-    else
-      false ->
-        Logger.warning(
-          "[Network.Node] Dropped share message with invalid signature from #{message["from"]}"
-        )
+    %{"payload" => payload, "from" => from} = message
+
+    case store_received_solution(payload, from, state) do
+      {:ok, solution} ->
+        Logger.debug("[Network.Node] Stored shared solution #{solution.id} from #{from}")
 
       {:error, reason} ->
         Logger.debug("[Network.Node] Could not store shared solution: #{inspect(reason)}")
-
-      _ ->
-        :ok
     end
 
     add_peer(state, message)
@@ -311,12 +369,18 @@ defmodule JidoClaw.Network.Node do
 
   defp handle_solution_requested(message, state) do
     case message do
-      %{"payload" => %{"description" => description}, "id" => request_id, "from" => from} ->
-        opts_raw = get_in(message, ["payload", "opts"]) || %{}
-        opts = Enum.map(opts_raw, fn {k, v} -> {String.to_existing_atom(k), v} end)
+      # `request_id` is the envelope "id", which is NOT covered by the
+      # signature — guard its type here or a re-wrapped envelope could
+      # crash Protocol.response_message/3.
+      %{"payload" => %{"description" => description}, "id" => request_id, "from" => from}
+      when is_binary(description) and is_binary(request_id) ->
+        opts = sanitize_request_opts(get_in(message, ["payload", "opts"]))
 
         # Thread the node's tenant + workspace into Matcher so cross-
-        # tenant rows are not exposed via network responses.
+        # tenant rows are not exposed via network responses. Scope opts
+        # first: sanitize_request_opts/1 only emits disjoint keys, but
+        # if the whitelist ever grows an overlap, first occurrence wins
+        # in Keyword lookups.
         scope_opts = [
           tenant_id: state.tenant_id,
           workspace_id: state.workspace_id,
@@ -324,7 +388,7 @@ defmodule JidoClaw.Network.Node do
           cross_workspace_visibility: [:public]
         ]
 
-        solutions = Matcher.find_solutions(description, opts ++ scope_opts)
+        solutions = Matcher.find_solutions(description, scope_opts ++ opts)
 
         if solutions != [] and not is_nil(state.identity) do
           solution_maps = Enum.map(solutions, fn %{solution: s} -> NetworkFacade.to_wire(s) end)
@@ -340,9 +404,8 @@ defmodule JidoClaw.Network.Node do
       _ ->
         :ok
     end
-  rescue
-    # String.to_existing_atom may raise for unknown option keys
-    ArgumentError -> :ok
+
+    add_peer(state, message)
   end
 
   defp handle_solution_response(message, state) do
@@ -351,17 +414,24 @@ defmodule JidoClaw.Network.Node do
     with %{"payload" => %{"solutions" => solutions, "request_id" => _req_id}, "from" => from} <-
            message,
          true <- is_list(solutions) do
-      Enum.each(solutions, fn solution_map ->
-        attrs = Map.put(solution_map, "agent_id", from)
+      Enum.each(solutions, fn
+        solution_map when is_map(solution_map) ->
+          case NetworkFacade.store_inbound(solution_map, from, node_state) do
+            {:ok, solution} ->
+              Logger.debug("[Network.Node] Stored response solution #{solution.id} from #{from}")
+              Reputation.record_share(state.tenant_id, from)
 
-        case NetworkFacade.store_inbound(attrs, node_state) do
-          {:ok, solution} ->
-            Logger.debug("[Network.Node] Stored response solution #{solution.id} from #{from}")
-            Reputation.record_share(state.tenant_id, from)
+            {:error, reason} ->
+              Logger.debug("[Network.Node] Could not store response solution: #{inspect(reason)}")
+          end
 
-          {:error, reason} ->
-            Logger.debug("[Network.Node] Could not store response solution: #{inspect(reason)}")
-        end
+        other ->
+          # Entries are canonical JSON values after the boundary, but
+          # their shape is still sender-chosen — the signature covers
+          # the payload as a whole, not each "solutions" entry.
+          Logger.debug(
+            "[Network.Node] Skipped non-map response solution entry from #{from}: #{inspect(other)}"
+          )
       end)
     else
       _ -> :ok
@@ -379,21 +449,36 @@ defmodule JidoClaw.Network.Node do
 
   defp same_agent?(_, _), do: false
 
-  # Returns true when the signature is valid, or when we have no public key to
-  # verify against (peer unknown). Drops messages only when verification
-  # explicitly fails.
-  defp valid_or_unverifiable?(message, _from) do
-    # We don't maintain a peer key registry yet, so we accept unverifiable
-    # messages as potentially valid. Future: look up public key from a key
-    # directory keyed by agent_id and call Protocol.verify_message/2.
-    _ = message
-    true
+  defp fetch_peer_key(from) do
+    case PeerDirectory.fetch(from) do
+      {:ok, pubkey} -> {:ok, pubkey}
+      :error -> {:error, :unknown_peer}
+    end
   end
 
-  defp store_received_solution(payload, from, state) when is_map(payload) do
-    attrs = Map.put(payload, "agent_id", from)
+  # Peer-supplied request opts stay untrusted even when the signature
+  # verifies (the peer's software may be buggy or hostile). Whitelist
+  # known Matcher/Fingerprint options with valid value types and drop
+  # everything else — scope keys (tenant/workspace/visibility) can never
+  # be injected, non-binary values can't reach Fingerprint.signature/3,
+  # and limit is clamped (Matcher's own default is 5).
+  @max_request_limit 25
 
-    case NetworkFacade.store_inbound(attrs, node_state(state)) do
+  defp sanitize_request_opts(opts) when is_map(opts) do
+    Enum.flat_map(opts, fn
+      {"language", v} when is_binary(v) -> [language: v]
+      {"framework", v} when is_binary(v) -> [framework: v]
+      {"error_class", v} when is_binary(v) -> [error_class: v]
+      {"limit", v} when is_integer(v) and v > 0 -> [limit: min(v, @max_request_limit)]
+      {"threshold", v} when is_number(v) -> [threshold: v]
+      _ -> []
+    end)
+  end
+
+  defp sanitize_request_opts(_), do: []
+
+  defp store_received_solution(payload, from, state) when is_map(payload) do
+    case NetworkFacade.store_inbound(payload, from, node_state(state)) do
       {:ok, solution} ->
         Reputation.record_share(state.tenant_id, from)
         {:ok, solution}

@@ -373,6 +373,14 @@ defmodule JidoClaw.Application do
   # -- Clustering: libcluster --
   defp cluster_children do
     if Application.get_env(:jido_claw, :cluster_enabled, false) do
+      if Node.self() == :nonode@nohost do
+        Logger.warning(
+          "[JidoClaw] Clustering is enabled but Erlang distribution is not started — " <>
+            "no nodes can connect. Start the BEAM with --name/--sname and a " <>
+            "non-default distribution cookie (see README \"Clustering\")."
+        )
+      end
+
       topologies = JidoClaw.Cluster.topology()
 
       [

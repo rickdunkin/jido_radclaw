@@ -848,6 +848,24 @@ config :jido_claw,
   cluster_strategy: :gossip  # :gossip | :kubernetes | :epmd
 ```
 
+The `:gossip` strategy **requires** a shared secret — the app refuses to
+boot clustering without one:
+
+```bash
+JIDOCLAW_CLUSTER_SECRET=<same value on every node>   # or config :jido_claw, :cluster_secret
+```
+
+You must also set a non-default Erlang distribution cookie (via
+`RELEASE_COOKIE` for releases, or `--cookie`/`-setcookie` when starting
+the BEAM directly) — never bake or share `~/.erlang.cookie` in images.
+
+The trust model is layered: the gossip secret *encrypts* discovery
+heartbeats (libcluster uses AES-CBC with no MAC, so it is not
+authentication), the distribution cookie gates cluster *membership*,
+and per-peer Ed25519 signatures (`JIDOCLAW_NETWORK_PEERS`) authenticate
+network *messages*. Secret and cookie must both be set and non-default
+before exposing a node to a shared network segment.
+
 ## Canopy Workspace Integration
 
 JidoClaw works as an **agent runtime** inside [Canopy](https://github.com/Miosa-osa/canopy) workspaces — the open-source workspace agent harness protocol for AI agent systems. If JidoClaw is the agent, Canopy is the office.

@@ -141,9 +141,7 @@ defmodule JidoClaw.V064CrossTenantTest do
             sharing: :local,
             workspace_id: ws_a.id,
             embedding_status: :disabled,
-            tags: [],
-            verification: %{},
-            trust_score: 0.0
+            tags: []
           },
           tenant: tenant_a,
           actor: actor_for(tenant_a)
@@ -158,9 +156,7 @@ defmodule JidoClaw.V064CrossTenantTest do
             sharing: :local,
             workspace_id: ws_b.id,
             embedding_status: :disabled,
-            tags: [],
-            verification: %{},
-            trust_score: 0.0
+            tags: []
           },
           tenant: tenant_b,
           actor: actor_for(tenant_b)

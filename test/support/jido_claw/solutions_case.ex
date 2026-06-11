@@ -113,6 +113,14 @@ defmodule JidoClaw.SolutionsCase do
     * `:embedding_status` — default `:disabled` (no Voyage egress
       needed in regression tests; matcher tests explicitly opt in)
     * `:embedding` — inject a pre-computed vector
+    * `:trust_score` / `:verification` — the `:store` action no longer
+      accepts either (trust is server-derived, never caller-asserted),
+      so a **non-default** override (≠ `0.0` / ≠ `%{}`) reroutes the
+      create through `Solution.import_legacy/2`, which still accepts
+      both and runs the same Redact/FK/embedding-status changes (it
+      skips `HintBackfillWorker` and the audit producer, which no
+      fixture consumer relies on). Explicit default values keep the
+      normal `:store` path and its side effects.
   """
   @spec solution_fixture(String.t(), String.t(), String.t(), keyword()) :: Solution.t()
   def solution_fixture(tenant_id, workspace_id, content, opts \\ []) do
@@ -134,9 +142,7 @@ defmodule JidoClaw.SolutionsCase do
       sharing: Keyword.get(opts, :sharing, :local),
       workspace_id: workspace_id,
       embedding_status: Keyword.get(opts, :embedding_status, :disabled),
-      tags: Keyword.get(opts, :tags, []),
-      verification: Keyword.get(opts, :verification, %{}),
-      trust_score: Keyword.get(opts, :trust_score, 0.0)
+      tags: Keyword.get(opts, :tags, [])
     }
 
     attrs =
@@ -147,7 +153,19 @@ defmodule JidoClaw.SolutionsCase do
 
     actor = Keyword.get(opts, :actor, actor_for(tenant_id))
 
-    {:ok, sol} = Solution.store(attrs, tenant: tenant_id, actor: actor)
+    trust_score = Keyword.get(opts, :trust_score, 0.0)
+    verification = Keyword.get(opts, :verification, %{})
+
+    {:ok, sol} =
+      if trust_score != 0.0 or verification != %{} do
+        attrs
+        |> Map.put(:trust_score, trust_score)
+        |> Map.put(:verification, verification)
+        |> Solution.import_legacy(tenant: tenant_id, actor: actor)
+      else
+        Solution.store(attrs, tenant: tenant_id, actor: actor)
+      end
+
     sol
   end
 

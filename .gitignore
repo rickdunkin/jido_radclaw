@@ -1,6 +1,8 @@
 /_build/
 /deps/
 /cover/
+# ExUnit @tag :tmp_dir scratch space
+/tmp/
 *.ez
 *.beam
 /jido

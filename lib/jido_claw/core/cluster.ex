@@ -84,25 +84,23 @@ defmodule JidoClaw.Cluster do
 
   # -- Topology Configuration --
 
-  @doc "Get libcluster topology for the current environment."
+  @doc """
+  Get libcluster topology for the current environment.
+
+  The `:gossip` strategy (default, also the unknown-strategy fallback)
+  **requires** a shared secret — `config :jido_claw, :cluster_secret`
+  or the `JIDOCLAW_CLUSTER_SECRET` env var — and raises when it is
+  missing. Only invoked from `cluster_children/0` when
+  `:cluster_enabled` is true (default false), so single-node boots
+  never hit the requirement.
+  """
   @spec topology() :: keyword()
   def topology do
     env = Application.get_env(:jido_claw, :cluster_strategy, :gossip)
 
     case env do
       :gossip ->
-        [
-          jido_claw: [
-            strategy: Cluster.Strategy.Gossip,
-            config: [
-              port: Application.get_env(:jido_claw, :gossip_port, 45_892),
-              if_addr: {0, 0, 0, 0},
-              multicast_if: {0, 0, 0, 0},
-              multicast_addr: {230, 1, 1, 251},
-              multicast_ttl: 1
-            ]
-          ]
-        ]
+        gossip_topology()
 
       :kubernetes ->
         [
@@ -134,19 +132,63 @@ defmodule JidoClaw.Cluster do
 
       _ ->
         Logger.warning("[Cluster] Unknown strategy #{inspect(env)}, defaulting to gossip")
+        gossip_topology()
+    end
+  end
 
-        [
-          jido_claw: [
-            strategy: Cluster.Strategy.Gossip,
-            config: [
-              port: 45_892,
-              if_addr: {0, 0, 0, 0},
-              multicast_if: {0, 0, 0, 0},
-              multicast_addr: {230, 1, 1, 251},
-              multicast_ttl: 1
-            ]
-          ]
+  # The gossip secret encrypts discovery heartbeats (libcluster uses
+  # AES-CBC with no MAC, so it is encryption, NOT authentication):
+  # cluster *membership* is gated by the Erlang distribution cookie,
+  # and network *messages* by peer signatures
+  # (JidoClaw.Network.PeerDirectory). Without a secret, heartbeats are
+  # plaintext and any host on the multicast segment gets discovered and
+  # connect-attempted — hence the hard requirement.
+  defp gossip_topology do
+    [
+      jido_claw: [
+        strategy: Cluster.Strategy.Gossip,
+        config: [
+          port: Application.get_env(:jido_claw, :gossip_port, 45_892),
+          if_addr: {0, 0, 0, 0},
+          multicast_if: {0, 0, 0, 0},
+          multicast_addr: {230, 1, 1, 251},
+          multicast_ttl: 1,
+          secret: gossip_secret!()
         ]
+      ]
+    ]
+  end
+
+  # App env first (test seam), then the env var read at call time —
+  # JidoClaw.Application.load_dotenv/0 runs before cluster_children/0
+  # builds the topology, so `.env` values work (runtime.exs is too
+  # early). Mirrors JidoClaw.Web.AdminAccess.
+  @spec gossip_secret!() :: String.t()
+  defp gossip_secret! do
+    raw =
+      Application.get_env(:jido_claw, :cluster_secret) ||
+        System.get_env("JIDOCLAW_CLUSTER_SECRET")
+
+    with secret when is_binary(secret) <- raw,
+         trimmed when trimmed != "" <- String.trim(secret) do
+      trimmed
+    else
+      _ ->
+        raise """
+        A gossip cluster secret is required to start clustering.
+
+        The :gossip strategy multicasts discovery heartbeats; without a shared \
+        secret they are sent in plaintext and any host on the multicast segment \
+        is discovered and connect-attempted.
+
+        Set the JIDOCLAW_CLUSTER_SECRET env var (or `config :jido_claw, \
+        :cluster_secret`) to the same non-empty value on every node. Also set a \
+        non-default Erlang distribution cookie — the secret only encrypts \
+        discovery; the cookie is what gates cluster membership.
+
+        Not clustering? Set `config :jido_claw, cluster_enabled: false` (the \
+        default) instead.
+        """
     end
   end
 end
