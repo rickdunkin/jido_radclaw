@@ -7,8 +7,12 @@ defmodule JidoClaw.Web.RpcChannel do
     {:ok, %{status: "connected"}, socket}
   end
 
-  def join("rpc:" <> _topic, _payload, socket) do
-    {:ok, socket}
+  # Keep an explicit reject clause (not a missing one): deleting it would
+  # crash the join with a FunctionClauseError — ERROR-level stacktrace and an
+  # opaque "join crashed" reply — instead of this clean error. `rpc:lobby` is
+  # the only documented join target (README).
+  def join("rpc:" <> _topic, _payload, _socket) do
+    {:error, %{reason: "unauthorized topic"}}
   end
 
   @impl Phoenix.Channel
@@ -17,23 +21,18 @@ defmodule JidoClaw.Web.RpcChannel do
       System.monotonic_time(:second) -
         Application.get_env(:jido_claw, :started_at, System.monotonic_time(:second))
 
-    sessions =
-      length(Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [true]}]))
+    sessions = length(JidoClaw.Session.Supervisor.list_sessions(tenant_for(socket)))
 
     {:reply, {:ok, %{uptime: uptime, sessions: sessions, node: to_string(Node.self())}}, socket}
   end
 
   def handle_in("sessions.list", _payload, socket) do
-    registered =
-      Registry.select(JidoClaw.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
+    tenant_id = tenant_for(socket)
 
     sessions =
-      Enum.map(registered, fn {key, _pid} ->
-        case key do
-          {tenant_id, session_id} -> %{tenant_id: tenant_id, session_id: session_id}
-          _ -> %{id: inspect(key)}
-        end
-      end)
+      tenant_id
+      |> JidoClaw.Session.Supervisor.list_sessions()
+      |> Enum.map(fn {session_id, _pid} -> %{tenant_id: tenant_id, session_id: session_id} end)
 
     {:reply, {:ok, %{sessions: sessions}}, socket}
   end

@@ -27,7 +27,7 @@ The May audit scored against a **single-user, Tailscale-only** deployment where 
 
 If the single-user/Tailscale assumptions still hold:
 
-- **Deprioritize:** H1 (AshAdmin), H3 (RpcChannel leak), H16 (Folio authorization) — all require a second authenticated user or an attacker already on the tailnet. *(H16 since closed by removing the Folio subsystem entirely — see the per-finding note.)*
+- **Deprioritize:** H1 (AshAdmin), H3 (RpcChannel leak), H16 (Folio authorization) — all require a second authenticated user or an attacker already on the tailnet. *(H16 since closed by removing the Folio subsystem entirely; H3 since fixed — tenant-scoped via `list_sessions/1` — see the per-finding notes.)*
 - **Keep at HIGH:** H2 (`check_origin: false`) — the attack vector is the *operator's own browser* visiting a malicious page, which the tailnet does not mitigate.
 - **Conditional:** H4/H5 (network/cluster) apply only when `:cluster_enabled` is true; H6 (trust gaming) is reachable by the LLM via the solution store even single-user.
 - **Keep:** all reliability/correctness highs (H10–H15) and the secrets-at-rest highs (H7–H9) — these are LLM-adversary or accidental-leakage findings, exactly the categories the May threat model keeps.
@@ -65,13 +65,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fixed (2026-06-10):** Secure-by-default in **every** env, not just dev: the base config now binds `http: [ip: {127,0,0,1}, port: 4000]` with `check_origin: ["//localhost:4000", "//127.0.0.1:4000", "//[::1]:4000"]` — an explicit port-pinned allowlist rather than `check_origin: true`, which compares only `url[:host]` and would reject a browser at `127.0.0.1` (and a port-less `//localhost` entry is an any-port wildcard in Phoenix). External exposure is opt-in via `PHX_HOST` (`lib/jido_claw/web/gateway_exposure.ex`), applied in `Application.start/2` after `.env` loads (runtime.exs evaluates too early to see it): rebinds `0.0.0.0` and extends the allowlist with the named hosts pinned to the gateway port; unparseable values warn and stay loopback. The now-redundant prod `check_origin`/`PHX_HOST` block in `runtime.exs` was removed (prod without `PHX_HOST` intentionally binds loopback). The dead sidecar's `check_origin: false` was also dropped and its shallow `http:` merge deep-merged to preserve the loopback ip (full L19 deletion still open). Verified live: forged/wrong-port origins → 403, allowlisted origins → 101, origin-less CLI connects unaffected; `PHX_HOST` rebinds and pins as documented (README + docs/SETUP.md).
 
-### H3. `RpcChannel "sessions.list"` leaks every tenant's session IDs ✓ verified
+### H3. `RpcChannel "sessions.list"` leaks every tenant's session IDs ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/web/channels/rpc_channel.ex:26-39`
 
 **What:** The handler runs an unscoped `Registry.select` over `JidoClaw.SessionRegistry` (keyed `{tenant_id, session_id}`) and returns all tenants' pairs to any authenticated socket. Every other RPC handler derives tenant from `socket.assigns.current_user`; this one does not.
 
 **Fix:** Filter to the caller's tenant (mirror `Session.Supervisor.list_sessions/1`, which already scopes by tenant). Related hardening: the catch-all `join("rpc:" <> _topic, ...)` admits any subtopic with no per-topic authorization (L-class today since handlers ignore the topic, but a latent footgun).
+
+**Fixed (2026-06-10):** `sessions.list` now goes through `Session.Supervisor.list_sessions/1` scoped to `tenant_for(socket)` (the authenticated user's tenant) and returns only that tenant's `{tenant_id, session_id}` pairs; `gateway.status` derives its session count from the same scoped call. The join catch-all now rejects any `rpc:*` subtopic other than `rpc:lobby` with `{:error, %{reason: "unauthorized topic"}}` (kept as an explicit clause — deleting it would surface as a `FunctionClauseError` crash instead of a clean error reply). README payload examples no longer show a client-supplied `tenant_id`. Covered by `test/jido_claw/web/rpc_channel_test.exs` (own-vs-foreign tenant registry entries, scoped count, join rejection).
 
 ### H4. Unauthenticated solution injection over clustered PubSub ✓ verified
 
@@ -151,13 +153,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fixed (2026-06-10):** the auto and manual I/O branches of `maybe_compact/3` now run inside a `compact_or_forward/3` containment wrapper: any raise, exit, or throw — including the exceptions `Compactor.Telemetry.with_compaction` deliberately reraises — is logged, emitted as an `:exception`-stage `:compaction` error trace through a non-throwing emit path (`safe_emit_error`), and the **original action** is forwarded, so a compaction fault can never crash the live ReAct turn. The `missing_context`/transformer-collision branches keep their existing return contracts. Storage calls route through an Application-env seam (`:compaction_storage`) for fault injection; tests cover raise/exit/throw containment in both modes plus the `with_compaction` reraise path (persist raise over a real seeded slice).
 
-### H12. Session metadata: non-atomic writers clobber the atomic compaction snapshot ✓ verified
+### H12. Session metadata: non-atomic writers clobber the atomic compaction snapshot ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/conversations/resources/session.ex:124-138, 162-177`
 
 **What:** `set_compaction_snapshot` is correctly atomic (single-key `jsonb_set` via an `atomic/3` change). But `set_prompt_snapshot` and `set_current_agent_template` are `require_atomic?(false)` function changes that read the **loaded record's** `metadata`, mutate in memory, and `force_change_attribute(:metadata, full_map)` — replacing the entire column. A handoff's `set_current_agent_template` (loaded before any `compactions` key existed) committing after a concurrent compaction write silently drops the snapshot. The AGENTS.md "two agents persisting different keys concurrently both survive" claim holds only for compaction-vs-compaction.
 
 **Fix:** Convert both writers to single-key `jsonb_set` atomic changes on the same pattern as `SetCompactionSnapshot`.
+
+**Fixed (2026-06-10):** both writers now route through a parameterized `Changes.SetMetadataKey` atomic change (beside `SetCompactionSnapshot`): a non-nil argument writes the single top-level key via `jsonb_set(coalesce(metadata, '{}'), …)` in the UPDATE itself, a nil argument deletes it via `#-` (preserving the old `Map.delete` semantics for `set_current_agent_template(…, nil)`). `require_atomic?(false)` and the read-modify-write function changes are gone, so a writer holding a stale struct can no longer clobber `metadata["compactions"]` (or any sibling key). Cross-writer regression tests in `test/jido_claw/conversations/session_compaction_keying_test.exs` (stale-struct clobber per writer — red on the old code, green now — nil-delete with sibling survival, and a mixed concurrent-writers proof).
 
 ### H13. `ShellSessionServer` patch dropped `trap_exit` → leaked SSH connections on teardown ✓ verified
 
@@ -271,7 +275,7 @@ If the single-user/Tailscale assumptions still hold:
 ## Suggested priority order
 
 1. ~~**H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).~~ ✅ Done 2026-06-10 — `/admin` behind the `JIDOCLAW_ADMIN_EMAILS` allowlist (plug + on_mount); loopback bind + port-pinned origin allowlist in every env, `PHX_HOST` opt-in exposure.
-2. **H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes). **H10 + H11 fixed 2026-06-10** (see the per-finding notes); H12 remains open.
+2. ~~**H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes).~~ ✅ Done 2026-06-10 — all three fixed (see the per-finding notes).
 3. **H7 + H8 + H9 + M1 + M2** — the secrets cluster (chmod, import redaction, env allowlist, block redaction, logger metadata).
 4. **H13 + H15** — patch drift, process-group reaping. *(H14, Telegram wiring, was in this tier — since closed by removing the adapter and its dead scaffolding.)*
 5. **H4 + H5 + H6** — before ever enabling clustering: peer verification, gossip secret, trust-score hardening.

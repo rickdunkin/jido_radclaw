@@ -124,18 +124,8 @@ defmodule JidoClaw.Conversations.Session do
     update :set_prompt_snapshot do
       accept([])
       argument(:snapshot, :string, allow_nil?: false)
-      require_atomic?(false)
 
-      change(fn changeset, _ctx ->
-        snap = Ash.Changeset.get_argument(changeset, :snapshot)
-        md = Ash.Changeset.get_attribute(changeset, :metadata) || %{}
-
-        Ash.Changeset.force_change_attribute(
-          changeset,
-          :metadata,
-          Map.put(md, "prompt_snapshot", snap)
-        )
-      end)
+      change({__MODULE__.Changes.SetMetadataKey, key: "prompt_snapshot", argument: :snapshot})
     end
 
     # Per-agent compaction snapshots are keyed under
@@ -160,20 +150,10 @@ defmodule JidoClaw.Conversations.Session do
     update :set_current_agent_template do
       accept([])
       argument(:template, :string, allow_nil?: true)
-      require_atomic?(false)
 
-      change(fn changeset, _ctx ->
-        template = Ash.Changeset.get_argument(changeset, :template)
-        md = Ash.Changeset.get_attribute(changeset, :metadata) || %{}
-
-        new_md =
-          case template do
-            nil -> Map.delete(md, "current_agent_template")
-            value -> Map.put(md, "current_agent_template", value)
-          end
-
-        Ash.Changeset.force_change_attribute(changeset, :metadata, new_md)
-      end)
+      change(
+        {__MODULE__.Changes.SetMetadataKey, key: "current_agent_template", argument: :template}
+      )
     end
 
     read :active_for_workspace do
@@ -312,6 +292,74 @@ defmodule JidoClaw.Conversations.Session do
   # ---------------------------------------------------------------------------
   # Inline change modules
   # ---------------------------------------------------------------------------
+
+  defmodule Changes.SetMetadataKey do
+    @moduledoc """
+    Atomically sets or deletes a single top-level `metadata[key]` slot via
+    `jsonb_set` / `#-` in the UPDATE itself, so a writer holding a stale
+    record can never clobber concurrently-written sibling keys
+    (e.g. `metadata["compactions"]`).
+
+    A nil argument deletes the key (Map.delete semantics). That branch is a
+    real path only for actions whose argument is `allow_nil?: true`
+    (`:set_current_agent_template`); for `:set_prompt_snapshot` the
+    `allow_nil?: false` argument is rejected by action-input validation
+    before the change runs, so its delete branch is generic-but-unreachable.
+    """
+    use Ash.Resource.Change
+
+    import Ash.Expr
+
+    @impl Ash.Resource.Change
+    def init(opts) do
+      # Parameterized change: fail fast on malformed opts instead of letting
+      # a nil key/argument flow into get_argument or the SQL path. Uses
+      # Keyword.fetch/2 + {:error, ...} (the callback's contract) rather than
+      # a raising fetch!.
+      with {:ok, key} when is_binary(key) <- Keyword.fetch(opts, :key),
+           {:ok, argument} when is_atom(argument) <- Keyword.fetch(opts, :argument) do
+        {:ok, opts}
+      else
+        _ ->
+          {:error,
+           "SetMetadataKey requires :key (string) and :argument (atom), got: #{inspect(opts)}"}
+      end
+    end
+
+    @impl Ash.Resource.Change
+    def atomic(changeset, opts, _context) do
+      key = Keyword.fetch!(opts, :key)
+
+      case Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :argument)) do
+        nil ->
+          {:atomic,
+           %{
+             metadata:
+               {:atomic,
+                expr(fragment("coalesce(?, '{}'::jsonb) #- array[?]::text[]", metadata, ^key))}
+           }}
+
+        value ->
+          # Encode-then-`::text::jsonb`: passing the raw value to a `::jsonb`
+          # param double-encodes it (see SetCompactionSnapshot below).
+          encoded = Jason.encode!(value)
+
+          {:atomic,
+           %{
+             metadata:
+               {:atomic,
+                expr(
+                  fragment(
+                    "jsonb_set(coalesce(?, '{}'::jsonb), array[?]::text[], ?::text::jsonb, true)",
+                    metadata,
+                    ^key,
+                    ^encoded
+                  )
+                )}
+           }}
+      end
+    end
+  end
 
   defmodule Changes.SetCompactionSnapshot do
     @moduledoc """

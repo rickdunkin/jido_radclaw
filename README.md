@@ -645,14 +645,16 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 
 ### WebSocket RPC
 
-Connect to `ws://localhost:4000/ws` and join `rpc:lobby`:
+Connect to `ws://localhost:4000/ws` and join `rpc:lobby` (the only accepted `rpc:*` topic):
 
 ```json
 {"topic": "rpc:lobby", "event": "gateway.status", "payload": {}}
 {"topic": "rpc:lobby", "event": "sessions.list", "payload": {}}
-{"topic": "rpc:lobby", "event": "sessions.create", "payload": {"tenant_id": "default", "session_id": "my-session"}}
-{"topic": "rpc:lobby", "event": "sessions.sendMessage", "payload": {"tenant_id": "default", "session_id": "my-session", "content": "Hello!"}}
+{"topic": "rpc:lobby", "event": "sessions.create", "payload": {"session_id": "my-session"}}
+{"topic": "rpc:lobby", "event": "sessions.sendMessage", "payload": {"session_id": "my-session", "content": "Hello!"}}
 ```
+
+Sessions are scoped to the authenticated user's tenant — the server derives the tenant from the socket's user, so `sessions.list` and `gateway.status` only ever see your own sessions, and a client-supplied `tenant_id` is ignored.
 
 ### LiveDashboard
 
