@@ -10,6 +10,13 @@ Architecture direction — not a commitment. Baseline **2026-06-04**. Builds on
 
 ## Status reconciliation — 2026-06-10 (Phases 0–5 complete)
 
+*Re-verified against the tree, `mix.lock`, and the Squidie/SquidSonar checkouts
+2026-06-11: everything below still holds. Only dep drift: `ash` is now locked at
+3.27.8 (`reactor` unchanged at 1.0.2, still non-optional via ash). Upstream
+Squidie shipped 0.2.0 on 2026-06-10 — inventory impact recorded in
+[`FEATURES-WORTH-BORROWING.md`](FEATURES-WORTH-BORROWING.md)'s 0.2.0 note; nothing
+in it changes this plan.*
+
 Phases 0–3 are **implemented and tested**, including the items the original
 phase commits claimed but deferred; **Phase 4 (definition fingerprint +
 replay, T1-3) shipped 2026-06-09** — see §4.7's implementation note for what
@@ -184,7 +191,7 @@ completeness of capability, not preservation of what's there.
 **One execution engine wrapped in one durable envelope.**
 
 - **Engine:** Reactor / `Ash.Reactor` (`reactor 1.0.2`, already a non-optional dep of
-  `ash 3.27.7` — **zero new dependencies**, and `runic` is *not* needed). Reactor owns
+  `ash` — 3.27.8 in today's lock — **zero new dependencies**, and `runic` is *not* needed). Reactor owns
   the DAG, concurrency, saga compensation and **opt-in** durable undo (declared per
   step — §4.6), step retry/backoff, and the pause/resume primitive.
 - **Envelope:** the concepts borrowed from Squidie — an append-only **event log**
@@ -315,9 +322,12 @@ eventually-durable.
 
 ### 4.2 `WorkflowEvent` — the append-only system of record
 
-As specified in the T1-1 plan: `use JidoClaw.Resource` (tenant-scoped), append-only
-(`:read` + `:append`, no update/destroy), a DB-enforced **unique** `(workflow_run_id,
-seq)` index — the uniqueness *fence*, not monotonicity itself; `seq` is allocated by the
+As specified in the T1-1 plan: tenant-scoped, append-only (`:read` + `:append`, no
+update/destroy) — shipped on plain `use Ash.Resource` + the two hand-written tenant
+policies rather than the sketched `use JidoClaw.Resource`, because that macro
+force-injects `bypass action(:by_id_global)`, which doesn't compile for a resource with
+no global-id read (isolation semantics are identical) — with a DB-enforced **unique**
+`(workflow_run_id, seq)` index — the uniqueness *fence*, not monotonicity itself; `seq` is allocated by the
 append helper under a per-run lock (callers never supply it), which is what makes it
 monotonic and gap-free (T1-1). `payload`/`metadata` are redacted by a **recursive**,
 key-aware redactor (`Redaction.Transcript`, **not** `Patterns.redact/1` — which only scans
@@ -826,7 +836,7 @@ are test-pinned (`deadline_test.exs` + dashboard render pins,
 ## 10. Dependency posture
 
 - **No new dependencies.** `reactor 1.0.2` is already pulled (non-optional) by
-  `ash 3.27.7`; `Ash.Reactor` is the extension. `spark`, `multigraph`, `splode`,
+  `ash` (3.27.8 in today's lock); `Ash.Reactor` is the extension. `spark`, `multigraph`, `splode`,
   `telemetry` (Reactor's deps) are all already present.
 - **`runic` is not needed** and should not be added — Reactor fills the role Squidie used
   Runic for (dependency-readiness planning), natively and stably (Runic is alpha).

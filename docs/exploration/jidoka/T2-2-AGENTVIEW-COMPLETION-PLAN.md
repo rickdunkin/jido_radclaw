@@ -7,6 +7,34 @@ required to get there.
 
 Baseline date: 2026-05-31.
 
+> **Status (2026-06-11): EXECUTED — plan complete.** The completion bar was met
+> and T2-2 is recorded as ADOPTED in
+> [`FEATURES-WORTH-BORROWING.md`](FEATURES-WORTH-BORROWING.md) (landed in
+> commit `7964773` "Surface-neutral view projection", 2026-06-03). The body
+> below is unrevised plan-time text — its "Current Baseline" / "Still ad hoc"
+> claims describe the pre-work state, not today. Outcome deviations and
+> post-plan drift worth knowing:
+>
+> - `inspect_agent`'s MCP `kind` enum became `module|session|request`, exactly
+>   as Resolved Decision 5 recommended. The Search Checks grep for the old
+>   `auto … agent_id …` enum therefore no longer matches anything.
+> - The MCP publish list has since grown to **21 tools** (`replay_workflow`
+>   joined 2026-06-09), so the `publishes 17 tools` search check is stale; the
+>   count assertion lives in `test/jido_claw/mcp_server_test.exs`.
+> - `RunSummaryFeed` was deleted outright (the "or replace it with a
+>   `WorkflowView` read" branch), not made tenant-keyed.
+> - Resolved Decision 6 shipped with one deliberate deviation: `WorkflowRun`
+>   got the required-`tenant_id` multitenancy block, but kept a hand-rolled
+>   `use Ash.Resource` (needed for the AshCloak extension) instead of
+>   switching to `use JidoClaw.Resource`.
+> - The post-plan Reactor migration (Phases 0–5, 2026-06-08..10; see
+>   `docs/exploration/squidie/REACTOR-ADOPTION.md`) deleted
+>   `Workflows.StepAction` and `workflows/{plan,iterative,skill}_workflow.ex`
+>   — workflow-step agents now run through `skills/steps/agent_runner.ex`
+>   under the `orchestration/` Reactor engine — and replaced
+>   `orchestration/approval_gate.ex` with the gate/case family. References to
+>   those modules below are historical.
+
 ## Summary
 
 T2-2 is not blocked on a mechanical migration of the remaining consumers to the

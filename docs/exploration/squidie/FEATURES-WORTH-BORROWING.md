@@ -1,16 +1,18 @@
 # Features Worth Borrowing from Squidie (+ SquidSonar, Rift)
 
-Exploration notes — not a plan, not a commitment. Inventory **2026-06-04**.
+Exploration notes — not a plan, not a commitment. Inventory **2026-06-04**; re-verified
+against the checkouts **2026-06-11** (version/LOC/cite refreshes — see the 0.2.0 update
+note below).
 
 Sources, primary author Cristiano Carvalho. Squidie and SquidSonar are from the
 `dark-trench` GitHub org (org confirmed in both their Hex metadata and their local
-checkouts' `origin`). Rift's *package metadata* also points there (`rift/mix.exs:12`
+checkouts' `origin`). Rift's *package metadata* also points there (`rift/mix.exs:60`
 → `dark-trench/rift`), but the local checkout's `origin` is `ccarvalho-eng/rift`
 (`rift/.git/config:9`) — a personal fork/move, so "from dark-trench" holds for the
 metadata, not for this checkout:
 
-- `~/workspace/claws/squidie` — **Squidie 0.1.3**, "Durable workflow runtime for Elixir applications." ~27k LOC. 637 commits since 2026-04-27 (born as **Squid Mesh**), Hex-published **2026-06-01** (v0.1.0), renamed to Squidie **2026-06-03** (v0.1.2). Deps: `jido ~> 2.0`, `runic ~> 0.1.0-alpha`, `spark ~> 2.7`, `ecto_sql ~> 3.13`.
-- `~/workspace/claws/squid_sonar` — **SquidSonar 0.1.7**, "Embeddable runtime dashboard for Squidie." ~3k LOC. An embeddable Phoenix LiveView **ops dashboard / control surface** you mount in a host app — *not* read-only: alongside inspect/graph/explain it exposes run controls (cancel/resume/approve/reject/replay) via `SquidSonar.Runs` (`runs.ex:43-96`) wired to LiveView events (`run_live.ex:48-120`). Deps: `phoenix ~> 1.8.1`, `phoenix_live_view ~> 1.1`, `squidie ~> 0.1.2`.
+- `~/workspace/claws/squidie` — **Squidie 0.2.0**, "Durable workflow runtime for Elixir applications." ~29k LOC. 672 commits since 2026-04-27 (born as **Squid Mesh**), Hex-published **2026-06-01** (v0.1.0), renamed to Squidie **2026-06-03** (v0.1.2), **0.2.0 shipped 2026-06-10** — new capabilities assessed in the 0.2.0 update note below. Deps: `jido ~> 2.0`, `runic ~> 0.1.0-alpha`, `spark ~> 2.7`, `ecto_sql ~> 3.13` (constraints unchanged through 0.2.0).
+- `~/workspace/claws/squid_sonar` — **SquidSonar 0.1.7**, "Embeddable runtime dashboard for Squidie." ~4.5k LOC. An embeddable Phoenix LiveView **ops dashboard / control surface** you mount in a host app — *not* read-only: alongside inspect/graph/explain it exposes run controls (cancel/resume/approve/reject/replay via `SquidSonar.Runs`, `runs.ex:43-96`; since 2026-06 also `start_spec/3` for launching runtime-spec runs, `runs.ex:98-110`) wired to LiveView events (`run_live.ex:48-120`). Deps: `phoenix ~> 1.8.1`, `phoenix_live_view ~> 1.1`, `squidie ~> 0.1.2`. (11 commits past the 0.1.7 tag as of 2026-06-11 — live-claim/deferred-continuation/compensation-evidence/dynamic-work views — with no version bump.)
 - `~/workspace/claws/rift` — **Rift 0.1.0 (ARCHIVED)**, "Phoenix LiveView ops inbox for human workflow decisions." ~3.7k LOC. Example app: host declares *case types*, users open cases via forms, each case starts one Squidie run, operators review in an inbox. Raw Ecto (`Rift.Repo`).
 
 ## Determination (TL;DR)
@@ -27,8 +29,8 @@ Squidie is genuinely well-engineered — append-only journal, projection-rebuild
 
 ## Why not adopt Squidie as a dependency
 
-1. **Ash-vs-raw-Ecto is structural, not cosmetic.** Squidie owns its tables (`squidie_journal_threads`, `squidie_journal_entries`, `squidie_journal_checkpoints`) as three raw `Ecto.Schema` modules (`lib/squidie/persistence/journal_*.ex`) and stores payloads as opaque `:erlang.term_to_binary` blobs under a custom `:squidie_ecto_term_v1` codec (`lib/squidie/runtime/journal/storage/ecto.ex:352`, `:371`). All run state would be invisible to the machinery jido_radclaw is built on — Ash policies, attribute multitenancy, paper-trail, archival, AshAdmin. You'd run two parallel persistence universes in one Postgres.
-2. **Purpose mismatch.** Squidie's primary surface is *developer-authored, compiled* Spark workflow modules. It *does* have a runtime-authored spec path (`Squidie.start_spec/3,4`, validated against a host-owned action registry — `squidie.ex:193-238`), so it is not strictly compiled-only — but that path is still not jido_radclaw's model (*YAML skills that LLMs and humans edit at runtime* in `.jido/skills/`, plus an agent swarm), and Squidie **deliberately rejects replay of runtime-spec runs** (`{:error, {:invalid_replay_source, :runtime_spec}}`, `runtime/journal/replay.ex:84-85`) — i.e. the editable-definition case our skills live in is exactly the one its replay machinery refuses. Adopting Squidie would either duplicate the skill-DAG engine (`lib/jido_claw/workflows/plan_workflow.ex`) or force skills behind a recompile boundary.
+1. **Ash-vs-raw-Ecto is structural, not cosmetic.** Squidie owns its tables (`squidie_journal_threads`, `squidie_journal_entries`, `squidie_journal_checkpoints`) as three raw `Ecto.Schema` modules (`lib/squidie/persistence/journal_*.ex`) and stores payloads as opaque `:erlang.term_to_binary` blobs under a custom `:squidie_ecto_term_v1` codec (`lib/squidie/runtime/journal/storage/ecto.ex:354`, `:371`; the codec tag at `:28`). All run state would be invisible to the machinery jido_radclaw is built on — Ash policies, attribute multitenancy, paper-trail, archival, AshAdmin. You'd run two parallel persistence universes in one Postgres.
+2. **Purpose mismatch.** Squidie's primary surface is *developer-authored, compiled* Spark workflow modules. It *does* have a runtime-authored spec path (`Squidie.start_spec/3,4`, validated against a host-owned action registry — `squidie.ex:195-247`), so it is not strictly compiled-only — but that path is still not jido_radclaw's model (*YAML skills that LLMs and humans edit at runtime* in `.jido/skills/`, plus an agent swarm), and Squidie **deliberately rejects replay of runtime-spec runs** (`{:error, {:invalid_replay_source, :runtime_spec}}`, `runtime/journal/replay.ex:84-85`) — i.e. the editable-definition case our skills live in is exactly the one its replay machinery refuses. Adopting Squidie would either duplicate the skill-DAG engine (`lib/jido_claw/workflows/plan_workflow.ex`) or force skills behind a recompile boundary.
 3. **Scale mismatch.** 27k LOC of distributed lease/fencing/multi-worker infrastructure for a single-operator, single-node, tailnet tool. You'd carry the complexity (and an alpha `runic` dep) without needing the distribution. (See [project threat model].)
 4. **Maturity.** Days-old on Hex by its current name, single primary author, riding an alpha transitive dep (`runic 0.1.0-alpha`). Fine to learn from; risky as load-bearing core infrastructure.
 5. **It would replace-or-duplicate, not complement.** jido_radclaw already has a (weak) orchestration subsystem *and* a skill-DAG engine. Squidie doesn't slot beside them; it overlaps both.
@@ -41,7 +43,7 @@ jido_radclaw's orchestration **mutates a `status` column directly** (`lib/jido_c
 
 **Update (2026-06-04, post-exploration):** after this inventory was written we worked
 through how these borrows interact with **Ash Reactor** (`reactor 1.0.2`, already a
-non-optional dependency of `ash 3.27.7` — no new deps required). The conclusion
+non-optional dependency of `ash` — 3.27.8 in today's lock; no new deps required). The conclusion
 reframes the whole inventory:
 
 > Reactor is the **execution engine** (DAG, concurrency, saga compensation + undo,
@@ -55,6 +57,44 @@ skill-DAG drivers. The full target architecture and phased plan live in
 [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md). Where entries below say "keep the skill
 DAG," read that as superseded by the Reactor doc. The revisions this implies are
 folded into T1-1, T1-2, and S-1 below.
+
+## Update — Squidie 0.2.0 + SquidSonar drift (re-verified 2026-06-11)
+
+Both checkouts moved after the 2026-06-04 inventory; the determination (borrow
+patterns, don't adopt) is unchanged. Squidie shipped **0.2.0 on 2026-06-10**
+(35 commits since the inventory; lib grew to ~29k LOC). SquidSonar gained 11
+commits with no version bump (see its source bullet above). New in Squidie
+0.2.0, with dispositions:
+
+- **`Squidie.Step.HTTP` / `Squidie.Step.Elixir`** — reusable runtime actions
+  (validated HTTP with host-enforced destination policy, credential refs, and
+  redacted/bounded response persistence; host-approved Elixir adapter keys),
+  plus action-catalog metadata for host-owned registries. **SKIP the modules**
+  (S-5's rationale holds: jido_radclaw's tool surface is its own `Jido.Action`
+  modules) — **except one idea worth borrowing: the host-enforced destination
+  policy.** The only arbitrary-egress tool here, `Tools.BrowseWeb`, already
+  has bounded output (10KB truncation, `browse_web.ex:34`) and redaction
+  (every tool result passes `OutputRedaction.redact_result/1`,
+  `tools/action.ex:41`), but it navigates to **any** LLM-supplied URL — no
+  loopback/private-range/tailnet deny, no allowlist. That is exactly the
+  leakage path the threat model cares about: an injected page can steer the
+  browser at internal services (the dashboard, local admin endpoints) and
+  quote their content into the transcript. The borrow: a small
+  destination-policy gate at the `browse_web` entry (deny loopback /
+  RFC-1918 / link-local / tailnet CIDRs unless explicitly configured).
+  Credential refs stay moot until an authenticated HTTP tool exists.
+- **Run timeline read model** — new public `inspect_run_timeline/1-2` and a
+  `Timeline` visibility view. **Already covered** — the T1-1 borrow shipped:
+  the `WorkflowEvent` log + `WorkflowStep` projection + dashboard run view are
+  the equivalent surface here.
+- **Editor-metadata preservation + diff for visual workflow specs.** **SKIP**
+  — jido_radclaw has no visual spec editor; skills are flat YAML edited by
+  humans/LLMs.
+
+Line cites below were refreshed where upstream files grew (the journal
+executor, SquidSonar's `core_components.ex`); the structural claims all
+re-verified — including that Squidie still ships no public telemetry contract
+(S-6) and still refuses runtime-spec replay (`replay.ex:85`).
 
 ## How to read this document
 
@@ -90,6 +130,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Reactor-aware revision**: with Reactor as the engine, the **primary** event producer is a `Reactor.Middleware` (one append per step/run lifecycle transition; §4.4/§4.5 add deliberate non-middleware writers) rather than per-driver dual-writes — see [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md) §"The event-log producer". Two consequences: (1) status becomes a **pure projection** of events from day one (greenfield — no dual-write phase needed); (2) for side-effectful `Ash.Reactor` action steps, the authoritative "side effect committed" fact can be appended **inside the same DB transaction** as the mutation, eliminating dual-write drift. Note `Reactor.Middleware.event/3` blocks the reactor, so the high-volume *per-step* timeline appends hand off to an async writer — but the run-lifecycle events are written **synchronously and durably**: `run_started`/`run_resumed`/`run_halted`/terminals via the middleware's run-lifecycle callbacks (`init`/`halt`/`complete`/`error`), and `approval_requested`/`approval_resolved` by the gate step / decision flow (in-transaction). All but `run_halted` are **status-authority** (they fold into the materialized status column); `run_halted` rides the same synchronous path as durable provenance but moves no status (Reactor doc §4.1) — so status stays durable (§4.1/§4.3). The boot reconciler **reconciles** non-terminal runs whose run is no longer live: resume only a recorded decision, leave unresolved gates parked, and fail stranded/no-decision runs (Reactor doc §4.8). Full phasing in the companion plan + the Reactor doc.
 
+**Shipped (Phase 0 2026-06-08; complete 2026-06-09)** — see the [T1-1 plan](T1-1-WORKFLOW-EVENT-LOG-PLAN.md)'s status note and `REACTOR-ADOPTION.md` § "Status reconciliation" for the full ledger. One sketch correction: `WorkflowEvent` (and the `WorkflowStep` projection) deliberately does **not** `use JidoClaw.Resource` — that macro force-injects `bypass action(:by_id_global)`, which doesn't compile for a resource with no global-id read — so both ship plain `use Ash.Resource` plus the two hand-written tenant policies (the `ReputationImport` precedent; attribute multitenancy and isolation semantics are identical). The widened bare-key set landed in `Redaction.Env`'s `@sensitive_exact` (`security/redaction/env.ex:42`), so the append-time `Transcript` scrub now catches `password`/`secret`/`token`/`authorization`/`credential`.
+
 ---
 
 ### T1-2. Retry policy with backoff
@@ -105,6 +147,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 **Why it matters**: LLM/tool steps are exactly the flaky-by-nature work retries exist for (provider 429s, transient tool failures, network). The algorithm fits on a postcard — there is no reason to take a dep for it, and no reason *not* to have it.
 
 **Adoption sketch**: Use Reactor's step-level `max_retries` + `compensate`/`:retry`. Skills express retry as optional per-step `retry:` metadata in their YAML, which the skill→Reactor compiler ([`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md) §"Skills on Reactor") translates into Reactor step options. `step_retried` lifecycle facts still land in the T1-1 event log via the middleware. Future: gate retries on the provider error classifier (hermes T1-4) so only `retryable?` reasons retry — wire that into the `compensate` callback.
+
+**Shipped as revised (2026-06-09)** — no ported module: per-step `retry:` YAML compiles to Reactor `max_retries` + the `compensate/4 → :retry` policy on `AgentStep`/`IterativeStep` (the iterative loop threads the generator's declared `retry:` budget onto itself), and `step_retried` facts land in the event log via the middleware. The classifier gating remains future work.
 
 ---
 
@@ -139,6 +183,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 **Why it matters**: For an autonomous agent that acts while you sleep, the audit timeline is the product. A single-operator tool still wants to answer "what happened, in what order, who decided what." This is the right shape to grow `ApprovalGate` into.
 
 **Adoption sketch**: Grow `ApprovalGate` into a pair: `JidoClaw.Orchestration.AgentCase` (belongs_to `WorkflowRun`; `type`, `subject`, `details` map, `status`, `state` map) + `AgentCaseEvent` (immutable `case_id`, `actor_id`, `type`, `data`, `inserted_at`). Each lifecycle action persists the state change **and** an event in one Ash transaction. Drop Rift's multi-actor scaffolding (`visible_to_originator`, `team`, `assignee_ref`/claim-assign, read-receipts) — single operator. This naturally rides on the T1-1 event log (an `AgentCaseEvent` is a specialization of the run-event idea applied to human gates).
+
+**Shipped (Phase 2 2026-06-08; `AgentCaseEvent` 2026-06-09)** as `JidoClaw.Orchestration.AgentCase` + `AgentCaseEvent` — the immutable per-case timeline (per-case `seq` allocated under `FOR UPDATE`, unique `(agent_case_id, seq)` fence), appended in the same transaction as every case transition (opened/approved/rejected/cancelled/abandoned/retracted). The Alp River AR-1 lifecycle rode along: operator `abandon` (terminal `:abandoned`) and stale-approval `retract` (`approval_retracted`, case reopened with decision data cleared). The multi-actor scaffolding was dropped as sketched.
 
 ---
 
@@ -180,7 +226,7 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Recommendation**: BORROW-PATTERN (small, high-hygiene).
 
-**Where**: `lib/squidie/runtime/schedule_identity.ex` (derives a deterministic run identity from signal-id / intended firing window; `idempotency: :return_existing_run` returns the existing run instead of double-firing).
+**Where**: `lib/squidie/runtime/schedule_identity.ex` (derives a deterministic run identity from signal-id / intended firing window); the `idempotency: :return_existing_run | :skip_duplicate` strategy enum lives beside it in `schedule_metadata.ex:36` / `workflow/spec.ex:38` — `:return_existing_run` returns the existing run instead of double-firing.
 
 **What**: A duplicate cron delivery for the same intended window deterministically resolves to the run that already exists, rather than starting a second one.
 
@@ -196,7 +242,7 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Recommendation**: BORROW-PATTERN (future-proofing; not needed today).
 
-**Where**: `lib/squidie/runtime/journal/executor.ex:140-371` (claim fenced by `claim_id` + `claim_token_hash`; heartbeat extends `lease_until`; completion with a stale token is rejected).
+**Where**: `lib/squidie/runtime/journal/executor.ex` (the module has grown to ~3.1k lines since the inventory; 0.2.0 anchors — `claim_context/5` `:374`, heartbeat `:293`, stale-token/terminal handling `:312-317`): claim fenced by `claim_id` + claim token; heartbeat extends the lease; completion with a stale token is rejected.
 
 **What**: A worker atomically claims one unit of work with a fencing token and a lease; a heartbeat extends the lease; if the worker dies the lease expires and the work becomes claimable again; a late completion from a fenced-out worker is refused.
 
@@ -222,6 +268,8 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Adoption sketch**: `JidoClaw.HumanGates.<Kind>` modules via a Spark DSL (`gate do type …; fields do …; end end`) with `after_approved/2`/`after_rejected/2` that emit a `jido_claw.orchestration.gate_decided` signal the suspended workflow resumes from. **Collapse Rift's resolver indirection** (`{:resolver, :field}` + `build_payload/2`) — Rift needs it because it never sees host data; jido_radclaw *is* the host and can call `JidoClaw.*` directly.
 
+**Shipped (2026-06-09)** as `JidoClaw.Orchestration.Gate.Dsl` (+ the `HumanGate` base, `Gate.Info`, a select-options verifier), with all three kinds declared (`tool_call`, `plan`, `irreversible_write`) — only `irreversible_write` has a live producer today. `GateStep` derives `kind` solely from the DSL; `Gate.Kinds` single-sources the enum shared with `AgentCase.kind`. One sketch correction: resume is not a signal hop — `Cases.decide/4` (with its `resume: false` commit-only seam) drives `GateResume` directly. The resolver indirection was collapsed as sketched.
+
 ---
 
 ## Tier 3 — Polish
@@ -230,7 +278,7 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Recommendation**: BORROW-PATTERN (copy, don't dep — from SquidSonar; low urgency).
 
-**Where**: `squid_sonar/lib/squid_sonar_web/workflow_graph_layout.ex` (~254 LOC, pure functions): topo order by input position (`:38-50`), longest-path column assignment (`:61-77`, Bellman-Ford-style relaxation), parent-preferring greedy row assignment (`:79-130`), dog-leg orthogonal edge routing (`:193-213`). Rendered as CSS-positioned divs (not SVG) in `core_components.ex:553-619`.
+**Where**: `squid_sonar/lib/squid_sonar_web/workflow_graph_layout.ex` (258 LOC, pure functions): topo order by input position (`:46-59`), longest-path column assignment (`:61-77`, Bellman-Ford-style relaxation), parent-preferring greedy row assignment (`:79-130`), dog-leg orthogonal edge routing (`:197-217`). Rendered as CSS-positioned divs (not SVG) in `core_components.ex:634-720` (the file grew to ~1.2k lines with the post-baseline panels).
 
 **What**: A hand-rolled Sugiyama-lite DAG layout that turns `{nodes, edges}` into pixel positions for a layered graph, rendered as absolutely-positioned HTML so it themes via CSS variables.
 
@@ -246,7 +294,7 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 **Recommendation**: BORROW-PATTERN (only if T3-1 is taken).
 
-**Where**: `squid_sonar/lib/squid_sonar_web/components/core_components.ex:790-799` (`workflow_node_style/1`, `workflow_segment_style/1`, `workflow_port_style/1`).
+**Where**: `squid_sonar/lib/squid_sonar_web/components/core_components.ex:971-979` (`workflow_node_style/1`, `workflow_segment_style/1`, `workflow_port_style/1`).
 
 **What**: Renders nodes/edges as absolutely-positioned HTML elements rather than SVG, keeping theming consistent and avoiding SVG/HTML interop. Trade-off: no cheap zoom/pan.
 
@@ -258,7 +306,7 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 
 ## Skip / Already Covered
 
-- **S-1. Saga / compensation → use Ash Reactor (now the whole engine, not just the saga).** Squidie's compensation walker (`runtime/journal/compensation.ex:149-172`, reverse-order compensatable-step scheduling) is elegant, but **Reactor is already in the dep tree (`reactor 1.0.2` via `ash 3.27.7`), is Ash-native, and supports `compensate` + `undo` directly.** Crucially, `Ash.Reactor` action steps (`create`/`update`/`destroy`/`action`/`bulk_*`) support **declarable, durable per-step `undo`** — when you opt in (it defaults to `undo: :never`; durable rollback requires declaring an `undo_action` plus `undo: :always | :outside_transaction`), reversal is a *durable* action (e.g. a destroy's undo is a recreate), not an in-memory closure that evaporates on a VM crash. That opt-in durable undo is still strictly better than Squidie's walker for our threat model. Don't reimplement compensation; model side-effectful workflows as `Ash.Reactor` and declare undo on the steps that need it. See [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md) §4.6.
+- **S-1. Saga / compensation → use Ash Reactor (now the whole engine, not just the saga).** Squidie's compensation walker (`runtime/journal/compensation.ex:149-172`, reverse-order compensatable-step scheduling) is elegant, but **Reactor is already in the dep tree (`reactor 1.0.2` via `ash`, 3.27.8 in today's lock), is Ash-native, and supports `compensate` + `undo` directly.** Crucially, `Ash.Reactor` action steps (`create`/`update`/`destroy`/`action`/`bulk_*`) support **declarable, durable per-step `undo`** — when you opt in (it defaults to `undo: :never`; durable rollback requires declaring an `undo_action` plus `undo: :always | :outside_transaction`), reversal is a *durable* action (e.g. a destroy's undo is a recreate), not an in-memory closure that evaporates on a VM crash. That opt-in durable undo is still strictly better than Squidie's walker for our threat model. Don't reimplement compensation; model side-effectful workflows as `Ash.Reactor` and declare undo on the steps that need it. See [`REACTOR-ADOPTION.md`](REACTOR-ADOPTION.md) §4.6.
 - **S-2. Cron triggers → already more capable.** jido_radclaw's cron subsystem (`platform/cron/{dispatcher,scheduler,worker}.ex`) on `crontab` + `time_zone_info` with tenant scoping and `target` routing is more capable than Squidie's "declare cron intent, host enqueues" model. (Take only the T2-3 idempotency idea.)
 - **S-3. Dynamic work / fan-out → swarm covers it.** `Squidie.schedule_dynamic_work/3` (bounded fan-out from inside a step with an action-registry allowlist) duplicates what the swarm + sub-agent spawning already does in spirit. Revisit only if you ever expose dynamic-graph editing in the dashboard.
 - **S-4. Storage-adapter abstraction → SKIP.** `runtime/journal/storage.ex` exists so Squidie can be backend-portable. jido_radclaw is single-deployment Ash+Postgres; the abstraction is pure overhead here.
@@ -274,9 +322,9 @@ Per entry: **Recommendation**, **Where** (source file:line), **What**, **Gap in 
 - **`runic 0.1.0-alpha`** is the concerning transitive dep if you ever vendored Squidie code. Net-new to jido_radclaw's tree: `runic`, `flow`, `gen_stage`. Already present: `multigraph`, `uniq`. Inside Squidie, Runic's role is narrow — `RunicPlanner` (`workflow/runic_planner.ex`) uses it only as a dependency-readiness solver; a homegrown topo-sort could replace it. If you ever lift a Squidie module, lift the source and skip Runic.
 - **Elixir version**: Squidie targets `~> 1.18` (CI on 1.19/OTP 28); jido_radclaw is on 1.20/OTP 29 ([toolchain]). The constraint is permissive and nothing in Squidie's own code uses APIs removed in 1.20 — Runic-alpha is the wildcard. Not verified at runtime.
 - **Jido version**: Squidie wants `jido ~> 2.0`; jido_radclaw overrides to `~> 2.1`. Compatible. (The old `memento` blocker no longer applies — see [toolchain].)
-- **Persistence opacity**: Squidie's journal payloads are `term_to_binary` blobs (`storage/ecto.ex:352`), not SQL-queryable columns. This is the crux of "don't adopt as dep" — confirmed by direct read.
+- **Persistence opacity**: Squidie's journal payloads are `term_to_binary` blobs (`storage/ecto.ex:354`), not SQL-queryable columns. This is the crux of "don't adopt as dep" — confirmed by direct read.
 
-## Appendix — Squidie public API surface (`lib/squidie.ex`)
+## Appendix — Squidie public API surface (`lib/squidie.ex`, as of 0.2.0)
 
 For reference, the host-app surface a dependency would expose:
 
@@ -286,6 +334,7 @@ For reference, the host-app surface a dependency would expose:
 | `start_child_run/4-5` | Idempotent child run from inside a step |
 | `execute_next/1` | Claim + execute one visible attempt (host-worker entrypoint) |
 | `inspect_run/2`, `inspect_run_graph/2`, `explain_run/2` | Read-only snapshot / graph / operator explanation |
+| `inspect_run_timeline/1-2` | Run timeline read model (new in 0.2.0) |
 | `list_runs/2` | Redacted run summaries |
 | `cancel/2`, `resume/1-3`, `approve/3`, `reject/3` | Lifecycle control |
 | `replay/2` | Fresh run from a prior run's trigger+input (irreversible-gated) |

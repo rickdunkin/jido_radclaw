@@ -19,6 +19,13 @@ Baseline date: 2026-06-04.
 >   view renders). The middleware enriches `step_*` payloads with the YAML
 >   step name, `step_type`, an `irreversible` marker, and a JSON-safe output
 >   summary.
+> - **Resource mechanism (sketch divergence)** — `WorkflowEvent` and the
+>   `WorkflowStep` projection ship on plain `use Ash.Resource` plus the two
+>   hand-written tenant policies, **not** the Phase-1 sketch's
+>   `use JidoClaw.Resource`: that macro force-injects
+>   `bypass action(:by_id_global)`, which fails to compile for a resource
+>   with no global-id read (the `ReputationImport` precedent). Attribute
+>   multitenancy and the tenant-match policies are unchanged.
 > - **Recovery §4.8 divergences** — dangling gates reconcile to `:failed`
 >   with `run_recovered` + `run_failed` (+ the case cancelled, one
 >   transaction), and the decision-recorded branch is re-keyed on the
@@ -30,9 +37,10 @@ Baseline date: 2026-06-04.
 >   status-authority; `AgentCaseEvent` is the per-case immutable timeline.
 > - **Deliberately still deferred:** the async step-timeline `Writer` +
 >   barrier (§4.3) — synchronous appends under the per-run `FOR UPDATE` lock
->   stay; an `iterative` skill projects as one step row; Phase 4/5 items
->   (fingerprint/replay, deadlines, cron idempotency, actor-visibility
->   redaction) are next-phase scope.
+>   stay; an `iterative` skill projects as one step row. (The Phase 4/5
+>   items this bullet originally deferred have since shipped:
+>   fingerprint/replay 2026-06-09, deadlines + cron idempotency +
+>   actor-visibility redaction 2026-06-10.)
 >
 > See `REACTOR-ADOPTION.md` § "Status reconciliation" for the full ledger.
 
@@ -342,7 +350,10 @@ to `WorkflowStep` rows with `sequence` derived from event order.
 Flag: `WorkflowStep` uses plain `use Ash.Resource`, not the tenant-scoped
 `JidoClaw.Resource`. Decide whether to migrate it to the wrapper for consistency, or
 leave it (it's a child of a tenant-scoped run). Recommend migrating for uniform
-tenant policy.
+tenant policy. *(Resolved 2026-06 the other way: it stays plain — and `WorkflowEvent`
+is plain too — because the wrapper force-injects a `bypass action(:by_id_global)` that
+doesn't compile for resources without that read; both hand-write the standard tenant
+policies, with attribute multitenancy as usual.)*
 
 **Tests**: a Reactor run creates one `WorkflowStep` per step with correct
 status/sequence/output; a step failure records `step_failed` + a failed `WorkflowStep`.
@@ -436,6 +447,10 @@ run with an open gate and **no** checkpoint, run the reconciler, and assert `run
 cancelled/failed, and a case event is recorded — no inbox approval left unresumable.
 
 ## Phase 4 — Replay gates + cron idempotency (follow-up, optional)
+
+> **Shipped:** T1-3 fingerprint + replay 2026-06-09 (see `REACTOR-ADOPTION.md` §4.7's
+> implementation note); T2-3 cron idempotency 2026-06-10 (a generic `:idempotency_key`
+> opt on `ReactorRunner.run/3` — see the FEATURES T2-3 shipped note).
 
 Status is already a projection from Phase 1 — there is no dual-write to retire here.
 
