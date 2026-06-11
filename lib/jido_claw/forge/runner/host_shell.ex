@@ -20,6 +20,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
 
   require Logger
 
+  alias JidoClaw.Core.OsCmd
   alias JidoClaw.Security.Redaction.Env
 
   defstruct [:agent_pid, :sandbox_id]
@@ -131,20 +132,15 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   end
 
   defp run_with_timeout(executable, args, cwd, env, timeout) when is_integer(timeout) do
-    task =
-      Task.async(fn ->
-        try do
-          System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
-        rescue
-          e -> {Exception.message(e), 1}
-        end
-      end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      nil -> {"", :timeout}
-      {:exit, reason} -> {"task exited: #{inspect(reason)}", 1}
+    # OsCmd kills the whole OS process tree on timeout — a brutally
+    # killed Task only reaped the BEAM side and orphaned the real
+    # command (and any grandchildren it forked).
+    case OsCmd.run(executable, args, cd: cwd, env: env, timeout: timeout) do
+      {_partial, :timeout} -> {"", :timeout}
+      {output, status} -> {output, status}
     end
+  rescue
+    e -> {Exception.message(e), 1}
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour

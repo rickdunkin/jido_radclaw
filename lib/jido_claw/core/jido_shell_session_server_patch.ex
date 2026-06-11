@@ -15,6 +15,14 @@
 # `JidoClaw.Shell.SessionManager.update_env/3`; this handler is a
 # low-level mutator.
 #
+# Apart from that addition, this copy has behavioral parity with dep
+# ref `bace81a` for upstream lifecycle handling — in particular the
+# `trap_exit` flag in `init/1` and the `{:EXIT, _, _}` handle_info
+# clause, which the dep added so `terminate/2` (and thus
+# `Backend.SSH.terminate/1 → :ssh.close`) runs on supervisor-initiated
+# shutdown. Header comments and reach annotations still intentionally
+# differ; do not assume full-file parity.
+#
 # Strict compile relies on `elixirc_options: [ignore_module_conflict: true]`
 # declared in mix.exs to suppress the "redefining module" warning this
 # intentionally triggers — see the comment there for the full patch
@@ -120,6 +128,13 @@ defmodule Jido.Shell.ShellSessionServer do
 
   @impl GenServer
   def init(opts) do
+    # Trap exits so backends' `terminate/1` callbacks run on supervisor
+    # shutdown, not just on manual `GenServer.stop/1`. Without this, shutdowns
+    # initiated via `DynamicSupervisor.terminate_child/2` would skip cleanup
+    # for backends that spawn external resources (SSH connections, Bash
+    # sessions, Sprite handles, …).
+    Process.flag(:trap_exit, true)
+
     session_id = Keyword.fetch!(opts, :session_id)
     workspace_id = Keyword.fetch!(opts, :workspace_id)
     cwd = Keyword.get(opts, :cwd, "/")
@@ -273,6 +288,14 @@ defmodule Jido.Shell.ShellSessionServer do
       true ->
         {:noreply, state}
     end
+  end
+
+  @impl GenServer
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # With `trap_exit` enabled, stray exits from linked helper processes land
+    # here. Backends own their own cleanup via `terminate/1`, so just ignore
+    # these messages and let the supervisor-initiated shutdown path run.
+    {:noreply, state}
   end
 
   # === Private ===

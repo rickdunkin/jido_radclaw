@@ -17,6 +17,7 @@ defmodule JidoClaw.Shell.BackendHost do
   @behaviour Jido.Shell.Backend
 
   alias Jido.Shell.Backend.OutputLimiter
+  alias JidoClaw.Core.OsCmd
   alias JidoClaw.Security.Redaction.Env
 
   @default_task_supervisor Jido.Shell.CommandTaskSupervisor
@@ -114,6 +115,12 @@ defmodule JidoClaw.Shell.BackendHost do
   # -- Private: command execution ---------------------------------------------
 
   defp run_command(session_pid, line, cwd, env, timeout, output_limit) do
+    # Trap exits so `cancel/2`'s `Process.exit(task, :shutdown)` becomes
+    # a message we can handle cooperatively — killing the OS process
+    # tree before the task dies — instead of an instant BEAM-side exit
+    # that orphans the `sh -c` children.
+    Process.flag(:trap_exit, true)
+
     # Validate cwd exists
     effective_cwd =
       if File.dir?(cwd) do
@@ -134,14 +141,41 @@ defmodule JidoClaw.Shell.BackendHost do
       ])
 
     result = collect_port_output(port, session_pid, timeout, output_limit, 0)
-    send(session_pid, {:command_finished, result})
+    finish_command(session_pid, result)
     # Backend task contract: always send `:command_finished` so the caller
-    # never deadlocks. Port.open / port mailbox faults are normalized into
-    # `{:error, msg}` instead of crashing the supervised task silently.
+    # never deadlocks — except after a cancel, where the session server has
+    # already cleared the command (see finish_command/2). Port.open / port
+    # mailbox faults are normalized into `{:error, msg}` instead of
+    # crashing the supervised task silently.
   rescue
     # reach:disable-next-line bare_rescue
     error ->
       send(session_pid, {:command_finished, {:error, Exception.message(error)}})
+  end
+
+  # A cancelled task must stay silent. By the time it gets here the
+  # session server has already demonitored, broadcast `:command_cancelled`,
+  # and cleared `current_command` — and may have accepted a *new* command.
+  # A late `{:command_finished, ...}` would be re-broadcast under that new
+  # command, shifting every subsequent command's output by one. This
+  # covers both the explicit cancel clause (`:cancelled`) and a cancel
+  # that raced in while the timeout/output-limit paths were tree-killing.
+  defp finish_command(_session_pid, :cancelled), do: :ok
+
+  defp finish_command(session_pid, result) do
+    if cancel_pending?() do
+      :ok
+    else
+      send(session_pid, {:command_finished, result})
+    end
+  end
+
+  defp cancel_pending? do
+    receive do
+      {:EXIT, from, :shutdown} when is_pid(from) -> true
+    after
+      0 -> false
+    end
   end
 
   defp collect_port_output(port, session_pid, timeout, output_limit, bytes_sent) do
@@ -156,6 +190,8 @@ defmodule JidoClaw.Shell.BackendHost do
             # Don't emit the over-limit chunk (matches SSH/Local
             # behavior). The error context already carries the byte
             # accounting (`emitted_bytes`, `max_output_bytes`).
+            # Tree-kill before closing — `Port.close/1` drops `:os_pid`.
+            kill_port_tree(port)
             catch_port_close(port)
             {:error, error}
         end
@@ -163,10 +199,42 @@ defmodule JidoClaw.Shell.BackendHost do
       {^port, {:exit_status, exit_code}} ->
         send(session_pid, {:command_event, {:exit_status, exit_code}})
         {:ok, exit_code}
+
+      # Cooperative cancellation: `cancel/2` sends `:shutdown`, which
+      # the trapping task sees here. Reap the OS process tree, then let
+      # the task finish normally — and silently: the session server has
+      # already demonitored and broadcast `:command_cancelled`, so
+      # `finish_command/2` must not send anything (see its comment).
+      {:EXIT, from, :shutdown} when is_pid(from) ->
+        kill_port_tree(port)
+        catch_port_close(port)
+        :cancelled
+
+      # Any other linked-process failure: still reap and close, but
+      # don't misreport it as a cancellation. `is_pid(from)` keeps both
+      # clauses from swallowing the trailing `{:EXIT, port, :normal}` a
+      # trapping owner receives on port death.
+      {:EXIT, from, reason} when is_pid(from) ->
+        kill_port_tree(port)
+        catch_port_close(port)
+        {:error, "Command aborted: #{inspect(reason)}"}
     after
       timeout ->
+        # Tree-kill before closing — `Port.close/1` drops `:os_pid`.
+        kill_port_tree(port)
         catch_port_close(port)
         {:error, "Command timed out after #{timeout}ms"}
+    end
+  end
+
+  # Kill the OS process tree rooted at the port's child. The `sh -c`
+  # wrapper forks grandchildren (the real command); closing the port
+  # alone leaves them running. No-op once the port is closed (`:os_pid`
+  # is gone), so callers must invoke this before `catch_port_close/1`.
+  defp kill_port_tree(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> OsCmd.kill_tree(os_pid)
+      _ -> :ok
     end
   end
 

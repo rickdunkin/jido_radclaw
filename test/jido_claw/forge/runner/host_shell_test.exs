@@ -3,6 +3,7 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
 
   alias JidoClaw.Forge.Runner.HostShell
   alias JidoClaw.Forge.Sandbox
+  alias JidoClaw.Security.Redaction.Env
 
   setup do
     {:ok, client, shell_id} = HostShell.create(%{})
@@ -77,12 +78,81 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
     end
   end
 
+  describe "exec_argv timeout" do
+    test "returns {\"\", :timeout} and kills the OS process tree", %{client: client} do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "host_shell_timeout_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      marker = Path.join(tmp, "grandchild.pid")
+
+      assert {"", :timeout} =
+               HostShell.exec_argv(
+                 client,
+                 "sh",
+                 ["-c", "sleep 30 & echo $! > #{marker}; wait"],
+                 timeout: 1_000
+               )
+
+      assert_eventually(fn -> marker_pid(marker) != nil end)
+      pid = marker_pid(marker)
+
+      # The backgrounded `sleep 30` (a grandchild of the BEAM) must die
+      # with the tree — previously only the Task was brutally killed and
+      # the OS processes were orphaned.
+      assert_eventually(fn -> not os_pid_alive?(pid) end, 2_000)
+    end
+  end
+
   defp collect_port_output(port, acc \\ "") do
     receive do
       {^port, {:data, chunk}} -> collect_port_output(port, acc <> chunk)
       {^port, {:exit_status, _status}} -> acc
     after
       5_000 -> flunk("timed out waiting for spawned port to exit")
+    end
+  end
+
+  defp marker_pid(marker) do
+    case File.read(marker) do
+      {:ok, content} ->
+        case String.trim(content) do
+          "" -> nil
+          pid -> pid
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp os_pid_alive?(pid) do
+    {_out, status} =
+      System.cmd("ps", ["-p", pid], stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
+
+    status == 0
+  end
+
+  defp assert_eventually(fun, timeout_ms \\ 500) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_assert_eventually(fun, deadline)
+  end
+
+  defp do_assert_eventually(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("assert_eventually timed out")
+
+      true ->
+        Process.sleep(10)
+        do_assert_eventually(fun, deadline)
     end
   end
 end

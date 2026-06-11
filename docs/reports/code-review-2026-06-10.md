@@ -163,13 +163,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fixed (2026-06-10):** both writers now route through a parameterized `Changes.SetMetadataKey` atomic change (beside `SetCompactionSnapshot`): a non-nil argument writes the single top-level key via `jsonb_set(coalesce(metadata, '{}'), …)` in the UPDATE itself, a nil argument deletes it via `#-` (preserving the old `Map.delete` semantics for `set_current_agent_template(…, nil)`). `require_atomic?(false)` and the read-modify-write function changes are gone, so a writer holding a stale struct can no longer clobber `metadata["compactions"]` (or any sibling key). Cross-writer regression tests in `test/jido_claw/conversations/session_compaction_keying_test.exs` (stale-struct clobber per writer — red on the old code, green now — nil-delete with sibling survival, and a mixed concurrent-writers proof).
 
-### H13. `ShellSessionServer` patch dropped `trap_exit` → leaked SSH connections on teardown ✓ verified
+### H13. `ShellSessionServer` patch dropped `trap_exit` → leaked SSH connections on teardown ✓ verified — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/core/jido_shell_session_server_patch.ex` (zero `trap_exit` occurrences) vs `deps/jido_shell/lib/jido_shell/shell_session_server.ex:98` (pinned ref `bace81a` has it)
 
 **What:** The patch was forked from an older jido_shell than the pinned ref and omits `Process.flag(:trap_exit, true)` plus the `{:EXIT, _, _}` handle_info clause the dep added specifically so `terminate/2 → Backend.SSH.terminate/1` runs on supervised shutdown. Every `stop_session`/`drop_sessions`/`invalidate_ssh_sessions`/project-dir-drift rebuild now kills the session without closing the underlying `:ssh` connection process (separately supervised, not linked) — one leaked SSH connection per teardown. `test/jido_claw/shell/session_manager_ssh_test.exs:532-534` even documents the divergence.
 
 **Fix:** Re-port `trap_exit` as the first line of the patched `init/1` and the `{:EXIT, _pid, _reason} -> {:noreply, state}` clause, restoring equivalence to the shadowed dep version.
+
+**Fixed (2026-06-10):** Re-ported exactly as prescribed: `Process.flag(:trap_exit, true)` is the first line of the patched `init/1` and the `{:EXIT, _pid, _reason} -> {:noreply, state}` clause is in place, so supervisor-initiated shutdowns run `terminate/2` and backends close their external resources. The patch header now states behavioral parity with dep ref `bace81a` for upstream lifecycle handling (while warning not to assume full-file parity). The test that *documented* the divergence now *guards against* it: `session_manager_ssh_test.exs` asserts a `{:fake_ssh, {:close, conn_pid}}` on all four teardown paths — `stop_session`, `drop_sessions`, `invalidate_ssh_sessions` eviction, and the project-dir-drift rebuild (close of the stale connection alongside the reconnect).
 
 ### H14. Telegram channel adapter is non-functional ✓ verified — ✅ fixed 2026-06-10 (by removal)
 
@@ -181,13 +183,15 @@ If the single-user/Tailscale assumptions still hold:
 
 **Fixed (2026-06-10):** Resolved by removing the adapter rather than wiring it up — it never worked and was never going to be used. The dead channel scaffolding went with it: `Channel.Worker` and `Channel.Supervisor` (zero live callers — Discord runs via `DiscordConsumer` directly) and the producer-less per-tenant `channel_sup` DynamicSupervisor are deleted; `Channel.Behaviour` stays (Discord implements it). `/channels` now reports Discord consumer status instead of listing Workers that could never exist. `:telegram` is out of the Session `kind` enum, old `telegram_*.jsonl` archives import via the `:imported_legacy` catch-all (regression-tested), and a data migration reclassifies any existing telegram rows.
 
-### H15. Forge timeout/brutal-kill orphans OS grandchildren — high|medium confidence
+### H15. Forge timeout/brutal-kill orphans OS grandchildren — high|medium confidence — ✅ fixed 2026-06-10
 
 **Where:** `lib/jido_claw/forge/runner/host_shell.ex:133`, `lib/jido_claw/forge/sandbox/docker.ex:249`; same class in `lib/jido_claw/shell/backend_host.ex:128`
 
 **What:** Commands run as `sh -c <command>`. `Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)` kills the BEAM task and closes the port, which at best SIGKILLs the immediate `sh` — the grandchild (the actual `claude`/`codex`/user command) is reparented and keeps consuming CPU/memory past the timeout with no reaper.
 
 **Fix:** Spawn via a process-group wrapper (`setsid` + kill the negative pgid on timeout), or `exec` in the shell string so no intermediate `sh` remains, and kill via `Port.info(port, :os_pid)` on the timeout branch.
+
+**Fixed (2026-06-10):** Fixed at all three sites, with one deliberate deviation from the suggested fix: `setsid`/process-group approaches were avoided (`setsid(1)` does not exist on macOS, and an `exec` prefix is unsafe for pipeline commands). Instead a new `JidoClaw.Core.OsCmd` runs commands through a `Port` so the OS pid is known up front, and on timeout `kill_tree/1` walks the live process table — a bounded SIGSTOP fixpoint (root stopped first so it cannot fork ahead of the walk; `ps -A` snapshot + descendant BFS, re-snapshot until stable) followed by one SIGKILL of the whole set, degrading to kill-what-was-collected if a snapshot fails so nothing is left frozen. `host_shell.ex` (`run_with_timeout/5`) and `docker.ex` (`exec_with_timeout/2`) route through `OsCmd.run/3`; the Docker note is explicit that this reaps the host-side `sbx` client tree while the in-container command runs until sandbox destroy (microVM contains the blast radius — accepted). The same-class `backend_host.ex` site now traps exits in the command task and tree-kills on all three abort paths (timeout, cooperative cancel, output limit) before closing the port. Two defects in the fix itself were caught and closed the same day: (1) post-implementation review P1 — `OsCmd.run/3`'s `:timeout` was an idle-output timeout (the receive window reset on every chunk), so chatty commands never timed out; now an absolute monotonic deadline checked before each receive (wall-clock cap, regression-tested against a steady-output command). (2) The cooperative-cancel change let a cancelled BackendHost task outlive the cancel by its tree-kill latency and then send a late `{:command_finished, ...}`, which `ShellSessionServer` re-broadcast under the *next* command — shifting every subsequent command's output by one (surfaced as `RunCommandTest` flakes); cancelled tasks now stay silent (`finish_command/2` suppresses the send, including when a cancel races in during the timeout/limit kill paths), with backend-level (`refute_receive`) and end-to-end (timed-out command must not poison the next command) regressions. Tree reaping is covered by grandchild-pid liveness tests across `os_cmd_test.exs`, `host_shell_test.exs`, and `backend_host_test.exs`.
 
 ### H16. Folio resources have no authorization — any user reads every user's data ✓ verified — ✅ fixed 2026-06-10 (by removal)
 
@@ -277,7 +281,7 @@ If the single-user/Tailscale assumptions still hold:
 1. ~~**H1 + H2** — gate the admin surface and fix the WebSocket origin default (small diffs, eliminate the exposed privileged surface).~~ ✅ Done 2026-06-10 — `/admin` behind the `JIDOCLAW_ADMIN_EMAILS` allowlist (plug + on_mount); loopback bind + port-pinned origin allowlist in every env, `PHX_HOST` opt-in exposure.
 2. ~~**H10 + H11 + H12** — agent-loop reliability: spawn-cap lockout, compactor exception safety, metadata clobber (all small, well-localized fixes).~~ ✅ Done 2026-06-10 — all three fixed (see the per-finding notes).
 3. **H7 + H8 + H9 + M1 + M2** — the secrets cluster (chmod, import redaction, env allowlist, block redaction, logger metadata).
-4. **H13 + H15** — patch drift, process-group reaping. *(H14, Telegram wiring, was in this tier — since closed by removing the adapter and its dead scaffolding.)*
+4. ~~**H13 + H15** — patch drift, process-group reaping.~~ ✅ Done 2026-06-10 — trap_exit re-ported with close-on-teardown regression guards; OS process-tree reaping via `Core.OsCmd` at all three sites, wall-clock timeouts (see the per-finding notes). *(H14, Telegram wiring, was in this tier — since closed by removing the adapter and its dead scaffolding.)*
 5. **H4 + H5 + H6** — before ever enabling clustering: peer verification, gossip secret, trust-score hardening.
 6. Mediums opportunistically; the migration/CLI ones (M11, M12) before the next data migration; M7/M8 before long-running production use.
 
@@ -288,14 +292,14 @@ One-line test-coverage/risk impressions from the subsystem reviews:
 | Subsystem | Quality | Coverage notes |
 | --- | --- | --- |
 | security/accounts/audit | Strong; honest documented trade-offs | Vault, redaction patterns, async writer, actor classifier all tested |
-| forge | Defense-conscious; runner/sandbox split clean | Thin on failure/timeout/leak paths; denylist untested for odd secret names |
+| forge | Defense-conscious; runner/sandbox split clean | Thin on failure/timeout/leak paths (timeout/orphan-reap paths since covered — see H15); denylist untested for odd secret names |
 | tools | Macro pipeline is the standout | 26 test files incl. dedicated path-jail escape suites |
 | agent layer | Defaults/Compactor composition verified correct end-to-end | AgentTracker and Heartbeat have no dedicated tests |
 | reasoning | Disciplined; AGENTS.md compaction claims hold (except H11) | 27 test files; no projected tool-pair transformer test |
 | memory/embeddings | Mature bitemporal design; SQL precedence correct | No dedicated `hybrid_search_sql` or `memory.ex` recall/forget tests |
 | orchestration | Exceptionally engineered event-sourced SM | ~4.2k test lines across 14 files |
 | CLI/mix tasks | Good error boundaries; real Display backpressure | Export test gives false redaction assurance (H8 note) |
-| shell/core patches | ETS-mirror deadlock avoidance exemplary; anubis patch safe | trap_exit drift documented in a test rather than fixed |
+| shell/core patches | ETS-mirror deadlock avoidance exemplary; anubis patch safe | trap_exit drift since fixed (H13); the documenting test now asserts close-on-teardown |
 | web | Auth defense-in-depth on mutating events | RpcChannel/UserSocket, WorkflowsLive, RequireAuth untested |
 | platform/conversations/cron | Conversations + cron strong; Discord adapter scaffolding-grade | Discord adapter has no tests (Telegram + dead channel scaffolding and Folio since removed) |
 | solutions/trace/error | Error taxonomy exemplary; trust pure-logic well tested | Trust *integrity* (who may assert it) is the gap, not the math |

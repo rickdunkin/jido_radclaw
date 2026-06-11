@@ -10,6 +10,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   @behaviour JidoClaw.Forge.Sandbox.Behaviour
   require Logger
 
+  alias JidoClaw.Core.OsCmd
   alias JidoClaw.Security.Redaction.Env
 
   defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
@@ -247,17 +248,22 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   defp exec_with_timeout(args, timeout) do
-    task =
-      Task.async(fn ->
-        System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
-      end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} ->
-        result
-
+    case System.find_executable("sbx") do
       nil ->
-        {"timeout after #{timeout}ms", 124}
+        {"sbx: command not found", 127}
+
+      sbx ->
+        # On timeout OsCmd kills the host-side `sbx` client tree — that
+        # is the fix here; the in-container command keeps running until
+        # the sandbox is destroyed. The microVM contains the blast
+        # radius, but a timed-out command still running inside a
+        # long-lived sandbox can consume its CPU/memory and affect later
+        # commands in that same sandbox. Accepted for now; revisit if
+        # sbx grows a remote-cancel API.
+        case OsCmd.run(sbx, args, env: Env.scrubbed_cmd_env(), timeout: timeout) do
+          {_partial, :timeout} -> {"timeout after #{timeout}ms", 124}
+          result -> result
+        end
     end
   end
 

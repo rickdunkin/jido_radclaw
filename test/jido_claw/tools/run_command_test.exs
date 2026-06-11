@@ -98,6 +98,22 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
       assert String.trim(result.output) == "fast"
     end
+
+    test "a timed-out command does not poison the next command's output" do
+      assert {:error, %{message: message}} =
+               RunCommand.run(%{command: "sleep 10", timeout: 100}, %{})
+
+      assert message =~ "timed out"
+
+      # The cancelled task lingers in its tree-kill for ~50-500ms after the
+      # session moved on. If it then sends a late `command_finished`, the
+      # session server re-broadcasts it under this command, which would
+      # return `""` here — and shift every later command's output by one.
+      # The 1s sleep keeps this command collecting across that window.
+      assert {:ok, result} = RunCommand.run(%{command: "sleep 1; echo aftermath"}, %{})
+
+      assert String.trim(result.output) == "aftermath"
+    end
   end
 
   describe "run/2 backend routing" do

@@ -457,9 +457,13 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
           server: "staging"
         )
 
-      assert_receive {:fake_ssh, {:connect, _, _, _, _}}
+      assert_receive {:fake_ssh, {:connect, _, _, _, conn_pid}}
 
       :ok = SessionManager.invalidate_ssh_sessions(["staging"])
+
+      # Eviction must close the cached connection (H13 regression
+      # guard) — assert before draining the rest of the mailbox.
+      assert_receive {:fake_ssh, {:close, ^conn_pid}}
       drain_fake_ssh_messages()
 
       {:ok, _} =
@@ -529,11 +533,13 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
           server: "staging"
         )
 
-      # New connect for the rebuilt session. ShellSessionServer doesn't
-      # trap exits, so the old backend's terminate isn't called on
-      # shutdown — we assert the reconnect rather than a close message.
+      # New connect for the rebuilt session, and — because the patched
+      # ShellSessionServer traps exits — the old backend's terminate
+      # closes the stale connection. assert_receive is selective, so
+      # connect-vs-close ordering doesn't matter here.
       assert_receive {:fake_ssh, {:connect, _, _, _, new_conn}}
       assert new_conn != conn_pid
+      assert_receive {:fake_ssh, {:close, ^conn_pid}}
     end
   end
 
@@ -553,6 +559,10 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
       assert {:ok, _pid} = ShellSession.lookup(session_id)
 
       :ok = SessionManager.stop_session(ws)
+
+      # The trapped-exit shutdown path runs terminate → Backend.SSH
+      # closes its connection (H13 regression guard).
+      assert_receive {:fake_ssh, {:close, _}}
 
       # Registry cleanup is async — the session pid is terminated
       # synchronously, but the Registry entry is removed via a :DOWN
@@ -574,6 +584,9 @@ defmodule JidoClaw.Shell.SessionManagerSSHTest do
       assert {:ok, _pid} = ShellSession.lookup(session_id)
 
       :ok = SessionManager.drop_sessions(ws)
+
+      # As with stop_session: terminate must close the SSH connection.
+      assert_receive {:fake_ssh, {:close, _}}
 
       assert_eventually(fn ->
         ShellSession.lookup(session_id) == {:error, :not_found}
