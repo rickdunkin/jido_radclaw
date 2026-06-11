@@ -32,9 +32,9 @@ defmodule JidoClaw.Resource do
   that come after it, so a bypass declared in a second `policies` block
   (appended after these) would be ineffective.
 
-  Resources with non-standard policy shapes
-  (`global_lookup.ex`, `request_correlation.ex`, `reputation_import.ex`)
-  keep their hand-written `use Ash.Resource` + `policies do` block.
+  Resources with non-standard policy shapes, currently
+  `request_correlation.ex`, keep their hand-written `use Ash.Resource`
+  + `policies do` block.
   """
 
   defmacro __using__(opts) do

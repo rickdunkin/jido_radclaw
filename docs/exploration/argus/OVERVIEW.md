@@ -528,7 +528,7 @@ File:line citations for the existing surface, captured during this exploration. 
 - `JidoClaw.Projects.Project` Ash resource — `projects/project.ex:1-77`. Attributes: `id`, `name`, `github_full_name`, `default_branch`, `settings`, timestamps. Domain at `projects.ex:1-11`.
 - `/projects` LiveView — `web/live/projects_live.ex:6-9` does `Ash.read!(Project, authorize?: false)`, renders static table.
 - `Workspace.project_id` field exists at `workspaces/resources/workspace.ex:164-167`, used in `workspaces/resolver.ex:47`. **Nullable, and the RPC `sessions.create` path (`web/channels/rpc_channel.ex:57-58`) does not pass it.**
-- **No `worktree` references in the codebase.** Grep for `worktree` in `lib/` returns only one unrelated hit in `solutions/resources/reputation_import.ex`. No `git worktree` shell calls anywhere.
+- **No `worktree` references in the codebase.** Grep for `worktree` in `lib/` returns no hits. No `git worktree` shell calls anywhere.
 
 ### A.3 Session / activity history
 

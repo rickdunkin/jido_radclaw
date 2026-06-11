@@ -65,7 +65,7 @@ defmodule JidoClaw.Solutions.SolutionTest do
       assert inspect(err) =~ ~r/trust_score|verification/
     end
 
-    test ":import_legacy still accepts trust_score (intentional contrast for the migrator)" do
+    test ":import_legacy still accepts trust_score (intentional contrast — fixtures seed pre-earned trust)" do
       tenant_id = unique_tenant_id()
       workspace = workspace_fixture(tenant_id)
 

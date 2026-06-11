@@ -9,8 +9,6 @@ defmodule JidoClaw.Solutions.Domain do
     * `JidoClaw.Solutions.Solution` — the corpus row.
     * `JidoClaw.Solutions.Reputation` — per-`(tenant_id, agent_id)`
       reputation entry with atomic counter writes.
-    * `JidoClaw.Solutions.ReputationImport` — idempotency ledger for
-      one-shot legacy `.jido/reputation.json` imports.
 
   Pure modules (preserved): `Fingerprint`, `Matcher`, `Trust`.
   """
@@ -20,6 +18,5 @@ defmodule JidoClaw.Solutions.Domain do
   resources do
     resource(JidoClaw.Solutions.Solution)
     resource(JidoClaw.Solutions.Reputation)
-    resource(JidoClaw.Solutions.ReputationImport)
   end
 end

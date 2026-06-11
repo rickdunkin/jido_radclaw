@@ -9,6 +9,12 @@ defmodule JidoClaw.Cron.Worker do
   immediately and persists `disabled_at`, so the bad row is not reloaded on
   restart.
 
+  `:at` is a one-shot: it fires at most once, then disables and persists
+  `disabled_at`. An `:at` whose instant has already passed at init/reload is
+  skipped (disabled without firing) — a missed one-shot must not fire at
+  boot. Manual `trigger/2` remains an operator override that executes
+  regardless of disabled status.
+
   Timer ticks carry the `%DateTime{}` window they were armed for
   (`{:tick, window}`), and a tick only fires when its window equals the
   current `next_run` — a duplicate or stale tick is swallowed without
@@ -152,7 +158,7 @@ defmodule JidoClaw.Cron.Worker do
   @impl GenServer
   def handle_info({:tick, window}, %{status: :active, next_run: window} = state) do
     state = execute_job(state, {:scheduled, window})
-    {:noreply, schedule_next(state)}
+    {:noreply, after_fire(state)}
   end
 
   # Stale/duplicate window, or a disabled worker: swallow WITHOUT executing
@@ -238,13 +244,44 @@ defmodule JidoClaw.Cron.Worker do
     }
   end
 
+  # Post-dispatch re-arm policy for the matching-tick clause. Scheduled ticks
+  # stop once disabled; manual trigger/2 deliberately bypasses this (operator
+  # intent always runs, see handle_cast(:trigger, ...)).
+
+  # Already disabled by execute_job (3-failure auto-disable): don't re-arm,
+  # and clear the consumed window — execute_job sets status without touching
+  # next_run, and a dangling next_run would advertise a tick that never comes.
+  defp after_fire(%{status: :disabled} = state), do: %{state | next_run: nil}
+
+  # A one-shot :at fires exactly once, then disables (in-memory + persisted)
+  # and never re-arms. Recurring :cron/:every re-arm as before.
+  defp after_fire(%{schedule: {:at, _dt}} = state) do
+    Logger.info("[Cron] One-shot :at job #{state.id} fired; disabling")
+    persist_disabled(state)
+    %{state | status: :disabled, next_run: nil}
+  end
+
+  defp after_fire(state), do: schedule_next(state)
+
   # Every arm sends {:tick, window} carrying the SAME DateTime struct stored
   # in next_run, so handle_info can equality-match message against state and
   # swallow duplicate/stale ticks.
   defp schedule_next(%{schedule: {:at, %DateTime{} = dt}} = state) do
-    delay = max(DateTime.diff(dt, DateTime.utc_now(), :millisecond), 0)
-    Process.send_after(self(), {:tick, dt}, delay)
-    %{state | next_run: dt}
+    now = DateTime.utc_now()
+
+    case DateTime.compare(dt, now) do
+      :lt ->
+        # Elapsed one-shot at init/reload: must NOT fire at boot. Persist
+        # disabled_at so for_tenant excludes the row on the next reload.
+        Logger.info("[Cron] Skipping elapsed one-shot :at job #{state.id}; disabling")
+        persist_disabled(state)
+        %{state | status: :disabled, next_run: nil}
+
+      _ ->
+        delay = max(DateTime.diff(dt, now, :millisecond), 0)
+        Process.send_after(self(), {:tick, dt}, delay)
+        %{state | next_run: dt}
+    end
   end
 
   defp schedule_next(%{schedule: {:every, ms}} = state) when is_integer(ms) do

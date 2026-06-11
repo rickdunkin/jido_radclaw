@@ -114,7 +114,8 @@ defmodule JidoClaw.Solutions.Solution do
       # trust is earned server-side via `:update_verification_and_trust`
       # (RecomputeTrustScore), never caller-asserted at create. New rows
       # start at the attribute defaults (0.0 / %{}). Only
-      # `:import_legacy` may carry them (v0.5.x migration).
+      # `:import_legacy` may carry them (test-fixture seeding of rows
+      # with pre-earned trust).
       accept([
         :problem_signature,
         :solution_content,
@@ -448,9 +449,9 @@ defmodule JidoClaw.Solutions.Solution do
     @moduledoc """
     Bridge action arguments → attributes for `id`, `inserted_at`,
     `updated_at` on `:import_legacy`. Ash forbids `accept`-ing
-    primary keys and timestamps, but the migration task needs to
-    preserve the legacy values so re-running the migration is
-    idempotent.
+    primary keys and timestamps, but fixture seeding needs to
+    preserve the source values so re-seeding is deterministic
+    (e.g. the export task's byte-determinism gate).
     """
     use Ash.Resource.Change
 

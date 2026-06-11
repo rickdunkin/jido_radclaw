@@ -10,7 +10,7 @@ defmodule JidoClaw.PolicyAuthzTest do
     3. Cross-actor read → empty result or `NotFound` (filter, NOT
        `Forbidden`)
     4. `:by_id_global` bypass works without an actor — only on
-       resources that define it (skip Audit.Event, ReputationImport)
+       resources that define it (skip Audit.Event)
     5. `authorize?: false` bypass works (system path)
     6. Missing actor on writes → `Ash.Error.Forbidden`
     7. Missing actor on reads → empty result (filter)

@@ -7,9 +7,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
   Deliberately does **not** use the `JidoClaw.Resource` macro — that macro
   always injects `bypass action(:by_id_global)`, which fails to compile for
   a resource with no `:by_id_global` action. Events are only ever read
-  run-scoped (`:for_run`), never by global id, so this mirrors
-  `JidoClaw.Solutions.ReputationImport`: a plain `use Ash.Resource` plus the
-  two non-bypass tenant policies.
+  run-scoped (`:for_run`), never by global id, so this ships a plain
+  `use Ash.Resource` plus the two non-bypass tenant policies.
 
   `seq` is monotonic and gap-free **per run**, allocated solely by
   `Changes.Allocate` under a per-run `FOR UPDATE` lock; callers never supply

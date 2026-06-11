@@ -14,6 +14,13 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   Contract 3: `Scheduler.load_persistent_jobs/2` rehydrates `:mfa` from
   the persisted `mfa_module`/`mfa_function`/`mfa_args` columns so a
   reloaded system job ticks under its original MFA.
+
+  Contract 4: a one-shot `:at` row whose instant has already passed is
+  skipped at reload — the worker disables itself in init WITHOUT firing
+  (a missed one-shot must never fire at boot), persists `disabled_at`,
+  and the row is excluded from the next reload. A still-future `:at`
+  row arms normally. Uses the same `:cron_workflow_runner` app-env
+  capture seam as `WorkerFireProvenanceTest` to refute boot-time fires.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -21,6 +28,19 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Scheduler
   alias JidoClaw.Tenant.Manager
+
+  defmodule CapturingRunner do
+    @moduledoc false
+    @spec run(term()) :: :ok
+    def run(state) do
+      send(
+        Application.fetch_env!(:jido_claw, :persistent_disable_test_pid),
+        {:runner_ran, state}
+      )
+
+      :ok
+    end
+  end
 
   defp wait_until_disabled(job_id, tenant, attempts \\ 50) do
     result =
@@ -144,6 +164,98 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
         state = Cron.Worker.get_state(tenant, "reload-mfa-test")
         state.last_result == {:error, :forced}
       end)
+    end
+  end
+
+  describe "Contract 4: one-shot :at rows on scheduler reload" do
+    setup do
+      previous = Application.fetch_env(:jido_claw, :cron_workflow_runner)
+      Application.put_env(:jido_claw, :cron_workflow_runner, CapturingRunner)
+      Application.put_env(:jido_claw, :persistent_disable_test_pid, self())
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:jido_claw, :cron_workflow_runner, value)
+          :error -> Application.delete_env(:jido_claw, :cron_workflow_runner)
+        end
+
+        Application.delete_env(:jido_claw, :persistent_disable_test_pid)
+      end)
+
+      :ok
+    end
+
+    test "an elapsed :at row is skipped and disabled at reload, never fired" do
+      tenant = seed_tenant("at_elapsed")
+      {:ok, _} = Manager.ensure_tenant(tenant)
+
+      past = DateTime.add(DateTime.utc_now(), -3_600, :second)
+
+      {:ok, _job} =
+        Job.upsert(
+          %{
+            job_id: "at-elapsed",
+            schedule_kind: :at,
+            schedule_value: DateTime.to_iso8601(past),
+            target: :workflow,
+            workflow_name: "explore_codebase"
+          },
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      # Count is 1: the worker DOES start, then self-disables in init —
+      # the same idle-zombie semantics as a :cron config error.
+      assert {:ok, 1} = Scheduler.load_persistent_jobs(tenant, ".")
+
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, "at-elapsed") end)
+
+      # The elapsed one-shot never executed at boot.
+      refute_receive {:runner_ran, _state}, 300
+
+      state = Cron.Worker.get_state(tenant, "at-elapsed")
+      assert state.status == :disabled
+      assert state.next_run == nil
+
+      # disabled_at persisted, so the next reload excludes the row.
+      row = wait_until_disabled("at-elapsed", tenant)
+      assert %DateTime{} = row.disabled_at
+
+      assert {:ok, 0} = Scheduler.load_persistent_jobs(tenant, ".")
+    end
+
+    test "a still-future :at row arms normally at reload" do
+      tenant = seed_tenant("at_future")
+      {:ok, _} = Manager.ensure_tenant(tenant)
+
+      # Comfortably future so slow CI can never cross the firing boundary;
+      # truncated to :second because the ISO8601 string round-trip is the
+      # worker's source of truth for next_run equality.
+      dt =
+        DateTime.utc_now()
+        |> DateTime.add(86_400, :second)
+        |> DateTime.truncate(:second)
+
+      {:ok, _job} =
+        Job.upsert(
+          %{
+            job_id: "at-future",
+            schedule_kind: :at,
+            schedule_value: DateTime.to_iso8601(dt),
+            target: :workflow,
+            workflow_name: "explore_codebase"
+          },
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      assert {:ok, 1} = Scheduler.load_persistent_jobs(tenant, ".")
+
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, "at-future") end)
+
+      assert %{status: :active, next_run: ^dt} = Cron.Worker.get_state(tenant, "at-future")
+
+      refute_receive {:runner_ran, _state}, 300
     end
   end
 

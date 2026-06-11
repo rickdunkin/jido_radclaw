@@ -4,6 +4,9 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
   import JidoClaw.ExportTestHelper
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Solutions.Solution
+  alias JidoClaw.Workspaces.Resolver
 
   @fixtures Path.expand("../../fixtures/exports/solutions", __DIR__)
 
@@ -13,7 +16,7 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
     :ok
   end
 
-  describe "round-trip via migrate.solutions + export.solutions" do
+  describe "round-trip via Solution.import_legacy + export.solutions" do
     test "export of sanitized fixture is byte-deterministic across re-runs" do
       project_dir = unique_project_dir("solutions-sanitized")
       copy_fixture(Path.join(@fixtures, "sanitized"), project_dir)
@@ -21,17 +24,13 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
       out_a = Path.join([project_dir, "solutions-export-1.json"])
       out_b = Path.join([project_dir, "solutions-export-2.json"])
 
-      reenable!("jidoclaw.migrate.solutions")
-      Mix.Task.run("jidoclaw.migrate.solutions", ["--project", project_dir])
+      seed_solutions_from_fixture(project_dir)
 
       reenable!("jidoclaw.export.solutions")
       Mix.Task.run("jidoclaw.export.solutions", ["--project", project_dir, "--out", out_a])
 
       assert File.exists?(out_a)
       bytes_a = File.read!(out_a)
-
-      reenable!("jidoclaw.migrate.solutions")
-      Mix.Task.run("jidoclaw.migrate.solutions", ["--project", project_dir])
 
       reenable!("jidoclaw.export.solutions")
       Mix.Task.run("jidoclaw.export.solutions", ["--project", project_dir, "--out", out_b])
@@ -55,8 +54,7 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
       out_path = Path.join([project_dir, "solutions-export.json"])
       manifest_path = Path.join([project_dir, "solutions-export.manifest.json"])
 
-      reenable!("jidoclaw.migrate.solutions")
-      Mix.Task.run("jidoclaw.migrate.solutions", ["--project", project_dir])
+      seed_solutions_from_fixture(project_dir)
 
       reenable!("jidoclaw.export.solutions")
 
@@ -84,7 +82,7 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
 
       # Each manifest entry's redactions list must align with
       # `[REDACTED*]` sentinels inside the corresponding solution's
-      # post-migrate content. We don't assert the exact count — just
+      # post-import content. We don't assert the exact count — just
       # that every reported position genuinely lands on a redaction
       # marker, and that at least one solution has a redaction.
       total_reported =
@@ -117,12 +115,63 @@ defmodule Mix.Tasks.Jidoclaw.SolutionsExportTest do
              "expected at least one redaction across all solutions in the with-secrets fixture"
 
       # Belt-and-braces: the export'd content has no raw fixture
-      # secrets — proves the migrate-time redaction fired.
+      # secrets — proves the action-time (`:import_legacy`
+      # RedactSolutionContent) redaction fired.
       Enum.each(payload, fn {_id, sol} ->
         content = sol["solution_content"] || ""
         refute content =~ ~r/sk-[A-Za-z0-9]{20,}/
         refute content =~ ~r/ghp_[A-Za-z0-9]{36}/
       end)
     end
+  end
+
+  # Seed Postgres from a fixture's `.jido/solutions.json` via the
+  # `:import_legacy` action — the seam the deleted v0.5.x migrator wrapped,
+  # and where redaction (`RedactSolutionContent`) actually runs. Resolves the
+  # same `("default", project_dir)` workspace the export task resolves. Uses
+  # `import_legacy!` so a bad seed fails the test loudly.
+  defp seed_solutions_from_fixture(project_dir) do
+    {:ok, ws} = Resolver.ensure_workspace("default", project_dir)
+
+    [project_dir, ".jido", "solutions.json"]
+    |> Path.join()
+    |> File.read!()
+    |> Jason.decode!()
+    |> Map.values()
+    |> Enum.each(fn entry ->
+      Solution.import_legacy!(
+        %{
+          id: Map.fetch!(entry, "id"),
+          problem_signature: Map.fetch!(entry, "problem_signature"),
+          solution_content: Map.fetch!(entry, "solution_content"),
+          language: Map.fetch!(entry, "language"),
+          framework: Map.get(entry, "framework"),
+          runtime: Map.get(entry, "runtime"),
+          agent_id: Map.get(entry, "agent_id"),
+          tags: Map.get(entry, "tags", []),
+          verification: Map.get(entry, "verification", %{}),
+          trust_score: Map.fetch!(entry, "trust_score"),
+          sharing: coerce_sharing(Map.fetch!(entry, "sharing")),
+          workspace_id: ws.id,
+          inserted_at: parse_dt!(Map.fetch!(entry, "inserted_at")),
+          updated_at: parse_dt!(Map.fetch!(entry, "updated_at"))
+        },
+        tenant: ws.tenant_id,
+        actor: Actor.system(ws.tenant_id)
+      )
+    end)
+
+    :ok
+  end
+
+  # Whitelist only — an unknown sharing value in a fixture is a fixture
+  # bug and should raise, never `String.to_atom/1` its way in.
+  defp coerce_sharing("local"), do: :local
+  defp coerce_sharing("shared"), do: :shared
+  defp coerce_sharing("public"), do: :public
+
+  defp parse_dt!(iso) when is_binary(iso) do
+    {:ok, dt, _offset} = DateTime.from_iso8601(iso)
+    dt
   end
 end

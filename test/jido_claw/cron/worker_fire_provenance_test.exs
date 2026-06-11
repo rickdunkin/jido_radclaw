@@ -128,4 +128,44 @@ defmodule JidoClaw.Cron.WorkerFireProvenanceTest do
     assert_receive {:runner_ran, %{fire: :manual}}, 5_000
     assert %{fire: nil} = Cron.Worker.get_state(tenant, job_id)
   end
+
+  describe "one-shot :at schedule" do
+    # The setup-block @far_future :every worker still runs here and keeps
+    # guarding the recurring re-arm path through after_fire/1; the :at worker
+    # under test is scheduled inside the test body with its own cleanup.
+    test "fires exactly once, then disables and never re-arms", ctx do
+      %{tenant: tenant} = ctx
+
+      job_id = "fire-at-#{System.unique_integer([:positive])}"
+      # Comfortably future so the natural timer can never fire on slow CI;
+      # the tick is driven explicitly.
+      dt = DateTime.add(DateTime.utc_now(), 86_400, :second)
+
+      {:ok, ^job_id, pid} =
+        Scheduler.schedule(tenant,
+          id: job_id,
+          target: :workflow,
+          workflow_name: "explore_codebase",
+          schedule: {:at, dt}
+        )
+
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, job_id) end)
+
+      assert %{status: :active, next_run: ^dt} = Cron.Worker.get_state(tenant, job_id)
+
+      send(pid, {:tick, dt})
+
+      assert_receive {:runner_ran, %{fire: {:scheduled, ^dt}}}, 5_000
+
+      # The one-shot consumed its window: disabled, with no dangling next_run
+      # advertising a tick that will never come.
+      assert %{status: :disabled, next_run: nil} = Cron.Worker.get_state(tenant, job_id)
+
+      # A second tick for the consumed window is swallowed — never a second run.
+      send(pid, {:tick, dt})
+      refute_receive {:runner_ran, _state}, 300
+
+      assert Process.alive?(pid)
+    end
+  end
 end
