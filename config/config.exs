@@ -263,8 +263,22 @@ config :jido_claw,
     max_traces: 100,
     max_events_per_trace: 300,
     persist?: true,
-    persist_sync?: false
+    persist_sync?: false,
+    # Durable retention: trace_runs (and their events) whose `updated_at` is
+    # older than this many days are pruned by JidoClaw.Trace.RetentionSweeper.
+    # Keyed on updated_at (last activity), so live traces never age out
+    # mid-flight. nil / non-positive / non-integer disables sweeping.
+    retention_days: 30
   ],
+  # Per-leaf byte cap applied by WorkflowEvent.Changes.Allocate to persisted
+  # event payload/metadata and the raw projection stash (WorkflowRun.result /
+  # WorkflowStep.output). 64 KB — deliberately above the 32 KB tool output
+  # cap, since a step legitimately aggregates multiple tool outputs.
+  workflow_event_payload_max_bytes: 65_536,
+  # Max byte size of the serialized replay_inputs blob ReactorRunner persists
+  # at launch; an over-cap blob is omitted (run completes but is not
+  # replayable — surfaces as {:not_replayable, :no_inputs}).
+  workflow_replay_inputs_max_bytes: 1_048_576,
   base_resources: [JidoClaw.Resource]
 
 config :spark, :formatter,

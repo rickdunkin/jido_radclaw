@@ -123,7 +123,13 @@
           # shared contract; imposing a behaviour would over-couple them.
           "JidoClaw.ForgeView",
           "JidoClaw.SwarmView",
-          "JidoClaw.WorkflowView"
+          "JidoClaw.WorkflowView",
+          # Plain GenServers — the shared init/1, handle_info/2, start_link/1
+          # ARE GenServer's callbacks (same false-positive class as the Forge
+          # runners above); their tick loops are not a shared domain contract.
+          "JidoClaw.CodeServer.Runtime",
+          "JidoClaw.Conversations.RequestCorrelation.Sweeper",
+          "JidoClaw.Trace.RetentionSweeper"
         ]
       ]
     ]

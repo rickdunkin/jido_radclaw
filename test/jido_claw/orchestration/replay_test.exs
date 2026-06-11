@@ -491,6 +491,54 @@ defmodule JidoClaw.Orchestration.ReplayTest do
     end
   end
 
+  describe "replay-inputs size guard (L9)" do
+    # The launch logs the dropped-blob warning.
+    @tag :capture_log
+    test "an over-cap inputs blob is omitted: run completes, column is SQL NULL, replay refuses",
+         ctx do
+      put_replay_inputs_cap!(64)
+
+      dir = tmp_project_dir!()
+      write_fixture!(dir)
+      original = launch_fixture!(dir, ctx, %{}, %{extra_context: String.duplicate("a", 10_000)})
+      drain_echo_messages()
+
+      assert original.status == :completed
+
+      {:ok, reloaded} = WorkflowRun.by_id(original.id, tenant: ctx.tenant, actor: ctx.actor)
+      # The raw encrypted column must be SQL NULL — the attrs key was OMITTED.
+      # AshCloak encrypts any PRESENT argument, so `replay_inputs: nil` would
+      # have persisted ciphertext-of-nil here and broken the presence check.
+      assert reloaded.encrypted_replay_inputs == nil
+
+      {:ok, loaded} = Ash.load(reloaded, :replay_inputs, tenant: ctx.tenant, actor: ctx.actor)
+      assert loaded.replay_inputs == nil
+
+      # The absent blob surfaces through the existing refusal vocabulary.
+      assert {:error, {:not_replayable, :no_inputs}} =
+               Replay.replay(original.id, tenant: ctx.tenant, actor: ctx.actor)
+    end
+
+    test "a non-positive cap env value falls back to the 1 MB default — replayability survives",
+         ctx do
+      # A raw -1 cap would make `byte_size(blob) > cap` true for EVERY blob,
+      # silently stripping replayability from every run.
+      put_replay_inputs_cap!(-1)
+
+      dir = tmp_project_dir!()
+      write_fixture!(dir)
+      original = launch_fixture!(dir, ctx)
+      drain_echo_messages()
+
+      {:ok, reloaded} = WorkflowRun.by_id(original.id, tenant: ctx.tenant, actor: ctx.actor)
+      assert is_binary(reloaded.encrypted_replay_inputs)
+
+      assert {:ok, replayed} = Replay.replay(original.id, tenant: ctx.tenant, actor: ctx.actor)
+      assert replayed.status == :completed
+      assert replayed.retry_of_id == original.id
+    end
+  end
+
   describe "MCP seam (ReplayWorkflow tool, T2-2 security pin)" do
     test "a replay-run error carrying a secret never reaches MCP output", ctx do
       dir = tmp_project_dir!()
@@ -668,6 +716,18 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   defp template(module),
     do: %{module: module, description: "stub", model: :fast, max_iterations: 1}
 
+  defp put_replay_inputs_cap!(value) do
+    previous = Application.fetch_env(:jido_claw, :workflow_replay_inputs_max_bytes)
+    Application.put_env(:jido_claw, :workflow_replay_inputs_max_bytes, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, v} -> Application.put_env(:jido_claw, :workflow_replay_inputs_max_bytes, v)
+        :error -> Application.delete_env(:jido_claw, :workflow_replay_inputs_max_bytes)
+      end
+    end)
+  end
+
   defp build_socket(actor) do
     %Phoenix.LiveView.Socket{
       assigns: %{
@@ -720,14 +780,19 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   # Launch exactly the way the production skill callers do: fresh-disk load,
   # compile, run through the envelope with the skill hash + run-level deadline
   # + project_dir scope.
-  defp launch_fixture!(dir, %{tenant: tenant, actor: actor}, context_overrides \\ %{}) do
+  defp launch_fixture!(
+         dir,
+         %{tenant: tenant, actor: actor},
+         context_overrides \\ %{},
+         inputs \\ %{extra_context: "initial"}
+       ) do
     {:ok, skill} = Skills.load_skill(@fixture_name, dir)
     {:ok, reactor} = Compiler.compile(skill)
 
     context = Map.merge(%{project_dir: dir}, context_overrides)
 
     assert {:ok, _value, run} =
-             ReactorRunner.run(reactor, %{extra_context: "initial"},
+             ReactorRunner.run(reactor, inputs,
                tenant: tenant,
                actor: actor,
                name: skill.name,

@@ -43,6 +43,7 @@ defmodule JidoClaw.Trace.Resources.TraceEvent do
     define(:append_event, action: :append_event)
     define(:for_trace, action: :for_trace, args: [:trace_id])
     define(:read, action: :read)
+    define(:sweep_delete, action: :sweep_delete)
   end
 
   actions do
@@ -87,6 +88,14 @@ defmodule JidoClaw.Trace.Resources.TraceEvent do
       argument(:trace_id, :string, allow_nil?: false)
       filter(expr(trace_id == ^arg(:trace_id)))
       prepare(build(sort: [seq: :asc]))
+    end
+
+    # Maintenance-only delete for the retention sweeper (see
+    # `TraceRun.sweep_expired/1`). Named and private for the same reason as
+    # TraceRun's: no authorizers here, so no generic `:destroy` default.
+    destroy :sweep_delete do
+      description("Retention-sweeper delete of an expired trace's events.")
+      public?(false)
     end
   end
 

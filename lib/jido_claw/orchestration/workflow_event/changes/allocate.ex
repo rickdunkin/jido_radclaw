@@ -20,11 +20,14 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     1. Lock + read the parent run (`FOR UPDATE`) so concurrent appends for
        one run serialize. A missing run (or a tenant mismatch the filter
        drops) becomes a clean changeset error, not a crash on `nil`.
-    2. Stash `run.status` and the **raw** payload in changeset context for
-       the after_action — *before* redaction.
-    3. Allocate `seq = max(existing) + 1` (after the lock) and redact the
-       persisted `payload`/`metadata`. The unique `(workflow_run_id, seq)`
-       index is the backstop.
+    2. Stash `run.status` and the **raw** payload (size-capped per leaf, but
+       *not* redacted) in changeset context for the after_action.
+    3. Allocate `seq = max(existing) + 1` (after the lock) and redact-then-cap
+       the persisted `payload`/`metadata` — redaction always sees the full
+       original (capping first could cut a secret below the redaction regex's
+       match threshold). The unique `(workflow_run_id, seq)` index is the
+       backstop. The cap (`:workflow_event_payload_max_bytes`, default 64 KB)
+       is per-leaf, not a whole-payload budget.
 
   ## after_action (status-authority kinds only)
 
@@ -62,6 +65,9 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
   alias JidoClaw.Orchestration.WorkflowStep
   alias JidoClaw.Repo
   alias JidoClaw.Security.Redaction.Transcript
+  alias JidoClaw.Tools.OutputLimit
+
+  @default_payload_leaf_cap 65_536
 
   # The kinds that project a WorkflowStep row. `step_retried` deliberately
   # does NOT write (the retry's own `step_started` resets the row);
@@ -101,13 +107,21 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
         raw_payload = Changeset.get_attribute(changeset, :payload) || %{}
         raw_metadata = Changeset.get_attribute(changeset, :metadata) || %{}
 
+        # Capped raw → context stash (bounds WorkflowRun.result /
+        # WorkflowStep.output, which store raw by design — size-only,
+        # no redaction). Redact-the-ORIGINAL-then-cap → persisted columns:
+        # truncating first could cut a long secret below the redaction
+        # regex's match threshold and persist an unredacted partial secret.
+        # This is a per-leaf bound, NOT a whole-payload budget — many
+        # under-cap leaves can still grow; current payload shapes are
+        # single-large-LLM-text leaves.
         changeset
         |> Changeset.set_context(%{
-          workflow_event: %{current_status: run.status, raw_payload: raw_payload}
+          workflow_event: %{current_status: run.status, raw_payload: capped(raw_payload)}
         })
         |> Changeset.force_change_attribute(:seq, next_seq(run_id, tenant, actor))
-        |> Changeset.force_change_attribute(:payload, Transcript.redact(raw_payload))
-        |> Changeset.force_change_attribute(:metadata, Transcript.redact(raw_metadata))
+        |> Changeset.force_change_attribute(:payload, capped(Transcript.redact(raw_payload)))
+        |> Changeset.force_change_attribute(:metadata, capped(Transcript.redact(raw_metadata)))
 
       :error ->
         Changeset.add_error(changeset,
@@ -338,6 +352,23 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
     )
 
     :ok
+  end
+
+  defp capped(map), do: OutputLimit.truncate(map, payload_leaf_cap())
+
+  # Normalize the env value: only a positive integer is honored. A nil cap
+  # would silently fail open (`byte_size(v) > nil` is false under Erlang term
+  # ordering, disabling truncation entirely); a negative one would truncate
+  # every leaf to marker-only.
+  defp payload_leaf_cap do
+    case Application.get_env(
+           :jido_claw,
+           :workflow_event_payload_max_bytes,
+           @default_payload_leaf_cap
+         ) do
+      cap when is_integer(cap) and cap > 0 -> cap
+      _invalid -> @default_payload_leaf_cap
+    end
   end
 
   defp put_valid(map, _key, nil, _valid?), do: map

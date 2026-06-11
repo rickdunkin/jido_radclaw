@@ -32,6 +32,16 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.StructStep do
   def run(_arguments, _context, _options), do: {:ok, %{workspace: ~D[2024-01-01]}}
 end
 
+defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.ContextPayloadStep do
+  @moduledoc false
+  use Reactor.Step
+
+  # Returns whatever map the test seeded in context — lets the payload-cap
+  # tests drive arbitrary step results through the real append path.
+  @impl Reactor.Step
+  def run(_arguments, context, _options), do: {:ok, context[:step_payload]}
+end
+
 defmodule JidoClaw.Orchestration.ReactorMiddlewareTest.HaltStep do
   @moduledoc false
   use Reactor.Step
@@ -76,6 +86,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.ReactorMiddleware
+  alias JidoClaw.Orchestration.ReactorMiddlewareTest.ContextPayloadStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.ErrStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.HaltStep
   alias JidoClaw.Orchestration.ReactorMiddlewareTest.MapStep
@@ -231,6 +242,122 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert reloaded.status == :completed
   end
 
+  describe "payload byte cap (M8 — Allocate per-leaf truncation)" do
+    test "a huge step result is capped in the persisted event AND in run.result", ctx do
+      put_payload_cap!(200)
+      run = create_run("mw-cap-huge", ctx)
+      huge = String.duplicate("a", 100_000)
+      context = Map.put(context(run, ctx), :step_payload, %{text: huge})
+
+      assert {:ok, %{text: ^huge}} =
+               Reactor.run(build(ContextPayloadStep), %{}, context,
+                 async?: false,
+                 run_id: run.id
+               )
+
+      completed = Enum.find(events_for(run, ctx), &(&1.kind == :step_completed))
+      leaf = completed.payload["output"]["text"]
+      assert byte_size(leaf) <= 200
+      assert leaf =~ "[tool output truncated"
+
+      # The raw projection sink is bounded too: run.result comes from the
+      # context-stashed (capped) raw payload, not the persisted column.
+      %{tenant: tenant, actor: actor} = ctx
+      {:ok, reloaded} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
+      assert byte_size(reloaded.result["text"]) <= 200
+      assert reloaded.result["text"] =~ "[tool output truncated"
+    end
+
+    test "small flag keys (irreversible/deadline) pass through a low cap untouched", ctx do
+      put_payload_cap!(120)
+      run = create_run("mw-cap-flags", ctx)
+
+      reactor =
+        Builder.new()
+        |> Builder.add_step!(:only, {OkStep, [deadline: %{within: 60}, irreversible: true]})
+        |> Builder.return!(:only)
+        |> Builder.add_middleware!(ReactorMiddleware)
+
+      assert {:ok, :done} =
+               Reactor.run(reactor, %{}, context(run, ctx), async?: false, run_id: run.id)
+
+      started = Enum.find(events_for(run, ctx), &(&1.kind == :step_started))
+      assert started.payload["deadline"] == %{"within" => 60}
+      assert started.payload["irreversible"] == true
+    end
+
+    test "an under-cap payload persists byte-identical, no marker", ctx do
+      put_payload_cap!(200)
+      run = create_run("mw-cap-small", ctx)
+      context = Map.put(context(run, ctx), :step_payload, %{note: "small"})
+
+      assert {:ok, %{note: "small"}} =
+               Reactor.run(build(ContextPayloadStep), %{}, context,
+                 async?: false,
+                 run_id: run.id
+               )
+
+      completed = Enum.find(events_for(run, ctx), &(&1.kind == :step_completed))
+      assert completed.payload["output"] == %{"note" => "small"}
+      refute inspect(completed.payload) =~ "truncated"
+    end
+
+    test "a secret straddling the cap boundary is fully redacted (redact-before-cap)", ctx do
+      # 38B pad + 37B secret + 50B tail = 125B > the 120B cap. Cap-first
+      # would cut at ~60B, leaving "sk-ant-" + 15 body chars — below the
+      # redaction regex's {20,} threshold, persisting a raw partial secret.
+      # Redact-first replaces the full secret, and the redacted leaf (112B)
+      # then fits under the cap. The tail is "." — outside the key regex's
+      # char class — so the match ends exactly at the secret.
+      put_payload_cap!(120)
+      run = create_run("mw-cap-secret", ctx)
+
+      pad = String.duplicate("x", 38)
+      secret = "sk-ant-" <> String.duplicate("S3CR3T", 5)
+      tail = String.duplicate(".", 50)
+      context = Map.put(context(run, ctx), :step_payload, %{text: pad <> secret <> tail})
+
+      assert {:ok, _} =
+               Reactor.run(build(ContextPayloadStep), %{}, context,
+                 async?: false,
+                 run_id: run.id
+               )
+
+      completed = Enum.find(events_for(run, ctx), &(&1.kind == :step_completed))
+      leaf = completed.payload["output"]["text"]
+
+      assert leaf == pad <> "[REDACTED:ANTHROPIC_KEY]" <> tail
+      refute leaf =~ "sk-ant-"
+      refute leaf =~ "S3CR3T"
+    end
+
+    test "a nil or negative cap env value falls back to the 64 KB default", ctx do
+      # nil fails open (`byte_size(v) > nil` is false — truncation disabled);
+      # negative truncates everything to marker-only. Both must normalize.
+      for bad_cap <- [nil, -1] do
+        put_payload_cap!(bad_cap)
+        run = create_run("mw-cap-norm-#{inspect(bad_cap)}", ctx)
+
+        context =
+          Map.put(context(run, ctx), :step_payload, %{text: String.duplicate("a", 70_000)})
+
+        assert {:ok, _} =
+                 Reactor.run(build(ContextPayloadStep), %{}, context,
+                   async?: false,
+                   run_id: run.id
+                 )
+
+        completed = Enum.find(events_for(run, ctx), &(&1.kind == :step_completed))
+        leaf = completed.payload["output"]["text"]
+        # Truncated at the default, not fail-open (would be 70_000) and not
+        # marker-only (would be ~60 bytes).
+        assert byte_size(leaf) <= 65_536
+        assert byte_size(leaf) > 1_000
+        assert leaf =~ "[tool output truncated"
+      end
+    end
+  end
+
   describe "resume of a halted reactor (initial_state: :halted)" do
     test "positive control: an un-cancelled halted reactor resumes downstream to run_completed",
          ctx do
@@ -344,6 +471,18 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   defp create_run(name, %{tenant: tenant, actor: actor}) do
     {:ok, run} = WorkflowRun.create(%{name: name}, tenant: tenant, actor: actor)
     run
+  end
+
+  defp put_payload_cap!(value) do
+    previous = Application.fetch_env(:jido_claw, :workflow_event_payload_max_bytes)
+    Application.put_env(:jido_claw, :workflow_event_payload_max_bytes, value)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, v} -> Application.put_env(:jido_claw, :workflow_event_payload_max_bytes, v)
+        :error -> Application.delete_env(:jido_claw, :workflow_event_payload_max_bytes)
+      end
+    end)
   end
 
   defp context(run, %{tenant: tenant, actor: actor}) do

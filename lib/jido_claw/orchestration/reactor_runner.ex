@@ -79,7 +79,10 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   one, so replay can locate the skills dir without decoding the inputs blob),
   `retry_of_id`, and the AshCloak-encrypted `replay_inputs` blob —
   `term_to_binary({@replay_version, inputs, extra_context})`, encoded in the
-  pre-run body so an encode raise lands in the body-level rescue.
+  pre-run body so an encode raise lands in the body-level rescue. The blob is
+  size-guarded (`:workflow_replay_inputs_max_bytes`, default 1 MB): an
+  over-cap blob is omitted with a warning — the launch proceeds, and the run
+  later refuses replay as `{:not_replayable, :no_inputs}`.
 
   ## Terminal-durability backstop
 
@@ -198,6 +201,11 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # versions.
   @replay_version 1
 
+  # Default size guard on the persisted replay_inputs blob (1 MB). Every
+  # launch funnels through run/3, and Replay re-decodes + re-persists the
+  # blob — without a cap an oversized input is loopable amplification.
+  @default_replay_inputs_cap 1_048_576
+
   # Cancellation reason stamped on a pending case when a gate pause fails to
   # persist; also the human-facing `run_failed` error context.
   @gate_pause_reason "gate pause failed"
@@ -236,20 +244,29 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
          {:ok, runnable} <- build_runnable(reactor),
          {:ok, run} <-
            create_run(
-             %{
-               name: name,
-               workflow_type: "reactor",
-               config:
-                 run_config(identity, reactor_module, extra_context, Keyword.get(opts, :deadline)),
-               definition_hash: definition_hash(reactor_module, opts),
-               # Encoded here — BELOW the dedupe read — so a key hit never
-               # reaches the encode; a term_to_binary raise (a non-serializable
-               # input, e.g. a local fun) still lands in the body-level rescue
-               # → {:error, {:exception, msg}, nil}, preserving never-raises.
-               replay_inputs: :erlang.term_to_binary({@replay_version, inputs, extra_context}),
-               retry_of_id: Keyword.get(opts, :retry_of_id),
-               idempotency_key: idempotency_key
-             },
+             # Replay inputs are encoded here — BELOW the dedupe read — so a
+             # key hit never reaches the encode; a term_to_binary raise (a
+             # non-serializable input, e.g. a local fun) still lands in the
+             # body-level rescue → {:error, {:exception, msg}, nil},
+             # preserving never-raises. An over-cap blob OMITS the key
+             # (see replay_inputs_attrs/3) — the launch itself never fails.
+             Map.merge(
+               %{
+                 name: name,
+                 workflow_type: "reactor",
+                 config:
+                   run_config(
+                     identity,
+                     reactor_module,
+                     extra_context,
+                     Keyword.get(opts, :deadline)
+                   ),
+                 definition_hash: definition_hash(reactor_module, opts),
+                 retry_of_id: Keyword.get(opts, :retry_of_id),
+                 idempotency_key: idempotency_key
+               },
+               replay_inputs_attrs(name, inputs, extra_context)
+             ),
              idempotency_key,
              tenant,
              actor
@@ -336,6 +353,43 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # caller holds the `%Skills{}` — so the struct branch takes the opt as-is.
   defp definition_hash(nil, opts), do: Keyword.get(opts, :definition_hash)
   defp definition_hash(module, _opts), do: DefinitionFingerprint.for_module(module)
+
+  # `%{replay_inputs: blob}` when the encoded blob is within the cap; `%{}`
+  # when over. The key must be OMITTED, not set to nil: AshCloak's Encrypt
+  # change encrypts any PRESENT argument — including nil — so
+  # `replay_inputs: nil` would persist ciphertext-of-nil instead of SQL NULL
+  # and break Replay's presence check. An absent blob surfaces through the
+  # existing refusal vocabulary ({:not_replayable, :no_inputs}); the warning
+  # here records why. The run id doesn't exist yet, so the log carries `name`.
+  defp replay_inputs_attrs(name, inputs, extra_context) do
+    blob = :erlang.term_to_binary({@replay_version, inputs, extra_context})
+    cap = replay_inputs_cap()
+
+    if byte_size(blob) > cap do
+      Logger.warning(
+        "[ReactorRunner] replay_inputs for #{inspect(name)} dropped: " <>
+          "#{byte_size(blob)} bytes exceeds cap #{cap} — the run will not be replayable"
+      )
+
+      %{}
+    else
+      %{replay_inputs: blob}
+    end
+  end
+
+  # Positive integer or the default — a nil cap would make
+  # `byte_size(blob) > nil` false (the guard never trips); a negative one
+  # would strip replayability from every run.
+  defp replay_inputs_cap do
+    case Application.get_env(
+           :jido_claw,
+           :workflow_replay_inputs_max_bytes,
+           @default_replay_inputs_cap
+         ) do
+      cap when is_integer(cap) and cap > 0 -> cap
+      _invalid -> @default_replay_inputs_cap
+    end
+  end
 
   # Launch dedupe, read-first leg: a present key that already owns a run
   # short-circuits the launch via the `with`'s else (`{:hit, run}` →

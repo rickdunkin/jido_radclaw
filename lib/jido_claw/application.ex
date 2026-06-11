@@ -165,6 +165,9 @@ defmodule JidoClaw.Application do
       JidoClaw.Trace.Collector,
       JidoClaw.Conversations.Recorder,
       JidoClaw.Conversations.RequestCorrelation.Sweeper,
+      # Hourly trace retention: prunes trace_runs/trace_events older than
+      # trace[:retention_days]. Only needs Repo; no ordering constraint.
+      JidoClaw.Trace.RetentionSweeper,
       JidoClaw.Audit.SignalListener
     ]
 
