@@ -59,6 +59,13 @@ defmodule JidoClaw.Forge.Sandbox do
   @spec impl_module() :: module()
   def impl_module, do: impl()
 
+  @doc """
+  Exit status backends report when `OsCmd` returns `:output_limit`:
+  128 + SIGXFSZ ("file size limit exceeded"; 124 is taken by timeout).
+  """
+  @spec output_limit_exit_status() :: 153
+  def output_limit_exit_status, do: 153
+
   defp impl do
     Application.get_env(:jido_claw, :forge_sandbox, JidoClaw.Forge.Runner.HostShell)
   end

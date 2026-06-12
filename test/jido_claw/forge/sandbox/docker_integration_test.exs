@@ -85,6 +85,26 @@ defmodule JidoClaw.Forge.Sandbox.DockerIntegrationTest do
     end
   end
 
+  describe "output limit handling" do
+    test "exec past the output cap returns 153", %{client: client} do
+      original = Application.get_env(:jido_claw, :os_cmd_max_output_bytes, :unset)
+      Application.put_env(:jido_claw, :os_cmd_max_output_bytes, 1_000)
+
+      on_exit(fn ->
+        case original do
+          :unset -> Application.delete_env(:jido_claw, :os_cmd_max_output_bytes)
+          previous -> Application.put_env(:jido_claw, :os_cmd_max_output_bytes, previous)
+        end
+      end)
+
+      # The cap applies to the host-side sbx client's merged output
+      # stream; head bounds the in-container producer.
+      {output, code} = Docker.exec(client, "yes x | head -c 100000", timeout: 30_000)
+      assert code == 153
+      assert output =~ "output limit exceeded"
+    end
+  end
+
   describe "destroy idempotency" do
     test "destroy on already-destroyed sandbox does not crash", %{
       client: client,

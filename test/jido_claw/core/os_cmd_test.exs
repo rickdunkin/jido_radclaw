@@ -115,6 +115,80 @@ defmodule JidoClaw.Core.OsCmdTest do
     end
   end
 
+  describe "output cap" do
+    test "caps output at exactly :max_output_bytes and reports :output_limit", %{sh: sh} do
+      # `head -c` bounds the runaway to 100 KB so a broken cap fails
+      # fast on the pattern instead of accumulating output for long.
+      assert {output, :output_limit} =
+               OsCmd.run(sh, ["-c", "yes x | head -c 100000"],
+                 max_output_bytes: 1_000,
+                 timeout: 30_000
+               )
+
+      assert byte_size(output) == 1_000
+    end
+
+    test "exceeding the cap kills the whole OS process tree", %{sh: sh, tmp: tmp} do
+      marker = Path.join(tmp, "grandchild.pid")
+
+      # `wait` keeps the shell alive on the backgrounded sleep, so the
+      # tree is still running when the cap fires; the safety timeout
+      # bounds a broken-cap failure to {"", :timeout} instead of a hang.
+      assert {_output, :output_limit} =
+               OsCmd.run(
+                 sh,
+                 ["-c", "sleep 30 & echo $! > #{marker}; yes x | head -c 100000; wait"],
+                 max_output_bytes: 1_000,
+                 timeout: 30_000
+               )
+
+      assert_eventually(fn -> marker_pid(marker) != nil end)
+      pid = marker_pid(marker)
+
+      assert_eventually(fn -> not os_pid_alive?(pid) end, 2_000)
+    end
+
+    test "max_output_bytes: :infinity opts out of a configured cap", %{sh: sh} do
+      put_app_env_restoring(:os_cmd_max_output_bytes, 1_000)
+
+      # 2>/dev/null: when head closes the pipe, yes complains on stderr,
+      # which OsCmd merges into stdout — silence it for the exact-size
+      # assertion.
+      assert {output, 0} =
+               OsCmd.run(sh, ["-c", "yes x 2>/dev/null | head -c 10000"],
+                 max_output_bytes: :infinity
+               )
+
+      assert byte_size(output) == 10_000
+    end
+
+    test "the configured default applies when no option is passed", %{sh: sh} do
+      put_app_env_restoring(:os_cmd_max_output_bytes, 1_000)
+
+      assert {output, :output_limit} =
+               OsCmd.run(sh, ["-c", "yes x | head -c 10000"], timeout: 30_000)
+
+      assert byte_size(output) == 1_000
+    end
+
+    test "under-cap output is returned in full with the real status", %{sh: sh} do
+      assert {"hello", 3} = OsCmd.run(sh, ["-c", "printf hello; exit 3"], max_output_bytes: 1_000)
+    end
+
+    # Unit-tests the config normalizer directly: pins that app config can
+    # never disable the cap (notably `:infinity`, which is per-call only)
+    # without having to generate >10 MB of real output.
+    test "configured_max_output_bytes/0 normalizes invalid config to the 10 MB default" do
+      for invalid <- [0, -5, nil, :infinity, "10000"] do
+        put_app_env_restoring(:os_cmd_max_output_bytes, invalid)
+        assert OsCmd.configured_max_output_bytes() == 10_000_000
+      end
+
+      put_app_env_restoring(:os_cmd_max_output_bytes, 4_096)
+      assert OsCmd.configured_max_output_bytes() == 4_096
+    end
+  end
+
   describe "kill_tree/1" do
     test "is :ok for an already-dead pid" do
       # Spawn something short-lived and wait for it to exit so the pid
@@ -130,6 +204,18 @@ defmodule JidoClaw.Core.OsCmdTest do
 
       assert :ok = OsCmd.kill_tree(os_pid)
     end
+  end
+
+  defp put_app_env_restoring(key, value) do
+    original = Application.get_env(:jido_claw, key, :unset)
+    Application.put_env(:jido_claw, key, value)
+
+    on_exit(fn ->
+      case original do
+        :unset -> Application.delete_env(:jido_claw, key)
+        previous -> Application.put_env(:jido_claw, key, previous)
+      end
+    end)
   end
 
   defp marker_pid(marker) do

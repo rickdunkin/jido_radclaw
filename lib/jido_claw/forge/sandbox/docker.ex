@@ -11,6 +11,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   require Logger
 
   alias JidoClaw.Core.OsCmd
+  alias JidoClaw.Forge.Sandbox
   alias JidoClaw.Security.Redaction.Env
 
   defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
@@ -131,11 +132,10 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     args = build_exec_args(sandbox_name, workspace_dir, command)
     timeout = Keyword.get(opts, :timeout)
 
-    if timeout do
-      exec_with_timeout(args, timeout)
-    else
-      System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
-    end
+    # No-timeout calls go through exec_with_timeout too (OsCmd accepts
+    # :infinity): they get the output cap, the tree-kill, and the
+    # missing-sbx guard — the raw System.cmd here *raised* :enoent.
+    exec_with_timeout(args, timeout || :infinity)
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
@@ -148,11 +148,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     sbx_args = build_exec_argv_args(sandbox_name, workspace_dir, command, args)
     timeout = Keyword.get(opts, :timeout)
 
-    if timeout do
-      exec_with_timeout(sbx_args, timeout)
-    else
-      System.cmd("sbx", sbx_args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
-    end
+    exec_with_timeout(sbx_args, timeout || :infinity)
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
@@ -166,11 +162,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     sbx_args = build_run_args(name, agent_type, workspace_dir, args)
     timeout = Keyword.get(opts, :timeout)
 
-    if timeout do
-      exec_with_timeout(sbx_args, timeout)
-    else
-      System.cmd("sbx", sbx_args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
-    end
+    exec_with_timeout(sbx_args, timeout || :infinity)
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
@@ -311,22 +303,40 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   defp exec_with_timeout(args, timeout) do
-    case System.find_executable("sbx") do
+    case sbx_finder().("sbx") do
       nil ->
         {"sbx: command not found", 127}
 
       sbx ->
-        # On timeout OsCmd kills the host-side `sbx` client tree — that
-        # is the fix here; the in-container command keeps running until
-        # the sandbox is destroyed. The microVM contains the blast
-        # radius, but a timed-out command still running inside a
-        # long-lived sandbox can consume its CPU/memory and affect later
-        # commands in that same sandbox. Accepted for now; revisit if
-        # sbx grows a remote-cancel API.
+        # On timeout (or output cap) OsCmd kills the host-side `sbx`
+        # client tree — that is the fix here; the in-container command
+        # keeps running until the sandbox is destroyed. The microVM
+        # contains the blast radius, but a timed-out command still
+        # running inside a long-lived sandbox can consume its CPU/memory
+        # and affect later commands in that same sandbox. Accepted for
+        # now; revisit if sbx grows a remote-cancel API.
         case OsCmd.run(sbx, args, env: Env.scrubbed_cmd_env(), timeout: timeout) do
-          {_partial, :timeout} -> {"timeout after #{timeout}ms", 124}
-          result -> result
+          {_partial, :timeout} ->
+            {"timeout after #{timeout}ms", 124}
+
+          {partial, :output_limit} ->
+            {"output limit exceeded after #{byte_size(partial)} bytes",
+             Sandbox.output_limit_exit_status()}
+
+          result ->
+            result
         end
+    end
+  end
+
+  # Injectable finder so tests can force the missing-sbx branch
+  # deterministically on machines that have sbx installed (the app-env
+  # seam idiom, cf. :task_supervisor). Anything but a 1-arity fun falls
+  # back to the real finder — bad config must not crash the exec path.
+  defp sbx_finder do
+    case Application.get_env(:jido_claw, :sbx_finder) do
+      fun when is_function(fun, 1) -> fun
+      _absent_or_invalid -> &System.find_executable/1
     end
   end
 

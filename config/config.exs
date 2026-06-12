@@ -279,6 +279,19 @@ config :jido_claw,
   # at launch; an over-cap blob is omitted (run completes but is not
   # replayable — surfaces as {:not_replayable, :no_inputs}).
   workflow_replay_inputs_max_bytes: 1_048_576,
+  # Per-command output cap in Core.OsCmd — bounds BEAM memory per external
+  # command. Past the cap the OS process tree is killed and the cap-sized
+  # output prefix returned; HostShell/Docker map it to exit status 153
+  # (Sandbox.output_limit_exit_status/0). Positive integers only —
+  # `:infinity` is honored solely as a per-call option, and invalid values
+  # normalize to the default, so config can never silently disable the cap.
+  os_cmd_max_output_bytes: 10_000_000,
+  # Opt-in HostShell resource limits (default off; Docker has cgroups).
+  # CPU seconds via `ulimit -t` (portable) and virtual memory KB via
+  # `ulimit -v` (enforced on Linux; macOS accepts but does not enforce).
+  # Best-effort prelude — a rejected limit never aborts the command.
+  # forge_ulimit_cpu_seconds: 600,
+  # forge_ulimit_virtual_memory_kb: 2_097_152,
   base_resources: [JidoClaw.Resource]
 
 config :spark, :formatter,

@@ -177,6 +177,39 @@ defmodule JidoClaw.Tools.EditFileTest do
     end
   end
 
+  describe "read size cap" do
+    test "refuses to edit a local file over the 5 MB cap (pre-read stat guard)", %{dir: dir} do
+      path = Path.join(dir, "big.txt")
+      File.write!(path, :binary.copy("x", @max_content_bytes + 1))
+
+      assert {:error, %{message: message}} =
+               EditFile.run(%{path: path, old_string: "x", new_string: "y"}, context(dir))
+
+      assert message =~ "read cap"
+      assert message =~ "#{@max_content_bytes}"
+    end
+
+    test "refuses an edit whose result would exceed the write cap", %{dir: dir} do
+      # Both inputs are under the cap; only the resulting content is
+      # not (~4 MB file + ~2 MB replacement → ~6 MB result).
+      path = Path.join(dir, "grow.txt")
+      base = :binary.copy("a", 4 * 1024 * 1024)
+      File.write!(path, "MARKER" <> base)
+
+      new_string = :binary.copy("b", 2 * 1024 * 1024)
+
+      assert {:error, %{message: message}} =
+               EditFile.run(
+                 %{path: path, old_string: "MARKER", new_string: new_string},
+                 context(dir)
+               )
+
+      assert message =~ "new_content exceeds"
+      # Refused before the write — the file is untouched.
+      assert File.read!(path) == "MARKER" <> base
+    end
+  end
+
   describe "run/2 with workspace_id (VFS path)" do
     test "edits a file through a mounted VFS filesystem" do
       workspace_id = "test-editfile-vfs-#{System.unique_integer([:positive])}"

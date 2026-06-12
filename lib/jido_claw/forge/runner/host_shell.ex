@@ -21,6 +21,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   require Logger
 
   alias JidoClaw.Core.OsCmd
+  alias JidoClaw.Forge.Sandbox
   alias JidoClaw.Security.Redaction.Env
 
   defstruct [:agent_pid, :sandbox_id]
@@ -73,11 +74,22 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     env = Env.scrubbed_cmd_env(sandbox.env)
 
     try do
-      System.cmd("sh", ["-c", command],
-        cd: sandbox.dir,
-        env: env,
-        stderr_to_stdout: true
-      )
+      case shell_path() do
+        nil ->
+          {"sh: command not found", 127}
+
+        sh ->
+          # OsCmd (vs the previous raw System.cmd) gets this path the
+          # output cap and the process-tree kill behind it.
+          case OsCmd.run(sh, ["-c", ulimit_prelude() <> command],
+                 cd: sandbox.dir,
+                 env: env,
+                 timeout: :infinity
+               ) do
+            {output, :output_limit} -> {output, Sandbox.output_limit_exit_status()}
+            {output, status} when is_integer(status) -> {output, status}
+          end
+      end
     rescue
       e -> {Exception.message(e), 1}
     end
@@ -125,22 +137,70 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  defp run_with_timeout(executable, args, cwd, env, :infinity) do
-    System.cmd(executable, args, cd: cwd, env: env, stderr_to_stdout: true)
-  rescue
-    e -> {Exception.message(e), 1}
-  end
-
-  defp run_with_timeout(executable, args, cwd, env, timeout) when is_integer(timeout) do
+  defp run_with_timeout(executable, args, cwd, env, timeout) do
     # OsCmd kills the whole OS process tree on timeout — a brutally
     # killed Task only reaped the BEAM side and orphaned the real
-    # command (and any grandchildren it forked).
-    case OsCmd.run(executable, args, cd: cwd, env: env, timeout: timeout) do
+    # command (and any grandchildren it forked). It also caps output
+    # (mapped to exit 153 here, partial output preserved for
+    # debuggability) and accepts `:infinity`, so the previous raw
+    # System.cmd no-timeout clause is gone.
+    {exec, exec_args} = apply_ulimits(executable, args)
+
+    case OsCmd.run(exec, exec_args, cd: cwd, env: env, timeout: timeout) do
       {_partial, :timeout} -> {"", :timeout}
+      {output, :output_limit} -> {output, Sandbox.output_limit_exit_status()}
       {output, status} -> {output, status}
     end
   rescue
     e -> {Exception.message(e), 1}
+  end
+
+  # Resolve the POSIX shell used for `exec/3` command strings and the
+  # ulimit wrapper — PATH first, then /bin/sh directly (robust to weird
+  # PATH environments; find_executable on an absolute path checks that
+  # file itself). nil when neither resolves.
+  defp shell_path do
+    System.find_executable("sh") || System.find_executable("/bin/sh")
+  end
+
+  # Opt-in resource limits (default off — both keys unset): `ulimit -t`
+  # (CPU seconds, portable) and `ulimit -v` (virtual memory KB, enforced
+  # on Linux; macOS accepts but does not enforce it). Only validated
+  # positive integers are ever interpolated, and each limit is
+  # best-effort (`|| true`) — a shell that rejects it must not abort the
+  # command.
+  defp ulimit_prelude do
+    [
+      {"-t", positive_int_config(:forge_ulimit_cpu_seconds)},
+      {"-v", positive_int_config(:forge_ulimit_virtual_memory_kb)}
+    ]
+    |> Enum.reject(fn {_flag, value} -> is_nil(value) end)
+    |> Enum.map_join(fn {flag, value} -> "ulimit #{flag} #{value} 2>/dev/null || true; " end)
+  end
+
+  defp positive_int_config(key) do
+    case Application.get_env(:jido_claw, key) do
+      value when is_integer(value) and value > 0 -> value
+      _unset_or_invalid -> nil
+    end
+  end
+
+  # Wraps an argv in a shell that applies the ulimit prelude and then
+  # `exec`s the real command: `"$0" "$@"` keeps the argv out of the
+  # shell string entirely (no escaping), and `exec` replaces the shell
+  # so the rlimits land on the command's own process — OsCmd's kill_tree
+  # walks grandchildren either way. With no ulimits configured (or no
+  # shell to wrap with) this is byte-identical pass-through. Public for
+  # the default-off pin test.
+  @doc false
+  @spec apply_ulimits(String.t(), [String.t()]) :: {String.t(), [String.t()]}
+  def apply_ulimits(executable, args) do
+    with prelude when prelude != "" <- ulimit_prelude(),
+         sh when is_binary(sh) <- shell_path() do
+      {sh, ["-c", prelude <> ~S(exec "$0" "$@"), executable | args]}
+    else
+      _none_configured_or_no_shell -> {executable, args}
+    end
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour

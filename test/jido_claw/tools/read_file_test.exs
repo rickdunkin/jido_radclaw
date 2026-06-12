@@ -125,6 +125,56 @@ defmodule JidoClaw.Tools.ReadFileTest do
     end
   end
 
+  describe "run/2 read size cap" do
+    @read_cap 5 * 1024 * 1024
+
+    test "refuses a local file over the 5 MB cap (pre-read stat guard)", %{dir: dir} do
+      path = Path.join(dir, "big.bin")
+      File.write!(path, :binary.copy("x", @read_cap + 1))
+
+      assert {:error, %{message: message}} = ReadFile.run(%{path: path}, context(dir))
+
+      assert message =~ "read cap"
+      assert message =~ "#{@read_cap}"
+    end
+
+    test "refuses an over-cap file read through a VFS mount (post-read guard)" do
+      # /project/... is not under project_dir, so the pre-read stat
+      # guard falls through and the unconditional post-read check is
+      # what must fire here.
+      workspace_id = "test-readfile-cap-#{System.unique_integer([:positive])}"
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_read_file_cap_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "big.bin"), :binary.copy("x", @read_cap + 1))
+
+      {:ok, _} = Workspace.ensure_started(workspace_id, tmp)
+
+      on_exit(fn ->
+        _ = Workspace.teardown(workspace_id)
+        File.rm_rf!(tmp)
+      end)
+
+      assert {:error, %{message: message}} =
+               ReadFile.run(
+                 %{path: "/project/big.bin"},
+                 %{tool_context: %{workspace_id: workspace_id, project_dir: tmp}}
+               )
+
+      assert message =~ "read cap"
+    end
+
+    # The exact ≤cap/>cap boundary is pinned on the shared guard helper
+    # (file_payload_limit_test.exs) — pushing an at-cap 5 MB payload
+    # through the full tool pipeline is needlessly slow (the output
+    # redaction regexes dominate).
+  end
+
   describe "run/2 error" do
     test "should return error when file does not exist", %{dir: dir} do
       path = Path.join(dir, "no_such_file.txt")

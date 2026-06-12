@@ -15,6 +15,11 @@ defmodule JidoClaw.Core.OsCmd do
   does not exist on macOS, and an `exec` prefix is unsafe for pipeline
   commands. Instead `kill_tree/1` walks the live process table.
 
+  Output accumulation is bounded by default (`:max_output_bytes`, see
+  `run/3`): a runaway child cannot balloon BEAM memory — past the cap
+  the tree is killed and the cap-sized prefix returned with
+  `:output_limit`.
+
   ## Tree-kill strategy
 
   `kill_tree/1` is a bounded STOP-fixpoint followed by a single KILL:
@@ -35,6 +40,11 @@ defmodule JidoClaw.Core.OsCmd do
 
   alias JidoClaw.Security.Redaction.Env
 
+  # Default per-command output cap. Matches the jido_shell streaming cap
+  # (`BackendHost.max_output_bytes/0`) and sits far above the 32 KB tool
+  # and 10 KB forge-persistence caps, so it only catches runaways.
+  @default_max_output_bytes 10_000_000
+
   # Cap on STOP→snapshot rounds before giving up on finding new
   # descendants. Each round STOPs everything it found, so even a
   # hostile fork loop loses its forking ancestors within a few rounds.
@@ -47,7 +57,9 @@ defmodule JidoClaw.Core.OsCmd do
   @doc """
   Runs `executable` with `args` through a `Port`, returning
   `{output, exit_status}` — or `{partial_output, :timeout}` after
-  killing the OS process tree when `:timeout` elapses.
+  killing the OS process tree when `:timeout` elapses, or
+  `{capped_output, :output_limit}` after killing the tree when the
+  output cap is exceeded.
 
   Options:
 
@@ -55,6 +67,14 @@ defmodule JidoClaw.Core.OsCmd do
     * `:timeout` — milliseconds or `:infinity` (default `:infinity`);
       a wall-clock cap on total runtime — output activity does not
       extend it
+    * `:max_output_bytes` — positive integer or `:infinity` (default:
+      the `:os_cmd_max_output_bytes` app env, 10 MB). When the
+      accumulated output would exceed the cap, the overflowing chunk
+      is cut at exactly the cap, the OS process tree is killed, and
+      `{capped_output, :output_limit}` is returned — the result is
+      exactly cap-sized. `:infinity` (no cap) is honored only as an
+      explicit per-call option; the app env accepts positive integers
+      only, so global config can never silently disable the default
     * `:env` — environment in `System.cmd/3` format
       (`[{String.t(), String.t() | nil}]`); defaults to
       `Env.scrubbed_cmd_env()` so a caller that forgets the option
@@ -65,11 +85,17 @@ defmodule JidoClaw.Core.OsCmd do
   stderr is merged into stdout, mirroring
   `System.cmd(..., stderr_to_stdout: true)`.
   """
-  @spec run(binary(), [binary()], keyword()) :: {binary(), integer() | :timeout}
+  @spec run(binary(), [binary()], keyword()) ::
+          {binary(), integer() | :timeout | :output_limit}
   def run(executable, args, opts \\ []) when is_binary(executable) and is_list(args) do
     cd = Keyword.get(opts, :cd, File.cwd!())
     timeout = Keyword.get(opts, :timeout, :infinity)
     env = Keyword.get_lazy(opts, :env, &Env.scrubbed_cmd_env/0)
+
+    max_bytes =
+      opts
+      |> Keyword.get(:max_output_bytes, configured_max_output_bytes())
+      |> normalize_max_output_bytes()
 
     port =
       Port.open({:spawn_executable, executable}, [
@@ -90,8 +116,31 @@ defmodule JidoClaw.Core.OsCmd do
         _ -> nil
       end
 
-    collect(port, os_pid, [], deadline(timeout))
+    collect(port, os_pid, [], 0, max_bytes, deadline(timeout))
   end
+
+  # Normalize the `:os_cmd_max_output_bytes` app env: only a positive
+  # integer is honored — `:infinity` deliberately included in the
+  # rejects, so global config can never silently disable the safety
+  # default (opt out per call instead). Same fail-closed normalization
+  # as `Allocate.payload_leaf_cap/0`: a nil cap would fail open under
+  # Erlang term ordering, a non-positive one would cap everything to
+  # empty. Public for tests — the invalid-config fallback is unit-
+  # testable without generating >10 MB of real output.
+  @doc false
+  @spec configured_max_output_bytes() :: pos_integer()
+  def configured_max_output_bytes do
+    case Application.get_env(:jido_claw, :os_cmd_max_output_bytes, @default_max_output_bytes) do
+      bytes when is_integer(bytes) and bytes > 0 -> bytes
+      _invalid -> @default_max_output_bytes
+    end
+  end
+
+  # The per-call option additionally accepts `:infinity` (explicit
+  # opt-out); anything else invalid falls back to the configured cap.
+  defp normalize_max_output_bytes(:infinity), do: :infinity
+  defp normalize_max_output_bytes(bytes) when is_integer(bytes) and bytes > 0, do: bytes
+  defp normalize_max_output_bytes(_invalid), do: configured_max_output_bytes()
 
   @doc """
   Kills the OS process rooted at `os_pid` together with all of its
@@ -117,8 +166,9 @@ defmodule JidoClaw.Core.OsCmd do
   # The deadline is checked *before* each receive, not just enforced via
   # `after` — a zero-timeout receive still consumes queued `{:data, _}`
   # messages first, so a chatty child with a mailbox backlog could keep
-  # delaying the kill past the deadline.
-  defp collect(port, os_pid, acc, deadline) do
+  # delaying the kill past the deadline. The deadline check also comes
+  # before the cap check: a chunk tripping both reports `:timeout`.
+  defp collect(port, os_pid, acc, bytes_so_far, max_bytes, deadline) do
     case remaining(deadline) do
       0 ->
         timeout(port, os_pid, acc)
@@ -126,7 +176,16 @@ defmodule JidoClaw.Core.OsCmd do
       wait ->
         receive do
           {^port, {:data, chunk}} ->
-            collect(port, os_pid, [acc | chunk], deadline)
+            new_total = bytes_so_far + byte_size(chunk)
+
+            if within_cap?(max_bytes, new_total) do
+              collect(port, os_pid, [acc, chunk], new_total, max_bytes, deadline)
+            else
+              # Keep the prefix of the overflowing chunk up to exactly
+              # the cap, so the result is exactly cap-sized.
+              kept = binary_part(chunk, 0, max_bytes - bytes_so_far)
+              output_limit(port, os_pid, [acc, kept])
+            end
 
           {^port, {:exit_status, status}} ->
             flush_port(port)
@@ -137,6 +196,11 @@ defmodule JidoClaw.Core.OsCmd do
         end
     end
   end
+
+  # Explicit clause for the uncapped case — `new_total <= :infinity`
+  # would "work" via Erlang term ordering, but opaquely.
+  defp within_cap?(:infinity, _new_total), do: true
+  defp within_cap?(max_bytes, new_total), do: new_total <= max_bytes
 
   # Once the deadline passes we report `:timeout` even if the child raced
   # to completion — `kill_tree/1` on an already-dead pid is a no-op and
@@ -156,6 +220,23 @@ defmodule JidoClaw.Core.OsCmd do
     {IO.iodata_to_binary(output), :timeout}
   end
 
+  # Mirrors timeout/3 — including the nil-os_pid safety branch — but the
+  # post-kill drain *discards* the child's buffered output instead of
+  # accumulating it: the cap exists to bound memory, so the drain keeps
+  # only the mailbox/port hygiene, never regrows the result.
+  defp output_limit(port, os_pid, acc) do
+    if is_integer(os_pid) do
+      kill_tree(os_pid)
+      drain_after_kill_discard(port)
+    else
+      # No OS pid to kill (port already gone) — just close.
+      close_port(port)
+    end
+
+    flush_port(port)
+    {IO.iodata_to_binary(acc), :output_limit}
+  end
+
   defp deadline(:infinity), do: :infinity
 
   defp deadline(timeout_ms) when is_integer(timeout_ms),
@@ -169,12 +250,25 @@ defmodule JidoClaw.Core.OsCmd do
   # output. Fall back to a hard close if the port never reports.
   defp drain_after_kill(port, acc) do
     receive do
-      {^port, {:data, chunk}} -> drain_after_kill(port, [acc | chunk])
+      {^port, {:data, chunk}} -> drain_after_kill(port, [acc, chunk])
       {^port, {:exit_status, _status}} -> acc
     after
       @post_kill_drain_ms ->
         close_port(port)
         acc
+    end
+  end
+
+  # The output-limit twin of drain_after_kill/2: consume-and-drop port
+  # messages until the exit_status (or the drain cap), force-closing the
+  # port on the timeout branch exactly like its accumulating sibling.
+  defp drain_after_kill_discard(port) do
+    receive do
+      {^port, {:data, _chunk}} -> drain_after_kill_discard(port)
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      @post_kill_drain_ms ->
+        close_port(port)
     end
   end
 

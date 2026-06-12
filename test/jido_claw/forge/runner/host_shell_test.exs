@@ -1,6 +1,7 @@
 defmodule JidoClaw.Forge.Runner.HostShellTest do
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Core.OsCmd
   alias JidoClaw.Forge.Runner.HostShell
   alias JidoClaw.Forge.Sandbox
   alias JidoClaw.Security.Redaction.Env
@@ -78,6 +79,56 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
     end
   end
 
+  describe "output cap" do
+    test "exec/3 maps the output cap to exit status 153 with cap-sized output", %{client: client} do
+      put_app_env_restoring(:os_cmd_max_output_bytes, 1_000)
+
+      # head bounds the runaway: a broken cap returns {100 KB, 0} and
+      # fails the pattern instead of producing unbounded output.
+      assert {output, 153} = HostShell.exec(client, "yes x | head -c 100000", [])
+      assert byte_size(output) == 1_000
+    end
+
+    test "exec_argv without :timeout maps the output cap to exit status 153", %{client: client} do
+      put_app_env_restoring(:os_cmd_max_output_bytes, 1_000)
+
+      assert {output, 153} =
+               HostShell.exec_argv(client, "sh", ["-c", "yes x | head -c 100000"], [])
+
+      assert byte_size(output) == 1_000
+    end
+  end
+
+  describe "ulimit (opt-in)" do
+    test "no ulimit config means byte-identical argv pass-through" do
+      assert HostShell.apply_ulimits("printf", ["%s", "x"]) == {"printf", ["%s", "x"]}
+    end
+
+    test "forge_ulimit_cpu_seconds kills a CPU-bound loop with a nonzero status",
+         %{client: client} do
+      # Genuine platform variance (unlike the seamable sbx branch): some
+      # hosts accept `ulimit -t` but never deliver SIGXCPU to a shell
+      # busy loop. Probe first; skip with a message when unenforced.
+      if ulimit_cpu_enforced?() do
+        put_app_env_restoring(:forge_ulimit_cpu_seconds, 1)
+
+        # Timing-sensitive: SIGXCPU lands after ~1s of CPU time. The
+        # 10s safety timeout means a NOT-applied ulimit surfaces as
+        # {"", :timeout} and fails the integer assertion — it must not
+        # hang (which is also why this goes through exec_argv, not the
+        # :infinity-timeout exec/3).
+        assert {_output, status} =
+                 HostShell.exec_argv(client, "sh", ["-c", "while true; do :; done"],
+                   timeout: 10_000
+                 )
+
+        assert is_integer(status) and status != 0
+      else
+        IO.puts("[skip] ulimit -t is not enforced for shell busy loops on this host")
+      end
+    end
+  end
+
   describe "exec_argv timeout" do
     test "returns {\"\", :timeout} and kills the OS process tree", %{client: client} do
       tmp =
@@ -105,6 +156,34 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
       # with the tree — previously only the Task was brutally killed and
       # the OS processes were orphaned.
       assert_eventually(fn -> not os_pid_alive?(pid) end, 2_000)
+    end
+  end
+
+  defp put_app_env_restoring(key, value) do
+    original = Application.get_env(:jido_claw, key, :unset)
+    Application.put_env(:jido_claw, key, value)
+
+    on_exit(fn ->
+      case original do
+        :unset -> Application.delete_env(:jido_claw, key)
+        previous -> Application.put_env(:jido_claw, key, previous)
+      end
+    end)
+  end
+
+  # One-shot capability probe: does this host actually deliver SIGXCPU
+  # to a shell busy loop under `ulimit -t`? Exit 99 = the limit could
+  # not even be set; :timeout = set but unenforced within the window.
+  defp ulimit_cpu_enforced? do
+    sh = System.find_executable("sh") || flunk("sh not found on PATH")
+
+    case OsCmd.run(
+           sh,
+           ["-c", "ulimit -t 1 2>/dev/null || exit 99; while true; do :; done"],
+           timeout: 10_000
+         ) do
+      {_out, status} when is_integer(status) and status != 0 and status != 99 -> true
+      _unset_or_unenforced -> false
     end
   end
 

@@ -257,6 +257,48 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
     end
   end
 
+  describe "missing sbx CLI (finder seam)" do
+    # The :sbx_finder seam forces the missing-sbx branch deterministically
+    # on machines that have sbx installed. The no-:timeout cases are the
+    # funnel regression: the raw System.cmd they used to hit *raised*
+    # :enoent instead of returning {_, 127}.
+    setup do
+      original = Application.get_env(:jido_claw, :sbx_finder, :unset)
+      Application.put_env(:jido_claw, :sbx_finder, fn _name -> nil end)
+
+      on_exit(fn ->
+        case original do
+          :unset -> Application.delete_env(:jido_claw, :sbx_finder)
+          previous -> Application.put_env(:jido_claw, :sbx_finder, previous)
+        end
+      end)
+
+      client = %Docker{
+        sandbox_name: "forge-no-sbx",
+        workspace_dir: System.tmp_dir!(),
+        sandbox_id: "no-sbx"
+      }
+
+      %{client: client}
+    end
+
+    test "exec without :timeout returns 127 instead of raising", %{client: client} do
+      assert {"sbx: command not found", 127} = Docker.exec(client, "echo hi", [])
+    end
+
+    test "exec_argv without :timeout returns 127 instead of raising", %{client: client} do
+      assert {"sbx: command not found", 127} = Docker.exec_argv(client, "echo", ["hi"], [])
+    end
+
+    test "run without :timeout returns 127 instead of raising", %{client: client} do
+      assert {"sbx: command not found", 127} = Docker.run(client, "shell", ["hi"], [])
+    end
+
+    test "exec with :timeout returns 127 through the same path", %{client: client} do
+      assert {"sbx: command not found", 127} = Docker.exec(client, "echo hi", timeout: 1_000)
+    end
+  end
+
   describe "sandbox_agent_type derivation" do
     # We test this indirectly through create/1's spec handling.
     # The private function maps :runner to sbx agent types.

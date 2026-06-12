@@ -50,16 +50,24 @@ defmodule JidoClaw.Tools.EditFile do
     project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
     opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-    case Resolver.read(path, opts) do
-      {:ok, content} ->
-        replace_unique_match(path, content, old_str, new_str, opts)
+    # Same two-layer read cap as read_file: pre-read stat keeps
+    # oversized local files off the heap entirely; the unconditional
+    # post-read check closes the stat→read race and covers remote/VFS
+    # branches.
+    with :ok <- FilePayloadLimit.validate_read(path, opts) do
+      case Resolver.read(path, opts) do
+        {:ok, content} ->
+          with :ok <- FilePayloadLimit.validate_read_content(path, content) do
+            replace_unique_match(path, content, old_str, new_str, opts)
+          end
 
-      {:error, reason} ->
-        {:error,
-         Error.execution_error("Cannot read #{path}: #{inspect(reason)}",
-           phase: :read,
-           details: %{path: path, reason: inspect(reason)}
-         )}
+        {:error, reason} ->
+          {:error,
+           Error.execution_error("Cannot read #{path}: #{inspect(reason)}",
+             phase: :read,
+             details: %{path: path, reason: inspect(reason)}
+           )}
+      end
     end
   end
 
@@ -89,6 +97,34 @@ defmodule JidoClaw.Tools.EditFile do
   defp write_edit(path, content, old_str, new_str, opts) do
     new_content = String.replace(content, old_str, new_str, global: false)
 
+    with :ok <- validate_new_content_size(path, new_content) do
+      do_write(path, new_content, old_str, new_str, opts)
+    end
+  end
+
+  # The write-cap invariant must hold for the *result*, not just the
+  # inputs: a ≤5 MB file plus a ≤5 MB new_string can produce ~10 MB.
+  # (The single-occurrence rule bounds growth to one insertion today,
+  # but the guard holds independent of that rule.)
+  defp validate_new_content_size(path, new_content) do
+    case FilePayloadLimit.validate(:new_content, new_content) do
+      :ok ->
+        :ok
+
+      {:error, message} ->
+        {:error,
+         Error.validation_error(message,
+           field: :new_content,
+           details: %{
+             path: path,
+             size: byte_size(new_content),
+             max_bytes: FilePayloadLimit.max_bytes()
+           }
+         )}
+    end
+  end
+
+  defp do_write(path, new_content, old_str, new_str, opts) do
     case Resolver.atomic_write(path, new_content, opts) do
       :ok ->
         diff = build_diff(old_str, new_str)

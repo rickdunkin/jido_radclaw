@@ -30,6 +30,7 @@ defmodule JidoClaw.Tools.ReadFile do
       limit: [type: :non_neg_integer, default: 2000, doc: "Max lines to read"]
     ]
 
+  alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
 
@@ -49,25 +50,40 @@ defmodule JidoClaw.Tools.ReadFile do
     MCPScope.wrap(:read_file, params, context, fn enriched ->
       workspace_id = get_in(enriched, [:tool_context, :workspace_id])
       project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
+      opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-      case Resolver.read(path, workspace_id: workspace_id, project_dir: project_dir) do
-        {:ok, content} ->
-          lines = String.split(content, "\n")
-          total = length(lines)
+      # Two-layer read cap (the write cap, 5 MB): the pre-read stat
+      # refuses oversized local files before they reach the heap; the
+      # unconditional post-read check closes the stat→read race and
+      # covers remote/VFS branches (materialized before the check —
+      # bounding the fetch needs backend streaming).
+      with :ok <- FilePayloadLimit.validate_read(path, opts),
+           {:ok, content} <- read_with_content_cap(path, opts) do
+        lines = String.split(content, "\n")
+        total = length(lines)
 
-          numbered =
-            lines
-            |> Enum.with_index(1)
-            |> Enum.slice(offset, limit)
-            |> Enum.map_join("\n", fn {line, n} ->
-              "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
-            end)
+        numbered =
+          lines
+          |> Enum.with_index(1)
+          |> Enum.slice(offset, limit)
+          |> Enum.map_join("\n", fn {line, n} ->
+            "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
+          end)
 
-          {:ok, %{path: path, content: numbered, total_lines: total}}
-
-        {:error, reason} ->
-          {:error, "Cannot read #{path}: #{inspect(reason)}"}
+        {:ok, %{path: path, content: numbered, total_lines: total}}
       end
     end)
+  end
+
+  defp read_with_content_cap(path, opts) do
+    case Resolver.read(path, opts) do
+      {:ok, content} ->
+        with :ok <- FilePayloadLimit.validate_read_content(path, content) do
+          {:ok, content}
+        end
+
+      {:error, reason} ->
+        {:error, "Cannot read #{path}: #{inspect(reason)}"}
+    end
   end
 end
