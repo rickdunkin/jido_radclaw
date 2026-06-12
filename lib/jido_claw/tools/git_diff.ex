@@ -15,6 +15,7 @@ defmodule JidoClaw.Tools.GitDiff do
 
   alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.Tools.OutputShaper
 
   @impl Jido.Action
   def run(params, context) do
@@ -37,18 +38,25 @@ defmodule JidoClaw.Tools.GitDiff do
              env: Env.scrubbed_cmd_env()
            ) do
         {output, 0} ->
-          truncated =
-            if byte_size(output) > 15_000 do
-              String.slice(output, 0, 15_000) <> "\n... (diff truncated)"
-            else
-              output
-            end
-
-          {:ok, %{diff: truncated}}
+          # The FULL shapeable? predicate, mirroring RunCommand's capture
+          # decision: handing the shaper a full diff it would then pass
+          # through (e.g. no tenant) would land on OutputLimit's 32KB
+          # head-cut instead of the legacy 15KB slice.
+          if OutputShaper.shapeable?("git_diff", params, enriched) do
+            {:ok, %{diff: output}}
+          else
+            {:ok, %{diff: legacy_slice(output)}}
+          end
 
         {output, _} ->
           {:error, "git diff failed: #{String.trim(output)}"}
       end
     end)
   end
+
+  defp legacy_slice(output) when byte_size(output) > 15_000 do
+    String.slice(output, 0, 15_000) <> "\n... (diff truncated)"
+  end
+
+  defp legacy_slice(output), do: output
 end

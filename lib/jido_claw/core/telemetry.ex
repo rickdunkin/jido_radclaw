@@ -40,6 +40,12 @@ defmodule JidoClaw.Telemetry do
       summary("jido_claw.tool.execute.duration", unit: {:native, :millisecond}),
       counter("jido_claw.tool.execute.exception.total"),
 
+      # Output shaping metrics — both derive from the single
+      # [:jido_claw, :tool, :shaping] event (the metric name's last
+      # segment selects the measurement), so one execute serves both.
+      counter("jido_claw.tool.shaping.total", tags: [:tool, :format]),
+      sum("jido_claw.tool.shaping.bytes_saved", tags: [:tool]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -174,6 +180,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :tool, :execute, :exception],
       %{count: 1},
       Map.put(metadata, :kind, kind)
+    )
+  end
+
+  @spec emit_shaping(String.t(), atom(), non_neg_integer()) :: :ok
+  def emit_shaping(tool, format, bytes_saved) do
+    :telemetry.execute(
+      [:jido_claw, :tool, :shaping],
+      %{bytes_saved: bytes_saved, total: 1},
+      %{tool: tool, format: format}
     )
   end
 

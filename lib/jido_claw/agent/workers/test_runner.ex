@@ -7,6 +7,7 @@ defmodule JidoClaw.Agent.Workers.TestRunner do
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.RunCommand,
+      JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.SearchCode
     ],
     model: :fast,

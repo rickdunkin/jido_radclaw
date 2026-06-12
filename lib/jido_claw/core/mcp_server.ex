@@ -20,6 +20,9 @@ defmodule JidoClaw.MCPServer do
         JidoClaw.Tools.ListDirectory,
         JidoClaw.Tools.SearchCode,
         JidoClaw.Tools.RunCommand,
+        # MCP run_command/git_diff output is shaped too — without
+        # fetch_output, MCP callers couldn't drill into stored refs.
+        JidoClaw.Tools.FetchOutput,
         JidoClaw.Tools.GitStatus,
         JidoClaw.Tools.GitDiff,
         JidoClaw.Tools.GitCommit,

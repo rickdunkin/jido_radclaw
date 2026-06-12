@@ -13,6 +13,7 @@ defmodule JidoClaw.Agent.Workers.Verifier do
       JidoClaw.Tools.GitDiff,
       JidoClaw.Tools.GitStatus,
       JidoClaw.Tools.RunCommand,
+      JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.ListDirectory,
       JidoClaw.Tools.VerifyCertificate
     ],

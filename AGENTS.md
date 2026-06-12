@@ -35,7 +35,7 @@ find module/function definitions.
 
 ### MCP Server Mode
 
-JidoClaw exposes 21 tools over MCP stdio transport for use with Claude Code, Cursor, and other MCP-compatible editors. To add it to a project, create or edit `.mcp.json` in the project root:
+JidoClaw exposes 22 tools over MCP stdio transport for use with Claude Code, Cursor, and other MCP-compatible editors. To add it to a project, create or edit `.mcp.json` in the project root:
 
 ```json
 {
@@ -51,7 +51,7 @@ JidoClaw exposes 21 tools over MCP stdio transport for use with Claude Code, Cur
 
 The `cwd` must be the absolute path to the JidoClaw project directory (where `mix.exs` lives). The server requires PostgreSQL to be running and `mix ecto.setup` to have been run at least once.
 
-**Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`, `agent_status`, `inspect_agent`, `swarm_status`, `forge_status`, `workflow_status`, `replay_workflow`. (`replay_workflow` is MCP-only by design — it is not in the in-REPL agent's tool list, and it exposes no `force`/`allow_irreversible` overrides; replay-gate overrides are dashboard-only.)
+**Exposed tools**: `read_file`, `write_file`, `edit_file`, `list_directory`, `search_code`, `run_command`, `fetch_output`, `git_status`, `git_diff`, `git_commit`, `project_info`, `run_skill`, `store_solution`, `find_solution`, `network_share`, `network_status`, `agent_status`, `inspect_agent`, `swarm_status`, `forge_status`, `workflow_status`, `replay_workflow`. (`replay_workflow` is MCP-only by design — it is not in the in-REPL agent's tool list, and it exposes no `force`/`allow_irreversible` overrides; replay-gate overrides are dashboard-only.)
 
 **Known limitations** (anubis_mcp 1.6.2 — patched in `lib/jido_claw/core/`):
 
@@ -60,7 +60,7 @@ The `cwd` must be the absolute path to the JidoClaw project directory (where `mi
 
 ## Architecture
 
-JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework ecosystem. It provides a CLI REPL with ~31 tools, swarm orchestration, sandboxed code execution (Forge), a Phoenix LiveView web dashboard, and multi-provider LLM support.
+JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido framework ecosystem. It provides a CLI REPL with ~32 tools, swarm orchestration, sandboxed code execution (Forge), a Phoenix LiveView web dashboard, and multi-provider LLM support.
 
 ### Supervision Tree
 
@@ -81,6 +81,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 - **Swarm**: The main agent can spawn sub-agents dynamically; `AgentTracker` monitors per-agent stats
 - **Skills**: YAML-based multi-step workflows in `.jido/skills/` with `depends_on` for DAG execution
 - **VFS**: Virtual filesystem (`JidoClaw.VFS.Resolver`) routes `github://`, `s3://`, `git://` paths to backends
+- **Output Shaping**: Verbose tool output (`run_command`, `git_diff`) is compressed format-aware by `JidoClaw.Tools.OutputShaper` (stage between `OutputRedaction` and `OutputLimit` in the shared `Tools.Action` pipeline). Rule: compress the green, never the red — `mix test`/`mix compile` success noise becomes counts, failure/warning blocks stay verbatim, unknown formats get head+tail. The full captured output (up to 512KB; `truncated` flagged beyond) is stored tenant-scoped in `Conversations.ToolOutput` under a ref and retrievable via the `fetch_output` tool, so shaping is reversible. Anything that would exceed `OutputLimit`'s 32KB inline cap — an oversized shaped/all-signal body — is bounded by head+tail elision with the ref footer intact (never ref-less truncated), and `fetch_output` itself clips oversized slices to the cap (direction-aware) and reports honest `clipped`/`selected_lines` metadata. `run_command` requests the larger capture from `SessionManager` via the `:capture_bytes` opt only when `OutputShaper.shapeable?/3` holds (same predicate on capture and shaping sides). Disabled ⇒ byte-identical legacy truncation (`enabled?: false` in test.exs); no-tenant calls pass through unshaped; streaming runs are never shaped. Config under `:output_shaping`; telemetry on `[:jido_claw, :tool, :shaping]` plus `:output` Trace events.
 - **Context Compaction**: Long sessions are compacted live via `JidoClaw.Reasoning.Compactor`. The `JidoClaw.Agent.Defaults` macro accepts `compaction: [...]` opts and injects an `on_before_cmd/2` override on `{:ai_react_start, _}` that runs `Compactor.maybe_compact/3` before delegating to `super`. The main `JidoClaw.Agent` and all 7 workers carry `compaction: [mode: :auto]`. Per-agent keying shipped: each agent compacts its own slice keyed by `JidoClaw.Reasoning.Compactor.Identity` (`"main"` for both main surfaces, `"handoff:<uuid>:<tpl>"` for a routed worker, the spawn tag for a sub-agent), with per-key snapshots persisted under `Session.metadata["compactions"][key]` (`key = "<identity>::<context_ref|default>"`) via atomic `jsonb_set`; spawned/handoff sub-agents get coherent durable transcripts via `JidoClaw.Conversations.SubagentTranscript`. (Real `context_ref` lanes remain a no-op follow-up — no producer currently sets `context_ref`, so keys normally trail `::default`, though the code accepts one if it appears in tool context.) Best-effort: storage and summarizer failures are emitted via `:compaction` Trace events and logged, but never block the agent's forward progress. The actual LLM-facing message trim happens in `JidoClaw.Reasoning.Compactor.RequestTransformer` (a `Jido.AI.Reasoning.ReAct.RequestTransformer` implementation) — it filters projected messages by `refs.request_id ∈ snapshot.summarized_request_ids` and injects the summary as a delimited user-role message.
 
 ### Module Namespace Convention
@@ -92,7 +93,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 | `agent/`         | Main agent, prompt builder, templates, workers                                              |
 | `cli/`           | REPL, commands, branding, setup, formatter                                                  |
 | `forge/`         | Sandboxed execution (runners, sandbox backends)                                             |
-| `tools/`         | All 31+ Jido.Action tool modules                                                            |
+| `tools/`         | All 32+ Jido.Action tool modules                                                            |
 | `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess                                           |
 | `reasoning/`     | Strategy + pipeline stores, classifier, telemetry, certificate templates, context compactor |
 | `security/`      | Encryption vault, secret redaction                                                          |

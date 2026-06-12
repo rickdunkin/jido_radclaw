@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (31 tools)
+## Tool Catalog (32 tools)
 
 ### File Operations (4 tools)
 
@@ -39,14 +39,28 @@ Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 - Use BEFORE editing to find every file that references a symbol, function, or pattern.
 - Returns: file paths and matching lines with line numbers.
 
-### Shell (1 tool)
+### Shell (2 tools)
 
 **run_command** — Execute a shell command with persistent session state.
 - Parameters: `command` (required), `timeout_ms` (default 30000).
 - Working directory and environment variables persist between calls (session-backed via jido_shell).
 - Command chaining supported: `;` and `&&` and `||`.
-- Output is truncated at ~10KB. For verbose output, pipe to a file and read_file it.
+- Verbose output (mix test, builds, logs) is **shaped**: success noise becomes counts,
+  failures/errors stay verbatim, and the result carries an `output_ref` plus a footer like
+  `[full output: 184320 bytes — fetch_output ref=out_...]`. Use fetch_output with that ref
+  to drill into the full output — do NOT re-run the command just to see more of it.
 - Always verify success via exit code in the output. Non-zero = failure.
+
+**fetch_output** — Retrieve the full stored output behind an `output_ref`.
+- Parameters: `ref` (required), then ONE of: `grep` (regex — returns matching lines with
+  line numbers), `tail` (last N lines), `head` (first N lines), or `offset`+`limit`
+  (line window). Precedence: grep > tail > head > offset/limit.
+- Use after a shaped run_command/git_diff result when you need detail the summary dropped
+  (e.g. grep for a specific test name, tail the last 100 lines of a build log).
+- Content is clipped to ~32KB with a note when the slice is too large; when the result
+  says `clipped: true`, narrow with grep/head/tail/offset+limit.
+- Refs expire after ~7 days; a result whose footer says "(full output unavailable)" has
+  no ref — only then re-run the command.
 
 ### Git (3 tools)
 
@@ -80,15 +94,17 @@ Agent templates and their exact tool access:
 | Template     | Tools Available                                                        | Max Iterations | Purpose                          |
 |--------------|------------------------------------------------------------------------|----------------|----------------------------------|
 | `coder`      | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Coding tasks, feature work,      |
-|              | run_command, git_status, git_diff, git_commit, project_info           |                | bug fixes, multi-file changes    |
-| `test_runner`| read_file, search_code, run_command                                    | 15             | Running tests, verifying builds  |
-| `reviewer`   | read_file, git_diff, git_status, search_code                          | 15             | Code review, audit, read-only    |
+|              | run_command, fetch_output, git_status, git_diff, git_commit,          |                | bug fixes, multi-file changes    |
+|              | project_info                                                           |                |                                  |
+| `test_runner`| read_file, run_command, fetch_output, search_code                     | 15             | Running tests, verifying builds  |
+| `reviewer`   | read_file, git_diff, fetch_output, git_status, search_code            | 15             | Code review, audit, read-only    |
 | `docs_writer`| read_file, write_file, search_code                                     | 15             | Writing docs, module docs, specs |
 | `researcher` | read_file, search_code, list_directory, project_info                  | 15             | Codebase exploration, read-only  |
 | `refactorer` | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Large-scale restructuring,       |
-|              | run_command, git_status, git_diff, git_commit, project_info           |                | renames, module reorganization   |
+|              | run_command, fetch_output, git_status, git_diff, git_commit,          |                | renames, module reorganization   |
+|              | project_info                                                           |                |                                  |
 | `verifier`   | read_file, search_code, git_diff, git_status, run_command,            | 20             | Interactive verification,        |
-|              | list_directory, verify_certificate                                     |                | structured verdict/confidence    |
+|              | fetch_output, list_directory, verify_certificate                      |                | structured verdict/confidence    |
 
 **list_agents** — List all currently running child agents with their status.
 - Use to check if previously spawned agents have finished.
@@ -516,6 +532,7 @@ Before writing code for any non-trivial problem:
 | Find where something is defined       | search_code                            |
 | See project structure                 | list_directory                         |
 | Run tests / build / lint              | run_command                            |
+| Drill into shaped/stored output       | fetch_output (ref from output_ref)     |
 | Check git state before committing     | git_status → git_diff → git_commit    |
 | Get project overview quickly          | project_info                           |
 | Delegate parallel work                | spawn_agent (coder/researcher/etc)     |

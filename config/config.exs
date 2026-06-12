@@ -194,6 +194,24 @@ config :jido_claw,
 # tests drive WorkflowRecovery.reconcile_all/0 directly inside the sandbox.
 config :jido_claw, :workflow_recovery, enabled?: true
 
+# Tool output shaping (JidoClaw.Tools.OutputShaper). Format-aware compression
+# of verbose command output — success noise becomes counts, error detail stays
+# verbatim — with the full captured output stored under a ref retrievable via
+# the `fetch_output` tool. `enabled?` is the single kill switch: reversibility
+# is part of shaping (no separate store toggle), so disabling it restores the
+# legacy blind head-truncation behavior byte-for-byte.
+config :jido_claw, :output_shaping,
+  enabled?: true,
+  # outputs smaller than this pass through untouched
+  min_shape_bytes: 2_048,
+  # SessionManager capture when shaping is on (non-streaming)
+  capture_bytes: 512 * 1024,
+  ref_ttl_days: 7,
+  # verbatim failure blocks budget; remainder counted
+  failures_budget_bytes: 24 * 1024,
+  generic_head_bytes: 2_048,
+  generic_tail_bytes: 4_096
+
 # Phoenix endpoint — secure-by-default in EVERY env: bind loopback and pin
 # WebSocket origins to local hosts. External exposure (e.g. Tailscale) is
 # opt-in via PHX_HOST, applied at app start by JidoClaw.Web.GatewayExposure

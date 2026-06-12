@@ -11,6 +11,7 @@ defmodule JidoClaw.Agent.Workers.Refactorer do
       JidoClaw.Tools.ListDirectory,
       JidoClaw.Tools.SearchCode,
       JidoClaw.Tools.RunCommand,
+      JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.GitStatus,
       JidoClaw.Tools.GitDiff,
       JidoClaw.Tools.GitCommit,

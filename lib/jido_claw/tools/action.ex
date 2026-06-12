@@ -32,13 +32,17 @@ defmodule JidoClaw.Tools.Action do
       alias JidoClaw.Tools.MCPScope
       alias JidoClaw.Tools.OutputLimit
       alias JidoClaw.Tools.OutputRedaction
+      alias JidoClaw.Tools.OutputShaper
 
+      # Ordering is load-bearing: redact (must see the full original) →
+      # shape (semantic compression) → cap (dumb backstop).
       @impl Jido.Action
       def run(params, context) do
         MCPScope.wrap(@jidoclaw_tool_name, params, context, fn enriched_context ->
           super(params, enriched_context)
           |> Error.normalize_result()
           |> OutputRedaction.redact_result()
+          |> OutputShaper.shape_result(@jidoclaw_tool_name, params, enriched_context)
           |> OutputLimit.truncate_result()
         end)
       end

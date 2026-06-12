@@ -7,6 +7,7 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.GitDiff,
+      JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.GitStatus,
       JidoClaw.Tools.SearchCode
     ],

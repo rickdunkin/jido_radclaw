@@ -1,10 +1,15 @@
 defmodule JidoClaw.Tools.RunCommandTest do
   use ExUnit.Case, async: false
 
+  import JidoClaw.TenantCase,
+    only: [seed_full: 1, actor_for: 1]
+
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.ServerRegistry.ServerEntry
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Test.FakeSSH
+  alias JidoClaw.Tools.FetchOutput
   alias JidoClaw.Tools.RunCommand
   alias JidoClaw.VFS.Workspace
 
@@ -461,6 +466,131 @@ defmodule JidoClaw.Tools.RunCommandTest do
       after
         Process.register(pid, JidoClaw.Shell.SessionManager)
       end
+    end
+  end
+
+  describe "output shaping integration" do
+    setup do
+      sandbox_pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+
+      original = Application.get_env(:jido_claw, :output_shaping, [])
+      Application.put_env(:jido_claw, :output_shaping, Keyword.merge(original, enabled?: true))
+
+      workspace_id = "rc-shape-#{System.unique_integer([:positive])}"
+
+      dir =
+        Path.join(System.tmp_dir!(), "jido_claw_fake_mix_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      write_fake_mix!(dir)
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, :output_shaping, original)
+        _ = SessionManager.stop_session(workspace_id)
+        _ = Workspace.teardown(workspace_id)
+        File.rm_rf!(dir)
+        Sandbox.stop_owner(sandbox_pid)
+      end)
+
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "rc-shape")
+
+      context = %{
+        tool_context: %{
+          tenant_id: tenant_id,
+          session_uuid: session.id,
+          actor: actor_for(tenant_id),
+          workspace_id: workspace_id,
+          project_dir: dir
+        }
+      }
+
+      {:ok, workspace_id: workspace_id, dir: dir, context: context, tenant_id: tenant_id}
+    end
+
+    # A fake `mix` ahead of the real one on PATH: emits ~20KB of canned
+    # ExUnit output — over the legacy 10KB cap (proving the larger
+    # capture), under the legacy 50KB backend valve (so the no-tenant
+    # regression run completes instead of erroring).
+    defp write_fake_mix!(dir) do
+      dots = String.duplicate(".", 18_000)
+
+      script = """
+      #!/bin/sh
+      cat <<'FAKE_MIX_EOF'
+      Running ExUnit with seed: 4242, max_cases: 8
+
+      #{dots}
+
+        1) test shaped end to end (FakeSuiteTest)
+           test/fake_suite_test.exs:7
+           ** (RuntimeError) intentional fixture failure
+           stacktrace:
+             test/fake_suite_test.exs:8: (test)
+
+      Finished in 2.0 seconds (1.0s async, 1.0s sync)
+      42 tests, 1 failure
+
+      Randomized with seed 4242
+      FAKE_MIX_EOF
+      exit 2
+      """
+
+      path = Path.join(dir, "mix")
+      File.write!(path, script)
+      File.chmod!(path, 0o755)
+    end
+
+    test "mix test output is shaped with a fetchable ref", %{
+      dir: dir,
+      workspace_id: ws,
+      context: context
+    } do
+      assert {:ok, result} =
+               RunCommand.run(
+                 %{command: "PATH=#{dir}:$PATH mix test", workspace_id: ws, timeout: 15_000},
+                 context
+               )
+
+      assert result.exit_code == 2
+      assert result.shaped
+      assert result.output_ref =~ ~r/^out_/
+      assert result.summary.failed == 1
+
+      # The 18KB dots line is gone; the failure block survives verbatim.
+      assert result.output =~ "mix test — 41 passed, 1 failed"
+      assert result.output =~ "1) test shaped end to end (FakeSuiteTest)"
+      assert result.output =~ "** (RuntimeError) intentional fixture failure"
+      refute result.output =~ String.duplicate(".", 1_000)
+      assert result.output =~ "fetch_output ref=#{result.output_ref}"
+
+      # Roundtrip: the stored full output is fetchable and grep-able.
+      assert {:ok, fetched} =
+               FetchOutput.run(%{ref: result.output_ref, grep: "intentional fixture"}, context)
+
+      assert fetched.returned_lines == 1
+      assert fetched.content =~ "intentional fixture failure"
+
+      assert {:ok, full} = FetchOutput.run(%{ref: result.output_ref, head: 5}, context)
+      assert full.content =~ "Running ExUnit with seed: 4242"
+    end
+
+    test "no tenant in scope falls back to legacy 10KB truncation, unshaped", %{
+      dir: dir,
+      workspace_id: ws
+    } do
+      assert {:ok, result} =
+               RunCommand.run(
+                 %{command: "PATH=#{dir}:$PATH mix test", workspace_id: ws, timeout: 15_000},
+                 %{tool_context: %{workspace_id: ws, project_dir: dir}}
+               )
+
+      refute Map.has_key?(result, :shaped)
+      refute Map.has_key?(result, :output_ref)
+
+      assert byte_size(result.output) <=
+               10_000 + byte_size(SessionManager.truncation_note(false))
+
+      assert String.ends_with?(result.output, SessionManager.truncation_note(false))
     end
   end
 end

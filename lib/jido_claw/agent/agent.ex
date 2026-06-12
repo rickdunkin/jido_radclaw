@@ -5,13 +5,14 @@ defmodule JidoClaw.Agent do
     description:
       "Terminal-based AI coding agent with swarm orchestration. Reads, writes, edits files, runs commands, manages git, and spawns child agents for parallel work.",
     tools: [
-      # Core tools (10)
+      # Core tools (11)
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
       JidoClaw.Tools.EditFile,
       JidoClaw.Tools.ListDirectory,
       JidoClaw.Tools.SearchCode,
       JidoClaw.Tools.RunCommand,
+      JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.GitStatus,
       JidoClaw.Tools.GitDiff,
       JidoClaw.Tools.GitCommit,

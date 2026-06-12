@@ -104,6 +104,11 @@ defmodule JidoClaw.Shell.SessionManager do
       requires `:server` and bypasses the classifier.
     * `:server` - server name from `.jido/config.yaml` (required when
       `backend: :ssh`).
+    * `:capture_bytes` - byte cap for the captured output returned to the
+      caller. Defaults to the legacy caps (10 KB non-streaming, 50 KB
+      streaming preview) when absent — byte-identical legacy behavior.
+      `JidoClaw.Tools.RunCommand` passes a larger capture when output
+      shaping is on so the shaper sees the full output.
 
   Returns `{:ok, %{output: String.t(), exit_code: integer()}}` or `{:error, reason}`.
 
@@ -1205,11 +1210,12 @@ defmodule JidoClaw.Shell.SessionManager do
     drain_events(session_id)
 
     run_opts = local_run_opts(streaming?, opts)
+    capture = capture_bytes(streaming?, opts)
 
     result =
       case ShellSessionServer.run_command(session_id, command, run_opts) do
         {:ok, :accepted} ->
-          case collect_output(session_id, timeout, streaming?) do
+          case collect_output(session_id, timeout, streaming?, capture) do
             {:timeout, _partial} ->
               # Cancel so the session isn't left busy
               _ = ShellSessionServer.cancel(session_id)
@@ -1241,7 +1247,19 @@ defmodule JidoClaw.Shell.SessionManager do
   # that's where the patched ShellSessionServer reads them. Host
   # backend sees both `:streaming` (for its own internal cap function)
   # and `:execution_context.limits.max_output_bytes` (passes through).
-  defp local_run_opts(false, _opts), do: []
+  #
+  # Non-streaming: the host backend's own runaway valve is 50 KB, which
+  # would hard-error before a shaping capture (512 KB) fills. When a
+  # caller requests `:capture_bytes`, raise the valve to 2× the capture:
+  # up to `capture` returns full output, capture..2×capture truncates
+  # gracefully with the note, and only past 2× trips the runaway error.
+  # No opt ⇒ `[]`, byte-identical legacy behavior.
+  defp local_run_opts(false, opts) do
+    case Keyword.get(opts, :capture_bytes) do
+      nil -> []
+      capture -> [execution_context: %{limits: %{max_output_bytes: capture * 2}}]
+    end
+  end
 
   defp local_run_opts(true, _opts) do
     cap = streaming_local_max_output_bytes()
@@ -1257,36 +1275,46 @@ defmodule JidoClaw.Shell.SessionManager do
       10_000_000
   end
 
-  defp collect_output(session_id, timeout, streaming?) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_collect(session_id, deadline, [], 0, streaming?)
+  # Resolve the capture cap for a run: explicit `:capture_bytes` opt wins,
+  # otherwise the legacy per-mode caps apply (byte-identical behavior when
+  # the opt is absent).
+  defp capture_bytes(streaming?, opts) do
+    Keyword.get(opts, :capture_bytes) || default_capture(streaming?)
   end
 
-  defp do_collect(session_id, deadline, acc, exit_code, streaming?) do
+  defp default_capture(true), do: @streaming_capture_preview
+  defp default_capture(false), do: @max_output_chars
+
+  defp collect_output(session_id, timeout, streaming?, capture) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_collect(session_id, deadline, [], 0, streaming?, capture)
+  end
+
+  defp do_collect(session_id, deadline, acc, exit_code, streaming?, capture) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     if remaining <= 0 do
-      {:timeout, finalize_output(acc, streaming?)}
+      {:timeout, finalize_output(acc, streaming?, capture)}
     else
       receive do
         {:jido_shell_session, ^session_id, {:output, chunk}} ->
-          do_collect(session_id, deadline, [chunk | acc], exit_code, streaming?)
+          do_collect(session_id, deadline, [chunk | acc], exit_code, streaming?, capture)
 
         {:jido_shell_session, ^session_id, {:exit_status, code}} ->
-          do_collect(session_id, deadline, acc, code, streaming?)
+          do_collect(session_id, deadline, acc, code, streaming?, capture)
 
         {:jido_shell_session, ^session_id, :command_done} ->
-          ok_output(acc, exit_code, streaming?)
+          ok_output(acc, exit_code, streaming?, capture)
 
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}} = error}} ->
           # Output cap exceeded mid-stream. Surface the error directly
           # so callers can react (e.g. RunCommand can render the
           # streamed preview alongside the cap-overflow message).
-          output_limit_error(error, acc, streaming?)
+          output_limit_error(error, acc, streaming?, capture)
 
         {:jido_shell_session, ^session_id, {:error, _error}} ->
-          ok_output(acc, max(exit_code, 1), streaming?)
+          ok_output(acc, max(exit_code, 1), streaming?, capture)
 
         {:jido_shell_session, ^session_id, :command_cancelled} ->
           cancellation_error()
@@ -1296,10 +1324,10 @@ defmodule JidoClaw.Shell.SessionManager do
 
         # Ignore lifecycle events (command_started, cwd_changed)
         {:jido_shell_session, ^session_id, _other} ->
-          do_collect(session_id, deadline, acc, exit_code, streaming?)
+          do_collect(session_id, deadline, acc, exit_code, streaming?, capture)
       after
         remaining ->
-          {:timeout, finalize_output(acc, streaming?)}
+          {:timeout, finalize_output(acc, streaming?, capture)}
       end
     end
   end
@@ -1309,7 +1337,7 @@ defmodule JidoClaw.Shell.SessionManager do
   # (a normal success-but-failed outcome, unlike host/VFS where
   # `{:command, :exit_code}` is treated as opaque error) and routes
   # timeouts/output-limit-exceeded through `SSHError.format/2`.
-  defp execute_ssh_command(session_id, command, timeout, entry, streaming?, _opts) do
+  defp execute_ssh_command(session_id, command, timeout, entry, streaming?, opts) do
     case ShellSessionServer.subscribe(session_id, self()) do
       {:ok, :subscribed} -> :ok
       {:error, reason} -> throw({:subscribe_failed, reason})
@@ -1317,12 +1345,14 @@ defmodule JidoClaw.Shell.SessionManager do
 
     drain_events(session_id)
 
+    capture = capture_bytes(streaming?, opts)
+
     result =
       case ShellSessionServer.run_command(session_id, command,
-             output_limit: ssh_output_limit(streaming?)
+             output_limit: ssh_output_limit(streaming?, capture)
            ) do
         {:ok, :accepted} ->
-          case collect_ssh_output(session_id, timeout, entry, streaming?) do
+          case collect_ssh_output(session_id, timeout, entry, streaming?, capture) do
             {:timeout, _partial} ->
               _ = ShellSessionServer.cancel(session_id)
               drain_events(session_id)
@@ -1357,33 +1387,44 @@ defmodule JidoClaw.Shell.SessionManager do
       {:error, "Could not subscribe to SSH session: #{inspect(reason)}"}
   end
 
-  defp ssh_output_limit(false), do: @max_ssh_output_bytes
+  # The non-streaming valve never drops below the legacy 1 MB; a capture
+  # request larger than 500 KB lifts it to 2× the capture so the capture
+  # cap (graceful truncation) is reached before the runaway error.
+  defp ssh_output_limit(false, capture), do: max(@max_ssh_output_bytes, capture * 2)
 
-  defp ssh_output_limit(true) do
+  defp ssh_output_limit(true, _capture) do
     Application.get_env(:jido_claw, :test_streaming_max_output_bytes_override) ||
       @streaming_ssh_output_bytes
   end
 
-  defp collect_ssh_output(session_id, timeout, entry, streaming?) do
+  defp collect_ssh_output(session_id, timeout, entry, streaming?, capture) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    do_collect_ssh(session_id, deadline, [], 0, entry, streaming?)
+    do_collect_ssh(session_id, deadline, [], 0, entry, streaming?, capture)
   end
 
-  defp do_collect_ssh(session_id, deadline, acc, exit_code, entry, streaming?) do
+  defp do_collect_ssh(session_id, deadline, acc, exit_code, entry, streaming?, capture) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     if remaining <= 0 do
-      {:timeout, finalize_output(acc, streaming?)}
+      {:timeout, finalize_output(acc, streaming?, capture)}
     else
       receive do
         {:jido_shell_session, ^session_id, {:output, chunk}} ->
-          do_collect_ssh(session_id, deadline, [chunk | acc], exit_code, entry, streaming?)
+          do_collect_ssh(
+            session_id,
+            deadline,
+            [chunk | acc],
+            exit_code,
+            entry,
+            streaming?,
+            capture
+          )
 
         {:jido_shell_session, ^session_id, {:exit_status, code}} ->
-          do_collect_ssh(session_id, deadline, acc, code, entry, streaming?)
+          do_collect_ssh(session_id, deadline, acc, code, entry, streaming?, capture)
 
         {:jido_shell_session, ^session_id, :command_done} ->
-          ok_output(acc, exit_code, streaming?)
+          ok_output(acc, exit_code, streaming?, capture)
 
         # Remote non-zero exit — surfaced by the SSH backend as an
         # Error struct but semantically a successful command completion
@@ -1391,14 +1432,14 @@ defmodule JidoClaw.Shell.SessionManager do
         # `{:ok, %{exit_code: <n>}}` instead of a terminal error.
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :exit_code}, context: %{code: code}}}} ->
-          ok_output(acc, code, streaming?)
+          ok_output(acc, code, streaming?, capture)
 
         # Output cap exceeded mid-stream — surface the structured
         # error with preview folded into context so callers (RunCommand)
         # can render the streamed preview alongside the cap message.
         {:jido_shell_session, ^session_id,
          {:error, %Jido.Shell.Error{code: {:command, :output_limit_exceeded}} = error}} ->
-          output_limit_error(error, acc, streaming?)
+          output_limit_error(error, acc, streaming?, capture)
 
         # Preserve raw struct for transport-drop classification by the
         # retry path. Format-at-boundary semantics live in
@@ -1423,47 +1464,49 @@ defmodule JidoClaw.Shell.SessionManager do
           crashed_error(reason)
 
         {:jido_shell_session, ^session_id, _other} ->
-          do_collect_ssh(session_id, deadline, acc, exit_code, entry, streaming?)
+          do_collect_ssh(session_id, deadline, acc, exit_code, entry, streaming?, capture)
       after
         remaining ->
-          {:timeout, finalize_output(acc, streaming?)}
+          {:timeout, finalize_output(acc, streaming?, capture)}
       end
     end
   end
 
-  defp finalize_output(acc, streaming?) do
+  defp finalize_output(acc, streaming?, capture) do
     output =
       acc
       |> Enum.reverse()
       |> Enum.join()
 
-    cap = if streaming?, do: @streaming_capture_preview, else: @max_output_chars
-
-    if byte_size(output) > cap do
-      note =
-        if streaming?,
-          do: "\n... (output truncated; full output streamed live)\n",
-          else: "\n... (output truncated)"
-
-      truncate_utf8(output, cap) <> note
+    if byte_size(output) > capture do
+      truncate_utf8(output, capture) <> truncation_note(streaming?)
     else
       output
     end
   end
 
+  # Public so `JidoClaw.Tools.OutputShaper` can suffix-match captured
+  # output against the exact note text (marker drift breaks at this one
+  # definition site instead of silently disabling truncation detection).
+  # The dependency is strictly one-way: OutputShaper → SessionManager.
+  @doc false
+  @spec truncation_note(boolean()) :: String.t()
+  def truncation_note(true), do: "\n... (output truncated; full output streamed live)\n"
+  def truncation_note(false), do: "\n... (output truncated)"
+
   # Build the `{:ok, %{output, exit_code}}` tuple shared by both
   # receive loops. Finalises the accumulator (reverse + truncate) so
   # the result is ready to surface to the caller.
-  defp ok_output(acc, exit_code, streaming?) do
-    {:ok, %{output: finalize_output(acc, streaming?), exit_code: exit_code}}
+  defp ok_output(acc, exit_code, streaming?, capture) do
+    {:ok, %{output: finalize_output(acc, streaming?, capture), exit_code: exit_code}}
   end
 
   # Build the `{:error, %Jido.Shell.Error{}}` tuple for an output-limit
   # cap overflow, folding the streamed preview into the error's
   # `context.preview` so callers can render the partial output beside
   # the cap message.
-  defp output_limit_error(%Jido.Shell.Error{} = error, acc, streaming?) do
-    preview = finalize_output(acc, streaming?)
+  defp output_limit_error(%Jido.Shell.Error{} = error, acc, streaming?, capture) do
+    preview = finalize_output(acc, streaming?, capture)
     new_context = Map.put(error.context || %{}, :preview, preview)
     {:error, %{error | context: new_context}}
   end

@@ -15,6 +15,10 @@ config :jido_claw, :reasoning_telemetry_sync, true
 # directly inside the Ecto sandbox, so an ungated boot scan never runs.
 config :jido_claw, :workflow_recovery, enabled?: false
 
+# Output shaping off in test so the existing 10KB-truncation tests stay
+# green; shaping tests opt in via Application.put_env + on_exit restore.
+config :jido_claw, :output_shaping, enabled?: false
+
 # Trace persistence is opt-in for tests. The Collector still ingests
 # events into the in-memory ring on every run, but
 # `JidoClaw.Trace.Persistence.append/2` is a no-op unless a test

@@ -82,6 +82,7 @@ defmodule JidoClaw.Tools.RunCommand do
 
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.Tools.OutputShaper
 
   @impl Jido.Action
   def run(%{command: command} = params, context) do
@@ -98,7 +99,14 @@ defmodule JidoClaw.Tools.RunCommand do
       backend = coerce_backend(Map.get(params, :backend))
       server = Map.get(params, :server)
       agent_id = get_in(enriched, [:tool_context, :agent_id]) || "main"
-      stream_to_display? = streaming_requested?(params)
+      stream_to_display? = OutputShaper.effective_streaming?(params)
+
+      # The FULL shapeable? predicate, not just enabled?+non-streaming:
+      # capturing 512KB for a call the shaper will pass through (e.g. no
+      # tenant) would land on OutputLimit's 32KB head-cut instead of the
+      # legacy 10KB behavior. Same predicate on both sides means capture
+      # and shaping can never disagree.
+      capture? = OutputShaper.shapeable?("run_command", params, enriched)
 
       with :ok <- validate_backend_server(backend, server) do
         dispatch(command, backend, %{
@@ -108,7 +116,8 @@ defmodule JidoClaw.Tools.RunCommand do
           server: server,
           params: params,
           stream?: stream_to_display?,
-          agent_id: agent_id
+          agent_id: agent_id,
+          capture?: capture?
         })
       end
     end)
@@ -124,7 +133,8 @@ defmodule JidoClaw.Tools.RunCommand do
   defp validate_backend_server(_, _), do: :ok
 
   # `dispatch_opts` keys: :timeout, :workspace_id, :project_dir, :server,
-  # :params, :stream?, :agent_id. Bundled to keep arity within credo limits.
+  # :params, :stream?, :agent_id, :capture?. Bundled to keep arity within
+  # credo limits.
   defp dispatch(command, :ssh, dispatch_opts) do
     %{
       timeout: timeout,
@@ -132,16 +142,15 @@ defmodule JidoClaw.Tools.RunCommand do
       project_dir: project_dir,
       server: server,
       stream?: stream?,
-      agent_id: agent_id
+      agent_id: agent_id,
+      capture?: capture?
     } = dispatch_opts
 
     if session_manager_available?() do
       opts =
-        maybe_put_streaming(
-          [project_dir: project_dir, backend: :ssh, server: server],
-          stream?,
-          agent_id
-        )
+        [project_dir: project_dir, backend: :ssh, server: server]
+        |> maybe_put_streaming(stream?, agent_id)
+        |> maybe_put_capture(capture?)
 
       SessionManager.run(workspace_id, command, timeout, opts)
     else
@@ -155,13 +164,15 @@ defmodule JidoClaw.Tools.RunCommand do
       workspace_id: workspace_id,
       project_dir: project_dir,
       stream?: stream?,
-      agent_id: agent_id
+      agent_id: agent_id,
+      capture?: capture?
     } = dispatch_opts
 
     opts =
       [project_dir: project_dir]
       |> maybe_put(:backend, backend)
       |> maybe_put_streaming(stream?, agent_id)
+      |> maybe_put_capture(capture?)
 
     if session_manager_available?() do
       SessionManager.run(workspace_id, command, timeout, opts)
@@ -173,28 +184,23 @@ defmodule JidoClaw.Tools.RunCommand do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  # Drop streaming opts under MCP serve_mode (stdio JSON-RPC) — Display
-  # writes raw ANSI to stdout and would corrupt the framing.
+  # `stream?` is the EFFECTIVE flag (`OutputShaper.effective_streaming?/1`)
+  # — already false under MCP serve_mode, where Display would corrupt the
+  # stdio JSON-RPC framing, so no serve-mode check is needed here.
   defp maybe_put_streaming(opts, false, _agent_id), do: opts
 
   defp maybe_put_streaming(opts, true, agent_id) do
-    if Application.get_env(:jido_claw, :serve_mode) == :mcp do
-      require Logger
-      Logger.debug("[RunCommand] dropping stream_to_display: under MCP serve_mode")
-      opts
-    else
-      Keyword.merge(opts,
-        stream_to_display: true,
-        agent_id: agent_id,
-        tool_name: "run_command"
-      )
-    end
+    Keyword.merge(opts,
+      stream_to_display: true,
+      agent_id: agent_id,
+      tool_name: "run_command"
+    )
   end
 
-  defp streaming_requested?(params) do
-    Map.get(params, :stream_to_display) == true or
-      Map.get(params, "stream_to_display") == true
-  end
+  defp maybe_put_capture(opts, false), do: opts
+
+  defp maybe_put_capture(opts, true),
+    do: Keyword.put(opts, :capture_bytes, OutputShaper.capture_bytes())
 
   # Legacy-atom coercion for NimbleOptions. Turns `:host`/`:vfs`/`:ssh`
   # into their string equivalents so the `{:in, [...]}` schema
