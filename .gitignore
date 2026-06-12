@@ -1,6 +1,7 @@
 /_build/
 /deps/
 /cover/
+/.elixir_ls/
 # ExUnit @tag :tmp_dir scratch space
 /tmp/
 *.ez
