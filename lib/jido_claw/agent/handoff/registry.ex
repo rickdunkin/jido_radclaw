@@ -16,16 +16,22 @@ defmodule JidoClaw.Agent.Handoff.Registry do
         handoff: JidoClaw.Agent.Handoff.t(),
         updated_at_ms: integer(),
         preamble_consumed?: boolean(),
-        prompt_injected?: boolean()
+        prompt_injected_pid: pid() | nil
       }
 
     * `:preamble_consumed?` — toggled to `true` after the first
       post-handoff user turn successfully dispatches with the
       handoff preamble. Cold-start hydration paths set this to `true`
       from the start because the original handoff message is gone.
-    * `:prompt_injected?` — toggled to `true` once `Startup.inject_system_prompt/3`
-      has successfully primed the worker pid with the project prompt.
-      Retries on failure (kept `false`).
+    * `:prompt_injected_pid` — the worker pid `Startup.inject_system_prompt/3`
+      successfully primed with the project prompt, or `nil` when no
+      injection has succeeded yet. Keyed by pid (not a boolean) so a
+      recreated worker — fresh pid, empty state — is injected again
+      instead of skipped because a previous incarnation was primed.
+      The registry is in-memory, so storing a node-local pid is safe;
+      presentation layers (`JidoClaw.AgentView`) derive a boolean from
+      it rather than exposing the pid. Failed injections leave it
+      unchanged, so injection self-retries next turn.
 
   Callers construct a `%JidoClaw.Agent.Handoff{}` and pass that — the
   registry assembles the owner map internally so the boolean flags
@@ -43,7 +49,7 @@ defmodule JidoClaw.Agent.Handoff.Registry do
           handoff: Handoff.t(),
           updated_at_ms: integer(),
           preamble_consumed?: boolean(),
-          prompt_injected?: boolean()
+          prompt_injected_pid: pid() | nil
         }
 
   # ---- Public API ----
@@ -77,8 +83,9 @@ defmodule JidoClaw.Agent.Handoff.Registry do
 
     * `:preamble_consumed?` — `true` skips the preamble on the next turn.
       Used by cold-start hydration paths (the original message is gone).
-    * `:prompt_injected?` — `true` skips the next `inject_system_prompt`.
-      The Router sets this after a successful injection.
+    * `:prompt_injected_pid` — worker pid already primed with the project
+      prompt; `inject_system_prompt` is skipped while that exact pid is
+      routed to. The Router records it after a successful injection.
   """
   @spec put_owner(String.t(), String.t(), Handoff.t(), keyword()) :: :ok
   def put_owner(tenant_id, runtime_session_id, %Handoff{} = handoff, opts)
@@ -99,13 +106,17 @@ defmodule JidoClaw.Agent.Handoff.Registry do
     )
   end
 
-  @doc "Mark the worker's system prompt as injected. No-op if absent."
-  @spec mark_prompt_injected(String.t(), String.t()) :: :ok
-  def mark_prompt_injected(tenant_id, runtime_session_id)
-      when is_binary(tenant_id) and is_binary(runtime_session_id) do
+  @doc """
+  Record `worker_pid` as the worker whose system prompt was injected.
+  No-op if absent. A later route to a *different* pid (worker recreated)
+  re-injects.
+  """
+  @spec mark_prompt_injected(String.t(), String.t(), pid()) :: :ok
+  def mark_prompt_injected(tenant_id, runtime_session_id, worker_pid)
+      when is_binary(tenant_id) and is_binary(runtime_session_id) and is_pid(worker_pid) do
     GenServer.call(
       __MODULE__,
-      {:mark_prompt_injected, {tenant_id, runtime_session_id}}
+      {:mark_prompt_injected, {tenant_id, runtime_session_id}, worker_pid}
     )
   end
 
@@ -135,7 +146,7 @@ defmodule JidoClaw.Agent.Handoff.Registry do
       handoff: handoff,
       updated_at_ms: System.system_time(:millisecond),
       preamble_consumed?: Keyword.get(opts, :preamble_consumed?, false),
-      prompt_injected?: Keyword.get(opts, :prompt_injected?, false)
+      prompt_injected_pid: Keyword.get(opts, :prompt_injected_pid)
     }
 
     {:reply, :ok, Map.put(state, key, owner)}
@@ -151,11 +162,11 @@ defmodule JidoClaw.Agent.Handoff.Registry do
     {:reply, :ok, new_state}
   end
 
-  def handle_call({:mark_prompt_injected, key}, _from, state) do
+  def handle_call({:mark_prompt_injected, key, worker_pid}, _from, state) do
     new_state =
       case Map.get(state, key) do
         nil -> state
-        owner -> Map.put(state, key, %{owner | prompt_injected?: true})
+        owner -> Map.put(state, key, %{owner | prompt_injected_pid: worker_pid})
       end
 
     {:reply, :ok, new_state}

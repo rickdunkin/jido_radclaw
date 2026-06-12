@@ -205,6 +205,19 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       assert tc.session_uuid == context.session_uuid
     end
 
+    test "the spawned step worker is genuinely stopped after the run (P1 regression)" do
+      %{context: context} = real_scope_context()
+
+      assert {:ok, _} = AgentRunner.run("echo_public", "go", "s", context)
+      assert_receive {:echo_stub, :tool_context, tc}, 5_000
+
+      # The after-block cleanup used `Process.exit(pid, :normal)`, which is
+      # silently discarded when sent to another (non-trapping) process — the
+      # worker leaked alive after every skill step. The real stop_agent goes
+      # through the supervisor; registry cleanup is async, so poll.
+      wait_until(fn -> JidoClaw.Jido.whereis(tc.agent_id) == nil end)
+    end
+
     test "child correlation carries the parent's user_id end-to-end" do
       %{context: context, session: session, user_id: user_id} = real_scope_context()
 
@@ -261,6 +274,24 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     }
 
     %{context: context, session: session, user_id: user_id}
+  end
+
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    wait_until_deadline(fun, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp wait_until_deadline(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("condition not met within timeout")
+
+      true ->
+        Process.sleep(20)
+        wait_until_deadline(fun, deadline)
+    end
   end
 end
 

@@ -512,8 +512,14 @@ defmodule JidoClaw do
   @doc """
   Return the current handoff owner record for `(tenant, runtime_session_id)`,
   or `nil` when ownership is at main (no active handoff).
+
+  This is an in-node runtime-truth accessor: it returns the registry's raw
+  owner map verbatim, including the pid-bearing `:prompt_injected_pid` field
+  — not a JSON/public projection, and not serialization-safe. Presentation
+  layers (`JidoClaw.AgentView.snapshot/2`) derive booleans from it instead
+  of exposing the pid.
   """
-  @spec handoff_owner(String.t(), String.t()) :: map() | nil
+  @spec handoff_owner(String.t(), String.t()) :: JidoClaw.Agent.Handoff.Registry.owner() | nil
   def handoff_owner(tenant_id, runtime_session_id)
       when is_binary(tenant_id) and is_binary(runtime_session_id) do
     HandoffRegistry.owner(tenant_id, runtime_session_id)

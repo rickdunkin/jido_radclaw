@@ -63,49 +63,82 @@ defmodule JidoClaw.Tools.SendToAgent do
     # terminal entry (follow-up to a finished agent) only while the tracked
     # pid matches the dispatch target and is still alive — so a `:running`
     # entry always has an armed monitor behind it, and an expired/dead agent
-    # reads as not_found instead of being resurrected.
+    # reads as not_found instead of being resurrected. Success says which:
+    # `:reactivated` (this call flipped a terminal entry, and now owns its
+    # release on a start failure) or `:already_running` (an in-flight
+    # orchestration still owns the entry; its monitor stays armed).
     case agent_tracker().mark_running(agent_id, pid) do
-      :ok ->
-        agent_tracker().update_request_id(agent_id, request_id)
+      {:ok, activation} ->
+        start_result =
+          Task.Supervisor.start_child(task_supervisor(), fn ->
+            # Arm the tracker's orchestrator monitor before any work — the
+            # backstop for kills the try/catch below can't see.
+            agent_tracker().attach_orchestrator(agent_id, self())
 
-        spawn(fn ->
-          try do
-            SubagentTranscript.record_task(child_tool_context, request_id, params.message)
+            try do
+              SubagentTranscript.record_task(child_tool_context, request_id, params.message)
 
-            outcome =
-              SubagentTranscript.run(
-                template.module,
-                pid,
-                params.message,
-                request_id,
-                child_tool_context
-              )
+              outcome =
+                SubagentTranscript.run(
+                  template.module,
+                  pid,
+                  params.message,
+                  request_id,
+                  child_tool_context
+                )
 
-            status = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
-            agent_tracker().mark_complete(agent_id, status)
-          catch
-            # An orchestration crash must not strand the re-activated entry
-            # `:running` (it would consume the spawn cap until the child dies).
-            kind, reason ->
-              agent_tracker().mark_complete(agent_id, :error)
+              status = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
+              agent_tracker().mark_complete(agent_id, status)
+            catch
+              # An orchestration crash must not strand the re-activated entry
+              # `:running` (it would consume the spawn cap until the child dies).
+              kind, reason ->
+                agent_tracker().mark_complete(agent_id, :error)
 
-              Logger.warning(
-                "[SendToAgent] follow-up orchestration for #{agent_id} #{kind}: #{inspect(reason)}"
-              )
-          end
-        end)
+                Logger.warning(
+                  "[SendToAgent] follow-up orchestration for #{agent_id} #{kind}: #{inspect(reason)}"
+                )
+            end
+          end)
 
-        {:ok,
-         %{
-           agent_id: agent_id,
-           status: "message_sent",
-           message: "Message sent to agent '#{agent_id}'"
-         }}
+        case start_result do
+          {:ok, _task_pid} ->
+            # Only point the tracker at the new request once orchestration is
+            # actually running behind it — a start failure must not leave the
+            # entry referencing a request with no transcript/request state.
+            agent_tracker().update_request_id(agent_id, request_id)
+
+            {:ok,
+             %{
+               agent_id: agent_id,
+               status: "message_sent",
+               message: "Message sent to agent '#{agent_id}'"
+             }}
+
+          {:error, reason} ->
+            # A `:reactivated` entry has nothing left to complete it — force
+            # it terminal (the agent pre-existed this call and stays alive:
+            # terminal-but-alive remains re-engageable). An `:already_running`
+            # entry still belongs to the in-flight orchestration, whose
+            # monitor stayed armed through the gate — leave it untouched.
+            release_failed_engagement(activation, agent_id)
+
+            {:error,
+             Error.execution_error("Failed to start follow-up orchestration.",
+               phase: :dispatch,
+               details: %{reason: inspect(reason), agent_id: agent_id}
+             )}
+        end
 
       {:error, :not_found} ->
         {:error, Error.not_found(:agent, agent_id)}
     end
   end
+
+  defp release_failed_engagement(:reactivated, agent_id),
+    do: agent_tracker().mark_complete(agent_id, :error)
+
+  defp release_failed_engagement(:already_running, _agent_id), do: :ok
 
   defp template_for_agent(agent_id, entry) do
     case entry do
@@ -138,6 +171,10 @@ defmodule JidoClaw.Tools.SendToAgent do
 
   defp jido_runtime do
     Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp task_supervisor do
+    Application.get_env(:jido_claw, :task_supervisor, JidoClaw.TaskSupervisor)
   end
 
   defp agent_tracker do

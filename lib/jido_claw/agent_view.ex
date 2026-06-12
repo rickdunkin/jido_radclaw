@@ -595,7 +595,10 @@ defmodule JidoClaw.AgentView do
       template: owner.template,
       module: owner.module,
       preamble_consumed?: Map.get(owner, :preamble_consumed?, false),
-      prompt_injected?: Map.get(owner, :prompt_injected?, false),
+      # The registry stores the injected worker's pid (so a recreated worker
+      # re-injects); the view exposes only the derived boolean — pids are
+      # in-node runtime detail, not serialization-safe presentation data.
+      prompt_injected?: is_pid(Map.get(owner, :prompt_injected_pid)),
       updated_at_ms: Map.get(owner, :updated_at_ms)
     }
   end

@@ -44,30 +44,32 @@ defmodule JidoClaw.Agent.Handoff.RegistryTest do
       assert owner.handoff == handoff
       assert is_integer(owner.updated_at_ms)
       assert owner.preamble_consumed? == false
-      assert owner.prompt_injected? == false
+      assert owner.prompt_injected_pid == nil
 
       assert :ok = HandoffRegistry.mark_preamble_consumed("acme", "s1")
       assert HandoffRegistry.owner("acme", "s1").preamble_consumed? == true
 
-      assert :ok = HandoffRegistry.mark_prompt_injected("acme", "s1")
-      assert HandoffRegistry.owner("acme", "s1").prompt_injected? == true
+      worker = spawn(fn -> Process.sleep(:infinity) end)
+      assert :ok = HandoffRegistry.mark_prompt_injected("acme", "s1", worker)
+      assert HandoffRegistry.owner("acme", "s1").prompt_injected_pid == worker
+      Process.exit(worker, :kill)
 
       assert :ok = HandoffRegistry.clear("acme", "s1")
       assert HandoffRegistry.owner("acme", "s1") == nil
     end
 
-    test "put_owner/4 honors :preamble_consumed? and :prompt_injected? opts" do
+    test "put_owner/4 honors :preamble_consumed? and :prompt_injected_pid opts" do
       handoff = handoff_fixture()
 
       assert :ok =
                HandoffRegistry.put_owner("acme", "s1", handoff,
                  preamble_consumed?: true,
-                 prompt_injected?: true
+                 prompt_injected_pid: self()
                )
 
       owner = HandoffRegistry.owner("acme", "s1")
       assert owner.preamble_consumed? == true
-      assert owner.prompt_injected? == true
+      assert owner.prompt_injected_pid == self()
     end
   end
 
@@ -105,7 +107,7 @@ defmodule JidoClaw.Agent.Handoff.RegistryTest do
     end
 
     test "mark_prompt_injected on absent entry is a no-op" do
-      assert :ok = HandoffRegistry.mark_prompt_injected("acme", "s1")
+      assert :ok = HandoffRegistry.mark_prompt_injected("acme", "s1", self())
       assert HandoffRegistry.owner("acme", "s1") == nil
     end
 

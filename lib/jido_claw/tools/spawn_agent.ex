@@ -32,6 +32,8 @@ defmodule JidoClaw.Tools.SpawnAgent do
       ]
     ]
 
+  require Logger
+
   alias JidoClaw.Agent.Templates
   alias JidoClaw.AgentTracker
   alias JidoClaw.Conversations.SubagentTranscript
@@ -53,9 +55,17 @@ defmodule JidoClaw.Tools.SpawnAgent do
   defp spawn_from_template(template_name, task, tag, context, scope_opts) do
     case templates().get(template_name) do
       {:ok, template} ->
-        case jido_runtime().start_agent(template.module, id: tag) do
-          {:ok, pid} ->
-            register_spawned_agent(pid, template, template_name, task, tag, context, scope_opts)
+        case jido_runtime().start_subagent(template.module, id: tag) do
+          {:ok, subagent_pid} ->
+            register_spawned_agent(
+              subagent_pid,
+              template,
+              template_name,
+              task,
+              tag,
+              context,
+              scope_opts
+            )
 
           {:error, reason} ->
             {:error,
@@ -70,7 +80,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
     end
   end
 
-  defp register_spawned_agent(pid, template, template_name, task, tag, context, scope_opts) do
+  defp register_spawned_agent(
+         subagent_pid,
+         template,
+         template_name,
+         task,
+         tag,
+         context,
+         scope_opts
+       ) do
     visibility = Map.get(template, :forward_context, :public)
 
     base_tool_context =
@@ -83,21 +101,74 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
     tracker_opts = Keyword.put(scope_opts, :request_id, request_id)
 
-    case agent_tracker().register(tag, pid, template_name, task, tracker_opts) do
+    case agent_tracker().register(tag, subagent_pid, template_name, task, tracker_opts) do
       :ok ->
-        spawn(fn ->
+        start_orchestration(
+          subagent_pid,
+          template,
+          template_name,
+          task,
+          tag,
+          child_tool_context,
+          request_id
+        )
+
+      {:error, :agent_id_taken} ->
+        # The sub-agent started but the tracker never adopted it — reclaim it,
+        # mirroring the start_orchestration failure branch: an untracked agent
+        # is invisible to the TTL sweep and would leak alive forever.
+        _ = jido_runtime().stop_agent(subagent_pid)
+        {:error, agent_id_taken_error(tag)}
+    end
+  end
+
+  # The orchestration runs in a supervised task, never a bare spawn: the
+  # first statement arms the tracker's orchestrator monitor (backstop for
+  # uncatchable kills), and the try/catch is the primary terminal writer for
+  # orchestration crashes. Both converge on the from-`:running`-only
+  # transition, so a double-fire is a harmless no-op.
+  defp start_orchestration(
+         subagent_pid,
+         template,
+         template_name,
+         task,
+         tag,
+         child_tool_context,
+         request_id
+       ) do
+    start_result =
+      Task.Supervisor.start_child(task_supervisor(), fn ->
+        agent_tracker().attach_orchestrator(tag, self())
+
+        try do
           SubagentTranscript.record_task(child_tool_context, request_id, task)
 
           outcome =
-            SubagentTranscript.run(template.module, pid, task, request_id, child_tool_context)
+            SubagentTranscript.run(
+              template.module,
+              subagent_pid,
+              task,
+              request_id,
+              child_tool_context
+            )
 
           # Persist the terminal row BEFORE marking the tracker complete, so
           # get_agent_result / inspection never observe a completed tracker
           # racing missing durable history.
           status = SubagentTranscript.record_result(child_tool_context, request_id, outcome)
           agent_tracker().mark_complete(tag, status)
-        end)
+        catch
+          # An orchestration crash must not strand the entry `:running` (it
+          # would consume the spawn cap until the child dies).
+          kind, reason ->
+            agent_tracker().mark_complete(tag, :error)
 
+            Logger.warning("[SpawnAgent] orchestration for #{tag} #{kind}: #{inspect(reason)}")
+        end
+      end)
+
+    case start_result do
+      {:ok, _task_pid} ->
         {:ok,
          %{
            agent_id: tag,
@@ -108,8 +179,17 @@ defmodule JidoClaw.Tools.SpawnAgent do
              "Agent '#{tag}' spawned with template '#{template_name}'. Use get_agent_result to collect the result when done."
          }}
 
-      {:error, :agent_id_taken} ->
-        {:error, agent_id_taken_error(tag)}
+      {:error, reason} ->
+        # No orchestration will ever drive this entry: force it terminal and
+        # reclaim the just-started sub-agent so neither consumes the spawn cap.
+        agent_tracker().mark_complete(tag, :error)
+        _ = jido_runtime().stop_agent(subagent_pid)
+
+        {:error,
+         Error.execution_error("Failed to start agent orchestration.",
+           phase: :spawn,
+           details: %{reason: inspect(reason), template: template_name, agent_id: tag}
+         )}
     end
   end
 
@@ -201,6 +281,10 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   defp jido_runtime do
     Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
+  end
+
+  defp task_supervisor do
+    Application.get_env(:jido_claw, :task_supervisor, JidoClaw.TaskSupervisor)
   end
 
   defp agent_tracker do

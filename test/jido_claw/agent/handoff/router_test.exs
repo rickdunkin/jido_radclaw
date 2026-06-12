@@ -17,6 +17,68 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
      tenant_id: tenant_id, session: session, runtime_session_id: runtime_session_id, actor: actor}
   end
 
+  # Stub worker for the seam-runtime re-injection tests: captures the
+  # set_system_prompt signal the Startup injection path issues, forwarding
+  # `{:injected_prompt, worker_pid, prompt}` to the test (the
+  # coherence_test.exs CapturingAgent pattern).
+  defmodule CapturingWorker do
+    @moduledoc false
+    use GenServer
+
+    @spec start(pid()) :: GenServer.on_start()
+    def start(test_pid), do: GenServer.start(__MODULE__, test_pid)
+
+    @impl GenServer
+    def init(test_pid), do: {:ok, test_pid}
+
+    @impl GenServer
+    def handle_call(
+          {:signal, %{type: "ai.react.set_system_prompt", data: %{system_prompt: prompt}}},
+          _from,
+          test_pid
+        ) do
+      send(test_pid, {:injected_prompt, self(), prompt})
+      {:reply, {:ok, %{}}, test_pid}
+    end
+
+    def handle_call({:signal, _signal}, _from, state), do: {:reply, {:ok, %{}}, state}
+  end
+
+  # Seam-scoped runtime: the only way to observe injection per worker pid AND
+  # control worker recreation (the real runtime can't do either). Workers are
+  # unlinked CapturingWorkers tabled in app env by agent id; `whereis` reports
+  # only live pids, mirroring the real registry after a worker death.
+  defmodule SeamRuntime do
+    @moduledoc false
+
+    alias JidoClaw.Agent.Handoff.RouterTest.CapturingWorker
+
+    @spec whereis(String.t()) :: pid() | nil
+    def whereis(agent_id) do
+      case Map.get(seam_workers(), agent_id) do
+        pid when is_pid(pid) -> if Process.alive?(pid), do: pid
+        _ -> nil
+      end
+    end
+
+    @spec start_subagent(module(), keyword()) :: {:ok, pid()}
+    def start_subagent(_module, opts) do
+      agent_id = Keyword.fetch!(opts, :id)
+      test_pid = Application.fetch_env!(:jido_claw, :router_seam_test_pid)
+      {:ok, pid} = CapturingWorker.start(test_pid)
+
+      Application.put_env(
+        :jido_claw,
+        :router_seam_workers,
+        Map.put(seam_workers(), agent_id, pid)
+      )
+
+      {:ok, pid}
+    end
+
+    defp seam_workers, do: Application.get_env(:jido_claw, :router_seam_workers, %{})
+  end
+
   defp default_pid do
     pid = spawn(fn -> Process.sleep(:infinity) end)
     on_exit_cleanup(pid)
@@ -169,7 +231,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
         )
 
       assert_receive {:prompt_injected, _}, 2_000
-      assert HandoffRegistry.owner(t, rsid).prompt_injected? == true
+      assert is_pid(HandoffRegistry.owner(t, rsid).prompt_injected_pid)
 
       # Drain any additional events first
       flush_prompt_events()
@@ -278,6 +340,65 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       {:ok, fresh} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
       refute Map.has_key?(fresh.metadata || %{}, "current_agent_template")
+    end
+  end
+
+  describe "prompt injection keyed by worker pid (seam runtime)" do
+    setup do
+      orig_runtime = Application.get_env(:jido_claw, :jido_runtime)
+      Application.put_env(:jido_claw, :jido_runtime, SeamRuntime)
+      Application.put_env(:jido_claw, :router_seam_test_pid, self())
+      Application.put_env(:jido_claw, :router_seam_workers, %{})
+
+      on_exit(fn ->
+        for {_id, pid} <- Application.get_env(:jido_claw, :router_seam_workers, %{}),
+            Process.alive?(pid) do
+          GenServer.stop(pid)
+        end
+
+        Application.delete_env(:jido_claw, :router_seam_workers)
+        Application.delete_env(:jido_claw, :router_seam_test_pid)
+
+        if orig_runtime,
+          do: Application.put_env(:jido_claw, :jido_runtime, orig_runtime),
+          else: Application.delete_env(:jido_claw, :jido_runtime)
+      end)
+
+      :ok
+    end
+
+    test "a recreated worker (new pid) is re-injected; an unchanged live worker is not",
+         %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do
+      install_handoff(t, rsid, session.id, "reviewer", JidoClaw.Agent.Workers.Reviewer)
+      default = default_pid()
+
+      opts = [project_dir: File.cwd!(), session_record: session, default_agent_id: "main"]
+
+      # First route: worker created and primed at pid1.
+      {pid1, "reviewer", _, _, _} =
+        HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
+
+      assert_receive {:injected_prompt, ^pid1, _prompt}, 2_000
+      assert HandoffRegistry.owner(t, rsid).prompt_injected_pid == pid1
+
+      # Same live worker: the pid-keyed marker skips re-injection.
+      {^pid1, _, _, _, _} =
+        HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
+
+      refute_receive {:injected_prompt, _, _}, 300
+
+      # Worker dies (`:temporary` — no supervisor resurrection); the next
+      # route lazily recreates it and MUST inject the fresh, empty-state pid.
+      ref = Process.monitor(pid1)
+      Process.exit(pid1, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+
+      {pid2, "reviewer", _, _, _} =
+        HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
+
+      assert pid2 != pid1
+      assert_receive {:injected_prompt, ^pid2, _prompt}, 2_000
+      assert HandoffRegistry.owner(t, rsid).prompt_injected_pid == pid2
     end
   end
 

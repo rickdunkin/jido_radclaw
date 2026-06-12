@@ -7,11 +7,21 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   @tenant_id "tenant-spawn-agent-test"
 
   defmodule FakeRuntime do
-    @spec start_agent(module(), keyword()) :: {:ok, pid()}
-    def start_agent(_module, opts) do
+    # The tool spawns children via start_subagent/2 (`:temporary` in the real
+    # runtime); the message keeps the :start_agent tag for the assertions.
+    @spec start_subagent(module(), keyword()) :: {:ok, pid()}
+    def start_subagent(_module, opts) do
       pid = spawn(fn -> Process.sleep(:infinity) end)
       send(Application.fetch_env!(:jido_claw, :spawn_agent_test_pid), {:start_agent, opts, pid})
       {:ok, pid}
+    end
+
+    # Record-only: never kills the target, so tests control pid lifetime
+    # (the AgentTrackerTest.FakeRuntime convention).
+    @spec stop_agent(pid() | String.t()) :: :ok
+    def stop_agent(target) do
+      send(Application.fetch_env!(:jido_claw, :spawn_agent_test_pid), {:stop_agent, target})
+      :ok
     end
 
     @spec whereis(String.t()) :: pid() | nil
@@ -30,6 +40,26 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     def get("coder") do
       {:ok, %{module: JidoClaw.Tools.SpawnAgentTest.FakeWorker, description: "fake coder"}}
     end
+  end
+
+  defmodule TakenTracker do
+    # The narrowest tracker that drives register_spawned_agent into its
+    # :agent_id_taken branch. The generated-id path skips
+    # ensure_agent_id_available, so only these two callbacks are reached.
+    @spec child_count(keyword()) :: 0
+    def child_count(_opts), do: 0
+
+    @spec register(String.t(), pid(), term(), term(), keyword()) :: {:error, :agent_id_taken}
+    def register(_id, _pid, _template, _task, _opts), do: {:error, :agent_id_taken}
+
+    # Straggler absorbers: orchestration tasks from earlier tests can
+    # outlive their test (parked on the Recorder flush) and read the
+    # swapped-in tracker late — absorb their writes instead of crashing.
+    @spec attach_orchestrator(String.t(), pid()) :: :ok
+    def attach_orchestrator(_id, _pid), do: :ok
+
+    @spec mark_complete(String.t(), :done | :error) :: :ok
+    def mark_complete(_id, _status), do: :ok
   end
 
   defmodule RestrictedTemplates do
@@ -56,6 +86,31 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     end
   end
 
+  defmodule BlockingTemplates do
+    @spec get(String.t()) :: {:ok, map()}
+    def get("coder") do
+      {:ok,
+       %{module: JidoClaw.Tools.SpawnAgentTest.BlockingWorker, description: "blocking coder"}}
+    end
+  end
+
+  defmodule BlockingWorker do
+    # Holds the spawn orchestration open until released. `ask_sync` runs
+    # inside the supervised orchestration task, so `self()` here IS the
+    # orchestrator pid — the test uses it to kill the task mid-flight.
+    @spec ask_sync(pid(), String.t(), keyword()) :: :ok
+    def ask_sync(_pid, task, _opts) do
+      test_pid = Application.fetch_env!(:jido_claw, :spawn_agent_test_pid)
+      send(test_pid, {:ask_sync_started, self(), task})
+
+      receive do
+        :release -> :ok
+      after
+        5_000 -> :ok
+      end
+    end
+  end
+
   setup do
     old_max_children = Application.get_env(:jido_claw, :spawn_agent_max_children)
     old_max_depth = Application.get_env(:jido_claw, :spawn_agent_max_depth)
@@ -63,6 +118,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     old_agent_templates = Application.get_env(:jido_claw, :agent_templates)
     old_busy_ids = Application.get_env(:jido_claw, :spawn_agent_busy_ids)
     old_test_pid = Application.get_env(:jido_claw, :spawn_agent_test_pid)
+    old_agent_tracker = Application.get_env(:jido_claw, :agent_tracker)
+    old_task_supervisor = Application.get_env(:jido_claw, :task_supervisor)
 
     AgentTracker.reset()
     flush_tracker()
@@ -74,6 +131,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
       restore_env(:agent_templates, old_agent_templates)
       restore_env(:spawn_agent_busy_ids, old_busy_ids)
       restore_env(:spawn_agent_test_pid, old_test_pid)
+      restore_env(:agent_tracker, old_agent_tracker)
+      restore_env(:task_supervisor, old_task_supervisor)
       AgentTracker.reset()
     end)
   end
@@ -115,6 +174,78 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
 
     Process.exit(pid, :kill)
     Process.exit(done_pid, :kill)
+  end
+
+  test "a killed orchestration task forces the entry terminal and frees the cap (M17 regression)" do
+    configure_fake_spawn()
+    Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
+
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "long haul"}, ctx())
+
+    assert_receive {:start_agent, [id: ^agent_id], agent_pid}
+    assert_receive {:ask_sync_started, task_pid, "long haul"}, 1_000
+
+    # In flight: the entry consumes the cap and the agent process is alive.
+    assert %{status: :running} = AgentTracker.get_agent(agent_id, tenant_id: @tenant_id)
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
+
+    # Kill the orchestrator (uncatchable — the task's try/catch never runs).
+    # The tracker's orchestrator monitor must force the entry terminal even
+    # though the agent process itself stays alive the whole time.
+    Process.exit(task_pid, :kill)
+
+    wait_until(fn ->
+      match?(%{status: :error}, AgentTracker.get_agent(agent_id, tenant_id: @tenant_id))
+    end)
+
+    assert %{error: error} = AgentTracker.get_agent(agent_id, tenant_id: @tenant_id)
+    assert error =~ "orchestrator died"
+    assert Process.alive?(agent_pid)
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+
+    Process.exit(agent_pid, :kill)
+  end
+
+  test "reclaims the started sub-agent when registration is taken (P2-2 regression)" do
+    configure_fake_spawn()
+    Application.put_env(:jido_claw, :agent_tracker, TakenTracker)
+
+    # No tag → the availability pre-check is skipped, so the race lands on
+    # register, after the sub-agent has already started.
+    assert {:error, %{code: :validation_error, details: details}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
+
+    assert details.reason == :agent_id_taken
+
+    # The taken branch must reclaim the started sub-agent: untracked agents
+    # are invisible to the TTL sweep and would otherwise leak alive forever.
+    assert_receive {:start_agent, _opts, started_pid}
+    assert_receive {:stop_agent, ^started_pid}
+    refute_receive {:ask_sync, _, _, _}
+
+    Process.exit(started_pid, :kill)
+  end
+
+  test "a start_child failure forces the entry terminal and reclaims the sub-agent" do
+    configure_fake_spawn()
+
+    start_supervised!({Task.Supervisor, name: __MODULE__.CrampedTaskSup, max_children: 0})
+    Application.put_env(:jido_claw, :task_supervisor, __MODULE__.CrampedTaskSup)
+
+    assert {:error, %{code: :execution_error, details: %{phase: :spawn}}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
+
+    assert_receive {:start_agent, [id: agent_id], started_pid}
+    assert_receive {:stop_agent, ^started_pid}
+    flush_tracker()
+
+    # No orchestration ever ran behind the registered entry: it must be
+    # terminal and the cap free.
+    assert %{status: :error} = AgentTracker.get_agent(agent_id, tenant_id: @tenant_id)
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+
+    Process.exit(started_pid, :kill)
   end
 
   test "requires tenant scope before checking spawn limits" do
@@ -299,6 +430,24 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
 
   defp flush_tracker do
     _ = AgentTracker.get_state()
+  end
+
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    wait_until_deadline(fun, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp wait_until_deadline(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("condition not met within timeout")
+
+      true ->
+        Process.sleep(20)
+        wait_until_deadline(fun, deadline)
+    end
   end
 
   defp configure_fake_spawn do

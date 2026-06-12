@@ -33,6 +33,33 @@ defmodule JidoClaw.AgentTracker do
        and both terminal writers (`mark_complete` + `:DOWN`) transition
        only from `:running`, so a finished entry can never silently
        consume the spawn cap with nothing left to complete it.
+    3. A `:running` entry's *orchestrator* (the supervised task driving
+       the run, attached via `attach_orchestrator/2`) is monitored too —
+       if it dies without writing a terminal status, its `:DOWN` forces
+       the entry to `:error` so an orchestration kill can never strand
+       the entry `:running` (consuming the spawn cap) behind a live,
+       idle agent the terminal-only sweep would never collect. The
+       orchestrator's own `mark_complete` cast always arrives before its
+       `:DOWN` (same sender, same receiver), so a normal exit never
+       reads as "orchestrator died". Accepted residuals: the tool
+       process dying between `register` and the task's
+       `attach_orchestrator` (a microsecond window inside one tool call
+       — the whole call fails with it); a superseded orchestrator's
+       late `mark_complete` landing on a re-engaged entry (benign:
+       wrong-but-terminal beats stuck-`:running`; the dangerous inverse
+       — a stale `:DOWN` erroring a fresh engagement — is closed by
+       demonitor+flush on re-attach and terminal-entry reactivation,
+       while an already-running entry keeps its current orchestrator
+       armed until the replacement attaches); and the already-running
+       swap window itself — between `mark_running/2` and the new task's
+       attach, the old orchestrator dying forces the entry `:error`
+       while the new dispatch proceeds, whose later `mark_complete` is
+       then discarded by the from-`:running`-only guard, so its
+       terminal status (and the result status the tracker reports) can
+       be lost. Rare, and accepted because it still beats leaving the
+       live task unmonitored (a strand); a full fix needs per-run
+       generations on terminal writes, or rejecting `send_to_agent`
+       while a run is in flight — both deliberately out of scope.
 
   Config (code defaults, read per call):
   `:agent_tracker_sweep_interval_ms` (60s),
@@ -128,12 +155,42 @@ defmodule JidoClaw.AgentTracker do
   is still armed, so a later death always lands in a `:DOWN` terminal
   transition). Anything else returns `{:error, :not_found}` with no
   mutation: a dead terminal entry stays terminal and sweepable — never
-  resurrect what the monitor can't watch. An already-`:running` entry
-  with a matching live pid returns `:ok` as a no-op.
+  resurrect what the monitor can't watch.
+
+  Success says which of two very different things happened, because the
+  caller's failure handling must differ:
+
+    * `{:ok, :reactivated}` — this call flipped a terminal entry back to
+      `:running`. Nothing else will ever complete it, so the caller owns
+      forcing it back terminal if its dispatch never starts.
+    * `{:ok, :already_running}` — no-op: an in-flight orchestration
+      still owns the entry and its orchestrator monitor stays armed
+      until the replacement task attaches. The caller must leave the
+      entry untouched if its own dispatch fails to start.
   """
-  @spec mark_running(String.t(), pid()) :: :ok | {:error, :not_found}
+  @spec mark_running(String.t(), pid()) ::
+          {:ok, :reactivated | :already_running} | {:error, :not_found}
   def mark_running(id, expected_pid) when is_binary(id) and is_pid(expected_pid) do
     GenServer.call(__MODULE__, {:mark_running, id, expected_pid})
+  end
+
+  @doc """
+  Attach the orchestration process driving an agent's current run.
+
+  Called by the supervised orchestration task (`spawn_agent` /
+  `send_to_agent`) as its first statement, so the tracker monitors the
+  process responsible for eventually calling `mark_complete/2`. If that
+  process dies without writing a terminal status, its `:DOWN` forces the
+  entry to `:error` — the backstop for uncatchable kills the task's own
+  try/catch can't see. Re-attaching replaces (demonitor + flush) any
+  previous orchestrator ref. A synchronous call: the task must not start
+  real work until the monitor is armed. No-op for untracked ids;
+  attaching an already-dead pid yields an immediate `:DOWN` (`:noproc`),
+  which still forces the terminal transition.
+  """
+  @spec attach_orchestrator(String.t(), pid()) :: :ok
+  def attach_orchestrator(id, pid) when is_binary(id) and is_pid(pid) do
+    GenServer.call(__MODULE__, {:attach_orchestrator, id, pid})
   end
 
   @doc """
@@ -195,7 +252,8 @@ defmodule JidoClaw.AgentTracker do
 
   @impl GenServer
   def init(_opts) do
-    {:ok, %{agents: %{}, order: [], monitors: %{}, stopping: %{}}, {:continue, :setup}}
+    {:ok, %{agents: %{}, order: [], monitors: %{}, orchestrators: %{}, stopping: %{}},
+     {:continue, :setup}}
   end
 
   @impl GenServer
@@ -325,15 +383,26 @@ defmodule JidoClaw.AgentTracker do
 
   def handle_call({:mark_running, id, expected_pid}, _from, state) do
     case Map.get(state.agents, id) do
-      %AgentEntry{pid: ^expected_pid} = entry ->
+      %AgentEntry{pid: ^expected_pid, status: status} = entry ->
         if Process.alive?(expected_pid) do
-          {:reply, :ok, reactivate_entry(state, id, entry)}
+          activation = if status == :running, do: :already_running, else: :reactivated
+          {:reply, {:ok, activation}, reactivate_entry(state, id, entry)}
         else
           {:reply, {:error, :not_found}, state}
         end
 
       _ ->
         {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:attach_orchestrator, id, pid}, _from, state) do
+    if Map.has_key?(state.agents, id) do
+      state = demonitor_orchestrator(state, id)
+      ref = Process.monitor(pid)
+      {:reply, :ok, %{state | orchestrators: Map.put(state.orchestrators, ref, id)}}
+    else
+      {:reply, :ok, state}
     end
   end
 
@@ -367,19 +436,32 @@ defmodule JidoClaw.AgentTracker do
   end
 
   def handle_cast(:reset, _state) do
-    {:noreply, %{agents: %{}, order: [], monitors: %{}, stopping: %{}}}
+    {:noreply, %{agents: %{}, order: [], monitors: %{}, orchestrators: %{}, stopping: %{}}}
   end
 
-  # Process crash detection
+  # Process crash detection. Orchestrator refs first: an orchestration task
+  # that died without writing a terminal status forces `:error` (no-op from
+  # the from-`:running`-only guard when its `mark_complete` cast — which
+  # always precedes the `:DOWN` from the same sender — already landed).
+  # Agent-server refs keep their existing crash semantics.
   @impl GenServer
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case Map.pop(state.monitors, ref) do
-      {nil, _} ->
-        {:noreply, state}
+    case Map.pop(state.orchestrators, ref) do
+      {agent_id, orchestrators} when is_binary(agent_id) ->
+        state = %{state | orchestrators: orchestrators}
 
-      {agent_id, monitors} ->
-        state = %{state | monitors: monitors, stopping: Map.delete(state.stopping, agent_id)}
-        {:noreply, complete_entry(state, agent_id, :error, inspect(reason))}
+        {:noreply,
+         complete_entry(state, agent_id, :error, "orchestrator died: #{inspect(reason)}")}
+
+      {nil, _} ->
+        case Map.pop(state.monitors, ref) do
+          {nil, _} ->
+            {:noreply, state}
+
+          {agent_id, monitors} ->
+            state = %{state | monitors: monitors, stopping: Map.delete(state.stopping, agent_id)}
+            {:noreply, complete_entry(state, agent_id, :error, inspect(reason))}
+        end
     end
   end
 
@@ -405,15 +487,45 @@ defmodule JidoClaw.AgentTracker do
     end
   end
 
+  # At most one orchestrator ref exists per agent id (attach replaces).
+  defp find_orchestrator_ref(state, id) do
+    Enum.find_value(state.orchestrators, fn {ref, agent_id} ->
+      if agent_id == id, do: ref
+    end)
+  end
+
+  # Drop the orchestrator monitor for `id`, if any. `[:flush]` purges an
+  # already-queued `:DOWN`, so a stale (dead, superseded) orchestrator can
+  # never error a freshly attached/re-engaged entry.
+  defp demonitor_orchestrator(state, id) do
+    case find_orchestrator_ref(state, id) do
+      nil ->
+        state
+
+      ref ->
+        Process.demonitor(ref, [:flush])
+        %{state | orchestrators: Map.delete(state.orchestrators, ref)}
+    end
+  end
+
   # Flip an entry back to `:running` for a follow-up dispatch (no-op when
   # already running) and cancel any pending expiry stop for it. Liveness and
-  # pid identity are validated by the caller (`{:mark_running, ...}`).
+  # pid identity are validated by the caller (`{:mark_running, ...}`). Only
+  # a *terminal* reactivation drops the previous orchestrator ref — that ref
+  # is stale (its run already wrote a terminal status), and dropping it
+  # keeps a dying superseded orchestrator from erroring the fresh
+  # engagement. An already-running entry keeps its **live** orchestrator
+  # monitored until the replacement task attaches (`attach_orchestrator`
+  # does the demonitor+flush swap) — dropping it here, before the
+  # replacement is known to have started, would leave the in-flight run
+  # unmonitored if that start fails.
   defp reactivate_entry(state, id, %AgentEntry{status: :running}) do
     %{state | stopping: Map.delete(state.stopping, id)}
   end
 
   defp reactivate_entry(state, id, _terminal_entry) do
     state
+    |> demonitor_orchestrator(id)
     |> update_agent(id, fn e -> %{e | status: :running, finished_at: nil, error: nil} end)
     |> Map.update!(:stopping, &Map.delete(&1, id))
   end
@@ -478,13 +590,19 @@ defmodule JidoClaw.AgentTracker do
     {evicted_refs, kept_refs} =
       Enum.split_with(state.monitors, fn {_ref, id} -> MapSet.member?(id_set, id) end)
 
-    Enum.each(evicted_refs, fn {ref, _id} -> Process.demonitor(ref, [:flush]) end)
+    {evicted_orch_refs, kept_orch_refs} =
+      Enum.split_with(state.orchestrators, fn {_ref, id} -> MapSet.member?(id_set, id) end)
+
+    Enum.each(evicted_refs ++ evicted_orch_refs, fn {ref, _id} ->
+      Process.demonitor(ref, [:flush])
+    end)
 
     %{
       state
       | agents: Map.drop(state.agents, ids),
         order: Enum.reject(state.order, &MapSet.member?(id_set, &1)),
         monitors: Map.new(kept_refs),
+        orchestrators: Map.new(kept_orch_refs),
         stopping: Map.drop(state.stopping, ids)
     }
   end

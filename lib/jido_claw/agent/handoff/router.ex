@@ -429,12 +429,17 @@ defmodule JidoClaw.Agent.Handoff.Router do
     _ -> nil
   end
 
+  # Handoff workers are short-lived sub-agents: `start_subagent` starts them
+  # `:temporary`, so a crashed worker is not resurrected as an untracked
+  # orphan — `ensure_worker_pid/2` lazily recreates it on the next turn.
   defp jido_start_agent(module, opts) do
     runtime = Application.get_env(:jido_claw, :jido_runtime, JidoClaw.Jido)
-    runtime.start_agent(module, opts)
+    runtime.start_subagent(module, opts)
   end
 
-  defp maybe_inject_prompt(_pid, %{prompt_injected?: true}, _tenant, _session, _dir, _record),
+  # Skip only when THIS worker pid is the one already primed — a recreated
+  # worker (fresh pid, empty state) falls through and gets injected again.
+  defp maybe_inject_prompt(pid, %{prompt_injected_pid: pid}, _tenant, _session, _dir, _record),
     do: :ok
 
   defp maybe_inject_prompt(_pid, _owner, _tenant, _session, nil, _session_record) do
@@ -453,7 +458,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
        ) do
     case inject_prompt_for(pid, owner, project_dir, session_record) do
       :ok ->
-        HandoffRegistry.mark_prompt_injected(tenant_id, runtime_session_id)
+        HandoffRegistry.mark_prompt_injected(tenant_id, runtime_session_id, pid)
         :ok
 
       {:error, reason} ->

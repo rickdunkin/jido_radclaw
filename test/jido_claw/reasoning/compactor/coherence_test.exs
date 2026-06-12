@@ -64,8 +64,9 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
     @spec whereis(term()) :: nil
     def whereis(_id), do: nil
 
-    @spec start_agent(module(), keyword()) :: {:ok, pid()}
-    def start_agent(_module, _opts) do
+    # The handoff router starts workers via start_subagent/2.
+    @spec start_subagent(module(), keyword()) :: {:ok, pid()}
+    def start_subagent(_module, _opts) do
       {:ok, Application.fetch_env!(:jido_claw, :coherence_capturing_pid)}
     end
   end

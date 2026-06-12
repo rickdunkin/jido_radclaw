@@ -52,7 +52,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
          visibility = Map.get(template, :forward_context, :public),
          scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
          tool_context = JidoClaw.ToolContext.build(scoped),
-         {:ok, pid} <- JidoClaw.Jido.start_agent(template.module, id: tag) do
+         {:ok, pid} <- JidoClaw.Jido.start_subagent(template.module, id: tag) do
       request_id = JidoClaw.register_child_correlation(tool_context)
       SubagentTranscript.record_task(tool_context, request_id, task)
 
@@ -74,7 +74,12 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
 
           {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
       after
-        if Process.alive?(pid), do: Process.exit(pid, :normal)
+        # A real supervisor stop, not `Process.exit(pid, :normal)` — an exit
+        # signal with reason `:normal` sent to another (non-trapping) process
+        # is discarded, so that cleanup never actually stopped the worker.
+        # Skill-step workers aren't AgentTracker-registered; this is their
+        # only stopper. `{:error, :not_found}` on an already-dead pid is fine.
+        if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
       end
     else
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}

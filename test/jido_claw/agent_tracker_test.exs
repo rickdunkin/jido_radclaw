@@ -127,7 +127,7 @@ defmodule JidoClaw.AgentTrackerTest do
       drain()
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
 
-      assert :ok = AgentTracker.mark_running("revive", pid)
+      assert {:ok, :reactivated} = AgentTracker.mark_running("revive", pid)
 
       assert %{status: :running, finished_at: nil, error: nil} = AgentTracker.get_agent("revive")
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
@@ -135,11 +135,11 @@ defmodule JidoClaw.AgentTrackerTest do
       Process.exit(pid, :kill)
     end
 
-    test "is a no-op :ok for an already-running entry with a matching live pid" do
+    test "returns :already_running as a no-op for a running entry with a matching live pid" do
       pid = live_pid()
       assert :ok = AgentTracker.register("already", pid, "coder", "t", tenant_id: @tenant_id)
 
-      assert :ok = AgentTracker.mark_running("already", pid)
+      assert {:ok, :already_running} = AgentTracker.mark_running("already", pid)
       assert %{status: :running} = AgentTracker.get_agent("already")
 
       Process.exit(pid, :kill)
@@ -181,12 +181,180 @@ defmodule JidoClaw.AgentTrackerTest do
       assert :ok = AgentTracker.register("self-heal", pid, "coder", "t", tenant_id: @tenant_id)
       AgentTracker.mark_complete("self-heal", :done)
       drain()
-      assert :ok = AgentTracker.mark_running("self-heal", pid)
+      assert {:ok, :reactivated} = AgentTracker.mark_running("self-heal", pid)
 
       kill_and_wait(pid)
 
       assert %{status: :error} = AgentTracker.get_agent("self-heal")
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+    end
+  end
+
+  describe "attach_orchestrator/2" do
+    test "a dead orchestrator forces a running entry to :error (agent stays alive)" do
+      agent = live_pid()
+      orch = live_pid()
+      assert :ok = AgentTracker.register("orphan", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("orphan", orch)
+
+      kill_and_wait(orch)
+
+      assert %{status: :error, error: error} = AgentTracker.get_agent("orphan")
+      assert error =~ "orchestrator died"
+      assert Process.alive?(agent)
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+
+      Process.exit(agent, :kill)
+    end
+
+    test "a normal orchestrator exit never clobbers the :done it just wrote" do
+      agent = live_pid()
+
+      # Mirrors the real orchestration task: mark_complete cast, then exit
+      # :normal — the cast must always win over the monitor's :DOWN.
+      orch =
+        spawn(fn ->
+          receive do
+            :finish -> AgentTracker.mark_complete("happy", :done)
+          end
+        end)
+
+      assert :ok = AgentTracker.register("happy", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("happy", orch)
+
+      ref = Process.monitor(orch)
+      send(orch, :finish)
+      assert_receive {:DOWN, ^ref, :process, _, _}
+      drain()
+
+      assert %{status: :done, error: nil} = AgentTracker.get_agent("happy")
+      Process.exit(agent, :kill)
+    end
+
+    test "attaching an already-dead orchestrator still forces terminal" do
+      agent = live_pid()
+      orch = live_pid()
+      kill_and_wait(orch)
+
+      assert :ok = AgentTracker.register("late", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("late", orch)
+      drain()
+
+      assert %{status: :error, error: error} = AgentTracker.get_agent("late")
+      assert error =~ "orchestrator died"
+      Process.exit(agent, :kill)
+    end
+
+    test "re-attach replaces the previous orchestrator ref" do
+      agent = live_pid()
+      orch1 = live_pid()
+      orch2 = live_pid()
+
+      assert :ok = AgentTracker.register("relay", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("relay", orch1)
+      assert :ok = AgentTracker.attach_orchestrator("relay", orch2)
+
+      # The superseded orchestrator was demonitored — its death is invisible.
+      kill_and_wait(orch1)
+      assert %{status: :running} = AgentTracker.get_agent("relay")
+
+      # The current one still backstops.
+      kill_and_wait(orch2)
+      assert %{status: :error} = AgentTracker.get_agent("relay")
+
+      Process.exit(agent, :kill)
+    end
+
+    test "is a no-op :ok for an untracked id" do
+      orch = live_pid()
+      assert :ok = AgentTracker.attach_orchestrator("never-registered", orch)
+
+      kill_and_wait(orch)
+      assert AgentTracker.get_agent("never-registered") == nil
+    end
+
+    test "mark_running reactivation drops the stale orchestrator ref" do
+      agent = live_pid()
+      orch1 = live_pid()
+
+      assert :ok = AgentTracker.register("re-engage", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("re-engage", orch1)
+      AgentTracker.mark_complete("re-engage", :done)
+      drain()
+
+      # Re-engagement (send_to_agent's gate): the previous run's orchestrator
+      # dying must not error the fresh engagement.
+      assert {:ok, :reactivated} = AgentTracker.mark_running("re-engage", agent)
+      kill_and_wait(orch1)
+
+      assert %{status: :running} = AgentTracker.get_agent("re-engage")
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
+
+      Process.exit(agent, :kill)
+    end
+
+    test "mark_running on an already-running entry keeps the current orchestrator armed" do
+      agent = live_pid()
+      orch1 = live_pid()
+
+      assert :ok = AgentTracker.register("busy", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("busy", orch1)
+
+      # A follow-up gate on a busy agent must not drop the live run's
+      # monitor: until the replacement task attaches, orch1 is the only
+      # thing standing between a kill and a stranded :running entry.
+      assert {:ok, :already_running} = AgentTracker.mark_running("busy", agent)
+
+      kill_and_wait(orch1)
+
+      assert %{status: :error, error: error} = AgentTracker.get_agent("busy")
+      assert error =~ "orchestrator died"
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+
+      Process.exit(agent, :kill)
+    end
+
+    test "eviction drops orchestrator refs — a late death cannot touch a successor entry" do
+      Application.put_env(:jido_claw, :agent_tracker_terminal_ttl_ms, 0)
+
+      agent = live_pid()
+      orch = live_pid()
+      assert :ok = AgentTracker.register("cycled", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("cycled", orch)
+      AgentTracker.mark_complete("cycled", :done)
+      drain()
+      kill_and_wait(agent)
+      sweep()
+      assert AgentTracker.get_agent("cycled") == nil
+
+      # Same id re-registered after eviction; without the evict-time
+      # demonitor the old ref would error the successor on orch's death.
+      agent2 = live_pid()
+      assert :ok = AgentTracker.register("cycled", agent2, "coder", "t", tenant_id: @tenant_id)
+      kill_and_wait(orch)
+
+      assert %{status: :running} = AgentTracker.get_agent("cycled")
+      Process.exit(agent2, :kill)
+    end
+
+    test "reset clears orchestrator refs" do
+      agent = live_pid()
+      orch = live_pid()
+      assert :ok = AgentTracker.register("reset-me", agent, "coder", "t", tenant_id: @tenant_id)
+      assert :ok = AgentTracker.attach_orchestrator("reset-me", orch)
+
+      AgentTracker.reset()
+      drain()
+
+      # Re-register the same id post-reset; the pre-reset orchestrator dying
+      # must not touch the fresh entry.
+      agent2 = live_pid()
+      assert :ok = AgentTracker.register("reset-me", agent2, "coder", "t", tenant_id: @tenant_id)
+      kill_and_wait(orch)
+
+      assert %{status: :running} = AgentTracker.get_agent("reset-me")
+      Process.exit(agent, :kill)
+      Process.exit(agent2, :kill)
     end
   end
 
@@ -277,7 +445,7 @@ defmodule JidoClaw.AgentTrackerTest do
       assert :ok = AgentTracker.register("reused", pid, "coder", "t", tenant_id: @tenant_id)
       AgentTracker.mark_complete("reused", :done)
       drain()
-      assert :ok = AgentTracker.mark_running("reused", pid)
+      assert {:ok, :reactivated} = AgentTracker.mark_running("reused", pid)
 
       sweep()
 
