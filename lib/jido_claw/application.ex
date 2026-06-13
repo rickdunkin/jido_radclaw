@@ -19,6 +19,7 @@ defmodule JidoClaw.Application do
 
   alias JidoClaw.Core.DependencyPatches
   alias JidoClaw.Embeddings.BootGuard
+  alias JidoClaw.MCP.Consumer, as: MCPConsumer
   alias JidoClaw.Security.Redaction.LogRedactor
   alias JidoClaw.Security.RuntimeSecrets
   alias JidoClaw.Security.VaultConfig
@@ -171,7 +172,7 @@ defmodule JidoClaw.Application do
       JidoClaw.Audit.SignalListener
     ]
 
-    [
+    List.flatten([
       # Infrastructure
       supervisor_child(JidoClaw.InfraSupervisor, infra_children, :one_for_one),
 
@@ -267,12 +268,33 @@ defmodule JidoClaw.Application do
       # Agent tracking (per-agent stats for swarm display)
       JidoClaw.AgentTracker,
 
+      # External MCP tool consumption (JidoClaw.MCP.Consumer). After
+      # AgentTracker — the `:prepared` rehydrate reads it to re-attach live
+      # tracked agents. Serve-mode/test gated (absent under :mcp; stdio is
+      # reserved for JSON-RPC there).
+      mcp_consumer_children(),
+
       # Display coordinator (spinner, status bar, swarm box)
       JidoClaw.Display,
 
       # VFS/Profile/ServerRegistry/SessionManager dependency chain.
       supervisor_child(JidoClaw.Shell.Supervisor, shell_children(), :rest_for_one)
-    ]
+    ])
+  end
+
+  # External MCP consumer — gated off in MCP serve mode (stdio is JSON-RPC) and
+  # in test (the suite starts its own under `start_supervised`); present in
+  # `:cli`/`:gateway`/`:both`. The pure `Consumer.start?/2` keeps the gate
+  # testable without mutating global runtime config.
+  defp mcp_consumer_children do
+    if MCPConsumer.start?(
+         Application.get_env(:jido_claw, :serve_mode),
+         Application.get_env(:jido_claw, :mcp_consumer_enabled?, true)
+       ) do
+      [MCPConsumer]
+    else
+      []
+    end
   end
 
   defp supervisor_child(id, children, strategy) do

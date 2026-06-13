@@ -198,7 +198,34 @@ config :jido_claw,
 # forget, replay_workflow); add `require: ~w(...)` here to override it. The
 # shell param-pattern triggers (e.g. `git commit` via run_command) also live
 # in-module so a config typo can never disable them.
-config :jido_claw, :tool_approval, enabled?: true
+#
+# `mcp_require_approval` (default true) is the GLOBAL posture for external MCP
+# tools: each `mcp_*` proxy is gated unless its server is explicitly trusted
+# (`require_approval: false` in `mcp_servers`, below) or this is flipped to
+# false. An unknown `mcp_`-prefixed name (lost/unset policy) falls back to this
+# global default — gated by default, so the gate fails CLOSED, never to native.
+config :jido_claw, :tool_approval, enabled?: true, mcp_require_approval: true
+
+# External MCP servers to consume (JidoClaw.MCP). Declared in
+# `.jido/config.yaml` under `mcp_servers:`; discovered at boot, their tools
+# wrapped in the full host safety pipeline and exposed as `mcp_<server>_<tool>`.
+# Inert when absent. Example `.jido/config.yaml`:
+#
+#     mcp_servers:
+#       - name: tidewave                 # ^[a-z][a-z0-9_]*$ — also the mcp_ prefix root
+#         transport: streamable_http     # stdio | sse | streamable_http
+#         url: "http://localhost:4000/tidewave/mcp"
+#         require_approval: false        # trusts this server (default: gated)
+#       - name: filesystem
+#         transport: stdio
+#         command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/dir"]
+#         cwd: "/path/to/project"        # subprocess working dir (optional)
+#         env: {FOO: "bar"}              # operator overrides LAYERED ON TOP of the
+#                                        # patched transport's default-deny env scrub
+#                                        # (omit ⇒ pure default-deny: no host secrets)
+#
+# Discovery/registration timeouts are tunable under `config :jido_claw, :mcp`
+# (`ready_timeout_ms`, `list_tools_timeout_ms`, `server_prep_timeout_ms`).
 
 # Boot-time workflow recovery (JidoClaw.Orchestration.WorkflowRecovery).
 # Enabled by default; gated off at runtime when clustered or in MCP mode so

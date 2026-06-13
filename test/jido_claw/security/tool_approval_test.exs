@@ -254,4 +254,73 @@ defmodule JidoClaw.Security.ToolApprovalTest do
       end
     end
   end
+
+  describe "external MCP tool policy (env-free opts)" do
+    test "an mcp_ tool with an explicit nil policy entry is gated by the global default",
+         %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("mcp_x_y", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_policy: %{"mcp_x_y" => nil}
+               )
+    end
+
+    test "an mcp_ tool whose server is trusted (false) passes through", %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("mcp_x_y", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_policy: %{"mcp_x_y" => false}
+               )
+    end
+
+    test "global mcp_require_approval: false ungates a nil-policy mcp_ tool", %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("mcp_x_y", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_require_approval: false,
+                 mcp_policy: %{"mcp_x_y" => nil}
+               )
+    end
+
+    test "overlapping prefixes resolve independently by exact name", %{scope: scope} do
+      policy = %{"mcp_foo_q" => false, "mcp_foo_bar_q" => true}
+
+      assert :ok =
+               ToolApproval.gate("mcp_foo_q", %{}, ctx(scope), enabled?: true, mcp_policy: policy)
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("mcp_foo_bar_q", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_policy: policy
+               )
+    end
+
+    test "an unknown mcp_-prefixed tool with an empty policy fails CLOSED to gated (not native)",
+         %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("mcp_unknown_t", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_policy: %{}
+               )
+    end
+
+    test "the same unknown mcp_ tool ungates under a global false (the &&/|| footgun)",
+         %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("mcp_unknown_t", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_require_approval: false,
+                 mcp_policy: %{}
+               )
+    end
+
+    test "a native (non-mcp_) tool is unaffected by the mcp policy", %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("read_file", %{path: "x"}, ctx(scope),
+                 enabled?: true,
+                 require: ["git_commit"],
+                 mcp_policy: %{}
+               )
+    end
+  end
 end

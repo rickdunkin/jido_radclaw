@@ -414,7 +414,10 @@ defmodule JidoClaw.Inspection do
       request_id: agent_state_request_id(state) || trace_field(trace, :request_id),
       system_prompt: safe(fn -> AgentPrompt.build_snapshot(File.cwd!(), nil) end),
       model: agent_state_model(state) || model_from_module(module),
-      tool_names: tool_names_for_module(module),
+      # Live-query the running agent first so dynamically-attached external MCP
+      # proxies (`mcp_*`) show up; fall back to the module's static toolset only
+      # when the live read fails (nil), not when it is genuinely empty.
+      tool_names: live_tool_names(pid) || tool_names_for_module(module),
       mcp_tools: mcp_tool_names(),
       skills: skills_summary(),
       usage: usage_from(nil, trace),
@@ -613,6 +616,16 @@ defmodule JidoClaw.Inspection do
 
   defp session_prompt(_session) do
     AgentPrompt.build_snapshot(File.cwd!(), nil)
+  end
+
+  # Live tool list off a running agent (`Jido.AI.list_tools/1` returns
+  # `{:ok, [module]}`); nil on any read failure so the caller falls back to the
+  # module's static toolset.
+  defp live_tool_names(pid) when is_pid(pid) do
+    safe(fn ->
+      {:ok, tools} = Jido.AI.list_tools(pid)
+      tool_names(tools)
+    end)
   end
 
   defp tool_names_for_module(nil), do: []

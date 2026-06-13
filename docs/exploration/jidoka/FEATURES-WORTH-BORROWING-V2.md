@@ -41,7 +41,7 @@ V2 architecture in one paragraph (details in the V1 doc's "The jidoka V2 rewrite
 - **Phase 1 minimal**: `require_approval` on an operator-listed set of dangerous tools + a `max_input_length`-style input control. Predicates (arg-pattern matching, e.g. `run_command` only for non-allowlisted binaries) phase 2.
 - Surface pending approvals through the existing projection family (`AgentView` status, `RuntimeOverview` count, `Inspection.Summary.interrupt`).
 
-Pairs with **V2-2** (external MCP tools should default to `require_approval`) and with the Reactor gate/case family (shared approval UX and vocabulary).
+Pairs with **V2-2** (external MCP tools now default to `require_approval` — shipped) and with the Reactor gate/case family (shared approval UX and vocabulary).
 
 ---
 
@@ -49,17 +49,21 @@ Pairs with **V2-2** (external MCP tools should default to `require_approval`) an
 
 ### V2-2. External MCP tool consumption (MCP client tool source)
 
+**Status (2026-06-13)**: PARTIAL — agents now *consume* external MCP servers. `JidoClaw.MCP` (facade) + `JidoClaw.MCP.Consumer` (boot prep + attach coordinator) discover each configured server's tools and compile one safe proxy `Jido.Action` per tool via `JidoClaw.MCP.ProxyGenerator`. The payoff: generated proxies **`use JidoClaw.Tools.Action`** (not bare `Jido.Action`), so the full safety pipeline (`ToolApproval.gate → Error.normalize → OutputRedaction → OutputLimit`) wraps every external call — inbound results redacted + capped, outbound args scrubbed. Names are `mcp_<server>_<tool>`; **default-on approval** gates every `mcp_*` tool unless its server is trusted (`require_approval: false`), failing **closed** (gated, never native) for any unknown `mcp_`-prefixed name. Operators declare servers in `.jido/config.yaml` under `mcp_servers:` (stdio/sse/streamable_http), with stdio subprocess env default-denied (`Env.scrubbed_port_env/1`).
+
+**Deferred (keeps this PARTIAL)**: per-template allowlist enforcement; worker/sub-agent sync; generic MCP output shaping (proxies redact + cap but do not format-shape/`fetch_output`-store); reconnect/re-discovery — including **no auto re-prep after a hard prep crash** (a hard-killed prep transitions the Consumer to `:failed`/tool-less, fail-closed policy, until an app restart re-preps).
+
 **Status (2026-06-11)**: NOT_ADOPTED — but the transport machinery already ships unused in deps.
 
 **Where in jidoka**: `lib/jidoka/agent/tool_sources/mcp.ex` (the `mcp_tools` DSL entity), `lib/jidoka/operation/source/mcp.ex` + `mcp/{tools,transport}.ex`.
 
 **What**: jidoka agents can declare external MCP servers as tool sources — the tools they advertise are discovered, schema-mapped, and exposed to the LLM alongside local actions, with the same `forward_context` and controls treatment as any other operation source. Import supports `discover_mcp?` for spec-time discovery.
 
-**Gap in jido_radclaw**: the platform is fluent in *serving* MCP (21 published tools; the memory consolidator even spins per-run loopback MCP endpoints for its harness) but agents cannot *consume* external MCP servers. Workers can't use tidewave-, context7-, or filesystem-class servers; every capability must be hand-written as a `Jido.Action` tool.
+**Gap in jido_radclaw** (now closed — see Status above): the platform was already fluent in *serving* MCP (22 published tools; the memory consolidator even spins per-run loopback MCP endpoints for its harness); it now also *consumes* external MCP servers. Workers can reach tidewave-, context7-, or filesystem-class servers, so a capability no longer has to be hand-written as a `Jido.Action` tool.
 
 **Why it matters**: it's the cheapest capability-expansion lever available, because the hard part already exists in deps — `jido_mcp` ships `Jido.MCP.ClientPool` ("one Anubis client per configured endpoint", with `Jido.MCP.{Config, Endpoint, EndpointID}`) plus ready-made jido_ai actions `sync_tools_to_agent` / `unsync_tools_from_agent`. The borrow is wiring and trust policy, not transport code.
 
-**Adoption sketch**: config surface in `.jido/config.yaml` (`mcp_servers:` list, per-template opt-in allowlist — operator-controlled, like `forward_context`); name-prefix synced tools (`mcp_<server>_<tool>`) to avoid collisions with the 31 native tools; treat external tool *results* as untrusted model input — they bypass the `JidoClaw.Tools.Action` redaction wrapper, so synced tools need an equivalent wrapping at sync time (redact outbound args via the existing scrubbers, cap/scrub inbound results); default external tools to `require_approval` once V2-1 exists. Defer per-tenant server config until multi-tenancy is real.
+**Adoption sketch** (2026-06-11, pre-implementation — the original plan; the Status above records what shipped. Two points below were superseded: proxies `use JidoClaw.Tools.Action`, so external results are *not* unwrapped at sync time but redacted/capped through the inherited pipeline; and default `require_approval` shipped rather than waiting on V2-1): config surface in `.jido/config.yaml` (`mcp_servers:` list, per-template opt-in allowlist — operator-controlled, like `forward_context`); name-prefix synced tools (`mcp_<server>_<tool>`) to avoid collisions with the 31 native tools; treat external tool *results* as untrusted model input — they bypass the `JidoClaw.Tools.Action` redaction wrapper, so synced tools need an equivalent wrapping at sync time (redact outbound args via the existing scrubbers, cap/scrub inbound results); default external tools to `require_approval` once V2-1 exists. Defer per-tenant server config until multi-tenancy is real.
 
 ---
 

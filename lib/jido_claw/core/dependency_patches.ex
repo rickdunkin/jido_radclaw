@@ -3,6 +3,7 @@ defmodule JidoClaw.Core.DependencyPatches do
 
   @patched_modules [
     {Anubis.Server.Handlers.Tools, :anubis_mcp},
+    {Jido.MCP.Transport.STDIO, :jido_mcp},
     {Jido.Shell.Command.Registry, :jido_shell},
     {Jido.Shell.ShellSession, :jido_shell},
     {Jido.Shell.ShellSessionServer, :jido_shell}

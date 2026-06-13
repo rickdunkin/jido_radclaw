@@ -66,6 +66,10 @@ defmodule JidoClaw.CLI.Repl do
 
     case JidoClaw.Jido.start_agent(Agent, id: "main") do
       {:ok, pid} ->
+        # Fire-and-forget: register any configured external MCP proxies onto the
+        # main agent. The natural delay before the first prompt covers the
+        # async registration. Best-effort (no-op when no Consumer is running).
+        _ = JidoClaw.MCP.attach_to_agent(pid, "main")
         state = boot_repl_session(pid, project_dir, config, model, strategy)
         loop(state)
 

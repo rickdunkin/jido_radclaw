@@ -63,7 +63,7 @@ defmodule JidoClaw.Security.ToolApproval do
   # only toggles `enabled?`). Operators override via `:tool_approval, :require`.
   @default_require ~w(network_share kill_agent schedule_task unschedule_task git_commit forget replay_workflow)
 
-  @config_defaults [enabled?: true, require: @default_require]
+  @config_defaults [enabled?: true, require: @default_require, mcp_require_approval: true]
 
   @doc "The shipped default require list (single source of truth)."
   @spec default_require() :: [String.t()]
@@ -108,10 +108,54 @@ defmodule JidoClaw.Security.ToolApproval do
     end
   end
 
-  # -- Requirement check (global config only — no per-template knob in v1) --
+  # -- Requirement check --
+  #
+  # External MCP proxy tools (the `mcp_`-rooted names minted by
+  # `JidoClaw.MCP.ProxyGenerator`) resolve against the published per-server
+  # approval policy FIRST; everything else falls through to the native
+  # require-list / param-pattern logic. The mapping is explicit so internal
+  # tags (`:gated`/`:trusted`/`:not_external`) never reach `reason_suffix/1`.
 
-  # `:listed` | `{:pattern, param_key}` | nil
+  # `:listed` | `{:pattern, param_key}` | :mcp_external | nil
   defp requirement(tool, params, opts) do
+    case mcp_requirement(tool, opts) do
+      :gated -> :mcp_external
+      :trusted -> nil
+      :not_external -> native_requirement(tool, params, opts)
+    end
+  end
+
+  # Bypass analysis (feedback_gate_bypass_coverage_sweeps): MCP proxies are
+  # in-process `Jido.Action` modules invoked by name through the same wrapper
+  # as native tools — there is no shell-equivalent surface (`run_command`
+  # cannot reach them), so the exact-name policy is the whole gate.
+  #
+  # `:gated` | `:trusted` | `:not_external`. Explicit clauses (NOT `&&`/`||`,
+  # which would wrongly map a global `false` to `:not_external`): exact policy
+  # wins, then an unknown `mcp_`-prefixed name falls back to the global default
+  # (never native — a lost/reset policy term fails CLOSED to the global
+  # posture), then truly native names route to `native_requirement/3`.
+  defp mcp_requirement(tool, opts) do
+    case Map.fetch(mcp_policy(opts), tool) do
+      {:ok, true} -> :gated
+      {:ok, false} -> :trusted
+      {:ok, nil} -> global_req(opts)
+      :error -> if String.starts_with?(tool, "mcp_"), do: global_req(opts), else: :not_external
+    end
+  end
+
+  defp global_req(opts), do: global_to_req(opt_or_config(opts, :mcp_require_approval))
+
+  defp global_to_req(false), do: :trusted
+  # Default and fail-closed: `true` or any malformed config value ⇒ gated.
+  defp global_to_req(_other), do: :gated
+
+  defp mcp_policy(opts) do
+    Keyword.get(opts, :mcp_policy) || JidoClaw.MCP.approval_policy()
+  end
+
+  # `:listed` | `{:pattern, param_key}` | nil — native require-list / patterns.
+  defp native_requirement(tool, params, opts) do
     if tool in require_list(opts) do
       :listed
     else
@@ -217,6 +261,9 @@ defmodule JidoClaw.Security.ToolApproval do
   end
 
   defp reason_suffix(:listed), do: ""
+
+  defp reason_suffix(:mcp_external),
+    do: " (it is an external MCP server tool, gated by default until its server is trusted)"
 
   defp reason_suffix({:pattern, param_key}),
     do: " (its `#{param_key}` argument matches a guarded-operation pattern)"

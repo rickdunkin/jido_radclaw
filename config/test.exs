@@ -24,6 +24,13 @@ config :jido_claw, :output_shaping, enabled?: false
 # `enabled?: true` + `require:` opts (env-free, DestinationPolicy style).
 config :jido_claw, :tool_approval, enabled?: false
 
+# External MCP consumption: the suite drives JidoClaw.MCP.Consumer through an
+# injectable Stub client (no real transport), and the boot Consumer is gated
+# off so consumer_test starts its own under start_supervised (the named
+# singleton can't collide with a boot instance).
+config :jido_claw, :mcp_client, JidoClaw.MCP.Client.Stub
+config :jido_claw, :mcp_consumer_enabled?, false
+
 # Trace persistence is opt-in for tests. The Collector still ingests
 # events into the in-memory ring on every run, but
 # `JidoClaw.Trace.Persistence.append/2` is a no-op unless a test

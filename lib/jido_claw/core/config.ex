@@ -147,6 +147,23 @@ defmodule JidoClaw.Config do
     end
   end
 
+  @doc """
+  Returns the raw `mcp_servers:` list from config (external MCP server decls).
+
+  Entry-level validation and translation happen in
+  `JidoClaw.MCP.EndpointConfig.parse/1` — this accessor returns whatever is in
+  the YAML so the parser can apply its own fail-closed warn-and-skip logic.
+  Inert (`[]`) when absent. Not in `@defaults` — an unconfigured project boots
+  with no external MCP tools.
+  """
+  @spec mcp_servers(map()) :: list()
+  def mcp_servers(config) do
+    case Map.get(config, "mcp_servers") do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
+
   @doc "Returns all available strategy names with descriptions."
   @spec strategy_descriptions() :: %{String.t() => String.t()}
   def strategy_descriptions, do: @strategy_descriptions

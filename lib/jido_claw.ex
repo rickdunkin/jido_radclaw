@@ -111,6 +111,15 @@ defmodule JidoClaw do
              :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session.id),
              :ok <-
                JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session) do
+          # Best-effort: register any configured external MCP proxies onto this
+          # agent before its turn runs. Covers both fresh and existing chat
+          # pids (chat agents aren't in AgentTracker); steady-state-cheap via
+          # the Consumer's `:already` fast path, so only a pid's first turn does
+          # registration work. Tool-less on `:timeout` (prep still running — a
+          # later turn genuinely retries) or `:mcp_unavailable` (prep crashed —
+          # tool-less until a Consumer/app restart re-preps).
+          _ = JidoClaw.MCP.ensure_attached(agent_pid)
+
           run_chat_turn(
             agent_pid,
             tenant_id,
