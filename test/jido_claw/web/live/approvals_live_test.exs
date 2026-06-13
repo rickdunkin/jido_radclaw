@@ -91,6 +91,21 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
     refute html =~ "Abandon run"
   end
 
+  test "renders a tool-call case's agent_template and arguments from details", %{tenant: tenant} do
+    scope = %{tenant_id: tenant, actor: actor_for(tenant), agent_template: "coder"}
+    {:pending, gate} = ToolApprovals.request(scope, "git_commit", %{message: "ship it"})
+
+    html =
+      %{__changed__: %{}, gates: [gate], flash: %{}}
+      |> ApprovalsLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    assert html =~ "template:"
+    assert html =~ "coder"
+    assert html =~ "args:"
+  end
+
   test "approve handle_event on a tool-call case decides it and clears the inbox", %{
     tenant: tenant
   } do

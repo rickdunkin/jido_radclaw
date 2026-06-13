@@ -65,6 +65,18 @@ defmodule JidoClaw.Web.ApprovalsLive do
           tool: <code>{gate.tool_name}</code>
         </div>
         <div
+          :if={details_value(gate, "agent_template")}
+          style="color: var(--muted); font-size: 0.8125rem; margin-bottom: 0.25rem;"
+        >
+          template: <code>{details_value(gate, "agent_template")}</code>
+        </div>
+        <div
+          :if={details_value(gate, "arguments")}
+          style="color: var(--muted); font-size: 0.8125rem; margin-bottom: 0.25rem;"
+        >
+          args: <code>{details_value(gate, "arguments")}</code>
+        </div>
+        <div
           :if={gate_description(gate)}
           style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem;"
         >

@@ -246,6 +246,20 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert child_ctx.session_id == "s"
   end
 
+  test "sets :agent_template from the tracked entry's template on the follow-up child" do
+    assert {:ok, %{status: "message_sent"}} =
+             SendToAgent.run(
+               %{agent_id: "docs_writer_123", message: "follow-up"},
+               ctx(%{agent_id: "main"})
+             )
+
+    assert_receive {:ask_sync, FakeWorker, _pid, "follow-up", opts}
+
+    # child/3 clears it; the tool restores it from entry.template so the
+    # per-template approval policy applies to every follow-up turn.
+    assert opts[:tool_context].agent_template == "docs_writer"
+  end
+
   test "updates AgentTracker with the follow-up request_id" do
     Application.put_env(:jido_claw, :agent_tracker, CapturingTracker)
 

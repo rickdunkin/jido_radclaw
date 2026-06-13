@@ -7,6 +7,7 @@ defmodule JidoClaw.Security.ToolApprovalTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Security.ToolApproval
 
@@ -45,6 +46,8 @@ defmodule JidoClaw.Security.ToolApprovalTest do
   end
 
   defp ctx(scope), do: %{tool_context: scope}
+
+  defp with_template(scope, name), do: Map.put(scope, :agent_template, name)
 
   defp enable_gate(require) do
     prior = Application.get_env(:jido_claw, :tool_approval)
@@ -137,6 +140,109 @@ defmodule JidoClaw.Security.ToolApprovalTest do
       refute Map.has_key?(details, :reason)
       refute Map.has_key?(details, :retry)
       refute Map.has_key?(details, :retryable)
+    end
+  end
+
+  describe "per-template require_approval overlay (env-free opts)" do
+    setup do
+      original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+
+      # Real shipped worker module (carries read_file/list_directory/run_command);
+      # only :require_approval is overridden per template under test.
+      overrides = %{
+        "coder" => %{module: JidoClaw.Agent.Workers.Coder, require_approval: ["read_file"]},
+        "ra_all" => %{module: JidoClaw.Agent.Workers.Coder, require_approval: :all},
+        "ra_runcmd" => %{module: JidoClaw.Agent.Workers.Coder, require_approval: ["run_command"]},
+        "victim_tpl" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          require_approval: ["tool_approval_victim"]
+        }
+      }
+
+      Application.put_env(:jido_claw, :agent_templates_override, Map.merge(original, overrides))
+      on_exit(fn -> Application.put_env(:jido_claw, :agent_templates_override, original) end)
+      :ok
+    end
+
+    test "a tool in the calling template's require_approval pends", %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("read_file", %{path: "x"}, ctx(with_template(scope, "coder")),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "a tool NOT in the template's require_approval passes through", %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate(
+                 "list_directory",
+                 %{path: "x"},
+                 ctx(with_template(scope, "coder")),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test ":all gates every native tool for the template", %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("read_file", %{path: "x"}, ctx(with_template(scope, "ra_all")),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test ~s(the unrouted "main" agent is never gated by template policy), %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("read_file", %{path: "x"}, ctx(with_template(scope, "main")),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "an absent tool_context (no template) consults the global floor only", %{scope: scope} do
+      assert :ok =
+               ToolApproval.gate("read_file", %{path: "x"}, ctx(scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "a global require-listed tool stays gated regardless of template", %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "git_commit",
+                 %{message: "x"},
+                 ctx(with_template(scope, "coder")),
+                 enabled?: true,
+                 require: ["git_commit"]
+               )
+    end
+
+    test "a param-pattern reason wins over a broad template policy (order check)", %{scope: scope} do
+      assert {:error, %{message: message}} =
+               ToolApproval.gate(
+                 "run_command",
+                 %{command: "git commit -m x"},
+                 ctx(with_template(scope, "ra_runcmd")),
+                 enabled?: true,
+                 require: []
+               )
+
+      assert message =~ "guarded-operation pattern"
+      refute message =~ "agent template"
+    end
+
+    test "lifts a flat agent_template (ReAct flat-merge) and gates via the live wrapper", %{
+      scope: scope
+    } do
+      enable_gate([])
+
+      flat =
+        scope
+        |> Map.delete(:tool_context)
+        |> Map.put(:agent_template, "victim_tpl")
+
+      assert {:error, %{code: :approval_pending}} = Victim.run(%{arg: "x"}, flat)
     end
   end
 
@@ -252,6 +358,34 @@ defmodule JidoClaw.Security.ToolApprovalTest do
         assert field[:type] == :string,
                "#{inspect(tool)} param #{inspect(param)} must be a :string field, got #{inspect(field[:type])}"
       end
+    end
+
+    # Trivial today (every shipped template ships `require_approval: []`), but a
+    # live typo guard the moment entries are added: each entry must be one of
+    # THAT template's own tools (not the broad MCP-inclusive wrapped set).
+    test "every shipped template's require_approval names a tool that template can call" do
+      for {name, template} <- Templates.list() do
+        assert_template_require_approval(name, template)
+      end
+    end
+
+    defp assert_template_require_approval(_name, %{require_approval: :all}), do: :ok
+
+    defp assert_template_require_approval(name, %{require_approval: list} = template)
+         when is_list(list) do
+      own_tools = template_tool_names(template)
+
+      for entry <- list do
+        assert MapSet.member?(own_tools, entry),
+               "template #{name} require_approval entry #{inspect(entry)} is not one of its tools"
+      end
+    end
+
+    defp template_tool_names(%{module: module}) do
+      module.strategy_opts()
+      |> Keyword.get(:tools, [])
+      |> Enum.map(& &1.name())
+      |> MapSet.new()
     end
   end
 

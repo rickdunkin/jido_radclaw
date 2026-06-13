@@ -218,6 +218,17 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       wait_until(fn -> JidoClaw.Jido.whereis(tc.agent_id) == nil end)
     end
 
+    test "sets :agent_template to the step's template name on the worker tool_context" do
+      %{context: context} = real_scope_context()
+
+      assert {:ok, _} = AgentRunner.run("echo_public", "go", "s", context)
+      assert_receive {:echo_stub, :tool_context, tc}, 5_000
+
+      # resolve_scope/2 omits the template; run/4 sets it so the per-template
+      # approval policy applies to skill-step workers too.
+      assert tc.agent_template == "echo_public"
+    end
+
     test "child correlation carries the parent's user_id end-to-end" do
       %{context: context, session: session, user_id: user_id} = real_scope_context()
 

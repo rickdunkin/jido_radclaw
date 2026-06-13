@@ -51,7 +51,10 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
          scope = resolve_scope(context, tag),
          visibility = Map.get(template, :forward_context, :public),
          scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
-         tool_context = JidoClaw.ToolContext.build(scoped),
+         # resolve_scope/2 omits :agent_template (build/1 nils it); set it so the
+         # per-template approval policy applies to step workers too.
+         tool_context =
+           Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
          {:ok, pid} <- JidoClaw.Jido.start_subagent(template.module, id: tag) do
       request_id = JidoClaw.register_child_correlation(tool_context)
       SubagentTranscript.record_task(tool_context, request_id, task)

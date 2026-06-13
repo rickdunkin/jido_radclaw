@@ -91,8 +91,15 @@ defmodule JidoClaw.Tools.SpawnAgent do
        ) do
     visibility = Map.get(template, :forward_context, :public)
 
+    # `child/3` resets :agent_template to nil; set it explicitly (the contract
+    # at ToolContext.child/2) so the per-template approval policy and durable
+    # compaction identity see the spawning template. Before register_child_
+    # correlation so the correlation row resolves from the same context.
     base_tool_context =
-      JidoClaw.ToolContext.child(Map.get(context, :tool_context), tag, visibility)
+      context
+      |> Map.get(:tool_context)
+      |> JidoClaw.ToolContext.child(tag, visibility)
+      |> Map.put(:agent_template, template_name)
 
     child_tool_context =
       Map.put(base_tool_context, :swarm_depth, swarm_depth(context) + 1)

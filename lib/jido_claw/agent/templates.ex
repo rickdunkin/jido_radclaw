@@ -17,6 +17,25 @@ defmodule JidoClaw.Agent.Templates do
   `JidoClaw.ToolContext.policy_controlled_keys/0`; `hydrate_template/1`
   validates the field and fails closed to `:none` (with a warning) on any
   unknown key or malformed value, so a typo can never silently widen scope.
+
+  ## `require_approval` policy
+
+  Every resolved template also carries a `:require_approval` key — a list of
+  native tool names this template's agents must clear a human approval for,
+  **in addition to** the global `:tool_approval, :require` floor. It can only
+  *add* gated tools, never remove them; `:all` gates every tool the template
+  can call. The default is `[]` (no per-template gating; zero behavior
+  change). `JidoClaw.Security.ToolApproval` reads it for any templated-agent
+  surface (handoff / spawn / follow-up / skill step).
+
+  Unlike `forward_context` (which fails closed to `:none`), a malformed
+  `:require_approval` falls back to `[]` — the **global floor**, not a
+  per-layer fail-closed. This is deliberate: the genuinely dangerous
+  capabilities are already covered by the global require-list, so failing the
+  per-template overlay *open* (it adds nothing) keeps the system safe, whereas
+  failing it to `:all` would gate every benign tool (`read_file`…) for that
+  worker — a self-inflicted DoS with no marginal security. `:all` stays a
+  valid *explicit* operator value; only the malformed/typo fallback is `[]`.
   """
 
   require Logger
@@ -95,10 +114,28 @@ defmodule JidoClaw.Agent.Templates do
   @spec exists?(String.t()) :: boolean()
   def exists?(name), do: Map.has_key?(@templates, name)
 
+  @doc """
+  Return the per-template `:require_approval` policy — additional native tools
+  this template's agents must clear a human approval for, on top of the global
+  require-list. `:all` gates every tool; a list names specific tools.
+
+  Resolves through `get/1` (honouring the `:agent_templates_override` test
+  hook). Returns `[]` for an unknown template (e.g. `"main"`, not in
+  `@templates`) — also the floor a malformed policy falls back to.
+  """
+  @spec require_approval(String.t()) :: [String.t()] | :all
+  def require_approval(name) do
+    case get(name) do
+      {:ok, %{require_approval: ra}} -> ra
+      _ -> []
+    end
+  end
+
   defp hydrate_template(template) do
     template
     |> ensure_max_iterations()
     |> ensure_forward_context()
+    |> ensure_require_approval()
   end
 
   # Two clauses, NO catch-all — preserves today's behavior: a template
@@ -135,6 +172,32 @@ defmodule JidoClaw.Agent.Templates do
     )
 
     :none
+  end
+
+  defp ensure_require_approval(%{require_approval: ra} = t),
+    do: Map.put(t, :require_approval, validate_ra(ra, t))
+
+  defp ensure_require_approval(t), do: Map.put(t, :require_approval, [])
+
+  # `:all` and a list of non-empty binaries are the only valid shapes. Anything
+  # else (non-list, non-binary or empty-string element, atom footgun) warns and
+  # falls back to `[]` — the GLOBAL FLOOR, not a per-layer fail-closed (see the
+  # moduledoc for why the asymmetry with forward_context is deliberate).
+  defp validate_ra(:all, _t), do: :all
+
+  defp validate_ra(list, t) when is_list(list) do
+    if Enum.all?(list, &(is_binary(&1) and &1 != "")), do: list, else: warn_ra(list, t)
+  end
+
+  defp validate_ra(other, t), do: warn_ra(other, t)
+
+  defp warn_ra(bad, t) do
+    Logger.warning(
+      "[Templates] invalid :require_approval #{inspect(bad)} for " <>
+        "#{inspect(Map.get(t, :module))}; falling back to the global floor ([])"
+    )
+
+    []
   end
 
   defp module_max_iterations(module) do

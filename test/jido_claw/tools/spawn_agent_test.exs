@@ -325,6 +325,24 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     Process.exit(pid, :kill)
   end
 
+  test "sets :agent_template on the child tool_context (per-template approval policy)" do
+    configure_fake_spawn()
+
+    tool_context = %{tenant_id: @tenant_id, session_id: "s"}
+
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: tool_context})
+
+    assert_receive {:start_agent, [id: ^agent_id], pid}
+    assert_receive {:ask_sync, ^pid, "do work", opts}
+
+    # child/3 nulls it; the tool restores it to the spawning template so the
+    # gate (and durable compaction identity) see the template.
+    assert opts[:tool_context].agent_template == "coder"
+
+    Process.exit(pid, :kill)
+  end
+
   test "default template (no forward_context) forwards the full scope" do
     configure_fake_spawn()
 

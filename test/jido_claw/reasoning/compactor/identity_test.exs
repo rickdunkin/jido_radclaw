@@ -26,6 +26,13 @@ defmodule JidoClaw.Reasoning.Compactor.IdentityTest do
       assert Identity.resolve(nil, "child_tag_42", "sess-123") == "child_tag_42"
     end
 
+    test "spawned sub-agent with a worker template keeps its tag — NOT mapped to main" do
+      # Per-template approval policy now stamps a worker template name onto
+      # spawned/step children (was nil). Identity must still key off the tag:
+      # resolve("coder", tag, session) == resolve(nil, tag, session) == tag.
+      assert Identity.resolve("coder", "child_tag_42", "sess-123") == "child_tag_42"
+    end
+
     test "main/0 is the canonical main id" do
       assert Identity.main() == "main"
     end

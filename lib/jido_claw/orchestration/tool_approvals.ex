@@ -4,9 +4,10 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
 
   `request/3` is the single entry point the wrapper policy
   (`JidoClaw.Security.ToolApproval`) calls when a require-listed (or
-  pattern-triggered) tool call must clear a human approval before it runs. It
-  maps a `{tenant, session, tool, args}` fingerprint to a durable `AgentCase`
-  and returns one of:
+  pattern-triggered, or per-template-gated) tool call must clear a human
+  approval before it runs. It maps a
+  `{tenant, session, agent_template, tool, args}` fingerprint to a durable
+  `AgentCase` and returns one of:
 
     * `{:allowed, case}` — a prior approval exists and was **consumed** by this
       call (single-use); the tool may execute.
@@ -39,6 +40,13 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   fingerprints identically whether it arrives atom-keyed (internal) or
   string-keyed (MCP/JSON). `nil`/booleans are preserved (identical across both
   paths) to avoid over-collapsing `true` and `"true"`.
+
+  The term carries the calling agent's `:agent_template` (term version `:v2`),
+  so an approval is **template-scoped**: a `git_commit` approved for `"main"`
+  is not reusable by a `"coder"` worker — consent is per-template. Two
+  instances of the *same* template still collapse to one case (the fingerprint
+  omits the per-instance `agent_id`). A non-binary template normalizes to the
+  same hash as `nil`.
 
   ## Redaction
 
@@ -95,7 +103,10 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   @spec fingerprint(map(), atom() | String.t(), map()) :: String.t()
   def fingerprint(scope, tool_name, params) do
     session_key = scope[:session_uuid] || scope[:session_id]
-    term = {:v1, scope[:tenant_id], session_key, to_string(tool_name), canonical_params(params)}
+
+    term =
+      {:v2, scope[:tenant_id], session_key, agent_template(scope), to_string(tool_name),
+       canonical_params(params)}
 
     :sha256
     |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
@@ -103,6 +114,18 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   end
 
   # -- Internal --
+
+  # The calling agent's template scopes the fingerprint (and the operator
+  # detail): consent is per-template, so two `coder` instances issuing the
+  # identical call collapse to one case, but a `coder` call never reuses a
+  # `main` approval. Only a binary survives — guard against an atom/non-JSON
+  # value from a future/test caller normalizing to the same hash as `nil`.
+  defp agent_template(scope) do
+    case scope[:agent_template] do
+      value when is_binary(value) -> value
+      _ -> nil
+    end
+  end
 
   defp system_actor(tenant_id) when is_binary(tenant_id), do: Actor.system(tenant_id)
   defp system_actor(_tenant_id), do: nil
@@ -250,6 +273,7 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
       "arguments" => ToolTranscript.summarize_args(tool, redacted)
     })
     |> put_present("session_id", scope[:session_id])
+    |> put_present("agent_template", agent_template(scope))
   end
 
   defp put_present(map, _key, nil), do: map

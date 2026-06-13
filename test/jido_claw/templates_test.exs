@@ -232,6 +232,49 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
+  describe "require_approval hydration" do
+    test "static templates default to []" do
+      for name <- @valid_names do
+        assert {:ok, %{require_approval: []}} = Templates.get(name)
+      end
+    end
+
+    test "a valid list of real tool names survives hydration unchanged" do
+      with_ra_override(["read_file", "write_file"], fn ->
+        assert {:ok, %{require_approval: ["read_file", "write_file"]}} = Templates.get("ra_test")
+      end)
+    end
+
+    test ":all survives hydration unchanged" do
+      with_ra_override(:all, fn ->
+        assert {:ok, %{require_approval: :all}} = Templates.get("ra_test")
+      end)
+    end
+
+    test "a non-list value falls back to [] (the global floor) with a warning" do
+      assert_ra_floor("read_file")
+    end
+
+    test "a list with a non-binary element falls back to []" do
+      assert_ra_floor(["read_file", :write_file])
+    end
+
+    test "a list with an empty-string element falls back to []" do
+      assert_ra_floor(["read_file", ""])
+    end
+
+    test "require_approval/1 resolves through get/1 (honours the override hook)" do
+      with_ra_override(["read_file"], fn ->
+        assert Templates.require_approval("ra_test") == ["read_file"]
+      end)
+    end
+
+    test "require_approval/1 returns [] for an unknown template (e.g. main)" do
+      assert Templates.require_approval("main") == []
+      assert Templates.require_approval("nonexistent") == []
+    end
+  end
+
   # Register a one-off `"fc_test"` template carrying `forward_context: fc`
   # via the override hook, run `fun`, then restore the prior override.
   defp with_fc_override(fc, fun) do
@@ -260,6 +303,37 @@ defmodule JidoClaw.Agent.TemplatesTest do
         end)
 
       assert log =~ "invalid :forward_context"
+    end)
+  end
+
+  # Register a one-off `"ra_test"` template carrying `require_approval: ra`
+  # via the override hook, run `fun`, then restore the prior override.
+  defp with_ra_override(ra, fun) do
+    original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+
+    template = %{module: JidoClaw.Agent.Workers.Coder, max_iterations: 1, require_approval: ra}
+
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      Map.put(original, "ra_test", template)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:jido_claw, :agent_templates_override, original)
+    end
+  end
+
+  defp assert_ra_floor(ra) do
+    with_ra_override(ra, fn ->
+      log =
+        capture_log(fn ->
+          assert {:ok, %{require_approval: []}} = Templates.get("ra_test")
+        end)
+
+      assert log =~ "invalid :require_approval"
     end)
   end
 end

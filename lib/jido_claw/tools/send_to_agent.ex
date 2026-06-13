@@ -42,8 +42,15 @@ defmodule JidoClaw.Tools.SendToAgent do
         # child can't be re-widened mid-conversation.
         visibility = Map.get(template, :forward_context, :public)
 
+        # `child/3` clears :agent_template; restore it from the tracked entry's
+        # template so the per-template approval policy applies to every
+        # follow-up turn too. Before register_child_correlation (the contract
+        # at ToolContext.child/2).
         child_tool_context =
-          JidoClaw.ToolContext.child(Map.get(context, :tool_context), params.agent_id, visibility)
+          context
+          |> Map.get(:tool_context)
+          |> JidoClaw.ToolContext.child(params.agent_id, visibility)
+          |> Map.put(:agent_template, entry.template)
 
         # Fallible setup (correlation registration touches Postgres) runs
         # BEFORE the tracker gate, so a raise here leaves the entry untouched.

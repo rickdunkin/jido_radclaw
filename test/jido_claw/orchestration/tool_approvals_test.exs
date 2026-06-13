@@ -141,6 +141,65 @@ defmodule JidoClaw.Orchestration.ToolApprovalsTest do
     end
   end
 
+  describe "template-scoped fingerprint (:v2)" do
+    test "distinct templates fingerprint differently and open distinct pending cases", ctx do
+      coder = Map.put(ctx.scope, :agent_template, "coder")
+      reviewer = Map.put(ctx.scope, :agent_template, "reviewer")
+
+      refute ToolApprovals.fingerprint(coder, "git_commit", %{message: "x"}) ==
+               ToolApprovals.fingerprint(reviewer, "git_commit", %{message: "x"})
+
+      assert {:pending, c1} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      assert {:pending, c2} = ToolApprovals.request(reviewer, "git_commit", %{message: "x"})
+      refute c1.id == c2.id
+    end
+
+    test "the same template collapses identical calls to one fingerprint", ctx do
+      coder = Map.put(ctx.scope, :agent_template, "coder")
+
+      assert ToolApprovals.fingerprint(coder, "git_commit", %{message: "x"}) ==
+               ToolApprovals.fingerprint(coder, "git_commit", %{message: "x"})
+
+      assert {:pending, first} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      assert {:pending, second} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      assert first.id == second.id
+    end
+
+    test "an approval for one template is not reusable by another", ctx do
+      coder = Map.put(ctx.scope, :agent_template, "coder")
+      reviewer = Map.put(ctx.scope, :agent_template, "reviewer")
+
+      assert {:pending, opened} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      _approved = approve(opened, ctx)
+
+      # The coder's approval is consumed by the coder's retry...
+      assert {:allowed, _} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      # ...but the reviewer issuing the identical call still pends (own consent).
+      assert {:pending, _} = ToolApprovals.request(reviewer, "git_commit", %{message: "x"})
+    end
+
+    test "a non-binary agent_template normalizes to the same hash as nil", ctx do
+      nil_fp = ToolApprovals.fingerprint(ctx.scope, "git_commit", %{})
+      atom_scope = Map.put(ctx.scope, :agent_template, :coder)
+
+      assert ToolApprovals.fingerprint(atom_scope, "git_commit", %{}) == nil_fp
+    end
+
+    test "details carries the agent_template when present", ctx do
+      coder = Map.put(ctx.scope, :agent_template, "coder")
+
+      assert {:pending, agent_case} = ToolApprovals.request(coder, "git_commit", %{message: "x"})
+      assert agent_case.details["agent_template"] == "coder"
+    end
+
+    test "details omits agent_template when absent", ctx do
+      assert {:pending, agent_case} =
+               ToolApprovals.request(ctx.scope, "git_commit", %{message: "x"})
+
+      refute Map.has_key?(agent_case.details, "agent_template")
+    end
+  end
+
   describe "concurrent claims" do
     test "an approval is consumed by exactly one of two concurrent retries", ctx do
       assert {:pending, opened} = ToolApprovals.request(ctx.scope, "git_commit", %{message: "x"})

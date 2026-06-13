@@ -29,10 +29,17 @@ defmodule JidoClaw.Security.ToolApproval do
 
   ## What is gated
 
-  A call is gated when its tool name is in `require` **or** a param-pattern
-  trigger fires. The patterns close the bypass where a general-purpose tool
-  reaches a gated capability — e.g. `run_command "git commit ..."` is the shell
-  equivalent of the gated `git_commit` tool. The default `run_command`/`command`
+  A call is gated when its tool name is in `require`, a param-pattern trigger
+  fires, **or** the calling agent's template lists it in `require_approval`
+  (`JidoClaw.Agent.Templates`). The template overlay is **additive** — it can
+  only gate *more* native tools for a given worker class, never weaken the
+  global floor — and is keyed off `tool_context.agent_template`, so it applies
+  to every templated surface (handoff / spawn / follow-up / skill step) and
+  never to the unrouted `"main"` agent. The check order is require-list →
+  param-pattern → template, so the most specific reason wins. The patterns
+  close the bypass where a general-purpose tool reaches a gated capability —
+  e.g. `run_command "git commit ..."` is the shell equivalent of the gated
+  `git_commit` tool. The default `run_command`/`command`
   patterns match plain `git commit` and option-bearing forms (`git -C repo
   commit`, `git -c user.name=x commit`, `git --git-dir=.git commit`) plus
   `crontab` (the `schedule_task` equivalent). Quoted args with spaces
@@ -56,6 +63,7 @@ defmodule JidoClaw.Security.ToolApproval do
 
   require Logger
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.Orchestration.ToolApprovals
 
   # The conservative default require list, single-sourced here so the config
@@ -99,7 +107,7 @@ defmodule JidoClaw.Security.ToolApproval do
     if enabled?(opts) do
       tool = to_string(tool_name)
 
-      case requirement(tool, params, opts) do
+      case requirement(tool, params, context, opts) do
         nil -> :ok
         reason -> decide(tool, params, context, reason, opts)
       end
@@ -116,12 +124,12 @@ defmodule JidoClaw.Security.ToolApproval do
   # require-list / param-pattern logic. The mapping is explicit so internal
   # tags (`:gated`/`:trusted`/`:not_external`) never reach `reason_suffix/1`.
 
-  # `:listed` | `{:pattern, param_key}` | :mcp_external | nil
-  defp requirement(tool, params, opts) do
+  # `:listed` | `{:pattern, param_key}` | `{:template, name}` | :mcp_external | nil
+  defp requirement(tool, params, context, opts) do
     case mcp_requirement(tool, opts) do
       :gated -> :mcp_external
       :trusted -> nil
-      :not_external -> native_requirement(tool, params, opts)
+      :not_external -> native_requirement(tool, params, context, opts)
     end
   end
 
@@ -154,14 +162,41 @@ defmodule JidoClaw.Security.ToolApproval do
     Keyword.get(opts, :mcp_policy) || JidoClaw.MCP.approval_policy()
   end
 
-  # `:listed` | `{:pattern, param_key}` | nil — native require-list / patterns.
-  defp native_requirement(tool, params, opts) do
+  # `:listed` | `{:pattern, param_key}` | `{:template, name}` | nil — native
+  # require-list, then shell param-patterns, then the calling template's
+  # additive `require_approval` overlay. The order keeps reason precision: a
+  # `run_command "git commit"` under a template that broadly gates
+  # `run_command` still surfaces the more useful `{:pattern, :command}` reason
+  # (`||` short-circuits before the template is consulted).
+  defp native_requirement(tool, params, context, opts) do
     if tool in require_list(opts) do
       :listed
     else
-      pattern_match(tool, params, opts)
+      pattern_match(tool, params, opts) || template_requirement(tool, context)
     end
   end
+
+  # The calling agent's template (set on every spawned/handoff/step
+  # tool_context) may gate ADDITIONAL native tools. `template_name/1` is
+  # nil-safe on the no-tenant / passthrough `ensure_nested` path (no
+  # `:tool_context`) — a nil name means "global floor only", the correct
+  # fail-state. `Templates.require_approval/1` returns `[]` for `"main"` and
+  # any unknown template, so those never gate here.
+  defp template_requirement(tool, context) do
+    name = template_name(context)
+
+    cond do
+      is_nil(name) -> nil
+      gated_by_template?(tool, Templates.require_approval(name)) -> {:template, name}
+      true -> nil
+    end
+  end
+
+  defp template_name(%{tool_context: %{agent_template: name}}) when is_binary(name), do: name
+  defp template_name(_context), do: nil
+
+  defp gated_by_template?(_tool, :all), do: true
+  defp gated_by_template?(tool, list) when is_list(list), do: tool in list
 
   defp pattern_match(tool, params, opts) do
     case Map.get(require_patterns(opts), tool) do
@@ -267,6 +302,9 @@ defmodule JidoClaw.Security.ToolApproval do
 
   defp reason_suffix({:pattern, param_key}),
     do: " (its `#{param_key}` argument matches a guarded-operation pattern)"
+
+  defp reason_suffix({:template, name}),
+    do: " (the `#{name}` agent template requires approval for this tool)"
 
   # -- Config resolution (DestinationPolicy opt_or_config pattern) --
 

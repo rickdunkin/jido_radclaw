@@ -48,6 +48,20 @@ defmodule JidoClaw.ToolContextTest do
       assert child[:user_id] == "u-2"
       assert child[:agent_id] == "child-tag"
     end
+
+    test "nulls :agent_template (spawned children are not handoff-routed)" do
+      parent = ToolContext.build(%{agent_template: "main", tenant_id: "t", project_dir: "/d"})
+      child = ToolContext.child(parent, "child-tag")
+
+      assert child[:agent_template] == nil
+    end
+
+    test "an explicit post-child :agent_template put survives (per-template policy)" do
+      parent = ToolContext.build(%{tenant_id: "t", project_dir: "/d"})
+      child = Map.put(ToolContext.child(parent, "child-tag"), :agent_template, "coder")
+
+      assert child[:agent_template] == "coder"
+    end
   end
 
   describe "ensure_nested/1" do
