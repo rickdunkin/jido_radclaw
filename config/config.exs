@@ -212,6 +212,23 @@ config :jido_claw, :output_shaping,
   generic_head_bytes: 2_048,
   generic_tail_bytes: 4_096
 
+# Destination policy for LLM-controlled egress (JidoClaw.Security.DestinationPolicy,
+# gating the browse_web tool). The headless browser otherwise navigates to ANY
+# model-supplied URL — an injected page can steer it at loopback / RFC-1918 /
+# link-local / tailnet services (local dashboard, admin endpoints, 169.254.169.254
+# cloud metadata) and quote their content into the transcript. `enabled?` is the
+# kill switch. `allowed_cidrs` punches explicit holes in the built-in deny set
+# (allow beats deny) — e.g. browsing your own dashboard on localhost:4000 needs
+# ["127.0.0.0/8", "::1/128"]. The post-navigation re-check re-resolves the final
+# hostname even when the URL string is unchanged, so typical TTL-0 DNS rebinds
+# are caught before any response is quoted (an alternating resolver can still
+# slip between checks). Non-goals (documented in the module): the browser's own
+# internal *request* — it resolves and fetches out of process; the gate blocks
+# response leakage into the transcript, not the fetch itself.
+config :jido_claw, :destination_policy,
+  enabled?: true,
+  allowed_cidrs: []
+
 # Phoenix endpoint — secure-by-default in EVERY env: bind loopback and pin
 # WebSocket origins to local hosts. External exposure (e.g. Tailscale) is
 # opt-in via PHX_HOST, applied at app start by JidoClaw.Web.GatewayExposure

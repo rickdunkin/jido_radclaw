@@ -31,12 +31,19 @@ defmodule JidoClaw.Tools.BrowseWeb do
       ]
     ]
 
+  alias JidoClaw.Security.DestinationPolicy
+
   @max_content_bytes 10_240
 
   @impl Jido.Action
   def run(%{url: url} = params, _context) do
     action = Map.get(params, :action, "get_content")
-    do_browse(url, action)
+
+    # Deny internal destinations before the browser session even starts; the
+    # {:error, reason} short-circuits through the shared pipeline.
+    with :ok <- DestinationPolicy.check(url) do
+      do_browse(url, action)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -68,10 +75,63 @@ defmodule JidoClaw.Tools.BrowseWeb do
 
   defp execute(session, url, action) do
     case Jido.Browser.navigate(session, url) do
-      {:ok, session, _nav} -> dispatch_action(action, session, url)
+      {:ok, session, nav} -> recheck_destination(session, nav, url, action)
       {:error, reason} -> {:error, format_error(reason)}
     end
   end
+
+  # The page can redirect (or JS-navigate) away from the vetted URL before we
+  # read anything, so re-check the final destination — otherwise internal-host
+  # content gets quoted into the transcript. The re-check is unconditional: a
+  # final URL string-equal to the requested one is still re-resolved, because
+  # DNS rebinding never changes the URL string — the same-string case is the
+  # attack case, not a safe fast path. Redirect *detection* stays
+  # adapter-dependent: prefer the live browser URL, fall back to navigate
+  # metadata; Vibium and the Web CLI echo the requested URL there, so adapters
+  # supporting neither get_url/evaluate nor real final-URL metadata degrade to
+  # re-checking the requested URL — rebinds still caught, true redirects
+  # missed. The internal *request* already happened out-of-process — what this
+  # blocks is leaking the response, at the cost of one extra DNS resolution per
+  # hostname browse. JS/meta-refresh navigation after this window remains out
+  # of reach.
+  defp recheck_destination(session, nav, url, action) do
+    with :ok <- recheck(final_url(session, nav, url), url) do
+      dispatch_action(action, session, url)
+    end
+  end
+
+  defp recheck(final, requested) do
+    case DestinationPolicy.check(final) do
+      :ok -> :ok
+      {:error, reason} -> {:error, recheck_denial(final, requested, reason)}
+    end
+  end
+
+  defp recheck_denial(url, url, reason),
+    do: "destination failed the post-navigation re-check: #{reason}"
+
+  defp recheck_denial(_final, _requested, reason),
+    do: "page redirected to a blocked destination: #{reason}"
+
+  # Total over every adapter result shape — a broken URL probe must never turn
+  # allowed browsing into a hard failure.
+  defp final_url(session, nav, url) do
+    live_url(session) || extract_url(nav) || url
+  end
+
+  defp live_url(session) do
+    case Jido.Browser.get_url(session) do
+      {:ok, _session, meta} -> extract_url(meta)
+      _ -> nil
+    end
+  end
+
+  # The adapter command path may be string-keyed; the JS fallback and nav
+  # metadata from Vibium are atom-keyed. Normalize the shapes here, at the
+  # boundary.
+  defp extract_url(%{url: url}) when is_binary(url), do: url
+  defp extract_url(%{"url" => url}) when is_binary(url), do: url
+  defp extract_url(_other), do: nil
 
   defp dispatch_action("get_content", session, url), do: get_content(session, url)
   defp dispatch_action("extract_links", session, url), do: extract_links(session, url)

@@ -83,6 +83,45 @@ commits with no version bump (see its source bullet above). New in Squidie
   destination-policy gate at the `browse_web` entry (deny loopback /
   RFC-1918 / link-local / tailnet CIDRs unless explicitly configured).
   Credential refs stay moot until an authenticated HTTP tool exists.
+
+  **Shipped (2026-06-12)** as `JidoClaw.Security.DestinationPolicy` gating
+  `Tools.BrowseWeb` at both ends of a browse: pre-navigation on the requested
+  URL, plus a post-navigation re-check of the final URL (live `get_url`
+  preferred, navigate-metadata fallback — Vibium and the Web CLI echo the
+  *requested* URL there, so redirect *detection* is adapter-dependent and
+  degrades to pre-navigation-only on adapters reporting neither). Sketch
+  corrections from implementation: `URI.new/1` fail-closed plus an outright
+  backslash reject (the WHATWG `\`→`/` parser differential would otherwise
+  let `http://127.0.0.1\@example.com/` parse host-side as `example.com`
+  while the browser navigates to loopback); exotic IPv4 literal forms
+  (decimal `2130706433`, hex `0x7f.0.0.1`, octal, short `127.1`) and
+  IPv4-mapped IPv6 are affirmatively classified and denied, not merely
+  unparseable; hostnames resolve BOTH address families and one internal
+  record poisons the host (deny-any), with resolver timeout/servfail
+  failing the whole check closed — `:nxdomain` is the only benign empty
+  family. One `allowed_cidrs` config list punches explicit holes (allow
+  beats deny, mapped forms unwrap first; browsing the local dashboard
+  needs `["127.0.0.0/8", "::1/128"]`). Honest gaps, documented in the
+  moduledoc: DNS-rebinding TOCTOU and the internal *request* a redirect
+  already triggered in the out-of-process browser are not preventable from
+  the BEAM — the post-navigation check blocks quoting the response into
+  the transcript, not the fetch itself.
+
+  Post-review hardenings (same day): the post-navigation re-check is now
+  unconditional — a final URL string-equal to the requested one is still
+  re-resolved, so typical TTL-0 rebinds are caught at the response-leak
+  step (a resolver alternating answers can still slip between checks),
+  and adapters reporting no final URL degrade to re-checking the requested
+  URL instead of nothing. And the gate gained WHATWG browser-parity host
+  parsing: the host is percent-decoded once before classification
+  (`%31%32%37.0.0.1` is loopback, not a DNS name), a trailing dot is
+  dropped for IPv4-literal candidacy only (`127.0.0.1.` denies as
+  loopback; `example.com.` still resolves as the FQDN, dot intact), and
+  hosts that end in a number without parsing as an IP
+  (`0x7f.0x0.0x0.0x1`, `example.123`) or that decode to forbidden host
+  bytes (`/`, `@`, `:`, `\`, ...) fail closed affirmatively — previously
+  these fell to the DNS branch, leaning on resolver failure that
+  NXDOMAIN-hijacking/wildcard resolvers can convert into answers.
 - **Run timeline read model** — new public `inspect_run_timeline/1-2` and a
   `Timeline` visibility view. **Already covered** — the T1-1 borrow shipped:
   the `WorkflowEvent` log + `WorkflowStep` projection + dashboard run view are

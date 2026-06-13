@@ -96,7 +96,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 | `tools/`         | All 32+ Jido.Action tool modules                                                            |
 | `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess                                           |
 | `reasoning/`     | Strategy + pipeline stores, classifier, telemetry, certificate templates, context compactor |
-| `security/`      | Encryption vault, secret redaction                                                          |
+| `security/`      | Encryption vault, secret redaction, browse_web destination-policy gate                      |
 | `web/`           | Phoenix endpoint, controllers, LiveView                                                     |
 | `orchestration/` | Persistent workflow state machine                                                           |
 | `solutions/`     | Solution fingerprinting, trust scoring, semi-formal verification                            |
