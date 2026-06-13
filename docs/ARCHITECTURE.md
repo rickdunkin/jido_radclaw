@@ -60,7 +60,6 @@ JidoClaw.Supervisor (rest_for_one)
 │   ├── JidoClaw.Telemetry                 — 20+ metric definitions
 │   ├── JidoClaw.Stats                     — session counters (GenServer)
 │   ├── JidoClaw.BackgroundProcess.Registry — OS process tracking
-│   ├── JidoClaw.Platform.Approval         — tool approval workflow
 │   ├── DynamicSupervisor (SessionSupervisor) — global session fallback
 │   ├── JidoClaw.Jido                      — Jido agent runtime
 │   ├── JidoClaw.Messaging                 — room-based messaging runtime
@@ -245,6 +244,12 @@ JidoClaw.Security
 │
 ├── SecretRef (Ash Resource)
 │   └── Encrypted reference to secrets stored in database
+│
+├── DestinationPolicy    — host-enforced egress gate for browse_web
+│
+├── ToolApproval         — per-tool-call human-approval gate (wrapper stage)
+│   ├── require list + param-pattern triggers → ToolApprovals producer
+│   └── opens run-less AgentCase (kind :tool_call); single-use / deny-once
 │
 └── Redaction Pipeline
     ├── Patterns          — regex patterns for sensitive data (API keys, tokens, passwords)
@@ -718,7 +723,7 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
        ├── Forge engine (SessionRegistry, HarnessSupervisor, ExecSessionSupervisor, Manager, Sandbox)
        ├── Code Server (RuntimeRegistry, RuntimeSupervisor)
        ├── Finch HTTP pools
-       ├── Core services (Telemetry, Stats, Approval, Jido, Shell.SessionManager, etc.)
+       ├── Core services (Telemetry, Stats, Jido, Shell.SessionManager, etc.)
        ├── Messaging runtime (JidoClaw.Messaging)
        ├── Tenancy (Supervisor + Manager → creates "default" tenant)
        ├── Solutions engine (Store + Reputation)

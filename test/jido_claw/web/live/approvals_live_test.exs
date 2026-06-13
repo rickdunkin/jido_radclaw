@@ -10,6 +10,7 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
+  alias JidoClaw.Orchestration.ToolApprovals
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Web.ApprovalsLive
   alias Phoenix.HTML.Safe
@@ -18,6 +19,12 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
     TestIrreversibleWrite.reset()
     tenant = seed_tenant("gates-live")
     {:ok, tenant: tenant, actor: actor_for(tenant)}
+  end
+
+  defp open_tool_call(tenant) do
+    scope = %{tenant_id: tenant, actor: actor_for(tenant)}
+    {:pending, gate} = ToolApprovals.request(scope, "git_commit", %{message: "x"})
+    gate
   end
 
   test "render shows the gate DSL's typed fields (title, label, widgets)", %{
@@ -66,6 +73,36 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
 
     {:ok, completed} = WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
     assert completed.status == :completed
+  end
+
+  test "renders a tool-call case with its tool name and no Abandon button", %{tenant: tenant} do
+    gate = open_tool_call(tenant)
+
+    html =
+      %{__changed__: %{}, gates: [gate], flash: %{}}
+      |> ApprovalsLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    # ToolCallGate DSL title + the tool name; a run-less case offers no Abandon.
+    assert html =~ "Approve tool call"
+    assert html =~ "git_commit"
+    assert html =~ ~s(value="approve")
+    refute html =~ "Abandon run"
+  end
+
+  test "approve handle_event on a tool-call case decides it and clears the inbox", %{
+    tenant: tenant
+  } do
+    gate = open_tool_call(tenant)
+    web_actor = %{user_id: Ecto.UUID.generate(), tenant_id: tenant}
+    socket = build_socket(web_actor)
+
+    assert {:noreply, updated} = ApprovalsLive.handle_event("approve", %{"id" => gate.id}, socket)
+    assert updated.assigns.gates == []
+
+    {:ok, decided} = AgentCase.by_id(gate.id, tenant: tenant, actor: web_actor)
+    assert decided.status == :approved
   end
 
   defp build_socket(actor) do

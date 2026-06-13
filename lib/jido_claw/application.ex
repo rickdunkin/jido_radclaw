@@ -201,9 +201,6 @@ defmodule JidoClaw.Application do
       # Background process tracking
       JidoClaw.BackgroundProcess.Registry,
 
-      # Tool approval
-      JidoClaw.Platform.Approval,
-
       # Global session supervisor (fallback for non-tenant sessions)
       {DynamicSupervisor, name: JidoClaw.SessionSupervisor, strategy: :one_for_one},
 

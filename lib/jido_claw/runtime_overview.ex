@@ -7,7 +7,9 @@ defmodule JidoClaw.RuntimeOverview do
   # must degrade to 0 / empty rather than crash the dashboard render.
   # reach:disable-for-this-file bare_rescue
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.ForgeView
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.SwarmView
   alias JidoClaw.WorkflowView
 
@@ -17,6 +19,7 @@ defmodule JidoClaw.RuntimeOverview do
           swarm: SwarmView.t(),
           forge: ForgeView.t(),
           workflows: WorkflowView.t(),
+          approvals: %{pending_count: non_neg_integer()},
           uptime: map(),
           generated_at: DateTime.t()
         }
@@ -26,6 +29,7 @@ defmodule JidoClaw.RuntimeOverview do
             swarm: nil,
             forge: nil,
             workflows: nil,
+            approvals: %{pending_count: 0},
             uptime: %{},
             generated_at: nil
 
@@ -44,6 +48,7 @@ defmodule JidoClaw.RuntimeOverview do
            swarm: swarm,
            forge: view_or_empty(ForgeView, scope),
            workflows: view_or_empty(WorkflowView, scope),
+           approvals: approvals(tenant_id),
            uptime: uptime(length(swarm.agents)),
            generated_at: DateTime.utc_now()
          }}
@@ -77,6 +82,20 @@ defmodule JidoClaw.RuntimeOverview do
     _ -> 0
   catch
     :exit, _ -> 0
+  end
+
+  # The operator inbox count (pending workflow + tool-call approval cases).
+  # Read under a tenant-bound system actor; any fault degrades to zero so the
+  # dashboard render never crashes on a DB hiccup.
+  defp approvals(tenant_id) do
+    case AgentCase.pending_for_tenant(tenant: tenant_id, actor: Actor.system(tenant_id)) do
+      {:ok, cases} -> %{pending_count: length(cases)}
+      _ -> %{pending_count: 0}
+    end
+  rescue
+    _ -> %{pending_count: 0}
+  catch
+    :exit, _ -> %{pending_count: 0}
   end
 
   # `seconds` is legitimately process-wide (BEAM uptime). The agent count is

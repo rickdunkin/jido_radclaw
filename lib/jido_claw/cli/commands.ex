@@ -97,6 +97,8 @@ defmodule JidoClaw.CLI.Commands do
 
     IO.puts("  \e[33m⚙\e[0m  workflows   \e[1m#{overview.workflows.active_count} active\e[0m")
 
+    IO.puts("  \e[33m⚙\e[0m  approvals   \e[1m#{overview.approvals.pending_count} pending\e[0m")
+
     elapsed = System.monotonic_time(:second) - state.started_at
     IO.puts("  \e[33m⚙\e[0m  uptime      \e[1m#{Formatter.format_elapsed(elapsed)}\e[0m")
 

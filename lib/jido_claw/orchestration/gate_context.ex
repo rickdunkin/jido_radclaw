@@ -17,8 +17,12 @@ defmodule JidoClaw.Orchestration.GateContext do
   @enforce_keys [:run, :agent_case, :tenant]
   defstruct [:run, :agent_case, :decision, :tenant, :actor]
 
+  @typedoc """
+  `run` is `nil` for a run-less tool-call gate (the conversation-axis
+  approval); the workflow gate hooks carry the durable `%WorkflowRun{}`.
+  """
   @type t :: %__MODULE__{
-          run: WorkflowRun.t(),
+          run: WorkflowRun.t() | nil,
           agent_case: AgentCase.t(),
           decision: :approve | :reject | nil,
           tenant: String.t(),

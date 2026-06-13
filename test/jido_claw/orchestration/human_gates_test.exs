@@ -385,10 +385,57 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       assert {:ok, _completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
       events_after_first = event_count(run, ctx)
 
-      # A second decide (approve OR reject) loses to the pending-only fence.
+      # A second decide (approve OR reject) loses cleanly: post-resume the run's
+      # checkpoint is cleared, so `guard_resumable` refuses it before any
+      # commit. (The concurrent stale-load race — two deciders both seeing
+      # :pending — is fenced separately by the FOR UPDATE reload-and-recheck in
+      # `Cases`; see the concurrent test below.)
       assert {:error, _} = Cases.decide(case_id, :reject, %{}, scope(ctx))
       assert {:ok, %AgentCase{status: :approved}} = AgentCase.by_id(case_id, scope(ctx))
       assert event_count(run, ctx) == events_after_first
+    end
+
+    test "concurrent approve (no resume) vs reject resolves to one winner, one decision event",
+         ctx do
+      %{tenant: tenant, actor: actor} = ctx
+
+      # Race two stale-loaded deciders on one gated run's pending case. Approve
+      # runs with `resume: false` to isolate the decision fence from GateResume:
+      # both deciders load the case `:pending` + the run `:awaiting_approval`
+      # with a checkpoint, pass `guard_resumable`, then collide in the commit.
+      # The run -> case lock order (lock_run before lock_case) is exercised here.
+      # Loop so the stale-load interleaving is reliably hit at least once.
+      for _ <- 1..8 do
+        {result, _inputs} = run_gated(tenant, actor)
+        assert {:ok, {:paused, case_id}, run} = result
+
+        approve_opts = Keyword.put(scope(ctx), :resume, false)
+
+        results =
+          Task.await_many([
+            Task.async(fn -> Cases.decide(case_id, :approve, %{}, approve_opts) end),
+            Task.async(fn -> Cases.decide(case_id, :reject, %{}, scope(ctx)) end)
+          ])
+
+        assert Enum.count(results, &match?({:ok, _}, &1)) == 1,
+               "expected exactly one {:ok}, got: #{inspect(results)}"
+
+        assert Enum.count(results, &match?({:error, _}, &1)) == 1,
+               "expected exactly one {:error}, got: #{inspect(results)}"
+
+        # The AgentCase reflects the winner.
+        {:ok, decided} = AgentCase.by_id(case_id, scope(ctx))
+        assert decided.status in [:approved, :rejected]
+
+        # Exactly one new decision WorkflowEvent — approval_resolved XOR
+        # run_cancelled — matching the winner (never both, as a lost race would
+        # append).
+        decision_kinds =
+          Enum.filter(kinds(run, ctx), &(&1 in [:approval_resolved, :run_cancelled]))
+
+        expected_kind = %{approved: :approval_resolved, rejected: :run_cancelled}[decided.status]
+        assert decision_kinds == [expected_kind]
+      end
     end
   end
 

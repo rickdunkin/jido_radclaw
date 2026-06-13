@@ -11,6 +11,7 @@ defmodule JidoClaw.CLI.Commands.Approvals do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cases
+  alias JidoClaw.Orchestration.WorkflowRun
 
   @doc "List the tenant's pending approval gates."
   @spec list(map()) :: {:ok, map()}
@@ -52,10 +53,13 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     IO.puts("")
 
     case Cases.decide(id, decision, attrs, tenant: state.tenant_id, actor: actor) do
-      {:ok, run} ->
+      {:ok, %WorkflowRun{} = run} ->
         IO.puts(
           "  \e[32m✓\e[0m  Gate #{decision}d — run \e[1m#{run.name}\e[0m is now #{run.status}"
         )
+
+      {:ok, %AgentCase{}} ->
+        IO.puts("  \e[32m✓\e[0m  #{tool_call_decided_message(decision)}")
 
       {:error, :not_yet_resumable} ->
         IO.puts("  \e[33m⚠\e[0m  Gate not ready yet (checkpoint still being written). Try again.")
@@ -90,6 +94,11 @@ defmodule JidoClaw.CLI.Commands.Approvals do
       {:error, :not_found} ->
         IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
 
+      {:error, :not_workflow_case} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  This is a tool-call approval — approve or reject it; there is no run to abandon."
+        )
+
       {:error, :not_pending} ->
         IO.puts("  \e[33m⚠\e[0m  Gate already decided — abandon applies to pending gates only.")
 
@@ -100,6 +109,11 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     IO.puts("")
     {:ok, state}
   end
+
+  defp tool_call_decided_message(:approve), do: "Tool call approved — the agent may retry it now"
+
+  defp tool_call_decided_message(:reject),
+    do: "Tool call rejected — the agent will not retry it automatically"
 
   defp abandon_attrs(nil), do: %{}
 

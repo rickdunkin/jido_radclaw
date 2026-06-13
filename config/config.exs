@@ -185,8 +185,20 @@ config :jido_claw,
   gateway_port: 4000,
   cluster_enabled: false,
   cluster_strategy: :gossip,
-  tool_approval_mode: :off,
   embeddings_strict_boot: true
+
+# Tool-call approval gate (JidoClaw.Security.ToolApproval). A require-listed —
+# or param-pattern-triggered — tool call is intercepted in the shared
+# Tools.Action wrapper, opens a durable pending AgentCase (kind :tool_call),
+# and returns a non-retryable approval_pending error the LLM relays to the
+# operator. Approvals are single-use; rejections are deny-once. `enabled?` is
+# the kill switch. The conservative default require list is single-sourced in
+# `JidoClaw.Security.ToolApproval.default_require/0`
+# (network_share, kill_agent, schedule_task, unschedule_task, git_commit,
+# forget, replay_workflow); add `require: ~w(...)` here to override it. The
+# shell param-pattern triggers (e.g. `git commit` via run_command) also live
+# in-module so a config typo can never disable them.
+config :jido_claw, :tool_approval, enabled?: true
 
 # Boot-time workflow recovery (JidoClaw.Orchestration.WorkflowRecovery).
 # Enabled by default; gated off at runtime when clustered or in MCP mode so

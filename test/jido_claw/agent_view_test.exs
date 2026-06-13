@@ -7,6 +7,7 @@ defmodule JidoClaw.AgentViewTest do
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.AgentView
   alias JidoClaw.Conversations.Session, as: ConversationsSession
+  alias JidoClaw.Orchestration.ToolApprovals
   alias JidoClaw.Session.Worker, as: SessionWorker
 
   setup do
@@ -207,6 +208,23 @@ defmodule JidoClaw.AgentViewTest do
       assert view.status == :idle
       assert view.agent_template == "reviewer"
       assert view.handoff_owner.preamble_consumed?
+    end
+
+    test "a pending tool-call approval case yields :awaiting_approval", %{
+      tenant_id: tid,
+      session: session
+    } do
+      scope = %{
+        tenant_id: tid,
+        session_uuid: session.id,
+        session_id: session.external_id,
+        actor: actor_for(tid)
+      }
+
+      assert {:pending, _case} = ToolApprovals.request(scope, "git_commit", %{message: "x"})
+
+      assert {:ok, view} = AgentView.snapshot(session)
+      assert view.status == :awaiting_approval
     end
   end
 

@@ -93,6 +93,36 @@ defmodule JidoClaw.ToolContext do
   end
 
   @doc """
+  Ensure a flat scope is reachable under the nested `:tool_context` key.
+
+  jido_ai flat-merges the caller's `tool_context` map into the `run/2`
+  context, so on the live ReAct path the canonical scope keys arrive at the
+  **top level** and `context[:tool_context]` is absent. Tools, `OutputShaper`,
+  and the tool-approval gate all read `context[:tool_context]`, so this lifts
+  a flat, tenant-bearing context into the nested shape they expect.
+
+    * `(a)` an existing non-empty `:tool_context` map is respected unchanged;
+    * `(b)` a flat context carrying a string `:tenant_id` is rebuilt nested
+      via `build/1`, **excluding `:agent_id`** — jido_ai overwrites it with
+      the runtime id, and capturing that into the nested scope would hand
+      swarm parent-scoping (`SwarmScope.scope_from_tool_context/1`) and
+      telemetry a `:parent_agent_id` they do not see today. Tenant, session,
+      and template all lift cleanly without it;
+    * `(c)` anything else (no tenant scope to lift) passes through unchanged,
+      leaving MCP default-injection to populate scope when nothing lifts.
+  """
+  @spec ensure_nested(map()) :: map()
+  def ensure_nested(%{tool_context: tc} = context) when is_map(tc) and map_size(tc) > 0 do
+    context
+  end
+
+  def ensure_nested(%{tenant_id: tenant_id} = context) when is_binary(tenant_id) do
+    Map.put(context, :tool_context, build(Map.delete(context, :agent_id)))
+  end
+
+  def ensure_nested(context) when is_map(context), do: context
+
+  @doc """
   Build a child tool_context map from a parent's tool_context, replacing
   the agent_id with `child_tag` and falling back to `File.cwd!()` for
   `:project_dir` when the parent's value is `nil`.

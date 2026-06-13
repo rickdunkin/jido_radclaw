@@ -39,6 +39,7 @@ defmodule JidoClaw.Orchestration.GateStep do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.Gate
+  alias JidoClaw.Orchestration.Gate.Presentation
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -55,7 +56,7 @@ defmodule JidoClaw.Orchestration.GateStep do
       step_name: step_name,
       kind: Gate.Info.gate_kind!(gate_module),
       gate_module: gate_module,
-      details: Map.merge(dsl_details(gate_module), details)
+      details: Map.merge(Presentation.details(gate_module), details)
     }
 
     case WorkflowLog.gate_open(run, attrs,
@@ -69,44 +70,5 @@ defmodule JidoClaw.Orchestration.GateStep do
 
   def run(_arguments, _context, _options) do
     {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
-  end
-
-  # The gate DSL's presentation, normalized to JSON-native shapes (string
-  # keys/values) so the in-memory map equals its jsonb round-trip — the
-  # approval surfaces read one shape.
-  defp dsl_details(gate_module) do
-    details = %{
-      "gate_title" => Gate.Info.gate_title!(gate_module),
-      "fields" => Enum.map(Gate.Info.fields(gate_module), &field_to_map/1)
-    }
-
-    put_description(details, gate_module)
-  end
-
-  defp put_description(details, gate_module) do
-    case Gate.Info.gate_description(gate_module) do
-      {:ok, description} when is_binary(description) ->
-        Map.put(details, "gate_description", description)
-
-      _ ->
-        details
-    end
-  end
-
-  defp field_to_map(%Gate.Field{} = field) do
-    %{
-      "name" => Atom.to_string(field.name),
-      "type" => Atom.to_string(field.type),
-      "label" => field.label || humanize(field.name),
-      "options" => field.options,
-      "required" => field.required?
-    }
-  end
-
-  defp humanize(name) do
-    name
-    |> Atom.to_string()
-    |> String.replace("_", " ")
-    |> String.capitalize()
   end
 end

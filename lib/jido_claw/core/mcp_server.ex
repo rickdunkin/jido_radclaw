@@ -49,4 +49,13 @@ defmodule JidoClaw.MCPServer do
         JidoClaw.Tools.ReplayWorkflow
       ]
     }
+
+  @doc """
+  The MCP-published tool modules, derived from the generated `__publish__/0`
+  so the tool-wrapper marker sweeps cover every publication surface (not just
+  `JidoClaw.Agent.tool_modules/0`) and can never drift from this list.
+  `replay_workflow` is MCP-only and on the approval require list.
+  """
+  @spec published_tool_modules() :: [module()]
+  def published_tool_modules, do: __publish__().tools
 end

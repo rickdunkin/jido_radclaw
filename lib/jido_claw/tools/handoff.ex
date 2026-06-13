@@ -178,9 +178,10 @@ defmodule JidoClaw.Tools.Handoff do
   end
 
   # Best-effort context for the failure path. Mirrors `extract_context/1`'s
-  # nested-or-flat lookup but never fails — any field may be `nil`.
+  # nested-or-flat lookup but never fails — any field may be `nil`. `context`
+  # is always a map here: the shared `Tools.Action` wrapper enriches it
+  # (`ToolContext.ensure_nested/1` + `MCPScope.wrap/4`) before invoking `run/2`.
   defp base_telemetry(context) do
-    context = if is_map(context), do: context, else: %{}
     tc = Map.get(context, :tool_context) || context
 
     %{

@@ -15,6 +15,7 @@ defmodule JidoClaw.Web.DashboardLive do
     if connected?(socket) do
       ForgePubSub.subscribe_sessions()
       RunPubSub.subscribe_all()
+      RunPubSub.subscribe_gates()
     end
 
     {:ok,
@@ -31,9 +32,10 @@ defmodule JidoClaw.Web.DashboardLive do
     <div>
       <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Dashboard</h1>
 
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem;">
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; margin-bottom: 2rem;">
         <.stat_card label="Forge Sessions" value={to_string(@overview.forge.active_count)} />
         <.stat_card label="Active Workflows" value={to_string(@overview.workflows.active_count)} />
+        <.stat_card label="Pending Approvals" value={to_string(@overview.approvals.pending_count)} />
         <.stat_card label="Uptime" value={format_uptime(@overview.uptime.seconds)} />
         <.stat_card label="Status" value="Online" />
       </div>
@@ -119,6 +121,18 @@ defmodule JidoClaw.Web.DashboardLive do
 
   @impl Phoenix.LiveView
   def handle_info({:run_abandoned, _id, _info}, socket) do
+    {:noreply, schedule_overview_refresh(socket)}
+  end
+
+  # Gate lifecycle (RunPubSub gates channel) — a requested/resolved approval
+  # changes the pending-approvals count, so coalesce an overview rebuild.
+  @impl Phoenix.LiveView
+  def handle_info({:gate_requested, _id, _info}, socket) do
+    {:noreply, schedule_overview_refresh(socket)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info({:gate_resolved, _id, _info}, socket) do
     {:noreply, schedule_overview_refresh(socket)}
   end
 

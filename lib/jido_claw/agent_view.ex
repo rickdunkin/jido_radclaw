@@ -25,11 +25,14 @@ defmodule JidoClaw.AgentView do
 
   ## Status enum
 
-  `:idle | :running | :awaiting_handoff | :error | :hibernated | :agent_lost`.
-  Note: completed traces map to `:idle` — a long-lived session whose last
-  trace finished is "doing nothing right now" from the user's perspective.
-  Consumers that want the terminal-state nuance read `:trace_status`,
-  which carries `:completed | :cancelled | :interrupted` separately.
+  `:idle | :running | :awaiting_handoff | :awaiting_approval | :error |
+  :hibernated | :agent_lost`. Note: completed traces map to `:idle` — a
+  long-lived session whose last trace finished is "doing nothing right now"
+  from the user's perspective. `:awaiting_approval` means the session has a
+  pending tool-call approval case (the agent relayed an `approval_pending`
+  error and is waiting on the operator). Consumers that want the terminal-state
+  nuance read `:trace_status`, which carries
+  `:completed | :cancelled | :interrupted` separately.
   """
 
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
@@ -37,6 +40,7 @@ defmodule JidoClaw.AgentView do
   alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.Compactor.Storage, as: CompactorStorage
   alias JidoClaw.Session.Worker, as: SessionWorker
@@ -60,7 +64,14 @@ defmodule JidoClaw.AgentView do
   @default_events_limit 100
   @default_messages_limit 50
 
-  @type status :: :idle | :running | :awaiting_handoff | :error | :hibernated | :agent_lost
+  @type status ::
+          :idle
+          | :running
+          | :awaiting_handoff
+          | :awaiting_approval
+          | :error
+          | :hibernated
+          | :agent_lost
 
   @type message :: %{role: String.t(), content: String.t(), timestamp: integer()}
 
@@ -345,7 +356,7 @@ defmodule JidoClaw.AgentView do
     messages = fetch_messages(base, worker_info, opts)
     message_count = total_message_count(worker_info, base)
 
-    status = derive_status(trace, owner, worker_info)
+    status = derive_status(trace, owner, worker_info, base)
     error = if status == :error, do: derive_error_payload(trace), else: nil
     started_at = derive_started_at(worker_info, base.session_record)
     last_active = derive_last_active(worker_info, base.session_record)
@@ -532,11 +543,12 @@ defmodule JidoClaw.AgentView do
       0
   end
 
-  defp derive_status(trace, owner, worker_info) do
+  defp derive_status(trace, owner, worker_info, base) do
     cond do
       trace_field(trace, :status) == :failed -> :error
       trace_field(trace, :status) == :running -> :running
       awaiting_handoff?(owner) -> :awaiting_handoff
+      awaiting_tool_approval?(base.session_uuid, base.tenant_id, base.actor) -> :awaiting_approval
       worker_status(worker_info) == :hibernated -> :hibernated
       worker_status(worker_info) == :agent_lost -> :agent_lost
       true -> :idle
@@ -545,6 +557,24 @@ defmodule JidoClaw.AgentView do
 
   defp awaiting_handoff?(%{preamble_consumed?: false}), do: true
   defp awaiting_handoff?(_), do: false
+
+  # A session with a pending tool-call approval case is "awaiting approval".
+  # Guard on a non-empty `session_uuid` — a worker can briefly exist before its
+  # durable session UUID is wired (`Session.Worker`), so `pending_for_session`
+  # must never be issued with `nil`. A DB fault degrades to `false`.
+  defp awaiting_tool_approval?(session_uuid, tenant_id, actor)
+       when is_binary(session_uuid) and session_uuid != "" do
+    match?(
+      {:ok, [_ | _]},
+      AgentCase.pending_for_session(session_uuid, tenant: tenant_id, actor: actor)
+    )
+  rescue
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      false
+  end
+
+  defp awaiting_tool_approval?(_session_uuid, _tenant_id, _actor), do: false
 
   defp worker_status({:ok, %{status: status}}), do: status
   defp worker_status(_), do: nil

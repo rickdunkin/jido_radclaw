@@ -68,8 +68,16 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
              ErrorEcho.run(%{shape: :failed_ok}, %{})
   end
 
-  test "registered agent tools use the shared redaction wrapper" do
-    for module <- JidoClaw.Agent.tool_modules() do
+  # The sweep covers every publication surface — the in-REPL agent registry AND
+  # the MCP-published tools (e.g. replay_workflow is MCP-only and on the
+  # approval require list), derived from JidoClaw.MCPServer.__publish__/0 so the
+  # list can't drift.
+  defp wrapped_tool_modules do
+    Enum.uniq(JidoClaw.Agent.tool_modules() ++ JidoClaw.MCPServer.published_tool_modules())
+  end
+
+  test "every wrapped tool carries the shared redaction marker" do
+    for module <- wrapped_tool_modules() do
       # function_exported?/3 does not load the module, and tool modules are
       # loaded lazily — ensure each is loaded before introspecting its markers.
       Code.ensure_loaded!(module)
@@ -79,11 +87,20 @@ defmodule JidoClaw.Tools.OutputRedactionTest do
     end
   end
 
-  test "registered agent tools use the shared MCP scope wrapper" do
-    for module <- JidoClaw.Agent.tool_modules() do
+  test "every wrapped tool carries the shared MCP scope marker" do
+    for module <- wrapped_tool_modules() do
       Code.ensure_loaded!(module)
 
       assert function_exported?(module, :__jidoclaw_tool_mcp_scoped__, 0),
+             "#{inspect(module)} must use JidoClaw.Tools.Action"
+    end
+  end
+
+  test "every wrapped tool carries the shared tool-approval gate marker" do
+    for module <- wrapped_tool_modules() do
+      Code.ensure_loaded!(module)
+
+      assert function_exported?(module, :__jidoclaw_tool_approval_gated__, 0),
              "#{inspect(module)} must use JidoClaw.Tools.Action"
     end
   end

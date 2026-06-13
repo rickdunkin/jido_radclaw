@@ -19,18 +19,38 @@ defmodule JidoClaw.Orchestration.AgentCase do
   ## Concurrency fence
 
   Two operators can both read a `:pending` case and race to decide it. The
-  `:approve`/`:reject`/`:cancel` actions each carry a
-  `change filter(expr(status == :pending))`, which compiles to a DB-side
-  `UPDATE … WHERE status = 'pending'`: exactly one writer flips the row, the
-  loser's update matches zero rows and returns a stale-record `{:error, _}`.
-  This is both the idempotency guard (a duplicate `decide` is a clean error)
-  and the multi-approver race fence — enforced in the database, not over
-  in-memory loaded data.
+  real fence lives in `JidoClaw.Orchestration.Cases`: each decision commit
+  reloads this row `FOR UPDATE` inside its transaction and re-checks the status
+  on the fresh, locked struct before writing, so the loser blocks on the row
+  lock, reads the winner's committed status, and rolls back. The
+  `change filter(expr(status == :pending))` the `:approve`/`:reject`/`:cancel`
+  actions carry is an **in-memory precondition**, NOT a DB-side
+  `UPDATE … WHERE status = 'pending'` — for *record* updates in
+  ash_postgres 2.9 the captured UPDATE keys on `id`/`tenant_id` only. It still
+  rejects a *freshly-loaded* non-pending struct (the idempotency guard for a
+  sequential duplicate `decide`), but it cannot fence a concurrent stale-loaded
+  decider on its own; the `FOR UPDATE` reload is what closes that race.
 
   ## Single gate per run
 
   This slice supports one gate per run. Multi-gate identification (reading the
   halted step name to disambiguate) is a documented follow-up.
+
+  ## Tool-call cases (run-less)
+
+  The same row also backs the **conversation-axis** tool-approval gate
+  (`kind: :tool_call`), which has no `WorkflowRun`. Those rows are created by
+  `JidoClaw.Orchestration.ToolApprovals` via the `:open_tool_call` action with
+  `workflow_run_id == nil`, keyed by a `fingerprint` of `{tenant, session,
+  tool, args}`. `:approve`/`:reject` flow through the same
+  `JidoClaw.Orchestration.Cases.decide/4` path; a partial unique index
+  (`agent_cases_pending_fingerprint_index`) guarantees at most one pending case
+  per fingerprint so concurrent identical calls collapse to one ticket. The
+  approval is single-use (`:consume` stamps `consumed_at` on the approved row)
+  and rejections are deny-once (`:consume_rejection` stamps the rejected row),
+  so an identical call later re-pends rather than reusing a spent decision. The
+  `:create` action stays workflow-strict (`validate(present(:workflow_run_id))`)
+  while `:open_tool_call` requires `fingerprint`/`tool_name` instead.
   """
 
   use JidoClaw.Resource, domain: JidoClaw.Orchestration
@@ -44,6 +64,18 @@ defmodule JidoClaw.Orchestration.AgentCase do
     custom_indexes do
       index([:tenant_id, :status])
       index([:workflow_run_id, :status])
+
+      # At most one *pending* tool-call case per fingerprint per tenant — the
+      # named partial unique index the producer's race-loser re-read keys on
+      # (`AshErrors.unique_violation?/2` matches the constraint-name fragment).
+      index([:tenant_id, :fingerprint],
+        unique: true,
+        where: "status = 'pending'",
+        name: "agent_cases_pending_fingerprint_index"
+      )
+
+      # Plain lookup index for the by-fingerprint classification read.
+      index([:tenant_id, :fingerprint])
     end
   end
 
@@ -66,6 +98,13 @@ defmodule JidoClaw.Orchestration.AgentCase do
     define(:cancel)
     define(:abandon)
     define(:reopen)
+
+    # Tool-call (run-less) case API.
+    define(:open_tool_call)
+    define(:consume)
+    define(:consume_rejection)
+    define(:by_fingerprint, args: [:fingerprint])
+    define(:pending_for_session, args: [:session_id])
   end
 
   actions do
@@ -83,12 +122,42 @@ defmodule JidoClaw.Orchestration.AgentCase do
         :details
       ])
 
+      # `workflow_run_id` is now nullable at the column level (tool-call cases
+      # have no run), so the workflow create stays strict here.
+      validate(present(:workflow_run_id))
+
       change(set_attribute(:status, :pending))
     end
 
-    # Decision write — approve. The `filter` change is the DB-side concurrency
-    # fence: only a still-`:pending` row flips, so a duplicate/concurrent
-    # decide loses cleanly with a stale-record error (idempotent).
+    # Open a run-less tool-call approval case (the conversation-axis gate).
+    # Distinct from `:create`: no run, fingerprint/tool_name required.
+    create :open_tool_call do
+      description("Open a pending tool-call approval case (no workflow run).")
+
+      accept([
+        :step_name,
+        :details,
+        :fingerprint,
+        :tool_name,
+        :session_id
+      ])
+
+      # Nullable columns + a partial unique index would not protect NULL
+      # fingerprints, so the producer contract is enforced here.
+      validate(present(:fingerprint))
+      validate(present(:tool_name))
+
+      change(set_attribute(:kind, :tool_call))
+      change(set_attribute(:gate_module, JidoClaw.Gates.ToolCallGate))
+      change(set_attribute(:status, :pending))
+    end
+
+    # Decision write — approve. The `filter` change is an in-memory precondition
+    # (it does NOT compile to a DB-side `WHERE` for record updates in
+    # ash_postgres 2.9), so it rejects a freshly-loaded non-pending struct (the
+    # sequential-duplicate idempotency guard) but is NOT the concurrency fence.
+    # The fence is the `FOR UPDATE` reload-and-recheck in `Cases` (same model as
+    # `:consume` below).
     update :approve do
       description("Approve a pending case; records decision metadata.")
       accept([:decision_comment, :decided_by_id])
@@ -118,8 +187,10 @@ defmodule JidoClaw.Orchestration.AgentCase do
     end
 
     # Operator-initiated abandon of a parked gate (AR-1): deliberately giving
-    # up on the run ≠ crash-reaped (`cancel`) ≠ gate-reject. Pending-fenced
-    # like the decisions.
+    # up on the run ≠ crash-reaped (`cancel`) ≠ gate-reject. Fenced like the
+    # decisions: `commit_abandon` re-reads the pending cases fresh under the
+    # per-run `FOR UPDATE` lock (the `filter` here stays an in-memory
+    # precondition).
     update :abandon do
       description("Abandon a pending case (operator gave up on the parked run).")
       accept([:cancellation_reason, :decided_by_id])
@@ -130,8 +201,10 @@ defmodule JidoClaw.Orchestration.AgentCase do
 
     # Stale-approval retraction (AR-1): a recorded-but-not-yet-acted approval
     # is withdrawn pre-resume, so the reopened case carries NO stale decision
-    # data. DB-fenced on `status == :approved` (the retract race fence's case
-    # half); the event-log half lives in `Cases.retract/3`.
+    # data. Lock-fenced in `commit_retract` (the case row is reloaded
+    # `FOR UPDATE` and re-checked `:approved` before this runs); the `filter`
+    # here is an in-memory precondition, and the event-log half of the race
+    # fence lives in `Cases.retract/3`.
     update :reopen do
       description("Reopen an approved case whose approval was retracted pre-resume.")
       accept([])
@@ -141,6 +214,31 @@ defmodule JidoClaw.Orchestration.AgentCase do
       change(set_attribute(:decided_at, nil))
       change(set_attribute(:decision_comment, nil))
       change(set_attribute(:decided_by_id, nil))
+    end
+
+    # Single-use claim on an approved tool-call case. The `filter` change is
+    # an in-memory precondition (it does NOT compile to a DB-side `WHERE` for
+    # record updates in ash_postgres 2.9; the captured UPDATE keys on
+    # `id`/`tenant_id` only). The real concurrency fence is the producer's
+    # `FOR UPDATE` re-read in `JidoClaw.Orchestration.ToolApprovals` — the same
+    # row-lock idiom `Cases.lock_run/3` uses — which serializes concurrent
+    # retries so exactly one consumes the approval and the next identical call
+    # re-pends. An approval thus grants ONE attempt, not one successful effect.
+    update :consume do
+      description("Consume an approved tool-call case (single-use approval).")
+      accept([])
+      change(filter(expr(status == :approved and is_nil(consumed_at))))
+      change(set_attribute(:consumed_at, &DateTime.utc_now/0))
+    end
+
+    # Deny-once claim on a rejected tool-call case. Same fencing model as
+    # `:consume`: the producer's `FOR UPDATE` re-read is the concurrency fence,
+    # so the next identical call re-pends rather than reusing a stale denial.
+    update :consume_rejection do
+      description("Consume a rejected tool-call case (deny-once).")
+      accept([])
+      change(filter(expr(status == :rejected and is_nil(consumed_at))))
+      change(set_attribute(:consumed_at, &DateTime.utc_now/0))
     end
 
     read :by_id_global do
@@ -167,6 +265,19 @@ defmodule JidoClaw.Orchestration.AgentCase do
       description("All pending cases for the actor's tenant — the operator inbox.")
       prepare(build(sort: [inserted_at: :asc]))
       filter(expr(status == :pending))
+    end
+
+    read :by_fingerprint do
+      description("Tenant's cases for a fingerprint, newest first — the producer classifier.")
+      argument(:fingerprint, :string, allow_nil?: false)
+      prepare(build(sort: [inserted_at: :desc]))
+      filter(expr(fingerprint == ^arg(:fingerprint)))
+    end
+
+    read :pending_for_session do
+      description("Pending tool-call cases for a session — the awaiting-approval status probe.")
+      argument(:session_id, :uuid, allow_nil?: false)
+      filter(expr(session_id == ^arg(:session_id) and status == :pending))
     end
   end
 
@@ -239,13 +350,55 @@ defmodule JidoClaw.Orchestration.AgentCase do
       public?(true)
     end
 
+    # Conversations.Session UUID FK for tool-call cases — the runtime external
+    # session id lives in `details` only. Mirrors the ToolOutput pattern: a
+    # plain nullable column paired with a `belongs_to :session` that does not
+    # define its own attribute.
+    attribute :session_id, :uuid do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # SHA-256 of the canonical `{tenant, session, tool, args}` term — the
+    # tool-call dedup/approval key. Nullable (workflow cases have none);
+    # `:open_tool_call` enforces presence so the partial unique index bites.
+    attribute :fingerprint, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # The gated tool's registered name (tool-call cases only).
+    attribute :tool_name, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # Stamped when a tool-call decision is spent: single-use approval
+    # (`:consume`) or deny-once rejection (`:consume_rejection`).
+    attribute :consumed_at, :utc_datetime_usec do
+      allow_nil?(true)
+      public?(true)
+    end
+
     timestamps()
   end
 
   relationships do
+    # Nullable at the column level so run-less tool-call cases can exist; the
+    # `:create` action's `validate(present(:workflow_run_id))` keeps the
+    # workflow path strict.
     belongs_to :workflow_run, JidoClaw.Orchestration.WorkflowRun do
-      allow_nil?(false)
+      allow_nil?(true)
       public?(true)
+    end
+
+    # Conversations.Session FK for tool-call cases. ToolOutput pattern exactly:
+    # the explicit `attribute :session_id` above is the column; this defines no
+    # attribute of its own, stays writable, and is nullable.
+    belongs_to :session, JidoClaw.Conversations.Session do
+      define_attribute?(false)
+      attribute_writable?(true)
+      allow_nil?(true)
     end
 
     belongs_to :tenant, JidoClaw.Tenants.Tenant do

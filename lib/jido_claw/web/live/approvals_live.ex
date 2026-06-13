@@ -14,6 +14,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowRun
 
   # Gate events can arrive in bursts; coalesce inbox reloads behind a single
   # delayed :refresh_gates, mirroring DashboardLive's overview debounce.
@@ -58,6 +59,12 @@ defmodule JidoClaw.Web.ApprovalsLive do
           {gate.step_name} · {gate.kind}
         </div>
         <div
+          :if={gate.tool_name}
+          style="color: var(--muted); font-size: 0.8125rem; margin-bottom: 0.25rem;"
+        >
+          tool: <code>{gate.tool_name}</code>
+        </div>
+        <div
           :if={gate_description(gate)}
           style="color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem;"
         >
@@ -83,6 +90,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
               Reject
             </button>
             <button
+              :if={gate.workflow_run_id}
               type="button"
               class="btn"
               style="margin-left: auto; color: var(--muted);"
@@ -182,16 +190,25 @@ defmodule JidoClaw.Web.ApprovalsLive do
       if comment, do: Map.put(base_attrs, :decision_comment, comment), else: base_attrs
 
     case Cases.decide(id, decision, attrs, tenant: tenant_id(socket), actor: actor) do
-      {:ok, run} ->
+      {:ok, %WorkflowRun{} = run} ->
         {:noreply,
          socket
          |> put_flash(:info, "Gate #{decision}d — run #{run.name} is now #{run.status}")
+         |> assign(gates: load_gates(socket))}
+
+      {:ok, %AgentCase{}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, tool_call_flash(decision))
          |> assign(gates: load_gates(socket))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not #{decision} gate: #{inspect(reason)}")}
     end
   end
+
+  defp tool_call_flash(:approve), do: "Tool call approved — the agent may retry it now"
+  defp tool_call_flash(:reject), do: "Tool call rejected — the agent will not retry it"
 
   # -- Gate DSL presentation (seeded into details by GateStep) --
 

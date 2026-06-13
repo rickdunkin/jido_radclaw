@@ -4,10 +4,19 @@ defmodule JidoClaw.Gates.ToolCallGate do
   executes a sensitive tool invocation (shell command, network mutation,
   credential use).
 
-  Declared-but-unproduced: no reactor wires this kind yet. The tool-approval
-  producer (intercepting flagged tool calls into a gate) is future work; the
-  kind ships now so the vocabulary, `AgentCase.kind` column, and approval
-  surfaces are ready for it.
+  The producer is `JidoClaw.Orchestration.ToolApprovals`, driven by the
+  wrapper-level policy `JidoClaw.Security.ToolApproval`: a require-listed (or
+  param-pattern-triggered) tool call opens a **run-less** `AgentCase` (kind
+  `:tool_call`) keyed by a `{tenant, session, tool, args}` fingerprint, and the
+  tool returns a non-retryable `approval_pending` error the LLM relays to the
+  operator. Approvals are single-use; rejections are deny-once. Operators decide
+  through the same surfaces as workflow gates (REPL `/gates`, web `/approvals`),
+  routed through `JidoClaw.Orchestration.Cases.decide/4`'s run-less branch.
+
+  This module supplies only the operator-facing presentation
+  (`title`/`description`/`fields`, surfaced in the inbox) and the default no-op
+  `after_approved`/`after_rejected` hooks — there is no reactor and no run, so
+  the hooks receive a `%GateContext{run: nil}`.
   """
 
   use JidoClaw.Orchestration.HumanGate

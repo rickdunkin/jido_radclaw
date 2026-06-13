@@ -50,6 +50,56 @@ defmodule JidoClaw.ToolContextTest do
     end
   end
 
+  describe "ensure_nested/1" do
+    test "respects an existing non-empty :tool_context unchanged" do
+      existing = %{tenant_id: "lifted", session_uuid: "s"}
+      context = %{tool_context: existing, tenant_id: "flat"}
+
+      assert ToolContext.ensure_nested(context) == context
+      assert ToolContext.ensure_nested(context).tool_context == existing
+    end
+
+    test "lifts a flat tenant-bearing context into a nested :tool_context" do
+      context = %{
+        tenant_id: "t",
+        session_id: "sess-1",
+        session_uuid: "uuid-1",
+        agent_template: "main",
+        project_dir: "/work"
+      }
+
+      nested = ToolContext.ensure_nested(context)
+
+      assert nested.tool_context.tenant_id == "t"
+      assert nested.tool_context.session_id == "sess-1"
+      assert nested.tool_context.session_uuid == "uuid-1"
+      assert nested.tool_context.agent_template == "main"
+      assert nested.tool_context.project_dir == "/work"
+    end
+
+    test "excludes jido_ai's runtime :agent_id from the lifted scope" do
+      # On the live ReAct path jido_ai overwrites :agent_id with the runtime
+      # id; capturing it would hand SwarmScope a parent_agent_id it lacks today.
+      context = %{tenant_id: "t", agent_id: "runtime-agent-id"}
+
+      nested = ToolContext.ensure_nested(context)
+
+      assert nested.tool_context.agent_id == nil
+    end
+
+    test "treats an empty :tool_context as absent and lifts the flat scope" do
+      context = %{tool_context: %{}, tenant_id: "t"}
+
+      assert ToolContext.ensure_nested(context).tool_context.tenant_id == "t"
+    end
+
+    test "passes through a context with no tenant scope to lift" do
+      context = %{some: "thing"}
+
+      assert ToolContext.ensure_nested(context) == context
+    end
+  end
+
   describe "forward_context policy — child/3 + apply_visibility/2" do
     test ":public forwards the parent's full scope" do
       child = ToolContext.child(full_parent(), "c", :public)

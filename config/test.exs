@@ -19,6 +19,11 @@ config :jido_claw, :workflow_recovery, enabled?: false
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false
 
+# Tool-call approval gate off in test so the broad tool suite isn't gated;
+# the gate's own tests drive JidoClaw.Security.ToolApproval.gate/4 with explicit
+# `enabled?: true` + `require:` opts (env-free, DestinationPolicy style).
+config :jido_claw, :tool_approval, enabled?: false
+
 # Trace persistence is opt-in for tests. The Collector still ingests
 # events into the in-memory ring on every run, but
 # `JidoClaw.Trace.Persistence.append/2` is a no-op unless a test

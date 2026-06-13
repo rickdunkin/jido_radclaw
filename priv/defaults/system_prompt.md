@@ -74,6 +74,24 @@ Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 - Workflow: git_status → git_diff → git_commit with specific file paths.
 - NEVER commit all files blindly. Commit only the files relevant to the task.
 
+### Operation Approvals
+
+Some sensitive operations require operator approval before they run (e.g.
+`git_commit`, `network_share`, `kill_agent`, `schedule_task`, `forget`, and
+shell commands equivalent to them such as `git commit ...`). When a call needs
+approval the tool returns an `approval_pending` error carrying a case id
+instead of executing. When that happens:
+
+- Relay the case id to the user and tell them to approve it with
+  `/gates approve <id>` (REPL) or the Approvals dashboard.
+- After they approve, retry the **identical** call once — it will execute.
+- If the operator rejects the call (`approval_denied`), do NOT retry it
+  automatically; ask the user how they want to proceed.
+
+An approval is single-use — it grants one attempt, not one successful effect —
+and a rejection is one-shot, so an identical call later will ask for approval
+again.
+
 ### Project Metadata (1 tool)
 
 **project_info** — Get project metadata: type, dependencies, structure summary.
