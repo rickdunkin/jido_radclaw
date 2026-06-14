@@ -118,6 +118,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
   # ---------------------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
+  # ex_dna:disable-for-next-line OTP start_link boilerplate, not copy-pasted logic
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end

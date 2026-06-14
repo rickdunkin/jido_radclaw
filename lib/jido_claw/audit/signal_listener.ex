@@ -39,6 +39,7 @@ defmodule JidoClaw.Audit.SignalListener do
   end
 
   @impl GenServer
+  # ex_dna:disable-for-next-line OTP retryable-setup boilerplate, not copy-pasted logic
   def init(_opts) do
     {:ok, %__MODULE__{}, {:continue, :setup}}
   end

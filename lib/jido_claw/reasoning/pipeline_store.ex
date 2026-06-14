@@ -32,10 +32,13 @@ defmodule JidoClaw.Reasoning.PipelineStore do
   all log a warning and the offending file is skipped. The process never
   crashes. User-vs-user name collisions resolve to the
   lexicographically-first filename (files are sorted before parsing).
+
+  The cached-registry GenServer machinery (client API, server callbacks,
+  disk loading) is provided by `JidoClaw.Reasoning.YamlStore`; only the
+  pipeline-specific struct and `validate/1` live here.
   """
 
-  use GenServer
-  require Logger
+  use JidoClaw.Reasoning.YamlStore, subdir: "pipelines", label: "PipelineStore"
 
   alias JidoClaw.Reasoning.{PipelineValidator, YamlStore}
 
@@ -49,128 +52,8 @@ defmodule JidoClaw.Reasoning.PipelineStore do
         }
 
   # ---------------------------------------------------------------------------
-  # Client API
+  # Private — validation
   # ---------------------------------------------------------------------------
-
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @doc "Return all cached pipeline names."
-  @spec list() :: [String.t()]
-  def list do
-    GenServer.call(__MODULE__, :list)
-  end
-
-  @doc "Find a cached pipeline by name."
-  @spec get(String.t()) :: {:ok, t()} | {:error, :not_found}
-  def get(name) when is_binary(name) do
-    GenServer.call(__MODULE__, {:get, name})
-  end
-
-  @doc "Return all cached pipeline structs."
-  @spec all() :: [t()]
-  def all do
-    GenServer.call(__MODULE__, :all)
-  end
-
-  @doc "Reload pipelines from disk."
-  @spec reload() :: :ok
-  def reload do
-    GenServer.call(__MODULE__, :reload)
-  end
-
-  # ---------------------------------------------------------------------------
-  # Server callbacks
-  # ---------------------------------------------------------------------------
-
-  @impl GenServer
-  def init(opts) do
-    project_dir = Keyword.fetch!(opts, :project_dir)
-    {:ok, %{project_dir: project_dir, pipelines: []}, {:continue, :load}}
-  end
-
-  @impl GenServer
-  def handle_continue(:load, state) do
-    pipelines = load_from_disk(state.project_dir)
-
-    Logger.debug(
-      "[PipelineStore] Cached #{length(pipelines)} user pipelines from #{pipelines_dir(state.project_dir)}"
-    )
-
-    {:noreply, %{state | pipelines: pipelines}}
-  end
-
-  @impl GenServer
-  def handle_call(:all, _from, state), do: {:reply, state.pipelines, state}
-
-  @impl GenServer
-  def handle_call(:list, _from, state) do
-    {:reply, Enum.map(state.pipelines, & &1.name), state}
-  end
-
-  @impl GenServer
-  def handle_call({:get, name}, _from, state) do
-    case Enum.find(state.pipelines, &(&1.name == name)) do
-      nil -> {:reply, {:error, :not_found}, state}
-      pipeline -> {:reply, {:ok, pipeline}, state}
-    end
-  end
-
-  @impl GenServer
-  def handle_call(:reload, _from, state) do
-    pipelines = load_from_disk(state.project_dir)
-    Logger.info("[PipelineStore] Reloaded #{length(pipelines)} user pipelines")
-    {:reply, :ok, %{state | pipelines: pipelines}}
-  end
-
-  # ---------------------------------------------------------------------------
-  # Private — loading + parsing
-  # ---------------------------------------------------------------------------
-
-  defp pipelines_dir(project_dir), do: Path.join([project_dir, ".jido", "pipelines"])
-
-  # ex_dna:disable-for-next-line
-  defp load_from_disk(project_dir) do
-    dir = pipelines_dir(project_dir)
-
-    case File.ls(dir) do
-      {:ok, files} ->
-        files
-        # Sort first so name collisions resolve to lexicographically-first
-        # reproducibly across filesystems (File.ls returns undefined order).
-        |> Enum.sort()
-        |> Enum.filter(&String.ends_with?(&1, ".yaml"))
-        |> Enum.flat_map(fn file -> parse_pipeline_file(Path.join(dir, file)) end)
-        |> dedupe_by_name()
-
-      {:error, _} ->
-        []
-    end
-  end
-
-  defp parse_pipeline_file(path) do
-    case YamlElixir.read_from_file(path) do
-      {:ok, data} when is_map(data) ->
-        case validate(data) do
-          {:ok, pipeline} ->
-            [pipeline]
-
-          {:error, reason} ->
-            Logger.warning("[PipelineStore] Skipping #{path}: #{reason}")
-            []
-        end
-
-      {:ok, _} ->
-        Logger.warning("[PipelineStore] Skipping #{path}: not a YAML mapping")
-        []
-
-      {:error, reason} ->
-        Logger.warning("[PipelineStore] Failed to parse #{path}: #{inspect(reason)}")
-        []
-    end
-  end
 
   defp validate(data) do
     with {:ok, name} <- YamlStore.fetch_name(data),
@@ -209,23 +92,4 @@ defmodule JidoClaw.Reasoning.PipelineStore do
 
   defp stringish(v, _default) when is_binary(v), do: v
   defp stringish(_, default), do: default
-
-  # Resolves user-vs-user name collisions by keeping the lexicographically-first
-  # file (the sort above guarantees consistent ordering across filesystems).
-  defp dedupe_by_name(pipelines) do
-    {kept, _seen} =
-      Enum.reduce(pipelines, {[], MapSet.new()}, fn pipeline, {acc, seen} ->
-        if MapSet.member?(seen, pipeline.name) do
-          Logger.warning(
-            "[PipelineStore] Duplicate user pipeline '#{pipeline.name}' — keeping the lexicographically-first definition"
-          )
-
-          {acc, seen}
-        else
-          {[pipeline | acc], MapSet.put(seen, pipeline.name)}
-        end
-      end)
-
-    Enum.reverse(kept)
-  end
 end

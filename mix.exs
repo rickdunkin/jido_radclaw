@@ -160,14 +160,8 @@ defmodule JidoClaw.MixProject do
       {:jido_messaging, "~> 1.0", override: true},
       {:jido_shell,
        github: "agentjido/jido_shell",
-       ref: "bace81abab9481e15723f4879f85eff5b14ea92d",
+       ref: "0c0e86aa6244c5a48473fe714bb866046ae0b927",
        override: true},
-      # jido_shell's Bash backend (Jido.Shell.Backend.Bash.JidoInterop)
-      # unconditionally `use Bash.Interop`, so `:bash` is a hard compile-time
-      # dependency even though jido_shell marks it `optional: true`. We don't
-      # wire up the Bash backend at runtime — this only satisfies compilation.
-      # Pinned to the exact ref jido_shell builds against (tv-labs/bash).
-      {:bash, github: "tv-labs/bash", ref: "c1038ff83e825c29ea131bf8b728bd1672734c01"},
       {:jido_vfs, "~> 1.0", override: true},
 
       # Data

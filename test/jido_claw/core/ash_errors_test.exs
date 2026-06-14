@@ -108,6 +108,23 @@ defmodule JidoClaw.Core.AshErrorsTest do
     end
   end
 
+  describe "db_errors/0" do
+    test "returns the exact canonical rescue list" do
+      # Pins the single source of truth for `rescue _ in @db_errors` sites
+      # across the app. Drift here (e.g. a module dropping Ash.Error.Forbidden)
+      # is exactly what this consolidation fixed — fail loudly if it recurs.
+      assert AshErrors.db_errors() == [
+               Ash.Error.Invalid,
+               Ash.Error.Unknown,
+               Ash.Error.Forbidden,
+               Ash.Error.Query.NotFound,
+               DBConnection.ConnectionError,
+               DBConnection.OwnershipError,
+               Postgrex.Error
+             ]
+    end
+  end
+
   defp invalid_error(errors), do: Invalid.exception(errors: errors)
 
   defp unique_violation(constraint) do

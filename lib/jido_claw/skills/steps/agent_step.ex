@@ -43,6 +43,8 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   alias JidoClaw.Workflows.ContextBuilder
   alias JidoClaw.Workflows.StepResult
 
+  import JidoClaw.Skills.Steps.RetryBudget, only: [retry_budget: 1, positive_remaining?: 1]
+
   @impl Reactor.Step
   @spec run(Reactor.inputs(), Reactor.context(), keyword()) ::
           {:ok, term()} | {:error, term()}
@@ -106,17 +108,6 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   def undo(_value, _arguments, context, options) do
     run_cleanup(options, context, "undo")
   end
-
-  defp retry_budget(options) do
-    case Keyword.get(options, :retry, 0) do
-      retry when is_integer(retry) and retry >= 0 -> retry
-      _ -> 0
-    end
-  end
-
-  defp positive_remaining?(:infinity), do: true
-  defp positive_remaining?(remaining) when is_integer(remaining), do: remaining > 0
-  defp positive_remaining?(_), do: false
 
   defp cleanup_declared?(options) do
     case Keyword.get(options, :compensate) do

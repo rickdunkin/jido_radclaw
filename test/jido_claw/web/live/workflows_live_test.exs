@@ -3,7 +3,9 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
   Direct-socket test (per `approvals_live_test.exs`) of the workflows page's
   Cancel button: the "cancel" `handle_event` routes through
   `Cancellation.cancel/2` and flashes the run's actual resulting status, and
-  the button (with its `data-confirm`) renders only for cancellable rows.
+  the button (with its `data-confirm`) renders only for cancellable rows. Also
+  pins the `toggle_cell/1` refactor: the steps toggle rides on the 5 data cells
+  (never the Actions cell), so each run row emits exactly 5 toggle bindings.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -59,7 +61,23 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
     refute html =~ ~s(id="replay-#{running.id}")
   end
 
+  test "each run row puts the steps toggle on exactly its 5 data cells", ctx do
+    run = seed_running(ctx, "wf-toggle")
+
+    html = render_runs([run])
+
+    # The toggle binding rides on the 5 data cells (Name/Type/Status/Started/
+    # Deadline), each carrying this run's id; the 6th (Actions) cell holds the
+    # reveal/cancel/replay buttons and must NOT toggle. Count == 5 proves both.
+    assert count_substring(html, ~s(phx-click="toggle_steps" phx-value-id="#{run.id}")) == 5
+  end
+
   # -- Helpers --
+
+  defp count_substring(haystack, needle) do
+    parts = String.split(haystack, needle)
+    length(parts) - 1
+  end
 
   defp seed_running(ctx, name) do
     {:ok, run} = WorkflowRun.create(%{name: name}, tenant: ctx.tenant, actor: ctx.actor)

@@ -206,29 +206,20 @@ defmodule JidoClaw.Web.WorkflowsLive do
               <%!-- The steps toggle rides on the data cells (not the row), so
                     the Actions cell's buttons never double-fire a toggle. --%>
               <tr id={"run-#{run.id}"}>
-                <td phx-click="toggle_steps" phx-value-id={run.id} style="cursor: pointer;">
-                  {run.name}
-                </td>
-                <td
-                  phx-click="toggle_steps"
-                  phx-value-id={run.id}
-                  style="cursor: pointer; color: var(--muted);"
-                >
+                <.toggle_cell run_id={run.id}>{run.name}</.toggle_cell>
+                <.toggle_cell run_id={run.id} style="cursor: pointer; color: var(--muted);">
                   {run.workflow_type || "—"}
-                </td>
-                <td phx-click="toggle_steps" phx-value-id={run.id} style="cursor: pointer;">
-                  <.status_badge status={run.status} />
-                </td>
-                <td
-                  phx-click="toggle_steps"
-                  phx-value-id={run.id}
+                </.toggle_cell>
+                <.toggle_cell run_id={run.id}><.status_badge status={run.status} /></.toggle_cell>
+                <.toggle_cell
+                  run_id={run.id}
                   style="cursor: pointer; color: var(--muted); font-size: 0.875rem;"
                 >
                   {format_time(run.started_at)}
-                </td>
-                <td phx-click="toggle_steps" phx-value-id={run.id} style="cursor: pointer;">
+                </.toggle_cell>
+                <.toggle_cell run_id={run.id}>
                   <.deadline_badge evidence={run_view.deadline} />
-                </td>
+                </.toggle_cell>
                 <td style="text-align: right; white-space: nowrap;">
                   <button
                     class="btn"
@@ -379,6 +370,22 @@ defmodule JidoClaw.Web.WorkflowsLive do
         </table>
       </div>
     </div>
+    """
+  end
+
+  # One toggle binding for all five data cells: each is a distinct DOM node, but
+  # routing the `phx-click` through a single component keeps the toggle on the
+  # cells (not the row), so the Actions cell never double-fires a step toggle.
+  attr(:run_id, :string, required: true)
+  attr(:style, :string, default: "cursor: pointer;")
+  slot(:inner_block, required: true)
+
+  @spec toggle_cell(map()) :: Phoenix.LiveView.Rendered.t()
+  defp toggle_cell(assigns) do
+    ~H"""
+    <td phx-click="toggle_steps" phx-value-id={@run_id} style={@style}>
+      {render_slot(@inner_block)}
+    </td>
     """
   end
 

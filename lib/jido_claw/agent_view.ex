@@ -50,15 +50,7 @@ defmodule JidoClaw.AgentView do
   # Ash CRUD + Postgrex faults the cold-read paths can hit; narrowed so a
   # genuine bug surfaces instead of being swallowed as "session not found"
   # or an empty projection.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   @default_events_categories [:request, :model, :tool, :output, :handoff, :reasoning]
   @default_events_limit 100

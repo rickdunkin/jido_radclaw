@@ -20,15 +20,7 @@ defmodule JidoClaw.Agent.Prompt do
 
   # Ash CRUD + Postgrex faults the Block tier read can hit; narrowed so a
   # real bug surfaces instead of silently producing an empty Block tier.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   # Embed the default system prompt at compile time so the escript/binary is self-contained
   @priv_prompt Path.join([__DIR__, "..", "..", "..", "priv", "defaults", "system_prompt.md"])

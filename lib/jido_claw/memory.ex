@@ -44,15 +44,7 @@ defmodule JidoClaw.Memory do
 
   # Ash CRUD + Postgrex faults the Block scope-chain read can hit; narrowing
   # keeps unexpected bugs surfacing instead of silently swallowed by `[]`.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.AshErrors

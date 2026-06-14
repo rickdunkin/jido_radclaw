@@ -6,15 +6,7 @@ defmodule JidoClaw.Forge.Manager do
   # Ash CRUD + Postgrex faults `recoverable?/1` can hit while consulting the
   # session phase / latest checkpoint; narrowed so a real bug surfaces
   # instead of silently treating every session as unrecoverable.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias JidoClaw.Forge.Persistence
   alias JidoClaw.Forge.PubSub, as: ForgePubSub

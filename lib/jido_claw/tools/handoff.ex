@@ -59,15 +59,7 @@ defmodule JidoClaw.Tools.Handoff do
   # Ash CRUD + Postgrex faults the best-effort metadata-mirror can hit when
   # writing the `current_agent_template` mirror — narrowed so a real bug
   # surfaces rather than being logged-and-swallowed.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry

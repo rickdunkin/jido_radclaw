@@ -35,6 +35,8 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
   alias JidoClaw.Workflows.StepNormalizer
   alias JidoClaw.Workflows.StepResult
 
+  import JidoClaw.Skills.Steps.RetryBudget, only: [retry_budget: 1, positive_remaining?: 1]
+
   @default_max_iterations 3
 
   @impl Reactor.Step
@@ -78,17 +80,6 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
       {:error, reason}
     end
   end
-
-  defp retry_budget(options) do
-    case Keyword.get(options, :retry, 0) do
-      retry when is_integer(retry) and retry >= 0 -> retry
-      _ -> 0
-    end
-  end
-
-  defp positive_remaining?(:infinity), do: true
-  defp positive_remaining?(remaining) when is_integer(remaining), do: remaining > 0
-  defp positive_remaining?(_), do: false
 
   @doc """
   Extract generator and evaluator steps from a skill by `role` field.

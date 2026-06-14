@@ -1,7 +1,16 @@
 defmodule JidoClaw.Core.AshErrors do
   @moduledoc """
-  Structural classification of Ash errors that callers would otherwise
-  have to string-match out of `inspect/1` output.
+  Structural handling of Ash/DB errors that callers would otherwise have to
+  string-match out of `inspect/1` output. Two concerns live here:
+
+    * **Classification** (`unique_violation?/2`) — detect a DB-level unique
+      violation structurally instead of by inspecting error strings.
+    * **The canonical rescue list** (`db_errors/0`) — the single source of
+      truth for the Ash/Postgrex exception structs the best-effort read/persist
+      paths narrow their rescues on (`rescue _ in @db_errors`), so a real bug
+      surfaces instead of being logged-and-swallowed.
+
+  ## Unique violations
 
   A DB-level unique violation surfaces as `Ash.Error.Invalid` wrapping
   `Ash.Error.Changes.InvalidAttribute` whose `private_vars` carry
@@ -11,6 +20,19 @@ defmodule JidoClaw.Core.AshErrors do
   so callers must pass index-name fragments (mind
   `identity_index_names` shortenings on the resource).
   """
+
+  @doc "Canonical Ash/DB exception structs the rescues narrow on (`rescue _ in @db_errors`)."
+  @spec db_errors() :: [module()]
+  def db_errors,
+    do: [
+      Ash.Error.Invalid,
+      Ash.Error.Unknown,
+      Ash.Error.Forbidden,
+      Ash.Error.Query.NotFound,
+      DBConnection.ConnectionError,
+      DBConnection.OwnershipError,
+      Postgrex.Error
+    ]
 
   @doc """
   True when `error` is an `Ash.Error.Invalid` carrying at least one

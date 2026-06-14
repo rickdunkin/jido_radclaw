@@ -19,15 +19,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
   # Ash CRUD + Postgrex faults the metadata-read/clear paths can hit; the
   # rescues narrow to these so an unexpected error surfaces instead of
   # being swallowed.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry

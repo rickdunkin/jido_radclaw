@@ -19,6 +19,10 @@ defmodule JidoClaw.Forge.Harness do
 
   @registry JidoClaw.Forge.SessionRegistry
 
+  # Ash CRUD + Postgrex faults the checkpoint-recovery read can hit; narrowed
+  # so a real bug surfaces instead of silently treating recovery as a miss.
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
+
   defstruct [
     :session_id,
     :spec,
@@ -789,14 +793,7 @@ defmodule JidoClaw.Forge.Harness do
       {:error, _} -> nil
     end
   rescue
-    _ in [
-      Ash.Error.Invalid,
-      Ash.Error.Unknown,
-      Ash.Error.Query.NotFound,
-      DBConnection.ConnectionError,
-      DBConnection.OwnershipError,
-      Postgrex.Error
-    ] ->
+    _ in @db_errors ->
       nil
   end
 

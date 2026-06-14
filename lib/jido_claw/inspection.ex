@@ -21,6 +21,14 @@ defmodule JidoClaw.Inspection do
   # a crashed inspector. Narrowing would couple the view to every
   # subsystem's exception surface.
   # reach:disable-for-this-file bare_rescue
+  #
+  # The alias run below coincidentally matches AgentView's — both projections
+  # alias the same Trace/Compactor/Session subsystems, so the overlap is shared
+  # domain, not copy-pasted logic. Breaking the match means dropping a middle
+  # alias, but each is a remote call whose fully-qualified call sites would then
+  # trip Credo's AliasUsage (3+ parts) — trading one finding for another. So
+  # disable ExDNA for this small read-only projection module.
+  # ex_dna:disable-for-this-file
 
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Prompt, as: AgentPrompt

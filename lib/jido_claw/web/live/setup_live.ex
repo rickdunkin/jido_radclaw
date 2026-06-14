@@ -23,27 +23,15 @@ defmodule JidoClaw.Web.SetupLive do
       <p style="color: var(--muted); margin-bottom: 2rem;">Verify your environment is ready</p>
 
       <div style="display: flex; gap: 0.25rem; margin-bottom: 1.5rem;">
-        <button
-          class={"btn #{if @step == :prerequisites, do: "btn-primary"}"}
-          phx-click="step"
-          phx-value-step="prerequisites"
-        >
-          Prerequisites
-        </button>
-        <button
-          class={"btn #{if @step == :credentials, do: "btn-primary"}"}
-          phx-click="step"
-          phx-value-step="credentials"
-        >
-          Credentials
-        </button>
-        <button
-          class={"btn #{if @step == :database, do: "btn-primary"}"}
-          phx-click="step"
-          phx-value-step="database"
-        >
-          Database
-        </button>
+        <%= for {step, label} <- [prerequisites: "Prerequisites", credentials: "Credentials", database: "Database"] do %>
+          <button
+            class={"btn #{if @step == step, do: "btn-primary"}"}
+            phx-click="step"
+            phx-value-step={step}
+          >
+            {label}
+          </button>
+        <% end %>
       </div>
 
       <div :if={@step == :prerequisites} class="card">
@@ -106,12 +94,18 @@ defmodule JidoClaw.Web.SetupLive do
     """
   end
 
+  # Explicit literal matching — never String.to_atom on params.
   @impl Phoenix.LiveView
-  def handle_event("step", %{"step" => step}, socket) do
-    {:noreply, assign(socket, step: String.to_existing_atom(step))}
-  rescue
-    ArgumentError -> {:noreply, socket}
-  end
+  def handle_event("step", %{"step" => "prerequisites"}, socket),
+    do: {:noreply, assign(socket, step: :prerequisites)}
+
+  def handle_event("step", %{"step" => "credentials"}, socket),
+    do: {:noreply, assign(socket, step: :credentials)}
+
+  def handle_event("step", %{"step" => "database"}, socket),
+    do: {:noreply, assign(socket, step: :database)}
+
+  def handle_event("step", _params, socket), do: {:noreply, socket}
 
   @impl Phoenix.LiveView
   def handle_event("recheck", _params, socket) do

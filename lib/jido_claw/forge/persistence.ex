@@ -6,14 +6,7 @@ defmodule JidoClaw.Forge.Persistence do
   # Ash CRUD + Postgrex faults this best-effort persistence layer can hit;
   # rescues narrow to these so an unexpected error (a real bug) surfaces
   # instead of being logged-and-swallowed.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias Ash.Query
   alias JidoClaw.Authorization.Actor
@@ -378,14 +371,7 @@ defmodule JidoClaw.Forge.Persistence do
           end
         end
       rescue
-        e in [
-          Ash.Error.Invalid,
-          Ash.Error.Unknown,
-          Ash.Error.Query.NotFound,
-          DBConnection.ConnectionError,
-          DBConnection.OwnershipError,
-          Postgrex.Error
-        ] ->
+        e in @db_errors ->
           # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
           Logger.warning("[Forge.Persistence] Failed to get latest checkpoint: #{inspect(e)}")
           nil
@@ -482,14 +468,7 @@ defmodule JidoClaw.Forge.Persistence do
           }
         end
       rescue
-        e in [
-          Ash.Error.Invalid,
-          Ash.Error.Unknown,
-          Ash.Error.Query.NotFound,
-          DBConnection.ConnectionError,
-          DBConnection.OwnershipError,
-          Postgrex.Error
-        ] ->
+        e in @db_errors ->
           # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
           Logger.warning("[Forge.Persistence] Failed to build context_for_resume: #{inspect(e)}")
           nil
@@ -515,14 +494,7 @@ defmodule JidoClaw.Forge.Persistence do
       {:error, _} -> nil
     end
   rescue
-    _ in [
-      Ash.Error.Invalid,
-      Ash.Error.Unknown,
-      Ash.Error.Query.NotFound,
-      DBConnection.ConnectionError,
-      DBConnection.OwnershipError,
-      Postgrex.Error
-    ] ->
+    _ in @db_errors ->
       nil
   end
 
@@ -539,14 +511,7 @@ defmodule JidoClaw.Forge.Persistence do
       {:error, _} -> nil
     end
   rescue
-    _ in [
-      Ash.Error.Invalid,
-      Ash.Error.Unknown,
-      Ash.Error.Query.NotFound,
-      DBConnection.ConnectionError,
-      DBConnection.OwnershipError,
-      Postgrex.Error
-    ] ->
+    _ in @db_errors ->
       nil
   end
 

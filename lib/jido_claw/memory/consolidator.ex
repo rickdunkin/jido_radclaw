@@ -31,15 +31,7 @@ defmodule JidoClaw.Memory.Consolidator do
 
   # Ash CRUD + Postgrex faults the workspace/session Ash reads can hit;
   # narrowing keeps unexpected bugs surfacing instead of silently swallowed.
-  @db_errors [
-    Ash.Error.Invalid,
-    Ash.Error.Unknown,
-    Ash.Error.Forbidden,
-    Ash.Error.Query.NotFound,
-    DBConnection.ConnectionError,
-    DBConnection.OwnershipError,
-    Postgrex.Error
-  ]
+  @db_errors JidoClaw.Core.AshErrors.db_errors()
 
   alias JidoClaw.Conversations.Session, as: ConversationSession
   alias JidoClaw.Memory.Consolidator.RunServer

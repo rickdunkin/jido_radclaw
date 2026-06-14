@@ -49,9 +49,17 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   collision. On user-vs-user collision the lexicographically-first filename
   wins (files are sorted before parsing so ordering is reproducible across
   environments).
+
+  The cached-registry GenServer machinery (client API, server callbacks,
+  disk loading) is provided by `JidoClaw.Reasoning.YamlStore`; only the
+  strategy-specific struct and `validate/1` live here.
   """
 
-  use GenServer
+  use JidoClaw.Reasoning.YamlStore, subdir: "strategies", label: "StrategyStore"
+
+  # `Logger` is also injected by the `use` above (for the shared machinery), but
+  # this module's own `classify_prompt_entry/4` calls a Logger macro directly, so
+  # declare the dependency explicitly here too.
   require Logger
 
   alias JidoClaw.Reasoning.{Complexity, TaskType, YamlStore}
@@ -93,128 +101,8 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   @max_prompt_bytes 5_000
 
   # ---------------------------------------------------------------------------
-  # Client API
+  # Private — validation + parsing
   # ---------------------------------------------------------------------------
-
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @doc "Return all cached strategy names."
-  @spec list() :: [String.t()]
-  def list do
-    GenServer.call(__MODULE__, :list)
-  end
-
-  @doc "Find a cached user strategy by name."
-  @spec get(String.t()) :: {:ok, t()} | {:error, :not_found}
-  def get(name) when is_binary(name) do
-    GenServer.call(__MODULE__, {:get, name})
-  end
-
-  @doc "Return all cached strategy structs."
-  @spec all() :: [t()]
-  def all do
-    GenServer.call(__MODULE__, :all)
-  end
-
-  @doc "Reload strategies from disk (hot-reload after YAML edits)."
-  @spec reload() :: :ok
-  def reload do
-    GenServer.call(__MODULE__, :reload)
-  end
-
-  # ---------------------------------------------------------------------------
-  # Server callbacks
-  # ---------------------------------------------------------------------------
-
-  @impl GenServer
-  def init(opts) do
-    project_dir = Keyword.fetch!(opts, :project_dir)
-    {:ok, %{project_dir: project_dir, strategies: []}, {:continue, :load}}
-  end
-
-  @impl GenServer
-  def handle_continue(:load, state) do
-    strategies = load_from_disk(state.project_dir)
-
-    Logger.debug(
-      "[StrategyStore] Cached #{length(strategies)} user strategies from #{strategies_dir(state.project_dir)}"
-    )
-
-    {:noreply, %{state | strategies: strategies}}
-  end
-
-  @impl GenServer
-  def handle_call(:all, _from, state), do: {:reply, state.strategies, state}
-
-  @impl GenServer
-  def handle_call(:list, _from, state) do
-    {:reply, Enum.map(state.strategies, & &1.name), state}
-  end
-
-  @impl GenServer
-  def handle_call({:get, name}, _from, state) do
-    case Enum.find(state.strategies, &(&1.name == name)) do
-      nil -> {:reply, {:error, :not_found}, state}
-      strategy -> {:reply, {:ok, strategy}, state}
-    end
-  end
-
-  @impl GenServer
-  def handle_call(:reload, _from, state) do
-    strategies = load_from_disk(state.project_dir)
-    Logger.info("[StrategyStore] Reloaded #{length(strategies)} user strategies")
-    {:reply, :ok, %{state | strategies: strategies}}
-  end
-
-  # ---------------------------------------------------------------------------
-  # Private — loading + parsing
-  # ---------------------------------------------------------------------------
-
-  defp strategies_dir(project_dir), do: Path.join([project_dir, ".jido", "strategies"])
-
-  # ex_dna:disable-for-next-line
-  defp load_from_disk(project_dir) do
-    dir = strategies_dir(project_dir)
-
-    case File.ls(dir) do
-      {:ok, files} ->
-        files
-        # Sort first so name collisions resolve to lexicographically-first
-        # reproducibly across filesystems (File.ls returns undefined order).
-        |> Enum.sort()
-        |> Enum.filter(&String.ends_with?(&1, ".yaml"))
-        |> Enum.flat_map(fn file -> parse_strategy_file(Path.join(dir, file)) end)
-        |> dedupe_by_name()
-
-      {:error, _} ->
-        []
-    end
-  end
-
-  defp parse_strategy_file(path) do
-    case YamlElixir.read_from_file(path) do
-      {:ok, data} when is_map(data) ->
-        case validate(data) do
-          {:ok, strategy} ->
-            [strategy]
-
-          {:error, reason} ->
-            Logger.warning("[StrategyStore] Skipping #{path}: #{reason}")
-            []
-        end
-
-      {:ok, _} ->
-        Logger.warning("[StrategyStore] Skipping #{path}: not a YAML mapping")
-        []
-
-      {:error, reason} ->
-        Logger.warning("[StrategyStore] Failed to parse #{path}: #{inspect(reason)}")
-        []
-    end
-  end
 
   defp validate(data) do
     with {:ok, name} <- YamlStore.fetch_name(data),
@@ -358,24 +246,4 @@ defmodule JidoClaw.Reasoning.StrategyStore do
   defp stringish(nil), do: nil
   defp stringish(v) when is_binary(v), do: v
   defp stringish(_), do: nil
-
-  # Built-in collisions are caught in validate/1. This pass resolves
-  # user-vs-user name collisions by keeping the lexicographically-first file
-  # (the sort above guarantees consistent ordering across filesystems).
-  defp dedupe_by_name(strategies) do
-    {kept, _seen} =
-      Enum.reduce(strategies, {[], MapSet.new()}, fn strat, {acc, seen} ->
-        if MapSet.member?(seen, strat.name) do
-          Logger.warning(
-            "[StrategyStore] Duplicate user strategy '#{strat.name}' — keeping the lexicographically-first definition"
-          )
-
-          {acc, seen}
-        else
-          {[strat | acc], MapSet.put(seen, strat.name)}
-        end
-      end)
-
-    Enum.reverse(kept)
-  end
 end
