@@ -121,4 +121,35 @@ defmodule JidoClaw.MCP.EndpointConfigTest do
     assert EndpointConfig.parse("nope") == {[], []}
     assert EndpointConfig.parse([]) == {[], []}
   end
+
+  test "a non-empty templates allowlist is carried onto the ServerSpec" do
+    {[spec], []} =
+      EndpointConfig.parse([
+        %{
+          "name" => "fs",
+          "transport" => "stdio",
+          "command" => "x",
+          "templates" => ["main", "coder"]
+        }
+      ])
+
+    assert spec.templates == ["main", "coder"]
+  end
+
+  test "an empty-string templates element is rejected (allowlisted-to-nobody footgun)" do
+    {specs, warnings} =
+      EndpointConfig.parse([
+        %{
+          "name" => "empties",
+          "transport" => "stdio",
+          "command" => "x",
+          "templates" => ["coder", ""]
+        }
+      ])
+
+    assert specs == []
+    assert [warning] = warnings
+    assert warning =~ "empties"
+    assert warning =~ "invalid_templates"
+  end
 end

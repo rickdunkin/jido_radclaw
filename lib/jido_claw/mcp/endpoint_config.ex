@@ -132,8 +132,12 @@ defmodule JidoClaw.MCP.EndpointConfig do
   defp validate_templates(:error), do: {:ok, []}
   defp validate_templates({:ok, nil}), do: {:ok, []}
 
+  # Match `require_approval`'s non-empty-string posture: an empty-string element
+  # is a silent "allowlisted to nobody" footgun, so reject the whole entry.
   defp validate_templates({:ok, list}) when is_list(list) do
-    if Enum.all?(list, &is_binary/1), do: {:ok, list}, else: {:error, {:invalid_templates, list}}
+    if Enum.all?(list, &(is_binary(&1) and &1 != "")),
+      do: {:ok, list},
+      else: {:error, {:invalid_templates, list}}
   end
 
   defp validate_templates({:ok, other}), do: {:error, {:invalid_templates, other}}

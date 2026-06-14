@@ -135,6 +135,44 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
     assert {:ok, _} = Ecto.UUID.cast(request_id)
   end
 
+  test "the routed handoff worker (not main) is the pid attached under its template",
+       %{
+         tenant_id: t,
+         session: session,
+         runtime_session_id: rsid,
+         actor: actor,
+         tmp: tmp
+       } do
+    install_handoff(t, rsid, session.id, actor)
+
+    Application.put_env(:jido_claw, :mcp_facade, JidoClaw.Test.MCPFacadeCapture)
+    Application.put_env(:jido_claw, :mcp_facade_capture_target, self())
+
+    on_exit(fn ->
+      Application.delete_env(:jido_claw, :mcp_facade)
+      Application.delete_env(:jido_claw, :mcp_facade_capture_target)
+    end)
+
+    {:ok, _} =
+      JidoClaw.chat(t, rsid, "Anything to fix?",
+        kind: :api,
+        workspace_id: tmp,
+        external_id: rsid,
+        actor: actor
+      )
+
+    routed_pid = Jido.whereis(JidoClaw.Jido, "handoff:#{session.id}:reviewer")
+    main_pid = Jido.whereis(JidoClaw.Jido, rsid)
+
+    assert is_pid(routed_pid)
+    refute routed_pid == main_pid
+
+    # The MCP attach runs against the *routed* worker under its template — not
+    # the pre-routing main pid. This is the handoff-turn correctness fix: the
+    # turn runs on routed_pid, so its tools must register there.
+    assert_receive {:mcp_ensure_attached, ^routed_pid, "reviewer", 8_000}, 5_000
+  end
+
   test "second turn after the handoff drops the preamble",
        %{
          tenant_id: t,

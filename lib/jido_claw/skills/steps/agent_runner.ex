@@ -35,6 +35,10 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     Application.get_env(:jido_claw, :step_agent_server, AgentServer)
   end
 
+  defp mcp do
+    Application.get_env(:jido_claw, :mcp_facade, JidoClaw.MCP)
+  end
+
   @doc """
   Spawn `template_name`, run `task`, and capture the result.
 
@@ -56,6 +60,12 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
          tool_context =
            Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
          {:ok, pid} <- JidoClaw.Jido.start_subagent(template.module, id: tag) do
+      # Bounded: register this step template's allowlisted external MCP proxies
+      # onto the freshly-spawned worker before its single-shot turn. Best-effort
+      # — a `:skipped`/`:partial`/`:timeout` just means a tool-less step (still
+      # strictly better than today's zero tools). Blocks only this step's setup.
+      _ = mcp().ensure_attached(pid, template_name, 8_000)
+
       request_id = JidoClaw.register_child_correlation(tool_context)
       SubagentTranscript.record_task(tool_context, request_id, task)
 

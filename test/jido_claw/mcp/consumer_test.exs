@@ -7,6 +7,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
   """
   use ExUnit.Case, async: false
 
+  alias JidoClaw.AgentTracker
   alias JidoClaw.MCP
   alias JidoClaw.MCP.Consumer
   alias JidoClaw.MCP.ProxyGenerator
@@ -37,6 +38,15 @@ defmodule JidoClaw.MCP.ConsumerTest do
   defp restore_policy(key, value), do: :persistent_term.put(key, value)
 
   defp stub(map), do: Application.put_env(:jido_claw, :mcp_stub, map)
+
+  # A streamable_http server map with an optional `templates:` reach-allowlist;
+  # the discovered tool's local name is `mcp_<name>_ping`.
+  defp server(name, opts \\ []) do
+    base = %{"name" => name, "transport" => "streamable_http", "url" => "http://localhost:1/mcp"}
+    Enum.reduce(opts, base, fn {key, value}, acc -> Map.put(acc, to_string(key), value) end)
+  end
+
+  defp tool_name(server_name), do: "mcp_#{server_name}_ping"
 
   defp ping_tool,
     do: %{"name" => "ping", "inputSchema" => %{"type" => "object", "properties" => %{}}}
@@ -147,7 +157,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
       agent = start_agent!()
 
-      assert :ok = MCP.ensure_attached(agent, 3_000)
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
       assert {:ok, true} = Jido.AI.has_tool?(agent, @tool_name)
     end
 
@@ -157,8 +167,8 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
       agent = start_agent!()
 
-      assert :ok = MCP.ensure_attached(agent, 3_000)
-      assert :already = MCP.ensure_attached(agent, 3_000)
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
+      assert :already = MCP.ensure_attached(agent, "main", 3_000)
     end
 
     test "blocks during :preparing then returns with the tool present" do
@@ -169,7 +179,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
       assert_receive {:listing, task_pid}, 2_000
 
-      waiter = Task.async(fn -> MCP.ensure_attached(agent, 5_000) end)
+      waiter = Task.async(fn -> MCP.ensure_attached(agent, "main", 5_000) end)
       assert_eventually(fn -> :sys.get_state(consumer).waiters != [] end)
 
       send(task_pid, :release)
@@ -184,7 +194,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
       agent = start_agent!()
 
-      assert :ok = MCP.ensure_attached(agent, 3_000)
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
       assert MapSet.member?(:sys.get_state(consumer).attached, agent)
     end
 
@@ -196,7 +206,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
       assert_receive {:listing, _task_pid}, 2_000
 
-      waiter = Task.async(fn -> MCP.ensure_attached(agent, 5_000) end)
+      waiter = Task.async(fn -> MCP.ensure_attached(agent, "main", 5_000) end)
       assert_eventually(fn -> :sys.get_state(consumer).waiters != [] end)
 
       prep_pid = :sys.get_state(consumer).prep_pid
@@ -215,7 +225,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       # `:mcp_unavailable` must be the FIRST assertion: on unfixed code this
       # path returns `:ok` and fires an async `mark_attached` cast, which a
       # later `attached` check could observe non-deterministically.
-      assert :mcp_unavailable = MCP.ensure_attached(agent, 1_000)
+      assert :mcp_unavailable = MCP.ensure_attached(agent, "main", 1_000)
       refute MapSet.member?(:sys.get_state(consumer).attached, agent)
       assert :sys.get_state(consumer).status == :failed
     end
@@ -264,8 +274,158 @@ defmodule JidoClaw.MCP.ConsumerTest do
       refute MapSet.member?(:sys.get_state(consumer).attached, agent)
 
       # Self-heal: a current-generation ensure_attached still attaches normally.
-      assert :ok = MCP.ensure_attached(agent, 3_000)
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
       assert MapSet.member?(:sys.get_state(consumer).attached, agent)
+    end
+  end
+
+  describe "per-template reach" do
+    setup do
+      # The Consumer reads the globally-named singleton AgentTracker on
+      # `:prepared` fan-out; reset it so rehydrate assertions never pick up
+      # stale tracked entries (and so tests 1–5/7 fan out to an empty tracker).
+      AgentTracker.reset()
+      _ = AgentTracker.get_state()
+      on_exit(fn -> AgentTracker.reset() end)
+      :ok
+    end
+
+    test "an empty allowlist grants the tool to every template (back-compat)" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([@server])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      coder = start_agent!()
+      researcher = start_agent!()
+
+      assert :ok = MCP.ensure_attached(coder, "coder", 3_000)
+      assert :ok = MCP.ensure_attached(researcher, "researcher", 3_000)
+
+      assert has_tool?(coder, @tool_name)
+      assert has_tool?(researcher, @tool_name)
+    end
+
+    test "a restricted allowlist grants the tool only to listed templates" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([server("stub", templates: ["coder"])])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      coder = start_agent!()
+      other = start_agent!()
+
+      assert :ok = MCP.ensure_attached(coder, "coder", 3_000)
+      assert has_tool?(coder, @tool_name)
+
+      # An un-allowlisted template's empty filtered set registers vacuously, so
+      # ensure_attached still reports :ok — but the tool must NOT be present.
+      # The :ok-vs-has_tool? distinction is the whole point of reach: the tool
+      # is withheld at *registration*, never advertised to the LLM, not merely
+      # gated at call time.
+      assert :ok = MCP.ensure_attached(other, "researcher", 3_000)
+      refute has_tool?(other, @tool_name)
+    end
+
+    test "the fire-and-forget attach path respects the allowlist" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([server("stub", templates: ["coder"])])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      coder = start_agent!()
+      other = start_agent!()
+
+      assert :ok = MCP.attach_to_agent(coder, "coder")
+      assert :ok = MCP.attach_to_agent(other, "researcher")
+
+      assert_eventually(fn -> has_tool?(coder, @tool_name) end)
+      # Once `other`'s empty registration completes it is marked attached and
+      # can never gain the tool — a deterministic refute.
+      assert_eventually(fn -> MapSet.member?(:sys.get_state(consumer).attached, other) end)
+      refute has_tool?(other, @tool_name)
+    end
+
+    test "a deferred (:preparing) fire-and-forget attach lands filtered" do
+      stub(%{list_tools: blocking_list_tools(self(), [ping_tool()])})
+      consumer = start_consumer!([server("stub", templates: ["coder"])])
+      coder = start_agent!()
+      other = start_agent!()
+
+      assert_receive {:listing, task_pid}, 2_000
+      assert :sys.get_state(consumer).status == :preparing
+
+      assert :ok = MCP.attach_to_agent(coder, "coder")
+      assert :ok = MCP.attach_to_agent(other, "researcher")
+      send(task_pid, :release)
+
+      # Exercises fan_out_to_pending using the now-used stashed per-pid template.
+      assert_eventually(fn -> has_tool?(coder, @tool_name) end)
+      assert_eventually(fn -> MapSet.member?(:sys.get_state(consumer).attached, other) end)
+      refute has_tool?(other, @tool_name)
+    end
+
+    test "union: a pid gets every unrestricted server's tools plus the restricted ones it is listed for" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([server("alpha"), server("beta", templates: ["coder"])])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      coder = start_agent!()
+      researcher = start_agent!()
+
+      assert :ok = MCP.ensure_attached(coder, "coder", 3_000)
+      assert :ok = MCP.ensure_attached(researcher, "researcher", 3_000)
+
+      # coder is allowlisted on beta and everyone is on alpha → both tools.
+      assert has_tool?(coder, tool_name("alpha"))
+      assert has_tool?(coder, tool_name("beta"))
+
+      # researcher gets the unrestricted server only — the key guarantee.
+      assert has_tool?(researcher, tool_name("alpha"))
+      refute has_tool?(researcher, tool_name("beta"))
+    end
+
+    test "tracked fan-out registers each tracked pid's allowed subset and skips already-attached pids" do
+      stub(%{list_tools: blocking_list_tools(self(), [ping_tool()])})
+      consumer = start_consumer!([server("stub", templates: ["coder"])])
+
+      assert_receive {:listing, task_pid}, 2_000
+
+      coder = start_agent!()
+      researcher = start_agent!()
+      already = start_agent!()
+
+      n = System.unique_integer([:positive])
+      :ok = AgentTracker.register("reach-coder-#{n}", coder, "coder", "t")
+      :ok = AgentTracker.register("reach-researcher-#{n}", researcher, "researcher", "t")
+      :ok = AgentTracker.register("reach-already-#{n}", already, "coder", "t")
+
+      # Seed `already` into the attached set so the fan-out's pid-membership
+      # reject (the tracked-tuple fix) skips it — proving the reject keys on the
+      # pid, not the {pid, template} tuple tracked_live_pids now returns.
+      :sys.replace_state(consumer, fn s -> %{s | attached: MapSet.put(s.attached, already)} end)
+
+      send(task_pid, :release)
+
+      # coder (allowlisted, not yet attached) gets the tool via fan-out.
+      assert_eventually(fn -> has_tool?(coder, @tool_name) end)
+      # researcher (not allowlisted) is filtered out; `already` (pre-attached)
+      # is skipped entirely — neither ever gains the tool.
+      refute has_tool?(researcher, @tool_name)
+      refute has_tool?(already, @tool_name)
+    end
+
+    test "a second ensure_attached under the same template fast-returns :already, tool set unchanged" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([server("stub", templates: ["coder"])])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      coder = start_agent!()
+
+      assert :ok = MCP.ensure_attached(coder, "coder", 3_000)
+      assert has_tool?(coder, @tool_name)
+
+      assert :already = MCP.ensure_attached(coder, "coder", 3_000)
+
+      {:ok, tools} = Jido.AI.list_tools(coder)
+      assert Enum.count(tools, &(&1.name() == @tool_name)) == 1
     end
   end
 

@@ -20,10 +20,22 @@ defmodule JidoClaw.MCP.Consumer do
       and registers in a **fire-and-forget supervised task** — used at REPL boot
       and the `:prepared`/restart rehydrate fan-out. The Consumer never
       `Task.yield`s in a callback.
-    * `ensure_attached/2` (via the facade) answers `:modules_when_ready`
+    * `ensure_attached/3` (via the facade) answers `:modules_when_ready`
       immediately when `:ready` (or `:already` for a confirmed pid), else
       **defers** the reply until `{:prepared}` — the *caller* waits, registers,
       and confirms; the Consumer stays free.
+
+  ## Per-template reach (registration filtering)
+
+  Each attach carries the target agent's **template** name, and every server
+  declares a reach-allowlist (`ServerSpec.templates`, normalized here to
+  `:all | [name]` per generated module). `modules_for_template/3` keeps only the
+  modules a template may reach — `:all` (empty/absent allowlist ⇒ every
+  template) or membership in the named list — so an un-allowlisted worker is
+  withheld the tools at *registration* (the LLM never sees them), strictly
+  stronger and simpler than gating the call. A nil/non-binary template resolves
+  to unrestricted-only. `"main"` is just a nameable template: an allowlist must
+  include it to keep tools on the interactive agent.
 
   Per-module registration is independent (`has_tool?`/`register_tool` wrapped in
   `try/catch :exit` + rescue), so one dead/slow agent call warn-logs and
@@ -36,6 +48,7 @@ defmodule JidoClaw.MCP.Consumer do
 
   require Logger
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.MCP.EndpointConfig
   alias JidoClaw.MCP.ProxyGenerator
 
@@ -75,6 +88,9 @@ defmodule JidoClaw.MCP.Consumer do
        # still matches, fencing out marks from a crashed prior incarnation.
        generation: make_ref(),
        modules: [],
+       # %{module() => :all | [template_name]} — the reach-allowlist per
+       # generated proxy module, accumulated across servers at prep.
+       module_templates: %{},
        pending: %{},
        waiters: [],
        attached: MapSet.new(),
@@ -90,7 +106,8 @@ defmodule JidoClaw.MCP.Consumer do
 
     case state.status do
       :ready ->
-        start_register_task(pid, state.modules, state.generation)
+        modules = modules_for_template(state.modules, state.module_templates, template)
+        start_register_task(pid, modules, state.generation)
         {:reply, :ok, state}
 
       :preparing ->
@@ -101,21 +118,24 @@ defmodule JidoClaw.MCP.Consumer do
     end
   end
 
-  def handle_call({:modules_when_ready, pid}, from, state) do
+  def handle_call({:modules_when_ready, pid, template}, from, state) do
     cond do
       # `:failed` first (defense-in-depth): a crashed Consumer reports
       # unavailable even if a stale `attached` entry ever slipped in.
       state.status == :failed ->
         {:reply, {:error, :mcp_unavailable}, state}
 
+      # `attached` is pid-keyed and a pid's template is immutable for its
+      # lifetime, so the `:already` fast path stays correct without re-filtering.
       MapSet.member?(state.attached, pid) ->
         {:reply, :already, state}
 
       state.status == :ready ->
-        {:reply, {:ok, state.modules, state.generation}, ensure_monitored(state, pid)}
+        modules = modules_for_template(state.modules, state.module_templates, template)
+        {:reply, {:ok, modules, state.generation}, ensure_monitored(state, pid)}
 
       true ->
-        {:noreply, %{state | waiters: [{from, pid} | state.waiters]}}
+        {:noreply, %{state | waiters: [{from, pid, template} | state.waiters]}}
     end
   end
 
@@ -128,7 +148,7 @@ defmodule JidoClaw.MCP.Consumer do
   # Consumer: if that replacement is `:preparing`/`:failed` the status guard
   # drops it; if it already reached `:ready` with a *different* module set, the
   # generation mismatch drops it — pid stays unmarked and a later
-  # `ensure_attached/2` idempotently re-registers + re-marks (self-healing).
+  # `ensure_attached/3` idempotently re-registers + re-marks (self-healing).
   # Within one incarnation the token always matches, so nothing legitimate is
   # dropped.
   def handle_cast(
@@ -143,12 +163,13 @@ defmodule JidoClaw.MCP.Consumer do
   end
 
   @impl GenServer
-  def handle_info({:prepared, modules, policy}, state) do
+  def handle_info({:prepared, modules, policy, module_templates}, state) do
     :persistent_term.put(JidoClaw.MCP.policy_key(), policy)
 
     replied =
-      Enum.reduce(state.waiters, state, fn {from, pid}, acc ->
-        GenServer.reply(from, {:ok, modules, state.generation})
+      Enum.reduce(state.waiters, state, fn {from, pid, template}, acc ->
+        filtered = modules_for_template(modules, module_templates, template)
+        GenServer.reply(from, {:ok, filtered, state.generation})
         ensure_monitored(acc, pid)
       end)
 
@@ -156,6 +177,7 @@ defmodule JidoClaw.MCP.Consumer do
       replied
       | status: :ready,
         modules: modules,
+        module_templates: module_templates,
         waiters: [],
         prep_ref: nil,
         prep_pid: nil
@@ -163,14 +185,14 @@ defmodule JidoClaw.MCP.Consumer do
 
     fanned =
       ready
-      |> fan_out_to_pending(modules)
-      |> fan_out_to_tracked(modules)
+      |> fan_out_to_pending()
+      |> fan_out_to_tracked()
 
     {:noreply, fanned}
   end
 
   # A hard, untrappable prep kill is the only way prep dies without sending
-  # `{:prepared}` (graceful failures are rescued into `{:prepared, [], %{}}`).
+  # `{:prepared}` (graceful failures are rescued into `{:prepared, [], %{}, %{}}`).
   # Transition to `:failed` — NOT `:ready` with empty modules, which is
   # indistinguishable from a successful zero-tool prep and would falsely
   # mark later callers attached and tool-less forever. Reply `:mcp_unavailable`
@@ -185,7 +207,7 @@ defmodule JidoClaw.MCP.Consumer do
 
     :persistent_term.put(JidoClaw.MCP.policy_key(), %{})
 
-    Enum.each(state.waiters, fn {from, _pid} ->
+    Enum.each(state.waiters, fn {from, _pid, _template} ->
       GenServer.reply(from, {:error, :mcp_unavailable})
     end)
 
@@ -194,6 +216,7 @@ defmodule JidoClaw.MCP.Consumer do
        state
        | status: :failed,
          modules: [],
+         module_templates: %{},
          pending: %{},
          waiters: [],
          prep_ref: nil,
@@ -269,20 +292,42 @@ defmodule JidoClaw.MCP.Consumer do
     :exit, _reason -> {:error, :exit}
   end
 
+  # The reach-allowlist filter: keep `mod` where its server admits every
+  # template (`:all`) or names this (binary) one. A nil/non-binary template
+  # falls back to unrestricted-only — the `is_binary` guard lives here (not on
+  # the facade) so the facade's `template` stays a required *position*, not a
+  # required binary. An empty result registers vacuously (`:ok`), so an
+  # un-allowlisted worker attaches with no tools rather than erroring.
+  @spec modules_for_template([module()], %{module() => :all | [String.t()]}, term()) ::
+          [module()]
+  defp modules_for_template(modules, module_templates, template) do
+    Enum.filter(modules, fn mod ->
+      case Map.get(module_templates, mod) do
+        :all -> true
+        allowed when is_list(allowed) -> is_binary(template) and template in allowed
+        _missing -> false
+      end
+    end)
+  end
+
   # -- Fan-out --
 
-  defp fan_out_to_pending(state, modules) do
-    Enum.each(state.pending, fn {pid, _template} ->
+  defp fan_out_to_pending(state) do
+    Enum.each(state.pending, fn {pid, template} ->
+      modules = modules_for_template(state.modules, state.module_templates, template)
       start_register_task(pid, modules, state.generation)
     end)
 
     %{state | pending: %{}}
   end
 
-  defp fan_out_to_tracked(state, modules) do
+  defp fan_out_to_tracked(state) do
     tracked_live_pids()
-    |> Enum.reject(&MapSet.member?(state.attached, &1))
-    |> Enum.reduce(state, fn pid, acc ->
+    # `attached` holds pids, so reject on the pid (the second element is the
+    # tracked template) before registering each pid's filtered subset.
+    |> Enum.reject(fn {pid, _template} -> MapSet.member?(state.attached, pid) end)
+    |> Enum.reduce(state, fn {pid, template}, acc ->
+      modules = modules_for_template(state.modules, state.module_templates, template)
       start_register_task(pid, modules, state.generation)
       ensure_monitored(acc, pid)
     end)
@@ -290,7 +335,10 @@ defmodule JidoClaw.MCP.Consumer do
 
   # AgentTracker retains terminal entries (it does not drop `:done`/`:error`),
   # so filter to live `:running` pids — and tolerate the tracker not being up
-  # yet (the Consumer starts right after it, but a restart can race).
+  # yet (the Consumer starts right after it, but a restart can race). Returns
+  # `[{pid, template}]`: main and skill-step workers aren't tracker-registered,
+  # so every tracked template is a worker binary; a non-binary still falls back
+  # to unrestricted-only downstream.
   defp tracked_live_pids do
     case Process.whereis(JidoClaw.AgentTracker) do
       nil ->
@@ -301,7 +349,7 @@ defmodule JidoClaw.MCP.Consumer do
 
         for {_id, entry} <- agents,
             entry.status == :running and is_pid(entry.pid) and Process.alive?(entry.pid),
-            do: entry.pid
+            do: {entry.pid, entry.template}
     end
   rescue
     _exception -> []
@@ -327,21 +375,22 @@ defmodule JidoClaw.MCP.Consumer do
   # -- Prep (off-process) --
 
   defp run_prep(parent, servers) do
-    {modules, policy} = prepare(servers)
-    send(parent, {:prepared, modules, policy})
+    {modules, policy, module_templates} = prepare(servers)
+    send(parent, {:prepared, modules, policy, module_templates})
   rescue
     exception ->
       Logger.warning("[MCP] prep failed: #{inspect(exception)}")
-      send(parent, {:prepared, [], %{}})
+      send(parent, {:prepared, [], %{}, %{}})
   catch
     kind, reason ->
       Logger.warning("[MCP] prep crashed: #{inspect({kind, reason})}")
-      send(parent, {:prepared, [], %{}})
+      send(parent, {:prepared, [], %{}, %{}})
   end
 
   defp prepare(servers) do
     {specs, warnings} = EndpointConfig.parse(servers || configured_servers())
     Enum.each(warnings, fn warning -> Logger.warning("[MCP] #{warning}") end)
+    warn_unknown_templates(specs)
 
     results =
       specs
@@ -352,12 +401,34 @@ defmodule JidoClaw.MCP.Consumer do
       )
       |> Enum.map(fn
         {:ok, result} -> result
-        {:exit, _reason} -> {[], %{}}
+        {:exit, _reason} -> {[], %{}, %{}}
       end)
 
-    modules = Enum.flat_map(results, fn {mods, _policy} -> mods end)
-    policy = Enum.reduce(results, %{}, fn {_mods, pol}, acc -> Map.merge(acc, pol) end)
-    {modules, policy}
+    modules = Enum.flat_map(results, fn {mods, _policy, _module_templates} -> mods end)
+    policy = Enum.reduce(results, %{}, fn {_mods, pol, _mt}, acc -> Map.merge(acc, pol) end)
+
+    module_templates =
+      Enum.reduce(results, %{}, fn {_mods, _pol, mt}, acc -> Map.merge(acc, mt) end)
+
+    {modules, policy, module_templates}
+  end
+
+  # Operator hygiene: an allowlist naming a template that doesn't exist would
+  # silently grant tools to no one. Warn (don't drop), mirroring the parse-time
+  # warn-and-skip posture. `Templates.get/1` honors the `:agent_templates_
+  # override` test/custom hook (unlike `names/0`/`exists?/1`); `"main"` is a
+  # nameable pseudo-template absent from the registry, so never false-warn on it.
+  defp warn_unknown_templates(specs) do
+    for spec <- specs,
+        name <- spec.templates,
+        name != "main",
+        match?({:error, _reason}, Templates.get(name)) do
+      Logger.warning(
+        "[MCP] server #{spec.name}: allowlist references unknown template #{inspect(name)}"
+      )
+    end
+
+    :ok
   end
 
   defp prepare_server(spec) do
@@ -368,13 +439,20 @@ defmodule JidoClaw.MCP.Consumer do
          {:ok, tools} <- client.list_tools(spec.endpoint.id, list_tools_timeout()) do
       modules = ProxyGenerator.build_modules(spec.name, spec.endpoint.id, tools)
       policy = Map.new(modules, fn module -> {module.name(), spec.require_approval} end)
-      {modules, policy}
+      allowed = template_allowance(spec.templates)
+      module_templates = Map.new(modules, fn module -> {module, allowed} end)
+      {modules, policy, module_templates}
     else
       error ->
         Logger.warning("[MCP] server #{spec.name}: discovery failed: #{inspect(error)}")
-        {[], %{}}
+        {[], %{}, %{}}
     end
   end
+
+  # `[]`/absent ⇒ `:all` (every template reaches these tools — back-compat);
+  # a non-empty list ⇒ only those template names.
+  defp template_allowance([]), do: :all
+  defp template_allowance(list) when is_list(list), do: list
 
   defp configured_servers do
     case Application.get_env(:jido_claw, :mcp_servers) do

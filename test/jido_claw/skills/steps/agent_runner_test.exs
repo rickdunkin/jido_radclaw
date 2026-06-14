@@ -229,6 +229,25 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       assert tc.agent_template == "echo_public"
     end
 
+    test "ensure_attaches the step template's external MCP tools onto the worker" do
+      %{context: context} = real_scope_context()
+
+      Application.put_env(:jido_claw, :mcp_facade, JidoClaw.Test.MCPFacadeCapture)
+      Application.put_env(:jido_claw, :mcp_facade_capture_target, self())
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :mcp_facade)
+        Application.delete_env(:jido_claw, :mcp_facade_capture_target)
+      end)
+
+      assert {:ok, _} = AgentRunner.run("echo_public", "go", "s", context)
+
+      # run/4 bounds-attaches the freshly-spawned worker under the step's
+      # template before its single-shot turn (steps previously got no externals).
+      assert_receive {:mcp_ensure_attached, pid, "echo_public", 8_000}, 5_000
+      assert is_pid(pid)
+    end
+
     test "child correlation carries the parent's user_id end-to-end" do
       %{context: context, session: session, user_id: user_id} = real_scope_context()
 

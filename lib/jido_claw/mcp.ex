@@ -11,8 +11,9 @@ defmodule JidoClaw.MCP do
   Two attach entry points, both keeping the Consumer non-blocking:
 
     * `attach_to_agent/2` — fire-and-forget (REPL boot, restart rehydrate).
-    * `ensure_attached/2` — bounded, for the chat request path: a fresh
-      session's first turn must already carry its tools.
+    * `ensure_attached/3` — bounded, for the per-turn paths (chat / spawn /
+      follow-up / skill-step): the turn must already carry its tools. The
+      `template` arg scopes which external tools register (the reach-allowlist).
 
   Plus two reads used by the safety pipeline and proxies:
 
@@ -24,7 +25,6 @@ defmodule JidoClaw.MCP do
   alias JidoClaw.MCP.Consumer
 
   @policy_key {:jido_claw, :mcp_approval_policy}
-  @default_ensure_timeout 8_000
 
   @typedoc "Result of an attach attempt (best-effort; callers may ignore)."
   @type attach_result :: :ok | :already | :partial | :mcp_unavailable | :timeout | :skipped
@@ -63,22 +63,30 @@ defmodule JidoClaw.MCP do
   end
 
   @doc """
-  Ensure `pid` has its MCP proxies registered before its turn runs (bounded).
+  Ensure `pid` has its `template`-allowlisted MCP proxies registered before its
+  turn runs (bounded).
 
-  Returns immediately with `:already` for a pid the Consumer has confirmed
-  attached (the steady-state chat fast path), so only a pid's first turn does
-  registration work. While prep is still running, the *caller* waits (bounded by
-  `timeout`) — the Consumer defers the reply rather than blocking itself. On
-  `:timeout` (prep still running) the agent proceeds tool-less and a later turn
-  genuinely retries; on a prep crash returns `:mcp_unavailable`, which is
-  **terminal until a Consumer/app restart re-preps** — later turns stay tool-less
-  (no self-heal); with no Consumer, `:skipped`.
+  Only the modules `template` may reach (the per-server reach-allowlist) are
+  registered; an un-allowlisted worker confirms `:ok` having attached an empty
+  subset. Returns immediately with `:already` for a pid the Consumer has
+  confirmed attached (the steady-state fast path), so only a pid's first turn
+  does registration work. While prep is still running, the *caller* waits
+  (bounded by `timeout`) — the Consumer defers the reply rather than blocking
+  itself. On `:timeout` (prep still running) the agent proceeds tool-less and a
+  later turn genuinely retries; on a prep crash returns `:mcp_unavailable`,
+  which is **terminal until a Consumer/app restart re-preps** — later turns stay
+  tool-less (no self-heal); with no Consumer, `:skipped`.
+
+  Strictly 3-arity (no defaulted timeout): callers pass the bound explicitly so
+  a stale 2-arity call fails loudly instead of silently binding the timeout as
+  the template. `template` is typed `term()` — any non-binary resolves to
+  unrestricted-only downstream (the binary check lives in the Consumer).
   """
-  @spec ensure_attached(pid(), timeout()) :: attach_result()
-  def ensure_attached(pid, timeout \\ @default_ensure_timeout) when is_pid(pid) do
+  @spec ensure_attached(pid(), term(), timeout()) :: attach_result()
+  def ensure_attached(pid, template, timeout) when is_pid(pid) do
     case Process.whereis(Consumer) do
       nil -> :skipped
-      _consumer -> do_ensure_attached(pid, timeout)
+      _consumer -> do_ensure_attached(pid, template, timeout)
     end
   end
 
@@ -88,8 +96,8 @@ defmodule JidoClaw.MCP do
     :exit, _reason -> :skipped
   end
 
-  defp do_ensure_attached(pid, timeout) do
-    case GenServer.call(Consumer, {:modules_when_ready, pid}, timeout) do
+  defp do_ensure_attached(pid, template, timeout) do
+    case GenServer.call(Consumer, {:modules_when_ready, pid, template}, timeout) do
       :already ->
         :already
 

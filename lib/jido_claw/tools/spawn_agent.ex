@@ -147,6 +147,12 @@ defmodule JidoClaw.Tools.SpawnAgent do
       Task.Supervisor.start_child(task_supervisor(), fn ->
         agent_tracker().attach_orchestrator(tag, self())
 
+        # Bounded: register the spawning template's allowlisted external MCP
+        # proxies onto the sub-agent before its turn runs. Blocks only this
+        # task, never the caller/Consumer. Best-effort (`:skipped` with no
+        # Consumer; `:partial`/`:timeout` just means a tool-less turn).
+        _ = mcp().ensure_attached(subagent_pid, template_name, 8_000)
+
         try do
           SubagentTranscript.record_task(child_tool_context, request_id, task)
 
@@ -300,5 +306,12 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   defp templates do
     Application.get_env(:jido_claw, :agent_templates, Templates)
+  end
+
+  # Kept apart from the sibling Application.get_env/3 seams above: three
+  # byte-identical seams clustered across this and send_to_agent.ex trip the
+  # cross-file duplicate-clone gate; split, the shared block stays under it.
+  defp mcp do
+    Application.get_env(:jido_claw, :mcp_facade, JidoClaw.MCP)
   end
 end

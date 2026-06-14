@@ -111,15 +111,6 @@ defmodule JidoClaw do
              :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session.id),
              :ok <-
                JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session) do
-          # Best-effort: register any configured external MCP proxies onto this
-          # agent before its turn runs. Covers both fresh and existing chat
-          # pids (chat agents aren't in AgentTracker); steady-state-cheap via
-          # the Consumer's `:already` fast path, so only a pid's first turn does
-          # registration work. Tool-less on `:timeout` (prep still running — a
-          # later turn genuinely retries) or `:mcp_unavailable` (prep crashed —
-          # tool-less until a Consumer/app restart re-preps).
-          _ = JidoClaw.MCP.ensure_attached(agent_pid)
-
           run_chat_turn(
             agent_pid,
             tenant_id,
@@ -161,6 +152,11 @@ defmodule JidoClaw do
   end
 
   defp ask_runtime, do: Application.get_env(:jido_claw, :ask_runtime, JidoClaw.Agent)
+
+  # The MCP facade, behind a seam so call-site tests can assert the pid/template
+  # passed to `ensure_attached/3` (the Consumer is off in the default test env,
+  # so a direct call only yields `:skipped`).
+  defp mcp, do: Application.get_env(:jido_claw, :mcp_facade, JidoClaw.MCP)
 
   defp recorder_flush_timeout,
     do: Application.get_env(:jido_claw, :recorder_flush_timeout, 30_000)
@@ -210,6 +206,17 @@ defmodule JidoClaw do
         session_record: session,
         default_agent_id: session_id
       )
+
+    # Best-effort: register any configured external MCP proxies onto the
+    # resolved owner — the *routed* worker, not the pre-routing main pid — so a
+    # handoff turn runs against a tool-equipped worker too. The no-handoff case
+    # attaches `(main_pid, "main")`; a handoff attaches `(worker_pid, template)`.
+    # External tools are scoped per template by the server reach-allowlist.
+    # Covers fresh and existing pids (chat / handoff workers aren't in
+    # AgentTracker); steady-state-cheap via the Consumer's `:already` fast path.
+    # Tool-less on `:timeout` (prep still running — a later turn retries) or
+    # `:mcp_unavailable` (prep crashed — tool-less until a Consumer/app restart).
+    _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
 
     # Register correlation AFTER routing so the stamped compaction identity
     # reflects the resolved owner (main vs handoff worker). Still precedes

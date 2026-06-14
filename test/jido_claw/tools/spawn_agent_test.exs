@@ -120,6 +120,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     old_test_pid = Application.get_env(:jido_claw, :spawn_agent_test_pid)
     old_agent_tracker = Application.get_env(:jido_claw, :agent_tracker)
     old_task_supervisor = Application.get_env(:jido_claw, :task_supervisor)
+    old_mcp_facade = Application.get_env(:jido_claw, :mcp_facade)
+    old_mcp_target = Application.get_env(:jido_claw, :mcp_facade_capture_target)
 
     AgentTracker.reset()
     flush_tracker()
@@ -133,6 +135,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
       restore_env(:spawn_agent_test_pid, old_test_pid)
       restore_env(:agent_tracker, old_agent_tracker)
       restore_env(:task_supervisor, old_task_supervisor)
+      restore_env(:mcp_facade, old_mcp_facade)
+      restore_env(:mcp_facade_capture_target, old_mcp_target)
       AgentTracker.reset()
     end)
   end
@@ -321,6 +325,23 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert child_ctx.workspace_uuid == nil
     assert child_ctx.actor == nil
     assert child_ctx.session_id == "s"
+
+    Process.exit(pid, :kill)
+  end
+
+  test "ensure_attaches the spawning template's external MCP tools onto the sub-agent" do
+    configure_fake_spawn()
+    Application.put_env(:jido_claw, :mcp_facade, JidoClaw.Test.MCPFacadeCapture)
+    Application.put_env(:jido_claw, :mcp_facade_capture_target, self())
+
+    assert {:ok, %{agent_id: agent_id}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, ctx())
+
+    assert_receive {:start_agent, [id: ^agent_id], pid}
+
+    # The orchestration task bounds-attaches the sub-agent under its template
+    # before running the turn (workers previously got zero external tools).
+    assert_receive {:mcp_ensure_attached, ^pid, "coder", 8_000}, 2_000
 
     Process.exit(pid, :kill)
   end

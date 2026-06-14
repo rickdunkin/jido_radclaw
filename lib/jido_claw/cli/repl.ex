@@ -48,6 +48,8 @@ defmodule JidoClaw.CLI.Repl do
     stats: %{messages: 0, tokens: 0}
   ]
 
+  @type t :: %__MODULE__{}
+
   @spec start(String.t()) :: :ok
   def start(project_dir) do
     config = ensure_config(project_dir)
@@ -69,7 +71,7 @@ defmodule JidoClaw.CLI.Repl do
         # Fire-and-forget: register any configured external MCP proxies onto the
         # main agent. The natural delay before the first prompt covers the
         # async registration. Best-effort (no-op when no Consumer is running).
-        _ = JidoClaw.MCP.attach_to_agent(pid, "main")
+        _ = mcp().attach_to_agent(pid, "main")
         state = boot_repl_session(pid, project_dir, config, model, strategy)
         loop(state)
 
@@ -354,20 +356,8 @@ defmodule JidoClaw.CLI.Repl do
     Display.exit_input_mode()
     Display.start_thinking()
 
-    actor = Actor.system(state.tenant_id)
-    session_record = fetch_session_record(state, actor)
-
     {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} =
-      HandoffRouter.resolve_session_owner(
-        state.tenant_id,
-        state.session_id,
-        state.session_uuid,
-        state.agent_pid,
-        actor,
-        project_dir: state.cwd,
-        session_record: session_record,
-        default_agent_id: state.agent_id
-      )
+      resolve_owner_and_attach(state)
 
     # Register correlation AFTER routing (so the stamped compaction identity
     # reflects the resolved owner) but BEFORE the user-message append, so the
@@ -464,6 +454,54 @@ defmodule JidoClaw.CLI.Repl do
         state
     end
   end
+
+  @doc """
+  Test seam: resolve the handoff-aware session owner for this turn and
+  eagerly register the routed worker's template-allowlisted external MCP
+  proxies before dispatch.
+
+  Mirrors the programmatic chat path (`JidoClaw.run_chat_turn/8`): the
+  bounded `ensure_attached/3` runs against the *routed* pid/template — a
+  handoff worker, or `main` on the no-handoff path — so a handoff-routed
+  REPL turn and a racing first REPL turn are both tool-equipped before
+  dispatch. Best-effort: a `:timeout`/`:mcp_unavailable`/`:skipped` result
+  leaves the turn tool-less rather than blocking it.
+
+  Returns the `JidoClaw.Agent.Handoff.Router.resolve_session_owner/6`
+  5-tuple unchanged.
+  """
+  @spec resolve_owner_and_attach(t()) ::
+          {pid(), String.t(), String.t(), boolean(),
+           JidoClaw.Agent.Handoff.Registry.owner() | nil}
+  def resolve_owner_and_attach(%__MODULE__{} = state) do
+    actor = Actor.system(state.tenant_id)
+    session_record = fetch_session_record(state, actor)
+
+    routed =
+      HandoffRouter.resolve_session_owner(
+        state.tenant_id,
+        state.session_id,
+        state.session_uuid,
+        state.agent_pid,
+        actor,
+        project_dir: state.cwd,
+        session_record: session_record,
+        default_agent_id: state.agent_id
+      )
+
+    {routed_pid, routed_template, _, _, _} = routed
+
+    # Bounded: register the routed worker's template-allowlisted MCP proxies
+    # before the turn; blocks only this turn, never the Consumer (best-effort).
+    _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
+    routed
+  end
+
+  # The MCP facade, behind a seam so call-site tests can assert the
+  # pid/template passed to `ensure_attached/3` and `attach_to_agent/2` (the
+  # Consumer is off in the default test env, so a direct call only yields
+  # `:skipped`). Mirrors `JidoClaw.mcp/0`.
+  defp mcp, do: Application.get_env(:jido_claw, :mcp_facade, JidoClaw.MCP)
 
   defp fetch_session_record(%{session_uuid: nil}, _actor), do: nil
 

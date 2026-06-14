@@ -150,6 +150,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     original_test_pid = Application.get_env(:jido_claw, :send_to_agent_test_pid)
     original_flush_timeout = Application.get_env(:jido_claw, :recorder_flush_timeout)
     original_task_supervisor = Application.get_env(:jido_claw, :task_supervisor)
+    original_mcp_facade = Application.get_env(:jido_claw, :mcp_facade)
+    original_mcp_target = Application.get_env(:jido_claw, :mcp_facade_capture_target)
 
     Application.put_env(:jido_claw, :jido_runtime, FakeJido)
     Application.put_env(:jido_claw, :agent_tracker, FakeTracker)
@@ -167,6 +169,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       restore_env(:send_to_agent_test_pid, original_test_pid)
       restore_env(:recorder_flush_timeout, original_flush_timeout)
       restore_env(:task_supervisor, original_task_supervisor)
+      restore_env(:mcp_facade, original_mcp_facade)
+      restore_env(:mcp_facade_capture_target, original_mcp_target)
     end)
 
     :ok
@@ -244,6 +248,22 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert child_ctx.workspace_uuid == nil
     assert child_ctx.actor == nil
     assert child_ctx.session_id == "s"
+  end
+
+  test "ensure_attaches the tracked template's external MCP tools onto the running child" do
+    Application.put_env(:jido_claw, :mcp_facade, JidoClaw.Test.MCPFacadeCapture)
+    Application.put_env(:jido_claw, :mcp_facade_capture_target, self())
+
+    assert {:ok, %{status: "message_sent"}} =
+             SendToAgent.run(
+               %{agent_id: "docs_writer_123", message: "follow-up"},
+               ctx(%{agent_id: "main"})
+             )
+
+    # The follow-up orchestration task bounds-attaches the child pid (FakeJido
+    # returns self()) under its tracked template before the turn.
+    assert_receive {:mcp_ensure_attached, pid, "docs_writer", 8_000}, 2_000
+    assert pid == self()
   end
 
   test "sets :agent_template from the tracked entry's template on the follow-up child" do

@@ -56,14 +56,14 @@ defmodule JidoClaw.Tools.SendToAgent do
         # BEFORE the tracker gate, so a raise here leaves the entry untouched.
         request_id = JidoClaw.register_child_correlation(child_tool_context)
 
-        dispatch(pid, params, template, child_tool_context, request_id)
+        dispatch(pid, params, template, entry.template, child_tool_context, request_id)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp dispatch(pid, params, template, child_tool_context, request_id) do
+  defp dispatch(pid, params, template, template_name, child_tool_context, request_id) do
     agent_id = params.agent_id
 
     # mark_running is the last gate before dispatch: it re-activates a
@@ -81,6 +81,11 @@ defmodule JidoClaw.Tools.SendToAgent do
             # Arm the tracker's orchestrator monitor before any work — the
             # backstop for kills the try/catch below can't see.
             agent_tracker().attach_orchestrator(agent_id, self())
+
+            # Bounded: register the tracked template's allowlisted external MCP
+            # proxies onto the running child before the follow-up turn. Blocks
+            # only this task; best-effort (`:skipped` with no Consumer).
+            _ = mcp().ensure_attached(pid, template_name, 8_000)
 
             try do
               SubagentTranscript.record_task(child_tool_context, request_id, params.message)
@@ -190,5 +195,12 @@ defmodule JidoClaw.Tools.SendToAgent do
 
   defp templates do
     Application.get_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+  end
+
+  # Kept apart from the sibling Application.get_env/3 seams above: three
+  # byte-identical seams clustered across this and spawn_agent.ex trip the
+  # cross-file duplicate-clone gate; split, the shared block stays under it.
+  defp mcp do
+    Application.get_env(:jido_claw, :mcp_facade, JidoClaw.MCP)
   end
 end
