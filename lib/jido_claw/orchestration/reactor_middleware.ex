@@ -105,14 +105,16 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Trace
   alias JidoClaw.Workflows.StepResult
 
-  # Mirrors `WorkflowEvent.Projection`'s terminal set — a resume whose run has
-  # already reached one of these must hard-stop, never execute a step.
-  @terminal [:completed, :failed, :cancelled, :abandoned]
+  # Folds onto `WorkflowEvent.Projection`'s terminal set — the compile-time call
+  # bakes the literal list into the `status in @terminal` guard below: a resume
+  # whose run has already reached one of these must hard-stop, never execute a step.
+  @terminal Projection.terminal_statuses()
 
   @impl Reactor.Middleware
   @spec init(Reactor.context()) :: {:ok, Reactor.context()} | {:error, term()}

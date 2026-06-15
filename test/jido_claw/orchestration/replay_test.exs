@@ -15,6 +15,9 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  import JidoClaw.Test.ReplayFixtures,
+    except: [launch_fixture!: 2, launch_fixture!: 3, launch_fixture!: 4]
+
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
@@ -24,28 +27,12 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Skills
-  alias JidoClaw.Skills.Compiler
   alias JidoClaw.Test.EchoStub
+  alias JidoClaw.Test.ReplayFixtures
   alias JidoClaw.Test.SecretErrorStub
   alias JidoClaw.Tools.ReplayWorkflow
   alias JidoClaw.Web.WorkflowsLive
   alias Phoenix.HTML.Safe
-
-  @fixture_name "replay_fixture"
-
-  @fixture_yaml """
-  name: replay_fixture
-  description: replay fixture skill
-  steps:
-    - name: alpha
-      template: researcher
-      task: "do alpha"
-    - name: beta
-      template: docs_writer
-      task: "do beta"
-      depends_on: [alpha]
-  synthesis: done
-  """
 
   setup do
     tenant = seed_tenant("replay")
@@ -102,8 +89,8 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       # Edit the YAML ON DISK (a task change is semantic). An in-memory struct
       # mutation would not catch a cache-serving lookup — this must touch disk.
-      write_fixture!(dir, String.replace(@fixture_yaml, "do alpha", "do alpha CHANGED"))
-      {:ok, edited} = Skills.load_skill(@fixture_name, dir)
+      write_fixture!(dir, String.replace(fixture_yaml(), "do alpha", "do alpha CHANGED"))
+      {:ok, edited} = Skills.load_skill(fixture_name(), dir)
       new_hash = DefinitionFingerprint.for_skill(edited)
       refute new_hash == stored
 
@@ -126,7 +113,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       drain_echo_messages()
 
       docs_only =
-        @fixture_yaml
+        fixture_yaml()
         |> String.replace("description: replay fixture skill", "description: reworded docs")
         |> Kernel.<>("# a trailing comment\n")
 
@@ -147,7 +134,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       # Add ONLY a top-level deadline — observability semantics, excluded from
       # the fingerprint, so the gate must pass without force:.
-      write_fixture!(dir, @fixture_yaml <> "deadline:\n  within: 1800\n  due_soon: 300\n")
+      write_fixture!(dir, fixture_yaml() <> "deadline:\n  within: 1800\n  due_soon: 300\n")
 
       assert {:ok, replayed} = Replay.replay(original.id, tenant: ctx.tenant, actor: ctx.actor)
       assert replayed.status == :completed
@@ -320,7 +307,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       # A semantic disk edit arms the definition gate on top of the
       # already-armed irreversible gate.
       write_fixture!(dir, String.replace(irreversible_yaml, "push something", "push EDITED"))
-      {:ok, edited} = Skills.load_skill(@fixture_name, dir)
+      {:ok, edited} = Skills.load_skill(fixture_name(), dir)
       new_hash = DefinitionFingerprint.for_skill(edited)
 
       # force alone passes the definition gate, then trips the irreversible one.
@@ -594,7 +581,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       assert Enum.any?(ok_socket.assigns.runs, &(&1.retry_of_id == original.id))
 
       # A disk edit blocks the next click and arms the per-run force button.
-      write_fixture!(dir, String.replace(@fixture_yaml, "do alpha", "do alpha CHANGED"))
+      write_fixture!(dir, String.replace(fixture_yaml(), "do alpha", "do alpha CHANGED"))
 
       assert {:noreply, blocked} =
                WorkflowsLive.handle_event("replay", %{"id" => original.id}, ok_socket)
@@ -793,64 +780,14 @@ defmodule JidoClaw.Orchestration.ReplayTest do
     |> IO.iodata_to_binary()
   end
 
-  defp tmp_project_dir! do
-    dir = Path.join(System.tmp_dir!(), "replay_proj_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(Path.join([dir, ".jido", "skills"]))
-    on_exit(fn -> File.rm_rf!(dir) end)
-    dir
-  end
-
-  defp write_fixture!(dir, yaml \\ @fixture_yaml) do
-    File.write!(Path.join([dir, ".jido", "skills", "fixture.yaml"]), yaml)
-  end
-
-  # Launch exactly the way the production skill callers do: fresh-disk load,
-  # compile, run through the envelope with the skill hash + run-level deadline
-  # + project_dir scope.
-  defp launch_fixture!(
-         dir,
-         %{tenant: tenant, actor: actor},
-         context_overrides \\ %{},
-         inputs \\ %{extra_context: "initial"}
-       ) do
-    {:ok, skill} = Skills.load_skill(@fixture_name, dir)
-    {:ok, reactor} = Compiler.compile(skill)
-
-    context = Map.merge(%{project_dir: dir}, context_overrides)
-
-    assert {:ok, _value, run} =
-             ReactorRunner.run(reactor, inputs,
-               tenant: tenant,
-               actor: actor,
-               name: skill.name,
-               async?: true,
-               definition_hash: DefinitionFingerprint.for_skill(skill),
-               deadline: skill.deadline,
-               context: context
-             )
-
+  # Delegate the run mechanics to the shared fixtures, keeping only this file's
+  # completion assertion (the shared helper returns the run for ok OR error to
+  # serve the diagnostics suite's failure-path tests, and does not assert).
+  defp launch_fixture!(dir, ctx, overrides \\ %{}, inputs \\ %{extra_context: "initial"}) do
+    run = ReplayFixtures.launch_fixture!(dir, ctx, overrides, inputs)
     assert run.status == :completed
     run
   end
-
-  defp forge_terminal_run!(attrs, %{tenant: tenant, actor: actor}) do
-    {:ok, run} = WorkflowRun.create(attrs, tenant: tenant, actor: actor)
-
-    # Corruption-sim precedent (human_gates_test): force a terminal status via
-    # the private projection action, bypassing the event log.
-    {:ok, completed} =
-      run
-      |> Ash.Changeset.for_update(:set_status, %{status: :completed},
-        tenant: tenant,
-        authorize?: false
-      )
-      |> Ash.update()
-
-    completed
-  end
-
-  defp module_config,
-    do: %{reactor: "JidoClaw.Orchestration.Reactors.GatedTestReactor", definition_kind: "module"}
 
   defp kinds(run, %{tenant: tenant, actor: actor}) do
     {:ok, events} = WorkflowEvent.for_run(run.id, tenant: tenant, actor: actor)

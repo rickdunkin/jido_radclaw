@@ -79,6 +79,8 @@ V2 made trace handling declarative: `Trace.Policy` is data (`enabled, sample_rat
 
 ### V2-4. Replay preflight diagnostics (`Debug.ReplayDiagnostics`)
 
+**Status (2026-06-15)**: ADOPTED — `Replay.diagnose/2` shipped (`e8704be`): the two-axis projection over a recorded run — recorded-health `status` (`:complete`/`:waiting`/`:failed`/`:incomplete`) and the replay-safety axis (`blockers` + `preflight_clear?` + presence-only `input_status`, never decrypting the inputs blob) — sharing the `Replay.Safety`/`DefinitionResolver` gates with `replay/2` so the preflight cannot drift from the actual refusal. Surfaced in the `replay_workflow` MCP refusal detail (`to_mcp_map/1`, additive at `details.diagnostics`) and the dashboard replay panel, with the P1/P2/P3 review fixes folded in. Post-ship cleanups: the terminal-status set is now single-sourced in `WorkflowEvent.Projection` (`terminal_statuses/0` + total `terminal_status?/1`; the zero-caller `Safety.terminal_statuses/0` left as a fold target is gone, and the five hand-copied terminal lists fold onto it), and the replay test fixtures are consolidated onto `JidoClaw.Test.ReplayFixtures`. One deferred follow-up remains — **P1 consumer-attach**: attaching diagnostics on the raw-read-error refusal path (`replay_workflow.ex`'s `refusal_error/4` + the `workflows_live.ex` catch-all). Left out deliberately — that path bubbles an *arbitrary* error from `WorkflowEvent.for_run/3` failing inside `check_irreversible`, the catch-all also legitimately handles `:not_found`/`:launch_failed` (which must *not* get diagnostics), a clean version needs a `replay.ex` refusal-vocabulary normalization (surface `{:not_replayable, :irreversible_check_failed}`), and the path self-degrades anyway (the same DB fault breaks `diagnose/2`'s own event read) — net negative without adding Mox to test it.
+
 **Status (2026-06-11)**: PARTIAL — jido_radclaw's Reactor replay has a fingerprint gate; it lacks a diagnostics *report*.
 
 **Where in jidoka**: `lib/jidoka/debug/replay_diagnostics.ex` + `debug/diagnostics.ex`.
@@ -99,7 +101,7 @@ V2 answers "is this recorded run complete/safe to reason about without re-execut
 
 **Where in jidoka**: `lib/jidoka/browser/tools/{read_page,search_web,snapshot_url}.ex` (backed by `jido_browser`).
 
-jido_radclaw has `Tools.BrowseWeb` (fetch a page) but no web *search* — the Researcher worker can only follow URLs it already knows. jidoka's `search_web` (via the `jido_browser` dep, which jido_radclaw doesn't pull today) is the reference. Small, self-contained; route the output through the `Tools.Action` redaction wrapper like every other tool. Worth doing the next time Researcher quality is the work item.
+jido_radclaw has `Tools.BrowseWeb` (fetch a page) but no web *search* — the Researcher worker can only follow URLs it already knows. jidoka's `search_web` is the reference, and it is cheaper to borrow than this entry first stated: the `jido_browser ~> 2.0` dep *is* already pulled (`mix.exs:153`) and its Brave-backed `SearchWeb` is compiled — so V2-6 is a wrapped `search_web` tool plus a Brave API key, **no new dependency**. Small, self-contained; route the output through the `Tools.Action` redaction wrapper like every other tool. Worth doing the next time Researcher quality is the work item.
 
 ### V2-7. Lua-authored bounded workflow DAGs — WATCH
 
@@ -137,6 +139,8 @@ The genuinely novel V2 idea: an LLM (or operator) writes a tiny sandboxed Lua sc
 1. **V2-1 Controls** is the headline borrow — threat-model aligned, single insertion point already exists (`Tools.Action` wrapper), approval UX already proven by the gate/case family. Nothing blocks it.
 2. **V2-2 MCP client** follows naturally — external tools are exactly the case where per-operation controls earn their keep, so land V2-1 first (or at minimum its ticket resource) and default synced tools to `require_approval`.
 3. **V2-3 through V2-6** are independent and opportunistic; none justify a dedicated work item today. **V2-7** is a watch entry.
+
+**Program status (2026-06-15)**: the three borrows that warranted dedicated work are all shipped — **V2-1** approval gate (`7fa6267`, `28a01ce`), **V2-2** external MCP consumption (`3cde549`, `ce96f02`), and **V2-4** replay preflight diagnostics (`e8704be`) — so the active Jidoka-V2 borrowing program is complete. (V2-1 and V2-2 keep their PARTIAL labels only for deliberate out-of-scope deferrals — V2-1's input/output-length controls are out of the threat model, and V2-2's per-tool approval overlay is superseded by the per-template reach-allowlist; neither is pending work.) The remainder are intentional standing deferrals per their entries: **V2-3** (trace split) and **V2-5** (eval harness) are opportunistic-if-touched, **V2-6** (web search) is a next-time-Researcher-is-the-work-item borrow, and **V2-7** (Lua DAGs) is a watch entry. Nothing is secretly half-done; the two upstream watch triggers below remain the only re-audit prompts.
 
 Relationship to the other exploration docs:
 

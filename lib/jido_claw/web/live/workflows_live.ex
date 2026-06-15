@@ -7,13 +7,11 @@ defmodule JidoClaw.Web.WorkflowsLive do
   alias JidoClaw.Orchestration.Replay
   alias JidoClaw.Orchestration.Replay.Diagnostics
   alias JidoClaw.Orchestration.Visibility
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowStep
   alias JidoClaw.Web.Components.GraphLayout
   alias JidoClaw.Web.Components.StepGraph
-
-  # Mirrors Replay's terminal set: only a finished run gets a Replay button.
-  @terminal [:completed, :failed, :cancelled, :abandoned]
 
   # Lateness crosses deadline thresholds without any event, so a timer
   # re-renders the page periodically (re-fetching runs + expanded steps).
@@ -459,7 +457,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
   defp format_time(nil), do: "—"
   defp format_time(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
 
-  defp replayable?(status), do: status in @terminal
+  defp replayable?(status), do: Projection.terminal_status?(status)
 
   # The inverse of replayable?: only a run that can still make progress has
   # anything to cancel.

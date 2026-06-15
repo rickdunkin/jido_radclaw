@@ -9,10 +9,10 @@ defmodule JidoClaw.WorkflowView do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.Visibility
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowRun
 
   @active_statuses [:pending, :running, :awaiting_approval]
-  @terminal_statuses [:completed, :failed, :cancelled, :abandoned]
 
   @type t :: %__MODULE__{
           tenant_id: String.t(),
@@ -64,7 +64,10 @@ defmodule JidoClaw.WorkflowView do
     tenant_id = Keyword.fetch!(opts, :tenant_id)
     actor = Keyword.get(opts, :actor) || Actor.system(tenant_id)
     active_runs = read_runs(tenant_id, actor, @active_statuses, [started_at: :desc], 25)
-    completions = read_runs(tenant_id, actor, @terminal_statuses, [completed_at: :desc], 10)
+
+    completions =
+      read_runs(tenant_id, actor, Projection.terminal_statuses(), [completed_at: :desc], 10)
+
     # One timestamp for the whole view: consistent deadline evidence across
     # every projected run, and it doubles as generated_at.
     now = DateTime.utc_now()

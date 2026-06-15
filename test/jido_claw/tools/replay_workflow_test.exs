@@ -13,14 +13,9 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
   alias Anubis.Server.Frame
   alias Anubis.Server.Handlers.Tools, as: ToolsHandler
   alias Anubis.Server.Response
-  alias JidoClaw.Orchestration.DefinitionFingerprint
-  alias JidoClaw.Orchestration.ReactorRunner
-  alias JidoClaw.Skills
-  alias JidoClaw.Skills.Compiler
   alias JidoClaw.Test.EchoStub
+  alias JidoClaw.Test.ReplayFixtures
   alias JidoClaw.Tools.ReplayWorkflow
-
-  @fixture_name "replay_fixture"
 
   @fixture_yaml """
   name: replay_fixture
@@ -70,7 +65,7 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
     end
 
     test "a definition change refuses, points at the dashboard, and carries diagnostics", ctx do
-      dir = tmp_project_dir!()
+      dir = ReplayFixtures.tmp_project_dir!()
       write_fixture!(dir)
       original = launch_fixture!(ctx, dir)
 
@@ -89,7 +84,7 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
     end
 
     test "an irreversible-steps refusal carries diagnostics", ctx do
-      dir = tmp_project_dir!()
+      dir = ReplayFixtures.tmp_project_dir!()
 
       write_fixture!(dir, """
       name: replay_fixture
@@ -181,32 +176,22 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
   defp tool_ctx(%{tenant: tenant, actor: actor}),
     do: %{tool_context: %{tenant_id: tenant, actor: actor}}
 
-  defp tmp_project_dir! do
-    dir = Path.join(System.tmp_dir!(), "replay_tool_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(Path.join([dir, ".jido", "skills"]))
-    on_exit(fn -> File.rm_rf!(dir) end)
-    dir
-  end
-
+  # This file's fixture is an intentionally DIFFERENT single-step skill (setup
+  # configures only `researcher`), so the YAML + its `write_fixture!` default
+  # stay local — routing through the shared 2-step default would run an
+  # unconfigured `docs_writer` step. Only the file-write path is shared.
   defp write_fixture!(dir, yaml \\ @fixture_yaml) do
-    File.write!(Path.join([dir, ".jido", "skills", "fixture.yaml"]), yaml)
+    ReplayFixtures.write_fixture!(dir, yaml)
   end
 
+  # Bespoke (ctx-first) signature kept for the call sites; the run mechanics
+  # delegate to the shared launcher after writing this file's own YAML. The
+  # shared launcher passes `deadline: skill.deadline` (nil for the no-deadline
+  # 1-step fixture → behavior unchanged) and returns the run without asserting,
+  # so the completion assertion stays here.
   defp launch_fixture!(ctx, dir \\ nil) do
-    dir = dir || tap(tmp_project_dir!(), &write_fixture!/1)
-    {:ok, skill} = Skills.load_skill(@fixture_name, dir)
-    {:ok, reactor} = Compiler.compile(skill)
-
-    assert {:ok, _value, run} =
-             ReactorRunner.run(reactor, %{extra_context: ""},
-               tenant: ctx.tenant,
-               actor: ctx.actor,
-               name: skill.name,
-               async?: true,
-               definition_hash: DefinitionFingerprint.for_skill(skill),
-               context: %{project_dir: dir}
-             )
-
+    dir = dir || tap(ReplayFixtures.tmp_project_dir!(), &write_fixture!/1)
+    run = ReplayFixtures.launch_fixture!(dir, ctx, %{}, %{extra_context: ""})
     assert run.status == :completed
     run
   end

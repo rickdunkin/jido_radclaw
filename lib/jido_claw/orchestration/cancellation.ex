@@ -61,12 +61,14 @@ defmodule JidoClaw.Orchestration.Cancellation do
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
-  # Mirrors `WorkflowEvent.Projection`'s terminal set: a run that can no
-  # longer make progress has nothing to cancel.
-  @terminal [:completed, :failed, :cancelled, :abandoned]
+  # Folds onto `WorkflowEvent.Projection`'s terminal set — the compile-time call
+  # bakes the literal list into the `status in @terminal` guards below: a run
+  # that can no longer make progress has nothing to cancel.
+  @terminal Projection.terminal_statuses()
 
   @default_reason "cancelled by operator"
 

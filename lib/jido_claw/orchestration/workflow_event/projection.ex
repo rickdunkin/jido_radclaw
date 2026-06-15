@@ -46,6 +46,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
 
   @non_terminal [:pending, :running, :awaiting_approval]
 
+  # The terminal run statuses — a run here can no longer make progress.
+  # Complement of @non_terminal; the single source every other module folds onto.
+  @terminal [:completed, :failed, :cancelled, :abandoned]
+
+  @doc "The terminal run statuses (the run can no longer make progress)."
+  @spec terminal_statuses() :: [atom()]
+  def terminal_statuses, do: @terminal
+
+  @doc "Whether `status` is terminal. Total: a non-atom returns false."
+  @spec terminal_status?(term()) :: boolean()
+  def terminal_status?(status) when is_atom(status), do: status in @terminal
+  def terminal_status?(_status), do: false
+
   @doc """
   Returns `true` when `kind` is a status-authority event — one that the
   append path must fold into the materialized `WorkflowRun.status` column

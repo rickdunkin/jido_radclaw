@@ -7,8 +7,8 @@ defmodule JidoClaw.Orchestration.Replay.Safety do
 
     * **Terminal gate** — only a run that can no longer make progress is
       replayable. `terminal_status?/1` takes the status atom explicitly (no
-      `%WorkflowRun{}` ambiguity), mirroring `WorkflowEvent.Projection`'s
-      terminal set.
+      `%WorkflowRun{}` ambiguity) and delegates to `WorkflowEvent.Projection`,
+      the single source of the terminal set.
     * **Irreversible gate** — `irreversible_executed?/1` scans a run's durable
       `WorkflowEvent` log: if any `step_*` event payload was stamped
       `irreversible: true`, re-running would repeat an un-undoable side effect.
@@ -17,26 +17,18 @@ defmodule JidoClaw.Orchestration.Replay.Safety do
   """
 
   alias JidoClaw.Orchestration.WorkflowEvent
-
-  # Mirrors `WorkflowEvent.Projection`'s terminal set.
-  @terminal [:completed, :failed, :cancelled, :abandoned]
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
 
   # Event kinds proving a step *executed* (started counts: an irreversible
   # side effect may have fired even if the step never completed).
   @irreversible_kinds [:step_started, :step_completed, :step_failed]
 
   @doc """
-  The terminal run statuses — the single source the duplicated terminal lists
-  at `WorkflowsLive`/`WorkflowView` can eventually fold onto.
-  """
-  @spec terminal_statuses() :: [atom()]
-  def terminal_statuses, do: @terminal
-
-  @doc """
   Whether `status` is terminal (the run can no longer make progress).
+  Delegates to `WorkflowEvent.Projection`, the single source of the terminal set.
   """
-  @spec terminal_status?(atom()) :: boolean()
-  def terminal_status?(status) when is_atom(status), do: status in @terminal
+  @spec terminal_status?(term()) :: boolean()
+  def terminal_status?(status), do: Projection.terminal_status?(status)
 
   @doc """
   Whether any of `events` proves an `irreversible: true` step executed.
