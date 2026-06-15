@@ -493,6 +493,7 @@ defmodule JidoClaw.Orchestration.WorkflowStepProjectionTest do
         steps: [],
         steps_error: nil,
         replay_blocked: %{},
+        replay_diagnostics: %{},
         reveal_runs: MapSet.new(),
         steps_view: :graph,
         step_graph: nil,
@@ -513,6 +514,7 @@ defmodule JidoClaw.Orchestration.WorkflowStepProjectionTest do
       steps: [],
       steps_error: nil,
       replay_blocked: %{},
+      replay_diagnostics: %{},
       reveal_runs: MapSet.new(),
       steps_view: :graph,
       step_graph: nil

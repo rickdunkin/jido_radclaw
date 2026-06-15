@@ -5,6 +5,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.Replay
+  alias JidoClaw.Orchestration.Replay.Diagnostics
   alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowStep
@@ -36,6 +37,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
        steps: [],
        steps_error: nil,
        replay_blocked: %{},
+       replay_diagnostics: %{},
        reveal_runs: MapSet.new(),
        steps_view: :graph,
        step_graph: nil
@@ -115,6 +117,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
          socket
          |> assign(runs: runs, runs_error: runs_error)
          |> update(:replay_blocked, &Map.delete(&1, run_id))
+         |> update(:replay_diagnostics, &Map.delete(&1, run_id))
          |> put_flash(:info, "Replay launched: #{run.name} is #{run.status}")}
 
       {:error, {:definition_changed, _stored, _current}} ->
@@ -127,6 +130,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
         {:noreply,
          socket
          |> update(:replay_blocked, &Map.put(&1, run_id, blocked))
+         |> stash_diagnostics(run_id)
          |> put_flash(:error, definition_changed_flash(blocked))}
 
       {:error, :irreversible_steps_executed} ->
@@ -139,6 +143,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
         {:noreply,
          socket
          |> update(:replay_blocked, &Map.put(&1, run_id, blocked))
+         |> stash_diagnostics(run_id)
          |> put_flash(:error, irreversible_flash(blocked))}
 
       {:error, reason} ->
@@ -360,6 +365,14 @@ defmodule JidoClaw.Web.WorkflowsLive do
                   </table>
                 </td>
               </tr>
+              <%!-- Preflight diagnostics for a blocked replay: stashed on the
+                    blocked click (never the 30s refresh), shown until a
+                    successful replay clears the run's entry. --%>
+              <tr :if={diag = @replay_diagnostics[run.id]} id={"replay-diagnostics-#{run.id}"}>
+                <td colspan="6" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
+                  <.replay_diagnostics_detail diagnostics={diag} />
+                </td>
+              </tr>
             <% end %>
             <tr :if={@runs == []}>
               <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
@@ -386,6 +399,46 @@ defmodule JidoClaw.Web.WorkflowsLive do
     <td phx-click="toggle_steps" phx-value-id={@run_id} style={@style}>
       {render_slot(@inner_block)}
     </td>
+    """
+  end
+
+  # Compact preflight panel: the recorded-health status, the replay-safety
+  # summary (definition/input/preflight_clear?), and the determinable blockers
+  # + warnings + counts. Blocker terms are structural refusal reasons (no
+  # payloads), so `inspect/1` is safe on the operator surface.
+  attr(:diagnostics, Diagnostics, required: true)
+
+  @spec replay_diagnostics_detail(map()) :: Phoenix.LiveView.Rendered.t()
+  defp replay_diagnostics_detail(assigns) do
+    ~H"""
+    <div style="font-size: 0.8125rem;">
+      <div style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem;">
+        Replay preflight
+      </div>
+      <div style="margin-bottom: 0.5rem;">
+        Health: <strong>{@diagnostics.status}</strong>
+        · Definition: <strong>{@diagnostics.definition.status}</strong>
+        · Inputs: <strong>{@diagnostics.input_status}</strong>
+        · Preflight: <strong>{if @diagnostics.preflight_clear?, do: "clear", else: "blocked"}</strong>
+      </div>
+      <div :if={@diagnostics.blockers != []} style="margin-bottom: 0.5rem;">
+        <div style="color: var(--muted);">Blockers</div>
+        <ul style="margin: 0.25rem 0 0 1rem;">
+          <li :for={blocker <- @diagnostics.blockers}>{inspect(blocker)}</li>
+        </ul>
+      </div>
+      <div :if={@diagnostics.warnings != []} style="margin-bottom: 0.5rem;">
+        <div style="color: var(--muted);">Warnings</div>
+        <ul style="margin: 0.25rem 0 0 1rem;">
+          <li :for={warning <- @diagnostics.warnings}>{warning}</li>
+        </ul>
+      </div>
+      <div style="color: var(--muted);">
+        Failed steps: {length(@diagnostics.failed_steps)} · Unresolved: {length(
+          @diagnostics.unresolved_steps
+        )} · Pending gates: {length(@diagnostics.pending_gates)}
+      </div>
+    </div>
     """
   end
 
@@ -479,6 +532,24 @@ defmodule JidoClaw.Web.WorkflowsLive do
   end
 
   defp replay_opts(_socket, _params), do: []
+
+  # Compute + stash preflight diagnostics for a just-blocked run. Runs ONLY on a
+  # blocked click (never the 30s refresh, which calls refresh/1). A diagnose
+  # failure degrades silently — diagnostics must never break the block flow.
+  defp stash_diagnostics(socket, run_id) do
+    case Replay.diagnose(run_id, diagnose_opts(socket)) do
+      {:ok, diagnostics} ->
+        update(socket, :replay_diagnostics, &Map.put(&1, run_id, diagnostics))
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp diagnose_opts(%{assigns: %{current_actor: %{tenant_id: tenant_id} = actor}}),
+    do: [tenant: tenant_id, actor: actor]
+
+  defp diagnose_opts(_socket), do: []
 
   # Without a current_actor the empty opts make Cancellation refuse cleanly
   # with :missing_required_opt (mirrors replay_opts).

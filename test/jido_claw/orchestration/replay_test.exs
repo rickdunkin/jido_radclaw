@@ -20,6 +20,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.Replay
+  alias JidoClaw.Orchestration.Replay.Diagnostics
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Skills
@@ -601,7 +602,12 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       assert %{reason: :definition_changed} = blocked.assigns.replay_blocked[original.id]
       assert Phoenix.Flash.get(blocked.assigns.flash, :error) =~ "definition changed"
 
-      # The force re-click (phx-value-force) launches and clears the block.
+      # Diagnostics are stashed in the SEPARATE assign on the blocked click.
+      assert %Diagnostics{definition: %{status: :changed}} =
+               blocked.assigns.replay_diagnostics[original.id]
+
+      # The force re-click (phx-value-force) launches and clears the block —
+      # and the run's diagnostics entry along with it.
       assert {:noreply, forced} =
                WorkflowsLive.handle_event(
                  "replay",
@@ -611,6 +617,25 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       assert Phoenix.Flash.get(forced.assigns.flash, :info) =~ "Replay launched"
       refute Map.has_key?(forced.assigns.replay_blocked, original.id)
+      refute Map.has_key?(forced.assigns.replay_diagnostics, original.id)
+    end
+
+    test "the preflight diagnostics detail renders only when stashed for a run", ctx do
+      dir = tmp_project_dir!()
+      write_fixture!(dir)
+      completed = launch_fixture!(dir, ctx)
+      drain_echo_messages()
+
+      {:ok, diag} = Replay.diagnose(completed.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      # Stashed → the full-width detail row renders.
+      with_diag = render_workflows([completed], %{}, %{completed.id => diag})
+      assert with_diag =~ ~s(id="replay-diagnostics-#{completed.id}")
+      assert with_diag =~ "Replay preflight"
+
+      # No entry → absent (the 30s refresh never computes diagnostics).
+      without = render_workflows([completed])
+      refute without =~ ~s(id="replay-diagnostics-#{completed.id}")
     end
 
     test "a run tripping BOTH gates resolves in three clicks (grants carry forward)", ctx do
@@ -740,6 +765,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
         steps: [],
         steps_error: nil,
         replay_blocked: %{},
+        replay_diagnostics: %{},
         reveal_runs: MapSet.new(),
         steps_view: :graph,
         step_graph: nil
@@ -747,7 +773,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
     }
   end
 
-  defp render_workflows(runs, replay_blocked \\ %{}) do
+  defp render_workflows(runs, replay_blocked \\ %{}, replay_diagnostics \\ %{}) do
     %{
       __changed__: %{},
       flash: %{},
@@ -757,6 +783,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
       steps: [],
       steps_error: nil,
       replay_blocked: replay_blocked,
+      replay_diagnostics: replay_diagnostics,
       reveal_runs: MapSet.new(),
       steps_view: :graph,
       step_graph: nil

@@ -69,18 +69,48 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
       assert message =~ "not found"
     end
 
-    test "a definition change refuses and points at the dashboard (no force lever)", ctx do
+    test "a definition change refuses, points at the dashboard, and carries diagnostics", ctx do
       dir = tmp_project_dir!()
       write_fixture!(dir)
       original = launch_fixture!(ctx, dir)
 
       write_fixture!(dir, String.replace(@fixture_yaml, "do the thing", "do something else"))
 
-      assert {:error, %{message: message}} =
+      # The refusal envelope is additive: the plain-English message stays, with
+      # the preflight diagnostics attached at details.diagnostics. The envelope
+      # keys are atoms; everything inside to_mcp_map/1 is string-keyed.
+      assert {:error, %{message: message, details: %{diagnostics: diagnostics}}} =
                ReplayWorkflow.run(%{run_id: original.id}, tool_ctx(ctx))
 
       assert message =~ "definition changed"
       assert message =~ "dashboard-only"
+      assert diagnostics["definition"]["status"] == "changed"
+      refute diagnostics["preflight_clear?"]
+    end
+
+    test "an irreversible-steps refusal carries diagnostics", ctx do
+      dir = tmp_project_dir!()
+
+      write_fixture!(dir, """
+      name: replay_fixture
+      description: irreversible fixture
+      steps:
+        - name: only
+          template: researcher
+          task: "do the thing"
+          irreversible: true
+      synthesis: done
+      """)
+
+      original = launch_fixture!(ctx, dir)
+
+      assert {:error, %{message: message, details: %{diagnostics: diagnostics}}} =
+               ReplayWorkflow.run(%{run_id: original.id}, tool_ctx(ctx))
+
+      assert message =~ "irreversible steps"
+      assert message =~ "dashboard-only"
+      assert diagnostics["irreversible_executed?"] == true
+      assert "irreversible_steps_executed" in Enum.map(diagnostics["blockers"], & &1["code"])
     end
 
     test "missing tenant in tool context fails cleanly" do

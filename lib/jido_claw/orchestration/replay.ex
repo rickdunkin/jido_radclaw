@@ -65,31 +65,17 @@ defmodule JidoClaw.Orchestration.Replay do
 
   require Logger
 
-  alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
+  alias JidoClaw.Orchestration.Replay.DefinitionResolver
+  alias JidoClaw.Orchestration.Replay.Diagnostics
+  alias JidoClaw.Orchestration.Replay.Safety
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
-  alias JidoClaw.Skills
-  alias JidoClaw.Skills.Compiler
 
   # Must match `ReactorRunner`'s replay-inputs encoder. Bump together on any
   # envelope change; any other shape (including unknown versions) refuses as
   # `:corrupt_inputs` — a v2 encoder pairs with a v2 clause here.
   @replay_version 1
-
-  # Mirrors `WorkflowEvent.Projection`'s terminal set: only a run that can no
-  # longer make progress is replayable.
-  @terminal [:completed, :failed, :cancelled, :abandoned]
-
-  # Atom-creation fence for module-kind runs (GateResume precedent): a config
-  # identity must name a reactor in our own namespace before
-  # `String.to_existing_atom/1` runs. No `Elixir.` prefix — the identity is
-  # `inspect(module)`.
-  @allowed_module_prefix "JidoClaw.Orchestration.Reactors."
-
-  # Event kinds proving a step *executed* (started counts: an irreversible
-  # side effect may have fired even if the step never completed).
-  @irreversible_kinds [:step_started, :step_completed, :step_failed]
 
   @doc """
   Replay terminal run `run_id` as a fresh `WorkflowRun`.
@@ -118,15 +104,25 @@ defmodule JidoClaw.Orchestration.Replay do
     end
   end
 
+  @doc """
+  Preflight diagnostics for `run_id` — a pure, never-decrypting projection of
+  the recorded run's health plus the determinable replay blockers. Facade over
+  `JidoClaw.Orchestration.Replay.Diagnostics.diagnose/2`; see that module for
+  the two-axes contract and the never-decrypt discipline.
+  """
+  @spec diagnose(String.t(), keyword()) ::
+          {:ok, Diagnostics.t()} | {:error, :missing_required_opt | :not_found}
+  def diagnose(run_id, opts \\ []), do: Diagnostics.diagnose(run_id, opts)
+
   # -- Pipeline --
 
   defp do_replay(run_id, tenant, actor, force?, allow_irreversible?) do
     with {:ok, original} <- load_run(run_id, tenant, actor),
          :ok <- ensure_terminal(original),
-         {:ok, kind} <- definition_kind(original),
+         {:ok, kind} <- DefinitionResolver.definition_kind(original),
          # Resolve BEFORE decoding the blob: the [:safe] decode below needs
          # the definition's atoms interned (fresh-VM concern, see moduledoc).
-         {:ok, resolved} <- resolve_definition(kind, original),
+         {:ok, resolved} <- DefinitionResolver.resolve(kind, original),
          {:ok, inputs, extra_context} <- decode_inputs(original, tenant, actor),
          :ok <- check_definition(original, resolved, force?),
          :ok <- check_irreversible(original, tenant, actor, allow_irreversible?) do
@@ -143,101 +139,10 @@ defmodule JidoClaw.Orchestration.Replay do
     end
   end
 
-  defp ensure_terminal(%WorkflowRun{status: status}) when status in @terminal, do: :ok
-  defp ensure_terminal(_run), do: {:error, {:not_replayable, :run_not_terminal}}
-
-  # `config` is string-keyed jsonb on read. Runs created before Phase 4 (or
-  # outside `ReactorRunner`) carry no kind and are simply not replayable.
-  defp definition_kind(%WorkflowRun{config: config}) when is_map(config) do
-    case Map.get(config, "definition_kind") do
-      kind when kind in ["skill", "module"] -> {:ok, kind}
-      _other -> {:error, {:not_replayable, :no_definition_kind}}
-    end
-  end
-
-  defp definition_kind(_run), do: {:error, {:not_replayable, :no_definition_kind}}
-
-  # -- Definition re-resolution (fresh, never the cache) --
-
-  defp resolve_definition("skill", original) do
-    name = original.config["reactor"]
-
-    with {:ok, skill} <- lookup_skill(name, skill_project_dir(original)),
-         {:ok, reactor} <- compile_skill(skill) do
-      {:ok,
-       %{
-         kind: "skill",
-         reactor: reactor,
-         hash: DefinitionFingerprint.for_skill(skill),
-         # The freshly re-resolved run-level deadline rides to launch/6 —
-         # see replay_deadline/2 for the skill/module source asymmetry.
-         deadline: skill.deadline
-       }}
-    end
-  end
-
-  defp resolve_definition("module", original) do
-    identity = original.config["reactor"]
-
-    with :ok <- check_allowed_module(identity),
-         {:ok, module} <- resolve_module(identity) do
-      {:ok, %{kind: "module", reactor: module, hash: DefinitionFingerprint.for_module(module)}}
-    end
-  end
-
-  # The fresh-disk lookup (`Skills.load_skill/2`), NOT the cached `Skills.get/2`
-  # — comparing the stored hash against the boot-time cache would defeat the
-  # gate whenever the YAML changed on disk after boot.
-  defp lookup_skill(name, project_dir) do
-    case Skills.load_skill(name, project_dir) do
-      {:ok, skill} -> {:ok, skill}
-      {:error, :not_found} -> {:error, {:not_replayable, :skill_unavailable}}
-      {:error, {:duplicate_skill_name, _name} = dup} -> {:error, {:not_replayable, dup}}
-    end
-  end
-
-  # Recorded at launch by `ReactorRunner.run_config/3` when the caller's scope
-  # carried one; absent (e.g. a cron run launched from the app root) falls
-  # back to the current working directory, mirroring the launch-path default.
-  defp skill_project_dir(%WorkflowRun{config: config}) do
-    case Map.get(config, "project_dir") do
-      dir when is_binary(dir) -> dir
-      _missing -> File.cwd!()
-    end
-  end
-
-  defp compile_skill(skill) do
-    case Compiler.compile(skill) do
-      {:ok, reactor} -> {:ok, reactor}
-      {:error, reason} -> {:error, {:not_replayable, {:compile_failed, reason}}}
-    end
-  end
-
-  defp check_allowed_module(identity) when is_binary(identity) do
-    if String.starts_with?(identity, @allowed_module_prefix) do
-      :ok
-    else
-      {:error, {:not_replayable, {:disallowed_module, identity}}}
-    end
-  end
-
-  defp check_allowed_module(identity),
-    do: {:error, {:not_replayable, {:disallowed_module, identity}}}
-
-  # `String.to_existing_atom/1` (never `to_atom/1`) on the prefix-fenced
-  # identity: to have created this run the module must have been loaded, so
-  # its atom exists; if not, the module is gone from this VM and the run
-  # cannot be replayed anyway.
-  defp resolve_module(identity) do
-    module = String.to_existing_atom("Elixir." <> identity)
-
-    if Code.ensure_loaded?(module) and Spark.Dsl.is?(module, Reactor) do
-      {:ok, module}
-    else
-      {:error, {:not_replayable, :module_unavailable}}
-    end
-  rescue
-    ArgumentError -> {:error, {:not_replayable, :module_unavailable}}
+  defp ensure_terminal(%WorkflowRun{status: status}) do
+    if Safety.terminal_status?(status),
+      do: :ok,
+      else: {:error, {:not_replayable, :run_not_terminal}}
   end
 
   # -- Inputs decode (the only consumer of the replay_inputs blob) --
@@ -317,7 +222,7 @@ defmodule JidoClaw.Orchestration.Replay do
   defp check_irreversible(original, tenant, actor, false) do
     case WorkflowEvent.for_run(original.id, tenant: tenant, actor: actor) do
       {:ok, events} ->
-        if Enum.any?(events, &irreversible_step?/1) do
+        if Safety.irreversible_executed?(events) do
           {:error, :irreversible_steps_executed}
         else
           :ok
@@ -328,15 +233,6 @@ defmodule JidoClaw.Orchestration.Replay do
         {:error, reason}
     end
   end
-
-  # The middleware stamps `irreversible: true` into `step_*` payloads
-  # (string-keyed jsonb on read). `step_started` counts: the side effect may
-  # have fired even if the step never completed.
-  defp irreversible_step?(%WorkflowEvent{kind: kind, payload: payload})
-       when kind in @irreversible_kinds and is_map(payload),
-       do: payload["irreversible"] == true
-
-  defp irreversible_step?(_event), do: false
 
   # -- Launch --
 

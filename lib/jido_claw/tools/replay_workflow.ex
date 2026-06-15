@@ -1,4 +1,9 @@
 defmodule JidoClaw.Tools.ReplayWorkflow do
+  # The diagnosed-refusal error builds the `{code, details, message}` wire-error
+  # contract (Error.t()) — the same explicit API shape error.ex/tool_approval.ex
+  # produce; pragma'd here too so reach's drifting cross-file anchor never lands
+  # on an unsuppressed participant.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   MCP tool over `JidoClaw.Orchestration.Replay.replay/2`: re-run a terminal
   workflow run by id with its original (durably stored) inputs.
@@ -35,18 +40,63 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.Replay
+  alias JidoClaw.Orchestration.Replay.Diagnostics
   alias JidoClaw.Orchestration.Visibility
 
   @impl Jido.Action
   def run(params, context) do
     tool_context = Map.get(context, :tool_context, %{}) || %{}
 
-    with {:ok, tenant} <- resolve_tenant(tool_context),
-         actor = resolve_actor(tool_context, tenant),
-         {:ok, run} <- Replay.replay(params.run_id, tenant: tenant, actor: actor) do
-      {:ok, summarize(run)}
-    else
-      {:error, reason} -> {:error, format_refusal(reason)}
+    # Bind tenant/actor BEFORE attempting, so a refusal can reuse them to
+    # attach preflight diagnostics without re-resolving scope.
+    case resolve_tenant(tool_context) do
+      {:ok, tenant} ->
+        attempt(params.run_id, tenant, resolve_actor(tool_context, tenant))
+
+      {:error, :missing_tenant} ->
+        {:error, format_refusal(:missing_tenant)}
+    end
+  end
+
+  defp attempt(run_id, tenant, actor) do
+    case Replay.replay(run_id, tenant: tenant, actor: actor) do
+      {:ok, run} -> {:ok, summarize(run)}
+      {:error, reason} -> {:error, refusal_error(reason, run_id, tenant, actor)}
+    end
+  end
+
+  # Replay-relevant refusals carry a preflight-diagnostics map at
+  # `details.diagnostics` so the LLM sees WHY (all determinable blockers, run
+  # health, the unverified-input residual), not just the first refusal. The
+  # plain-English `format_refusal/1` string stays the `message`; the legacy
+  # `Error.normalize/1` `%{code, message, details}` clause passes `details`
+  # through verbatim. Other refusals (`:not_found`, `:launch_failed`, …) keep
+  # the bare string.
+  defp refusal_error({:definition_changed, _stored, _current} = reason, run_id, tenant, actor),
+    do: diagnosed_error(reason, run_id, tenant, actor)
+
+  defp refusal_error(:irreversible_steps_executed = reason, run_id, tenant, actor),
+    do: diagnosed_error(reason, run_id, tenant, actor)
+
+  defp refusal_error({:not_replayable, _detail} = reason, run_id, tenant, actor),
+    do: diagnosed_error(reason, run_id, tenant, actor)
+
+  defp refusal_error(reason, _run_id, _tenant, _actor), do: format_refusal(reason)
+
+  defp diagnosed_error(reason, run_id, tenant, actor) do
+    message = format_refusal(reason)
+
+    case Replay.diagnose(run_id, tenant: tenant, actor: actor) do
+      {:ok, diagnostics} ->
+        %{
+          code: :replay_refused,
+          message: message,
+          details: %{diagnostics: Diagnostics.to_mcp_map(diagnostics)}
+        }
+
+      # Degrade silently: diagnostics must never break a refusal.
+      {:error, _reason} ->
+        message
     end
   end
 
