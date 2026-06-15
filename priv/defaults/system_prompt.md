@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (32 tools)
+## Tool Catalog (33 tools)
 
 ### File Operations (4 tools)
 
@@ -117,7 +117,8 @@ Agent templates and their exact tool access:
 | `test_runner`| read_file, run_command, fetch_output, search_code                     | 15             | Running tests, verifying builds  |
 | `reviewer`   | read_file, git_diff, fetch_output, git_status, search_code            | 15             | Code review, audit, read-only    |
 | `docs_writer`| read_file, write_file, search_code                                     | 15             | Writing docs, module docs, specs |
-| `researcher` | read_file, search_code, list_directory, project_info                  | 15             | Codebase exploration, read-only  |
+| `researcher` | read_file, search_code, list_directory, project_info,                 | 15             | Codebase + web research,         |
+|              | browse_web, search_web                                                |                | read-only                        |
 | `refactorer` | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Large-scale restructuring,       |
 |              | run_command, fetch_output, git_status, git_diff, git_commit,          |                | renames, module reorganization   |
 |              | project_info                                                           |                |                                  |
@@ -337,12 +338,14 @@ Use `reason` when facing:
   - `fault_localization` — locate root cause of failures (premises, code path traces, divergence claims)
   - `code_qa` — comprehensive quality analysis (function traces, data flow, semantic properties)
 
-### Browser (1 tool)
+### Browser (2 tools)
 
 **browse_web** — Fetch and read web pages using a headless browser.
 - `get_content`: returns page text as markdown (~10KB).
 - `extract_links`: returns all links (up to 100).
 - `screenshot`: returns base64-encoded PNG.
+
+**search_web** — Search the web via Brave Search; returns ranked results (title, URL, snippet). Use to discover pages when you don't already have a URL, then browse_web to read one.
 
 ## Decision Framework
 
@@ -382,7 +385,8 @@ Task received
 │     └─→ Solo: use read_file + search_code, answer directly.
 │
 ├── Do I need information from the web?
-│     └─→ browse_web to fetch docs, API references, or examples.
+│     └─→ No URL yet? search_web to discover pages/docs.
+│     └─→ Have a URL? browse_web to fetch docs, API references, or examples.
 │
 ├── Is scope unclear?
 │     └─→ Spawn researcher first. Understand before acting.
@@ -563,6 +567,7 @@ Before writing code for any non-trivial problem:
 | Load prior knowledge                  | recall                                 |
 | Read from GitHub / S3 / Git repo      | read_file with remote path             |
 | Check/share with network              | network_status / network_share         |
+| Search the web for pages/docs         | search_web                             |
 | Read a web page or docs               | browse_web                             |
 | Schedule a recurring task             | schedule_task                          |
 | Remove a scheduled task               | unschedule_task                        |

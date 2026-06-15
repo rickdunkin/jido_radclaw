@@ -93,9 +93,9 @@ defmodule JidoClaw.JidoMd do
     - **Use for**: Writing documentation, README files, module docs, inline comments
 
     ### `researcher`
-    - **Tools**: read_file, search_code, list_directory, project_info
+    - **Tools**: read_file, search_code, list_directory, project_info, browse_web, search_web
     - **Max iterations**: 15
-    - **Use for**: Codebase exploration, architecture analysis, dependency mapping, understanding unfamiliar code
+    - **Use for**: Codebase exploration, architecture analysis, dependency mapping, understanding unfamiliar code, web research (discover with search_web, read with browse_web)
 
     ### `refactorer`
     - **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info

@@ -34,8 +34,9 @@ defmodule JidoClaw.Agent do
       JidoClaw.Tools.FindSolution,
       JidoClaw.Tools.NetworkShare,
       JidoClaw.Tools.NetworkStatus,
-      # Browser tools (1)
+      # Browser tools (2)
       JidoClaw.Tools.BrowseWeb,
+      JidoClaw.Tools.SearchWeb,
       # Reasoning tools (3)
       JidoClaw.Tools.Reason,
       JidoClaw.Tools.RunPipeline,

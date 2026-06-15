@@ -63,7 +63,7 @@ defmodule JidoClaw.Agent.Templates do
     },
     "researcher" => %{
       module: JidoClaw.Agent.Workers.Researcher,
-      description: "Explores and analyzes codebase structure",
+      description: "Explores and analyzes codebase structure, and researches the web (read-only)",
       model: :fast
     },
     "refactorer" => %{

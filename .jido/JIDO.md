@@ -30,7 +30,7 @@ JidoClaw is an AI agent platform built on BEAM/OTP with the Jido framework.
 ```
 CLI (REPL) ──> Agent Engine ──> LLM Provider (Ollama/Anthropic/OpenAI/etc.)
    |                |
-   |                ├── Tools (30): file ops, git, search, shell, memory, swarm, scheduling
+   |                ├── Tools (33): file ops, git, search, shell, memory, swarm, browser, reasoning, scheduling
    |                ├── Skills: multi-step orchestrated workflows
    |                └── Solutions: fingerprint-based solution caching
    |
@@ -107,10 +107,10 @@ Use `spawn_agent` with a template name to create a child agent.
 - **Strength**: Can read existing code to understand it, then write accurate docs
 
 ### `researcher`
-- **Tools**: read_file, search_code, list_directory, project_info
+- **Tools**: read_file, search_code, list_directory, project_info, browse_web, search_web
 - **Max iterations**: 15
-- **Use for**: Codebase exploration, architecture analysis, dependency mapping
-- **Strength**: Read-only exploration — safe to point at any part of the codebase
+- **Use for**: Codebase exploration, architecture analysis, dependency mapping, web research (discover with search_web, read with browse_web)
+- **Strength**: Read-only exploration of the codebase and public web research
 
 ### `refactorer`
 - **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info
@@ -180,7 +180,7 @@ synthesis: "Summarize what was done and any remaining issues"
 
 ---
 
-## Tools (30 total)
+## Tools (33 total)
 
 ### File Operations
 | Tool | Description |
@@ -199,6 +199,7 @@ synthesis: "Summarize what was done and any remaining issues"
 | `git_status` | Repository status |
 | `git_diff` | Show staged and unstaged changes |
 | `git_commit` | Create commits with messages |
+| `fetch_output` | Retrieve the full stored output behind an output_ref |
 
 ### Swarm Orchestration
 | Tool | Description |
@@ -208,6 +209,7 @@ synthesis: "Summarize what was done and any remaining issues"
 | `list_agents` | List all running agents |
 | `send_to_agent` | Send a message to a running agent |
 | `kill_agent` | Terminate an agent |
+| `handoff` | Transfer conversation ownership to a specialized worker template |
 
 ### Memory & Solutions
 | Tool | Description |
@@ -216,6 +218,7 @@ synthesis: "Summarize what was done and any remaining issues"
 | `recall` | Search memories by query |
 | `store_solution` | Cache a solution with a fingerprint |
 | `find_solution` | Find cached solutions matching a fingerprint |
+| `forget` | Remove or invalidate stored memory entries |
 
 ### Skills & Network
 | Tool | Description |
@@ -223,6 +226,19 @@ synthesis: "Summarize what was done and any remaining issues"
 | `run_skill` | Execute a multi-step skill workflow |
 | `network_share` | Share solutions on the JidoClaw network |
 | `network_status` | Check network connectivity |
+
+### Browser
+| Tool | Description |
+|------|-------------|
+| `browse_web` | Fetch and read web pages using a headless browser |
+| `search_web` | Search the web via Brave Search; returns ranked results (title, URL, snippet) |
+
+### Reasoning
+| Tool | Description |
+|------|-------------|
+| `reason` | Apply a structured reasoning strategy to a complex problem |
+| `run_pipeline` | Chain multiple reasoning strategies sequentially |
+| `verify_certificate` | Verify code using semi-formal reasoning certificates |
 
 ### Scheduling
 | Tool | Description |

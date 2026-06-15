@@ -3,12 +3,14 @@ defmodule JidoClaw.Agent.Workers.Researcher do
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_researcher",
     description:
-      "Explores and analyzes codebase structure, dependencies, and patterns. Read-only access for deep codebase investigation. Return a structured result with a top-line `summary`, `confidence` (`low`/`medium`/`high`), a list of `findings` (each with a `topic`, `detail`, and `references` — file paths or symbols), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Explores and analyzes codebase structure, dependencies, and patterns, and researches the web (discover with search_web, read with browse_web). Read-only access for deep codebase and web investigation. Return a structured result with a top-line `summary`, `confidence` (`low`/`medium`/`high`), a list of `findings` (each with a `topic`, `detail`, and `references` — file paths or symbols), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.SearchCode,
       JidoClaw.Tools.ListDirectory,
-      JidoClaw.Tools.ProjectInfo
+      JidoClaw.Tools.ProjectInfo,
+      JidoClaw.Tools.BrowseWeb,
+      JidoClaw.Tools.SearchWeb
     ],
     model: :fast,
     max_iterations: 15,

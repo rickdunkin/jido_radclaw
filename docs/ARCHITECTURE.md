@@ -153,7 +153,7 @@ JidoClaw.Agent
 │
 ├── Scheduling (3)        — ScheduleTask, UnscheduleTask, ListScheduledTasks
 │
-└── Browser (1)           — BrowseWeb
+└── Browser (2)           — BrowseWeb, SearchWeb
 ```
 
 ## Reasoning Strategies
@@ -829,7 +829,7 @@ Each tenant has its own isolated supervision subtree. A crash in one tenant does
 | **jido_vfs** | main | VFS abstraction for file tools (GitHub, S3, Git) |
 | **jido_memory** | main | ETS store backend for persistent memory |
 | **jido_mcp** | main | MCP server for Claude Code / Cursor integration |
-| **jido_browser** | ~> 2.0 | `browse_web` tool |
+| **jido_browser** | ~> 2.0 | `browse_web` + `search_web` tools |
 | **jido_composer** | ~> 0.3 | Workflow FSM for sequential skill orchestration |
 | **jido_messaging** | main | Room-based messaging runtime |
 | **jido_skill** | main | Skill metadata discoverability |
