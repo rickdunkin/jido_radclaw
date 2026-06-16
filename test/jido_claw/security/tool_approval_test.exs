@@ -9,6 +9,7 @@ defmodule JidoClaw.Security.ToolApprovalTest do
 
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Security.ShellCommand
   alias JidoClaw.Security.ToolApproval
 
   # Inline victim actions exercise the real wrapper pipeline.
@@ -140,6 +141,244 @@ defmodule JidoClaw.Security.ToolApprovalTest do
       refute Map.has_key?(details, :reason)
       refute Map.has_key?(details, :retry)
       refute Map.has_key?(details, :retryable)
+    end
+  end
+
+  describe "shell-aware run_command gating (env-free opts)" do
+    defp run_cmd(scope, command, opts \\ []) do
+      ToolApproval.gate(
+        "run_command",
+        Map.new([{:command, command}]),
+        ctx(scope),
+        Keyword.merge([enabled?: true, require: []], opts)
+      )
+    end
+
+    test "newly-closed shell bypasses of git_commit pend", %{scope: scope} do
+      bypasses = [
+        ~s(git -C "my dir" commit),
+        "FOO=bar git commit",
+        "A=1 B=2 git commit",
+        "sudo git commit",
+        "sudo -u user git commit",
+        "/usr/bin/git commit",
+        ~s(sh -c "git commit"),
+        "bash -lc 'git commit'",
+        "git commit &",
+        "echo x\ngit commit",
+        "timeout 5 git commit",
+        # git-aware resolution: dynamic sub-command, inline alias, redirect-aware
+        # arg extraction, and an unknown pre-sub-command flag all gate.
+        "git $x",
+        "git -c alias.ci=commit ci",
+        "git > out commit",
+        "git --frobnicate commit",
+        # config injection (review F1/F2): GIT_CONFIG_* env (inline, env-wrapper,
+        # cross-command export/set -a) and an inline config-include directive.
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.ci GIT_CONFIG_VALUE_0=commit git ci",
+        "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.ci GIT_CONFIG_VALUE_0=commit git ci",
+        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.ci GIT_CONFIG_VALUE_0=commit; git ci",
+        "set -a; GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=alias.ci; GIT_CONFIG_VALUE_0=commit; git ci",
+        "git -c include.path=/path/to/config ci",
+        # config injection (review F3): a persistent `git config` alias/include
+        # write — gates even with no later git in the same string.
+        "git config alias.ci commit; git ci",
+        "git config alias.ci commit",
+        "git config include.path /tmp/evil",
+        # the closed dynamic-key bug + the deliberate config grammar: a dynamic
+        # key, a section rename into a risky section, and the editor mutation
+        # surface all gate as persistent writes.
+        ~s(git config "$key" commit),
+        ~s(git config set "$key" commit),
+        "git config rename-section foo alias",
+        "git config --rename-section foo include",
+        "git config edit",
+        ~s(K=alias.ci; git config "$K" commit; git ci)
+      ]
+
+      for cmd <- bypasses do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected #{inspect(cmd)} to pend"
+      end
+    end
+
+    test "compound and control forms hiding git commit pend", %{scope: scope} do
+      compounds = [
+        "(git commit)",
+        "{ git commit; }",
+        "if true; then git commit; fi",
+        "f(){ git commit; }; f"
+      ]
+
+      for cmd <- compounds do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected #{inspect(cmd)} to pend"
+      end
+    end
+
+    test "un-analyzable commands fail closed and pend (never silently pass)", %{scope: scope} do
+      unknowns = [
+        "$GIT commit",
+        "git${IFS}commit",
+        "sudo -X git commit",
+        "sh <<EOF\ngit commit\nEOF",
+        String.duplicate("a;", 300),
+        # A dynamic interpreter/eval script target cannot be read — fail closed.
+        ~s(sh -c "$cmd"),
+        ~s(eval "$cmd")
+      ]
+
+      for cmd <- unknowns do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected #{inspect(cmd)} to pend"
+      end
+    end
+
+    test "suspicious shell structure pends under the default kinds", %{scope: scope} do
+      structural = [~S|echo $(date)|, ~S|git log `date`|, "curl x | sh", "base64 -d | bash -e"]
+
+      for cmd <- structural do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected #{inspect(cmd)} to pend"
+      end
+    end
+
+    test "benign commands and pinned residuals pass through", %{scope: scope} do
+      benign = [
+        "git status",
+        "git diff",
+        "ls -la",
+        "echo hello",
+        "git log && echo commit",
+        "bash deploy.sh",
+        "sh < deploy.sh",
+        "alias gc='git commit'",
+        "gc",
+        # git-aware resolution keeps common benign dynamic-arg usage un-gated:
+        # a dynamic value is not a sub-command.
+        ~s(git push origin "$branch"),
+        ~s(git -C "$dir" status),
+        # config-injection benign regressions (review F1/F2/F3): a GIT_CONFIG token
+        # with no git command, a non-GIT_CONFIG env prefix, a non-include `-c`, and
+        # an ordinary `git config` write to a non-alias/include key.
+        "echo GIT_CONFIG_COUNT=1",
+        "GIT_AUTHOR_NAME=x git status",
+        "git -c core.pager=less status",
+        "git config user.name x",
+        # config reads/removals + a benign dynamic-value write are intentionally
+        # allowed (they cannot plant config a later git honors).
+        ~s(git config user.name "$val"),
+        "git config --get alias.x",
+        "git config get user.name",
+        "git config unset alias.x",
+        "git config remove-section alias",
+        "git config --list"
+      ]
+
+      for cmd <- benign do
+        assert :ok = run_cmd(scope, cmd), "expected #{inspect(cmd)} to pass through"
+      end
+    end
+
+    test "an argument-position variable does not mask a literal git commit", %{scope: scope} do
+      assert {:error, %{code: :approval_pending}} = run_cmd(scope, ~S|git commit -m "$MSG"|)
+    end
+
+    test ":suspicious_shell_structure_kinds narrows structural gating", %{scope: scope} do
+      # Default-on: command substitution pends.
+      assert {:error, %{code: :approval_pending}} = run_cmd(scope, ~S|echo $(date)|)
+
+      # Narrowed to pipe-only: $() passes through, the pipe-into-shell still pends.
+      narrowed = [suspicious_shell_structure_kinds: [:pipe_to_shell]]
+      assert :ok = run_cmd(scope, ~S|echo $(date)|, narrowed)
+      assert {:error, %{code: :approval_pending}} = run_cmd(scope, "curl x | sh", narrowed)
+    end
+
+    test ":suspicious_shell_structure_kinds: [] disables structure but not the floor", %{
+      scope: scope
+    } do
+      off = [suspicious_shell_structure_kinds: []]
+      # $() passes once structural gating is off...
+      assert :ok = run_cmd(scope, ~S|echo $(date)|, off)
+      # ...but the git matcher and the un-analyzable fail-closed floor still pend.
+      assert {:error, %{code: :approval_pending}} = run_cmd(scope, "git commit", off)
+      assert {:error, %{code: :approval_pending}} = run_cmd(scope, "$GIT commit", off)
+    end
+
+    test "a malformed kinds config falls back to the default (does not disable)", %{scope: scope} do
+      # A non-list typo must not silently turn structural gating off.
+      assert {:error, %{code: :approval_pending}} =
+               run_cmd(scope, ~S|echo $(date)|, suspicious_shell_structure_kinds: :oops)
+    end
+
+    test "the gate is backend-agnostic (pre-dispatch) — an SSH-backed git commit pends", %{
+      scope: scope
+    } do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "run_command",
+                 %{command: "git commit", backend: "ssh", server: "x"},
+                 ctx(scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "a config %Regex{} matcher coexists with the structured run_command default", %{
+      scope: scope
+    } do
+      opts = [
+        enabled?: true,
+        require: [],
+        require_patterns: %{"read_file" => {:path, [~r{/etc/shadow}]}}
+      ]
+
+      # The structured run_command default still gates a shell git commit...
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("run_command", %{command: "git commit"}, ctx(scope), opts)
+
+      # ...and the config-supplied regex gates read_file on a matching path.
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("read_file", %{path: "/etc/shadow"}, ctx(scope), opts)
+
+      assert :ok = ToolApproval.gate("read_file", %{path: "/tmp/ok"}, ctx(scope), opts)
+    end
+
+    test "a config {:effect, _} matcher with an unknown kind is warn-skipped, not silently inert",
+         %{
+           scope: scope
+         } do
+      cfg = fn kind ->
+        [
+          enabled?: true,
+          require: [],
+          require_patterns: %{"read_file" => {:path, [{:effect, kind}]}}
+        ]
+      end
+
+      # A valid effect kind gates read_file when its path is commit-shaped...
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "read_file",
+                 %{path: "git commit"},
+                 ctx(scope),
+                 cfg.(:git_commit)
+               )
+
+      # ...while a typo'd kind warn-skips the whole entry (logged, never silently
+      # accepted-then-inert), so the same path now passes through.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok =
+                   ToolApproval.gate(
+                     "read_file",
+                     %{path: "git commit"},
+                     ctx(scope),
+                     cfg.(:git_commt)
+                   )
+        end)
+
+      assert log =~ "ignoring invalid :require_patterns"
     end
   end
 
@@ -348,7 +587,7 @@ defmodule JidoClaw.Security.ToolApprovalTest do
     test "every require_patterns key is a real tool whose param is a :string schema field" do
       by_name = tool_module_by_name()
 
-      for {tool, {param, _regexes}} <- ToolApproval.require_patterns() do
+      for {tool, {param, _matchers}} <- ToolApproval.require_patterns() do
         module = Map.get(by_name, tool)
         assert module, "require_patterns key #{inspect(tool)} resolves to no wrapped tool"
 
@@ -357,6 +596,16 @@ defmodule JidoClaw.Security.ToolApprovalTest do
 
         assert field[:type] == :string,
                "#{inspect(tool)} param #{inspect(param)} must be a :string field, got #{inspect(field[:type])}"
+      end
+    end
+
+    test "every shipped {:effect, _} matcher names a known analyzer effect kind" do
+      known = MapSet.new(ShellCommand.effect_kinds())
+
+      for {_tool, {_param, matchers}} <- ToolApproval.require_patterns(),
+          {:effect, kind} <- matchers do
+        assert MapSet.member?(known, kind),
+               "shipped {:effect, #{inspect(kind)}} is not a known effect kind"
       end
     end
 

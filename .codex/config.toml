@@ -28,3 +28,6 @@ approval_mode = "approve"
 
 [mcp_servers.tidewave.tools.execute_sql_query]
 approval_mode = "approve"
+
+[mcp_servers.tidewave.tools.get_logs]
+approval_mode = "approve"

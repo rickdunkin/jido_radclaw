@@ -39,57 +39,136 @@ defmodule JidoClaw.Security.ToolApproval do
   param-pattern → template, so the most specific reason wins. The patterns
   close the bypass where a general-purpose tool reaches a gated capability —
   e.g. `run_command "git commit ..."` is the shell equivalent of the gated
-  `git_commit` tool. The default `run_command`/`command`
-  patterns match plain `git commit` and option-bearing forms (`git -C repo
-  commit`, `git -c user.name=x commit`, `git --git-dir=.git commit`) plus
-  `crontab` (the `schedule_task` equivalent). Quoted args with spaces
-  (`git -C "my dir" commit`) are out of regex reach — operators wanting full
-  shell containment add `run_command` to `require`. False positives merely ask
-  for approval, which is acceptable.
+  `git_commit` tool. The `run_command` `:command` matchers delegate to
+  `JidoClaw.Security.ShellCommand`, a shell-aware analyzer (a `nimble_parsec`
+  grammar) that tokenizes the command the way a shell would, splits on
+  separators/group boundaries, strips transparent prefixes (env-assignments,
+  redirects, control keywords, wrapper words) to resolve the real command word,
+  and emits **honest semantic effects** the gate matches on (`{:effect, kind}`).
+  So `git commit`, `git -C "my dir" commit`, `FOO=bar git commit`,
+  `sudo git commit`, `/usr/bin/git commit`, `sh -c "git commit"`, and the
+  multiline / separator variants all gate (`:git_commit`), as does `crontab`
+  (`:crontab`, the `schedule_task` equivalent). For `git` the analyzer resolves
+  the *true* sub-command past global options, inline `-c alias.X=Y` definitions,
+  and alias chains, emitting `:git_commit` **only** for a definitively resolved
+  commit; git-resolution uncertainty (a dynamic sub-command `git $x`, an unknown
+  pre-sub-command flag `git --frobnicate commit`, an alias cycle, a `!`-shell
+  alias) surfaces as `:opaque` (scope `:git`) — gated, but never a *false*
+  `:git_commit`. Config injection (`:git_config_injection`) covers an inline
+  `-c include.path=…` directive, a `--config-env` value, a dynamic inline `-c`,
+  and any visible `GIT_CONFIG_*` env mutation co-occurring with a git command. A
+  `git config` sub-command that **plants** config a later turn honors
+  (`:git_config_persistent_write`) is resolved by a deliberate state machine over
+  git's real grammar — config options may appear before *and* after an optional
+  action word (`set`/`rename-section`/…); writes to an `alias.*`/`include.*` key,
+  a *dynamic* key (`git config "$key" commit`, `git config set "$k" commit`), a
+  `rename-section` into `alias`/`include`, and an `edit`/`-e`/`--edit` mutation
+  all gate, while reads and removals (`git config --get alias.x`,
+  `git config get user.name`, `unset`, `remove-section`, `--list`) and a benign
+  write (`git config user.name "$val"`) pass. So `git -c alias.ci=commit ci`,
+  `git -c include.path=f ci`, `git config alias.ci commit`,
+  `git config "$key" commit`, `git config edit`, `GIT_CONFIG_COUNT=1 … git ci`,
+  and `export GIT_CONFIG_…=…; git ci` all gate while `git -C "$dir" status` and
+  `git config user.name x` stay un-gated; a dynamic interpreter/eval script
+  (`sh -c "$cmd"`) fails closed (`:opaque`, scope `:interpreter`). The gate
+  additionally fires on *suspicious structure* — command substitution (`$()`),
+  backticks, and a pipe into a shell (`curl … | sh`) — tunable (or disabled) via
+  `:suspicious_shell_structure_kinds`. Anything it cannot confidently resolve
+  fails closed to "require approval" (the `{:effect, :opaque}` floor). The gate
+  runs pre-dispatch, so it is backend-agnostic (host `sh -c`, remote SSH shell,
+  VFS). Documented residuals —
+  covered by the escape valve (add `run_command` to `require` for total
+  containment): shell aliases/functions sourced from login/startup files (not
+  visible in the command string) and script-file indirection (`bash deploy.sh`,
+  `sh < deploy.sh`). False positives merely ask for approval, which is
+  acceptable.
 
   ## Configuration
 
       config :jido_claw, :tool_approval,
         enabled?: true,
-        require: ~w(network_share kill_agent ...)
+        require: ~w(network_share kill_agent ...),
+        suspicious_shell_structure_kinds: [:command_substitution, :backtick, :pipe_to_shell]
 
-  `enabled?`/`require`/`require_patterns` resolve via per-call opts first, then
-  app config, then the in-module defaults (the DestinationPolicy `opt_or_config`
-  pattern), so tests stay env-free. The shell param-patterns live in-module
-  (`@require_patterns`); config can **add** patterns for other tools but a typo'd
-  config entry can never disable the shipped ones (defaults win on merge, and
-  malformed entries are warn-and-skipped).
+  `enabled?`/`require`/`require_patterns`/`suspicious_shell_structure_kinds`
+  resolve via per-call opts first, then app config, then the in-module defaults
+  (the DestinationPolicy `opt_or_config` pattern), so tests stay env-free. The
+  shell param-patterns live in-module (`@require_patterns`); config can **add**
+  patterns for other tools but a typo'd config entry can never disable the
+  shipped ones (defaults win on merge, and malformed entries are
+  warn-and-skipped). `:suspicious_shell_structure_kinds` narrows the `:structure`
+  matcher — a literal `[]` disables structural gating (the
+  `:git_commit`/`:git_config_injection`/`:git_config_persistent_write`/`:crontab`
+  effect matchers and the `:opaque` fail-closed floor remain), an unknown/
+  malformed value falls back to the default. The `{:effect, _}` matchers are
+  intentionally not disable-able.
   """
 
   require Logger
 
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Orchestration.ToolApprovals
+  alias JidoClaw.Security.ShellCommand
 
   # The conservative default require list, single-sourced here so the config
   # sanity sweep validates the SAME list every environment ships (test config
   # only toggles `enabled?`). Operators override via `:tool_approval, :require`.
   @default_require ~w(network_share kill_agent schedule_task unschedule_task git_commit forget replay_workflow)
 
-  @config_defaults [enabled?: true, require: @default_require, mcp_require_approval: true]
+  # Suspicious shell-structure kinds the `run_command` `:structure` matcher gates
+  # on by default. Operators narrow via `:suspicious_shell_structure_kinds`
+  # (a dedicated key, not @require_patterns — see suspicious_structure_kinds/1);
+  # a literal `[]` disables structural gating (the git/crontab + unknown? floor
+  # stays). Must mirror JidoClaw.Security.ShellCommand's structure vocabulary.
+  @default_structure_kinds [:command_substitution, :backtick, :pipe_to_shell]
+
+  @config_defaults [
+    enabled?: true,
+    require: @default_require,
+    mcp_require_approval: true,
+    suspicious_shell_structure_kinds: @default_structure_kinds
+  ]
 
   @doc "The shipped default require list (single source of truth)."
   @spec default_require() :: [String.t()]
   def default_require, do: @default_require
 
-  # In-module param-pattern triggers — `{param_key, [regex, ...]}` per tool.
-  # Shell equivalents of gated tools reachable through general-purpose tools.
+  # In-module param-pattern triggers — `{param_key, [matcher, ...]}` per tool.
+  # A matcher is `{:effect, kind}` (a semantic risk fact from
+  # JidoClaw.Security.ShellCommand.analyze/1), `:structure` (suspicious shell
+  # structure, kinds from :suspicious_shell_structure_kinds), `{:cmd, name}` /
+  # `{:cmd, name, opts}` (shell-aware command resolution, kept for operator
+  # config), or a `%Regex{}` (raw-string fallback). These close the bypass where
+  # the general-purpose run_command reaches a gated capability.
+  #
+  # The five `{:effect, _}` entries are the non-disable-able floor (defaults win
+  # on merge in require_patterns/1); `:structure` is narrowed/disabled via
+  # :suspicious_shell_structure_kinds. The analyzer's effects are honest semantic
+  # facts: `:git_commit` only for a definitively resolved commit (git-resolution
+  # uncertainty surfaces as `:opaque`, scope :git), `:git_config_injection` for
+  # inline `-c`/`--config-env`/`GIT_CONFIG_*`-env config injection, and
+  # `:git_config_persistent_write` for a `git config` write that PLANTS config a
+  # later turn honors (an `alias.*`/`include.*` key, a dynamic key, a section
+  # rename into `alias`/`include`, or an `edit`/`-e`/`--edit` mutation) — read/
+  # removal config forms (`--get`/`get`/`unset`/`remove-section`) are allowed.
   @require_patterns %{
     "run_command" =>
       {:command,
        [
-         # git-commit equivalence: plain `git commit` AND option-bearing forms
-         # (`git -C repo commit`, `git -c user.name=x commit`,
-         # `git --git-dir=.git commit`). Bare-token interpositions break the
-         # chain (`git log && echo commit` stays unmatched).
-         ~r/\bgit(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b/,
-         # crontab equivalence (schedule_task).
-         ~r/\bcrontab\b/
+         # git-commit equivalence (the git_commit tool): `git … commit` in any
+         # shell dressing — quoting, separators, env/wrapper/path prefixes,
+         # aliases, `sh -c`, multiline. `git log && echo commit` stays unmatched.
+         {:effect, :git_commit},
+         # git config injection (inline -c include/--config-env, GIT_CONFIG_* env).
+         {:effect, :git_config_injection},
+         # a persistent `git config` write that plants config for a later turn.
+         {:effect, :git_config_persistent_write},
+         # crontab equivalence (the schedule_task tool).
+         {:effect, :crontab},
+         # fail-closed floor: anything unresolved (parse/interpreter/git opacity).
+         {:effect, :opaque},
+         # Suspicious shell structure: `$()`, backticks, pipe-into-a-shell.
+         :structure
        ]}
   }
 
@@ -200,15 +279,40 @@ defmodule JidoClaw.Security.ToolApproval do
 
   defp pattern_match(tool, params, opts) do
     case Map.get(require_patterns(opts), tool) do
-      {param_key, regexes} when is_list(regexes) ->
+      {param_key, matchers} when is_list(matchers) ->
         value = param_value(params, param_key)
 
-        if is_binary(value) and Enum.any?(regexes, &Regex.match?(&1, value)) do
+        if is_binary(value) and matchers_match?(matchers, value, opts) do
           {:pattern, param_key}
         end
 
       _ ->
         nil
+    end
+  end
+
+  # Analyze the command once, then test each matcher against the shared analysis
+  # (opts threaded — only the :structure matcher consults config). Any hit gates.
+  defp matchers_match?(matchers, value, opts) do
+    analysis = ShellCommand.analyze(value)
+    Enum.any?(matchers, &matcher_matches?(&1, value, analysis, opts))
+  end
+
+  defp matcher_matches?(%Regex{} = regex, raw, _analysis, _opts), do: Regex.match?(regex, raw)
+
+  defp matcher_matches?({:effect, kind}, _raw, analysis, _opts),
+    do: ShellCommand.has_effect?(analysis, kind)
+
+  defp matcher_matches?({:cmd, name}, _raw, analysis, _opts),
+    do: ShellCommand.command_present?(analysis, name, [])
+
+  defp matcher_matches?({:cmd, name, cmd_opts}, _raw, analysis, _opts),
+    do: ShellCommand.command_present?(analysis, name, cmd_opts)
+
+  defp matcher_matches?(:structure, _raw, analysis, opts) do
+    case suspicious_structure_kinds(opts) do
+      [] -> false
+      kinds -> ShellCommand.structure_present?(analysis, kinds)
     end
   end
 
@@ -318,10 +422,10 @@ defmodule JidoClaw.Security.ToolApproval do
   defp validated_config_patterns(config) when is_map(config) do
     config
     |> Enum.flat_map(fn
-      {tool, {param, regexes}}
-      when is_binary(tool) and is_atom(param) and is_list(regexes) ->
-        if Enum.all?(regexes, &match?(%Regex{}, &1)) do
-          [{tool, {param, regexes}}]
+      {tool, {param, matchers}}
+      when is_binary(tool) and is_atom(param) and is_list(matchers) ->
+        if Enum.all?(matchers, &valid_matcher?/1) do
+          [{tool, {param, matchers}}]
         else
           warn_skip(tool)
         end
@@ -334,6 +438,15 @@ defmodule JidoClaw.Security.ToolApproval do
 
   defp validated_config_patterns(_other), do: %{}
 
+  defp valid_matcher?(%Regex{}), do: true
+  # Validate the kind against the analyzer's known effect kinds — an operator
+  # `{:effect, :typo}` must be warn-skipped, never accepted-then-silently-inert.
+  defp valid_matcher?({:effect, kind}) when is_atom(kind), do: kind in ShellCommand.effect_kinds()
+  defp valid_matcher?({:cmd, name}) when is_binary(name), do: true
+  defp valid_matcher?({:cmd, name, opts}) when is_binary(name) and is_list(opts), do: true
+  defp valid_matcher?(:structure), do: true
+  defp valid_matcher?(_other), do: false
+
   defp warn_skip(tool) do
     Logger.warning("tool approval: ignoring invalid :require_patterns entry for #{inspect(tool)}")
     []
@@ -342,6 +455,43 @@ defmodule JidoClaw.Security.ToolApproval do
   defp enabled?(opts), do: opt_or_config(opts, :enabled?)
   defp require_list(opts), do: opt_or_config(opts, :require)
   defp config_patterns(opts), do: opt_or_config(opts, :require_patterns) || %{}
+
+  # The kinds the `:structure` matcher gates on. A dedicated config key (not
+  # @require_patterns, whose defaults win on merge and so could never be
+  # narrowed): a literal `[]` disables structural gating; non-list/all-unknown
+  # falls back to the default (a typo must not silently disable a gate); a
+  # mixed list keeps its known kinds and warns-and-drops the unknown ones.
+  defp suspicious_structure_kinds(opts) do
+    opts
+    |> opt_or_config(:suspicious_shell_structure_kinds)
+    |> normalize_structure_kinds()
+  end
+
+  defp normalize_structure_kinds([]), do: []
+
+  defp normalize_structure_kinds(kinds) when is_list(kinds) do
+    {known, unknown} = Enum.split_with(kinds, &(&1 in @default_structure_kinds))
+    maybe_warn_unknown_kinds(unknown)
+    if known == [], do: @default_structure_kinds, else: known
+  end
+
+  defp normalize_structure_kinds(other) do
+    Logger.warning(
+      "tool approval: :suspicious_shell_structure_kinds must be a list of " <>
+        "#{inspect(@default_structure_kinds)}, got #{inspect(other)}; using default"
+    )
+
+    @default_structure_kinds
+  end
+
+  defp maybe_warn_unknown_kinds([]), do: :ok
+
+  defp maybe_warn_unknown_kinds(unknown) do
+    Logger.warning(
+      "tool approval: ignoring unknown :suspicious_shell_structure_kinds " <>
+        "#{inspect(unknown)} (known: #{inspect(@default_structure_kinds)})"
+    )
+  end
 
   defp opt_or_config(opts, key) do
     case Keyword.fetch(opts, key) do

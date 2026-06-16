@@ -168,6 +168,11 @@ defmodule JidoClaw.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
       {:glob_ex, "~> 0.1"},
+      # Pure-BEAM parser combinator; substrate for the shell-aware run_command
+      # approval analyzer (JidoClaw.Security.ShellCommand). Already resolved at
+      # 1.4.2 transitively (makeup, abnf_parsec, time_zone_info) — declared
+      # direct so `deps.unlock --unused` keeps it and the use is explicit.
+      {:nimble_parsec, "~> 1.4"},
 
       # Phoenix gateway
       {:phoenix, "~> 1.7"},
