@@ -338,6 +338,16 @@ config :jido_claw,
     max_events_per_trace: 300,
     persist?: true,
     persist_sync?: false,
+    # Trace.Policy redaction + sampling (see `JidoClaw.Trace.Policy`).
+    # Keep-all sampling, deterministic per-trace via `:erlang.phash2`; accepts 1.
+    sample_rate: 1.0,
+    # Durable-write target (`JidoClaw.Trace.Sink`). Default delegates to
+    # Trace.Persistence; swap to Trace.Sink.InMemory for assertion-only tests.
+    sink: JidoClaw.Trace.Sink.Postgres,
+    # Additive "[OMITTED]"/"[REDACTED]" key names layered onto the built-in
+    # Policy floor (atoms/strings, case-insensitive). Cannot un-redact a built-in.
+    extra_omit_keys: [],
+    extra_redact_keys: [],
     # Durable retention: trace_runs (and their events) whose `updated_at` is
     # older than this many days are pruned by JidoClaw.Trace.RetentionSweeper.
     # Keyed on updated_at (last activity), so live traces never age out

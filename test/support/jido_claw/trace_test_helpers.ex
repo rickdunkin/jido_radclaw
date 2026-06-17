@@ -62,5 +62,37 @@ defmodule JidoClaw.TraceTestHelpers do
     GenServer.call(JidoClaw.Trace.Persistence, :__sync__)
   end
 
+  @doc """
+  Drain the InMemory sink's mailbox. Returns `:ok` after every prior
+  `{:write, ...}` cast has been handled. The collector barrier alone is
+  not enough when `sink: Trace.Sink.InMemory` — its `write/2` is an async
+  cast one hop past the collector.
+  """
+  @spec sync_sink() :: :ok
+  def sync_sink do
+    GenServer.call(JidoClaw.Trace.Sink.InMemory, :__sync__)
+  end
+
+  @doc """
+  Drain the global Collector, then the Persistence writer.
+
+  Call this in a shared-sandbox trace test's `on_exit` **before**
+  `Ecto.Adapters.SQL.Sandbox.stop_owner/1`. The Collector is a process-
+  global singleton that borrows the shared sandbox connection for its
+  best-effort durable tenant lookup (`durable_tenant/1` →
+  `RequestCorrelation.lookup/1`) during ingest. A test that emits
+  Collector-ingested telemetry without its own `sync_collector/0` (e.g. an
+  emit-and-`assert_receive` reasoning test) leaves that lookup query in
+  flight; stopping the owner then races it and logs a "still using a
+  connection from owner" warning. Draining the Collector first guarantees
+  it is idle, and draining Persistence flushes any sink write it queued.
+  """
+  @spec drain_trace_processes() :: :ok
+  def drain_trace_processes do
+    _ = sync_collector()
+    _ = sync_persistence()
+    :ok
+  end
+
   defp unique, do: System.unique_integer([:positive])
 end

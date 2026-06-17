@@ -30,11 +30,12 @@ defmodule JidoClaw.TraceTest do
     )
 
     on_exit(fn ->
-      # Drain Persistence mailbox so any in-flight write completes
-      # before the sandbox owner exits. Defensive against the rare
-      # case where a test enabled persistence and emitted before
-      # we get here.
-      _ = H.sync_persistence()
+      # Drain the Collector THEN Persistence before the sandbox owner exits.
+      # The global Collector borrows the shared connection for best-effort
+      # durable tenant lookups during ingest, so an un-drained event (e.g.
+      # the reasoning canonical-path test emits + asserts but never calls
+      # sync_collector) leaves a lookup query in flight that races stop_owner.
+      _ = H.drain_trace_processes()
 
       if previous_trace_cfg do
         Application.put_env(:jido_claw, :trace, previous_trace_cfg)
@@ -136,6 +137,28 @@ defmodule JidoClaw.TraceTest do
       assert {:ok, trace} = Trace.for_request(agent_id, request_id)
       first = hd(trace.events)
       assert first.metadata.params == "[OMITTED]"
+    end
+
+    test "value-scrubs an embedded secret in a non-omitted metadata string" do
+      agent_id = unique_id("scrub-agent")
+      request_id = unique_id("req")
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{
+          agent_id: agent_id,
+          request_id: request_id,
+          note: "Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      )
+
+      :ok = H.sync_collector()
+      assert {:ok, trace} = Trace.for_request(agent_id, request_id)
+      first = hd(trace.events)
+      # `note` is neither omitted nor key-redacted, yet the embedded key is gone.
+      refute first.metadata.note =~ "sk-ant-api03"
+      assert first.metadata.note =~ "[REDACTED"
     end
   end
 

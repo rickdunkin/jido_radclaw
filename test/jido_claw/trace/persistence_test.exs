@@ -8,7 +8,13 @@ defmodule JidoClaw.Trace.PersistenceTest do
 
   setup do
     pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
-    on_exit(fn -> Sandbox.stop_owner(pid) end)
+
+    on_exit(fn ->
+      # Drain the global Collector + Persistence before releasing the shared
+      # connection — see `H.drain_trace_processes/0` for the race it closes.
+      _ = H.drain_trace_processes()
+      Sandbox.stop_owner(pid)
+    end)
 
     previous_trace_cfg = Application.get_env(:jido_claw, :trace)
     Application.put_env(:jido_claw, :trace, persist_sync?: true, persist?: true)

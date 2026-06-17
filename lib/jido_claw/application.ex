@@ -159,10 +159,15 @@ defmodule JidoClaw.Application do
       # acceptance gate "Bus restart resubscribe" / "Assistant ordering".
       {Jido.Signal.Bus, name: JidoClaw.SignalBus, partition_count: 1},
       JidoClaw.Conversations.RequestCorrelation.Cache,
-      # Trace.Persistence MUST start before Trace.Collector: the
-      # Collector attaches telemetry handlers in init/1 and may
-      # immediately fan events out to Persistence.
+      # Trace.Persistence + Trace.Sink.InMemory MUST start before
+      # Trace.Collector: the Collector attaches telemetry handlers in init/1
+      # and may immediately fan events out to whichever sink is configured.
+      # Order: Persistence → Sink.InMemory → Collector — so anything the
+      # Collector may write to on first event is already started for BOTH
+      # sinks (the default Postgres sink rides Persistence; Sink.InMemory is
+      # an idle bounded GenServer until selected via config).
       JidoClaw.Trace.Persistence,
+      JidoClaw.Trace.Sink.InMemory,
       JidoClaw.Trace.Collector,
       JidoClaw.Conversations.Recorder,
       JidoClaw.Conversations.RequestCorrelation.Sweeper,

@@ -54,18 +54,21 @@ defmodule JidoClaw.Trace.Collector do
   """
 
   use GenServer
+  require Logger
 
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Trace.Event
   alias JidoClaw.Trace.Limit, as: TraceLimit
-  alias JidoClaw.Trace.Persistence, as: TracePersistence
+  alias JidoClaw.Trace.Policy
   alias JidoClaw.Trace.Sanitize, as: TraceSanitize
+  alias JidoClaw.Trace.Sink.Postgres, as: SinkPostgres
 
   @handler_id "jido-claw-trace-collector"
 
   @default_max_traces 100
   @default_max_events_per_trace 300
+  @default_policy Policy.default()
 
   # `[:jido, :ai, :llm, :delta]` is deliberately omitted — a single LLM
   # call emits 100s of these and would evict the lifecycle events in
@@ -117,7 +120,9 @@ defmodule JidoClaw.Trace.Collector do
             by_request: %{},
             by_run: %{},
             by_trace: %{},
-            by_tenant: %{}
+            by_tenant: %{},
+            policy: @default_policy,
+            sink: SinkPostgres
 
   @type t :: %__MODULE__{
           enabled?: boolean(),
@@ -130,7 +135,9 @@ defmodule JidoClaw.Trace.Collector do
           by_request: map(),
           by_run: map(),
           by_trace: map(),
-          by_tenant: map()
+          by_tenant: map(),
+          policy: Policy.t(),
+          sink: module()
         }
 
   @type target_ref :: %{
@@ -176,7 +183,15 @@ defmodule JidoClaw.Trace.Collector do
   @impl GenServer
   def init(_opts) do
     attach_handlers()
-    {:ok, struct(__MODULE__, trace_config())}
+    config = Application.get_env(:jido_claw, :trace, [])
+
+    fields =
+      Map.merge(trace_config(config), %{
+        policy: Policy.from_config(config),
+        sink: resolve_sink(config)
+      })
+
+    {:ok, struct(__MODULE__, fields)}
   end
 
   @impl GenServer
@@ -256,9 +271,7 @@ defmodule JidoClaw.Trace.Collector do
       )
   end
 
-  defp trace_config do
-    config = Application.get_env(:jido_claw, :trace, [])
-
+  defp trace_config(config) do
     %{
       enabled?: config_value(config, :enabled?, true),
       max_traces:
@@ -288,35 +301,46 @@ defmodule JidoClaw.Trace.Collector do
   defp record_event(state, event_name, measurements, metadata) do
     seq = state.seq + 1
 
-    case normalize_event(seq, event_name, measurements, metadata) do
+    case normalize_event(state.policy, seq, event_name, measurements, metadata) do
       nil ->
         %{state | seq: seq}
 
       %Event{} = event ->
         key = trace_key(event)
 
-        trace =
-          state.traces
-          |> Map.get(key, new_trace(event))
-          |> append_event(event, state.max_events_per_trace)
-          |> backfill_tenant(event)
-
-        traces = Map.put(state.traces, key, trace)
-        order = append_order(state.order, key)
-        new_state = %{state | seq: seq, traces: traces, order: order}
-
-        new_state
-        |> prune_traces()
-        |> rebuild_indexes()
-        |> maybe_persist(event, trace)
+        # Deterministic per-trace sampling: a dropped key still bumps `seq`
+        # (keeping it monotonic for the UPSERT/UUID contracts) but never
+        # touches the ring or the sink. Recomputed each event — no drop-cache.
+        if Policy.keep_trace?(state.policy, key) do
+          ingest_event(state, event, key, seq)
+        else
+          %{state | seq: seq}
+        end
     end
   end
 
-  defp normalize_event(seq, event_name, measurements, metadata) do
+  defp ingest_event(state, event, key, seq) do
+    trace =
+      state.traces
+      |> Map.get(key, new_trace(event))
+      |> append_event(event, state.max_events_per_trace)
+      |> backfill_tenant(event)
+
+    traces = Map.put(state.traces, key, trace)
+    order = append_order(state.order, key)
+    new_state = %{state | seq: seq, traces: traces, order: order}
+
+    new_state
+    |> prune_traces()
+    |> rebuild_indexes()
+    |> maybe_write_sink(event, trace)
+  end
+
+  defp normalize_event(policy, seq, event_name, measurements, metadata) do
     case event_shape(event_name, metadata) do
       {:ok, source, category, event} ->
-        sanitized_measurements = TraceSanitize.payload(measurements)
-        sanitized_metadata = TraceSanitize.payload(metadata)
+        sanitized_measurements = TraceSanitize.payload(policy, measurements)
+        sanitized_metadata = TraceSanitize.payload(policy, metadata)
         request_id = string_value(metadata, :request_id)
         run_id = string_value(metadata, :run_id) || request_id
 
@@ -729,15 +753,36 @@ defmodule JidoClaw.Trace.Collector do
     ArgumentError -> nil
   end
 
-  defp maybe_persist(state, event, trace) do
+  defp maybe_write_sink(state, event, trace) do
     if persist?() do
-      TracePersistence.append(event, trace)
+      state.sink.write(event, trace)
     end
 
     state
   end
 
+  # `persist?()` stays a LIVE per-event read (not snapshotted at init) so a
+  # test can flip `persist?: false` via `put_env` without restarting the
+  # Collector — snapshotting it would reintroduce sandbox-leak writes.
   defp persist? do
     Keyword.get(Application.get_env(:jido_claw, :trace, []), :persist?, true)
+  end
+
+  # Resolve + validate the configured sink once at init. The `is_atom` guard
+  # runs first so a non-module value (e.g. `sink: "oops"`) can't crash
+  # `Code.ensure_loaded?/1`; any invalid value logs and falls back to the
+  # default Postgres sink, so a bad `:sink` never crashes the Collector.
+  defp resolve_sink(config) do
+    sink = config_value(config, :sink, SinkPostgres)
+
+    if is_atom(sink) and Code.ensure_loaded?(sink) and function_exported?(sink, :write, 2) do
+      sink
+    else
+      Logger.warning(
+        "[Trace.Collector] invalid :sink #{inspect(sink)} — falling back to #{inspect(SinkPostgres)}"
+      )
+
+      SinkPostgres
+    end
   end
 end

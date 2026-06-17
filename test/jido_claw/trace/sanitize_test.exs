@@ -1,6 +1,7 @@
 defmodule JidoClaw.Trace.SanitizeTest do
   use ExUnit.Case, async: true
 
+  alias JidoClaw.Trace.Policy
   alias JidoClaw.Trace.Sanitize
 
   describe "payload/1 — sensitive key redaction" do
@@ -100,6 +101,23 @@ defmodule JidoClaw.Trace.SanitizeTest do
     end
   end
 
+  describe "payload/1 — embedded value scrub" do
+    test "scrubs a secret embedded in a non-omitted, non-redacted string value" do
+      out = Sanitize.payload(%{note: "Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA"})
+      refute out.note =~ "sk-ant-api03"
+      assert out.note =~ "[REDACTED"
+    end
+  end
+
+  describe "payload/2 — custom policy" do
+    test "applies a caller-supplied policy with extra omit keys" do
+      policy = Policy.from_config(extra_omit_keys: [:custom_blob])
+
+      assert Sanitize.payload(policy, %{custom_blob: %{a: 1}, keep: "ok"}) ==
+               %{custom_blob: "[OMITTED]", keep: "ok"}
+    end
+  end
+
   describe "payload/1 — benign passthrough" do
     test "passes through plain values" do
       assert Sanitize.payload(%{foo: 1, bar: "ok"}) == %{foo: 1, bar: "ok"}
@@ -125,6 +143,13 @@ defmodule JidoClaw.Trace.SanitizeTest do
 
       assert is_binary(preview)
       assert preview =~ "[REDACTED]"
+    end
+
+    test "redacts secrets in a string preview before slicing" do
+      preview = Sanitize.preview("Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA", 500)
+
+      assert preview =~ "[REDACTED"
+      refute preview =~ "sk-ant-api03"
     end
   end
 end

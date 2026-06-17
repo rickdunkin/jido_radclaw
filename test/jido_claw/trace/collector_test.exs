@@ -3,6 +3,8 @@ defmodule JidoClaw.Trace.CollectorTest do
 
   alias JidoClaw.Trace
   alias JidoClaw.Trace.Collector
+  alias JidoClaw.Trace.Policy
+  alias JidoClaw.Trace.Sink
   alias JidoClaw.TraceTestHelpers, as: H
 
   setup do
@@ -37,7 +39,7 @@ defmodule JidoClaw.Trace.CollectorTest do
         :ok = restart_collector()
       end)
 
-      Application.put_env(:jido_claw, :trace, max_traces: 3)
+      Application.put_env(:jido_claw, :trace, Keyword.merge(previous || [], max_traces: 3))
       :ok = restart_collector()
 
       tenant_id = "tenant-#{System.unique_integer([:positive])}"
@@ -127,6 +129,107 @@ defmodule JidoClaw.Trace.CollectorTest do
     end
   end
 
+  describe "sampling" do
+    test "sample_rate 1.0 keeps all traces (baseline)" do
+      with_trace_config([sample_rate: 1.0, persist?: false], fn ->
+        request_id = "samp-keep-#{System.unique_integer([:positive])}"
+
+        :telemetry.execute(
+          [:jido, :ai, :request, :start],
+          %{},
+          %{agent_id: "samp-agent", request_id: request_id}
+        )
+
+        :ok = H.sync_collector()
+        assert {:ok, _} = Trace.for_request(%{agent_id: "samp-agent"}, request_id)
+      end)
+    end
+
+    test "sample_rate 0.0 drops all traces" do
+      with_trace_config([sample_rate: 0.0, persist?: false], fn ->
+        request_id = "samp-drop-#{System.unique_integer([:positive])}"
+
+        :telemetry.execute(
+          [:jido, :ai, :request, :start],
+          %{},
+          %{agent_id: "samp-agent", request_id: request_id}
+        )
+
+        :ok = H.sync_collector()
+        assert {:error, :not_found} = Trace.for_request(%{agent_id: "samp-agent"}, request_id)
+      end)
+    end
+
+    test "mid-rate keeps each request whole-or-not, matching Policy.keep_trace?" do
+      with_trace_config([sample_rate: 0.5, persist?: false], fn ->
+        policy = %{Policy.default() | sample_rate: 0.5}
+
+        for i <- 1..40 do
+          request_id = "samp-mid-#{i}-#{System.unique_integer([:positive])}"
+
+          :telemetry.execute(
+            [:jido, :ai, :request, :start],
+            %{},
+            %{agent_id: "samp-mid-agent", request_id: request_id}
+          )
+
+          :telemetry.execute(
+            [:jido, :ai, :tool, :complete],
+            %{duration_ms: 1},
+            %{
+              agent_id: "samp-mid-agent",
+              request_id: request_id,
+              tool_name: "t",
+              tool_call_id: "c-#{i}"
+            }
+          )
+
+          :ok = H.sync_collector()
+
+          # Both events share key {:request, request_id}, so the trace is
+          # wholly kept (both events) or wholly dropped — never partial.
+          expected_keep = Policy.keep_trace?(policy, {:request, request_id})
+
+          case Trace.for_request(%{agent_id: "samp-mid-agent"}, request_id) do
+            {:ok, trace} ->
+              assert expected_keep, "kept a trace the policy would drop"
+              # request:start + tool:complete, both kept (same trace key).
+              assert [_, _] = trace.events
+
+            {:error, :not_found} ->
+              refute expected_keep, "dropped a trace the policy would keep"
+          end
+        end
+      end)
+    end
+  end
+
+  describe "sink selection" do
+    test "routes writes to the configured InMemory sink (Postgres untouched)" do
+      with_trace_config([sink: Sink.InMemory, persist?: true, sample_rate: 1.0], fn ->
+        :ok = Sink.InMemory.reset()
+        request_id = "sink-sel-#{System.unique_integer([:positive])}"
+
+        :telemetry.execute(
+          [:jido, :ai, :request, :start],
+          %{},
+          %{agent_id: "sink-sel-agent", request_id: request_id}
+        )
+
+        # The InMemory write/2 is an async cast one hop past the collector,
+        # so the collector barrier alone is not enough.
+        :ok = H.sync_collector()
+        :ok = H.sync_sink()
+
+        written = Sink.InMemory.written(request_id)
+        assert written != []
+        assert Enum.all?(written, fn {_event, trace} -> trace.trace_id == request_id end)
+      end)
+
+      :ok = Sink.InMemory.reset()
+    end
+  end
+
   describe "crash recovery" do
     test "Collector survives a crash without duplicate telemetry handlers" do
       pid = Process.whereis(Collector)
@@ -149,6 +252,27 @@ defmodule JidoClaw.Trace.CollectorTest do
 
       :ok = H.sync_collector()
       assert {:ok, _trace} = Trace.for_request("recovered", "recovered-req")
+    end
+  end
+
+  # Sampling + sink are snapshotted at Collector init, so a config change
+  # only takes effect after a restart (same pattern the max_traces test
+  # uses). persist? stays a live read and rides along here too.
+  defp with_trace_config(overrides, fun) do
+    previous = Application.get_env(:jido_claw, :trace)
+    Application.put_env(:jido_claw, :trace, Keyword.merge(previous || [], overrides))
+    :ok = restart_collector()
+
+    try do
+      fun.()
+    after
+      if previous do
+        Application.put_env(:jido_claw, :trace, previous)
+      else
+        Application.delete_env(:jido_claw, :trace)
+      end
+
+      :ok = restart_collector()
     end
   end
 
