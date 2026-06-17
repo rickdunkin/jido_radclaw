@@ -23,13 +23,11 @@ defmodule Mix.Tasks.Jidoclaw.CompileCheck do
   """
   use Mix.Task
 
-  @allowlist [
-    # Intentional scaffolding: PullRequestCoordinator's stub helpers always
-    # return {:ok, _}, so its retry `else` branches read as dead until those
-    # helpers do real, fallible work. Matched narrowly by message so other
-    # warnings in this file are still caught. See the NOTE in that module.
-    {"lib/jido_claw/github/agents/pull_request_coordinator.ex", "will never match"}
-  ]
+  # Empty by design: there are currently no tolerated warnings. Add an entry only
+  # when a warning is genuinely unavoidable (upstream-generated code or
+  # intentional scaffolding), justified inline, and re-checked on every dep bump /
+  # Elixir upgrade. See AGENTS.md "Known limitations".
+  @allowlist []
 
   @impl Mix.Task
   def run(_args) do
