@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.OutputShaperTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Conversations.ToolOutput
+  alias JidoClaw.MCP.ProxyGenerator
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.OutputShaper
 
@@ -32,6 +33,19 @@ defmodule JidoClaw.Tools.OutputShaperTest do
     use JidoClaw.Tools.Action,
       name: "git_diff",
       description: "Test-only echo standing in for git_diff in shaper tests.",
+      schema: []
+
+    @impl Jido.Action
+    def run(%{result: result}, _context), do: result
+  end
+
+  # Inline `mcp_`-rooted echo standing in for a generated MCP proxy: the
+  # wrapper runs the full pipeline, and `mcp_test_echo` clears
+  # `mcp_shapeable?/2`'s `mcp_` prefix check so the generic MCP path fires.
+  defmodule McpEcho do
+    use JidoClaw.Tools.Action,
+      name: "mcp_test_echo",
+      description: "Test-only echo standing in for an external MCP proxy in shaper tests.",
       schema: []
 
     @impl Jido.Action
@@ -122,6 +136,8 @@ defmodule JidoClaw.Tools.OutputShaperTest do
 
     RunCommandEcho.run(params, context)
   end
+
+  defp run_mcp(result, context), do: McpEcho.run(%{result: result}, context)
 
   # All-signal `mix compile` output: only warning blocks, no `Compiling`
   # noise, so `MixCompile.parse/1` matches but returns compressed?: false.
@@ -338,9 +354,12 @@ defmodule JidoClaw.Tools.OutputShaperTest do
       enable_shaping()
       %{tenant_id: tenant_id, context: context} = scope()
 
-      # The escape splits the key so the upstream OutputRedaction pass
-      # misses it; stripping reassembles it. 24 trailing chars clear the
-      # pattern's 20-char minimum.
+      # The escape splits the key in the raw output. The upstream
+      # OutputRedaction pass now strips ANSI + redacts at the root, so the
+      # secret is already caught before the shaper sees it; the shaper's own
+      # strip+redact (kept belt-and-suspenders) is then a no-op on the
+      # already-redacted text. 24 trailing chars clear the pattern's 20-char
+      # minimum.
       split_secret = "sk-ant-\e[0mabcdefghijklmnopqrstuvwx"
 
       output =
@@ -373,7 +392,7 @@ defmodule JidoClaw.Tools.OutputShaperTest do
       assert result.shaped
       assert result.truncated == true
       assert result.output =~ "... [elided"
-      assert result.output =~ "[captured output (upstream-truncated):"
+      assert result.output =~ "[captured output (truncated):"
       refute Map.has_key?(result, :summary)
     end
 
@@ -579,6 +598,395 @@ defmodule JidoClaw.Tools.OutputShaperTest do
       refute OutputShaper.shapeable?("run_command", %{stream_to_display: true}, context)
       refute OutputShaper.shapeable?("run_command", %{}, %{tool_context: %{}})
       refute OutputShaper.shapeable?("run_command", %{}, nil)
+    end
+  end
+
+  describe "mcp_shapeable?/2" do
+    test "true only for an mcp_-rooted name with a tenant while enabled" do
+      enable_shaping()
+      %{context: context} = scope()
+
+      assert OutputShaper.mcp_shapeable?("mcp_test_echo", context)
+      assert OutputShaper.mcp_shapeable?("mcp_x_y", context)
+
+      # native + non-mcp_ names never take the generic MCP path
+      refute OutputShaper.mcp_shapeable?("run_command", context)
+      refute OutputShaper.mcp_shapeable?("read_file", context)
+      # "mcp" without the underscore delimiter is not mcp_-rooted
+      refute OutputShaper.mcp_shapeable?("mcpfoo", context)
+      # no tenant in scope → storage impossible → fail closed
+      refute OutputShaper.mcp_shapeable?("mcp_x_y", %{tool_context: %{}})
+      # non-binary tool name → fail closed
+      refute OutputShaper.mcp_shapeable?(:mcp_atom, context)
+    end
+
+    test "false when shaping is disabled regardless of name/tenant" do
+      %{context: context} = scope()
+      refute OutputShaper.mcp_shapeable?("mcp_x_y", context)
+    end
+  end
+
+  describe "external MCP generic shaping" do
+    test "oversized MCP map is collapsed, ref-stored, isError lifted" do
+      enable_shaping()
+      %{tenant_id: tenant_id, context: context} = scope()
+      cap_output_bytes(4_096)
+
+      big = String.duplicate("x", 6_000) <> "TAILMARK"
+      data = %{"content" => [%{"type" => "text", "text" => big}], "isError" => true}
+
+      assert byte_size(Jason.encode!(data)) > 4_096
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert result["isError"] == true
+      assert result.output_ref =~ ~r/^out_/
+      assert byte_size(result.output) <= 4_096
+      assert result.output =~ "... [elided"
+      assert String.ends_with?(result.output, "fetch_output ref=#{result.output_ref}]")
+      refute result.output =~ "[tool output truncated"
+      assert is_integer(result.captured_bytes) and result.captured_bytes > 0
+      assert result.truncated == false
+
+      # The whole model-facing wrapper must be JSON-encodable — jido_ai
+      # `Jason.encode!`s it on every turn.
+      assert is_binary(Jason.encode!(result))
+
+      # Reversibility: the full pretty-JSON (with the tail) is stored.
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      assert row.content =~ "TAILMARK"
+      assert row.tool == "mcp_test_echo"
+      assert row.command == nil
+      assert row.command_fingerprint == nil
+    end
+
+    test "payload above capture_bytes is tail-preserved in storage" do
+      enable_shaping(capture_bytes: 8_192)
+      %{tenant_id: tenant_id, context: context} = scope()
+      cap_output_bytes(4_096)
+
+      filler = String.duplicate("x", 20_000)
+      text = "HEAD_SENTINEL" <> filler <> "TAIL_SENTINEL"
+      data = %{"content" => [%{"text" => text}], "isError" => false}
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert result.truncated == true
+      assert result.output =~ "captured output (truncated)"
+      assert result.output_ref =~ ~r/^out_/
+
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      # The capture cap is tail-preserving (Generic.fit), so the tail — where
+      # MCP errors live — survives in the stored ref.
+      assert byte_size(row.content) <= 8_192
+      assert row.content =~ "TAIL_SENTINEL"
+      assert row.content =~ "... [elided"
+    end
+
+    test "capture_bytes below the inline cap still shapes (decision keys on original size)" do
+      enable_shaping(capture_bytes: 1_024)
+      %{context: context} = scope()
+      cap_output_bytes(4_096)
+
+      data = %{"content" => [%{"text" => String.duplicate("y", 6_000)}]}
+      assert byte_size(Jason.encode!(data)) > 4_096
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      # Misconfig (capture < inline cap) must NOT cap small, skip shaping, and
+      # fall to OutputLimit's ref-less cut — the >cap test keys on the full
+      # serialized size, so it still shapes.
+      assert result.shaped
+      assert byte_size(result.output) <= 4_096
+      refute result.output =~ "[tool output truncated"
+    end
+
+    test "under-cap MCP result passes through structurally (shaper no-op)" do
+      enable_shaping()
+      %{context: context} = scope()
+
+      data = %{"content" => [%{"text" => "small ok"}], "isError" => false}
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      # Shaper-relative identity: the shaper is a no-op on its already
+      # OutputRedaction-processed input (here secret/ANSI-free, so == data).
+      # NOT raw-tool-output identity — Part A mutates upstream by design.
+      assert result == data
+      refute Map.has_key?(result, :shaped)
+    end
+
+    test "a non-JSON term is force-shaped into a JSON-safe wrapper (averts jido_ai crash)" do
+      enable_shaping()
+      %{tenant_id: tenant_id, context: context} = scope()
+
+      # A bare tuple is tiny but unencodable — passing it through would later
+      # crash jido_ai's Jason.encode!; the shaper collapses it instead.
+      data = {:not, :json, "SAFEMARK"}
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert result.output_ref =~ ~r/^out_/
+      refute Map.has_key?(result, "isError")
+      # The wrapper is JSON-encodable — the whole point of force-shaping.
+      assert is_binary(Jason.encode!(result))
+
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      # The inspect-rendered content round-trips.
+      assert row.content =~ "SAFEMARK"
+    end
+
+    test "a non-UTF-8 binary under the cap is force-shaped" do
+      enable_shaping()
+      %{context: context} = scope()
+
+      data = <<0xFF, 0xFE, 0xFD>>
+      refute String.valid?(data)
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert result.output_ref =~ ~r/^out_/
+      # JSON-encodable wrapper despite the non-UTF-8 source.
+      assert is_binary(Jason.encode!(result))
+    end
+
+    test "many small fields summing past the cap collapse (conservative total trigger)" do
+      enable_shaping()
+      %{context: context} = scope()
+      cap_output_bytes(4_096)
+
+      data = Map.new(1..400, fn i -> {"field_#{i}", "value number #{i}"} end)
+      assert byte_size(Jason.encode!(data)) > 4_096
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert byte_size(result.output) <= 4_096
+      assert result.output_ref =~ ~r/^out_/
+    end
+
+    test "no tenant in tool_context skips MCP shaping (falls to OutputLimit)" do
+      enable_shaping()
+      cap_output_bytes(4_096)
+
+      data = %{"content" => [%{"text" => String.duplicate("x", 8_000)}]}
+
+      assert {:ok, result} = run_mcp({:ok, data}, %{tool_context: %{}})
+
+      # Shaper skipped — no ref, no shaped flag; OutputLimit did the ref-less
+      # cut on the oversized nested string.
+      refute Map.has_key?(result, :shaped)
+      refute Map.has_key?(result, :output_ref)
+
+      text =
+        result
+        |> Map.fetch!("content")
+        |> hd()
+        |> Map.fetch!("text")
+
+      assert String.contains?(text, "[tool output truncated")
+    end
+
+    test "error results pass through the MCP path untouched" do
+      enable_shaping()
+      %{context: context} = scope()
+
+      assert {:error, %{message: "boom"}} = run_mcp({:error, "boom"}, context)
+
+      assert {:error, %{message: "boom"}, %{side: 1}} =
+               run_mcp({:error, "boom", %{side: 1}}, context)
+    end
+
+    test "3-tuple MCP success preserves effects while shaping" do
+      enable_shaping()
+      %{context: context} = scope()
+      cap_output_bytes(4_096)
+
+      data = %{"content" => [%{"text" => String.duplicate("z", 6_000)}]}
+
+      assert {:ok, result, %{side: :fx}} = run_mcp({:ok, data, %{side: :fx}}, context)
+      assert result.shaped
+    end
+
+    test "transient store failure degrades to shaped-without-ref, still bounded" do
+      enable_shaping()
+      %{tenant_id: tenant_id} = scope()
+      cap_output_bytes(4_096)
+
+      # session_uuid with no Session row → the FK check fails the insert.
+      broken_context = %{
+        tool_context: %{
+          tenant_id: tenant_id,
+          session_uuid: Ecto.UUID.generate(),
+          actor: actor_for(tenant_id)
+        }
+      }
+
+      data = %{"content" => [%{"text" => String.duplicate("x", 8_000)}], "isError" => true}
+
+      assert {:ok, result} = run_mcp({:ok, data}, broken_context)
+
+      assert result.shaped
+      assert result["isError"] == true
+      refute Map.has_key?(result, :output_ref)
+      assert result.output =~ "(full output unavailable)"
+      assert byte_size(result.output) <= 4_096
+      refute result.output =~ "[tool output truncated"
+    end
+
+    test "oversized bare-binary MCP result is shaped with a ref and no isError key" do
+      enable_shaping()
+      %{tenant_id: tenant_id, context: context} = scope()
+      cap_output_bytes(4_096)
+
+      data = "PREFIX " <> String.duplicate("a", 8_000) <> " TAILMARK"
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      assert result.shaped
+      assert result.output_ref =~ ~r/^out_/
+      refute Map.has_key?(result, "isError")
+      assert byte_size(result.output) <= 4_096
+
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      assert row.content =~ "TAILMARK"
+    end
+
+    test "disabled config leaves the MCP result byte-identical" do
+      %{context: context} = scope()
+
+      data = %{"content" => [%{"text" => "under cap"}], "isError" => false}
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+      assert result == data
+      refute Map.has_key?(result, :shaped)
+    end
+
+    test "an ANSI-split secret in an under-cap MCP result is redacted upstream" do
+      enable_shaping()
+      %{context: context} = scope()
+
+      # 24 trailing chars clear the pattern's 20-char minimum.
+      split = "sk-ant-\e[0mabcdefghijklmnopqrstuvwx"
+      data = %{"content" => [%{"text" => "leaked #{split}"}]}
+
+      assert {:ok, result} = run_mcp({:ok, data}, context)
+
+      # Under-cap → structured passthrough, but the upstream OutputRedaction
+      # root strip already reassembled + redacted the split secret. This is
+      # what makes the passthrough safe.
+      text =
+        result
+        |> Map.fetch!("content")
+        |> hd()
+        |> Map.fetch!("text")
+
+      assert text =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute text =~ "abcdefghijklmnopqrstuvwx"
+      refute Map.has_key?(result, :shaped)
+    end
+
+    test "isError false is preserved; absent yields no isError key" do
+      enable_shaping()
+      %{context: context} = scope()
+      cap_output_bytes(4_096)
+
+      big = String.duplicate("x", 6_000)
+
+      assert {:ok, r1} = run_mcp({:ok, %{"content" => big, "isError" => false}}, context)
+      assert r1.shaped
+      assert r1["isError"] == false
+
+      assert {:ok, r2} = run_mcp({:ok, %{"content" => big}}, context)
+      assert r2.shaped
+      refute Map.has_key?(r2, "isError")
+    end
+  end
+
+  describe "external MCP generic shaping (generated proxy integration)" do
+    setup do
+      prior = Application.get_env(:jido_claw, :mcp_stub)
+
+      on_exit(fn ->
+        case prior do
+          nil -> Application.delete_env(:jido_claw, :mcp_stub)
+          value -> Application.put_env(:jido_claw, :mcp_stub, value)
+        end
+      end)
+
+      :ok
+    end
+
+    test "a real proxy re-surfaces the dep's :tool_error promotion, shapes it, scrubs outbound ANSI" do
+      enable_shaping()
+      %{tenant_id: tenant_id, context: context} = scope()
+      cap_output_bytes(4_096)
+
+      test_pid = self()
+      big = String.duplicate("x", 8_000) <> " TAILMARK"
+
+      # Production shape: jido_mcp promotes a domain `isError: true` result to
+      # `{:error, %{type: :tool_error, details: <raw result map>}}` (NOT a bare
+      # `{:ok, data}`). The proxy re-surfaces it to `{:ok, data}` so it hits the
+      # generic MCP shaper — this stub exercises that real error→data→shape path.
+      Application.put_env(:jido_claw, :mcp_stub, %{
+        call_tool: fn _id, name, args ->
+          send(test_pid, {:stub_call, name, args})
+
+          {:error,
+           %{type: :tool_error, details: %{"content" => [%{"text" => big}], "isError" => true}}}
+        end
+      })
+
+      [module] = ProxyGenerator.build_modules("svc", :svc, [%{"name" => "echo"}])
+      assert module.name() == "mcp_svc_echo"
+
+      # Outbound: an ANSI-laden arg reaches the remote stub scrubbed — the
+      # intentional outbound mutation from Part A's root strip.
+      assert {:ok, result} = module.run(%{"q" => "plain\e[31m text"}, context)
+
+      assert_received {:stub_call, "echo", scrubbed_args}
+      assert scrubbed_args == %{"q" => "plain text"}
+
+      # Inbound: the oversized real-proxy result is shaped + round-trips
+      # (not only the inline echo).
+      assert result.shaped
+      assert result["isError"] == true
+      assert result.output_ref =~ ~r/^out_/
+      assert byte_size(result.output) <= 4_096
+
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      assert row.content =~ "TAILMARK"
+      assert row.tool == "mcp_svc_echo"
     end
   end
 end

@@ -34,6 +34,30 @@ defmodule JidoClaw.Tools.OutputShaper do
   read of config + params + context. `RunCommand` calls it **before**
   execution (the capture decision) and this module calls it again after
   (the shaping decision), so capture and shaping can never disagree.
+
+  ## External MCP tools
+
+  `mcp_<server>_<tool>` proxy results take a parallel **generic** path
+  (`mcp_shapeable?/2` → `safe_shape_mcp/3`), distinct from the native
+  format-aware allowlist. Their result is an arbitrary JSON-safe term, not
+  a known text-field map, so the strategy is **collapse-and-extract**:
+  above the inline cap (or for any unencodable term) the whole result is
+  pretty-serialized, stored under a ref (capture-capped with tail-
+  preserving elision so errors at the tail survive), and replaced by a
+  bounded `:output` wrapper. The spec-standard `isError` flag is lifted
+  onto the wrapper so the model's only failure signal survives the
+  collapse. Below the cap the full structured result passes through
+  untouched. The over-cap trigger is deliberately conservative — pretty
+  JSON inflates size versus the compact JSON jido_ai sends — and
+  over-collapsing only bounds context further, never loses it (the ref
+  recovers the full payload).
+
+  A domain `isError: true` result is a *successful* MCP response per spec,
+  but jido_mcp promotes it to a wire-error; the proxy
+  (`JidoClaw.MCP.ProxyGenerator`) re-surfaces it to `{:ok, data}` **before**
+  this stage. That is why `do_shape_mcp/3` only matches `{:ok, ...}` — the
+  headline failure case arrives here as data with its `isError` intact, so
+  it gets shaped + lifted + ref-stored like any other oversized result.
   """
 
   # Containment boundary: shaping (and its Trace emits) must NEVER turn a
@@ -43,6 +67,7 @@ defmodule JidoClaw.Tools.OutputShaper do
 
   require Logger
 
+  alias JidoClaw.Security.Redaction.Ansi
   alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.OutputLimit
@@ -53,17 +78,12 @@ defmodule JidoClaw.Tools.OutputShaper do
   alias JidoClaw.Tools.OutputShaper.Parsed
   alias JidoClaw.Tools.OutputShaper.Store
 
-  # Allowlist: tool name → the result-map text field the shaper acts on.
-  # Everything else (including fetch_output — the recursion guard) passes
+  # Native allowlist: tool name → the result-map text field the shaper acts
+  # on with format-aware parsing. `mcp_<server>_<tool>` proxies take the
+  # parallel generic path (`mcp_shapeable?/2` → `safe_shape_mcp/3`);
+  # everything else (including fetch_output — the recursion guard) passes
   # through untouched.
   @shapeable_tools %{"run_command" => :output, "git_diff" => :diff}
-
-  # CSI (colors, cursor), OSC (titles, hyperlinks), then remaining
-  # two-byte ESC sequences — in that order, so ESC-[ / ESC-] are consumed
-  # as CSI/OSC starts before the generic rule sees them.
-  @ansi_csi ~r/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/
-  @ansi_osc ~r/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/
-  @ansi_two_byte ~r/\x1b[\x40-\x5f]/
 
   # OutputLimit's truncation marker, anchored to the end of the text —
   # a substring scan would false-positive on real output that merely
@@ -156,6 +176,21 @@ defmodule JidoClaw.Tools.OutputShaper do
 
   def shapeable?(_tool_name, _params, _context), do: false
 
+  @doc """
+  True when an external MCP tool's result should be generically shaped.
+
+  Parallel to `shapeable?/3` but for the `mcp_<server>_<tool>` proxies:
+  no native allowlist, no capture-sizing contract (the proxy already holds
+  the whole result in memory), and no streaming check (proxies don't
+  stream). Fail-closed like `shapeable?/3` — requires shaping enabled, an
+  `mcp_`-rooted name, and a tenant in `tool_context` for ref storage.
+  """
+  @spec mcp_shapeable?(String.t(), map() | nil) :: boolean()
+  def mcp_shapeable?(tool_name, context) when is_binary(tool_name),
+    do: enabled?() and String.starts_with?(tool_name, "mcp_") and tenant_present?(context)
+
+  def mcp_shapeable?(_tool_name, _context), do: false
+
   defp tenant_present?(%{tool_context: %{tenant_id: tenant_id}})
        when is_binary(tenant_id) and tenant_id != "",
        do: true
@@ -165,17 +200,28 @@ defmodule JidoClaw.Tools.OutputShaper do
   # -- Pipeline stage -----------------------------------------------------------
 
   @doc """
-  Shape a tool result. Pass-through for everything except an allowlisted
-  tool's successful result whose text field clears `min_shape_bytes/0`.
-  Errors (2- and 3-tuple) are never touched; `effects` are preserved.
-  Any internal failure returns the original result unchanged.
+  Shape a tool result. Two parallel paths:
+
+    * **native** — an allowlisted tool (`run_command`/`git_diff`) whose
+      text field clears `min_shape_bytes/0` gets format-aware shaping;
+    * **external MCP** — an `mcp_<server>_<tool>` proxy result above the
+      inline cap is collapsed-and-extracted (`safe_shape_mcp/3`).
+
+  Everything else passes through. Errors (2- and 3-tuple) are never
+  touched; `effects` are preserved. Any internal failure returns the
+  original result unchanged.
   """
   @spec shape_result(term(), String.t(), map(), map() | nil) :: term()
   def shape_result(result, tool_name, params, context) do
-    if shapeable?(tool_name, params, context) do
-      safe_shape(result, tool_name, params, context)
-    else
-      result
+    cond do
+      shapeable?(tool_name, params, context) ->
+        safe_shape(result, tool_name, params, context)
+
+      mcp_shapeable?(tool_name, context) ->
+        safe_shape_mcp(result, tool_name, context)
+
+      true ->
+        result
     end
   end
 
@@ -219,13 +265,13 @@ defmodule JidoClaw.Tools.OutputShaper do
   end
 
   defp shape_text(map, field, text, tool, params, ctx) do
-    # ANSI escapes can interrupt a secret (`sk-\e[0m...`) so the upstream
-    # OutputRedaction pass may have missed it — stripping reassembles it.
-    # Re-redacting the stripped text is mandatory before it is parsed,
-    # shaped, or stored.
+    # Belt-and-suspenders: upstream `OutputRedaction` already strips ANSI +
+    # redacts at the root, so this pass is now redundant — but re-stripping
+    # and re-redacting before the text is parsed, shaped, or stored is cheap
+    # and keeps the shaper safe even if a future caller feeds it raw text.
     clean =
       text
-      |> strip_ansi()
+      |> Ansi.strip()
       |> Patterns.redact()
 
     truncated? = upstream_truncated?(clean)
@@ -242,20 +288,126 @@ defmodule JidoClaw.Tools.OutputShaper do
         finish_shape(
           map,
           field,
-          %{
-            text: text,
-            clean: clean,
-            body: body,
-            summary: summary,
-            format: used_format,
-            truncated?: truncated?
-          },
+          shaping_attrs(text, clean, body, summary, used_format, truncated?),
           tool,
           params,
           ctx
         )
     end
   end
+
+  # Single construction site for the `finish_shape/6` input map so the
+  # native and MCP paths share one shape (no duplicated literal).
+  defp shaping_attrs(text, clean, body, summary, format, truncated?) do
+    %{
+      text: text,
+      clean: clean,
+      body: body,
+      summary: summary,
+      format: format,
+      truncated?: truncated?
+    }
+  end
+
+  # -- External MCP path --------------------------------------------------------
+
+  # Rescued exactly like `safe_shape/4` (file-level `bare_rescue` pragma) —
+  # any internal fault hands the original result back, degrading to today's
+  # OutputLimit-only behavior.
+  defp safe_shape_mcp(result, tool_name, context) do
+    do_shape_mcp(result, tool_name, context)
+  rescue
+    e ->
+      Logger.warning("[OutputShaper] MCP shaping #{tool_name} raised: #{Exception.message(e)}")
+      emit_error_trace(tool_name, e)
+      result
+  end
+
+  # Unlike the native `do_shape/4`, `data` is NOT guarded to a plain map:
+  # an MCP result can be a binary, list, number, or (defensively) an
+  # unencodable term — `shape_mcp_payload/3` handles each. Effects preserved.
+  defp do_shape_mcp({:ok, data}, tool, ctx), do: {:ok, shape_mcp_payload(data, tool, ctx)}
+
+  defp do_shape_mcp({:ok, data, effects}, tool, ctx),
+    do: {:ok, shape_mcp_payload(data, tool, ctx), effects}
+
+  defp do_shape_mcp(other, _tool, _ctx), do: other
+
+  # Collapse-and-extract. `data` arrives ANSI-clean + redacted (the upstream
+  # OutputRedaction root pass), so no per-leaf cleaning is needed here.
+  #
+  # The shape decision keys on the ORIGINAL serialized size — not the
+  # capture-capped size — so a `capture_bytes` misconfigured below the
+  # inline cap can't let a huge payload cap small, skip shaping, and fall to
+  # OutputLimit's ref-less head-cut. Unencodable `data` is force-shaped
+  # regardless of size: passing it through would later crash jido_ai's
+  # `Jason.encode!`, so it collapses to a JSON-safe inspect-based wrapper.
+  defp shape_mcp_payload(data, tool, ctx) do
+    {encodability, serialized} = mcp_serialize(data)
+
+    if encodability == :unencodable or byte_size(serialized) > OutputLimit.max_bytes() do
+      {clean, truncated?} = cap_capture(serialized)
+      body = mcp_head_tail(clean)
+
+      finish_shape(
+        put_present(%{}, "isError", mcp_is_error(data)),
+        :output,
+        shaping_attrs(serialized, clean, body, nil, :mcp, truncated?),
+        tool,
+        %{},
+        ctx
+      )
+    else
+      data
+    end
+  end
+
+  # `{:encodable | :unencodable, binary}`. A non-UTF-8 binary is treated as
+  # unencodable (it would otherwise fail jido_ai's later `Jason.encode!`);
+  # everything else is pretty-printed JSON, falling back to a bounded inspect
+  # for terms Jason can't encode. Pretty JSON is best for `fetch_output`
+  # readability — it also inflates size, making the >cap trigger conservative.
+  defp mcp_serialize(data) when is_binary(data) do
+    if String.valid?(data), do: {:encodable, data}, else: {:unencodable, mcp_inspect(data)}
+  end
+
+  defp mcp_serialize(data) do
+    case Jason.encode(data, pretty: true) do
+      {:ok, json} -> {:encodable, json}
+      {:error, _reason} -> {:unencodable, mcp_inspect(data)}
+    end
+  rescue
+    # Jason.encode/2 is inconsistent on non-JSON terms: a PID returns
+    # `{:error, _}` but a bare tuple RAISES ArgumentError. Both mean
+    # "not JSON-safe" — collapse to a bounded inspect either way. (Defensive:
+    # production MCP data is always JSON-decoded, so already encodable.)
+    _ -> {:unencodable, mcp_inspect(data)}
+  end
+
+  defp mcp_inspect(data),
+    do: inspect(data, pretty: true, limit: :infinity, printable_limit: :infinity)
+
+  # Tail-preserving storage cap: the full payload is in memory (unlike
+  # run_command's streamed prefix), so head+tail elision keeps the
+  # errors-at-the-tail in the stored ref. Returns `{clean, truncated?}`.
+  defp cap_capture(serialized) do
+    case Generic.fit(serialized, capture_bytes()) do
+      {:ok, fitted} -> {fitted, true}
+      :nocompress -> {serialized, false}
+    end
+  end
+
+  defp mcp_head_tail(clean) do
+    case Generic.head_tail(clean, generic_head_bytes(), generic_tail_bytes()) do
+      {:ok, body} -> body
+      :nocompress -> clean
+    end
+  end
+
+  # Lift the spec-standard `isError` so the model's only failure signal
+  # survives the collapse. `nil` ⇒ `put_present/3` omits the key entirely.
+  defp mcp_is_error(%{"isError" => v}) when is_boolean(v), do: v
+  defp mcp_is_error(_data), do: nil
 
   # `shaping` keys: :text (original field value), :clean (stripped +
   # re-redacted), :body (parser output), :summary, :format, :truncated?.
@@ -495,15 +647,6 @@ defmodule JidoClaw.Tools.OutputShaper do
 
   # -- Helpers ------------------------------------------------------------------
 
-  @doc false
-  @spec strip_ansi(binary()) :: binary()
-  def strip_ansi(text) when is_binary(text) do
-    text
-    |> then(&Regex.replace(@ansi_csi, &1, ""))
-    |> then(&Regex.replace(@ansi_osc, &1, ""))
-    |> then(&Regex.replace(@ansi_two_byte, &1, ""))
-  end
-
   # Exact suffix matches against the known markers — real output could
   # contain the phrase mid-stream. SessionManager owns its note strings
   # (`SessionManager.truncation_note/1`), so marker-text drift breaks at
@@ -518,10 +661,13 @@ defmodule JidoClaw.Tools.OutputShaper do
     "\n\n[full output: #{bytes} bytes — fetch_output ref=#{ref}]"
   end
 
-  # The ref holds what was *captured*, which above the capture cap is
-  # not everything — the hint stays honest about that.
+  # The ref holds what was *captured*, which above the capture cap is not
+  # everything — the hint stays honest. "truncated" (not "upstream-") covers
+  # both paths: run_command's upstream stream cap AND the MCP path, where the
+  # cap happens inside the shaper. Not parsed anywhere (upstream_truncated?/1
+  # keys on SessionManager.truncation_note), so this is wording-only.
   defp footer_line(ref, bytes, true) do
-    "\n\n[captured output (upstream-truncated): #{bytes} bytes — fetch_output ref=#{ref}]"
+    "\n\n[captured output (truncated): #{bytes} bytes — fetch_output ref=#{ref}]"
   end
 
   defp exit_code_of(%{exit_code: exit_code}) when is_integer(exit_code), do: exit_code

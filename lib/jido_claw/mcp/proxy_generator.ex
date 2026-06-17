@@ -6,8 +6,13 @@ defmodule JidoClaw.MCP.ProxyGenerator do
   generated modules `use JidoClaw.Tools.Action` (not bare `Jido.Action`), so
   the full host safety pipeline — `ToolApproval.gate → Error.normalize →
   OutputRedaction → OutputLimit`, inside `MCPScope.wrap` — wraps every call
-  automatically. The proxy `run/2` only adds **outbound arg scrubbing** and
-  returns `{:ok, data}`; the wrapper redacts + caps the result.
+  automatically. The proxy `run/2` adds **outbound arg scrubbing** and
+  **re-surfaces jido_mcp's domain-error promotion** (a spec-`isError: true`
+  result, which the dep returns as `{:error, %{type: :tool_error}}`) back to
+  `{:ok, data}`, so a tool-execution failure reaches the generic MCP shaper
+  (isError lifted + reversible `fetch_output` ref) and the model as data —
+  its only failure signal — instead of being mangled by `Error.normalize`.
+  The wrapper then redacts + caps the result.
 
   ## Name safety (load-bearing)
 
@@ -241,9 +246,28 @@ defmodule JidoClaw.MCP.ProxyGenerator do
           scrubbed = JidoClaw.Tools.OutputRedaction.redact(params)
 
           case JidoClaw.MCP.client().call_tool(@endpoint_id, @remote_tool_name, scrubbed) do
-            {:ok, data} -> {:ok, data}
-            {:error, error} -> {:error, error}
-            other -> {:error, {:unexpected_proxy_response, other}}
+            {:ok, data} ->
+              {:ok, data}
+
+            # jido_mcp promotes a domain `isError: true` result (a *successful*
+            # MCP response carrying a tool-execution error flag, per spec) to
+            # `{:error, %{type: :tool_error, details: <raw result map>}}`.
+            # Re-surface it as `{:ok, data}` so the result (incl. `isError`)
+            # reaches the generic MCP shaper (isError lifted + reversible
+            # fetch_output ref) and the model as data — its only failure signal
+            # — instead of being mangled by `Error.normalize` and ref-lessly
+            # head-cut by `OutputLimit`. Matching `"isError" => true` in
+            # `details` (not just `type: :tool_error`) documents the MCP
+            # domain-error contract in code: any `:tool_error` lacking it, plus
+            # genuine transport/protocol errors, stay `{:error, _}`.
+            {:error, %{type: :tool_error, details: %{"isError" => true} = data}} ->
+              {:ok, data}
+
+            {:error, error} ->
+              {:error, error}
+
+            other ->
+              {:error, {:unexpected_proxy_response, other}}
           end
         end
       end

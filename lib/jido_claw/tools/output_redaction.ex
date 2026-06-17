@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.OutputRedaction do
   Redacts tool execution results before they are returned to an agent.
   """
 
-  alias JidoClaw.Security.Redaction.{Env, Patterns}
+  alias JidoClaw.Security.Redaction.{Ansi, Env, Patterns}
 
   @binary_payload_keys ~w(base64 bytes image_bytes screenshot screenshot_base64)
 
@@ -14,8 +14,12 @@ defmodule JidoClaw.Tools.OutputRedaction do
   def redact_result({:error, reason, effects}), do: {:error, redact(reason), redact(effects)}
   def redact_result(other), do: redact(other)
 
+  # ANSI escapes can interrupt a secret (`sk-ant-\e[0m...`) so a raw value
+  # scan would miss it — strip first to reassemble, then redact. Closes the
+  # leak for every tool and every path (incl. under-cap MCP passthrough) at
+  # the root, so the shaping path downstream consumes already-clean text.
   @spec redact(term()) :: term()
-  def redact(value) when is_binary(value), do: Patterns.redact(value)
+  def redact(value) when is_binary(value), do: Patterns.redact(Ansi.strip(value))
 
   def redact(value) when is_map(value) and not is_struct(value) do
     Map.new(value, fn {key, inner} -> {key, redact_value(key, inner)} end)
@@ -45,21 +49,17 @@ defmodule JidoClaw.Tools.OutputRedaction do
     end
   end
 
-  defp sensitive_key?(key) when is_atom(key) do
-    key
-    |> Atom.to_string()
-    |> Env.sensitive_key?()
-  end
+  defp sensitive_key?(key), do: Env.sensitive_key?(classified_key(key))
 
-  defp sensitive_key?(key) when is_binary(key), do: Env.sensitive_key?(key)
-  defp sensitive_key?(_key), do: false
+  defp binary_payload_key?(key), do: classified_key(key) in @binary_payload_keys
 
-  defp binary_payload_key?(key) when is_atom(key) do
-    key
-    |> Atom.to_string()
-    |> binary_payload_key?()
-  end
-
-  defp binary_payload_key?(key) when is_binary(key), do: key in @binary_payload_keys
-  defp binary_payload_key?(_key), do: false
+  # Classify keys through an ANSI strip so an escape-split key
+  # (`"api_\e[0mkey"`) can't dodge sensitive-key detection while its value
+  # leaks. The emitted key is left unmutated — the `Map.new/2` in `redact/1`
+  # keeps the original; only classification sees the stripped form. Atoms are
+  # handled defensively (they come from code, not external JSON); a non-binary,
+  # non-atom key falls through to a guaranteed-false classification downstream.
+  defp classified_key(key) when is_atom(key), do: Ansi.strip(Atom.to_string(key))
+  defp classified_key(key) when is_binary(key), do: Ansi.strip(key)
+  defp classified_key(key), do: key
 end
