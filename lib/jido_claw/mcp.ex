@@ -73,14 +73,20 @@ defmodule JidoClaw.MCP do
   does registration work. While prep is still running, the *caller* waits
   (bounded by `timeout`) — the Consumer defers the reply rather than blocking
   itself. On `:timeout` (prep still running) the agent proceeds tool-less and a
-  later turn genuinely retries; on a prep crash returns `:mcp_unavailable`,
-  which is **terminal until a Consumer/app restart re-preps** — later turns stay
-  tool-less (no self-heal); with no Consumer, `:skipped`.
+  later turn genuinely retries; on a prep crash returns `:mcp_unavailable`
+  (tool-less for that turn); with no Consumer, `:skipped`.
 
   Strictly 3-arity (no defaulted timeout): callers pass the bound explicitly so
   a stale 2-arity call fails loudly instead of silently binding the timeout as
   the template. `template` is typed `term()` — any non-binary resolves to
   unrestricted-only downstream (the binary check lives in the Consumer).
+
+  `:mcp_unavailable` is no longer terminal: a hard prep crash now triggers
+  bounded backoff re-prep in the Consumer, so a later turn's `ensure_attached`
+  recovers once a retry succeeds. Only after the Consumer exhausts every retry
+  (then genuinely `:failed`) does `:mcp_unavailable` persist until a restart.
+  Steady-state tool-set drift is reconciled by the Consumer's periodic
+  re-discovery, independent of this call.
   """
   @spec ensure_attached(pid(), term(), timeout()) :: attach_result()
   def ensure_attached(pid, template, timeout) when is_pid(pid) do
@@ -103,7 +109,10 @@ defmodule JidoClaw.MCP do
 
       {:ok, modules, generation} ->
         result = Consumer.register_modules(pid, modules)
-        if result == :ok, do: GenServer.cast(Consumer, {:mark_attached, pid, generation})
+
+        if result == :ok,
+          do: GenServer.cast(Consumer, {:mark_attached, pid, generation, template})
+
         result
 
       {:error, :mcp_unavailable} ->

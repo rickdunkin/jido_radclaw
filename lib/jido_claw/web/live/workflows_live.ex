@@ -144,6 +144,16 @@ defmodule JidoClaw.Web.WorkflowsLive do
          |> stash_diagnostics(run_id)
          |> put_flash(:error, irreversible_flash(blocked))}
 
+      # The irreversible check itself failed to read events — surface the
+      # structured preflight report (matching the MCP tool) rather than an
+      # opaque error. Scoped to this one reason; the other `{:not_replayable, _}`
+      # reasons keep the bare catch-all below.
+      {:error, {:not_replayable, :irreversible_check_failed}} ->
+        {:noreply,
+         socket
+         |> stash_diagnostics(run_id)
+         |> put_flash(:error, "Couldn't verify replay safety — see preflight below")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Replay refused: #{inspect(reason)}")}
     end

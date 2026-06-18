@@ -23,6 +23,9 @@ defmodule JidoClaw.MCP.Client.Stub do
     do: resolve(:await_endpoint_ready, [endpoint_id, timeout], :ok)
 
   @impl JidoClaw.MCP.Client
+  def refresh_endpoint(endpoint_id), do: resolve(:refresh_endpoint, [endpoint_id], :ok)
+
+  @impl JidoClaw.MCP.Client
   def list_tools(endpoint_id, timeout),
     do: resolve(:list_tools, [endpoint_id, timeout], {:ok, []})
 

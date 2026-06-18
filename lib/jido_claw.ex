@@ -215,7 +215,8 @@ defmodule JidoClaw do
     # Covers fresh and existing pids (chat / handoff workers aren't in
     # AgentTracker); steady-state-cheap via the Consumer's `:already` fast path.
     # Tool-less on `:timeout` (prep still running — a later turn retries) or
-    # `:mcp_unavailable` (prep crashed — tool-less until a Consumer/app restart).
+    # `:mcp_unavailable` (prep crashed — bounded re-prep recovers it on a later
+    # turn; only after retries exhaust does it persist until a restart).
     _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
 
     # Register correlation AFTER routing so the stamped compaction identity

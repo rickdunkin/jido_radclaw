@@ -19,8 +19,11 @@ defmodule JidoClaw.Orchestration.Replay do
       `irreversible: true` (scanned from the durable `step_*` event payloads
       the middleware stamps), re-running it would repeat an un-undoable side
       effect; refused with `{:error, :irreversible_steps_executed}`. Override:
-      `allow_irreversible: true`. A failed event read bubbles up — an unsafe
-      replay is never permitted on a failed check.
+      `allow_irreversible: true`. A failed event read is **normalized** to
+      `{:not_replayable, :irreversible_check_failed}` (never bubbled raw) — an
+      unsafe replay is never permitted on a failed check, and the refusal joins
+      the vocabulary `diagnose` reports, so the MCP/dashboard surfaces attach a
+      structured preflight report instead of an opaque error.
 
   Both overrides are operator affordances (the dashboard); the MCP tool
   deliberately exposes neither.
@@ -68,8 +71,8 @@ defmodule JidoClaw.Orchestration.Replay do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Replay.DefinitionResolver
   alias JidoClaw.Orchestration.Replay.Diagnostics
+  alias JidoClaw.Orchestration.Replay.EventReader
   alias JidoClaw.Orchestration.Replay.Safety
-  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
 
   # Must match `ReactorRunner`'s replay-inputs encoder. Bump together on any
@@ -220,7 +223,7 @@ defmodule JidoClaw.Orchestration.Replay do
   defp check_irreversible(_original, _tenant, _actor, true), do: :ok
 
   defp check_irreversible(original, tenant, actor, false) do
-    case WorkflowEvent.for_run(original.id, tenant: tenant, actor: actor) do
+    case EventReader.for_run(original.id, tenant: tenant, actor: actor) do
       {:ok, events} ->
         if Safety.irreversible_executed?(events) do
           {:error, :irreversible_steps_executed}
@@ -228,9 +231,17 @@ defmodule JidoClaw.Orchestration.Replay do
           :ok
         end
 
-      # Never permit an unsafe replay on a failed read — bubble the error.
+      # Never permit an unsafe replay on a failed read. Normalize the opaque Ash
+      # error into the refusal vocabulary (matching what `diagnose` emits) so the
+      # MCP tool and dashboard attach a structured preflight report rather than
+      # an `inspect/1` blob; log the underlying reason first (the gate-warning
+      # style above).
       {:error, reason} ->
-        {:error, reason}
+        Logger.warning(
+          "[Replay] irreversible-event read failed for run #{original.id}: #{inspect(reason)}"
+        )
+
+        {:error, {:not_replayable, :irreversible_check_failed}}
     end
   end
 

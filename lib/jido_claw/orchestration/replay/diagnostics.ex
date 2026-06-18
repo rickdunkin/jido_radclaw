@@ -87,9 +87,9 @@ defmodule JidoClaw.Orchestration.Replay.Diagnostics do
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Replay.DefinitionResolver
+  alias JidoClaw.Orchestration.Replay.EventReader
   alias JidoClaw.Orchestration.Replay.Safety
   alias JidoClaw.Orchestration.Visibility
-  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Orchestration.WorkflowStep
   alias JidoClaw.Tools.OutputLimit
@@ -344,18 +344,18 @@ defmodule JidoClaw.Orchestration.Replay.Diagnostics do
   # -- Irreversible axis (shares Safety with the replay gate) --
 
   defp diagnose_irreversible(run, tenant, actor) do
-    case WorkflowEvent.for_run(run.id, tenant: tenant, actor: actor) do
+    case EventReader.for_run(run.id, tenant: tenant, actor: actor) do
       {:ok, events} ->
         executed? = Safety.irreversible_executed?(events)
         blockers = if executed?, do: [:irreversible_steps_executed], else: []
         {executed?, blockers, []}
 
       {:error, reason} ->
-        # Replay bubbles this read failure as a hard refusal (replay.ex
-        # check_irreversible): an unsafe replay is never permitted when the
-        # irreversible check can't run. Normalize replay's raw bubbled error to a
-        # determinable blocker so preflight_clear? cannot be true while replay
-        # would refuse. Keep the warning for the underlying read-error detail.
+        # Replay refuses this read failure as `{:not_replayable,
+        # :irreversible_check_failed}` (replay.ex check_irreversible): an unsafe
+        # replay is never permitted when the irreversible check can't run. Report
+        # the SAME determinable blocker so preflight_clear? cannot be true while
+        # replay would refuse. Keep the warning for the underlying read detail.
         {false, [{:not_replayable, :irreversible_check_failed}],
          ["irreversible-event read failed: #{inspect(reason)}"]}
     end

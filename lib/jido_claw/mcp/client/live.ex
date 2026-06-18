@@ -33,6 +33,14 @@ defmodule JidoClaw.MCP.Client.Live do
   end
 
   @impl JidoClaw.MCP.Client
+  def refresh_endpoint(endpoint_id) do
+    case Jido.MCP.refresh_endpoint(endpoint_id) do
+      {:ok, _endpoint, _ref} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @impl JidoClaw.MCP.Client
   def list_tools(endpoint_id, timeout) do
     endpoint_id
     |> Jido.MCP.list_tools(timeout: timeout, ready_timeout: timeout)

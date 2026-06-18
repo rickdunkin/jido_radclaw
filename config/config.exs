@@ -224,8 +224,14 @@ config :jido_claw, :tool_approval, enabled?: true, mcp_require_approval: true
 #                                        # patched transport's default-deny env scrub
 #                                        # (omit ⇒ pure default-deny: no host secrets)
 #
-# Discovery/registration timeouts are tunable under `config :jido_claw, :mcp`
-# (`ready_timeout_ms`, `list_tools_timeout_ms`, `server_prep_timeout_ms`).
+# Discovery/registration timeouts and the self-heal cadence are tunable under
+# `config :jido_claw, :mcp` (production keeps the in-code defaults):
+#   - `ready_timeout_ms`, `list_tools_timeout_ms`, `server_prep_timeout_ms`
+#   - `reprep_max_attempts` (5), `reprep_backoff_ms` (1_000),
+#     `reprep_backoff_max_ms` (30_000) — bounded exponential-backoff re-prep
+#     after a hard prep crash, then a terminal tool-less `:failed`
+#   - `rediscovery_interval_ms` (300_000; `0` disables auto-arming) — periodic
+#     re-discovery that re-syncs each live agent's external tool set
 
 # Boot-time workflow recovery (JidoClaw.Orchestration.WorkflowRecovery).
 # Enabled by default; gated off at runtime when clustered or in MCP mode so

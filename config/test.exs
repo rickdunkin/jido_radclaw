@@ -31,6 +31,14 @@ config :jido_claw, :tool_approval, enabled?: false
 config :jido_claw, :mcp_client, JidoClaw.MCP.Client.Stub
 config :jido_claw, :mcp_consumer_enabled?, false
 
+# Fast-but-observable re-prep backoff; re-discovery is driven manually via
+# `send(consumer, :rediscover)` (interval 0 ⇒ no auto-arming) for determinism.
+config :jido_claw, :mcp,
+  reprep_backoff_ms: 50,
+  reprep_backoff_max_ms: 100,
+  reprep_max_attempts: 2,
+  rediscovery_interval_ms: 0
+
 # Trace persistence is opt-in for tests. The Collector still ingests
 # events into the in-memory ring on every run, but
 # `JidoClaw.Trace.Persistence.append/2` is a no-op unless a test

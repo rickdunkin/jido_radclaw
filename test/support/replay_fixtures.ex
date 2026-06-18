@@ -59,6 +59,30 @@ defmodule JidoClaw.Test.ReplayFixtures do
   end
 
   @doc """
+  Swap the `Replay.EventReader` seam to one that always fails, so a test can
+  exercise the irreversible-read-failure refusal/diagnostics paths without Mox
+  (the run row still reads fine — only the events read fails, the realistic
+  partial fault). Restores the prior value (usually absent) on exit.
+  """
+  @spec put_failing_event_reader!() :: :ok
+  def put_failing_event_reader! do
+    prior = Application.fetch_env(:jido_claw, :replay_event_reader)
+
+    Application.put_env(:jido_claw, :replay_event_reader, fn _run_id, _opts ->
+      {:error, :simulated}
+    end)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      case prior do
+        {:ok, value} -> Application.put_env(:jido_claw, :replay_event_reader, value)
+        :error -> Application.delete_env(:jido_claw, :replay_event_reader)
+      end
+    end)
+
+    :ok
+  end
+
+  @doc """
   Launch the fixture exactly the way production skill callers do (fresh-disk
   load, compile, run with the skill hash + run-level deadline + project_dir
   scope), returning the resulting run whether it completed, failed, or paused.

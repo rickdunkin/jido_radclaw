@@ -479,6 +479,49 @@ defmodule JidoClaw.Orchestration.ReplayTest do
     end
   end
 
+  describe "irreversible read failure (V2-4)" do
+    # A run that clears the definition + input gates so the pipeline reaches the
+    # irreversible gate, where the injected reader fails (the run row still reads
+    # fine — only the events read fails).
+    defp forge_readfail_run!(name, ctx) do
+      forge_terminal_run!(
+        %{
+          name: name,
+          config: module_config(),
+          definition_hash: DefinitionFingerprint.for_module(GatedTestReactor),
+          replay_inputs: :erlang.term_to_binary({1, %{}, %{}})
+        },
+        ctx
+      )
+    end
+
+    @tag :capture_log
+    test "an events-read failure refuses with :irreversible_check_failed, not a raw bubble",
+         ctx do
+      put_failing_event_reader!()
+      run = forge_readfail_run!("forge-readfail", ctx)
+
+      assert {:error, {:not_replayable, :irreversible_check_failed}} =
+               Replay.replay(run.id, tenant: ctx.tenant, actor: ctx.actor)
+    end
+
+    @tag :capture_log
+    test "the dashboard stashes preflight diagnostics on the read-failure refusal", ctx do
+      put_failing_event_reader!()
+      run = forge_readfail_run!("forge-readfail-dash", ctx)
+      socket = build_socket(ctx.actor)
+
+      assert {:noreply, blocked} =
+               WorkflowsLive.handle_event("replay", %{"id" => run.id}, socket)
+
+      assert Phoenix.Flash.get(blocked.assigns.flash, :error) =~ "Couldn't verify replay safety"
+
+      assert %Diagnostics{} = diag = blocked.assigns.replay_diagnostics[run.id]
+      assert {:not_replayable, :irreversible_check_failed} in diag.blockers
+      refute diag.preflight_clear?
+    end
+  end
+
   describe "replay-inputs size guard (L9)" do
     # The launch logs the dropped-blob warning.
     @tag :capture_log

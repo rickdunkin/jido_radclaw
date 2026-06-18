@@ -295,6 +295,38 @@ defmodule JidoClaw.Orchestration.Replay.DiagnosticsTest do
     end
   end
 
+  describe "irreversible read failure (V2-4)" do
+    test "a failed events read self-degrades to a determinable blocker + warning", ctx do
+      put_failing_event_reader!()
+      run = forge_replayable!(%{name: "forge-readfail-diag"}, ctx)
+
+      assert {:ok, diag} = Replay.diagnose(run.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      # The read failure becomes a determinable blocker (so preflight_clear?
+      # cannot disagree with replay/2) plus a warning carrying the read detail —
+      # diagnose itself never errors on the read failure.
+      assert {:not_replayable, :irreversible_check_failed} in diag.blockers
+      refute diag.preflight_clear?
+      assert Enum.any?(diag.warnings, &(&1 =~ "irreversible-event read failed"))
+    end
+
+    test "the read-failure blocker and warning survive to_mcp_map/1 encoding" do
+      # Construct the struct directly (the cleanest seam — no read failure needed)
+      # and confirm the blocker code/detail + warning reach the encoded wire map.
+      diag = %Diagnostics{
+        run_id: Ash.UUID.generate(),
+        blockers: [{:not_replayable, :irreversible_check_failed}],
+        warnings: ["irreversible-event read failed: :simulated"],
+        generated_at: DateTime.utc_now()
+      }
+
+      encoded = Jason.encode!(Diagnostics.to_mcp_map(diag))
+
+      assert encoded =~ "irreversible_check_failed"
+      assert encoded =~ "irreversible-event read failed"
+    end
+  end
+
   describe "to_mcp_map/1 (security + bounding)" do
     test "a secret on a failed run never appears in the encoded MCP map", ctx do
       override_templates(SecretErrorStub)

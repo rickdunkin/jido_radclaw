@@ -108,6 +108,20 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
       assert "irreversible_steps_executed" in Enum.map(diagnostics["blockers"], & &1["code"])
     end
 
+    @tag :capture_log
+    test "an irreversible read-failure refusal carries diagnostics", ctx do
+      original = launch_fixture!(ctx)
+      # Inject AFTER launch so only the replay-time events read fails.
+      ReplayFixtures.put_failing_event_reader!()
+
+      assert {:error, %{message: message, details: %{diagnostics: diagnostics}}} =
+               ReplayWorkflow.run(%{run_id: original.id}, tool_ctx(ctx))
+
+      assert message =~ "not replayable"
+      assert "not_replayable" in Enum.map(diagnostics["blockers"], & &1["code"])
+      assert "irreversible_check_failed" in Enum.map(diagnostics["blockers"], & &1["detail"])
+    end
+
     test "missing tenant in tool context fails cleanly" do
       assert {:error, %{message: message}} =
                ReplayWorkflow.run(%{run_id: Ash.UUID.generate()}, %{tool_context: %{}})

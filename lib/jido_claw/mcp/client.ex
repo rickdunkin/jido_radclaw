@@ -29,6 +29,15 @@ defmodule JidoClaw.MCP.Client do
   @doc "Block until the endpoint's client has completed MCP initialization (bounded)."
   @callback await_endpoint_ready(endpoint_id(), timeout()) :: :ok | {:error, term()}
 
+  @doc """
+  Stop and restart an already-registered endpoint's client (a real recycle).
+
+  Re-`register_endpoint/1` alone can't recover an alive-but-stuck client (its
+  server was unreachable at boot init), so the crash re-prep + re-discovery
+  paths refresh a failed endpoint before retrying discovery.
+  """
+  @callback refresh_endpoint(endpoint_id()) :: :ok | {:error, term()}
+
   @doc "Discover the endpoint's tools (bounded), normalized to a bare tool list."
   @callback list_tools(endpoint_id(), timeout()) :: {:ok, [tool()]} | {:error, term()}
 
