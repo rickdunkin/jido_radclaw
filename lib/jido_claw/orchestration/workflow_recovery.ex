@@ -43,6 +43,12 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     * `:pending` **+ checkpoint** → an impossible/corrupt pair (a checkpoint is
       only ever written after `:awaiting_approval`) → fail-with-audit and a
       `Logger.warning`; **never** resumed.
+    * `workflow_type: "composer"` **+ `:running`** → **observed** (no-op): an
+      AR-2 composer parent sits `:running` for the whole route with no
+      checkpoint, so it is observed, never terminalized (2d does the real
+      rebuild+resume). Any *other* composer status falls through to the
+      status-based branches above, so a never-started `:pending` composer is
+      still failed.
 
   No branch clears a checkpoint by hand — every terminal clears it centrally in
   the projection (Decision 7).
@@ -114,6 +120,17 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # `resume_checkpoint` calculation is `%Ash.NotLoaded{}` on a plain read,
   # which `not is_nil/1` would misclassify as "present" on every run.
   defp reconcile_run(run), do: reconcile_branch(classify(run), run)
+
+  # AR-2 composer parents (`workflow_type: "composer"`) sit `:running` for the
+  # whole route with no checkpoint, so the status heads below would mis-classify
+  # one as `:stranded → :failed` at boot. Until 2d's real rebuild+resume branch,
+  # this no-op guard (dispatched on `workflow_type` + `:running` FIRST) keeps
+  # reactor recovery from clobbering the valid 2a parent state — it observes,
+  # like the `:parked` branch. Scoped to `:running` ONLY: a `:pending` or
+  # `:awaiting_approval` composer row falls through to the status heads below, so
+  # a never-started `:pending` composer is still correctly failed (the recovery
+  # contract holds for the whole `workflow_type`, not bypassed for it).
+  defp classify(%WorkflowRun{workflow_type: "composer", status: :running}), do: :composer
 
   defp classify(%WorkflowRun{status: :awaiting_approval, encrypted_resume_checkpoint: cp})
        when not is_nil(cp),
@@ -220,6 +237,11 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   # Genuinely stranded (the original bug fix): run_recovered + run_failed.
   defp reconcile_branch(:stranded, run), do: fail_stranded(run, :stranded)
+
+  # Composer parent (Phase 2a no-op guard): observe-only — never terminalize the
+  # new run type via reactor recovery. 2d replaces this with state-rebuild +
+  # resume mid-route.
+  defp reconcile_branch(:composer, run), do: emit(run, :composer)
 
   # The after_approved hook is NOT run (Decision 8) — recovery never routes
   # through Cases.decide, so the hook is skipped by construction.

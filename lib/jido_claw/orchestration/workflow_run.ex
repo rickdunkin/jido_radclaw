@@ -62,6 +62,9 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       index([:tenant_id, :status])
       index([:tenant_id, :completed_at])
 
+      # Composer lineage (AR-2 Phase 2a): parent → child-runs + recovery scan.
+      index([:tenant_id, :parent_run_id])
+
       # Claim/fencing scan indexes (§4.11 data model — implementation
       # deferred). Deliberately global, NOT tenant-prefixed: the future
       # `:claim_next` lease scanner is a system-level cross-tenant poller
@@ -106,12 +109,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
         :replay_inputs,
         :retry_of_id,
         :idempotency_key,
+        :parent_run_id,
         :user_id,
         :project_id,
         :metadata
       ])
 
       change(set_attribute(:status, :pending))
+      change(__MODULE__.Changes.ValidateCrossTenant)
     end
 
     # Projection-owned status write — the ONLY writer of `status` and its
@@ -372,6 +377,12 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       allow_nil?: true
     )
 
+    # Composer lineage (AR-2 Phase 2a): a parent `WorkflowRun` whose every wave is
+    # a child linked here. Lets Ash define `parent_run_id` (no
+    # `define_attribute?(false)`); `Changes.ValidateCrossTenant` cross-tenant-guards it.
+    belongs_to(:parent_run, __MODULE__, allow_nil?: true, attribute_writable?: true)
+
+    has_many(:child_runs, __MODULE__, destination_attribute: :parent_run_id)
     has_many(:steps, JidoClaw.Orchestration.WorkflowStep)
     has_many(:agent_cases, JidoClaw.Orchestration.AgentCase)
     has_many(:events, JidoClaw.Orchestration.WorkflowEvent)

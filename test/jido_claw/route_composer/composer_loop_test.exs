@@ -13,6 +13,8 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
@@ -97,6 +99,31 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     # four waves: planner, approver (implementer held), implementer, both reviewers.
     assert summary.wave_index == 4
     assert match?([_, _, _, _], summary.history)
+
+    # Phase 2a: the run is a first-class composer parent (root, terminal
+    # :completed at convergence), and every wave is a child linked by
+    # parent_run_id + the deterministic composer:<parent>:<wave_index> key.
+    parent_id = summary.parent_run_id
+    assert is_binary(parent_id)
+
+    assert {:ok, parent} =
+             WorkflowRun.by_id(parent_id, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+    assert parent.workflow_type == "composer"
+    assert parent.status == :completed
+    refute is_nil(parent.started_at)
+    assert is_nil(parent.parent_run_id)
+
+    for entry <- summary.history do
+      assert {:ok, child} =
+               WorkflowRun.by_id(entry.child_run_id,
+                 tenant: ctx.tenant,
+                 actor: actor_for(ctx.tenant)
+               )
+
+      assert child.parent_run_id == parent_id
+      assert child.idempotency_key == "composer:#{parent_id}:#{entry.index}"
+    end
   end
 
   test "the implementer is held while the approver runs, then released", ctx do
@@ -161,6 +188,17 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     refute MapSet.member?(summary.final_live, "clean:quality")
     # still terminates — not a spin or hang — with every stage having run once.
     assert MapSet.equal?(summary.ran, MapSet.new(@all_stages))
+
+    # Phase 2a: a :not_converged terminal takes the parent to :failed, with the
+    # terminal (not the nil reason) as the error string.
+    assert {:ok, parent} =
+             WorkflowRun.by_id(summary.parent_run_id,
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant)
+             )
+
+    assert parent.status == :failed
+    assert parent.error == "not_converged"
   end
 
   test "a wave failure records a failed history entry surfacing child_run_id", ctx do
@@ -177,9 +215,19 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     assert entry.stages == ["planner"]
     # the wave's reactor ran; its child run id is surfaced for actionability.
     assert entry.child_run_id
+
+    # Phase 2a: a :failed terminal takes the parent to :failed, error prefixed.
+    assert {:ok, parent} =
+             WorkflowRun.by_id(summary.parent_run_id,
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant)
+             )
+
+    assert parent.status == :failed
+    assert String.starts_with?(parent.error, "failed:")
   end
 
-  test "run_sync unlinks and kills the composer on timeout, then drains the in-flight wave",
+  test "run_sync times out, kills the unlinked composer, and terminalizes the parent to :failed",
        ctx do
     Application.put_env(
       :jido_claw,
@@ -189,19 +237,27 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
 
     Application.put_env(:jido_claw, :step_agent_server, BlockingAgentServer)
 
-    parent = self()
-    task = Task.async(fn -> send(parent, {:run_sync, run(ctx, timeout: 400)}) end)
+    test_pid = self()
+    task = Task.async(fn -> send(test_pid, {:run_sync, run(ctx, timeout: 400)}) end)
 
-    # Capture the linked composer before the 400ms kill.
-    composer = await_linked_composer(task.pid)
+    # The composer is now UNLINKED (run_sync uses GenServer.start + monitor), so
+    # capture it by its $initial_call — not the task's link set — and monitor it
+    # to observe the kill.
+    composer = await_composer_process()
     cref = Process.monitor(composer)
 
     # Core: the timeout fires (wave blocked 600ms > 400ms) and the composer is
-    # *killed*, not left turning the crank. On the unfixed code the composer
-    # stays alive → no :killed DOWN → the second assert_receive times out.
+    # *killed*, not left turning the crank.
     assert_receive {:run_sync, {:error, :timeout}}, 3_000
     assert_receive {:DOWN, ^cref, :process, ^composer, :killed}, 3_000
     Task.await(task)
+
+    # Phase 2a: the now-ownerless :running parent is terminalized live to :failed
+    # with the STORED STRING (error is a :string column, so it is "composer_timeout",
+    # never the inspected ":composer_timeout") — not left :running.
+    parent = composer_parent_run(ctx)
+    assert parent.status == :failed
+    assert parent.error == "composer_timeout"
 
     # Hygiene: the in-flight wave runs under async_nolink and outlives the
     # composer; wait for its durable write so nothing writes under a torn-down
@@ -209,28 +265,49 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     drain_run_registry(2_000)
   end
 
-  # Bounded poll of `task_pid`'s links for the freshly `start_link`ed composer
-  # (its `$initial_call` is `{RouteComposer, :init, 1}`). The composer is started
-  # at the top of `run_sync/1` (t≈0) and lives until the 400ms kill, so the
-  # capture window is wide and deterministic.
-  defp await_linked_composer(task_pid, tries \\ 200) do
-    links =
-      case Process.info(task_pid, :links) do
-        {:links, pids} -> pids
-        nil -> []
-      end
+  test "run_sync surfaces a start failure and terminalizes the parent to :failed", ctx do
+    # No :catalog → the composer's init/1 raises → GenServer.start returns
+    # {:error, _} → start_composer terminalizes the just-created :running parent.
+    # (capture_log swallows the deliberate proc_lib crash report.)
+    capture_log(fn ->
+      assert {:error, {:start_failed, _reason}} =
+               RouteComposer.run_sync(
+                 tenant: ctx.tenant,
+                 actor: actor_for(ctx.tenant),
+                 timeout: 1_000
+               )
+    end)
 
-    case Enum.find(links, &composer?/1) do
+    parent = composer_parent_run(ctx)
+    assert parent.status == :failed
+  end
+
+  # Bounded poll of the live process table for the freshly-started composer (its
+  # `$initial_call` is `{RouteComposer, :init, 1}`). run_sync/1 now starts it
+  # UNLINKED (GenServer.start), so it is no longer in the caller's link set — but
+  # it is a live process from just after `create_parent_run/1` commits until the
+  # 400ms kill, and async:false means it is the only composer alive, so scanning
+  # by initial call is deterministic.
+  defp await_composer_process(tries \\ 200) do
+    case Enum.find(Process.list(), &composer?/1) do
       nil when tries > 0 ->
         Process.sleep(5)
-        await_linked_composer(task_pid, tries - 1)
+        await_composer_process(tries - 1)
 
       nil ->
-        flunk("composer not linked to task within poll window")
+        flunk("composer process not found within poll window")
 
       pid ->
         pid
     end
+  end
+
+  # The single composer parent run in this test's (per-test) tenant — the
+  # `workflow_type: "composer"` root run. async:false + a fresh tenant per test
+  # means there is exactly one.
+  defp composer_parent_run(ctx) do
+    {:ok, runs} = WorkflowRun.list(tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+    Enum.find(runs, &(&1.workflow_type == "composer"))
   end
 
   defp composer?(pid) do

@@ -49,7 +49,10 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   "always run". `:deadline` is the run-level lateness policy
   (`JidoClaw.Orchestration.Deadline.parse/1` shape) stored normalized in
   `config["deadline"]` — pure read-model evidence; an invalid value is dropped
-  with a log, never a launch failure.
+  with a log, never a launch failure. `:parent_run_id` (AR-2 Phase 2a) links
+  the created run to a parent `WorkflowRun` (a composer wave passes its
+  composer parent); absent/nil → a root run. It is cross-tenant-guarded by
+  `WorkflowRun`'s `:create` change.
 
   ## Launch idempotency (T2-3)
 
@@ -263,7 +266,12 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
                    ),
                  definition_hash: definition_hash(reactor_module, opts),
                  retry_of_id: Keyword.get(opts, :retry_of_id),
-                 idempotency_key: idempotency_key
+                 idempotency_key: idempotency_key,
+                 # Composer lineage (AR-2 Phase 2a): a composer wave passes its
+                 # parent run id so the child WorkflowRun links to it. nil for
+                 # an ordinary reactor run → a root run. The cross-tenant guard
+                 # on WorkflowRun's :create refuses a parent in another tenant.
+                 parent_run_id: Keyword.get(opts, :parent_run_id)
                },
                replay_inputs_attrs(name, inputs, extra_context)
              ),
