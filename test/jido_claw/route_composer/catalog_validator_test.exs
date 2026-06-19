@@ -299,6 +299,62 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     assert CatalogValidator.validate(cat) == []
   end
 
+  defp lens_stage(pubs) do
+    %{
+      "qr" =>
+        stage(
+          name: "qr",
+          unit: {:worker_template, "reviewer"},
+          lens: "quality",
+          emit: :default,
+          routes: ["code"],
+          req: ["request"],
+          out: ["findings"],
+          sub: ["request-received"],
+          pub: pubs,
+          task: "review"
+        )
+    }
+  end
+
+  describe "emit :default + lens verdict-publishes hardening (invariant 8)" do
+    test "a missing clean:<lens> is flagged at load" do
+      problems = CatalogValidator.validate(lens_stage(["findings:quality", "scope-shift"]))
+      assert Enum.any?(problems, &String.contains?(&1, "clean:quality"))
+    end
+
+    test "a missing findings:<lens> is flagged at load" do
+      problems = CatalogValidator.validate(lens_stage(["clean:quality", "scope-shift"]))
+      assert Enum.any?(problems, &String.contains?(&1, "findings:quality"))
+    end
+
+    test "declaring both verdict families passes" do
+      assert CatalogValidator.validate(
+               lens_stage(["clean:quality", "findings:quality", "scope-shift"])
+             ) == []
+    end
+
+    test "a non-:default lens stage is exempt (the mapper isn't the default derivation)" do
+      cat = %{
+        "qr" =>
+          stage(
+            name: "qr",
+            unit: {:worker_template, "reviewer"},
+            lens: "quality",
+            emit: {:mapper, "custom"},
+            routes: ["code"],
+            req: ["request"],
+            out: ["findings"],
+            sub: ["request-received"],
+            pub: ["scope-shift"],
+            task: "review"
+          )
+      }
+
+      assert CatalogValidator.validate(cat) == []
+    end
+  end
+
   test "a data-graph cycle is flagged" do
     cat = %{
       "a" =>

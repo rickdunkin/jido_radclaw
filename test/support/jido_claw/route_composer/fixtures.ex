@@ -158,6 +158,131 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
     true
   end
 
+  # ---------------------------------------------------------------------------
+  # Phase-1 loop fixtures (AR-2 §14 — the single-run loop spike)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  The validator-clean, gate-free Phase-1 catalog mirroring the real code-path
+  shape: `planner → {approver, implementer(held by lock)} → implementer →
+  {quality-reviewer, security-reviewer}`. `planner` subscribes the **seed**
+  `request-received` (no triage stage in Phase 1); the reviewers declare both
+  `clean:<lens>` and `findings:<lens>`.
+  """
+  @spec phase1_catalog() :: %{String.t() => Stage.t()}
+  def phase1_catalog do
+    key_named(%{
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft an implementation plan from the request; emit plan-ready.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "approver" =>
+        stage(
+          unit: {:worker_template, "verifier"},
+          task: "Approve the plan; emit plan-approved with the approved-plan.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["approved-plan"],
+          pub: ["plan-approved", "scope-shift"]
+        ),
+      "implementer" =>
+        stage(
+          unit: {:worker_template, "coder"},
+          task: "Implement the approved plan; emit code-written and auth-surface.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          opt: ["approved-plan"],
+          out: ["diff"],
+          pub: ["code-written", "auth-surface", "scope-shift"],
+          lock: [%{while: "plan-ready", until: "plan-approved"}]
+        ),
+      "quality-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "quality",
+          task: "Review the diff for quality; flag findings, else emit clean:quality.",
+          routes: ["code"],
+          sub: ["code-written"],
+          req: ["diff"],
+          out: ["findings"],
+          pub: ["clean:quality", "findings:quality", "scope-shift"]
+        ),
+      "security-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "security",
+          task: "Review the diff for auth-surface; flag findings, else emit clean:security.",
+          routes: ["code"],
+          sub: ["auth-surface"],
+          req: ["diff"],
+          out: ["findings"],
+          pub: ["clean:security", "findings:security", "scope-shift"]
+        )
+    })
+  end
+
+  @doc "The Phase-1 seed live signals: the seed signal + the `code` path."
+  @spec phase1_seed_live() :: [String.t()]
+  def phase1_seed_live, do: ["request-received", "code"]
+
+  @doc "The Phase-1 seed artifact store (provenance shape from the start)."
+  @spec phase1_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def phase1_seed_artifacts, do: %{"request" => %{"seed" => "Build the auth feature"}}
+
+  @doc "Canned reviewer typed output — clean (approve, no findings)."
+  @spec phase1_clean_reviewer() :: %{String.t() => term()}
+  def phase1_clean_reviewer, do: %{"overall" => "approve", "findings" => []}
+
+  @doc "Canned reviewer typed output — findings (request_changes)."
+  @spec phase1_findings_reviewer() :: %{String.t() => term()}
+  def phase1_findings_reviewer do
+    %{
+      "overall" => "request_changes",
+      "findings" => [%{"severity" => "error", "description" => "missing nil check"}]
+    }
+  end
+
+  @doc """
+  The `template => canned typed output` map the stub workers serve. Producers
+  carry `signals` + their output artifact; the reviewer carries the supplied
+  verdict (default clean).
+  """
+  @spec phase1_stub_outputs(map()) :: %{String.t() => map()}
+  def phase1_stub_outputs(reviewer \\ phase1_clean_reviewer()) do
+    %{
+      "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: build the auth feature"},
+      "verifier" => %{
+        "signals" => ["plan-approved"],
+        "approved-plan" => "APPROVED: build the auth feature"
+      },
+      "coder" => %{
+        "signals" => ["code-written", "auth-surface"],
+        "diff" => "DIFF: +def authenticate(user), do: ..."
+      },
+      "reviewer" => reviewer
+    }
+  end
+
+  @doc """
+  The `:agent_templates_override` map pointing every Phase-1 template at `module`
+  (a single shared stub worker; the stub picks its canned output by
+  `agent_template`).
+  """
+  @spec phase1_template_override(module()) :: %{String.t() => map()}
+  def phase1_template_override(module) do
+    Map.new(~w(researcher verifier coder reviewer), fn name ->
+      {name, %{module: module, description: "phase-1 stub", model: :fast, max_iterations: 1}}
+    end)
+  end
+
   # Stamp each stage's `name` from its catalog key.
   defp key_named(map) do
     Map.new(map, fn {name, stage} -> {name, %{stage | name: name}} end)

@@ -27,7 +27,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   `JidoClaw.RouteComposer.Catalog` compile-time guard checks worker-template
   existence separately.
 
-  ## Invariants (groups 1–8 + cycle)
+  ## Invariants (groups 1–8 + cycle = 9)
 
     1. `routes` present, non-empty, and ⊆ `["talk", "sketch", "code",
        "system"]`.
@@ -40,7 +40,11 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
     6. every `lock` `while` / `until` is a seed signal or family-published.
     7. no self-dependency — a stage's required inputs are disjoint from its
        outputs.
-    8. the producer → consumer data graph is acyclic.
+    8. an `emit: :default` + `lens` stage declares **both** `clean:<lens>` and
+       `findings:<lens>` in `publishes` (the `:default` mapper derives both
+       verdict families, so a missing declaration would fail the strict
+       ⊆-publishes emit check mid-wave — caught here at load instead, AR-2 §7).
+    9. the producer → consumer data graph is acyclic.
 
   `family_match?/2` is **bidirectional** (an exact topic, a qualified member of
   the family, **or** the family base) and is deliberately distinct from the
@@ -206,7 +210,8 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       check_required(name, stage, produced),
       check_task(name, stage),
       check_locks(name, stage, published),
-      check_self_dep(name, stage)
+      check_self_dep(name, stage),
+      check_verdict_publishes(name, stage)
     ])
   end
 
@@ -276,6 +281,19 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       ["#{name}: required input intersects output (self-dependency)"]
     end
   end
+
+  # A `emit: :default` + `lens` stage derives BOTH verdict families
+  # (`clean:<lens>` / `findings:<lens>`), so both must be declared `publishes`
+  # topics — otherwise the strict ⊆-publishes emit check would fail for one
+  # verdict mid-wave. Catch the authoring error at load (AR-2 Decisions).
+  defp check_verdict_publishes(name, %Stage{emit: :default, lens: lens, publishes: pubs})
+       when is_binary(lens) do
+    for topic <- ["clean:#{lens}", "findings:#{lens}"], topic not in pubs do
+      "#{name}: emit :default + lens #{inspect(lens)} must declare `#{topic}` in publishes"
+    end
+  end
+
+  defp check_verdict_publishes(_name, _stage), do: []
 
   # ---------------------------------------------------------------------------
   # Cycle — the producer → consumer data graph must be acyclic

@@ -73,17 +73,18 @@ defmodule JidoClaw.Skills.Compiler do
   alias JidoClaw.Skills.Steps.AgentStep
   alias JidoClaw.Skills.Steps.CollectStep
   alias JidoClaw.Skills.Steps.IterativeStep
+  alias JidoClaw.Workflows.StepIds
   alias JidoClaw.Workflows.StepNormalizer
   alias Reactor.Argument
   alias Reactor.Builder
 
   @collect_id :__collect__
 
-  # Hard cap on graph-skill steps. Step ids come from this compile-time
-  # table so compiling LLM-authored YAML never mints atoms at runtime;
-  # `validate/3` rejects larger skills up front.
-  @max_steps 256
-  @step_ids List.to_tuple(Enum.map(1..@max_steps, &:"step_#{&1}"))
+  # Hard cap on graph-skill steps + the positional atom-id pool both live in
+  # the shared `JidoClaw.Workflows.StepIds` (which `RouteComposer.WaveBuilder`
+  # also draws from), so compiling LLM-authored YAML never mints atoms at
+  # runtime; `validate/3` rejects larger skills up front.
+  @max_steps StepIds.max()
 
   @doc """
   Compile `skill` to a runnable `%Reactor{}` struct, or return `{:error, _}`
@@ -499,8 +500,12 @@ defmodule JidoClaw.Skills.Compiler do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp step_id(idx) when is_integer(idx) and idx >= 1 and idx <= @max_steps,
-    do: elem(@step_ids, idx - 1)
+  # The count is validated against `@max_steps` (= `StepIds.max()`) up front, so
+  # the `{:ok, id}` match always holds here.
+  defp step_id(idx) when is_integer(idx) and idx >= 1 and idx <= @max_steps do
+    {:ok, id} = StepIds.fetch(idx)
+    id
+  end
 
   defp input_arg, do: Argument.from_input(:extra_context, :extra_context)
 

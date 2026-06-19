@@ -1,0 +1,67 @@
+defmodule JidoClaw.RouteComposer.LoopTest do
+  use ExUnit.Case, async: true
+
+  alias JidoClaw.RouteComposer.Loop
+  alias JidoClaw.RouteComposer.TestFixtures
+
+  describe "dispatch_cohort/2" do
+    test "first wave minus ran that is non-empty" do
+      display = %{waves: [["planner"], ["approver", "implementer"]]}
+      assert Loop.dispatch_cohort(display, MapSet.new()) == ["planner"]
+    end
+
+    test "skips a fully-ran wave, picks the next non-empty cohort" do
+      display = %{waves: [["planner"], ["approver", "implementer"]]}
+      assert Loop.dispatch_cohort(display, MapSet.new(["planner"])) == ["approver", "implementer"]
+    end
+
+    test "filters ran members within a wave" do
+      display = %{waves: [["approver", "implementer"]]}
+      assert Loop.dispatch_cohort(display, MapSet.new(["approver"])) == ["implementer"]
+    end
+
+    test "nil when nothing unrun remains" do
+      display = %{waves: [["planner"]]}
+      assert Loop.dispatch_cohort(display, MapSet.new(["planner"])) == nil
+    end
+  end
+
+  describe "terminal/2 + lenses_clean?/3" do
+    setup do
+      %{catalog: TestFixtures.phase1_catalog()}
+    end
+
+    test "converged: nothing held and every ran lens clean", %{catalog: catalog} do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["quality-reviewer", "security-reviewer"]),
+        live: MapSet.new(["clean:quality", "clean:security"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :converged
+    end
+
+    test "not_converged: a ran lens still has open findings (forward-only)", %{catalog: catalog} do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["quality-reviewer"]),
+        live: MapSet.new(["findings:quality"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :not_converged
+    end
+
+    test "deadlock: a non-empty held set with nothing dispatchable", %{catalog: catalog} do
+      state = %{catalog: catalog, ran: MapSet.new(), live: MapSet.new()}
+      assert Loop.terminal(%{held: %{"implementer" => ["plan-approved"]}}, state) == :deadlock
+    end
+
+    test "lenses_clean?/3 ignores ran stages that carry no lens", %{catalog: catalog} do
+      assert Loop.lenses_clean?(catalog, MapSet.new(["planner"]), MapSet.new())
+    end
+
+    test "lenses_clean?/3 is false when a ran lens has no clean signal", %{catalog: catalog} do
+      refute Loop.lenses_clean?(catalog, MapSet.new(["security-reviewer"]), MapSet.new())
+    end
+  end
+end
