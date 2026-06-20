@@ -30,6 +30,7 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.{Message, Recorder}
   alias JidoClaw.Reasoning.Output
+  alias JidoClaw.Security.SensitiveScrub
 
   @default_flush_timeout_ms 30_000
   @ask_timeout_ms 120_000
@@ -117,13 +118,21 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
 
   defp do_append(session_uuid, tenant_id, role, content, request_id, tool_context)
        when is_binary(session_uuid) and session_uuid != "" and is_binary(tenant_id) do
+    # AR-2 Phase 2b sink (iii): the durable copy of a marked composer
+    # subagent's task (`record_task`'s injected `full_task`, carrying decrypted
+    # artifacts) and its result text are whole-write-sanitized here — the single
+    # chokepoint both `record_task` and `record_terminal` funnel through. (The
+    # live `AgentStep` `full_task` that the subagent actually consumes is left
+    # intact; only this at-rest copy is scrubbed.)
+    {content, metadata} = scrub_turn(tool_context, content)
+
     attrs =
       %{
         session_id: session_uuid,
         request_id: request_id,
         role: role,
         content: content,
-        metadata: %{}
+        metadata: metadata
       }
       |> put_present(:agent_id, Map.get(tool_context, :agent_id))
       |> Map.put(:subagent, Map.get(tool_context, :subagent, true))
@@ -143,6 +152,12 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
   end
 
   defp do_append(_session_uuid, _tenant_id, _role, _content, _request_id, _tool_context), do: :ok
+
+  defp scrub_turn(tool_context, content) do
+    if Map.get(tool_context, :sanitize_sensitive_context, false),
+      do: {SensitiveScrub.redacted_text(), SensitiveScrub.redacted_map()},
+      else: {content, %{}}
+  end
 
   defp append_opts(tenant_id, actor) do
     [tenant: tenant_id, actor: actor || Actor.system(tenant_id)]

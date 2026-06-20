@@ -11,8 +11,10 @@ defmodule JidoClaw.RouteComposer.Fold do
       so a re-reviewed lens that flips clears the stale signal and convergence
       stays reachable (the §7 mutual-exclusion invariant);
     * **artifacts** index into the provenance store as `store[name][producer] =
-      value`, so co-producers of one `name` (AR-3's per-lens `findings`) coexist
-      without clobbering;
+      {:ref, ref}` (Phase 2b: an explicitly-tagged opaque `ComposerArtifact`
+      ref, not the value — the tag distinguishes a wave-produced ref from an
+      inline seed at the `ArtifactContext` read boundary, P2), so co-producers
+      of one `name` (AR-3's per-lens `findings`) coexist without clobbering;
     * **stage names** union into `ran`.
 
   The routing set `available` is **derived** from the store (`available/1`), not
@@ -71,10 +73,17 @@ defmodule JidoClaw.RouteComposer.Fold do
   defp paired_verdict("findings:" <> lens), do: "clean:" <> lens
   defp paired_verdict(_signal), do: nil
 
+  # Every emission artifact value in Phase 2b IS an opaque ref, so tag it
+  # `{:ref, ref}` (P2) — the explicit tag lets `ArtifactContext` distinguish a
+  # wave-produced ref from an inline seed value (which enters only via `init/1`
+  # and stays bare) without the old `art_<hex>` regex heuristic, which misread a
+  # seed that merely looked like a ref. The durable emission shape is unchanged
+  # (still bare `art_<hex>` strings); only this in-memory fold store is tagged.
   defp fold_artifacts(state, producer, artifacts) do
     store =
-      Enum.reduce(artifacts, state.artifacts, fn {name, value}, acc ->
-        Map.update(acc, name, %{producer => value}, &Map.put(&1, producer, value))
+      Enum.reduce(artifacts, state.artifacts, fn {name, ref}, acc ->
+        tagged = {:ref, ref}
+        Map.update(acc, name, %{producer => tagged}, &Map.put(&1, producer, tagged))
       end)
 
     %{state | artifacts: store}

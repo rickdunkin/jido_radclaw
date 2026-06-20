@@ -294,40 +294,62 @@ defmodule JidoClaw do
   @doc """
   Convenience entry point for child requests (sub-agents, workflows): pulls
   `session_uuid`, `tenant_id`, `workspace_uuid`, and `user_id` out of a
-  tool_context map and forwards to `register_correlation/6`. Returns a fresh
-  `request_id` regardless — if the context is missing `session_uuid` or
-  `tenant_id`, registration is skipped but the caller still gets an id to
-  thread through.
+  tool_context map and forwards to `register_correlation/6`.
+
+  Returns `{:ok, request_id}` or `{:error, reason}`. The unmarked path is
+  effectively infallible — a missing scope skips registration but still yields
+  an id (`{:ok, id}`), and a durable-write failure falls back to cache-only
+  (`{:ok, id}`). A **marked** context (`sanitize_sensitive_context: true`,
+  AR-2 Phase 2b C4) instead **aborts**: a missing scope is
+  `{:error, :missing_correlation_scope}` (else the marker row would never
+  exist, silently undermining the sanitize guarantees) and a durable-write
+  failure surfaces `{:error, reason}` (no cache-only fallback). Callers stop
+  the freshly-spawned worker on `{:error, _}`.
 
   See the note on `register_correlation/6` about eventual relocation.
   """
-  @spec register_child_correlation(map()) :: String.t()
+  @spec register_child_correlation(map()) :: {:ok, String.t()} | {:error, term()}
   def register_child_correlation(ctx) do
     request_id = Ecto.UUID.generate()
+    # Coerce to a strict boolean: `ToolContext.build/1` writes every canonical
+    # key present-as-nil, so an unmarked child carries `sanitize_sensitive_context: nil`
+    # (a `Map.get` default fires only for an ABSENT key, never a present-nil one).
+    # `== true` maps nil/false/absent → false so `marked` never reaches the
+    # `allow_nil?: false` durable field or `register_failure/4`'s true/false clauses
+    # as a nil. Matches the in-tree idiom at `Tools.OutputShaper`.
+    marked = Map.get(ctx, :sanitize_sensitive_context) == true
 
     case ctx do
       %{session_uuid: session_uuid, tenant_id: tenant_id} = c
       when is_binary(session_uuid) and is_binary(tenant_id) ->
-        register_correlation(
-          request_id,
-          session_uuid,
-          tenant_id,
-          Map.get(c, :workspace_uuid),
-          Map.get(c, :user_id),
-          agent_id:
-            CompactionIdentity.resolve(
-              Map.get(c, :agent_template),
-              Map.get(c, :agent_id),
-              Map.get(c, :session_id)
-            ),
-          subagent: Map.get(c, :subagent, true)
-        )
+        case register_correlation(
+               request_id,
+               session_uuid,
+               tenant_id,
+               Map.get(c, :workspace_uuid),
+               Map.get(c, :user_id),
+               agent_id:
+                 CompactionIdentity.resolve(
+                   Map.get(c, :agent_template),
+                   Map.get(c, :agent_id),
+                   Map.get(c, :session_id)
+                 ),
+               subagent: Map.get(c, :subagent, true),
+               sanitize_sensitive_context: marked,
+               expires_at: Map.get(c, :request_correlation_expires_at)
+             ) do
+          :ok -> {:ok, request_id}
+          {:error, reason} -> {:error, reason}
+        end
+
+      # Missing scope: a marked run MUST have a durable marker row, so abort;
+      # an unmarked run keeps the legacy skip-but-return-an-id behavior.
+      _ when marked ->
+        {:error, :missing_correlation_scope}
 
       _ ->
-        :ok
+        {:ok, request_id}
     end
-
-    request_id
   end
 
   @doc """
@@ -351,7 +373,7 @@ defmodule JidoClaw do
           String.t() | nil,
           String.t() | nil,
           keyword()
-        ) :: :ok
+        ) :: :ok | {:error, term()}
   def register_correlation(
         request_id,
         session_uuid,
@@ -366,6 +388,11 @@ defmodule JidoClaw do
     # `CompactionIdentity.resolve/3`.
     agent_id = Keyword.get(opts, :agent_id) || CompactionIdentity.main()
     subagent = Keyword.get(opts, :subagent, false)
+    # Strict boolean (see `register_child_correlation/1`): a present-nil
+    # `:sanitize_sensitive_context` opt must not reach the `allow_nil?: false`
+    # durable field or `register_failure/4`'s true/false clauses as a nil.
+    marked = Keyword.get(opts, :sanitize_sensitive_context) == true
+    expires_at = Keyword.get(opts, :expires_at)
 
     scope = %{
       session_id: session_uuid,
@@ -373,30 +400,51 @@ defmodule JidoClaw do
       workspace_id: workspace_uuid,
       user_id: user_id,
       agent_id: agent_id,
-      subagent: subagent
+      subagent: subagent,
+      sanitize_sensitive_context: marked
     }
 
-    case RequestCorrelation.register(%{
-           request_id: request_id,
-           session_id: session_uuid,
-           tenant_id: tenant_id,
-           workspace_id: workspace_uuid,
-           user_id: user_id,
-           agent_id: agent_id,
-           subagent: subagent
-         }) do
+    # Omit `:expires_at` unless supplied so the resource's TTL default fires;
+    # a composer wave passes a conservative ceiling (AR-2 Phase 2b C5).
+    attrs =
+      maybe_put(
+        %{
+          request_id: request_id,
+          session_id: session_uuid,
+          tenant_id: tenant_id,
+          workspace_id: workspace_uuid,
+          user_id: user_id,
+          agent_id: agent_id,
+          subagent: subagent,
+          sanitize_sensitive_context: marked
+        },
+        :expires_at,
+        expires_at
+      )
+
+    case RequestCorrelation.register(attrs) do
       {:ok, _} ->
         CorrelationCache.put(request_id, scope)
         :ok
 
       {:error, reason} ->
         Logger.warning("[chat] correlation registration failed: #{inspect(reason)}")
-        # Still cache locally so the in-process Recorder can resolve scope
-        # — Postgres write retry can come later.
-        CorrelationCache.put(request_id, scope)
-        :ok
+        register_failure(marked, request_id, scope, reason)
     end
   end
+
+  # Marked (AR-2 Phase 2b C4): a missing durable marker row silently undermines
+  # the Recorder/Audit/Trace sanitize guarantees, so abort — no cache-only
+  # fallback. Unmarked keeps the legacy cache-only `:ok` (Postgres retry later).
+  defp register_failure(true, _request_id, _scope, reason), do: {:error, reason}
+
+  defp register_failure(false, request_id, scope, _reason) do
+    CorrelationCache.put(request_id, scope)
+    :ok
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp handle_response({:ok, answer}, tenant_id, session_id, request_id) when is_binary(answer) do
     SessionWorker.add_message(tenant_id, session_id, :assistant, answer, request_id)

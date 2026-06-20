@@ -123,6 +123,7 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
         :user_id,
         :agent_id,
         :subagent,
+        :sanitize_sensitive_context,
         :expires_at,
         :run_id,
         :model,
@@ -201,6 +202,17 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
     # `true` when the dispatching agent is a spawned sub-agent / workflow
     # step. Stamped onto `messages.subagent`.
     attribute :subagent, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
+    end
+
+    # AR-2 Phase 2b: `true` for a composer subagent's turn whose derived
+    # output must be sanitized at every durable sink it reaches (Recorder,
+    # Audit, Trace resolve the marker by scope/request_id). Mirrors `subagent`
+    # — NOT NULL, default false. Threaded from the marked wave's reactor
+    # context (`ReactorRunner`'s `:sanitize_sensitive_context` opt).
+    attribute :sanitize_sensitive_context, :boolean do
       allow_nil?(false)
       public?(true)
       default(false)

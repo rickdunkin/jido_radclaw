@@ -7,39 +7,71 @@ defmodule JidoClaw.RouteComposer.ArtifactContext do
   `JidoClaw.Workflows.ContextBuilder` wires don't span waves. The composer
   instead serializes the artifacts each wave's stages name in their `input`
   (required ∪ optional, across producers) out of the **provenance-keyed** store
-  (`name → %{producer => value}`) into one markdown block.
+  (`name → %{producer => ref}`) into one markdown block.
+
+  Phase 2b: a **wave-produced** entry is an explicitly-tagged `{:ref, art_<hex>}`
+  (`JidoClaw.RouteComposer.Fold` tags every emission artifact value, P2),
+  **resolved + decrypted** via `ComposerArtifact.resolve_value/2` (tenant/actor
+  threaded from the composer state) before formatting — the **only** place a
+  decrypted artifact value re-enters live execution. A **seeded** entry (the
+  composer's in-memory seed store, e.g. the initial `request`) is an untagged
+  inline value, so it is used directly — the tag (not an `art_<hex>` regex
+  heuristic) is what tells the two apart, so a seed that merely looks like a ref
+  is never misread. A seed's durable exposure is via the subagent task,
+  sanitized by the Phase 2b marker (Theme B), not by ref-storage.
+
+  `build/4` returns `{:ok, text} | {:error, reason}`: a missing ref, corrupt
+  envelope, wrong-tenant ref, or decrypt failure is a **controlled wave
+  failure**, never a crash or a silently-omitted artifact (P1-2).
 
   Missing optionals are simply absent; a missing *required* input is the
   router's drop decision, not the formatter's. Each rendered value is truncated
-  to a per-value byte cap (elision marked) and the whole string to a total cap —
-  even for the spike, unbounded artifact text into `:extra_context` is a spend
-  and debuggability hazard. Names and producers are sorted so the string is
-  deterministic.
+  to a per-value byte cap (elision marked) and the whole string to a total cap.
+  Names and producers are sorted so the string is deterministic.
   """
 
+  alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.RouteComposer.Stage
 
   @per_value_cap 4_000
   @total_cap 16_000
   @elision "…[truncated]"
 
-  @type store :: %{optional(String.t()) => %{optional(String.t()) => term()}}
+  @type store :: %{optional(String.t()) => %{optional(String.t()) => {:ref, String.t()} | term()}}
 
   @doc """
-  Build the `:extra_context` string for `stages` from the provenance `store`.
+  Build the `:extra_context` string for `stages` from the provenance `store`,
+  resolving + decrypting each ref under `tenant`/`actor`.
 
   Collects every artifact named in the stages' `input` (required ∪ optional),
-  renders each present artifact's `producer → value` entries, and joins them.
-  Returns `""` when none of the wanted artifacts are present.
+  resolves each present artifact's `producer → ref` entries, renders them, and
+  joins them. Returns `{:ok, ""}` when none of the wanted artifacts are present,
+  `{:ok, text}` otherwise, or `{:error, reason}` if any ref fails to resolve.
   """
-  @spec build([Stage.t()], store()) :: String.t()
-  def build(stages, store) do
+  @spec build([Stage.t()], store(), String.t(), term()) ::
+          {:ok, String.t()} | {:error, term()}
+  def build(stages, store, tenant, actor) do
+    case resolve_sections(stages, store, tenant, actor) do
+      {:ok, sections} -> {:ok, cap(Enum.join(sections, "\n\n"), @total_cap)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resolve_sections(stages, store, tenant, actor) do
     stages
     |> wanted_names()
     |> Enum.sort()
-    |> Enum.flat_map(fn name -> section(name, Map.get(store, name)) end)
-    |> Enum.join("\n\n")
-    |> cap(@total_cap)
+    |> Enum.reduce_while({:ok, []}, fn name, {:ok, acc} ->
+      case section(name, Map.get(store, name), tenant, actor) do
+        {:ok, []} -> {:cont, {:ok, acc}}
+        {:ok, [section]} -> {:cont, {:ok, [section | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp wanted_names(stages) do
@@ -50,19 +82,44 @@ defmodule JidoClaw.RouteComposer.ArtifactContext do
     end)
   end
 
-  defp section(_name, nil), do: []
-  defp section(_name, producers) when map_size(producers) == 0, do: []
+  defp section(_name, nil, _tenant, _actor), do: {:ok, []}
+  defp section(_name, producers, _tenant, _actor) when map_size(producers) == 0, do: {:ok, []}
 
-  defp section(name, producers) do
-    entries =
-      producers
-      |> Enum.sort_by(fn {producer, _value} -> producer end)
-      |> Enum.map_join("\n", fn {producer, value} ->
-        "- **#{producer}**: #{cap(to_text(value), @per_value_cap)}"
-      end)
-
-    ["### #{name}\n#{entries}"]
+  defp section(name, producers, tenant, actor) do
+    case resolve_entries(producers, tenant, actor) do
+      {:ok, entries} -> {:ok, ["### #{name}\n#{Enum.join(entries, "\n")}"]}
+      {:error, _reason} = error -> error
+    end
   end
+
+  defp resolve_entries(producers, tenant, actor) do
+    producers
+    |> Enum.sort_by(fn {producer, _entry} -> producer end)
+    |> Enum.reduce_while({:ok, []}, fn {producer, entry}, {:ok, acc} ->
+      case resolve_entry(entry, tenant, actor) do
+        {:ok, value} ->
+          line = "- **#{producer}**: #{cap(to_text(value), @per_value_cap)}"
+          {:cont, {:ok, [line | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:artifact_resolve_failed, entry, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # A wave-produced entry is the explicitly-tagged `{:ref, ref}` (P2 — `Fold`
+  # tags every emission artifact value): resolve + decrypt. Any other term is an
+  # inline seed value (the composer's in-memory seed store, which never passes
+  # through `Fold`), used directly — so a seed that merely looks like `art_<hex>`
+  # is no longer misread as a ref and failed.
+  defp resolve_entry({:ref, ref}, tenant, actor) when is_binary(ref),
+    do: ComposerArtifact.resolve_value(ref, tenant: tenant, actor: actor)
+
+  defp resolve_entry(entry, _tenant, _actor), do: {:ok, entry}
 
   defp to_text(value) when is_binary(value), do: value
   defp to_text(value), do: inspect(value)

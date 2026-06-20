@@ -53,10 +53,17 @@ defmodule JidoClaw.Tools.SendToAgent do
           |> Map.put(:agent_template, entry.template)
 
         # Fallible setup (correlation registration touches Postgres) runs
-        # BEFORE the tracker gate, so a raise here leaves the entry untouched.
-        request_id = JidoClaw.register_child_correlation(child_tool_context)
+        # BEFORE the tracker gate, so a failure here leaves the entry untouched.
+        case JidoClaw.register_child_correlation(child_tool_context) do
+          {:ok, request_id} ->
+            dispatch(pid, params, template, entry.template, child_tool_context, request_id)
 
-        dispatch(pid, params, template, entry.template, child_tool_context, request_id)
+          # Marked registration failed (AR-2 Phase 2b C4) — the agent is
+          # pre-existing and still running, so just don't dispatch the turn
+          # (leave the running agent untouched), unlike the spawn path.
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}

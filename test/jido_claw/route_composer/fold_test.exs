@@ -18,17 +18,21 @@ defmodule JidoClaw.RouteComposer.FoldTest do
     next = Fold.fold(state(), [emission])
 
     assert MapSet.member?(next.live, "plan-ready")
-    assert next.artifacts == %{"plan" => %{"planner" => "P"}}
+    # P2: every folded emission artifact value is tagged `{:ref, ref}`.
+    assert next.artifacts == %{"plan" => %{"planner" => {:ref, "P"}}}
     assert MapSet.member?(next.ran, "planner")
   end
 
   test "co-producers of one artifact name coexist (no clobber)" do
-    e1 = %StageEmission{stage: "quality-reviewer", artifacts: %{"findings" => []}}
-    e2 = %StageEmission{stage: "security-reviewer", artifacts: %{"findings" => []}}
+    e1 = %StageEmission{stage: "quality-reviewer", artifacts: %{"findings" => "Q"}}
+    e2 = %StageEmission{stage: "security-reviewer", artifacts: %{"findings" => "S"}}
     next = Fold.fold(state(), [e1, e2])
 
     assert next.artifacts == %{
-             "findings" => %{"quality-reviewer" => [], "security-reviewer" => []}
+             "findings" => %{
+               "quality-reviewer" => {:ref, "Q"},
+               "security-reviewer" => {:ref, "S"}
+             }
            }
   end
 

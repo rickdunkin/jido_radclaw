@@ -8,10 +8,13 @@ defmodule JidoClaw.Orchestration.RunExecution do
   including `Replay`) and `GateResume.run_reactor` (operator approve and boot
   recovery) — use it, so every live run is killable.
 
-  The caller blocks on `Task.yield(task, :infinity)`, so the public API stays
-  synchronous and never raises: a normal return surfaces as
-  `{:reactor, result}`, a killed/crashed executor as `{:exit, reason}`, and a
-  registration conflict as `{:duplicate, pid}`.
+  The caller blocks on `Task.yield(task, yield_timeout)` (default `:infinity`),
+  so the public API stays synchronous and never raises: a normal return
+  surfaces as `{:reactor, result}`, a killed/crashed executor as
+  `{:exit, reason}`, and a registration conflict as `{:duplicate, pid}`. A
+  bounded `:yield_timeout` (AR-2 Phase 2b, per-wave) that elapses kills the
+  executor (`Task.shutdown/2`) and surfaces `{:exit, :timeout}` — unless the
+  task completes in the yield→kill gap, in which case the real result wins.
 
   ## Registration
 
@@ -91,7 +94,11 @@ defmodule JidoClaw.Orchestration.RunExecution do
   @spec run_killable(Reactor.t() | module(), map(), map(), keyword()) ::
           {:reactor, term()} | {:exit, term()} | {:duplicate, pid()}
   def run_killable(runnable, inputs, context, opts) do
-    {tenant_id, reactor_opts} = Keyword.pop(opts, :tenant_id)
+    {tenant_id, opts} = Keyword.pop(opts, :tenant_id)
+    # `:yield_timeout` is RunExecution-local (the per-wave kill deadline, AR-2
+    # Phase 2b C3) — popped here so it never reaches Reactor.run (struct!-strict
+    # on opt keys). Default `:infinity` ⇒ byte-identical to every prior caller.
+    {yield_timeout, reactor_opts} = Keyword.pop(opts, :yield_timeout, :infinity)
     run_id = Keyword.fetch!(reactor_opts, :run_id)
 
     task =
@@ -107,13 +114,19 @@ defmodule JidoClaw.Orchestration.RunExecution do
         end
       end)
 
-    # `:infinity` — the public API stays synchronous; nil (timeout) can't
-    # happen. `$callers` propagation from async_nolink keeps Ecto sandbox
-    # allowances working in tests.
-    case Task.yield(task, :infinity) do
+    # Bounded yield + shutdown (`yield_timeout: :infinity` ⇒ `Task.yield` never
+    # returns nil, so `Task.shutdown` is never reached — unchanged for every
+    # existing caller). `$callers` propagation from async_nolink keeps Ecto
+    # sandbox allowances working in tests.
+    case Task.yield(task, yield_timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, {@registration_conflict, pid}} -> {:duplicate, pid}
+      # Completed — via `yield` OR the shutdown race (the task finished between
+      # the yield deadline and the kill). A wave whose child run actually
+      # completed must fold as completed, never as a false timeout (P1-3).
       {:ok, result} -> {:reactor, result}
       {:exit, reason} -> {:exit, reason}
+      # Genuinely killed at the deadline — `Task.shutdown` returned nil.
+      nil -> {:exit, :timeout}
     end
   end
 

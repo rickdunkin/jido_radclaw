@@ -108,6 +108,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Security.SensitiveScrub
   alias JidoClaw.Trace
   alias JidoClaw.Workflows.StepResult
 
@@ -408,11 +409,42 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   end
 
   defp append(run, kind, payload, context) do
-    WorkflowLog.append(run, kind, payload,
+    WorkflowLog.append(run, kind, sanitize_payload(kind, payload, context),
       tenant: run.tenant_id,
       actor: context_actor(context, run)
     )
   end
+
+  # AR-2 Phase 2b (P1 — the single chokepoint: `emit/3`, `complete/2`, and
+  # `error/2` all funnel through `append/4`). When the wave is marked, replace
+  # the content-bearing payload field with a TYPE-PRESERVING placeholder BEFORE
+  # the append — `Allocate` stashes and projects the raw payload into
+  # `WorkflowStep.output` / `WorkflowStep.error` / `WorkflowRun.result` /
+  # `WorkflowRun.error`, so a projection-time scrub would be too late. Keyed by
+  # kind + destination column type: the two `:map` columns take `redacted_map/0`
+  # (a string would break the cast), the two `:string` error columns
+  # (`step_failed` → `WorkflowStep.error`, `run_failed` → `WorkflowRun.error`)
+  # take `redacted_text/0`. `Map.replace/3` no-ops when the key is absent (e.g. a
+  # non-JSON-safe result was already dropped to `%{}`), and the catch-all leaves
+  # every other kind untouched.
+  defp sanitize_payload(kind, payload, %{sanitize_sensitive_context: true}),
+    do: scrub_payload(kind, payload)
+
+  defp sanitize_payload(_kind, payload, _context), do: payload
+
+  defp scrub_payload(:run_completed, payload),
+    do: Map.replace(payload, :result, SensitiveScrub.redacted_map())
+
+  defp scrub_payload(:step_completed, payload),
+    do: Map.replace(payload, :output, SensitiveScrub.redacted_map())
+
+  # `:run_failed` and `:step_failed` both carry a `Reason.format/1` string in
+  # `:error` — the step is the subagent stage (the highest-value leak), so it is
+  # scrubbed at the same chokepoint.
+  defp scrub_payload(kind, payload) when kind in [:run_failed, :step_failed],
+    do: Map.replace(payload, :error, SensitiveScrub.redacted_text())
+
+  defp scrub_payload(_kind, payload), do: payload
 
   defp run_from(%{workflow_run: %WorkflowRun{} = run}), do: {:ok, run}
   defp run_from(_context), do: :error

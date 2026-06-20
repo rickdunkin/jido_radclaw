@@ -14,6 +14,8 @@ defmodule JidoClaw.ToolContextShapeTest do
     :agent_id,
     :agent_template,
     :subagent,
+    :sanitize_sensitive_context,
+    :request_correlation_expires_at,
     :actor
   ]
 

@@ -110,6 +110,7 @@ defmodule JidoClaw.Conversations.Recorder do
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.MapKeys
+  alias JidoClaw.Security.SensitiveScrub
 
   @topics [
     "ai.tool.started",
@@ -501,17 +502,20 @@ defmodule JidoClaw.Conversations.Recorder do
 
     with {:ok, scope} <- resolve_scope(request_id) do
       envelope = ToolTranscript.envelope(arguments)
-      content = ToolTranscript.summarize_args(tool_name, arguments)
+
+      {content, metadata} =
+        scrub_message(
+          scope,
+          ToolTranscript.summarize_args(tool_name, arguments),
+          %{tool_name: tool_name, arguments: envelope}
+        )
 
       base_attrs = %{
         session_id: scope.session_id,
         request_id: request_id,
         role: :tool_call,
         content: content,
-        metadata: %{
-          tool_name: tool_name,
-          arguments: envelope
-        },
+        metadata: metadata,
         tool_call_id: tool_call_id
       }
 
@@ -547,17 +551,19 @@ defmodule JidoClaw.Conversations.Recorder do
           nil
         end
 
-      content = ToolTranscript.result_summary(tool_name, raw_result)
+      {content, metadata} =
+        scrub_message(
+          scope,
+          ToolTranscript.result_summary(tool_name, raw_result),
+          %{tool_name: tool_name, result: envelope}
+        )
 
       base_attrs = %{
         session_id: scope.session_id,
         request_id: request_id,
         role: :tool_result,
         content: content,
-        metadata: %{
-          tool_name: tool_name,
-          result: envelope
-        },
+        metadata: metadata,
         tool_call_id: tool_call_id,
         parent_message_id: parent
       }
@@ -585,12 +591,14 @@ defmodule JidoClaw.Conversations.Recorder do
 
       true ->
         with {:ok, scope} <- resolve_scope(request_id) do
+          {content, metadata} = scrub_message(scope, thinking, %{})
+
           base_attrs = %{
             session_id: scope.session_id,
             request_id: request_id,
             role: :reasoning,
-            content: thinking,
-            metadata: %{}
+            content: content,
+            metadata: metadata
           }
 
           attrs = Map.merge(base_attrs, identity_attrs(scope))
@@ -760,6 +768,16 @@ defmodule JidoClaw.Conversations.Recorder do
     |> maybe_put(:subagent, Map.get(scope, :subagent))
   end
 
+  # AR-2 Phase 2b sink (iv): a marked composer subagent's `messages.content`
+  # (string) + `messages.metadata` (map) are whole-write-sanitized to
+  # type-preserving placeholders. Never drops the row (P2). Unmarked scopes
+  # pass through unchanged.
+  defp scrub_message(scope, content, metadata) do
+    if Map.get(scope, :sanitize_sensitive_context, false),
+      do: {SensitiveScrub.redacted_text(), SensitiveScrub.redacted_map()},
+      else: {content, metadata}
+  end
+
   defp reply_waiters(state, request_id) do
     {pending, waiters} = Map.pop(state.waiters, request_id, [])
     Enum.each(pending, &GenServer.reply(&1, :ok))
@@ -808,7 +826,10 @@ defmodule JidoClaw.Conversations.Recorder do
               workspace_id: row.workspace_id,
               user_id: row.user_id,
               agent_id: row.agent_id,
-              subagent: row.subagent
+              subagent: row.subagent,
+              # AR-2 Phase 2b: the cache-miss rehydrate must re-carry the marker
+              # or the sink gate silently sees `false` after an eviction.
+              sanitize_sensitive_context: row.sanitize_sensitive_context
             }
 
             Cache.put(request_id, scope)

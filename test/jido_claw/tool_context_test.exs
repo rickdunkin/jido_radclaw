@@ -64,6 +64,30 @@ defmodule JidoClaw.ToolContextTest do
     end
   end
 
+  describe "AR-2 Phase 2b — sensitive marker is canonical (B1)" do
+    test "build/1 keeps :sanitize_sensitive_context as a canonical key" do
+      ctx = ToolContext.build(%{tenant_id: "t", sanitize_sensitive_context: true})
+      assert ctx[:sanitize_sensitive_context] == true
+      assert Map.has_key?(ctx, :sanitize_sensitive_context)
+    end
+
+    test "child/2 propagates the marker to nested children (not force-overwritten)" do
+      parent =
+        ToolContext.build(%{tenant_id: "t", project_dir: "/d", sanitize_sensitive_context: true})
+
+      child = ToolContext.child(parent, "child-tag")
+      assert child[:sanitize_sensitive_context] == true
+    end
+
+    test "the marker is NOT policy-strippable (survives forward_context :none)" do
+      parent =
+        ToolContext.build(%{tenant_id: "t", project_dir: "/d", sanitize_sensitive_context: true})
+
+      child = ToolContext.child(parent, "child-tag", :none)
+      assert child[:sanitize_sensitive_context] == true
+    end
+  end
+
   describe "ensure_nested/1" do
     test "respects an existing non-empty :tool_context unchanged" do
       existing = %{tenant_id: "lifted", session_uuid: "s"}

@@ -29,6 +29,16 @@ defmodule JidoClaw.ToolContext do
                            (REPL/chat main + handoff workers). Drives the
                            durable `messages.subagent` flag so cold readers
                            can exclude sub-agent rows from the primary view.
+    * `:sanitize_sensitive_context` — boolean (AR-2 Phase 2b). `true` for a
+                           composer subagent's turn whose derived durable
+                           output must be sanitized at every sink. Canonical
+                           (always forwarded — never policy-strippable) so it
+                           propagates to nested `spawn_agent`/`send_to_agent`
+                           children automatically.
+    * `:request_correlation_expires_at` — `DateTime` | nil (AR-2 Phase 2b).
+                           The conservative `RequestCorrelation` TTL ceiling a
+                           composer wave seeds so an orphaned late-writing
+                           subagent's marker row outlives realistic late writes.
     * `:actor`          — Ash authorization actor map; built by
                            `JidoClaw.Authorization.Actor`. Nil for paths
                            that haven't resolved an actor (system / public)
@@ -50,6 +60,8 @@ defmodule JidoClaw.ToolContext do
     :agent_id,
     :agent_template,
     :subagent,
+    :sanitize_sensitive_context,
+    :request_correlation_expires_at,
     :actor
   ]
 

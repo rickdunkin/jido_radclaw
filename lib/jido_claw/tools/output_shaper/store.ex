@@ -116,7 +116,7 @@ defmodule JidoClaw.Tools.OutputShaper.Store do
     insert_attrs =
       attrs
       |> Map.put(:command, redact_command(raw_command))
-      |> Map.put(:command_fingerprint, fingerprint(raw_command))
+      |> Map.put(:command_fingerprint, command_fingerprint(raw_command, tool_context))
       |> Map.put(:session_id, Map.get(tool_context, :session_uuid))
       |> Map.put(:ref, generate_ref())
 
@@ -153,6 +153,13 @@ defmodule JidoClaw.Tools.OutputShaper.Store do
 
   defp redact_command(nil), do: nil
   defp redact_command(command) when is_binary(command), do: Patterns.redact(command)
+
+  # AR-2 Phase 2b (P3-2): a marked composer command stores NO fingerprint — no
+  # equality oracle, no raw-derived hash at rest (the delta/dedup feature is
+  # traded for zero leaked signal). A nil fingerprint already short-circuits
+  # `delta_line` and `latest_for_fingerprint`.
+  defp command_fingerprint(_raw_command, %{sanitize_sensitive_context: true}), do: nil
+  defp command_fingerprint(raw_command, _tool_context), do: fingerprint(raw_command)
 
   defp generate_ref do
     "out_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)

@@ -1,6 +1,7 @@
 defmodule JidoClaw.Trace.CollectorTest do
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Trace
   alias JidoClaw.Trace.Collector
   alias JidoClaw.Trace.Policy
@@ -305,5 +306,136 @@ defmodule JidoClaw.Trace.CollectorTest do
       _pid ->
         :ok
     end
+  end
+
+  describe "AR-2 Phase 2b — sensitive digest (sink vi)" do
+    test "a marked request_id redacts EVERY metadata-derived column (P1a)" do
+      request_id = "trace-marked-#{System.unique_integer([:positive])}"
+      secret = "ZZTRACESECRETZZ-#{System.unique_integer([:positive])}"
+      mark(request_id, true)
+
+      # Plant the secret in each metadata-derived sink: agent_id (→ name),
+      # trace_id, span_id, parent_span_id, plus a phase + free metadata/measurements.
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{secret_measure: 99},
+        %{
+          agent_id: secret,
+          request_id: request_id,
+          trace_id: secret,
+          span_id: secret,
+          parent_span_id: secret,
+          phase: :reviewing,
+          secret_field: secret
+        }
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "ignored"}, request_id)
+      [event | _] = trace.events
+
+      # The trusted correlation key survives; every metadata-derived column is
+      # collapsed to it, redacted, or dropped.
+      assert event.request_id == request_id
+      assert event.name == "[composer-sensitive:redacted]"
+      assert event.phase == nil
+      assert event.trace_id == request_id
+      assert event.run_id == request_id
+      assert event.span_id == nil
+      assert event.parent_span_id == nil
+      assert event.metadata == %{"redacted" => true}
+      assert event.measurements == %{"redacted" => true}
+      refute inspect(event) =~ secret
+    end
+
+    test "a marked span DROPS span_id/parent_span_id even when hex/UUID-shaped (no shape-gate leak)" do
+      request_id = "trace-marked-hex-#{System.unique_integer([:positive])}"
+      # An all-hex value that would have passed a `[0-9a-f]{8,64}` shape gate —
+      # a sensitive value can be hex (a hash, a hex token). Both span ids are
+      # metadata-derived with no trusted provenance, so both are dropped.
+      hex_secret = "0123456789abcdef0123456789abcdef"
+      mark(request_id, true)
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{
+          agent_id: "marked-agent",
+          request_id: request_id,
+          span_id: hex_secret,
+          parent_span_id: Ash.UUID.generate()
+        }
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "ignored"}, request_id)
+      [event | _] = trace.events
+      # No metadata-derived span id survives on a marked span, regardless of shape.
+      assert event.span_id == nil
+      assert event.parent_span_id == nil
+      refute inspect(event) =~ hex_secret
+    end
+
+    test "an unmarked request_id passes name + trace_id + metadata through (control)" do
+      request_id = "trace-unmarked-#{System.unique_integer([:positive])}"
+      secret = "ZZTRACEKEEPZZ-#{System.unique_integer([:positive])}"
+      mark(request_id, false)
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{
+          agent_id: secret,
+          request_id: request_id,
+          trace_id: secret,
+          span_id: secret,
+          kept_field: secret
+        }
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "ignored"}, request_id)
+      [event | _] = trace.events
+      refute event.metadata == %{"redacted" => true}
+      assert event.name == secret
+      assert event.trace_id == secret
+      # Unmarked keeps span_id — the drop is :marked-only.
+      assert event.span_id == secret
+      assert inspect(event.metadata) =~ secret
+    end
+
+    test "an unknown request_id (no correlation row) passes through — fail-open" do
+      request_id = "trace-unknown-#{System.unique_integer([:positive])}"
+      secret = "ZZTRACEUNKNOWNZZ-#{System.unique_integer([:positive])}"
+      # No cache entry, no durable row → :unknown → NOT digested.
+
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{},
+        %{agent_id: secret, request_id: request_id, trace_id: secret, kept_field: secret}
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "ignored"}, request_id)
+      [event | _] = trace.events
+      refute event.metadata == %{"redacted" => true}
+      assert event.name == secret
+      assert event.trace_id == secret
+      assert inspect(event.metadata) =~ secret
+    end
+  end
+
+  defp mark(request_id, marked?) do
+    Cache.put(request_id, %{
+      session_id: nil,
+      tenant_id: "trace-tenant",
+      workspace_id: nil,
+      user_id: nil,
+      sanitize_sensitive_context: marked?
+    })
   end
 end

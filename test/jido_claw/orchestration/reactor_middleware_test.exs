@@ -96,6 +96,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Orchestration.WorkflowStep
   alias Reactor.Argument
   alias Reactor.Builder
 
@@ -415,6 +416,39 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
 
       assert Enum.filter(events, &(&1.seq > cancelled_seq and &1.payload["step"] == ":notify")) ==
                []
+    end
+  end
+
+  describe "AR-2 Phase 2b — marked step_failed scrub (P1b)" do
+    test "a marked run's step_failed redacts the durable WorkflowStep.error", ctx do
+      run = create_run("mw-marked-stepfail", ctx)
+      context = Map.put(context(run, ctx), :sanitize_sensitive_context, true)
+
+      assert {:error, _} =
+               Reactor.run(build(ErrStep), %{}, context, async?: false, run_id: run.id)
+
+      # The step_failed event payload is scrubbed at the append chokepoint...
+      step_failed = Enum.find(events_for(run, ctx), &(&1.kind == :step_failed))
+      assert step_failed.payload["error"] == "[composer-sensitive:redacted]"
+
+      # ...and the projected durable WorkflowStep.error carries the placeholder,
+      # never the real failure reason.
+      %{tenant: tenant, actor: actor} = ctx
+      {:ok, steps} = WorkflowStep.for_run(run.id, tenant: tenant, actor: actor)
+      failed_step = Enum.find(steps, & &1.error)
+      assert failed_step.error == "[composer-sensitive:redacted]"
+      refute failed_step.error =~ "boom"
+    end
+
+    test "an unmarked run's step_failed keeps the real reason (control)", ctx do
+      run = create_run("mw-unmarked-stepfail", ctx)
+
+      assert {:error, _} =
+               Reactor.run(build(ErrStep), %{}, context(run, ctx), async?: false, run_id: run.id)
+
+      step_failed = Enum.find(events_for(run, ctx), &(&1.kind == :step_failed))
+      refute step_failed.payload["error"] == "[composer-sensitive:redacted]"
+      assert step_failed.payload["error"] =~ "boom"
     end
   end
 

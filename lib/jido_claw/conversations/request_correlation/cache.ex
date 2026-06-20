@@ -31,6 +31,10 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
         # / messages.subagent without a DB round-trip.
         agent_id: <string> | nil,
         subagent: <boolean>,
+        # AR-2 Phase 2b: `true` for a composer subagent's marked turn, mirrored
+        # from the row so the Recorder/Audit sink gates resolve it without a DB
+        # round-trip.
+        sanitize_sensitive_context: <boolean>,
         # Optional telemetry merged in by the Recorder when
         # `ai.llm.response` / `ai.request.completed` lands.
         run_id: <string> | nil,

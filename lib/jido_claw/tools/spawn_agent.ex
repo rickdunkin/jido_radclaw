@@ -104,28 +104,41 @@ defmodule JidoClaw.Tools.SpawnAgent do
     child_tool_context =
       Map.put(base_tool_context, :swarm_depth, swarm_depth(context) + 1)
 
-    request_id = JidoClaw.register_child_correlation(child_tool_context)
+    case JidoClaw.register_child_correlation(child_tool_context) do
+      {:ok, request_id} ->
+        tracker_opts = Keyword.put(scope_opts, :request_id, request_id)
 
-    tracker_opts = Keyword.put(scope_opts, :request_id, request_id)
+        case agent_tracker().register(tag, subagent_pid, template_name, task, tracker_opts) do
+          :ok ->
+            start_orchestration(
+              subagent_pid,
+              template,
+              template_name,
+              task,
+              tag,
+              child_tool_context,
+              request_id
+            )
 
-    case agent_tracker().register(tag, subagent_pid, template_name, task, tracker_opts) do
-      :ok ->
-        start_orchestration(
-          subagent_pid,
-          template,
-          template_name,
-          task,
-          tag,
-          child_tool_context,
-          request_id
-        )
+          {:error, :agent_id_taken} ->
+            # The sub-agent started but the tracker never adopted it — reclaim
+            # it, mirroring the start_orchestration failure branch: an untracked
+            # agent is invisible to the TTL sweep and would leak alive forever.
+            _ = jido_runtime().stop_agent(subagent_pid)
+            {:error, agent_id_taken_error(tag)}
+        end
 
-      {:error, :agent_id_taken} ->
-        # The sub-agent started but the tracker never adopted it — reclaim it,
-        # mirroring the start_orchestration failure branch: an untracked agent
-        # is invisible to the TTL sweep and would leak alive forever.
+      # Marked registration failed (AR-2 Phase 2b C4) — stop the freshly-spawned
+      # worker (it has no durable marker row) rather than orchestrate an
+      # un-sanitized turn. Same reclaim as the `:agent_id_taken` branch.
+      {:error, reason} ->
         _ = jido_runtime().stop_agent(subagent_pid)
-        {:error, agent_id_taken_error(tag)}
+
+        {:error,
+         Error.execution_error("Failed to register agent correlation.",
+           phase: :spawn,
+           details: %{reason: inspect(reason), template: template_name}
+         )}
     end
   end
 

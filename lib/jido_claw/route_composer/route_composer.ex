@@ -31,9 +31,12 @@ defmodule JidoClaw.RouteComposer do
   ## State (in-memory)
 
   `catalog`, `live` (signal topics), `artifacts` (the provenance store `name →
-  %{producer => value}`), `ran`, `premises`, `prev_route`, `wave_index`, the
+  %{producer => ref}` — Phase 2b: opaque `ComposerArtifact` refs, the values
+  encrypted at rest and resolved only at the wave boundary), `ran`, `premises`,
+  `prev_route`, `wave_index`, the
   `parent_run_id`, plus the run identity (`tenant`, `actor`, `context`) and
-  bounds (`max_waves`, `deadline`). `available` is **derived** from `artifacts`
+  bounds (`max_waves`, the durable wall-clock `deadline_at_ms`, `wave_timeout_ms`).
+  `available` is **derived** from `artifacts`
   each tick, never stored.
 
   ## Driving / notification
@@ -53,6 +56,16 @@ defmodule JidoClaw.RouteComposer do
   inside `ReactorRunner.run/3` — acceptable for a single-run spike; Phase 4 moves
   wave execution to a `Task` + `handle_info` so the GenServer stays live across a
   gate park.
+
+  ## Sensitive artifacts (Phase 2b)
+
+  Artifact values no longer live inline anywhere durable: each wave's values are
+  AshCloak-encrypted in `JidoClaw.Orchestration.ComposerArtifact` and every other
+  surface carries only an opaque `art_<hex>` ref (resolved + decrypted solely at
+  the wave boundary by `ArtifactContext`). A run launched with
+  `sanitize_sensitive_context: true` (which then REQUIRES a bounded
+  `:deadline_ms`, C2) marks every wave, so the subagent's derived durable output
+  is sanitized at all six sinks — real `diff`/`approved-plan` values may now flow.
 
   ## Scope forks (Phase 1)
 
@@ -78,10 +91,20 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.RouteComposer.WaveBuilder
+  alias JidoClaw.Security.SensitiveScrub
 
   @default_max_waves 20
   @default_timeout_ms 60_000
   @default_run_name "route_composer"
+
+  # Per-wave wall-clock kill deadline (AR-2 Phase 2b C3) — a composer wave that
+  # runs longer than this is killed and the child wave fails. ~5 min default.
+  @default_wave_timeout_ms 300_000
+
+  # Conservative ceiling for an orphaned subagent's own lifetime (its turn /
+  # LLM / tool timeouts), added on top of the run deadline + one wave timeout to
+  # size the marker-row TTL (C5). A fixed constant, NOT T_wave. ~10 min.
+  @orphan_drain_ms 600_000
 
   @type terminal ::
           :converged | :not_converged | :deadlock | :budget_exhausted | :failed
@@ -118,8 +141,11 @@ defmodule JidoClaw.RouteComposer do
   Required opts: `:catalog`, `:tenant`, `:actor`, `:notify`, `:ref`,
   `:parent_run_id`. Optional: `:live` / `:artifacts` / `:premises` (seed state),
   `:context` (the scope map merged into each wave's Reactor context),
-  `:max_waves` (default `#{@default_max_waves}`), `:deadline_ms` (wall-clock
-  budget from start). The composer ticks immediately, so the parent run MUST
+  `:max_waves` (default `#{@default_max_waves}`), `:deadline_at_ms` (the durable
+  wall-clock budget from the parent config, threaded by `start_composer/2` — C1),
+  `:sanitize_sensitive_context` (AR-2 Phase 2b marker), `:wave_timeout_ms`
+  (per-wave kill deadline, default `#{@default_wave_timeout_ms}`). The composer
+  ticks immediately, so the parent run MUST
   already be committed (`create_parent_run/1`) before this is called — a wave
   could otherwise fire against an uncommitted parent. Used by 2c's supervised
   lifecycle; `run_sync/1` uses the unlinked `start_composer/2` instead.
@@ -147,25 +173,60 @@ defmodule JidoClaw.RouteComposer do
     tenant = Keyword.fetch!(opts, :tenant)
     actor = Keyword.fetch!(opts, :actor)
     name = Keyword.get(opts, :name, @default_run_name)
+    marked = Keyword.get(opts, :sanitize_sensitive_context, false)
+    deadline_ms = Keyword.get(opts, :deadline_ms)
 
-    genesis =
-      Ash.transact([WorkflowRun, WorkflowEvent], fn ->
-        with {:ok, parent} <-
-               WorkflowRun.create(%{name: name, workflow_type: "composer"},
-                 tenant: tenant,
-                 actor: actor
-               ),
-             {:ok, _event} <-
-               WorkflowLog.append(parent, :run_started, %{}, tenant: tenant, actor: actor) do
-          parent
-        end
-      end)
+    with :ok <- validate_sensitive_deadline(marked, deadline_ms) do
+      # The SOLE wall-clock read for this run (C1, P2-1): a durable
+      # `config["deadline_at_ms"]` (unix-ms integer, JSONB-safe) the loop's
+      # `past_deadline?` and 2d recovery both read — never a monotonic recompute.
+      # Marked runs also stamp the durable `sanitize_sensitive_context` flag (P1b)
+      # so `append_parent_terminal/5` can scrub a marked failure reason from a
+      # reloaded parent (the live GenServer marker never reaches that write).
+      config = parent_config(deadline_ms, marked)
 
-    case genesis do
-      {:ok, parent} -> reload_running_parent(parent, tenant, actor)
-      {:error, reason} -> {:error, {:start_failed, reason}}
+      genesis =
+        Ash.transact([WorkflowRun, WorkflowEvent], fn ->
+          with {:ok, parent} <-
+                 WorkflowRun.create(%{name: name, workflow_type: "composer", config: config},
+                   tenant: tenant,
+                   actor: actor
+                 ),
+               {:ok, _event} <-
+                 WorkflowLog.append(parent, :run_started, %{}, tenant: tenant, actor: actor) do
+            parent
+          end
+        end)
+
+      case genesis do
+        {:ok, parent} -> reload_running_parent(parent, tenant, actor)
+        {:error, reason} -> {:error, {:start_failed, reason}}
+      end
     end
   end
+
+  # A marked (sensitive) composer run MUST carry a bounded `:deadline_ms` (C2) —
+  # the retention ceiling's source of truth — else it is rejected at launch.
+  defp validate_sensitive_deadline(true, ms) when is_integer(ms) and ms > 0, do: :ok
+
+  defp validate_sensitive_deadline(true, _ms),
+    do: {:error, {:start_failed, :deadline_required_for_sensitive_run}}
+
+  defp validate_sensitive_deadline(false, _ms), do: :ok
+
+  # `%{"deadline_at_ms" => unix_ms}` when a bounded deadline is set (else absent;
+  # one `System.os_time(:millisecond)` read), plus `"sanitize_sensitive_context"
+  # => true` for a marked run (P1b) — a boolean-in-JSONB that round-trips
+  # cleanly. Both keys are read back from the reloaded parent.
+  defp parent_config(ms, marked), do: maybe_mark(deadline_config(ms), marked)
+
+  defp deadline_config(ms) when is_integer(ms) and ms > 0,
+    do: %{"deadline_at_ms" => System.os_time(:millisecond) + ms}
+
+  defp deadline_config(_ms), do: %{}
+
+  defp maybe_mark(config, true), do: Map.put(config, "sanitize_sensitive_context", true)
+  defp maybe_mark(config, false), do: config
 
   @doc """
   Start the (unlinked) composer GenServer for `parent`, threading
@@ -177,7 +238,13 @@ defmodule JidoClaw.RouteComposer do
   @spec start_composer(keyword(), WorkflowRun.t()) ::
           {:ok, pid()} | {:error, {:start_failed, term()}}
   def start_composer(opts, %WorkflowRun{} = parent) do
-    start_opts = Keyword.put(opts, :parent_run_id, parent.id)
+    # Thread the STORED durable deadline (C1, P2-1) from the reloaded :running
+    # parent so `init/1` reads it back — no second wall-clock read, no monotonic
+    # recompute. `nil` when the run is unbounded.
+    start_opts =
+      opts
+      |> Keyword.put(:parent_run_id, parent.id)
+      |> Keyword.put(:deadline_at_ms, parent.config["deadline_at_ms"])
 
     case GenServer.start(__MODULE__, start_opts) do
       {:ok, pid} ->
@@ -296,6 +363,12 @@ defmodule JidoClaw.RouteComposer do
 
   @impl GenServer
   def init(opts) do
+    # The durable wall-clock deadline read STRAIGHT from the parent config
+    # (C1, P2-1) — never a monotonic recompute. nil ⇒ unbounded.
+    deadline_at_ms = Keyword.get(opts, :deadline_at_ms)
+    marked = Keyword.get(opts, :sanitize_sensitive_context, false)
+    wave_timeout_ms = Keyword.get(opts, :wave_timeout_ms, @default_wave_timeout_ms)
+
     state = %{
       catalog: Keyword.fetch!(opts, :catalog),
       live: MapSet.new(Keyword.get(opts, :live, [])),
@@ -307,9 +380,17 @@ defmodule JidoClaw.RouteComposer do
       parent_run_id: Keyword.fetch!(opts, :parent_run_id),
       tenant: Keyword.fetch!(opts, :tenant),
       actor: Keyword.fetch!(opts, :actor),
-      context: Keyword.get(opts, :context, %{}),
+      context:
+        seed_wave_context(
+          Keyword.get(opts, :context, %{}),
+          marked,
+          deadline_at_ms,
+          wave_timeout_ms
+        ),
       max_waves: Keyword.get(opts, :max_waves, @default_max_waves),
-      deadline: deadline_at(Keyword.get(opts, :deadline_ms)),
+      deadline_at_ms: deadline_at_ms,
+      sanitize_sensitive_context: marked,
+      wave_timeout_ms: wave_timeout_ms,
       notify: Keyword.fetch!(opts, :notify),
       ref: Keyword.fetch!(opts, :ref),
       history: [],
@@ -320,6 +401,25 @@ defmodule JidoClaw.RouteComposer do
 
     {:ok, state, {:continue, :tick}}
   end
+
+  # Seed the per-wave reactor context with the conservative `RequestCorrelation`
+  # TTL ceiling (C5): a marked run (which C2 guarantees has a bounded deadline)
+  # needs an orphaned late-writing subagent's marker row to outlive realistic
+  # late writes. `deadline_at_ms + T_wave + orphan_drain`, converted to a
+  # `DateTime` (the field type is `:utc_datetime_usec`). Unmarked runs keep the
+  # resource's default TTL.
+  defp seed_wave_context(context, true, deadline_at_ms, wave_timeout_ms)
+       when is_integer(deadline_at_ms) do
+    expires_at_ms = deadline_at_ms + wave_timeout_ms + @orphan_drain_ms
+
+    Map.put(
+      context,
+      :request_correlation_expires_at,
+      DateTime.from_unix!(expires_at_ms, :millisecond)
+    )
+  end
+
+  defp seed_wave_context(context, _marked, _deadline_at_ms, _wave_timeout_ms), do: context
 
   @impl GenServer
   def handle_continue(:tick, state) do
@@ -344,13 +444,26 @@ defmodule JidoClaw.RouteComposer do
 
     case WaveBuilder.build_wave(stages, wave_index: state.wave_index) do
       {:ok, reactor} ->
-        extra_context = ArtifactContext.build(stages, state.artifacts)
+        run_built_wave(reactor, stages, dispatch, display, state)
 
+      # build_wave failure: no reactor ran, so there is no run to record.
+      {:error, reason} ->
+        finish_failed(reason, nil, dispatch, display, state)
+    end
+  end
+
+  # Resolve + decrypt the wanted artifacts into `:extra_context` (Phase 2b: the
+  # only place a decrypted value re-enters live execution), branching on
+  # `ArtifactContext.build/4`'s `{:ok, _} | {:error, _}`. A resolve/decrypt
+  # failure terminates the wave cleanly via `finish_failed` (no reactor ran, so
+  # no child run to record — the same shape as the `build_wave` failure clause).
+  defp run_built_wave(reactor, stages, dispatch, display, state) do
+    case ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor) do
+      {:ok, extra_context} ->
         reactor
         |> run_reactor(extra_context, state)
         |> handle_wave_result(dispatch, display, state)
 
-      # build_wave failure: no reactor ran, so there is no run to record.
       {:error, reason} ->
         finish_failed(reason, nil, dispatch, display, state)
     end
@@ -420,7 +533,18 @@ defmodule JidoClaw.RouteComposer do
       name: "route_composer:wave_#{state.wave_index}",
       context: state.context,
       parent_run_id: state.parent_run_id,
-      idempotency_key: "composer:#{state.parent_run_id}:#{state.wave_index}"
+      idempotency_key: "composer:#{state.parent_run_id}:#{state.wave_index}",
+      # A composer wave carries no definition_hash and isn't standalone-
+      # replayable (the parent log is the replay unit), and its inputs include
+      # the decrypted `:extra_context` — so omit the at-rest replay_inputs copy
+      # entirely (A3/A4, P1). NOT `replay_inputs: nil` — AshCloak would encrypt
+      # a present nil into ciphertext-of-nil; the key is omitted.
+      omit_replay_inputs: true,
+      # AR-2 Phase 2b: mark the wave sensitive (Theme B sinks sanitize the
+      # subagent's derived durable output) and bound its wall-clock lifetime
+      # (C3 — a hung wave is killed → child :failed).
+      sanitize_sensitive_context: state.sanitize_sensitive_context,
+      execution_timeout: state.wave_timeout_ms
     )
   end
 
@@ -528,12 +652,26 @@ defmodule JidoClaw.RouteComposer do
       parent_run_id: state.parent_run_id,
       final_route: state.prev_route,
       final_live: state.live,
-      artifacts: state.artifacts,
+      artifacts: unwrap_refs(state.artifacts),
       ran: state.ran,
       wave_index: state.wave_index,
       history: Enum.reverse(state.history)
     }
   end
+
+  # The summary's `artifacts` is display/notify-only (never re-resolved), so it
+  # keeps the historical bare-ref shape: P2 tags the in-memory fold store as
+  # `{:ref, ref}`, so unwrap each tagged ref back to the bare string here (seeds
+  # stay bare). The durable parent `result` (`terminal_summary_subset/1`) omits
+  # `artifacts` entirely, so it is unaffected.
+  defp unwrap_refs(store) do
+    Map.new(store, fn {name, producers} ->
+      {name, Map.new(producers, fn {producer, entry} -> {producer, unwrap_ref(entry)} end)}
+    end)
+  end
+
+  defp unwrap_ref({:ref, ref}), do: ref
+  defp unwrap_ref(entry), do: entry
 
   # ---------------------------------------------------------------------------
   # Parent-terminal writes (Phase 2a)
@@ -553,7 +691,9 @@ defmodule JidoClaw.RouteComposer do
         if Projection.terminal_status?(parent.status) do
           :ok
         else
-          case WorkflowLog.append(parent, kind, payload, tenant: tenant, actor: actor) do
+          scrubbed = scrub_terminal_payload(kind, payload, parent)
+
+          case WorkflowLog.append(parent, kind, scrubbed, tenant: tenant, actor: actor) do
             {:ok, _event} -> :ok
             {:error, reason} -> {:error, reason}
           end
@@ -563,6 +703,25 @@ defmodule JidoClaw.RouteComposer do
         {:error, {:reload_failed, other}}
     end
   end
+
+  # When the reloaded parent carries the durable Phase 2b marker, a `:run_failed`
+  # terminal's reason string is replaced with the type-preserving placeholder
+  # before the durable append — covering BOTH the normal `format_terminal_error/2`
+  # path and the abnormal `format_terminalize_reason/1` path (both funnel here),
+  # and future-proofing 2c/2d recovery (which writes terminals from a reloaded
+  # parent with no live state). `:run_completed` is left alone — its `result` is
+  # the opaque `terminal_summary_subset/1` (no artifact values). Coarse by design
+  # (a marked budget_exhausted/timeout reason is also redacted), consistent with
+  # the whole-write-when-marked policy; the run `status: :failed` still conveys
+  # the failure.
+  defp scrub_terminal_payload(
+         :run_failed,
+         payload,
+         %WorkflowRun{config: %{"sanitize_sensitive_context" => true}}
+       ),
+       do: Map.replace(payload, :error, SensitiveScrub.redacted_text())
+
+  defp scrub_terminal_payload(_kind, payload, _parent), do: payload
 
   # Failure-path terminalizer for the abnormal launch / run_sync paths
   # (reload/start/timeout/crash). Writes `run_failed` with a formatted reason
@@ -591,8 +750,10 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  # A json-safe subset for the converged parent's `result` column — NEVER artifact
-  # values (those are still inline in child results in 2a; 2b ref-stores them).
+  # A json-safe subset for the converged parent's `result` column — never
+  # artifact values (Phase 2b ref-stores them; the summary's `artifacts` are
+  # opaque refs, and only `terminal`/`wave_index`/`final_route` are projected
+  # here anyway).
   defp terminal_summary_subset(summary) do
     %{
       "terminal" => Atom.to_string(summary.terminal),
@@ -632,15 +793,17 @@ defmodule JidoClaw.RouteComposer do
     state.wave_index >= state.max_waves or past_deadline?(state)
   end
 
-  defp past_deadline?(%{deadline: nil}), do: false
-  defp past_deadline?(%{deadline: deadline}), do: now_ms() >= deadline
+  # Wall-clock against the durable `deadline_at_ms` (C1) — the live loop and 2d
+  # recovery read the identical stored unix-ms value across a reboot. (Phase 2a's
+  # monotonic deadline is gone; a monotonic clock is meaningless after restart.)
+  defp past_deadline?(%{deadline_at_ms: nil}), do: false
+
+  defp past_deadline?(%{deadline_at_ms: deadline_at_ms}),
+    do: System.os_time(:millisecond) >= deadline_at_ms
 
   defp budget_reason(state) do
-    if past_deadline?(state), do: {:deadline, state.deadline}, else: {:max_waves, state.max_waves}
+    if past_deadline?(state),
+      do: {:deadline, state.deadline_at_ms},
+      else: {:max_waves, state.max_waves}
   end
-
-  defp deadline_at(nil), do: nil
-  defp deadline_at(ms) when is_integer(ms) and ms > 0, do: now_ms() + ms
-
-  defp now_ms, do: System.monotonic_time(:millisecond)
 end

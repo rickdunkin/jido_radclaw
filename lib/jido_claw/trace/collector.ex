@@ -58,6 +58,7 @@ defmodule JidoClaw.Trace.Collector do
 
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Security.SensitiveScrub
   alias JidoClaw.Trace.Event
   alias JidoClaw.Trace.Limit, as: TraceLimit
   alias JidoClaw.Trace.Policy
@@ -339,8 +340,6 @@ defmodule JidoClaw.Trace.Collector do
   defp normalize_event(policy, seq, event_name, measurements, metadata) do
     case event_shape(event_name, metadata) do
       {:ok, source, category, event} ->
-        sanitized_measurements = TraceSanitize.payload(policy, measurements)
-        sanitized_metadata = TraceSanitize.payload(policy, metadata)
         request_id = string_value(metadata, :request_id)
         run_id = string_value(metadata, :run_id) || request_id
 
@@ -351,25 +350,38 @@ defmodule JidoClaw.Trace.Collector do
             request_id ||
             Ash.UUID.generate()
 
+        span_id = string_value(metadata, :jido_span_id) || string_value(metadata, :span_id)
+
+        parent_span_id =
+          string_value(metadata, :jido_parent_span_id) ||
+            string_value(metadata, :parent_span_id)
+
+        # AR-2 Phase 2b (P1a): resolve the sensitivity marker ONCE and gate EVERY
+        # metadata-derived column on it (not just the two `:map` columns). On a
+        # confident `:marked`, the trusted `request_id` is the only metadata ID
+        # the marker was registered under, so collapse the other ID columns to it
+        # and drop the rest of the derived sinks. `:unmarked`/`:unknown` pass
+        # through unchanged.
+        marker = marker_for(request_id)
+        raw_phase = atom_value(metadata, :phase) || atom_value(metadata, :stage)
+
         %Event{
           seq: seq,
           at_ms: event_time_ms(measurements, metadata),
           source: source,
           category: category,
           event: event,
-          phase: atom_value(metadata, :phase) || atom_value(metadata, :stage),
-          name: event_name_label(category, metadata),
+          phase: redact_phase(marker, raw_phase),
+          name: redact_name(marker, event_name_label(category, metadata)),
           status: event_status(category, event, metadata),
           duration_ms: duration_ms(measurements),
           request_id: request_id,
-          run_id: run_id,
-          trace_id: trace_id,
-          span_id: string_value(metadata, :jido_span_id) || string_value(metadata, :span_id),
-          parent_span_id:
-            string_value(metadata, :jido_parent_span_id) ||
-              string_value(metadata, :parent_span_id),
-          measurements: sanitized_measurements,
-          metadata: sanitized_metadata
+          run_id: collapse_to_request(marker, run_id, request_id),
+          trace_id: collapse_to_request(marker, trace_id, request_id),
+          span_id: redact_span_id(marker, span_id),
+          parent_span_id: redact_span_id(marker, parent_span_id),
+          measurements: redact_map(marker, TraceSanitize.payload(policy, measurements)),
+          metadata: redact_map(marker, TraceSanitize.payload(policy, metadata))
         }
 
       :error ->
@@ -576,6 +588,84 @@ defmodule JidoClaw.Trace.Collector do
     _ -> nil
   catch
     :exit, _ -> nil
+  end
+
+  # AR-2 Phase 2b sink (vi) — `request_id` is the trusted correlation key the
+  # marker was registered under; every OTHER column is derived from raw
+  # `metadata` and is a potential content sink (P1a). `marker_for/1` resolves the
+  # marker ONCE (cache → durable, via `marker_status/1`) and the per-column
+  # redactors below branch on it. A `nil` request_id is `:unmarked` (most
+  # workflow/output telemetry carries none, and a marked subagent ALWAYS has a
+  # registered request_id by C4).
+  #
+  # Digest only on a confident `:marked`. `:unknown` (absent/faulting row)
+  # PASSES — a deliberate deviation from the doc's fail-closed-on-unknown:
+  # (a) C4 guarantees a marked subagent ALWAYS has a durable correlation row
+  # (the turn aborts on a write failure), so `:marked` is reliably resolvable
+  # during its life AND the conservative C5 `expires_at` window (which catches
+  # orphan late-writes via the durable fallback) — fail-closed adds nothing for
+  # marked data; (b) the trace system extracts structural fields (`agent_id`,
+  # `run_id`) FROM `metadata`, and most legitimate non-composer telemetry
+  # carries a `request_id` whose correlation row has simply expired (600s TTL),
+  # so digesting `:unknown` would shred general observability. The residual
+  # gap — a marked span arriving AFTER its C5 ceiling — is beyond the designed
+  # orphan-drain retention.
+  defp marker_for(nil), do: :unmarked
+  defp marker_for(request_id), do: marker_status(request_id)
+
+  # The two `:map` columns (`metadata`/`measurements`) → a type-valid redacted
+  # map; `name` (arbitrary metadata string content) → the redacted-text
+  # placeholder; `phase` (atom) → nil. Redact only on a confident `:marked`.
+  defp redact_map(:marked, _payload), do: SensitiveScrub.redacted_map()
+  defp redact_map(_marker, payload), do: payload
+
+  defp redact_name(:marked, _name), do: SensitiveScrub.redacted_text()
+  defp redact_name(_marker, name), do: name
+
+  defp redact_phase(:marked, _phase), do: nil
+  defp redact_phase(_marker, phase), do: phase
+
+  # `trace_id`/`run_id` collapse to the trusted `request_id` on a marked span —
+  # their metadata-derived values are tainted. Trace assembly keys on
+  # `request_id` first (`trace_key/1`), so grouping stays coherent and the span
+  # is never stranded.
+  defp collapse_to_request(:marked, _value, request_id), do: request_id
+  defp collapse_to_request(_marker, value, _request_id), do: value
+
+  # `span_id`/`parent_span_id` are DROPPED entirely on a marked span. They are
+  # metadata-derived (read straight from `metadata`, with no internal provenance
+  # distinguishing a framework-generated id from injected content), so a shape
+  # gate is NOT a real trust boundary — a sensitive value that happens to be
+  # hex/UUID-shaped (a hash, a hex token) would slip through into `trace_events`.
+  # Only the registered `request_id` is trusted; trace assembly keys on it (not
+  # span_id, see `trace_key/1`), so dropping these costs only intra-trace span
+  # nesting for marked composer turns, never grouping.
+  defp redact_span_id(:marked, _span_id), do: nil
+  defp redact_span_id(_marker, span_id), do: span_id
+
+  # `:marked | :unmarked | :unknown`. Cache-first (live turns hit ETS); the
+  # durable fallback catches a marked subagent's orphan late-writes after its
+  # cache entry was cleared on request completion (within the C5 ceiling). An
+  # absent row or a faulting read is `:unknown`.
+  defp marker_status(request_id) do
+    case Cache.lookup(request_id) do
+      {:ok, %{sanitize_sensitive_context: true}} -> :marked
+      {:ok, %{sanitize_sensitive_context: false}} -> :unmarked
+      _miss_or_no_key -> durable_marker_status(request_id)
+    end
+  end
+
+  defp durable_marker_status(request_id) do
+    case RequestCorrelation.lookup(request_id) do
+      {:ok, %{sanitize_sensitive_context: true}} -> :marked
+      {:ok, %{sanitize_sensitive_context: false}} -> :unmarked
+      _absent -> :unknown
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> :unknown
+  catch
+    :exit, _ -> :unknown
   end
 
   defp completed_at(current, %Event{status: status, at_ms: at_ms})

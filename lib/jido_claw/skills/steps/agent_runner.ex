@@ -66,36 +66,58 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       # strictly better than today's zero tools). Blocks only this step's setup.
       _ = mcp().ensure_attached(pid, template_name, 8_000)
 
-      request_id = JidoClaw.register_child_correlation(tool_context)
-      SubagentTranscript.record_task(tool_context, request_id, task)
-
-      try do
-        result =
-          run_step(template.module, pid, request_id, task, tool_context, step_name, template_name)
-
-        record_step_terminal(tool_context, request_id, result)
-        result
-      rescue
-        # reach:disable-next-line bare_rescue
-        e ->
-          SubagentTranscript.record_terminal(
-            tool_context,
+      case JidoClaw.register_child_correlation(tool_context) do
+        {:ok, request_id} ->
+          run_registered_step(
+            pid,
             request_id,
-            :system,
-            "[step crashed] " <> Exception.message(e)
+            task,
+            tool_context,
+            step_name,
+            template_name,
+            template.module
           )
 
-          {:error, "Step #{template_name} crashed: #{Exception.message(e)}"}
-      after
-        # A real supervisor stop, not `Process.exit(pid, :normal)` — an exit
-        # signal with reason `:normal` sent to another (non-trapping) process
-        # is discarded, so that cleanup never actually stopped the worker.
-        # Skill-step workers aren't AgentTracker-registered; this is their
-        # only stopper. `{:error, :not_found}` on an already-dead pid is fine.
-        if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
+        # Marked registration failed (missing scope / durable write, AR-2
+        # Phase 2b C4) — the worker has no durable marker row, so stop it and
+        # abort rather than run an un-sanitized turn.
+        {:error, reason} ->
+          if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
+          {:error, "Step #{template_name} correlation failed: #{inspect(reason)}"}
       end
     else
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
+    end
+  end
+
+  # The post-correlation step lifecycle: record the task turn, run the step,
+  # record its terminal, and (in `after`) stop the worker. A real supervisor
+  # stop, not `Process.exit(pid, :normal)` — an exit signal with reason
+  # `:normal` sent to another (non-trapping) process is discarded, so that
+  # cleanup never actually stopped the worker. Skill-step workers aren't
+  # AgentTracker-registered; this is their only stopper.
+  defp run_registered_step(pid, request_id, task, tool_context, step_name, template_name, module) do
+    SubagentTranscript.record_task(tool_context, request_id, task)
+
+    try do
+      result = run_step(module, pid, request_id, task, tool_context, step_name, template_name)
+      record_step_terminal(tool_context, request_id, result)
+      result
+    rescue
+      # reach:disable-next-line bare_rescue
+      e ->
+        msg = Exception.message(e)
+
+        SubagentTranscript.record_terminal(
+          tool_context,
+          request_id,
+          :system,
+          "[step crashed] " <> msg
+        )
+
+        {:error, "Step #{template_name} crashed: #{msg}"}
+    after
+      if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
     end
   end
 
@@ -291,7 +313,12 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       actor: context[:actor],
       project_dir: context[:project_dir] || File.cwd!(),
       agent_id: tag,
-      subagent: true
+      subagent: true,
+      # AR-2 Phase 2b: thread the sensitivity marker + TTL ceiling from the
+      # reactor context onto the step worker's scope (same builder path as the
+      # other canonical keys, set just after at the call site for agent_template).
+      sanitize_sensitive_context: context[:sanitize_sensitive_context] || false,
+      request_correlation_expires_at: context[:request_correlation_expires_at]
     }
   end
 

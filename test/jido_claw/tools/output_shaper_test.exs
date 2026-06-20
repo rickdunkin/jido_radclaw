@@ -989,4 +989,38 @@ defmodule JidoClaw.Tools.OutputShaperTest do
       assert row.tool == "mcp_svc_echo"
     end
   end
+
+  describe "AR-2 Phase 2b — sensitive sanitization (sink vii)" do
+    test "a marked tool_context redacts the stored content/command/summary + nils the fingerprint" do
+      enable_shaping()
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "shaper-sens")
+      secret = "ZZSHAPESECRETZZ-#{System.unique_integer([:positive])}"
+
+      marked = %{
+        tool_context: %{
+          tenant_id: tenant_id,
+          session_uuid: session.id,
+          actor: actor_for(tenant_id),
+          sanitize_sensitive_context: true
+        }
+      }
+
+      output = exunit_output(passed: 311, failures: [{secret, "test/x_test.exs:1"}])
+
+      assert {:ok, result} = run_shaped(output, marked)
+      assert result.shaped
+
+      assert {:ok, row} =
+               ToolOutput.by_ref(result.output_ref,
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      assert row.content == "[composer-sensitive:redacted]"
+      assert row.command == "[composer-sensitive:redacted]"
+      assert row.summary == %{"redacted" => true}
+      assert is_nil(row.command_fingerprint)
+      refute row.content =~ secret
+    end
+  end
 end

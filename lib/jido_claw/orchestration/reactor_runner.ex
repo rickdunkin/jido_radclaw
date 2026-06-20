@@ -52,7 +52,16 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   with a log, never a launch failure. `:parent_run_id` (AR-2 Phase 2a) links
   the created run to a parent `WorkflowRun` (a composer wave passes its
   composer parent); absent/nil → a root run. It is cross-tenant-guarded by
-  `WorkflowRun`'s `:create` change.
+  `WorkflowRun`'s `:create` change. `:omit_replay_inputs` (AR-2 Phase 2b,
+  default `false`) drops the at-rest `replay_inputs` copy entirely — composer
+  waves pass `true` (the wave inputs hold the decrypted `:extra_context`, and
+  the parent log is the replay unit, not the wave). `:sanitize_sensitive_context`
+  (AR-2 Phase 2b, default `false`) is injected into the base reactor context so
+  the subagent scope boundary and the inline middleware sanitize the wave's
+  derived durable output. `:execution_timeout` (ms | `:infinity`, default
+  `:infinity`) is the per-wave kill deadline threaded into
+  `RunExecution.run_killable/4`'s bounded yield — `:infinity` leaves every
+  non-composer caller unchanged.
 
   ## Launch idempotency (T2-3)
 
@@ -184,6 +193,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Security.SensitiveScrub
   alias Reactor.Builder
 
   # Statuses from which a `run_failed` transition is legal — i.e. the run has
@@ -273,31 +283,45 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
                  # on WorkflowRun's :create refuses a parent in another tenant.
                  parent_run_id: Keyword.get(opts, :parent_run_id)
                },
-               replay_inputs_attrs(name, inputs, extra_context)
+               replay_inputs_attrs(
+                 name,
+                 inputs,
+                 extra_context,
+                 Keyword.get(opts, :omit_replay_inputs, false)
+               )
              ),
              idempotency_key,
              tenant,
              actor
            ) do
       # Build the merged context (run-identity base wins over the caller's
-      # extra `:context`) and the finalizer opts here, so `execute/6` stays
+      # extra `:context`) and the finalizer opts here, so `execute/7` stays
       # within the arity budget.
       context =
         Map.merge(extra_context, %{
           tenant: tenant,
           actor: actor,
           workflow_run: run,
-          reactor: identity
+          reactor: identity,
+          # AR-2 Phase 2b marker, in the base map so it wins over the caller's
+          # `:context` and reaches both the AgentRunner scope boundary and the
+          # inline `ReactorMiddleware` sanitize read.
+          sanitize_sensitive_context: Keyword.get(opts, :sanitize_sensitive_context, false)
         })
 
       finalize_opts = [
         tenant: tenant,
         actor: actor,
         inputs: inputs,
-        reactor_module: reactor_module
+        reactor_module: reactor_module,
+        # AR-2 Phase 2b (P1b): a marked run's terminal-backstop `run_failed`
+        # (pre-`init/1` validation / `{:exit, _}` kill, where the middleware's
+        # `error/2` never fired) scrubs its reason in `append_failed/2`. Default
+        # `false` ⇒ byte-identical for every non-composer caller.
+        sanitize_sensitive_context: Keyword.get(opts, :sanitize_sensitive_context, false)
       ]
 
-      execute(run, runnable, inputs, context, finalize_opts, async?)
+      execute(run, runnable, inputs, context, finalize_opts, async?, execution_timeout(opts))
     else
       # Launch dedupe: the key already owns a run (read-first hit, or the
       # create race's winner re-read by create_run). Nothing was executed.
@@ -362,6 +386,17 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp definition_hash(nil, opts), do: Keyword.get(opts, :definition_hash)
   defp definition_hash(module, _opts), do: DefinitionFingerprint.for_module(module)
 
+  # Per-wave kill deadline (ms) or `:infinity` (default — no kill, byte-
+  # identical to pre-2b callers). A non-positive / non-integer value other than
+  # `:infinity` degrades to `:infinity` rather than failing the launch.
+  defp execution_timeout(opts) do
+    case Keyword.get(opts, :execution_timeout, :infinity) do
+      :infinity -> :infinity
+      ms when is_integer(ms) and ms > 0 -> ms
+      _invalid -> :infinity
+    end
+  end
+
   # `%{replay_inputs: blob}` when the encoded blob is within the cap; `%{}`
   # when over. The key must be OMITTED, not set to nil: AshCloak's Encrypt
   # change encrypts any PRESENT argument — including nil — so
@@ -369,7 +404,14 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # and break Replay's presence check. An absent blob surfaces through the
   # existing refusal vocabulary ({:not_replayable, :no_inputs}); the warning
   # here records why. The run id doesn't exist yet, so the log carries `name`.
-  defp replay_inputs_attrs(name, inputs, extra_context) do
+  # `omit_replay_inputs: true` (composer waves, A3) bypasses the encode
+  # entirely so the create attrs carry NO `replay_inputs` key — not
+  # `replay_inputs: nil` (AshCloak would encrypt a present nil into
+  # ciphertext-of-nil; the omit-key rule). Same `%{}` shape as the over-cap
+  # branch, so the run surfaces `{:not_replayable, :no_inputs}` later.
+  defp replay_inputs_attrs(_name, _inputs, _extra_context, true), do: %{}
+
+  defp replay_inputs_attrs(name, inputs, extra_context, false) do
     blob = :erlang.term_to_binary({@replay_version, inputs, extra_context})
     cap = replay_inputs_cap()
 
@@ -503,14 +545,19 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # of scope and defensively fails via finalize/3's :unexpected_halt clause).
   # `tenant_id:` is RunExecution-local registry metadata, popped there —
   # it never reaches Reactor.run (whose executor state is struct!-strict).
-  defp execute(run, runnable, inputs, context, finalize_opts, async?) do
+  defp execute(run, runnable, inputs, context, finalize_opts, async?, execution_timeout) do
     execution =
       RunExecution.run_killable(runnable, inputs, context,
         run_id: run.id,
         tenant_id: run.tenant_id,
         async?: async?,
         timeout: :infinity,
-        max_iterations: :infinity
+        max_iterations: :infinity,
+        # Per-wave kill deadline (AR-2 Phase 2b C3). Default `:infinity` ⇒
+        # `Task.yield` never times out, so this is a no-op for non-composer
+        # callers; an elapsed bound kills the executor → `{:exit, :timeout}` →
+        # `handle_exit` → `ensure_failed` terminalizes the wave `:failed`.
+        yield_timeout: execution_timeout
       )
 
     case execution do
@@ -726,7 +773,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   end
 
   defp append_failed(run, reason, opts) do
-    formatted = Reason.format(reason)
+    formatted = format_failure(reason, opts)
 
     case WorkflowLog.append(run, :run_failed, %{error: formatted},
            tenant: Keyword.get(opts, :tenant, run.tenant_id),
@@ -759,6 +806,16 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
         :ok
     end
+  end
+
+  # A marked run (AR-2 Phase 2b, P1b) replaces the formatted reason with the
+  # type-preserving placeholder so the backstop's durable `error` column AND its
+  # PubSub broadcast carry no artifact-derived content. Default `false` ⇒
+  # byte-identical `Reason.format/1` for every non-composer caller.
+  defp format_failure(reason, opts) do
+    if Keyword.get(opts, :sanitize_sensitive_context, false),
+      do: SensitiveScrub.redacted_text(),
+      else: Reason.format(reason)
   end
 
   # Tenant-scoped reload; falls back to the in-memory run on any failure so the

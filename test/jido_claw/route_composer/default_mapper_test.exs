@@ -107,4 +107,21 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
 
     assert DefaultMapper.map(atom, producer_meta()) == DefaultMapper.map(string, producer_meta())
   end
+
+  test "coerces an output artifact's atom keys + atom values to strings (A5 no-novel-atom)" do
+    result = %StepResult{
+      name: "planner",
+      typed_output: %{
+        "signals" => ["plan-ready"],
+        "plan" => %{"n" => 1, nested_key: :nested_value}
+      }
+    }
+
+    assert {:ok, %StageEmission{artifacts: %{"plan" => coerced}}} =
+             DefaultMapper.map(result, producer_meta())
+
+    # Atom key → string, atom value → inspect; the string key + number survive,
+    # so the stored blob is `[:safe]`-decodable.
+    assert coerced == %{"nested_key" => ":nested_value", "n" => 1}
+  end
 end

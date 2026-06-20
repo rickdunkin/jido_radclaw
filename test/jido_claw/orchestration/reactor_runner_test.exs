@@ -398,6 +398,40 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
     end
   end
 
+  describe "AR-2 Phase 2b — marked backstop error scrub (P1b-iii)" do
+    test "a marked run forced to the pre-init backstop redacts the durable error", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      # Missing required input → validation fails before init/1, so the runner's
+      # finalize backstop (append_failed) writes the only run_failed.
+      inputs = Map.delete(valid_inputs(), :github_full_name)
+
+      assert {:error, _reason, run} =
+               ReactorRunner.run(ProjectRegistration, inputs,
+                 tenant: tenant,
+                 actor: actor,
+                 sanitize_sensitive_context: true
+               )
+
+      assert run.status == :failed
+      # Only run_failed (no run_started) — confirms the backstop path, not error/2.
+      assert kinds(run, ctx) == [:run_failed]
+      assert run.error == "[composer-sensitive:redacted]"
+    end
+
+    test "an unmarked backstop keeps the formatted reason (default false, unchanged)", ctx do
+      %{tenant: tenant, actor: actor} = ctx
+      inputs = Map.delete(valid_inputs(), :github_full_name)
+
+      assert {:error, _reason, run} =
+               ReactorRunner.run(ProjectRegistration, inputs, tenant: tenant, actor: actor)
+
+      assert run.status == :failed
+      assert kinds(run, ctx) == [:run_failed]
+      refute run.error == "[composer-sensitive:redacted]"
+      assert is_binary(run.error)
+    end
+  end
+
   defp valid_inputs do
     uniq = System.unique_integer([:positive])
 

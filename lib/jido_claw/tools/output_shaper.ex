@@ -69,6 +69,7 @@ defmodule JidoClaw.Tools.OutputShaper do
 
   alias JidoClaw.Security.Redaction.Ansi
   alias JidoClaw.Security.Redaction.Patterns
+  alias JidoClaw.Security.SensitiveScrub
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.OutputLimit
   alias JidoClaw.Tools.OutputShaper.Generic
@@ -415,19 +416,24 @@ defmodule JidoClaw.Tools.OutputShaper do
     %{text: text, clean: clean, body: body, summary: summary, truncated?: truncated?} = shaping
 
     tc = tool_context(ctx)
+    marked = sanitize_marked?(tc)
     command = command_for(tool, params)
     captured_bytes = byte_size(clean)
-    delta = delta_line(tool, summary, command, tc)
+    # Marked (AR-2 Phase 2b sink vii, P3-2): skip the delta path entirely so the
+    # raw command is never even hashed at lookup time (no fingerprint, no
+    # prev-run comparison).
+    delta = if marked, do: "", else: delta_line(tool, summary, command, tc)
 
-    store_attrs = %{
-      tool: tool,
-      command: command,
-      content: clean,
-      byte_size: captured_bytes,
-      truncated: truncated?,
-      exit_code: exit_code_of(map),
-      summary: summary
-    }
+    store_attrs =
+      sanitize_store_attrs(marked, %{
+        tool: tool,
+        command: command,
+        content: clean,
+        byte_size: captured_bytes,
+        truncated: truncated?,
+        exit_code: exit_code_of(map),
+        summary: summary
+      })
 
     {ref, footer} =
       case Store.put(store_attrs, tc) do
@@ -463,6 +469,33 @@ defmodule JidoClaw.Tools.OutputShaper do
     |> Map.put(:truncated, truncated?)
     |> put_present(:output_ref, ref)
     |> put_present(:summary, summary)
+  end
+
+  # `tc` is always a map (`tool_context/1` returns `%{}` or a guarded map), so an
+  # `is_map/1` guard here is provably dead (dialyzer flags the unreachable
+  # branch). `== true` yields a strict boolean for the exact-match
+  # `sanitize_store_attrs/2` clauses below.
+  defp sanitize_marked?(tc), do: Map.get(tc, :sanitize_sensitive_context, false) == true
+
+  # AR-2 Phase 2b sink (vii): the at-rest `ToolOutput` row for a marked composer
+  # subagent is whole-write-sanitized — `content`/`command` (:string) →
+  # `redacted_text`, `summary` (:map) → `redacted_summary`, `byte_size` recut to
+  # the placeholder so the row stays self-consistent. The model-facing shaped
+  # output is left intact (live execution); its durable copies are sanitized at
+  # the recorder/audit sinks, and `Store.do_put` stores `command_fingerprint:
+  # nil` (no equality oracle at rest, P3-2).
+  defp sanitize_store_attrs(false, attrs), do: attrs
+
+  defp sanitize_store_attrs(true, attrs) do
+    redacted = SensitiveScrub.redacted_text()
+
+    %{
+      attrs
+      | command: redacted,
+        content: redacted,
+        byte_size: byte_size(redacted),
+        summary: SensitiveScrub.redacted_summary()
+    }
   end
 
   # -- Body selection -----------------------------------------------------------

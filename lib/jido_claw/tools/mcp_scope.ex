@@ -33,6 +33,7 @@ defmodule JidoClaw.Tools.MCPScope do
   alias JidoClaw.Conversations.{Message, ToolTranscript}
   alias JidoClaw.Core.AshErrors
   alias JidoClaw.MCPScope.Initializer
+  alias JidoClaw.Security.SensitiveScrub
 
   @wrapped_key :__jidoclaw_mcp_scope_wrapped__
 
@@ -109,14 +110,25 @@ defmodule JidoClaw.Tools.MCPScope do
     request_id = enriched_ctx[:mcp_request_id] || Ecto.UUID.generate()
     tool_call_id = enriched_ctx[:mcp_tool_call_id] || Ecto.UUID.generate()
 
+    # AR-2 Phase 2b sink (viii): MCPScope appends to `messages` directly
+    # (bypassing the Recorder), so it sanitizes a marked composer subagent's
+    # content/metadata here too (belt-and-suspenders for a future MCP-exposed
+    # composer route).
+    {call_content, call_metadata} =
+      scrub_message(
+        tc,
+        ToolTranscript.summarize_args(tool_name, params),
+        %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)}
+      )
+
     call_attrs =
       Map.merge(
         %{
           session_id: tc.session_uuid,
           request_id: request_id,
           role: :tool_call,
-          content: ToolTranscript.summarize_args(tool_name, params),
-          metadata: %{tool_name: to_string(tool_name), arguments: ToolTranscript.envelope(params)},
+          content: call_content,
+          metadata: call_metadata,
           tool_call_id: tool_call_id
         },
         identity_attrs(tc)
@@ -133,14 +145,21 @@ defmodule JidoClaw.Tools.MCPScope do
     try do
       result = fun.(enriched_ctx)
 
+      {result_content, result_metadata} =
+        scrub_message(
+          tc,
+          ToolTranscript.result_summary(tool_name, result),
+          %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)}
+        )
+
       result_attrs =
         Map.merge(
           %{
             session_id: tc.session_uuid,
             request_id: request_id,
             role: :tool_result,
-            content: ToolTranscript.result_summary(tool_name, result),
-            metadata: %{tool_name: to_string(tool_name), result: ToolTranscript.envelope(result)},
+            content: result_content,
+            metadata: result_metadata,
             tool_call_id: tool_call_id,
             parent_message_id: parent_id
           },
@@ -154,17 +173,21 @@ defmodule JidoClaw.Tools.MCPScope do
         stacktrace = __STACKTRACE__
         err_msg = Exception.message(err)
 
+        {err_content, err_metadata} =
+          scrub_message(
+            tc,
+            "#{tool_name} → exception: #{err_msg}",
+            %{tool_name: to_string(tool_name), result: %{error: err_msg}}
+          )
+
         result_attrs =
           Map.merge(
             %{
               session_id: tc.session_uuid,
               request_id: request_id,
               role: :tool_result,
-              content: "#{tool_name} → exception: #{err_msg}",
-              metadata: %{
-                tool_name: to_string(tool_name),
-                result: %{error: err_msg}
-              },
+              content: err_content,
+              metadata: err_metadata,
               tool_call_id: tool_call_id,
               parent_message_id: parent_id
             },
@@ -180,6 +203,12 @@ defmodule JidoClaw.Tools.MCPScope do
   # mode is single-user main-agent only, so these are normally absent and
   # the message resource's `"main"` / `false` defaults apply; we still
   # forward them in case a future MCP path threads a sub-agent scope.
+  defp scrub_message(tc, content, metadata) do
+    if Map.get(tc, :sanitize_sensitive_context, false),
+      do: {SensitiveScrub.redacted_text(), SensitiveScrub.redacted_map()},
+      else: {content, metadata}
+  end
+
   defp identity_attrs(tc) do
     %{}
     |> put_present(:agent_id, Map.get(tc, :agent_id))

@@ -58,12 +58,16 @@
           # workflow_run.ex: both update actions (`set_status`,
           # `set_checkpoint`) are internal projection/runner writes
           # (`public?(false)`) — none should be the primary update.
+          # composer_artifact.ex: same shape — both updates (`set_active`,
+          # `tombstone_active`) are internal `public?(false)` state
+          # transitions; a generic primary update would silently flip state.
           {AshCredo.Check.Design.MissingPrimaryAction,
            [
              files: %{
                excluded: [
                  "lib/jido_claw/accounts/token.ex",
-                 "lib/jido_claw/orchestration/workflow_run.ex"
+                 "lib/jido_claw/orchestration/workflow_run.ex",
+                 "lib/jido_claw/orchestration/composer_artifact.ex"
                ]
              }
            ]},

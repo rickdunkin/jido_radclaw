@@ -27,6 +27,7 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   (the `projection.ex:19` precedent), so every lookup tries both.
   """
 
+  alias JidoClaw.Orchestration.ComposerArtifact.Envelope
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.Workflows.StepResult
 
@@ -118,7 +119,9 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   defp artifact_or_text(name, result) do
     case Map.fetch(result.artifacts, name) do
       {:ok, value} -> coerce(value)
-      :error -> result.result
+      # The `result.result` fallback runs through `coerce/1` too (A5) — a raw
+      # value here would otherwise reach `store_pending` un-normalized.
+      :error -> coerce(result.result)
     end
   end
 
@@ -154,21 +157,12 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   end
 
   # ---------------------------------------------------------------------------
-  # json-safe coercion (inline, non-sensitive — Phase 1)
+  # No-novel-atom, json-safe coercion (AR-2 §6 / A5)
   # ---------------------------------------------------------------------------
 
-  defp coerce(value)
-       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
-       do: value
-
-  defp coerce(value) when is_list(value), do: Enum.map(value, &coerce/1)
-  defp coerce(value) when is_struct(value), do: inspect(value)
-
-  defp coerce(value) when is_map(value),
-    do: Map.new(value, fn {k, v} -> {coerce_key(k), coerce(v)} end)
-
-  defp coerce(value), do: inspect(value)
-
-  defp coerce_key(k) when is_binary(k) or is_atom(k), do: k
-  defp coerce_key(k), do: inspect(k)
+  # The single shared normalizer (re-asserted by `ComposerArtifact`'s
+  # `store_pending` before encode) so a stored artifact blob is always
+  # `[:safe]`-decodable: every non-`true`/`false`/`nil` atom is stringified,
+  # and atom map keys go through `Atom.to_string/1` (never `String.to_atom/1`).
+  defp coerce(value), do: Envelope.normalize(value)
 end

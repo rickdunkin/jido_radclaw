@@ -82,6 +82,26 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       scope = AgentRunner.resolve_scope(%{agent_id: "ignored"}, "actual_tag")
       assert scope.agent_id == "actual_tag"
     end
+
+    test "threads the AR-2 Phase 2b marker + TTL ceiling from the reactor context (B1/C5)" do
+      expires = DateTime.utc_now()
+
+      ctx = %{
+        tenant: "t",
+        sanitize_sensitive_context: true,
+        request_correlation_expires_at: expires
+      }
+
+      scope = AgentRunner.resolve_scope(ctx, "tag-marked")
+      assert scope.sanitize_sensitive_context == true
+      assert scope.request_correlation_expires_at == expires
+    end
+
+    test "defaults the marker to false when the reactor context omits it" do
+      scope = AgentRunner.resolve_scope(%{tenant: "t"}, "tag-plain")
+      assert scope.sanitize_sensitive_context == false
+      assert scope.request_correlation_expires_at == nil
+    end
   end
 
   describe "run/4 — async typed-output capture" do

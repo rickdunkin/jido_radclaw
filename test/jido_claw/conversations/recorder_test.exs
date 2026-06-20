@@ -401,6 +401,44 @@ defmodule JidoClaw.Conversations.RecorderTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
+  describe "AR-2 Phase 2b — sensitive sanitization (sink iv)" do
+    test "a marked scope redacts tool_result content + metadata (type-preserving)" do
+      %{tenant_id: tenant, session: session} = seed_session("recSensitiveMarked")
+      r = "req-sens-#{System.unique_integer([:positive])}"
+      secret = "ZZRECSECRETZZ-#{System.unique_integer([:positive])}"
+
+      Cache.put(r, %{
+        session_id: session.id,
+        tenant_id: tenant,
+        workspace_id: nil,
+        user_id: nil,
+        sanitize_sensitive_context: true
+      })
+
+      emit_tool_result(r, "call-marked", "run_command", {:ok, secret})
+      finalize_and_flush(r)
+
+      [tr] = tool_results_for(session.id, tenant)
+      refute tr.content =~ secret
+      assert tr.content == "[composer-sensitive:redacted]"
+      # metadata stays a valid map (type-preserving placeholder), no secret.
+      assert tr.metadata == %{"redacted" => true}
+    end
+
+    test "an unmarked scope keeps the tool_result content (control)" do
+      %{tenant_id: tenant, session: session} = seed_session("recSensitiveUnmarked")
+      r = "req-plain-#{System.unique_integer([:positive])}"
+      secret = "ZZRECPLAINZZ-#{System.unique_integer([:positive])}"
+
+      register(r, session.id, tenant)
+      emit_tool_result(r, "call-plain", "run_command", {:ok, secret})
+      finalize_and_flush(r)
+
+      [tr] = tool_results_for(session.id, tenant)
+      refute tr.content == "[composer-sensitive:redacted]"
+    end
+  end
+
   defp seed_session(label) do
     tenant_id = "tenant-rec-#{label}-#{System.unique_integer([:positive])}"
     {:ok, _} = Tenant.ensure(tenant_id)

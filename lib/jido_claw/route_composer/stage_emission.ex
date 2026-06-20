@@ -3,8 +3,12 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   One stage's typed emission on a wave — the signals it published and the
   artifacts it produced (AR-2 §7).
 
-  This is in-memory mapper I/O: `JidoClaw.RouteComposer.Emit.DefaultMapper`
-  produces it and `JidoClaw.RouteComposer.Fold` consumes it. The struct itself
+  `artifacts` is `%{name => ref}` — an opaque `ComposerArtifact` ref string
+  (Phase 2b), not the value. `JidoClaw.RouteComposer.Emit.DefaultMapper`
+  produces the pre-persist emission (inline mapper values), then
+  `JidoClaw.RouteComposer.Steps.WaveCollect` ref-stores each value and the
+  composer rehydrates the ref-valued emission via `from_map/1`;
+  `JidoClaw.RouteComposer.Fold` indexes the refs. The struct itself
   is **not** json-safe (`JidoClaw.Orchestration.ReactorMiddleware`'s
   `json_safe?/1` rejects every struct), so `JidoClaw.RouteComposer.Steps.WaveCollect`
   returns the json-safe **map** form and the composer rehydrates each emission

@@ -27,6 +27,7 @@ defmodule JidoClaw.Audit.SignalListener do
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Conversations.ToolTranscript
   alias JidoClaw.Core.MapKeys
+  alias JidoClaw.Security.SensitiveScrub
 
   @topic "ai.tool.started"
   @retry_after_ms 250
@@ -119,7 +120,10 @@ defmodule JidoClaw.Audit.SignalListener do
               payload: %{
                 request_id: request_id,
                 session_id: scope.session_id && to_string(scope.session_id),
-                arguments: ToolTranscript.envelope(arguments),
+                # AR-2 Phase 2b sink (v): a marked composer subagent's tool
+                # arguments are redacted to a type-preserving map placeholder in
+                # the `Audit.Event.payload` (:map); tool_name/ids stay.
+                arguments: scrub_arguments(scope, arguments),
                 tool_name: tool_name
               }
             )
@@ -146,7 +150,11 @@ defmodule JidoClaw.Audit.SignalListener do
               session_id: row.session_id,
               tenant_id: row.tenant_id,
               workspace_id: row.workspace_id,
-              user_id: row.user_id
+              user_id: row.user_id,
+              # AR-2 Phase 2b: the cache-miss rehydrate must re-carry the marker
+              # (this map already drops the identity flags) or the audit gate
+              # silently sees `false` after an eviction.
+              sanitize_sensitive_context: row.sanitize_sensitive_context
             }
 
             Cache.put(request_id, scope)
@@ -158,6 +166,12 @@ defmodule JidoClaw.Audit.SignalListener do
     end
   rescue
     _ -> :error
+  end
+
+  defp scrub_arguments(scope, arguments) do
+    if Map.get(scope, :sanitize_sensitive_context, false),
+      do: SensitiveScrub.redacted_map(),
+      else: ToolTranscript.envelope(arguments)
   end
 
   defp skip(reason, tool_name) do
