@@ -13,12 +13,23 @@ defmodule JidoClaw.RouteComposer.ArtifactContext do
   (`JidoClaw.RouteComposer.Fold` tags every emission artifact value, P2),
   **resolved + decrypted** via `ComposerArtifact.resolve_value/2` (tenant/actor
   threaded from the composer state) before formatting — the **only** place a
-  decrypted artifact value re-enters live execution. A **seeded** entry (the
-  composer's in-memory seed store, e.g. the initial `request`) is an untagged
-  inline value, so it is used directly — the tag (not an `art_<hex>` regex
-  heuristic) is what tells the two apart, so a seed that merely looks like a ref
-  is never misread. A seed's durable exposure is via the subagent task,
-  sanitized by the Phase 2b marker (Theme B), not by ref-storage.
+  decrypted artifact value re-enters live execution. The tag (not an `art_<hex>`
+  regex heuristic) is what distinguishes a ref from an inline value, so a seed
+  that merely looks like a ref is never misread.
+
+  A **seed** entry takes one of two shapes (Phase 2d):
+
+    * **folded / recovered** — once `do_rebuild` folds the genesis
+      `artifacts_produced` event, the inline seed is overwritten with a
+      `{:ref, art_<hex>}` (a real ref-stored seed row, `wave_index: -1`,
+      `producer: "seed"`), so it resolves + decrypts here exactly like a
+      wave-produced artifact (this is the normal launch *and* recovery path);
+    * **minimal launch** — a `create_parent_run` with no genesis seed event
+      (the lifecycle tests' bare path) keeps the in-memory seed as an untagged
+      inline value, used directly.
+
+  Either way a seed's durable exposure is via the subagent task, sanitized by the
+  Phase 2b marker (Theme B).
 
   `build/4` returns `{:ok, text} | {:error, reason}`: a missing ref, corrupt
   envelope, wrong-tenant ref, or decrypt failure is a **controlled wave
@@ -111,11 +122,11 @@ defmodule JidoClaw.RouteComposer.ArtifactContext do
     end
   end
 
-  # A wave-produced entry is the explicitly-tagged `{:ref, ref}` (P2 — `Fold`
-  # tags every emission artifact value): resolve + decrypt. Any other term is an
-  # inline seed value (the composer's in-memory seed store, which never passes
-  # through `Fold`), used directly — so a seed that merely looks like `art_<hex>`
-  # is no longer misread as a ref and failed.
+  # A tagged `{:ref, ref}` (P2) — a wave-produced artifact, OR a folded/recovered
+  # seed row (Phase 2d: genesis ref-stores the seed, `do_rebuild` folds it to a
+  # ref): resolve + decrypt. Any other term is an untagged inline seed value (a
+  # minimal in-memory launch with no genesis seed event), used directly — so a
+  # seed that merely looks like `art_<hex>` is never misread as a ref and failed.
   defp resolve_entry({:ref, ref}, tenant, actor) when is_binary(ref),
     do: ComposerArtifact.resolve_value(ref, tenant: tenant, actor: actor)
 

@@ -142,6 +142,36 @@ defmodule JidoClaw.RouteComposer.ArtifactContextTest do
     end
   end
 
+  test "resolves + decrypts a folded seed ref (child_run_id: nil, wave_index: -1, Phase 2d)",
+       ctx do
+    # A genesis-folded seed is a real ref-stored row (child_run_id: nil, producer:
+    # "seed", wave_index: -1) tagged `{:ref, ref}` in the store — build/4 must
+    # resolve+decrypt it like any wave-produced artifact, not just resolve_value/2
+    # in isolation.
+    stages = [TestFixtures.stage(name: "planner", req: ["request"])]
+
+    {:ok, row} =
+      ComposerArtifact.store_pending(
+        %{
+          ref: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower),
+          name: "request",
+          producer: "seed",
+          term: "Build the auth feature",
+          child_run_id: nil,
+          parent_run_id: ctx.parent.id,
+          wave_index: -1
+        },
+        tenant: ctx.tenant_id,
+        actor: ctx.actor
+      )
+
+    store = %{"request" => %{"seed" => {:ref, row.ref}}}
+
+    assert {:ok, text} = build(ctx, stages, store)
+    assert text =~ "### request"
+    assert text =~ "Build the auth feature"
+  end
+
   test "a bare seed value that looks like a ref is used inline, never resolved (P2)", ctx do
     stages = [TestFixtures.stage(name: "implementer", req: ["plan"])]
 

@@ -13,12 +13,15 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
   import ExUnit.CaptureLog
 
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
+  alias JidoClaw.Orchestration.WorkflowRecovery
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.TestFixtures
   alias JidoClaw.RouteComposer.TestSupport.BlockingAgentServer
   alias JidoClaw.RouteComposer.TestSupport.GatedAgentServer
@@ -432,7 +435,440 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     end
   end
 
+  # ===========================================================================
+  # Crash recovery (Phase 2d) — cold boot: a crafted :running parent (+
+  # children/events) with NO live composer process, then reconcile_all/0.
+  # ===========================================================================
+
+  describe "crash recovery (Phase 2d)" do
+    test "1: a killed mid-route run resumes from the next wave on reboot", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+      child0 = craft_child(parent, ctx, 0, :completed)
+      # Wave 0's durable fold (planner ran, published plan-ready, produced the
+      # plan), so the resumed composer skips wave 0 and dispatches wave 1.
+      commit_wave0(parent, child0, ctx)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "2: a wave_started with no child re-launches wave 0 under the same key (rule 1)", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+      # Crash AFTER wave_started committed but BEFORE the child run was created.
+      append_wave_started(parent, 0, ["planner"], ctx)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+
+      # Exactly one wave-0 child materialized under composer:<parent>:0.
+      assert match?([_], wave_children(parent, ctx, 0))
+
+      # The genesis seed events rebuilt live/artifacts (recovery passed no seed
+      # opts): the first composed route saw the seed signal + artifact.
+      rc = first_route_composed(parent.id, ctx)
+      assert "request-received" in rc.payload["live"]
+      assert "request" in rc.payload["available"]
+    end
+
+    test "3: a child recovered to :failed re-dispatches under a fresh wave_index (rule 2)", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+      append_wave_started(parent, 0, ["planner"], ctx)
+      # A :running wave-0 child recovery will fail (stranded → :failed).
+      failed = craft_child(parent, ctx, 0, :running)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+
+      # The original wave-0 child stays :failed (a harmless orphan), and a fresh
+      # wave-1 child materialized (rule 2's fresh wave_index).
+      assert reload(failed.id, ctx).status == :failed
+      assert wave_children(parent, ctx, 1) != []
+
+      assert_unique_actives(parent, ctx)
+    end
+
+    test "4: subtractive deltas survive the rebuild", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+      # Publish two inert signals, retract one — the net must survive the rebuild.
+      {:ok, _} =
+        append_event(parent, :signals_published, %{signals: ["keep-sig", "drop-sig"]}, ctx)
+
+      {:ok, _} = append_event(parent, :signals_retracted, %{signals: ["drop-sig"]}, ctx)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      # The resumed composer's first composed route reflects the NET live:
+      # keep-sig present (additive survived), drop-sig absent (subtractive survived).
+      rc = first_route_composed(parent.id, ctx)
+      assert "keep-sig" in rc.payload["live"]
+      refute "drop-sig" in rc.payload["live"]
+    end
+
+    test "5: orphaned :pending artifacts never block re-launch nor surface", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+      append_wave_started(parent, 0, ["planner"], ctx)
+      failed = craft_child(parent, ctx, 0, :running)
+
+      # WaveCollect inserted a :pending plan for wave 0 before the crash (no
+      # wave_completed → never activated): an orphan that must not block re-launch.
+      orphan_ref = generate_ref()
+
+      {:ok, _} =
+        ComposerArtifact.store_pending(
+          %{
+            ref: orphan_ref,
+            name: "plan",
+            producer: "planner",
+            term: "ORPHAN PLAN",
+            child_run_id: failed.id,
+            parent_run_id: parent.id,
+            wave_index: 0
+          },
+          tenant: ctx.tenant,
+          actor: ctx.actor
+        )
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      # No unique violation (the run converged) and ≤1 active per {name, producer}.
+      assert_unique_actives(parent, ctx)
+
+      # The orphan was never promoted (still :pending) and is not among the actives.
+      assert {:ok, orphan} =
+               ComposerArtifact.resolve_ref(orphan_ref, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert orphan.state == :pending
+      refute orphan_ref in active_refs(parent, ctx)
+    end
+
+    test "6a: a gate-rejected-then-crash child synthesizes route_rejected", ctx do
+      parent = recoverable_parent(ctx)
+      append_wave_started(parent, 0, ["planner"], ctx)
+      # No Phase-2 gate producers yet, so craft the child terminal directly.
+      craft_child(parent, ctx, 0, :cancelled)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :cancelled = await_status(parent.id, ctx, :cancelled, 30_000)
+      assert :route_rejected in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "rejected"
+    end
+
+    test "6b: a gate-abandoned-then-crash child synthesizes route_abandoned", ctx do
+      parent = recoverable_parent(ctx)
+      append_wave_started(parent, 0, ["planner"], ctx)
+      craft_child(parent, ctx, 0, :abandoned)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :cancelled = await_status(parent.id, ctx, :cancelled, 30_000)
+      assert :route_abandoned in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "abandoned"
+    end
+
+    test "7: a parked gate child blocks restart (forward-safety pin)", ctx do
+      parent = recoverable_parent(ctx)
+      {parked, _gate} = craft_parked_child(parent, ctx)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+
+      # The parked child stays :awaiting_approval (the :parked no-op), so the
+      # "all children terminal" guard fails → the composer is NOT started.
+      assert reload(parent.id, ctx).status == :running
+      assert Registry.lookup(@registry, parent.id) == []
+      assert reload(parked.id, ctx).status == :awaiting_approval
+
+      assert {:ok, [_pending]} =
+               AgentCase.pending_for_run(parked.id, tenant: ctx.tenant, actor: ctx.actor)
+    end
+
+    test "8: seed premises survive a pre-first-wave crash", ctx do
+      converging_outputs()
+      # A genesis-only crash (no route_composed marker yet) with a non-empty seed
+      # premises — recovery must restore it from config, not the lost in-memory opts.
+      parent = recoverable_parent(ctx, premises: %{"risk" => "low", "scope" => "auth"})
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      # The resumed composer's FIRST route_composed carries the seed premises.
+      rc = first_route_composed(parent.id, ctx)
+      assert rc.payload["premises"] == %{"risk" => "low", "scope" => "auth"}
+    end
+
+    test "a recovered sensitive run keeps its marker and fails closed without a scope (H23/P1)",
+         ctx do
+      # The critical P1 fix: build_start_opts must restore `sanitize_sensitive_context`
+      # from config on recovery. We prove the LIVE marker survived by its observable
+      # effect: a marked wave's `register_child_correlation` REQUIRES a session scope,
+      # which recovery does not restore (context isn't durable). So a recovered
+      # sensitive run FAILS CLOSED at its first wave rather than running an
+      # un-sanitized turn. A LOST marker would instead make the correlation
+      # infallible (unmarked → cache-only) and the run would CONVERGE — exactly the
+      # same setup the unmarked recovery tests above ride to `:completed`. So
+      # `:failed` here (vs their `:completed`) isolates the surviving marker.
+      converging_outputs()
+      parent = recoverable_parent(ctx, sanitize_sensitive_context: true, deadline_ms: 60_000)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+      assert :route_failed in kinds(parent.id, ctx)
+      # Failed at the FIRST wave's correlation (no wave ever completed) ...
+      refute :wave_completed in kinds(parent.id, ctx)
+      # ... and the marked terminal scrub (config-driven) redacted the reason.
+      assert reload(parent.id, ctx).error == "[composer-sensitive:redacted]"
+    end
+
+    test "a malformed config catalog leaves the parent :running and starts no composer", ctx do
+      parent = malformed_catalog_parent(ctx, %{"bad" => %{}})
+
+      log =
+        capture_log(fn ->
+          assert :ok = WorkflowRecovery.reconcile_all()
+        end)
+
+      # Deterministic discriminator: ONLY the un-recoverable branch logs this (fails
+      # without the fix, where recoverable_catalog? returns true → resume → no such log).
+      assert log =~ "no recoverable catalog"
+
+      # Corroborating second signal: a restarted composer would append route_converged
+      # ASYNCHRONOUSLY, so an immediate read is racy — use a BOUNDED settle (reuse the
+      # suite's poll cadence, ~500ms) so the buggy path has time to misbehave, then
+      # assert it never converged and the parent stays :running.
+      refute converged_within?(parent.id, ctx, 500)
+      assert reload(parent.id, ctx).status == :running
+    end
+
+    test "a malformed config catalog with a valid opts catalog still fails closed", ctx do
+      # The launch seam (not recovery): `build_start_opts/2` starts FROM opts, so a
+      # direct `ensure_started/2`/`start_composer/2` caller may carry a VALID
+      # `:catalog`. A corrupt `config["catalog"]` is authoritative and must NOT
+      # fall back to that opts catalog — `:invalid` STRIPS the key so init fails
+      # closed, instead of launching a composer on the stale opts catalog (which,
+      # left in place, would converge to :completed).
+      parent = malformed_catalog_parent(ctx, %{"bad" => %{}})
+
+      # base_opts carries a VALID phase1 catalog; config["catalog"] is corrupt.
+      capture_log(fn ->
+        assert {:error, _reason} = RouteComposer.ensure_started(base_opts(ctx), parent)
+      end)
+
+      # No composer ran on the stale opts catalog: no wave ever launched and the
+      # parent never converged.
+      refute :wave_started in kinds(parent.id, ctx)
+      refute converged_within?(parent.id, ctx, 500)
+    end
+  end
+
+  # --- recovery crafting helpers ---
+
+  # A recoverable parent: create_parent_run with the full base_opts, so config
+  # carries the serialized catalog + bounds and genesis records the seed
+  # live/artifacts events. `extra_opts` adds e.g. premises / the sensitive marker.
+  defp recoverable_parent(ctx, extra_opts \\ []) do
+    {:ok, parent} = RouteComposer.create_parent_run(Keyword.merge(base_opts(ctx), extra_opts))
+    parent
+  end
+
+  # A :running composer parent whose `config["catalog"]` is malformed — it decodes
+  # atom-safe to a default `%Stage{}` but is NOT validator-clean, so the recovery
+  # guard must classify it un-recoverable. `recoverable_parent/2` always serializes
+  # a VALID catalog, so craft this one directly: create :pending → run_started →
+  # :running (the parent axis of craft_child/4 + drive_child/3).
+  defp malformed_catalog_parent(ctx, bad_catalog) do
+    {:ok, parent} =
+      WorkflowRun.create(
+        %{
+          name: "malformed-composer",
+          workflow_type: "composer",
+          config: %{"catalog" => bad_catalog}
+        },
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    {:ok, _} = append_event(parent, :run_started, %{}, ctx)
+    reload(parent.id, ctx)
+  end
+
+  # Create a wave child under the deterministic composer:<parent>:<wave> launch
+  # key and drive it to `status` via its own event log.
+  defp craft_child(parent, ctx, wave_index, status) do
+    {:ok, child} =
+      WorkflowRun.create(
+        %{
+          name: "wave-#{wave_index}",
+          workflow_type: "reactor",
+          parent_run_id: parent.id,
+          idempotency_key: "composer:#{parent.id}:#{wave_index}"
+        },
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    drive_child(child, status, ctx)
+  end
+
+  defp drive_child(child, :pending, _ctx), do: child
+
+  defp drive_child(child, :running, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  defp drive_child(child, :completed, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :run_completed, %{result: %{}}, ctx)
+    reload(child.id, ctx)
+  end
+
+  defp drive_child(child, :cancelled, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :run_cancelled, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  # `run_abandoned` is legal only from :awaiting_approval (projection guard), so
+  # park the child via approval_requested first.
+  defp drive_child(child, :abandoned, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :approval_requested, %{}, ctx)
+    {:ok, _} = append_event(child, :run_abandoned, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  # A parked gate child: :awaiting_approval + a checkpoint + a pending AgentCase
+  # (so recovery classifies it :parked → no-op, leaving it non-terminal).
+  defp craft_parked_child(parent, ctx) do
+    child = craft_child(parent, ctx, 0, :running)
+
+    {:ok, gate} =
+      WorkflowLog.gate_open(
+        child,
+        %{
+          workflow_run_id: child.id,
+          step_name: "plan-gate",
+          kind: :irreversible_write,
+          gate_module: JidoClaw.Gates.IrreversibleWriteGate,
+          details: %{}
+        },
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    {:ok, _} =
+      WorkflowRun.set_checkpoint(
+        reload(child.id, ctx),
+        %{resume_checkpoint: :erlang.term_to_binary(:cp)},
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    {reload(child.id, ctx), gate}
+  end
+
+  # Commit wave 0's durable fold (the dropped-fold recovery shape): store the plan
+  # as a :pending row that Commit.commit_wave activates, alongside wave_completed
+  # + the content deltas.
+  defp commit_wave0(parent, child, ctx) do
+    plan_ref = generate_ref()
+
+    {:ok, _} =
+      ComposerArtifact.store_pending(
+        %{
+          ref: plan_ref,
+          name: "plan",
+          producer: "planner",
+          term: "PLAN: build the auth feature",
+          child_run_id: child.id,
+          parent_run_id: parent.id,
+          wave_index: 0
+        },
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    deltas = %{
+      stages: ["planner"],
+      signals_published: ["plan-ready"],
+      signals_retracted: [],
+      artifacts_produced: [%{name: "plan", producer: "planner", ref: plan_ref}]
+    }
+
+    :ok = Commit.commit_wave(parent, 0, deltas, tenant: ctx.tenant, actor: ctx.actor)
+  end
+
+  defp append_event(run, kind, payload, ctx),
+    do: WorkflowLog.append(run, kind, payload, tenant: ctx.tenant, actor: ctx.actor)
+
+  # wave_started is a no-op for the projection (correlation metadata), so a minimal
+  # payload suffices; it documents "the composer started this wave before crashing".
+  defp append_wave_started(parent, wave_index, stages, ctx),
+    do: append_event(parent, :wave_started, %{wave_index: wave_index, stages: stages}, ctx)
+
+  defp wave_children(parent, ctx, wave_index) do
+    {:ok, %{child_runs: kids}} =
+      Ash.load(reload(parent.id, ctx), :child_runs, tenant: ctx.tenant, actor: ctx.actor)
+
+    Enum.filter(kids, &(&1.idempotency_key == "composer:#{parent.id}:#{wave_index}"))
+  end
+
+  defp first_route_composed(parent_id, ctx) do
+    {:ok, events} = WorkflowEvent.for_run(parent_id, tenant: ctx.tenant, actor: ctx.actor)
+
+    events
+    |> Enum.sort_by(& &1.seq)
+    |> Enum.find(&(&1.kind == :route_composed))
+  end
+
+  defp active_refs(parent, ctx) do
+    {:ok, actives} =
+      ComposerArtifact.active_for_run(parent.id, tenant: ctx.tenant, actor: ctx.actor)
+
+    Enum.map(actives, & &1.ref)
+  end
+
+  defp assert_unique_actives(parent, ctx) do
+    {:ok, actives} =
+      ComposerArtifact.active_for_run(parent.id, tenant: ctx.tenant, actor: ctx.actor)
+
+    keys = Enum.map(actives, &{&1.name, &1.producer})
+    assert keys == Enum.uniq(keys)
+  end
+
+  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
   # --- helpers ---
+
+  # A small bounded poll: true iff `:route_converged` appears in the parent's log
+  # within `timeout` ms, else false on timeout. Gives a (buggy-path) restarted
+  # composer time to false-converge before the caller asserts it did NOT.
+  defp converged_within?(parent_id, ctx, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    converged_loop(parent_id, ctx, deadline)
+  end
+
+  defp converged_loop(parent_id, ctx, deadline) do
+    cond do
+      :route_converged in kinds(parent_id, ctx) ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        Process.sleep(50)
+        converged_loop(parent_id, ctx, deadline)
+    end
+  end
 
   defp await_status(parent_id, ctx, target, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout

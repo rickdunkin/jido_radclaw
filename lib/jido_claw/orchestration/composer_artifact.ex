@@ -33,6 +33,17 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
   requires `:pending`, `tombstone_active` requires `:active`, so a `:pending` row
   can never be tombstoned nor a `:tombstoned` row reactivated.
 
+  ## Seed rows (Phase 2d — durable genesis)
+
+  A composer's **seed** artifacts are ref-stored at genesis via the same
+  `store_pending`, with `child_run_id: nil`, `producer: "seed"`, and a
+  `wave_index` sentinel `-1`. They stay `:pending` **forever** (no real wave
+  `N ≥ 0` ever names `-1`, so `pending_for_wave`/`activate_for_wave` never touch
+  them, and the `WHERE state='active'` partial index never sees them) yet resolve
+  state-agnostically through `resolve_value`. So a recovered/folded seed artifact
+  is an opaque `{:ref, ref}` (resolved + decrypted at the wave boundary like any
+  wave-produced artifact), while a minimal in-memory launch keeps its seed inline.
+
   ## The `store_pending` encoding choreography (load-bearing)
 
   AshCloak rewrites the accepted cloaked `:value` into an argument of the
@@ -263,9 +274,11 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
       public?(true)
     end
 
-    # The only nullable attribute (load-bearing — see the moduledoc
-    # choreography). Cloaked: stored as `encrypted_value`, read as a
-    # decrypting `value` calculation. Holds the `Envelope.encode/1` blob.
+    # Nullable so a `term:`-only call round-trips a real nil artifact value
+    # (load-bearing — see the moduledoc choreography; `child_run_id` is the only
+    # other nullable attribute, for seed rows). Cloaked: stored as
+    # `encrypted_value`, read as a decrypting `value` calculation. Holds the
+    # `Envelope.encode/1` blob.
     attribute :value, :binary do
       allow_nil?(true)
       public?(false)
@@ -278,8 +291,12 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
       constraints(one_of: [:pending, :active, :tombstoned])
     end
 
+    # Nullable for **seed** rows (AR-2 Phase 2d): a genesis seed artifact has no
+    # producing wave, so it carries `child_run_id: nil` (+ `producer: "seed"`,
+    # `wave_index: -1`). A real wave's row always sets it. `ValidateCrossTenantFk`
+    # skips the lineage check for a nil child.
     attribute :child_run_id, :uuid do
-      allow_nil?(false)
+      allow_nil?(true)
       public?(true)
     end
 

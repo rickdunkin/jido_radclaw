@@ -114,6 +114,7 @@ defmodule JidoClaw.RouteComposer do
 
   require Logger
 
+  alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.WorkflowEvent
@@ -121,11 +122,14 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.ArtifactContext
+  alias JidoClaw.RouteComposer.Catalog
+  alias JidoClaw.RouteComposer.CatalogValidator
   alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Loop
   alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
   alias JidoClaw.RouteComposer.Router
+  alias JidoClaw.RouteComposer.Stage
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.RouteComposer.WaveBuilder
   alias JidoClaw.Security.SensitiveScrub
@@ -173,7 +177,13 @@ defmodule JidoClaw.RouteComposer do
   ]
 
   @type terminal ::
-          :converged | :not_converged | :deadlock | :budget_exhausted | :failed
+          :converged
+          | :not_converged
+          | :deadlock
+          | :budget_exhausted
+          | :failed
+          | :rejected
+          | :abandoned
 
   @type history_entry :: %{
           index: non_neg_integer(),
@@ -255,18 +265,26 @@ defmodule JidoClaw.RouteComposer do
       # `past_deadline?` and 2d recovery both read — never a monotonic recompute.
       # Marked runs also stamp the durable `sanitize_sensitive_context` flag (P1b)
       # so `append_parent_terminal/5` can scrub a marked failure reason from a
-      # reloaded parent (the live GenServer marker never reaches that write).
-      config = parent_config(deadline_ms, marked)
+      # reloaded parent (the live GenServer marker never reaches that write). 2d
+      # adds the serialized `catalog` + bounds + seed `premises` so a node reboot
+      # can reconstruct the launch inputs (`build_start_opts/2`).
+      config = parent_config(opts, deadline_ms, marked)
 
       genesis =
-        Ash.transact([WorkflowRun, WorkflowEvent], fn ->
+        Ash.transact([WorkflowRun, WorkflowEvent, ComposerArtifact], fn ->
           with {:ok, parent} <-
                  WorkflowRun.create(%{name: name, workflow_type: "composer", config: config},
                    tenant: tenant,
                    actor: actor
                  ),
                {:ok, _event} <-
-                 WorkflowLog.append(parent, :run_started, %{}, tenant: tenant, actor: actor) do
+                 WorkflowLog.append(parent, :run_started, %{}, tenant: tenant, actor: actor),
+               # AFTER create + run_started (order matters, H11b): the seed rows'
+               # parent FK + lineage read-your-writes the just-created parent. The
+               # genesis seed `live`/`artifacts` events let `do_rebuild` reconstruct
+               # them at recovery (no `live`/`artifacts` opts then); at launch they
+               # fold idempotently onto the init seed (union / overwrite).
+               :ok <- append_genesis_seed(parent, opts, tenant, actor) do
             parent
           end
         end)
@@ -290,8 +308,20 @@ defmodule JidoClaw.RouteComposer do
   # `%{"deadline_at_ms" => unix_ms}` when a bounded deadline is set (else absent;
   # one `System.os_time(:millisecond)` read), plus `"sanitize_sensitive_context"
   # => true` for a marked run (P1b) — a boolean-in-JSONB that round-trips
-  # cleanly. Both keys are read back from the reloaded parent.
-  defp parent_config(ms, marked), do: maybe_mark(deadline_config(ms), marked)
+  # cleanly. 2d also threads (when present in opts) the serialized `catalog`
+  # (`Catalog.to_map/1`, self-contained / drift-proof), `max_waves`,
+  # `wave_timeout_ms`, and the seed `premises` (closing the pre-first-wave
+  # durability gap — `route_composed` only carries premises *after* the first
+  # wave). Every key is read back by `build_start_opts/2` at recovery.
+  defp parent_config(opts, ms, marked) do
+    ms
+    |> deadline_config()
+    |> maybe_mark(marked)
+    |> maybe_put_catalog(Keyword.get(opts, :catalog))
+    |> maybe_put("max_waves", Keyword.get(opts, :max_waves))
+    |> maybe_put("wave_timeout_ms", Keyword.get(opts, :wave_timeout_ms))
+    |> maybe_put_premises(Keyword.get(opts, :premises))
+  end
 
   defp deadline_config(ms) when is_integer(ms) and ms > 0,
     do: %{"deadline_at_ms" => System.os_time(:millisecond) + ms}
@@ -300,6 +330,109 @@ defmodule JidoClaw.RouteComposer do
 
   defp maybe_mark(config, true), do: Map.put(config, "sanitize_sensitive_context", true)
   defp maybe_mark(config, false), do: config
+
+  defp maybe_put_catalog(config, nil), do: config
+  defp maybe_put_catalog(config, catalog), do: Map.put(config, "catalog", Catalog.to_map(catalog))
+
+  defp maybe_put(config, _key, nil), do: config
+  defp maybe_put(config, key, value), do: Map.put(config, key, value)
+
+  # Seed premises go through the same `json_safe/1` boundary
+  # `route_composed_payload/2` uses, so atom values / stray structs never reach
+  # JSONB (`feedback_pin_types_at_ash_persistence_boundaries`).
+  defp maybe_put_premises(config, nil), do: config
+  defp maybe_put_premises(config, premises), do: Map.put(config, "premises", json_safe(premises))
+
+  # Record the seed `live`/`artifacts` the same way a wave records its deltas, so
+  # `do_rebuild` rebuilds them by folding the genesis events (recovery passes no
+  # seed opts). Seed `artifacts` are ref-stored (P1 — config/state carry only
+  # refs): one `signals_published` (sorted live) then one `artifacts_produced`
+  # (the seed store flattened to ref triples). Both are guarded on a non-empty
+  # seed, so the minimal `create_parent_run(tenant:, actor:)` callers append
+  # nothing (H5b). Any seed-insert / append failure flows the existing
+  # `{:error, reason}` channel → `{:start_failed, reason}` (H11a).
+  defp append_genesis_seed(parent, opts, tenant, actor) do
+    with :ok <- append_genesis_signals(parent, Keyword.get(opts, :live, []), tenant, actor) do
+      append_genesis_artifacts(parent, Keyword.get(opts, :artifacts, %{}), tenant, actor)
+    end
+  end
+
+  defp append_genesis_signals(parent, live, tenant, actor) do
+    case Enum.sort(live) do
+      [] ->
+        :ok
+
+      signals ->
+        append_genesis_event(parent, :signals_published, %{signals: signals}, tenant, actor)
+    end
+  end
+
+  defp append_genesis_artifacts(_parent, artifacts, _tenant, _actor)
+       when map_size(artifacts) == 0,
+       do: :ok
+
+  defp append_genesis_artifacts(parent, artifacts, tenant, actor) do
+    case store_seed_rows(parent, artifacts, tenant, actor) do
+      {:ok, []} ->
+        :ok
+
+      {:ok, triples} ->
+        append_genesis_event(parent, :artifacts_produced, %{artifacts: triples}, tenant, actor)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # Flatten the seed store (`name → producer → value`, H14) to ref triples,
+  # `store_pending`-ing each value as a **seed** row (`child_run_id: nil`,
+  # `producer:`, `wave_index: -1`, `term: value`) so the value lives encrypted at
+  # rest (P1) and the genesis `artifacts_produced` carries only the bare ref.
+  defp store_seed_rows(parent, artifacts, tenant, actor) do
+    seed_pairs(artifacts)
+    |> Enum.reduce_while({:ok, []}, fn {name, producer, value}, {:ok, acc} ->
+      case store_seed_row(parent, name, producer, value, tenant, actor) do
+        {:ok, ref} -> {:cont, {:ok, [%{name: name, producer: producer, ref: ref} | acc]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, triples} -> {:ok, Enum.reverse(triples)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp seed_pairs(artifacts) do
+    for {name, producers} <- artifacts, {producer, value} <- producers do
+      {name, producer, value}
+    end
+  end
+
+  defp store_seed_row(parent, name, producer, value, tenant, actor) do
+    attrs = %{
+      ref: generate_ref(),
+      name: name,
+      producer: producer,
+      term: value,
+      child_run_id: nil,
+      parent_run_id: parent.id,
+      wave_index: -1
+    }
+
+    case ComposerArtifact.store_pending(attrs, tenant: tenant, actor: actor) do
+      {:ok, %ComposerArtifact{ref: ref}} -> {:ok, ref}
+      {:error, reason} -> {:error, {:seed_artifact_store_failed, name, reason}}
+    end
+  end
+
+  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+  defp append_genesis_event(parent, kind, payload, tenant, actor) do
+    case WorkflowLog.append(parent, kind, payload, tenant: tenant, actor: actor) do
+      {:ok, _event} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc """
   Start the (unlinked) composer GenServer for `parent`, threading
@@ -361,15 +494,109 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  # Thread the STORED durable deadline (C1, P2-1) from the reloaded :running
-  # parent so `init/1` reads it back — no second wall-clock read, no monotonic
-  # recompute (`nil` when the run is unbounded) — plus the `:parent_run_id`.
-  # Shared by `start_composer/2` (unlinked) and `ensure_started/2` (supervised) so
-  # sensitive-run TTL/deadline behavior cannot drift across the two launch paths.
-  defp build_start_opts(opts, %WorkflowRun{} = parent) do
+  @doc """
+  Decode a serialized `config["catalog"]` for a composer launch/resume:
+
+    * `{:ok, catalog}` — present and coherent (`CatalogValidator` clean). `config`
+      is authoritative, so this wins over any opts catalog.
+    * `:absent` — no serialized catalog (the minimal `create_parent_run` lifecycle
+      path); the caller MAY fall back to an opts catalog.
+    * `:invalid` — present but un-decodable (atom-unsafe tag) OR incoherent
+      (structural/semantic). `config` is authoritative, so an invalid one is NOT
+      overridden by a possibly-stale opts catalog — it behaves like "no start".
+  """
+  @spec decode_config_catalog(term()) :: {:ok, %{String.t() => Stage.t()}} | :absent | :invalid
+  def decode_config_catalog(nil), do: :absent
+
+  def decode_config_catalog(serialized) do
+    case Catalog.from_map(serialized) do
+      nil ->
+        :invalid
+
+      catalog when map_size(catalog) == 0 ->
+        # A zero-stage catalog decodes + validates vacuously clean but can only
+        # false-converge (no stage to dispatch) — fail closed, same as malformed.
+        :invalid
+
+      catalog ->
+        if CatalogValidator.validate(catalog) == [], do: {:ok, catalog}, else: :invalid
+    end
+  end
+
+  # Reconstruct the composer's launch inputs from the durable parent `config`
+  # (Phase 2d), so a cold-boot recovery (`ensure_started/2` with no
+  # catalog/seed/bounds opts) resumes with the same inputs the launch had — the
+  # config is **authoritative**, with opts as the fallback for the minimal
+  # `create_parent_run(tenant:, actor:)` lifecycle-test path (config carries no
+  # catalog there, H12). Shared by `start_composer/2` (unlinked) and
+  # `ensure_started/2` (supervised) so sensitive-run TTL/deadline behavior cannot
+  # drift across the two launch paths.
+  #
+  #   * `:deadline_at_ms` — the STORED durable wall-clock budget (C1, P2-1;
+  #     `nil` when unbounded), never a recompute.
+  #   * `:catalog` — `decode_config_catalog(config["catalog"])`: a valid config
+  #     catalog wins (config-authoritative / drift-proof); **absent** → opts
+  #     fallback (the minimal-launch path); **invalid** (un-decodable or
+  #     incoherent) → refuse, no stale-opts fallback (behaves like "no start").
+  #   * `:premises` — restore the seed premises from config (the pre-first-wave
+  #     gap; `route_composed` only carries premises once waves run).
+  #   * `:max_waves` / `:wave_timeout_ms` — config-then-opts-then-default (the
+  #     TTL ceiling in `seed_wave_context` depends on `wave_timeout_ms`, H23).
+  #   * `:sanitize_sensitive_context` — **the critical P1 fix (H23)**: a recovered
+  #     sensitive run MUST keep its marker (else its waves write plaintext), so
+  #     read it from config — safe for launch too (config was set from the launch
+  #     marker at genesis).
+  #
+  # `live`/`artifacts` are NOT restored here: they ride opts at launch and are
+  # absent at recovery, where the genesis events rebuild them in `do_rebuild`.
+  defp build_start_opts(opts, %WorkflowRun{config: config} = parent) do
     opts
     |> Keyword.put(:parent_run_id, parent.id)
-    |> Keyword.put(:deadline_at_ms, parent.config["deadline_at_ms"])
+    |> Keyword.put(:deadline_at_ms, config["deadline_at_ms"])
+    |> put_start_catalog(config["catalog"])
+    |> Keyword.put(:premises, config["premises"] || opts[:premises] || %{})
+    |> Keyword.put(:max_waves, config["max_waves"] || opts[:max_waves] || @default_max_waves)
+    |> Keyword.put(
+      :wave_timeout_ms,
+      config["wave_timeout_ms"] || opts[:wave_timeout_ms] || @default_wave_timeout_ms
+    )
+    |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
+  end
+
+  # Three-way config-authoritative catalog resolution (`decode_config_catalog/1`):
+  # a valid config catalog wins; `:absent` falls back to any opts catalog (the
+  # minimal-launch lifecycle path); `:invalid` (un-decodable or incoherent)
+  # refuses — NO stale-opts fallback.
+  #
+  # `start_opts` is built FROM `opts`, so a direct `start_composer/2` /
+  # `ensure_started/2` caller may ALREADY have seeded a (valid) `:catalog`. That
+  # makes `:invalid` actively DELETE the key, not merely decline to add one —
+  # returning `start_opts` unchanged would leave the stale opts catalog in place
+  # and let `init/1` launch on it (a config-authoritative-contract violation).
+  # With the key stripped, `init/1`'s `Keyword.fetch!(opts, :catalog)` raises →
+  # `{:start_failed, _}` rather than starting a composer on a corrupt config or a
+  # possibly-stale opts catalog (the inverse of the present-nil trap,
+  # `project_tool_context_present_nil_map_get_trap`: here we remove the key so the
+  # fetch fails closed).
+  defp put_start_catalog(start_opts, serialized) do
+    case decode_config_catalog(serialized) do
+      {:ok, catalog} -> Keyword.put(start_opts, :catalog, catalog)
+      # minimal-launch lifecycle path
+      :absent -> put_opts_catalog(start_opts)
+      # authoritative-but-corrupt → strip any stale opts catalog, fail closed
+      :invalid -> Keyword.delete(start_opts, :catalog)
+    end
+  end
+
+  # The `:absent` minimal-launch path (config carries no catalog): keep an opts
+  # catalog if the caller supplied one, but only PUT a resolved key — never
+  # `catalog: nil` (which would defeat `init/1`'s `Keyword.fetch!`), so a launch
+  # with no catalog anywhere still raises → `{:start_failed, _}`.
+  defp put_opts_catalog(start_opts) do
+    case start_opts[:catalog] do
+      nil -> start_opts
+      catalog -> Keyword.put(start_opts, :catalog, catalog)
+    end
   end
 
   @doc """
@@ -708,8 +935,29 @@ defmodule JidoClaw.RouteComposer do
       status when status in [:running, :pending, :awaiting_approval] ->
         observe_existing_child(run, dispatch, display, state)
 
-      _terminal ->
-        finish_failed({:existing_run_not_completed, run.status}, run, dispatch, display, state)
+      # Phase 2d rule 2: a recovered child already `:failed` re-dispatches its
+      # stages under a FRESH `wave_index`. The failed wave never appended a
+      # `wave_completed`, so its stages aren't in `ran`; the re-tick re-composes
+      # them and dispatches under `composer:<parent>:<N+1>` — a key MISS → a
+      # genuinely fresh run (its own genuine failure then surfaces as
+      # `{:error, _, run}` → `finish_failed`, so this never loops; repeated
+      # mid-recovery crashes walk `wave_index` forward, bounded by `max_waves`).
+      # The old `:failed` child is a harmless orphan, told apart by `wave_index`.
+      # This differs DELIBERATELY from `observe_existing_child`'s non-completed
+      # terminal (H8): there a `:failed` is a genuine just-now wave failure that
+      # must fail the route; here it is a stale corpse from a prior crash.
+      :failed ->
+        {:noreply, %{state | wave_index: state.wave_index + 1}, {:continue, :tick}}
+
+      # A gate-decided-then-crash (Phase 2d): the gate's decision already drove
+      # the child to a terminal before the composer could observe it, so
+      # synthesize the parent terminal (the projection maps
+      # `route_rejected`/`route_abandoned` → `:cancelled` + disposition).
+      :cancelled ->
+        finish({:rejected, {:child_cancelled, run.id}}, state)
+
+      :abandoned ->
+        finish({:abandoned, {:child_abandoned, run.id}}, state)
     end
   end
 
@@ -1072,6 +1320,23 @@ defmodule JidoClaw.RouteComposer do
     |> notify_payload(summary)
   end
 
+  # Phase 2d gate-decided-then-crash terminals: append the cancelled-family event
+  # carrying a STRING disposition in `result` (NOT `error`, H10 — JSONB-safe,
+  # matching the `terminal_summary_subset`/`json_safe` stringify discipline; the
+  # projection lifts `result.disposition` onto the run via
+  # `terminal_lifting_result(:cancelled, …)`). Placed before the failure catch-all.
+  defp parent_terminal_notify(kind, _reason, summary, state)
+       when kind in [:rejected, :abandoned] do
+    state.parent_run_id
+    |> append_parent_terminal(
+      route_cancelled_kind(kind),
+      %{result: %{disposition: Atom.to_string(kind)}},
+      state.tenant,
+      state.actor
+    )
+    |> notify_payload(summary)
+  end
+
   defp parent_terminal_notify(kind, reason, summary, state) do
     state.parent_run_id
     |> append_parent_terminal(
@@ -1090,11 +1355,19 @@ defmodule JidoClaw.RouteComposer do
   defp route_terminal_kind(:budget_exhausted), do: :route_budget_exhausted
   defp route_terminal_kind(:failed), do: :route_failed
 
+  # The cancelled-family symbol → its durable `route_*` event kind; both project
+  # onto `:cancelled` (with the disposition lifted), via `@route_cancelled_kinds`.
+  defp route_cancelled_kind(:rejected), do: :route_rejected
+  defp route_cancelled_kind(:abandoned), do: :route_abandoned
+
   defp notify_payload(:ok, summary), do: {:done, summary}
   defp notify_payload({:error, reason}, _summary), do: {:terminalize_failed, reason}
 
   defp classify_terminal({:budget_exhausted, reason}), do: {:budget_exhausted, reason}
   defp classify_terminal({:failed, reason}), do: {:failed, reason}
+  # Phase 2d gate-decided-then-crash terminals (carry a disposition reason).
+  defp classify_terminal({:rejected, reason}), do: {:rejected, reason}
+  defp classify_terminal({:abandoned, reason}), do: {:abandoned, reason}
   defp classify_terminal(kind) when is_atom(kind), do: {kind, nil}
 
   defp summary(kind, reason, state) do
@@ -1113,9 +1386,10 @@ defmodule JidoClaw.RouteComposer do
 
   # The summary's `artifacts` is display/notify-only (never re-resolved), so it
   # keeps the historical bare-ref shape: P2 tags the in-memory fold store as
-  # `{:ref, ref}`, so unwrap each tagged ref back to the bare string here (seeds
-  # stay bare). The durable parent `result` (`terminal_summary_subset/1`) omits
-  # `artifacts` entirely, so it is unaffected.
+  # `{:ref, ref}`, so unwrap each tagged ref back to the bare string here (a
+  # folded/recovered seed is also a tagged ref and unwraps to its ref string; an
+  # untagged minimal-launch seed passes through). The durable parent `result`
+  # (`terminal_summary_subset/1`) omits `artifacts` entirely, so it is unaffected.
   defp unwrap_refs(store) do
     Map.new(store, fn {name, producers} ->
       {name, Map.new(producers, fn {producer, entry} -> {producer, unwrap_ref(entry)} end)}

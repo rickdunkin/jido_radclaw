@@ -75,10 +75,13 @@ defmodule JidoClaw.RouteComposer.Fold do
 
   # Every emission artifact value in Phase 2b IS an opaque ref, so tag it
   # `{:ref, ref}` (P2) — the explicit tag lets `ArtifactContext` distinguish a
-  # wave-produced ref from an inline seed value (which enters only via `init/1`
-  # and stays bare) without the old `art_<hex>` regex heuristic, which misread a
-  # seed that merely looked like a ref. The durable emission shape is unchanged
-  # (still bare `art_<hex>` strings); only this in-memory fold store is tagged.
+  # ref from an untagged inline seed value without the old `art_<hex>` regex
+  # heuristic, which misread a seed that merely looked like a ref. `Fold` itself
+  # only ever processes wave emissions and never touches a seed; a seed enters
+  # via `init/1` bare and is ref-ified (if at all) by the *projection's*
+  # genesis-fold (Phase 2d), not here, so an untagged seed is only the
+  # minimal-launch case. The durable emission shape is unchanged (still bare
+  # `art_<hex>` strings); only this in-memory fold store is tagged.
   defp fold_artifacts(state, producer, artifacts) do
     store =
       Enum.reduce(artifacts, state.artifacts, fn {name, ref}, acc ->

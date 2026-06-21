@@ -6,6 +6,10 @@ defmodule JidoClaw.Orchestration.ComposerArtifactTest do
   normalizer, both cross-tenant FK guards + the lineage assertion, the
   active-keyed partial-unique index backstop, and the non-null contract.
 
+  AR-2 Phase 2d — seed rows: a nullable `child_run_id` + a `wave_index: -1`
+  sentinel keep a genesis seed artifact invisible to every real-wave read yet
+  resolvable by ref.
+
   Non-async (`TenantCase`): the index/encrypt-at-rest assertions read raw
   Postgres rows, so it must not race other tenants' writes.
   """
@@ -196,7 +200,9 @@ defmodule JidoClaw.Orchestration.ComposerArtifactTest do
   end
 
   describe "non-null contract" do
-    for missing <- [:ref, :name, :producer, :child_run_id, :wave_index, :parent_run_id] do
+    # `:child_run_id` is NOT in this list (Phase 2d made it nullable for seed rows
+    # — see the seed-row test below).
+    for missing <- [:ref, :name, :producer, :wave_index, :parent_run_id] do
       test "store_pending rejects a missing #{missing}" do
         ctx = seed_lineage("artifact-required-#{unquote(missing)}")
         attrs = Map.delete(pending_attrs(ctx), unquote(missing))
@@ -214,6 +220,48 @@ defmodule JidoClaw.Orchestration.ComposerArtifactTest do
                ComposerArtifact.store_pending(attrs, tenant: ctx.tenant_id, actor: ctx.actor)
 
       assert error_message?(err, "term_required")
+    end
+  end
+
+  describe "seed rows (Phase 2d)" do
+    test "a seed row (child_run_id: nil, wave_index: -1, producer: seed) inserts :pending, " <>
+           "is invisible to real-wave reads, and resolves" do
+      ctx = seed_lineage("artifact-seed")
+
+      attrs =
+        pending_attrs(ctx, %{
+          name: "request",
+          producer: "seed",
+          term: "Build the auth feature",
+          child_run_id: nil,
+          wave_index: -1
+        })
+
+      assert {:ok, row} =
+               ComposerArtifact.store_pending(attrs, tenant: ctx.tenant_id, actor: ctx.actor)
+
+      assert row.state == :pending
+      assert is_nil(row.child_run_id)
+      assert row.wave_index == -1
+
+      # The sentinel -1 keeps it out of every real-wave (`N ≥ 0`) read: never
+      # `:active` (so `active_for_run` excludes it), and `pending_for_wave(p, 0)`
+      # filters on `wave_index == 0` (so it never sees the seed).
+      assert {:ok, []} =
+               ComposerArtifact.active_for_run(ctx.parent.id,
+                 tenant: ctx.tenant_id,
+                 actor: ctx.actor
+               )
+
+      assert {:ok, []} =
+               ComposerArtifact.pending_for_wave(ctx.parent.id, 0,
+                 tenant: ctx.tenant_id,
+                 actor: ctx.actor
+               )
+
+      # Still resolvable state-agnostically (the wave boundary reads it by ref).
+      assert {:ok, "Build the auth feature"} =
+               ComposerArtifact.resolve_value(attrs.ref, tenant: ctx.tenant_id, actor: ctx.actor)
     end
   end
 

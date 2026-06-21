@@ -105,4 +105,173 @@ defmodule JidoClaw.RouteComposer.Stage do
     publishes: [],
     lock: []
   ]
+
+  # ---------------------------------------------------------------------------
+  # JSONB (de)serialization (AR-2 Phase 2d — durable catalog in the parent config)
+  # ---------------------------------------------------------------------------
+  #
+  # `to_map/1` / `from_map/1` round-trip a `%Stage{}` through a JSON-safe map so
+  # the composer's launch catalog survives a full node reboot in
+  # `WorkflowRun.config["catalog"]`. Only the **closed enums** are stringified
+  # (the `unit` tag, `emit`, `guard`/`model`/`effort`, and the structural
+  # `input`/`lock` keys); every free string/list (`name`, `task`, `lens`,
+  # `routes`, `output`, `subscribes`, `publishes`, lock `while`/`until` *values*)
+  # passes through verbatim, preserving the atom-safety invariant above.
+  #
+  # `from_map/1` is **total + nil-on-failure**: it rebuilds via `struct/2` (so
+  # struct defaults fill absent keys) and coerces every closed enum back through
+  # a **hardcoded whitelist** — NEVER `String.to_atom`/`String.to_existing_atom`
+  # on free input (mirrors `ComposerArtifact.Envelope`'s `[:safe]` rationale). An
+  # unknown closed tag fails the whole decode (returns `nil`, never a created
+  # atom, a kept string, or a partial struct). This guarantees **atom-safety
+  # only**: a structurally-degenerate-but-atom-safe map (e.g. `%{}`) still decodes
+  # to a default `%Stage{}`, so STRUCTURAL coherence is
+  # `JidoClaw.RouteComposer.CatalogValidator`'s job — gated at launch/recovery by
+  # `RouteComposer.decode_config_catalog/1`, not by `from_map`.
+
+  @unit_tags %{
+    "seed" => :seed,
+    "worker_template" => :worker_template,
+    "skill" => :skill,
+    "gate" => :gate
+  }
+  @guards %{"sticky" => :sticky}
+  @models %{"fast" => :fast, "capable" => :capable}
+  @efforts %{"low" => :low, "medium" => :medium, "high" => :high}
+
+  @doc """
+  Serialize a `%Stage{}` to a JSON-safe, string-keyed map (closed enums
+  stringified; free strings/lists verbatim). The inverse of `from_map/1`.
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = stage) do
+    %{
+      "name" => stage.name,
+      "unit" => unit_to_map(stage.unit),
+      "task" => stage.task,
+      "lens" => stage.lens,
+      "guard" => atom_to_string(stage.guard),
+      "model" => atom_to_string(stage.model),
+      "effort" => atom_to_string(stage.effort),
+      "emit" => emit_to_map(stage.emit),
+      "routes" => stage.routes,
+      "input" => input_to_map(stage.input),
+      "output" => stage.output,
+      "subscribes" => stage.subscribes,
+      "publishes" => stage.publishes,
+      "lock" => Enum.map(stage.lock, &lock_to_map/1)
+    }
+  end
+
+  @doc """
+  Rebuild a `%Stage{}` from a `to_map/1` (or JSONB-reloaded) map. Total +
+  nil-on-failure: an unknown closed enum value, or any non-map input, returns
+  `nil` (never a partial struct, a created atom, or a kept string).
+  """
+  @spec from_map(map() | nil) :: t() | nil
+  def from_map(map) when is_map(map) do
+    with {:ok, unit} <- unit_from_map(Map.get(map, "unit")),
+         {:ok, emit} <- emit_from_map(Map.get(map, "emit")),
+         {:ok, guard} <- enum_from(Map.get(map, "guard"), @guards),
+         {:ok, model} <- enum_from(Map.get(map, "model"), @models),
+         {:ok, effort} <- enum_from(Map.get(map, "effort"), @efforts),
+         {:ok, input} <- input_from_map(Map.get(map, "input")),
+         {:ok, lock} <- lock_from_map(Map.get(map, "lock")) do
+      struct(__MODULE__, %{
+        name: Map.get(map, "name"),
+        unit: unit,
+        task: Map.get(map, "task"),
+        lens: Map.get(map, "lens"),
+        guard: guard,
+        model: model,
+        effort: effort,
+        emit: emit,
+        routes: string_list(Map.get(map, "routes")),
+        input: input,
+        output: string_list(Map.get(map, "output")),
+        subscribes: string_list(Map.get(map, "subscribes")),
+        publishes: string_list(Map.get(map, "publishes")),
+        lock: lock
+      })
+    else
+      _ -> nil
+    end
+  end
+
+  def from_map(_other), do: nil
+
+  defp unit_to_map(nil), do: nil
+
+  defp unit_to_map({tag, name}) when is_atom(tag),
+    do: %{"tag" => Atom.to_string(tag), "name" => name}
+
+  defp unit_from_map(nil), do: {:ok, nil}
+
+  defp unit_from_map(%{"tag" => tag, "name" => name}) when is_binary(tag) do
+    case Map.fetch(@unit_tags, tag) do
+      {:ok, atom_tag} -> {:ok, {atom_tag, name}}
+      :error -> :error
+    end
+  end
+
+  defp unit_from_map(_other), do: :error
+
+  defp emit_to_map(:default), do: "default"
+  defp emit_to_map({:mapper, name}), do: %{"mapper" => name}
+
+  # Absent ⇒ the struct default `:default`; the tagged mapper or the literal
+  # `"default"` decode back; anything else is an unknown closed value.
+  defp emit_from_map(nil), do: {:ok, :default}
+  defp emit_from_map("default"), do: {:ok, :default}
+  defp emit_from_map(%{"mapper" => name}), do: {:ok, {:mapper, name}}
+  defp emit_from_map(_other), do: :error
+
+  defp input_to_map(%{required: req, optional: opt}),
+    do: %{"required" => req, "optional" => opt}
+
+  defp input_from_map(nil), do: {:ok, %{required: [], optional: []}}
+
+  defp input_from_map(%{} = map),
+    do:
+      {:ok,
+       %{
+         required: string_list(Map.get(map, "required")),
+         optional: string_list(Map.get(map, "optional"))
+       }}
+
+  defp input_from_map(_other), do: :error
+
+  defp lock_to_map(%{while: w, until: u}), do: %{"while" => w, "until" => u}
+
+  defp lock_from_map(nil), do: {:ok, []}
+
+  defp lock_from_map(list) when is_list(list) do
+    reduced =
+      Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->
+        case entry do
+          %{"while" => w, "until" => u} -> {:cont, {:ok, [%{while: w, until: u} | acc]}}
+          _ -> {:halt, :error}
+        end
+      end)
+
+    case reduced do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      :error -> :error
+    end
+  end
+
+  defp lock_from_map(_other), do: :error
+
+  # nil (absent) keeps the struct default; a whitelisted string maps to its atom
+  # (`Map.fetch/2` already yields `{:ok, atom}` | `:error`, the contract here);
+  # any other value is an unknown closed enum and fails the decode.
+  defp enum_from(nil, _allowed), do: {:ok, nil}
+  defp enum_from(value, allowed) when is_binary(value), do: Map.fetch(allowed, value)
+  defp enum_from(_value, _allowed), do: :error
+
+  defp atom_to_string(nil), do: nil
+  defp atom_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp string_list(list) when is_list(list), do: list
+  defp string_list(_other), do: []
 end

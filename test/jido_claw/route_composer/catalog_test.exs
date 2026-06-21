@@ -1,9 +1,11 @@
 defmodule JidoClaw.RouteComposer.CatalogTest do
   use ExUnit.Case, async: true
 
+  alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.CatalogValidator
   alias JidoClaw.RouteComposer.Stage
+  alias JidoClaw.RouteComposer.TestFixtures
 
   test "the starter catalog validates clean" do
     assert CatalogValidator.validate(Catalog.all()) == []
@@ -29,5 +31,98 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
   test "valid?/1 reflects catalog membership" do
     assert Catalog.valid?("plan-gate")
     refute Catalog.valid?("ghost")
+  end
+
+  describe "to_map/from_map serialization (Phase 2d — durable catalog)" do
+    test "round-trips the built-in catalog (incl. the :seed + :gate units)" do
+      assert Catalog.from_map(Catalog.to_map(Catalog.all())) == Catalog.all()
+    end
+
+    test "round-trips the phase-1 catalog" do
+      phase1 = TestFixtures.phase1_catalog()
+      assert Catalog.from_map(Catalog.to_map(phase1)) == phase1
+    end
+
+    test "Stage.to_map/from_map round-trips every closed-enum variant" do
+      variants = [
+        TestFixtures.stage(name: "seed-stage", unit: {:seed, "triage"}),
+        TestFixtures.stage(name: "wt", unit: {:worker_template, "coder"}),
+        TestFixtures.stage(name: "skill", unit: {:skill, "my-skill"}),
+        TestFixtures.stage(name: "gate", unit: {:gate, "plan"}),
+        TestFixtures.stage(name: "mapper", emit: {:mapper, "m"}),
+        TestFixtures.stage(name: "sticky", guard: :sticky),
+        TestFixtures.stage(name: "tiered", model: :fast, effort: :high),
+        TestFixtures.stage(
+          name: "locked",
+          lock: [%{while: "a", until: "b"}],
+          req: ["x"],
+          opt: ["y"]
+        ),
+        TestFixtures.stage(name: "bare")
+      ]
+
+      for stage <- variants do
+        assert Stage.from_map(Stage.to_map(stage)) == stage
+      end
+    end
+
+    test "from_map(nil) is nil and a non-map is nil" do
+      assert Catalog.from_map(nil) == nil
+      assert Catalog.from_map("not a map") == nil
+      assert Stage.from_map(nil) == nil
+      assert Stage.from_map("not a map") == nil
+    end
+
+    test "an unknown closed tag fails the whole decode → nil, and creates no atom" do
+      # A globally-unique, never-before-seen tag string: if `from_map` round-tripped
+      # it through `String.to_atom`, the atom would exist afterward.
+      bogus = "definitely_not_a_unit_tag_#{System.unique_integer([:positive])}"
+
+      assert Stage.from_map(%{"unit" => %{"tag" => bogus, "name" => "x"}}) == nil
+      assert Catalog.from_map(%{"s" => %{"unit" => %{"tag" => bogus, "name" => "x"}}}) == nil
+
+      # One malformed stage fails the WHOLE catalog decode (recovery treats it as
+      # un-recoverable, identical to absent).
+      assert Catalog.from_map(%{
+               "ok" =>
+                 Stage.to_map(TestFixtures.stage(name: "ok", unit: {:worker_template, "c"})),
+               "bad" => %{"unit" => %{"tag" => bogus, "name" => "x"}}
+             }) == nil
+
+      # The bogus tag was never atomized.
+      assert_raise ArgumentError, fn -> String.to_existing_atom(bogus) end
+    end
+
+    test "an unknown guard / emit value fails the decode → nil" do
+      assert Stage.from_map(%{"guard" => "loud"}) == nil
+      assert Stage.from_map(%{"emit" => %{"unknown" => "x"}}) == nil
+      assert Stage.from_map(%{"model" => "turbo"}) == nil
+      assert Stage.from_map(%{"effort" => "extreme"}) == nil
+    end
+
+    test "a structurally-empty stage map decodes (atom-safe) but is NOT validator-clean" do
+      # `from_map` rejects only atom-unsafe input (unknown closed tags); a structurally
+      # empty stage map decodes to a default %Stage{}, so coherence needs CatalogValidator.
+      catalog = Catalog.from_map(%{"bad" => %{}})
+      assert %{"bad" => %Stage{name: nil, unit: nil, routes: []}} = catalog
+      assert CatalogValidator.validate(catalog) != []
+    end
+
+    test "decode_config_catalog classifies absent / valid / invalid" do
+      valid = TestFixtures.phase1_catalog()
+      assert RouteComposer.decode_config_catalog(nil) == :absent
+      assert RouteComposer.decode_config_catalog(Catalog.to_map(valid)) == {:ok, valid}
+      # structural
+      assert RouteComposer.decode_config_catalog(%{"bad" => %{}}) == :invalid
+      # zero-stage
+      assert RouteComposer.decode_config_catalog(%{}) == :invalid
+      bogus = %{"s" => %{"unit" => %{"tag" => "nope", "name" => "x"}}}
+      # atom-unsafe
+      assert RouteComposer.decode_config_catalog(bogus) == :invalid
+    end
+
+    test "phase1_catalog validates clean (recovery-guard invariant)" do
+      assert CatalogValidator.validate(TestFixtures.phase1_catalog()) == []
+    end
   end
 end

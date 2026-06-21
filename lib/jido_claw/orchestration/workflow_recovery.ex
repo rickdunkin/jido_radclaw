@@ -43,12 +43,22 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     * `:pending` **+ checkpoint** → an impossible/corrupt pair (a checkpoint is
       only ever written after `:awaiting_approval`) → fail-with-audit and a
       `Logger.warning`; **never** resumed.
-    * `workflow_type: "composer"` **+ `:running`** → **observed** (no-op): an
-      AR-2 composer parent sits `:running` for the whole route with no
-      checkpoint, so it is observed, never terminalized (2d does the real
-      rebuild+resume). Any *other* composer status falls through to the
+    * `workflow_type: "composer"` **+ `:running`** → **rebuilt + resumed**
+      (Phase 2d): an AR-2 composer parent sits `:running` for the whole route
+      with no checkpoint. Its serialized launch catalog is decoded **and
+      validated** from `config` (absent, atom-unsafe, **or** structurally-
+      incoherent — all un-recoverable, leaving the parent `:running`); its
+      non-terminal children are reconciled through the
+      reactor branches above; and — **only when every child is terminal** — the
+      supervised `JidoClaw.RouteComposer` is restarted, whose own
+      `init`/`do_rebuild` folds the durable log and resumes mid-route. A still-
+      parked gate child, or a transient blip, leaves the parent `:running` to
+      retry next boot — never failing a recoverable route. Composer parents are
+      reconciled **before** the other runs (their children excluded from the rest
+      of the scan), so the composer never re-dispatches a wave onto an
+      executorless child (H6b). Any *other* composer status falls through to the
       status-based branches above, so a never-started `:pending` composer is
-      still failed.
+      still failed (H20).
 
   No branch clears a checkpoint by hand — every terminal clears it centrally in
   the projection (Decision 7).
@@ -73,8 +83,10 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.GateResume
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.RouteComposer
 
   @dangling_gate_reason "recovered: dangling gate"
   @parked_orphan_reason "recovered: parked gate, pending case missing"
@@ -105,7 +117,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   def reconcile_all do
     case WorkflowRun.list_non_terminal_global() do
       {:ok, runs} ->
-        Enum.each(runs, &reconcile_run/1)
+        reconcile_partitioned(runs)
 
       {:error, reason} ->
         Logger.warning("[WorkflowRecovery] non-terminal scan failed: #{inspect(reason)}")
@@ -113,6 +125,32 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     :ok
   end
+
+  # Composer parents are reconciled FIRST (Phase 2d): a parent's children must be
+  # reconciled (and the composer restarted) before the `others` loop touches them,
+  # or a restarted composer would re-dispatch a wave and observe an executorless
+  # corpse for ~T_wave (H6b). The composer branch returns the child ids it
+  # handled; those are excluded from `others` so a child isn't reconciled twice
+  # (which would log a stale-`:running` `:illegal` double-reconcile warning).
+  defp reconcile_partitioned(runs) do
+    {composers, others} = Enum.split_with(runs, &composer_parent?/1)
+
+    handled =
+      Enum.reduce(composers, MapSet.new(), fn run, acc ->
+        MapSet.union(acc, reconcile_branch(:composer, run))
+      end)
+
+    others
+    |> Enum.reject(&MapSet.member?(handled, &1.id))
+    |> Enum.each(&reconcile_run/1)
+  end
+
+  # The exact condition `classify/1` maps to `:composer` — a `:running` composer
+  # parent. A `:pending`/`:awaiting_approval` composer is NOT one (it falls
+  # through to the status-based branches, so a never-started composer still
+  # fails, H20).
+  defp composer_parent?(%WorkflowRun{workflow_type: "composer", status: :running}), do: true
+  defp composer_parent?(_run), do: false
 
   # Classify on (status, checkpoint presence) and dispatch. Nothing is live at
   # boot, so the branch is decidable from DB state alone (no event fold).
@@ -238,10 +276,133 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # Genuinely stranded (the original bug fix): run_recovered + run_failed.
   defp reconcile_branch(:stranded, run), do: fail_stranded(run, :stranded)
 
-  # Composer parent (Phase 2a no-op guard): observe-only — never terminalize the
-  # new run type via reactor recovery. 2d replaces this with state-rebuild +
-  # resume mid-route.
-  defp reconcile_branch(:composer, run), do: emit(run, :composer)
+  # Composer parent (Phase 2d — the real rebuild+resume branch): reconcile the
+  # parent's non-terminal children through the reactor branches above, then —
+  # ONLY when every child is terminal — restart the supervised `RouteComposer`,
+  # whose own `init`/`do_rebuild` folds the durable log and resumes mid-route.
+  # Returns the set of child ids reconciled here (excluded from the `others`
+  # loop by `reconcile_partitioned/1`). The parent stays `:running` throughout —
+  # resume is mid-route, not a terminal, and an un-recoverable/parked/transient
+  # case leaves it `:running` to retry next boot (never failing a recoverable
+  # route).
+  defp reconcile_branch(:composer, run) do
+    if recoverable_catalog?(run) do
+      resume_composer(run)
+    else
+      # Absent OR un-decodable/incoherent serialized catalog (a public-`create`
+      # parent, or a corrupt `config["catalog"]`) → un-recoverable. NEVER
+      # `ensure_started`: a composer started on a structurally-degenerate catalog
+      # would silently false-converge the corrupt-config run to `:completed` (an
+      # empty composed route → nothing to dispatch → vacuous convergence),
+      # mutating the parent instead of leaving it `:running`. Decode-AND-validate
+      # (via `RouteComposer.decode_config_catalog`), not presence-only: a
+      # present-but-bad catalog must not slip through. Leave `:running`.
+      Logger.warning(
+        "[WorkflowRecovery] composer parent #{run.id} has no recoverable catalog; leaving :running"
+      )
+
+      emit(run, :composer)
+      MapSet.new()
+    end
+  end
+
+  # Delegates to the shared `RouteComposer.decode_config_catalog/1`: recoverable
+  # iff `{:ok, _}` — the serialized catalog both decodes (atom-safe) AND validates
+  # coherent (`CatalogValidator` clean). `:absent` (no `config["catalog"]`) and
+  # `:invalid` (un-decodable OR structurally-incoherent) are both un-recoverable.
+  # (`run.config["catalog"]` is nil-safe via `Access`; a nil config → `:absent`.)
+  defp recoverable_catalog?(run) do
+    match?({:ok, _}, RouteComposer.decode_config_catalog(run.config["catalog"]))
+  end
+
+  defp resume_composer(run) do
+    tenant = run.tenant_id
+    actor = Actor.system(tenant)
+    handled = reconcile_children(run, tenant, actor)
+
+    if all_children_terminal?(run, tenant, actor) do
+      start_recovered_composer(run, tenant, actor)
+    else
+      # A legitimately parked `:awaiting_approval` gate (the `:parked` no-op left
+      # it), a child a transient case-lookup error left awaiting, or any child that
+      # didn't terminalize. Do NOT start — a restarted composer would re-dispatch
+      # that wave, hit the still-non-terminal child, and `observe_existing_child`
+      # would poll the now-executorless child until `wave_timeout_ms` then fail the
+      # parent. Leave `:running` + retry next boot. (The durable
+      # wake-after-gate-decision story is Phase 4 gate-in-composer wiring; 2d must
+      # neither fail a parked parent nor start a composer that would.)
+      Logger.info(
+        "[WorkflowRecovery] composer parent #{run.id} has a non-terminal child " <>
+          "(e.g. a parked gate); leaving :running for the next boot"
+      )
+
+      emit(run, :composer)
+    end
+
+    handled
+  end
+
+  # Reconcile every NON-TERMINAL child through the shipped reactor branches
+  # (children are `workflow_type: "reactor"`): a `:running` no-checkpoint child →
+  # `:stranded` → `:failed`; a gated `:running` + recorded decision →
+  # `GateResume`; a parked `:awaiting_approval` + pending case → `:parked` (no-op,
+  # the human still owns the gate). Returns the set of child ids touched.
+  defp reconcile_children(run, tenant, actor) do
+    case load_child_runs(run, tenant, actor) do
+      {:ok, children} ->
+        children
+        |> Enum.filter(&non_terminal?/1)
+        |> Enum.reduce(MapSet.new(), fn child, acc ->
+          reconcile_run(child)
+          MapSet.put(acc, child.id)
+        end)
+
+      :error ->
+        MapSet.new()
+    end
+  end
+
+  # Re-read the children AFTER reconciliation (statuses changed) and require every
+  # one to be terminal before starting (findings #1 + #2). A reload failure is
+  # treated as "not all terminal" — don't start, retry next boot.
+  defp all_children_terminal?(run, tenant, actor) do
+    case load_child_runs(run, tenant, actor) do
+      {:ok, children} -> Enum.all?(children, &Projection.terminal_status?(&1.status))
+      :error -> false
+    end
+  end
+
+  defp start_recovered_composer(run, tenant, actor) do
+    # No `catalog:` opt — `build_start_opts/2` reconstructs it config-
+    # authoritatively (Step 3). A transient supervisor blip leaves the parent
+    # `:running` for the next boot (H19 — never fail a recoverable route).
+    case RouteComposer.ensure_started([tenant: tenant, actor: actor], run) do
+      {:ok, _pid} ->
+        emit(run, :composer)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[WorkflowRecovery] failed to start recovered composer #{run.id}: " <>
+            "#{inspect(reason)}; leaving :running for the next boot"
+        )
+    end
+  end
+
+  defp load_child_runs(run, tenant, actor) do
+    case Ash.load(run, :child_runs, tenant: tenant, actor: actor) do
+      {:ok, %WorkflowRun{child_runs: children}} ->
+        {:ok, children}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[WorkflowRecovery] failed to load composer children for #{run.id}: #{inspect(reason)}"
+        )
+
+        :error
+    end
+  end
+
+  defp non_terminal?(%WorkflowRun{status: status}), do: not Projection.terminal_status?(status)
 
   # The after_approved hook is NOT run (Decision 8) — recovery never routes
   # through Cases.decide, so the hook is skipped by construction.

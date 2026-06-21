@@ -174,4 +174,49 @@ defmodule JidoClaw.RouteComposer.Catalog do
   @doc "Returns true when `name` is a stage in the catalog."
   @spec valid?(String.t()) :: boolean()
   def valid?(name) when is_binary(name), do: Map.has_key?(@catalog, name)
+
+  # ---------------------------------------------------------------------------
+  # JSONB (de)serialization (AR-2 Phase 2d — durable catalog in the parent config)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Serialize a `%{name => %Stage{}}` catalog to a JSON-safe, string-keyed map
+  (each stage via `Stage.to_map/1`) — the form stored in the composer parent's
+  `WorkflowRun.config["catalog"]` so the launch catalog survives a node reboot.
+  """
+  @spec to_map(%{String.t() => Stage.t()}) :: %{String.t() => map()}
+  def to_map(catalog) when is_map(catalog) do
+    Map.new(catalog, fn {name, stage} -> {name, Stage.to_map(stage)} end)
+  end
+
+  @doc """
+  Rebuild a catalog from a `to_map/1` (or JSONB-reloaded) map. **Total +
+  nil-on-failure** (never `{:error, _}`): `from_map(nil)` is `nil`, and if **any**
+  stage fails to decode (`Stage.from_map/1` returns `nil` for an atom-unsafe
+  unknown closed tag) the whole catalog decode returns `nil`. This guarantees
+  **atom-safety only** — a structurally-degenerate-but-atom-safe stage map
+  decodes to a default `%Stage{}`, so STRUCTURAL/semantic coherence is a separate
+  `JidoClaw.RouteComposer.CatalogValidator` check; the launch/recovery gate
+  `RouteComposer.decode_config_catalog/1` composes both (decode here + validate
+  there).
+  """
+  @spec from_map(map() | nil) :: %{String.t() => Stage.t()} | nil
+  def from_map(nil), do: nil
+
+  def from_map(map) when is_map(map) do
+    reduced =
+      Enum.reduce_while(map, {:ok, %{}}, fn {name, stage_map}, {:ok, acc} ->
+        case Stage.from_map(stage_map) do
+          %Stage{} = stage -> {:cont, {:ok, Map.put(acc, name, stage)}}
+          nil -> {:halt, :error}
+        end
+      end)
+
+    case reduced do
+      {:ok, catalog} -> catalog
+      :error -> nil
+    end
+  end
+
+  def from_map(_other), do: nil
 end
