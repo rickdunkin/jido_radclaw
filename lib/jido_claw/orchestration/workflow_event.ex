@@ -114,7 +114,37 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           :run_failed,
           :run_cancelled,
           :run_abandoned,
-          :run_recovered
+          :run_recovered,
+          # AR-2 Composer (Phase 2c) — the durable composer delta log. None are a
+          # DB check constraint (an Ash app-level `one_of`, stored as text, like
+          # `WorkflowRun.status`), so no migration. The projection
+          # (`JidoClaw.RouteComposer.Projection`) folds every kind; the loop
+          # produces the additive 5 + the 5 in-loop terminals (+ `signals_retracted`
+          # on a paired-verdict flip). The rest are defined + folded + unit-tested
+          # now; their producers are Phase 4 gates / AR-4 reruns.
+          #
+          # Additive — wave deltas (parent stays `:running`; NOT status-authority).
+          :route_composed,
+          :wave_started,
+          :wave_completed,
+          :signals_published,
+          :artifacts_produced,
+          :wave_paused,
+          :wave_resumed,
+          # Subtractive — wave deltas (parent stays `:running`; NOT status-authority).
+          :signals_retracted,
+          :stages_invalidated,
+          :artifacts_invalidated,
+          # Parent-terminal — the composer's own terminal vocabulary. Status-authority
+          # (see `WorkflowEvent.Projection`): the four failure kinds + not-converged
+          # → `:failed`, converged → `:completed`, reject/abandon → `:cancelled`.
+          :route_converged,
+          :route_not_converged,
+          :route_deadlocked,
+          :route_budget_exhausted,
+          :route_failed,
+          :route_rejected,
+          :route_abandoned
         ]
       )
     end

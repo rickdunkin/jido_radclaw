@@ -159,11 +159,12 @@ defmodule JidoClaw.RouteComposer.SensitiveRouteTest do
     assert parent.error == "[composer-sensitive:redacted]"
     refute String.starts_with?(parent.error, "failed:")
 
-    # The scrub is at the append chokepoint, so the run_failed event payload
-    # carries the placeholder too (not a read-time mask).
+    # The scrub is at the append chokepoint, so the durable terminal event payload
+    # carries the placeholder too (not a read-time mask). Phase 2c: a loop `:failed`
+    # terminal is the `route_failed` kind (not the abnormal-path `:run_failed`).
     {:ok, events} = WorkflowEvent.for_run(parent.id, tenant: ctx.tenant, actor: ctx.actor)
-    run_failed = Enum.find(events, &(&1.kind == :run_failed))
-    assert run_failed.payload["error"] == "[composer-sensitive:redacted]"
+    route_failed = Enum.find(events, &(&1.kind == :route_failed))
+    assert route_failed.payload["error"] == "[composer-sensitive:redacted]"
   end
 
   # The secret is globally unique, so any row anywhere holding it (in any of the

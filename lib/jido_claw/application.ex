@@ -152,6 +152,17 @@ defmodule JidoClaw.Application do
       # so they must be torn down before those services on app shutdown.
       {Registry, keys: :unique, name: JidoClaw.Orchestration.RunRegistry},
       {Task.Supervisor, name: JidoClaw.Orchestration.RunTaskSupervisor},
+      # AR-2 composer supervised lifecycle (Phase 2c): the parent-run-id → composer
+      # GenServer registry + the DynamicSupervisor its `:transient` children run
+      # under. `max_restarts: 10`/`max_seconds: 30` matches the root supervisor's
+      # intensity (DynamicSupervisor defaults to 3/5) — the restart-intensity
+      # backstop for the rebuild-on-restart resume, not the design.
+      {Registry, keys: :unique, name: JidoClaw.RouteComposer.Registry},
+      {DynamicSupervisor,
+       name: JidoClaw.RouteComposer.Supervisor,
+       strategy: :one_for_one,
+       max_restarts: 10,
+       max_seconds: 30},
       # partition_count: 1 is REQUIRED for the Recorder's flush/1 barrier
       # to give per-request ordering. The Recorder's "all prior signals
       # processed" guarantee depends on per-sender FIFO from a single

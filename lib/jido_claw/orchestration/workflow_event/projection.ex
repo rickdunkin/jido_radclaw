@@ -24,6 +24,22 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   payload access tolerates both (`payload[:result] || payload["result"]`).
   """
 
+  # AR-2 composer parent-terminal kinds (Phase 2c), grouped by the existing
+  # `WorkflowRun.status` each implies — the composer adds NO new status atom, it
+  # reuses `:completed`/`:failed`/`:cancelled`. The loop produces `:route_converged`
+  # + the four `@route_failed_kinds`; `:route_rejected`/`:route_abandoned` are
+  # defined + projected now, producers (Phase 4 gates) later. `route_*` failures
+  # stay distinct from the abnormal-path generic `:run_failed` (both → `:failed`),
+  # so `terminal_status?/1` covers either.
+  @route_failed_kinds [
+    :route_not_converged,
+    :route_deadlocked,
+    :route_budget_exhausted,
+    :route_failed
+  ]
+  @route_cancelled_kinds [:route_rejected, :route_abandoned]
+  @route_terminal_kinds [:route_converged] ++ @route_failed_kinds ++ @route_cancelled_kinds
+
   # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
   # authority — `run_halted` is provenance only (the in-txn `approval_requested`
   # is what flips the run to `:awaiting_approval`). The gate kinds carry
@@ -31,18 +47,20 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # `approval_resolved` (approve = "decision recorded, resuming" → `:running`),
   # `approval_retracted` (stale approval withdrawn pre-resume →
   # `:awaiting_approval`), and `run_abandoned` (operator gave up on a parked
-  # gate → terminal `:abandoned`).
+  # gate → terminal `:abandoned`). The composer's additive/subtractive wave deltas
+  # are deliberately NOT authority — they persist as pure-log events and the parent
+  # stays `:running` across a wave; only `@route_terminal_kinds` carry authority.
   @status_authority_kinds [
-    :run_started,
-    :run_resumed,
-    :run_completed,
-    :run_failed,
-    :run_cancelled,
-    :run_abandoned,
-    :approval_requested,
-    :approval_resolved,
-    :approval_retracted
-  ]
+                            :run_started,
+                            :run_resumed,
+                            :run_completed,
+                            :run_failed,
+                            :run_cancelled,
+                            :run_abandoned,
+                            :approval_requested,
+                            :approval_resolved,
+                            :approval_retracted
+                          ] ++ @route_terminal_kinds
 
   @non_terminal [:pending, :running, :awaiting_approval]
 
@@ -108,6 +126,20 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def next_status(:running, :approval_retracted), do: {:ok, :awaiting_approval}
   def next_status(:awaiting_approval, :run_resumed), do: {:ok, :running}
   def next_status(:running, :run_resumed), do: {:ok, :running}
+
+  # AR-2 composer terminals (Phase 2c). `route_converged` mirrors `run_completed`
+  # (`:running` only — the composer parent is `:running` for the whole route);
+  # the four failure kinds mirror `run_failed` (any non-terminal → `:failed`);
+  # `route_rejected`/`route_abandoned` mirror `run_cancelled` (any non-terminal →
+  # `:cancelled`). A terminal → terminal append still falls to `:illegal`.
+  def next_status(:running, :route_converged), do: {:ok, :completed}
+
+  def next_status(status, kind) when status in @non_terminal and kind in @route_failed_kinds,
+    do: {:ok, :failed}
+
+  def next_status(status, kind) when status in @non_terminal and kind in @route_cancelled_kinds,
+    do: {:ok, :cancelled}
+
   def next_status(_current, _kind), do: :illegal
 
   @doc """
@@ -121,7 +153,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   ## Checkpoint lifecycle (Decision 7)
 
   The **terminal** clauses (`run_completed`/`run_failed`/`run_cancelled`/
-  `run_abandoned`) set `clear_checkpoint: true` — `:set_status`'s explicit
+  `run_abandoned` and the AR-2 composer `route_*` terminals) set
+  `clear_checkpoint: true` — `:set_status`'s explicit
   clear argument, which force-changes the **real encrypted column**
   (`encrypted_resume_checkpoint`) to true SQL NULL — so a run's frozen halt
   blob is cleared in the *same transaction* as the terminal status flip, with
@@ -139,20 +172,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     do: %{status: :running, started_at: occurred_at}
 
   def status_attrs(:run_completed, payload, occurred_at),
-    do: %{
-      status: :completed,
-      completed_at: occurred_at,
-      result: fetch(payload, :result),
-      clear_checkpoint: true
-    }
+    do: terminal_lifting_result(:completed, payload, occurred_at)
 
   def status_attrs(:run_failed, payload, occurred_at),
-    do: %{
-      status: :failed,
-      completed_at: occurred_at,
-      error: fetch(payload, :error),
-      clear_checkpoint: true
-    }
+    do: terminal_lifting_error(:failed, payload, occurred_at)
 
   def status_attrs(:run_cancelled, _payload, occurred_at),
     do: %{status: :cancelled, completed_at: occurred_at, clear_checkpoint: true}
@@ -173,6 +196,43 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
 
   def status_attrs(:run_resumed, _payload, _occurred_at),
     do: %{status: :running}
+
+  # AR-2 composer terminals (Phase 2c). `route_converged` models on
+  # `:run_completed` (lifts `result`); the four failure kinds model on
+  # `:run_failed` (lift `error`). `route_rejected`/`route_abandoned` get their
+  # OWN clause — `:cancelled` but lifting `result` (NOT `:run_cancelled`, which
+  # drops its payload) so the disposition the gate records (`result.disposition`)
+  # survives onto the run column. All clear the checkpoint like every terminal.
+  def status_attrs(:route_converged, payload, occurred_at),
+    do: terminal_lifting_result(:completed, payload, occurred_at)
+
+  def status_attrs(kind, payload, occurred_at) when kind in @route_failed_kinds,
+    do: terminal_lifting_error(:failed, payload, occurred_at)
+
+  def status_attrs(kind, payload, occurred_at) when kind in @route_cancelled_kinds,
+    do: terminal_lifting_result(:cancelled, payload, occurred_at)
+
+  # The two terminal attribute shapes — `status` + `completed_at` +
+  # `clear_checkpoint`, lifting either `result` (completed/converged, or cancelled
+  # carrying a disposition) or `error` (failed). Factored so each shape lives once
+  # (reach repeated-map-shape); the raw payload tolerates atom/string keys.
+  defp terminal_lifting_result(status, payload, occurred_at) do
+    %{
+      status: status,
+      completed_at: occurred_at,
+      result: fetch(payload, :result),
+      clear_checkpoint: true
+    }
+  end
+
+  defp terminal_lifting_error(status, payload, occurred_at) do
+    %{
+      status: status,
+      completed_at: occurred_at,
+      error: fetch(payload, :error),
+      clear_checkpoint: true
+    }
+  end
 
   @doc """
   Fold a list of events (sorted by `seq`) to a status, applying

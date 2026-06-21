@@ -121,3 +121,41 @@ defmodule JidoClaw.RouteComposer.TestSupport.BlockingAgentServer do
     {:ok, %{status: :failed, result: :blocked}}
   end
 end
+
+defmodule JidoClaw.RouteComposer.TestSupport.GatedAgentServer do
+  @moduledoc """
+  A one-shot gated `:step_agent_server` stub (AR-2 Phase 2c supervised-resume
+  tests). The FIRST `await_completion/2` call (the first wave) atomically disarms
+  a shared gate, signals the configured test pid with its OWN (wave-executor) pid,
+  and blocks until that pid sends `:proceed` — letting a test catch the composer
+  mid-wave, kill it, drive the `:transient` restart, and exercise the dedupe-hit
+  observe path against a still-`:running` child. Every later call delegates
+  straight to `StubAgentServer` (normal canned output). `async: false` + a
+  single-stage first wave means no concurrent caller races the gate.
+  """
+  alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
+
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
+  def await_completion(pid, opts) do
+    if disarm?() do
+      send(Application.fetch_env!(:jido_claw, :route_composer_gate_pid), {:wave_gate, self()})
+
+      receive do
+        :proceed -> :ok
+      after
+        15_000 -> :ok
+      end
+    end
+
+    StubAgentServer.await_completion(pid, opts)
+  end
+
+  defp disarm? do
+    if Application.get_env(:jido_claw, :route_composer_gate_armed, false) do
+      Application.put_env(:jido_claw, :route_composer_gate_armed, false)
+      true
+    else
+      false
+    end
+  end
+end

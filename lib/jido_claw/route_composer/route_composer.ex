@@ -1,7 +1,9 @@
 defmodule JidoClaw.RouteComposer do
   @moduledoc """
-  The single-run composer loop (AR-2 §4; §14 Phase 2a — durable parent-run
-  lineage over the still-**in-memory** composer state).
+  The single-run composer loop (AR-2 §4; §14 Phase 2c — the run is now a pure
+  function of durable state: composer deltas live in the parent's append-only
+  `WorkflowEvent` log, state is re-projectable from that log, and the composer is
+  a **supervised** process that rebuilds-from-log and resumes after a crash).
 
   A `GenServer` that turns the Alp River crank: **seed → `compose_route` →
   `merge_sticky` → dispatch the next unrun wave → run it on Reactor → fold the
@@ -21,34 +23,67 @@ defmodule JidoClaw.RouteComposer do
   `start_composer/2` start the GenServer. Each wave runs as a **child**
   `WorkflowRun` linked by `parent_run_id` and keyed by the deterministic
   idempotency key `composer:<parent_run_id>:<wave_index>`, so a re-derived wave
-  (2d recovery) dedupes to the existing child instead of double-running. The
-  parent reaches a terminal status (`:completed` on convergence, `:failed`
-  otherwise) the moment the loop finishes — `finish/2` appends that terminal
-  *before* it notifies. **Composer state (`live`/`artifacts`/`ran`/`prev_route`/
-  `wave_index`) still lives only in GenServer memory** — the durable event
-  log/projection and crash recovery are Phase 2c/2d.
+  (a restart re-dispatch / 2d recovery) dedupes to the existing child instead of
+  double-running. The parent reaches a terminal status the moment the loop
+  finishes — `finish/2` appends that terminal *before* it notifies.
 
-  ## State (in-memory)
+  ## Durable composer state (Phase 2c)
+
+  Composer state (`live`/`artifacts`/`ran`/`premises`/`prev_route`/`wave_index`)
+  is now a projection of the parent's `WorkflowEvent` log. Each wave appends its
+  deltas — `route_composed`/`wave_started` pre-launch (atomically, under the SAME
+  FOR-UPDATE parent-terminal guard as the fold-path commit, via
+  `JidoClaw.RouteComposer.Commit.start_wave/3`, so a cancel landing between waves
+  can never leak a wave's start markers onto an already-terminal parent), then
+  (atomically, with the `ComposerArtifact` ref
+  `:pending → :active` flip) `wave_completed` +
+  `signals_published`/`signals_retracted`/`artifacts_produced` on the fold path
+  (`JidoClaw.RouteComposer.Commit.commit_wave/4`). Both fence the parent's *durable*
+  state against a between-waves cancel; the wave's child-run launch is created
+  afterward by `ReactorRunner` without a parent-terminal check, so a cancel in that
+  narrow window still spawns an in-flight child whose fold is fenced at
+  `commit_wave/4` (same as the accepted `async_nolink` "wave survives a kill") —
+  fully closing that window is deferred Phase 4 work. The loop derives those content
+  deltas by **diffing** pre/post `Fold` state, so the durable log equals the
+  in-memory fold by construction (the equivalence invariant
+  `JidoClaw.RouteComposer.Projection.project(seed, log) == in-memory`). `init/1`
+  rebuilds from the log via that projection and resumes — a supervised composer
+  that crashes mid-route restarts (`:transient`) and continues; a fresh run (log =
+  `[run_started]`) projects to the seed unchanged. The five in-loop terminals are
+  the semantically-named `route_*` kinds (`route_converged` → `:completed`; the
+  four failures → `:failed`), all projecting onto the existing `WorkflowRun`
+  statuses. Boot-time crash recovery (the `WorkflowRecovery` scan + child-wave
+  re-launch) stays Phase 2d.
+
+  ## In-memory state (a projection of the durable log)
 
   `catalog`, `live` (signal topics), `artifacts` (the provenance store `name →
   %{producer => ref}` — Phase 2b: opaque `ComposerArtifact` refs, the values
   encrypted at rest and resolved only at the wave boundary), `ran`, `premises`,
-  `prev_route`, `wave_index`, the
-  `parent_run_id`, plus the run identity (`tenant`, `actor`, `context`) and
-  bounds (`max_waves`, the durable wall-clock `deadline_at_ms`, `wave_timeout_ms`).
-  `available` is **derived** from `artifacts`
+  `prev_route`, `wave_index`, the `parent_run_id` + the reloaded `parent` struct
+  (the carrier for non-terminal appends), plus the run identity (`tenant`, `actor`,
+  `context`), bounds (`max_waves`, the durable wall-clock `deadline_at_ms`,
+  `wave_timeout_ms`), and `rebuild_attempts` (the resume retry counter). The
+  evolving slice is rebuilt from the durable log on init/restart by
+  `JidoClaw.RouteComposer.Projection`; `available` is **derived** from `artifacts`
   each tick, never stored.
 
   ## Driving / notification
 
   The loop ticks via `handle_continue(:tick, …)`. `finish/2` stamps the terminal
-  + summary, **appends the parent's terminal event first** (reload-guarded:
-  `run_completed` on convergence → `:completed`, `run_failed` otherwise →
-  `:failed`), then sends `{:route_composer, ref, {:done, summary}}` to `notify`
-  for **every** terminal — or `{:route_composer, ref, {:terminalize_failed,
-  reason}}` if that durable write failed (so the caller never sees a
-  falsely-successful `:done`). It returns `{:stop, :normal, state}` so a finished
-  composer terminates rather than lingering. The thin `run_sync/1` helper
+  + summary, **appends the parent's `route_*` terminal event first** (reload-guarded:
+  `route_converged` → `:completed`, the four failure kinds → `:failed`), then —
+  **only when there is a sync caller** (`maybe_notify/2`) — sends
+  `{:route_composer, ref, {:done, summary}}` to `notify`, or
+  `{:route_composer, ref, {:terminalize_failed, reason}}` if that durable write
+  failed (so the caller never sees a falsely-successful `:done`). A **supervised**
+  run has no `notify`; its durable terminal is the source of truth, so a **failed**
+  terminal append is logged loudly (`log_supervised_terminal_failure/2`) — the
+  parent is left `:running` for 2d boot recovery, not silently swallowed (the sync
+  path surfaces the same failure via `maybe_notify/2`; a supervised run has nobody
+  to tell). It returns
+  `{:stop, :normal, state}` so a finished composer terminates rather than lingering
+  (and, under `:transient`, is not restarted). The thin `run_sync/1` helper
   (`create_parent_run/1` → `start_composer/2` **unlinked** + `Process.monitor` +
   a bounded `receive`) is the test/CLI entry: a composer crash surfaces as a
   handled `:DOWN`, and on timeout/crash/start-failure the now-ownerless
@@ -86,12 +121,19 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.ArtifactContext
+  alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Loop
+  alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.RouteComposer.WaveBuilder
   alias JidoClaw.Security.SensitiveScrub
+
+  # The supervised lifecycle's named singletons (Phase 2c), started in
+  # `JidoClaw.Application`'s always-on core group.
+  @registry JidoClaw.RouteComposer.Registry
+  @supervisor JidoClaw.RouteComposer.Supervisor
 
   @default_max_waves 20
   @default_timeout_ms 60_000
@@ -105,6 +147,30 @@ defmodule JidoClaw.RouteComposer do
   # LLM / tool timeouts), added on top of the run deadline + one wave timeout to
   # size the marker-row TTL (C5). A fixed constant, NOT T_wave. ~10 min.
   @orphan_drain_ms 600_000
+
+  # Rebuild-on-restart retry budget (Phase 2c): a transient parent-reload /
+  # event-load error (DB blip) is retried a capped number of times with capped
+  # exponential backoff before the composer stops `:normal` — leaving the parent
+  # `:running` for 2d boot recovery, NOT crash-looping the supervised child.
+  @max_rebuild_attempts 5
+  @rebuild_backoff_ms 100
+  @rebuild_backoff_max_ms 2_000
+
+  # Dedupe-hit observe poll interval (Phase 2c): a restart re-dispatch may bind a
+  # still-running in-flight child; the composer polls its terminal at this cadence
+  # up to `wave_timeout_ms`.
+  @observe_poll_ms 50
+
+  # Terminal error kinds whose `:error` is scrubbed for a marked (sensitive) run:
+  # the abnormal-path generic `:run_failed` plus the four loop `route_*` failures.
+  # `:route_converged` is excluded — its payload is the opaque result subset.
+  @scrubbable_error_kinds [
+    :run_failed,
+    :route_not_converged,
+    :route_deadlocked,
+    :route_budget_exhausted,
+    :route_failed
+  ]
 
   @type terminal ::
           :converged | :not_converged | :deadlock | :budget_exhausted | :failed
@@ -148,10 +214,17 @@ defmodule JidoClaw.RouteComposer do
   ticks immediately, so the parent run MUST
   already be committed (`create_parent_run/1`) before this is called — a wave
   could otherwise fire against an uncommitted parent. Used by 2c's supervised
-  lifecycle; `run_sync/1` uses the unlinked `start_composer/2` instead.
+  lifecycle (`ensure_started/2`), single-owner per `parent_run_id` via the
+  `JidoClaw.RouteComposer.Registry`; `run_sync/1` uses the unlinked, unnamed
+  `start_composer/2` instead.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts) do
+    parent_run_id = Keyword.fetch!(opts, :parent_run_id)
+    GenServer.start_link(__MODULE__, opts, name: via_tuple(parent_run_id))
+  end
+
+  defp via_tuple(parent_run_id), do: {:via, Registry, {@registry, parent_run_id}}
 
   @doc """
   Durable genesis of a composer parent run (Phase 2a).
@@ -238,15 +311,7 @@ defmodule JidoClaw.RouteComposer do
   @spec start_composer(keyword(), WorkflowRun.t()) ::
           {:ok, pid()} | {:error, {:start_failed, term()}}
   def start_composer(opts, %WorkflowRun{} = parent) do
-    # Thread the STORED durable deadline (C1, P2-1) from the reloaded :running
-    # parent so `init/1` reads it back — no second wall-clock read, no monotonic
-    # recompute. `nil` when the run is unbounded.
-    start_opts =
-      opts
-      |> Keyword.put(:parent_run_id, parent.id)
-      |> Keyword.put(:deadline_at_ms, parent.config["deadline_at_ms"])
-
-    case GenServer.start(__MODULE__, start_opts) do
+    case GenServer.start(__MODULE__, build_start_opts(opts, parent)) do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -260,6 +325,51 @@ defmodule JidoClaw.RouteComposer do
 
         {:error, {:start_failed, reason}}
     end
+  end
+
+  @doc """
+  Find-or-start the **supervised** composer for `parent`, single-owner per
+  `parent_run_id` (Phase 2c). Looks the run up in `JidoClaw.RouteComposer.Registry`;
+  on a miss, starts a `restart: :transient` child under
+  `JidoClaw.RouteComposer.Supervisor` (collapsing `{:already_started, pid}` for the
+  start race) — mirroring `VFS.Workspace.start_fresh/2` /
+  `CodeServer.ensure_project_runtime/1`. The composer exits `{:stop, :normal}` on
+  every terminal, so `:transient` means "crash → restart → `init` rebuilds +
+  resumes; normal terminal → no restart." Supervised runs have no sync caller, so
+  `:notify`/`:ref` are omitted (the durable terminal is the source of truth).
+  """
+  @spec ensure_started(keyword(), WorkflowRun.t()) :: {:ok, pid()} | {:error, term()}
+  def ensure_started(opts, %WorkflowRun{} = parent) do
+    case Registry.lookup(@registry, parent.id) do
+      [{pid, _value}] -> {:ok, pid}
+      [] -> start_supervised_composer(build_start_opts(opts, parent), parent.id)
+    end
+  end
+
+  defp start_supervised_composer(start_opts, parent_run_id) do
+    child_spec = %{
+      id: {__MODULE__, parent_run_id},
+      start: {__MODULE__, :start_link, [start_opts]},
+      restart: :transient
+    }
+
+    # Collapse the start race: `{:already_started, pid}` (a concurrent caller won)
+    # is success; `{:ok, pid}` and a real `{:error, _}` both pass through.
+    case DynamicSupervisor.start_child(@supervisor, child_spec) do
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      other -> other
+    end
+  end
+
+  # Thread the STORED durable deadline (C1, P2-1) from the reloaded :running
+  # parent so `init/1` reads it back — no second wall-clock read, no monotonic
+  # recompute (`nil` when the run is unbounded) — plus the `:parent_run_id`.
+  # Shared by `start_composer/2` (unlinked) and `ensure_started/2` (supervised) so
+  # sensitive-run TTL/deadline behavior cannot drift across the two launch paths.
+  defp build_start_opts(opts, %WorkflowRun{} = parent) do
+    opts
+    |> Keyword.put(:parent_run_id, parent.id)
+    |> Keyword.put(:deadline_at_ms, parent.config["deadline_at_ms"])
   end
 
   @doc """
@@ -369,6 +479,12 @@ defmodule JidoClaw.RouteComposer do
     marked = Keyword.get(opts, :sanitize_sensitive_context, false)
     wave_timeout_ms = Keyword.get(opts, :wave_timeout_ms, @default_wave_timeout_ms)
 
+    # The SEED state (Phase 2c): the static fields + the seeded `live`/`artifacts`/
+    # `premises`. `handle_continue(:rebuild)` reloads the parent and folds the
+    # durable event log onto this seed via `ComposerProjection.project/2` — a fresh
+    # run (log = `[run_started]`) projects to the seed unchanged; a crashed-and-
+    # restarted run resumes from the rebuilt state. `notify`/`ref` are optional —
+    # a supervised run has no sync caller (the durable terminal is the truth).
     state = %{
       catalog: Keyword.fetch!(opts, :catalog),
       live: MapSet.new(Keyword.get(opts, :live, [])),
@@ -378,6 +494,7 @@ defmodule JidoClaw.RouteComposer do
       prev_route: [],
       wave_index: 0,
       parent_run_id: Keyword.fetch!(opts, :parent_run_id),
+      parent: nil,
       tenant: Keyword.fetch!(opts, :tenant),
       actor: Keyword.fetch!(opts, :actor),
       context:
@@ -391,15 +508,115 @@ defmodule JidoClaw.RouteComposer do
       deadline_at_ms: deadline_at_ms,
       sanitize_sensitive_context: marked,
       wave_timeout_ms: wave_timeout_ms,
-      notify: Keyword.fetch!(opts, :notify),
-      ref: Keyword.fetch!(opts, :ref),
+      notify: Keyword.get(opts, :notify),
+      ref: Keyword.get(opts, :ref),
+      rebuild_attempts: 0,
       history: [],
       terminal: nil,
       reason: nil,
       summary: nil
     }
 
-    {:ok, state, {:continue, :tick}}
+    {:ok, state, {:continue, :rebuild}}
+  end
+
+  # ---------------------------------------------------------------------------
+  # The tick loop + rebuild-from-log resume (Phase 2c)
+  # ---------------------------------------------------------------------------
+
+  # `handle_continue(:rebuild)` runs once after init and resumes from the durable
+  # log; `:tick` turns the crank. `handle_info(:rebuild_retry)` (below) is the
+  # `Process.send_after` re-arm on a transient rebuild failure — it arrives as an
+  # info message, NOT a continue, so it needs its own head; both drive `do_rebuild/1`.
+  @impl GenServer
+  def handle_continue(:rebuild, state), do: do_rebuild(state)
+
+  def handle_continue(:tick, state) do
+    available = Fold.available(state.artifacts)
+    result = Router.compose_route(state.catalog, state.live, available, state.ran)
+    display = Router.merge_sticky(state.catalog, state.prev_route, result)
+    dispatch = Loop.dispatch_cohort(display, state.ran)
+
+    cond do
+      is_nil(dispatch) -> finish(Loop.terminal(display, state), state)
+      over_budget?(state) -> finish({:budget_exhausted, budget_reason(state)}, state)
+      true -> run_wave(dispatch, display, state)
+    end
+  end
+
+  @impl GenServer
+  def handle_info(:rebuild_retry, state), do: do_rebuild(state)
+
+  defp do_rebuild(state) do
+    case load_parent_and_events(state) do
+      # Reloaded parent already terminal → don't resume a finished run.
+      {:terminal, _parent} ->
+        {:stop, :normal, state}
+
+      {:ok, parent, events} ->
+        rebuilt =
+          ComposerProjection.project(%{state | parent: parent, rebuild_attempts: 0}, events)
+
+        {:noreply, rebuilt, {:continue, :tick}}
+
+      {:error, reason} ->
+        retry_rebuild_or_stop(state, reason)
+    end
+  end
+
+  defp load_parent_and_events(state) do
+    with {:ok, %WorkflowRun{} = parent} <- reload_parent(state) do
+      if Projection.terminal_status?(parent.status) do
+        {:terminal, parent}
+      else
+        load_events(state, parent)
+      end
+    end
+  end
+
+  defp reload_parent(state) do
+    case WorkflowRun.by_id(state.parent_run_id, tenant: state.tenant, actor: state.actor) do
+      {:ok, %WorkflowRun{} = parent} -> {:ok, parent}
+      {:ok, nil} -> {:error, :parent_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp load_events(state, parent) do
+    case WorkflowEvent.for_run(state.parent_run_id, tenant: state.tenant, actor: state.actor) do
+      {:ok, events} -> {:ok, parent, events}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A transient parent-reload / event-load error (DB blip) must not crash a
+  # `:transient` child into a restart loop. Retry a capped number of times with
+  # capped exponential backoff; if still failing, log loudly and stop `:normal` —
+  # leaving the parent `:running` for 2d boot recovery, NOT terminalizing a
+  # recoverable run. (The supervisor's `max_restarts` is a backstop, not the
+  # design.)
+  defp retry_rebuild_or_stop(state, reason) do
+    if state.rebuild_attempts < @max_rebuild_attempts do
+      Process.send_after(self(), :rebuild_retry, rebuild_backoff(state.rebuild_attempts))
+
+      Logger.warning(
+        "[RouteComposer] rebuild attempt #{state.rebuild_attempts + 1} failed for parent " <>
+          "#{state.parent_run_id} (#{inspect(reason)}); retrying"
+      )
+
+      {:noreply, %{state | rebuild_attempts: state.rebuild_attempts + 1}}
+    else
+      Logger.error(
+        "[RouteComposer] rebuild failed for parent #{state.parent_run_id} after " <>
+          "#{state.rebuild_attempts} attempts (#{inspect(reason)}); leaving parent :running for recovery"
+      )
+
+      {:stop, :normal, state}
+    end
+  end
+
+  defp rebuild_backoff(attempt) do
+    min(@rebuild_backoff_ms * Integer.pow(2, attempt), @rebuild_backoff_max_ms)
   end
 
   # Seed the per-wave reactor context with the conservative `RequestCorrelation`
@@ -421,20 +638,6 @@ defmodule JidoClaw.RouteComposer do
 
   defp seed_wave_context(context, _marked, _deadline_at_ms, _wave_timeout_ms), do: context
 
-  @impl GenServer
-  def handle_continue(:tick, state) do
-    available = Fold.available(state.artifacts)
-    result = Router.compose_route(state.catalog, state.live, available, state.ran)
-    display = Router.merge_sticky(state.catalog, state.prev_route, result)
-    dispatch = Loop.dispatch_cohort(display, state.ran)
-
-    cond do
-      is_nil(dispatch) -> finish(Loop.terminal(display, state), state)
-      over_budget?(state) -> finish({:budget_exhausted, budget_reason(state)}, state)
-      true -> run_wave(dispatch, display, state)
-    end
-  end
-
   # ---------------------------------------------------------------------------
   # The wave
   # ---------------------------------------------------------------------------
@@ -453,35 +656,60 @@ defmodule JidoClaw.RouteComposer do
   end
 
   # Resolve + decrypt the wanted artifacts into `:extra_context` (Phase 2b: the
-  # only place a decrypted value re-enters live execution), branching on
-  # `ArtifactContext.build/4`'s `{:ok, _} | {:error, _}`. A resolve/decrypt
-  # failure terminates the wave cleanly via `finish_failed` (no reactor ran, so
-  # no child run to record — the same shape as the `build_wave` failure clause).
+  # only place a decrypted value re-enters live execution), then append the
+  # pre-launch `route_composed` + `wave_started` markers (Phase 2c) under the
+  # FOR-UPDATE parent-terminal guard (`Commit.start_wave/3`) — both BEFORE
+  # `run_reactor`, so `wave_started` commits before the child run exists (2d
+  # detects a pre-creation crash from it). A resolve/decrypt failure OR a failed
+  # pre-launch append terminates the wave cleanly via `finish_failed` (no reactor
+  # ran / the wave must not silently launch un-recorded), the same shape as the
+  # `build_wave` failure clause. A `{:error, :parent_terminal}` from the guard stops
+  # cleanly WITHOUT launching the wave or creating a child run — consistent with the
+  # existing `commit_wave` `:parent_terminal` arm.
+  #
+  # NOTE — residual window (deferred Phase 4): `:parent_terminal` here fires only
+  # when the parent was ALREADY terminal while `start_wave/3` held the lock. A cancel
+  # landing AFTER `start_wave/3` commits but BEFORE `run_reactor` creates the child
+  # still spawns an in-flight child (`ReactorRunner` does no parent-terminal check) —
+  # its fold is fenced at `commit_wave/4`, the same accepted `async_nolink` "wave
+  # survives a kill". Closing it needs composer cancellation / a child-create
+  # terminal coupling, out of this follow-up's scope.
   defp run_built_wave(reactor, stages, dispatch, display, state) do
-    case ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor) do
-      {:ok, extra_context} ->
-        reactor
-        |> run_reactor(extra_context, state)
-        |> handle_wave_result(dispatch, display, state)
-
-      {:error, reason} ->
-        finish_failed(reason, nil, dispatch, display, state)
+    with {:ok, extra_context} <-
+           ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor),
+         :ok <- record_wave_start(dispatch, display, state) do
+      reactor
+      |> run_reactor(extra_context, state)
+      |> handle_wave_result(dispatch, display, state)
+    else
+      # The run ended externally (operator cancel between waves): stop cleanly,
+      # don't re-terminalize and don't launch the wave — consistent with the
+      # `commit_wave` `:parent_terminal` arm in `handle_wave_value/5`.
+      {:error, :parent_terminal} -> {:stop, :normal, state}
+      {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
   end
 
-  # A launch-dedupe hit re-binds an already-seen wave. It cannot occur in 2a's
-  # linear single-process loop (each `wave_index` runs exactly once), but the
-  # deterministic `composer:<parent>:<wave_index>` key makes it reachable for 2d
-  # recovery re-drives, so the contract is kept total now: a `:completed`
-  # existing child folds its durable emission; any other status is a failed wave
-  # (the full status-branch table — `:awaiting_approval` park, live `:running`
-  # observe — is 2c/2d). This clause must precede the generic `{:ok, value, run}`
-  # one (the existing-run tuple matches both).
+  # A launch-dedupe hit re-binds an already-seen wave. It cannot occur in a fresh
+  # linear run (each `wave_index` runs exactly once), but the deterministic
+  # `composer:<parent>:<wave_index>` key makes it reachable on a **restart
+  # re-dispatch** (a live composer crash does NOT kill its in-flight wave — the
+  # wave runs `async_nolink` and survives to finish durably), so the contract is
+  # total: a `:completed` child folds its durable emission (recovering a dropped
+  # fold); a still-`:running`/`:pending`/`:awaiting_approval` child is **observed**
+  # (bounded read-only poll, not failed — Phase 2c) then re-branched; a terminal
+  # `:failed`/`:cancelled`/`:abandoned` is a failed wave. This clause must precede
+  # the generic `{:ok, value, run}` one (the existing-run tuple matches both).
   defp handle_wave_result({:ok, {:existing_run, _id}, run}, dispatch, display, state) do
-    if run.status == :completed do
-      handle_wave_value(decode_emissions(run.result), run, dispatch, display, state)
-    else
-      finish_failed({:existing_run_not_completed, run.status}, run, dispatch, display, state)
+    case run.status do
+      :completed ->
+        handle_wave_value(decode_emissions(run.result), run, dispatch, display, state)
+
+      status when status in [:running, :pending, :awaiting_approval] ->
+        observe_existing_child(run, dispatch, display, state)
+
+      _terminal ->
+        finish_failed({:existing_run_not_completed, run.status}, run, dispatch, display, state)
     end
   end
 
@@ -498,13 +726,32 @@ defmodule JidoClaw.RouteComposer do
     finish_failed(reason, run, dispatch, display, state)
   end
 
+  # The durable commit path (Phase 2c): compute the pure fold, derive the wave's
+  # content deltas by DIFFING pre/post `Fold` state (so the durable log equals the
+  # in-memory fold by construction — incl. a paired-verdict flip that retracts a
+  # live signal, captured as `signals_retracted`), then atomically commit
+  # `wave_completed` + content + `activate_for_wave` via `Commit.commit_wave/4`.
+  # Only on `:ok` do we fold into memory and continue.
   defp handle_wave_value({:ok, emissions}, run, dispatch, display, state) do
-    next =
-      state
-      |> Fold.fold(emissions)
-      |> record_wave(dispatch, display, run, emissions)
+    next_fold = Fold.fold(state, emissions)
+    deltas = wave_deltas(state, next_fold, dispatch)
 
-    {:noreply, next, {:continue, :tick}}
+    case Commit.commit_wave(state.parent, state.wave_index, deltas, auth_opts(state)) do
+      :ok ->
+        next = record_wave(next_fold, dispatch, display, run, emissions)
+        {:noreply, next, {:continue, :tick}}
+
+      # The run ended externally (an operator cancel landed while the wave
+      # returned): stop cleanly, don't re-terminalize (the terminal append already
+      # no-ops a terminal parent).
+      {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      # A commit leg failed: terminalize the parent `route_failed` — do NOT
+      # fold/record/continue from memory as if the durable write had landed.
+      {:error, reason} ->
+        finish_failed(reason, run, dispatch, display, state)
+    end
   end
 
   defp handle_wave_value({:error, reason}, run, dispatch, display, state),
@@ -593,6 +840,177 @@ defmodule JidoClaw.RouteComposer do
   end
 
   # ---------------------------------------------------------------------------
+  # Durable wave records (Phase 2c)
+  # ---------------------------------------------------------------------------
+
+  # Pre-launch markers, appended in order to the parent log BEFORE the wave's
+  # reactor runs: `route_composed` (the merged display route + premises + live/
+  # available snapshot, JSON-safe) then `wave_started` (wave_index, stages, the
+  # canonical route/catalog hashes). Both go through `Commit.start_wave/3` — the
+  # SAME FOR-UPDATE parent-terminal guard as the fold-path `commit_wave/4` — so a
+  # cancel landing between waves can never leak these markers onto an already-terminal
+  # parent (the wave's child-run launch is unfenced — see `run_built_wave/5`).
+  # `{:error, :parent_terminal}` propagates so the
+  # caller stops cleanly (the run already ended); any other failed append becomes
+  # `{:error, {:wave_start_append_failed, _}}` so the caller terminalizes — the
+  # wave never launches un-recorded.
+  defp record_wave_start(dispatch, display, state) do
+    markers = [
+      route_composed: route_composed_payload(display, state),
+      wave_started: wave_started_payload(dispatch, display, state)
+    ]
+
+    case Commit.start_wave(state.parent, markers, auth_opts(state)) do
+      :ok -> :ok
+      {:error, :parent_terminal} = halt -> halt
+      {:error, reason} -> {:error, {:wave_start_append_failed, reason}}
+    end
+  end
+
+  defp route_composed_payload(display, state) do
+    json_safe(%{
+      route: display.route,
+      waves: display.waves,
+      held: display.held,
+      dropped: display.dropped,
+      triggered_by: display.triggered_by,
+      size: display.size,
+      live: state.live,
+      available: Fold.available(state.artifacts),
+      premises: state.premises
+    })
+  end
+
+  defp wave_started_payload(dispatch, display, state) do
+    %{
+      wave_index: state.wave_index,
+      stages: dispatch,
+      route_hash: canonical_hash(Enum.sort(display.route)),
+      catalog_hash: canonical_hash(Enum.sort_by(state.catalog, &elem(&1, 0)))
+    }
+  end
+
+  # The wave's content deltas, derived by DIFFING pre/post `Fold` state — the
+  # construction that makes `ComposerProjection.project(seed, log)` equal the
+  # in-memory fold. Signals are sorted lists (JSON-safe + deterministic);
+  # `signals_retracted` captures a paired-verdict flip (NOT assumed empty);
+  # artifacts are the new/changed `{name, producer, ref}` triples (bare ref).
+  defp wave_deltas(state, next_fold, dispatch) do
+    %{
+      stages: dispatch,
+      signals_published: signals_diff(next_fold.live, state.live),
+      signals_retracted: signals_diff(state.live, next_fold.live),
+      artifacts_produced: artifacts_diff(state.artifacts, next_fold.artifacts)
+    }
+  end
+
+  defp signals_diff(from, subtract) do
+    from
+    |> MapSet.difference(subtract)
+    |> Enum.sort()
+  end
+
+  defp artifacts_diff(old_store, new_store) do
+    for {name, producers} <- new_store,
+        {producer, entry} <- producers,
+        get_in(old_store, [name, producer]) != entry do
+      %{name: name, producer: producer, ref: bare_ref(entry)}
+    end
+  end
+
+  defp bare_ref({:ref, ref}), do: ref
+  defp bare_ref(other), do: other
+
+  # Canonical sha256 hex over a deterministic term — robust if the hashes later
+  # gain semantic weight; NOT `:erlang.phash2` (`feedback_canonical_fingerprint_term`).
+  # In 2c they are correlation / catalog-drift-detection metadata only.
+  defp canonical_hash(term) do
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
+  end
+
+  # JSON-safe-ify a composer event payload: MapSet → sorted list, atom keys/values
+  # → strings (e.g. `dropped`'s `:off_path`/`:unsatisfiable_input`), recursively.
+  # The projection reads tolerantly (string keys). Load-bearing — a MapSet or
+  # novel-atom payload fails to persist or round-trips wrong
+  # (`feedback_pin_types_at_ash_persistence_boundaries`).
+  defp json_safe(%MapSet{} = set) do
+    set
+    |> MapSet.to_list()
+    |> Enum.sort()
+    |> Enum.map(&json_safe/1)
+  end
+
+  defp json_safe(map) when is_map(map) and not is_struct(map),
+    do: Map.new(map, fn {k, v} -> {json_safe_key(k), json_safe(v)} end)
+
+  defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
+
+  defp json_safe(atom) when is_atom(atom) and not is_boolean(atom) and not is_nil(atom),
+    do: Atom.to_string(atom)
+
+  defp json_safe(other), do: other
+
+  defp json_safe_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_safe_key(key) when is_binary(key), do: key
+  defp json_safe_key(key), do: to_string(key)
+
+  defp auth_opts(state), do: [tenant: state.tenant, actor: state.actor]
+
+  # ---------------------------------------------------------------------------
+  # Dedupe-hit observe (Phase 2c) — restart re-dispatch of a still-running child
+  # ---------------------------------------------------------------------------
+
+  # Bounded read-only poll of an in-flight existing child until it terminates or
+  # `wave_timeout_ms` elapses (2b's per-wave T_wave bound), then re-branch:
+  # `:completed` folds + commits its durable emission; any other terminal, or the
+  # observe timeout, is a failed wave (conservative; 2d's fresh-wave_index
+  # re-dispatch + gate-park handling extend this).
+  defp observe_existing_child(run, dispatch, display, state) do
+    case await_existing_child(run, state) do
+      {:ok, %WorkflowRun{status: :completed} = done} ->
+        handle_wave_value(decode_emissions(done.result), done, dispatch, display, state)
+
+      {:ok, %WorkflowRun{} = other} ->
+        finish_failed(
+          {:existing_run_not_completed, other.status},
+          other,
+          dispatch,
+          display,
+          state
+        )
+
+      {:error, reason} ->
+        finish_failed(reason, run, dispatch, display, state)
+    end
+  end
+
+  defp await_existing_child(run, state) do
+    poll_existing_child(run, state, System.monotonic_time(:millisecond) + state.wave_timeout_ms)
+  end
+
+  defp poll_existing_child(run, state, deadline) do
+    case WorkflowRun.by_id(run.id, tenant: state.tenant, actor: state.actor) do
+      {:ok, %WorkflowRun{status: status} = reloaded} ->
+        cond do
+          Projection.terminal_status?(status) ->
+            {:ok, reloaded}
+
+          System.monotonic_time(:millisecond) >= deadline ->
+            {:error, {:observe_timeout, status}}
+
+          true ->
+            Process.sleep(@observe_poll_ms)
+            poll_existing_child(run, state, deadline)
+        end
+
+      other ->
+        {:error, {:observe_reload_failed, other}}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Termination
   # ---------------------------------------------------------------------------
 
@@ -604,22 +1022,49 @@ defmodule JidoClaw.RouteComposer do
   # `:converged` → `run_completed` (→ `:completed`), every other terminal →
   # `run_failed` (→ `:failed`). (2c swaps these for the semantically-named
   # `route_*` kinds, all projecting onto the same statuses.)
+  # Durable terminal append FIRST, then conditional notify (Phase 2a/2c). The
+  # `kind` stays the bare symbol (`:converged`/`:not_converged`/…) — existing tests
+  # assert `summary.terminal == :converged` and `terminal_summary_subset/1` stores
+  # `Atom.to_string(summary.terminal)`; only the durable EVENT kind changes (to
+  # `route_*`). The append happens inside `parent_terminal_notify/4`, so a
+  # supervised run (no `notify`) still writes its terminal; `maybe_notify/2` then
+  # sends only when there is a sync caller.
   defp finish(terminal, state) do
     {kind, reason} = classify_terminal(terminal)
     summary = summary(kind, reason, state)
-
-    send(
-      state.notify,
-      {:route_composer, state.ref, parent_terminal_notify(kind, reason, summary, state)}
-    )
-
+    payload = parent_terminal_notify(kind, reason, summary, state)
+    maybe_notify(state, payload)
+    log_supervised_terminal_failure(payload, state)
     {:stop, :normal, %{state | terminal: kind, reason: reason, summary: summary}}
   end
+
+  defp maybe_notify(%{notify: nil}, _payload), do: :ok
+
+  defp maybe_notify(%{notify: notify, ref: ref}, payload) do
+    send(notify, {:route_composer, ref, payload})
+    :ok
+  end
+
+  # A supervised run (no sync caller) whose durable terminal append FAILED would
+  # otherwise stop `:normal` silently — the parent stays `:running` with no owner
+  # and no visible error (the sync path surfaces this via `maybe_notify/2`; a
+  # supervised run has nobody to tell). Log loudly so the stuck parent is
+  # operator-visible (and recoverable by the 2d boot scan). Still stop `:normal` —
+  # NOT crash-loop the shared `:transient` supervisor on a DB blip (the
+  # `retry_rebuild_or_stop` stance).
+  defp log_supervised_terminal_failure({:terminalize_failed, reason}, %{notify: nil} = state) do
+    Logger.error(
+      "[RouteComposer] terminal append failed for parent #{state.parent_run_id} " <>
+        "(#{inspect(reason)}); parent left :running for recovery"
+    )
+  end
+
+  defp log_supervised_terminal_failure(_payload, _state), do: :ok
 
   defp parent_terminal_notify(:converged, _reason, summary, state) do
     state.parent_run_id
     |> append_parent_terminal(
-      :run_completed,
+      :route_converged,
       %{result: terminal_summary_subset(summary)},
       state.tenant,
       state.actor
@@ -630,13 +1075,20 @@ defmodule JidoClaw.RouteComposer do
   defp parent_terminal_notify(kind, reason, summary, state) do
     state.parent_run_id
     |> append_parent_terminal(
-      :run_failed,
+      route_terminal_kind(kind),
       %{error: format_terminal_error(kind, reason)},
       state.tenant,
       state.actor
     )
     |> notify_payload(summary)
   end
+
+  # The composer terminal symbol → its durable `route_*` event kind (`:converged`
+  # is handled above → `:route_converged`); these four all project onto `:failed`.
+  defp route_terminal_kind(:not_converged), do: :route_not_converged
+  defp route_terminal_kind(:deadlock), do: :route_deadlocked
+  defp route_terminal_kind(:budget_exhausted), do: :route_budget_exhausted
+  defp route_terminal_kind(:failed), do: :route_failed
 
   defp notify_payload(:ok, summary), do: {:done, summary}
   defp notify_payload({:error, reason}, _summary), do: {:terminalize_failed, reason}
@@ -704,21 +1156,19 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  # When the reloaded parent carries the durable Phase 2b marker, a `:run_failed`
+  # When the reloaded parent carries the durable Phase 2b marker, an error-bearing
   # terminal's reason string is replaced with the type-preserving placeholder
-  # before the durable append — covering BOTH the normal `format_terminal_error/2`
-  # path and the abnormal `format_terminalize_reason/1` path (both funnel here),
-  # and future-proofing 2c/2d recovery (which writes terminals from a reloaded
-  # parent with no live state). `:run_completed` is left alone — its `result` is
-  # the opaque `terminal_summary_subset/1` (no artifact values). Coarse by design
-  # (a marked budget_exhausted/timeout reason is also redacted), consistent with
-  # the whole-write-when-marked policy; the run `status: :failed` still conveys
-  # the failure.
-  defp scrub_terminal_payload(
-         :run_failed,
-         payload,
-         %WorkflowRun{config: %{"sanitize_sensitive_context" => true}}
-       ),
+  # before the durable append — covering the abnormal-path `:run_failed`
+  # (`format_terminalize_reason/1`) AND the four loop `route_*` failures
+  # (`format_terminal_error/2`), both of which funnel here. `:route_converged` is
+  # left alone — its payload is the opaque `terminal_summary_subset/1` (no artifact
+  # values). Coarse by design (a marked budget_exhausted/timeout reason is also
+  # redacted), consistent with the whole-write-when-marked policy; the run
+  # `status: :failed` still conveys the failure.
+  defp scrub_terminal_payload(kind, payload, %WorkflowRun{
+         config: %{"sanitize_sensitive_context" => true}
+       })
+       when kind in @scrubbable_error_kinds,
        do: Map.replace(payload, :error, SensitiveScrub.redacted_text())
 
   defp scrub_terminal_payload(_kind, payload, _parent), do: payload
