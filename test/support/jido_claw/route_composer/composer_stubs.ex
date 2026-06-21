@@ -67,6 +67,8 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     tool_context = Keyword.fetch!(opts, :tool_context)
     template = Map.fetch!(tool_context, :agent_template)
 
+    maybe_capture_context(template, tool_context)
+
     outputs = Application.fetch_env!(:jido_claw, :route_composer_stub_outputs)
     typed = Map.fetch!(outputs, template)
 
@@ -77,6 +79,18 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     })
 
     {:ok, %{id: request_id}}
+  end
+
+  # Optional context capture (AR-2 Phase 3b recovery test): when
+  # `:route_composer_capture_context` is a pid, report the `tool_context` a wave
+  # worker received, so a test can assert a recovered composer threaded the
+  # persisted-then-re-atomized scope (real `workspace_id`/`project_dir`/
+  # `session_uuid`, not the `wf_<tag>` / `File.cwd!()` fallback). Off by default.
+  defp maybe_capture_context(template, tool_context) do
+    case Application.get_env(:jido_claw, :route_composer_capture_context) do
+      pid when is_pid(pid) -> send(pid, {:wave_context, template, tool_context})
+      _other -> :ok
+    end
   end
 end
 

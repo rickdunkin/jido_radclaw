@@ -16,6 +16,7 @@ defmodule JidoClaw.CLI.Repl do
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Conversations.SessionId
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
+  alias JidoClaw.FrontDoor
   alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.StrategyRegistry
   alias JidoClaw.Shell.ProfileManager
@@ -387,6 +388,67 @@ defmodule JidoClaw.CLI.Repl do
     # 2. Persist the *raw* user message — durable history reflects what the user
     #    typed, not the strategy-prepared or preambled variant.
     Worker.add_message(state.tenant_id, state.session_id, :user, message, request_id)
+
+    # AR-8 front door: triage this turn once. `talk`/`sketch` stay on the inline
+    # REPL agent path (`dispatch_inline/4`, byte-for-byte unchanged); `code`/`system`
+    # divert to a durable composer run and NEVER reach the inline agent (P1). REPL
+    # turns are unauthenticated, so `user_id` is nil and the actor is system-bound.
+    front_door_ctx = %{
+      tenant_id: state.tenant_id,
+      session_id: state.session_id,
+      session_uuid: state.session_uuid,
+      workspace_id: state.session_id,
+      workspace_uuid: state.workspace_uuid,
+      project_dir: state.cwd,
+      user_id: nil,
+      actor: Actor.system(state.tenant_id),
+      agent_id: routed_agent_id,
+      agent_template: routed_template
+    }
+
+    case FrontDoor.decide(message, front_door_ctx) do
+      {:inline, _verdict} ->
+        dispatch_inline(
+          message,
+          request_id,
+          state,
+          {routed_pid, routed_template, routed_agent_id, preamble, first_post_handoff?}
+        )
+
+      {:composer, {_status, resp}} ->
+        # Render the composer ack (launched or failed-to-start) and persist it as
+        # the assistant turn; the inline mutation-capable agent is never invoked.
+        # Mark any handoff preamble consumed so it doesn't replay next turn (P2).
+        Display.stop_thinking()
+        Formatter.print_answer(resp.message)
+
+        HandoffRouter.mark_preamble_consumed_on_success(
+          state.tenant_id,
+          state.session_id,
+          routed_template,
+          first_post_handoff?,
+          {:ok, resp.message}
+        )
+
+        Worker.add_message(
+          state.tenant_id,
+          state.session_id,
+          :assistant,
+          resp.message,
+          request_id
+        )
+
+        state
+    end
+  end
+
+  # Today's inline REPL dispatch, gated behind the front door (only a `talk`/
+  # `sketch` verdict reaches it). Moved verbatim: strategy-prepare the message,
+  # build the routed tool_context, ask the agent, poll tool calls, hold the flush
+  # barrier, mark any handoff preamble consumed, print + persist the answer. The
+  # strategy-hint prepend stays inline-only (composer turns are not strategy-prepped).
+  defp dispatch_inline(message, request_id, state, routed) do
+    {routed_pid, routed_template, routed_agent_id, preamble, first_post_handoff?} = routed
 
     prepared_raw = prepare_user_message(message, state.strategy)
 

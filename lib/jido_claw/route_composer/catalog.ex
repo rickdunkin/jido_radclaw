@@ -36,12 +36,25 @@ defmodule JidoClaw.RouteComposer.Catalog do
       input: %{required: ["request"], optional: []},
       output: ["intent"],
       publishes: [
+        # Path + planning topics the front-door seed maps onto `live`.
         "code",
         "system",
         "plan-needed",
+        # The full early-signal vocabulary a `Triage.Verdict` can carry (AR-8),
+        # so the seeded "triage emission" is coherent with its declared contract.
+        # Publishes need no consumer (only consumed signals need a producer), so
+        # this stays `CatalogValidator`-clean.
         "needs-tests",
         "significant-build",
         "auth-surface",
+        "secrets",
+        "perms-change",
+        "multi-file",
+        "novel-domain",
+        "bug",
+        "ambiguous",
+        "destructive-op",
+        "irreversible",
         "scope-shift"
       ]
     },

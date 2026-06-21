@@ -212,6 +212,19 @@ defmodule JidoClaw.Error do
   def format(message) when is_binary(message), do: message
   def format(other), do: inspect(other)
 
+  @doc """
+  Reduce an error `reason` to a short, **payload-free** tag string for safe
+  logging — the leading atom of an atom or `{tag, …}` tuple, never the payload
+  (which may echo prompt/secret/artifact text). Unlike `format/1` this never
+  `inspect/1`s the value; an unrecognized shape is `"unknown"`. Pair it with the
+  global log redactor for belt-and-suspenders.
+  """
+  @spec summarize_reason(term()) :: String.t()
+  def summarize_reason(reason) when is_atom(reason), do: to_string(reason)
+  def summarize_reason({tag, _detail}) when is_atom(tag), do: to_string(tag)
+  def summarize_reason({tag, _a, _b}) when is_atom(tag), do: to_string(tag)
+  def summarize_reason(_other), do: "unknown"
+
   defp format_error_class(errors) do
     errors
     |> flatten_class_errors()

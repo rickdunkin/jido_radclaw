@@ -206,6 +206,21 @@ config :jido_claw,
 # global default — gated by default, so the gate fails CLOSED, never to native.
 config :jido_claw, :tool_approval, enabled?: true, mcp_require_approval: true
 
+# AR-8 triage model (JidoClaw.Triage.LLM). A DIRECT model spec passed straight to
+# `Jido.AI.generate_object/3` — the `:fast` atom resolves through the user's
+# configured model (the REPL aliases `:fast`), and a literal binary like
+# "anthropic:claude-haiku-4-5" bypasses `model_aliases` entirely (REPL-safe, no
+# alias plumbing). Override to a cheap model to make per-turn triage near-free.
+config :jido_claw, :triage_model, :fast
+
+# AR-8 triage: a `:secrets`-signalled code/system turn launches its composer run
+# marked sensitive (the scrubber redacts derived plaintext in every durable sink)
+# and bounded by this wall-clock deadline (ms) — which also caps how long
+# secret-bearing request-correlation state lives. A marked run REQUIRES a positive
+# deadline (RouteComposer.validate_sensitive_deadline/2), so the two are set
+# together in JidoClaw.FrontDoor. Non-secrets runs stay unmarked and unbounded.
+config :jido_claw, :triage_sensitive_deadline_ms, 1_800_000
+
 # External MCP servers to consume (JidoClaw.MCP). Declared in
 # `.jido/config.yaml` under `mcp_servers:`; discovered at boot, their tools
 # wrapped in the full host safety pipeline and exposed as `mcp_<server>_<tool>`.

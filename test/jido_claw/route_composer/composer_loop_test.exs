@@ -16,8 +16,10 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   import ExUnit.CaptureLog
 
   alias JidoClaw.Orchestration.RunRegistry
+  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.TestFixtures
   alias JidoClaw.RouteComposer.TestSupport.BlockingAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
@@ -74,6 +76,88 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
       max_waves: Keyword.get(opts, :max_waves, 10),
       timeout: Keyword.get(opts, :timeout, 30_000)
     )
+  end
+
+  # AR-2 Phase 3b — the Option-A front-door seed (`triage ∈ ran`) on the gate-free
+  # triage-seeded fixture catalog.
+  defp run_triage_seeded(ctx, opts \\ []) do
+    RouteComposer.run_sync(
+      catalog: TestFixtures.triage_seeded_fixture_catalog(),
+      live: TestFixtures.triage_seed_live(),
+      artifacts: TestFixtures.triage_seed_artifacts(),
+      ran: TestFixtures.triage_seed_ran(),
+      tenant: ctx.tenant,
+      actor: actor_for(ctx.tenant),
+      context: ctx.context,
+      max_waves: Keyword.get(opts, :max_waves, 10),
+      timeout: Keyword.get(opts, :timeout, 30_000)
+    )
+  end
+
+  test "Option-A seed: triage ∈ ran, converges, and triage is never dispatched", ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.phase1_stub_outputs()
+    )
+
+    assert {:ok, summary} = run_triage_seeded(ctx)
+    assert summary.terminal == :converged
+
+    # triage is in `ran` (the genesis seed), but never appears in a dispatched wave.
+    assert MapSet.member?(summary.ran, "triage")
+    refute Enum.any?(summary.history, &("triage" in &1.stages))
+
+    # Wave 0 == [planner] proves intent/plan-needed were seeded correctly (planner
+    # requires `intent` + subscribes `plan-needed`, both triage's declared outputs).
+    assert hd(summary.history).stages == ["planner"]
+
+    # The genesis wave_completed(wave_index: -1, stages: ["triage"]) is in the log.
+    {:ok, events} =
+      WorkflowEvent.for_run(summary.parent_run_id,
+        tenant: ctx.tenant,
+        actor: actor_for(ctx.tenant)
+      )
+
+    genesis =
+      Enum.find(events, fn e ->
+        e.kind == :wave_completed and e.payload["wave_index"] == -1
+      end)
+
+    assert genesis, "expected a genesis wave_completed(-1) event"
+    assert genesis.payload["stages"] == ["triage"]
+  end
+
+  test "built-in catalog: the triage seed reconciles, then halts at the unbuilt plan-gate", ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.phase1_stub_outputs()
+    )
+
+    # The real catalog can't converge until Phase 4 (plan-gate is a {:gate,_} unit
+    # WaveBuilder rejects). Pin the exact Phase-3/Phase-4 boundary: reconciliation
+    # works (no triage/{:seed,_} error), planner runs, then the gate halts it.
+    assert {:ok, summary} =
+             RouteComposer.run_sync(
+               catalog: Catalog.all(),
+               live: ["request-received", "code", "plan-needed"],
+               artifacts: %{
+                 "request" => %{"seed" => "Build it"},
+                 "intent" => %{"triage" => "Build it"}
+               },
+               ran: ["triage"],
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               max_waves: 10,
+               timeout: 30_000
+             )
+
+    assert summary.terminal == :failed
+    # planner ran (wave 0), then plan-gate ({:gate,"plan"}) is the unsupported unit.
+    assert MapSet.member?(summary.ran, "planner")
+    assert match?({:unsupported_unit, "plan-gate", {:gate, "plan"}}, summary.reason)
   end
 
   test "composes a code-path route end-to-end and converges clean", ctx do

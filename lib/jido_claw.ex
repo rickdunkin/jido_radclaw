@@ -27,6 +27,7 @@ defmodule JidoClaw do
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache, as: CorrelationCache
   alias JidoClaw.Conversations.Session, as: ConversationsSession
+  alias JidoClaw.FrontDoor
   alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Tenant.Manager, as: TenantManager
@@ -252,13 +253,73 @@ defmodule JidoClaw do
         actor: actor
       })
 
+    # AR-8 front door: triage this turn once and route it. `talk`/`sketch` stay on
+    # the inline agent path (below, byte-for-byte unchanged); `code`/`system` divert
+    # to a durable composer run and NEVER reach the mutation-capable inline agent.
+    front_door_ctx = %{
+      tenant_id: tenant_id,
+      session_id: session_id,
+      session_uuid: session.id,
+      workspace_id: session_id,
+      workspace_uuid: workspace.id,
+      project_dir: project_dir,
+      user_id: user_id,
+      actor: actor,
+      agent_id: routed_agent_id,
+      agent_template: routed_template
+    }
+
+    case FrontDoor.decide(message, front_door_ctx) do
+      {:inline, _verdict} ->
+        dispatch_inline(
+          routed_pid,
+          preamble <> message,
+          tool_context,
+          {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
+        )
+
+      {:composer, {_status, resp}} ->
+        # Both composer tags (launched / failed-to-start) render `resp.message` as
+        # the assistant response and never touch the inline agent (P1). The divert
+        # creates no tool/reasoning rows under this request_id, so the assistant row
+        # has nothing to order against — no Recorder.flush barrier needed (P2).
+        ack = {:ok, resp.message}
+
+        HandoffRouter.mark_preamble_consumed_on_success(
+          tenant_id,
+          session_id,
+          routed_template,
+          first_post_handoff?,
+          ack
+        )
+
+        SessionWorker.add_message(tenant_id, session_id, :assistant, resp.message, request_id)
+        ack
+    end
+
+    # Public API turn entry — any unexpected fault is normalized to {:error, _}
+    # so callers never see an exception escape.
+  rescue
+    # reach:disable-next-line bare_rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    :exit, reason -> {:error, inspect(reason)}
+  end
+
+  # Today's inline dispatch, gated behind the front door (only a `talk`/`sketch`
+  # verdict reaches it). Moved verbatim from the chat turn body: ask the routed
+  # agent, hold the Recorder flush barrier (assistant row must sequence after all
+  # tool/reasoning rows), mark any handoff preamble consumed, and handle the reply.
+  defp dispatch_inline(routed_pid, query, tool_context, turn) do
+    {tenant_id, session_id, request_id, routed_template, first_post_handoff?} = turn
+
     # Handoff routing is an ownership *transfer*, not a freshly-built child
     # context: the same conversation's `tool_context` is routed to the owning
     # worker as-is. Full-context continuity is the defining purpose of handoff,
     # so the `forward_context` visibility policy (spawn / follow-up /
     # workflow-step) deliberately does NOT apply here.
     response =
-      ask_runtime().ask_sync(routed_pid, preamble <> message,
+      ask_runtime().ask_sync(routed_pid, query,
         timeout: 120_000,
         request_id: request_id,
         tool_context: tool_context
@@ -282,13 +343,6 @@ defmodule JidoClaw do
     )
 
     handle_response(response, tenant_id, session_id, request_id)
-    # Public API turn entry — any unexpected fault is normalized to {:error, _}
-    # so callers never see an exception escape.
-  rescue
-    # reach:disable-next-line bare_rescue
-    e -> {:error, Exception.message(e)}
-  catch
-    :exit, reason -> {:error, inspect(reason)}
   end
 
   @doc """

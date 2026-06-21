@@ -52,6 +52,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_prompt_snapshot, action: :set_prompt_snapshot, args: [:snapshot])
     define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:key, :snapshot])
     define(:set_current_agent_template, action: :set_current_agent_template, args: [:template])
+    define(:set_triage_path, action: :set_triage_path, args: [:path])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
     define(:list_open_for_workspaces_global, args: [:workspace_ids])
@@ -154,6 +155,19 @@ defmodule JidoClaw.Conversations.Session do
       change(
         {__MODULE__.Changes.SetMetadataKey, key: "current_agent_template", argument: :template}
       )
+    end
+
+    # AR-8 triage stickiness (Phase 3c): the front door persists the latest
+    # verdict path under `metadata["last_triage_path"]` for observability /
+    # cold-start (the decision itself is the fresh per-turn verdict, not this).
+    # Reuses `SetMetadataKey` (no new change module) and stores the path as a
+    # STRING (`to_string(path)`) — never an atom at the JSON boundary. The
+    # `allow_nil?: false` argument makes the change's delete branch unreachable.
+    update :set_triage_path do
+      accept([])
+      argument(:path, :string, allow_nil?: false)
+
+      change({__MODULE__.Changes.SetMetadataKey, key: "last_triage_path", argument: :path})
     end
 
     read :active_for_workspace do

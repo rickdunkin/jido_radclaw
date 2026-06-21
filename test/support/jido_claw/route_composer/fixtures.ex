@@ -283,6 +283,117 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
     end)
   end
 
+  # ---------------------------------------------------------------------------
+  # Phase-3 triage-seeded fixtures (AR-2 §8/§14 — the Option-A front-door seed)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A **gate-free**, validator-clean catalog mirroring `phase1_catalog/0`, but with
+  a non-executable `{:seed, "triage"}` stage and a `planner` that subscribes
+  `plan-needed` / requires the `intent` artifact (triage's declared outputs) — the
+  shape the front-door Option-A seed reconciles against. The built-in catalog
+  can't converge until Phase 4 (it halts at `plan-gate`), so end-to-end seeding /
+  reconciliation tests run on THIS catalog instead.
+
+  Driven with the Option-A seed (`triage ∈ ran`, `intent`/`plan-needed`/path
+  seeded), the route is `planner → approver → implementer(held) → {reviewers}` and
+  converges; `triage` is in `ran` so it is never dispatched.
+  """
+  @spec triage_seeded_fixture_catalog() :: %{String.t() => Stage.t()}
+  def triage_seeded_fixture_catalog do
+    key_named(%{
+      "triage" =>
+        stage(
+          unit: {:seed, "triage"},
+          routes: ["talk", "sketch", "code", "system"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["intent"],
+          pub: ["plan-needed", "code", "system", "scope-shift"]
+        ),
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft an implementation plan from the intent; emit plan-ready.",
+          routes: ["code", "system"],
+          sub: ["plan-needed"],
+          req: ["intent"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "approver" =>
+        stage(
+          unit: {:worker_template, "verifier"},
+          task: "Approve the plan; emit plan-approved with the approved-plan.",
+          routes: ["code", "system"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["approved-plan"],
+          pub: ["plan-approved", "scope-shift"]
+        ),
+      "implementer" =>
+        stage(
+          unit: {:worker_template, "coder"},
+          task: "Implement the approved plan; emit code-written and auth-surface.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          opt: ["approved-plan"],
+          out: ["diff"],
+          pub: ["code-written", "auth-surface", "scope-shift"],
+          lock: [%{while: "plan-ready", until: "plan-approved"}]
+        ),
+      "quality-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "quality",
+          task: "Review the diff for quality; flag findings, else emit clean:quality.",
+          routes: ["code"],
+          sub: ["code-written"],
+          req: ["diff"],
+          out: ["findings"],
+          pub: ["clean:quality", "findings:quality", "scope-shift"]
+        ),
+      "security-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "security",
+          task: "Review the diff for auth-surface; flag findings, else emit clean:security.",
+          routes: ["code"],
+          sub: ["auth-surface"],
+          req: ["diff"],
+          out: ["findings"],
+          pub: ["clean:security", "findings:security", "scope-shift"]
+        )
+    })
+  end
+
+  @doc """
+  The triage-seeded live signals (Option A): the seed signal + the `code` path +
+  triage's `plan-needed` publish. `request-received` stays in the seed (the honest
+  durable record); `triage ∈ ran` is what makes it inert (rejected alternative B
+  omitted it and worked only by accident).
+  """
+  @spec triage_seed_live() :: [String.t()]
+  def triage_seed_live, do: ["request-received", "code", "plan-needed"]
+
+  @doc """
+  The triage-seeded artifact store: the seed `request` plus the triage-produced
+  `intent` (non-empty — `planner` requires it and the router is key-presence based,
+  so a nil intent would falsely satisfy the requirement).
+  """
+  @spec triage_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def triage_seed_artifacts do
+    %{
+      "request" => %{"seed" => "Build the auth feature"},
+      "intent" => %{"triage" => "Build the auth feature"}
+    }
+  end
+
+  @doc "The Option-A `ran` seed — `triage` pre-marked as already-run."
+  @spec triage_seed_ran() :: [String.t()]
+  def triage_seed_ran, do: ["triage"]
+
   # Stamp each stage's `name` from its catalog key.
   defp key_named(map) do
     Map.new(map, fn {name, stage} -> {name, %{stage | name: name}} end)

@@ -13,6 +13,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
   import ExUnit.CaptureLog
 
+  alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.RunRegistry
@@ -256,6 +257,39 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   # ===========================================================================
+  # Launch context contract (Phase 3 P2)
+  # ===========================================================================
+
+  test "start_composer honors an explicit :context on a minimal parent (P2)", ctx do
+    converging_outputs()
+    Application.put_env(:jido_claw, :route_composer_capture_context, self())
+    on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_context) end)
+
+    {:ok, parent} = RouteComposer.create_parent_run(tenant: ctx.tenant, actor: ctx.actor)
+    # documents why the bug bit: a minimal parent persists no "context" subset.
+    refute Map.has_key?(parent.config, "context")
+
+    notify_ref = make_ref()
+
+    {:ok, _pid} =
+      RouteComposer.start_composer(
+        Keyword.merge(base_opts(ctx), notify: self(), ref: notify_ref),
+        parent
+      )
+
+    assert_receive {:wave_context, "researcher", tc}, 30_000
+    # The explicit opts :context is honored, not clobbered to the "wf_<tag>" fallback.
+    assert tc.workspace_id == ctx.context.workspace_id
+    assert tc.project_dir == ctx.context.project_dir
+    assert tc.session_uuid == ctx.context.session_uuid
+
+    # Wait for the terminal so the unlinked composer doesn't outlive the test against
+    # the shared sandbox (the notify/ref idiom from the commit-failure test above).
+    assert_receive {:route_composer, ^notify_ref, {:done, summary}}, 30_000
+    assert summary.terminal == :converged
+  end
+
+  # ===========================================================================
   # Post-review lifecycle gaps (Phase 2b/2c follow-up)
   # ===========================================================================
 
@@ -361,6 +395,42 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
       assert pid1 == pid2
       assert [{^pid1, _}] = Registry.lookup(@registry, parent.id)
+    end
+
+    test "ensure_started WITHOUT :terminalize_on_failure? leaves an unstartable parent :running (R4-P2)",
+         ctx do
+      # Boot recovery's default: a malformed config catalog makes init fail-closed
+      # (put_start_catalog strips the key → Keyword.fetch!(:catalog) raises →
+      # GenServer.start errors). With NO :terminalize_on_failure? opt the parent is
+      # left :running for the next boot's retry — never fail a recoverable route.
+      parent = malformed_catalog_parent(ctx, %{"bad" => %{}})
+      assert reload(parent.id, ctx).status == :running
+
+      capture_log(fn ->
+        assert {:error, _reason} = RouteComposer.ensure_started(base_opts(ctx), parent)
+      end)
+
+      assert reload(parent.id, ctx).status == :running
+      assert Registry.lookup(@registry, parent.id) == []
+    end
+
+    test "ensure_started WITH :terminalize_on_failure? cleans the orphan to terminal (R3-P1)",
+         ctx do
+      # The front-door opt-in (inverse of the above): the same forced start failure,
+      # but `terminalize_on_failure?: true` terminalizes the created-but-unstartable
+      # parent so no lingering :running run sits behind a "couldn't start" ack.
+      parent = malformed_catalog_parent(ctx, %{"bad" => %{}})
+      assert reload(parent.id, ctx).status == :running
+
+      capture_log(fn ->
+        assert {:error, _reason} =
+                 RouteComposer.ensure_started(
+                   Keyword.put(base_opts(ctx), :terminalize_on_failure?, true),
+                   parent
+                 )
+      end)
+
+      assert reload(parent.id, ctx).status == :failed
     end
 
     test "a restart-after-terminal stops :normal (terminal_status? guard)", ctx do
@@ -604,27 +674,57 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert rc.payload["premises"] == %{"risk" => "low", "scope" => "auth"}
     end
 
-    test "a recovered sensitive run keeps its marker and fails closed without a scope (H23/P1)",
+    test "a recovered sensitive run keeps BOTH its restored scope and its marker, and converges",
          ctx do
-      # The critical P1 fix: build_start_opts must restore `sanitize_sensitive_context`
-      # from config on recovery. We prove the LIVE marker survived by its observable
-      # effect: a marked wave's `register_child_correlation` REQUIRES a session scope,
-      # which recovery does not restore (context isn't durable). So a recovered
-      # sensitive run FAILS CLOSED at its first wave rather than running an
-      # un-sanitized turn. A LOST marker would instead make the correlation
-      # infallible (unmarked → cache-only) and the run would CONVERGE — exactly the
-      # same setup the unmarked recovery tests above ride to `:completed`. So
-      # `:failed` here (vs their `:completed`) isolates the surviving marker.
+      # Phase 3b makes the composer's `context` durable, which CHANGES this case:
+      # a recovered sensitive run now restores its session scope (so the marked
+      # `register_child_correlation` succeeds) AND its marker (config-driven, the
+      # original H23/P1 fix) — so it CONVERGES with sanitization intact, instead of
+      # failing closed for a lost scope (the pre-3b limitation this test used to
+      # assert). We prove the marker SURVIVED recovery by its durable correlation
+      # row: a wave's `RequestCorrelation` is `sanitize_sensitive_context: true`
+      # (an unmarked recovered run — the other recovery tests — would write false).
       converging_outputs()
       parent = recoverable_parent(ctx, sanitize_sensitive_context: true, deadline_ms: 60_000)
 
       assert :ok = WorkflowRecovery.reconcile_all()
-      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
-      assert :route_failed in kinds(parent.id, ctx)
-      # Failed at the FIRST wave's correlation (no wave ever completed) ...
-      refute :wave_completed in kinds(parent.id, ctx)
-      # ... and the marked terminal scrub (config-driven) redacted the reason.
-      assert reload(parent.id, ctx).error == "[composer-sensitive:redacted]"
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+
+      # The marker survived recovery: at least one wave correlation row is marked
+      # (the discriminator that isolates the surviving marker now that scope is
+      # restored and the run no longer fails closed).
+      {:ok, correlations} = RequestCorrelation.read(tenant: ctx.tenant, actor: ctx.actor)
+      assert Enum.any?(correlations, & &1.sanitize_sensitive_context)
+    end
+
+    test "recovery restores the persisted scope re-atomized, incl workspace_id (R2-P1/R3-P1/R3-P2)",
+         ctx do
+      # The persist+restore round-trip: create_parent_run serialized `context`
+      # (JSON-safe, string-keyed) into config; recovery (no :context opt) restores
+      # it RE-ATOMIZED, so a recovered wave keeps the SAME VFS/session scope rather
+      # than the `wf_<tag>` / `File.cwd!()` fallback.
+      converging_outputs()
+      Application.put_env(:jido_claw, :route_composer_capture_context, self())
+      on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_context) end)
+
+      parent = recoverable_parent(ctx)
+
+      # Persist side: config carries the string-keyed scope subset incl workspace_id.
+      stored = reload(parent.id, ctx).config["context"]
+      assert stored["workspace_id"] == ctx.context.workspace_id
+      assert stored["project_dir"] == ctx.context.project_dir
+      assert stored["session_uuid"] == ctx.context.session_uuid
+
+      # Restore side: the recovered wave worker's tool_context carries the SAME
+      # scope (re-atomized), proving build_start_opts restored it from config.
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert_receive {:wave_context, "researcher", tc}, 30_000
+      assert tc.workspace_id == ctx.context.workspace_id
+      assert tc.project_dir == ctx.context.project_dir
+      assert tc.session_uuid == ctx.context.session_uuid
+
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
     end
 
     test "a malformed config catalog leaves the parent :running and starts no composer", ctx do

@@ -47,6 +47,11 @@ config :jido_claw, :mcp,
 # `Ecto.Adapters.SQL.Sandbox` owner.
 config :jido_claw, :trace, persist?: false
 
+# AR-8 triage: default the impl to the deterministic stub so every chat-path test
+# routes through the (talk-by-default) front door without a real LLM call. A test
+# that exercises triage flips `:triage_canned_verdict` / injects a custom impl.
+config :jido_claw, :triage_impl, JidoClaw.Test.TriageStub
+
 # Recorder flush barrier: tests rarely emit the real `ai.request.completed`
 # terminal signal (LLM calls are stubbed), so the dispatcher / sub-agent
 # transcript flush would otherwise block on the 30s production default. A

@@ -176,6 +176,20 @@ defmodule JidoClaw.RouteComposer do
     :route_failed
   ]
 
+  # The composer's durable scope subset (Phase 3b). `parent_config/3` persists
+  # exactly these keys (JSON-safe) and `build_start_opts/2` restores them
+  # RE-ATOMIZED — `AgentRunner.resolve_scope/2` reads atom keys
+  # (`context[:session_uuid]`, `[:workspace_id]`, `[:project_dir]`, …), so a
+  # string-keyed restored context would silently hit the `workspace_id →
+  # "wf_<tag>"` / `project_dir → File.cwd!()` fallbacks. The fixed whitelist is
+  # the only place a stored string key becomes an atom (no `String.to_atom/1` on
+  # arbitrary input). Live `actor`/pids are deliberately NOT persisted — recovery
+  # supplies its own (the established system-actor pattern).
+  @persisted_context_keys ~w(
+    project_dir tenant_id session_id session_uuid
+    workspace_id workspace_uuid user_id agent_id agent_template
+  )a
+
   @type terminal ::
           :converged
           | :not_converged
@@ -215,8 +229,11 @@ defmodule JidoClaw.RouteComposer do
   Start a composer GenServer for an **already-created** parent run.
 
   Required opts: `:catalog`, `:tenant`, `:actor`, `:notify`, `:ref`,
-  `:parent_run_id`. Optional: `:live` / `:artifacts` / `:premises` (seed state),
-  `:context` (the scope map merged into each wave's Reactor context),
+  `:parent_run_id`. Optional: `:live` / `:artifacts` / `:premises` / `:ran` (seed
+  state — `:ran` pre-marks stages as already-run, e.g. `["triage"]` for the
+  Option-A front-door seed), `:context` (the scope map merged into each wave's
+  Reactor context — persisted JSON-safe in the parent config and restored
+  re-atomized at recovery, Phase 3b),
   `:max_waves` (default `#{@default_max_waves}`), `:deadline_at_ms` (the durable
   wall-clock budget from the parent config, threaded by `start_composer/2` — C1),
   `:sanitize_sensitive_context` (AR-2 Phase 2b marker), `:wave_timeout_ms`
@@ -321,6 +338,7 @@ defmodule JidoClaw.RouteComposer do
     |> maybe_put("max_waves", Keyword.get(opts, :max_waves))
     |> maybe_put("wave_timeout_ms", Keyword.get(opts, :wave_timeout_ms))
     |> maybe_put_premises(Keyword.get(opts, :premises))
+    |> maybe_put_context(Keyword.get(opts, :context))
   end
 
   defp deadline_config(ms) when is_integer(ms) and ms > 0,
@@ -343,6 +361,20 @@ defmodule JidoClaw.RouteComposer do
   defp maybe_put_premises(config, nil), do: config
   defp maybe_put_premises(config, premises), do: Map.put(config, "premises", json_safe(premises))
 
+  # Persist the durable scope subset (Phase 3b): take only the whitelisted keys,
+  # then push them through the same `json_safe/1` boundary premises use (which
+  # stringifies atom keys), so a node reboot can rebuild wave scope. Live
+  # `actor`/pids are excluded by the whitelist, so they never reach JSONB. A
+  # caller with no context (the minimal `create_parent_run` path) stores nothing.
+  defp maybe_put_context(config, context) when is_map(context) do
+    case Map.take(context, @persisted_context_keys) do
+      subset when map_size(subset) == 0 -> config
+      subset -> Map.put(config, "context", json_safe(subset))
+    end
+  end
+
+  defp maybe_put_context(config, _context), do: config
+
   # Record the seed `live`/`artifacts` the same way a wave records its deltas, so
   # `do_rebuild` rebuilds them by folding the genesis events (recovery passes no
   # seed opts). Seed `artifacts` are ref-stored (P1 — config/state carry only
@@ -352,9 +384,32 @@ defmodule JidoClaw.RouteComposer do
   # nothing (H5b). Any seed-insert / append failure flows the existing
   # `{:error, reason}` channel → `{:start_failed, reason}` (H11a).
   defp append_genesis_seed(parent, opts, tenant, actor) do
-    with :ok <- append_genesis_signals(parent, Keyword.get(opts, :live, []), tenant, actor) do
-      append_genesis_artifacts(parent, Keyword.get(opts, :artifacts, %{}), tenant, actor)
+    with :ok <- append_genesis_signals(parent, Keyword.get(opts, :live, []), tenant, actor),
+         :ok <-
+           append_genesis_artifacts(parent, Keyword.get(opts, :artifacts, %{}), tenant, actor) do
+      append_genesis_ran(parent, Keyword.get(opts, :ran, []), tenant, actor)
     end
+  end
+
+  # Option (A) — seed `triage ∈ ran` as a genesis `wave_completed(wave_index: -1)`,
+  # so the composer's trigger step skips the (non-executable `{:seed, _}`) triage
+  # stage and never asks `WaveBuilder` to build a seed stage. The projection's
+  # `wave_completed` fold unions the stages into `ran` and advances
+  # `wave_index = max(0, -1 + 1) = 0`, so the first real wave is still wave 0.
+  # `wave_completed` is non-status-authority (`commit.ex:14-24`), appended after
+  # `run_started` flips `:running`, so it is transaction-legal. At recovery (no
+  # `:ran` opt) the genesis event alone rebuilds `ran` identically (Phase 3b),
+  # preserving projection-equivalence.
+  defp append_genesis_ran(_parent, [], _tenant, _actor), do: :ok
+
+  defp append_genesis_ran(parent, ran, tenant, actor) do
+    append_genesis_event(
+      parent,
+      :wave_completed,
+      %{wave_index: -1, stages: Enum.sort(ran)},
+      tenant,
+      actor
+    )
   end
 
   defp append_genesis_signals(parent, live, tenant, actor) do
@@ -470,13 +525,41 @@ defmodule JidoClaw.RouteComposer do
   every terminal, so `:transient` means "crash → restart → `init` rebuilds +
   resumes; normal terminal → no restart." Supervised runs have no sync caller, so
   `:notify`/`:ref` are omitted (the durable terminal is the source of truth).
+
+  `opts[:terminalize_on_failure?]` (default `false`) is **opt-in** orphan cleanup
+  (Phase 3b / R3-P1): the **front door** passes `true` so a `create_parent_run`
+  success + failed start yields a clean terminal parent behind its "couldn't
+  start" ack. **Boot recovery omits it** and leaves a transiently-unstartable
+  parent `:running` so the next boot retries — never fail a recoverable route.
   """
   @spec ensure_started(keyword(), WorkflowRun.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(opts, %WorkflowRun{} = parent) do
     case Registry.lookup(@registry, parent.id) do
-      [{pid, _value}] -> {:ok, pid}
-      [] -> start_supervised_composer(build_start_opts(opts, parent), parent.id)
+      [{pid, _value}] ->
+        {:ok, pid}
+
+      [] ->
+        case start_supervised_composer(build_start_opts(opts, parent), parent.id) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, reason} = error -> maybe_terminalize_orphan(opts, parent, reason, error)
+        end
     end
+  end
+
+  # Opt-in: terminalize a created-but-unstartable parent (front door only). Boot
+  # recovery (default `false`) leaves it `:running` for the next boot's retry. The
+  # original `error` passes through either way (the caller surfaces it).
+  defp maybe_terminalize_orphan(opts, parent, reason, error) do
+    if Keyword.get(opts, :terminalize_on_failure?, false) do
+      terminalize_parent(
+        parent,
+        {:composer_start_failed, reason},
+        Keyword.fetch!(opts, :tenant),
+        Keyword.fetch!(opts, :actor)
+      )
+    end
+
+    error
   end
 
   defp start_supervised_composer(start_opts, parent_run_id) do
@@ -546,6 +629,12 @@ defmodule JidoClaw.RouteComposer do
   #     sensitive run MUST keep its marker (else its waves write plaintext), so
   #     read it from config — safe for launch too (config was set from the launch
   #     marker at genesis).
+  #   * `:context` — restore the durable scope subset RE-ATOMIZED (Phase 3b /
+  #     R2-P1/R3-P1): `json_safe/1` stringified the keys at persist time, but
+  #     `AgentRunner.resolve_scope/2` reads atoms, so `restore_context/1` maps the
+  #     fixed whitelist back to atom keys. Run on BOTH launch and recovery (config
+  #     is authoritative), so a recovered run keeps the SAME VFS/session scope
+  #     (incl. `workspace_id`) rather than the `"wf_<tag>"` fallback.
   #
   # `live`/`artifacts` are NOT restored here: they ride opts at launch and are
   # absent at recovery, where the genesis events rebuild them in `do_rebuild`.
@@ -561,7 +650,34 @@ defmodule JidoClaw.RouteComposer do
       config["wave_timeout_ms"] || opts[:wave_timeout_ms] || @default_wave_timeout_ms
     )
     |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
+    |> Keyword.put(:context, start_context(config["context"], opts[:context]))
   end
+
+  # Re-atomize the persisted (string-keyed) context subset back to the atom keys
+  # `AgentRunner.resolve_scope/2` reads. Maps ONLY the fixed whitelist (no
+  # `String.to_atom/1` on arbitrary input), dropping absent keys. Only ever called
+  # with a persisted map — `start_context/2` handles the absent-context (`nil`) case
+  # upstream (empty map / opts fallback) before delegating here.
+  defp restore_context(context) when is_map(context) do
+    @persisted_context_keys
+    |> Enum.flat_map(fn key ->
+      case context[Atom.to_string(key)] do
+        nil -> []
+        value -> [{key, value}]
+      end
+    end)
+    |> Map.new()
+  end
+
+  # Config is authoritative (recovery carries no opts context): restore the persisted,
+  # re-atomized subset when present. When config has no "context" — the minimal
+  # `create_parent_run(tenant:, actor:)`-then-start-with-context launch path, which
+  # persists no subset — fall back to the caller's opts context (mirroring the
+  # `config[...] || opts[...]` shape the sibling bounds already use), so an explicit
+  # launch `:context` is honored rather than clobbered to %{}.
+  defp start_context(nil, opts_context) when is_map(opts_context), do: opts_context
+  defp start_context(nil, _opts_context), do: %{}
+  defp start_context(config_context, _opts_context), do: restore_context(config_context)
 
   # Three-way config-authoritative catalog resolution (`decode_config_catalog/1`):
   # a valid config catalog wins; `:absent` falls back to any opts catalog (the
@@ -716,7 +832,10 @@ defmodule JidoClaw.RouteComposer do
       catalog: Keyword.fetch!(opts, :catalog),
       live: MapSet.new(Keyword.get(opts, :live, [])),
       artifacts: Keyword.get(opts, :artifacts, %{}),
-      ran: MapSet.new(),
+      # Pre-run `ran` (Option A): a launch seeds `ran: ["triage"]` so the composer
+      # starts as-if-triage-ran. At recovery opts carry no `:ran` and the genesis
+      # `wave_completed(-1)` event rebuilds it identically via the projection.
+      ran: MapSet.new(Keyword.get(opts, :ran, [])),
       premises: Keyword.get(opts, :premises, %{}),
       prev_route: [],
       wave_index: 0,
