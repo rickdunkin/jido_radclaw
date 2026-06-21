@@ -700,6 +700,64 @@ defmodule JidoClaw.TraceTest do
     end
   end
 
+  describe "AR-2 Phase 2b — sensitive digest cache miss (sink vi)" do
+    test "a marked durable row survives a cache miss → span is digested" do
+      tenant_id = "tenant-trace-marked-miss-#{System.unique_integer([:positive])}"
+      request_id = unique_id("req-marked-miss")
+      secret = "ZZTRACEMISSSECRETZZ-#{System.unique_integer([:positive])}"
+
+      session = seed_session_for(tenant_id)
+
+      # Write BOTH the durable (marked) RequestCorrelation row AND the cache
+      # via the public dispatcher, then evict the cache to force the
+      # Collector's durable marker fallback (durable_marker_status/1), which
+      # must resolve `:marked` — the inverse of the unmarked/unknown controls
+      # in collector_test.exs. The durable write needs a real persisted
+      # session (register/1 validates session ⊂ tenant).
+      :ok =
+        JidoClaw.register_correlation(request_id, session.id, tenant_id, nil, nil,
+          sanitize_sensitive_context: true
+        )
+
+      :ok = RequestCorrelation.Cache.delete(request_id)
+
+      # Plant the secret in every metadata-derived sink: agent_id (→ name),
+      # trace_id, span_id, parent_span_id, a phase, plus free metadata + a
+      # measurement.
+      :telemetry.execute(
+        [:jido, :ai, :request, :start],
+        %{secret_measure: 99},
+        %{
+          agent_id: secret,
+          request_id: request_id,
+          trace_id: secret,
+          span_id: secret,
+          parent_span_id: secret,
+          phase: :reviewing,
+          secret_field: secret
+        }
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, trace} = Trace.for_request(%{agent_id: "ignored"}, request_id)
+      [event | _] = trace.events
+
+      # The trusted correlation key survives; every metadata-derived column is
+      # collapsed to it, redacted, or dropped.
+      assert event.request_id == request_id
+      assert event.name == "[composer-sensitive:redacted]"
+      assert event.phase == nil
+      assert event.trace_id == request_id
+      assert event.run_id == request_id
+      assert event.span_id == nil
+      assert event.parent_span_id == nil
+      assert event.metadata == %{"redacted" => true}
+      assert event.measurements == %{"redacted" => true}
+      refute inspect(event) =~ secret
+    end
+  end
+
   # -------------------------------------------------------------------------
   # helpers
   # -------------------------------------------------------------------------

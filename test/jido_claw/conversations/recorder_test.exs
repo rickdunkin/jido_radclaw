@@ -425,6 +425,31 @@ defmodule JidoClaw.Conversations.RecorderTest do
       assert tr.metadata == %{"redacted" => true}
     end
 
+    test "a marked durable row survives a cache miss → tool_result still redacted" do
+      %{tenant_id: tenant, session: session} = seed_session("recSensitiveMarkedMiss")
+      r = "req-sens-miss-#{System.unique_integer([:positive])}"
+      secret = "ZZRECMISSSECRETZZ-#{System.unique_integer([:positive])}"
+
+      # Write BOTH the durable RequestCorrelation row (marked) AND the ETS
+      # cache via the public dispatcher, then evict the cache to force the
+      # Postgres-rehydrate path. The marker must be re-carried on rehydrate
+      # (recorder.ex resolve_scope/1) or the sink silently sees `false`.
+      :ok =
+        JidoClaw.register_correlation(r, session.id, tenant, nil, nil,
+          sanitize_sensitive_context: true
+        )
+
+      Cache.delete(r)
+
+      emit_tool_result(r, "call-marked-miss", "run_command", {:ok, secret})
+      finalize_and_flush(r)
+
+      [tr] = tool_results_for(session.id, tenant)
+      refute tr.content =~ secret
+      assert tr.content == "[composer-sensitive:redacted]"
+      assert tr.metadata == %{"redacted" => true}
+    end
+
     test "an unmarked scope keeps the tool_result content (control)" do
       %{tenant_id: tenant, session: session} = seed_session("recSensitiveUnmarked")
       r = "req-plain-#{System.unique_integer([:positive])}"

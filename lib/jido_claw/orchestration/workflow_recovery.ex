@@ -161,10 +161,11 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   # AR-2 composer parents (`workflow_type: "composer"`) sit `:running` for the
   # whole route with no checkpoint, so the status heads below would mis-classify
-  # one as `:stranded → :failed` at boot. Until 2d's real rebuild+resume branch,
-  # this no-op guard (dispatched on `workflow_type` + `:running` FIRST) keeps
-  # reactor recovery from clobbering the valid 2a parent state — it observes,
-  # like the `:parked` branch. Scoped to `:running` ONLY: a `:pending` or
+  # one as `:stranded → :failed` at boot. Dispatched on `workflow_type` +
+  # `:running` FIRST, this head routes a live composer parent into the real 2d
+  # rebuild+resume branch (`reconcile_branch(:composer, run)` →
+  # `resume_composer/1`) instead of letting reactor recovery clobber the valid
+  # parent state. Scoped to `:running` ONLY: a `:pending` or
   # `:awaiting_approval` composer row falls through to the status heads below, so
   # a never-started `:pending` composer is still correctly failed (the recovery
   # contract holds for the whole `workflow_type`, not bypassed for it).
