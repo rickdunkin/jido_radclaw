@@ -1,9 +1,11 @@
 defmodule JidoClaw.Agent.Workers.Coder do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_coder",
     description:
-      "Full-capability coding agent. Reads, writes, edits files, runs commands, manages git, and searches code. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), `notes` for caveats, and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Full-capability coding agent. Reads, writes, edits files, runs commands, manages git, and searches code. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), and `notes` for caveats.",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
@@ -29,15 +31,7 @@ defmodule JidoClaw.Agent.Workers.Coder do
           summary: Zoi.string(),
           files_changed: Zoi.array(Zoi.string()),
           notes: Zoi.string(),
-          artifacts:
-            Zoi.object(
-              %{
-                url: Zoi.optional(Zoi.string()),
-                port: Zoi.optional(Zoi.string()),
-                files: Zoi.optional(Zoi.string())
-              },
-              unrecognized_keys: :preserve
-            )
+          artifacts: OutputSchema.artifacts()
         }),
       retries: 1,
       on_validation_error: :repair

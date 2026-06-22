@@ -19,6 +19,11 @@ config :jido_claw, :workflow_recovery, enabled?: false
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false
 
+# AR-5 doctrine injection off in test so existing spawn/skill tests run on
+# today's no-doctrine behavior; doctrine's own tests opt in via
+# Application.put_env + on_exit (async: false).
+config :jido_claw, :doctrine, enabled?: false
+
 # Tool-call approval gate off in test so the broad tool suite isn't gated;
 # the gate's own tests drive JidoClaw.Security.ToolApproval.gate/4 with explicit
 # `enabled?: true` + `require:` opts (env-free, DestinationPolicy style).

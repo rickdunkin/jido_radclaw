@@ -467,6 +467,52 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert AgentTracker.get_agent("never-registered") == nil
   end
 
+  @tag :capture_log
+  test "wires AR-5 doctrine injection onto the spawned sub-agent (real runtime)" do
+    # Real runtime + real Templates (NOT configure_fake_spawn's sleeping pid):
+    # only a pid that actually handles the ReAct set_system_prompt signal proves
+    # the seam. No session_uuid → the orchestration's correlation goes cache-only
+    # and its transcript writes hit do_append's no-op clause, so the detached Task
+    # touches no DB (no sandbox to tear down under it). The flag is OFF globally,
+    # so a deleted call would make this never fire — that's the point.
+    original = Application.get_env(:jido_claw, :doctrine)
+    Application.put_env(:jido_claw, :doctrine, enabled?: true)
+
+    handler_id = "ar5-spawn-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:jido_claw, :agent, :prompt_injected],
+      fn _event, _measurements, metadata, _config ->
+        send(test_pid, {:injected, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn ->
+      :telemetry.detach(handler_id)
+
+      case original do
+        nil -> Application.delete_env(:jido_claw, :doctrine)
+        val -> Application.put_env(:jido_claw, :doctrine, val)
+      end
+    end)
+
+    tool_context = %{tenant_id: "tenant-spawn-ar5-#{System.unique_integer([:positive])}"}
+
+    assert {:ok, %{agent_id: _}} =
+             SpawnAgent.run(%{template: "coder", task: "do work"}, %{tool_context: tool_context})
+
+    # The orchestration Task injects right after ensure_attached (spawn_agent.ex),
+    # before its first SubagentTranscript.run.
+    assert_receive {:injected, metadata}, 10_000
+    assert metadata.source == :doctrine
+    assert metadata.template == "coder"
+
+    if is_pid(metadata.pid), do: JidoClaw.Jido.stop_agent(metadata.pid)
+  end
+
   defp flush_tracker do
     _ = AgentTracker.get_state()
   end

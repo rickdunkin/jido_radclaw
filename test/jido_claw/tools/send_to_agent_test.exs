@@ -143,6 +143,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     end
   end
 
+  defmodule RealPidJido do
+    @moduledoc false
+    @spec whereis(String.t()) :: pid() | nil
+    def whereis(_agent_id), do: Application.get_env(:jido_claw, :send_to_agent_real_pid)
+  end
+
   setup do
     original_jido = Application.get_env(:jido_claw, :jido_runtime)
     original_tracker = Application.get_env(:jido_claw, :agent_tracker)
@@ -468,6 +474,78 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       # re-engageable.
       assert %{status: :error} = AgentTracker.get_agent("docs_writer_123")
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+    end
+
+    @tag :capture_log
+    test "injects the AR-5 doctrine prompt before the follow-up turn (real worker pid)" do
+      alias JidoClaw.AgentTracker
+
+      tag = "docs_writer_ar5_#{System.unique_integer([:positive])}"
+
+      # The turn runs through BlockingWorker (observable, never hits an LLM)
+      # while set_system_prompt targets the real DocsWriter pid — template.module
+      # and the injected pid are independent in the dispatch task. RealPidJido
+      # decouples whereis from Registry lookup mechanics.
+      Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
+      Application.put_env(:jido_claw, :jido_runtime, RealPidJido)
+      Application.put_env(:jido_claw, :send_to_agent_test_pid, self())
+
+      # The flag is OFF globally, so a deleted inject call would never fire —
+      # that is exactly the regression this test pins.
+      original_doctrine = Application.get_env(:jido_claw, :doctrine)
+      Application.put_env(:jido_claw, :doctrine, enabled?: true)
+
+      {:ok, pid} = JidoClaw.Jido.start_subagent(JidoClaw.Agent.Workers.DocsWriter, id: tag)
+      Application.put_env(:jido_claw, :send_to_agent_real_pid, pid)
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
+        Application.delete_env(:jido_claw, :send_to_agent_real_pid)
+
+        case original_doctrine do
+          nil -> Application.delete_env(:jido_claw, :doctrine)
+          val -> Application.put_env(:jido_claw, :doctrine, val)
+        end
+
+        AgentTracker.reset()
+      end)
+
+      # Flush to a terminal entry so the follow-up cleanly reactivates it.
+      assert :ok =
+               AgentTracker.register(tag, pid, "docs_writer", "initial", tenant_id: @tenant_id)
+
+      AgentTracker.mark_complete(tag, :done)
+      _ = AgentTracker.get_state()
+
+      handler_id = "ar5-send-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:jido_claw, :agent, :prompt_injected],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:injected, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # ctx is tenant-only → correlation is cache-only, no DB.
+      assert {:ok, %{status: "message_sent"}} =
+               SendToAgent.run(%{agent_id: tag, message: "follow-up"}, ctx())
+
+      # Ordering proof: the dispatch task injects (firing the telemetry) BEFORE
+      # SubagentTranscript.run reaches BlockingWorker.ask_sync. So by the time
+      # the worker signals its turn, {:injected} is already enqueued — the
+      # no-wait assert_received succeeds in the fixed code and would fail if the
+      # inject call ran after the turn.
+      assert_receive {:ask_sync_started, worker_pid, "follow-up"}, 10_000
+      assert_received {:injected, metadata}
+      assert metadata.source == :doctrine
+      assert metadata.template == "docs_writer"
+
+      send(worker_pid, :release)
     end
   end
 

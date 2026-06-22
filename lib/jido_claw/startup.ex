@@ -8,8 +8,15 @@ defmodule JidoClaw.Startup do
   """
 
   alias JidoClaw.Agent.Prompt
+  alias JidoClaw.Agent.SubagentPrompt
   alias JidoClaw.Reasoning.PipelineStore
   alias JidoClaw.Reasoning.StrategyStore
+
+  require Logger
+
+  # AR-5 doctrine injection kill switch. `enabled?: true` ships doctrine to every
+  # spawn/skill sub-agent; `false` restores legacy no-doctrine worker behavior.
+  @doctrine_defaults [enabled?: true]
 
   @doc """
   Ensure project-level `.jido/` files exist and reconcile the system prompt
@@ -124,6 +131,52 @@ defmodule JidoClaw.Startup do
     base = resolve_prompt(session, project_dir)
     combined = base <> "\n\n" <> handoff_block(handoff_context)
     do_inject(pid, combined, project_dir, source_of(session), %{handoff: true})
+  end
+
+  @doc """
+  Inject the AR-5 doctrine system prompt onto a freshly-spawned sub-agent pid — the
+  first system prompt spawn/skill workers receive. Gated by
+  `config :jido_claw, :doctrine, enabled?:` (disabled → no-op `:ok`). Best-effort: any
+  failure logs and returns `:ok`, never blocking the spawn. Reuses `do_inject/5`
+  (emits `[:jido_claw, :agent, :prompt_injected]`, source `:doctrine`).
+  """
+  @spec inject_subagent_prompt(pid(), String.t(), map()) :: :ok
+  def inject_subagent_prompt(pid, template_name, tool_context)
+      when is_pid(pid) and is_binary(template_name) do
+    if doctrine_enabled?() do
+      project_dir = Map.get(tool_context, :project_dir) || File.cwd!()
+      prompt = SubagentPrompt.build(template_name, tool_context)
+
+      # do_inject/5 returns :ok | {:error, reason} — log the error tuple too, not
+      # just raises/exits.
+      case do_inject(pid, prompt, project_dir, :doctrine, %{template: template_name}) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "[Doctrine] set_system_prompt failed (#{template_name}): #{inspect(reason)}"
+          )
+
+          :ok
+      end
+    else
+      :ok
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    e ->
+      Logger.warning("[Doctrine] subagent prompt injection failed: #{Exception.message(e)}")
+      :ok
+  catch
+    # dead/slow pid — never block the spawn
+    :exit, _ -> :ok
+  end
+
+  defp doctrine_enabled? do
+    :jido_claw
+    |> Application.get_env(:doctrine, [])
+    |> Keyword.get(:enabled?, @doctrine_defaults[:enabled?])
   end
 
   defp do_inject(pid, prompt, project_dir, source, extra_metadata) do

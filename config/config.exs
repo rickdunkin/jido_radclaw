@@ -254,6 +254,10 @@ config :jido_claw, :triage_sensitive_deadline_ms, 1_800_000
 # tests drive WorkflowRecovery.reconcile_all/0 directly inside the sandbox.
 config :jido_claw, :workflow_recovery, enabled?: true
 
+# AR-5 central doctrine injection (JidoClaw.Doctrine → spawn/skill sub-agents).
+# Kill switch: disabling restores legacy no-doctrine worker behavior.
+config :jido_claw, :doctrine, enabled?: true
+
 # Tool output shaping (JidoClaw.Tools.OutputShaper). Format-aware compression
 # of verbose command output — success noise becomes counts, error detail stays
 # verbatim — with the full captured output stored under a ref retrievable via

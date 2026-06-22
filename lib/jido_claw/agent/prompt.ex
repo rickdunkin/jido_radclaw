@@ -18,6 +18,8 @@ defmodule JidoClaw.Agent.Prompt do
 
   require Logger
 
+  alias JidoClaw.Agent.PromptSections
+
   # Ash CRUD + Postgrex faults the Block tier read can hit; narrowed so a
   # real bug surfaces instead of silently producing an empty Block tier.
   @db_errors JidoClaw.Core.AshErrors.db_errors()
@@ -240,38 +242,6 @@ defmodule JidoClaw.Agent.Prompt do
     """
   end
 
-  defp blocks_section([]), do: ""
-
-  defp blocks_section(blocks) do
-    entries =
-      Enum.map_join(blocks, "\n\n", fn block ->
-        header =
-          case block.description do
-            nil -> "### #{block.label}"
-            "" -> "### #{block.label}"
-            desc -> "### #{block.label} — #{desc}"
-          end
-
-        header <> "\n" <> block.value
-      end)
-
-    """
-
-    ## Memory Blocks (curated context)
-    #{entries}
-    """
-  end
-
-  defp jido_md_section(nil), do: ""
-
-  defp jido_md_section(content) do
-    """
-
-    ## Project Instructions (from JIDO.md)
-    #{content}
-    """
-  end
-
   # ---------------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------------
@@ -311,13 +281,13 @@ defmodule JidoClaw.Agent.Prompt do
     project_type = detect_type(cwd)
     skills = load_skills(cwd)
     blocks = render_block_tier(scope)
-    jido_md = load_jido_md(cwd)
+    jido_md = PromptSections.load_jido_md(cwd)
 
     base_prompt <>
       "\n" <>
       environment_section_snapshot(cwd, project_type, skills) <>
-      blocks_section(blocks) <>
-      jido_md_section(jido_md)
+      PromptSections.blocks_section(blocks) <>
+      PromptSections.jido_md_section(jido_md)
   end
 
   defp render_block_tier(nil), do: []
@@ -451,15 +421,6 @@ defmodule JidoClaw.Agent.Prompt do
     _ -> []
   catch
     :exit, _ -> []
-  end
-
-  defp load_jido_md(cwd) do
-    path = Path.join([cwd, ".jido", "JIDO.md"])
-
-    case File.read(path) do
-      {:ok, content} -> content
-      _ -> nil
-    end
   end
 
   defp detect_type(dir) do

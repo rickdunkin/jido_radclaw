@@ -1,9 +1,11 @@
 defmodule JidoClaw.Agent.Workers.TestRunner do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_test_runner",
     description:
-      "Runs tests and reports results. Read-only access to files with command execution for running test suites. Return a structured result with `status` (`passed`/`failed`/`error` — `error` for test-runner crashes/setup failures distinct from `failed` for test assertions), a one-line `summary`, `passed_count` / `failed_count` (non-negative), a list of `failures` (each with the failing `test` name and its `error` message), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Runs tests and reports results. Read-only access to files with command execution for running test suites. Return a structured result with `status` (`passed`/`failed`/`error` — `error` for test-runner crashes/setup failures distinct from `failed` for test assertions), a one-line `summary`, `passed_count` / `failed_count` (non-negative), and a list of `failures` (each with the failing `test` name and its `error` message).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.RunCommand,
@@ -32,15 +34,7 @@ defmodule JidoClaw.Agent.Workers.TestRunner do
                 coerce: true
               )
             ),
-          artifacts:
-            Zoi.object(
-              %{
-                url: Zoi.optional(Zoi.string()),
-                port: Zoi.optional(Zoi.string()),
-                files: Zoi.optional(Zoi.string())
-              },
-              unrecognized_keys: :preserve
-            )
+          artifacts: OutputSchema.artifacts()
         }),
       retries: 1,
       on_validation_error: :repair

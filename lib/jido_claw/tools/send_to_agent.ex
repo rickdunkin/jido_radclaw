@@ -94,6 +94,13 @@ defmodule JidoClaw.Tools.SendToAgent do
             # only this task; best-effort (`:skipped` with no Consumer).
             _ = mcp().ensure_attached(pid, template_name, 8_000)
 
+            # AR-5: re-inject the doctrine system prompt before the follow-up
+            # turn. A follow-up can outrun the spawn's async injection, so
+            # without this the first follow-up could run on the default ReAct
+            # prompt. Safe to repeat (set_system_prompt replaces, never
+            # appends); best-effort + gated, mirrors the ensure_attached above.
+            _ = JidoClaw.Startup.inject_subagent_prompt(pid, template_name, child_tool_context)
+
             try do
               SubagentTranscript.record_task(child_tool_context, request_id, params.message)
 

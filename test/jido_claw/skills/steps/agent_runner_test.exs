@@ -295,6 +295,57 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     end
   end
 
+  describe "run/4 — AR-5 doctrine injection" do
+    setup do
+      original = Application.get_env(:jido_claw, :doctrine)
+      Application.put_env(:jido_claw, :doctrine, enabled?: true)
+
+      on_exit(fn ->
+        case original do
+          nil -> Application.delete_env(:jido_claw, :doctrine)
+          val -> Application.put_env(:jido_claw, :doctrine, val)
+        end
+      end)
+
+      :ok
+    end
+
+    @tag :capture_log
+    test "injects the doctrine prompt onto the freshly-spawned step worker" do
+      handler_id = "ar5-agentrunner-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:jido_claw, :agent, :prompt_injected],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:injected, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # A bare context: no session_uuid → the step's correlation goes cache-only
+      # and its transcript writes hit do_append's no-op clause, so the worker turn
+      # touches no DB. Real "coder" template + default runtime so the pid actually
+      # handles the ReAct set_system_prompt signal. run/4 is synchronous (it blocks
+      # until the step's turn finishes); the injection fires before the turn runs
+      # (agent_runner.ex, right after ensure_attached), so drive run/4 in a Task and
+      # assert the early event. The flag is OFF globally, so a deleted call would
+      # make this never fire — that's the point.
+      Task.start(fn -> AgentRunner.run("coder", "go", "s", %{}) end)
+
+      assert_receive {:injected, metadata}, 10_000
+      assert metadata.source == :doctrine
+      assert metadata.template == "coder"
+
+      # Stop the worker the Task spawned (idempotent — the step's after-block also
+      # stops it) so a failing assertion never leaks a supervised process.
+      if is_pid(metadata.pid), do: JidoClaw.Jido.stop_agent(metadata.pid)
+    end
+  end
+
   # Builds a real tenant/workspace/session and a Reactor-style context carrying
   # the full scope (the shape ReactorRunner merges into the context).
   defp real_scope_context do

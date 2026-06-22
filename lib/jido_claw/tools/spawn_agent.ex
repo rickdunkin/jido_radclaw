@@ -166,6 +166,17 @@ defmodule JidoClaw.Tools.SpawnAgent do
         # Consumer; `:partial`/`:timeout` just means a tool-less turn).
         _ = mcp().ensure_attached(subagent_pid, template_name, 8_000)
 
+        # AR-5: inject the doctrine system prompt onto the worker before its turn
+        # runs — the first system prompt spawn workers receive. Best-effort + gated;
+        # runs inside the Task so it never blocks the caller, before the first
+        # SubagentTranscript.run.
+        _ =
+          JidoClaw.Startup.inject_subagent_prompt(
+            subagent_pid,
+            template_name,
+            child_tool_context
+          )
+
         try do
           SubagentTranscript.record_task(child_tool_context, request_id, task)
 

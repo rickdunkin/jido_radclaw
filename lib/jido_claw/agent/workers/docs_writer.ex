@@ -1,9 +1,11 @@
 defmodule JidoClaw.Agent.Workers.DocsWriter do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_docs_writer",
     description:
-      "Writes documentation, module docs, function specs, and inline comments. Reads existing code and writes updated files. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), `kinds` (one or more of `moduledoc`/`typespec`/`readme`/`guide`/`inline_comment`/`other`), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Writes documentation, module docs, function specs, and inline comments. Reads existing code and writes updated files. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), and `kinds` (one or more of `moduledoc`/`typespec`/`readme`/`guide`/`inline_comment`/`other`).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
@@ -31,15 +33,7 @@ defmodule JidoClaw.Agent.Workers.DocsWriter do
                 other: "other"
               )
             ),
-          artifacts:
-            Zoi.object(
-              %{
-                url: Zoi.optional(Zoi.string()),
-                port: Zoi.optional(Zoi.string()),
-                files: Zoi.optional(Zoi.string())
-              },
-              unrecognized_keys: :preserve
-            )
+          artifacts: OutputSchema.artifacts()
         }),
       retries: 1,
       on_validation_error: :repair

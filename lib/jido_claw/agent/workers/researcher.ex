@@ -1,9 +1,11 @@
 defmodule JidoClaw.Agent.Workers.Researcher do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_researcher",
     description:
-      "Explores and analyzes codebase structure, dependencies, and patterns, and researches the web (discover with search_web, read with browse_web). Read-only access for deep codebase and web investigation. Return a structured result with a top-line `summary`, `confidence` (`low`/`medium`/`high`), a list of `findings` (each with a `topic`, `detail`, and `references` — file paths or symbols), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Explores and analyzes codebase structure, dependencies, and patterns, and researches the web (discover with search_web, read with browse_web). Read-only access for deep codebase and web investigation. Return a structured result with a top-line `summary`, `confidence` (`low`/`medium`/`high`), and a list of `findings` (each with a `topic`, `detail`, and `references` — file paths or symbols).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.SearchCode,
@@ -33,15 +35,7 @@ defmodule JidoClaw.Agent.Workers.Researcher do
                 coerce: true
               )
             ),
-          artifacts:
-            Zoi.object(
-              %{
-                url: Zoi.optional(Zoi.string()),
-                port: Zoi.optional(Zoi.string()),
-                files: Zoi.optional(Zoi.string())
-              },
-              unrecognized_keys: :preserve
-            )
+          artifacts: OutputSchema.artifacts()
         }),
       retries: 1,
       on_validation_error: :repair

@@ -1,9 +1,11 @@
 defmodule JidoClaw.Agent.Workers.Refactorer do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_refactorer",
     description:
-      "Refactors code for improved structure, readability, and performance. Full tool access for comprehensive codebase restructuring. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), `improvements` (bullets of what got better — structure, readability, perf, etc.), and `artifacts` (an object with optional `url`/`port`/`files` — use `{}` if none).",
+      "Refactors code for improved structure, readability, and performance. Full tool access for comprehensive codebase restructuring. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), and `improvements` (bullets of what got better — structure, readability, perf, etc.).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
@@ -29,15 +31,7 @@ defmodule JidoClaw.Agent.Workers.Refactorer do
           summary: Zoi.string(),
           files_changed: Zoi.array(Zoi.string()),
           improvements: Zoi.array(Zoi.string()),
-          artifacts:
-            Zoi.object(
-              %{
-                url: Zoi.optional(Zoi.string()),
-                port: Zoi.optional(Zoi.string()),
-                files: Zoi.optional(Zoi.string())
-              },
-              unrecognized_keys: :preserve
-            )
+          artifacts: OutputSchema.artifacts()
         }),
       retries: 1,
       on_validation_error: :repair

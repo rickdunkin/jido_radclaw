@@ -66,6 +66,11 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       # strictly better than today's zero tools). Blocks only this step's setup.
       _ = mcp().ensure_attached(pid, template_name, 8_000)
 
+      # AR-5: inject the doctrine system prompt onto the freshly-spawned worker
+      # before its single-shot turn — the first system prompt step workers receive.
+      # Best-effort + gated; never blocks the step.
+      _ = JidoClaw.Startup.inject_subagent_prompt(pid, template_name, tool_context)
+
       case JidoClaw.register_child_correlation(tool_context) do
         {:ok, request_id} ->
           run_registered_step(
