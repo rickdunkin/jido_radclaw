@@ -44,9 +44,18 @@ defmodule JidoClaw.MCPServer do
         JidoClaw.Tools.ForgeStatus,
         JidoClaw.Tools.WorkflowStatus,
 
+        # Single-run composer observe (AR-2 Phase 5, §10.2) — MCP-only by
+        # design (the `workflow_status` precedent: not on the in-REPL agent).
+        JidoClaw.Tools.InspectWorkflow,
+
         # Workflow replay (Phase 4) — MCP-only by design: the in-REPL agent's
         # tool list deliberately does NOT carry this side-effect lever.
         JidoClaw.Tools.ReplayWorkflow
+      ],
+      resources: [
+        # The route-composer catalog at jido://workflows/catalog (AR-2 Phase 5,
+        # §10.2): a client can discover the composable surface, not just trigger it.
+        JidoClaw.MCPServer.Resources.WorkflowCatalog
       ]
     }
 

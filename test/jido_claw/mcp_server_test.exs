@@ -5,6 +5,15 @@ defmodule JidoClaw.MCPServerTest do
 
   alias JidoClaw.MCPServer
 
+  # MCPServer is only auto-loaded when serve_mode == :mcp; in the test VM it can
+  # be unloaded, and `function_exported?/3` does NOT auto-load (unlike a direct
+  # function call). Force-load it once — module loading is VM-global — so the
+  # export checks below stop flaking on test ordering.
+  setup_all do
+    {:module, MCPServer} = Code.ensure_loaded(MCPServer)
+    :ok
+  end
+
   describe "module existence" do
     test "module is compiled and available" do
       assert Code.ensure_loaded?(MCPServer)
@@ -56,8 +65,8 @@ defmodule JidoClaw.MCPServerTest do
       assert is_list(publish.tools)
     end
 
-    test "publishes 22 tools" do
-      assert Enum.count(MCPServer.__publish__().tools) == 22
+    test "publishes 23 tools" do
+      assert Enum.count(MCPServer.__publish__().tools) == 23
     end
 
     test "includes introspection tools" do
@@ -68,6 +77,10 @@ defmodule JidoClaw.MCPServerTest do
       assert JidoClaw.Tools.SwarmStatus in tools
       assert JidoClaw.Tools.ForgeStatus in tools
       assert JidoClaw.Tools.WorkflowStatus in tools
+    end
+
+    test "includes the single-run composer observe tool (MCP-only surface)" do
+      assert JidoClaw.Tools.InspectWorkflow in MCPServer.__publish__().tools
     end
 
     test "includes the workflow replay tool (MCP-only surface)" do
@@ -104,6 +117,16 @@ defmodule JidoClaw.MCPServerTest do
 
       assert JidoClaw.Tools.ProjectInfo in tools
       assert JidoClaw.Tools.RunSkill in tools
+    end
+  end
+
+  describe "published resources (AR-2 Phase 5)" do
+    test "__publish__/0 carries a resources list" do
+      assert is_list(MCPServer.__publish__().resources)
+    end
+
+    test "publishes the route-composer catalog resource" do
+      assert JidoClaw.MCPServer.Resources.WorkflowCatalog in MCPServer.__publish__().resources
     end
   end
 end

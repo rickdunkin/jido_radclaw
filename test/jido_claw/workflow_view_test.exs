@@ -1,6 +1,7 @@
 defmodule JidoClaw.WorkflowViewTest do
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Tools.WorkflowStatus
   alias JidoClaw.WorkflowView
@@ -155,5 +156,113 @@ defmodule JidoClaw.WorkflowViewTest do
     mcp_late = Enum.find(status["active_runs"], &(&1["run_id"] == run.id))
     assert mcp_late["deadline"]["status"] == "overdue"
     assert is_binary(mcp_late["deadline"]["due_at"])
+  end
+
+  # AR-2 Phase 5 (§10.2): the PRE-projection snapshot shape — atom top-level
+  # keys, an atom `composer.reason`. (The `JsonSafe.encode/1` atom→string flip
+  # lives in the `InspectWorkflow` tool, asserted in its own test.)
+  describe "snapshot/2 composer-awareness" do
+    test "a composer run with composer events carries :composer (available + route/ran/held)",
+         %{tenant_a: tenant} do
+      run = composer_run!(tenant, "composer-with-events")
+      append!(run, :route_composed, composed_payload(), tenant)
+      append!(run, :wave_started, %{wave_index: 0, stages: ["planner"]}, tenant)
+      append!(run, :wave_completed, %{wave_index: 0, stages: ["planner"]}, tenant)
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+
+      # Top-level keys stay atoms (the operator base view is untouched).
+      assert snapshot.run_id == run.id
+      assert snapshot.workflow_type == "composer"
+
+      composer = snapshot.composer
+      assert composer.available == true
+      assert composer.route == ["planner", "implementer"]
+      assert composer.ran == ["planner"]
+      assert composer.held == %{"implementer" => "needs-tests"}
+
+      # No parked gate child → the reliable signal is present and false.
+      assert composer.awaiting_approval_available == true
+      assert composer.awaiting_approval == false
+      assert composer.awaiting_child_run_ids == []
+    end
+
+    test "an :awaiting_approval child reports awaiting_approval: true + the child id",
+         %{tenant_a: tenant} do
+      parent = composer_run!(tenant, "parent")
+      append!(parent, :route_composed, %{route: ["plan-gate"], waves: [["plan-gate"]]}, tenant)
+      append!(parent, :wave_started, %{wave_index: 0, stages: ["plan-gate"]}, tenant)
+
+      {:ok, child} =
+        WorkflowRun.create(
+          %{name: "gate-wave", workflow_type: "reactor", parent_run_id: parent.id},
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      # Drive the child to :awaiting_approval via the real projection path.
+      append!(child, :run_started, %{}, tenant)
+      append!(child, :approval_requested, %{}, tenant)
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(parent.id, %{tenant_id: tenant})
+
+      composer = snapshot.composer
+      assert composer.available == true
+      assert composer.awaiting_approval == true
+      assert composer.awaiting_child_run_ids == [child.id]
+      # The parent stays :running across the child gate pause (§6).
+      assert snapshot.status == :running
+    end
+
+    test "a composer run with no composer events reports not_yet_composed (atom reason)",
+         %{tenant_a: tenant} do
+      run = composer_run!(tenant, "fresh-composer")
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+      assert snapshot.composer == %{available: false, reason: :not_yet_composed}
+    end
+
+    test "a non-composer run carries no :composer key", %{tenant_a: tenant} do
+      {:ok, run} =
+        WorkflowRun.create(%{name: "plain", workflow_type: "reactor"},
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+      refute Map.has_key?(snapshot, :composer)
+    end
+  end
+
+  # -- composer test helpers --
+
+  defp composer_run!(tenant, name) do
+    {:ok, run} =
+      WorkflowRun.create(%{name: name, workflow_type: "composer"},
+        tenant: tenant,
+        actor: actor_for(tenant)
+      )
+
+    # Genesis: run_started flips the parent to :running (the real composer path).
+    append!(run, :run_started, %{}, tenant)
+    run
+  end
+
+  defp composed_payload do
+    %{
+      route: ["planner", "implementer"],
+      waves: [["planner"], ["implementer"]],
+      held: %{"implementer" => "needs-tests"},
+      dropped: %{},
+      triggered_by: %{},
+      size: 2,
+      live: ["code", "plan-ready"],
+      available: ["plan"],
+      premises: %{}
+    }
+  end
+
+  defp append!(run, kind, payload, tenant) do
+    {:ok, _} = WorkflowLog.append(run, kind, payload, tenant: tenant, actor: actor_for(tenant))
   end
 end

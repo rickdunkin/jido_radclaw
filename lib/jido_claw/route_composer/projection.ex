@@ -47,7 +47,14 @@ defmodule JidoClaw.RouteComposer.Projection do
   effect), and `stages_invalidated` (Phase 4e rerun primitive → `ran` difference,
   an optional `closed_wave_index` advance, + a per-stage `rerun_counts` increment).
   Genesis, terminals, and any non-composer kind fold as no-ops.
+
+  ## Tolerant payload access
+
+  Atom-vs-string key tolerance lives in `JidoClaw.RouteComposer.EventPayload`
+  (`get/2`, `list/2`, `int/2`), shared with `JidoClaw.RouteComposer.Observe`.
   """
+
+  alias JidoClaw.RouteComposer.EventPayload
 
   @doc """
   Fold the run's `events` onto `seed_state` in `seq` order, returning the full
@@ -67,28 +74,31 @@ defmodule JidoClaw.RouteComposer.Projection do
   defp apply_event(%{kind: :route_composed, payload: payload}, state) do
     state
     |> put_premises(payload)
-    |> Map.put(:prev_route, list_field(payload, :route))
+    |> Map.put(:prev_route, EventPayload.list(payload, :route))
   end
 
   # The fold-applied marker (appended unconditionally, even for an empty-emission
   # wave). `wave_index` advances to `max(_, idx + 1)` so a benign re-dispatched
   # `wave_completed` is idempotent.
   defp apply_event(%{kind: :wave_completed, payload: payload}, state) do
-    stages = list_field(payload, :stages)
+    stages = EventPayload.list(payload, :stages)
 
     %{
       state
       | ran: MapSet.union(state.ran, MapSet.new(stages)),
-        wave_index: advance_wave_index(state.wave_index, int_field(payload, :wave_index))
+        wave_index: advance_wave_index(state.wave_index, EventPayload.int(payload, :wave_index))
     }
   end
 
   defp apply_event(%{kind: :signals_published, payload: payload}, state) do
-    %{state | live: MapSet.union(state.live, MapSet.new(list_field(payload, :signals)))}
+    %{state | live: MapSet.union(state.live, MapSet.new(EventPayload.list(payload, :signals)))}
   end
 
   defp apply_event(%{kind: :signals_retracted, payload: payload}, state) do
-    %{state | live: MapSet.difference(state.live, MapSet.new(list_field(payload, :signals)))}
+    %{
+      state
+      | live: MapSet.difference(state.live, MapSet.new(EventPayload.list(payload, :signals)))
+    }
   end
 
   defp apply_event(%{kind: :artifacts_produced, payload: payload}, state) do
@@ -110,7 +120,7 @@ defmodule JidoClaw.RouteComposer.Projection do
   #   * `rerun_counts` increments per invalidated stage — the per-stage rerun cap
   #     the loop's `over_budget?` reads (rebuilt here so the cap survives a crash).
   defp apply_event(%{kind: :stages_invalidated, payload: payload}, state) do
-    stages = list_field(payload, :stages)
+    stages = EventPayload.list(payload, :stages)
 
     # `ran`/`wave_index` always exist on the seed (the `|` update); `rerun_counts`
     # is added tolerantly (a synthetic-log test seed may omit it).
@@ -145,7 +155,7 @@ defmodule JidoClaw.RouteComposer.Projection do
   # keeps the seed); for a future premises producer the value round-trips through
   # the JSON-safe boundary (string keys), so seed it string-keyed to stay equal.
   defp put_premises(state, payload) do
-    case get(payload, :premises) do
+    case EventPayload.get(payload, :premises) do
       nil -> state
       premises -> %{state | premises: premises}
     end
@@ -160,7 +170,7 @@ defmodule JidoClaw.RouteComposer.Projection do
   # `closed_wave_index` (the reject-parked-gate path); otherwise the index is
   # untouched (a generic completed-wave rerun).
   defp advance_on_invalidation(current, payload) do
-    case int_field(payload, :closed_wave_index) do
+    case EventPayload.int(payload, :closed_wave_index) do
       idx when is_integer(idx) -> max(current, idx + 1)
       _absent -> current
     end
@@ -171,9 +181,9 @@ defmodule JidoClaw.RouteComposer.Projection do
   end
 
   defp produce_artifact(entry, store) do
-    name = get(entry, :name)
-    producer = get(entry, :producer)
-    ref = get(entry, :ref)
+    name = EventPayload.get(entry, :name)
+    producer = EventPayload.get(entry, :producer)
+    ref = EventPayload.get(entry, :ref)
 
     if is_binary(name) and is_binary(producer) do
       Map.update(store, name, %{producer => {:ref, ref}}, &Map.put(&1, producer, {:ref, ref}))
@@ -185,8 +195,8 @@ defmodule JidoClaw.RouteComposer.Projection do
   # Delete `store[name][producer]`, pruning a now-empty name map so `available`
   # (which excludes empty producer maps) stays correct.
   defp invalidate_artifact(entry, store) do
-    name = get(entry, :name)
-    producer = get(entry, :producer)
+    name = EventPayload.get(entry, :name)
+    producer = EventPayload.get(entry, :producer)
 
     case Map.get(store, name) do
       nil ->
@@ -199,36 +209,9 @@ defmodule JidoClaw.RouteComposer.Projection do
   end
 
   defp artifact_entries(payload) do
-    case get(payload, :artifacts) do
+    case EventPayload.get(payload, :artifacts) do
       list when is_list(list) -> list
       _ -> []
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # Tolerant payload access (atom key wins, else string key, else default)
-  # ---------------------------------------------------------------------------
-
-  defp list_field(payload, key) do
-    case get(payload, key) do
-      list when is_list(list) -> list
-      _ -> []
-    end
-  end
-
-  defp int_field(payload, key) do
-    case get(payload, key) do
-      n when is_integer(n) -> n
-      _ -> nil
-    end
-  end
-
-  defp get(map, key) when is_map(map) and is_atom(key) do
-    case Map.get(map, key) do
-      nil -> Map.get(map, Atom.to_string(key))
-      value -> value
-    end
-  end
-
-  defp get(_map, _key), do: nil
 end
