@@ -160,7 +160,7 @@ defmodule JidoClaw.MixProject do
       {:jido_messaging, "~> 1.0", override: true},
       {:jido_shell,
        github: "agentjido/jido_shell",
-       ref: "0c0e86aa6244c5a48473fe714bb866046ae0b927",
+       ref: "18d892d16e1366fe152048ba6f60e8cda1b1de4b",
        override: true},
       {:jido_vfs, "~> 1.0", override: true},
 
