@@ -48,12 +48,16 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
       with no checkpoint. Its serialized launch catalog is decoded **and
       validated** from `config` (absent, atom-unsafe, **or** structurally-
       incoherent — all un-recoverable, leaving the parent `:running`); its
-      non-terminal children are reconciled through the
-      reactor branches above; and — **only when every child is terminal** — the
-      supervised `JidoClaw.RouteComposer` is restarted, whose own
-      `init`/`do_rebuild` folds the durable log and resumes mid-route. A still-
-      parked gate child, or a transient blip, leaves the parent `:running` to
-      retry next boot — never failing a recoverable route. Composer parents are
+      non-terminal children are reconciled through the reactor branches above;
+      and — when every still-non-terminal child is a **parked gate** (Phase 4d:
+      `:awaiting_approval` + a pending case; a still-running **worker** child
+      still blocks restart) — the supervised `JidoClaw.RouteComposer` is
+      restarted, whose own `init`/`do_rebuild` folds the durable log and either
+      resumes mid-route OR re-enters the gate park (`derive_park` re-parks the
+      gate WITHOUT re-dispatching, then folds/terminalizes on the operator's
+      decision). A non-gate non-terminal child, or a transient blip, leaves the
+      parent `:running` to retry next boot — never failing a recoverable route.
+      Composer parents are
       reconciled **before** the other runs (their children excluded from the rest
       of the scan), so the composer never re-dispatches a wave onto an
       executorless child (H6b). Any *other* composer status falls through to the
@@ -321,20 +325,18 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     actor = Actor.system(tenant)
     handled = reconcile_children(run, tenant, actor)
 
-    if all_children_terminal?(run, tenant, actor) do
+    if restartable?(run, tenant, actor) do
       start_recovered_composer(run, tenant, actor)
     else
-      # A legitimately parked `:awaiting_approval` gate (the `:parked` no-op left
-      # it), a child a transient case-lookup error left awaiting, or any child that
-      # didn't terminalize. Do NOT start — a restarted composer would re-dispatch
-      # that wave, hit the still-non-terminal child, and `observe_existing_child`
-      # would poll the now-executorless child until `wave_timeout_ms` then fail the
-      # parent. Leave `:running` + retry next boot. (The durable
-      # wake-after-gate-decision story is Phase 4 gate-in-composer wiring; 2d must
-      # neither fail a parked parent nor start a composer that would.)
+      # A still-running/transient WORKER child remains non-terminal: do NOT start —
+      # a restarted composer would re-dispatch that wave, hit the executorless
+      # corpse, and `observe_existing_child` would poll until `wave_timeout_ms`
+      # then fail the parent. Leave `:running` + retry next boot. (A **parked gate**
+      # child does NOT block restart — Phase 4d: the restarted composer's
+      # `derive_park` re-parks it WITHOUT re-dispatching.)
       Logger.info(
-        "[WorkflowRecovery] composer parent #{run.id} has a non-terminal child " <>
-          "(e.g. a parked gate); leaving :running for the next boot"
+        "[WorkflowRecovery] composer parent #{run.id} has a non-terminal non-gate child; " <>
+          "leaving :running for the next boot"
       )
 
       emit(run, :composer)
@@ -363,15 +365,32 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     end
   end
 
-  # Re-read the children AFTER reconciliation (statuses changed) and require every
-  # one to be terminal before starting (findings #1 + #2). A reload failure is
-  # treated as "not all terminal" — don't start, retry next boot.
-  defp all_children_terminal?(run, tenant, actor) do
+  # Re-read the children AFTER reconciliation and decide whether the composer is
+  # safe to restart (Phase 4d): YES iff every still-non-terminal child is a
+  # **parked gate** (`:awaiting_approval` + a pending `AgentCase`) — the restarted
+  # composer re-parks those without re-dispatching. A still-running/transient
+  # WORKER child (the executorless-corpse danger the old all-terminal guard
+  # feared) blocks the restart. A reload failure is "not safe" — don't start,
+  # retry next boot.
+  defp restartable?(run, tenant, actor) do
     case load_child_runs(run, tenant, actor) do
-      {:ok, children} -> Enum.all?(children, &Projection.terminal_status?(&1.status))
-      :error -> false
+      {:ok, children} ->
+        children
+        |> Enum.reject(&Projection.terminal_status?(&1.status))
+        |> Enum.all?(&parked_gate_child?(&1, tenant, actor))
+
+      :error ->
+        false
     end
   end
+
+  # A parked gate: `:awaiting_approval` with an open pending `AgentCase` (the
+  # `:parked` no-op left it that way). Anything else non-terminal blocks restart.
+  defp parked_gate_child?(%WorkflowRun{status: :awaiting_approval} = child, tenant, actor) do
+    match?({:ok, [_ | _]}, AgentCase.pending_for_run(child.id, tenant: tenant, actor: actor))
+  end
+
+  defp parked_gate_child?(_child, _tenant, _actor), do: false
 
   defp start_recovered_composer(run, tenant, actor) do
     # No `catalog:` opt — `build_start_opts/2` reconstructs it config-

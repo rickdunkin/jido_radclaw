@@ -88,9 +88,14 @@ defmodule JidoClaw.RouteComposer do
   a bounded `receive`) is the test/CLI entry: a composer crash surfaces as a
   handled `:DOWN`, and on timeout/crash/start-failure the now-ownerless
   `:running` parent is terminalized live. Per wave the GenServer **blocks**
-  inside `ReactorRunner.run/3` — acceptable for a single-run spike; Phase 4 moves
-  wave execution to a `Task` + `handle_info` so the GenServer stays live across a
-  gate park.
+  inside `ReactorRunner.run/3` — fine because nothing long-running executes
+  inside it: a worker wave returns when its (stubbed/real) subagents finish, and
+  a **gate** wave returns *promptly* at the `GateStep` halt (one DB write, no
+  LLM) as `{:ok, {:paused, case_id}, run}`. The composer then **parks** by
+  returning `{:noreply, parked}` from `handle_continue` and becomes an idle, live
+  GenServer that wakes on `handle_info({:gate_resolved, …})` (Phase 4) — nothing
+  executes during the park, so "stays live across a gate park" needs no
+  off-process `Task` rearchitecture.
 
   ## Sensitive artifacts (Phase 2b)
 
@@ -102,12 +107,16 @@ defmodule JidoClaw.RouteComposer do
   `:deadline_ms`, C2) marks every wave, so the subagent's derived durable output
   is sanitized at all six sinks — real `diff`/`approved-plan` values may now flow.
 
-  ## Scope forks (Phase 1)
+  ## Scope forks
 
-  Forward-only: the self-heal rerun loop (AR-4) is out of scope, so a ran lens
-  with open `findings:<lens>` terminates `:not_converged` (it does not re-fire a
-  fixer). Worker-only waves: `WaveBuilder` rejects non-`{:worker_template, _}`
-  units, so the public loop is fixture-catalog-only.
+  The rerun/invalidation **primitive** now exists (Phase 4e — `stages_invalidated`
+  with an optional `closed_wave_index`, `signals_retracted`, `artifacts_invalidated`,
+  the per-stage rerun cap), and Phase 4's **use** of it is the plan-gate re-plan
+  (reject opt-in + stale-approval retraction). The AR-4 self-heal **fixer**
+  workflow (review → fix → re-review) that reuses the primitive for open review
+  findings is a separate workflow (§12), so `Loop.terminal`'s
+  `:not_converged`-on-open-`findings:<lens>` is unchanged here — a ran lens with
+  open findings still terminates `:not_converged` (it does not re-fire a fixer).
   """
 
   use GenServer
@@ -117,6 +126,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
+  alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLog
@@ -143,6 +153,11 @@ defmodule JidoClaw.RouteComposer do
   @default_timeout_ms 60_000
   @default_run_name "route_composer"
 
+  # Per-stage rerun cap (Phase 4e): a stage may be invalidated + re-fired at most
+  # this many times before the run takes the `route_budget_exhausted` terminal —
+  # the bound on a non-progressing re-plan loop (reused by AR-4/AR-8c reruns).
+  @default_rerun_cap 2
+
   # Per-wave wall-clock kill deadline (AR-2 Phase 2b C3) — a composer wave that
   # runs longer than this is killed and the child wave fails. ~5 min default.
   @default_wave_timeout_ms 300_000
@@ -159,6 +174,14 @@ defmodule JidoClaw.RouteComposer do
   @max_rebuild_attempts 5
   @rebuild_backoff_ms 100
   @rebuild_backoff_max_ms 2_000
+
+  # Park-marker (`wave_paused`) append retry budget (Phase 4b): a transient
+  # append failure at the park point is retried with the same capped backoff as
+  # the rebuild path before the composer parks in-memory anyway (the parent stays
+  # `:running`, the open case is a valid pending approval — recovery derives the
+  # park from `wave_started` even without the marker). NEVER tears a validly-parked
+  # gate down (only an externally-cancelled `:parent_terminal` does that).
+  @max_wave_paused_attempts 5
 
   # Dedupe-hit observe poll interval (Phase 2c): a restart re-dispatch may bind a
   # still-running in-flight child; the composer polls its terminal at this cadence
@@ -858,6 +881,17 @@ defmodule JidoClaw.RouteComposer do
       ref: Keyword.get(opts, :ref),
       rebuild_attempts: 0,
       history: [],
+      # Gate park (Phase 4): `parked` holds `%{wave_index, case_id, child_run_id,
+      # dispatch, display}` while the composer is parked on a gate (else nil), and
+      # `gates_subscribed` is the once-only `RunPubSub.subscribe_gates/0` flag so a
+      # restart/re-park doesn't double-subscribe.
+      parked: nil,
+      gates_subscribed: false,
+      # Rerun primitive (Phase 4e): `rerun_counts` is the per-stage invalidation
+      # tally the rerun cap reads (rebuilt from the log by `ComposerProjection`),
+      # `rerun_cap` the ceiling before `route_budget_exhausted`.
+      rerun_counts: %{},
+      rerun_cap: Keyword.get(opts, :rerun_cap, @default_rerun_cap),
       terminal: nil,
       reason: nil,
       summary: nil
@@ -884,14 +918,55 @@ defmodule JidoClaw.RouteComposer do
     dispatch = Loop.dispatch_cohort(display, state.ran)
 
     cond do
-      is_nil(dispatch) -> finish(Loop.terminal(display, state), state)
-      over_budget?(state) -> finish({:budget_exhausted, budget_reason(state)}, state)
-      true -> run_wave(dispatch, display, state)
+      is_nil(dispatch) ->
+        finish(Loop.terminal(display, state), state)
+
+      over_budget?(state) ->
+        finish({:budget_exhausted, budget_reason(state)}, state)
+
+      true ->
+        # Peel a solo gate out of a mixed Kahn cohort (Phase 4b): the router does
+        # not guarantee a gate is alone in its level, so dispatch the gate this
+        # turn and let the independent workers re-compose next tick.
+        run_wave(Loop.split_solo_gate(dispatch, state.catalog), display, state)
     end
   end
 
   @impl GenServer
   def handle_info(:rebuild_retry, state), do: do_rebuild(state)
+
+  # Gate wake (Phase 4b): an operator decided a gate. Ignore unless it is OUR
+  # parked child; otherwise reload the child and branch on its STATUS — never on
+  # `info.decision` — the durable status is the truth. This closes the
+  # broadcast-before-resume race (`cases.ex:281-284`): the approve broadcast can
+  # land before `GateResume` finishes, so a non-terminal child is observed to
+  # terminal before folding, and the fold always reads a `:completed` child.
+  def handle_info({:gate_resolved, run_id, _info}, state) do
+    if match?(%{child_run_id: ^run_id}, state.parked) do
+      resolve_parked_gate(state)
+    else
+      {:noreply, state}
+    end
+  end
+
+  # Retry a transient `wave_paused` append (Phase 4b) — ONLY while still parked on
+  # that exact child. A decision (approve/reject/abandon) clears `parked` to nil (or
+  # re-parks on a later gate); a delayed retry firing into a resolved park would deref
+  # a nil park in `wave_paused_payload/1` and crash. Mirrors the `:gate_resolved` guard.
+  def handle_info({:retry_wave_paused, child_run_id, attempt}, state) do
+    if match?(%{child_run_id: ^child_run_id}, state.parked) do
+      attempt_wave_paused(state, attempt)
+    else
+      {:noreply, state}
+    end
+  end
+
+  # The composer subscribes to the GLOBAL gates topic, so it also receives gate
+  # events for OTHER runs (a `{:gate_requested, _}` it never acts on, and a
+  # `{:gate_resolved, _}` for some other run's child the clause above already
+  # filtered out). Drop any unmatched message rather than letting GenServer's
+  # default handler log it as unexpected.
+  def handle_info(_message, state), do: {:noreply, state}
 
   defp do_rebuild(state) do
     case load_parent_and_events(state) do
@@ -903,10 +978,23 @@ defmodule JidoClaw.RouteComposer do
         rebuilt =
           ComposerProjection.project(%{state | parent: parent, rebuild_attempts: 0}, events)
 
-        {:noreply, rebuilt, {:continue, :tick}}
+        resume_or_tick(rebuilt, events)
 
       {:error, reason} ->
         retry_rebuild_or_stop(state, reason)
+    end
+  end
+
+  # On rebuild, resume a parked gate WITHOUT re-dispatching it (Phase 4d): if the
+  # log shows an open gate wave (`wave_started(N)` for a gate, no
+  # `wave_completed(N)`, a child at `composer:<parent>:N`), re-enter the park and
+  # branch on the child's status; otherwise turn the crank normally. This is what
+  # makes "durable wake-after-gate-decision" work — a restart re-parks (or folds /
+  # terminalizes a decided-while-down gate) instead of re-dispatching the wave.
+  defp resume_or_tick(state, events) do
+    case derive_park(state, events) do
+      nil -> {:noreply, state, {:continue, :tick}}
+      park -> re_enter_park(park, state)
     end
   end
 
@@ -992,13 +1080,81 @@ defmodule JidoClaw.RouteComposer do
     stages = Enum.map(dispatch, &Map.fetch!(state.catalog, &1))
 
     case WaveBuilder.build_wave(stages, wave_index: state.wave_index) do
-      {:ok, reactor} ->
+      # A solo gate wave (Phase 4b): dispatch its named gate-producer reactor
+      # module, which halts at the `GateStep` and parks the composer.
+      {:ok, {:module_reactor, module, gate_inputs}} ->
+        run_gate_wave(module, gate_inputs, dispatch, display, state)
+
+      {:ok, %Reactor{} = reactor} ->
         run_built_wave(reactor, stages, dispatch, display, state)
 
       # build_wave failure: no reactor ran, so there is no run to record.
       {:error, reason} ->
         finish_failed(reason, nil, dispatch, display, state)
     end
+  end
+
+  # A gate wave (Phase 4b). Resolve the gate's required-input ref from the store
+  # (the loop has store access; the builder does not), append the pre-launch
+  # markers under the FOR-UPDATE fence, then run the named gate reactor through
+  # `ReactorRunner.run/3` (`async?: false` — the runner pins the halted struct
+  # serializable, Decision 1). It returns promptly at the `GateStep` halt as
+  # `{:ok, {:paused, case_id}, run}`; `handle_wave_result` parks on it. No
+  # `:extra_context` (the gate stores the raw plan from its ref, feeds no worker),
+  # so the formatting/cap path is skipped. A `:parent_terminal` from the fence
+  # stops cleanly without launching; any other pre-launch error fails the wave.
+  defp run_gate_wave(module, gate_inputs, dispatch, display, state) do
+    gate_stage = Map.fetch!(state.catalog, hd(dispatch))
+
+    with {:ok, plan_ref} <- resolve_gate_input_ref(gate_stage, state),
+         :ok <- record_wave_start(dispatch, display, state),
+         :ok <- ensure_parent_live(state) do
+      module
+      |> run_gate_reactor(Map.put(gate_inputs, :plan_ref, plan_ref), state)
+      |> handle_wave_result(dispatch, display, state)
+    else
+      {:error, :parent_terminal} -> {:stop, :normal, state}
+      {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
+    end
+  end
+
+  # Resolve the bare store ref of the gate's single required input (the `plan`
+  # for `plan-gate`) from the provenance store. The base catalog gives a gate
+  # input one producer; multiple producers is out of scope, so pick the
+  # lexicographically-first deterministically. A missing input is a clean wave
+  # failure (the router's drop-unsatisfiable should never dispatch a gate whose
+  # input is absent, so this is a backstop).
+  defp resolve_gate_input_ref(%Stage{input: %{required: [name | _]}}, state) do
+    case Map.get(state.artifacts, name) do
+      producers when is_map(producers) and map_size(producers) > 0 ->
+        {_producer, entry} = Enum.min_by(producers, &elem(&1, 0))
+        {:ok, bare_ref(entry)}
+
+      _absent ->
+        {:error, {:gate_input_missing, name}}
+    end
+  end
+
+  defp resolve_gate_input_ref(%Stage{name: name}, _state),
+    do: {:error, {:gate_input_absent, name}}
+
+  # The gate reactor's launch — same envelope opts as `run_reactor/3` but
+  # `async?: false` (checkpoint serializability) and no `:extra_context`. The
+  # deterministic `composer:<parent>:<wave_index>` key makes a re-derived gate
+  # wave dedupe to the existing (parked or decided) child.
+  defp run_gate_reactor(module, inputs, state) do
+    ReactorRunner.run(module, inputs,
+      tenant: state.tenant,
+      actor: state.actor,
+      async?: false,
+      name: "route_composer:gate_#{state.wave_index}",
+      context: state.context,
+      parent_run_id: state.parent_run_id,
+      idempotency_key: "composer:#{state.parent_run_id}:#{state.wave_index}",
+      omit_replay_inputs: true,
+      sanitize_sensitive_context: state.sanitize_sensitive_context,
+      execution_timeout: state.wave_timeout_ms
+    )
   end
 
   # Resolve + decrypt the wanted artifacts into `:extra_context` (Phase 2b: the
@@ -1023,7 +1179,8 @@ defmodule JidoClaw.RouteComposer do
   defp run_built_wave(reactor, stages, dispatch, display, state) do
     with {:ok, extra_context} <-
            ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor),
-         :ok <- record_wave_start(dispatch, display, state) do
+         :ok <- record_wave_start(dispatch, display, state),
+         :ok <- ensure_parent_live(state) do
       reactor
       |> run_reactor(extra_context, state)
       |> handle_wave_result(dispatch, display, state)
@@ -1034,6 +1191,33 @@ defmodule JidoClaw.RouteComposer do
       {:error, :parent_terminal} -> {:stop, :normal, state}
       {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
+  end
+
+  # Belt-and-suspenders parent-terminal re-check in the launch path (Phase 4c):
+  # `record_wave_start`'s FOR-UPDATE guard catches a cancel that landed BEFORE the
+  # markers; this catches one landing in the residual window AFTER the markers
+  # commit but BEFORE `run_reactor` creates the child (the child create is
+  # unfenced). A best-effort narrowing only — a reload blip proceeds (the wave's
+  # fold is still fenced at `commit_wave/4`); full closure under CONCURRENT
+  # terminalization rides the Phase 6 cluster lease (§10.1).
+  defp ensure_parent_live(state) do
+    case WorkflowRun.by_id(state.parent_run_id, tenant: state.tenant, actor: state.actor) do
+      {:ok, %WorkflowRun{status: status}} ->
+        if Projection.terminal_status?(status), do: {:error, :parent_terminal}, else: :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  # A gate wave halted at its `GateStep` (Phase 4b): the run promptly returned
+  # `{:ok, {:paused, case_id}, run}` (one DB write, no LLM). PARK — subscribe to
+  # the gates topic, append the durable `wave_paused` marker, hold the dispatch
+  # context, and return `{:noreply, parked}`. The composer is now an idle, live
+  # GenServer that wakes on `handle_info({:gate_resolved, …})`. This clause must
+  # precede the generic `{:ok, value, run}` one.
+  defp handle_wave_result({:ok, {:paused, case_id}, run}, dispatch, display, state) do
+    park_gate(case_id, run, dispatch, display, state)
   end
 
   # A launch-dedupe hit re-binds an already-seen wave. It cannot occur in a fresh
@@ -1068,15 +1252,16 @@ defmodule JidoClaw.RouteComposer do
       :failed ->
         {:noreply, %{state | wave_index: state.wave_index + 1}, {:continue, :tick}}
 
-      # A gate-decided-then-crash (Phase 2d): the gate's decision already drove
-      # the child to a terminal before the composer could observe it, so
-      # synthesize the parent terminal (the projection maps
-      # `route_rejected`/`route_abandoned` → `:cancelled` + disposition).
+      # A gate-decided-then-crash (Phase 2d/4c): the gate's decision already drove
+      # the child to a terminal before the composer could observe it. Routed through
+      # the SAME `terminalize_gate_disposition/3` the live wake path uses (so the
+      # two cannot drift) → `route_rejected`/`route_abandoned` → `:cancelled` +
+      # disposition. (Phase 4e interposes the reject re-plan opt-in here too.)
       :cancelled ->
-        finish({:rejected, {:child_cancelled, run.id}}, state)
+        terminalize_gate_disposition(:rejected, run, state)
 
       :abandoned ->
-        finish({:abandoned, {:child_abandoned, run.id}}, state)
+        terminalize_gate_disposition(:abandoned, run, state)
     end
   end
 
@@ -1106,7 +1291,7 @@ defmodule JidoClaw.RouteComposer do
     case Commit.commit_wave(state.parent, state.wave_index, deltas, auth_opts(state)) do
       :ok ->
         next = record_wave(next_fold, dispatch, display, run, emissions)
-        {:noreply, next, {:continue, :tick}}
+        maybe_retract_stale_approval(next, emissions)
 
       # The run ended externally (an operator cancel landed while the wave
       # returned): stop cleanly, don't re-terminalize (the terminal append already
@@ -1326,18 +1511,545 @@ defmodule JidoClaw.RouteComposer do
   defp auth_opts(state), do: [tenant: state.tenant, actor: state.actor]
 
   # ---------------------------------------------------------------------------
+  # Gate park / wake (Phase 4)
+  # ---------------------------------------------------------------------------
+
+  # Park on a gate halt: subscribe-once to the gates topic (so the operator's
+  # decision wakes us), then append the durable `wave_paused` marker. `parked` is
+  # set BEFORE the append so the composer wakes even if the marker append is mid-
+  # retry. Do NOT bump `wave_index` / `record_wave` / re-append the start markers —
+  # the wave is not done.
+  defp park_gate(case_id, child, dispatch, display, state) do
+    state = ensure_gates_subscribed(state)
+
+    park = %{
+      wave_index: state.wave_index,
+      case_id: case_id,
+      child_run_id: child.id,
+      dispatch: dispatch,
+      display: display
+    }
+
+    attempt_wave_paused(%{state | parked: park}, 0)
+  end
+
+  # Append `wave_paused` under the parent-terminal fence, with the retry/exhaust/
+  # teardown branches (Phase 4b): the gate is VALIDLY parked here (open case +
+  # `:awaiting_approval` child), so a failed marker append must never terminalize
+  # the parent nor tear the gate down — only an externally-cancelled
+  # `:parent_terminal` tears it down (the parent IS terminal, so the case would be
+  # a real orphan). Otherwise retry (transient) or park-in-memory-anyway (exhausted):
+  # the live composer still wakes on the decision, the parent stays `:running`
+  # (recoverable), and recovery derives the park from `wave_started` even without
+  # the marker.
+  defp attempt_wave_paused(%{parked: park} = state, attempt) do
+    case Commit.append_markers(
+           state.parent,
+           [wave_paused: wave_paused_payload(park)],
+           auth_opts(state)
+         ) do
+      :ok ->
+        {:noreply, state}
+
+      {:error, :parent_terminal} ->
+        teardown_parked_gate(state)
+
+      {:error, reason} when attempt < @max_wave_paused_attempts ->
+        Logger.warning(
+          "[RouteComposer] wave_paused append attempt #{attempt + 1} failed for parent " <>
+            "#{state.parent_run_id} (#{inspect(reason)}); retrying"
+        )
+
+        Process.send_after(
+          self(),
+          {:retry_wave_paused, park.child_run_id, attempt + 1},
+          rebuild_backoff(attempt)
+        )
+
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.error(
+          "[RouteComposer] wave_paused append exhausted for parent #{state.parent_run_id} " <>
+            "(#{inspect(reason)}); parked in-memory, durable marker missing — recovery derives " <>
+            "the park from wave_started"
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  # The ONLY teardown path: the parent was cancelled externally during the park,
+  # so the open gate case is a real orphan. Cancel it + fail the child in one
+  # transaction (`terminate_cancelling_cases`), then stop `:normal`. If that
+  # teardown also errors, stop `:normal` anyway and leave it for recovery's
+  # terminal-parent child reconciliation — never a busy-loop.
+  defp teardown_parked_gate(%{parked: park} = state) do
+    case WorkflowRun.by_id(park.child_run_id, tenant: state.tenant, actor: state.actor) do
+      {:ok, %WorkflowRun{} = child} ->
+        WorkflowLog.terminate_cancelling_cases(
+          child,
+          [{:run_failed, %{error: "composer parent terminal during gate park"}}],
+          "composer parent terminal during gate park",
+          auth_opts(state)
+        )
+
+      _other ->
+        :ok
+    end
+
+    {:stop, :normal, state}
+  end
+
+  defp ensure_gates_subscribed(%{gates_subscribed: true} = state), do: state
+
+  defp ensure_gates_subscribed(state) do
+    RunPubSub.subscribe_gates()
+    %{state | gates_subscribed: true}
+  end
+
+  # The wake decision: reload the parked child and branch on its terminal STATUS
+  # (the truth), polling a not-yet-terminal child (approve broadcast landed before
+  # `GateResume` finished) to terminal first. Reused by recovery's `re_enter_park`.
+  defp resolve_parked_gate(%{parked: park} = state) do
+    case WorkflowRun.by_id(park.child_run_id, tenant: state.tenant, actor: state.actor) do
+      {:ok, %WorkflowRun{status: :completed} = child} ->
+        fold_resumed_gate(child, state)
+
+      {:ok, %WorkflowRun{status: status} = child}
+      when status in [:running, :pending, :awaiting_approval] ->
+        observe_then_resolve(child, state)
+
+      {:ok, %WorkflowRun{status: :cancelled} = child} ->
+        terminalize_gate_disposition(:rejected, child, state)
+
+      {:ok, %WorkflowRun{status: :abandoned} = child} ->
+        terminalize_gate_disposition(:abandoned, child, state)
+
+      other ->
+        # Reload failed (a DB blip): stay parked and leave it for recovery's
+        # re_enter_park on the next boot — the decision is durable, so it is never
+        # lost; we just can't observe it right now.
+        Logger.warning(
+          "[RouteComposer] parked-child reload failed for parent #{state.parent_run_id} " <>
+            "(#{inspect(other)}); staying parked for recovery"
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  # The approve broadcast can land before `GateResume.resume/2` finishes
+  # (`cases.ex:281-284`), so a child seen `:running`/`:awaiting_approval` is polled
+  # to terminal before we fold — the fold ALWAYS reads `:completed`, never the
+  # broadcast (else the implementer releases against an unwritten `plan-approved`).
+  defp observe_then_resolve(child, %{parked: park} = state) do
+    case await_existing_child(child, state) do
+      {:ok, %WorkflowRun{status: :completed} = done} ->
+        fold_resumed_gate(done, state)
+
+      {:ok, %WorkflowRun{status: :cancelled} = done} ->
+        terminalize_gate_disposition(:rejected, done, state)
+
+      {:ok, %WorkflowRun{status: :abandoned} = done} ->
+        terminalize_gate_disposition(:abandoned, done, state)
+
+      {:ok, %WorkflowRun{} = other} ->
+        finish_failed(
+          {:gate_resume_not_terminal, other.status},
+          other,
+          park.dispatch,
+          park.display,
+          state
+        )
+
+      {:error, reason} ->
+        finish_failed(reason, child, park.dispatch, park.display, state)
+    end
+  end
+
+  # Approve resolved: append `wave_resumed` (provenance), clear the park, then fold
+  # the child's durable emission through the SAME `handle_wave_value` path a worker
+  # wave uses — appending `wave_completed` + content and promoting the gate's
+  # `:pending` `approved-plan` to `:active` via `commit_wave`'s `activate_for_wave`,
+  # then `{:continue, :tick}`. The next `compose_route` sees `plan-approved` live →
+  # the implementer's lock is inactive → it dispatches. `wave_index` is unchanged
+  # (the park never bumped it), so `commit_wave` keys on the gate's own wave index.
+  defp fold_resumed_gate(child, %{parked: park} = state) do
+    cleared = %{state | parked: nil}
+
+    case Commit.append_markers(
+           cleared.parent,
+           [wave_resumed: wave_resumed_payload(park)],
+           auth_opts(cleared)
+         ) do
+      :ok ->
+        handle_wave_value(
+          decode_emissions(child.result),
+          child,
+          park.dispatch,
+          park.display,
+          cleared
+        )
+
+      {:error, :parent_terminal} ->
+        {:stop, :normal, cleared}
+
+      {:error, reason} ->
+        finish_failed(reason, child, park.dispatch, park.display, cleared)
+    end
+  end
+
+  # Reject/abandon → the parent's disposition terminal (Phase 4c). Reused by the
+  # live wake path AND the dedupe-hit `:cancelled`/`:abandoned` clause so the live
+  # and crash-recovery paths cannot drift. `route_rejected`/`route_abandoned`
+  # project onto `:cancelled` + `result.disposition`, dropping the held route.
+  #
+  # Phase 4e reject opt-in: when the catalog has a `plan-rejected` subscriber, a
+  # reject from a PARKED gate RE-PLANS (re-earns approval) instead of terminating;
+  # abandon never re-plans, and a reject with no parked context (dedupe-hit) takes
+  # the committed default.
+  defp terminalize_gate_disposition(:rejected, child, %{parked: park} = state)
+       when is_map(park) do
+    gate_stage = Map.fetch!(state.catalog, hd(park.dispatch))
+
+    if any_subscriber?(state.catalog, "plan-rejected") do
+      replan_after_reject(park, gate_stage, %{state | parked: nil})
+    else
+      finish({:rejected, {:child_cancelled, child.id}}, %{state | parked: nil})
+    end
+  end
+
+  defp terminalize_gate_disposition(:rejected, child, state),
+    do: finish({:rejected, {:child_cancelled, child.id}}, %{state | parked: nil})
+
+  defp terminalize_gate_disposition(:abandoned, child, state),
+    do: finish({:abandoned, {:child_abandoned, child.id}}, %{state | parked: nil})
+
+  defp wave_paused_payload(park) do
+    %{wave_index: park.wave_index, agent_case_id: park.case_id, child_run_id: park.child_run_id}
+  end
+
+  defp wave_resumed_payload(park) do
+    %{wave_index: park.wave_index, agent_case_id: park.case_id, child_run_id: park.child_run_id}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Recovery: wake-after-gate (Phase 4d)
+  # ---------------------------------------------------------------------------
+
+  # Re-derive a parked gate from the rebuilt state + durable log, WITHOUT
+  # requiring `wave_paused`. The authoritative signal is a `wave_started(N)` for a
+  # **gate** dispatch with no `wave_completed(N)` and a materialized child at
+  # `composer:<parent>:N` — `N` is the rebuilt `wave_index` (the last
+  # `wave_completed` advanced it to the parked wave). `wave_paused(N)`, when
+  # present, only supplies the `agent_case_id` shortcut; its ABSENCE never hides
+  # the park (so the rare "marker-append exhausted" park is still recoverable). A
+  # worker wave that crashed (`wave_started(N)` for a worker) returns nil here →
+  # the normal tick re-dispatches it (the dedupe-hit path handles the corpse).
+  defp derive_park(state, events) do
+    n = state.wave_index
+
+    with true <- wave_event?(events, :wave_started, n),
+         false <- wave_event?(events, :wave_completed, n),
+         stages when is_list(stages) <- wave_started_stages(events, n),
+         true <- gate_dispatch?(stages, state.catalog),
+         {:ok, %WorkflowRun{} = child} <- load_wave_child(state, n) do
+      build_recovery_park(state, n, child, stages, events)
+    else
+      _no_park -> nil
+    end
+  end
+
+  defp build_recovery_park(state, n, child, stages, events) do
+    # Re-compose the display from the rebuilt state (the same shape the live tick
+    # produces); the dispatch is the AUTHORITATIVE stored `wave_started` stages.
+    available = Fold.available(state.artifacts)
+    result = Router.compose_route(state.catalog, state.live, available, state.ran)
+    display = Router.merge_sticky(state.catalog, state.prev_route, result)
+
+    %{
+      wave_index: n,
+      case_id: recovered_case_id(events, n),
+      child_run_id: child.id,
+      dispatch: stages,
+      display: display
+    }
+  end
+
+  # Re-enter a parked gate on rebuild, reusing the SAME wake/fold/disposition code
+  # the live path uses (4b/4c): an `:awaiting_approval` child is re-parked
+  # (subscribe THEN re-read, to close the decision-landed-during-subscribe
+  # window); a decided-while-down child is folded / terminalized.
+  defp re_enter_park(park, state) do
+    resolve_recovered_gate(%{state | parked: park}, true)
+  end
+
+  defp resolve_recovered_gate(state, first?) do
+    case WorkflowRun.by_id(state.parked.child_run_id, tenant: state.tenant, actor: state.actor) do
+      # First read: subscribe, then re-read — a decision landing between the read
+      # and the subscribe would otherwise be missed.
+      {:ok, %WorkflowRun{status: :awaiting_approval}} when first? ->
+        resolve_recovered_gate(ensure_gates_subscribed(state), false)
+
+      # Genuinely still parked (now subscribed): re-append `wave_paused` and wait.
+      {:ok, %WorkflowRun{status: :awaiting_approval}} ->
+        attempt_wave_paused(state, 0)
+
+      {:ok, %WorkflowRun{status: :completed} = child} ->
+        fold_resumed_gate(child, state)
+
+      {:ok, %WorkflowRun{status: :cancelled} = child} ->
+        terminalize_gate_disposition(:rejected, child, state)
+
+      {:ok, %WorkflowRun{status: :abandoned} = child} ->
+        terminalize_gate_disposition(:abandoned, child, state)
+
+      # Decided-then-resuming while down (rare — reconcile usually finishes the
+      # resume first): observe to terminal, then fold/terminalize.
+      {:ok, %WorkflowRun{status: status} = child} when status in [:running, :pending] ->
+        observe_then_resolve(child, state)
+
+      _other ->
+        # Reload failed — stay parked (subscribed); recovery retries next boot.
+        {:noreply, ensure_gates_subscribed(state)}
+    end
+  end
+
+  defp load_wave_child(state, n) do
+    WorkflowRun.by_idempotency_key("composer:#{state.parent_run_id}:#{n}",
+      tenant: state.tenant,
+      actor: state.actor
+    )
+  end
+
+  # An event of `kind` for wave index `n` (the kind is pinned by the repeated
+  # variable). Recovery reads DB-reloaded events, so every payload is
+  # string-keyed (JSONB round-trip) — no atom-key tolerance needed here.
+  defp wave_event?(events, kind, n) do
+    Enum.any?(events, fn
+      %{kind: ^kind, payload: payload} -> event_wave_index(payload) == n
+      _event -> false
+    end)
+  end
+
+  defp wave_started_stages(events, n) do
+    Enum.find_value(events, fn
+      %{kind: :wave_started, payload: payload} ->
+        if event_wave_index(payload) == n, do: payload["stages"] || []
+
+      _event ->
+        nil
+    end)
+  end
+
+  defp recovered_case_id(events, n) do
+    Enum.find_value(events, fn
+      %{kind: :wave_paused, payload: payload} ->
+        if event_wave_index(payload) == n, do: payload["agent_case_id"]
+
+      _event ->
+        nil
+    end)
+  end
+
+  defp event_wave_index(payload) when is_map(payload) do
+    case payload["wave_index"] do
+      n when is_integer(n) -> n
+      _other -> nil
+    end
+  end
+
+  defp event_wave_index(_payload), do: nil
+
+  # ---------------------------------------------------------------------------
+  # Rerun / invalidation primitive + re-plan (Phase 4e)
+  # ---------------------------------------------------------------------------
+
+  # Re-plan after a gate reject (the §15.8 opt-in): in one fenced transaction fold
+  # `plan-rejected` + invalidate the re-run set, carrying `closed_wave_index` (the
+  # rejected gate's wave) so the re-fire gets a FRESH launch key PAST the cancelled
+  # gate child (without this advance the re-dispatched planner would dedupe to the
+  # cancelled gate and terminate — the High finding). Then mirror the deltas in
+  # memory and re-tick: the next compose re-fires the planner → re-gate → re-park →
+  # re-approve.
+  defp replan_after_reject(park, gate_stage, state) do
+    rerun_set = replan_rerun_set(state, gate_stage)
+
+    markers = [
+      signals_published: %{signals: ["plan-rejected"]},
+      stages_invalidated: %{stages: rerun_set, closed_wave_index: park.wave_index}
+    ]
+
+    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+      :ok ->
+        next = apply_reject_replan(state, rerun_set, park.wave_index)
+        {:noreply, next, {:continue, :tick}}
+
+      {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      {:error, _reason} ->
+        # The re-plan markers didn't land durably → fall back to the committed
+        # default (terminate as rejected) rather than diverge from the log.
+        finish({:rejected, {:replan_append_failed, park.child_run_id}}, state)
+    end
+  end
+
+  # Stale-approval retraction (§4): a wave folded a premise-break (`scope-shift`)
+  # while `plan-approved` is live and the implementer (the stage locked
+  # `until: plan-approved`) has NOT run — so the approved plan is stale. Retract
+  # `plan-approved` (`signals_retracted`) + invalidate the re-run set (here the
+  # gate DID complete, so it is in the set) and re-tick → re-plan → re-gate →
+  # re-approve. NO `closed_wave_index` (a generic completed-wave rerun — the gate's
+  # `wave_completed` already advanced the index). The narrow pre-resume
+  # `Cases.retract/3` window is not reachable here (the composer folds
+  # `plan-approved` only after the gate child resumed), so it is omitted.
+  defp maybe_retract_stale_approval(state, emissions) do
+    if stale_approval?(state, emissions) do
+      retract_stale_approval(state)
+    else
+      {:noreply, state, {:continue, :tick}}
+    end
+  end
+
+  defp stale_approval?(state, emissions) do
+    MapSet.member?(state.live, "plan-approved") and
+      signal_emitted?(emissions, "scope-shift") and
+      not implementer_ran?(state)
+  end
+
+  defp retract_stale_approval(state) do
+    case plan_gate_stage_struct(state.catalog) do
+      %Stage{} = gate_stage ->
+        rerun_set = replan_rerun_set(state, gate_stage)
+
+        markers = [
+          signals_retracted: %{signals: ["plan-approved"]},
+          stages_invalidated: %{stages: rerun_set}
+        ]
+
+        commit_stale_retraction(state, rerun_set, markers)
+
+      nil ->
+        {:noreply, state, {:continue, :tick}}
+    end
+  end
+
+  defp commit_stale_retraction(state, rerun_set, markers) do
+    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+      :ok ->
+        {:noreply, apply_stale_retraction(state, rerun_set), {:continue, :tick}}
+
+      {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      {:error, _reason} ->
+        # The retraction didn't land — proceed with the (stale) approval rather
+        # than terminate; the next premise-break re-attempts.
+        {:noreply, state, {:continue, :tick}}
+    end
+  end
+
+  # The in-`ran` subset of {the gate's input producer(s), the gate}. For a reject
+  # the gate parked but never completed (∉ `ran`) → just the input producer(s)
+  # (the planner); for a stale approval the gate DID complete (∈ `ran`) → both.
+  defp replan_rerun_set(state, %Stage{name: gate_name} = gate_stage) do
+    gate_stage
+    |> gate_input_producers(state)
+    |> MapSet.new()
+    |> MapSet.put(gate_name)
+    |> MapSet.intersection(state.ran)
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
+  defp gate_input_producers(%Stage{input: %{required: [name | _]}}, state) do
+    case Map.get(state.artifacts, name) do
+      producers when is_map(producers) -> Map.keys(producers)
+      _absent -> []
+    end
+  end
+
+  defp gate_input_producers(%Stage{}, _state), do: []
+
+  # Mirror the durable reject-replan deltas in memory (the equivalence invariant):
+  # `plan-rejected` live, the re-run set dropped from `ran`, `wave_index` advanced
+  # past the rejected gate wave, the rerun counts bumped.
+  defp apply_reject_replan(state, rerun_set, closed_wave_index) do
+    %{
+      state
+      | live: MapSet.put(state.live, "plan-rejected"),
+        ran: MapSet.difference(state.ran, MapSet.new(rerun_set)),
+        wave_index: max(state.wave_index, closed_wave_index + 1),
+        rerun_counts: bump_rerun_counts(state.rerun_counts, rerun_set)
+    }
+  end
+
+  # Mirror the durable stale-retraction deltas in memory: `plan-approved` dropped
+  # from `live`, the re-run set from `ran`, the rerun counts bumped. `wave_index`
+  # is untouched (no `closed_wave_index` — the gate's `wave_completed` advanced it).
+  defp apply_stale_retraction(state, rerun_set) do
+    %{
+      state
+      | live: MapSet.delete(state.live, "plan-approved"),
+        ran: MapSet.difference(state.ran, MapSet.new(rerun_set)),
+        rerun_counts: bump_rerun_counts(state.rerun_counts, rerun_set)
+    }
+  end
+
+  defp bump_rerun_counts(counts, stages) do
+    Enum.reduce(stages, counts, fn stage, acc -> Map.update(acc, stage, 1, &(&1 + 1)) end)
+  end
+
+  defp signal_emitted?(emissions, signal) do
+    Enum.any?(emissions, fn %StageEmission{signals: signals} -> signal in signals end)
+  end
+
+  # The implementer (the stage held `until: plan-approved`) — "has it run?". When
+  # the catalog has no such stage, treat as "ran" (don't retract).
+  defp implementer_ran?(state) do
+    case plan_gate_locked_stage(state.catalog) do
+      nil -> true
+      name -> MapSet.member?(state.ran, name)
+    end
+  end
+
+  defp plan_gate_locked_stage(catalog) do
+    Enum.find_value(catalog, fn {name, %Stage{lock: locks}} ->
+      if Enum.any?(locks, &(&1.until == "plan-approved")), do: name
+    end)
+  end
+
+  defp plan_gate_stage_struct(catalog) do
+    Enum.find_value(catalog, fn {_name, %Stage{unit: unit} = stage} ->
+      if match?({:gate, "plan"}, unit), do: stage
+    end)
+  end
+
+  defp any_subscriber?(catalog, signal) do
+    Enum.any?(catalog, fn {_name, %Stage{subscribes: subs}} -> signal in subs end)
+  end
+
+  # ---------------------------------------------------------------------------
   # Dedupe-hit observe (Phase 2c) — restart re-dispatch of a still-running child
   # ---------------------------------------------------------------------------
 
   # Bounded read-only poll of an in-flight existing child until it terminates or
   # `wave_timeout_ms` elapses (2b's per-wave T_wave bound), then re-branch:
-  # `:completed` folds + commits its durable emission; any other terminal, or the
-  # observe timeout, is a failed wave (conservative; 2d's fresh-wave_index
-  # re-dispatch + gate-park handling extend this).
+  # `:completed` folds + commits its durable emission. A `:cancelled`/`:abandoned`
+  # terminal is gate-aware (Phase 4c): for a **gate** dispatch it is a legitimate
+  # operator decision → the disposition terminal (via the SHARED
+  # `terminalize_gate_disposition/3`), while for a **worker** dispatch (and any
+  # other terminal or the observe timeout) it stays the conservative
+  # `finish_failed`.
   defp observe_existing_child(run, dispatch, display, state) do
     case await_existing_child(run, state) do
       {:ok, %WorkflowRun{status: :completed} = done} ->
         handle_wave_value(decode_emissions(done.result), done, dispatch, display, state)
+
+      {:ok, %WorkflowRun{status: status} = other} when status in [:cancelled, :abandoned] ->
+        observe_terminal(status, other, dispatch, display, state)
 
       {:ok, %WorkflowRun{} = other} ->
         finish_failed(
@@ -1352,6 +2064,26 @@ defmodule JidoClaw.RouteComposer do
         finish_failed(reason, run, dispatch, display, state)
     end
   end
+
+  # A gate child's observed `:cancelled`/`:abandoned` is an operator decision →
+  # the disposition terminal; a worker child's is a genuine failure → fail the
+  # wave conservatively.
+  defp observe_terminal(status, child, dispatch, display, state) do
+    if gate_dispatch?(dispatch, state.catalog) do
+      terminalize_gate_disposition(disposition_for(status), child, state)
+    else
+      finish_failed({:existing_run_not_completed, status}, child, dispatch, display, state)
+    end
+  end
+
+  defp disposition_for(:cancelled), do: :rejected
+  defp disposition_for(:abandoned), do: :abandoned
+
+  # True when `dispatch` is a solo `{:gate, _}` stage.
+  defp gate_dispatch?([name], catalog),
+    do: match?(%Stage{unit: {:gate, _unit}}, Map.get(catalog, name))
+
+  defp gate_dispatch?(_dispatch, _catalog), do: false
 
   defp await_existing_child(run, state) do
     poll_existing_child(run, state, System.monotonic_time(:millisecond) + state.wave_timeout_ms)
@@ -1614,6 +2346,9 @@ defmodule JidoClaw.RouteComposer do
   defp format_terminal_error(:budget_exhausted, {:deadline, deadline}),
     do: "budget_exhausted: deadline=#{deadline}"
 
+  defp format_terminal_error(:budget_exhausted, {:rerun_cap, cap}),
+    do: "budget_exhausted: rerun_cap=#{cap}"
+
   defp format_terminal_error(:failed, reason), do: "failed: #{Reason.format(reason)}"
   defp format_terminal_error(kind, _reason), do: Atom.to_string(kind)
 
@@ -1633,7 +2368,13 @@ defmodule JidoClaw.RouteComposer do
   # ---------------------------------------------------------------------------
 
   defp over_budget?(state) do
-    state.wave_index >= state.max_waves or past_deadline?(state)
+    state.wave_index >= state.max_waves or past_deadline?(state) or rerun_capped?(state)
+  end
+
+  # A stage invalidated more than `rerun_cap` times is a non-progressing re-plan
+  # loop (an oscillation guard) → the `route_budget_exhausted` terminal (Phase 4e).
+  defp rerun_capped?(state) do
+    Enum.any?(state.rerun_counts, fn {_stage, count} -> count > state.rerun_cap end)
   end
 
   # Wall-clock against the durable `deadline_at_ms` (C1) — the live loop and 2d
@@ -1645,8 +2386,10 @@ defmodule JidoClaw.RouteComposer do
     do: System.os_time(:millisecond) >= deadline_at_ms
 
   defp budget_reason(state) do
-    if past_deadline?(state),
-      do: {:deadline, state.deadline_at_ms},
-      else: {:max_waves, state.max_waves}
+    cond do
+      rerun_capped?(state) -> {:rerun_cap, state.rerun_cap}
+      past_deadline?(state) -> {:deadline, state.deadline_at_ms}
+      true -> {:max_waves, state.max_waves}
+    end
   end
 end

@@ -8,6 +8,9 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
   defp worker(name),
     do: TestFixtures.stage(name: name, unit: {:worker_template, "reviewer"}, task: "t")
 
+  defp gate(name),
+    do: TestFixtures.stage(name: name, unit: {:gate, "plan"}, out: ["approved-plan"])
+
   test "builds a %Reactor{} with the :extra_context input, a step per stage, and the collect return" do
     assert {:ok, %Reactor{} = reactor} =
              WaveBuilder.build_wave([worker("quality-reviewer"), worker("security-reviewer")],
@@ -25,11 +28,41 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
     assert reactor.return == :__collect__
   end
 
-  test "rejects a non-worker unit loudly" do
-    stage = TestFixtures.stage(name: "plan-gate", unit: {:gate, "plan"}, task: "t")
+  test "builds a solo gate stage as its named gate-producer module reactor (Phase 4a)" do
+    stage = gate("plan-gate")
+
+    assert {:ok, {:module_reactor, JidoClaw.Orchestration.Reactors.PlanGate, inputs}} =
+             WaveBuilder.build_wave([stage], wave_index: 2)
+
+    assert inputs == %{
+             wave_index: 2,
+             stage_name: "plan-gate",
+             artifact_name: "approved-plan",
+             signal_name: "plan-approved"
+           }
+  end
+
+  test "rejects a gate mixed with workers (must be a solo wave)" do
+    assert {:error, {:gate_must_be_solo_wave, names}} =
+             WaveBuilder.build_wave([gate("plan-gate"), worker("implementer")])
+
+    assert Enum.sort(names) == ["implementer", "plan-gate"]
+  end
+
+  test "rejects more than one gate in a cohort (must be a solo wave)" do
+    # The now-reachable `>1`-gate arm: `Loop.split_solo_gate` no longer peels a lone
+    # gate out of a multi-gate cohort, so the cohort reaches this backstop intact.
+    assert {:error, {:gate_must_be_solo_wave, names}} =
+             WaveBuilder.build_wave([gate("gate-a"), gate("gate-b")])
+
+    assert Enum.sort(names) == ["gate-a", "gate-b"]
+  end
+
+  test "rejects an unsupported (seed/skill) unit loudly" do
+    stage = TestFixtures.stage(name: "triage", unit: {:seed, "triage"}, task: "t")
 
     assert WaveBuilder.build_wave([stage]) ==
-             {:error, {:unsupported_unit, "plan-gate", {:gate, "plan"}}}
+             {:error, {:unsupported_unit, "triage", {:seed, "triage"}}}
   end
 
   test "rejects an oversized wave (more stages than StepIds.max/0)" do

@@ -11,7 +11,7 @@ defmodule JidoClaw.RouteComposer.Catalog do
   {reviewers, fixer}`. The review → fix → re-review loop is **dynamic** (a later
   phase, via the `findings` / `code-written` signal edges), never a data cycle.
 
-  Two guards run at **compile time** (fail fast, not just a test):
+  Three guards run at **compile time** (fail fast, not just a test):
 
     * `JidoClaw.RouteComposer.CatalogValidator.validate/1` must return `[]`, so
       an incoherent catalog breaks the build,
@@ -19,12 +19,16 @@ defmodule JidoClaw.RouteComposer.Catalog do
       `JidoClaw.Agent.Templates` template, so a typo is caught now rather than
       at execution time. (Existence is checked **only here**; the pure
       validator never resolves it.)
+    * every `{:gate, _}` stage must name a known
+      `JidoClaw.RouteComposer.GateReactors` gate (the parallel guard — a typo'd
+      gate would otherwise fail only when the wave dispatches).
 
   Accessors mirror `JidoClaw.Reasoning.StrategyRegistry`.
   """
 
   alias JidoClaw.Agent.Templates
   alias JidoClaw.RouteComposer.CatalogValidator
+  alias JidoClaw.RouteComposer.GateReactors
   alias JidoClaw.RouteComposer.Stage
 
   @catalog %{
@@ -63,7 +67,9 @@ defmodule JidoClaw.RouteComposer.Catalog do
       unit: {:worker_template, "researcher"},
       task: "Draft an implementation plan from the confirmed intent; emit plan-ready.",
       routes: ["code", "system"],
-      subscribes: ["plan-needed"],
+      # `plan-rejected` is the Phase-4e re-plan opt-in: a rejected plan re-fires
+      # the planner (its publisher is `plan-gate`'s extended `publishes`).
+      subscribes: ["plan-needed", "plan-rejected"],
       input: %{required: ["intent"], optional: []},
       output: ["plan"],
       publishes: ["plan-ready", "scope-shift"]
@@ -75,7 +81,15 @@ defmodule JidoClaw.RouteComposer.Catalog do
       subscribes: ["plan-ready"],
       input: %{required: ["plan"], optional: []},
       output: ["approved-plan"],
-      publishes: ["plan-approved", "scope-shift"]
+      # `plan-approved` is the gate reactor's own emission; `plan-rejected` /
+      # `plan-abandoned` are composer-SYNTHESIZED from the gate child's terminal
+      # status (the reactor emits only `plan-approved`; reject cancels before the
+      # emit step — §9 step 5/6). Declaring them here keeps the catalog coherent
+      # once a stage opts into `subscribes: ["plan-rejected"]` (Phase 4e —
+      # `CatalogValidator` rejects a subscription with no declared publisher) and
+      # lets the composer fold a synthesized signal as-if-from `plan-gate` past
+      # the emission ⊆ `publishes` coherence check. Publishes need no consumer.
+      publishes: ["plan-approved", "plan-rejected", "plan-abandoned", "scope-shift"]
     },
     "test-author" => %Stage{
       name: "test-author",
@@ -170,6 +184,11 @@ defmodule JidoClaw.RouteComposer.Catalog do
   for {name, %Stage{unit: {:worker_template, template}}} <- @catalog,
       not Templates.exists?(template) do
     raise "RouteComposer stage #{name} references unknown worker template #{inspect(template)}"
+  end
+
+  for {name, %Stage{unit: {:gate, gate_name}}} <- @catalog,
+      not GateReactors.known?(gate_name) do
+    raise "RouteComposer stage #{name} references unknown gate #{inspect(gate_name)}"
   end
 
   @doc "Returns the whole starter catalog as a `%{name => %Stage{}}` map."

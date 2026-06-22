@@ -15,6 +15,8 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
 
   import ExUnit.CaptureLog
 
+  alias JidoClaw.Orchestration.Cases
+  alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
@@ -128,36 +130,107 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     assert genesis.payload["stages"] == ["triage"]
   end
 
-  test "built-in catalog: the triage seed reconciles, then halts at the unbuilt plan-gate", ctx do
+  test "built-in catalog: the triage seed reconciles, planner runs, then the plan-gate PARKS",
+       ctx do
     Application.put_env(
       :jido_claw,
       :route_composer_stub_outputs,
       TestFixtures.phase1_stub_outputs()
     )
 
-    # The real catalog can't converge until Phase 4 (plan-gate is a {:gate,_} unit
-    # WaveBuilder rejects). Pin the exact Phase-3/Phase-4 boundary: reconciliation
-    # works (no triage/{:seed,_} error), planner runs, then the gate halts it.
-    assert {:ok, summary} =
-             RouteComposer.run_sync(
-               catalog: Catalog.all(),
-               live: ["request-received", "code", "plan-needed"],
-               artifacts: %{
-                 "request" => %{"seed" => "Build it"},
-                 "intent" => %{"triage" => "Build it"}
-               },
-               ran: ["triage"],
+    # Phase 4: the real catalog's `{:gate, "plan"}` stage now BUILDS + PARKS (vs
+    # the old `{:unsupported_unit,...}` failure). Drive it via run_sync in a task;
+    # subscribe to gates first so we catch the park, then ABANDON it so the route
+    # takes a clean terminal (no operator approval needed for this boundary pin).
+    RunPubSub.subscribe_gates()
+
+    task =
+      Task.async(fn ->
+        RouteComposer.run_sync(
+          catalog: Catalog.all(),
+          live: ["request-received", "code", "plan-needed"],
+          artifacts: %{
+            "request" => %{"seed" => "Build it"},
+            "intent" => %{"triage" => "Build it"}
+          },
+          ran: ["triage"],
+          tenant: ctx.tenant,
+          actor: actor_for(ctx.tenant),
+          context: ctx.context,
+          max_waves: 10,
+          timeout: 30_000
+        )
+      end)
+
+    # The gate built + parked (reconciliation worked, planner ran, gate halted).
+    assert_receive {:gate_requested, child_id, %{agent_case_id: case_id}}, 15_000
+    parent_id = parent_of(child_id, ctx)
+    # Wait for the durable park so the composer has subscribed before we decide.
+    await_wave_paused(parent_id, ctx)
+
+    assert {:ok, _} =
+             Cases.abandon(case_id, %{}, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+    assert {:ok, summary} = Task.await(task, 30_000)
+    assert summary.terminal == :abandoned
+    assert MapSet.member?(summary.ran, "planner")
+
+    ks = event_kinds(parent_id, ctx)
+    assert :wave_paused in ks
+    assert :route_abandoned in ks
+    drain_run_registry(2_000)
+  end
+
+  test "gate fixture: planner → plan-gate parks → approve → implementer runs → converges", ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.gate_fixture_stub_outputs()
+    )
+
+    RunPubSub.subscribe_gates()
+
+    task =
+      Task.async(fn ->
+        RouteComposer.run_sync(
+          catalog: TestFixtures.gate_fixture_catalog(),
+          live: TestFixtures.gate_fixture_seed_live(),
+          artifacts: TestFixtures.gate_fixture_seed_artifacts(),
+          tenant: ctx.tenant,
+          actor: actor_for(ctx.tenant),
+          context: ctx.context,
+          max_waves: 10,
+          timeout: 30_000
+        )
+      end)
+
+    assert_receive {:gate_requested, child_id, %{agent_case_id: case_id}}, 15_000
+    parent_id = parent_of(child_id, ctx)
+    await_wave_paused(parent_id, ctx)
+
+    # Approve → GateResume emits plan-approved + approved-plan, the composer wakes,
+    # folds, and releases the held implementer.
+    assert {:ok, _} =
+             Cases.decide(case_id, :approve, %{},
                tenant: ctx.tenant,
-               actor: actor_for(ctx.tenant),
-               context: ctx.context,
-               max_waves: 10,
-               timeout: 30_000
+               actor: actor_for(ctx.tenant)
              )
 
-    assert summary.terminal == :failed
-    # planner ran (wave 0), then plan-gate ({:gate,"plan"}) is the unsupported unit.
-    assert MapSet.member?(summary.ran, "planner")
-    assert match?({:unsupported_unit, "plan-gate", {:gate, "plan"}}, summary.reason)
+    assert {:ok, summary} = Task.await(task, 30_000)
+    assert summary.terminal == :converged
+
+    # The held implementer released and ran; the gate's approved-plan crossed waves.
+    assert MapSet.member?(summary.ran, "plan-gate")
+    assert MapSet.member?(summary.ran, "implementer")
+    assert MapSet.member?(summary.final_live, "plan-approved")
+    assert get_in(summary.artifacts, ["approved-plan", "plan-gate"])
+    assert get_in(summary.artifacts, ["diff", "implementer"])
+
+    ks = event_kinds(parent_id, ctx)
+    assert :wave_paused in ks
+    assert :wave_resumed in ks
+    assert :route_converged in ks
+    drain_run_registry(2_000)
   end
 
   test "composes a code-path route end-to-end and converges clean", ctx do
@@ -398,6 +471,37 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     case Process.info(pid, :dictionary) do
       {:dictionary, dict} -> Keyword.get(dict, :"$initial_call") == {RouteComposer, :init, 1}
       _ -> false
+    end
+  end
+
+  # The composer parent id of a gate child run.
+  defp parent_of(child_id, ctx) do
+    {:ok, child} = WorkflowRun.by_id(child_id, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+    child.parent_run_id
+  end
+
+  defp event_kinds(parent_id, ctx) do
+    {:ok, events} =
+      WorkflowEvent.for_run(parent_id, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+    Enum.map(events, & &1.kind)
+  end
+
+  # Bounded poll until the parent's durable `wave_paused` marker lands — the
+  # composer subscribes to the gates topic BEFORE appending it, so once it is
+  # durable the composer is subscribed and a decision broadcast cannot be missed
+  # (closes the subscribe-before-decision race in these run_sync-driven tests).
+  defp await_wave_paused(parent_id, ctx, tries \\ 500) do
+    cond do
+      :wave_paused in event_kinds(parent_id, ctx) ->
+        :ok
+
+      tries > 0 ->
+        Process.sleep(20)
+        await_wave_paused(parent_id, ctx, tries - 1)
+
+      true ->
+        flunk("wave_paused never appeared for parent #{parent_id}")
     end
   end
 

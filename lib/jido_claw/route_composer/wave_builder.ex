@@ -9,14 +9,32 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
   (no intra-wave `from_result` edges, since same-Kahn-level stages are
   independent; all cross-wave data arrives via the formatted `:extra_context`).
 
-  **Worker-only.** Every unit must be `{:worker_template, _}`; a `{:gate, _}` /
-  `{:seed, _}` / `{:skill, _}` unit is rejected with `{:error, {:unsupported_unit,
-  name, unit}}` (gates/seed/skill are later phases, and `AgentStep` requires a
-  `template:`, `agent_step.ex:52`). An oversized wave (more stages than
+  ## Wave shapes (AR-2 §14 Phase 4a)
+
+  Three classified outcomes:
+
+    * an **all-worker** cohort builds the struct path above → `{:ok, %Reactor{}}`;
+    * a **solo gate** stage (`{:gate, name}`) resolves to its named
+      `JidoClaw.Orchestration.Reactors.*` gate-producer reactor via
+      `JidoClaw.RouteComposer.GateReactors` → `{:ok, {:module_reactor, module,
+      inputs}}` (a gate **must** be a module, not a struct — the resume checkpoint
+      keys on a module name, see `Reactors.PlanGate`'s moduledoc). The `inputs`
+      carry `wave_index`/`stage_name`/`artifact_name`/`signal_name`; the loop
+      supplies the gate input's `plan_ref` (the builder has no store access);
+    * a gate **mixed** with any other stage, or more than one gate, is rejected
+      `{:error, {:gate_must_be_solo_wave, names}}` — the router does not guarantee
+      a gate is alone in its Kahn level (the shipped catalog co-locates `plan-gate`
+      + `test-author` + `implementer`), so the loop peels a solo gate out before
+      dispatch; this is the backstop.
+
+  A `{:seed, _}` / `{:skill, _}` unit stays unsupported (`{:error,
+  {:unsupported_unit, name, unit}}`; `AgentStep` requires a `template:`,
+  `agent_step.ex:52`). An oversized worker wave (more stages than
   `JidoClaw.Workflows.StepIds.max/0`) returns `{:error, :wave_too_large}` rather
   than crashing — a backstop, since a wave is a single Kahn level.
   """
 
+  alias JidoClaw.RouteComposer.GateReactors
   alias JidoClaw.RouteComposer.Stage
   alias JidoClaw.RouteComposer.Steps.WaveCollect
   alias JidoClaw.Skills.Steps.AgentStep
@@ -27,25 +45,78 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
   @collect_id :__collect__
 
   @doc """
-  Build `stages` (a list of `%Stage{}`, one Kahn level) into `{:ok, %Reactor{}}`,
-  or `{:error, reason}` on a non-worker unit or an oversized wave.
+  Build `stages` (a list of `%Stage{}`, one Kahn level) into a runnable wave.
 
-  Options: `:wave_index` (stamped into `WaveCollect`; default `0`).
+  Returns `{:ok, %Reactor{}}` for an all-worker cohort, `{:ok, {:module_reactor,
+  module, inputs}}` for a solo gate stage, or `{:error, reason}` on an
+  unsupported unit, a mixed/multi gate cohort, an unknown gate, or an oversized
+  worker wave.
+
+  Options: `:wave_index` (stamped into `WaveCollect` / the gate inputs; default `0`).
   """
-  @spec build_wave([Stage.t()], keyword()) :: {:ok, Reactor.t()} | {:error, term()}
+  @spec build_wave([Stage.t()], keyword()) ::
+          {:ok, Reactor.t()}
+          | {:ok, {:module_reactor, module(), map()}}
+          | {:error, term()}
   def build_wave(stages, opts \\ []) do
     wave_index = Keyword.get(opts, :wave_index, 0)
 
-    with :ok <- validate_units(stages),
-         :ok <- validate_size(stages) do
-      build(Enum.with_index(stages, 1), wave_index)
+    case classify(stages) do
+      :workers ->
+        with :ok <- validate_size(stages) do
+          build(Enum.with_index(stages, 1), wave_index)
+        end
+
+      {:solo_gate, stage} ->
+        build_gate_wave(stage, wave_index)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  defp validate_units(stages) do
+  # Classify the dispatch cohort: an all-worker cohort takes the struct path; a
+  # lone gate becomes a named module reactor; a gate mixed with any other stage
+  # (or >1 gate) is rejected (the loop peels a solo gate, so this is the
+  # backstop). A `{:seed,_}`/`{:skill,_}` unit stays unsupported.
+  defp classify(stages) do
+    {gates, non_gates} = Enum.split_with(stages, &gate?/1)
+
+    cond do
+      gates == [] -> classify_workers(non_gates)
+      match?([_single], gates) and non_gates == [] -> {:solo_gate, hd(gates)}
+      true -> {:error, {:gate_must_be_solo_wave, Enum.map(stages, & &1.name)}}
+    end
+  end
+
+  defp classify_workers(stages) do
     case Enum.find(stages, fn %Stage{unit: unit} -> not match?({:worker_template, _}, unit) end) do
-      nil -> :ok
+      nil -> :workers
       %Stage{name: name, unit: unit} -> {:error, {:unsupported_unit, name, unit}}
+    end
+  end
+
+  defp gate?(%Stage{unit: {:gate, _name}}), do: true
+  defp gate?(%Stage{}), do: false
+
+  # A solo gate wave is dispatched as its named gate-producer reactor module
+  # (Phase 4a). `GateReactors` bounds the gate name → `{module, signal}` (no
+  # `String.to_atom` on the catalog-sourced name); the loop merges `plan_ref`
+  # into these inputs (the builder has no store access).
+  defp build_gate_wave(%Stage{unit: {:gate, gate_name}} = stage, wave_index) do
+    case GateReactors.resolve(gate_name) do
+      {module, signal} ->
+        inputs = %{
+          wave_index: wave_index,
+          stage_name: stage.name,
+          artifact_name: List.first(stage.output),
+          signal_name: signal
+        }
+
+        {:ok, {:module_reactor, module, inputs}}
+
+      nil ->
+        {:error, {:unknown_gate, stage.name, gate_name}}
     end
   end
 

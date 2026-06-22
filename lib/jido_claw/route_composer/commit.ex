@@ -99,7 +99,23 @@ defmodule JidoClaw.RouteComposer.Commit do
   NOT fence the later child-run launch — see the moduledoc Scope note.)
   """
   @spec start_wave(WorkflowRun.t(), [{atom(), map()}], keyword()) :: :ok | {:error, term()}
-  def start_wave(%WorkflowRun{} = parent, markers, opts) do
+  def start_wave(%WorkflowRun{} = parent, markers, opts),
+    do: append_markers(parent, markers, opts)
+
+  @doc """
+  Append an ordered `[{kind, payload}]` batch of **non-status-authority** composer
+  markers under the SAME FOR-UPDATE parent-terminal guard as `commit_wave/4`
+  (Phase 4). The general form `start_wave/3` delegates to — used for the
+  pre-launch markers (`route_composed` + `wave_started`) AND the gate-lifecycle /
+  rerun markers (`wave_paused` / `wave_resumed` / `stages_invalidated` /
+  `signals_retracted`), all of which must never land on an already-terminal
+  parent. Returns `:ok`, `{:error, :parent_terminal}` (the run ended externally —
+  stop, do not re-terminalize), or `{:error, reason}` (a leg failed). Touches
+  `WorkflowEvent` only (no `ComposerArtifact` ref-flip); for the `:pending →
+  :active` promotion use `commit_wave/4`.
+  """
+  @spec append_markers(WorkflowRun.t(), [{atom(), map()}], keyword()) :: :ok | {:error, term()}
+  def append_markers(%WorkflowRun{} = parent, markers, opts) do
     guarded_wave_txn(
       [WorkflowEvent, WorkflowRun],
       parent,

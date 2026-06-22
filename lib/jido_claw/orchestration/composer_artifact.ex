@@ -339,6 +339,39 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
     end
   end
 
+  @doc """
+  Store a **wave-produced** artifact (`name`/`producer`/`term`) as a fresh
+  encrypted `:pending` row, lineage-keyed to the wave's `child` run, returning
+  its opaque `{:ok, ref}` (or `{:error, {:artifact_store_failed, name, _}}`).
+
+  The single construction site for the wave-artifact create-attrs shape — shared
+  by `JidoClaw.RouteComposer.Steps.WaveCollect` (worker waves) and
+  `JidoClaw.Orchestration.Reactors.PlanGate.EmitApprovedPlan` (the gate wave) so
+  the `store_pending` attrs are not duplicated across producers. `child` is the
+  wave's child `WorkflowRun` (`child.id` + `child.parent_run_id` = the composer
+  parent).
+  """
+  @spec store_wave_artifact(String.t(), String.t(), term(), struct(), integer(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def store_wave_artifact(name, producer, term, child, wave_index, opts) do
+    attrs = %{
+      ref: generate_ref(),
+      name: name,
+      producer: producer,
+      term: term,
+      child_run_id: child.id,
+      parent_run_id: child.parent_run_id,
+      wave_index: wave_index
+    }
+
+    case store_pending(attrs, opts) do
+      {:ok, %__MODULE__{ref: ref}} -> {:ok, ref}
+      {:error, reason} -> {:error, {:artifact_store_failed, name, reason}}
+    end
+  end
+
+  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
   defp load_value(row, opts) do
     case Ash.load(row, :value, tenant: opts[:tenant], actor: opts[:actor]) do
       {:ok, %__MODULE__{value: blob}} when is_binary(blob) -> {:ok, blob}

@@ -153,6 +153,55 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
       assert MapSet.equal?(result.ran, MapSet.new(["approver"]))
     end
 
+    test "stages_invalidated advances wave_index ONLY when closed_wave_index is present (4e)" do
+      s = seed(%{ran: MapSet.new(["planner"]), wave_index: 1})
+
+      # With closed_wave_index (the reject-parked-gate path): advance past the wave.
+      advanced =
+        Projection.project(s, [
+          event(:stages_invalidated, %{stages: ["planner"], closed_wave_index: 1}, 1)
+        ])
+
+      assert advanced.wave_index == 2
+
+      # Without it (a generic completed-wave rerun): wave_index untouched (no key skip).
+      unchanged =
+        Projection.project(s, [event(:stages_invalidated, %{stages: ["planner"]}, 1)])
+
+      assert unchanged.wave_index == 1
+    end
+
+    test "stages_invalidated bumps the per-stage rerun_counts (the cap source)" do
+      s = seed(%{ran: MapSet.new(["planner"]), rerun_counts: %{}})
+
+      result =
+        Projection.project(s, [
+          event(:stages_invalidated, %{stages: ["planner"]}, 1),
+          event(:stages_invalidated, %{stages: ["planner", "plan-gate"]}, 2)
+        ])
+
+      assert result.rerun_counts == %{"planner" => 2, "plan-gate" => 1}
+    end
+
+    test "a retracted plan-approved + invalidated stages stay gone across the rebuild (4e)" do
+      # The stale-approval shape: publish then retract plan-approved, invalidate the
+      # planner+plan-gate. project(seed, log) is the NET state — nothing resurrected.
+      s =
+        seed(%{
+          live: MapSet.new(["code", "plan-approved"]),
+          ran: MapSet.new(["planner", "plan-gate"])
+        })
+
+      result =
+        Projection.project(s, [
+          event(:signals_retracted, %{signals: ["plan-approved"]}, 1),
+          event(:stages_invalidated, %{stages: ["planner", "plan-gate"]}, 2)
+        ])
+
+      refute MapSet.member?(result.live, "plan-approved")
+      assert MapSet.equal?(result.ran, MapSet.new())
+    end
+
     test "artifacts_invalidated deletes store[name][producer], pruning an empty name" do
       s =
         seed(%{

@@ -26,6 +26,45 @@ defmodule JidoClaw.RouteComposer.LoopTest do
     end
   end
 
+  describe "split_solo_gate/2 (Phase 4b)" do
+    setup do
+      %{
+        catalog: TestFixtures.gate_fixture_catalog(),
+        # A two-gate-plus-worker catalog for the multi-gate backstop cases (the
+        # shipped catalog has only one gate); `split_solo_gate` reads only `unit`.
+        multi_gate: %{
+          "gate-a" => TestFixtures.stage(name: "gate-a", unit: {:gate, "a"}),
+          "gate-b" => TestFixtures.stage(name: "gate-b", unit: {:gate, "b"}),
+          "worker" => TestFixtures.stage(name: "worker", unit: {:worker_template, "coder"})
+        }
+      }
+    end
+
+    test "peels a gate out of a mixed cohort", %{catalog: catalog} do
+      assert Loop.split_solo_gate(["plan-gate", "implementer"], catalog) == ["plan-gate"]
+    end
+
+    test "passes an already-solo gate through", %{catalog: catalog} do
+      assert Loop.split_solo_gate(["plan-gate"], catalog) == ["plan-gate"]
+    end
+
+    test "passes a worker-only cohort through unchanged", %{catalog: catalog} do
+      assert Loop.split_solo_gate(["planner"], catalog) == ["planner"]
+    end
+
+    test "passes a multi-gate cohort through unchanged (so the WaveBuilder backstop rejects it)",
+         %{multi_gate: catalog} do
+      # >1 gate must NOT peel to a lone gate (the buggy `[gate | _]` did); it passes
+      # through so WaveBuilder's `:gate_must_be_solo_wave` backstop rejects it.
+      assert Loop.split_solo_gate(["gate-a", "gate-b"], catalog) == ["gate-a", "gate-b"]
+    end
+
+    test "passes a multi-gate + worker cohort through unchanged", %{multi_gate: catalog} do
+      assert Loop.split_solo_gate(["gate-a", "gate-b", "worker"], catalog) ==
+               ["gate-a", "gate-b", "worker"]
+    end
+  end
+
   describe "terminal/2 + lenses_clean?/3" do
     setup do
       %{catalog: TestFixtures.phase1_catalog()}

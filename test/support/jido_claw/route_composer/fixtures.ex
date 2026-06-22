@@ -394,6 +394,167 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   @spec triage_seed_ran() :: [String.t()]
   def triage_seed_ran, do: ["triage"]
 
+  # ---------------------------------------------------------------------------
+  # Phase-4 gate fixtures (AR-2 §9/§14 — the human plan gate in the composer)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A validator-clean, **gate-bearing** catalog: `planner → plan-gate →
+  implementer`, the implementer locked `while: plan-ready until: plan-approved`.
+
+  `plan-gate` is a real `{:gate, "plan"}` unit (driven by
+  `JidoClaw.Orchestration.Reactors.PlanGate`), so the route holds the implementer
+  until the gate is approved (then releases it) and converges; reject/abandon
+  take the route terminal. Smaller than the built-in catalog (no reviewers), so
+  the park/wake/reject/abandon integration tests drive a 3-wave route
+  (`planner → plan-gate(park) → implementer`).
+  """
+  @spec gate_fixture_catalog() :: %{String.t() => Stage.t()}
+  def gate_fixture_catalog do
+    key_named(%{
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft an implementation plan from the request; emit plan-ready.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "plan-gate" =>
+        stage(
+          unit: {:gate, "plan"},
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["approved-plan"],
+          pub: ["plan-approved", "plan-rejected", "plan-abandoned", "scope-shift"]
+        ),
+      "implementer" =>
+        stage(
+          unit: {:worker_template, "coder"},
+          task: "Implement the approved plan; emit code-written.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          opt: ["approved-plan"],
+          out: ["diff"],
+          pub: ["code-written", "scope-shift"],
+          lock: [%{while: "plan-ready", until: "plan-approved"}]
+        )
+    })
+  end
+
+  @doc "The gate-fixture seed live signals: the seed signal + the `code` path."
+  @spec gate_fixture_seed_live() :: [String.t()]
+  def gate_fixture_seed_live, do: ["request-received", "code"]
+
+  @doc "The gate-fixture seed artifact store (the seed `request`)."
+  @spec gate_fixture_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def gate_fixture_seed_artifacts, do: %{"request" => %{"seed" => "Build the auth feature"}}
+
+  @doc """
+  The `template => canned typed output` map for the gate fixture: the `researcher`
+  (planner) emits `plan-ready` + the `plan` artifact; the `coder` (implementer)
+  emits `code-written` + the `diff` artifact. The gate has no worker — it is a
+  real `Reactors.PlanGate` driven by `Cases.decide/4` directly.
+  """
+  @spec gate_fixture_stub_outputs() :: %{String.t() => map()}
+  def gate_fixture_stub_outputs do
+    %{
+      "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: build the auth feature"},
+      "coder" => %{"signals" => ["code-written"], "diff" => "DIFF: +def authenticate(user)"}
+    }
+  end
+
+  @doc """
+  The gate fixture with the **re-plan opt-in** (Phase 4e §15.8): the planner also
+  `subscribes: ["plan-rejected"]`, so a gate reject re-fires the planner and
+  re-earns approval (rather than terminating). Same stub outputs as the gate
+  fixture (`gate_fixture_stub_outputs/0`).
+  """
+  @spec gate_replan_fixture_catalog() :: %{String.t() => Stage.t()}
+  def gate_replan_fixture_catalog do
+    catalog = gate_fixture_catalog()
+    planner = %{catalog["planner"] | subscribes: ["request-received", "plan-rejected"]}
+    %{catalog | "planner" => planner}
+  end
+
+  @doc """
+  A gate fixture exercising the Phase-4e **stale-approval** retraction: a
+  `rescoper` runs after approval (sub `plan-approved`, requires `approved-plan`)
+  and publishes `scope-shift` — a premise break — while the implementer is still
+  held (it requires the rescoper's `rescope` output, so it is ordered after).
+  Folding that `scope-shift` (with `plan-approved` live + implementer not run)
+  retracts `plan-approved` and re-gates; the rescoper stays in `ran` (not
+  invalidated), so it does not re-fire, and the route converges after a single
+  re-approval.
+  """
+  @spec stale_approval_fixture_catalog() :: %{String.t() => Stage.t()}
+  def stale_approval_fixture_catalog do
+    key_named(%{
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft an implementation plan; emit plan-ready.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "plan-gate" =>
+        stage(
+          unit: {:gate, "plan"},
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["approved-plan"],
+          pub: ["plan-approved", "plan-rejected", "plan-abandoned", "scope-shift"]
+        ),
+      "rescoper" =>
+        stage(
+          unit: {:worker_template, "verifier"},
+          task: "Re-check scope against the approved plan; emit scope-shift on a premise break.",
+          routes: ["code"],
+          sub: ["plan-approved"],
+          req: ["approved-plan"],
+          out: ["rescope"],
+          pub: ["scope-shift"]
+        ),
+      "implementer" =>
+        stage(
+          unit: {:worker_template, "coder"},
+          task: "Implement the approved plan; emit code-written.",
+          routes: ["code"],
+          sub: ["plan-approved"],
+          req: ["plan", "rescope"],
+          opt: ["approved-plan"],
+          out: ["diff"],
+          pub: ["code-written", "scope-shift"],
+          lock: [%{while: "plan-ready", until: "plan-approved"}]
+        )
+    })
+  end
+
+  @doc """
+  Stub outputs for `stale_approval_fixture_catalog/0`: the `verifier` (rescoper)
+  emits `scope-shift` + the `rescope` artifact (the premise break, fired once);
+  `researcher`/`coder` as in the gate fixture.
+  """
+  @spec stale_approval_stub_outputs() :: %{String.t() => map()}
+  def stale_approval_stub_outputs do
+    %{
+      "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: build the auth feature"},
+      "verifier" => %{
+        "signals" => ["scope-shift"],
+        "rescope" => "RESCOPE: tighten the auth scope"
+      },
+      "coder" => %{"signals" => ["code-written"], "diff" => "DIFF: +def authenticate(user)"}
+    }
+  end
+
   # Stamp each stage's `name` from its catalog key.
   defp key_named(map) do
     Map.new(map, fn {name, stage} -> {name, %{stage | name: name}} end)

@@ -3,11 +3,14 @@ defmodule JidoClaw.Gates.PlanGate do
   The `:plan` gate — a human approval checkpoint on an agent's *plan* before
   it begins executing (the review-the-approach-not-each-step flow).
 
-  Declared-but-unproduced: no reactor wires this kind yet. The plan-approval
-  producer (plan presented → approved → batch execution, with stale-approval
-  retraction on re-plan via `Cases.retract/2`) is future work; the kind ships
-  now so the vocabulary, `AgentCase.kind` column, and approval surfaces are
-  ready for it.
+  Wired by `JidoClaw.Orchestration.Reactors.PlanGate` (AR-2 §14 Phase 4): the
+  composer dispatches a `{:gate, "plan"}` stage as that single-stage gate
+  reactor, which `GateStep`s on this module — the case `kind` is sourced from
+  the `kind(:plan)` DSL below. Approve resumes and emits `plan-approved`
+  (releasing the held implementer); reject/abandon take the route terminal;
+  stale-approval retraction on re-plan rides `Cases.retract/3`. The hooks keep
+  the `HumanGate` no-op defaults — the composer's durable park/wake is the
+  must-happen work, never a best-effort hook.
   """
 
   use JidoClaw.Orchestration.HumanGate

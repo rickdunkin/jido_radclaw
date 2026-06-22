@@ -14,8 +14,9 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   import ExUnit.CaptureLog
 
   alias JidoClaw.Conversations.RequestCorrelation
-  alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
@@ -506,6 +507,192 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   # ===========================================================================
+  # Gate park / wake / reject / abandon (Phase 4b/4c) — supervised composer on
+  # the gate-bearing fixture, driven by Cases.decide/4 + Cases.abandon/3.
+  # ===========================================================================
+
+  describe "gate park / wake (Phase 4b/4c)" do
+    test "approve: wave_paused (implementer held) → wave_resumed + wave_completed → converges",
+         ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+
+      # Parked durably: wave_paused landed, the implementer is held (no
+      # implementer wave_started), and the gate wave is not yet completed.
+      parked_kinds = kinds(parent.id, ctx)
+      assert :wave_paused in parked_kinds
+      refute :wave_resumed in parked_kinds
+      refute implementer_started?(parent.id, ctx)
+
+      assert {:ok, _} = Cases.decide(case_id, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      ks = kinds(parent.id, ctx)
+      assert :wave_resumed in ks
+      assert :route_converged in ks
+      # The held implementer released and ran (its diff is an :active artifact).
+      assert implementer_started?(parent.id, ctx)
+      assert "approved-plan" in active_names(parent, ctx)
+      assert "diff" in active_names(parent, ctx)
+    end
+
+    test "reject → parent :cancelled + disposition rejected, the held route dropped", ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+
+      assert {:ok, _} = Cases.decide(case_id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert :cancelled = await_status(parent.id, ctx, :cancelled, 30_000)
+
+      assert :route_rejected in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "rejected"
+      # The route dropped with the parent — the implementer never ran, never converged.
+      refute :route_converged in kinds(parent.id, ctx)
+      refute implementer_started?(parent.id, ctx)
+    end
+
+    test "abandon → parent :cancelled + disposition abandoned", ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+
+      assert {:ok, _} = Cases.abandon(case_id, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert :cancelled = await_status(parent.id, ctx, :cancelled, 30_000)
+
+      assert :route_abandoned in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "abandoned"
+      refute :route_converged in kinds(parent.id, ctx)
+    end
+  end
+
+  # ===========================================================================
+  # Stale `wave_paused` retry guard (Phase 4 P1) — a delayed retry that fires
+  # after the gate resolves must be dropped, never deref a nil park and crash.
+  # ===========================================================================
+
+  describe "stale wave_paused retry (Phase 4 P1)" do
+    test "a retry firing into a resolved park is dropped, not deref'd into a crash", ctx do
+      # The literal current-bug condition: the gate resolved (parked → nil) while a
+      # transient `wave_paused` retry was still queued. The fix turns the handler into
+      # a guarded 3-tuple, so the obsolete 2-tuple the buggy handler matched now falls
+      # through to the catch-all and is dropped.
+      {parent, _case_id} = start_and_park_gate(ctx)
+      [{pid, _}] = Registry.lookup(@registry, parent.id)
+
+      # Gate resolved out from under an in-flight retry.
+      :sys.replace_state(pid, &%{&1 | parked: nil})
+      # The OLD 2-tuple shape the buggy handler matched — a 3-tuple would never reach
+      # the buggy clause, so only the 2-tuple reproduces the literal crash.
+      send(pid, {:retry_wave_paused, 3})
+      # Barrier: a sys call is served AFTER the info message (strict mailbox order),
+      # so its return proves the retry was processed. Against the buggy code the
+      # composer crashed on `nil.wave_index` and this exits; against the fix it survives.
+      :sys.get_state(pid)
+      assert Process.alive?(pid)
+    end
+
+    test "a foreign-child retry is guarded out — no spurious second wave_paused", ctx do
+      # Locks the new child-id guard (and the stale-retry-for-gate-A-while-parked-on-B
+      # case): a 3-tuple retry whose child id is NOT our parked child must not re-append.
+      {parent, case_id} = start_and_park_gate(ctx)
+      [{pid, _}] = Registry.lookup(@registry, parent.id)
+
+      # A foreign child's retry (the new 3-tuple shape), sent (test → composer) BEFORE
+      # the decision broadcast (also test → composer, synchronous in `Cases.decide`),
+      # so mailbox order has the composer handle the retry while still parked.
+      send(pid, {:retry_wave_paused, Ecto.UUID.generate(), 3})
+
+      assert {:ok, _} = Cases.decide(case_id, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+
+      # Exactly one wave_paused: the foreign retry matched no parked child and was a
+      # no-op. Without the guard it would re-append against the real park (→ 2).
+      assert wave_paused_count(parent.id, ctx) == 1
+    end
+  end
+
+  # ===========================================================================
+  # Rerun / re-plan (Phase 4e) — reject opt-in, stale-approval, rerun cap.
+  # ===========================================================================
+
+  describe "re-plan (Phase 4e)" do
+    test "reject with the opt-in re-plans (just the planner, advancing past the gate) and converges",
+         ctx do
+      {parent, case_id} =
+        park_gate_on(
+          ctx,
+          TestFixtures.gate_replan_fixture_catalog(),
+          TestFixtures.gate_fixture_stub_outputs()
+        )
+
+      # Reject the first gate → the opt-in re-plans (the planner re-fires).
+      assert {:ok, _} = Cases.decide(case_id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      # stages_invalidated removed JUST the planner (the gate parked → never in ran)
+      # and carried closed_wave_index = the rejected gate's wave (advancing the index
+      # so the re-dispatch gets a FRESH launch key, not the cancelled gate child).
+      assert_receive {:gate_requested, _child2, %{agent_case_id: case_id2}}, 15_000
+      await_wave_paused_count(parent.id, ctx, 2)
+
+      inv = stages_invalidated_event(parent.id, ctx)
+      assert inv.payload["stages"] == ["planner"]
+      assert inv.payload["closed_wave_index"] == 1
+
+      # Re-approve the re-fired gate → converges.
+      assert {:ok, _} =
+               Cases.decide(case_id2, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "a post-approval scope-shift retracts plan-approved, re-gates, and re-earns approval",
+         ctx do
+      {parent, case_id} =
+        park_gate_on(
+          ctx,
+          TestFixtures.stale_approval_fixture_catalog(),
+          TestFixtures.stale_approval_stub_outputs()
+        )
+
+      # Approve → the rescoper runs + emits scope-shift while the implementer is held
+      # → plan-approved retracted + {planner, plan-gate} invalidated → re-gate.
+      assert {:ok, _} = Cases.decide(case_id, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert_receive {:gate_requested, _child2, %{agent_case_id: case_id2}}, 15_000
+      await_wave_paused_count(parent.id, ctx, 2)
+      assert :signals_retracted in kinds(parent.id, ctx)
+
+      # The stale-approval rerun set is a completed-wave rerun — NO closed_wave_index.
+      inv = stages_invalidated_event(parent.id, ctx)
+      assert Enum.sort(inv.payload["stages"]) == ["plan-gate", "planner"]
+      refute Map.has_key?(inv.payload, "closed_wave_index")
+
+      # Re-approve → the rescoper does not re-fire (stays in ran) → converges.
+      assert {:ok, _} =
+               Cases.decide(case_id2, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "the per-stage rerun cap terminates a non-progressing loop as route_budget_exhausted",
+         ctx do
+      # rerun_cap: 0 → the first reject's re-plan invalidates the planner (count 1 >
+      # 0), and the next tick's over_budget? trips → route_budget_exhausted.
+      {parent, case_id} =
+        park_gate_on(
+          ctx,
+          TestFixtures.gate_replan_fixture_catalog(),
+          TestFixtures.gate_fixture_stub_outputs(),
+          rerun_cap: 0
+        )
+
+      assert {:ok, _} = Cases.decide(case_id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+      assert :route_budget_exhausted in kinds(parent.id, ctx)
+      assert String.starts_with?(reload(parent.id, ctx).error, "budget_exhausted: rerun_cap=")
+    end
+  end
+
+  # ===========================================================================
   # Crash recovery (Phase 2d) — cold boot: a crafted :running parent (+
   # children/events) with NO live composer process, then reconcile_all/0.
   # ===========================================================================
@@ -644,20 +831,69 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert reload(parent.id, ctx).result["disposition"] == "abandoned"
     end
 
-    test "7: a parked gate child blocks restart (forward-safety pin)", ctx do
-      parent = recoverable_parent(ctx)
-      {parked, _gate} = craft_parked_child(parent, ctx)
+    test "7a: killed while parked, NOT decided → recovery restarts + re-parks (Phase 4d)", ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+      paused_before = wave_paused_count(parent.id, ctx)
+      kill_supervised(parent.id)
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
-      # The parked child stays :awaiting_approval (the :parked no-op), so the
-      # "all children terminal" guard fails → the composer is NOT started.
+      # The restarted composer re-derived the park and RE-PARKED (a fresh
+      # wave_paused) WITHOUT re-dispatching the gate wave — the parent stays
+      # :running and the gate child stays :awaiting_approval. (Pre-4d the parked
+      # gate would have BLOCKED restart.)
+      await_wave_paused_count(parent.id, ctx, paused_before + 1)
       assert reload(parent.id, ctx).status == :running
-      assert Registry.lookup(@registry, parent.id) == []
-      assert reload(parked.id, ctx).status == :awaiting_approval
+      assert [{_pid, _}] = Registry.lookup(@registry, parent.id)
+      assert reload_child(parent, ctx).status == :awaiting_approval
 
-      assert {:ok, [_pending]} =
-               AgentCase.pending_for_run(parked.id, tenant: ctx.tenant, actor: ctx.actor)
+      # The re-parked composer is subscribed + functional: approve → converges.
+      assert {:ok, _} = Cases.decide(case_id, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "7b: killed while parked, APPROVED while down → recovery folds + converges", ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+      kill_supervised(parent.id)
+
+      # Decide while there is no live composer: the gate child resumes to :completed.
+      assert {:ok, _} = Cases.decide(case_id, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :wave_resumed in kinds(parent.id, ctx)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "7c: killed while parked, REJECTED while down → recovery terminalizes :cancelled", ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+      kill_supervised(parent.id)
+
+      assert {:ok, _} = Cases.decide(case_id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :cancelled = await_status(parent.id, ctx, :cancelled, 30_000)
+      assert :route_rejected in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "rejected"
+    end
+
+    test "7d: derive_park finds the park via wave_started even with NO wave_paused", ctx do
+      # The marker is non-load-bearing: craft a parked-gate state with wave_started(1)
+      # but NO wave_paused, and recovery must still find + re-enter the park.
+      parent = gate_recoverable_parent(ctx)
+      child0 = craft_child(parent, ctx, 0, :completed)
+      commit_wave0(parent, child0, ctx)
+      append_wave_started(parent, 1, ["plan-gate"], ctx)
+      {gate_child, _gate} = craft_gate_child(parent, ctx, 1)
+      assert wave_paused_count(parent.id, ctx) == 0
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+
+      # derive_park found it via wave_started(1) (no wave_paused) → re-parked.
+      await_wave_paused_count(parent.id, ctx, 1)
+      assert reload(parent.id, ctx).status == :running
+      assert reload(gate_child.id, ctx).status == :awaiting_approval
     end
 
     test "8: seed premises survive a pre-first-wave crash", ctx do
@@ -845,10 +1081,20 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     reload(child.id, ctx)
   end
 
-  # A parked gate child: :awaiting_approval + a checkpoint + a pending AgentCase
-  # (so recovery classifies it :parked → no-op, leaving it non-terminal).
-  defp craft_parked_child(parent, ctx) do
-    child = craft_child(parent, ctx, 0, :running)
+  # A recoverable gate-fixture parent: config carries the serialized gate fixture
+  # catalog + bounds (so recovery decodes it) and genesis records the seed.
+  defp gate_recoverable_parent(ctx, extra \\ []) do
+    {:ok, parent} = RouteComposer.create_parent_run(Keyword.merge(gate_fixture_opts(ctx), extra))
+    parent
+  end
+
+  # A parked gate child at `wave_index`: :awaiting_approval + a (dummy) checkpoint
+  # + a pending `:plan` AgentCase. Modeled on the former `craft_parked_child/2`,
+  # but `kind: :plan` (the gate kind) and at a chosen wave. The dummy checkpoint
+  # is fine for the re-park path (re_enter_park subscribes + waits; it never
+  # decodes the checkpoint).
+  defp craft_gate_child(parent, ctx, wave_index) do
+    child = craft_child(parent, ctx, wave_index, :running)
 
     {:ok, gate} =
       WorkflowLog.gate_open(
@@ -856,8 +1102,8 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
         %{
           workflow_run_id: child.id,
           step_name: "plan-gate",
-          kind: :irreversible_write,
-          gate_module: JidoClaw.Gates.IrreversibleWriteGate,
+          kind: :plan,
+          gate_module: JidoClaw.Gates.PlanGate,
           details: %{}
         },
         tenant: ctx.tenant,
@@ -945,6 +1191,134 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+  # --- Phase-4 gate helpers ---
+
+  defp gate_fixture_opts(ctx), do: gate_opts(ctx, TestFixtures.gate_fixture_catalog())
+
+  defp gate_opts(ctx, catalog, extra \\ []) do
+    Keyword.merge(
+      [
+        catalog: catalog,
+        live: TestFixtures.gate_fixture_seed_live(),
+        artifacts: TestFixtures.gate_fixture_seed_artifacts(),
+        tenant: ctx.tenant,
+        actor: ctx.actor,
+        context: ctx.context,
+        max_waves: 10
+      ],
+      extra
+    )
+  end
+
+  defp start_and_park_gate(ctx) do
+    park_gate_on(
+      ctx,
+      TestFixtures.gate_fixture_catalog(),
+      TestFixtures.gate_fixture_stub_outputs()
+    )
+  end
+
+  # Start a supervised composer on `catalog`/`stub_outputs` and block until it parks
+  # at the plan gate (durable `wave_paused`). Subscribing to gates BEFORE
+  # `ensure_started` catches the `{:gate_requested}` broadcast; `await_wave_paused`
+  # then guarantees the composer subscribed (it subscribes before appending the
+  # marker) before the caller decides — closing the subscribe-before-decision race.
+  defp park_gate_on(ctx, catalog, stub_outputs, extra_opts \\ []) do
+    Application.put_env(:jido_claw, :route_composer_stub_outputs, stub_outputs)
+    RunPubSub.subscribe_gates()
+    opts = gate_opts(ctx, catalog, extra_opts)
+    {:ok, parent} = RouteComposer.create_parent_run(opts)
+    {:ok, _pid} = RouteComposer.ensure_started(opts, parent)
+
+    assert_receive {:gate_requested, _child_id, %{agent_case_id: case_id}}, 15_000
+    await_wave_paused(parent.id, ctx)
+    {parent, case_id}
+  end
+
+  defp stages_invalidated_event(parent_id, ctx) do
+    {:ok, events} = WorkflowEvent.for_run(parent_id, tenant: ctx.tenant, actor: ctx.actor)
+    Enum.find(events, &(&1.kind == :stages_invalidated))
+  end
+
+  defp await_wave_paused(parent_id, ctx), do: await_wave_paused_count(parent_id, ctx, 1)
+
+  defp wave_paused_count(parent_id, ctx) do
+    Enum.count(kinds(parent_id, ctx), &(&1 == :wave_paused))
+  end
+
+  defp await_wave_paused_count(parent_id, ctx, n, tries \\ 500) do
+    cond do
+      wave_paused_count(parent_id, ctx) >= n ->
+        :ok
+
+      tries > 0 ->
+        Process.sleep(20)
+        await_wave_paused_count(parent_id, ctx, n, tries - 1)
+
+      true ->
+        flunk("expected #{n} wave_paused event(s) for parent #{parent_id}")
+    end
+  end
+
+  # Terminate the supervised composer (terminate_child, so the :transient child is
+  # not restarted) and wait until it deregisters — simulating "no live composer"
+  # for a recovery test.
+  defp kill_supervised(parent_id) do
+    case Registry.lookup(@registry, parent_id) do
+      [{pid, _}] ->
+        ref = Process.monitor(pid)
+        DynamicSupervisor.terminate_child(@supervisor, pid)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          5_000 -> :ok
+        end
+
+      [] ->
+        :ok
+    end
+
+    await_deregistered(parent_id)
+  end
+
+  defp await_deregistered(parent_id, tries \\ 200) do
+    cond do
+      Registry.lookup(@registry, parent_id) == [] ->
+        :ok
+
+      tries > 0 ->
+        Process.sleep(10)
+        await_deregistered(parent_id, tries - 1)
+
+      true ->
+        :ok
+    end
+  end
+
+  # The parent's currently-parked (`:awaiting_approval`) gate child.
+  defp reload_child(parent, ctx) do
+    {:ok, %WorkflowRun{child_runs: kids}} =
+      Ash.load(reload(parent.id, ctx), :child_runs, tenant: ctx.tenant, actor: ctx.actor)
+
+    Enum.find(kids, &(&1.status == :awaiting_approval))
+  end
+
+  defp implementer_started?(parent_id, ctx) do
+    {:ok, events} = WorkflowEvent.for_run(parent_id, tenant: ctx.tenant, actor: ctx.actor)
+
+    Enum.any?(events, fn e ->
+      e.kind == :wave_started and "implementer" in (e.payload["stages"] || [])
+    end)
+  end
+
+  defp active_names(parent, ctx) do
+    {:ok, actives} =
+      ComposerArtifact.active_for_run(parent.id, tenant: ctx.tenant, actor: ctx.actor)
+
+    Enum.map(actives, & &1.name)
+  end
 
   # --- helpers ---
 

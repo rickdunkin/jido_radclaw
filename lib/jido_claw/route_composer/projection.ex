@@ -38,13 +38,14 @@ defmodule JidoClaw.RouteComposer.Projection do
 
   ## Folded kinds
 
-  Produced by the 2c loop: `route_composed` (→ `premises` latest-wins + `prev_route`
+  Produced by the loop: `route_composed` (→ `premises` latest-wins + `prev_route`
   snapshot; its `live`/`available` snapshot is legibility only, never folded),
   `wave_completed` (→ `ran ∪ stages`, `wave_index = max(_, idx + 1)`),
   `signals_published`/`signals_retracted` (→ `live` union/difference),
-  `artifacts_produced` (→ tagged store insert). Defined + folded now, produced later:
-  `artifacts_invalidated` (store delete), `stages_invalidated` (`ran` difference),
-  `wave_paused`/`wave_resumed` (gate lifecycle provenance — no routing effect).
+  `artifacts_produced` (→ tagged store insert), `artifacts_invalidated` (→ store
+  delete), `wave_paused`/`wave_resumed` (gate lifecycle provenance — no routing
+  effect), and `stages_invalidated` (Phase 4e rerun primitive → `ran` difference,
+  an optional `closed_wave_index` advance, + a per-stage `rerun_counts` increment).
   Genesis, terminals, and any non-composer kind fold as no-ops.
   """
 
@@ -100,8 +101,31 @@ defmodule JidoClaw.RouteComposer.Projection do
     %{state | artifacts: store}
   end
 
+  # Subtractive `ran` delta (Phase 4e rerun primitive). Two extras:
+  #   * the OPTIONAL `closed_wave_index` advances `wave_index = max(_, idx + 1)`
+  #     — set ONLY by the reject-parked-gate path (closing a never-completed gate
+  #     wave so the re-fire gets a FRESH launch key); a generic completed-wave
+  #     rerun omits it (its `wave_completed` already advanced the index, so
+  #     re-advancing would skip a key + burn the `max_waves` budget);
+  #   * `rerun_counts` increments per invalidated stage — the per-stage rerun cap
+  #     the loop's `over_budget?` reads (rebuilt here so the cap survives a crash).
   defp apply_event(%{kind: :stages_invalidated, payload: payload}, state) do
-    %{state | ran: MapSet.difference(state.ran, MapSet.new(list_field(payload, :stages)))}
+    stages = list_field(payload, :stages)
+
+    # `ran`/`wave_index` always exist on the seed (the `|` update); `rerun_counts`
+    # is added tolerantly (a synthetic-log test seed may omit it).
+    base = %{
+      state
+      | ran: MapSet.difference(state.ran, MapSet.new(stages)),
+        wave_index: advance_on_invalidation(state.wave_index, payload)
+    }
+
+    Map.update(
+      base,
+      :rerun_counts,
+      bump_rerun_counts(%{}, stages),
+      &bump_rerun_counts(&1, stages)
+    )
   end
 
   # Gate lifecycle markers (Phase 4 producers): provenance only — no routing
@@ -131,6 +155,20 @@ defmodule JidoClaw.RouteComposer.Projection do
   # re-dispatch; a missing index falls back to a plain count bump.
   defp advance_wave_index(current, idx) when is_integer(idx), do: max(current, idx + 1)
   defp advance_wave_index(current, _idx), do: current + 1
+
+  # `stages_invalidated` advances `wave_index` ONLY when it carries the optional
+  # `closed_wave_index` (the reject-parked-gate path); otherwise the index is
+  # untouched (a generic completed-wave rerun).
+  defp advance_on_invalidation(current, payload) do
+    case int_field(payload, :closed_wave_index) do
+      idx when is_integer(idx) -> max(current, idx + 1)
+      _absent -> current
+    end
+  end
+
+  defp bump_rerun_counts(counts, stages) do
+    Enum.reduce(stages, counts, fn stage, acc -> Map.update(acc, stage, 1, &(&1 + 1)) end)
+  end
 
   defp produce_artifact(entry, store) do
     name = get(entry, :name)

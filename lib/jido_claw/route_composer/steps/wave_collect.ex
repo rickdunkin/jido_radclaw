@@ -94,26 +94,11 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
   defp store_one(name, producer, value, context, wave_index) do
     child = Map.fetch!(context, :workflow_run)
 
-    attrs = %{
-      ref: generate_ref(),
-      name: name,
-      producer: producer,
-      term: value,
-      child_run_id: child.id,
-      parent_run_id: child.parent_run_id,
-      wave_index: wave_index
-    }
-
-    case ComposerArtifact.store_pending(attrs,
-           tenant: Map.fetch!(context, :tenant),
-           actor: Map.fetch!(context, :actor)
-         ) do
-      {:ok, %ComposerArtifact{ref: ref}} -> {:ok, ref}
-      {:error, reason} -> {:error, {:artifact_store_failed, name, reason}}
-    end
+    ComposerArtifact.store_wave_artifact(name, producer, value, child, wave_index,
+      tenant: Map.fetch!(context, :tenant),
+      actor: Map.fetch!(context, :actor)
+    )
   end
-
-  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
 
   defp to_map(%StageEmission{} = emission, ref_artifacts) do
     %{"stage" => emission.stage, "signals" => emission.signals, "artifacts" => ref_artifacts}
