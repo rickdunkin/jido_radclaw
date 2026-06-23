@@ -379,6 +379,13 @@ config :jido_claw,
     # mid-flight. nil / non-positive / non-integer disables sweeping.
     retention_days: 30
   ],
+  # AR-8b-2 C3: opt-in TTL sweep of stale `.prototypes/<uuid>/` sketch sandboxes
+  # by JidoClaw.VFS.PrototypeRetentionSweeper. DISABLED by default (durability
+  # over tidiness — the same posture as the trace `retention_days` note and
+  # ComposerArtifact retention): `.prototypes/` is `.gitignore`d, so prototypes
+  # never pollute the repo. Set a positive `max_age_days` to enable; a dir is
+  # deleted only when stale by effective mtime AND not referenced by a live run.
+  prototype_retention: [max_age_days: nil],
   # Per-leaf byte cap applied by WorkflowEvent.Changes.Allocate to persisted
   # event payload/metadata and the raw projection stash (WorkflowRun.result /
   # WorkflowStep.output). 64 KB — deliberately above the 32 KB tool output

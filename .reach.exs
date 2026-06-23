@@ -129,7 +129,8 @@
           # runners above); their tick loops are not a shared domain contract.
           "JidoClaw.CodeServer.Runtime",
           "JidoClaw.Conversations.RequestCorrelation.Sweeper",
-          "JidoClaw.Trace.RetentionSweeper"
+          "JidoClaw.Trace.RetentionSweeper",
+          "JidoClaw.VFS.PrototypeRetentionSweeper"
         ]
       ]
     ]

@@ -21,7 +21,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     extensions: [AshCloak]
 
   policies do
-    bypass action([:by_id_global, :list_non_terminal_global]) do
+    bypass action([:by_id_global, :list_non_terminal_global, :referencing_prototype_global]) do
       authorize_if(always())
     end
 
@@ -92,6 +92,11 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
     define(:by_idempotency_key, args: [:idempotency_key], get?: true)
     define(:set_checkpoint, action: :set_checkpoint)
+
+    define(:list_referencing_prototype_global,
+      action: :referencing_prototype_global,
+      args: [:prototype_id]
+    )
   end
 
   actions do
@@ -195,6 +200,35 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       get?(true)
       argument(:idempotency_key, :string, allow_nil?: false)
       filter(expr(idempotency_key == ^arg(:idempotency_key)))
+    end
+
+    # AR-8b-2 C3 retention-sweep guard: is a prototype dir still needed by a
+    # live run? The only process that reads `.prototypes/<id>/` after launch is
+    # an in-flight sketch run, whose parent carries
+    # `config["premises"]["prototype_id"]` and stays non-terminal for the
+    # worker's lifetime. Cross-tenant (the sweeper is system-level); bracket
+    # access compiles to native JSONB (`#>>`) — guarded by a self-verifying SQL
+    # test. `config` is `public?(false)`, which does not block an in-resource
+    # action filter (the `set_status` private-attribute precedent). `limit: 1` —
+    # `reference_state/1` only needs existence. No GIN index: `multitenancy(:bypass)`
+    # drops the tenant predicate, so the existing `[:status, :claim_expires_at]`
+    # index (leading `status`, `all_tenants?: true`) serves the status filter and
+    # `limit: 1` stops at the first hit.
+    read :referencing_prototype_global do
+      description(
+        "Cross-tenant non-terminal runs whose premises reference a prototype_id (C3 sweep guard)."
+      )
+
+      multitenancy(:bypass)
+      argument(:prototype_id, :string, allow_nil?: false)
+      prepare(build(limit: 1))
+
+      filter(
+        expr(
+          status in [:pending, :running, :awaiting_approval] and
+            config["premises"]["prototype_id"] == ^arg(:prototype_id)
+        )
+      )
     end
   end
 

@@ -53,6 +53,15 @@ defmodule JidoClaw.VFS.Sandbox do
   def create_prototype_dir(_), do: {:error, :missing_project_dir}
 
   @doc """
+  True when `name` (a `.prototypes/` child basename or path) is shaped like a
+  prototype dir — a bare UUID. Single-sources the `@uuid` regex so the retention
+  sweeper (`JidoClaw.VFS.PrototypeRetentionSweeper`) doesn't re-declare it.
+  """
+  @spec uuid_child?(term()) :: boolean()
+  def uuid_child?(name) when is_binary(name), do: Regex.match?(@uuid, Path.basename(name))
+  def uuid_child?(_name), do: false
+
+  @doc """
   Validate an existing path IS a legit `.prototypes/<uuid>/` root — lexical
   shape, `lstat` symlink rejection on the `.prototypes` parent, a real-directory
   check on the child, and a realpath under-parent check.
@@ -66,7 +75,7 @@ defmodule JidoClaw.VFS.Sandbox do
     parent = Path.dirname(expanded)
 
     with :ok <- ensure(Path.basename(parent) == ".prototypes", :not_under_prototypes),
-         :ok <- ensure(Regex.match?(@uuid, Path.basename(expanded)), :child_not_uuid),
+         :ok <- ensure(uuid_child?(expanded), :child_not_uuid),
          # lstat the parent ITSELF: a `<base>/.prototypes -> /elsewhere/.prototypes`
          # symlink would otherwise pass the realpath-basename check below (the
          # target's basename is also `.prototypes`).

@@ -53,6 +53,9 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_compaction_snapshot, action: :set_compaction_snapshot, args: [:key, :snapshot])
     define(:set_current_agent_template, action: :set_current_agent_template, args: [:template])
     define(:set_triage_path, action: :set_triage_path, args: [:path])
+    define(:set_path_transitions, action: :set_path_transitions, args: [:transitions])
+    define(:set_oscillation_marker, action: :set_oscillation_marker, args: [:at])
+    define(:set_pending_prototype, action: :set_pending_prototype, args: [:candidate])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
     define(:list_open_for_workspaces_global, args: [:workspace_ids])
@@ -168,6 +171,41 @@ defmodule JidoClaw.Conversations.Session do
       argument(:path, :string, allow_nil?: false)
 
       change({__MODULE__.Changes.SetMetadataKey, key: "last_triage_path", argument: :path})
+    end
+
+    # AR-8b-2 C2 oscillation guard: the bounded newest-first path-transition log
+    # under `metadata["path_transitions"]` (the front door computes + caps it off
+    # the snapshot, then overwrites). Reuses `SetMetadataKey` (atomic jsonb_set)
+    # — no new change module. `allow_nil?: false` makes the delete branch
+    # unreachable (the guard always writes a list, never clears).
+    update :set_path_transitions do
+      accept([])
+      argument(:transitions, {:array, :map}, allow_nil?: false)
+
+      change({__MODULE__.Changes.SetMetadataKey, key: "path_transitions", argument: :transitions})
+    end
+
+    # AR-8b-2 C2 "ask once, then proceed" marker under
+    # `metadata["oscillation_prompted_at"]`. Set (ISO8601 string) on a debounce;
+    # CLEARED (nil → the change's `#-` delete branch) on any proceed or a talk
+    # turn. `allow_nil?: true` so the clear path is live.
+    update :set_oscillation_marker do
+      accept([])
+      argument(:at, :string, allow_nil?: true)
+
+      change({__MODULE__.Changes.SetMetadataKey, key: "oscillation_prompted_at", argument: :at})
+    end
+
+    # AR-8b-2 C1 durable graduation candidate under
+    # `metadata["pending_prototype"]`. Set (a JSON-safe candidate map) on a
+    # non-sensitive sketch launch; CONSUMED/CLEARED (nil → delete branch) on a
+    # relevant graduation, a sensitive sketch, or a newer sketch replacing it.
+    # `allow_nil?: true` so the consume path is live.
+    update :set_pending_prototype do
+      accept([])
+      argument(:candidate, :map, allow_nil?: true)
+
+      change({__MODULE__.Changes.SetMetadataKey, key: "pending_prototype", argument: :candidate})
     end
 
     read :active_for_workspace do

@@ -185,6 +185,11 @@ defmodule JidoClaw.Application do
       # Hourly trace retention: prunes trace_runs/trace_events older than
       # trace[:retention_days]. Only needs Repo; no ordering constraint.
       JidoClaw.Trace.RetentionSweeper,
+      # Hourly prototype retention (AR-8b-2 C3): opt-in TTL sweep of stale
+      # `.prototypes/<uuid>/` dirs. Always started, inert when disabled
+      # (`prototype_retention[:max_age_days]` nil by default). Filesystem +
+      # WorkflowRun reference check; no ordering constraint beyond Repo.
+      JidoClaw.VFS.PrototypeRetentionSweeper,
       JidoClaw.Audit.SignalListener
     ]
 

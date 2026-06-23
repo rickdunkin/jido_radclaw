@@ -17,7 +17,22 @@ defmodule JidoClaw.FrontDoor do
       whose run won't start must not be silently handed to the mutation-capable chat
       agent (P1). A `sketch` whose sandbox can't be created (no `project_dir`, a
       hostile `.prototypes` symlink/shape) lands here too — never on the inline
-      agent, which would write the real tree.
+      agent, which would write the real tree. The AR-8b-2 C2 **oscillation
+      debounce** (a `sketch ⇄ code` flip-flop) also returns this tag with a "re-send
+      to confirm" ack — no run is minted, and the re-send proceeds.
+
+  ## AR-8b-2 — cross-run sketch graduation (C1 + C2)
+
+  When a session sketched a throwaway and a later turn becomes a `code`/`system`
+  build, C1 seeds the fresh composer run with a **fresh LLM summary** of what the
+  prototype established (the prototype *informs*, it does not auto-merge). The
+  signal is a **durable candidate** under `metadata["pending_prototype"]` (written
+  on a non-sensitive sketch launch, consumed on a relevant graduation), keyed by
+  redacted topic-token overlap and a bounded TTL — so `last_triage_path` stays
+  observability-only. A `:secrets` sketch writes **no** candidate (and clears any
+  stale one), so a secret-involving throwaway never graduates and its topic never
+  reaches public metadata. C2 debounces rapid path-flipping off a bounded
+  `metadata["path_transitions"]` log; both guards **fail open** to a normal launch.
 
   This is the only **user-turn** caller of `RouteComposer.create_parent_run/1` /
   `ensure_started/2` (boot recovery, `workflow_recovery.ex`, also calls
@@ -39,8 +54,10 @@ defmodule JidoClaw.FrontDoor do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Error
+  alias JidoClaw.FrontDoor.PrototypeSummary
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
+  alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Triage
   alias JidoClaw.Triage.Verdict
@@ -49,6 +66,28 @@ defmodule JidoClaw.FrontDoor do
   @history_window 6
   @preview_max 120
   @default_sensitive_deadline_ms 1_800_000
+
+  # AR-8b-2 C2 oscillation guard: count adjacent sketch↔code/system flips inside
+  # this window; debounce on the threshold-th flip (a single `sketch → code`
+  # graduation is 1 flip and never debounced). C1 graduation candidate TTL is a
+  # backstop — `relevant?/2` is the primary guard.
+  @osc_window_ms 60_000
+  @osc_flip_threshold 2
+  @graduation_candidate_ttl_ms :timer.hours(2)
+
+  # Topic-token extraction for C1 relevance. Drop generic function/process words
+  # so only real topic words anchor relevance (biases toward NOT graduating — a
+  # false negative degrades to a normal `code` run; a false positive would seed a
+  # misleading summary). The marker denylist keeps redaction leftovers (`bearer`)
+  # and secret-class words from ever becoming relevance anchors.
+  @token_stopwords MapSet.new(~w(the a an and or but for nor yet with from into onto this that
+                        these those your you our their there here what when where which
+                        while will would should could able make made just like only also
+                        then than them they have been being does done about over under
+                        build sketch prototype throwaway implement create feature real
+                        really thing stuff want need please code system change))
+
+  @token_markers MapSet.new(~w(bearer redacted secret token password apikey anthropic github))
 
   # Verdict signal atom → composer topic string (the catalog's wire vocabulary).
   @signal_topics %{
@@ -80,25 +119,71 @@ defmodule JidoClaw.FrontDoor do
     history = recent_history(ctx, message)
     # classify/2 is the fail-safe boundary, so this hard-matches `{:ok, %Verdict{}}`.
     {:ok, %Verdict{} = verdict} = Triage.classify(message, history: history)
-    persist_path(ctx, verdict.path)
+    # Load the session ONCE (best-effort; nil ⇒ everything fails open) and thread
+    # it to every reader/writer. All metadata writes are atomic `jsonb_set` on the
+    # row, so snapshot staleness across sequential writes in one turn is irrelevant.
+    session = load_session(ctx)
+
+    # Cheap candidate read (no LLM): a non-expired, RELEVANT pending prototype on a
+    # graduating `code`/`system` turn. Read here, but only HYDRATED (summarized)
+    # after the oscillation guard returns `:proceed`.
+    candidate = pending_graduation(message, verdict, session)
+    # Observability only (last_triage_path); order-independent — atomic per-key.
+    persist_path(ctx, verdict.path, session)
 
     if Verdict.composer?(verdict) do
-      {:composer, start_composer(message, verdict, ctx)}
+      # P2: a `:secrets` sketch walls off cross-run graduation — clear any stale
+      # candidate up front, BEFORE the guard, so neither a launch failure NOR a
+      # debounce can let a prior non-sensitive prototype survive into a sensitive
+      # context. (The new-candidate WRITE stays in start_composer's success branch.)
+      clear_candidate_for_sensitive_sketch(verdict, session, ctx)
+
+      case oscillation_guard(session, verdict.path, ctx) do
+        :proceed ->
+          graduation = hydrate_graduation(candidate)
+          result = start_composer(message, verdict, ctx, graduation, session)
+          after_launch(result, verdict, ctx, session, graduation)
+          {:composer, result}
+
+        {:debounce, ack} ->
+          # No launch, NO summary ⇒ candidate + transition log untouched, so the
+          # confirming re-send still graduates.
+          {:composer, {:error, ack}}
+      end
     else
+      # A talk turn clears the C2 "ask once" speed-bump.
+      maybe_clear_marker(session, ctx)
       {:inline, verdict}
     end
   end
+
+  # P2: a `:secrets` sketch clears any stale `pending_prototype` regardless of whether
+  # its own launch then succeeds, fails, or is debounced. (Replacing a candidate
+  # otherwise only happens on a write, so a never-launched sensitive sketch must clear
+  # explicitly.)
+  defp clear_candidate_for_sensitive_sketch(
+         %Verdict{path: :sketch, signals: signals},
+         session,
+         ctx
+       ) do
+    if :secrets in signals, do: write_pending_prototype(session, ctx, nil), else: :ok
+  end
+
+  defp clear_candidate_for_sensitive_sketch(_verdict, _session, _ctx), do: :ok
 
   # ---------------------------------------------------------------------------
   # Composer launch (the Option-A seed)
   # ---------------------------------------------------------------------------
 
-  defp start_composer(message, %Verdict{} = verdict, ctx) do
+  defp start_composer(message, %Verdict{} = verdict, ctx, graduation, session) do
     # `intent` is load-bearing AND must be non-empty: `planner` requires the
     # `intent` artifact and the router's availability is key-presence based, so a
     # blank/nil intent would falsely satisfy the requirement and run `planner`
     # blind. Use the verdict's crisp intent when present, else the raw message.
-    intent = present(verdict.intent) || message
+    # C1 appends the prototype summary (the verdict intent stays leading +
+    # load-bearing); a `nil` summary leaves it byte-identical.
+    base_intent = present(verdict.intent) || message
+    intent = graduated_intent(base_intent, graduation)
     path = verdict.path
     sensitive? = :secrets in verdict.signals
 
@@ -128,17 +213,18 @@ defmodule JidoClaw.FrontDoor do
                context: composer_context(ctx, project_dir, workspace_id),
                # Front-door launch cleans its own orphan (boot recovery does not — 3b).
                terminalize_on_failure?: true,
-               # prototype_id/dir ride premises for Phase C (AR-8b-2) graduation provenance.
-               premises:
-                 Map.merge(
-                   %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)},
-                   premises_extra
-                 )
+               # prototype_id/dir ride premises for Phase C (AR-8b-2) provenance;
+               # `graduated_from` (C1) is folded in even when the summary is nil.
+               premises: build_premises(path, verdict, premises_extra, graduation)
              ],
              sensitive?
            ),
          {:ok, parent} <- composer().create_parent_run(opts),
          {:ok, _pid} <- composer().ensure_started(opts, parent) do
+      # Write the candidate only for a successful NON-SENSITIVE sketch; a sensitive
+      # sketch already cleared any stale one in `decide/2`; no-op for code/system.
+      set_sketch_candidate(path, sensitive?, parent, premises_extra, base_intent, ctx, session)
+
       {:ok,
        %{
          path: path,
@@ -275,18 +361,39 @@ defmodule JidoClaw.FrontDoor do
     end
   end
 
-  # Best-effort observability / cold-start: store the latest verdict path under
-  # `metadata["last_triage_path"]` as a STRING. Never fails the turn.
-  defp persist_path(ctx, path) do
+  # Load the session struct once per turn (best-effort). A `nil` makes every
+  # reader/writer below fail open.
+  defp load_session(ctx) do
     with sid when is_binary(sid) <- Map.get(ctx, :session_uuid),
          tenant when is_binary(tenant) <- Map.get(ctx, :tenant_id),
          {:ok, session} <- ConversationsSession.by_id(sid, tenant: tenant, actor: actor(ctx)) do
-      ConversationsSession.set_triage_path(session, to_string(path),
-        tenant: tenant,
-        actor: actor(ctx)
-      )
+      session
+    else
+      _ -> nil
     end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
 
+  # Best-effort observability / cold-start: store the latest verdict path under
+  # `metadata["last_triage_path"]` as a STRING (NOT read to decide — graduation
+  # keys off the durable `pending_prototype` candidate). Never fails the turn.
+  defp persist_path(_ctx, _path, nil), do: :ok
+
+  defp persist_path(ctx, path, session),
+    do:
+      safe_write(fn ->
+        ConversationsSession.set_triage_path(session, to_string(path), write_opts(ctx))
+      end)
+
+  # Every metadata write is best-effort + atomic (`jsonb_set` on the row), so a
+  # stale snapshot can't clobber a sibling key and a failure never blocks the
+  # turn. One wrapper centralizes the fail-open (no clone-sibling rescues).
+  defp safe_write(fun) when is_function(fun, 0) do
+    fun.()
     :ok
   rescue
     # reach:disable-next-line bare_rescue
@@ -294,6 +401,338 @@ defmodule JidoClaw.FrontDoor do
   catch
     :exit, _ -> :ok
   end
+
+  defp write_opts(ctx), do: [tenant: Map.get(ctx, :tenant_id), actor: actor(ctx)]
+
+  # ---------------------------------------------------------------------------
+  # C1 — prototype provenance (durable candidate → relevance-gated graduation)
+  # ---------------------------------------------------------------------------
+
+  # Cheap, NO-LLM read: a non-expired, topically-relevant pending prototype on a
+  # graduating `code`/`system` turn. Returns the raw (string-keyed) candidate map
+  # or nil. Fail-open to nil on any read failure.
+  defp pending_graduation(message, %Verdict{path: path} = verdict, session)
+       when path in [:code, :system] do
+    with %{} = cand <- candidate(session),
+         true <- fresh?(cand),
+         tokens = significant_tokens(present(verdict.intent) || message),
+         true <- relevant?(cand, tokens) do
+      cand
+    else
+      _ -> nil
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
+  defp pending_graduation(_message, _verdict, _session), do: nil
+
+  defp candidate(%{metadata: %{"pending_prototype" => %{} = cand}}), do: cand
+  defp candidate(_session), do: nil
+
+  # TTL backstop (relevance is the primary guard). Reuses the within-window clock
+  # seam so tests can drive expiry deterministically.
+  defp fresh?(%{"at" => at}), do: within_window?(at, graduation_ttl_ms())
+  defp fresh?(_cand), do: false
+
+  # Conservative token-overlap relevance: a non-empty intersection of the stored
+  # (redacted) sketch tokens and the graduating intent's tokens. Empty/nil intent
+  # ⇒ no tokens ⇒ not relevant (safe).
+  defp relevant?(%{"sketch_tokens" => stored}, intent_tokens)
+       when is_list(stored) and is_list(intent_tokens) do
+    not MapSet.disjoint?(MapSet.new(stored), MapSet.new(intent_tokens))
+  end
+
+  defp relevant?(_cand, _intent_tokens), do: false
+
+  # Redact → strip `[REDACTED:…]` placeholder spans → downcase → tokenize → drop
+  # short/stopword/marker tokens → sorted-unique LIST (JSON-safe; never a MapSet
+  # — `SetMetadataKey` runs `Jason.encode!/1`). Redaction runs FIRST (case-
+  # sensitive key patterns) and also scrubs any secret out of the stored tokens.
+  defp significant_tokens(text) when is_binary(text) do
+    text
+    |> Patterns.redact()
+    |> strip_redaction_placeholders()
+    |> String.downcase()
+    |> String.split(~r/[^\p{L}\p{N}]+/u, trim: true)
+    |> Enum.filter(&significant_token?/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp significant_tokens(_text), do: []
+
+  defp strip_redaction_placeholders(text),
+    do: Regex.replace(~r/\[REDACTED[^\]]*\]/, text, " ")
+
+  defp significant_token?(token) do
+    String.length(token) >= 4 and
+      not MapSet.member?(@token_stopwords, token) and
+      not MapSet.member?(@token_markers, token)
+  end
+
+  # The LLM summary — called ONLY on a real launch (the `:proceed` branch), so a
+  # debounced turn never summarizes. `run_id` is preserved through hydration (→
+  # `graduated_from`); `summary` is independent of provenance (stashed even nil).
+  defp hydrate_graduation(nil), do: nil
+
+  defp hydrate_graduation(%{} = cand) do
+    dir = cand["prototype_dir"]
+
+    summary =
+      case PrototypeSummary.summarize(dir) do
+        {:ok, text} -> text
+        _ -> nil
+      end
+
+    %{
+      prototype_id: cand["prototype_id"],
+      prototype_dir: dir,
+      run_id: cand["run_id"],
+      summary: summary
+    }
+  end
+
+  # Append the summary to the (leading, load-bearing) verdict intent. A nil
+  # summary leaves the seed byte-identical.
+  defp graduated_intent(base_intent, %{summary: summary}) when is_binary(summary) do
+    base_intent <>
+      "\n\nPrior exploration (a throwaway sketch, NOT to be merged) found: " <> summary
+  end
+
+  defp graduated_intent(base_intent, _graduation), do: base_intent
+
+  defp build_premises(path, %Verdict{} = verdict, premises_extra, graduation) do
+    %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)}
+    |> Map.merge(premises_extra)
+    |> merge_graduated_from(graduation)
+  end
+
+  defp merge_graduated_from(premises, %{prototype_id: id, prototype_dir: dir, run_id: run_id}) do
+    Map.put(premises, "graduated_from", %{
+      "prototype_id" => id,
+      "prototype_dir" => dir,
+      "run_id" => run_id
+    })
+  end
+
+  defp merge_graduated_from(premises, _graduation), do: premises
+
+  # On a successful NON-SENSITIVE sketch launch, WRITE the durable graduation
+  # candidate. A `:secrets` sketch already cleared any stale one eagerly in
+  # `decide/2`, so it falls to the catch-all here; code/system are a no-op too.
+  defp set_sketch_candidate(
+         :sketch,
+         false,
+         parent,
+         %{"prototype_id" => id, "prototype_dir" => dir},
+         intent,
+         ctx,
+         session
+       ) do
+    candidate = %{
+      "prototype_id" => id,
+      "prototype_dir" => dir,
+      "run_id" => parent.id,
+      "sketch_tokens" => significant_tokens(intent),
+      "at" => iso_now()
+    }
+
+    write_pending_prototype(session, ctx, candidate)
+  end
+
+  defp set_sketch_candidate(_path, _sensitive?, _parent, _extra, _intent, _ctx, _session), do: :ok
+
+  defp write_pending_prototype(nil, _ctx, _candidate), do: :ok
+
+  defp write_pending_prototype(session, ctx, candidate),
+    do:
+      safe_write(fn ->
+        ConversationsSession.set_pending_prototype(session, candidate, write_opts(ctx))
+      end)
+
+  # ---------------------------------------------------------------------------
+  # Post-launch bookkeeping (C2 transition log + C1 candidate consume)
+  # ---------------------------------------------------------------------------
+
+  defp after_launch(result, %Verdict{} = verdict, ctx, session, graduation) do
+    record_transition(result, verdict, ctx, session)
+    consume_candidate(result, verdict, graduation, ctx, session)
+    :ok
+  end
+
+  # A transition = a composer run that actually started (any path). The log holds
+  # `%{"path", "at"}` only — NO run_id, keeping a sensitive launch's run id out of
+  # public metadata (the flip-count guard needs nothing more).
+  defp record_transition({:ok, _ack}, %Verdict{path: path}, ctx, session),
+    do: append_transition(session, ctx, to_string(path))
+
+  defp record_transition(_result, _verdict, _ctx, _session), do: :ok
+
+  defp append_transition(nil, _ctx, _path), do: :ok
+
+  defp append_transition(session, ctx, path) do
+    entry = %{"path" => path, "at" => iso_now()}
+    transitions = Enum.take([entry | existing_transitions(session)], @history_window)
+
+    safe_write(fn ->
+      ConversationsSession.set_path_transitions(session, transitions, write_opts(ctx))
+    end)
+  end
+
+  defp existing_transitions(%{metadata: %{"path_transitions" => list}}) when is_list(list),
+    do: list
+
+  defp existing_transitions(_session), do: []
+
+  # Single-use: consume the candidate only on a successful code/system launch that
+  # actually graduated. An unrelated `code` turn (no graduation) leaves it for a
+  # later relevant turn (TTL-bounded).
+  defp consume_candidate({:ok, _ack}, %Verdict{path: path}, %{} = _graduation, ctx, session)
+       when path in [:code, :system],
+       do: write_pending_prototype(session, ctx, nil)
+
+  defp consume_candidate(_result, _verdict, _graduation, _ctx, _session), do: :ok
+
+  # ---------------------------------------------------------------------------
+  # C2 — oscillation guard
+  # ---------------------------------------------------------------------------
+
+  # `:proceed | {:debounce, error_ack}`, fail-open to `:proceed`. "Ask once, then
+  # proceed" (B1): a recent marker means this turn IS the confirming re-send —
+  # proceed and consume the marker. Otherwise debounce on a thrash and set it.
+  defp oscillation_guard(session, path, ctx) do
+    cond do
+      recently_prompted?(session) ->
+        write_marker(session, ctx, nil)
+        :proceed
+
+      thrash?(session, path) ->
+        write_marker(session, ctx, iso_now())
+        emit_oscillation(path, session)
+        {:debounce, debounce_ack(path)}
+
+      true ->
+        :proceed
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> :proceed
+  catch
+    :exit, _ -> :proceed
+  end
+
+  defp recently_prompted?(%{metadata: %{"oscillation_prompted_at" => at}}) when is_binary(at),
+    do: within_window?(at, @osc_window_ms)
+
+  defp recently_prompted?(_session), do: false
+
+  # Build the in-window path sequence (current first) and count adjacent
+  # sketch↔code/system flips.
+  defp thrash?(session, current_path) do
+    flips([to_string(current_path) | in_window_paths(session)]) >= @osc_flip_threshold
+  end
+
+  defp in_window_paths(%{metadata: %{"path_transitions" => list}}) when is_list(list) do
+    list
+    |> Enum.filter(&transition_in_window?/1)
+    |> Enum.map(&Map.get(&1, "path"))
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp in_window_paths(_session), do: []
+
+  defp transition_in_window?(%{"at" => at}), do: within_window?(at, @osc_window_ms)
+  defp transition_in_window?(_entry), do: false
+
+  # Pure (unit-testable): count adjacent flips across the sketch/non-sketch
+  # boundary. `sketch → code` is 1 flip (a normal graduation — never debounced);
+  # `sketch → code → sketch` is 2 (the first flip-back trips it).
+  defp flips(paths) do
+    paths
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.count(fn [a, b] -> flip?(a, b) end)
+  end
+
+  defp flip?(a, b), do: sketch?(a) != sketch?(b)
+
+  defp sketch?("sketch"), do: true
+  defp sketch?(_path), do: false
+
+  defp within_window?(iso, window_ms) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> DateTime.diff(now(), dt, :millisecond) <= window_ms
+      _ -> false
+    end
+  end
+
+  defp within_window?(_iso, _window_ms), do: false
+
+  defp maybe_clear_marker(nil, _ctx), do: :ok
+
+  defp maybe_clear_marker(session, ctx) do
+    if marker_present?(session), do: write_marker(session, ctx, nil), else: :ok
+  end
+
+  defp marker_present?(%{metadata: %{"oscillation_prompted_at" => at}}) when is_binary(at),
+    do: true
+
+  defp marker_present?(_session), do: false
+
+  defp write_marker(nil, _ctx, _at), do: :ok
+
+  defp write_marker(session, ctx, at),
+    do:
+      safe_write(fn ->
+        ConversationsSession.set_oscillation_marker(session, at, write_opts(ctx))
+      end)
+
+  # No silent suppression: a debounce always emits telemetry + a signal (mirrors
+  # `triage.classified`).
+  defp emit_oscillation(path, session) do
+    prior = last_composer_path(session)
+
+    :telemetry.execute(
+      [:jido_claw, :triage, :oscillation_guard],
+      %{count: 1},
+      %{path: path, prior: prior, reason: :debounce}
+    )
+
+    JidoClaw.SignalBus.emit("jido_claw.triage.oscillation_guard", %{
+      path: to_string(path),
+      prior: to_string(prior),
+      reason: "debounce"
+    })
+
+    :ok
+  end
+
+  defp last_composer_path(%{metadata: %{"path_transitions" => [%{"path" => p} | _rest]}})
+       when is_binary(p),
+       do: p
+
+  defp last_composer_path(_session), do: nil
+
+  defp debounce_ack(path) do
+    %{
+      path: path,
+      message:
+        "You've flipped between sketch and #{path} a couple of times just now. " <>
+          "Re-send to start the #{path} run, or say 'just sketch it' to stay in the sandbox."
+    }
+  end
+
+  # Clock seam (deterministic tests; mirrors the `:ask_runtime` idiom).
+  defp now, do: clock().utc_now()
+  defp clock, do: Application.get_env(:jido_claw, :front_door_clock, DateTime)
+  defp iso_now, do: DateTime.to_iso8601(now())
+
+  defp graduation_ttl_ms,
+    do:
+      Application.get_env(:jido_claw, :graduation_candidate_ttl_ms, @graduation_candidate_ttl_ms)
 
   # ---------------------------------------------------------------------------
   # Small helpers
