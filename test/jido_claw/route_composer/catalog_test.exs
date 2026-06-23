@@ -33,6 +33,18 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     refute Catalog.valid?("ghost")
   end
 
+  test "the AR-8b sketch-build stage is pinned" do
+    stage = Catalog.get("sketch-build")
+    assert %Stage{unit: {:worker_template, "sketch_build"}} = stage
+    assert stage.routes == ["sketch"]
+    assert stage.subscribes == ["request-received"]
+    assert stage.input == %{required: ["request"], optional: []}
+    # No lens (skips the clean:/findings: validator requirement) and no lock.
+    assert stage.lens == nil
+    assert stage.lock == []
+    assert "scope-shift" in stage.publishes
+  end
+
   describe "to_map/from_map serialization (Phase 2d — durable catalog)" do
     test "round-trips the built-in catalog (incl. the :seed + :gate units)" do
       assert Catalog.from_map(Catalog.to_map(Catalog.all())) == Catalog.all()

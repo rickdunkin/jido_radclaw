@@ -63,9 +63,9 @@ defmodule JidoClaw.Triage.Verdict do
   @spec talk(String.t() | nil) :: t()
   def talk(intent \\ nil), do: %__MODULE__{path: :talk, intent: intent}
 
-  @doc "True when the verdict routes into the composer (`code` or `system`)."
+  @doc "True when the verdict routes into the composer (`code`, `system`, or `sketch`)."
   @spec composer?(t()) :: boolean()
-  def composer?(%__MODULE__{path: p}), do: p in [:code, :system]
+  def composer?(%__MODULE__{path: p}), do: p in [:code, :system, :sketch]
 
   @doc """
   Normalize a structured-output map (string- or atom-keyed) into a `%Verdict{}`.

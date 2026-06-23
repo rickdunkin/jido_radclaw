@@ -252,12 +252,21 @@ defmodule JidoClaw.VFS.Resolver do
   This is intended for callers that need local filesystem metadata after the
   resolver has chosen the local backend. Remote URIs and mounted VFS paths are
   not translated here.
+
+  With `local_only: true` in `opts`, a remote-scheme `path` is rejected with
+  `{:error, {:remote_forbidden_in_sandbox, path}}` rather than passed through —
+  this entry point bypasses `parse_path/3`, so the gate is applied here too
+  (AR-8b sketch jail).
   """
   @spec local_path(String.t(), keyword(), :read | :write) :: {:ok, String.t()} | {:error, term()}
   def local_path(path, opts \\ [], mode \\ :read) when mode in [:read, :write] do
-    case resolve_local_path(path, opts, mode) do
-      {:local, local_path} -> {:ok, local_path}
-      {:error, reason} -> {:error, reason}
+    if local_only_violation?(path, opts) do
+      {:error, {:remote_forbidden_in_sandbox, path}}
+    else
+      case resolve_local_path(path, opts, mode) do
+        {:local, local_path} -> {:ok, local_path}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -298,9 +307,26 @@ defmodule JidoClaw.VFS.Resolver do
 
   # -- Path Parsing -----------------------------------------------------------
 
+  # The funnel above the prefix-matched clauses: `read/2`, `write/3`,
+  # `atomic_write/3`, and `ls/2` all route through `parse_path/3`, so the
+  # `local_only:` sandbox gate (AR-8b) catches a remote scheme here before it
+  # can reach any backend. `local_path/3` bypasses this funnel and re-checks
+  # the same predicate at its own entry. The `{:error, _}` is already in
+  # contract — every caller's `case`/`with` handles a parse error.
+  defp parse_path(path, opts, mode) do
+    if local_only_violation?(path, opts),
+      do: {:error, {:remote_forbidden_in_sandbox, path}},
+      else: do_parse_path(path, opts, mode)
+  end
+
+  # A `local_only` sandbox turn (the sketch worker) must never resolve a remote
+  # scheme — the local project jail does not cover `github://`/`s3://`/`git://`.
+  defp local_only_violation?(path, opts),
+    do: Keyword.get(opts, :local_only, false) and remote?(path)
+
   # github://owner/repo[@ref]/path/to/file
   # ref defaults to "main" when omitted
-  defp parse_path("github://" <> rest, _opts, _mode) do
+  defp do_parse_path("github://" <> rest, _opts, _mode) do
     case String.split(rest, "/", parts: 3) do
       [owner_repo_ref, repo, file_path] when repo != "" ->
         {owner, ref} = split_owner_ref(owner_repo_ref)
@@ -315,7 +341,7 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path("s3://" <> rest, _opts, _mode) do
+  defp do_parse_path("s3://" <> rest, _opts, _mode) do
     case String.split(rest, "/", parts: 2) do
       [bucket, key] -> {:s3, bucket, key}
       [bucket] -> {:s3, bucket, ""}
@@ -323,7 +349,7 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path("git://" <> rest, _opts, _mode) do
+  defp do_parse_path("git://" <> rest, _opts, _mode) do
     case String.split(rest, "//", parts: 2) do
       [repo_path, file_path] -> {:git, repo_path, file_path}
       [repo_path] -> {:git, repo_path, ""}
@@ -331,7 +357,7 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp parse_path(path, opts, mode) do
+  defp do_parse_path(path, opts, mode) do
     workspace_id = Keyword.get(opts, :workspace_id)
 
     if is_binary(workspace_id) and workspace_id != "" and String.starts_with?(path, "/") do
@@ -450,7 +476,16 @@ defmodule JidoClaw.VFS.Resolver do
       (relative != path and relative != ".." and not String.starts_with?(relative, "../"))
   end
 
-  defp realpath(path), do: realpath(path, 0)
+  @doc """
+  Fully resolve symlinks in `path` (depth-capped at `#{@max_symlink_depth}`).
+
+  Returns `{:ok, resolved}` or `{:error, reason}`. Exposed for
+  `JidoClaw.VFS.Sandbox`, which reuses this tested, depth-capped walk to
+  validate a `.prototypes/<uuid>/` sandbox root rather than re-implement path
+  safety (AR-8b).
+  """
+  @spec realpath(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def realpath(path), do: realpath(path, 0)
 
   defp realpath(_path, depth) when depth > @max_symlink_depth,
     do: {:error, :too_many_symlinks}

@@ -117,10 +117,44 @@ defmodule JidoClaw.FrontDoorTest do
       assert {:inline, %Verdict{path: :talk}} = FrontDoor.decide("how does X work?", ctx)
       assert composer_runs(ctx) == []
     end
+  end
 
-    test "sketch routes inline and creates no composer run", %{ctx: ctx} do
+  describe "decide/2 sketch composer routing (AR-8b)" do
+    test "sketch launches a composer in a per-prototype .prototypes/ sandbox", %{ctx: ctx} do
       canned(:sketch)
-      assert {:inline, %Verdict{path: :sketch}} = FrontDoor.decide("rough out an idea", ctx)
+
+      assert {:composer, {:ok, %{path: :sketch, parent_run_id: id, message: msg}}} =
+               FrontDoor.decide("sketch a throwaway rate-limiter prototype", ctx)
+
+      assert is_binary(msg)
+      parent = reload(id, ctx)
+      assert parent.workflow_type == "composer"
+
+      # The launch scope is the isolated per-prototype sandbox, not the real cwd.
+      proto = parent.config["context"]["project_dir"]
+      assert String.starts_with?(proto, Path.join(ctx.project_dir, ".prototypes"))
+      assert File.dir?(proto)
+      assert parent.config["context"]["workspace_id"] =~ ":proto:"
+
+      # prototype_id rides premises for Phase C (AR-8b-2) graduation provenance.
+      assert is_binary(parent.config["premises"]["prototype_id"])
+      assert parent.config["premises"]["prototype_dir"] == proto
+
+      # seeded live: path + the seed signal, but NO plan-gate (throwaway).
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "sketch" in live
+      assert "request-received" in live
+      refute "plan-needed" in live
+    end
+
+    test "a sketch with no project_dir hard-fails (no inline fall-through)", %{ctx: ctx} do
+      canned(:sketch)
+      ctx = Map.delete(ctx, :project_dir)
+
+      assert {:composer, {:error, %{path: :sketch}}} =
+               FrontDoor.decide("sketch something", ctx)
+
+      # Fail-closed: no parent created, never handed to the mutation-capable agent.
       assert composer_runs(ctx) == []
     end
   end

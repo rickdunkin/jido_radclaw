@@ -633,13 +633,22 @@ defmodule JidoClaw.MCP.Consumer do
   @spec modules_for_template([module()], %{module() => :all | [String.t()]}, term()) ::
           [module()]
   defp modules_for_template(modules, module_templates, template) do
-    Enum.filter(modules, fn mod ->
-      case Map.get(module_templates, mod) do
-        :all -> true
-        allowed when is_list(allowed) -> is_binary(template) and template in allowed
-        _missing -> false
-      end
-    end)
+    # AR-8b capability boundary: a sandboxed template (`sandbox: :prototype`)
+    # gets ZERO external MCP tools — at attach AND on every reconcile tick, so
+    # a tool can never be (re-)added behind the sketch jail. An empty result is
+    # already in-contract (registers vacuously `:ok`). `external_tools?/1` is
+    # `true` for a nil/non-binary/unknown template, so this only ever subtracts.
+    if is_binary(template) and not Templates.external_tools?(template) do
+      []
+    else
+      Enum.filter(modules, fn mod ->
+        case Map.get(module_templates, mod) do
+          :all -> true
+          allowed when is_list(allowed) -> is_binary(template) and template in allowed
+          _missing -> false
+        end
+      end)
+    end
   end
 
   # -- Fan-out --

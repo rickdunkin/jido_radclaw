@@ -173,6 +173,24 @@ defmodule JidoClaw.RouteComposer.Catalog do
       input: %{required: ["diff"], optional: []},
       output: ["fix"],
       publishes: ["code-written", "scope-shift"]
+    },
+    # AR-8b sketch path. The ONLY clean trigger is the seed signal
+    # `request-received` (no stage publishes `"sketch"`); the route-filter then
+    # drops this stage on every non-sketch run (its `routes: ["sketch"]` is
+    # disjoint from the live path). Publishes only the mandatory `scope-shift`
+    # — its worker emits no signals (no `signals` output field), so the route
+    # converges the moment it finishes.
+    "sketch-build" => %Stage{
+      name: "sketch-build",
+      unit: {:worker_template, "sketch_build"},
+      task:
+        "Build a throwaway prototype for the request in the sandbox: a tracer-bullet, scaffold, " <>
+          "diagram, or idea sketch. Write files only — do not run commands or touch git.",
+      routes: ["sketch"],
+      subscribes: ["request-received"],
+      input: %{required: ["request"], optional: []},
+      output: ["prototype"],
+      publishes: ["scope-shift"]
     }
   }
 

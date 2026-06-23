@@ -19,14 +19,15 @@ defmodule JidoClaw.Tools.SearchCode do
 
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
   def run(%{pattern: pattern} = params, context) do
     MCPScope.wrap(:search_code, params, context, fn enriched ->
-      with {:ok, regex} <- compile_pattern(pattern),
+      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])),
+           {:ok, regex} <- compile_pattern(pattern),
            {:ok, glob} <- compile_glob(Map.get(params, :glob)),
-           {:ok, lines} <-
-             search_path(Map.get(params, :path, "."), regex, glob, resolver_opts(enriched)) do
+           {:ok, lines} <- search_path(Map.get(params, :path, "."), regex, glob, opts) do
         max_results = Map.get(params, :max_results, 50)
         truncated = Enum.take(lines, max_results)
         total = length(lines)
@@ -58,13 +59,6 @@ defmodule JidoClaw.Tools.SearchCode do
     {:ok, GlobEx.compile!(glob)}
   rescue
     error in GlobEx.CompileError -> {:error, "invalid glob: #{Exception.message(error)}"}
-  end
-
-  defp resolver_opts(context) do
-    [
-      workspace_id: get_in(context, [:tool_context, :workspace_id]),
-      project_dir: get_in(context, [:tool_context, :project_dir]) || File.cwd!()
-    ]
   end
 
   defp search_path(path, regex, glob, opts) do

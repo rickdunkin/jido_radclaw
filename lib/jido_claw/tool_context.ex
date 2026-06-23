@@ -35,6 +35,14 @@ defmodule JidoClaw.ToolContext do
                            (always forwarded — never policy-strippable) so it
                            propagates to nested `spawn_agent`/`send_to_agent`
                            children automatically.
+    * `:sandbox`        — `:none` | `:prototype` (AR-8b). The isolation tier
+                           the turn runs under, stamped from the template's
+                           `sandbox` policy by `Skills.Steps.AgentRunner`. The
+                           file tools read it (`== :prototype`) to forbid remote
+                           VFS schemes (`github://`/…). Canonical (always
+                           forwarded — never policy-strippable) so a sketch
+                           worker's nested `spawn_agent`/`send_to_agent`
+                           children inherit the jail and can't shed it.
     * `:request_correlation_expires_at` — `DateTime` | nil (AR-2 Phase 2b).
                            The conservative `RequestCorrelation` TTL ceiling a
                            composer wave seeds so an orphaned late-writing
@@ -61,6 +69,7 @@ defmodule JidoClaw.ToolContext do
     :agent_template,
     :subagent,
     :sanitize_sensitive_context,
+    :sandbox,
     :request_correlation_expires_at,
     :actor
   ]

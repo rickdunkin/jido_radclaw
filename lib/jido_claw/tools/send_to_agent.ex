@@ -170,6 +170,11 @@ defmodule JidoClaw.Tools.SendToAgent do
     case entry do
       %{template: template_name} when is_binary(template_name) ->
         case templates().get(template_name) do
+          # AR-8b: a sandboxed template is composer-private — refuse a follow-up
+          # turn to it via the LLM-exposed swarm tool (mirrors spawn_agent).
+          {:ok, %{sandbox: :prototype}} ->
+            {:error, composer_private_error(template_name)}
+
           {:ok, template} ->
             {:ok, template}
 
@@ -193,6 +198,18 @@ defmodule JidoClaw.Tools.SendToAgent do
            details: %{agent_id: agent_id, metadata: inspect(other)}
          )}
     end
+  end
+
+  # Details intentionally {reason, template} (not adding agent_id) — the
+  # {agent_id, reason, template} 3-key shape is already used twice elsewhere and
+  # a third occurrence trips the reach fixed_shape_map smell. The message names
+  # the template; agent_id is not load-bearing here.
+  defp composer_private_error(template_name) do
+    Error.execution_error(
+      "Template '#{template_name}' is composer-private (sandboxed); follow-ups are not allowed.",
+      phase: :template_lookup,
+      details: %{reason: :composer_private, template: template_name}
+    )
   end
 
   defp jido_runtime do

@@ -111,11 +111,11 @@ defmodule JidoClaw.TriageTest do
       assert Enum.all?(Map.keys(reasons), &is_binary/1)
     end
 
-    test "composer?/1 is true only for code/system" do
+    test "composer?/1 is true for code/system/sketch, false for talk" do
       assert Verdict.composer?(%Verdict{path: :code})
       assert Verdict.composer?(%Verdict{path: :system})
+      assert Verdict.composer?(%Verdict{path: :sketch})
       refute Verdict.composer?(%Verdict{path: :talk})
-      refute Verdict.composer?(%Verdict{path: :sketch})
     end
   end
 

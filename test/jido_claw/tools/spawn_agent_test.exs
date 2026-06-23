@@ -155,6 +155,24 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert wire.details.phase == :spawn_limit
   end
 
+  test "refuses to spawn the composer-private sketch_build template (AR-8b)" do
+    # Real Templates (default seam) so `sketch_build` resolves to the genuine
+    # sandboxed template; FakeRuntime records any spawn so we can prove none happened.
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+    Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
+    Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
+
+    assert {:error, wire} = SpawnAgent.run(%{template: "sketch_build", task: "x"}, ctx())
+    assert wire.code == :execution_error
+    assert wire.details.reason == :composer_private
+    assert wire.details.template == "sketch_build"
+
+    # The guard fires before any runtime spawn or tracker registration.
+    refute_receive {:start_agent, _opts, _pid}
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+  end
+
   test "terminal children do not consume the spawn cap (H10 regression)" do
     configure_fake_spawn()
     Application.put_env(:jido_claw, :spawn_agent_max_children, 1)

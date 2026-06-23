@@ -90,6 +90,32 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     def get(name), do: {:error, {:unknown_template, name}}
   end
 
+  # A tracker whose only registered agent is a composer-private (sandboxed)
+  # template — for the AR-8b refusal test.
+  defmodule SandboxTracker do
+    @moduledoc false
+
+    @spec get_agent(String.t(), keyword()) :: map() | nil
+    def get_agent("sketch_agent", opts) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test",
+        do: %{template: "sketch_build"}
+    end
+
+    def get_agent(_agent_id, _opts), do: nil
+
+    # Straggler absorbers: an orchestration task from an earlier test can outlive
+    # its test (parked on the Recorder flush) and read this swapped-in tracker
+    # late — absorb its writes instead of crashing (the TakenTracker convention).
+    @spec mark_complete(String.t(), :done | :error) :: :ok
+    def mark_complete(_agent_id, _status), do: :ok
+
+    @spec attach_orchestrator(String.t(), pid()) :: :ok
+    def attach_orchestrator(_agent_id, _pid), do: :ok
+
+    @spec update_request_id(String.t(), String.t()) :: :ok
+    def update_request_id(_agent_id, _request_id), do: :ok
+  end
+
   defmodule RestrictedTemplates do
     @moduledoc false
 
@@ -208,6 +234,20 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   test "requires tenant scope before resolving tracker or runtime state" do
     assert {:error, %{code: :tenant_required}} =
              SendToAgent.run(%{agent_id: "docs_writer_123", message: "hello"}, %{})
+  end
+
+  test "refuses a follow-up to a composer-private (sandboxed) agent (AR-8b)" do
+    # Real Templates so `sketch_build` resolves to the genuine sandboxed template.
+    Application.put_env(:jido_claw, :agent_tracker, SandboxTracker)
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+
+    assert {:error, %{code: :execution_error, details: details}} =
+             SendToAgent.run(%{agent_id: "sketch_agent", message: "more"}, ctx())
+
+    assert details.reason == :composer_private
+    assert details.template == "sketch_build"
+    # The guard fires before dispatch, so the worker is never invoked.
+    refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
   end
 
   test "returns error when the agent process is missing" do

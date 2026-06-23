@@ -195,6 +195,59 @@ defmodule JidoClaw.VFS.ResolverTest do
     end
   end
 
+  describe "local_only sandbox gate (AR-8b sketch jail)" do
+    @remote_uris ["github://owner/repo/file.md", "s3://bucket/key", "git://repo//file"]
+
+    test "read/write/ls reject every remote scheme with local_only: true" do
+      for uri <- @remote_uris do
+        assert {:error, {:remote_forbidden_in_sandbox, ^uri}} =
+                 Resolver.read(uri, local_only: true)
+
+        assert {:error, {:remote_forbidden_in_sandbox, ^uri}} =
+                 Resolver.write(uri, "x", local_only: true)
+
+        assert {:error, {:remote_forbidden_in_sandbox, ^uri}} =
+                 Resolver.ls(uri, local_only: true)
+      end
+    end
+
+    test "local_path/3 (the parse_path bypass) also rejects remote schemes" do
+      for uri <- @remote_uris do
+        assert {:error, {:remote_forbidden_in_sandbox, ^uri}} =
+                 Resolver.local_path(uri, [local_only: true], :read)
+
+        assert {:error, {:remote_forbidden_in_sandbox, ^uri}} =
+                 Resolver.local_path(uri, [local_only: true], :write)
+      end
+    end
+
+    test "remote schemes still route remotely with local_only: false / absent" do
+      # Only the side-effect-free schemes here: github:///s3:// fail at the
+      # network/credentials layer with no local filesystem write, whereas a
+      # git:// read would init a local repo in cwd. We only need to prove the
+      # sandbox gate did NOT short-circuit (the result is anything other than
+      # the sandbox rejection). git:// rejection-under-local_only is covered above.
+      for uri <- ["github://owner/repo/file.md", "s3://bucket/key"] do
+        refute match?({:error, {:remote_forbidden_in_sandbox, _}}, Resolver.read(uri))
+
+        refute match?(
+                 {:error, {:remote_forbidden_in_sandbox, _}},
+                 Resolver.read(uri, local_only: false)
+               )
+      end
+    end
+
+    test "the local project_dir jail still works under local_only: true", %{tmp: tmp} do
+      proto = Path.join([tmp, ".prototypes", "ux"])
+      File.mkdir_p!(proto)
+
+      assert :ok = Resolver.write("note.md", "hi", project_dir: proto, local_only: true)
+      assert {:ok, "hi"} = Resolver.read("note.md", project_dir: proto, local_only: true)
+      assert {:ok, names} = Resolver.ls(".", project_dir: proto, local_only: true)
+      assert "note.md" in names
+    end
+  end
+
   describe "read/2 auto-bootstrap with :project_dir" do
     test "auto-bootstraps a brand-new workspace when :project_dir is passed" do
       ws = "test-resolver-bootstrap-#{System.unique_integer([:positive])}"

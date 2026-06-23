@@ -133,8 +133,9 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 7 templates" do
-      assert map_size(Templates.list()) == 7
+    test "should contain all 8 templates" do
+      # 7 general-purpose workers + the AR-8b composer-private `sketch_build`.
+      assert map_size(Templates.list()) == 8
     end
 
     test "should have all expected template names as keys" do
@@ -160,8 +161,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 7 names" do
-      assert Enum.count(Templates.names()) == 7
+    test "should return exactly 8 names" do
+      assert Enum.count(Templates.names()) == 8
     end
 
     test "should include all 7 expected template names" do

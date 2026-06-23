@@ -88,6 +88,26 @@ defmodule JidoClaw.ToolContextTest do
     end
   end
 
+  describe "AR-8b — :sandbox is canonical (the sketch jail capability)" do
+    test "build/1 keeps :sandbox as a canonical key" do
+      ctx = ToolContext.build(%{tenant_id: "t", sandbox: :prototype})
+      assert ctx[:sandbox] == :prototype
+      assert Map.has_key?(ctx, :sandbox)
+    end
+
+    test "child/2 propagates :sandbox to nested children (the jail is inherited)" do
+      parent = ToolContext.build(%{tenant_id: "t", project_dir: "/d", sandbox: :prototype})
+      child = ToolContext.child(parent, "child-tag")
+      assert child[:sandbox] == :prototype
+    end
+
+    test ":sandbox is NOT policy-strippable (survives forward_context :none)" do
+      parent = ToolContext.build(%{tenant_id: "t", project_dir: "/d", sandbox: :prototype})
+      child = ToolContext.child(parent, "child-tag", :none)
+      assert child[:sandbox] == :prototype
+    end
+  end
+
   describe "ensure_nested/1" do
     test "respects an existing non-empty :tool_context unchanged" do
       existing = %{tenant_id: "lifted", session_uuid: "s"}

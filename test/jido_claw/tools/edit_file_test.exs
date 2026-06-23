@@ -5,6 +5,7 @@ defmodule JidoClaw.Tools.EditFileTest do
 
   alias Jido.Shell.VFS
   alias JidoClaw.Tools.EditFile
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -207,6 +208,52 @@ defmodule JidoClaw.Tools.EditFileTest do
       assert message =~ "new_content exceeds"
       # Refused before the write — the file is untouched.
       assert File.read!(path) == "MARKER" <> base
+    end
+  end
+
+  describe "AR-8b sketch jail fails closed (review P2)" do
+    test "a sandbox context with no project_dir refuses to edit a real-tree file" do
+      sentinel =
+        Path.join(File.cwd!(), "sketch_edit_sentinel_#{System.unique_integer([:positive])}.txt")
+
+      File.write!(sentinel, "original")
+      on_exit(fn -> File.rm_rf!(sentinel) end)
+
+      assert {:error, _} =
+               EditFile.run(
+                 %{path: sentinel, old_string: "original", new_string: "tampered"},
+                 %{tool_context: %{sandbox: :prototype}}
+               )
+
+      assert File.read!(sentinel) == "original"
+    end
+
+    test "a sandbox context with a non-.prototypes project_dir is rejected", %{dir: dir} do
+      path = Path.join(dir, "f.txt")
+      File.write!(path, "foo bar")
+
+      assert {:error, _} =
+               EditFile.run(
+                 %{path: path, old_string: "bar", new_string: "qux"},
+                 %{tool_context: %{project_dir: dir, sandbox: :prototype}}
+               )
+
+      assert File.read!(path) == "foo bar"
+    end
+
+    test "a valid .prototypes sandbox root still edits jailed", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      path = Path.join(proto, "edit_me.txt")
+      File.write!(path, "foo bar baz")
+
+      assert {:ok, result} =
+               EditFile.run(
+                 %{path: path, old_string: "bar", new_string: "qux"},
+                 %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+               )
+
+      assert result.status == "edited"
+      assert File.read!(path) == "foo qux baz"
     end
   end
 

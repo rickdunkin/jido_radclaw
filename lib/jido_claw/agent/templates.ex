@@ -36,6 +36,18 @@ defmodule JidoClaw.Agent.Templates do
   failing it to `:all` would gate every benign tool (`read_file`…) for that
   worker — a self-inflicted DoS with no marginal security. `:all` stays a
   valid *explicit* operator value; only the malformed/typo fallback is `[]`.
+
+  ## `sandbox` policy (AR-8b)
+
+  Every resolved template also carries a `:sandbox` key — the isolation tier
+  this template's agents run under. `:none` (the default) is unchanged
+  behavior; `:prototype` is the throwaway-sketch capability boundary, which
+  drives four independent, structural enforcements (no external MCP tools, no
+  remote file schemes, a validated `.prototypes/<uuid>/` sandbox root, and
+  composer-private instantiation). Like `forward_context`, it fails **closed**:
+  a malformed *present* value sandboxes *harder* (to `:prototype`), never
+  weaker, so a registry typo can only over-isolate. `external_tools?/1` is the
+  derived reader the MCP `Consumer` gates on.
   """
 
   require Logger
@@ -76,6 +88,16 @@ defmodule JidoClaw.Agent.Templates do
       description:
         "Interactive verification — reads code, runs tests/commands. Returns a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning.",
       model: :fast
+    },
+    "sketch_build" => %{
+      module: JidoClaw.Agent.Workers.SketchBuild,
+      description: "Builds a throwaway prototype in an isolated sandbox (file tools only)",
+      model: :fast,
+      # AR-8b: the capability boundary. Drives the four structural enforcements
+      # (no external MCP tools, no remote file schemes, validated `.prototypes/`
+      # root, composer-private instantiation). No reason to widen its scope.
+      forward_context: :none,
+      sandbox: :prototype
     }
   }
 
@@ -131,11 +153,36 @@ defmodule JidoClaw.Agent.Templates do
     end
   end
 
+  @doc """
+  Return the per-template `:sandbox` isolation tier (`:none` | `:prototype`).
+
+  Resolves through `get/1` (honouring the `:agent_templates_override` test
+  hook). Returns `:none` for an unknown template (e.g. `"main"`, not in
+  `@templates`) — the unsandboxed default.
+  """
+  @spec sandbox(String.t()) :: :none | :prototype
+  def sandbox(name) do
+    case get(name) do
+      {:ok, %{sandbox: s}} -> s
+      _ -> :none
+    end
+  end
+
+  @doc """
+  False when the template forbids external (MCP) tools — i.e. is sandboxed
+  (`sandbox: :prototype`). The MCP `Consumer` short-circuits a sandboxed
+  template's tool set to `[]` on this, at attach and every reconcile tick.
+  An unknown template (`"main"`) is `:none`, so `external_tools?/1` is `true`.
+  """
+  @spec external_tools?(String.t()) :: boolean()
+  def external_tools?(name), do: sandbox(name) != :prototype
+
   defp hydrate_template(template) do
     template
     |> ensure_max_iterations()
     |> ensure_forward_context()
     |> ensure_require_approval()
+    |> ensure_sandbox()
   end
 
   # Two clauses, NO catch-all — preserves today's behavior: a template
@@ -198,6 +245,28 @@ defmodule JidoClaw.Agent.Templates do
     )
 
     []
+  end
+
+  defp ensure_sandbox(%{sandbox: s} = t), do: Map.put(t, :sandbox, validate_sandbox(s, t))
+  defp ensure_sandbox(t), do: Map.put(t, :sandbox, :none)
+
+  defp validate_sandbox(s, _t) when s in [:none, :prototype], do: s
+
+  # Fail CLOSED to the most-restrictive value: a malformed *present* value
+  # sandboxes harder (`:prototype`), never weaker — a static-registry typo can
+  # only over-isolate, and that template's own tests catch it. (Contrast
+  # `require_approval`, which fails to the global floor; here the safe failure
+  # is *more* isolation, since `:prototype` strips capabilities rather than
+  # adding gated ones.)
+  defp validate_sandbox(other, t), do: warn_sandbox(other, t)
+
+  defp warn_sandbox(bad, t) do
+    Logger.warning(
+      "[Templates] invalid :sandbox #{inspect(bad)} for " <>
+        "#{inspect(Map.get(t, :module))}; failing closed to :prototype"
+    )
+
+    :prototype
   end
 
   defp module_max_iterations(module) do

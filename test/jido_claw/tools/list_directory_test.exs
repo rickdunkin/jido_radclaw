@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.ListDirectory
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -226,6 +227,42 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
 
       assert message =~ "Cannot list /project/anything"
       assert message =~ "workspace_bootstrap_failed"
+    end
+  end
+
+  describe "AR-8b sketch jail (tool_context[:sandbox] == :prototype)" do
+    test "rejects a github:// path via the remote-branch guard", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      sandbox_ctx = %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+
+      assert {:error, %{message: message}} =
+               ListDirectory.run(%{path: "github://o/r/dir"}, sandbox_ctx)
+
+      assert message =~ "remote schemes are forbidden in the sketch sandbox"
+    end
+
+    test "still lists a local sandbox dir", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      touch(Path.join(proto, "proto.ex"))
+      sandbox_ctx = %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+
+      assert {:ok, result} = ListDirectory.run(%{path: proto}, sandbox_ctx)
+      assert result.entries =~ "proto.ex"
+    end
+  end
+
+  describe "AR-8b sketch jail fails closed (review P2)" do
+    test "a sandbox context with no project_dir refuses to list the real tree" do
+      assert {:error, _} =
+               ListDirectory.run(%{path: "."}, %{tool_context: %{sandbox: :prototype}})
+    end
+
+    test "a sandbox context with a non-.prototypes project_dir is rejected", %{dir: dir} do
+      assert {:error, _} =
+               ListDirectory.run(
+                 %{path: dir},
+                 %{tool_context: %{project_dir: dir, sandbox: :prototype}}
+               )
     end
   end
 end

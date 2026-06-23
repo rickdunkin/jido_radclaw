@@ -41,7 +41,8 @@ defmodule JidoClaw.Doctrine do
     "researcher" => [:base, :artifacts],
     "test_runner" => [:base, :artifacts],
     "reviewer" => [:base, :reviewer_min],
-    "verifier" => [:base, :reviewer_min]
+    "verifier" => [:base, :reviewer_min],
+    "sketch_build" => [:base, :artifacts]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

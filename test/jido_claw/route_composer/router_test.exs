@@ -394,6 +394,22 @@ defmodule JidoClaw.RouteComposer.RouterTest do
       assert_in_route(res, "implementer")
       refute Map.has_key?(res.held, "implementer")
     end
+
+    test "GAP-5 the AR-8b sketch path composes to exactly [sketch-build]" do
+      res =
+        compose(Catalog.all(), ["request-received", "sketch"],
+          available: ["request"],
+          ran: ["triage"]
+        )
+
+      assert res.route == ["sketch-build"]
+
+      # The code/system pipeline stays out of a sketch route.
+      for stage <- ~w(planner implementer test-author fixer quality-reviewer
+                      security-reviewer correctness-reviewer architecture-reviewer) do
+        refute stage in res.route
+      end
+    end
   end
 
   defp assert_lock_case(res, %{held: nil}) do

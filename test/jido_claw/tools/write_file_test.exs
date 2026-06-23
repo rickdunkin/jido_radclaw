@@ -7,6 +7,7 @@ defmodule JidoClaw.Tools.WriteFileTest do
 
   alias Jido.Shell.VFS
   alias JidoClaw.Tools.WriteFile
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -177,6 +178,54 @@ defmodule JidoClaw.Tools.WriteFileTest do
                )
 
       assert File.read!(Path.join(tmp, "written.txt")) == "hello-vfs"
+    end
+  end
+
+  describe "AR-8b sketch jail (tool_context[:sandbox] == :prototype)" do
+    test "rejects a github:// path", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      sandbox_ctx = %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+
+      assert {:error, %{message: msg}} =
+               WriteFile.run(%{path: "github://o/r/f.md", content: "x"}, sandbox_ctx)
+
+      assert msg =~ "remote_forbidden_in_sandbox"
+    end
+
+    test "still writes a local path jailed under the sandbox", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      sandbox_ctx = %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+      path = Path.join(proto, "proto.ex")
+
+      assert {:ok, %{path: ^path}} =
+               WriteFile.run(%{path: path, content: "defmodule P do\nend"}, sandbox_ctx)
+
+      assert File.read!(path) == "defmodule P do\nend"
+    end
+  end
+
+  describe "AR-8b sketch jail fails closed (review P2)" do
+    test "a sandbox context with no project_dir refuses to write and touches nothing" do
+      sentinel =
+        Path.join(File.cwd!(), "sketch_sentinel_#{System.unique_integer([:positive])}.txt")
+
+      on_exit(fn -> File.rm_rf!(sentinel) end)
+
+      assert {:error, _} =
+               WriteFile.run(
+                 %{path: sentinel, content: "should not be written"},
+                 %{tool_context: %{sandbox: :prototype}}
+               )
+
+      refute File.exists?(sentinel)
+    end
+
+    test "a sandbox context with a non-.prototypes project_dir is rejected", %{dir: dir} do
+      assert {:error, _} =
+               WriteFile.run(
+                 %{path: Path.join(dir, "x.txt"), content: "x"},
+                 %{tool_context: %{project_dir: dir, sandbox: :prototype}}
+               )
     end
   end
 end

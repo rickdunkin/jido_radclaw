@@ -36,27 +36,31 @@ defmodule JidoClaw.Tools.WriteFile do
   alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
   def run(%{path: path, content: content} = params, context) do
     with :ok <- FilePayloadLimit.validate(:content, content) do
       MCPScope.wrap(:write_file, params, context, fn enriched ->
-        workspace_id = get_in(enriched, [:tool_context, :workspace_id])
-        project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
-
-        case Resolver.write(path, content, workspace_id: workspace_id, project_dir: project_dir) do
-          :ok ->
-            lines =
-              content
-              |> String.split("\n")
-              |> length()
-
-            {:ok, %{path: path, lines_written: lines}}
-
-          {:error, reason} ->
-            {:error, "Cannot write #{path}: #{inspect(reason)}"}
-        end
+        write_with_context(path, content, enriched)
       end)
+    end
+  end
+
+  defp write_with_context(path, content, enriched) do
+    with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])) do
+      case Resolver.write(path, content, opts) do
+        :ok ->
+          lines =
+            content
+            |> String.split("\n")
+            |> length()
+
+          {:ok, %{path: path, lines_written: lines}}
+
+        {:error, reason} ->
+          {:error, "Cannot write #{path}: #{inspect(reason)}"}
+      end
     end
   end
 end

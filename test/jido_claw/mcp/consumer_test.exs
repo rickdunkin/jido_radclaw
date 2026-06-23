@@ -455,6 +455,25 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert has_tool?(researcher, @tool_name)
     end
 
+    test "a sandboxed template attaches ZERO external tools even from an :all server (AR-8b)" do
+      stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
+      # @server carries no `templates:` allowlist → :all (every template reaches it).
+      consumer = start_consumer!([@server])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      sandboxed = start_agent!()
+      normal = start_agent!()
+
+      assert :ok = MCP.ensure_attached(sandboxed, "sketch_build", 3_000)
+      assert :ok = MCP.ensure_attached(normal, "coder", 3_000)
+
+      # The sandboxed template is withheld every external tool at *registration*
+      # (external_tools?/1 is false), even though the server admits :all. A normal
+      # template still gets the :all server's tool.
+      refute has_tool?(sandboxed, @tool_name)
+      assert has_tool?(normal, @tool_name)
+    end
+
     test "a restricted allowlist grants the tool only to listed templates" do
       stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
       consumer = start_consumer!([server("stub", templates: ["coder"])])

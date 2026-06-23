@@ -34,6 +34,7 @@ defmodule JidoClaw.Tools.ListDirectory do
 
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
   def run(params, context) do
@@ -45,19 +46,29 @@ defmodule JidoClaw.Tools.ListDirectory do
   defp do_list(params, context) do
     path = Map.get(params, :path, ".")
     max_results = Map.get(params, :max_results, 200)
-    workspace_id = get_in(context, [:tool_context, :workspace_id])
-    project_dir = get_in(context, [:tool_context, :project_dir]) || File.cwd!()
-    ws_opts = [workspace_id: workspace_id, project_dir: project_dir]
 
-    entries = fetch_entries(path, params, ws_opts)
-    format_entries(entries, path, max_results)
+    case Sandbox.resolver_opts(get_in(context, [:tool_context])) do
+      {:ok, ws_opts} ->
+        entries = fetch_entries(path, params, ws_opts)
+        format_entries(entries, path, max_results)
+
+      {:error, message} ->
+        {:error, message}
+    end
   end
 
+  # The remote branch calls `Resolver.ls(path)` with no opts, bypassing the
+  # `local_only` funnel, so gate it directly here (AR-8b sketch jail).
   defp fetch_entries(path, params, ws_opts) do
-    if Resolver.remote?(path) do
-      list_remote(path)
-    else
-      list_workspace_or_local(path, params, ws_opts)
+    cond do
+      Keyword.get(ws_opts, :local_only, false) and Resolver.remote?(path) ->
+        {:error, "Cannot list #{path}: remote schemes are forbidden in the sketch sandbox"}
+
+      Resolver.remote?(path) ->
+        list_remote(path)
+
+      true ->
+        list_workspace_or_local(path, params, ws_opts)
     end
   end
 

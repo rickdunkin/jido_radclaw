@@ -54,6 +54,13 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   defp spawn_from_template(template_name, task, tag, context, scope_opts) do
     case templates().get(template_name) do
+      # AR-8b: a sandboxed template is composer-private — it may only run through
+      # the front-door sketch path that sets up a validated `.prototypes/<id>/`
+      # root. The LLM-exposed swarm tool must never spawn it (no sandbox scope
+      # → it would write the real tree, P2b).
+      {:ok, %{sandbox: :prototype}} ->
+        {:error, composer_private_error(template_name)}
+
       {:ok, template} ->
         case jido_runtime().start_subagent(template.module, id: tag) do
           {:ok, subagent_pid} ->
@@ -264,6 +271,14 @@ defmodule JidoClaw.Tools.SpawnAgent do
       field: :tag,
       value: tag,
       details: %{reason: :agent_id_taken}
+    )
+  end
+
+  defp composer_private_error(template_name) do
+    Error.execution_error(
+      "Template '#{template_name}' is composer-private (sandboxed) and cannot be spawned directly.",
+      phase: :spawn,
+      details: %{reason: :composer_private, template: template_name}
     )
   end
 

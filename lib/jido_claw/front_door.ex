@@ -6,14 +6,18 @@ defmodule JidoClaw.FrontDoor do
   `decide/2` runs AR-8 triage once (a fail-safe `JidoClaw.Triage.classify/2`
   call — never a spawned worker) and picks a route:
 
-    * `{:inline, verdict}` — `talk`/`sketch` (incl. a triage failure degraded to
-      `talk`): the turn stays on today's inline agent path, byte-for-byte unchanged.
-    * `{:composer, {:ok, resp}}` — a `code`/`system` verdict whose composer run
-      started; `resp.message` is the assistant ack.
-    * `{:composer, {:error, resp}}` — a `code`/`system` verdict whose run **failed
-      to start**: a bounded error ack. **This is NOT a fall-through to the inline
-      agent** (which has write/run/git tools) — a confident change verdict whose run
-      won't start must not be silently handed to the mutation-capable chat agent (P1).
+    * `{:inline, verdict}` — `talk` (incl. a triage failure degraded to `talk`):
+      the turn stays on today's inline agent path, byte-for-byte unchanged.
+    * `{:composer, {:ok, resp}}` — a `code`/`system`/`sketch` verdict whose composer
+      run started; `resp.message` is the assistant ack. A `sketch` run is launched
+      in a hard-isolated, per-prototype `.prototypes/<id>/` sandbox (AR-8b).
+    * `{:composer, {:error, resp}}` — a `code`/`system`/`sketch` verdict whose run
+      **failed to start**: a bounded error ack. **This is NOT a fall-through to the
+      inline agent** (which has write/run/git tools) — a confident change verdict
+      whose run won't start must not be silently handed to the mutation-capable chat
+      agent (P1). A `sketch` whose sandbox can't be created (no `project_dir`, a
+      hostile `.prototypes` symlink/shape) lands here too — never on the inline
+      agent, which would write the real tree.
 
   This is the only **user-turn** caller of `RouteComposer.create_parent_run/1` /
   `ensure_started/2` (boot recovery, `workflow_recovery.ex`, also calls
@@ -40,6 +44,7 @@ defmodule JidoClaw.FrontDoor do
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Triage
   alias JidoClaw.Triage.Verdict
+  alias JidoClaw.VFS.Sandbox
 
   @history_window 6
   @preview_max 120
@@ -97,35 +102,42 @@ defmodule JidoClaw.FrontDoor do
     path = verdict.path
     sensitive? = :secrets in verdict.signals
 
-    # `:secrets` ∈ signals → mark_sensitive/2 merges sanitize + a bounded deadline
-    # (a direct call, not a one-step pipe — Credo.Readability.SinglePipe).
-    opts =
-      mark_sensitive(
-        [
-          tenant: Map.fetch!(ctx, :tenant_id),
-          actor: actor(ctx),
-          name: "composer",
-          catalog: Catalog.all(),
-          # "plan-needed" is always seeded (triage's catalog publish that `planner`
-          # subscribes — without it the route is empty and falsely converges).
-          live:
-            Enum.uniq(
-              ["request-received", to_string(path), "plan-needed"] ++ mapped_signals(verdict)
-            ),
-          # FULL intent stored in the artifact; the ack shows only a capped preview.
-          artifacts: %{"request" => %{"seed" => message}, "intent" => %{"triage" => intent}},
-          # Option (A): seed `triage` as already-run so the composer never asks
-          # WaveBuilder to build the non-executable `{:seed, _}` stage.
-          ran: ["triage"],
-          context: composer_context(ctx),
-          # Front-door launch cleans its own orphan (boot recovery does not — 3b).
-          terminalize_on_failure?: true,
-          premises: %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)}
-        ],
-        sensitive?
-      )
-
-    with {:ok, parent} <- composer().create_parent_run(opts),
+    # A `:sketch` turn resolves a hard-isolated per-prototype `.prototypes/<id>/`
+    # sandbox up front (AR-8b); a `code`/`system` turn passes the launch scope
+    # through unchanged. A sandbox failure is `{:error, _}` and flows to the
+    # bounded ack below — NEVER a pass-through to the mutation-capable inline
+    # agent, which would write the real tree (P1c).
+    with {:ok, {project_dir, workspace_id}, premises_extra} <- sketch_scope(path, ctx),
+         # `:secrets` ∈ signals → mark_sensitive/2 merges sanitize + a bounded
+         # deadline (a direct call, not a one-step pipe — SinglePipe). The opts
+         # `=` binding is folded into the `with` so a sketch sandbox failure
+         # short-circuits before any parent is created.
+         opts =
+           mark_sensitive(
+             [
+               tenant: Map.fetch!(ctx, :tenant_id),
+               actor: actor(ctx),
+               name: "composer",
+               catalog: Catalog.all(),
+               live: seed_live(path, verdict),
+               # FULL intent stored in the artifact; the ack shows a capped preview.
+               artifacts: %{"request" => %{"seed" => message}, "intent" => %{"triage" => intent}},
+               # Option (A): seed `triage` as already-run so the composer never asks
+               # WaveBuilder to build the non-executable `{:seed, _}` stage.
+               ran: ["triage"],
+               context: composer_context(ctx, project_dir, workspace_id),
+               # Front-door launch cleans its own orphan (boot recovery does not — 3b).
+               terminalize_on_failure?: true,
+               # prototype_id/dir ride premises for Phase C (AR-8b-2) graduation provenance.
+               premises:
+                 Map.merge(
+                   %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)},
+                   premises_extra
+                 )
+             ],
+             sensitive?
+           ),
+         {:ok, parent} <- composer().create_parent_run(opts),
          {:ok, _pid} <- composer().ensure_started(opts, parent) do
       {:ok,
        %{
@@ -165,14 +177,18 @@ defmodule JidoClaw.FrontDoor do
 
   # The atom-keyed scope subset the composer threads into every wave (and persists
   # JSON-safe for recovery). Nils dropped so the persisted subset stays clean.
-  # `workspace_id` is included — `AgentRunner` otherwise falls back to `"wf_<tag>"`.
-  defp composer_context(ctx) do
+  # `project_dir`/`workspace_id` are passed in (resolved by `sketch_scope/2`): the
+  # ctx values for code/system, the per-prototype `.prototypes/<id>/` + scoped id
+  # for sketch. Both persist via `@persisted_context_keys` so the sandbox survives
+  # crash recovery. `workspace_id` is included — `AgentRunner` otherwise falls back
+  # to `"wf_<tag>"`.
+  defp composer_context(ctx, project_dir, workspace_id) do
     %{
-      project_dir: Map.get(ctx, :project_dir),
+      project_dir: project_dir,
       tenant_id: Map.get(ctx, :tenant_id),
       session_id: Map.get(ctx, :session_id),
       session_uuid: Map.get(ctx, :session_uuid),
-      workspace_id: Map.get(ctx, :workspace_id),
+      workspace_id: workspace_id,
       workspace_uuid: Map.get(ctx, :workspace_uuid),
       user_id: Map.get(ctx, :user_id),
       agent_id: Map.get(ctx, :agent_id),
@@ -181,6 +197,39 @@ defmodule JidoClaw.FrontDoor do
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
+
+  # Resolve the launch scope + extra premises for a turn. A `:sketch` turn
+  # creates a hard-isolated per-prototype `.prototypes/<id>/` sandbox (symlink-
+  # safe + validated by `VFS.Sandbox`); a missing `project_dir` or a hostile
+  # `.prototypes` symlink/shape surfaces as `{:error, _}` → the bounded ack (NOT
+  # a pass-through, so the worker can never cwd-fallback onto the real tree). A
+  # `code`/`system` turn passes the ctx scope through with no extra premises.
+  defp sketch_scope(:sketch, ctx) do
+    case Sandbox.create_prototype_dir(Map.get(ctx, :project_dir)) do
+      {:ok, %{dir: proto, id: id}} ->
+        ws = sketch_workspace_id(Map.get(ctx, :workspace_id), id)
+        {:ok, {proto, ws}, %{"prototype_id" => id, "prototype_dir" => proto}}
+
+      {:error, reason} ->
+        {:error, {:sketch_sandbox_unavailable, reason}}
+    end
+  end
+
+  defp sketch_scope(_path, ctx),
+    do: {:ok, {Map.get(ctx, :project_dir), Map.get(ctx, :workspace_id)}, %{}}
+
+  defp sketch_workspace_id(ws, id) when is_binary(ws) and ws != "", do: ws <> ":proto:" <> id
+  defp sketch_workspace_id(_ws, id), do: "proto:" <> id
+
+  # The seeded `live` topics. A `sketch` run omits `plan-needed` (no plan gate —
+  # it's throwaway); a `code`/`system` run always seeds it (triage's catalog
+  # publish that `planner` subscribes — without it the route is empty and falsely
+  # converges).
+  defp seed_live(:sketch, verdict),
+    do: Enum.uniq(["request-received", "sketch"] ++ mapped_signals(verdict))
+
+  defp seed_live(path, verdict),
+    do: Enum.uniq(["request-received", to_string(path), "plan-needed"] ++ mapped_signals(verdict))
 
   defp actor(ctx) do
     Map.get(ctx, :actor) || Actor.system(Map.fetch!(ctx, :tenant_id))
@@ -280,6 +329,14 @@ defmodule JidoClaw.FrontDoor do
   defp sensitive_deadline_ms do
     Application.get_env(:jido_claw, :triage_sensitive_deadline_ms, @default_sensitive_deadline_ms)
   end
+
+  # A sketch run is throwaway and lands in `.prototypes/` — its ack says so. The
+  # sensitive clause (like the generic one below) still omits the intent preview.
+  defp ack_message(:sketch, _intent, run_id, true),
+    do: "Sketching a sensitive throwaway prototype in .prototypes/ (run #{run_id})."
+
+  defp ack_message(:sketch, intent, run_id, false),
+    do: "Sketching a throwaway prototype in .prototypes/ for: #{preview(intent)} (run #{run_id})."
 
   # A sensitive run's ack must NOT echo the intent: marking the run sensitive scrubs
   # durable sinks, but the ack string itself bypasses that pipeline and goes straight

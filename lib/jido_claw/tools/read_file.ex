@@ -33,6 +33,7 @@ defmodule JidoClaw.Tools.ReadFile do
   alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
   def run(%{path: path} = params, context) do
@@ -48,16 +49,13 @@ defmodule JidoClaw.Tools.ReadFile do
 
   defp do_read(path, params, context, offset, limit) do
     MCPScope.wrap(:read_file, params, context, fn enriched ->
-      workspace_id = get_in(enriched, [:tool_context, :workspace_id])
-      project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
-      opts = [workspace_id: workspace_id, project_dir: project_dir]
-
       # Two-layer read cap (the write cap, 5 MB): the pre-read stat
       # refuses oversized local files before they reach the heap; the
       # unconditional post-read check closes the stat→read race and
       # covers remote/VFS branches (materialized before the check —
       # bounding the fetch needs backend streaming).
-      with :ok <- FilePayloadLimit.validate_read(path, opts),
+      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])),
+           :ok <- FilePayloadLimit.validate_read(path, opts),
            {:ok, content} <- read_with_content_cap(path, opts) do
         lines = String.split(content, "\n")
         total = length(lines)

@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.SearchCodeTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.SearchCode
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -142,6 +143,40 @@ defmodule JidoClaw.Tools.SearchCodeTest do
                SearchCode.run(%{pattern: "hit", path: dir, max_results: 3}, context(dir))
 
       assert result.total_matches == 10
+    end
+  end
+
+  describe "AR-8b sketch jail fails closed (review P2)" do
+    test "a sandbox context with no project_dir refuses to search the real tree" do
+      assert {:error, _} =
+               SearchCode.run(
+                 %{pattern: "defmodule JidoClaw"},
+                 %{tool_context: %{sandbox: :prototype}}
+               )
+    end
+
+    test "a sandbox context with a non-.prototypes project_dir is rejected", %{dir: dir} do
+      write(dir, "f.ex", "defmodule Foo do\nend\n")
+
+      assert {:error, _} =
+               SearchCode.run(
+                 %{pattern: "defmodule", path: dir},
+                 %{tool_context: %{project_dir: dir, sandbox: :prototype}}
+               )
+    end
+
+    test "a valid .prototypes sandbox root still searches jailed", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      write(proto, "src.ex", "defmodule Sketch do\nend\n")
+
+      assert {:ok, result} =
+               SearchCode.run(
+                 %{pattern: "defmodule", path: proto},
+                 %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+               )
+
+      assert result.total_matches >= 1
+      assert result.matches =~ "src.ex"
     end
   end
 

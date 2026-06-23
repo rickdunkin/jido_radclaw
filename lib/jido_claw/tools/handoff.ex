@@ -89,6 +89,7 @@ defmodule JidoClaw.Tools.Handoff do
          :ok <- reject_main(to_template),
          {:ok, message} <- validate_required(Map.get(params, :message), "message"),
          {:ok, template} <- Templates.get(to_template),
+         :ok <- reject_sandbox(template, to_template),
          {:ok, ctx_fields} <- extract_context(context) do
       summary = optional_trimmed(Map.get(params, :summary))
       reason = optional_trimmed(Map.get(params, :reason))
@@ -224,6 +225,17 @@ defmodule JidoClaw.Tools.Handoff do
 
   defp reject_main("main"), do: {:error, "Cannot hand off to 'main'; use /reset instead."}
   defp reject_main(_), do: :ok
+
+  # AR-8b: a sandboxed template is composer-private — it may only own a session
+  # through the front-door sketch path. A handoff would make it a session owner
+  # with no `.prototypes/` scope, so refuse it (string reason — see
+  # `error_to_string/1`).
+  defp reject_sandbox(%{sandbox: :prototype}, to_template),
+    do:
+      {:error,
+       "Template '#{to_template}' is composer-private (sandboxed) and cannot own a session."}
+
+  defp reject_sandbox(_template, _to_template), do: :ok
 
   # ---- Best-effort side-effects ----
 

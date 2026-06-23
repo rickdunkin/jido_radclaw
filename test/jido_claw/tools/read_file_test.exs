@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.ReadFile
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
 
   setup do
@@ -229,6 +230,37 @@ defmodule JidoClaw.Tools.ReadFileTest do
 
       assert {:error, %{message: "offset must be non-negative"}} =
                ReadFile.run(%{path: path, offset: -1, limit: -1}, context(dir))
+    end
+  end
+
+  describe "AR-8b sketch jail fails closed (review P2)" do
+    test "the reviewer's repro: a sandbox context with no project_dir cannot read mix.exs" do
+      assert {:error, _} =
+               ReadFile.run(%{path: "mix.exs"}, %{tool_context: %{sandbox: :prototype}})
+    end
+
+    test "a sandbox context with a non-.prototypes project_dir is rejected", %{dir: dir} do
+      File.write!(Path.join(dir, "f.txt"), "hi")
+
+      assert {:error, _} =
+               ReadFile.run(
+                 %{path: Path.join(dir, "f.txt")},
+                 %{tool_context: %{project_dir: dir, sandbox: :prototype}}
+               )
+    end
+
+    test "a valid .prototypes sandbox root still reads jailed", %{dir: dir} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(dir)
+      path = Path.join(proto, "note.txt")
+      File.write!(path, "inside the jail")
+
+      assert {:ok, result} =
+               ReadFile.run(
+                 %{path: path},
+                 %{tool_context: %{project_dir: proto, sandbox: :prototype}}
+               )
+
+      assert result.content =~ "inside the jail"
     end
   end
 

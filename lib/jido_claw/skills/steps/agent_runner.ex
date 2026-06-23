@@ -27,6 +27,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Reasoning.Output
+  alias JidoClaw.VFS.Sandbox
   alias JidoClaw.Workflows.StepResult
 
   @step_timeout_ms 180_000
@@ -51,8 +52,9 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
           {:ok, StepResult.t()} | {:error, binary()}
   def run(template_name, task, step_name, context) do
     with {:ok, template} <- Templates.get(template_name),
+         :ok <- validate_sandbox_scope(template, context),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
-         scope = resolve_scope(context, tag),
+         scope = stamp_sandbox(resolve_scope(context, tag), template),
          visibility = Map.get(template, :forward_context, :public),
          scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
          # resolve_scope/2 omits :agent_template (build/1 nils it); set it so the
@@ -94,6 +96,30 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
     end
   end
+
+  # AR-8b: a `sandbox: :prototype` template MUST run against a real, validated
+  # `.prototypes/<uuid>/` root — never the `resolve_scope/2` `File.cwd!()`
+  # fallback (P1c) and never an inherited real `project_dir` (P2b). Delegate the
+  # realpath/shape/symlink check to the single-sourced validator. Fail closed:
+  # a missing/non-`.prototypes` `project_dir` aborts setup (the `with`'s `else`
+  # maps it to a setup error and no worker starts). A non-sandbox template is
+  # untouched.
+  defp validate_sandbox_scope(%{sandbox: :prototype}, context) do
+    case context[:project_dir] do
+      pd when is_binary(pd) and pd != "" -> Sandbox.validate_root(pd)
+      _ -> {:error, :sandbox_scope_missing}
+    end
+  end
+
+  defp validate_sandbox_scope(_template, _context), do: :ok
+
+  # Stamp the canonical `:sandbox` key from the TEMPLATE policy (not the launch
+  # context), so the capability travels with the worker and can't be dropped by
+  # persistence or forgotten by a caller. `ToolContext.build/1` carries it onto
+  # the worker (it's a canonical key, never policy-strippable). Every template
+  # from `Templates.get/1` is hydrated with a `:sandbox` key, so the single
+  # clause never fails.
+  defp stamp_sandbox(scope, %{sandbox: s}), do: Map.put(scope, :sandbox, s)
 
   # The post-correlation step lifecycle: record the task turn, run the step,
   # record its terminal, and (in `after`) stop the worker. A real supervisor

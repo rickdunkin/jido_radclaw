@@ -34,6 +34,7 @@ defmodule JidoClaw.Tools.EditFile do
   alias JidoClaw.Tools.FilePayloadLimit
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.VFS.Resolver
+  alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
   def run(%{path: path, old_string: old_str, new_string: new_str} = params, context) do
@@ -46,15 +47,12 @@ defmodule JidoClaw.Tools.EditFile do
   end
 
   defp edit_with_context(path, old_str, new_str, enriched) do
-    workspace_id = get_in(enriched, [:tool_context, :workspace_id])
-    project_dir = get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
-    opts = [workspace_id: workspace_id, project_dir: project_dir]
-
     # Same two-layer read cap as read_file: pre-read stat keeps
     # oversized local files off the heap entirely; the unconditional
     # post-read check closes the stat→read race and covers remote/VFS
     # branches.
-    with :ok <- FilePayloadLimit.validate_read(path, opts) do
+    with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])),
+         :ok <- FilePayloadLimit.validate_read(path, opts) do
       case Resolver.read(path, opts) do
         {:ok, content} ->
           with :ok <- FilePayloadLimit.validate_read_content(path, content) do

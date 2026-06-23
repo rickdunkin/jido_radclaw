@@ -20,3 +20,6 @@ erl_crash.dump
 /.reach/
 /.harness/
 /.ex_dna_cache/
+
+# AR-8b sketch path — throwaway prototype sandbox (never committed)
+.prototypes/

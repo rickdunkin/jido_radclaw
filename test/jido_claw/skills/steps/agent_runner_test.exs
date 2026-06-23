@@ -186,6 +186,67 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     end
   end
 
+  describe "run/4 — AR-8b sandbox scope" do
+    setup do
+      pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      on_exit(fn -> Sandbox.stop_owner(pid) end)
+
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "sketch_stub" => %{
+          module: EchoStub,
+          description: "sandboxed sketch stub",
+          model: :fast,
+          max_iterations: 1,
+          sandbox: :prototype
+        }
+      })
+
+      Application.put_env(:jido_claw, :echo_stub_target, self())
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :echo_stub_target)
+      end)
+
+      :ok
+    end
+
+    test "a sandbox template with a nil project_dir is a setup error, no worker" do
+      assert {:error, msg} = AgentRunner.run("sketch_stub", "go", "s", %{})
+      assert msg =~ "setup failed"
+      assert msg =~ "sandbox_scope_missing"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a sandbox template with a non-.prototypes project_dir is a setup error, no worker" do
+      assert {:error, msg} =
+               AgentRunner.run("sketch_stub", "go", "s", %{
+                 tenant: "t",
+                 project_dir: File.cwd!()
+               })
+
+      assert msg =~ "setup failed"
+      assert msg =~ "not_under_prototypes"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a valid .prototypes scope runs and stamps tool_context[:sandbox] == :prototype" do
+      base = Path.join(System.tmp_dir!(), "ar-sbx-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(base)
+      on_exit(fn -> File.rm_rf!(base) end)
+      {:ok, %{dir: proto}} = JidoClaw.VFS.Sandbox.create_prototype_dir(base)
+
+      %{context: base_context} = real_scope_context()
+      context = Map.put(base_context, :project_dir, proto)
+
+      assert {:ok, _} = AgentRunner.run("sketch_stub", "go", "s", context)
+      assert_receive {:echo_stub, :tool_context, tc}, 5_000
+
+      assert tc.sandbox == :prototype
+      assert tc.agent_template == "sketch_stub"
+    end
+  end
+
   describe "run/4 — forward_context policy + child correlation (DB)" do
     setup do
       pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
