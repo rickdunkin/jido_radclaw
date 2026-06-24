@@ -91,6 +91,29 @@ defmodule JidoClaw.VFS.Sandbox do
   def validate_root(_), do: {:error, :invalid_sandbox_root}
 
   @doc """
+  Derive the **real project base** (`<real>`) from a sketch sandbox `project_dir`
+  (`<real>/.prototypes/<uuid>/`) — the root the read-only real-tree tools
+  (AR-8b-2 F3) jail their reads to.
+
+  Single-sources the derivation: runs `validate_root/1` (rejecting any path that
+  is not a real `.prototypes/<uuid>/` root, incl. lexical/symlink escapes), then
+  returns `{:ok, Path.dirname(Path.dirname(expanded))}`. `validate_root/1`
+  guarantees `.prototypes` is not a symlink (lstat on the parent), so the lexical
+  grandparent is the real base — deterministically (review §5). Fails CLOSED:
+  any non-prototype / invalid root surfaces `{:error, reason}`.
+  """
+  @spec real_root(term()) :: {:ok, String.t()} | {:error, term()}
+  def real_root(project_dir) when is_binary(project_dir) and project_dir != "" do
+    expanded = Path.expand(project_dir)
+
+    with :ok <- validate_root(expanded) do
+      {:ok, Path.dirname(Path.dirname(expanded))}
+    end
+  end
+
+  def real_root(_), do: {:error, :invalid_sandbox_root}
+
+  @doc """
   Derive `Resolver` opts (`workspace_id`/`project_dir`/`local_only`) from a
   tool's `tool_context`.
 

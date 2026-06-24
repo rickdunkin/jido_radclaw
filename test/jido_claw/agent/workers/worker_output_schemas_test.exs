@@ -21,6 +21,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     Refactorer,
     Researcher,
     Reviewer,
+    SketchReviewer,
     TestRunner,
     Verifier
   }
@@ -160,6 +161,38 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       assert parsed.overall == :approve
       [finding] = parsed.findings
       assert finding.severity == :info
+    end
+  end
+
+  # AR-8b-2 F1: SketchReviewer reuses the shared `OutputSchema.reviewer_verdict/0`
+  # (single-sourced with Reviewer) — what `DefaultMapper.reviewer_verdict/3`
+  # consumes. Covers both the clean (approve) and findings (request_changes) shapes.
+  describe "SketchReviewer schema (shared OutputSchema.reviewer_verdict/0)" do
+    test "parses a clean approve verdict" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SketchReviewer), %{
+                 "overall" => "approve",
+                 "summary" => "Prototype is logically sound",
+                 "findings" => []
+               })
+
+      assert parsed.overall == :approve
+      assert parsed.findings == []
+    end
+
+    test "parses a request_changes verdict with findings" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SketchReviewer), %{
+                 "overall" => "request_changes",
+                 "summary" => "Edge case unhandled",
+                 "findings" => [
+                   %{"severity" => "error", "description" => "off-by-one in the window"}
+                 ]
+               })
+
+      assert parsed.overall == :request_changes
+      [finding] = parsed.findings
+      assert finding.severity == :error
     end
   end
 end

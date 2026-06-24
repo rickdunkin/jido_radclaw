@@ -133,9 +133,10 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 8 templates" do
-      # 7 general-purpose workers + the AR-8b composer-private `sketch_build`.
-      assert map_size(Templates.list()) == 8
+    test "should contain all 9 templates" do
+      # 7 general-purpose workers + the AR-8b composer-private `sketch_build` +
+      # the AR-8b-2 composer-private `sketch_reviewer`.
+      assert map_size(Templates.list()) == 9
     end
 
     test "should have all expected template names as keys" do
@@ -161,8 +162,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 8 names" do
-      assert Enum.count(Templates.names()) == 8
+    test "should return exactly 9 names" do
+      assert Enum.count(Templates.names()) == 9
     end
 
     test "should include all 7 expected template names" do
@@ -273,6 +274,37 @@ defmodule JidoClaw.Agent.TemplatesTest do
     test "require_approval/1 returns [] for an unknown template (e.g. main)" do
       assert Templates.require_approval("main") == []
       assert Templates.require_approval("nonexistent") == []
+    end
+  end
+
+  # The composer-private sketch templates are deliberately NOT in @valid_names
+  # (the 7 public workers looped above asserting forward_context: :public): both
+  # are forward_context: :none + sandbox: :prototype, so they are pinned here.
+  describe "AR-8b / AR-8b-2 composer-private sketch templates" do
+    test "sketch_build is forward_context: :none, sandbox: :prototype" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.SketchBuild,
+                forward_context: :none,
+                sandbox: :prototype
+              }} =
+               Templates.get("sketch_build")
+    end
+
+    test "sketch_reviewer is forward_context: :none, sandbox: :prototype" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.SketchReviewer,
+                forward_context: :none,
+                sandbox: :prototype
+              }} = Templates.get("sketch_reviewer")
+    end
+
+    test "exists?/1 + names/0 include both sketch templates" do
+      assert Templates.exists?("sketch_build")
+      assert Templates.exists?("sketch_reviewer")
+      assert "sketch_build" in Templates.names()
+      assert "sketch_reviewer" in Templates.names()
     end
   end
 

@@ -22,28 +22,45 @@ defmodule JidoClaw.Tools.SearchCode do
   alias JidoClaw.VFS.Sandbox
 
   @impl Jido.Action
-  def run(%{pattern: pattern} = params, context) do
+  def run(%{pattern: _pattern} = params, context) do
     MCPScope.wrap(:search_code, params, context, fn enriched ->
-      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])),
-           {:ok, regex} <- compile_pattern(pattern),
-           {:ok, glob} <- compile_glob(Map.get(params, :glob)),
-           {:ok, lines} <- search_path(Map.get(params, :path, "."), regex, glob, opts) do
-        max_results = Map.get(params, :max_results, 50)
-        truncated = Enum.take(lines, max_results)
-        total = length(lines)
-        content = Enum.join(truncated, "\n")
-
-        note =
-          if total > max_results,
-            do: "\n(#{total - max_results} more matches truncated)",
-            else: ""
-
-        {:ok, %{matches: content <> note, total_matches: total}}
-      else
-        {:error, reason} when is_binary(reason) -> {:error, reason}
-        {:error, reason} -> {:error, inspect(reason)}
+      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])) do
+        search(params, opts)
       end
     end)
+  end
+
+  @doc """
+  The pure recursive search core, shared by `search_code` (sandbox/cwd opts) and
+  `search_real_code` (real-tree opts, AR-8b-2 F3). Takes already-derived
+  `Resolver` opts so the opts source (and the owning tool's own
+  `MCPScope.wrap`/approval/redaction pipeline) stays with each surface. Reads via
+  `Resolver.read/2` WITHOUT a `FilePayloadLimit` cap, exactly as `search_code`
+  does today (adding a cap would change existing behavior — out of scope), so
+  `search_real_code` is uncapped, matching its source. Returns the `search_code`
+  result shape or `{:error, _}`.
+  """
+  @spec search(%{required(:pattern) => String.t(), optional(atom()) => term()}, keyword()) ::
+          {:ok, %{matches: String.t(), total_matches: non_neg_integer()}} | {:error, term()}
+  def search(%{pattern: pattern} = params, opts) do
+    with {:ok, regex} <- compile_pattern(pattern),
+         {:ok, glob} <- compile_glob(Map.get(params, :glob)),
+         {:ok, lines} <- search_path(Map.get(params, :path, "."), regex, glob, opts) do
+      max_results = Map.get(params, :max_results, 50)
+      truncated = Enum.take(lines, max_results)
+      total = length(lines)
+      content = Enum.join(truncated, "\n")
+
+      note =
+        if total > max_results,
+          do: "\n(#{total - max_results} more matches truncated)",
+          else: ""
+
+      {:ok, %{matches: content <> note, total_matches: total}}
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, inspect(reason)}
+    end
   end
 
   defp compile_pattern(pattern) do

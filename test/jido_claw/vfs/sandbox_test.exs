@@ -116,6 +116,39 @@ defmodule JidoClaw.VFS.SandboxTest do
     end
   end
 
+  describe "real_root/1 (AR-8b-2 F3)" do
+    test "derives the real base (grandparent) from a valid prototype dir", %{base: base} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(base)
+
+      assert {:ok, real} = Sandbox.real_root(proto)
+      assert real == Path.expand(base)
+      assert Path.dirname(Path.dirname(proto)) == real
+    end
+
+    test "fails closed on a non-prototype / nil / empty path", %{base: base} do
+      # `base` itself is not a `.prototypes/<uuid>/` root.
+      assert {:error, _} = Sandbox.real_root(base)
+      assert {:error, :invalid_sandbox_root} = Sandbox.real_root(nil)
+      assert {:error, :invalid_sandbox_root} = Sandbox.real_root("")
+      assert {:error, :invalid_sandbox_root} = Sandbox.real_root(123)
+    end
+
+    test "fails closed on a symlink-escaping .prototypes", %{base: base} do
+      elsewhere =
+        Path.join(System.tmp_dir!(), "rr-elsewhere-#{System.unique_integer([:positive])}")
+
+      real_protos = Path.join(elsewhere, ".prototypes")
+      uuid = Ash.UUID.generate()
+      File.mkdir_p!(Path.join(real_protos, uuid))
+      on_exit(fn -> File.rm_rf!(elsewhere) end)
+
+      File.ln_s!(real_protos, Path.join(base, ".prototypes"))
+      candidate = Path.join([base, ".prototypes", uuid])
+
+      assert {:error, :symlinked_prototypes} = Sandbox.real_root(candidate)
+    end
+  end
+
   describe "resolver_opts/1" do
     test "non-sandbox context defaults project_dir to cwd, local_only false" do
       assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: nil})

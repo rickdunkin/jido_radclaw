@@ -1,5 +1,7 @@
 defmodule JidoClaw.Agent.Workers.Reviewer do
   @moduledoc false
+  alias JidoClaw.Agent.Workers.OutputSchema
+
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_reviewer",
     description:
@@ -17,21 +19,7 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
     tool_timeout_ms: 30_000,
     compaction: [mode: :auto],
     output: %{
-      schema:
-        Zoi.object(%{
-          overall: Zoi.enum([:approve, :request_changes, :comment]),
-          summary: Zoi.string(),
-          findings:
-            Zoi.array(
-              Zoi.object(
-                %{
-                  severity: Zoi.enum(info: "info", warning: "warning", error: "error"),
-                  description: Zoi.string()
-                },
-                coerce: true
-              )
-            )
-        }),
+      schema: OutputSchema.reviewer_verdict(),
       retries: 1,
       on_validation_error: :repair
     }

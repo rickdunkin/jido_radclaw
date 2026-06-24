@@ -39,22 +39,30 @@ defmodule JidoClaw.Tools.ListDirectory do
   @impl Jido.Action
   def run(params, context) do
     MCPScope.wrap(:list_directory, params, context, fn enriched ->
-      do_list(params, enriched)
+      case Sandbox.resolver_opts(get_in(enriched, [:tool_context])) do
+        {:ok, ws_opts} -> list(params, ws_opts)
+        {:error, message} -> {:error, message}
+      end
     end)
   end
 
-  defp do_list(params, context) do
+  @doc """
+  The pure listing core, shared by `list_directory` (sandbox/cwd opts) and
+  `list_real_directory` (real-tree opts, AR-8b-2 F3). Takes already-derived
+  `Resolver` opts so the opts source (and the owning tool's own
+  `MCPScope.wrap`/approval/redaction pipeline) stays with each surface. Its
+  remote branch is already gated by `local_only`, so a real-tree caller (which
+  passes `local_only: true`) is jailed to the local real tree. Returns the
+  `list_directory` result shape or `{:error, _}`.
+  """
+  @spec list(map(), keyword()) ::
+          {:ok, %{path: String.t(), entries: String.t(), total: non_neg_integer()}}
+          | {:error, term()}
+  def list(params, ws_opts) do
     path = Map.get(params, :path, ".")
     max_results = Map.get(params, :max_results, 200)
-
-    case Sandbox.resolver_opts(get_in(context, [:tool_context])) do
-      {:ok, ws_opts} ->
-        entries = fetch_entries(path, params, ws_opts)
-        format_entries(entries, path, max_results)
-
-      {:error, message} ->
-        {:error, message}
-    end
+    entries = fetch_entries(path, params, ws_opts)
+    format_entries(entries, path, max_results)
   end
 
   # The remote branch calls `Resolver.ls(path)` with no opts, bypassing the

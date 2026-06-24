@@ -37,40 +37,50 @@ defmodule JidoClaw.Tools.ReadFile do
 
   @impl Jido.Action
   def run(%{path: path} = params, context) do
-    offset = Map.get(params, :offset, 0)
-    limit = Map.get(params, :limit, 2000)
-
-    cond do
-      offset < 0 -> {:error, "offset must be non-negative"}
-      limit < 0 -> {:error, "limit must be non-negative"}
-      true -> do_read(path, params, context, offset, limit)
-    end
-  end
-
-  defp do_read(path, params, context, offset, limit) do
     MCPScope.wrap(:read_file, params, context, fn enriched ->
-      # Two-layer read cap (the write cap, 5 MB): the pre-read stat
-      # refuses oversized local files before they reach the heap; the
-      # unconditional post-read check closes the stat→read race and
-      # covers remote/VFS branches (materialized before the check —
-      # bounding the fetch needs backend streaming).
-      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])),
-           :ok <- FilePayloadLimit.validate_read(path, opts),
-           {:ok, content} <- read_with_content_cap(path, opts) do
-        lines = String.split(content, "\n")
-        total = length(lines)
-
-        numbered =
-          lines
-          |> Enum.with_index(1)
-          |> Enum.slice(offset, limit)
-          |> Enum.map_join("\n", fn {line, n} ->
-            "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
-          end)
-
-        {:ok, %{path: path, content: numbered, total_lines: total}}
+      with {:ok, opts} <- Sandbox.resolver_opts(get_in(enriched, [:tool_context])) do
+        read_numbered(path, opts, Map.get(params, :offset, 0), Map.get(params, :limit, 2000))
       end
     end)
+  end
+
+  @doc """
+  The pure read core, shared by `read_file` (sandbox/cwd opts) and
+  `read_real_file` (real-tree opts, AR-8b-2 F3): bound-check → `FilePayloadLimit`
+  cap → read → number lines. Takes already-derived `Resolver` opts so the opts
+  source (and the owning tool's own `MCPScope.wrap`/approval/redaction pipeline)
+  stays with each surface. Returns the `read_file` result shape or `{:error, _}`.
+  """
+  @spec read_numbered(String.t(), keyword(), integer(), integer()) ::
+          {:ok, %{path: String.t(), content: String.t(), total_lines: non_neg_integer()}}
+          | {:error, term()}
+  def read_numbered(_path, _opts, offset, _limit) when offset < 0,
+    do: {:error, "offset must be non-negative"}
+
+  def read_numbered(_path, _opts, _offset, limit) when limit < 0,
+    do: {:error, "limit must be non-negative"}
+
+  def read_numbered(path, opts, offset, limit) do
+    # Two-layer read cap (the write cap, 5 MB): the pre-read stat refuses
+    # oversized local files before they reach the heap; the unconditional
+    # post-read check closes the stat→read race and covers remote/VFS branches
+    # (materialized before the check — bounding the fetch needs backend
+    # streaming).
+    with :ok <- FilePayloadLimit.validate_read(path, opts),
+         {:ok, content} <- read_with_content_cap(path, opts) do
+      lines = String.split(content, "\n")
+      total = length(lines)
+
+      numbered =
+        lines
+        |> Enum.with_index(1)
+        |> Enum.slice(offset, limit)
+        |> Enum.map_join("\n", fn {line, n} ->
+          "#{String.pad_leading(Integer.to_string(n), 4)} │ #{line}"
+        end)
+
+      {:ok, %{path: path, content: numbered, total_lines: total}}
+    end
   end
 
   defp read_with_content_cap(path, opts) do

@@ -80,6 +80,52 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     )
   end
 
+  # AR-8b-2 F1 sketch-path helpers. Stub `sketch_build` + `sketch_reviewer` (plain
+  # StubWorker templates — no `sandbox` enforcement in the loop test, so they run
+  # without a real `.prototypes/` root) and serve the supplied reviewer verdict.
+  defp put_sketch_env(_ctx, reviewer_output) do
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      Map.merge(
+        TestFixtures.phase1_template_override(StubWorker),
+        %{
+          "sketch_build" => %{
+            module: StubWorker,
+            description: "sketch stub",
+            model: :fast,
+            max_iterations: 1
+          },
+          "sketch_reviewer" => %{
+            module: StubWorker,
+            description: "sketch review stub",
+            model: :fast,
+            max_iterations: 1
+          }
+        }
+      )
+    )
+
+    Application.put_env(:jido_claw, :route_composer_stub_outputs, %{
+      "sketch_build" => %{"prototype" => "PROTO: a tracer-bullet rate limiter"},
+      "sketch_reviewer" => reviewer_output
+    })
+  end
+
+  defp run_sketch(ctx) do
+    RouteComposer.run_sync(
+      catalog: Catalog.all(),
+      live: ["request-received", "sketch"],
+      artifacts: %{"request" => %{"seed" => "sketch a rate limiter"}},
+      ran: ["triage"],
+      tenant: ctx.tenant,
+      actor: actor_for(ctx.tenant),
+      context: ctx.context,
+      max_waves: 5,
+      timeout: 30_000
+    )
+  end
+
   # AR-2 Phase 3b — the Option-A front-door seed (`triage ∈ ran`) on the gate-free
   # triage-seeded fixture catalog.
   defp run_triage_seeded(ctx, opts \\ []) do
@@ -130,43 +176,39 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     assert genesis.payload["stages"] == ["triage"]
   end
 
-  test "AR-8b sketch path: triage ∈ ran, sketch-build runs and converges trivially", ctx do
-    # Stub `sketch_build` (a plain StubWorker template — no `sandbox` enforcement
-    # in the loop test, so it runs without a real `.prototypes/` root).
-    Application.put_env(
-      :jido_claw,
-      :agent_templates_override,
-      Map.put(
-        TestFixtures.phase1_template_override(StubWorker),
-        "sketch_build",
-        %{module: StubWorker, description: "sketch stub", model: :fast, max_iterations: 1}
-      )
-    )
+  test "AR-8b-2 F1 sketch path: a clean reviewer converges with clean:correctness", ctx do
+    # AR-8b-2 F1: the sketch path is now lens-gated. sketch-build (wave 1) →
+    # sketch-review (wave 2). A clean correctness verdict converges the run.
+    put_sketch_env(ctx, TestFixtures.phase1_clean_reviewer())
 
-    # No `signals` field → DefaultMapper emits []; the route converges the moment
-    # sketch-build finishes (nothing new is triggered).
-    Application.put_env(:jido_claw, :route_composer_stub_outputs, %{
-      "sketch_build" => %{"prototype" => "PROTO: a tracer-bullet rate limiter"}
-    })
-
-    assert {:ok, summary} =
-             RouteComposer.run_sync(
-               catalog: Catalog.all(),
-               live: ["request-received", "sketch"],
-               artifacts: %{"request" => %{"seed" => "sketch a rate limiter"}},
-               ran: ["triage"],
-               tenant: ctx.tenant,
-               actor: actor_for(ctx.tenant),
-               context: ctx.context,
-               max_waves: 5,
-               timeout: 30_000
-             )
+    assert {:ok, summary} = run_sketch(ctx)
 
     assert summary.terminal == :converged
-    assert summary.ran == MapSet.new(["triage", "sketch-build"])
-    # triage is seeded-as-run; never dispatched.
+    assert summary.ran == MapSet.new(["triage", "sketch-build", "sketch-review"])
+    assert MapSet.member?(summary.final_live, "clean:correctness")
+    refute MapSet.member?(summary.final_live, "findings:correctness")
+
+    # triage is seeded-as-run; never dispatched. Two sequential dispatches:
+    # sketch-build, then sketch-review (ordered by the prototype data edge).
     refute Enum.any?(summary.history, &("triage" in &1.stages))
-    assert Enum.any?(summary.history, &(&1.stages == ["sketch-build"]))
+    assert Enum.map(summary.history, & &1.stages) == [["sketch-build"], ["sketch-review"]]
+  end
+
+  test "AR-8b-2 F1 sketch path: a request_changes reviewer ends :not_converged with findings",
+       ctx do
+    put_sketch_env(ctx, TestFixtures.phase1_findings_reviewer())
+
+    assert {:ok, summary} = run_sketch(ctx)
+
+    # report-only: no fixer on the sketch path, so findings surface and the run
+    # ends :not_converged (not a spin) with every stage having run once.
+    assert summary.terminal == :not_converged
+    assert summary.ran == MapSet.new(["triage", "sketch-build", "sketch-review"])
+    assert MapSet.member?(summary.final_live, "findings:correctness")
+    refute MapSet.member?(summary.final_live, "clean:correctness")
+    # the findings artifact is present, produced by sketch-review.
+    assert get_in(summary.artifacts, ["findings", "sketch-review"])
+    assert Enum.map(summary.history, & &1.stages) == [["sketch-build"], ["sketch-review"]]
   end
 
   test "built-in catalog: the triage seed reconciles, planner runs, then the plan-gate PARKS",

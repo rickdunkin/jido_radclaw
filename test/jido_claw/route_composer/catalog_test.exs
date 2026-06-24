@@ -45,6 +45,21 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     assert "scope-shift" in stage.publishes
   end
 
+  test "the AR-8b-2 sketch-review stage is pinned" do
+    stage = Catalog.get("sketch-review")
+    assert %Stage{unit: {:worker_template, "sketch_reviewer"}} = stage
+    assert stage.lens == "correctness"
+    assert stage.routes == ["sketch"]
+    # Subscribes the SEED signal (no stage publishes `prototype`); depends on the
+    # `prototype` artifact via input.required (produced by `sketch-build`).
+    assert stage.subscribes == ["request-received"]
+    assert stage.input == %{required: ["prototype"], optional: []}
+    # emit :default + lens declares BOTH verdict families + scope-shift.
+    assert "findings:correctness" in stage.publishes
+    assert "clean:correctness" in stage.publishes
+    assert "scope-shift" in stage.publishes
+  end
+
   describe "to_map/from_map serialization (Phase 2d — durable catalog)" do
     test "round-trips the built-in catalog (incl. the :seed + :gate units)" do
       assert Catalog.from_map(Catalog.to_map(Catalog.all())) == Catalog.all()

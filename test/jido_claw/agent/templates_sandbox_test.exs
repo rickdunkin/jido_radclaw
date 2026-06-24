@@ -13,6 +13,11 @@ defmodule JidoClaw.Agent.TemplatesSandboxTest do
       assert Templates.sandbox("coder") == :none
     end
 
+    test "the AR-8b-2 sketch_reviewer template is sandboxed too" do
+      assert Templates.sandbox("sketch_reviewer") == :prototype
+      refute Templates.external_tools?("sketch_reviewer")
+    end
+
     test "external_tools?/1 is false only for a sandboxed template" do
       refute Templates.external_tools?("sketch_build")
       assert Templates.external_tools?("coder")

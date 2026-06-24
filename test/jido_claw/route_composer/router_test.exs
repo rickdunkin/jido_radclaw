@@ -395,20 +395,36 @@ defmodule JidoClaw.RouteComposer.RouterTest do
       refute Map.has_key?(res.held, "implementer")
     end
 
-    test "GAP-5 the AR-8b sketch path composes to exactly [sketch-build]" do
+    test "GAP-5 the AR-8b sketch path composes to [sketch-build, sketch-review] across two waves" do
       res =
         compose(Catalog.all(), ["request-received", "sketch"],
           available: ["request"],
           ran: ["triage"]
         )
 
-      assert res.route == ["sketch-build"]
+      # AR-8b-2 F1: `sketch-review` is NOT dropped in wave 1 — `drop_unsatisfiable/3`
+      # counts `prototype` as produced by in-route `sketch-build`, so the data graph
+      # orders it producer→consumer into wave 2.
+      assert res.route == ["sketch-build", "sketch-review"]
+      assert res.waves == [["sketch-build"], ["sketch-review"]]
+      assert res.dropped == %{}
 
       # The code/system pipeline stays out of a sketch route.
       for stage <- ~w(planner implementer test-author fixer quality-reviewer
                       security-reviewer correctness-reviewer architecture-reviewer) do
         refute stage in res.route
       end
+    end
+
+    test "GAP-5 the AR-8b-2 sketch-review stage is off-path on a code run" do
+      res =
+        compose(Catalog.all(), ["request-received", "code", "code-written"],
+          available: ["diff"],
+          ran: ["triage"]
+        )
+
+      refute "sketch-review" in res.route
+      refute "sketch-build" in res.route
     end
   end
 

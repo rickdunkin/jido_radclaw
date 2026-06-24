@@ -98,6 +98,16 @@ defmodule JidoClaw.Agent.Templates do
       # root, composer-private instantiation). No reason to widen its scope.
       forward_context: :none,
       sandbox: :prototype
+    },
+    "sketch_reviewer" => %{
+      module: JidoClaw.Agent.Workers.SketchReviewer,
+      description: "Reviews a throwaway prototype in the sandbox (read-only, file tools)",
+      model: :fast,
+      # AR-8b-2 F1: the light-lens correctness reviewer. Same `:prototype`
+      # capability boundary as `sketch_build` (runs jailed to the same
+      # `.prototypes/<uuid>/` root), composer-private (`forward_context: :none`).
+      forward_context: :none,
+      sandbox: :prototype
     }
   }
 

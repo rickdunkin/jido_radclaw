@@ -1,6 +1,7 @@
 defmodule JidoClaw.RouteComposer.LoopTest do
   use ExUnit.Case, async: true
 
+  alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.Loop
   alias JidoClaw.RouteComposer.TestFixtures
 
@@ -101,6 +102,36 @@ defmodule JidoClaw.RouteComposer.LoopTest do
 
     test "lenses_clean?/3 is false when a ran lens has no clean signal", %{catalog: catalog} do
       refute Loop.lenses_clean?(catalog, MapSet.new(["security-reviewer"]), MapSet.new())
+    end
+  end
+
+  describe "AR-8b-2 F1 sketch-review lens gating (Catalog.all)" do
+    setup do
+      %{catalog: Catalog.all()}
+    end
+
+    test "converged: a ran sketch-review with clean:correctness live", %{catalog: catalog} do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["sketch-build", "sketch-review"]),
+        live: MapSet.new(["clean:correctness"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :converged
+      assert Loop.lenses_clean?(catalog, state.ran, state.live)
+    end
+
+    test "not_converged: a ran sketch-review with findings:correctness (no clean)", %{
+      catalog: catalog
+    } do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["sketch-build", "sketch-review"]),
+        live: MapSet.new(["findings:correctness"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :not_converged
+      refute Loop.lenses_clean?(catalog, state.ran, state.live)
     end
   end
 end

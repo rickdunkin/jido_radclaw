@@ -191,6 +191,29 @@ defmodule JidoClaw.RouteComposer.Catalog do
       input: %{required: ["request"], optional: []},
       output: ["prototype"],
       publishes: ["scope-shift"]
+    },
+    # AR-8b-2 F1: the light-lens correctness reviewer on the sketch path. It
+    # subscribes the SEED signal `request-received` (no stage publishes
+    # `prototype`, which is an artifact, not a signal — `CatalogValidator`
+    # invariant 3 would reject a literal `subscribes: ["prototype"]`) and depends
+    # on the `prototype` artifact via `input.required` (invariant 4: `prototype`
+    # is in the output union, produced by `sketch-build`). The data graph orders
+    # it producer→consumer after `sketch-build` (wave 2). Its `lens` flips the
+    # sketch path from trivially-clean to gated: approve + no findings →
+    # `clean:correctness` → `:converged`; request_changes → `findings:correctness`
+    # → `:not_converged` (report-only — there is no fixer on the sketch path).
+    "sketch-review" => %Stage{
+      name: "sketch-review",
+      unit: {:worker_template, "sketch_reviewer"},
+      lens: "correctness",
+      task:
+        "Review the sandbox prototype for logic and edge-case correctness; " <>
+          "flag findings, else emit clean:correctness.",
+      routes: ["sketch"],
+      subscribes: ["request-received"],
+      input: %{required: ["prototype"], optional: []},
+      output: ["findings"],
+      publishes: ["findings:correctness", "clean:correctness", "scope-shift"]
     }
   }
 

@@ -5,12 +5,14 @@ defmodule JidoClaw.Agent.Workers.SketchBuild do
   # AR-8b sketch worker. File tools ONLY — no `RunCommand`/git, which shell to
   # the host and bypass the VFS jail. Its `sandbox: :prototype` template policy
   # (registered in `JidoClaw.Agent.Templates`) is the real capability boundary;
-  # this tool list is the corroborating in-worker restriction.
+  # this tool list is the corroborating in-worker restriction. The three
+  # read-real tools (AR-8b-2 F3) let it be *informed* by the real project tree
+  # (read-only) without being able to mutate it — every write still lands in the
+  # `.prototypes/<id>/` sandbox.
   #
   # The output schema deliberately carries NO `signals` field: its absence makes
   # `RouteComposer.Emit.DefaultMapper.explicit_signals/1` emit `[]`, so the
-  # sketch-build stage publishes no new signals and the composer route converges
-  # trivially the moment the worker finishes.
+  # sketch-build stage publishes no new signals of its own.
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_sketch_build",
     description:
@@ -19,7 +21,10 @@ defmodule JidoClaw.Agent.Workers.SketchBuild do
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
       JidoClaw.Tools.ListDirectory,
-      JidoClaw.Tools.SearchCode
+      JidoClaw.Tools.SearchCode,
+      JidoClaw.Tools.ReadRealFile,
+      JidoClaw.Tools.SearchRealCode,
+      JidoClaw.Tools.ListRealDirectory
     ],
     model: :fast,
     max_iterations: 15,

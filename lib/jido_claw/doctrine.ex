@@ -32,8 +32,10 @@ defmodule JidoClaw.Doctrine do
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
-  # empty doctrine; mirrors ToolApproval.default_require/0). The 5 producing workers
-  # get :artifacts; the two read-only judges get the :reviewer_min placeholder.
+  # empty doctrine; mirrors ToolApproval.default_require/0). The producing workers
+  # get :artifacts; the read-only judges get the :reviewer_min placeholder
+  # (`sketch_reviewer` is a read-only judge, so it reuses :reviewer_min like
+  # `reviewer`/`verifier` — no new priv file).
   @template_slices %{
     "coder" => [:base, :artifacts],
     "refactorer" => [:base, :artifacts],
@@ -42,7 +44,8 @@ defmodule JidoClaw.Doctrine do
     "test_runner" => [:base, :artifacts],
     "reviewer" => [:base, :reviewer_min],
     "verifier" => [:base, :reviewer_min],
-    "sketch_build" => [:base, :artifacts]
+    "sketch_build" => [:base, :artifacts],
+    "sketch_reviewer" => [:base, :reviewer_min]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

@@ -42,6 +42,14 @@ defmodule JidoClaw.DoctrineTest do
       refute doctrine =~ "Runtime artifacts"
     end
 
+    test "the AR-8b-2 sketch_reviewer is a read-only judge (base + reviewer-min)" do
+      doctrine = Doctrine.for_template("sketch_reviewer")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Review discipline"
+      refute doctrine =~ "Runtime artifacts"
+    end
+
     test "\"main\" maps to no doctrine (it uses Prompt — doctrine never double-applies)" do
       assert Doctrine.for_template("main") == ""
     end
