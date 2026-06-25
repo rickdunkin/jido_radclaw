@@ -17,6 +17,7 @@ defmodule JidoClaw.Tools.SendToAgent do
 
   require Logger
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Error
   alias JidoClaw.Tools.SwarmScope
@@ -168,28 +169,20 @@ defmodule JidoClaw.Tools.SendToAgent do
 
   defp template_for_agent(agent_id, entry) do
     case entry do
+      # AR-8b / AR-8b-2 F2 / AR-8c: a composer-private template (sandboxed OR the
+      # explicit AR-8c `system_*` flag) must never take a follow-up turn via the
+      # LLM-exposed swarm tool (mirrors spawn_agent). Resolve through the same
+      # `templates()` provider that runs the turn, then gate on that RESOLVED map
+      # via `composer_private_template?/1` — re-resolving the name against the
+      # canonical registry would let an overridden `:agent_templates` provider
+      # slip a private template past the guard (AR-8c review fix).
       %{template: template_name} when is_binary(template_name) ->
-        case templates().get(template_name) do
-          # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`)
-          # is composer-private — refuse a follow-up turn to it via the
-          # LLM-exposed swarm tool (mirrors spawn_agent).
-          {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
+        with {:ok, template} <- resolve_template(agent_id, template_name) do
+          if Templates.composer_private_template?(template) do
             {:error, composer_private_error(template_name)}
-
-          {:ok, template} ->
+          else
             {:ok, template}
-
-          {:error, reason} ->
-            {:error,
-             Error.execution_error(
-               "Template '#{template_name}' for agent '#{agent_id}' is unavailable.",
-               phase: :template_lookup,
-               details: %{
-                 template: template_name,
-                 agent_id: agent_id,
-                 reason: inspect(reason)
-               }
-             )}
+          end
         end
 
       other ->
@@ -201,13 +194,32 @@ defmodule JidoClaw.Tools.SendToAgent do
     end
   end
 
+  defp resolve_template(agent_id, template_name) do
+    case templates().get(template_name) do
+      {:ok, template} ->
+        {:ok, template}
+
+      {:error, reason} ->
+        {:error,
+         Error.execution_error(
+           "Template '#{template_name}' for agent '#{agent_id}' is unavailable.",
+           phase: :template_lookup,
+           details: %{
+             template: template_name,
+             agent_id: agent_id,
+             reason: inspect(reason)
+           }
+         )}
+    end
+  end
+
   # Details intentionally {reason, template} (not adding agent_id) — the
   # {agent_id, reason, template} 3-key shape is already used twice elsewhere and
   # a third occurrence trips the reach fixed_shape_map smell. The message names
   # the template; agent_id is not load-bearing here.
   defp composer_private_error(template_name) do
     Error.execution_error(
-      "Template '#{template_name}' is composer-private (sandboxed); follow-ups are not allowed.",
+      "Template '#{template_name}' is composer-private; follow-ups are not allowed.",
       phase: :template_lookup,
       details: %{reason: :composer_private, template: template_name}
     )
@@ -226,7 +238,7 @@ defmodule JidoClaw.Tools.SendToAgent do
   end
 
   defp templates do
-    Application.get_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+    Application.get_env(:jido_claw, :agent_templates, Templates)
   end
 
   # Kept apart from the sibling Application.get_env/3 seams above: three

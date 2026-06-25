@@ -24,6 +24,8 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     SketchBuild,
     SketchBuildExec,
     SketchReviewer,
+    SystemExecutor,
+    SystemVerifier,
     TestRunner,
     Verifier
   }
@@ -228,6 +230,69 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       tools = tools_for(SketchBuild)
       refute JidoClaw.Tools.RunCommand in tools
       refute JidoClaw.Tools.FetchOutput in tools
+    end
+  end
+
+  # AR-8c: SystemExecutor is coder-shaped (status/summary/files_changed/notes +
+  # artifacts, NO `signals` field — the verifier is ordered by the `system-change`
+  # data edge) but mutates the REAL machine via `RunCommand`.
+  describe "SystemExecutor schema + tool list" do
+    test "parses a coder-shaped result" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SystemExecutor), %{
+                 "status" => "completed",
+                 "summary" => "Updated the nginx config and reloaded the service",
+                 "files_changed" => ["/etc/nginx/nginx.conf"],
+                 "notes" => "reloaded with exit 0",
+                 "artifacts" => %{"files" => "/etc/nginx/nginx.conf"}
+               })
+
+      assert parsed.status == :completed
+      assert parsed.files_changed == ["/etc/nginx/nginx.conf"]
+      assert is_map(parsed.artifacts)
+    end
+
+    test "its tool list includes RunCommand (it runs CLI tooling on the machine)" do
+      assert JidoClaw.Tools.RunCommand in tools_for(SystemExecutor)
+    end
+  end
+
+  # AR-8c: SystemVerifier is reviewer-shaped (`OutputSchema.reviewer_verdict/0`, so
+  # the `lens: "system"` stage derives clean:system / findings:system with no mapper
+  # change) but carries `RunCommand` so it inspects the real machine.
+  describe "SystemVerifier schema + tool list (shared reviewer_verdict/0)" do
+    test "parses a clean approve verdict" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SystemVerifier), %{
+                 "overall" => "approve",
+                 "summary" => "Config is present and the service reloaded cleanly",
+                 "findings" => []
+               })
+
+      assert parsed.overall == :approve
+      assert parsed.findings == []
+    end
+
+    test "parses a request_changes verdict with findings" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SystemVerifier), %{
+                 "overall" => "request_changes",
+                 "summary" => "The change did not take",
+                 "findings" => [
+                   %{
+                     "severity" => "error",
+                     "description" => "service is still running the old config"
+                   }
+                 ]
+               })
+
+      assert parsed.overall == :request_changes
+      [finding] = parsed.findings
+      assert finding.severity == :error
+    end
+
+    test "its tool list includes RunCommand (it re-checks state on the machine)" do
+      assert JidoClaw.Tools.RunCommand in tools_for(SystemVerifier)
     end
   end
 end

@@ -74,6 +74,23 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     end
   end
 
+  # A provider that resolves the canonically-PUBLIC "coder" name to a
+  # composer-private template — the AR-8c divergence the resolved-map guard must
+  # catch (the name-based guard reads canonical "coder" as public, so it would
+  # spawn). Carries :description so the *pre-fix* spawn-success path doesn't
+  # KeyError before the receive-and-kill below can prove (and clean up) the leak.
+  defmodule DivergentTemplates do
+    @spec get(String.t()) :: {:ok, map()}
+    def get("coder") do
+      {:ok,
+       %{
+         module: JidoClaw.Tools.SpawnAgentTest.FakeWorker,
+         description: "divergent private coder",
+         composer_private: true
+       }}
+    end
+  end
+
   defmodule FakeWorker do
     @spec ask_sync(pid(), String.t(), keyword()) :: :ok
     def ask_sync(pid, task, opts) do
@@ -202,6 +219,58 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert wire.details.template == "sketch_build_exec"
 
     refute_receive {:start_agent, _opts, _pid}
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+  end
+
+  # AR-8c: the system workers are `sandbox: :none` (they run on the real
+  # machine) but composer-private via the explicit flag — the LLM swarm tool
+  # must still refuse them, so the safety gate cannot be bypassed.
+  for template <- ~w[system_executor system_verifier] do
+    test "refuses to spawn the composer-private #{template} template (AR-8c, :none + flag)" do
+      Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+      Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
+      Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+      Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
+
+      assert {:error, wire} = SpawnAgent.run(%{template: unquote(template), task: "x"}, ctx())
+      assert wire.details.reason == :composer_private
+      assert wire.details.template == unquote(template)
+
+      refute_receive {:start_agent, _opts, _pid}
+      assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+    end
+  end
+
+  test "refuses a spawn when a divergent provider resolves a public name to a private template (AR-8c review fix)" do
+    # The bypass AR-8c's review fix closes: :agent_templates points at a provider
+    # that resolves canonically-PUBLIC "coder" to a composer-private template. The
+    # name-based guard reads canonical "coder" (public) and would spawn; the
+    # resolved-map guard reads what the provider actually returned (private) and
+    # refuses — guard and launch now read the identical object, so they can't diverge.
+    Application.put_env(:jido_claw, :agent_templates, DivergentTemplates)
+    Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
+    Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
+
+    result = SpawnAgent.run(%{template: "coder", task: "x"}, ctx())
+
+    # Pre-fix the name-based guard passes "coder" and FakeRuntime spawns a
+    # Process.sleep(:infinity) pid. Receive-and-kill (not a bare refute_receive)
+    # so a pre-fix run cleans up the pid it just proved was wrongly spawned rather
+    # than leaking it. Post-fix the resolved-map guard fires before start_subagent,
+    # so nothing arrives and the after-clause passes cleanly.
+    receive do
+      {:start_agent, _opts, pid} ->
+        Process.exit(pid, :kill)
+        flunk("composer-private template was spawned despite the resolved-map guard")
+    after
+      200 -> :ok
+    end
+
+    assert {:error, wire} = result
+    assert wire.code == :execution_error
+    assert wire.details.reason == :composer_private
+    assert wire.details.template == "coder"
     assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
   end
 

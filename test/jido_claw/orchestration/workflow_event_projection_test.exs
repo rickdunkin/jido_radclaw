@@ -44,8 +44,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
       end
     end
 
-    test "all seven route terminals are status-authority kinds" do
-      for kind <- [:route_converged | @failed_kinds] ++ @cancelled_kinds do
+    test "all route terminals (incl. AR-8c verify_failed) are status-authority kinds" do
+      for kind <- [:route_converged, :route_verify_failed | @failed_kinds] ++ @cancelled_kinds do
         assert Projection.status_authority?(kind), "#{kind} must be status-authority"
       end
 
@@ -53,6 +53,16 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
       # :running across a wave.
       for kind <- [:route_composed, :wave_started, :wave_completed, :signals_published] do
         refute Projection.status_authority?(kind)
+      end
+    end
+
+    test "AR-8c route_verify_failed: any non-terminal -> :failed, terminal -> :illegal" do
+      for status <- [:pending, :running, :awaiting_approval] do
+        assert Projection.next_status(status, :route_verify_failed) == {:ok, :failed}
+      end
+
+      for status <- [:completed, :failed, :cancelled, :abandoned] do
+        assert Projection.next_status(status, :route_verify_failed) == :illegal
       end
     end
   end
@@ -107,6 +117,38 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                Projection.status_attrs(:route_converged, %{"result" => %{"ok" => true}}, at)
 
       assert %{error: "boom"} = Projection.status_attrs(:route_failed, %{"error" => "boom"}, at)
+    end
+
+    test "AR-8c route_verify_failed lifts BOTH error and result (atom-keyed)", %{occurred_at: at} do
+      attrs =
+        Projection.status_attrs(
+          :route_verify_failed,
+          %{error: "verify_failed: lenses=system", result: %{disposition: "verify_failed"}},
+          at
+        )
+
+      assert attrs == %{
+               status: :failed,
+               completed_at: at,
+               error: "verify_failed: lenses=system",
+               result: %{disposition: "verify_failed"},
+               clear_checkpoint: true
+             }
+    end
+
+    test "AR-8c route_verify_failed tolerates string-keyed (JSONB-reloaded) payload", %{
+      occurred_at: at
+    } do
+      attrs =
+        Projection.status_attrs(
+          :route_verify_failed,
+          %{"error" => "boom", "result" => %{"disposition" => "verify_failed"}},
+          at
+        )
+
+      assert attrs.status == :failed
+      assert attrs.error == "boom"
+      assert attrs.result == %{"disposition" => "verify_failed"}
     end
   end
 
@@ -184,6 +226,30 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
       {:ok, cancelled} = WorkflowRun.by_id(ctx.running.id, tenant: ctx.tenant, actor: ctx.actor)
       assert cancelled.status == :cancelled
       assert cancelled.result["disposition"] == "abandoned_at_gate"
+    end
+
+    test "AR-8c route_verify_failed -> :failed AND result.disposition survives", ctx do
+      {:ok, _} =
+        WorkflowLog.append(
+          ctx.running,
+          :route_verify_failed,
+          %{
+            error: "verify_failed: lenses=system",
+            result: %{disposition: "verify_failed"}
+          },
+          tenant: ctx.tenant,
+          actor: ctx.actor
+        )
+
+      {:ok, failed} = WorkflowRun.by_id(ctx.running.id, tenant: ctx.tenant, actor: ctx.actor)
+      {:ok, events} = WorkflowEvent.for_run(ctx.running.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      # The novel `:failed`-WITH-disposition combination: status is :failed (like a
+      # generic failure) but the operator query keys on the surviving disposition.
+      assert failed.status == :failed
+      assert failed.error == "verify_failed: lenses=system"
+      assert failed.result["disposition"] == "verify_failed"
+      assert Projection.project_status(events) == :failed
     end
   end
 end

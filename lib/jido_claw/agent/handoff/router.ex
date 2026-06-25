@@ -268,18 +268,8 @@ defmodule JidoClaw.Agent.Handoff.Router do
     case ConversationsSession.by_id(session_uuid, tenant: tenant_id, actor: actor) do
       {:ok, %{metadata: metadata}} when is_map(metadata) ->
         case Map.get(metadata, "current_agent_template") do
-          name when is_binary(name) ->
-            case Templates.get(name) do
-              # AR-8b / AR-8b-2 F2: a composer-private (sandboxed: `:prototype` or
-              # `:docker`) owner in the metadata mirror is treated as stale →
-              # cleared by `cold_start_or_default/1`.
-              {:ok, %{sandbox: s}} when s in [:prototype, :docker] -> :stale
-              {:ok, template} -> {:ok, name, template}
-              {:error, _} -> :stale
-            end
-
-          _ ->
-            :none
+          name when is_binary(name) -> resolve_metadata_template(name)
+          _ -> :none
         end
 
       _ ->
@@ -293,6 +283,20 @@ defmodule JidoClaw.Agent.Handoff.Router do
       )
 
       :none
+  end
+
+  # AR-8b / AR-8b-2 F2 / AR-8c: a composer-private owner (sandboxed OR the
+  # explicit `system_*` flag) in the metadata mirror is treated as stale →
+  # cleared by `cold_start_or_default/1`. Gated through the single
+  # `Templates.composer_private?/1` predicate. An unresolvable template is also
+  # stale.
+  defp resolve_metadata_template(name) do
+    with {:ok, template} <- Templates.get(name),
+         false <- Templates.composer_private?(name) do
+      {:ok, name, template}
+    else
+      _ -> :stale
+    end
   end
 
   defp synthesize_owner(tenant_id, runtime_session_id, session_uuid, template_name, template) do
@@ -353,21 +357,23 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
   defp route_with_owner(%{template: template_name, module: module} = owner, %Ctx{} = ctx) do
     case Templates.get(template_name) do
-      # AR-8b / AR-8b-2 F2: a composer-private (sandboxed: `:prototype` or
-      # `:docker`) template must never own a session — a stale/externally-mutated
-      # owner pointing at one is treated like a stale owner (clear the registry +
-      # metadata mirror, fall back to main).
-      {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
-        Logger.warning(
-          "[handoff.router] composer-private template '#{template_name}' cannot own a session — clearing"
-        )
-
-        HandoffRegistry.clear(ctx.tenant_id, ctx.runtime_session_id)
-        clear_stale_metadata(ctx.effective_uuid, ctx.tenant_id, ctx.actor)
-        default_tuple(ctx)
-
+      # AR-8b / AR-8b-2 F2 / AR-8c: a composer-private template (sandboxed OR the
+      # explicit `system_*` flag) must never own a session — a stale/externally-
+      # mutated owner pointing at one is treated like a stale owner (clear the
+      # registry + metadata mirror, fall back to main). Gated through the single
+      # `Templates.composer_private?/1` predicate.
       {:ok, _template} ->
-        route_known_template(owner, module, template_name, ctx)
+        if Templates.composer_private?(template_name) do
+          Logger.warning(
+            "[handoff.router] composer-private template '#{template_name}' cannot own a session — clearing"
+          )
+
+          HandoffRegistry.clear(ctx.tenant_id, ctx.runtime_session_id)
+          clear_stale_metadata(ctx.effective_uuid, ctx.tenant_id, ctx.actor)
+          default_tuple(ctx)
+        else
+          route_known_template(owner, module, template_name, ctx)
+        end
 
       {:error, _reason} ->
         Logger.warning(

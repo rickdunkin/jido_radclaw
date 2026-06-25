@@ -35,6 +35,13 @@ defmodule JidoClaw.RouteComposer.Stage do
       required input (validator invariant 6); never read by the router.
     * `:lens` — the review-lens identity (e.g. `"security"`); carried for later
       phases, never a router input.
+    * `:reverse_verify` — `true` marks a verifier stage whose open
+      `findings:<lens>` re-fire its upstream producer (the AR-8c reverse-verify
+      loop), bounded by the per-stage rerun cap; `false` (default) is the
+      forward-only reviewer (open findings terminate `:not_converged`). A
+      `reverse_verify: true` stage must carry a `lens` and exactly one required
+      input (`JidoClaw.RouteComposer.CatalogValidator`). Read by the loop, never
+      by the router.
     * `:guard` — `:sticky` keeps a once-triggered stage in the display route
       after its signal goes quiet (only `merge_sticky/3` reads it), or `nil`.
     * `:model` / `:effort` — spawn-time tiering overrides for later phases
@@ -77,6 +84,7 @@ defmodule JidoClaw.RouteComposer.Stage do
           unit: unit() | nil,
           task: String.t() | nil,
           lens: String.t() | nil,
+          reverse_verify: boolean(),
           guard: guard(),
           model: model() | nil,
           effort: effort() | nil,
@@ -97,6 +105,7 @@ defmodule JidoClaw.RouteComposer.Stage do
     :guard,
     :model,
     :effort,
+    reverse_verify: false,
     emit: :default,
     routes: [],
     input: %{required: [], optional: []},
@@ -150,6 +159,8 @@ defmodule JidoClaw.RouteComposer.Stage do
       "unit" => unit_to_map(stage.unit),
       "task" => stage.task,
       "lens" => stage.lens,
+      # A plain JSON-safe boolean (default false); no enum coercion needed.
+      "reverse_verify" => stage.reverse_verify,
       "guard" => atom_to_string(stage.guard),
       "model" => atom_to_string(stage.model),
       "effort" => atom_to_string(stage.effort),
@@ -182,6 +193,9 @@ defmodule JidoClaw.RouteComposer.Stage do
         unit: unit,
         task: Map.get(map, "task"),
         lens: Map.get(map, "lens"),
+        # Atom-safe boolean coercion: only a literal `true` decodes to `true`
+        # (absent / `false` / any other value → the struct default `false`).
+        reverse_verify: Map.get(map, "reverse_verify") == true,
         guard: guard,
         model: model,
         effort: effort,

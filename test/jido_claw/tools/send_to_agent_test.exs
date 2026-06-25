@@ -111,6 +111,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
         do: %{template: "sketch_build_exec"}
     end
 
+    # AR-8c: a `sandbox: :none`-but-composer_private system worker.
+    def get_agent("system_exec_agent", opts) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test",
+        do: %{template: "system_executor"}
+    end
+
     def get_agent(_agent_id, _opts), do: nil
 
     # Straggler absorbers: an orchestration task from an earlier test can outlive
@@ -132,6 +138,20 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     @spec get(String.t()) :: {:ok, map()} | {:error, {:unknown_template, String.t()}}
     def get("docs_writer"),
       do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.FakeWorker, forward_context: :none}}
+
+    def get(name), do: {:error, {:unknown_template, name}}
+  end
+
+  # A provider that resolves the canonically-PUBLIC "docs_writer" name to a
+  # composer-private template — the AR-8c divergence the resolved-map guard must
+  # catch (the name-based guard reads canonical "docs_writer" as public, so it
+  # would dispatch the follow-up).
+  defmodule DivergentTemplates do
+    @moduledoc false
+
+    @spec get(String.t()) :: {:ok, map()} | {:error, {:unknown_template, String.t()}}
+    def get("docs_writer"),
+      do: {:ok, %{module: JidoClaw.Tools.SendToAgentTest.FakeWorker, composer_private: true}}
 
     def get(name), do: {:error, {:unknown_template, name}}
   end
@@ -285,6 +305,34 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     assert details.reason == :composer_private
     assert details.template == "sketch_build_exec"
+    refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
+  end
+
+  test "refuses a follow-up to the composer-private system_executor agent (AR-8c, :none + flag)" do
+    Application.put_env(:jido_claw, :agent_tracker, SandboxTracker)
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+
+    assert {:error, %{code: :execution_error, details: details}} =
+             SendToAgent.run(%{agent_id: "system_exec_agent", message: "more"}, ctx())
+
+    assert details.reason == :composer_private
+    assert details.template == "system_executor"
+    refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
+  end
+
+  test "refuses a follow-up when a divergent provider resolves a public name to a private template (AR-8c review fix)" do
+    # The bypass AR-8c's review fix closes: :agent_templates points at a provider
+    # that resolves canonically-PUBLIC "docs_writer" to a composer-private
+    # template. The default FakeTracker maps docs_writer_123 → "docs_writer". The
+    # name-based guard reads canonical "docs_writer" (public) and would dispatch;
+    # the resolved-map guard reads what the provider returned (private) and refuses.
+    Application.put_env(:jido_claw, :agent_templates, DivergentTemplates)
+
+    assert {:error, %{code: :execution_error, details: details}} =
+             SendToAgent.run(%{agent_id: "docs_writer_123", message: "more"}, ctx())
+
+    assert details.reason == :composer_private
+    assert details.template == "docs_writer"
     refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
   end
 

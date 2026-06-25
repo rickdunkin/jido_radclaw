@@ -28,6 +28,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       unit: Keyword.get(opts, :unit),
       task: Keyword.get(opts, :task),
       lens: Keyword.get(opts, :lens),
+      reverse_verify: Keyword.get(opts, :reverse_verify, false),
       guard: Keyword.get(opts, :guard),
       model: Keyword.get(opts, :model),
       effort: Keyword.get(opts, :effort),
@@ -552,6 +553,121 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
         "rescope" => "RESCOPE: tighten the auth scope"
       },
       "coder" => %{"signals" => ["code-written"], "diff" => "DIFF: +def authenticate(user)"}
+    }
+  end
+
+  # ---------------------------------------------------------------------------
+  # AR-8c system-path fixtures (the reverse-verify loop)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A validator-clean catalog mirroring the AR-8c **system** path:
+  `triage(seed) → planner → safety-gate → system-executor(held) →
+  system-verifier(reverse_verify)`. The verifier subscribes the `system` path
+  signal (published by triage, so the catalog validates) and depends on
+  `system-change` via `input.required` (the data edge that orders it after the
+  executor). A `findings:system` re-fires `{system-executor, system-verifier}`;
+  the executor is held until `safety-approved` and never re-gated on retry.
+  """
+  @spec system_verify_loop_fixture_catalog() :: %{String.t() => Stage.t()}
+  def system_verify_loop_fixture_catalog do
+    key_named(%{
+      "triage" =>
+        stage(
+          unit: {:seed, "triage"},
+          routes: ["talk", "sketch", "code", "system"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["intent"],
+          pub: ["plan-needed", "system", "scope-shift"]
+        ),
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft a plan for the machine change from the intent; emit plan-ready.",
+          routes: ["system"],
+          sub: ["plan-needed"],
+          req: ["intent"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "safety-gate" =>
+        stage(
+          unit: {:gate, "safety"},
+          routes: ["system"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["approved-change"],
+          pub: ["safety-approved", "scope-shift"]
+        ),
+      "system-executor" =>
+        stage(
+          unit: {:worker_template, "system_executor"},
+          task: "Apply the approved change to the machine; report what changed.",
+          routes: ["system"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          opt: ["verify-feedback"],
+          out: ["system-change"],
+          pub: ["scope-shift"],
+          lock: [%{while: "plan-ready", until: "safety-approved"}]
+        ),
+      "system-verifier" =>
+        stage(
+          unit: {:worker_template, "system_verifier"},
+          lens: "system",
+          reverse_verify: true,
+          task: "Verify the change took; emit clean:system, else findings:system.",
+          routes: ["system"],
+          sub: ["system"],
+          req: ["system-change"],
+          out: ["findings"],
+          pub: ["clean:system", "findings:system", "scope-shift"]
+        )
+    })
+  end
+
+  @doc "The system-loop seed live: the seed signal + the `system` path + triage's `plan-needed`."
+  @spec system_loop_seed_live() :: [String.t()]
+  def system_loop_seed_live, do: ["request-received", "system", "plan-needed"]
+
+  @doc "The system-loop seed artifact store: the seed `request` + triage's `intent`."
+  @spec system_loop_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def system_loop_seed_artifacts do
+    %{
+      "request" => %{"seed" => "Update the nginx config and reload"},
+      "intent" => %{"triage" => "Update the nginx config and reload"}
+    }
+  end
+
+  @doc "The system-loop Option-A `ran` seed — `triage` pre-marked as already-run."
+  @spec system_loop_seed_ran() :: [String.t()]
+  def system_loop_seed_ran, do: ["triage"]
+
+  @doc """
+  The `:agent_templates_override` map pointing the system-loop templates
+  (`researcher` planner + `system_executor` + `system_verifier`) at `module` (the
+  `SystemLoopWorker` stub — the gate has no worker).
+  """
+  @spec system_loop_template_override(module()) :: %{String.t() => map()}
+  def system_loop_template_override(module) do
+    Map.new(~w(researcher system_executor system_verifier), fn name ->
+      {name, %{module: module, description: "system-loop stub", model: :fast, max_iterations: 1}}
+    end)
+  end
+
+  @doc """
+  The static `template => canned typed output` map for the system loop: the
+  `researcher` (planner) emits `plan-ready` + the `plan` artifact; the
+  `system_executor` produces the `system-change` artifact (NO signals — ordered
+  by the data edge). The `system_verifier` output is NOT here — it is
+  counter-driven by `SystemLoopWorker` (findings:system then clean:system).
+  """
+  @spec system_loop_stub_outputs() :: %{String.t() => map()}
+  def system_loop_stub_outputs do
+    %{
+      "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: update nginx + reload"},
+      "system_executor" => %{"system-change" => "CHANGE: wrote nginx.conf, reloaded the service"}
     }
   end
 

@@ -38,7 +38,14 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     :route_failed
   ]
   @route_cancelled_kinds [:route_rejected, :route_abandoned]
-  @route_terminal_kinds [:route_converged] ++ @route_failed_kinds ++ @route_cancelled_kinds
+  # AR-8c `:route_verify_failed` is a status-authority TERMINAL (it must fold into
+  # the status column), but it is deliberately kept OUT of `@route_failed_kinds`
+  # and `@route_cancelled_kinds` — those drive the guard clauses in
+  # `next_status`/`status_attrs`, and membership there would shadow the explicit
+  # `:route_verify_failed` clauses (which lift BOTH `error` and the
+  # `result.disposition`, a `:failed`-with-result combination neither family does).
+  @route_terminal_kinds [:route_converged, :route_verify_failed] ++
+                          @route_failed_kinds ++ @route_cancelled_kinds
 
   # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
   # authority — `run_halted` is provenance only (the in-txn `approval_requested`
@@ -134,6 +141,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # `:cancelled`). A terminal → terminal append still falls to `:illegal`.
   def next_status(:running, :route_converged), do: {:ok, :completed}
 
+  # AR-8c: a verify-failed machine change projects onto `:failed` (like the other
+  # failure kinds), from any non-terminal. An explicit clause — `:route_verify_failed`
+  # is intentionally absent from `@route_failed_kinds` (which would shadow the
+  # disposition-lifting `status_attrs` clause below).
+  def next_status(status, :route_verify_failed) when status in @non_terminal, do: {:ok, :failed}
+
   def next_status(status, kind) when status in @non_terminal and kind in @route_failed_kinds,
     do: {:ok, :failed}
 
@@ -206,6 +219,14 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def status_attrs(:route_converged, payload, occurred_at),
     do: terminal_lifting_result(:completed, payload, occurred_at)
 
+  # AR-8c — the novel `:failed`-WITH-disposition combination: lift BOTH `error`
+  # (the findings-derived reason string, scrubbed for a sensitive run) AND
+  # `result` (the non-sensitive `%{disposition: "verify_failed"}`), so the
+  # operator query is `status == :failed AND result.disposition == "verify_failed"`.
+  # Placed BEFORE the `@route_failed_kinds` guard (which lifts only `error`).
+  def status_attrs(:route_verify_failed, payload, occurred_at),
+    do: terminal_lifting_verify_failed(payload, occurred_at)
+
   def status_attrs(kind, payload, occurred_at) when kind in @route_failed_kinds,
     do: terminal_lifting_error(:failed, payload, occurred_at)
 
@@ -230,6 +251,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       status: status,
       completed_at: occurred_at,
       error: fetch(payload, :error),
+      clear_checkpoint: true
+    }
+  end
+
+  # AR-8c — `:failed` lifting BOTH `error` and `result` (the disposition). The
+  # only terminal that carries both: the error string is the (scrubbable)
+  # findings-derived reason, the result the non-sensitive disposition marker.
+  defp terminal_lifting_verify_failed(payload, occurred_at) do
+    %{
+      status: :failed,
+      completed_at: occurred_at,
+      error: fetch(payload, :error),
+      result: fetch(payload, :result),
       clear_checkpoint: true
     }
   end

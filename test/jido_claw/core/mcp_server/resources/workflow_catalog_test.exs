@@ -31,6 +31,12 @@ defmodule JidoClaw.MCPServer.Resources.WorkflowCatalogTest do
       # Representative stages from the starter catalog.
       assert Map.has_key?(stages, "triage")
       assert Map.has_key?(stages, "plan-gate")
+      # AR-8c: the system-path stages are discoverable, and the new
+      # `reverse_verify` field flows through the catalog resource (a JSON-safe
+      # boolean) so a client can see which verifier re-fires its producer.
+      assert Map.has_key?(stages, "safety-gate")
+      assert stages["system-verifier"]["reverse_verify"] == true
+      assert stages["system-executor"]["reverse_verify"] == false
     end
 
     test "each stage is a JSON-safe, string-keyed map (Stage.to_map shape)" do

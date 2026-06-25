@@ -216,6 +216,57 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
       refute Map.has_key?(result.artifacts, "plan")
       assert result.artifacts["request"] == %{"seed" => "R"}
     end
+
+    test "AR-8c verify-loop: invalidating {executor, verifier} drops both, bumps both, keeps wave_index" do
+      s =
+        seed(%{
+          ran: MapSet.new(["system-executor", "system-verifier", "planner"]),
+          wave_index: 2,
+          rerun_counts: %{}
+        })
+
+      result =
+        Projection.project(s, [
+          event(:stages_invalidated, %{stages: ["system-executor", "system-verifier"]}, 1)
+        ])
+
+      # Both leave `ran`; the planner stays.
+      assert MapSet.equal?(result.ran, MapSet.new(["planner"]))
+      assert result.rerun_counts == %{"system-executor" => 1, "system-verifier" => 1}
+      # No closed_wave_index ⇒ wave_index untouched (a generic completed-wave rerun).
+      assert result.wave_index == 2
+    end
+
+    test "AR-8c verify-loop: the verify-feedback marker folds the tagged ref into the store" do
+      # The fenced batch the loop emits on a findings:<lens> re-fire:
+      # stages_invalidated (no closed_wave_index) + artifacts_produced carrying the
+      # BARE findings ref into `verify-feedback`. The projection reconstructs the
+      # TAGGED {:ref, ref} mirror the in-memory `apply_invalidation` stores — the
+      # projection-equivalence invariant (C3/C4).
+      s =
+        seed(%{
+          ran: MapSet.new(["system-executor", "system-verifier"]),
+          artifacts: %{"findings" => %{"system-verifier" => {:ref, "art_f"}}},
+          rerun_counts: %{}
+        })
+
+      result =
+        Projection.project(s, [
+          event(:stages_invalidated, %{stages: ["system-executor", "system-verifier"]}, 1),
+          event(
+            :artifacts_produced,
+            %{artifacts: [%{name: "verify-feedback", producer: "system-verifier", ref: "art_f"}]},
+            2
+          )
+        ])
+
+      # verify-feedback mirrors the findings ref (tagged), keyed by the verifier.
+      assert result.artifacts["verify-feedback"] == %{"system-verifier" => {:ref, "art_f"}}
+      # The original findings entry is untouched (only `ran`/`rerun_counts` changed).
+      assert result.artifacts["findings"] == %{"system-verifier" => {:ref, "art_f"}}
+      assert MapSet.equal?(result.ran, MapSet.new())
+      assert result.rerun_counts == %{"system-executor" => 1, "system-verifier" => 1}
+    end
   end
 
   describe "equivalence invariant — project(seed, log) == in-memory Fold" do

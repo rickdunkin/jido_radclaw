@@ -142,6 +142,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           :route_not_converged,
           :route_deadlocked,
           :route_budget_exhausted,
+          # AR-8c: a machine change that could not be verified (reverse-verify reruns
+          # exhausted with findings:<lens> still open). Projects onto `:failed` like
+          # the other failures, but carries `result.disposition: "verify_failed"` so
+          # the operator query distinguishes it from a generic budget stop. App-level
+          # `one_of` (stored as text, like `WorkflowRun.status`) — no migration.
+          :route_verify_failed,
           :route_failed,
           :route_rejected,
           :route_abandoned

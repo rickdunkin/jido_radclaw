@@ -56,6 +56,31 @@ defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
       refute Map.has_key?(fresh.metadata || %{}, "current_agent_template")
     end
 
+    test "a composer-private metadata template is treated as stale → cleared (AR-8c)" do
+      # `system_executor` RESOLVES from Templates.get (unlike phantom_template),
+      # but is composer-private — durable metadata must not transiently re-install
+      # it as a session owner (bypassing the safety gate). So it is cleared and the
+      # registry stays empty, exactly like an unresolvable template.
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "hydrate-private")
+      actor = actor_for(tenant_id)
+      runtime_session_id = session.external_id
+
+      {:ok, _} =
+        ConversationsSession.set_current_agent_template(session, "system_executor",
+          tenant: tenant_id,
+          actor: actor
+        )
+
+      {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+
+      :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
+
+      assert HandoffRegistry.owner(tenant_id, runtime_session_id) == nil
+
+      {:ok, fresh} = ConversationsSession.by_id(session.id, tenant: tenant_id, actor: actor)
+      refute Map.has_key?(fresh.metadata || %{}, "current_agent_template")
+    end
+
     test "no metadata means no hydration" do
       %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "hydrate-nometa")
       actor = actor_for(tenant_id)

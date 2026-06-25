@@ -1,6 +1,22 @@
 defmodule JidoClaw.Agent.Workers.OutputSchema do
   @moduledoc "Shared Zoi schema fragments single-sourced across worker `output:` blocks (AR-5)."
 
+  @doc """
+  Builder result object (`status`/`summary`/`files_changed`/`notes` + runtime
+  `artifacts`) — the shape a mutating producer worker returns, shared by `Coder`
+  and the AR-8c `SystemExecutor` (which apply changes and report what changed).
+  """
+  @spec builder_result() :: Zoi.schema()
+  def builder_result do
+    Zoi.object(%{
+      status: Zoi.enum([:completed, :partial, :blocked]),
+      summary: Zoi.string(),
+      files_changed: Zoi.array(Zoi.string()),
+      notes: Zoi.string(),
+      artifacts: artifacts()
+    })
+  end
+
   @doc "Runtime-artifacts object reused by 5 workers (optional url/port/files, preserve unknowns)."
   @spec artifacts() :: Zoi.schema()
   def artifacts do

@@ -133,11 +133,12 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 10 templates" do
+    test "should contain all 12 templates" do
       # 7 general-purpose workers + the AR-8b composer-private `sketch_build` +
       # the AR-8b-2 composer-private `sketch_reviewer` + the AR-8b-2 F2
-      # composer-private `sketch_build_exec`.
-      assert map_size(Templates.list()) == 10
+      # composer-private `sketch_build_exec` + the AR-8c composer-private
+      # `system_executor` + `system_verifier`.
+      assert map_size(Templates.list()) == 12
     end
 
     test "should have all expected template names as keys" do
@@ -163,8 +164,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 10 names" do
-      assert Enum.count(Templates.names()) == 10
+    test "should return exactly 12 names" do
+      assert Enum.count(Templates.names()) == 12
     end
 
     test "should include all 7 expected template names" do
@@ -320,6 +321,108 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert "sketch_build" in Templates.names()
       assert "sketch_reviewer" in Templates.names()
       assert "sketch_build_exec" in Templates.names()
+    end
+  end
+
+  # AR-8c: the system-path workers. Unlike the sketch templates, they are
+  # `sandbox: :none` (they run on the real machine — that is the point), so their
+  # composer-privacy rides the explicit `:composer_private` flag, NOT the sandbox
+  # tier. Also `forward_context: :none`, so (like the sketch templates) they are
+  # deliberately NOT in @valid_names (the public-forward-context set).
+  describe "AR-8c composer-private system templates" do
+    test "system_executor is composer_private + forward_context: :none + sandbox: :none" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.SystemExecutor,
+                forward_context: :none,
+                sandbox: :none,
+                composer_private: true
+              }} = Templates.get("system_executor")
+    end
+
+    test "system_verifier is composer_private + forward_context: :none + sandbox: :none" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.SystemVerifier,
+                forward_context: :none,
+                sandbox: :none,
+                composer_private: true
+              }} = Templates.get("system_verifier")
+    end
+
+    test "exists?/1 + names/0 include both system templates" do
+      assert Templates.exists?("system_executor")
+      assert Templates.exists?("system_verifier")
+      assert "system_executor" in Templates.names()
+      assert "system_verifier" in Templates.names()
+    end
+  end
+
+  describe "composer_private?/1 (AR-8c central predicate)" do
+    test "is true for the sandboxed sketch templates (sandbox arm)" do
+      assert Templates.composer_private?("sketch_build")
+      assert Templates.composer_private?("sketch_reviewer")
+      assert Templates.composer_private?("sketch_build_exec")
+    end
+
+    test "is true for the system templates (explicit flag arm, sandbox: :none)" do
+      assert Templates.composer_private?("system_executor")
+      assert Templates.composer_private?("system_verifier")
+    end
+
+    test "is false for the public workers" do
+      for name <- @valid_names do
+        refute Templates.composer_private?(name)
+      end
+    end
+
+    test "is false for main / unknown templates" do
+      refute Templates.composer_private?("main")
+      refute Templates.composer_private?("nonexistent")
+      refute Templates.composer_private?("")
+    end
+
+    test "honours an override template that is sandbox: :none but composer_private: true" do
+      override = %{
+        "priv_stub" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          sandbox: :none,
+          composer_private: true
+        }
+      }
+
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+      on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+
+      assert Templates.composer_private?("priv_stub")
+      # And external MCP tools are withheld from it (the derived reader).
+      refute Templates.external_tools?("priv_stub")
+    end
+
+    test "external_tools?/1 is false for composer-private templates, true for public ones" do
+      refute Templates.external_tools?("system_executor")
+      refute Templates.external_tools?("system_verifier")
+      refute Templates.external_tools?("sketch_build")
+      assert Templates.external_tools?("coder")
+      assert Templates.external_tools?("main")
+    end
+
+    test "composer_private_template?/1 gates on an already-resolved map (provider-seam guard)" do
+      # The map-shaped companion the provider-seam tools (spawn_agent /
+      # send_to_agent) gate on: a sandboxed tier OR the explicit flag → private.
+      assert Templates.composer_private_template?(%{sandbox: :prototype})
+      assert Templates.composer_private_template?(%{sandbox: :docker})
+      assert Templates.composer_private_template?(%{composer_private: true})
+
+      # Defensive defaults: an un-hydrated provider map with no :sandbox /
+      # :composer_private keys reads as public, as does an explicit :none.
+      refute Templates.composer_private_template?(%{sandbox: :none})
+      refute Templates.composer_private_template?(%{})
+
+      refute Templates.composer_private_template?(%{
+               module: JidoClaw.Agent.Workers.Coder,
+               description: "public-looking provider map"
+             })
     end
   end
 

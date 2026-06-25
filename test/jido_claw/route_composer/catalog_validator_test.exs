@@ -355,6 +355,57 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     end
   end
 
+  # AR-8c invariant 9: a reverse_verify stage must carry a lens + EXACTLY one
+  # required input (the rerun helper reads only the first required artifact).
+  defp reverse_verify_stage(opts) do
+    %{
+      "rv" =>
+        stage(
+          name: "rv",
+          unit: {:worker_template, "system_verifier"},
+          lens: Keyword.get(opts, :lens, "system"),
+          reverse_verify: true,
+          emit: :default,
+          routes: ["system"],
+          req: Keyword.get(opts, :req, ["request"]),
+          out: ["findings"],
+          sub: ["request-received"],
+          pub: ["clean:system", "findings:system", "scope-shift"],
+          task: "verify"
+        )
+    }
+  end
+
+  describe "reverse_verify invariant (invariant 9)" do
+    test "a lens + exactly-one-required reverse_verify stage passes" do
+      assert CatalogValidator.validate(reverse_verify_stage(req: ["request"])) == []
+    end
+
+    test "a reverse_verify stage with no lens is flagged" do
+      problems = CatalogValidator.validate(reverse_verify_stage(lens: nil))
+      assert Enum.any?(problems, &String.contains?(&1, "lens"))
+    end
+
+    test "a reverse_verify stage with two required inputs is flagged" do
+      # Two seed artifacts so only the reverse_verify count invariant fires (not a
+      # no-producer error on an unbacked second input).
+      cat = reverse_verify_stage(req: ["request", "request"])
+      problems = CatalogValidator.validate(cat)
+      assert Enum.any?(problems, &String.contains?(&1, "exactly one required input"))
+    end
+
+    test "a reverse_verify stage with zero required inputs is flagged" do
+      problems = CatalogValidator.validate(reverse_verify_stage(req: []))
+      assert Enum.any?(problems, &String.contains?(&1, "exactly one required input"))
+    end
+
+    test "reverse_verify must be a boolean (structural group 0)" do
+      bad = %{"rv" => %{reverse_verify_stage([])["rv"] | reverse_verify: "yes"}}
+      problems = CatalogValidator.validate(bad)
+      assert Enum.any?(problems, &String.contains?(&1, "reverse_verify"))
+    end
+  end
+
   test "a data-graph cycle is flagged" do
     cat = %{
       "a" =>

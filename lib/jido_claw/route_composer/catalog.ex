@@ -82,10 +82,15 @@ defmodule JidoClaw.RouteComposer.Catalog do
       output: ["plan"],
       publishes: ["plan-ready", "scope-shift"]
     },
+    # AR-8c (decision 1): the plan-gate is dropped from the SYSTEM path — system
+    # ops run through the always-on `safety-gate` instead, so `plan-approved` is
+    # never live on `system` and the composer's `stale_approval?` guard is provably
+    # false there (no `implementer_ran?` change needed). The `planner` still serves
+    # both `code` + `system`.
     "plan-gate" => %Stage{
       name: "plan-gate",
       unit: {:gate, "plan"},
-      routes: ["code", "system"],
+      routes: ["code"],
       subscribes: ["plan-ready"],
       input: %{required: ["plan"], optional: []},
       output: ["approved-plan"],
@@ -240,6 +245,56 @@ defmodule JidoClaw.RouteComposer.Catalog do
       input: %{required: ["prototype"], optional: []},
       output: ["findings"],
       publishes: ["findings:correctness", "clean:correctness", "scope-shift"]
+    },
+    # AR-8c system path: `triage → planner → safety-gate → system-executor →
+    # system-verifier`. The always-on `safety-gate` (decision 1) gates every
+    # machine change; the executor is held until the human approves; the verifier
+    # (`reverse_verify: true`) re-fires the executor on an open `findings:system`.
+    "safety-gate" => %Stage{
+      name: "safety-gate",
+      unit: {:gate, "safety"},
+      routes: ["system"],
+      subscribes: ["plan-ready"],
+      input: %{required: ["plan"], optional: []},
+      output: ["approved-change"],
+      publishes: ["safety-approved", "scope-shift"]
+    },
+    "system-executor" => %Stage{
+      name: "system-executor",
+      unit: {:worker_template, "system_executor"},
+      task: "Apply the approved change to the machine/environment; report what changed.",
+      routes: ["system"],
+      subscribes: ["plan-ready"],
+      # `verify-feedback` is an OPTIONAL input with NO catalog producer (the
+      # composer writes it out-of-band on re-fire). Optional ⇒ not producer-checked
+      # (invariant 4) and adds NO precedence edge (`graph.ex` — absent producer →
+      # no edge), so the executor⇄verifier cycle the naive design would create is
+      # avoided. `ArtifactContext.wanted_names/1` (required ∪ optional) still
+      # surfaces the prior findings in the executor's task on re-fire.
+      input: %{required: ["plan"], optional: ["verify-feedback"]},
+      output: ["system-change"],
+      publishes: ["scope-shift"],
+      # Held until the human approves at the safety gate; never re-gated on retry
+      # (`safety-approved` is never retracted).
+      lock: [%{while: "plan-ready", until: "safety-approved"}]
+    },
+    "system-verifier" => %Stage{
+      name: "system-verifier",
+      unit: {:worker_template, "system_verifier"},
+      lens: "system",
+      reverse_verify: true,
+      task:
+        "Verify the change actually took on the machine (idempotent re-check / " <>
+          "state assertion / exit code); emit clean:system, else findings:system " <>
+          "with what to fix.",
+      routes: ["system"],
+      # The `system` path signal (always live) triggers it; the `system-change`
+      # data edge orders it AFTER the executor (the `sketch-review` pattern — no
+      # stage publishes `system-change` as a signal).
+      subscribes: ["system"],
+      input: %{required: ["system-change"], optional: []},
+      output: ["findings"],
+      publishes: ["findings:system", "clean:system", "scope-shift"]
     }
   }
 

@@ -55,6 +55,31 @@ defmodule JidoClaw.Agent.Templates do
   sandboxes *harder* (to `:prototype`), never weaker, so a registry typo can
   only over-isolate. `external_tools?/1` is the derived reader the MCP
   `Consumer` gates on.
+
+  ## `composer_private` policy (AR-8c)
+
+  Every resolved template also carries a `:composer_private` boolean (default
+  `false`). Composer-privacy is the single source of truth every *reachability*
+  surface gates on — direct spawn, follow-up turn, handoff, handoff
+  routing/recovery, and durable-metadata rehydration all refuse a
+  composer-private template, so it is instantiable **only** through the
+  composer's wave-builder path. A template is private when it is sandboxed
+  (`sandbox/1 in [:prototype, :docker]`) **or** the explicit flag is set. The
+  flag is the AR-8c channel: the `system_executor` / `system_verifier` workers
+  run on the **real** machine (`sandbox: :none` — that is the point), so the
+  sandbox-tier checks do not cover them; the flag keeps them un-spawnable past
+  the safety gate and external-MCP-tool-free (`external_tools?/1` is
+  `not composer_private?/1`) without sandboxing the host shell they must use.
+
+  Two predicate shapes share one definition. `composer_private?/1` takes a
+  **name**, resolves it through `get/1`, and is what the canonical surfaces
+  (handoff, router, worker rehydration) and `external_tools?/1` gate on.
+  `composer_private_template?/1` takes an **already-resolved map** — for the
+  provider-seam surfaces (`spawn_agent` / `send_to_agent`, which launch through
+  the configurable `:agent_templates` provider): they gate on the map their
+  provider actually returned, never re-resolving the name against this canonical
+  registry, so an overridden provider can't slip a private template past a guard
+  that checked a different source. `composer_private?/1` delegates to it.
   """
 
   require Logger
@@ -128,6 +153,29 @@ defmodule JidoClaw.Agent.Templates do
       # like `:prototype` — it gets no external MCP tools and is composer-private.
       forward_context: {:only, [:forge_session_key]},
       sandbox: :docker
+    },
+    # AR-8c: the two system-path workers. They run on the REAL machine
+    # (`sandbox: :none` — that is the point), so the sandbox-tier privacy checks
+    # do NOT cover them; instead they carry the explicit `composer_private: true`
+    # flag, which `composer_private?/1` honours independently of `sandbox/1`. That
+    # makes them (1) un-spawnable directly by the LLM (every reachability surface
+    # routes through `composer_private?/1`, so the safety gate cannot be bypassed)
+    # and (2) external-MCP-tool-free (`external_tools?/1` → `not composer_private?`),
+    # a fixed, auditable toolset. The composer drives them through the wave-builder
+    # path, which is unaffected. `forward_context: :none` keeps their scope tight.
+    "system_executor" => %{
+      module: JidoClaw.Agent.Workers.SystemExecutor,
+      description: "Applies an approved change to the machine/environment (full mutating tools)",
+      model: :fast,
+      forward_context: :none,
+      composer_private: true
+    },
+    "system_verifier" => %{
+      module: JidoClaw.Agent.Workers.SystemVerifier,
+      description: "Verifies a system/environment change took on the real machine (read + run)",
+      model: :fast,
+      forward_context: :none,
+      composer_private: true
     }
   }
 
@@ -200,14 +248,60 @@ defmodule JidoClaw.Agent.Templates do
   end
 
   @doc """
-  False when the template forbids external (MCP) tools — i.e. is sandboxed
-  (`sandbox: :prototype` or `:docker`). The MCP `Consumer` short-circuits a
-  sandboxed template's tool set to `[]` on this, at attach and every reconcile
-  tick. An unknown template (`"main"`) is `:none`, so `external_tools?/1` is
-  `true`.
+  True when a template's agents are **composer-private** — instantiable ONLY by
+  the composer's wave-builder path, never by an LLM-driven reachability surface
+  (direct spawn, follow-up turn, handoff, handoff recovery, or durable-metadata
+  rehydration). Resolves the **name** through `get/1`, then delegates to the
+  map-based `composer_private_template?/1` (the single definition of "private").
+  An unknown template (`"main"`) resolves to `{:error, _}` → `false`.
+
+  The name-based guard for the canonical reachability surfaces (handoff, router,
+  worker rehydration) and `external_tools?/1` — all of which resolve through
+  `JidoClaw.Agent.Templates`. The provider-seam surfaces (`spawn_agent` /
+  `send_to_agent`) instead gate on `composer_private_template?/1` against the
+  template their configurable provider actually returns.
+  """
+  @spec composer_private?(String.t()) :: boolean()
+  def composer_private?(name) do
+    case get(name) do
+      {:ok, template} -> composer_private_template?(template)
+      _ -> false
+    end
+  end
+
+  @doc """
+  True when an **already-resolved** template map is composer-private — sandboxed
+  (`:sandbox in [:prototype, :docker]`) or carrying the explicit
+  `:composer_private` flag. The map-shaped companion to `composer_private?/1`,
+  for the reachability surfaces that resolve a template through a configurable
+  provider (`spawn_agent` / `send_to_agent`'s `:agent_templates` seam): they must
+  gate on the *resolved* map, not re-resolve the name against the canonical
+  registry, or an overridden provider could launch a private template the
+  name-based guard never saw.
+
+  **The standalone definition** — it reads the `:sandbox` / `:composer_private`
+  fields directly, NOT in terms of `external_tools?/1`, so the
+  `external_tools?/1` → `not composer_private?/1` redefinition below cannot
+  recurse. Reads keys defensively (`Map.get/3` defaults) so an un-hydrated
+  provider map with no `:sandbox` / `:composer_private` keys defaults to public.
+  Intentionally atom-shaped only (`:prototype` / `:docker` values, atom keys) —
+  the provider contract is atom-keyed maps; it does not coerce string keys/values.
+  """
+  @spec composer_private_template?(map()) :: boolean()
+  def composer_private_template?(template) when is_map(template) do
+    Map.get(template, :sandbox, :none) in [:prototype, :docker] or
+      Map.get(template, :composer_private, false) == true
+  end
+
+  @doc """
+  False when the template forbids external (MCP) tools — i.e. it is
+  `composer_private?/1` (sandboxed **or** explicitly composer-private). The MCP
+  `Consumer` short-circuits such a template's tool set to `[]` on this, at attach
+  and every reconcile tick. An unknown template (`"main"`) is not private, so
+  `external_tools?/1` is `true`.
   """
   @spec external_tools?(String.t()) :: boolean()
-  def external_tools?(name), do: sandbox(name) not in [:prototype, :docker]
+  def external_tools?(name), do: not composer_private?(name)
 
   defp hydrate_template(template) do
     template
@@ -215,6 +309,7 @@ defmodule JidoClaw.Agent.Templates do
     |> ensure_forward_context()
     |> ensure_require_approval()
     |> ensure_sandbox()
+    |> ensure_composer_private()
   end
 
   # Two clauses, NO catch-all — preserves today's behavior: a template
@@ -281,6 +376,17 @@ defmodule JidoClaw.Agent.Templates do
 
   defp ensure_sandbox(%{sandbox: s} = t), do: Map.put(t, :sandbox, validate_sandbox(s, t))
   defp ensure_sandbox(t), do: Map.put(t, :sandbox, :none)
+
+  # Normalize `:composer_private` to a strict boolean (default `false`): only a
+  # literal `true` is private (the AR-8c system workers). Reading the hydrated key
+  # keeps `composer_private?/1` a single field read. An absent flag — every
+  # non-system template — is `false`; sandboxed templates are still caught by the
+  # `sandbox/1` arm of `composer_private?/1`, so this flag is the *additional*
+  # `sandbox: :none`-but-private channel, not the sandbox channel.
+  defp ensure_composer_private(%{composer_private: true} = t),
+    do: Map.put(t, :composer_private, true)
+
+  defp ensure_composer_private(t), do: Map.put(t, :composer_private, false)
 
   defp validate_sandbox(s, _t) when s in [:none, :prototype, :docker], do: s
 

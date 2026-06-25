@@ -25,14 +25,7 @@ defmodule JidoClaw.Agent.Workers.Coder do
     tool_timeout_ms: 30_000,
     compaction: [mode: :auto],
     output: %{
-      schema:
-        Zoi.object(%{
-          status: Zoi.enum([:completed, :partial, :blocked]),
-          summary: Zoi.string(),
-          files_changed: Zoi.array(Zoi.string()),
-          notes: Zoi.string(),
-          artifacts: OutputSchema.artifacts()
-        }),
+      schema: OutputSchema.builder_result(),
       retries: 1,
       on_validation_error: :repair
     }

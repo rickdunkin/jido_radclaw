@@ -5,6 +5,11 @@ defmodule JidoClaw.Orchestration.Reactors.PlanGate.EmitApprovedPlan do
   composer's wave-emission protocol so the loop folds it exactly like a worker
   wave's `JidoClaw.RouteComposer.Steps.WaveCollect` return.
 
+  **Generic + shared** (AR-8c): it is parameterized entirely by its
+  `artifact_name`/`signal_name` inputs — nothing is plan-specific — so
+  `JidoClaw.Orchestration.Reactors.SafetyGate` reuses this same step to promote
+  its `approved-change` / `safety-approved`. (One step, no per-gate copy.)
+
   A **named** `Reactor.Step` module (not an inline fun) so the halted reactor
   stays `:erlang.term_to_binary`-serializable for the durable resume checkpoint
   (Decision 1). It runs only **after** the gate (`wait_for(:approval_gate)`), so

@@ -21,9 +21,13 @@ defmodule JidoClaw.RouteComposer.GateReactors do
   """
 
   alias JidoClaw.Orchestration.Reactors.PlanGate
+  alias JidoClaw.Orchestration.Reactors.SafetyGate
 
   # gate-name → {gate-producer reactor module, approval signal it publishes}.
-  @gates %{"plan" => {PlanGate, "plan-approved"}}
+  @gates %{
+    "plan" => {PlanGate, "plan-approved"},
+    "safety" => {SafetyGate, "safety-approved"}
+  }
 
   @doc """
   Resolve a gate name to `{module, approval_signal}`, or `nil` when unknown.

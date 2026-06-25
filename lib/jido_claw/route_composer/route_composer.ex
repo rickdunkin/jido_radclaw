@@ -189,13 +189,17 @@ defmodule JidoClaw.RouteComposer do
   @observe_poll_ms 50
 
   # Terminal error kinds whose `:error` is scrubbed for a marked (sensitive) run:
-  # the abnormal-path generic `:run_failed` plus the four loop `route_*` failures.
-  # `:route_converged` is excluded — its payload is the opaque result subset.
+  # the abnormal-path generic `:run_failed` plus the loop `route_*` failures —
+  # including AR-8c `:route_verify_failed` (its findings-derived error string is
+  # sensitive; the scrub replaces ONLY `:error`, so the non-sensitive
+  # `result.disposition: "verify_failed"` survives). `:route_converged` is
+  # excluded — its payload is the opaque result subset.
   @scrubbable_error_kinds [
     :run_failed,
     :route_not_converged,
     :route_deadlocked,
     :route_budget_exhausted,
+    :route_verify_failed,
     :route_failed
   ]
 
@@ -219,6 +223,7 @@ defmodule JidoClaw.RouteComposer do
           | :not_converged
           | :deadlock
           | :budget_exhausted
+          | :verify_failed
           | :failed
           | :rejected
           | :abandoned
@@ -471,7 +476,7 @@ defmodule JidoClaw.RouteComposer do
     seed_pairs(artifacts)
     |> Enum.reduce_while({:ok, []}, fn {name, producer, value}, {:ok, acc} ->
       case store_seed_row(parent, name, producer, value, tenant, actor) do
-        {:ok, ref} -> {:cont, {:ok, [%{name: name, producer: producer, ref: ref} | acc]}}
+        {:ok, ref} -> {:cont, {:ok, [artifact_triple(name, producer, ref) | acc]}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
@@ -923,7 +928,7 @@ defmodule JidoClaw.RouteComposer do
         finish(Loop.terminal(display, state), state)
 
       over_budget?(state) ->
-        finish({:budget_exhausted, budget_reason(state)}, state)
+        finish(budget_terminal(state), state)
 
       true ->
         # Peel a solo gate out of a mixed Kahn cohort (Phase 4b): the router does
@@ -1292,7 +1297,7 @@ defmodule JidoClaw.RouteComposer do
     case Commit.commit_wave(state.parent, state.wave_index, deltas, auth_opts(state)) do
       :ok ->
         next = record_wave(next_fold, dispatch, display, run, emissions)
-        maybe_retract_stale_approval(next, emissions)
+        maybe_rerun_after_findings(next, emissions)
 
       # The run ended externally (an operator cancel landed while the wave
       # returned): stop cleanly, don't re-terminalize (the terminal append already
@@ -1467,9 +1472,14 @@ defmodule JidoClaw.RouteComposer do
     for {name, producers} <- new_store,
         {producer, entry} <- producers,
         get_in(old_store, [name, producer]) != entry do
-      %{name: name, producer: producer, ref: bare_ref(entry)}
+      artifact_triple(name, producer, bare_ref(entry))
     end
   end
+
+  # The `artifacts_produced` marker entry shape (bare ref), single-sourced across
+  # the wave-delta diff, the genesis seed rows, and the AR-8c verify-feedback
+  # marker (the projection folds it back into the tagged `{:ref, ref}` store).
+  defp artifact_triple(name, producer, ref), do: %{name: name, producer: producer, ref: ref}
 
   defp bare_ref({:ref, ref}), do: ref
   defp bare_ref(other), do: other
@@ -1714,7 +1724,14 @@ defmodule JidoClaw.RouteComposer do
        when is_map(park) do
     gate_stage = Map.fetch!(state.catalog, hd(park.dispatch))
 
-    if any_subscriber?(state.catalog, "plan-rejected") do
+    # AR-8c (B6): the re-plan opt-in is catalog-GLOBAL (`any_subscriber?` scans the
+    # whole catalog, where the planner always subscribes `plan-rejected`), so a
+    # rejected SAFETY-gate would otherwise re-fire the planner. Narrow it to the
+    # *parked gate itself publishing the re-plan signal*: the plan-gate publishes
+    # `plan-rejected` → unchanged re-plan; the safety-gate does not → its reject
+    # takes the `else` branch (cancel — the user declined the change), never loops
+    # back to planning.
+    if "plan-rejected" in gate_stage.publishes and any_subscriber?(state.catalog, "plan-rejected") do
       replan_after_reject(park, gate_stage, %{state | parked: nil})
     else
       finish({:rejected, {:child_cancelled, child.id}}, %{state | parked: nil})
@@ -1897,21 +1914,132 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  # Stale-approval retraction (§4): a wave folded a premise-break (`scope-shift`)
-  # while `plan-approved` is live and the implementer (the stage locked
-  # `until: plan-approved`) has NOT run — so the approved plan is stale. Retract
-  # `plan-approved` (`signals_retracted`) + invalidate the re-run set (here the
-  # gate DID complete, so it is in the set) and re-tick → re-plan → re-gate →
-  # re-approve. NO `closed_wave_index` (a generic completed-wave rerun — the gate's
-  # `wave_completed` already advanced the index). The narrow pre-resume
-  # `Cases.retract/3` window is not reachable here (the composer folds
-  # `plan-approved` only after the gate child resumed), so it is omitted.
-  defp maybe_retract_stale_approval(state, emissions) do
-    if stale_approval?(state, emissions) do
-      retract_stale_approval(state)
-    else
-      {:noreply, state, {:continue, :tick}}
+  # The post-fold rerun dispatcher (AR-8c). Two mutually-exclusive rerun paths
+  # plus the no-op fall-through:
+  #
+  #   * `open_verify_loop?` — a `reverse_verify: true` stage (the system-verifier)
+  #     just emitted `findings:<lens>`: re-fire BOTH it and its upstream producer
+  #     (the executor) so the change is re-applied + re-verified (AR-8c);
+  #   * `stale_approval?` — the plan-gate stale-approval retraction (Phase 4e),
+  #     UNCHANGED, and provably false on the `system` path (no `plan-approved`).
+  #
+  # `open_verify_loop?` keys on the `reverse_verify` flag, so forward-only
+  # reviewers (`sketch-review`, code reviewers — no flag) keep their
+  # `:not_converged` behavior. The two conditions are mutually exclusive in the
+  # shipped catalog (verify loop is system-only, stale approval is code-only).
+  defp maybe_rerun_after_findings(state, emissions) do
+    cond do
+      open_verify_loop?(state, emissions) -> rerun_verify_loop(state, emissions)
+      stale_approval?(state, emissions) -> retract_stale_approval(state)
+      true -> {:noreply, state, {:continue, :tick}}
     end
+  end
+
+  # A `reverse_verify: true` stage in this wave's emissions that emitted an open
+  # `findings:<lens>` signal (the verification failed).
+  defp open_verify_loop?(state, emissions) do
+    not is_nil(open_verify_stage(state, emissions))
+  end
+
+  defp open_verify_stage(state, emissions) do
+    Enum.find_value(emissions, fn %StageEmission{stage: name, signals: sigs} ->
+      stage = Map.get(state.catalog, name)
+
+      if match?(%Stage{reverse_verify: true}, stage) and
+           Enum.any?(sigs, &String.starts_with?(&1, "findings:")),
+         do: stage
+    end)
+  end
+
+  # The reverse-verify re-fire (AR-8c): the rerun set is exactly
+  # `replan_rerun_set(state, verifier)` = `{verifier} ∪ {producers of the
+  # verifier's single required input} ∩ ran` = `{system-verifier, system-executor}`.
+  # Both leave `ran`; on the next tick the executor re-triggers on its still-live
+  # `plan-ready` (its lock stays released — `safety-approved` is never retracted,
+  # so the human is NOT re-gated on retry), re-produces `system-change`, and the
+  # verifier (ordered after by the data edge) re-checks. Bounded by the per-stage
+  # `rerun_cap` (`over_budget?` → `budget_terminal` → `:verify_failed`).
+  defp rerun_verify_loop(state, emissions) do
+    verifier = open_verify_stage(state, emissions)
+    rerun_set = replan_rerun_set(state, verifier)
+    {extra_markers, artifacts_put} = verify_feedback(state, verifier)
+
+    invalidate_stages(state, rerun_set,
+      extra_markers: extra_markers,
+      artifacts_put: artifacts_put
+    )
+  end
+
+  # Informed re-fire (C3): copy the verifier's just-produced `findings` ref into
+  # the out-of-band `verify-feedback` input (producer = verifier name) so the
+  # executor reads the prior findings in its task on re-fire (`verify-feedback`
+  # has NO catalog producer, so it adds no precedence edge — cycle-free). The
+  # `artifacts_produced` marker payload carries the BARE ref (`bare_ref/1`, like
+  # the wave-artifact marker); the in-memory mirror stores the TAGGED `{:ref, ref}`
+  # shape `Fold`/`Projection` produce, so `Projection.project == in-memory` holds.
+  # No findings artifact (shouldn't happen — a findings emission always produces
+  # one) → a blind re-fire (no marker), still correct.
+  defp verify_feedback(state, %Stage{name: verifier_name}) do
+    case get_in(state.artifacts, ["findings", verifier_name]) do
+      nil ->
+        {[], %{}}
+
+      entry ->
+        ref = bare_ref(entry)
+
+        markers = [
+          artifacts_produced: %{
+            artifacts: [artifact_triple("verify-feedback", verifier_name, ref)]
+          }
+        ]
+
+        {markers, %{"verify-feedback" => %{verifier_name => {:ref, ref}}}}
+    end
+  end
+
+  # Shared rerun emitter (C4): emit `stages_invalidated` (+ `opts[:extra_markers]`)
+  # under the parent-terminal fence, then mirror in memory (`ran` difference +
+  # `bump_rerun_counts` + `opts[:artifacts_put]`). NO `closed_wave_index` (the
+  # verify-loop reruns are generic completed-wave reruns — the wave's
+  # `wave_completed` already advanced the index). Routes ONLY the new verify-loop
+  # path; the two plan-gate emitters (`replan_after_reject`,
+  # `retract_stale_approval`) keep their exact-payload shapes. The in-memory mirror
+  # matches `Projection.apply_event(:stages_invalidated)` + the `artifacts_produced`
+  # fold exactly (the projection-equivalence invariant).
+  defp invalidate_stages(state, rerun_set, opts) do
+    extra_markers = Keyword.get(opts, :extra_markers, [])
+    artifacts_put = Keyword.get(opts, :artifacts_put, %{})
+    markers = [stages_invalidated: %{stages: rerun_set}] ++ extra_markers
+
+    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+      :ok ->
+        {:noreply, apply_invalidation(state, rerun_set, artifacts_put), {:continue, :tick}}
+
+      {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      {:error, _reason} ->
+        # The markers didn't land durably → don't diverge from the log; continue
+        # with the (unchanged) state and let the next tick re-attempt.
+        {:noreply, state, {:continue, :tick}}
+    end
+  end
+
+  defp apply_invalidation(state, rerun_set, artifacts_put) do
+    %{
+      state
+      | ran: MapSet.difference(state.ran, MapSet.new(rerun_set)),
+        rerun_counts: bump_rerun_counts(state.rerun_counts, rerun_set),
+        artifacts: merge_artifacts(state.artifacts, artifacts_put)
+    }
+  end
+
+  # Two-level merge matching `Projection.produce_artifact/2` (per-producer
+  # `Map.put` into the name map), so the in-memory store equals the projection.
+  defp merge_artifacts(store, put) do
+    Enum.reduce(put, store, fn {name, producers}, acc ->
+      Map.update(acc, name, producers, &Map.merge(&1, producers))
+    end)
   end
 
   defp stale_approval?(state, emissions) do
@@ -1920,6 +2048,14 @@ defmodule JidoClaw.RouteComposer do
       not implementer_ran?(state)
   end
 
+  # Stale-approval retraction (§4): a wave folded a premise-break (`scope-shift`)
+  # while `plan-approved` is live and the implementer (the stage locked
+  # `until: plan-approved`) has NOT run — so the approved plan is stale. Retract
+  # `plan-approved` (`signals_retracted`) + invalidate the re-run set (here the
+  # gate DID complete, so it is in the set) and re-tick → re-plan → re-gate →
+  # re-approve. NO `closed_wave_index` (a generic completed-wave rerun — the gate's
+  # `wave_completed` already advanced the index). UNCHANGED by AR-8c (kept on its
+  # own exact-payload emitter, not routed through `invalidate_stages`).
   defp retract_stale_approval(state) do
     case plan_gate_stage_struct(state.catalog) do
       %Stage{} = gate_stage ->
@@ -2195,6 +2331,27 @@ defmodule JidoClaw.RouteComposer do
     notify_payload(result, summary)
   end
 
+  # AR-8c verify-failed: the novel `:failed`-WITH-disposition append — `:error`
+  # carries the (scrubbable) findings-derived reason, `result.disposition` the
+  # non-sensitive `"verify_failed"` marker the operator query keys on. Placed
+  # BEFORE the generic failure catch-all (which lifts only `:error`).
+  defp parent_terminal_notify(:verify_failed, reason, summary, state) do
+    result =
+      append_parent_terminal(
+        state.parent_run_id,
+        :route_verify_failed,
+        %{
+          error: format_terminal_error(:verify_failed, reason),
+          result: %{disposition: "verify_failed"}
+        },
+        state.tenant,
+        state.actor
+      )
+
+    maybe_teardown_forge_session(result, :verify_failed, state)
+    notify_payload(result, summary)
+  end
+
   defp parent_terminal_notify(kind, reason, summary, state) do
     result =
       append_parent_terminal(
@@ -2276,6 +2433,8 @@ defmodule JidoClaw.RouteComposer do
 
   defp classify_terminal({:budget_exhausted, reason}), do: {:budget_exhausted, reason}
   defp classify_terminal({:failed, reason}), do: {:failed, reason}
+  # AR-8c: verify-failed carries the exhausted lenses as its reason.
+  defp classify_terminal({:verify_failed, reason}), do: {:verify_failed, reason}
   # Phase 2d gate-decided-then-crash terminals (carry a disposition reason).
   defp classify_terminal({:rejected, reason}), do: {:rejected, reason}
   defp classify_terminal({:abandoned, reason}), do: {:abandoned, reason}
@@ -2410,6 +2569,11 @@ defmodule JidoClaw.RouteComposer do
     do: "budget_exhausted: rerun_cap=#{cap}"
 
   defp format_terminal_error(:failed, reason), do: "failed: #{Reason.format(reason)}"
+
+  # AR-8c: the reason is the list of reverse-verify lenses still open at the trip.
+  defp format_terminal_error(:verify_failed, lenses) when is_list(lenses),
+    do: "verify_failed: lenses=#{Enum.join(lenses, ",")}"
+
   defp format_terminal_error(kind, _reason), do: Atom.to_string(kind)
 
   # Abnormal-path reason → error string. Every caller passes a bare atom
@@ -2451,5 +2615,36 @@ defmodule JidoClaw.RouteComposer do
       past_deadline?(state) -> {:deadline, state.deadline_at_ms}
       true -> {:max_waves, state.max_waves}
     end
+  end
+
+  # AR-8c: a rerun-cap trip on a reverse-verify stage whose findings are STILL
+  # live is a *verification* failure, not a generic budget stop. The check is
+  # `rerun_counts` + `live` based, NOT `ran` based — critical, because the cap
+  # trips VIA the same invalidation that just removed the verifier from `ran`, so
+  # any `ran`-membership check is false at the trip tick. `budget_reason/1` stays
+  # pure (it classifies the *cause*); this is the orthogonal "is a reverse-verify
+  # lens open?" axis.
+  defp budget_terminal(state) do
+    if rerun_capped?(state) and verify_exhausted?(state) do
+      {:verify_failed, exhausted_verify_lenses(state)}
+    else
+      {:budget_exhausted, budget_reason(state)}
+    end
+  end
+
+  defp verify_exhausted?(state), do: exhausted_verify_lenses(state) != []
+
+  # The lenses of `reverse_verify: true` stages that hit their rerun cap with
+  # `findings:<lens>` STILL live — the loop gave up while verification was failing.
+  # Keyed on `rerun_counts` + `live` (NOT `ran`): the cap-tripping invalidation
+  # just removed the stage from `ran`. If it had passed, `clean:<lens>` would have
+  # replaced `findings:<lens>` and the loop would have converged, so it would not
+  # be capped with findings live.
+  defp exhausted_verify_lenses(state) do
+    for {name, %Stage{reverse_verify: true, lens: lens}} <- state.catalog,
+        is_binary(lens),
+        Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
+        MapSet.member?(state.live, "findings:#{lens}"),
+        do: lens
   end
 end

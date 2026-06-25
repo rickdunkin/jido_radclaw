@@ -431,37 +431,25 @@ defmodule JidoClaw.Session.Worker do
       {:ok, %{metadata: %{"current_agent_template" => template_name}} = session}
       when is_binary(template_name) ->
         case Templates.get(template_name) do
+          # AR-8c: a composer-private template (the `system_*` flag) must NOT be
+          # transiently re-installed as a handoff owner from durable metadata —
+          # the metadata mirror is not a path that can bypass the safety gate. So
+          # treat it as stale, exactly like an unresolvable template.
           {:ok, template} ->
-            handoff =
-              Handoff.new(%{
-                tenant_id: tenant_id,
-                runtime_session_id: runtime_session_id,
-                session_uuid: session_uuid,
-                from_template: Handoff.rehydrated_marker(),
-                to_template: template_name,
-                to_module: template.module,
-                message: Handoff.rehydrated_marker()
-              })
-
-            :ok =
-              HandoffRegistry.put_owner(tenant_id, runtime_session_id, handoff,
-                preamble_consumed?: true
+            if Templates.composer_private?(template_name) do
+              clear_stale_template(session, runtime_session_id, template_name, tenant_id, actor)
+            else
+              install_rehydrated_owner(
+                tenant_id,
+                runtime_session_id,
+                session_uuid,
+                template_name,
+                template
               )
-
-            :ok
+            end
 
           {:error, _} ->
-            Logger.warning(
-              "[Session] #{runtime_session_id} stale current_agent_template '#{template_name}' — clearing metadata"
-            )
-
-            _ =
-              ConversationsSession.set_current_agent_template(session, nil,
-                tenant: tenant_id,
-                actor: actor
-              )
-
-            :ok
+            clear_stale_template(session, runtime_session_id, template_name, tenant_id, actor)
         end
 
       _ ->
@@ -474,4 +462,42 @@ defmodule JidoClaw.Session.Worker do
   end
 
   defp seed_handoff_from_metadata(_, _, _, _), do: :ok
+
+  defp install_rehydrated_owner(
+         tenant_id,
+         runtime_session_id,
+         session_uuid,
+         template_name,
+         template
+       ) do
+    handoff =
+      Handoff.new(%{
+        tenant_id: tenant_id,
+        runtime_session_id: runtime_session_id,
+        session_uuid: session_uuid,
+        from_template: Handoff.rehydrated_marker(),
+        to_template: template_name,
+        to_module: template.module,
+        message: Handoff.rehydrated_marker()
+      })
+
+    :ok =
+      HandoffRegistry.put_owner(tenant_id, runtime_session_id, handoff, preamble_consumed?: true)
+
+    :ok
+  end
+
+  defp clear_stale_template(session, runtime_session_id, template_name, tenant_id, actor) do
+    Logger.warning(
+      "[Session] #{runtime_session_id} stale current_agent_template '#{template_name}' — clearing metadata"
+    )
+
+    _ =
+      ConversationsSession.set_current_agent_template(session, nil,
+        tenant: tenant_id,
+        actor: actor
+      )
+
+    :ok
+  end
 end

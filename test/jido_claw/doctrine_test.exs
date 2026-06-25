@@ -10,7 +10,7 @@ defmodule JidoClaw.DoctrineTest do
 
   describe "slice/1" do
     test "returns non-empty text for each known slice key" do
-      for key <- [:base, :artifacts, :reviewer_min] do
+      for key <- [:base, :artifacts, :reviewer_min, :system_verify] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
       end
@@ -20,8 +20,8 @@ defmodule JidoClaw.DoctrineTest do
       assert Doctrine.slice(:does_not_exist) == ""
     end
 
-    test "list/0 enumerates exactly the three seed slices" do
-      assert Enum.sort(Doctrine.list()) == [:artifacts, :base, :reviewer_min]
+    test "list/0 enumerates exactly the seed slices" do
+      assert Enum.sort(Doctrine.list()) == [:artifacts, :base, :reviewer_min, :system_verify]
     end
   end
 
@@ -56,6 +56,23 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Runtime artifacts"
       refute doctrine =~ "Review discipline"
+    end
+
+    test "the AR-8c system_executor is a producing worker (base + artifacts)" do
+      doctrine = Doctrine.for_template("system_executor")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Runtime artifacts"
+      refute doctrine =~ "Review discipline"
+    end
+
+    test "the AR-8c system_verifier is a judge with the system-verify slice" do
+      doctrine = Doctrine.for_template("system_verifier")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Review discipline"
+      assert doctrine =~ "System verification discipline"
+      refute doctrine =~ "Runtime artifacts"
     end
 
     test "\"main\" maps to no doctrine (it uses Prompt — doctrine never double-applies)" do

@@ -17,17 +17,17 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   the cycle check are skipped.
 
   Group 0 also shape-checks the typed scalar fields — `task` / `lens` as
-  nilable strings, `guard` / `model` / `effort` as their closed enums, and
-  `emit` as `:default | {:mapper, string}` — and rejects a non-`%Stage{}`
-  value or a non-string catalog key up front, so a clean result implies every
-  entry is a binary-keyed, well-formed `%Stage{}`.
+  nilable strings, `reverse_verify` as a boolean, `guard` / `model` / `effort`
+  as their closed enums, and `emit` as `:default | {:mapper, string}` — and
+  rejects a non-`%Stage{}` value or a non-string catalog key up front, so a clean
+  result implies every entry is a binary-keyed, well-formed `%Stage{}`.
 
   Existence of the template / skill / gate a `unit` names is **not** resolved
   here — that is execution-time (Phase 1+). Group 0 validates shape only; the
   `JidoClaw.RouteComposer.Catalog` compile-time guard checks worker-template
   existence separately.
 
-  ## Invariants (groups 1–8 + cycle = 9)
+  ## Invariants (groups 1–9 + cycle = 10)
 
     1. `routes` present, non-empty, and ⊆ `["talk", "sketch", "code",
        "system"]`.
@@ -44,7 +44,10 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
        `findings:<lens>` in `publishes` (the `:default` mapper derives both
        verdict families, so a missing declaration would fail the strict
        ⊆-publishes emit check mid-wave — caught here at load instead, AR-2 §7).
-    9. the producer → consumer data graph is acyclic.
+    9. a `reverse_verify: true` stage (AR-8c) carries a `lens` **and exactly
+       one** required input (the reused rerun helper inspects only the first
+       required artifact, so >1 would silently re-fire only one producer).
+    10. the producer → consumer data graph is acyclic.
 
   `family_match?/2` is **bidirectional** (an exact topic, a qualified member of
   the family, **or** the family base) and is deliberately distinct from the
@@ -115,6 +118,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       check_unit_shape(name, stage.unit),
       check_optional_string(name, "task", stage.task),
       check_optional_string(name, "lens", stage.lens),
+      check_bool(name, "reverse_verify", stage.reverse_verify),
       check_enum(name, "guard", stage.guard, [:sticky, nil]),
       check_enum(name, "model", stage.model, [:fast, :capable, nil]),
       check_enum(name, "effort", stage.effort, [:low, :medium, :high, nil]),
@@ -145,6 +149,9 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
 
   defp check_optional_string(name, field, _value),
     do: ["#{name}: `#{field}` must be a string or nil"]
+
+  defp check_bool(_name, _field, value) when is_boolean(value), do: []
+  defp check_bool(name, field, _value), do: ["#{name}: `#{field}` must be a boolean"]
 
   defp check_input_shape(name, %{required: req, optional: opt})
        when is_list(req) and is_list(opt) do
@@ -211,7 +218,8 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       check_task(name, stage),
       check_locks(name, stage, published),
       check_self_dep(name, stage),
-      check_verdict_publishes(name, stage)
+      check_verdict_publishes(name, stage),
+      check_reverse_verify(name, stage)
     ])
   end
 
@@ -294,6 +302,30 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   end
 
   defp check_verdict_publishes(_name, _stage), do: []
+
+  # A `reverse_verify: true` stage (AR-8c) emits `findings:<lens>` and re-fires
+  # its single upstream producer on an open finding. So it must carry a `lens`
+  # (the verdict family it emits) AND **exactly one** `input.required` artifact:
+  # the reused `replan_rerun_set/2` → `gate_input_producers/2` inspects only the
+  # FIRST required artifact (`[name | _]`), so a multi-required reverse_verify
+  # stage would silently re-fire only the first producer. Caught at load.
+  defp check_reverse_verify(name, %Stage{
+         reverse_verify: true,
+         lens: lens,
+         input: %{required: req}
+       }) do
+    lens_problem =
+      if is_binary(lens), do: [], else: ["#{name}: reverse_verify stage must carry a `lens`"]
+
+    input_problem =
+      if match?([_single], req),
+        do: [],
+        else: ["#{name}: reverse_verify stage must have exactly one required input"]
+
+    lens_problem ++ input_problem
+  end
+
+  defp check_reverse_verify(_name, _stage), do: []
 
   # ---------------------------------------------------------------------------
   # Cycle — the producer → consumer data graph must be acyclic

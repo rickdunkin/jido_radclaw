@@ -89,7 +89,7 @@ defmodule JidoClaw.Tools.Handoff do
          :ok <- reject_main(to_template),
          {:ok, message} <- validate_required(Map.get(params, :message), "message"),
          {:ok, template} <- Templates.get(to_template),
-         :ok <- reject_sandbox(template, to_template),
+         :ok <- reject_composer_private(to_template),
          {:ok, ctx_fields} <- extract_context(context) do
       summary = optional_trimmed(Map.get(params, :summary))
       reason = optional_trimmed(Map.get(params, :reason))
@@ -226,16 +226,19 @@ defmodule JidoClaw.Tools.Handoff do
   defp reject_main("main"), do: {:error, "Cannot hand off to 'main'; use /reset instead."}
   defp reject_main(_), do: :ok
 
-  # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`) is
-  # composer-private — it may only own a session through the front-door sketch
-  # path. A handoff would make it a session owner with no `.prototypes/` scope,
-  # so refuse it (string reason — see `error_to_string/1`).
-  defp reject_sandbox(%{sandbox: s}, to_template) when s in [:prototype, :docker],
-    do:
-      {:error,
-       "Template '#{to_template}' is composer-private (sandboxed) and cannot own a session."}
-
-  defp reject_sandbox(_template, _to_template), do: :ok
+  # AR-8b / AR-8b-2 F2 / AR-8c: a composer-private template — sandboxed
+  # (`:prototype`/`:docker`) OR the explicit AR-8c `system_*` flag — must never
+  # own a session: a handoff would make it the session owner with no
+  # `.prototypes/` scope (sandboxed) or bypassing the safety gate (system). Gated
+  # through the single `Templates.composer_private?/1` predicate (string reason —
+  # see `error_to_string/1`).
+  defp reject_composer_private(to_template) do
+    if Templates.composer_private?(to_template) do
+      {:error, "Template '#{to_template}' is composer-private and cannot own a session."}
+    else
+      :ok
+    end
+  end
 
   # ---- Best-effort side-effects ----
 

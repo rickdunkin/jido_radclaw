@@ -53,38 +53,47 @@ defmodule JidoClaw.Tools.SpawnAgent do
   end
 
   defp spawn_from_template(template_name, task, tag, context, scope_opts) do
+    # AR-8b / AR-8b-2 F2 / AR-8c: a composer-private template — sandboxed
+    # (`:prototype`/`:docker`, no `.prototypes/` scope here → would write the real
+    # tree) OR explicitly `composer_private` (the AR-8c `sandbox: :none` system
+    # workers, which must only run past the safety gate via the wave-builder) —
+    # is never spawnable by the LLM-exposed swarm tool. Resolve through the same
+    # `templates()` provider that launches it, then gate on that RESOLVED map via
+    # `composer_private_template?/1`: re-resolving the name against the canonical
+    # registry would let an overridden `:agent_templates` provider launch a
+    # private template the name-based guard never saw (AR-8c review fix).
     case templates().get(template_name) do
-      # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`) is
-      # composer-private — it may only run through the front-door sketch path
-      # that sets up a validated `.prototypes/<id>/` root (and, for `:docker`, a
-      # ready Forge session). The LLM-exposed swarm tool must never spawn it (no
-      # sandbox scope → it would write the real tree, P2b).
-      {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
-        {:error, composer_private_error(template_name)}
-
       {:ok, template} ->
-        case jido_runtime().start_subagent(template.module, id: tag) do
-          {:ok, subagent_pid} ->
-            register_spawned_agent(
-              subagent_pid,
-              template,
-              template_name,
-              task,
-              tag,
-              context,
-              scope_opts
-            )
-
-          {:error, reason} ->
-            {:error,
-             Error.execution_error("Failed to spawn agent.",
-               phase: :spawn,
-               details: %{reason: inspect(reason), template: template_name}
-             )}
+        if Templates.composer_private_template?(template) do
+          {:error, composer_private_error(template_name)}
+        else
+          do_spawn_from_template(template, template_name, task, tag, context, scope_opts)
         end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp do_spawn_from_template(template, template_name, task, tag, context, scope_opts) do
+    case jido_runtime().start_subagent(template.module, id: tag) do
+      {:ok, subagent_pid} ->
+        register_spawned_agent(
+          subagent_pid,
+          template,
+          template_name,
+          task,
+          tag,
+          context,
+          scope_opts
+        )
+
+      {:error, reason} ->
+        {:error,
+         Error.execution_error("Failed to spawn agent.",
+           phase: :spawn,
+           details: %{reason: inspect(reason), template: template_name}
+         )}
     end
   end
 

@@ -20,15 +20,26 @@ defmodule JidoClaw.Doctrine do
                        "doctrine",
                        "reviewer_min.md"
                      ])
+  @system_verify_priv Path.join([
+                        __DIR__,
+                        "..",
+                        "..",
+                        "priv",
+                        "defaults",
+                        "doctrine",
+                        "system_verify.md"
+                      ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
   @external_resource @reviewer_min_priv
+  @external_resource @system_verify_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
     artifacts: String.trim(File.read!(@artifacts_priv)),
-    reviewer_min: String.trim(File.read!(@reviewer_min_priv))
+    reviewer_min: String.trim(File.read!(@reviewer_min_priv)),
+    system_verify: String.trim(File.read!(@system_verify_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -49,7 +60,14 @@ defmodule JidoClaw.Doctrine do
     # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
     # `:artifacts` slice (no new priv file). Required: the drift guard
     # (`doctrine_test.exs`, `template_names() == names()`) fails without it.
-    "sketch_build_exec" => [:base, :artifacts]
+    "sketch_build_exec" => [:base, :artifacts],
+    # AR-8c: the system-path workers. The executor is a producer (`:artifacts`,
+    # like `coder`); the verifier is a read-only judge (`:reviewer_min`) PLUS the
+    # new `:system_verify` slice that defines what "verified" means on the real
+    # machine (idempotent re-check / state assertion / exit code; cite the
+    # evidence). Both required by the drift guard (`template_names() == names()`).
+    "system_executor" => [:base, :artifacts],
+    "system_verifier" => [:base, :reviewer_min, :system_verify]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

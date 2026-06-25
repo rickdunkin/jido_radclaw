@@ -33,6 +33,17 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubStore do
     end
   end
 
+  @doc """
+  Atomically increment and return the integer counter at `key` (default 0 →
+  first call returns 1). Used by `SystemLoopWorker` to make the
+  `system_verifier`'s verdict change across the AR-8c reverse-verify re-fires.
+  """
+  @spec bump(term()) :: integer()
+  def bump(key) do
+    ensure_table()
+    :ets.update_counter(@table, key, {2, 1}, {key, 0})
+  end
+
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined -> :ets.new(@table, [:named_table, :public, :set])
@@ -171,5 +182,62 @@ defmodule JidoClaw.RouteComposer.TestSupport.GatedAgentServer do
     else
       false
     end
+  end
+end
+
+defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
+  @moduledoc """
+  AR-8c reverse-verify-loop worker stub. Like `StubWorker` (one shared agent wired
+  in as every system-path worker template), but the `system_verifier` template's
+  output is **counter-driven**: it returns a `request_changes` (→ `findings:system`)
+  verdict for the first `:route_composer_system_verify_fails` invocations (default
+  1), then `approve` (→ `clean:system`) — so the reverse-verify loop re-fires the
+  executor + verifier and then converges (or, with the cap below the fail count,
+  exhausts into `:route_verify_failed`). Every other template falls back to the
+  static `:route_composer_stub_outputs` map (the planner + the executor).
+  """
+
+  use Jido.Agent,
+    name: "route_composer_system_loop_worker",
+    description: "AR-8c system reverse-verify-loop stub worker (exports ask/3)"
+
+  alias JidoClaw.RouteComposer.TestSupport.StubStore
+
+  @spec ask(pid(), term(), keyword()) :: {:ok, %{id: term()}}
+  def ask(_pid, _task, opts) when is_list(opts) do
+    request_id = Keyword.fetch!(opts, :request_id)
+    tool_context = Keyword.fetch!(opts, :tool_context)
+    template = Map.fetch!(tool_context, :agent_template)
+
+    StubStore.put(request_id, %{
+      status: :completed,
+      result: output_for(template),
+      meta: %{output: %{status: :validated, schema_kind: :map}}
+    })
+
+    {:ok, %{id: request_id}}
+  end
+
+  # The verifier verdict flips from findings → clean once the per-test fail count
+  # is exhausted. `StubStore.bump/1` is atomic; the verifier runs one wave at a
+  # time (sequential), so no race.
+  defp output_for("system_verifier") do
+    n = StubStore.bump(:system_verifier_calls)
+    fails = Application.get_env(:jido_claw, :route_composer_system_verify_fails, 1)
+
+    if n <= fails do
+      %{
+        "overall" => "request_changes",
+        "findings" => [%{"severity" => "error", "description" => "the change did not take"}]
+      }
+    else
+      %{"overall" => "approve", "findings" => []}
+    end
+  end
+
+  defp output_for(template) do
+    :jido_claw
+    |> Application.fetch_env!(:route_composer_stub_outputs)
+    |> Map.fetch!(template)
   end
 end

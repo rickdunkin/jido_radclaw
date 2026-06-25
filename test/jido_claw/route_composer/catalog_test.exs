@@ -78,6 +78,50 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     assert "scope-shift" in stage.publishes
   end
 
+  test "AR-8c: the plan-gate is dropped from the system path (routes: [code] only)" do
+    assert %Stage{routes: ["code"]} = Catalog.get("plan-gate")
+    # The planner still serves both paths.
+    assert "system" in Catalog.get("planner").routes
+    assert "code" in Catalog.get("planner").routes
+  end
+
+  test "AR-8c: the safety-gate stage is pinned" do
+    stage = Catalog.get("safety-gate")
+    assert %Stage{unit: {:gate, "safety"}} = stage
+    assert stage.routes == ["system"]
+    assert stage.subscribes == ["plan-ready"]
+    assert stage.input == %{required: ["plan"], optional: []}
+    assert stage.output == ["approved-change"]
+    assert "safety-approved" in stage.publishes
+    assert "scope-shift" in stage.publishes
+  end
+
+  test "AR-8c: the system-executor stage is pinned (held until safety-approved, optional verify-feedback)" do
+    stage = Catalog.get("system-executor")
+    assert %Stage{unit: {:worker_template, "system_executor"}} = stage
+    assert stage.routes == ["system"]
+    assert stage.subscribes == ["plan-ready"]
+    assert stage.input == %{required: ["plan"], optional: ["verify-feedback"]}
+    assert stage.output == ["system-change"]
+    assert stage.lock == [%{while: "plan-ready", until: "safety-approved"}]
+    refute stage.reverse_verify
+  end
+
+  test "AR-8c: the system-verifier stage is pinned (reverse_verify, lens: system)" do
+    stage = Catalog.get("system-verifier")
+    assert %Stage{unit: {:worker_template, "system_verifier"}} = stage
+    assert stage.lens == "system"
+    assert stage.reverse_verify
+    assert stage.routes == ["system"]
+    # The `system` path signal (always live) triggers it; the data edge on
+    # `system-change` orders it after the executor.
+    assert stage.subscribes == ["system"]
+    assert stage.input == %{required: ["system-change"], optional: []}
+    assert "findings:system" in stage.publishes
+    assert "clean:system" in stage.publishes
+    assert "scope-shift" in stage.publishes
+  end
+
   describe "to_map/from_map serialization (Phase 2d — durable catalog)" do
     test "round-trips the built-in catalog (incl. the :seed + :gate units)" do
       assert Catalog.from_map(Catalog.to_map(Catalog.all())) == Catalog.all()
@@ -103,6 +147,8 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
           req: ["x"],
           opt: ["y"]
         ),
+        # AR-8c: the reverse_verify boolean must survive the JSONB round-trip.
+        TestFixtures.stage(name: "rv", reverse_verify: true, lens: "system", req: ["c"]),
         TestFixtures.stage(name: "bare")
       ]
 
@@ -143,6 +189,15 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
       assert Stage.from_map(%{"emit" => %{"unknown" => "x"}}) == nil
       assert Stage.from_map(%{"model" => "turbo"}) == nil
       assert Stage.from_map(%{"effort" => "extreme"}) == nil
+    end
+
+    test "reverse_verify coerces atom-safely: only literal true is true, else false" do
+      assert %Stage{reverse_verify: true} = Stage.from_map(%{"reverse_verify" => true})
+      assert %Stage{reverse_verify: false} = Stage.from_map(%{"reverse_verify" => false})
+      # A non-boolean value (atom-unsafe garbage) does NOT fail the decode — it
+      # falls back to the struct default `false` (a degenerate-but-atom-safe map).
+      assert %Stage{reverse_verify: false} = Stage.from_map(%{"reverse_verify" => "yes"})
+      assert %Stage{reverse_verify: false} = Stage.from_map(%{})
     end
 
     test "a structurally-empty stage map decodes (atom-safe) but is NOT validator-clean" do

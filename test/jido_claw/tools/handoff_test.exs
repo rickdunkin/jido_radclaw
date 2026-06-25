@@ -243,6 +243,17 @@ defmodule JidoClaw.Tools.HandoffTest do
       assert HandoffRegistry.owner(t, rsid) == nil
     end
 
+    test "rejects the composer-private system_executor target template (AR-8c, :none + flag)",
+         %{tenant_id: t, session: session, runtime_session_id: rsid} do
+      ctx = build_context(t, rsid, session.id)
+
+      assert {:error, %{message: msg}} =
+               HandoffTool.run(%{to_template: "system_executor", message: "do it"}, ctx)
+
+      assert msg =~ "composer-private"
+      assert HandoffRegistry.owner(t, rsid) == nil
+    end
+
     test "rejects an unknown template",
          %{tenant_id: t, session: session, runtime_session_id: rsid} do
       request_id = Ecto.UUID.generate()
