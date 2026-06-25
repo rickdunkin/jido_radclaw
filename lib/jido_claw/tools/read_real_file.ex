@@ -7,8 +7,9 @@ defmodule JidoClaw.Tools.ReadRealFile do
   deliberately **no write/edit counterpart**, so mutation is structurally
   impossible (every write still lands in the sandbox via `write_file`). Reads are
   jailed to the real base (`JidoClaw.Tools.RealTree.resolver_opts/1`) and fail
-  **closed** unless the call carries a `sandbox: :prototype` context. Local paths
-  only — remote schemes (`github://`, `s3://`, `git://`) are forbidden.
+  **closed** unless the call carries a `sandbox: :prototype` or `:docker`
+  context. Local paths only — remote schemes (`github://`, `s3://`, `git://`)
+  are forbidden.
 
   Preserves `read_file`'s `FilePayloadLimit` cap + numbered-line formatting by
   reusing `JidoClaw.Tools.ReadFile.read_numbered/4`.

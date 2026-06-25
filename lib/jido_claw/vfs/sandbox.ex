@@ -117,17 +117,19 @@ defmodule JidoClaw.VFS.Sandbox do
   Derive `Resolver` opts (`workspace_id`/`project_dir`/`local_only`) from a
   tool's `tool_context`.
 
-  Fails CLOSED for a `sandbox: :prototype` context: a sketch tool call MUST
-  carry a `project_dir` that `validate_root/1` accepts — never the `File.cwd!()`
-  fallback (review P2). Non-sandbox contexts keep the existing
-  `project_dir || File.cwd!()` default.
+  Fails CLOSED for a `sandbox: :prototype` **or `:docker`** context: a sketch
+  tool call MUST carry a `project_dir` that `validate_root/1` accepts — never
+  the `File.cwd!()` fallback (review P2). `:docker` shares the `:prototype` file
+  jail (its OS-level isolation is layered on the same `.prototypes/<uuid>/`
+  root), so it jails file tools identically. Non-sandbox contexts keep the
+  existing `project_dir || File.cwd!()` default.
   """
   @spec resolver_opts(map() | nil) :: {:ok, keyword()} | {:error, term()}
   def resolver_opts(tool_context) when is_map(tool_context) do
     workspace_id = Map.get(tool_context, :workspace_id)
 
     case Map.get(tool_context, :sandbox) do
-      :prototype ->
+      sandbox when sandbox in [:prototype, :docker] ->
         sandbox_resolver_opts(workspace_id, Map.get(tool_context, :project_dir))
 
       _ ->

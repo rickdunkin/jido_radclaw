@@ -170,9 +170,10 @@ defmodule JidoClaw.Tools.SendToAgent do
     case entry do
       %{template: template_name} when is_binary(template_name) ->
         case templates().get(template_name) do
-          # AR-8b: a sandboxed template is composer-private — refuse a follow-up
-          # turn to it via the LLM-exposed swarm tool (mirrors spawn_agent).
-          {:ok, %{sandbox: :prototype}} ->
+          # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`)
+          # is composer-private — refuse a follow-up turn to it via the
+          # LLM-exposed swarm tool (mirrors spawn_agent).
+          {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
             {:error, composer_private_error(template_name)}
 
           {:ok, template} ->

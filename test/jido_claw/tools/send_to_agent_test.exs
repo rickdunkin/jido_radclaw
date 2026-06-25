@@ -101,6 +101,11 @@ defmodule JidoClaw.Tools.SendToAgentTest do
         do: %{template: "sketch_build"}
     end
 
+    def get_agent("docker_agent", opts) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test",
+        do: %{template: "docker_stub"}
+    end
+
     def get_agent(_agent_id, _opts), do: nil
 
     # Straggler absorbers: an orchestration task from an earlier test can outlive
@@ -247,6 +252,22 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     assert details.reason == :composer_private
     assert details.template == "sketch_build"
     # The guard fires before dispatch, so the worker is never invoked.
+    refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
+  end
+
+  test "refuses a follow-up to a composer-private :docker agent too (AR-8b-2 F2)" do
+    Application.put_env(:jido_claw, :agent_tracker, SandboxTracker)
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+
+    override = %{"docker_stub" => %{module: JidoClaw.Agent.Workers.Coder, sandbox: :docker}}
+    Application.put_env(:jido_claw, :agent_templates_override, override)
+    on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+
+    assert {:error, %{code: :execution_error, details: details}} =
+             SendToAgent.run(%{agent_id: "docker_agent", message: "more"}, ctx())
+
+    assert details.reason == :composer_private
+    assert details.template == "docker_stub"
     refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
   end
 

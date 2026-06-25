@@ -186,5 +186,18 @@ defmodule JidoClaw.VFS.SandboxTest do
       assert {:error, message} = Sandbox.resolver_opts(%{sandbox: :prototype, project_dir: base})
       assert message =~ "sketch sandbox scope invalid"
     end
+
+    test "a :docker context jails like :prototype (valid root → local_only true)", %{base: base} do
+      {:ok, %{dir: proto}} = Sandbox.create_prototype_dir(base)
+
+      assert {:ok, opts} = Sandbox.resolver_opts(%{sandbox: :docker, project_dir: proto})
+      assert opts[:project_dir] == proto
+      assert opts[:local_only] == true
+    end
+
+    test "a :docker context with no project_dir fails closed (no host cwd fallback)" do
+      assert {:error, message} = Sandbox.resolver_opts(%{sandbox: :docker})
+      assert message =~ "sketch sandbox scope missing"
+    end
   end
 end

@@ -70,6 +70,23 @@ defmodule JidoClaw.Forge do
     Harness.exec(session_id, command, opts)
   end
 
+  # Single source of truth for the Forge exec timeout cushion (AR-8b-2 F2 C3).
+  #
+  # Two independent consumers read this so they can never drift:
+  #
+  #   * `JidoClaw.Forge.Harness.exec_call_timeout/1` sizes the OUTER
+  #     `GenServer.call` deadline to `inner + cushion`, so a real in-container
+  #     timeout returns the backend's manufactured `{_, 124}` (which the bridge
+  #     taints on) instead of an uncaught caller `:exit, {:timeout, _}`; and
+  #   * `JidoClaw.Tools.RunCommand.ForgeBridge` folds it into the timeout-budget
+  #     `margin` it derives from the outer `Jido.Exec` deadline, so the ordering
+  #     `inner_OsCmd < harness_outer (inner + cushion) < jido_deadline` holds.
+  @exec_timeout_cushion_ms 5_000
+
+  @doc false
+  @spec exec_timeout_cushion_ms() :: non_neg_integer()
+  def exec_timeout_cushion_ms, do: @exec_timeout_cushion_ms
+
   @spec cmd(SessionHandle.t(), String.t(), [term()], keyword()) ::
           {:ok, term()} | {:error, term()}
   def cmd(%SessionHandle{session_id: sid}, command, args, opts \\ []) when is_list(args) do

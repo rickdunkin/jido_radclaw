@@ -35,14 +35,20 @@ defmodule JidoClaw.ToolContext do
                            (always forwarded — never policy-strippable) so it
                            propagates to nested `spawn_agent`/`send_to_agent`
                            children automatically.
-    * `:sandbox`        — `:none` | `:prototype` (AR-8b). The isolation tier
-                           the turn runs under, stamped from the template's
-                           `sandbox` policy by `Skills.Steps.AgentRunner`. The
-                           file tools read it (`== :prototype`) to forbid remote
-                           VFS schemes (`github://`/…). Canonical (always
-                           forwarded — never policy-strippable) so a sketch
-                           worker's nested `spawn_agent`/`send_to_agent`
-                           children inherit the jail and can't shed it.
+    * `:sandbox`        — `:none` | `:prototype` | `:docker` (AR-8b /
+                           AR-8b-2 F2). The isolation tier the turn runs under,
+                           stamped from the template's `sandbox` policy by
+                           `Skills.Steps.AgentRunner`. The file tools read it
+                           (`:prototype`/`:docker`) to forbid remote VFS schemes
+                           (`github://`/…); under `:docker`, `run_command`
+                           additionally routes into a Forge Docker session
+                           (`JidoClaw.Tools.RunCommand.ForgeBridge`) instead of
+                           the host shell. Canonical (always forwarded — never
+                           policy-strippable) so a sketch worker's nested
+                           `spawn_agent`/`send_to_agent` children inherit the
+                           jail and can't shed it. Value-agnostic to propagate:
+                           `:docker` rides the existing machinery with no
+                           builder change.
     * `:request_correlation_expires_at` — `DateTime` | nil (AR-2 Phase 2b).
                            The conservative `RequestCorrelation` TTL ceiling a
                            composer wave seeds so an orphaned late-writing

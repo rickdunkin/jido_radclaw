@@ -106,6 +106,16 @@ defmodule JidoClaw.ToolContextTest do
       child = ToolContext.child(parent, "child-tag", :none)
       assert child[:sandbox] == :prototype
     end
+
+    test ":docker rides the same machinery, value-agnostic (AR-8b-2 F2, no code change)" do
+      parent = ToolContext.build(%{tenant_id: "t", project_dir: "/d", sandbox: :docker})
+      assert parent[:sandbox] == :docker
+
+      # Inherited by nested children and not policy-strippable, exactly like
+      # :prototype — the builder never special-cases the value.
+      assert ToolContext.child(parent, "c")[:sandbox] == :docker
+      assert ToolContext.child(parent, "c", :none)[:sandbox] == :docker
+    end
   end
 
   describe "ensure_nested/1" do

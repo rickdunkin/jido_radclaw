@@ -60,8 +60,31 @@ defmodule JidoClaw.Forge.Harness do
 
   @spec exec(String.t(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def exec(session_id, command, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 300_000)
-    call(session_id, {:exec, command, opts}, timeout)
+    # AR-8b-2 F2 (C3): the OUTER GenServer.call deadline is cushioned past the
+    # INNER backend timeout (`opts[:timeout]`, passed through unchanged to
+    # `Sandbox.exec`). The inner (later-starting) OsCmd deadline must win so a
+    # real timeout surfaces as the backend's manufactured `{_, 124}` — which the
+    # ForgeBridge taints on — rather than an uncaught caller `:exit, {:timeout,
+    # _}` (`call/3` only catches `:noproc`). Before this bridge `exec/3` had no
+    # production callers, so the cushion regresses nothing pre-existing.
+    call(session_id, {:exec, command, opts}, exec_call_timeout(opts))
+  end
+
+  # The outer `GenServer.call` timeout: the caller's inner timeout plus the
+  # single-sourced cushion. A unit-testable seam (the bridge's deadline-budget
+  # margin reads the SAME `Forge.exec_timeout_cushion_ms/0`, so the two can
+  # never drift). A non-integer/absent inner timeout falls back to the legacy
+  # 300_000 default before cushioning.
+  @doc false
+  @spec exec_call_timeout(keyword()) :: timeout()
+  def exec_call_timeout(opts) do
+    inner =
+      case Keyword.get(opts, :timeout, 300_000) do
+        n when is_integer(n) and n >= 0 -> n
+        _ -> 300_000
+      end
+
+    inner + JidoClaw.Forge.exec_timeout_cushion_ms()
   end
 
   @spec apply_input(String.t(), term()) :: :ok | {:error, term()}
@@ -544,6 +567,12 @@ defmodule JidoClaw.Forge.Harness do
       iteration: state.iteration,
       runner: state.runner,
       sandbox_id: state.sandbox_id,
+      # AR-8b-2 F2 (D5): surface the resolved default-client backend module so
+      # `Skills.Steps.AgentRunner.validate_sandbox_scope(:docker)` can assert the
+      # session is a REAL `JidoClaw.Forge.Sandbox.Docker` backend (not a
+      # HostShell/default one) before launching a `:docker` worker — the
+      # structural invariant Unit B's per-call approval bypass rests on.
+      sandbox_module: state.sandbox_module,
       sandbox_status: state.sandbox_status,
       sandboxes: Map.keys(state.clients),
       started_at: state.started_at,

@@ -226,11 +226,11 @@ defmodule JidoClaw.Tools.Handoff do
   defp reject_main("main"), do: {:error, "Cannot hand off to 'main'; use /reset instead."}
   defp reject_main(_), do: :ok
 
-  # AR-8b: a sandboxed template is composer-private — it may only own a session
-  # through the front-door sketch path. A handoff would make it a session owner
-  # with no `.prototypes/` scope, so refuse it (string reason — see
-  # `error_to_string/1`).
-  defp reject_sandbox(%{sandbox: :prototype}, to_template),
+  # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`) is
+  # composer-private — it may only own a session through the front-door sketch
+  # path. A handoff would make it a session owner with no `.prototypes/` scope,
+  # so refuse it (string reason — see `error_to_string/1`).
+  defp reject_sandbox(%{sandbox: s}, to_template) when s in [:prototype, :docker],
     do:
       {:error,
        "Template '#{to_template}' is composer-private (sandboxed) and cannot own a session."}

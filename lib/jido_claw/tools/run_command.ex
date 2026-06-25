@@ -83,47 +83,69 @@ defmodule JidoClaw.Tools.RunCommand do
   alias JidoClaw.Shell.SessionManager
   alias JidoClaw.Tools.MCPScope
   alias JidoClaw.Tools.OutputShaper
+  alias JidoClaw.Tools.RunCommand.ForgeBridge
 
   @impl Jido.Action
   def run(%{command: command} = params, context) do
     MCPScope.wrap(:run_command, params, context, fn enriched ->
-      timeout = Map.get(params, :timeout, 30_000)
+      case get_in(enriched, [:tool_context, :sandbox]) do
+        :docker ->
+          # AR-8b-2 F2: a `:docker` worker routes execution into its Forge
+          # Docker session, IGNORING `backend`/`server` entirely — short-circuit
+          # before `coerce_backend`/`validate_backend_server` so a model-supplied
+          # `backend: "ssh"` can neither preempt the Forge route nor raise a
+          # spurious SSH error (the sandbox is set by template policy, not
+          # params). Hard-fails if the session is unavailable; never falls back
+          # to the host shell. `enriched` is passed (not just the key/timeout) so
+          # the bridge can read the outer `:__jido_deadline_ms__` (C2.0).
+          forge_key = get_in(enriched, [:tool_context, :forge_session_key])
+          ForgeBridge.dispatch(command, forge_key, params, enriched)
 
-      workspace_id =
-        get_in(enriched, [:tool_context, :workspace_id]) ||
-          Map.get(params, :workspace_id, "default")
-
-      project_dir =
-        get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
-
-      backend = coerce_backend(Map.get(params, :backend))
-      server = Map.get(params, :server)
-      agent_id = get_in(enriched, [:tool_context, :agent_id]) || "main"
-      stream_to_display? = OutputShaper.effective_streaming?(params)
-
-      # The FULL shapeable? predicate, not just enabled?+non-streaming:
-      # capturing 512KB for a call the shaper will pass through (e.g. no
-      # tenant) would land on OutputLimit's 32KB head-cut instead of the
-      # legacy 10KB behavior. Same predicate on both sides means capture
-      # and shaping can never disagree.
-      capture? = OutputShaper.shapeable?("run_command", params, enriched)
-
-      with :ok <- validate_backend_server(backend, server) do
-        dispatch(command, backend, %{
-          timeout: timeout,
-          workspace_id: workspace_id,
-          project_dir: project_dir,
-          server: server,
-          params: params,
-          stream?: stream_to_display?,
-          agent_id: agent_id,
-          capture?: capture?
-        })
+        _ ->
+          run_host(command, params, enriched)
       end
     end)
   end
 
   # -- Private ----------------------------------------------------------------
+
+  # The host/VFS/SSH dispatch (the pre-AR-8b-2 path), reached for every non-
+  # `:docker` sandbox tier (including `:none`/`:prototype`).
+  defp run_host(command, params, enriched) do
+    timeout = Map.get(params, :timeout, 30_000)
+
+    workspace_id =
+      get_in(enriched, [:tool_context, :workspace_id]) ||
+        Map.get(params, :workspace_id, "default")
+
+    project_dir =
+      get_in(enriched, [:tool_context, :project_dir]) || File.cwd!()
+
+    backend = coerce_backend(Map.get(params, :backend))
+    server = Map.get(params, :server)
+    agent_id = get_in(enriched, [:tool_context, :agent_id]) || "main"
+    stream_to_display? = OutputShaper.effective_streaming?(params, enriched)
+
+    # The FULL shapeable? predicate, not just enabled?+non-streaming:
+    # capturing 512KB for a call the shaper will pass through (e.g. no
+    # tenant) would land on OutputLimit's 32KB head-cut instead of the
+    # legacy 10KB behavior. Same predicate on both sides means capture
+    # and shaping can never disagree.
+    capture? = OutputShaper.shapeable?("run_command", params, enriched)
+
+    with :ok <- validate_backend_server(backend, server) do
+      dispatch(command, backend, %{
+        timeout: timeout,
+        workspace_id: workspace_id,
+        project_dir: project_dir,
+        server: server,
+        params: params,
+        stream?: stream_to_display?,
+        agent_id: agent_id,
+        capture?: capture?
+      })
+    end
+  end
 
   defp validate_backend_server(:ssh, server) when is_binary(server) and server != "", do: :ok
 
@@ -184,9 +206,10 @@ defmodule JidoClaw.Tools.RunCommand do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  # `stream?` is the EFFECTIVE flag (`OutputShaper.effective_streaming?/1`)
-  # — already false under MCP serve_mode, where Display would corrupt the
-  # stdio JSON-RPC framing, so no serve-mode check is needed here.
+  # `stream?` is the EFFECTIVE flag (`OutputShaper.effective_streaming?/2`)
+  # — already false under MCP serve_mode (where Display would corrupt the
+  # stdio JSON-RPC framing) and under `sandbox: :docker` (the Forge route never
+  # streams), so no serve-mode/docker check is needed here.
   defp maybe_put_streaming(opts, false, _agent_id), do: opts
 
   defp maybe_put_streaming(opts, true, agent_id) do

@@ -70,4 +70,19 @@ defmodule JidoClaw.Tools.ListRealDirectoryTest do
       assert message =~ "remote schemes are forbidden in the sketch sandbox"
     end
   end
+
+  describe "a :docker context lists the real tree identically (AR-8b-2 F2)" do
+    defp docker_ctx(proto), do: %{tool_context: %{project_dir: proto, sandbox: :docker}}
+
+    test "lists a real-tree directory, jailed to the real base", %{base: base, proto: proto} do
+      File.write!(Path.join(base, "real_file.ex"), "")
+
+      assert {:ok, result} = ListRealDirectory.run(%{path: base}, docker_ctx(proto))
+      assert result.entries =~ "real_file.ex"
+    end
+
+    test "forbids a remote scheme", %{proto: proto} do
+      assert {:error, _} = ListRealDirectory.run(%{path: "github://o/r/dir"}, docker_ctx(proto))
+    end
+  end
 end

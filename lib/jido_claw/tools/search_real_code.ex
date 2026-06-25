@@ -6,8 +6,8 @@ defmodule JidoClaw.Tools.SearchRealCode do
   *find* patterns in the real project (e.g. existing APIs to model a prototype
   on) without being able to mutate it. Searches are jailed to the real base
   (`JidoClaw.Tools.RealTree.resolver_opts/1`) and fail **closed** unless the call
-  carries a `sandbox: :prototype` context. Local paths only — remote schemes are
-  forbidden.
+  carries a `sandbox: :prototype` or `:docker` context. Local paths only —
+  remote schemes are forbidden.
 
   Reuses `JidoClaw.Tools.SearchCode.search/2`, so it matches `search_code`'s
   current behavior exactly (including reading files without a `FilePayloadLimit`

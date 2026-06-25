@@ -5,9 +5,9 @@ defmodule JidoClaw.Tools.ListRealDirectory do
   A sketch worker runs jailed to `<real>/.prototypes/<uuid>/`; this tool lets it
   *explore* the real project's layout without being able to mutate it. Listings
   are jailed to the real base (`JidoClaw.Tools.RealTree.resolver_opts/1`) and
-  fail **closed** unless the call carries a `sandbox: :prototype` context. Local
-  paths only — remote schemes are forbidden (the shared listing core's remote
-  branch is gated by `local_only`).
+  fail **closed** unless the call carries a `sandbox: :prototype` or `:docker`
+  context. Local paths only — remote schemes are forbidden (the shared listing
+  core's remote branch is gated by `local_only`).
 
   Reuses `JidoClaw.Tools.ListDirectory.list/2`, so it matches `list_directory`'s
   current behavior exactly.

@@ -18,8 +18,10 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Forge
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.Skills.Steps.AgentRunner
-  alias JidoClaw.Test.{EchoAskStub, EchoStub}
+  alias JidoClaw.Test.{EchoAskStub, EchoStub, StubSandbox}
   alias JidoClaw.Workflows.StepResult
 
   alias JidoClaw.Skills.Steps.AgentRunnerTest.{
@@ -101,6 +103,11 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       scope = AgentRunner.resolve_scope(%{tenant: "t"}, "tag-plain")
       assert scope.sanitize_sensitive_context == false
       assert scope.request_correlation_expires_at == nil
+    end
+
+    test "carries forge_session_key from the reactor context (AR-8b-2 F2 D5)" do
+      scope = AgentRunner.resolve_scope(%{forge_session_key: "sess-123"}, "tag-fk")
+      assert scope.forge_session_key == "sess-123"
     end
   end
 
@@ -244,6 +251,101 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
 
       assert tc.sandbox == :prototype
       assert tc.agent_template == "sketch_stub"
+    end
+  end
+
+  describe "run/4 — AR-8b-2 F2 :docker scope (fail-closed, no worker)" do
+    setup do
+      # In-memory Forge only (no Persistence/DB ownership), mirroring
+      # harness_bootstrap_env_test — these tests never launch a worker.
+      prev = Application.get_env(:jido_claw, JidoClaw.Forge.Persistence, [])
+      Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
+
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "docker_stub" => %{
+          module: EchoStub,
+          description: "docker sketch stub",
+          model: :fast,
+          max_iterations: 1,
+          sandbox: :docker
+        }
+      })
+
+      Application.put_env(:jido_claw, :echo_stub_target, self())
+
+      base = Path.join(System.tmp_dir!(), "ar-docker-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(base)
+      {:ok, %{dir: proto}} = JidoClaw.VFS.Sandbox.create_prototype_dir(base)
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, prev)
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :echo_stub_target)
+        File.rm_rf!(base)
+      end)
+
+      {:ok, proto: proto}
+    end
+
+    test "a missing forge_session_key fails closed before launch", %{proto: proto} do
+      assert {:error, msg} = AgentRunner.run("docker_stub", "go", "s", docker_context(proto, %{}))
+      assert msg =~ "setup failed"
+      assert msg =~ "docker_session_missing"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a dead/unknown forge_session_key fails closed", %{proto: proto} do
+      ctx =
+        docker_context(proto, %{forge_session_key: "no-such-session-#{System.unique_integer()}"})
+
+      assert {:error, msg} = AgentRunner.run("docker_stub", "go", "s", ctx)
+      assert msg =~ "docker_session_unavailable"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a non-.prototypes project_dir fails closed even with a ready session", %{proto: proto} do
+      sid = start_ready_session(%{runner: :shell, sandbox: StubSandbox})
+      ctx = docker_context(proto, %{project_dir: File.cwd!(), forge_session_key: sid})
+
+      assert {:error, msg} = AgentRunner.run("docker_stub", "go", "s", ctx)
+      assert msg =~ "not_under_prototypes"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a DEFERRED Docker session (state :ready, no default sandbox) fails closed — no lazy re-provision",
+         %{proto: proto} do
+      sid =
+        start_ready_session(%{runner: :shell, sandbox: :docker_sandbox, deferred_provision: true})
+
+      # Precondition: the deferred session is :ready but its default sandbox is
+      # NOT provisioned — exactly the state a later Forge.exec would lazily fill.
+      {:ok, status} = Forge.status(sid)
+      assert status.sandbox_module == JidoClaw.Forge.Sandbox.Docker
+      refute :default in status.sandboxes
+
+      ctx = docker_context(proto, %{forge_session_key: sid})
+
+      assert {:error, msg} = AgentRunner.run("docker_stub", "go", "s", ctx)
+      assert msg =~ "docker_session_not_ready"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
+    end
+
+    test "a fully-ready NON-Docker (StubSandbox) session fails closed — wrong backend",
+         %{proto: proto} do
+      sid = start_ready_session(%{runner: :shell, sandbox: StubSandbox})
+
+      # Forge.status now exposes the backend module (the D5 additive change).
+      {:ok, status} = Forge.status(sid)
+      assert status.sandbox_module == StubSandbox
+      assert status.state == :ready
+      assert status.sandbox_status == :ready
+      assert :default in status.sandboxes
+
+      ctx = docker_context(proto, %{forge_session_key: sid})
+
+      assert {:error, msg} = AgentRunner.run("docker_stub", "go", "s", ctx)
+      assert msg =~ "docker_session_wrong_backend"
+      refute_receive {:echo_stub, :tool_context, _tc}, 200
     end
   end
 
@@ -409,6 +511,29 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
 
   # Builds a real tenant/workspace/session and a Reactor-style context carrying
   # the full scope (the shape ReactorRunner merges into the context).
+  defp docker_context(proto, extra) do
+    Map.merge(%{tenant: "t", project_dir: proto}, extra)
+  end
+
+  # Start an in-memory Forge session and block until it broadcasts :ready
+  # (the deferred path readies without provisioning a default sandbox).
+  defp start_ready_session(spec) do
+    sid = "ar-docker-sess-#{System.unique_integer([:positive])}"
+    ForgePubSub.subscribe(sid)
+    on_exit(fn -> stop_session_quietly(sid) end)
+    {:ok, _} = Forge.start_session(sid, spec)
+    assert_receive {:ready, ^sid}, 10_000
+    sid
+  end
+
+  defp stop_session_quietly(sid) do
+    Forge.stop_session(sid)
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
   defp real_scope_context do
     tenant_id = "tenant-ar-#{System.unique_integer([:positive])}"
     project_dir = "/tmp/ar-#{System.unique_integer([:positive])}"

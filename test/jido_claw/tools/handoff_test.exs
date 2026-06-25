@@ -216,6 +216,22 @@ defmodule JidoClaw.Tools.HandoffTest do
       assert HandoffRegistry.owner(t, rsid) == nil
     end
 
+    test "rejects a composer-private :docker target template too (AR-8b-2 F2)",
+         %{tenant_id: t, session: session, runtime_session_id: rsid} do
+      override = %{"docker_stub" => %{module: JidoClaw.Agent.Workers.Coder, sandbox: :docker}}
+      original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+      on_exit(fn -> Application.put_env(:jido_claw, :agent_templates_override, original) end)
+
+      ctx = build_context(t, rsid, session.id)
+
+      assert {:error, %{message: msg}} =
+               HandoffTool.run(%{to_template: "docker_stub", message: "build it"}, ctx)
+
+      assert msg =~ "composer-private"
+      assert HandoffRegistry.owner(t, rsid) == nil
+    end
+
     test "rejects an unknown template",
          %{tenant_id: t, session: session, runtime_session_id: rsid} do
       request_id = Ecto.UUID.generate()

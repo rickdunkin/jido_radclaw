@@ -43,4 +43,29 @@ defmodule JidoClaw.Agent.TemplatesSandboxTest do
       assert {:ok, %{sandbox: :none}} = Templates.get("no_sandbox")
     end
   end
+
+  describe "the :docker tier (AR-8b-2 F2)" do
+    setup do
+      override = %{"docker_stub" => %{module: Coder, sandbox: :docker}}
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+      on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+      :ok
+    end
+
+    test ":docker is a valid, first-class policy (not coerced)" do
+      assert Templates.sandbox("docker_stub") == :docker
+      assert {:ok, %{sandbox: :docker}} = Templates.get("docker_stub")
+    end
+
+    test "a :docker template forbids external (MCP) tools, like :prototype" do
+      refute Templates.external_tools?("docker_stub")
+    end
+
+    test ":wat still coerces to :prototype — :docker did not widen the valid set to all atoms" do
+      override = %{"bad_sandbox" => %{module: Coder, sandbox: :wat}}
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+
+      assert Templates.sandbox("bad_sandbox") == :prototype
+    end
+  end
 end

@@ -151,11 +151,34 @@ defmodule JidoClaw.Tools.OutputShaper do
   dropped.
   """
   @spec effective_streaming?(map()) :: boolean()
-  def effective_streaming?(params) when is_map(params) do
-    requested? = Map.get(normalize_params(params), :stream_to_display) == true
+  def effective_streaming?(params) when is_map(params), do: effective_streaming?(params, nil)
 
-    requested? and Application.get_env(:jido_claw, :serve_mode) != :mcp
+  @doc """
+  Context-aware `effective_streaming?/1` (AR-8b-2 F2 C4).
+
+  A `:docker` worker's `run_command` routes through
+  `JidoClaw.Tools.RunCommand.ForgeBridge`, which returns the whole
+  `{output, exit_code}` at once — the docker route **never streams**. But a
+  model setting `stream_to_display: true` would make the `/1` predicate true,
+  flip `shapeable?/3` false, and let oversized docker output hit `OutputLimit`'s
+  ref-less head-cut (silent middle-drop). So force `false` for `:docker`,
+  guaranteeing the docker path always captures + shapes + ref-stores. Every
+  other context delegates to the `/1` logic unchanged.
+  """
+  @spec effective_streaming?(map(), map() | nil) :: boolean()
+  def effective_streaming?(params, context) when is_map(params) do
+    if docker_context?(context) do
+      false
+    else
+      requested? = Map.get(normalize_params(params), :stream_to_display) == true
+      requested? and Application.get_env(:jido_claw, :serve_mode) != :mcp
+    end
   end
+
+  defp docker_context?(context) when is_map(context),
+    do: get_in(context, [:tool_context, :sandbox]) == :docker
+
+  defp docker_context?(_context), do: false
 
   @doc """
   True when this tool call's output should be captured large and shaped.
@@ -171,7 +194,7 @@ defmodule JidoClaw.Tools.OutputShaper do
   def shapeable?(tool_name, params, context) when is_map(params) do
     enabled?() and
       Map.has_key?(@shapeable_tools, tool_name) and
-      not effective_streaming?(params) and
+      not effective_streaming?(params, context) and
       tenant_present?(context)
   end
 

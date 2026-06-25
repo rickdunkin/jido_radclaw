@@ -270,9 +270,10 @@ defmodule JidoClaw.Agent.Handoff.Router do
         case Map.get(metadata, "current_agent_template") do
           name when is_binary(name) ->
             case Templates.get(name) do
-              # AR-8b: a composer-private (sandboxed) owner in the metadata mirror
-              # is treated as stale → cleared by `cold_start_or_default/1`.
-              {:ok, %{sandbox: :prototype}} -> :stale
+              # AR-8b / AR-8b-2 F2: a composer-private (sandboxed: `:prototype` or
+              # `:docker`) owner in the metadata mirror is treated as stale →
+              # cleared by `cold_start_or_default/1`.
+              {:ok, %{sandbox: s}} when s in [:prototype, :docker] -> :stale
               {:ok, template} -> {:ok, name, template}
               {:error, _} -> :stale
             end
@@ -352,10 +353,11 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
   defp route_with_owner(%{template: template_name, module: module} = owner, %Ctx{} = ctx) do
     case Templates.get(template_name) do
-      # AR-8b: a composer-private (sandboxed) template must never own a session —
-      # a stale/externally-mutated owner pointing at one is treated like a stale
-      # owner (clear the registry + metadata mirror, fall back to main).
-      {:ok, %{sandbox: :prototype}} ->
+      # AR-8b / AR-8b-2 F2: a composer-private (sandboxed: `:prototype` or
+      # `:docker`) template must never own a session — a stale/externally-mutated
+      # owner pointing at one is treated like a stale owner (clear the registry +
+      # metadata mirror, fall back to main).
+      {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
         Logger.warning(
           "[handoff.router] composer-private template '#{template_name}' cannot own a session — clearing"
         )

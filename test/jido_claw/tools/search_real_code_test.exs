@@ -81,4 +81,22 @@ defmodule JidoClaw.Tools.SearchRealCodeTest do
                SearchRealCode.run(%{pattern: "x", path: "github://o/r/dir"}, sandbox_ctx(proto))
     end
   end
+
+  describe "a :docker context searches the real tree identically (AR-8b-2 F2)" do
+    defp docker_ctx(proto), do: %{tool_context: %{project_dir: proto, sandbox: :docker}}
+
+    test "matches a pattern, jailed to the real base", %{base: base, proto: proto} do
+      File.write!(Path.join(base, "real.ex"), "defmodule RealThing do\nend\n")
+
+      assert {:ok, result} =
+               SearchRealCode.run(%{pattern: "defmodule Real", path: base}, docker_ctx(proto))
+
+      assert result.total_matches >= 1
+    end
+
+    test "forbids a remote scheme", %{proto: proto} do
+      assert {:error, _} =
+               SearchRealCode.run(%{pattern: "x", path: "github://o/r/dir"}, docker_ctx(proto))
+    end
+  end
 end

@@ -54,11 +54,12 @@ defmodule JidoClaw.Tools.SpawnAgent do
 
   defp spawn_from_template(template_name, task, tag, context, scope_opts) do
     case templates().get(template_name) do
-      # AR-8b: a sandboxed template is composer-private — it may only run through
-      # the front-door sketch path that sets up a validated `.prototypes/<id>/`
-      # root. The LLM-exposed swarm tool must never spawn it (no sandbox scope
-      # → it would write the real tree, P2b).
-      {:ok, %{sandbox: :prototype}} ->
+      # AR-8b / AR-8b-2 F2: a sandboxed template (`:prototype` or `:docker`) is
+      # composer-private — it may only run through the front-door sketch path
+      # that sets up a validated `.prototypes/<id>/` root (and, for `:docker`, a
+      # ready Forge session). The LLM-exposed swarm tool must never spawn it (no
+      # sandbox scope → it would write the real tree, P2b).
+      {:ok, %{sandbox: s}} when s in [:prototype, :docker] ->
         {:error, composer_private_error(template_name)}
 
       {:ok, template} ->

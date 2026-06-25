@@ -343,6 +343,57 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
     end
   end
 
+  describe "AR-8b-2 F2 — composer-private :docker owners can't own a session either" do
+    setup do
+      override = %{"docker_stub" => %{module: JidoClaw.Agent.Workers.Coder, sandbox: :docker}}
+      original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+      on_exit(fn -> Application.put_env(:jido_claw, :agent_templates_override, original) end)
+      :ok
+    end
+
+    test "a :docker registry owner is cleared and falls back to main (route_with_owner)",
+         %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do
+      install_handoff(t, rsid, session.id, "docker_stub", JidoClaw.Agent.Workers.Coder)
+
+      {:ok, s} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
+
+      {:ok, _} =
+        ConversationsSession.set_current_agent_template(s, "docker_stub", tenant: t, actor: actor)
+
+      default = default_pid()
+
+      assert {^default, "main", "main", false, nil} =
+               HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
+                 project_dir: File.cwd!(),
+                 session_record: session,
+                 default_agent_id: "main"
+               )
+
+      assert HandoffRegistry.owner(t, rsid) == nil
+    end
+
+    test "a :docker metadata-only owner is treated as stale → main (fetch_metadata_template)",
+         %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do
+      {:ok, s} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
+
+      {:ok, _} =
+        ConversationsSession.set_current_agent_template(s, "docker_stub", tenant: t, actor: actor)
+
+      default = default_pid()
+
+      assert {^default, "main", "main", false, nil} =
+               HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
+                 project_dir: File.cwd!(),
+                 session_record: session,
+                 default_agent_id: "main"
+               )
+
+      {:ok, fresh} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
+      refute Map.has_key?(fresh.metadata || %{}, "current_agent_template")
+    end
+  end
+
   describe "resolve_session_owner/6 — cold-start" do
     test "metadata-only owner is re-seeded with preamble_consumed?: true",
          %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do

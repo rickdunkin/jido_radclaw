@@ -4,12 +4,13 @@ defmodule JidoClaw.Tools.RealTree do
   `read_real_file` / `search_real_code` / `list_real_directory`.
 
   A sketch worker runs jailed to `<real>/.prototypes/<uuid>/` (`sandbox:
-  :prototype`); these tools let it be *informed* by the real project tree
-  without being able to *mutate* it (there is deliberately no write/edit
-  counterpart). `resolver_opts/1`:
+  :prototype` or `:docker`); these tools let it be *informed* by the real
+  project tree without being able to *mutate* it (there is deliberately no
+  write/edit counterpart). `resolver_opts/1`:
 
-    * fails **closed** unless `tool_context[:sandbox] == :prototype` — the tools
-      are inert on any non-sketch surface (the main agent, a normal worker),
+    * fails **closed** unless `tool_context[:sandbox]` is `:prototype` or
+      `:docker` — the tools are inert on any non-sketch surface (the main
+      agent, a normal worker),
     * derives `<real>` via `JidoClaw.VFS.Sandbox.real_root/1` (which re-validates
       the `.prototypes/<uuid>/` root, rejecting lexical/symlink escapes), and
     * jails reads with `project_dir: real_dir` + `local_only: true` (remote
@@ -35,7 +36,7 @@ defmodule JidoClaw.Tools.RealTree do
   @spec resolver_opts(map() | nil) :: {:ok, keyword()} | {:error, term()}
   def resolver_opts(tool_context) when is_map(tool_context) do
     case Map.get(tool_context, :sandbox) do
-      :prototype ->
+      sandbox when sandbox in [:prototype, :docker] ->
         case Sandbox.real_root(Map.get(tool_context, :project_dir)) do
           {:ok, real_dir} ->
             {:ok, [project_dir: real_dir, local_only: true, workspace_id: nil]}
@@ -49,12 +50,12 @@ defmodule JidoClaw.Tools.RealTree do
 
       _ ->
         {:error,
-         "real-tree tools require a sketch sandbox (sandbox: :prototype) context — refusing to read the real tree"}
+         "real-tree tools require a sketch sandbox (sandbox: :prototype or :docker) context — refusing to read the real tree"}
     end
   end
 
   def resolver_opts(_),
     do:
       {:error,
-       "real-tree tools require a sketch sandbox (sandbox: :prototype) context — refusing to read the real tree"}
+       "real-tree tools require a sketch sandbox (sandbox: :prototype or :docker) context — refusing to read the real tree"}
 end

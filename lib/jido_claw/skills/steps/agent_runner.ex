@@ -26,11 +26,16 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   alias Jido.AgentServer
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
+  alias JidoClaw.Forge
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.VFS.Sandbox
   alias JidoClaw.Workflows.StepResult
 
   @step_timeout_ms 180_000
+
+  # The real Forge Docker backend module a `:docker` worker's session MUST be
+  # backed by (AR-8b-2 F2 D5). Distinct from the template-policy atom `:docker`.
+  @docker_backend JidoClaw.Forge.Sandbox.Docker
 
   defp agent_server_module do
     Application.get_env(:jido_claw, :step_agent_server, AgentServer)
@@ -111,7 +116,55 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     end
   end
 
+  # AR-8b-2 F2 (D5): a `sandbox: :docker` worker shares `:prototype`'s file jail
+  # (same validated `.prototypes/<uuid>/` root — without it `resolve_scope`'s
+  # `File.cwd!()` fallback would let host file tools hit the real tree) AND
+  # requires a READY, REAL Docker-backed Forge session whose default sandbox is
+  # already provisioned. Fail closed on any miss. Do NOT re-provision (Phase 2 /
+  # D7 Window 2). In Phase 1 no `:docker` worker launches in production, so this
+  # clause is exercised only by unit tests.
+  defp validate_sandbox_scope(%{sandbox: :docker}, context) do
+    with :ok <- validate_proto_root(context[:project_dir]) do
+      validate_docker_session(context[:forge_session_key])
+    end
+  end
+
   defp validate_sandbox_scope(_template, _context), do: :ok
+
+  defp validate_proto_root(pd) when is_binary(pd) and pd != "", do: Sandbox.validate_root(pd)
+  defp validate_proto_root(_), do: {:error, :sandbox_scope_missing}
+
+  # Assert backend identity + *sandbox* readiness, not just session state
+  # (review P1/P2). Requiring `sandbox_module == Docker` is what makes Unit B's
+  # per-call approval bypass safe — a `:docker` stamp on a non-Docker session can
+  # never produce a running worker. Requiring `:default in sandboxes` (not just
+  # `state == :ready`) forecloses silent lazy re-provisioning: a *deferred*
+  # session can be `state: :ready` with no default sandbox, and a later
+  # `Forge.exec` (no `:sandbox` opt) would lazily provision it.
+  defp validate_docker_session(forge_key) when is_binary(forge_key) and forge_key != "" do
+    case Forge.status(forge_key) do
+      {:ok, status} -> validate_docker_status(status)
+      {:error, _reason} -> {:error, :docker_session_unavailable}
+    end
+  end
+
+  defp validate_docker_session(_), do: {:error, :docker_session_missing}
+
+  defp validate_docker_status(%{
+         sandbox_module: @docker_backend,
+         state: :ready,
+         sandbox_status: :ready,
+         sandboxes: sandboxes
+       }) do
+    if :default in sandboxes,
+      do: :ok,
+      else: {:error, :docker_session_not_provisioned}
+  end
+
+  defp validate_docker_status(%{sandbox_module: @docker_backend}),
+    do: {:error, :docker_session_not_ready}
+
+  defp validate_docker_status(_status), do: {:error, :docker_session_wrong_backend}
 
   # Stamp the canonical `:sandbox` key from the TEMPLATE policy (not the launch
   # context), so the capability travels with the worker and can't be dropped by
@@ -349,7 +402,11 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       # reactor context onto the step worker's scope (same builder path as the
       # other canonical keys, set just after at the call site for agent_template).
       sanitize_sensitive_context: context[:sanitize_sensitive_context] || false,
-      request_correlation_expires_at: context[:request_correlation_expires_at]
+      request_correlation_expires_at: context[:request_correlation_expires_at],
+      # AR-8b-2 F2 (D5): thread the Forge session key so a `:docker` worker's
+      # `run_command` can route into its session. `ToolContext.build/1` preserves
+      # it when non-nil, omits it when nil — so non-docker steps are unchanged.
+      forge_session_key: context[:forge_session_key]
     }
   end
 

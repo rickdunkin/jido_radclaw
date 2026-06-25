@@ -5,11 +5,13 @@ defmodule JidoClaw.Tools.RunCommandTest do
     only: [seed_full: 1, actor_for: 1]
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Forge.Harness
   alias JidoClaw.Shell.ServerRegistry
   alias JidoClaw.Shell.ServerRegistry.ServerEntry
   alias JidoClaw.Shell.SessionManager
-  alias JidoClaw.Test.FakeSSH
+  alias JidoClaw.Test.{FakeSSH, ForgeStub, StubSandbox}
   alias JidoClaw.Tools.FetchOutput
+  alias JidoClaw.Tools.OutputShaper
   alias JidoClaw.Tools.RunCommand
   alias JidoClaw.VFS.Workspace
 
@@ -592,5 +594,256 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
       assert String.ends_with?(result.output, SessionManager.truncation_note(false))
     end
+  end
+
+  describe "docker bridge routing (AR-8b-2 F2)" do
+    setup do
+      {:ok, client, _id} = StubSandbox.create()
+      # notify: self() — setup runs in the test process, so the async teardown's
+      # {:forge_stub_stopped, _} lands in the test mailbox for assert_receive.
+      cleanup = ForgeStub.install(client: client, notify: self())
+      on_exit(cleanup)
+      {:ok, client: client}
+    end
+
+    test "routes a success into the Forge session and adapts {out, code} → a map", %{
+      client: client
+    } do
+      StubSandbox.program_exec(client, {"hello from docker\n", 0})
+
+      assert {:ok, result} = RunCommand.run(%{command: "echo hi", timeout: 5_000}, docker_ctx())
+      assert result.output == "hello from docker\n"
+      assert result.exit_code == 0
+
+      # No outer Jido deadline on a direct call → inner timeout == requested.
+      assert [%{opts: opts}] = ForgeStub.execs()
+      assert opts[:timeout] == 5_000
+    end
+
+    test "ignores a model-supplied backend: \"ssh\" — no preempt, no spurious SSH error", %{
+      client: client
+    } do
+      StubSandbox.program_exec(client, {"ok", 0})
+
+      # On the host path `backend: "ssh"` with no server raises; under :docker the
+      # branch short-circuits before coerce_backend/validate_backend_server.
+      assert {:ok, %{exit_code: 0}} =
+               RunCommand.run(%{command: "x", backend: "ssh", timeout: 5_000}, docker_ctx())
+    end
+
+    test "an absent session hard-fails (non-retryable, never SessionManager)" do
+      ForgeStub.set_absent(:not_found)
+
+      assert {:error, err} = RunCommand.run(%{command: "echo hi", timeout: 5_000}, docker_ctx())
+      assert err.code == :sandbox_unavailable
+    end
+
+    test "an omitted :timeout defaults to 30_000 inside the bridge", %{client: client} do
+      StubSandbox.program_exec(client, {"x", 0})
+
+      assert {:ok, _} = RunCommand.run(%{command: "x"}, docker_ctx())
+      assert [%{opts: opts}] = ForgeStub.execs()
+      assert opts[:timeout] == 30_000
+    end
+
+    test "a manufactured timeout taints: tears the session down, follow-up hard-fails", %{
+      client: client
+    } do
+      # inner == requested == 5_000 (direct call), so this is the exact match.
+      StubSandbox.program_exec(client, {"timeout after 5000ms", 124})
+
+      assert {:error, err} = RunCommand.run(%{command: "sleep 999", timeout: 5_000}, docker_ctx())
+      assert err.code == :sandbox_command_timeout
+
+      # Teardown is now detached — rendezvous with the async stop before asserting
+      # its effects (recorded call + flipped exec_result).
+      assert_receive {:forge_stub_stopped, "sess-x"}, 2_000
+
+      # stop_session ran (best-effort teardown of the in-container zombie).
+      assert ForgeStub.stops() != []
+
+      # The torn-down session is now absent → a follow-up hard-fails.
+      assert {:error, %{code: :sandbox_unavailable}} =
+               RunCommand.run(%{command: "echo retry", timeout: 5_000}, docker_ctx())
+    end
+
+    test "a Forge.exec that exits {:timeout, _} converges to the same taint outcome", %{
+      client: client
+    } do
+      # Box in the residual-catch (exit({:timeout, _})) delivery path with the same
+      # fast-return discriminant as the manufactured-124 test below.
+      ForgeStub.set_stop_delay(1_000)
+      StubSandbox.program_exec(client, fn -> exit({:timeout, :simulated}) end)
+
+      t0 = System.monotonic_time(:millisecond)
+      assert {:error, err} = RunCommand.run(%{command: "x", timeout: 5_000}, docker_ctx())
+      assert err.code == :sandbox_command_timeout
+      elapsed = System.monotonic_time(:millisecond) - t0
+
+      # Decoupled: the sync code blocked here for the full 1s stop; async returns in ms.
+      assert elapsed < 400, "expected a fast return; got #{elapsed}ms (teardown blocked it)"
+
+      # The stop still runs, asynchronously.
+      assert_receive {:forge_stub_stopped, "sess-x"}, 3_000
+    end
+
+    test "taint teardown is detached — the bridge returns before a slow stop_session", %{
+      client: client
+    } do
+      ForgeStub.set_stop_delay(1_000)
+      StubSandbox.program_exec(client, {"timeout after 5000ms", 124})
+
+      t0 = System.monotonic_time(:millisecond)
+
+      assert {:error, %{code: :sandbox_command_timeout}} =
+               RunCommand.run(%{command: "sleep 999", timeout: 5_000}, docker_ctx())
+
+      elapsed = System.monotonic_time(:millisecond) - t0
+
+      # Decoupled: the sync code blocked here for the full 1s stop; async returns in ms.
+      assert elapsed < 400, "expected a fast return; got #{elapsed}ms (teardown blocked it)"
+
+      # The stop still runs, asynchronously.
+      assert_receive {:forge_stub_stopped, "sess-x"}, 3_000
+    end
+
+    test "full Jido.Exec.run: a tiny deadline budget yields the bridge's :sandbox_deadline_exceeded, never launched" do
+      # 3_000ms outer deadline ⇒ budget below the min-viable threshold ⇒ refuse
+      # before any Forge.exec call. This proves :__jido_deadline_ms__ rides
+      # Tools.Action + MCPScope.wrap into the bridge. Jido.Exec wraps the bridge
+      # map into a Jido.Action.Error struct, so the code lands under :details.
+      ctx = %{tool_context: %{sandbox: :docker, forge_session_key: "sess-x"}}
+
+      assert {:error, err} =
+               Jido.Exec.run(RunCommand, %{command: "x"}, ctx, timeout: 3_000, max_retries: 0)
+
+      assert err.details.code == :sandbox_deadline_exceeded
+      refute match?(%Jido.Action.Error.TimeoutError{}, err)
+      assert ForgeStub.execs() == []
+    end
+
+    test "full Jido.Exec.run: an exec timeout surfaces the bridge's code, not Jido's timeout_error",
+         %{client: client} do
+      StubSandbox.program_exec(client, fn -> exit({:timeout, :simulated}) end)
+      ctx = %{tool_context: %{sandbox: :docker, forge_session_key: "sess-x"}}
+
+      # max_retries: 0 keeps this focused on the single bridge attempt + its code.
+      # (The default-retry tests below prove the error is also non-retryable at the
+      # jido_action layer, so a retry would not re-enter the session anyway.)
+      assert {:error, err} =
+               Jido.Exec.run(RunCommand, %{command: "x"}, ctx, timeout: 30_000, max_retries: 0)
+
+      assert err.details.code == :sandbox_command_timeout
+      refute match?(%Jido.Action.Error.TimeoutError{}, err)
+    end
+
+    test "full Jido.Exec.run with default retry: a timeout taint is non-retryable at the jido_action layer — no re-exec",
+         %{client: client} do
+      # No max_retries override → jido_action's default (1). Jido.Exec wraps the
+      # bridge map into an ExecutionFailureError that DEFAULTS to retryable unless
+      # details carries retry: false. Without that hint the retry re-runs exec —
+      # and with detached teardown the re-entry hits the still-live session before
+      # the async stop lands. The bridge error must be non-retryable at this layer.
+      StubSandbox.program_exec(client, fn -> exit({:timeout, :simulated}) end)
+      ctx = %{tool_context: %{sandbox: :docker, forge_session_key: "sess-x"}}
+
+      assert {:error, err} = Jido.Exec.run(RunCommand, %{command: "x"}, ctx, timeout: 30_000)
+
+      # THE regression: exactly one exec — the retry must not fire.
+      assert [_] = ForgeStub.execs()
+      assert err.details.code == :sandbox_command_timeout
+    end
+
+    test "full Jido.Exec.run with default retry: an output-limit taint is non-retryable — no re-exec",
+         %{client: client} do
+      # Anchored-regex match (not the inner-exact 124), so it taints regardless of
+      # the deadline-derived inner timeout. Same default-retry non-retryability.
+      StubSandbox.program_exec(client, {"output limit exceeded after 99999 bytes", 153})
+      ctx = %{tool_context: %{sandbox: :docker, forge_session_key: "sess-x"}}
+
+      assert {:error, err} = Jido.Exec.run(RunCommand, %{command: "x"}, ctx, timeout: 30_000)
+
+      assert [_] = ForgeStub.execs()
+      assert err.details.code == :sandbox_output_limit
+    end
+  end
+
+  describe "docker timeout cushion + streaming predicate (AR-8b-2 F2)" do
+    test "Harness.exec_call_timeout/1 cushions the outer call past the inner timeout" do
+      cushion = JidoClaw.Forge.exec_timeout_cushion_ms()
+      assert Harness.exec_call_timeout(timeout: 1_000) == 1_000 + cushion
+      # A non-integer/absent inner timeout falls back to the legacy default first.
+      assert Harness.exec_call_timeout([]) == 300_000 + cushion
+    end
+
+    test "effective_streaming?/2 is docker-scoped: false under :docker, delegates otherwise" do
+      params = %{stream_to_display: true}
+      docker = %{tool_context: %{sandbox: :docker}}
+      host = %{tool_context: %{sandbox: :none}}
+
+      refute OutputShaper.effective_streaming?(params, docker)
+      assert OutputShaper.effective_streaming?(params, host)
+      # /1 with no context delegates to the raw (non-docker) logic.
+      assert OutputShaper.effective_streaming?(params)
+    end
+  end
+
+  describe "docker streaming neutralization (AR-8b-2 F2)" do
+    setup do
+      sandbox_pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+
+      original = Application.get_env(:jido_claw, :output_shaping, [])
+      Application.put_env(:jido_claw, :output_shaping, Keyword.merge(original, enabled?: true))
+
+      {:ok, client, _id} = StubSandbox.create()
+      cleanup = ForgeStub.install(client: client)
+
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "rc-docker-stream")
+
+      on_exit(fn ->
+        cleanup.()
+        Application.put_env(:jido_claw, :output_shaping, original)
+        Sandbox.stop_owner(sandbox_pid)
+      end)
+
+      context = %{
+        tool_context: %{
+          tenant_id: tenant_id,
+          session_uuid: session.id,
+          actor: actor_for(tenant_id),
+          sandbox: :docker,
+          forge_session_key: "sess-x"
+        }
+      }
+
+      {:ok, client: client, context: context}
+    end
+
+    test "stream_to_display: true is neutralized — oversized docker output is shaped + ref-backed",
+         %{client: client, context: context} do
+      # >32KB: a streamed result would hit OutputLimit's ref-less head-cut; the
+      # docker predicate forces not-streaming → capture + shape + ref-store.
+      big = String.duplicate("line of docker output\n", 2_000)
+      StubSandbox.program_exec(client, {big, 0})
+
+      assert {:ok, result} =
+               RunCommand.run(
+                 %{command: "noisy", stream_to_display: true, timeout: 5_000},
+                 context
+               )
+
+      assert result.exit_code == 0
+      assert result.shaped
+      assert result.output_ref =~ ~r/^out_/
+      assert result.output =~ "fetch_output ref=#{result.output_ref}"
+
+      # Reversibility preserved: the full output is recoverable via the ref.
+      assert {:ok, fetched} = FetchOutput.run(%{ref: result.output_ref, head: 1}, context)
+      assert fetched.content =~ "line of docker output"
+    end
+  end
+
+  defp docker_ctx(extra \\ %{}) do
+    %{tool_context: Map.merge(%{sandbox: :docker, forge_session_key: "sess-x"}, extra)}
   end
 end

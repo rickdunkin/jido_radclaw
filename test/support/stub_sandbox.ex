@@ -22,12 +22,21 @@ defmodule JidoClaw.Test.StubSandbox do
   @spec fail_inject_env_key() :: String.t()
   def fail_inject_env_key, do: @fail_inject_env_key
 
-  @doc "Create a new stub-sandbox client with an empty event log."
+  @doc """
+  Create a new stub-sandbox client with an empty event log.
+
+  Reads an optional `:exec_response` from `spec` (default `{"", 0}`) so a
+  Harness-driven session (whose internal client a test can't reach) can still
+  program `exec/3` via `sandbox_spec: %{exec_response: ...}`. See
+  `program_exec/2` for the accepted response shapes.
+  """
   @impl JidoClaw.Forge.Sandbox.Behaviour
-  def create(_spec \\ %{}) do
+  def create(spec \\ %{}) do
+    exec_response = Map.get(spec, :exec_response, {"", 0})
+
     {:ok, agent} =
       Agent.start_link(fn ->
-        %{events: [], run_response: {"", 0}, files: %{}, env: %{}}
+        %{events: [], run_response: {"", 0}, exec_response: exec_response, files: %{}, env: %{}}
       end)
 
     {:ok, %__MODULE__{agent_pid: agent}, "stub-#{:erlang.unique_integer([:positive])}"}
@@ -53,6 +62,22 @@ defmodule JidoClaw.Test.StubSandbox do
   def program_run(%__MODULE__{agent_pid: pid}, response),
     do: Agent.update(pid, fn s -> %{s | run_response: response} end)
 
+  @doc """
+  Program the next return value of `exec/3` (and subsequent calls).
+
+  Accepts:
+
+    * a plain `{out, code}` tuple — returned immediately;
+    * `{:sleep, ms, response}` — blocks `ms` then returns `response` (drive the
+      AR-8b-2 F2 C3 cushion / bridge-catch timeout race past `timeout` or
+      `timeout + cushion`); and
+    * a 0-arity fun — invoked and its result returned (it may itself sleep,
+      return, or `exit({:timeout, _})` to drive the ForgeBridge's residual catch).
+  """
+  @spec program_exec(%__MODULE__{}, term()) :: :ok
+  def program_exec(%__MODULE__{agent_pid: pid}, response),
+    do: Agent.update(pid, fn s -> %{s | exec_response: response} end)
+
   @doc "Return the most recent recorded `run/4` argv."
   @spec last_run_args(%__MODULE__{}) :: list() | nil
   def last_run_args(%__MODULE__{agent_pid: pid}) do
@@ -67,8 +92,20 @@ defmodule JidoClaw.Test.StubSandbox do
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec(%__MODULE__{agent_pid: pid} = _client, command, _opts) do
     Agent.update(pid, fn s -> %{s | events: [{:exec, command} | s.events]} end)
-    {"", 0}
+
+    pid
+    |> Agent.get(fn s -> s.exec_response end)
+    |> resolve_exec_response()
   end
+
+  # Blocking forms let a test drive the C3 timeout race; see `program_exec/2`.
+  defp resolve_exec_response({:sleep, ms, response}) when is_integer(ms) do
+    Process.sleep(ms)
+    response
+  end
+
+  defp resolve_exec_response(fun) when is_function(fun, 0), do: fun.()
+  defp resolve_exec_response(response), do: response
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def exec_argv(%__MODULE__{agent_pid: pid} = _client, command, args, _opts) do

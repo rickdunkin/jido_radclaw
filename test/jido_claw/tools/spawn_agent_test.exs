@@ -173,6 +173,24 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
   end
 
+  test "refuses to spawn a composer-private :docker template too (AR-8b-2 F2)" do
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+    Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
+    Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
+
+    override = %{"docker_stub" => %{module: JidoClaw.Agent.Workers.Coder, sandbox: :docker}}
+    Application.put_env(:jido_claw, :agent_templates_override, override)
+    on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+
+    assert {:error, wire} = SpawnAgent.run(%{template: "docker_stub", task: "x"}, ctx())
+    assert wire.details.reason == :composer_private
+    assert wire.details.template == "docker_stub"
+
+    refute_receive {:start_agent, _opts, _pid}
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+  end
+
   test "terminal children do not consume the spawn cap (H10 regression)" do
     configure_fake_spawn()
     Application.put_env(:jido_claw, :spawn_agent_max_children, 1)

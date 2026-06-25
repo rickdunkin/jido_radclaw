@@ -108,4 +108,34 @@ defmodule JidoClaw.Tools.ReadRealFileTest do
       refute Code.ensure_loaded?(JidoClaw.Tools.EditRealFile)
     end
   end
+
+  describe "a :docker context reads the real tree identically (AR-8b-2 F2)" do
+    defp docker_ctx(proto), do: %{tool_context: %{project_dir: proto, sandbox: :docker}}
+
+    test "reads a real-tree file, jailed to the real base", %{base: base, proto: proto} do
+      File.write!(Path.join(base, "real.txt"), "from the real tree")
+
+      assert {:ok, result} =
+               ReadRealFile.run(%{path: Path.join(base, "real.txt")}, docker_ctx(proto))
+
+      assert result.content =~ "from the real tree"
+    end
+
+    test "rejects an absolute path outside the real base", %{proto: proto} do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_real_outside_d_#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(outside, "outside")
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, _} = ReadRealFile.run(%{path: outside}, docker_ctx(proto))
+    end
+
+    test "forbids remote schemes (no write counterpart either)", %{proto: proto} do
+      assert {:error, _} = ReadRealFile.run(%{path: "github://o/r/f"}, docker_ctx(proto))
+    end
+  end
 end

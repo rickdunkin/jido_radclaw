@@ -44,10 +44,17 @@ defmodule JidoClaw.Agent.Templates do
   behavior; `:prototype` is the throwaway-sketch capability boundary, which
   drives four independent, structural enforcements (no external MCP tools, no
   remote file schemes, a validated `.prototypes/<uuid>/` sandbox root, and
-  composer-private instantiation). Like `forward_context`, it fails **closed**:
-  a malformed *present* value sandboxes *harder* (to `:prototype`), never
-  weaker, so a registry typo can only over-isolate. `external_tools?/1` is the
-  derived reader the MCP `Consumer` gates on.
+  composer-private instantiation). `:docker` (AR-8b-2 F2) layers OS-level
+  execution isolation on top of that same `.prototypes/<uuid>/` file jail: its
+  `run_command` calls route into a Forge Docker microVM session instead of the
+  host shell, so a sketch can actually *run* its tracer-bullet without the
+  spawned shell escaping the jail. It shares `:prototype`'s capability boundary
+  (no external MCP tools, remote schemes forbidden, validated sandbox root,
+  composer-private), so `external_tools?/1` excludes it too. Like
+  `forward_context`, the policy fails **closed**: a malformed *present* value
+  sandboxes *harder* (to `:prototype`), never weaker, so a registry typo can
+  only over-isolate. `external_tools?/1` is the derived reader the MCP
+  `Consumer` gates on.
   """
 
   require Logger
@@ -164,13 +171,14 @@ defmodule JidoClaw.Agent.Templates do
   end
 
   @doc """
-  Return the per-template `:sandbox` isolation tier (`:none` | `:prototype`).
+  Return the per-template `:sandbox` isolation tier
+  (`:none` | `:prototype` | `:docker`).
 
   Resolves through `get/1` (honouring the `:agent_templates_override` test
   hook). Returns `:none` for an unknown template (e.g. `"main"`, not in
   `@templates`) — the unsandboxed default.
   """
-  @spec sandbox(String.t()) :: :none | :prototype
+  @spec sandbox(String.t()) :: :none | :prototype | :docker
   def sandbox(name) do
     case get(name) do
       {:ok, %{sandbox: s}} -> s
@@ -180,12 +188,13 @@ defmodule JidoClaw.Agent.Templates do
 
   @doc """
   False when the template forbids external (MCP) tools — i.e. is sandboxed
-  (`sandbox: :prototype`). The MCP `Consumer` short-circuits a sandboxed
-  template's tool set to `[]` on this, at attach and every reconcile tick.
-  An unknown template (`"main"`) is `:none`, so `external_tools?/1` is `true`.
+  (`sandbox: :prototype` or `:docker`). The MCP `Consumer` short-circuits a
+  sandboxed template's tool set to `[]` on this, at attach and every reconcile
+  tick. An unknown template (`"main"`) is `:none`, so `external_tools?/1` is
+  `true`.
   """
   @spec external_tools?(String.t()) :: boolean()
-  def external_tools?(name), do: sandbox(name) != :prototype
+  def external_tools?(name), do: sandbox(name) not in [:prototype, :docker]
 
   defp hydrate_template(template) do
     template
@@ -260,7 +269,7 @@ defmodule JidoClaw.Agent.Templates do
   defp ensure_sandbox(%{sandbox: s} = t), do: Map.put(t, :sandbox, validate_sandbox(s, t))
   defp ensure_sandbox(t), do: Map.put(t, :sandbox, :none)
 
-  defp validate_sandbox(s, _t) when s in [:none, :prototype], do: s
+  defp validate_sandbox(s, _t) when s in [:none, :prototype, :docker], do: s
 
   # Fail CLOSED to the most-restrictive value: a malformed *present* value
   # sandboxes harder (`:prototype`), never weaker — a static-registry typo can

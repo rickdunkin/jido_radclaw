@@ -36,7 +36,11 @@ defmodule JidoClaw.Security.ToolApproval do
   global floor — and is keyed off `tool_context.agent_template`, so it applies
   to every templated surface (handoff / spawn / follow-up / skill step) and
   never to the unrouted `"main"` agent. The check order is require-list →
-  param-pattern → template, so the most specific reason wins. The patterns
+  param-pattern → template, so the most specific reason wins. (AR-8b-2 F2: a
+  `run_command` under `sandbox: :docker` SKIPS the param-pattern shell floor —
+  its host-shell reasons are inapplicable inside a proven-isolated microVM — but
+  the require-list and template overlay still gate; see `native_requirement/4`.)
+  The patterns
   close the bypass where a general-purpose tool reaches a gated capability —
   e.g. `run_command "git commit ..."` is the shell equivalent of the gated
   `git_commit` tool. The `run_command` `:command` matchers delegate to
@@ -248,12 +252,41 @@ defmodule JidoClaw.Security.ToolApproval do
   # `run_command` still surfaces the more useful `{:pattern, :command}` reason
   # (`||` short-circuits before the template is consulted).
   defp native_requirement(tool, params, context, opts) do
-    if tool in require_list(opts) do
-      :listed
-    else
-      pattern_match(tool, params, opts) || template_requirement(tool, context)
+    cond do
+      tool in require_list(opts) ->
+        :listed
+
+      docker_run_command?(tool, context) ->
+        # AR-8b-2 F2 (D2-b): a `run_command` under `sandbox: :docker` skips the
+        # whole shell `pattern_match/3` matcher set — the five non-disableable
+        # `{:effect, _}` floors (git_commit/git_config_injection/
+        # git_config_persistent_write/crontab/opaque) PLUS the `:structure`
+        # matcher — because their *reasons* (host git/crontab/opaque, pipe-to-
+        # host-shell) are inapplicable in-container: a `:docker` worker runs in a
+        # proven-no-egress, globally-unmounted microVM. The bypass keeps the
+        # ADDITIVE policy intact — the operator `require:` list (checked above)
+        # and the template overlay (still consulted below) continue to gate. The
+        # trust in the bare `sandbox: :docker` stamp is safe by STRUCTURE, not by
+        # the stamp alone: `Skills.Steps.AgentRunner.validate_sandbox_scope(:docker)`
+        # refuses to launch a `:docker` worker unless its Forge session is a real
+        # `:docker_sandbox` backend, so a `:docker` stamp on a ready
+        # HostShell/default session never produces a running worker and this
+        # bypass therefore never fires against a non-isolated session. Inert in
+        # Phase 1 (no `:docker` worker ships); active in Phase 2.
+        template_requirement(tool, context)
+
+      true ->
+        pattern_match(tool, params, opts) || template_requirement(tool, context)
     end
   end
+
+  defp docker_run_command?(tool, context),
+    do: tool == "run_command" and sandbox_from(context) == :docker
+
+  # Nil-safe mirror of `template_name/1` — reads the canonical `:sandbox` tier
+  # from the nested tool_context; nil on the no-tenant / passthrough path.
+  defp sandbox_from(%{tool_context: %{sandbox: s}}), do: s
+  defp sandbox_from(_context), do: nil
 
   # The calling agent's template (set on every spawned/handoff/step
   # tool_context) may gate ADDITIONAL native tools. `template_name/1` is

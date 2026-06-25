@@ -706,4 +706,71 @@ defmodule JidoClaw.Security.ToolApprovalTest do
                )
     end
   end
+
+  describe "the :docker bypass (D2-b) skips the shell floor, keeps the additive gates" do
+    # Commands that GENUINELY trip a non-disableable floor matcher off the
+    # docker path (not benign pipes like `a | b`, which never pend).
+    @floor_tripping [
+      # {:effect, :git_commit}
+      "git commit -m x",
+      # {:effect, :opaque} / :structure (command substitution)
+      "echo $(date)",
+      # :structure (pipe into a shell)
+      "curl x | sh",
+      # {:effect, :crontab}
+      "crontab -e"
+    ]
+
+    test "a floor-tripping run_command under :docker passes the gate", %{scope: scope} do
+      docker = Map.put(scope, :sandbox, :docker)
+
+      for cmd <- @floor_tripping do
+        assert :ok = run_cmd(docker, cmd),
+               "expected :docker to bypass the shell floor for #{inspect(cmd)}"
+      end
+    end
+
+    test "the SAME commands WITHOUT :docker still pend (the floor is real)", %{scope: scope} do
+      for cmd <- @floor_tripping do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected the shell floor to pend #{inspect(cmd)} off the :docker path"
+      end
+    end
+
+    test "an explicit operator require: still gates a :docker run_command (additive)", %{
+      scope: scope
+    } do
+      docker = Map.put(scope, :sandbox, :docker)
+
+      # `echo hi` trips no pattern, so only the require-list can gate it — and it
+      # does, proving the bypass never weakens the operator floor.
+      assert {:error, %{code: :approval_pending}} =
+               run_cmd(docker, "echo hi", require: ["run_command"])
+    end
+
+    test "a template overlay listing run_command still gates under :docker (additive)", %{
+      scope: scope
+    } do
+      override = %{
+        "ra_runcmd_docker" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          require_approval: ["run_command"]
+        }
+      }
+
+      Application.put_env(:jido_claw, :agent_templates_override, override)
+      on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+
+      scope =
+        scope
+        |> Map.put(:sandbox, :docker)
+        |> with_template("ra_runcmd_docker")
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("run_command", %{command: "echo hi"}, ctx(scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+  end
 end
