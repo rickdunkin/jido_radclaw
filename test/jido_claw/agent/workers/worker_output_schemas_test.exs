@@ -21,12 +21,15 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     Refactorer,
     Researcher,
     Reviewer,
+    SketchBuild,
+    SketchBuildExec,
     SketchReviewer,
     TestRunner,
     Verifier
   }
 
   defp output_for(module), do: Keyword.fetch!(module.strategy_opts(), :output)
+  defp tools_for(module), do: Keyword.fetch!(module.strategy_opts(), :tools)
 
   describe "Coder schema" do
     test "parses a valid sample" do
@@ -193,6 +196,38 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       assert parsed.overall == :request_changes
       [finding] = parsed.findings
       assert finding.severity == :error
+    end
+  end
+
+  # AR-8b-2 F2: SketchBuildExec single-sources its output map with SketchBuild via
+  # the SketchWorker macro (builder shape — status/summary/files_changed/notes +
+  # artifacts, NO `signals` field). It differs from SketchBuild by EXACTLY one tool
+  # (`RunCommand` + its mandatory `FetchOutput` pair).
+  describe "SketchBuildExec schema + tool list" do
+    test "parses a builder result (same shape as SketchBuild)" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(SketchBuildExec), %{
+                 "status" => "completed",
+                 "summary" => "Built and ran the tracer-bullet",
+                 "files_changed" => ["main.exs"],
+                 "notes" => "exit 0",
+                 "artifacts" => %{"files" => "main.exs"}
+               })
+
+      assert parsed.status == :completed
+      assert parsed.files_changed == ["main.exs"]
+    end
+
+    test "its tool list includes RunCommand AND FetchOutput" do
+      tools = tools_for(SketchBuildExec)
+      assert JidoClaw.Tools.RunCommand in tools
+      assert JidoClaw.Tools.FetchOutput in tools
+    end
+
+    test "SketchBuild's tool list includes NEITHER RunCommand NOR FetchOutput" do
+      tools = tools_for(SketchBuild)
+      refute JidoClaw.Tools.RunCommand in tools
+      refute JidoClaw.Tools.FetchOutput in tools
     end
   end
 end

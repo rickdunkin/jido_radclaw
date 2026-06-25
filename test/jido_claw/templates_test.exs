@@ -133,10 +133,11 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 9 templates" do
+    test "should contain all 10 templates" do
       # 7 general-purpose workers + the AR-8b composer-private `sketch_build` +
-      # the AR-8b-2 composer-private `sketch_reviewer`.
-      assert map_size(Templates.list()) == 9
+      # the AR-8b-2 composer-private `sketch_reviewer` + the AR-8b-2 F2
+      # composer-private `sketch_build_exec`.
+      assert map_size(Templates.list()) == 10
     end
 
     test "should have all expected template names as keys" do
@@ -162,8 +163,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 9 names" do
-      assert Enum.count(Templates.names()) == 9
+    test "should return exactly 10 names" do
+      assert Enum.count(Templates.names()) == 10
     end
 
     test "should include all 7 expected template names" do
@@ -300,11 +301,25 @@ defmodule JidoClaw.Agent.TemplatesTest do
               }} = Templates.get("sketch_reviewer")
     end
 
-    test "exists?/1 + names/0 include both sketch templates" do
+    test "sketch_build_exec is forward_context: {:only, [:forge_session_key]}, sandbox: :docker" do
+      # AR-8b-2 F2: strict isolation (like `:none`) EXCEPT the Forge session key
+      # passes through (D5), and `sandbox: :docker` routes `run_command` into the
+      # Forge microVM.
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.SketchBuildExec,
+                forward_context: {:only, [:forge_session_key]},
+                sandbox: :docker
+              }} = Templates.get("sketch_build_exec")
+    end
+
+    test "exists?/1 + names/0 include all three sketch templates" do
       assert Templates.exists?("sketch_build")
       assert Templates.exists?("sketch_reviewer")
+      assert Templates.exists?("sketch_build_exec")
       assert "sketch_build" in Templates.names()
       assert "sketch_reviewer" in Templates.names()
+      assert "sketch_build_exec" in Templates.names()
     end
   end
 

@@ -44,6 +44,14 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "code",
         "system",
         "plan-needed",
+        # AR-8b-2 F2 (D4-B): the two sketch-builder discriminators. The front door
+        # seeds EXACTLY ONE (the launch decision, §2.4), making `sketch-build` and
+        # `sketch-build-exec` mutually exclusive by construction. Declared here so
+        # their subscriptions satisfy `CatalogValidator` invariant 3; neither is in
+        # `@signal_topics`, so `mapped_signals/1` never auto-injects them. Publishes
+        # need no consumer.
+        "must-execute",
+        "sketch-plain",
         # The full early-signal vocabulary a `Triage.Verdict` can carry (AR-8),
         # so the seeded "triage emission" is coherent with its declared contract.
         # Publishes need no consumer (only consumed signals need a producer), so
@@ -174,12 +182,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
       output: ["fix"],
       publishes: ["code-written", "scope-shift"]
     },
-    # AR-8b sketch path. The ONLY clean trigger is the seed signal
-    # `request-received` (no stage publishes `"sketch"`); the route-filter then
-    # drops this stage on every non-sketch run (its `routes: ["sketch"]` is
-    # disjoint from the live path). Publishes only the mandatory `scope-shift`
-    # — its worker emits no signals (no `signals` output field), so the route
-    # converges the moment it finishes.
+    # AR-8b sketch path (file-only). AR-8b-2 F2 (D4-B) retargets its trigger off
+    # the seed `request-received` onto the `sketch-plain` discriminator — so it is
+    # mutually exclusive with `sketch-build-exec` (← `must-execute`) by
+    # construction: the front door seeds exactly one. Publishes only the mandatory
+    # `scope-shift` — its worker emits no signals (no `signals` output field), so
+    # the route converges the moment it finishes.
     "sketch-build" => %Stage{
       name: "sketch-build",
       unit: {:worker_template, "sketch_build"},
@@ -187,7 +195,25 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Build a throwaway prototype for the request in the sandbox: a tracer-bullet, scaffold, " <>
           "diagram, or idea sketch. Write files only — do not run commands or touch git.",
       routes: ["sketch"],
-      subscribes: ["request-received"],
+      subscribes: ["sketch-plain"],
+      input: %{required: ["request"], optional: []},
+      output: ["prototype"],
+      publishes: ["scope-shift"]
+    },
+    # AR-8b-2 F2: the exec sketch builder. Subscribes the `must-execute`
+    # discriminator (D4-B), so it runs INSTEAD OF `sketch-build` on a
+    # must-execute sketch. Its `sketch_build_exec` worker runs `RunCommand` in a
+    # no-egress Forge Docker microVM (`sandbox: :docker`), so the tracer-bullet
+    # actually executes. Produces `prototype` (the same artifact `sketch-build`
+    # does — `sketch-review` orders after either via the data graph). Publishes
+    # only the mandatory `scope-shift` (no `signals` output field → converges the
+    # moment it finishes + the reviewer clears).
+    "sketch-build-exec" => %Stage{
+      name: "sketch-build-exec",
+      unit: {:worker_template, "sketch_build_exec"},
+      task: "Build a tracer-bullet prototype AND run it in the sandbox to validate it executes.",
+      routes: ["sketch"],
+      subscribes: ["must-execute"],
       input: %{required: ["request"], optional: []},
       output: ["prototype"],
       publishes: ["scope-shift"]

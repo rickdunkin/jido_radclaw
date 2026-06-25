@@ -54,6 +54,7 @@ defmodule JidoClaw.FrontDoor do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Error
+  alias JidoClaw.Forge
   alias JidoClaw.FrontDoor.PrototypeSummary
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
@@ -185,69 +186,129 @@ defmodule JidoClaw.FrontDoor do
     base_intent = present(verdict.intent) || message
     intent = graduated_intent(base_intent, graduation)
     path = verdict.path
-    sensitive? = :secrets in verdict.signals
 
-    # A `:sketch` turn resolves a hard-isolated per-prototype `.prototypes/<id>/`
-    # sandbox up front (AR-8b); a `code`/`system` turn passes the launch scope
-    # through unchanged. A sandbox failure is `{:error, _}` and flows to the
-    # bounded ack below — NEVER a pass-through to the mutation-capable inline
-    # agent, which would write the real tree (P1c).
-    with {:ok, {project_dir, workspace_id}, premises_extra} <- sketch_scope(path, ctx),
-         # `:secrets` ∈ signals → mark_sensitive/2 merges sanitize + a bounded
-         # deadline (a direct call, not a one-step pipe — SinglePipe). The opts
-         # `=` binding is folded into the `with` so a sketch sandbox failure
-         # short-circuits before any parent is created.
-         opts =
-           mark_sensitive(
-             [
-               tenant: Map.fetch!(ctx, :tenant_id),
-               actor: actor(ctx),
-               name: "composer",
-               catalog: Catalog.all(),
-               live: seed_live(path, verdict),
-               # FULL intent stored in the artifact; the ack shows a capped preview.
-               artifacts: %{"request" => %{"seed" => message}, "intent" => %{"triage" => intent}},
-               # Option (A): seed `triage` as already-run so the composer never asks
-               # WaveBuilder to build the non-executable `{:seed, _}` stage.
-               ran: ["triage"],
-               context: composer_context(ctx, project_dir, workspace_id),
-               # Front-door launch cleans its own orphan (boot recovery does not — 3b).
-               terminalize_on_failure?: true,
-               # prototype_id/dir ride premises for Phase C (AR-8b-2) provenance;
-               # `graduated_from` (C1) is folded in even when the summary is nil.
-               premises: build_premises(path, verdict, premises_extra, graduation)
-             ],
-             sensitive?
-           ),
-         {:ok, parent} <- composer().create_parent_run(opts),
-         {:ok, _pid} <- composer().ensure_started(opts, parent) do
-      # Write the candidate only for a successful NON-SENSITIVE sketch; a sensitive
-      # sketch already cleared any stale one in `decide/2`; no-op for code/system.
-      set_sketch_candidate(path, sensitive?, parent, premises_extra, base_intent, ctx, session)
-
-      {:ok,
-       %{
-         path: path,
-         parent_run_id: parent.id,
-         message: ack_message(path, intent, parent.id, sensitive?)
-       }}
-    else
+    # The explicit launch decision (D7 Window 1): a `:sketch` turn resolves a
+    # hard-isolated `.prototypes/<id>/` sandbox up front (AR-8b) and, when the
+    # verdict carries `:must_execute`, ALSO mints a no-egress Forge Docker session
+    # (the exec tier). A `code`/`system` turn passes the launch scope through
+    # unchanged. A prototype-dir failure is `{:error, _}` → the bounded ack —
+    # NEVER a pass-through to the mutation-capable inline agent (P1c).
+    case sketch_scope(verdict, ctx) do
       {:error, reason} ->
-        # P1 SAFETY: a confident code/system verdict whose run won't start does NOT
-        # fall through to the mutation-capable inline agent. The ack is a SHORT,
-        # STABLE string (this path bypasses the tool redaction/shaping pipeline, so
-        # never `inspect(reason)` into it); the detail is logged via a SUMMARIZED
-        # (payload-dropping) reason — the global LogRedactor is belt-and-suspenders.
-        Logger.warning("[FrontDoor] composer launch failed: #{Error.summarize_reason(reason)}")
+        composer_launch_error(path, reason)
 
-        {:error,
+      launch ->
+        finish_launch(launch, message, verdict, intent, base_intent, ctx, session, graduation)
+    end
+  end
+
+  defp finish_launch(
+         launch,
+         message,
+         %Verdict{} = verdict,
+         intent,
+         base_intent,
+         ctx,
+         session,
+         graduation
+       ) do
+    path = verdict.path
+    sensitive? = :secrets in verdict.signals
+    {project_dir, workspace_id} = launch_scope(launch)
+    premises_extra = launch_premises(launch)
+    forge_key = launch_forge_key(launch)
+
+    # `:secrets` ∈ signals → mark_sensitive/2 merges sanitize + a bounded deadline
+    # (a direct call, not a one-step pipe — SinglePipe).
+    opts =
+      mark_sensitive(
+        [
+          tenant: Map.fetch!(ctx, :tenant_id),
+          actor: actor(ctx),
+          name: "composer",
+          catalog: Catalog.all(),
+          live: seed_live(launch, verdict),
+          # FULL intent stored in the artifact; the ack shows a capped preview.
+          artifacts: %{"request" => %{"seed" => message}, "intent" => %{"triage" => intent}},
+          # Option (A): seed `triage` as already-run so the composer never asks
+          # WaveBuilder to build the non-executable `{:seed, _}` stage.
+          ran: ["triage"],
+          # `forge_session_key` (D5) rides the persisted CONTEXT (the worker-scope /
+          # restart / teardown home), NOT premises (summary-label-only).
+          context: composer_context(ctx, project_dir, workspace_id, forge_key),
+          # Front-door launch cleans its own orphan (boot recovery does not — 3b).
+          terminalize_on_failure?: true,
+          # prototype_id/dir ride premises for Phase C (AR-8b-2) provenance;
+          # `graduated_from` (C1) is folded in even when the summary is nil.
+          premises: build_premises(path, verdict, premises_extra, graduation)
+        ],
+        sensitive?
+      )
+
+    case guarded_launch(opts, forge_key) do
+      {:ok, parent} ->
+        # Write the candidate only for a successful NON-SENSITIVE sketch; a
+        # sensitive sketch already cleared any stale one in `decide/2`; no-op for
+        # code/system.
+        set_sketch_candidate(path, sensitive?, parent, premises_extra, base_intent, ctx, session)
+
+        {:ok,
          %{
            path: path,
-           message:
-             "I classified this as a #{path} change but couldn't start the run " <>
-               "(it's been logged). It was not run through the chat agent — please retry."
+           parent_run_id: parent.id,
+           message: launch_ack(launch, path, intent, parent.id, sensitive?)
          }}
+
+      {:error, reason} ->
+        composer_launch_error(path, reason)
     end
+  end
+
+  # Window 1b (D7): the front door owns Forge cleanup from session-creation until
+  # `ensure_started/2` returns `{:ok, _}`. If a composer-launch step then fails
+  # while an exec session is live, tear it down (`:cancelled` — the session WAS
+  # aborted) BEFORE surfacing the bounded error, because the composer's terminal
+  # teardown never runs (the composer never started). A non-exec launch has no
+  # `forge_key` → the teardown no-ops. After `ensure_started` succeeds, the
+  # composer's terminal hook (5.6) owns teardown.
+  defp guarded_launch(opts, forge_key) do
+    with {:ok, parent} <- composer().create_parent_run(opts),
+         {:ok, _pid} <- composer().ensure_started(opts, parent) do
+      {:ok, parent}
+    else
+      {:error, reason} ->
+        teardown_forge_session(forge_key)
+        {:error, reason}
+    end
+  end
+
+  defp teardown_forge_session(forge_key) when is_binary(forge_key) and forge_key != "" do
+    forge().stop_session(forge_key)
+    :ok
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp teardown_forge_session(_forge_key), do: :ok
+
+  # P1 SAFETY: a confident code/system (or sketch) verdict whose run won't start
+  # does NOT fall through to the mutation-capable inline agent. The ack is a
+  # SHORT, STABLE string (this path bypasses the tool redaction/shaping pipeline,
+  # so never `inspect(reason)` into it); the detail is logged via a SUMMARIZED
+  # (payload-dropping) reason — the global LogRedactor is belt-and-suspenders.
+  defp composer_launch_error(path, reason) do
+    Logger.warning("[FrontDoor] composer launch failed: #{Error.summarize_reason(reason)}")
+
+    {:error,
+     %{
+       path: path,
+       message:
+         "I classified this as a #{path} change but couldn't start the run " <>
+           "(it's been logged). It was not run through the chat agent — please retry."
+     }}
   end
 
   # Map the verdict's early signals to composer topics, intersected with the
@@ -268,7 +329,7 @@ defmodule JidoClaw.FrontDoor do
   # for sketch. Both persist via `@persisted_context_keys` so the sandbox survives
   # crash recovery. `workspace_id` is included — `AgentRunner` otherwise falls back
   # to `"wf_<tag>"`.
-  defp composer_context(ctx, project_dir, workspace_id) do
+  defp composer_context(ctx, project_dir, workspace_id, forge_key) do
     %{
       project_dir: project_dir,
       tenant_id: Map.get(ctx, :tenant_id),
@@ -278,44 +339,143 @@ defmodule JidoClaw.FrontDoor do
       workspace_uuid: Map.get(ctx, :workspace_uuid),
       user_id: Map.get(ctx, :user_id),
       agent_id: Map.get(ctx, :agent_id),
-      agent_template: Map.get(ctx, :agent_template)
+      agent_template: Map.get(ctx, :agent_template),
+      # AR-8b-2 F2 (D5): the Forge session handle for the jailed exec worker
+      # (nil-rejected, so non-exec runs are unchanged). Persisted via
+      # `@persisted_context_keys` so it survives restart and reaches
+      # `resolve_scope/2` → `apply_visibility {:only, [:forge_session_key]}` → the
+      # worker's `tool_context`.
+      forge_session_key: forge_key
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
 
-  # Resolve the launch scope + extra premises for a turn. A `:sketch` turn
-  # creates a hard-isolated per-prototype `.prototypes/<id>/` sandbox (symlink-
-  # safe + validated by `VFS.Sandbox`); a missing `project_dir` or a hostile
-  # `.prototypes` symlink/shape surfaces as `{:error, _}` → the bounded ack (NOT
-  # a pass-through, so the worker can never cwd-fallback onto the real tree). A
-  # `code`/`system` turn passes the ctx scope through with no extra premises.
-  defp sketch_scope(:sketch, ctx) do
+  # Resolve the launch decision for a turn (D7 Window 1). A `:sketch` turn creates
+  # a hard-isolated `.prototypes/<id>/` sandbox (symlink-safe + validated by
+  # `VFS.Sandbox`); a missing `project_dir` or hostile shape surfaces as
+  # `{:error, _}` → the bounded ack (NOT a pass-through). On a `:must_execute`
+  # sketch it ALSO mints a no-egress Forge Docker session; the explicit outcome
+  # is `{:exec, scope, premises, forge_key}` (session ready) /
+  # `{:plain_degraded, scope, premises, notice}` (exec setup failed → file-only +
+  # notice) / `{:plain, scope, premises}` (ordinary sketch or `code`/`system`).
+  defp sketch_scope(%Verdict{path: :sketch} = verdict, ctx) do
     case Sandbox.create_prototype_dir(Map.get(ctx, :project_dir)) do
       {:ok, %{dir: proto, id: id}} ->
         ws = sketch_workspace_id(Map.get(ctx, :workspace_id), id)
-        {:ok, {proto, ws}, %{"prototype_id" => id, "prototype_dir" => proto}}
+        premises_extra = %{"prototype_id" => id, "prototype_dir" => proto}
+        decide_sketch_launch(verdict, proto, ws, premises_extra, ctx)
 
       {:error, reason} ->
         {:error, {:sketch_sandbox_unavailable, reason}}
     end
   end
 
-  defp sketch_scope(_path, ctx),
-    do: {:ok, {Map.get(ctx, :project_dir), Map.get(ctx, :workspace_id)}, %{}}
+  defp sketch_scope(_verdict, ctx),
+    do: {:plain, {Map.get(ctx, :project_dir), Map.get(ctx, :workspace_id)}, %{}}
+
+  # `:must_execute` → attempt the exec launch; otherwise a plain (file-only)
+  # sketch. The verdict still says `:must_execute` even on the degraded path, so
+  # the launch decision must be a first-class value — never re-derived downstream.
+  defp decide_sketch_launch(%Verdict{signals: signals}, proto, ws, premises_extra, ctx) do
+    if :must_execute in signals do
+      attempt_exec_launch(proto, ws, premises_extra, ctx)
+    else
+      {:plain, {proto, ws}, premises_extra}
+    end
+  end
+
+  # Mint the no-egress, globally-unmounted Docker session at the front door. A
+  # missing real `workspace_uuid` (a `Session.workspace_id` is `:uuid`
+  # non-nullable, and the synthetic `<ws>:proto:<id>` would fail the cast) ⇒ the
+  # tier cannot persist a session ⇒ degrade. `start_session_ready/3` tears down
+  # any partial session on failure, so a degrade leaks nothing.
+  defp attempt_exec_launch(proto, ws, premises_extra, ctx) do
+    case Map.get(ctx, :workspace_uuid) do
+      uuid when is_binary(uuid) and uuid != "" ->
+        # A FRESH bare UUID — never a `sketch:<id>` prefix (the Forge
+        # `Session.name` invariant holds every name source is a fresh UUID).
+        forge_key = Ash.UUID.generate()
+
+        case forge().start_session_ready(forge_key, forge_exec_spec(proto, ctx, uuid)) do
+          {:ok, ^forge_key} -> {:exec, {proto, ws}, premises_extra, forge_key}
+          _error -> {:plain_degraded, {proto, ws}, premises_extra, exec_unavailable_notice()}
+        end
+
+      _ ->
+        {:plain_degraded, {proto, ws}, premises_extra, exec_unavailable_notice()}
+    end
+  end
+
+  # The Forge start spec (5.2): the backend is selected by the TOP-LEVEL `:sandbox`
+  # atom (`:docker_sandbox` — distinct from the `:docker` POLICY atom), the knobs
+  # live in the NESTED `:sandbox_spec` (1.5/1.6: a JSON-safe map mount, the
+  # `--workdir`, the no-egress request, and the global-config opt-out).
+  # `workspace_uuid` is the REAL UUID (never the synthetic id — `scope_from_spec/1`
+  # would fail to cast it); the synthetic id stays in `composer_context` only.
+  defp forge_exec_spec(proto_dir, ctx, workspace_uuid) do
+    %{
+      sandbox: :docker_sandbox,
+      sandbox_spec: %{
+        extra_mounts: [%{"host" => proto_dir, "container" => "/proto", "mode" => "rw"}],
+        workdir: "/proto",
+        network: :none,
+        isolate_global_config: true
+      },
+      runner: :shell,
+      tenant_id: Map.get(ctx, :tenant_id),
+      workspace_uuid: workspace_uuid
+    }
+  end
+
+  defp exec_unavailable_notice,
+    do: "Execution wasn't available, so this is a file-only sketch (it was not run)."
+
+  # Launch-outcome accessors (the launch decision is a first-class value).
+  defp launch_scope({:exec, scope, _premises, _key}), do: scope
+  defp launch_scope({:plain_degraded, scope, _premises, _notice}), do: scope
+  defp launch_scope({:plain, scope, _premises}), do: scope
+
+  defp launch_premises({:exec, _scope, premises, _key}), do: premises
+  defp launch_premises({:plain_degraded, _scope, premises, _notice}), do: premises
+  defp launch_premises({:plain, _scope, premises}), do: premises
+
+  defp launch_forge_key({:exec, _scope, _premises, key}), do: key
+  defp launch_forge_key(_launch), do: nil
+
+  # On a degraded exec sketch, surface the notice in the ack so a silent file-only
+  # sketch isn't mistaken for a run.
+  defp launch_ack({:plain_degraded, _scope, _premises, notice}, path, intent, run_id, sensitive?),
+    do: notice <> " " <> ack_message(path, intent, run_id, sensitive?)
+
+  defp launch_ack(_launch, path, intent, run_id, sensitive?),
+    do: ack_message(path, intent, run_id, sensitive?)
 
   defp sketch_workspace_id(ws, id) when is_binary(ws) and ws != "", do: ws <> ":proto:" <> id
   defp sketch_workspace_id(_ws, id), do: "proto:" <> id
 
-  # The seeded `live` topics. A `sketch` run omits `plan-needed` (no plan gate —
-  # it's throwaway); a `code`/`system` run always seeds it (triage's catalog
-  # publish that `planner` subscribes — without it the route is empty and falsely
-  # converges).
-  defp seed_live(:sketch, verdict),
-    do: Enum.uniq(["request-received", "sketch"] ++ mapped_signals(verdict))
+  # The seeded `live` topics, launch-outcome-aware (D4-B). A sketch seeds the
+  # `"sketch"` path signal (without a live path the router skips route filtering)
+  # plus EXACTLY ONE discriminator — `"must-execute"` for `:exec`, `"sketch-plain"`
+  # for any sketch that isn't exec (`:plain_degraded` or a plain `:plain` sketch).
+  # The `++ mapped_signals/1` tail is safe ONLY because neither discriminator is
+  # in `@signal_topics` (Part 4), so `mapped_signals` never re-injects either. A
+  # `code`/`system` run always seeds `plan-needed` (triage's catalog publish that
+  # `planner` subscribes — without it the route is empty and falsely converges).
+  defp seed_live({:exec, _scope, _premises, _key}, verdict),
+    do: sketch_seed("must-execute", verdict)
 
-  defp seed_live(path, verdict),
+  defp seed_live({:plain_degraded, _scope, _premises, _notice}, verdict),
+    do: sketch_seed("sketch-plain", verdict)
+
+  defp seed_live({:plain, _scope, _premises}, %Verdict{path: :sketch} = verdict),
+    do: sketch_seed("sketch-plain", verdict)
+
+  defp seed_live({:plain, _scope, _premises}, %Verdict{path: path} = verdict),
     do: Enum.uniq(["request-received", to_string(path), "plan-needed"] ++ mapped_signals(verdict))
+
+  defp sketch_seed(discriminator, verdict),
+    do: Enum.uniq(["request-received", "sketch", discriminator] ++ mapped_signals(verdict))
 
   defp actor(ctx) do
     Map.get(ctx, :actor) || Actor.system(Map.fetch!(ctx, :tenant_id))
@@ -325,6 +485,11 @@ defmodule JidoClaw.FrontDoor do
   # force a `create_parent_run` / `ensure_started` failure and assert the front
   # door's bounded error ack + P1 no-fall-through, without a real composer.
   defp composer, do: Application.get_env(:jido_claw, :front_door_composer, RouteComposer)
+
+  # The Forge facade, behind the SAME app-env key the bridge uses (AR-8b-2 F2
+  # 5.0), so a test drives the exec-launch decision + Window-1b teardown via
+  # `JidoClaw.Test.ForgeStub` without a live microVM.
+  defp forge, do: Application.get_env(:jido_claw, :forge_facade, Forge)
 
   # ---------------------------------------------------------------------------
   # Recent history + stickiness persistence

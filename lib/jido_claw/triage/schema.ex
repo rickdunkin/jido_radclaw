@@ -34,7 +34,11 @@ defmodule JidoClaw.Triage.Schema do
               irreversible: "irreversible",
               needs_tests: "needs-tests",
               significant_build: "significant-build",
-              scope_shift: "scope-shift"
+              scope_shift: "scope-shift",
+              # AR-8b-2 F2: a `sketch` whose tracer-bullet must be *run*, not just
+              # written. The front door reads `:must_execute in verdict.signals` to
+              # decide whether to attempt the Docker exec launch (§2.4).
+              must_execute: "must-execute"
             )
           )
         ),

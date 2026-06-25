@@ -32,6 +32,14 @@ defmodule JidoClaw.Test.StubSandbox do
   """
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def create(spec \\ %{}) do
+    # AR-8b-2 F2: an optional create-time block so a Harness-driven session stalls
+    # before `:ready`, driving `Forge.start_session_ready/3`'s await-timeout +
+    # unconditional-stop orphan guard (`sandbox_spec: %{create_sleep_ms: ms}`).
+    case Map.get(spec, :create_sleep_ms) do
+      ms when is_integer(ms) and ms > 0 -> Process.sleep(ms)
+      _ -> :ok
+    end
+
     exec_response = Map.get(spec, :exec_response, {"", 0})
 
     {:ok, agent} =

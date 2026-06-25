@@ -19,6 +19,11 @@ defmodule JidoClaw.Test.ForgeStub do
 
   @agent_key :forge_stub_agent
 
+  # AR-8b-2 F2 — additional facade surface for the front-door launch decision
+  # (`start_session_ready/3`) and the all-terminal composer teardown
+  # (`complete_session/1`). Each records its calls and serves a programmable
+  # outcome (`set_start_ready_result/1` / `set_complete_result/1`).
+
   @doc """
   Install this module as the `:forge_facade` and back it with a fresh state
   Agent. `:client` is the `StubSandbox` client `exec/3` delegates to; programme
@@ -36,9 +41,14 @@ defmodule JidoClaw.Test.ForgeStub do
   """
   @spec install(keyword()) :: (-> :ok)
   def install(opts) do
-    client = Keyword.fetch!(opts, :client)
+    # `:client` is REQUIRED only for the bridge `exec/3` delegation path; the
+    # front-door / composer-teardown tests (start_session_ready / complete_session)
+    # never call `exec`, so it defaults to `nil` there.
+    client = Keyword.get(opts, :client)
     notify = Keyword.get(opts, :notify)
     stop_delay = Keyword.get(opts, :stop_delay, 0)
+    start_ready_result = Keyword.get(opts, :start_ready_result, :ok)
+    complete_result = Keyword.get(opts, :complete_result, :ok)
     prev_facade = Application.get_env(:jido_claw, :forge_facade)
     prev_agent = Application.get_env(:jido_claw, @agent_key)
 
@@ -50,7 +60,11 @@ defmodule JidoClaw.Test.ForgeStub do
           execs: [],
           stops: [],
           notify: notify,
-          stop_delay: stop_delay
+          stop_delay: stop_delay,
+          start_ready_result: start_ready_result,
+          start_readies: [],
+          complete_result: complete_result,
+          completes: []
         }
       end)
 
@@ -77,6 +91,24 @@ defmodule JidoClaw.Test.ForgeStub do
     Agent.update(agent(), fn s -> %{s | stop_delay: ms} end)
   end
 
+  @doc """
+  Force the `start_session_ready/3` outcome: `:ok` echoes `{:ok, session_id}`,
+  `{:error, reason}` fails (models a degraded/timed-out exec launch).
+  """
+  @spec set_start_ready_result(:ok | {:error, term()}) :: :ok
+  def set_start_ready_result(result) do
+    Agent.update(agent(), fn s -> %{s | start_ready_result: result} end)
+  end
+
+  @doc """
+  Force the `complete_session/1` outcome: `:ok`, `{:error, reason}`, or `:raise`
+  (drives the composer's `best_effort` facade-failure swallow).
+  """
+  @spec set_complete_result(:ok | {:error, term()} | :raise) :: :ok
+  def set_complete_result(result) do
+    Agent.update(agent(), fn s -> %{s | complete_result: result} end)
+  end
+
   @doc "Recorded `exec/3` calls in chronological order (each `%{command:, opts:}`)."
   @spec execs() :: [map()]
   def execs, do: Agent.get(agent(), fn s -> Enum.reverse(s.execs) end)
@@ -84,6 +116,14 @@ defmodule JidoClaw.Test.ForgeStub do
   @doc "Recorded `stop_session/1` session ids in chronological order."
   @spec stops() :: [term()]
   def stops, do: Agent.get(agent(), fn s -> Enum.reverse(s.stops) end)
+
+  @doc "Recorded `start_session_ready/3` calls in chronological order."
+  @spec start_readies() :: [map()]
+  def start_readies, do: Agent.get(agent(), fn s -> Enum.reverse(s.start_readies) end)
+
+  @doc "Recorded `complete_session/1` session ids in chronological order."
+  @spec completes() :: [term()]
+  def completes, do: Agent.get(agent(), fn s -> Enum.reverse(s.completes) end)
 
   # -- Forge facade surface the bridge calls -----------------------------------
 
@@ -98,6 +138,33 @@ defmodule JidoClaw.Test.ForgeStub do
     case result do
       :delegate -> {:ok, StubSandbox.exec(client, command, opts)}
       {:error, _reason} = err -> err
+    end
+  end
+
+  @spec start_session_ready(term(), map(), keyword()) :: {:ok, term()} | {:error, term()}
+  def start_session_ready(session_id, spec, opts \\ []) do
+    result =
+      Agent.get_and_update(agent(), fn s ->
+        entry = %{session_id: session_id, spec: spec, opts: opts}
+        {s.start_ready_result, %{s | start_readies: [entry | s.start_readies]}}
+      end)
+
+    case result do
+      :ok -> {:ok, session_id}
+      {:error, _reason} = err -> err
+    end
+  end
+
+  @spec complete_session(term()) :: :ok | {:error, term()}
+  def complete_session(session_id) do
+    result =
+      Agent.get_and_update(agent(), fn s ->
+        {s.complete_result, %{s | completes: [session_id | s.completes]}}
+      end)
+
+    case result do
+      :raise -> raise "ForgeStub.complete_session forced raise"
+      other -> other
     end
   end
 

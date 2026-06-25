@@ -191,6 +191,20 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
     assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
   end
 
+  test "refuses to spawn the REAL sketch_build_exec template (AR-8b-2 F2, :docker)" do
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+    Application.put_env(:jido_claw, :jido_runtime, FakeRuntime)
+    Application.put_env(:jido_claw, :spawn_agent_test_pid, self())
+    Application.put_env(:jido_claw, :spawn_agent_max_children, 10)
+
+    assert {:error, wire} = SpawnAgent.run(%{template: "sketch_build_exec", task: "x"}, ctx())
+    assert wire.details.reason == :composer_private
+    assert wire.details.template == "sketch_build_exec"
+
+    refute_receive {:start_agent, _opts, _pid}
+    assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
+  end
+
   test "terminal children do not consume the spawn cap (H10 regression)" do
     configure_fake_spawn()
     Application.put_env(:jido_claw, :spawn_agent_max_children, 1)

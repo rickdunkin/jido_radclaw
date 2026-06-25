@@ -395,9 +395,11 @@ defmodule JidoClaw.RouteComposer.RouterTest do
       refute Map.has_key?(res.held, "implementer")
     end
 
-    test "GAP-5 the AR-8b sketch path composes to [sketch-build, sketch-review] across two waves" do
+    test "GAP-5 the sketch-plain path composes to [sketch-build, sketch-review] across two waves" do
+      # AR-8b-2 F2 (D4-B): the `sketch-plain` discriminator is now required to
+      # trigger `sketch-build` (it moved off the seed `request-received`).
       res =
-        compose(Catalog.all(), ["request-received", "sketch"],
+        compose(Catalog.all(), ["request-received", "sketch", "sketch-plain"],
           available: ["request"],
           ran: ["triage"]
         )
@@ -409,6 +411,9 @@ defmodule JidoClaw.RouteComposer.RouterTest do
       assert res.waves == [["sketch-build"], ["sketch-review"]]
       assert res.dropped == %{}
 
+      # D4-B: the exec builder is off-path without `must-execute`.
+      refute "sketch-build-exec" in res.route
+
       # The code/system pipeline stays out of a sketch route.
       for stage <- ~w(planner implementer test-author fixer quality-reviewer
                       security-reviewer correctness-reviewer architecture-reviewer) do
@@ -416,7 +421,23 @@ defmodule JidoClaw.RouteComposer.RouterTest do
       end
     end
 
-    test "GAP-5 the AR-8b-2 sketch-review stage is off-path on a code run" do
+    test "GAP-5 (F2) the must-execute path composes to [sketch-build-exec, sketch-review]" do
+      res =
+        compose(Catalog.all(), ["request-received", "sketch", "must-execute"],
+          available: ["request"],
+          ran: ["triage"]
+        )
+
+      # D4-B mutual exclusion: `sketch-build-exec` (← `must-execute`) runs INSTEAD
+      # OF `sketch-build` (← `sketch-plain`); `sketch-review` orders into wave 2 off
+      # the `prototype` data edge either builder produces.
+      assert res.route == ["sketch-build-exec", "sketch-review"]
+      assert res.waves == [["sketch-build-exec"], ["sketch-review"]]
+      assert res.dropped == %{}
+      refute "sketch-build" in res.route
+    end
+
+    test "GAP-5 the AR-8b-2 sketch stages are off-path on a code run" do
       res =
         compose(Catalog.all(), ["request-received", "code", "code-written"],
           available: ["diff"],
@@ -425,6 +446,7 @@ defmodule JidoClaw.RouteComposer.RouterTest do
 
       refute "sketch-review" in res.route
       refute "sketch-build" in res.route
+      refute "sketch-build-exec" in res.route
     end
   end
 

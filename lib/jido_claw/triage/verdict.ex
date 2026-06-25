@@ -54,7 +54,9 @@ defmodule JidoClaw.Triage.Verdict do
     "irreversible" => :irreversible,
     "needs-tests" => :needs_tests,
     "significant-build" => :significant_build,
-    "scope-shift" => :scope_shift
+    "scope-shift" => :scope_shift,
+    # AR-8b-2 F2: the only string→atom gate for the must-execute sketch signal.
+    "must-execute" => :must_execute
   }
 
   @sizes %{"XS" => :xs, "S" => :s, "M" => :m, "L" => :l, "XL" => :xl, "XXL" => :xxl}

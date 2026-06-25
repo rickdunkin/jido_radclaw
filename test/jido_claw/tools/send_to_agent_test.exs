@@ -106,6 +106,11 @@ defmodule JidoClaw.Tools.SendToAgentTest do
         do: %{template: "docker_stub"}
     end
 
+    def get_agent("sketch_exec_agent", opts) do
+      if Keyword.get(opts, :tenant_id) == "tenant-send-to-agent-test",
+        do: %{template: "sketch_build_exec"}
+    end
+
     def get_agent(_agent_id, _opts), do: nil
 
     # Straggler absorbers: an orchestration task from an earlier test can outlive
@@ -268,6 +273,18 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
     assert details.reason == :composer_private
     assert details.template == "docker_stub"
+    refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
+  end
+
+  test "refuses a follow-up to the REAL sketch_build_exec agent (AR-8b-2 F2)" do
+    Application.put_env(:jido_claw, :agent_tracker, SandboxTracker)
+    Application.put_env(:jido_claw, :agent_templates, JidoClaw.Agent.Templates)
+
+    assert {:error, %{code: :execution_error, details: details}} =
+             SendToAgent.run(%{agent_id: "sketch_exec_agent", message: "more"}, ctx())
+
+    assert details.reason == :composer_private
+    assert details.template == "sketch_build_exec"
     refute_receive {:ask_sync, _mod, _pid, _msg, _opts}, 200
   end
 

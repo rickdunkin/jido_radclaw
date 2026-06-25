@@ -45,7 +45,11 @@ defmodule JidoClaw.Doctrine do
     "reviewer" => [:base, :reviewer_min],
     "verifier" => [:base, :reviewer_min],
     "sketch_build" => [:base, :artifacts],
-    "sketch_reviewer" => [:base, :reviewer_min]
+    "sketch_reviewer" => [:base, :reviewer_min],
+    # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
+    # `:artifacts` slice (no new priv file). Required: the drift guard
+    # (`doctrine_test.exs`, `template_names() == names()`) fails without it.
+    "sketch_build_exec" => [:base, :artifacts]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

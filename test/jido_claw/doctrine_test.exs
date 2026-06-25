@@ -50,6 +50,14 @@ defmodule JidoClaw.DoctrineTest do
       refute doctrine =~ "Runtime artifacts"
     end
 
+    test "the AR-8b-2 F2 sketch_build_exec is a producing worker (base + artifacts)" do
+      doctrine = Doctrine.for_template("sketch_build_exec")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Runtime artifacts"
+      refute doctrine =~ "Review discipline"
+    end
+
     test "\"main\" maps to no doctrine (it uses Prompt — doctrine never double-applies)" do
       assert Doctrine.for_template("main") == ""
     end

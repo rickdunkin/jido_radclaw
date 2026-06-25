@@ -27,6 +27,7 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubStore
   alias JidoClaw.RouteComposer.TestSupport.StubWorker
+  alias JidoClaw.Test.ForgeStub
 
   @all_stages ~w(planner approver implementer quality-reviewer security-reviewer)
 
@@ -96,6 +97,15 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
             model: :fast,
             max_iterations: 1
           },
+          # AR-8b-2 F2: the exec builder shares the loop-test StubWorker (no
+          # `sandbox` enforcement in the loop test), so a `must-execute` seed can
+          # dispatch `sketch-build-exec` without a real Docker session.
+          "sketch_build_exec" => %{
+            module: StubWorker,
+            description: "sketch exec stub",
+            model: :fast,
+            max_iterations: 1
+          },
           "sketch_reviewer" => %{
             module: StubWorker,
             description: "sketch review stub",
@@ -108,14 +118,19 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
 
     Application.put_env(:jido_claw, :route_composer_stub_outputs, %{
       "sketch_build" => %{"prototype" => "PROTO: a tracer-bullet rate limiter"},
+      "sketch_build_exec" => %{"prototype" => "PROTO: a tracer-bullet rate limiter (ran)"},
       "sketch_reviewer" => reviewer_output
     })
   end
 
-  defp run_sketch(ctx) do
+  # AR-8b-2 F2 (D4-B): the front door seeds exactly ONE discriminator alongside
+  # `["request-received", "sketch"]` — `"sketch-plain"` (→ `sketch-build`) or
+  # `"must-execute"` (→ `sketch-build-exec`). The two builders are mutually
+  # exclusive by construction.
+  defp run_sketch(ctx, discriminator \\ "sketch-plain") do
     RouteComposer.run_sync(
       catalog: Catalog.all(),
-      live: ["request-received", "sketch"],
+      live: ["request-received", "sketch", discriminator],
       artifacts: %{"request" => %{"seed" => "sketch a rate limiter"}},
       ran: ["triage"],
       tenant: ctx.tenant,
@@ -185,6 +200,8 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
 
     assert summary.terminal == :converged
     assert summary.ran == MapSet.new(["triage", "sketch-build", "sketch-review"])
+    # D4-B mutual exclusion (the plain direction): the exec builder never runs.
+    refute MapSet.member?(summary.ran, "sketch-build-exec")
     assert MapSet.member?(summary.final_live, "clean:correctness")
     refute MapSet.member?(summary.final_live, "findings:correctness")
 
@@ -209,6 +226,91 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     # the findings artifact is present, produced by sketch-review.
     assert get_in(summary.artifacts, ["findings", "sketch-review"])
     assert Enum.map(summary.history, & &1.stages) == [["sketch-build"], ["sketch-review"]]
+  end
+
+  test "AR-8b-2 F2 sketch path: a must-execute seed runs sketch-build-exec, not sketch-build",
+       ctx do
+    # D4-B mutual exclusion (the exec direction): seeding `must-execute` dispatches
+    # `sketch-build-exec` (← `must-execute`) INSTEAD OF `sketch-build` (←
+    # `sketch-plain`), then `sketch-review` (← `request-received`). Both produce
+    # `prototype`, so the reviewer orders into wave 2 either way.
+    put_sketch_env(ctx, TestFixtures.phase1_clean_reviewer())
+
+    assert {:ok, summary} = run_sketch(ctx, "must-execute")
+
+    assert summary.terminal == :converged
+    assert summary.ran == MapSet.new(["triage", "sketch-build-exec", "sketch-review"])
+    refute MapSet.member?(summary.ran, "sketch-build")
+    assert MapSet.member?(summary.final_live, "clean:correctness")
+    assert Enum.map(summary.history, & &1.stages) == [["sketch-build-exec"], ["sketch-review"]]
+  end
+
+  # AR-8b-2 F2 (5.6 / D3): teardown must run for EVERY terminal, keyed on the
+  # `forge_session_key` in the composer's persisted context — `:converged` →
+  # `complete_session` (`:completed`); every other terminal → `stop_session`
+  # (`:cancelled`). The `:not_converged` case is the headline gap the review
+  # caught (a normal "ran but the reviewer requested changes" sketch would
+  # otherwise leave the microVM alive). Driven via the `ForgeStub` facade.
+  describe "AR-8b-2 F2 composer Forge-session teardown (every terminal)" do
+    setup do
+      cleanup = ForgeStub.install([])
+      on_exit(cleanup)
+      :ok
+    end
+
+    defp run_sketch_with_forge_key(ctx, reviewer_output, key) do
+      put_sketch_env(ctx, reviewer_output)
+      context = Map.put(ctx.context, :forge_session_key, key)
+
+      RouteComposer.run_sync(
+        catalog: Catalog.all(),
+        live: ["request-received", "sketch", "must-execute"],
+        artifacts: %{"request" => %{"seed" => "sketch a rate limiter"}},
+        ran: ["triage"],
+        tenant: ctx.tenant,
+        actor: actor_for(ctx.tenant),
+        context: context,
+        max_waves: 5,
+        timeout: 30_000
+      )
+    end
+
+    test "a converged run COMPLETES the Forge session (:completed), never stops it", ctx do
+      key = "fk_converge_#{:erlang.unique_integer([:positive])}"
+
+      assert {:ok, summary} =
+               run_sketch_with_forge_key(ctx, TestFixtures.phase1_clean_reviewer(), key)
+
+      assert summary.terminal == :converged
+      assert key in ForgeStub.completes()
+      refute key in ForgeStub.stops()
+    end
+
+    test "a :not_converged run STOPS the Forge session (:cancelled) — the leak the review caught",
+         ctx do
+      key = "fk_notconv_#{:erlang.unique_integer([:positive])}"
+
+      assert {:ok, summary} =
+               run_sketch_with_forge_key(ctx, TestFixtures.phase1_findings_reviewer(), key)
+
+      # Reviewer requested changes → :not_converged, yet the microVM is NOT left alive.
+      assert summary.terminal == :not_converged
+      assert key in ForgeStub.stops()
+      refute key in ForgeStub.completes()
+    end
+
+    test "a facade cleanup failure does NOT flip a converged run to :terminalize_failed", ctx do
+      # The composer `best_effort`-swallows the facade error; the teardown result
+      # never reaches `notify_payload/2`.
+      ForgeStub.set_complete_result(:raise)
+      key = "fk_raise_#{:erlang.unique_integer([:positive])}"
+
+      assert {:ok, summary} =
+               run_sketch_with_forge_key(ctx, TestFixtures.phase1_clean_reviewer(), key)
+
+      assert summary.terminal == :converged
+      assert key in ForgeStub.completes()
+    end
   end
 
   test "built-in catalog: the triage seed reconciles, planner runs, then the plan-gate PARKS",

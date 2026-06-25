@@ -62,6 +62,9 @@ defmodule JidoClaw.Triage.Prompt do
   - `needs-tests` — the change should be covered by tests.
   - `significant-build` — a sizable build with architectural weight.
   - `scope-shift` — the ask has shifted scope from the prior turn.
+  - `must-execute` — (on a `sketch`) the throwaway must be *run*, not just
+    written: it has to execute (build + run, run a script, hit a service) to be
+    worth anything. Emit ONLY on a `sketch` turn whose value is in the running.
 
   ## `intent` and `intent_confirmed`
 

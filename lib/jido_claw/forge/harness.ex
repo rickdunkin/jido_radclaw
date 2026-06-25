@@ -97,6 +97,19 @@ defmodule JidoClaw.Forge.Harness do
     call(session_id, :status)
   end
 
+  # AR-8b-2 F2 (1.3): a clean completion close that lands the session
+  # **`:completed`** (with `completed_at`), distinct from `Manager.stop_session`'s
+  # `:cancelled` — so a converged sketch run isn't misread as cancelled in
+  # ForgeView/history. Routed as a Harness self-stop with `reason: :normal`: the
+  # `:complete` handler best-effort stamps `completed_at`, then `{:stop, :normal,
+  # …}` lets `terminate/2`'s `maybe_finalize_phase(:normal ⇒ :completed)` finalizer
+  # be the FALLBACK, so a row whose stamp WRITE failed still lands `:completed`
+  # (not `:failed`). The microVM is destroyed by `terminate/2` either way.
+  @spec complete(String.t()) :: :ok | {:error, term()}
+  def complete(session_id) do
+    call(session_id, :complete)
+  end
+
   @spec attach_sandbox(String.t(), atom(), map()) :: {:ok, map()} | {:error, term()}
   def attach_sandbox(session_id, name, sandbox_spec) when is_atom(name) do
     call(session_id, {:attach_sandbox, name, sandbox_spec})
@@ -580,6 +593,21 @@ defmodule JidoClaw.Forge.Harness do
     }
 
     {:reply, {:ok, status}, state}
+  end
+
+  # AR-8b-2 F2 (1.3): the completion-aware close. Best-effort stamp `:completed` +
+  # `completed_at` (swallow any write error), then self-stop `:normal`.
+  # `terminate/2`'s `maybe_finalize_phase` finalizes `:completed` for `:normal`
+  # whether the stamp landed (clean: `completed_at` set) or failed (row still
+  # `:ready`/`:running` ⇒ finalized `:completed`, no `completed_at`) — NEVER
+  # `:failed`. A Manager-driven `terminate_child` would deliver `:shutdown`, so a
+  # failed prewrite would fall through to `:failed` — the misread `:completed`
+  # exists to avoid. Routed through the `persistence/0` seam so a test can force
+  # the stamp-failure → `:normal`-fallback path.
+  @impl GenServer
+  def handle_call(:complete, _from, state) do
+    persist(fn -> persistence().complete_session(state.session_id) end)
+    {:stop, :normal, :ok, state}
   end
 
   @impl GenServer
@@ -1289,6 +1317,16 @@ defmodule JidoClaw.Forge.Harness do
     e -> Logger.warning("[Forge.Harness] Persistence error: #{inspect(e)}")
   end
 
+  # Named test seam for the `:complete` handler ONLY (the app-env-seam idiom, cf.
+  # `:forge_facade`/`:sbx_finder`): a test installs a stub whose
+  # `complete_session/1` returns `{:error, _}` to drive the stamp-failure →
+  # `:normal`-fallback path (1.3). The rest of the harness calls `Persistence`
+  # directly — `maybe_finalize_phase/2`'s fallback write must stay on the real
+  # `Persistence` so the row genuinely lands `:completed`.
+  defp persistence do
+    Application.get_env(:jido_claw, :forge_persistence, Persistence)
+  end
+
   defp resolve_runner(:shell), do: JidoClaw.Forge.Runners.Shell
   defp resolve_runner(:claude_code), do: JidoClaw.Forge.Runners.ClaudeCode
   defp resolve_runner(:codex), do: JidoClaw.Forge.Runners.Codex
@@ -1304,13 +1342,20 @@ defmodule JidoClaw.Forge.Harness do
   defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module
 
-  defp build_sandbox_spec(state, base_spec) do
+  @doc """
+  Build the backend create spec from the per-session `base_spec` (AR-8b-2 F2 1.5).
+  Public so the map→tuple mount normalization is asserted directly without a live
+  session.
+  """
+  @spec build_sandbox_spec(%__MODULE__{}, map()) :: map()
+  def build_sandbox_spec(state, base_spec) do
     resources = Map.get(state.spec, :resources, [])
     resource_mounts = ResourceProvisioner.file_mount_specs(resources)
 
     base_spec
     |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
     |> merge_resource_mounts(resource_mounts)
+    |> normalize_mounts()
   end
 
   defp merge_resource_mounts(sandbox_spec, []), do: sandbox_spec
@@ -1318,6 +1363,55 @@ defmodule JidoClaw.Forge.Harness do
   defp merge_resource_mounts(sandbox_spec, mounts) do
     existing = Map.get(sandbox_spec, :extra_mounts, [])
     Map.put(sandbox_spec, :extra_mounts, existing ++ mounts)
+  end
+
+  # AR-8b-2 F2 (1.5): normalize every `:extra_mounts` entry to a
+  # `{host, container, mode}` tuple at this single harness boundary, so the
+  # backend's `add_spec_mounts/2` stays tuple-only AND the PERSISTED spec stays
+  # JSON-safe (a tuple cannot be jsonb-encoded — `redact_map/1` would raise — so
+  # F2 persists map mounts `%{"host"=>,"container"=>,"mode"=>}` and they convert
+  # here). Runs UNCONDITIONALLY (including the no-resource-mounts path), and is
+  # IDEMPOTENT: an already-`{h,c,m}` tuple (resource mounts, or a later
+  # create/recovery/sync re-run on an in-memory spec already converted) passes
+  # through. A malformed entry is an impossible-by-construction invariant on the
+  # F2 create/recovery paths (the front door builds well-formed maps; `wake/2`
+  # fail-closes a malformed recovered mount), so it raises a DESCRIPTIVE
+  # `ArgumentError` naming the bad entry — a clear boundary failure, not a
+  # `FunctionClauseError` buried in `add_spec_mounts/2`'s tuple destructure. With
+  # `restart: :temporary` that raise is a clean session death (front door
+  # degrades / recovery fails closed). Non-F2 sessions with no `:extra_mounts`
+  # pass through untouched.
+  defp normalize_mounts(sandbox_spec) do
+    case Map.get(sandbox_spec, :extra_mounts) do
+      nil ->
+        sandbox_spec
+
+      mounts when is_list(mounts) ->
+        Map.put(sandbox_spec, :extra_mounts, Enum.map(mounts, &normalize_mount/1))
+
+      other ->
+        raise ArgumentError,
+              "[Forge.Harness] invalid :extra_mounts (expected a list, got #{inspect(other)})"
+    end
+  end
+
+  # An already-`{host, container, mode}` tuple passes through. `mode` is NOT
+  # constrained to a binary: `ResourceProvisioner.file_mount_specs/1` yields an
+  # ATOM mode (`:ro`/`:rw`), which `add_spec_mounts/2` interpolates as-is — only
+  # `host`/`container` must be the binary paths the backend joins.
+  defp normalize_mount({host, container, _mode} = tuple)
+       when is_binary(host) and is_binary(container),
+       do: tuple
+
+  defp normalize_mount(%{"host" => host, "container" => container, "mode" => mode})
+       when is_binary(host) and is_binary(container) and is_binary(mode),
+       do: {host, container, mode}
+
+  defp normalize_mount(entry) do
+    raise ArgumentError,
+          "[Forge.Harness] invalid mount spec entry " <>
+            "(expected {host, container, mode} tuple or " <>
+            "%{\"host\" => _, \"container\" => _, \"mode\" => _} map, got #{inspect(entry)})"
   end
 
   defp bootstrap_client(state, client) do

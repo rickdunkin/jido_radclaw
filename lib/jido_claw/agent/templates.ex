@@ -115,6 +115,19 @@ defmodule JidoClaw.Agent.Templates do
       # `.prototypes/<uuid>/` root), composer-private (`forward_context: :none`).
       forward_context: :none,
       sandbox: :prototype
+    },
+    "sketch_build_exec" => %{
+      module: JidoClaw.Agent.Workers.SketchBuildExec,
+      description: "Builds AND runs a throwaway prototype in a Docker-isolated sandbox",
+      model: :fast,
+      # AR-8b-2 F2: the exec sketch builder. Shares `sketch_build`'s
+      # `.prototypes/<uuid>/` file jail, but its `run_command` routes into a Forge
+      # Docker microVM (`sandbox: :docker`). `forward_context: {:only,
+      # [:forge_session_key]}` (D5) keeps strict isolation but lets the session key
+      # through to the jailed worker. `external_tools?/1` excludes `:docker`, so —
+      # like `:prototype` — it gets no external MCP tools and is composer-private.
+      forward_context: {:only, [:forge_session_key]},
+      sandbox: :docker
     }
   }
 

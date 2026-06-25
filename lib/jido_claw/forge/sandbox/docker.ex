@@ -14,12 +14,17 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   alias JidoClaw.Forge.Sandbox
   alias JidoClaw.Security.Redaction.Env
 
-  defstruct [:sandbox_name, :workspace_dir, :sandbox_id]
+  defstruct [:sandbox_name, :workspace_dir, :sandbox_id, :workdir]
 
   @type t :: %__MODULE__{
           sandbox_name: String.t(),
           workspace_dir: String.t(),
-          sandbox_id: String.t()
+          sandbox_id: String.t(),
+          # AR-8b-2 F2 (1.6): the in-container working directory `exec` forces via
+          # `sbx exec --workdir <dir>` — stamped from `sandbox_spec.workdir` at
+          # create, read at exec. `nil` (every non-exec session) emits no flag, so
+          # exec defaults to the throwaway `/tmp` workspace as before.
+          workdir: String.t() | nil
         }
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
@@ -61,16 +66,34 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
         client = %__MODULE__{
           sandbox_name: sandbox_name,
           workspace_dir: workspace_dir,
-          sandbox_id: sandbox_id
+          sandbox_id: sandbox_id,
+          workdir: Map.get(spec, :workdir)
         }
 
-        inject_onecli_env(client, sandbox_id, sandbox_name)
+        maybe_inject_onecli_env(spec, client, sandbox_id, sandbox_name)
 
         {:ok, client, sandbox_id}
 
       {error_output, code} ->
         File.rm_rf(workspace_dir)
         {:error, {:sbx_create_failed, code, error_output}}
+    end
+  end
+
+  @doc """
+  The POST-CREATE half of the AR-8b-2 F2 (D2-a) global-config opt-out:
+  `build_create_args/4` skips the CA-cert mount + global `:extra_mounts`, and
+  THIS separate call site skips the OneCLI proxy env injection under
+  `isolate_global_config: true` (a create-arg assertion alone can't catch it).
+  Public so a test can drive the skip at the real call site without a live `sbx`.
+  """
+  @spec maybe_inject_onecli_env(map(), t(), String.t(), String.t()) :: :ok
+  def maybe_inject_onecli_env(spec, client, sandbox_id, sandbox_name) do
+    if isolate_global_config?(spec) do
+      :ok
+    else
+      inject_onecli_env(client, sandbox_id, sandbox_name)
+      :ok
     end
   end
 
@@ -128,8 +151,12 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
-  def exec(%__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir}, command, opts) do
-    args = build_exec_args(sandbox_name, workspace_dir, command)
+  def exec(
+        %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir, workdir: workdir},
+        command,
+        opts
+      ) do
+    args = build_exec_args(sandbox_name, workspace_dir, command, workdir)
     timeout = Keyword.get(opts, :timeout)
 
     # No-timeout calls go through exec_with_timeout too (OsCmd accepts
@@ -246,18 +273,53 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
 
   # --- Private ---
 
-  defp build_create_args(sandbox_name, agent_type, workspace_dir, spec) do
+  @doc """
+  Build the `sbx create` args (AR-8b-2 F2 1.6). Public so a test can assert the
+  emitted flags — global mounts skipped + `--network none` present under
+  `isolate_global_config: true` — without a live `sbx`.
+  """
+  @spec build_create_args(String.t(), String.t(), String.t(), map()) :: [String.t()]
+  def build_create_args(sandbox_name, agent_type, workspace_dir, spec) do
     args =
       ["create", "--name", sandbox_name]
-      # Add OneCLI CA cert mount if configured
-      |> maybe_add_ca_cert_mount()
-      # Add any extra mounts from config
-      |> add_extra_mounts()
-      # Add resource-declared mounts from spec
+      # OneCLI CA-cert mount + operator global `:extra_mounts` — skipped wholesale
+      # when the spec opts out of global host config (AR-8b-2 F2 D2-a): a host-path
+      # mount survives `--network none`, so the no-egress bypass cannot rest on
+      # egress alone.
+      |> add_global_mounts(spec)
+      # Resource-/spec-declared mounts (the prototype `extra_mount`) — always.
       |> add_spec_mounts(spec)
+      # Best-guess no-egress flag when the spec requests it. Precommit asserts the
+      # flag is EMITTED; the manual `:docker_sandbox` test asserts egress is
+      # actually DENIED (a `sbx` that silently ignores it fails open — caught only
+      # there).
+      |> add_network_flag(spec)
 
     args ++ [agent_type, workspace_dir]
   end
+
+  defp add_global_mounts(args, spec) do
+    if isolate_global_config?(spec) do
+      args
+    else
+      args
+      |> maybe_add_ca_cert_mount()
+      |> add_extra_mounts()
+    end
+  end
+
+  defp add_network_flag(args, %{network: :none}), do: args ++ ["--network", "none"]
+  defp add_network_flag(args, _spec), do: args
+
+  @doc """
+  Whether the spec opts out of all global host config (AR-8b-2 F2 D2-a). Reads
+  the atom key only: the create/recovery/sync specs reaching the backend are
+  atom-keyed by construction (`Forge.RecoveredSpec` re-atomizes a jsonb-recovered
+  spec before it reaches the Harness). Public for the predicate unit test.
+  """
+  @spec isolate_global_config?(map()) :: boolean()
+  def isolate_global_config?(%{isolate_global_config: true}), do: true
+  def isolate_global_config?(_spec), do: false
 
   defp build_run_args(sandbox_name, agent_type, workspace_dir, args) do
     base_args = ["run", agent_type, "--name", sandbox_name]
@@ -275,7 +337,13 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     Enum.concat([sbx_args, ["--"], args])
   end
 
-  defp build_exec_args(sandbox_name, workspace_dir, command) do
+  @doc """
+  Build the `sbx exec` args (AR-8b-2 F2 1.6). Public so a test can assert the
+  `--workdir <dir>` flag is emitted for an exec session. A `nil`/blank workdir
+  (every non-exec session) emits no flag — byte-identical to the pre-F2 args.
+  """
+  @spec build_exec_args(String.t(), String.t(), String.t(), String.t() | nil) :: [String.t()]
+  def build_exec_args(sandbox_name, workspace_dir, command, workdir \\ nil) do
     # Add --env-file if .forge_env exists
     env_file = env_file_path(workspace_dir)
 
@@ -286,8 +354,11 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
         ["exec"]
       end
 
-    args ++ [sandbox_name, "sh", "-c", command]
+    (args ++ workdir_args(workdir)) ++ [sandbox_name, "sh", "-c", command]
   end
+
+  defp workdir_args(workdir) when is_binary(workdir) and workdir != "", do: ["--workdir", workdir]
+  defp workdir_args(_workdir), do: []
 
   defp build_exec_argv_args(sandbox_name, workspace_dir, command, command_args) do
     env_file = env_file_path(workspace_dir)

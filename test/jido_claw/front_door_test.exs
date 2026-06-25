@@ -17,6 +17,7 @@ defmodule JidoClaw.FrontDoorTest do
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Session.Supervisor, as: SessionSupervisor
   alias JidoClaw.Session.Worker, as: SessionWorker
+  alias JidoClaw.Test.ForgeStub
   alias JidoClaw.Test.HandoffDispatchCapture
   alias JidoClaw.Triage.Verdict
 
@@ -156,6 +157,98 @@ defmodule JidoClaw.FrontDoorTest do
 
       # Fail-closed: no parent created, never handed to the mutation-capable agent.
       assert composer_runs(ctx) == []
+    end
+  end
+
+  # ===========================================================================
+  # AR-8b-2 F2 — the must-execute exec sketch tier launch decision (D7)
+  # ===========================================================================
+
+  describe "decide/2 must-execute exec sketch (AR-8b-2 F2)" do
+    setup do
+      # The Forge facade is stubbed so the exec-launch decision runs without a
+      # live microVM. Default outcome `:ok` (echo `{:ok, session_id}`).
+      cleanup = ForgeStub.install([])
+      on_exit(cleanup)
+      :ok
+    end
+
+    test "a ready exec session seeds must-execute and threads forge_session_key", %{ctx: ctx} do
+      canned(%Verdict{path: :sketch, signals: [:must_execute]})
+      ForgeStub.set_start_ready_result(:ok)
+
+      assert {:composer, {:ok, %{path: :sketch, parent_run_id: id}}} =
+               FrontDoor.decide("sketch and RUN a rate limiter", ctx)
+
+      # Seeded exactly the `must-execute` discriminator — NOT `sketch-plain`.
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "sketch" in live
+      assert "must-execute" in live
+      refute "sketch-plain" in live
+
+      # The forge_session_key is threaded into the persisted context (D5) and
+      # equals the session start_session_ready was called with.
+      forge_key = reload(id, ctx).config["context"]["forge_session_key"]
+      assert is_binary(forge_key)
+      assert [%{session_id: ^forge_key, spec: spec}] = ForgeStub.start_readies()
+      # The spec is the no-egress, globally-unmounted Docker exec spec (5.2/1.6).
+      assert spec.sandbox == :docker_sandbox
+      assert spec.sandbox_spec.network == :none
+      assert spec.sandbox_spec.isolate_global_config == true
+      assert spec.sandbox_spec.workdir == "/proto"
+      assert spec.workspace_uuid == ctx.workspace_uuid
+    end
+
+    test "a failed exec launch degrades to a file-only sketch (sketch-plain + notice)", %{
+      ctx: ctx
+    } do
+      canned(%Verdict{path: :sketch, signals: [:must_execute]})
+      ForgeStub.set_start_ready_result({:error, :egress_unavailable})
+
+      assert {:composer, {:ok, %{path: :sketch, parent_run_id: id, message: msg}}} =
+               FrontDoor.decide("sketch and run a rate limiter", ctx)
+
+      # Degraded: seeded `sketch-plain`, NOT `must-execute` (pins no double-seed).
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "sketch-plain" in live
+      refute "must-execute" in live
+
+      # The ack tells the user execution was unavailable, and no session key was
+      # threaded (the exec session never came up).
+      assert msg =~ "Execution wasn't available"
+      refute Map.has_key?(reload(id, ctx).config["context"], "forge_session_key")
+    end
+
+    test "a missing workspace_uuid degrades (can't persist a Forge session)", %{ctx: ctx} do
+      canned(%Verdict{path: :sketch, signals: [:must_execute]})
+      ctx = Map.delete(ctx, :workspace_uuid)
+
+      assert {:composer, {:ok, %{path: :sketch, parent_run_id: id, message: msg}}} =
+               FrontDoor.decide("sketch and run it", ctx)
+
+      assert msg =~ "Execution wasn't available"
+      # Never even attempted a Forge session (no real UUID to persist one).
+      assert ForgeStub.start_readies() == []
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "sketch-plain" in live
+    end
+
+    test "Window 1b: a live exec session is torn down when the composer launch fails",
+         %{ctx: ctx} do
+      canned(%Verdict{path: :sketch, signals: [:must_execute]})
+      ForgeStub.set_start_ready_result(:ok)
+      # The session comes up, but the composer launch then fails (Window 1b).
+      Application.put_env(:jido_claw, :front_door_create_mode, :error)
+
+      assert {:composer, {:error, %{path: :sketch, message: msg}}} =
+               FrontDoor.decide("sketch and run it", ctx)
+
+      # Bounded error ack (NOT a degrade — the whole run failed to start)...
+      assert msg =~ "couldn't start"
+      assert composer_runs(ctx) == []
+      # ...and the front door tore down the live exec session it owned.
+      assert [%{session_id: forge_key}] = ForgeStub.start_readies()
+      assert forge_key in ForgeStub.stops()
     end
   end
 

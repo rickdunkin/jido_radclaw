@@ -37,9 +37,27 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     stage = Catalog.get("sketch-build")
     assert %Stage{unit: {:worker_template, "sketch_build"}} = stage
     assert stage.routes == ["sketch"]
-    assert stage.subscribes == ["request-received"]
+    # AR-8b-2 F2 (D4-B): retargeted off the seed `request-received` onto the
+    # `sketch-plain` discriminator (mutually exclusive with `sketch-build-exec`).
+    assert stage.subscribes == ["sketch-plain"]
     assert stage.input == %{required: ["request"], optional: []}
     # No lens (skips the clean:/findings: validator requirement) and no lock.
+    assert stage.lens == nil
+    assert stage.lock == []
+    assert "scope-shift" in stage.publishes
+  end
+
+  test "the AR-8b-2 F2 sketch-build-exec stage is pinned" do
+    stage = Catalog.get("sketch-build-exec")
+    assert %Stage{unit: {:worker_template, "sketch_build_exec"}} = stage
+    assert stage.routes == ["sketch"]
+    # Subscribes the `must-execute` discriminator (D4-B) — runs INSTEAD OF
+    # `sketch-build` on a must-execute sketch.
+    assert stage.subscribes == ["must-execute"]
+    assert stage.input == %{required: ["request"], optional: []}
+    # Produces the SAME `prototype` artifact `sketch-build` does (so `sketch-review`
+    # orders after either). No lens, no lock.
+    assert stage.output == ["prototype"]
     assert stage.lens == nil
     assert stage.lock == []
     assert "scope-shift" in stage.publishes

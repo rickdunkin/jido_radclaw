@@ -9,7 +9,7 @@ defmodule JidoClaw.Forge do
   `Manager`, `Harness`, and `Persistence` collaborators.
   """
 
-  alias JidoClaw.Forge.{Harness, Manager, Persistence}
+  alias JidoClaw.Forge.{Harness, Manager, Persistence, ReadyStart, RecoveredSpec}
 
   defmodule SessionHandle do
     @moduledoc false
@@ -21,6 +21,20 @@ defmodule JidoClaw.Forge do
   @spec start_session(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def start_session(session_id, spec) when is_binary(session_id) and is_map(spec) do
     Manager.start_session(session_id, spec)
+  end
+
+  @doc """
+  Race-safe combined start: `subscribe → start_session → await-ready →
+  status-assert`, returning only once the session is `:ready` AND usable by the
+  bridge, or on a bounded failure (any partial session torn down). The caller
+  mints + owns `session_id` (it is the `forge_session_key`, AR-8b-2 F2 D5), so it
+  always holds a handle to clean up. See `JidoClaw.Forge.ReadyStart`.
+  """
+  @spec start_session_ready(String.t(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def start_session_ready(session_id, spec, opts \\ [])
+      when is_binary(session_id) and is_map(spec) do
+    ReadyStart.start(session_id, spec, opts)
   end
 
   @spec get_handle(String.t()) :: {:ok, SessionHandle.t()} | {:error, term()}
@@ -35,9 +49,16 @@ defmodule JidoClaw.Forge do
   def wake(session_id, opts \\ []) do
     with db_session when not is_nil(db_session) <- find_session_for_wake(session_id, opts),
          true <- db_session.phase not in [:completed, :cancelled],
-         checkpoint when not is_nil(checkpoint) <- Persistence.latest_checkpoint(session_id) do
+         checkpoint when not is_nil(checkpoint) <- Persistence.latest_checkpoint(session_id),
+         # AR-8b-2 F2 (1.4): a recovered spec round-trips through jsonb to string
+         # keys/values; re-atomize its known fields (and fail closed on an
+         # un-normalizable docker spec / invalid mount) BEFORE handing it to the
+         # Manager, so a recovered `:docker_sandbox` session re-provisions the real
+         # Docker backend + no-egress + mount rather than silently falling to
+         # `:default` (HostShell, no isolation).
+         {:ok, normalized} <- RecoveredSpec.normalize(db_session.spec) do
       spec =
-        db_session.spec
+        normalized
         |> Map.put(:resume_checkpoint_id, checkpoint.id)
         |> Map.put(:tenant_id, db_session.tenant_id)
         |> Map.put(:workspace_id, db_session.workspace_id)
@@ -46,12 +67,26 @@ defmodule JidoClaw.Forge do
     else
       nil -> {:error, :no_checkpoint}
       false -> {:error, :session_terminal}
+      {:error, reason} -> {:error, {:unrecoverable_spec, reason}}
     end
   end
 
   @spec stop_session(String.t(), term()) :: :ok | {:error, :not_found}
   def stop_session(session_id, reason \\ :normal) do
     Manager.stop_session(session_id, reason)
+  end
+
+  @doc """
+  Completion-aware close (AR-8b-2 F2 1.3): land the session **`:completed`** (with
+  `completed_at`) — distinct from `stop_session/2`'s `:cancelled`, so a converged
+  sketch run isn't misread as cancelled. Idiomatic `/1`: "complete" always means a
+  clean `:normal` close, so there is no meaningful second arg. Delegates to
+  `Harness.complete/1` (a `reason: :normal` self-stop; see its docs for the
+  stamp-failure → `:completed` fallback).
+  """
+  @spec complete_session(String.t()) :: :ok | {:error, term()}
+  def complete_session(session_id) do
+    Harness.complete(session_id)
   end
 
   @spec list_sessions() :: [String.t()]

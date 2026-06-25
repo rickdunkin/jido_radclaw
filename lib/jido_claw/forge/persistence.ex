@@ -294,6 +294,38 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  # AR-8b-2 F2 (1.3): mirror `update_session_phase/2` but call the `:complete`
+  # action (`session.ex` — sets `phase: :completed` AND stamps `completed_at`; the
+  # generic `:update_phase` does not). Best-effort (log + nil on error), so the
+  # `:complete` Harness handler can swallow a failed stamp and let `terminate/2`'s
+  # `:normal`-fallback finalize `:completed` anyway.
+  @spec complete_session(String.t()) :: Session.t() | nil
+  def complete_session(session_id) do
+    if enabled?() do
+      try do
+        session = find_session(session_id)
+
+        if session do
+          session
+          |> Ash.Changeset.for_update(:complete, %{})
+          |> Ash.update(session_action_opts(session))
+          |> case do
+            {:ok, updated} ->
+              updated
+
+            {:error, e} ->
+              Logger.warning("[Forge.Persistence] Failed to complete session: #{inspect(e)}")
+              nil
+          end
+        end
+      rescue
+        e in @db_errors ->
+          # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+          Logger.warning("[Forge.Persistence] Failed to complete session: #{inspect(e)}")
+      end
+    end
+  end
+
   @spec record_sandbox_id(String.t(), String.t()) :: Session.t() | nil
   def record_sandbox_id(session_id, sandbox_id) do
     if enabled?() do

@@ -97,6 +97,14 @@ defmodule JidoClaw.TriageTest do
       assert {:ok, %Verdict{path: :talk}} = Verdict.from_map(%{path: "talk"})
     end
 
+    test "AR-8b-2 F2: the must-execute signal normalizes to :must_execute" do
+      assert {:ok, verdict} =
+               Verdict.from_map(%{"path" => "sketch", "signals" => ["must-execute"]})
+
+      assert verdict.path == :sketch
+      assert verdict.signals == [:must_execute]
+    end
+
     test "a malformed or absent path is {:error, :invalid_verdict} (R6-P2)" do
       assert {:error, :invalid_verdict} = Verdict.from_map(%{"path" => "bogus"})
       assert {:error, :invalid_verdict} = Verdict.from_map(%{"signals" => []})

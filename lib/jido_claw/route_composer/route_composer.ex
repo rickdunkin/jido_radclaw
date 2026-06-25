@@ -211,6 +211,7 @@ defmodule JidoClaw.RouteComposer do
   @persisted_context_keys ~w(
     project_dir tenant_id session_id session_uuid
     workspace_id workspace_uuid user_id agent_id agent_template
+    forge_session_key
   )a
 
   @type terminal ::
@@ -2161,14 +2162,17 @@ defmodule JidoClaw.RouteComposer do
   defp log_supervised_terminal_failure(_payload, _state), do: :ok
 
   defp parent_terminal_notify(:converged, _reason, summary, state) do
-    state.parent_run_id
-    |> append_parent_terminal(
-      :route_converged,
-      %{result: terminal_summary_subset(summary)},
-      state.tenant,
-      state.actor
-    )
-    |> notify_payload(summary)
+    result =
+      append_parent_terminal(
+        state.parent_run_id,
+        :route_converged,
+        %{result: terminal_summary_subset(summary)},
+        state.tenant,
+        state.actor
+      )
+
+    maybe_teardown_forge_session(result, :converged, state)
+    notify_payload(result, summary)
   end
 
   # Phase 2d gate-decided-then-crash terminals: append the cancelled-family event
@@ -2178,26 +2182,82 @@ defmodule JidoClaw.RouteComposer do
   # `terminal_lifting_result(:cancelled, …)`). Placed before the failure catch-all.
   defp parent_terminal_notify(kind, _reason, summary, state)
        when kind in [:rejected, :abandoned] do
-    state.parent_run_id
-    |> append_parent_terminal(
-      route_cancelled_kind(kind),
-      %{result: %{disposition: Atom.to_string(kind)}},
-      state.tenant,
-      state.actor
-    )
-    |> notify_payload(summary)
+    result =
+      append_parent_terminal(
+        state.parent_run_id,
+        route_cancelled_kind(kind),
+        %{result: %{disposition: Atom.to_string(kind)}},
+        state.tenant,
+        state.actor
+      )
+
+    maybe_teardown_forge_session(result, kind, state)
+    notify_payload(result, summary)
   end
 
   defp parent_terminal_notify(kind, reason, summary, state) do
-    state.parent_run_id
-    |> append_parent_terminal(
-      route_terminal_kind(kind),
-      %{error: format_terminal_error(kind, reason)},
-      state.tenant,
-      state.actor
-    )
-    |> notify_payload(summary)
+    result =
+      append_parent_terminal(
+        state.parent_run_id,
+        route_terminal_kind(kind),
+        %{error: format_terminal_error(kind, reason)},
+        state.tenant,
+        state.actor
+      )
+
+    maybe_teardown_forge_session(result, kind, state)
+    notify_payload(result, summary)
   end
+
+  # AR-8b-2 F2 (5.6 / D3 — the review's headline gap): tear the exec Forge session
+  # down on EVERY terminal, not just `:converged`. `:converged → complete_session`
+  # (lands `:completed`); every other terminal → `stop_session` (lands
+  # `:cancelled` — the throwaway ended without converging). The bridge taint
+  # teardown covers only manufactured timeout/output-limit failures, so a normal
+  # "ran but the reviewer requested changes" sketch (`:not_converged`) would
+  # otherwise leave the microVM ALIVE.
+  #
+  # Fires ONLY on a clean terminal append (`:ok`): a FAILED append leaves the
+  # parent `:running`/recoverable, so tearing down the microVM there would strand
+  # a retry. Guards a non-empty binary key BEFORE touching Forge: every non-exec
+  # route has none → no-op, NEVER `forge().stop_session(nil)`. Best-effort +
+  # idempotent (a later call no-ops on an already-gone session); the teardown
+  # result must NOT flow into `notify_payload/2` — a cleanup `{:error, _}`
+  # becoming `{:terminalize_failed, _}` would misreport the run's outcome and
+  # leave the parent `:running`.
+  defp maybe_teardown_forge_session(:ok, terminal, state) do
+    case forge_key(state) do
+      key when is_binary(key) and key != "" -> do_forge_teardown(terminal, key)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_teardown_forge_session(_not_ok, _terminal, _state), do: :ok
+
+  defp do_forge_teardown(:converged, key),
+    do: best_effort(fn -> forge().complete_session(key) end)
+
+  defp do_forge_teardown(_other, key), do: best_effort(fn -> forge().stop_session(key) end)
+
+  # Read the `forge_session_key` from the composer's persisted context (the
+  # `@persisted_context_keys` subset, so it survives restart); a non-exec run has
+  # none ⇒ the helper no-ops before calling Forge.
+  defp forge_key(%{context: context}) when is_map(context), do: context[:forge_session_key]
+  defp forge_key(_state), do: nil
+
+  defp best_effort(fun) do
+    fun.()
+    :ok
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  # The Forge facade seam (5.0), the SAME app-env key the bridge + front door use,
+  # so `JidoClaw.Test.ForgeStub` drives all composer teardown in tests.
+  defp forge, do: Application.get_env(:jido_claw, :forge_facade, JidoClaw.Forge)
 
   # The composer terminal symbol → its durable `route_*` event kind (`:converged`
   # is handled above → `:route_converged`); these four all project onto `:failed`.

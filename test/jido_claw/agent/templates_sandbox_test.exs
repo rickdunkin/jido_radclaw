@@ -67,5 +67,13 @@ defmodule JidoClaw.Agent.TemplatesSandboxTest do
 
       assert Templates.sandbox("bad_sandbox") == :prototype
     end
+
+    test "the real sketch_build_exec template carries the :docker policy" do
+      # The `docker_stub` override above proves the POLICY mechanics; this pins the
+      # actual shipped template (no override — the static registry).
+      Application.delete_env(:jido_claw, :agent_templates_override)
+      assert Templates.sandbox("sketch_build_exec") == :docker
+      refute Templates.external_tools?("sketch_build_exec")
+    end
   end
 end
