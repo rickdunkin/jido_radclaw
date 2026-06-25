@@ -17,7 +17,7 @@ defmodule JidoClaw.Agent.Workers.SystemVerifier do
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_system_verifier",
     description:
-      "Verifies a system/environment change actually took on the real machine: re-runs idempotent checks, asserts state, inspects command exit codes. Read-only inspection plus command execution — never mutates. Return a structured review (`overall`, short `summary`, and a list of `findings` with `severity` info/warning/error and `description`).",
+      "Verifies a system/environment change actually took on the real machine: re-runs idempotent checks, asserts state, inspects command exit codes. Read-only inspection plus command execution — never mutates. Return a structured review (`overall`, short `summary`, an `action_needed` line, and a list of `findings`, each with `severity` info/warning/error, `confidence` likely/unsure, `location`, and `description`).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.SearchCode,

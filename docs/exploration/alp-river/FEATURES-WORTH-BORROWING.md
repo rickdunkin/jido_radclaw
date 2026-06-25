@@ -24,7 +24,7 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
-## Status reconciliation — 2026-06-25 (AR-2 / AR-5 / AR-8 shipped; AR-3 partial)
+## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-5 / AR-8 shipped; AR-4 / AR-6 remain, AR-7 partial)
 
 **This section supersedes the forward-looking claims in the 2026-06-11 reconciliation below**
 (notably its "None of AR-2 … AR-8 has landed" line — true when written, now stale). The Alp
@@ -60,23 +60,30 @@ shipped:
   `retract_stale_approval`), so AR-1's "only `irreversible_write` has a producer / retraction is
   operator-initiated" tail no longer holds. (See the amended AR-1 outcome note for the two
   residuals: the now-vestigial case-axis `Cases.retract`, and two stale in-code/in-doc claims.)
-- **AR-3 (reviewer fan-out + contract) — PARTIAL.** The fan-out *is* built: the composer catalog
-  instantiates the one `reviewer` template as four risk-gated lenses (security, quality,
-  correctness, architecture) dispatched as a parallel wave with lens-scoped findings. The
-  shared-contract *mechanism* rides AR-5, but its *content* is still a placeholder (the
-  `reviewer_min` doctrine slice — no concrete-consequence bar, anti-double-flag rule, or
-  VERDICT/FINDINGS shape yet).
+- **AR-3 (reviewer fan-out + contract) — DONE** (`2026-06-25`). The fan-out was already built (the
+  composer catalog instantiates the one `reviewer` template as four risk-gated lenses — security,
+  quality, correctness, architecture — dispatched as a parallel wave with lens-scoped findings);
+  the shared-contract **content** now ships too. Two doctrine slices, split by *reach*:
+  `reviewer_min` (expanded from the placeholder to field-agnostic universal judging discipline —
+  the concrete-consequence bar, the anti-double-flag rule — reaching all four read-only judges) and
+  the new `reviewer_contract` (the VERDICT/FINDINGS/ACTION_NEEDED shape + confidence tagging,
+  reaching only the three `reviewer_verdict/0` workers). The `reviewer_verdict/0` schema gained a
+  per-finding `confidence` (`likely`/`unsure`) + `location` and a top-level `action_needed`. This
+  also lands **AR-7's core** on the reviewer surface (see below).
 - **AR-4 (self-heal fixer loop) — NOT STARTED** (substrate only). The `fixer` stage is declared
   and a generic rerun primitive exists, but the review→fix→re-review loop is explicitly
   forward-only/deferred and the RE_RUN_SET logic is absent. (A sibling reverse-verify loop exists
   on the AR-8c system path, but that is a different feature.)
-- **AR-6 (personas) / AR-7 (confidence-tagging) — NOT STARTED.** No code; AR-5 left no pre-wired
-  `## PSYCHOLOGY` or confidence-tagging seam, so both remain clean greenfield adds on top of the
-  now-existing doctrine registry.
+- **AR-6 (personas) — NOT STARTED.** No code; AR-5 left no pre-wired `## PSYCHOLOGY` seam, so it
+  remains a clean greenfield add on top of the now-existing doctrine registry.
+- **AR-7 (confidence-tagging) — PARTIAL.** Its core — the `likely`/`unsure` per-finding tag and the
+  reporting threshold — shipped folded into AR-3 on the reviewer surface (the `reviewer_contract`
+  slice + the schema `confidence` field). The *pervasive* convention (codebase-wide claim tagging
+  on `researcher` / web-sourced agents, the source-URL requirement) is still not started.
 
-**Remaining live backlog**: AR-3 (finish the Reviewer Contract content), AR-4 (wire the
-self-heal loop onto the rerun primitive), AR-6, AR-7 — plus AR-2's explicitly-deferred tails
-(cluster lease, YAML catalog overlay).
+**Remaining live backlog**: AR-4 (wire the self-heal loop onto the rerun primitive), AR-6
+(personas), AR-7 (extend confidence-tagging past the reviewer surface) — plus AR-2's
+explicitly-deferred tails (cluster lease, YAML catalog overlay).
 
 ## Status reconciliation — 2026-06-11 (Squidie shipped; AR-1 landed)
 
@@ -104,8 +111,8 @@ sole event producer, human gates durably halt/resume via `GateStep`/`GateResume`
   write-only, and there is still no composer, no reviewer fan-out, no doctrine injection, no
   personas, no triage front door. The BUILD-ON items are **unblocked**; AR-2 (the composer)
   is now the natural next feature. *(Superseded as of 2026-06-25 — see the reconciliation above:
-  AR-2, AR-5, and AR-8 have since shipped, AR-1's tail closed, and AR-3 is partial; only
-  AR-4/AR-6/AR-7 remain not-started.)*
+  AR-2, AR-3, AR-5, and AR-8 have since shipped and AR-1's tail closed, with AR-7's core folded
+  into AR-3; only AR-4 and AR-6 remain not-started, and AR-7's pervasive extension is still open.)*
 
 **Alp River drift since the inventory**: one commit (2026-06-06, v1.2.5 → **1.2.6**): a
 deterministic **`/audit` self-scorecard** (`hooks/audit.py`, scoring five health categories
@@ -125,7 +132,8 @@ sits *above* the engine Squidie built. The original call — ship Squidie unchan
 exactly one thing (gate semantics), everything else builds on the new engine afterward or is
 independent — played out exactly: Squidie shipped (Phases 0–5) with AR-1 folded into
 Phase 2. The BUILD-ON/INDEPENDENT backlog has since largely shipped too — as of 2026-06-25:
-AR-2, AR-5, and AR-8 done, AR-3 partial; only AR-4, AR-6, and AR-7 remain.**
+AR-2, AR-3, AR-5, and AR-8 done (AR-7's core folded into AR-3); only AR-4, AR-6, and AR-7's
+pervasive extension remain.**
 
 Alp River and Squidie/Reactor solve **different layers**:
 
@@ -148,11 +156,11 @@ River is a mature, working reference for it.
 | --- | --- | --- |
 | **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE** — Phase 2; tail closed by AR-2 Phase 4 (AR-1) |
 | **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **DONE** — Phases 0–5 (AR-2) |
-| **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **PARTIAL** — fan-out built, contract content stub (AR-3) |
+| **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **DONE** — 4-lens fan-out + authored contract content (AR-3) |
 | **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **NOT STARTED** — substrate only (AR-4) |
 | **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **DONE** (AR-5) |
 | **Psychology / persona layer** | **Independent** — pure prompt assembly | **NOT STARTED** (AR-6) |
-| **Confidence-tagging convention** | **Independent** — output/prompt convention | **NOT STARTED** (AR-7) |
+| **Confidence-tagging convention** | **Independent** — output/prompt convention | **PARTIAL** — reviewer-surface core folded into AR-3; pervasive extension open (AR-7) |
 | **Conversation-type triage** (talk/sketch/code/system) | **Independent** front door; folds into AR-2 if built | **DONE** — all four paths, folded into AR-2 (AR-8) |
 | Hook substrate, `.md`/`.py` artifacts, render-card UX, compaction/reinject | Re-implement or already covered | **SKIP** (§4) |
 
@@ -387,8 +395,8 @@ override seam was not confirmed wired.
 
 ### AR-3. Reviewer fan-out + a shared Reviewer Contract
 
-**Recommendation**: BUILD-ON — **PARTIAL** (the 4-lens fan-out is built; the shared contract's
-content is still a stub). A concrete, high-value first workflow to run on the new engine.
+**Recommendation**: BUILD-ON — **DONE** (the 4-lens fan-out and the shared contract's authored
+content both ship). A concrete, high-value first workflow to run on the new engine.
 
 **Where** (Alp River): 15+ specialized review lenses (correctness, quality, architecture,
 security, performance, accessibility, design-consistency, ux, consistency, structure, reuse,
@@ -422,19 +430,36 @@ Reviewer Contract (via AR-5); compile "review the diff" to a Reactor `map`/paral
 feed findings to AR-4's fixer. Start with 3–4 lenses (correctness, security, quality,
 structure), not all 15.
 
-**Status update (2026-06-25): PARTIAL — the fan-out is built; the shared contract's *content* is
-not.** The composer catalog (`route_composer/catalog.ex`) instantiates the single `reviewer`
+**Status update (2026-06-25): DONE — the fan-out was built and the shared contract's *content* now
+ships.** The composer catalog (`route_composer/catalog.ex`) instantiates the single `reviewer`
 worker as **four risk-gated lenses** — `security` (subscribes `auth-surface`), `quality` and
 `correctness` (subscribe `code-written`), `architecture` (subscribes `significant-build`) — each
 emitting lens-scoped `findings:<lens>`/`clean:<lens>` and dispatched as one parallel Kahn wave
 (exactly the sketch's "start with 3–4 lenses"); `lens` is a first-class `Stage` field. The
-shared-contract **mechanism** rides AR-5 (the `reviewer` template gets the `reviewer_min`
-doctrine slice instead of restating rules), but its **content is a placeholder** —
-`priv/defaults/doctrine/reviewer_min.md` itself says "a fuller review contract may be supplied
-separately"; the concrete-consequence bar, anti-double-flag rule, and
-VERDICT/FINDINGS/ACTION_NEEDED shape are not yet written, and there is still one `reviewer` worker
-file. **To finish:** author the full Reviewer Contract content into the doctrine slice (and feed
-findings into AR-4's fixer once that exists).
+shared-contract **mechanism** rides AR-5; its **content** is now two doctrine slices, split by
+*reach* (the principled split: `reviewer_min` is shared by **four** read-only judges — `reviewer`,
+`sketch_reviewer`, `system_verifier`, **and `verifier`** — but `verifier` uses a different output
+schema, so the field-shape half must not reach it):
+
+- `priv/defaults/doctrine/reviewer_min.md` (expanded from the placeholder) — field-agnostic
+  **universal judging discipline**: judge only what you can see, keep correctness vs. style
+  separate, the **concrete-consequence bar** ("name a concrete observable consequence … 'this could
+  be cleaner' does not clear it"), and the **anti-double-flag rule** (don't flag what a guard/
+  framework default outside the diff already handles). Reaches all four judges.
+- `priv/defaults/doctrine/reviewer_contract.md` (new) — the **structured-verdict shape**
+  (`overall`/`summary`/`action_needed`, each finding `severity`/`confidence`/`location`/
+  `description`) plus the `likely`/`unsure` confidence definitions and the reporting threshold.
+  Reaches only the three `reviewer_verdict/0` workers.
+
+The `Agent.Workers.OutputSchema.reviewer_verdict/0` schema was enriched to match: a per-finding
+`confidence` (`likely`/`unsure`) + `location`, and a top-level `action_needed`. `severity`/
+`confidence` are **string** enums so the stored `findings` artifact round-trips clean through
+`ComposerArtifact.Envelope.normalize/1` (an atom enum would persist as `":error"`); `overall` stays
+an atom enum (mapper control, never stored). No mapper change — new finding keys ride the existing
+`coerce/1`. This also lands **AR-7's core** on the reviewer surface. `mix precommit` green.
+**Remaining (now AR-4, not AR-3):** `action_needed` is enforced in the verdict but not yet persisted
+as a durable artifact (no stage `output`/`publishes` mapping — deliberately deferred until the
+fixer consumes it), and findings still do not feed an automatic fixer.
 
 ### AR-4. Self-heal fixer loop — review → fix → re-review until clean
 
@@ -480,8 +505,9 @@ rerun primitive, and implement the RE_RUN_SET computation.
 ## §3 — Independent of the engine (prompt-layer borrows, land anytime)
 
 These are pure prompt/output assembly. They need **neither** Reactor nor the composer and can
-be picked up opportunistically without touching the Squidie roadmap. AR-5 is the enabler for
-AR-6, AR-7, and AR-3's shared contract.
+be picked up opportunistically without touching the Squidie roadmap. AR-5 is the enabler AR-3's
+shared contract already rides (shipped 2026-06-25), and that AR-6 and AR-7's pervasive extension
+still will.
 
 ### AR-5. Central doctrine injection into sub-agents
 
@@ -524,10 +550,12 @@ reused Memory blocks (`PromptSections.blocks_section/1`) + JIDO.md, injected via
 (`tools/spawn_agent.ex`), skill-step worker (`skills/steps/agent_runner.ex`), and follow-up turn
 (`tools/send_to_agent.ex`) — closing the exact main-agent-only gap this entry named. The
 duplicated worker schemas are single-sourced in `Agent.Workers.OutputSchema`. Config-gated,
-best-effort, tested. **Open borders (AR-3/AR-7, not AR-5 failures):** the named
-`confidence-tagging` and `code-doctrine` slices were not authored, `reviewer_min` is a deliberate
-placeholder (AR-3), and "project docs" is JIDO.md only (no `docs/` READ_MAP). The seam is now the
-live substrate AR-3's contract, AR-6, and AR-7 should ride.
+best-effort, tested. **Open borders (not AR-5 failures):** AR-3 has since filled `reviewer_min`
+(no longer a placeholder) and added the `reviewer_contract` slice carrying the confidence tag — so
+AR-7's reviewer-surface core now rides the seam; what's left unauthored is a *pervasive*
+`confidence-tagging` slice (AR-7's extension) and `code-doctrine` (AR-6's neighbor), and "project
+docs" is JIDO.md only (no `docs/` READ_MAP). The seam is the live substrate AR-6 and AR-7's
+extension still ride.
 
 ### AR-6. Psychology / persona layer
 
@@ -563,7 +591,8 @@ a fifth prompt section through the AR-5 assembler).
 
 ### AR-7. Confidence-tagging as a pervasive convention
 
-**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5) — **NOT STARTED**.
+**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5) — **PARTIAL** (the
+reviewer-surface core shipped folded into AR-3, 2026-06-25; the pervasive convention is not started).
 
 **Where** (Alp River): `doctrine/confidence-tagging.md` — every finding carries `[likely]`
 (evidence-based: code read, official docs, observed) or `[unsure]` (judgment, single-source,
@@ -583,12 +612,17 @@ contract) and AR-5 (it ships as a doctrine slice).
 extend the Reviewer/Researcher/Verifier output schemas to carry the tag + reporting threshold.
 Cheap once AR-5 exists.
 
-**Status update (2026-06-25): NOT STARTED.** No `confidence-tagging` doctrine slice exists, no
-codebase-wide `[likely]`/`[unsure]` convention (zero hits outside this doc), and the Reviewer
-verdict schema (`Agent.Workers.OutputSchema.reviewer_verdict/0`) still carries only `severity` +
-`description` — no confidence tag or reporting threshold. The three narrow typed slots called out
-in 2026-06-11 (Researcher/Verifier `low|medium|high`, `verify_certificate` float) are unchanged.
-Cheap to add now that the AR-5 doctrine seam exists.
+**Status update (2026-06-25): PARTIAL — the reviewer-surface core shipped folded into AR-3.** The
+`Agent.Workers.OutputSchema.reviewer_verdict/0` schema now carries a per-finding `confidence` tag
+(`likely`/`unsure`), and the new `reviewer_contract` doctrine slice defines both tags (evidence-based
+vs. judgment/single-source/inferred) and the reporting threshold (every `likely`; an `unsure` only at
+high impact — correctness/security/data risk) plus the concrete-consequence bar — injected into the
+three `reviewer_verdict/0` workers. What remains is the **pervasive** convention: no codebase-wide
+`[likely]`/`[unsure]` tagging beyond reviewer findings, `researcher` still carries only its own
+`low|medium|high` confidence (no per-claim tag, no source-URL requirement for web-sourced claims),
+and there is no standalone reach-all `confidence-tagging` slice. The three narrow typed slots called
+out in 2026-06-11 (Researcher/Verifier `low|medium|high`, `verify_certificate` float) are otherwise
+unchanged. Cheap to extend now that the tag, the threshold prose, and the AR-5 seam all exist.
 
 ### AR-8. Conversation-type triage (talk / sketch / code / system)
 
@@ -679,13 +713,14 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
 | Execute a bounded **declared** DAG | **Reactor** (DAG, concurrency, saga, halt/resume) | defers to the harness | **shipped** — `Skills.Compiler` → Reactor (static drivers deleted) |
 | **Durability** (log, status, recovery, gates) | **the envelope** (`WorkflowEvent`, projection, reconciler, human gates) | ephemeral signal state + reinject hook | **shipped** — event log + projection + recovery (stranding bug fixed) |
 | **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | **shipped** — `RouteComposer` composes waves from live signals (AR-2) |
-| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **partial** — 4-lens fan-out shipped (AR-3); contract content + self-heal fixer (AR-4) still to do |
-| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine shipped** to all sub-agents (AR-5); persona (AR-6) / confidence-tagging (AR-7) not started |
+| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **partial** — 4-lens fan-out + authored shared contract shipped (AR-3); self-heal fixer (AR-4) still to do |
+| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence shipped** to sub-agents (AR-5, AR-3); persona (AR-6) / pervasive confidence-tagging (AR-7) not started |
 
 The top two rows are Squidie — **shipped 2026-06-08..10**. The bottom three are Alp River — and
-as of **2026-06-25** they are no longer hypothetical: the composer (AR-2) and doctrine injection
-(AR-5) are shipped, review fan-out (AR-3) is partial, and only persona (AR-6),
-confidence-tagging (AR-7), and the self-heal fixer (AR-4) remain.
+as of **2026-06-25** they are no longer hypothetical: the composer (AR-2), review fan-out + the
+shared contract (AR-3), and doctrine injection (AR-5) are shipped, with AR-7's confidence-tagging
+core folded into AR-3; only persona (AR-6), AR-7's pervasive extension, and the self-heal fixer
+(AR-4) remain.
 
 ## Sequencing recommendation
 
@@ -702,11 +737,13 @@ confidence-tagging (AR-7), and the self-heal fixer (AR-4) remain.
    layer shipped on the engine, reusing the event-log/projection model, with its own plan docs
    (`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`). Deferred tails: the gust §4.11
    cluster lease and the optional YAML catalog overlay.
-4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** — **AR-3 partial** (the 4-lens fan-out shipped
-   on the composer; the shared-contract content is still to write); **AR-4 not started**
-   (forward-only — the self-heal loop is the next build on the rerun primitive already in place).
+4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** — **AR-3 done** (the 4-lens fan-out shipped on
+   the composer; the shared Reviewer Contract content + confidence tagging landed 2026-06-25,
+   folding in AR-7's reviewer-surface core); **AR-4 not started** (forward-only — the self-heal
+   loop is the next build on the rerun primitive already in place).
 5. **AR-5 → AR-6/AR-7, and AR-8** — **AR-5 done (2026-06-22)** and **AR-8 done (2026-06-23..25,
-   folded into AR-2's triage seed)**; **AR-6 and AR-7 remain** the cheap greenfield prompt-layer
+   folded into AR-2's triage seed)**; **AR-7's reviewer-surface core done** (folded into AR-3,
+   2026-06-25). **AR-6 and AR-7's pervasive extension remain** the cheap greenfield prompt-layer
    wins, now unblocked by the shipped AR-5 doctrine seam.
 
 ## Bottom line
@@ -717,8 +754,8 @@ the engine Squidie built**: the deterministic composer for the dynamic middle gr
 deliberately leaves to free-form ReAct, plus the multi-agent review, self-heal,
 doctrine-injection, and persona content to run on top. As of **2026-06-25** most of that backlog
 has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then **the
-composer itself (AR-2, Phases 0–5), doctrine injection (AR-5), and the four-path triage front
-door (AR-8)** — with reviewer fan-out (AR-3) partially built on the composer. What remains is a
-short tail: finish AR-3's shared Reviewer Contract content, wire the AR-4 self-heal fixer loop
-onto the rerun primitive already in place, and pick up the two cheap prompt-layer borrows (AR-6
-personas, AR-7 confidence-tagging) whenever there's a spare afternoon.
+composer itself (AR-2, Phases 0–5), reviewer fan-out + the shared Reviewer Contract (AR-3),
+doctrine injection (AR-5), and the four-path triage front door (AR-8)** — with AR-7's
+confidence-tagging core folded into AR-3. What remains is a short tail: wire the AR-4 self-heal
+fixer loop onto the rerun primitive already in place, extend confidence-tagging (AR-7) past the
+reviewer surface, and pick up the cheap persona borrow (AR-6) whenever there's a spare afternoon.

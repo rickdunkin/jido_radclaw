@@ -228,10 +228,24 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     if n <= fails do
       %{
         "overall" => "request_changes",
-        "findings" => [%{"severity" => "error", "description" => "the change did not take"}]
+        "summary" => "verification failed",
+        "action_needed" => "re-apply the change; the machine state is unchanged",
+        "findings" => [
+          %{
+            "severity" => "error",
+            "confidence" => "likely",
+            "location" => "host:/etc",
+            "description" => "the change did not take"
+          }
+        ]
       }
     else
-      %{"overall" => "approve", "findings" => []}
+      %{
+        "overall" => "approve",
+        "summary" => "change verified on the machine",
+        "action_needed" => "none",
+        "findings" => []
+      }
     end
   end
 

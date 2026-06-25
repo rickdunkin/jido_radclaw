@@ -20,6 +20,15 @@ defmodule JidoClaw.Doctrine do
                        "doctrine",
                        "reviewer_min.md"
                      ])
+  @reviewer_contract_priv Path.join([
+                            __DIR__,
+                            "..",
+                            "..",
+                            "priv",
+                            "defaults",
+                            "doctrine",
+                            "reviewer_contract.md"
+                          ])
   @system_verify_priv Path.join([
                         __DIR__,
                         "..",
@@ -33,41 +42,48 @@ defmodule JidoClaw.Doctrine do
   @external_resource @base_priv
   @external_resource @artifacts_priv
   @external_resource @reviewer_min_priv
+  @external_resource @reviewer_contract_priv
   @external_resource @system_verify_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
     artifacts: String.trim(File.read!(@artifacts_priv)),
     reviewer_min: String.trim(File.read!(@reviewer_min_priv)),
+    reviewer_contract: String.trim(File.read!(@reviewer_contract_priv)),
     system_verify: String.trim(File.read!(@system_verify_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
   # empty doctrine; mirrors ToolApproval.default_require/0). The producing workers
-  # get :artifacts; the read-only judges get the :reviewer_min placeholder
-  # (`sketch_reviewer` is a read-only judge, so it reuses :reviewer_min like
-  # `reviewer`/`verifier` — no new priv file).
+  # get :artifacts. The read-only judges ALL get :reviewer_min (field-agnostic
+  # judging discipline — concrete-consequence bar, anti-double-flag). The three
+  # that share `OutputSchema.reviewer_verdict/0` (`reviewer`, `sketch_reviewer`,
+  # `system_verifier`) ALSO get :reviewer_contract (the structured-verdict shape +
+  # confidence tagging). `verifier` does NOT — it judges with a different schema
+  # (`pass`/`fail` + confidence + reasoning), so the field-shape contract must not
+  # be injected into it.
   @template_slices %{
     "coder" => [:base, :artifacts],
     "refactorer" => [:base, :artifacts],
     "docs_writer" => [:base, :artifacts],
     "researcher" => [:base, :artifacts],
     "test_runner" => [:base, :artifacts],
-    "reviewer" => [:base, :reviewer_min],
+    "reviewer" => [:base, :reviewer_min, :reviewer_contract],
     "verifier" => [:base, :reviewer_min],
     "sketch_build" => [:base, :artifacts],
-    "sketch_reviewer" => [:base, :reviewer_min],
+    "sketch_reviewer" => [:base, :reviewer_min, :reviewer_contract],
     # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
     # `:artifacts` slice (no new priv file). Required: the drift guard
     # (`doctrine_test.exs`, `template_names() == names()`) fails without it.
     "sketch_build_exec" => [:base, :artifacts],
     # AR-8c: the system-path workers. The executor is a producer (`:artifacts`,
-    # like `coder`); the verifier is a read-only judge (`:reviewer_min`) PLUS the
-    # new `:system_verify` slice that defines what "verified" means on the real
+    # like `coder`); the verifier is a read-only judge (`:reviewer_min` +
+    # `:reviewer_contract`, since it shares `reviewer_verdict/0`) PLUS the new
+    # `:system_verify` slice that defines what "verified" means on the real
     # machine (idempotent re-check / state assertion / exit code; cite the
     # evidence). Both required by the drift guard (`template_names() == names()`).
     "system_executor" => [:base, :artifacts],
-    "system_verifier" => [:base, :reviewer_min, :system_verify]
+    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

@@ -153,19 +153,45 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
   end
 
   describe "Reviewer schema (already adopted in 46e1f87)" do
-    test "parses a valid sample" do
+    test "parses a valid sample with the enriched finding shape (AR-3)" do
       assert {:ok, parsed} =
                Output.parse(output_for(Reviewer), %{
                  "overall" => "approve",
                  "summary" => "Looks good",
+                 "action_needed" => "none",
                  "findings" => [
-                   %{"severity" => "info", "description" => "Consider extracting helper"}
+                   %{
+                     "severity" => "info",
+                     "confidence" => "likely",
+                     "location" => "lib/foo.ex:12",
+                     "description" => "Consider extracting helper"
+                   }
                  ]
                })
 
       assert parsed.overall == :approve
+      assert parsed.action_needed == "none"
       [finding] = parsed.findings
-      assert finding.severity == :info
+      # severity/confidence are STRING enums (clean artifact round-trip), not atoms.
+      assert finding.severity == "info"
+      assert finding.confidence == "likely"
+      assert finding.location == "lib/foo.ex:12"
+    end
+
+    test "rejects a finding missing the required confidence tag" do
+      assert {:error, _} =
+               Output.parse(output_for(Reviewer), %{
+                 "overall" => "request_changes",
+                 "summary" => "bug",
+                 "action_needed" => "fix the nil case",
+                 "findings" => [
+                   %{
+                     "severity" => "error",
+                     "location" => "lib/foo.ex:3",
+                     "description" => "nil deref"
+                   }
+                 ]
+               })
     end
   end
 
@@ -178,10 +204,12 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                Output.parse(output_for(SketchReviewer), %{
                  "overall" => "approve",
                  "summary" => "Prototype is logically sound",
+                 "action_needed" => "none",
                  "findings" => []
                })
 
       assert parsed.overall == :approve
+      assert parsed.action_needed == "none"
       assert parsed.findings == []
     end
 
@@ -190,14 +218,23 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                Output.parse(output_for(SketchReviewer), %{
                  "overall" => "request_changes",
                  "summary" => "Edge case unhandled",
+                 "action_needed" => "Guard the window bound against the off-by-one",
                  "findings" => [
-                   %{"severity" => "error", "description" => "off-by-one in the window"}
+                   %{
+                     "severity" => "error",
+                     "confidence" => "likely",
+                     "location" => "main.exs:8",
+                     "description" => "off-by-one in the window"
+                   }
                  ]
                })
 
       assert parsed.overall == :request_changes
+      assert parsed.action_needed == "Guard the window bound against the off-by-one"
       [finding] = parsed.findings
-      assert finding.severity == :error
+      assert finding.severity == "error"
+      assert finding.confidence == "likely"
+      assert finding.location == "main.exs:8"
     end
   end
 
@@ -266,10 +303,12 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                Output.parse(output_for(SystemVerifier), %{
                  "overall" => "approve",
                  "summary" => "Config is present and the service reloaded cleanly",
+                 "action_needed" => "none",
                  "findings" => []
                })
 
       assert parsed.overall == :approve
+      assert parsed.action_needed == "none"
       assert parsed.findings == []
     end
 
@@ -278,17 +317,23 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                Output.parse(output_for(SystemVerifier), %{
                  "overall" => "request_changes",
                  "summary" => "The change did not take",
+                 "action_needed" => "Re-run the reload; the daemon is on the old config",
                  "findings" => [
                    %{
                      "severity" => "error",
+                     "confidence" => "likely",
+                     "location" => "/etc/nginx/nginx.conf",
                      "description" => "service is still running the old config"
                    }
                  ]
                })
 
       assert parsed.overall == :request_changes
+      assert parsed.action_needed == "Re-run the reload; the daemon is on the old config"
       [finding] = parsed.findings
-      assert finding.severity == :error
+      assert finding.severity == "error"
+      assert finding.confidence == "likely"
+      assert finding.location == "/etc/nginx/nginx.conf"
     end
 
     test "its tool list includes RunCommand (it re-checks state on the machine)" do

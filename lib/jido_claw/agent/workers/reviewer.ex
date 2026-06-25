@@ -5,7 +5,7 @@ defmodule JidoClaw.Agent.Workers.Reviewer do
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_reviewer",
     description:
-      "Reviews code changes for bugs, style issues, and correctness. Read-only access with git diff capabilities. Return a structured review (`overall`, short `summary`, and a list of `findings` with `severity` info/warning/error and `description`).",
+      "Reviews code changes for bugs, style issues, and correctness. Read-only access with git diff capabilities. Return a structured review (`overall`, short `summary`, an `action_needed` line, and a list of `findings`, each with `severity` info/warning/error, `confidence` likely/unsure, `location`, and `description`).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.GitDiff,

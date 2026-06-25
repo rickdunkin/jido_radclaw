@@ -10,7 +10,7 @@ defmodule JidoClaw.DoctrineTest do
 
   describe "slice/1" do
     test "returns non-empty text for each known slice key" do
-      for key <- [:base, :artifacts, :reviewer_min, :system_verify] do
+      for key <- [:base, :artifacts, :reviewer_min, :reviewer_contract, :system_verify] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
       end
@@ -21,7 +21,13 @@ defmodule JidoClaw.DoctrineTest do
     end
 
     test "list/0 enumerates exactly the seed slices" do
-      assert Enum.sort(Doctrine.list()) == [:artifacts, :base, :reviewer_min, :system_verify]
+      assert Enum.sort(Doctrine.list()) == [
+               :artifacts,
+               :base,
+               :reviewer_contract,
+               :reviewer_min,
+               :system_verify
+             ]
     end
   end
 
@@ -34,19 +40,32 @@ defmodule JidoClaw.DoctrineTest do
       refute doctrine =~ "Review discipline"
     end
 
-    test "a judge worker gets base + reviewer-min, never the artifacts slice" do
+    test "a reviewer_verdict judge gets base + reviewer-min + reviewer-contract, never artifacts" do
       doctrine = Doctrine.for_template("reviewer")
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Review discipline"
+      assert doctrine =~ "Reviewer Contract"
+      assert doctrine =~ "likely"
       refute doctrine =~ "Runtime artifacts"
     end
 
-    test "the AR-8b-2 sketch_reviewer is a read-only judge (base + reviewer-min)" do
+    test "the verifier is a judge WITHOUT the reviewer-contract (it has a different schema)" do
+      doctrine = Doctrine.for_template("verifier")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Review discipline"
+      refute doctrine =~ "Reviewer Contract"
+      refute doctrine =~ "Runtime artifacts"
+    end
+
+    test "the AR-8b-2 sketch_reviewer is a reviewer_verdict judge (base + reviewer-min + contract)" do
       doctrine = Doctrine.for_template("sketch_reviewer")
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Review discipline"
+      assert doctrine =~ "Reviewer Contract"
+      assert doctrine =~ "likely"
       refute doctrine =~ "Runtime artifacts"
     end
 
@@ -66,11 +85,13 @@ defmodule JidoClaw.DoctrineTest do
       refute doctrine =~ "Review discipline"
     end
 
-    test "the AR-8c system_verifier is a judge with the system-verify slice" do
+    test "the AR-8c system_verifier is a judge with the reviewer-contract + system-verify slices" do
       doctrine = Doctrine.for_template("system_verifier")
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Review discipline"
+      assert doctrine =~ "Reviewer Contract"
+      assert doctrine =~ "likely"
       assert doctrine =~ "System verification discipline"
       refute doctrine =~ "Runtime artifacts"
     end

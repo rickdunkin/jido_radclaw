@@ -65,6 +65,45 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
       assert {:error, {:reviewer_without_lens, "r"}} =
                DefaultMapper.map(result, reviewer_meta(%{name: "r", lens: nil}))
     end
+
+    # AR-3 regression guard: the enriched finding shape, in the ATOM-KEYED form
+    # `Output.parse/2` produces (atom keys, STRING enum values), must store with
+    # clean string values. `ComposerArtifact.Envelope.normalize/1` inspect/1s atom
+    # *values* — an atom enum (`:error`) would persist as `":error"`. String enums
+    # (severity/confidence) round-trip untouched; atom keys stringify cleanly.
+    test "atom-keyed enriched verdict stores findings with clean string enums (A5 round-trip)" do
+      finding = %{
+        severity: "error",
+        confidence: "likely",
+        location: "lib/foo.ex:12",
+        description: "nil deref on the empty list"
+      }
+
+      result = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{
+          overall: :request_changes,
+          summary: "found a bug",
+          action_needed: "guard the empty case",
+          findings: [finding]
+        }
+      }
+
+      assert {:ok,
+              %StageEmission{
+                signals: ["findings:quality"],
+                artifacts: %{"findings" => stored}
+              }} = DefaultMapper.map(result, reviewer_meta())
+
+      assert stored == [
+               %{
+                 "severity" => "error",
+                 "confidence" => "likely",
+                 "location" => "lib/foo.ex:12",
+                 "description" => "nil deref on the empty list"
+               }
+             ]
+    end
   end
 
   describe "explicit signals + output artifacts" do

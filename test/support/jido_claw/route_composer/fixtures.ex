@@ -240,14 +240,29 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
 
   @doc "Canned reviewer typed output — clean (approve, no findings)."
   @spec phase1_clean_reviewer() :: %{String.t() => term()}
-  def phase1_clean_reviewer, do: %{"overall" => "approve", "findings" => []}
+  def phase1_clean_reviewer,
+    do: %{
+      "overall" => "approve",
+      "summary" => "looks correct",
+      "action_needed" => "none",
+      "findings" => []
+    }
 
   @doc "Canned reviewer typed output — findings (request_changes)."
   @spec phase1_findings_reviewer() :: %{String.t() => term()}
   def phase1_findings_reviewer do
     %{
       "overall" => "request_changes",
-      "findings" => [%{"severity" => "error", "description" => "missing nil check"}]
+      "summary" => "found a defect",
+      "action_needed" => "add the nil check before the deref",
+      "findings" => [
+        %{
+          "severity" => "error",
+          "confidence" => "likely",
+          "location" => "lib/auth.ex:42",
+          "description" => "missing nil check"
+        }
+      ]
     }
   end
 
