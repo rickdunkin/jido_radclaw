@@ -24,6 +24,60 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
+## Status reconciliation — 2026-06-25 (AR-2 / AR-5 / AR-8 shipped; AR-3 partial)
+
+**This section supersedes the forward-looking claims in the 2026-06-11 reconciliation below**
+(notably its "None of AR-2 … AR-8 has landed" line — true when written, now stale). The Alp
+River source-audit baseline is unchanged; only jido_radclaw's implementation has moved.
+Verified by a per-item in-tree sweep on 2026-06-25.
+
+Since 2026-06-11 the BUILD-ON/INDEPENDENT backlog this document framed as "next" has largely
+shipped:
+
+- **AR-2 (the composer) — DONE** (planned scope). The deterministic signal-driven route
+  composer shipped Phases 0–5 (`012f17fe`..`1eedf44f`, 2026-06-18..22): `JidoClaw.RouteComposer`
+  is a supervised subsystem live on the real turn path via `JidoClaw.FrontDoor.decide/2` — the
+  five-step pure `compose_route` + Kahn waves, each wave built via `Reactor.Builder` and run
+  through `ReactorRunner`; a durable composer event-log/projection with an AshCloak-encrypted
+  `ComposerArtifact` ref-store (resolving the Phase-2 blocker); crash recovery; human gates in
+  the composer (Phase 4); and MCP observe (`inspect_workflow` + the `jido://workflows/catalog`
+  resource). 222 composer test cases, zero skips. What's left is exactly what the plan parked:
+  the Phase-6 cluster lease (gust G1-1), the AR-4 fixer workflow, and the optional YAML catalog
+  overlay (gust G3-2).
+- **AR-5 (doctrine injection) — DONE** (`9127b2a7`, 2026-06-22). `JidoClaw.Doctrine` registry +
+  per-template slice map, injected into spawned, skill-step, and follow-up sub-agents (the exact
+  main-agent-only gap it targeted), with the duplicated worker schemas single-sourced in
+  `Agent.Workers.OutputSchema`.
+- **AR-8 (conversation-type triage) — DONE** (`5f702d48`..`1994eee6`, 2026-06-23..25). Grew well
+  past the original "cheap Classifier upgrade": an always-on triage seed publishing one of
+  talk/sketch/code/system per turn, all four paths wired into the live turn — including the
+  sketch path (AR-8b), sketch graduation + `:docker` exec tier (AR-8b-2), and the system path
+  (AR-8c). Sole caveat: the Docker exec tier's real-OS isolation is verified only in manual
+  `@docker_sandbox` tests (excluded from CI by design).
+- **AR-1 (gate semantics) — the open tail this document tracked is now CLOSED.** AR-2 Phase 4
+  (composer human gates) gave the `plan` gate and the `tool_call` gate live producers and made
+  stale-approval retraction **automatic** in the composer (`route_composer.ex`
+  `retract_stale_approval`), so AR-1's "only `irreversible_write` has a producer / retraction is
+  operator-initiated" tail no longer holds. (See the amended AR-1 outcome note for the two
+  residuals: the now-vestigial case-axis `Cases.retract`, and two stale in-code/in-doc claims.)
+- **AR-3 (reviewer fan-out + contract) — PARTIAL.** The fan-out *is* built: the composer catalog
+  instantiates the one `reviewer` template as four risk-gated lenses (security, quality,
+  correctness, architecture) dispatched as a parallel wave with lens-scoped findings. The
+  shared-contract *mechanism* rides AR-5, but its *content* is still a placeholder (the
+  `reviewer_min` doctrine slice — no concrete-consequence bar, anti-double-flag rule, or
+  VERDICT/FINDINGS shape yet).
+- **AR-4 (self-heal fixer loop) — NOT STARTED** (substrate only). The `fixer` stage is declared
+  and a generic rerun primitive exists, but the review→fix→re-review loop is explicitly
+  forward-only/deferred and the RE_RUN_SET logic is absent. (A sibling reverse-verify loop exists
+  on the AR-8c system path, but that is a different feature.)
+- **AR-6 (personas) / AR-7 (confidence-tagging) — NOT STARTED.** No code; AR-5 left no pre-wired
+  `## PSYCHOLOGY` or confidence-tagging seam, so both remain clean greenfield adds on top of the
+  now-existing doctrine registry.
+
+**Remaining live backlog**: AR-3 (finish the Reviewer Contract content), AR-4 (wire the
+self-heal loop onto the rerun primitive), AR-6, AR-7 — plus AR-2's explicitly-deferred tails
+(cluster lease, YAML catalog overlay).
+
 ## Status reconciliation — 2026-06-11 (Squidie shipped; AR-1 landed)
 
 **jido_radclaw drift since 2026-06-06 that touches entries below**: the Squidie/Reactor
@@ -49,7 +103,9 @@ sole event producer, human gates durably halt/resume via `GateStep`/`GateResume`
   `PipelineStore`/`RunPipeline` still run static chains, the two reasoning signals are still
   write-only, and there is still no composer, no reviewer fan-out, no doctrine injection, no
   personas, no triage front door. The BUILD-ON items are **unblocked**; AR-2 (the composer)
-  is now the natural next feature.
+  is now the natural next feature. *(Superseded as of 2026-06-25 — see the reconciliation above:
+  AR-2, AR-5, and AR-8 have since shipped, AR-1's tail closed, and AR-3 is partial; only
+  AR-4/AR-6/AR-7 remain not-started.)*
 
 **Alp River drift since the inventory**: one commit (2026-06-06, v1.2.5 → **1.2.6**): a
 deterministic **`/audit` self-scorecard** (`hooks/audit.py`, scoring five health categories
@@ -68,8 +124,8 @@ practice is the same determinism-over-prose philosophy AR-2 already captures.
 sits *above* the engine Squidie built. The original call — ship Squidie unchanged, fold in
 exactly one thing (gate semantics), everything else builds on the new engine afterward or is
 independent — played out exactly: Squidie shipped (Phases 0–5) with AR-1 folded into
-Phase 2. What remains live is the BUILD-ON/INDEPENDENT backlog, with AR-2 (the composer)
-first in line.**
+Phase 2. The BUILD-ON/INDEPENDENT backlog has since largely shipped too — as of 2026-06-25:
+AR-2, AR-5, and AR-8 done, AR-3 partial; only AR-4, AR-6, and AR-7 remain.**
 
 Alp River and Squidie/Reactor solve **different layers**:
 
@@ -88,16 +144,16 @@ That is the headline insight: **the "dynamic, not-a-declared-DAG" space Squidie 
 the free-form agent loop can instead be a deterministic, signal-composed loop** — and Alp
 River is a mature, working reference for it.
 
-| Alp River capability | Relationship to the Squidie work | Recommendation |
+| Alp River capability | Relationship to the Squidie work | Status (2026-06-25) |
 | --- | --- | --- |
-| **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE — shipped in Phase 2** (AR-1) |
-| **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **BUILD-ON — the next feature** (AR-2) |
-| **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **BUILD-ON** (AR-3) |
-| **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **BUILD-ON** (AR-4) |
-| **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **INDEPENDENT** (AR-5) |
-| **Psychology / persona layer** | **Independent** — pure prompt assembly | **INDEPENDENT** (AR-6) |
-| **Confidence-tagging convention** | **Independent** — output/prompt convention | **INDEPENDENT** (AR-7) |
-| **Conversation-type triage** (talk/sketch/code/system) | **Independent** front door; folds into AR-2 if built | **INDEPENDENT** (AR-8) |
+| **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE** — Phase 2; tail closed by AR-2 Phase 4 (AR-1) |
+| **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **DONE** — Phases 0–5 (AR-2) |
+| **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **PARTIAL** — fan-out built, contract content stub (AR-3) |
+| **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **NOT STARTED** — substrate only (AR-4) |
+| **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **DONE** (AR-5) |
+| **Psychology / persona layer** | **Independent** — pure prompt assembly | **NOT STARTED** (AR-6) |
+| **Confidence-tagging convention** | **Independent** — output/prompt convention | **NOT STARTED** (AR-7) |
+| **Conversation-type triage** (talk/sketch/code/system) | **Independent** front door; folds into AR-2 if built | **DONE** — all four paths, folded into AR-2 (AR-8) |
 | Hook substrate, `.md`/`.py` artifacts, render-card UX, compaction/reinject | Re-implement or already covered | **SKIP** (§4) |
 
 ## Why not "adopt as a dependency"
@@ -190,11 +246,22 @@ taxonomy (`:tool_call | :plan | :irreversible_write`, single-sourced in `Gate.Ki
 `:abandoned`, every pending case dropped, only legal from `:awaiting_approval`); and
 **stale-approval retraction** is `Cases.retract` (`approval_retracted`: case reopened with
 decision data cleared, run parked back at `:awaiting_approval`, race-fenced against
-`run_resumed` under the per-run lock) — both carry "AR-1" comments in the code. The tail
-still open: only the `irreversible_write` gate has a live producer; the *automatic* re-plan
-retraction trigger arrives with the future `plan`-gate producer (`gates/plan_gate.ex` is
-declared-but-unproduced), so today retraction is operator-initiated
-(`Cases.decide(..., resume: false)` then `retract`).
+`run_resumed` under the per-run lock) — both carry "AR-1" comments in the code.
+
+**Tail update (2026-06-25): the open tail is now CLOSED.** AR-2 Phase 4 (composer human gates,
+`ed483619`, 2026-06-22) gave both the `plan` gate (`gates/plan_gate.ex` → `Reactors.PlanGate`,
+dispatched via `route_composer/gate_reactors.ex` → `wave_builder.ex`) and the `tool_call` gate
+(the conversation-axis `Orchestration.ToolApprovals` producer) live producers, and made
+stale-approval retraction **automatic**: the composer detects a post-approval scope-shift and
+retracts the `plan-approved` *signal* (`route_composer.ex` `stale_approval?` →
+`retract_stale_approval`, tested in `composer_durable_test.exs`), re-gating so the revised plan
+must re-earn approval — a faithful realization of Alp River's "remove `#plan-approved` from the
+live set" lock. Two residuals remain: (1) the *case-axis* `Cases.retract` named just above is now
+**vestigial** — test-only, with no live caller and no operator surface, because the shipped
+automatic path retracts the signal and re-gates (minting a fresh case) rather than reopening the
+existing case; and (2) two stale claims should be reconciled — `gate/kinds.ex`'s moduledoc still
+asserts only `:irreversible_write` has a producer (now false on two counts), and the paragraph
+immediately above still describes the tail as open.
 
 ---
 
@@ -205,8 +272,9 @@ Build them **on** Reactor + the event-log envelope; nothing blocks them anymore.
 
 ### AR-2. Deterministic signal-driven route composer — the crown jewel
 
-**Recommendation**: BUILD-ON. The highest-value idea in the repo, and the one that fills the
-gap Squidie's §6 leaves open.
+**Recommendation**: BUILD-ON — **DONE (Phases 0–5, 2026-06-18..22)**; see the status update at
+the end of this entry. The highest-value idea in the repo, and the one that fills the gap
+Squidie's §6 leaves open.
 
 **Where** (Alp River): `hooks/route.py` — `compute_route(catalog, live, available,
 already_run)` is a **pure function** returning an ordered route + parallel `waves` + `held` +
@@ -300,9 +368,27 @@ gust borrows interact with the composer; the AR-2 exploration doc should own the
 (Conceptual rhyme, no code: the composer's Kahn waves are the dynamic version of gust's
 static stage cohorts — the one place gust's *shape* survives while its executor doesn't.)
 
+**Status update (2026-06-25): DONE — Phases 0–5 shipped (2026-06-18..22), live on the real turn
+path.** `JidoClaw.RouteComposer` is a supervised subsystem reached from
+`JidoClaw.FrontDoor.decide/2` (both the core turn and the REPL): the five-step pure
+`compose_route` + Kahn waves (`route_composer/router.ex`), each wave built via `Reactor.Builder`
+(`route_composer/wave_builder.ex`) and run through `ReactorRunner`; a durable composer
+event-log/projection with an AshCloak-encrypted `ComposerArtifact` ref-store (resolving the
+Phase-2 blocker); crash recovery (`WorkflowRecovery` resumes a `:running` composer parent); human
+gates in the composer (Phase 4, which also closed AR-1's tail); and MCP observe (Phase 5 —
+`inspect_workflow` + `workflow_status` learn composer state; the `jido://workflows/catalog`
+resource is registered). 222 composer test cases, zero skips; clean compile. Detailed plan docs:
+`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`. **Deferred (as the plan always
+intended):** the Phase-6 cluster lease (gust G1-1 — columns exist, behavior parked until
+clustering is real), the AR-4 self-heal fixer workflow, and the optional `.jido/` YAML catalog
+overlay + debounced watcher (gust G3-2; G3-3's DB mirror is mooted as recommended). Per-stage
+model/effort tiering: the `Stage` struct carries the fields, but the end-to-end spawn-time
+override seam was not confirmed wired.
+
 ### AR-3. Reviewer fan-out + a shared Reviewer Contract
 
-**Recommendation**: BUILD-ON. A concrete, high-value first workflow to run on the new engine.
+**Recommendation**: BUILD-ON — **PARTIAL** (the 4-lens fan-out is built; the shared contract's
+content is still a stub). A concrete, high-value first workflow to run on the new engine.
 
 **Where** (Alp River): 15+ specialized review lenses (correctness, quality, architecture,
 security, performance, accessibility, design-consistency, ux, consistency, structure, reuse,
@@ -336,9 +422,24 @@ Reviewer Contract (via AR-5); compile "review the diff" to a Reactor `map`/paral
 feed findings to AR-4's fixer. Start with 3–4 lenses (correctness, security, quality,
 structure), not all 15.
 
+**Status update (2026-06-25): PARTIAL — the fan-out is built; the shared contract's *content* is
+not.** The composer catalog (`route_composer/catalog.ex`) instantiates the single `reviewer`
+worker as **four risk-gated lenses** — `security` (subscribes `auth-surface`), `quality` and
+`correctness` (subscribe `code-written`), `architecture` (subscribes `significant-build`) — each
+emitting lens-scoped `findings:<lens>`/`clean:<lens>` and dispatched as one parallel Kahn wave
+(exactly the sketch's "start with 3–4 lenses"); `lens` is a first-class `Stage` field. The
+shared-contract **mechanism** rides AR-5 (the `reviewer` template gets the `reviewer_min`
+doctrine slice instead of restating rules), but its **content is a placeholder** —
+`priv/defaults/doctrine/reviewer_min.md` itself says "a fuller review contract may be supplied
+separately"; the concrete-consequence bar, anti-double-flag rule, and
+VERDICT/FINDINGS/ACTION_NEEDED shape are not yet written, and there is still one `reviewer` worker
+file. **To finish:** author the full Reviewer Contract content into the doctrine slice (and feed
+findings into AR-4's fixer once that exists).
+
 ### AR-4. Self-heal fixer loop — review → fix → re-review until clean
 
-**Recommendation**: BUILD-ON (with AR-3).
+**Recommendation**: BUILD-ON (with AR-3) — **NOT STARTED** (substrate only; the loop is
+explicitly forward-only). See the status update at the end of this entry.
 
 **Where** (Alp River): `agents/fixer.md` — input `@findings`, output `@diff`, and the smart
 bit: it emits a **RE_RUN_SET** = the union of *{gates that flagged a finding it fixed}* ∪
@@ -362,6 +463,18 @@ lenses}, terminating when every lens is clean. Port the domain-touched RE_RUN_SE
 what keeps the loop both complete (re-checks side-effects of a fix) and cheap (re-runs only
 affected lenses).
 
+**Status update (2026-06-25): NOT STARTED — substrate only; the loop is explicitly
+forward-only.** The `fixer` stage is declared in the catalog (`coder` template, subscribes
+`findings`, publishes `code-written` "for re-review") and a generic per-stage rerun primitive
+exists, but `route_composer/loop.ex` makes an open `findings:<lens>` terminate `:not_converged`
+with self-heal "deferred in forward-only Phase 1" — a ran lens with open findings does **not**
+re-fire a fixer. No RE_RUN_SET (flagged ∪ domain-touched) logic exists anywhere. The one working
+rerun loop is the AR-8c system-path reverse-verify (`reverse_verify` flag, executor⇄verifier
+pair) — a *different* feature, not the lens self-heal loop. `IterativeStep`
+(`skills/steps/iterative_step.ex`) remains a generic generator/evaluator skill loop, unrelated.
+**To finish:** wire review-wave → fixer → re-run touched lenses → converge onto the existing
+rerun primitive, and implement the RE_RUN_SET computation.
+
 ---
 
 ## §3 — Independent of the engine (prompt-layer borrows, land anytime)
@@ -372,7 +485,8 @@ AR-6, AR-7, and AR-3's shared contract.
 
 ### AR-5. Central doctrine injection into sub-agents
 
-**Recommendation**: INDEPENDENT. The highest-leverage prompt-layer borrow; unblocks AR-3/6/7.
+**Recommendation**: INDEPENDENT — **DONE (2026-06-22)**. The highest-leverage prompt-layer
+borrow; it is now the live substrate AR-3's contract, AR-6, and AR-7 should ride.
 
 **Where** (Alp River): `hooks/user-context-injector.sh` — a `PreToolUse(Agent)` hook that
 prepends four blocks to **every sub-agent's** prompt: `## DOCTRINE` (per-agent slices from
@@ -402,9 +516,23 @@ Memory blocks (`Prompt.blocks_section/1` — already built for the main agent, r
 project docs. This is the Elixir analog of the hook, de-dupes the worker descriptions, and
 makes AR-3's Reviewer Contract a real single-sourced artifact.
 
+**Status update (2026-06-25): DONE (2026-06-22).** `JidoClaw.Doctrine` is a priv-file-backed
+slice registry (`base`, `artifacts`, `reviewer_min`, `system_verify`) with a per-template slice
+map (`@template_slices`); `Agent.SubagentPrompt.build/2` assembles role + `## DOCTRINE` + the
+reused Memory blocks (`PromptSections.blocks_section/1`) + JIDO.md, injected via
+`Startup.inject_subagent_prompt/3` on **all three sub-agent paths** — initial spawn
+(`tools/spawn_agent.ex`), skill-step worker (`skills/steps/agent_runner.ex`), and follow-up turn
+(`tools/send_to_agent.ex`) — closing the exact main-agent-only gap this entry named. The
+duplicated worker schemas are single-sourced in `Agent.Workers.OutputSchema`. Config-gated,
+best-effort, tested. **Open borders (AR-3/AR-7, not AR-5 failures):** the named
+`confidence-tagging` and `code-doctrine` slices were not authored, `reviewer_min` is a deliberate
+placeholder (AR-3), and "project docs" is JIDO.md only (no `docs/` READ_MAP). The seam is now the
+live substrate AR-3's contract, AR-6, and AR-7 should ride.
+
 ### AR-6. Psychology / persona layer
 
-**Recommendation**: INDEPENDENT. Cheap, genuinely novel, ~a day on top of AR-5.
+**Recommendation**: INDEPENDENT — **NOT STARTED**. Cheap, genuinely novel, ~a day on top of
+AR-5 (now shipped, so this is unblocked).
 
 **Where** (Alp River): `psychology/*.md` — 9 personas (cynic, skeptic, detective, defender,
 optimist, pragmatist, teacher, user-advocate, craftsperson), each a 5-line
@@ -426,9 +554,16 @@ with the role-wins conflict rule carried verbatim. Differentiates how sub-agents
 (a skeptic plan-challenger probes assumptions; a cynic fixer asks what to delete) for very
 little code.
 
+**Status update (2026-06-25): NOT STARTED.** An exhaustive sweep for
+persona/psychology/skeptic/cynic/optimist/pragmatist across `lib priv test config` returns only
+false positives; there is no `JidoClaw.Agent.Persona`, no persona texts, and no template→persona
+map. AR-5 shipped **without** a pre-wired `## PSYCHOLOGY` seam, so this is a clean greenfield add
+on top of the now-existing doctrine registry (drop persona slices + a template→persona map, render
+a fifth prompt section through the AR-5 assembler).
+
 ### AR-7. Confidence-tagging as a pervasive convention
 
-**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5).
+**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5) — **NOT STARTED**.
 
 **Where** (Alp River): `doctrine/confidence-tagging.md` — every finding carries `[likely]`
 (evidence-based: code read, official docs, observed) or `[unsure]` (judgment, single-source,
@@ -448,9 +583,18 @@ contract) and AR-5 (it ships as a doctrine slice).
 extend the Reviewer/Researcher/Verifier output schemas to carry the tag + reporting threshold.
 Cheap once AR-5 exists.
 
+**Status update (2026-06-25): NOT STARTED.** No `confidence-tagging` doctrine slice exists, no
+codebase-wide `[likely]`/`[unsure]` convention (zero hits outside this doc), and the Reviewer
+verdict schema (`Agent.Workers.OutputSchema.reviewer_verdict/0`) still carries only `severity` +
+`description` — no confidence tag or reporting threshold. The three narrow typed slots called out
+in 2026-06-11 (Researcher/Verifier `low|medium|high`, `verify_certificate` float) are unchanged.
+Cheap to add now that the AR-5 doctrine seam exists.
+
 ### AR-8. Conversation-type triage (talk / sketch / code / system)
 
-**Recommendation**: INDEPENDENT front door; folds into AR-2 if/when that lands.
+**Recommendation**: INDEPENDENT front door; folds into AR-2 if/when that lands — **DONE (all
+four paths; folded into AR-2 as the triage seed, 2026-06-23..25)**. See the status update at the
+end of this entry.
 
 **Where** (Alp River): `WORKFLOW.md` `### Seed and path` (under `## Pipeline`) +
 `agents/triage.md` — an always-on
@@ -471,6 +615,24 @@ AR-2's composer**, so if the composer is built this folds in there; standalone i
 **Adoption sketch**: extend `Classifier` (or add a triage stage) to emit a path + early
 signals; the `talk` path stays inline, `code`/`system` enter the engine. If AR-2 lands, this
 becomes the composer's `triage` seed.
+
+**Status update (2026-06-25): DONE — all four paths shipped (2026-06-23..25), folded into AR-2 as
+the triage seed.** An always-on, fail-safe triage classifier (`triage.ex`, coerces any failure to
+`talk`) emits one of `talk/sketch/code/system` (`triage/verdict.ex`) each turn; `FrontDoor.decide/2`
+routes on it (live at `lib/jido_claw.ex` and the REPL), and the catalog `triage` stage is the
+`{:seed, "triage"}` with `routes: [talk, sketch, code, system]`. Sticky-but-re-evaluated
+(re-classifies each turn against a recent-turn window; "talk flips to code on 'do it'"). **talk**
+stays inline (no composer, no artifact); **code** is the normal reviewed-change engine route
+(planner → plan-gate → test-author/implementer → 4 reviewers → fixer); **sketch** (AR-8b) is a
+hard-isolated `.prototypes/<id>/` throwaway, with cross-run **graduation** (AR-8b-2 C1–C3,
+summary-only) and a `:docker` sandbox **exec tier** (AR-8b-2 F2 — `RunCommand`↔Forge bridge,
+no-egress + global-config isolation); **system** (AR-8c) is a verified machine change gated by the
+always-on `SafetyGate` (`:irreversible_write`) with an executor⇄verifier reverse-verify loop and a
+distinct `:route_verify_failed` terminal. Plan docs: `AR-8b-SKETCH-PATH.md`,
+`AR-8b-2-GRADUATION.md`, `AR-8b-2-F2-EXEC-TIER.md`, `AR-8c-SYSTEM-PATH.md`. **Sole caveat:** the
+Docker exec tier's real-OS isolation (no-egress, mount round-trip) is proven only in manual
+`@docker_sandbox`-tagged tests, excluded from CI by design. Explicit non-goals remain open by
+design (per-tool approval overlay for the exec tier; auto-merging a graduated prototype).
 
 ---
 
@@ -516,30 +678,36 @@ becomes the composer's `triage` seed.
 | --- | --- | --- | --- |
 | Execute a bounded **declared** DAG | **Reactor** (DAG, concurrency, saga, halt/resume) | defers to the harness | **shipped** — `Skills.Compiler` → Reactor (static drivers deleted) |
 | **Durability** (log, status, recovery, gates) | **the envelope** (`WorkflowEvent`, projection, reconciler, human gates) | ephemeral signal state + reinject hook | **shipped** — event log + projection + recovery (stranding bug fixed) |
-| **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | `Classifier` picks **1** static plan |
-| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | single `Reviewer`, no contract |
-| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | main-agent only; workers get `:description` |
+| **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | **shipped** — `RouteComposer` composes waves from live signals (AR-2) |
+| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **partial** — 4-lens fan-out shipped (AR-3); contract content + self-heal fixer (AR-4) still to do |
+| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine shipped** to all sub-agents (AR-5); persona (AR-6) / confidence-tagging (AR-7) not started |
 
-The top two rows are Squidie — **now shipped**. The bottom three are Alp River — and they
-**stack on top of** the substrate that now exists, they don't compete with it.
+The top two rows are Squidie — **shipped 2026-06-08..10**. The bottom three are Alp River — and
+as of **2026-06-25** they are no longer hypothetical: the composer (AR-2) and doctrine injection
+(AR-5) are shipped, review fan-out (AR-3) is partial, and only persona (AR-6),
+confidence-tagging (AR-7), and the self-heal fixer (AR-4) remain.
 
 ## Sequencing recommendation
+
+*(Progress through 2026-06-25 annotated inline.)*
 
 1. **Ship Squidie unchanged — done (Phases 0–5, 2026-06-08..10).** Reactor + the durable
    envelope (T1-1 event log, status-as-projection, recovery) shipped unchanged by this
    document, exactly as intended.
-2. **Fold AR-1 into Squidie Phase 2 — done.** The gate taxonomy + abandon/retraction
-   lifecycle shipped inside Phase 2 as a design input, credited as "AR-1" in code and docs.
-   Remaining tail: the `plan`/`tool_call` gate producers (and with them the automatic
-   re-plan retraction trigger) are still future work on the Squidie side.
-3. **Build the composer (AR-2) — now the front of the queue**: the deterministic signal layer
-   above the engine, reusing the event-log/projection model. Give it its own exploration doc —
-   folding in the gust cross-reference (see AR-2's entry): the §4.11 lease unit, the MCP
-   resources/observe tail, and the catalog storage choice.
-4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** are the first concrete workflows to run on
-   the engine — alongside or just after the composer.
-5. **AR-5 → AR-6/AR-7, and AR-8** are independent prompt-layer wins; land them opportunistically
-   whenever convenient. AR-5 first (it enables the others).
+2. **Fold AR-1 into Squidie Phase 2 — done; tail since closed.** The gate taxonomy +
+   abandon/retraction lifecycle shipped inside Phase 2 as a design input, credited as "AR-1" in
+   code and docs. The former tail — the `plan`/`tool_call` gate producers and the automatic
+   re-plan retraction trigger — **closed in AR-2 Phase 4 (2026-06-22)**.
+3. **Build the composer (AR-2) — DONE (Phases 0–5, 2026-06-18..22).** The deterministic signal
+   layer shipped on the engine, reusing the event-log/projection model, with its own plan docs
+   (`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`). Deferred tails: the gust §4.11
+   cluster lease and the optional YAML catalog overlay.
+4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** — **AR-3 partial** (the 4-lens fan-out shipped
+   on the composer; the shared-contract content is still to write); **AR-4 not started**
+   (forward-only — the self-heal loop is the next build on the rerun primitive already in place).
+5. **AR-5 → AR-6/AR-7, and AR-8** — **AR-5 done (2026-06-22)** and **AR-8 done (2026-06-23..25,
+   folded into AR-2's triage seed)**; **AR-6 and AR-7 remain** the cheap greenfield prompt-layer
+   wins, now unblocked by the shipped AR-5 doctrine seam.
 
 ## Bottom line
 
@@ -547,8 +715,10 @@ Alp River is the most architecturally relevant project in this folder *and* the 
 easily misread as a reason to pivot. It is not. It is the **methodology layer that sits above
 the engine Squidie built**: the deterministic composer for the dynamic middle ground Squidie
 deliberately leaves to free-form ReAct, plus the multi-agent review, self-heal,
-doctrine-injection, and persona content to run on top. The first two steps have happened —
-**Squidie shipped (Phases 0–5), and the gate semantics (AR-1) were folded in while the
-human-gate code was being written**, exactly as recommended. What's left is the build-on
-backlog: the composer (AR-2) and its workflows (AR-3/AR-4) on the foundation the engine left
-behind — and the prompt-layer borrows (AR-5/6/7/8) whenever there's a spare afternoon.
+doctrine-injection, and persona content to run on top. As of **2026-06-25** most of that backlog
+has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then **the
+composer itself (AR-2, Phases 0–5), doctrine injection (AR-5), and the four-path triage front
+door (AR-8)** — with reviewer fan-out (AR-3) partially built on the composer. What remains is a
+short tail: finish AR-3's shared Reviewer Contract content, wire the AR-4 self-heal fixer loop
+onto the rerun primitive already in place, and pick up the two cheap prompt-layer borrows (AR-6
+personas, AR-7 confidence-tagging) whenever there's a spare afternoon.
