@@ -18,6 +18,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
   alias JidoClaw.Agent.Workers.{
     Coder,
     DocsWriter,
+    Fixer,
     Refactorer,
     Researcher,
     Reviewer,
@@ -33,8 +34,13 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
   defp output_for(module), do: Keyword.fetch!(module.strategy_opts(), :output)
   defp tools_for(module), do: Keyword.fetch!(module.strategy_opts(), :tools)
 
+  # AR-4: Coder moved from `builder_result/0` to `coder_result/0` — the builder
+  # shape PLUS an OPTIONAL `signals` string list. It backs both the `implementer`
+  # (self-reports `code-written`) and the `test-author` (self-reports `tests-ready`)
+  # stages; the signals MUST parse as strings (`DefaultMapper.explicit_signals/1`
+  # matches them against `publishes` strings).
   describe "Coder schema" do
-    test "parses a valid sample" do
+    test "parses a valid sample WITHOUT signals (the optional field is absent)" do
       assert {:ok, parsed} =
                Output.parse(output_for(Coder), %{
                  "status" => "completed",
@@ -50,13 +56,58 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       assert is_map(parsed.artifacts)
       assert parsed.artifacts.url == "http://localhost:4000"
     end
+
+    test "parses a sample carrying a signals string list, keeping it strings" do
+      for signals <- [["code-written"], ["tests-ready"], ["code-written", "scope-shift"]] do
+        assert {:ok, parsed} =
+                 Output.parse(output_for(Coder), %{
+                   "status" => "completed",
+                   "summary" => "Implemented foo",
+                   "files_changed" => ["lib/foo.ex"],
+                   "notes" => "n/a",
+                   "signals" => signals,
+                   "artifacts" => %{}
+                 })
+
+        assert parsed.signals == signals
+        assert Enum.all?(parsed.signals, &is_binary/1)
+      end
+    end
   end
 
+  # AR-4: Fixer is builder-shaped (status/summary/files_changed/notes + artifacts)
+  # PLUS a `signals` string list — the domains it self-reports, fed to
+  # `DefaultMapper.explicit_signals/1` (so they MUST parse as strings, never atoms).
+  describe "Fixer schema" do
+    test "parses a valid sample, keeping signals as a list of strings" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(Fixer), %{
+                 "status" => "completed",
+                 "summary" => "Guarded the nil deref and tightened the auth check",
+                 "files_changed" => ["lib/auth.ex"],
+                 "notes" => "n/a",
+                 "signals" => ["code-written", "auth-surface"],
+                 "artifacts" => %{}
+               })
+
+      assert parsed.status == :completed
+      assert parsed.files_changed == ["lib/auth.ex"]
+      # The signals stay STRINGS (DefaultMapper matches them against publishes strings).
+      assert parsed.signals == ["code-written", "auth-surface"]
+      assert Enum.all?(parsed.signals, &is_binary/1)
+    end
+  end
+
+  # AR-4 P1: the researcher (the `planner` stage) now carries a REQUIRED `status`
+  # (closes the blocked-producer hole at the schema layer — a blocked planner can't
+  # silently fall through to summary-fabrication + `plan-ready` injection). The
+  # `signals` field stays optional.
   describe "Researcher schema" do
-    test "parses a valid sample" do
+    test "parses a valid sample (the optional signals field is absent)" do
       assert {:ok, parsed} =
                Output.parse(output_for(Researcher), %{
                  "summary" => "Looked at the module graph",
+                 "status" => "completed",
                  "confidence" => "medium",
                  "findings" => [
                    %{
@@ -68,10 +119,43 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "artifacts" => %{}
                })
 
+      assert parsed.status == :completed
       assert parsed.confidence == :medium
       assert is_list(parsed.findings)
       [finding] = parsed.findings
       assert finding.topic == "supervision tree"
+    end
+
+    # AR-4: the `planner` (a `researcher`) self-reports `plan-ready` / `scope-shift`
+    # through the optional `signals` field (strings, like the Coder/Fixer).
+    test "parses a sample carrying a signals string list" do
+      assert {:ok, parsed} =
+               Output.parse(output_for(Researcher), %{
+                 "summary" => "Drafted the plan",
+                 "status" => "completed",
+                 "confidence" => "high",
+                 "findings" => [],
+                 "signals" => ["plan-ready"],
+                 "artifacts" => %{}
+               })
+
+      assert parsed.signals == ["plan-ready"]
+      assert Enum.all?(parsed.signals, &is_binary/1)
+    end
+
+    # AR-4 P1: `status` is REQUIRED — a sample omitting it is rejected. This is the
+    # planner "absent status" coverage: required-at-the-schema is what stops a
+    # blocked planner that OMITS status from falling through to summary-fabrication
+    # + injection. The hermetic composer stubs bypass Zoi (they stamp `:validated`),
+    # so this contract change does not affect them.
+    test "rejects a sample missing the now-required status" do
+      assert {:error, _} =
+               Output.parse(output_for(Researcher), %{
+                 "summary" => "Looked at the module graph",
+                 "confidence" => "medium",
+                 "findings" => [],
+                 "artifacts" => %{}
+               })
     end
   end
 

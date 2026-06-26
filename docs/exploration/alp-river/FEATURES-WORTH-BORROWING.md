@@ -24,7 +24,7 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
-## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-5 / AR-8 shipped; AR-4 / AR-6 remain, AR-7 partial)
+## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-4 / AR-5 / AR-8 shipped; AR-6 remains, AR-7 partial)
 
 **This section supersedes the forward-looking claims in the 2026-06-11 reconciliation below**
 (notably its "None of AR-2 … AR-8 has landed" line — true when written, now stale). The Alp
@@ -42,8 +42,8 @@ shipped:
   `ComposerArtifact` ref-store (resolving the Phase-2 blocker); crash recovery; human gates in
   the composer (Phase 4); and MCP observe (`inspect_workflow` + the `jido://workflows/catalog`
   resource). 222 composer test cases, zero skips. What's left is exactly what the plan parked:
-  the Phase-6 cluster lease (gust G1-1), the AR-4 fixer workflow, and the optional YAML catalog
-  overlay (gust G3-2).
+  the Phase-6 cluster lease (gust G1-1) and the optional YAML catalog overlay (gust G3-2). (The
+  AR-4 fixer workflow that reused the rerun primitive has since shipped — see AR-4 below.)
 - **AR-5 (doctrine injection) — DONE** (`9127b2a7`, 2026-06-22). `JidoClaw.Doctrine` registry +
   per-template slice map, injected into spawned, skill-step, and follow-up sub-agents (the exact
   main-agent-only gap it targeted), with the duplicated worker schemas single-sourced in
@@ -70,10 +70,11 @@ shipped:
   reaching only the three `reviewer_verdict/0` workers). The `reviewer_verdict/0` schema gained a
   per-finding `confidence` (`likely`/`unsure`) + `location` and a top-level `action_needed`. This
   also lands **AR-7's core** on the reviewer surface (see below).
-- **AR-4 (self-heal fixer loop) — NOT STARTED** (substrate only). The `fixer` stage is declared
-  and a generic rerun primitive exists, but the review→fix→re-review loop is explicitly
-  forward-only/deferred and the RE_RUN_SET logic is absent. (A sibling reverse-verify loop exists
-  on the AR-8c system path, but that is a different feature.)
+- **AR-4 (self-heal fixer loop) — DONE** (the literal version, later on 2026-06-25). The `fixer`
+  became a first-class worker, and the composer's two-phase loop wires review → fix → re-review on
+  the `code` path: the domain-touched RE_RUN_SET (flagged ∪ domain-touched ∩ ran) with never-ran
+  lens summoning, and a distinct `:route_fix_failed` terminal on cap exhaustion. (The AR-8c
+  system-path reverse-verify loop is its sibling — a different feature.)
 - **AR-6 (personas) — NOT STARTED.** No code; AR-5 left no pre-wired `## PSYCHOLOGY` seam, so it
   remains a clean greenfield add on top of the now-existing doctrine registry.
 - **AR-7 (confidence-tagging) — PARTIAL.** Its core — the `likely`/`unsure` per-finding tag and the
@@ -81,9 +82,8 @@ shipped:
   slice + the schema `confidence` field). The *pervasive* convention (codebase-wide claim tagging
   on `researcher` / web-sourced agents, the source-URL requirement) is still not started.
 
-**Remaining live backlog**: AR-4 (wire the self-heal loop onto the rerun primitive), AR-6
-(personas), AR-7 (extend confidence-tagging past the reviewer surface) — plus AR-2's
-explicitly-deferred tails (cluster lease, YAML catalog overlay).
+**Remaining live backlog**: AR-6 (personas), AR-7 (extend confidence-tagging past the reviewer
+surface) — plus AR-2's explicitly-deferred tails (cluster lease, YAML catalog overlay).
 
 ## Status reconciliation — 2026-06-11 (Squidie shipped; AR-1 landed)
 
@@ -111,8 +111,8 @@ sole event producer, human gates durably halt/resume via `GateStep`/`GateResume`
   write-only, and there is still no composer, no reviewer fan-out, no doctrine injection, no
   personas, no triage front door. The BUILD-ON items are **unblocked**; AR-2 (the composer)
   is now the natural next feature. *(Superseded as of 2026-06-25 — see the reconciliation above:
-  AR-2, AR-3, AR-5, and AR-8 have since shipped and AR-1's tail closed, with AR-7's core folded
-  into AR-3; only AR-4 and AR-6 remain not-started, and AR-7's pervasive extension is still open.)*
+  AR-2, AR-3, AR-4, AR-5, and AR-8 have since shipped and AR-1's tail closed, with AR-7's core
+  folded into AR-3; only AR-6 remains not-started, and AR-7's pervasive extension is still open.)*
 
 **Alp River drift since the inventory**: one commit (2026-06-06, v1.2.5 → **1.2.6**): a
 deterministic **`/audit` self-scorecard** (`hooks/audit.py`, scoring five health categories
@@ -132,7 +132,7 @@ sits *above* the engine Squidie built. The original call — ship Squidie unchan
 exactly one thing (gate semantics), everything else builds on the new engine afterward or is
 independent — played out exactly: Squidie shipped (Phases 0–5) with AR-1 folded into
 Phase 2. The BUILD-ON/INDEPENDENT backlog has since largely shipped too — as of 2026-06-25:
-AR-2, AR-3, AR-5, and AR-8 done (AR-7's core folded into AR-3); only AR-4, AR-6, and AR-7's
+AR-2, AR-3, AR-4, AR-5, and AR-8 done (AR-7's core folded into AR-3); only AR-6 and AR-7's
 pervasive extension remain.**
 
 Alp River and Squidie/Reactor solve **different layers**:
@@ -157,7 +157,7 @@ River is a mature, working reference for it.
 | **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE** — Phase 2; tail closed by AR-2 Phase 4 (AR-1) |
 | **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **DONE** — Phases 0–5 (AR-2) |
 | **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **DONE** — 4-lens fan-out + authored contract content (AR-3) |
-| **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **NOT STARTED** — substrate only (AR-4) |
+| **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **DONE** — first-class fixer + domain-touched RE_RUN_SET + summoning + `:route_fix_failed` (AR-4) |
 | **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **DONE** (AR-5) |
 | **Psychology / persona layer** | **Independent** — pure prompt assembly | **NOT STARTED** (AR-6) |
 | **Confidence-tagging convention** | **Independent** — output/prompt convention | **PARTIAL** — reviewer-surface core folded into AR-3; pervasive extension open (AR-7) |
@@ -388,8 +388,9 @@ gates in the composer (Phase 4, which also closed AR-1's tail); and MCP observe 
 resource is registered). 222 composer test cases, zero skips; clean compile. Detailed plan docs:
 `AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`. **Deferred (as the plan always
 intended):** the Phase-6 cluster lease (gust G1-1 — columns exist, behavior parked until
-clustering is real), the AR-4 self-heal fixer workflow, and the optional `.jido/` YAML catalog
-overlay + debounced watcher (gust G3-2; G3-3's DB mirror is mooted as recommended). Per-stage
+clustering is real) and the optional `.jido/` YAML catalog overlay + debounced watcher (gust
+G3-2; G3-3's DB mirror is mooted as recommended). (The AR-4 self-heal fixer workflow that reused
+the rerun primitive has since shipped.) Per-stage
 model/effort tiering: the `Stage` struct carries the fields, but the end-to-end spawn-time
 override seam was not confirmed wired.
 
@@ -457,14 +458,16 @@ The `Agent.Workers.OutputSchema.reviewer_verdict/0` schema was enriched to match
 `ComposerArtifact.Envelope.normalize/1` (an atom enum would persist as `":error"`); `overall` stays
 an atom enum (mapper control, never stored). No mapper change — new finding keys ride the existing
 `coerce/1`. This also lands **AR-7's core** on the reviewer surface. `mix precommit` green.
-**Remaining (now AR-4, not AR-3):** `action_needed` is enforced in the verdict but not yet persisted
-as a durable artifact (no stage `output`/`publishes` mapping — deliberately deferred until the
-fixer consumes it), and findings still do not feed an automatic fixer.
+**Closed by AR-4 (2026-06-25):** `action_needed` now persists as a durable artifact (the code-path
+reviewers added it to their `output`, picked up from the typed output by the mapper's `dynamic/2`)
+because the self-heal fixer consumes it via `review-action`, and `code`-path findings now feed an
+automatic fixer (the AR-4 self-heal loop).
 
 ### AR-4. Self-heal fixer loop — review → fix → re-review until clean
 
-**Recommendation**: BUILD-ON (with AR-3) — **NOT STARTED** (substrate only; the loop is
-explicitly forward-only). See the status update at the end of this entry.
+**Recommendation**: BUILD-ON (with AR-3) — **DONE** (the literal version: a first-class
+`fixer` worker, a domain-touched RE_RUN_SET with never-ran summoning, and a distinct
+`:route_fix_failed` terminal). See the status update at the end of this entry.
 
 **Where** (Alp River): `agents/fixer.md` — input `@findings`, output `@diff`, and the smart
 bit: it emits a **RE_RUN_SET** = the union of *{gates that flagged a finding it fixed}* ∪
@@ -472,11 +475,12 @@ bit: it emits a **RE_RUN_SET** = the union of *{gates that flagged a finding it 
 fixing a correctness bug re-runs the visual lens even though visual didn't flag it). Lenses
 re-run after the fixer until all are clean (`WORKFLOW.md` `## Convergence`).
 
-**jido_radclaw gap**: the generator/evaluator retry loop survives as
+**jido_radclaw gap** (closed): the generator/evaluator retry loop survives as
 `Skills.Steps.IterativeStep` (`skills/steps/iterative_step.ex`, ported from the retired
-`IterativeWorkflow` in Phase 3) — the closest analog — but reviewer findings still do
-**not** feed an automatic fixer, and there is no review-fan-out → fix → targeted-re-review
-(re-verified 2026-06-11).
+`IterativeWorkflow` in Phase 3) as a generic analog, but the lens self-heal loop is now its
+own thing — reviewer findings on the `code` path feed an automatic fixer and a
+review-fan-out → fix → targeted-re-review loop (shipped 2026-06-25; see the status update
+below).
 
 **Relationship to Squidie**: maps onto Reactor's `recurse`/iterative compositional steps —
 which the shipped skill compiler already uses for skills' `:iterative` execution mode. The
@@ -488,17 +492,25 @@ lenses}, terminating when every lens is clean. Port the domain-touched RE_RUN_SE
 what keeps the loop both complete (re-checks side-effects of a fix) and cheap (re-runs only
 affected lenses).
 
-**Status update (2026-06-25): NOT STARTED — substrate only; the loop is explicitly
-forward-only.** The `fixer` stage is declared in the catalog (`coder` template, subscribes
-`findings`, publishes `code-written` "for re-review") and a generic per-stage rerun primitive
-exists, but `route_composer/loop.ex` makes an open `findings:<lens>` terminate `:not_converged`
-with self-heal "deferred in forward-only Phase 1" — a ran lens with open findings does **not**
-re-fire a fixer. No RE_RUN_SET (flagged ∪ domain-touched) logic exists anywhere. The one working
-rerun loop is the AR-8c system-path reverse-verify (`reverse_verify` flag, executor⇄verifier
-pair) — a *different* feature, not the lens self-heal loop. `IterativeStep`
-(`skills/steps/iterative_step.ex`) remains a generic generator/evaluator skill loop, unrelated.
-**To finish:** wire review-wave → fixer → re-run touched lenses → converge onto the existing
-rerun primitive, and implement the RE_RUN_SET computation.
+**Status update (2026-06-25): DONE — the literal version, on the `code` path.** The `fixer` is
+now a first-class worker (`Agent.Workers.Fixer`, its own `fixer` template + `fixer_result/0`
+schema with a `signals` field + `fixer_contract` doctrine slice) so it can self-report the
+domains its edits touched. The composer's two-phase loop (`route_composer.ex` `decide_rerun/2`)
+re-fires review → fix → re-review: **Hook R** (a forward reviewer flagged) snapshot-replaces the
+fixer's out-of-band `review-feedback`/`review-action`; **Hook F** (the fixer completed) computes
+the **RE_RUN_SET = (flagged ∪ domain-touched) ∩ ran** — domain-touched derived by inverting the
+catalog `subscribes`/`lens` via the shared one-directional `SignalMatch` — and invalidates those
+reviewers, while a never-ran lens whose domain signal the fixer just emitted is **summoned** by
+the now-live signal (the headline Alp River example: editing an auth file re-runs the security
+lens even though it never flagged). The markers are WELDED into the wave commit (atomic with
+`wave_completed`, so a crash can't re-project "fixer ran" without its re-review trigger).
+Exhaustion past the per-stage rerun cap with findings still open surfaces as a distinct
+`:route_fix_failed` terminal (the forward twin of AR-8c's `:route_verify_failed`,
+`result.disposition: "fix_failed"`). Findings ride the SIGNAL out-of-band (producerless
+`review-feedback`/`review-action`), so the data graph stays acyclic. Scope is the `code` path
+only — `sketch-review` stays report-only (no fixer → the surviving `:not_converged`-on-findings
+case) and `system` keeps its own reverse-verify loop. `action_needed` now persists (the AR-3
+deferral, closed because the fixer consumes it).
 
 ---
 
@@ -713,14 +725,14 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
 | Execute a bounded **declared** DAG | **Reactor** (DAG, concurrency, saga, halt/resume) | defers to the harness | **shipped** — `Skills.Compiler` → Reactor (static drivers deleted) |
 | **Durability** (log, status, recovery, gates) | **the envelope** (`WorkflowEvent`, projection, reconciler, human gates) | ephemeral signal state + reinject hook | **shipped** — event log + projection + recovery (stranding bug fixed) |
 | **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | **shipped** — `RouteComposer` composes waves from live signals (AR-2) |
-| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **partial** — 4-lens fan-out + authored shared contract shipped (AR-3); self-heal fixer (AR-4) still to do |
+| **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **shipped** — 4-lens fan-out + authored shared contract (AR-3) + the self-heal fixer loop with domain-touched RE_RUN_SET (AR-4) |
 | **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence shipped** to sub-agents (AR-5, AR-3); persona (AR-6) / pervasive confidence-tagging (AR-7) not started |
 
 The top two rows are Squidie — **shipped 2026-06-08..10**. The bottom three are Alp River — and
 as of **2026-06-25** they are no longer hypothetical: the composer (AR-2), review fan-out + the
-shared contract (AR-3), and doctrine injection (AR-5) are shipped, with AR-7's confidence-tagging
-core folded into AR-3; only persona (AR-6), AR-7's pervasive extension, and the self-heal fixer
-(AR-4) remain.
+shared contract (AR-3), doctrine injection (AR-5), and the self-heal fixer loop (AR-4) are
+shipped, with AR-7's confidence-tagging core folded into AR-3; only persona (AR-6) and AR-7's
+pervasive extension remain.
 
 ## Sequencing recommendation
 
@@ -737,10 +749,11 @@ core folded into AR-3; only persona (AR-6), AR-7's pervasive extension, and the 
    layer shipped on the engine, reusing the event-log/projection model, with its own plan docs
    (`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`). Deferred tails: the gust §4.11
    cluster lease and the optional YAML catalog overlay.
-4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** — **AR-3 done** (the 4-lens fan-out shipped on
-   the composer; the shared Reviewer Contract content + confidence tagging landed 2026-06-25,
-   folding in AR-7's reviewer-surface core); **AR-4 not started** (forward-only — the self-heal
-   loop is the next build on the rerun primitive already in place).
+4. **AR-3 (reviewer fan-out) + AR-4 (self-heal)** — **both done.** AR-3: the 4-lens fan-out shipped
+   on the composer; the shared Reviewer Contract content + confidence tagging landed 2026-06-25,
+   folding in AR-7's reviewer-surface core. **AR-4 done (2026-06-25)** — the literal self-heal loop
+   (first-class fixer + domain-touched RE_RUN_SET + never-ran summoning + the `:route_fix_failed`
+   terminal) built on the rerun primitive already in place.
 5. **AR-5 → AR-6/AR-7, and AR-8** — **AR-5 done (2026-06-22)** and **AR-8 done (2026-06-23..25,
    folded into AR-2's triage seed)**; **AR-7's reviewer-surface core done** (folded into AR-3,
    2026-06-25). **AR-6 and AR-7's pervasive extension remain** the cheap greenfield prompt-layer
@@ -755,7 +768,7 @@ deliberately leaves to free-form ReAct, plus the multi-agent review, self-heal,
 doctrine-injection, and persona content to run on top. As of **2026-06-25** most of that backlog
 has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then **the
 composer itself (AR-2, Phases 0–5), reviewer fan-out + the shared Reviewer Contract (AR-3),
-doctrine injection (AR-5), and the four-path triage front door (AR-8)** — with AR-7's
-confidence-tagging core folded into AR-3. What remains is a short tail: wire the AR-4 self-heal
-fixer loop onto the rerun primitive already in place, extend confidence-tagging (AR-7) past the
-reviewer surface, and pick up the cheap persona borrow (AR-6) whenever there's a spare afternoon.
+doctrine injection (AR-5), the four-path triage front door (AR-8), and the self-heal fixer loop
+(AR-4)** — with AR-7's confidence-tagging core folded into AR-3. What remains is a short tail:
+extend confidence-tagging (AR-7) past the reviewer surface, and pick up the cheap persona borrow
+(AR-6) whenever there's a spare afternoon.

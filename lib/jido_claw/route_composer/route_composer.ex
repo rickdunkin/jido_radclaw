@@ -107,16 +107,27 @@ defmodule JidoClaw.RouteComposer do
   `:deadline_ms`, C2) marks every wave, so the subagent's derived durable output
   is sanitized at all six sinks — real `diff`/`approved-plan` values may now flow.
 
-  ## Scope forks
+  ## Rerun consumers
 
-  The rerun/invalidation **primitive** now exists (Phase 4e — `stages_invalidated`
-  with an optional `closed_wave_index`, `signals_retracted`, `artifacts_invalidated`,
-  the per-stage rerun cap), and Phase 4's **use** of it is the plan-gate re-plan
-  (reject opt-in + stale-approval retraction). The AR-4 self-heal **fixer**
-  workflow (review → fix → re-review) that reuses the primitive for open review
-  findings is a separate workflow (§12), so `Loop.terminal`'s
-  `:not_converged`-on-open-`findings:<lens>` is unchanged here — a ran lens with
-  open findings still terminates `:not_converged` (it does not re-fire a fixer).
+  The rerun/invalidation **primitive** (Phase 4e — `stages_invalidated` with an
+  optional `closed_wave_index`, `signals_retracted`, `artifacts_invalidated`, the
+  per-stage rerun cap) now has THREE consumers: the plan-gate re-plan (reject
+  opt-in + stale-approval retraction), the AR-8c reverse-verify loop, and the AR-4
+  self-heal **fixer** loop (review → fix → re-review). AR-4 computes its rerun
+  decision PRE-commit (`decide_rerun/2`) and WELDS the markers into the wave commit
+  (the crash-window fix), while the verify + stale-approval paths keep their
+  post-commit append (`maybe_rerun_after_findings/2`). So on a `code` path WITH a
+  fixer, an open `findings:<lens>` re-fires the fixer — re-reviewing the touched
+  and newly-summoned lenses — until every lens is clean (`:converged`) or the
+  per-stage cap trips with findings still open (`:fix_failed`). `Loop.terminal`'s
+  `:not_converged`-on-open-`findings:<lens>` survives only where NO fixer shares
+  the lens's route: the `sketch-review` path (report-only).
+
+  The fixer's re-review derivation reads the SAME `emissions` that
+  `enforce_completion_signals/2` injects `@completion_signals` into BEFORE the fold,
+  so the baseline `code-written` is guaranteed even if the LLM fixer omits it —
+  closing the silent-converge gap where a fix-introduced regression in a never-flagged
+  lens (e.g. correctness) would otherwise go un-re-reviewed.
   """
 
   use GenServer
@@ -139,6 +150,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.Loop
   alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
   alias JidoClaw.RouteComposer.Router
+  alias JidoClaw.RouteComposer.SignalMatch
   alias JidoClaw.RouteComposer.Stage
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.RouteComposer.WaveBuilder
@@ -152,6 +164,23 @@ defmodule JidoClaw.RouteComposer do
   @default_max_waves 20
   @default_timeout_ms 60_000
   @default_run_name "route_composer"
+
+  # AR-4: the completion signals whose OMISSION yields a SILENT `:converged`
+  # (`Loop.terminal/2`): a no-lens producer that ran but didn't emit them is not
+  # `held`, so `lenses_clean?` is vacuously true and the run converges with no
+  # review (the implementer case) or before any work (the planner case). The
+  # composer INJECTS these into the emitting producer's emission before the fold
+  # (`enforce_completion_signals/2`), so a real LLM omission can't false-converge.
+  #
+  # Deliberately EXCLUDED: `tests-ready` (its omission by a COMPLETED test-author →
+  # an HONEST `:deadlock` — the implementer stays held on its `until: tests-ready`
+  # lock) and the conditional domain signals (`scope-shift` / `auth-surface` /
+  # `significant-build` — the loop can't infer what a producer chose to touch).
+  # Those stay self-reported via the producer `signals` fields. A BLOCKED
+  # test-author no longer reaches that lock — it route-fails at the mapper
+  # (`DefaultMapper.refuse_blocked_producer/2`), so `:deadlock` now covers only the
+  # completed-but-`tests-ready`-omitted case.
+  @completion_signals ["plan-ready", "code-written"]
 
   # Per-stage rerun cap (Phase 4e): a stage may be invalidated + re-fired at most
   # this many times before the run takes the `route_budget_exhausted` terminal —
@@ -200,6 +229,10 @@ defmodule JidoClaw.RouteComposer do
     :route_deadlocked,
     :route_budget_exhausted,
     :route_verify_failed,
+    # AR-4: the fix-failed error string is the findings-derived exhausted lenses
+    # (sensitive); the scrub replaces ONLY `:error`, so `result.disposition:
+    # "fix_failed"` survives — exactly like `:route_verify_failed`.
+    :route_fix_failed,
     :route_failed
   ]
 
@@ -224,6 +257,7 @@ defmodule JidoClaw.RouteComposer do
           | :deadlock
           | :budget_exhausted
           | :verify_failed
+          | :fix_failed
           | :failed
           | :rejected
           | :abandoned
@@ -1284,19 +1318,36 @@ defmodule JidoClaw.RouteComposer do
     finish_failed(reason, run, dispatch, display, state)
   end
 
-  # The durable commit path (Phase 2c): compute the pure fold, derive the wave's
-  # content deltas by DIFFING pre/post `Fold` state (so the durable log equals the
-  # in-memory fold by construction — incl. a paired-verdict flip that retracts a
-  # live signal, captured as `signals_retracted`), then atomically commit
-  # `wave_completed` + content + `activate_for_wave` via `Commit.commit_wave/4`.
-  # Only on `:ok` do we fold into memory and continue.
-  defp handle_wave_value({:ok, emissions}, run, dispatch, display, state) do
+  # The durable commit path (Phase 2c; AR-4 self-heal). First INJECT the guaranteed
+  # completion signals into the producers' emissions (`enforce_completion_signals/2`
+  # — the silent-converge fix, applied BEFORE the fold so it flows into live state,
+  # the durable `signals_published` delta, the never-ran summon, AND the fixer's
+  # re-review derivation in one place). Then compute the pure fold, derive the
+  # wave's content deltas by DIFFING pre/post `Fold` state (so the durable log
+  # equals the in-memory fold by construction — incl. a paired-verdict flip that
+  # retracts a live signal, captured as `signals_retracted`), then compute the AR-4
+  # self-heal rerun decision as a PURE function of the folded state
+  # (`decide_rerun/2`) and WELD its markers into the SAME `commit_wave` transaction
+  # (the crash-window fix: a "fixer ran" `wave_completed` can never land without its
+  # re-review trigger). Only on `:ok` do we mirror those markers in memory
+  # (`apply_fn`, the projection's own fold) and continue. The AR-8c verify loop +
+  # stale-approval stay on their existing POST-commit path
+  # (`maybe_rerun_after_findings`).
+  defp handle_wave_value({:ok, raw_emissions}, run, dispatch, display, state) do
+    emissions = enforce_completion_signals(raw_emissions, state)
     next_fold = Fold.fold(state, emissions)
     deltas = wave_deltas(state, next_fold, dispatch)
+    {hook_markers, apply_fn} = decide_rerun(next_fold, emissions)
 
-    case Commit.commit_wave(state.parent, state.wave_index, deltas, auth_opts(state)) do
+    case Commit.commit_wave(
+           state.parent,
+           state.wave_index,
+           deltas,
+           hook_markers,
+           auth_opts(state)
+         ) do
       :ok ->
-        next = record_wave(next_fold, dispatch, display, run, emissions)
+        next = record_wave(apply_fn.(next_fold), dispatch, display, run, emissions)
         maybe_rerun_after_findings(next, emissions)
 
       # The run ended externally (an operator cancel landed while the wave
@@ -1914,25 +1965,349 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  # The post-fold rerun dispatcher (AR-8c). Two mutually-exclusive rerun paths
-  # plus the no-op fall-through:
+  # The POST-commit rerun dispatcher (AR-8c verify + Phase 4e stale-approval) —
+  # the AR-4 self-heal hooks are computed PRE-commit and welded into the wave
+  # (`decide_rerun/2`), so this handles only the two paths that keep their
+  # post-commit append:
   #
   #   * `open_verify_loop?` — a `reverse_verify: true` stage (the system-verifier)
   #     just emitted `findings:<lens>`: re-fire BOTH it and its upstream producer
   #     (the executor) so the change is re-applied + re-verified (AR-8c);
   #   * `stale_approval?` — the plan-gate stale-approval retraction (Phase 4e),
-  #     UNCHANGED, and provably false on the `system` path (no `plan-approved`).
+  #     provably false on the `system` path (no `plan-approved`).
   #
-  # `open_verify_loop?` keys on the `reverse_verify` flag, so forward-only
-  # reviewers (`sketch-review`, code reviewers — no flag) keep their
-  # `:not_converged` behavior. The two conditions are mutually exclusive in the
-  # shipped catalog (verify loop is system-only, stale approval is code-only).
+  # Disjoint from the AR-4 hooks: a reviewer wave is never `reverse_verify`, and
+  # `implementer_ran?` is true at any reviewer/fixer tick (so stale-approval is
+  # false there). A forward-lens CODE reviewer's open findings now re-fire the
+  # FIXER (AR-4, welded above) — only the fixer-less `sketch-review` path keeps the
+  # `:not_converged`-on-findings terminal.
   defp maybe_rerun_after_findings(state, emissions) do
     cond do
       open_verify_loop?(state, emissions) -> rerun_verify_loop(state, emissions)
       stale_approval?(state, emissions) -> retract_stale_approval(state)
       true -> {:noreply, state, {:continue, :tick}}
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # AR-4 self-heal: completion-signal injection (the silent-converge guarantee)
+  # ---------------------------------------------------------------------------
+
+  # Inject each producer's guaranteed completion signal into its emission BEFORE
+  # the fold. A producer that RAN (its emission is in this wave) definitionally
+  # emitted its completion signal — `plan-ready` for the planner, `code-written`
+  # for the implementer/fixer — so we treat that signal as implied, not an optional
+  # self-report the LLM might drop and thereby SILENTLY false-converge
+  # (`@completion_signals`). One injection point fixes live state, the durable
+  # `signals_published` delta (`wave_deltas/3` diffs pre/post `live`), the never-ran
+  # summon, AND `decide_rerun/2`'s re-review derivation — all read these same,
+  # now-injected `emissions`.
+  #
+  # Idempotent (`Enum.uniq`): a no-op when the model already emitted the signal, so
+  # every existing test stays green. A blocked non-reviewer producer never reaches
+  # here: `DefaultMapper.refuse_blocked_producer/2` refuses it (`{:error,
+  # {:producer_blocked, _}}`) so `WaveCollect` route-fails the wave BEFORE this
+  # injection (and the fold) ever runs — a blocked planner can't get `plan-ready`
+  # injected onto a `plan` fabricated from its blocked `summary`, nor a blocked
+  # implementer `code-written` onto a fabricated `diff`. (`status` rides the
+  # producer's typed output, read at the mapper; `:partial`/`:completed` producers
+  # proceed normally.)
+  defp enforce_completion_signals(emissions, state) do
+    Enum.map(emissions, fn %StageEmission{stage: name, signals: sigs} = emission ->
+      with {:ok, stage} <- Map.fetch(state.catalog, name),
+           [_ | _] = inject <- completion_signals_for(stage),
+           true <- on_live_route?(stage, state.live) do
+        %{emission | signals: Enum.uniq(sigs ++ inject)}
+      else
+        _ -> emission
+      end
+    end)
+  end
+
+  # The completion signals a stage is GUARANTEED to emit by virtue of having run:
+  # exactly `@completion_signals ∩ publishes` for a non-reviewer, non-reverse-verify
+  # worker-template producer. Role-based, never a hardcoded template name — `lens:
+  # nil` is the explicit "non-reviewer" marker, `rv != true` excludes the
+  # reverse-verify loop, and `publishes ∩ @completion_signals` selects exactly what
+  # the stage declares (planner → `plan-ready`; implementer / fixer → `code-written`;
+  # test-author → `[]`, since it publishes `tests-ready`, not in the set; reviewers
+  # and gates/seeds → `[]`). Mirrors the `fixer_stage?/1` role-predicate style.
+  defp completion_signals_for(%Stage{
+         unit: {:worker_template, _},
+         reverse_verify: rv,
+         lens: nil,
+         publishes: pub
+       })
+       when rv != true,
+       do: Enum.filter(@completion_signals, &(&1 in pub))
+
+  defp completion_signals_for(%Stage{}), do: []
+
+  # ---------------------------------------------------------------------------
+  # AR-4 self-heal: the pure, pre-commit rerun decision (welded into the wave)
+  # ---------------------------------------------------------------------------
+
+  # The two-phase self-heal decision, computed on the FOLDED state BEFORE the wave
+  # commit and WELDED into it (the crash-window fix — these markers ride the SAME
+  # `commit_wave` transaction as `wave_completed`, so "fixer ran" can never land
+  # without its re-review trigger). Two mutually-exclusive hooks (a wave is either
+  # a reviewer wave or the fixer wave) + a no-op:
+  #
+  #   * Hook F — the fixer completed this wave: invalidate the re-review set
+  #     ((flagged ∪ domain-touched) ∩ ran) so the touched lenses re-review. The
+  #     fixer's emitted domain signals are already folded live (the fold ran
+  #     before this), so any never-ran subscriber is SUMMONED by the router next
+  #     tick — no marker needed for that.
+  #   * Hook R — a forward-lens reviewer flagged open `findings:<lens>` this wave:
+  #     snapshot-replace the fixer's out-of-band feedback (so it sees exactly this
+  #     round's open findings), and re-fire the fixer iff it already ran (a
+  #     re-flag; on the first finding the fixer ∉ `ran` and fires naturally — the
+  #     `∩ ran` makes that invalidation a no-op).
+  #
+  # Returns `{markers, apply_fn}`: the durable `[{kind, payload}]` batch + the
+  # in-memory mirror. `apply_fn` routes through `ComposerProjection.apply_markers/2`
+  # — the projection's OWN fold — so the in-memory mutation mirrors every welded
+  # marker BY CONSTRUCTION (`project == in-memory`). Deliberately welds no
+  # `signals_retracted` (that belongs to stale-approval, which keeps its own
+  # post-commit path). Disjoint from the AR-8c verify loop (a reviewer wave is
+  # never `reverse_verify`) and stale-approval (`implementer_ran?` is true at any
+  # reviewer/fixer tick).
+  defp decide_rerun(state, emissions) do
+    markers =
+      cond do
+        fixer_completed?(state, emissions) -> hook_f_markers(state, emissions)
+        open_fix_finding?(state, emissions) -> hook_r_markers(state, emissions)
+        true -> []
+      end
+
+    {markers, fn folded -> ComposerProjection.apply_markers(folded, markers) end}
+  end
+
+  # Hook F markers: invalidate the re-review set (the re-firing reviewers). Empty
+  # when nothing in-`ran` is touched (then convergence falls out next tick).
+  defp hook_f_markers(state, emissions) do
+    case fix_rerun_set(state, emissions) do
+      [] -> []
+      rerun_set -> [stages_invalidated: %{stages: rerun_set}]
+    end
+  end
+
+  # Hook R markers, in canonical fold order: `artifacts_invalidated` (clear the
+  # prior round's feedback) → `artifacts_produced` (this round's flagged feed) →
+  # `stages_invalidated` (re-fire the fixer iff it already ran).
+  defp hook_r_markers(state, emissions) do
+    flagged = open_fix_finding_stages(state, emissions)
+    {feedback_markers, _put} = review_feedback(state, flagged)
+    feedback_markers ++ fixer_reinvalidation_markers(state)
+  end
+
+  defp fixer_reinvalidation_markers(state) do
+    case fixer_name(state) do
+      name when is_binary(name) ->
+        if MapSet.member?(state.ran, name),
+          do: [stages_invalidated: %{stages: [name]}],
+          else: []
+
+      nil ->
+        []
+    end
+  end
+
+  # The fixer completed this wave: a fixer stage on the live route whose NAME is in
+  # the emissions (one emission entry per stage that ran this wave).
+  defp fixer_completed?(state, emissions) do
+    emitted = emitted_stage_names(emissions)
+
+    Enum.any?(state.catalog, fn {name, stage} ->
+      fixer_stage?(stage) and on_live_route?(stage, state.live) and MapSet.member?(emitted, name)
+    end)
+  end
+
+  # A forward-lens reviewer STAGE emitted its own (still-open) `findings:<lens>`
+  # this wave, AND a fixer shares its live route — so a re-review loop is actually
+  # possible. The sketch-review path has no fixer on its route, so its findings
+  # take the surviving `:not_converged` (report-only) terminal, unchanged.
+  defp open_fix_finding?(state, emissions) do
+    open_fix_finding_stages(state, emissions) != [] and fixer_on_live_route?(state)
+  end
+
+  # The lens-carrying, non-reverse_verify reviewer stages on the live route that
+  # emitted their own still-open `findings:<lens>` THIS wave — keyed off the
+  # emitting stage NAME (unique), the lens derived only to check the signal.
+  defp open_fix_finding_stages(state, emissions) do
+    emitted = emitted_stage_names(emissions)
+
+    for {name, %Stage{lens: lens} = stage} <- state.catalog,
+        forward_lens_stage?(stage),
+        MapSet.member?(emitted, name),
+        on_live_route?(stage, state.live),
+        MapSet.member?(state.live, "findings:#{lens}"),
+        do: name
+  end
+
+  # The AR-4 re-review set: (flagged ∪ domain-touched) reviewer STAGES ∩ ran.
+  # Flagged = reviewers with a currently-open `findings:<lens>`; domain-touched =
+  # reviewers on the fixer's route whose `subscribes` matches a signal the fixer
+  # emitted (so a fix that wanders into a lens's domain re-runs it even though it
+  # never flagged). A never-ran lens whose domain signal the fixer just emitted is
+  # excluded by `∩ ran` here and SUMMONED by the now-live signal instead.
+  defp fix_rerun_set(state, emissions) do
+    {fixer_name, fixer_stage} = completed_fixer(state, emissions)
+    emitted_signals = stage_emitted_signals(emissions, fixer_name)
+
+    (open_flagged_stages(state) ++ domain_touched_stages(state, fixer_stage, emitted_signals))
+    |> MapSet.new()
+    |> MapSet.intersection(state.ran)
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
+  # Lens-carrying, non-reverse_verify reviewer stages on the live route whose
+  # `findings:<lens>` is CURRENTLY open (regardless of which wave emitted it).
+  defp open_flagged_stages(state) do
+    for {name, %Stage{lens: lens} = stage} <- state.catalog,
+        forward_lens_stage?(stage),
+        on_live_route?(stage, state.live),
+        MapSet.member?(state.live, "findings:#{lens}"),
+        do: name
+  end
+
+  # The never-ran summon's `∩ ran` companion: lens-carrying, non-reverse_verify
+  # reviewer stages on the FIXER's route whose `subscribes` matches a fixer-emitted
+  # signal (via the shared one-directional matcher).
+  defp domain_touched_stages(_state, nil, _emitted_signals), do: []
+
+  defp domain_touched_stages(state, %Stage{routes: fixer_routes}, emitted_signals) do
+    for {name, %Stage{subscribes: subs} = stage} <- state.catalog,
+        forward_lens_stage?(stage),
+        routes_overlap?(stage.routes, fixer_routes),
+        Enum.any?(subs, &SignalMatch.matches?(&1, emitted_signals)),
+        do: name
+  end
+
+  # A fixer stage: a non-reverse_verify worker that subscribes the `findings`
+  # family base (it re-fires on ANY open review finding). Identified by ROLE — the
+  # `findings` subscription — not a hardcoded template name, so a user catalog with
+  # a differently-named fixer template still works.
+  defp fixer_stage?(%Stage{unit: {:worker_template, _}, reverse_verify: rv, subscribes: subs}),
+    do: rv != true and "findings" in subs
+
+  defp fixer_stage?(%Stage{}), do: false
+
+  defp forward_lens_stage?(%Stage{lens: lens, reverse_verify: rv}),
+    do: is_binary(lens) and rv != true
+
+  defp fixer_on_live_route?(state), do: not is_nil(fixer_name(state))
+
+  defp fixer_name(state) do
+    Enum.find_value(state.catalog, fn {name, stage} ->
+      if fixer_stage?(stage) and on_live_route?(stage, state.live), do: name
+    end)
+  end
+
+  defp completed_fixer(state, emissions) do
+    emitted = emitted_stage_names(emissions)
+
+    Enum.find_value(state.catalog, {nil, nil}, fn {name, stage} ->
+      if fixer_stage?(stage) and on_live_route?(stage, state.live) and
+           MapSet.member?(emitted, name),
+         do: {name, stage}
+    end)
+  end
+
+  defp emitted_stage_names(emissions),
+    do: MapSet.new(emissions, fn %StageEmission{stage: stage} -> stage end)
+
+  defp stage_emitted_signals(emissions, stage_name) do
+    Enum.find_value(emissions, [], fn
+      %StageEmission{stage: ^stage_name, signals: sigs} -> sigs
+      _emission -> nil
+    end)
+  end
+
+  # A stage participates in the current live route iff its `routes` intersect the
+  # live PATH signals (talk/sketch/code/system are folded into `live`). This
+  # route/stage scoping keeps a `code`-run fix loop off the `sketch` reviewers,
+  # which reuse the `correctness` lens — identity is the stage name + this check.
+  defp on_live_route?(%Stage{routes: routes}, live),
+    do: Enum.any?(routes, &MapSet.member?(live, &1))
+
+  defp routes_overlap?(a, b), do: Enum.any?(a, &(&1 in b))
+
+  # AR-4: snapshot-replace the fixer's `review-feedback` (← findings) +
+  # `review-action` (← action_needed) for the CURRENTLY flagged reviewers.
+  defp review_feedback(state, flagged_stages) do
+    build_feedback(
+      state,
+      flagged_stages,
+      [{"findings", "review-feedback"}, {"action_needed", "review-action"}],
+      true
+    )
+  end
+
+  # The shared out-of-band feedback builder (AR-8c verify + AR-4 self-heal): for
+  # each `producer` stage, copy its source artifact ref into a producerless
+  # feedback artifact (producer-keyed) the loop injects on re-fire. `name_map` is
+  # the `[{source_artifact, feedback_artifact}]` mapping; `replace?` snapshot-
+  # replaces (`artifacts_invalidated` for every existing feedback producer first)
+  # — set for AR-4's multi-round, multi-producer feed so a since-cleaned lens never
+  # leaves stale feedback; false for AR-8c's single, overwriting producer (whose
+  # markers/`artifacts_put` then match its pre-AR-4 shape exactly). Returns
+  # `{markers, artifacts_put}` — the markers welded (AR-4) or appended (AR-8c), the
+  # tagged `artifacts_put` the AR-8c in-memory mirror still uses.
+  defp build_feedback(state, producers, name_map, replace?) do
+    feedback_names = Enum.map(name_map, fn {_src, fb} -> fb end)
+    invalidated = if replace?, do: existing_feedback_markers(state, feedback_names), else: []
+    entries = feedback_entries(state, producers, name_map)
+    {invalidated ++ produced_markers(entries), feedback_artifacts_put(entries)}
+  end
+
+  # Each `{feedback_name, producer, ref}` the producers' source refs resolve to; a
+  # missing source ref is simply skipped (a blind re-fire, still correct).
+  defp feedback_entries(state, producers, name_map) do
+    for producer <- producers,
+        {source, feedback} <- name_map,
+        ref = feedback_ref(state, source, producer),
+        is_binary(ref),
+        do: {feedback, producer, ref}
+  end
+
+  defp feedback_ref(state, source, producer) do
+    case get_in(state.artifacts, [source, producer]) do
+      nil -> nil
+      entry -> bare_ref(entry)
+    end
+  end
+
+  defp produced_markers([]), do: []
+
+  defp produced_markers(entries) do
+    [
+      artifacts_produced: %{
+        artifacts: Enum.map(entries, fn {n, p, r} -> artifact_triple(n, p, r) end)
+      }
+    ]
+  end
+
+  # One `artifacts_invalidated` marker deleting every EXISTING producer of the
+  # feedback names — the snapshot-clear that makes AR-4's feed iteration-scoped
+  # (`projection.ex` prunes a now-empty name map, keeping `available` correct).
+  defp existing_feedback_markers(state, feedback_names) do
+    entries =
+      for name <- feedback_names,
+          {producer, _entry} <- Map.get(state.artifacts, name, %{}),
+          do: %{name: name, producer: producer}
+
+    case entries do
+      [] -> []
+      _ -> [artifacts_invalidated: %{artifacts: entries}]
+    end
+  end
+
+  defp feedback_artifacts_put(entries) do
+    Enum.reduce(entries, %{}, fn {name, producer, ref}, acc ->
+      Map.update(acc, name, %{producer => {:ref, ref}}, &Map.put(&1, producer, {:ref, ref}))
+    end)
   end
 
   # A `reverse_verify: true` stage in this wave's emissions that emitted an open
@@ -1973,28 +2348,15 @@ defmodule JidoClaw.RouteComposer do
   # Informed re-fire (C3): copy the verifier's just-produced `findings` ref into
   # the out-of-band `verify-feedback` input (producer = verifier name) so the
   # executor reads the prior findings in its task on re-fire (`verify-feedback`
-  # has NO catalog producer, so it adds no precedence edge — cycle-free). The
-  # `artifacts_produced` marker payload carries the BARE ref (`bare_ref/1`, like
-  # the wave-artifact marker); the in-memory mirror stores the TAGGED `{:ref, ref}`
-  # shape `Fold`/`Projection` produce, so `Projection.project == in-memory` holds.
-  # No findings artifact (shouldn't happen — a findings emission always produces
-  # one) → a blind re-fire (no marker), still correct.
+  # has NO catalog producer, so it adds no precedence edge — cycle-free). Routed
+  # through the SHARED `build_feedback/4` (single-sourced with AR-4's
+  # `review_feedback/2`) in single-producer, NON-replacing mode — the SAME single
+  # overwriting producer it always had, so its `artifacts_produced` marker (bare
+  # ref) and tagged `{:ref, ref}` `artifacts_put` mirror are byte-identical to the
+  # pre-AR-4 shape, and `Projection.project == in-memory` still holds. No findings
+  # artifact → empty entries → a blind re-fire (no marker), still correct.
   defp verify_feedback(state, %Stage{name: verifier_name}) do
-    case get_in(state.artifacts, ["findings", verifier_name]) do
-      nil ->
-        {[], %{}}
-
-      entry ->
-        ref = bare_ref(entry)
-
-        markers = [
-          artifacts_produced: %{
-            artifacts: [artifact_triple("verify-feedback", verifier_name, ref)]
-          }
-        ]
-
-        {markers, %{"verify-feedback" => %{verifier_name => {:ref, ref}}}}
-    end
+    build_feedback(state, [verifier_name], [{"findings", "verify-feedback"}], false)
   end
 
   # Shared rerun emitter (C4): emit `stages_invalidated` (+ `opts[:extra_markers]`)
@@ -2352,6 +2714,28 @@ defmodule JidoClaw.RouteComposer do
     notify_payload(result, summary)
   end
 
+  # AR-4 fix-failed: the self-heal twin of `:verify_failed` — a `:failed`-WITH-
+  # disposition append. `:error` carries the (scrubbable) exhausted-lenses reason,
+  # `result.disposition` the non-sensitive `"fix_failed"` the operator query keys
+  # on (distinguishing "the reviewers kept rejecting the fix" from a generic budget
+  # stop). Placed BEFORE the generic failure catch-all (which lifts only `:error`).
+  defp parent_terminal_notify(:fix_failed, reason, summary, state) do
+    result =
+      append_parent_terminal(
+        state.parent_run_id,
+        :route_fix_failed,
+        %{
+          error: format_terminal_error(:fix_failed, reason),
+          result: %{disposition: "fix_failed"}
+        },
+        state.tenant,
+        state.actor
+      )
+
+    maybe_teardown_forge_session(result, :fix_failed, state)
+    notify_payload(result, summary)
+  end
+
   defp parent_terminal_notify(kind, reason, summary, state) do
     result =
       append_parent_terminal(
@@ -2435,6 +2819,8 @@ defmodule JidoClaw.RouteComposer do
   defp classify_terminal({:failed, reason}), do: {:failed, reason}
   # AR-8c: verify-failed carries the exhausted lenses as its reason.
   defp classify_terminal({:verify_failed, reason}), do: {:verify_failed, reason}
+  # AR-4: fix-failed carries the exhausted forward lenses as its reason.
+  defp classify_terminal({:fix_failed, reason}), do: {:fix_failed, reason}
   # Phase 2d gate-decided-then-crash terminals (carry a disposition reason).
   defp classify_terminal({:rejected, reason}), do: {:rejected, reason}
   defp classify_terminal({:abandoned, reason}), do: {:abandoned, reason}
@@ -2574,6 +2960,10 @@ defmodule JidoClaw.RouteComposer do
   defp format_terminal_error(:verify_failed, lenses) when is_list(lenses),
     do: "verify_failed: lenses=#{Enum.join(lenses, ",")}"
 
+  # AR-4: the reason is the list of forward (self-heal) lenses still open at the trip.
+  defp format_terminal_error(:fix_failed, lenses) when is_list(lenses),
+    do: "fix_failed: lenses=#{Enum.join(lenses, ",")}"
+
   defp format_terminal_error(kind, _reason), do: Atom.to_string(kind)
 
   # Abnormal-path reason → error string. Every caller passes a bare atom
@@ -2624,15 +3014,28 @@ defmodule JidoClaw.RouteComposer do
   # any `ran`-membership check is false at the trip tick. `budget_reason/1` stays
   # pure (it classifies the *cause*); this is the orthogonal "is a reverse-verify
   # lens open?" axis.
+  # A rerun-cap trip with findings STILL live is a *verification* (AR-8c) or
+  # *self-heal* (AR-4) failure, not a generic budget stop. The two are disjoint —
+  # `reverse_verify` partitions verify stages from forward reviewers — so
+  # `budget_terminal/1` distinguishes them cleanly; anything else is a true budget
+  # stop. All `rerun_counts` + `live` based (NOT `ran`): the cap trips VIA the same
+  # invalidation that just removed the stage from `ran`.
   defp budget_terminal(state) do
-    if rerun_capped?(state) and verify_exhausted?(state) do
-      {:verify_failed, exhausted_verify_lenses(state)}
-    else
-      {:budget_exhausted, budget_reason(state)}
+    cond do
+      rerun_capped?(state) and verify_exhausted?(state) ->
+        {:verify_failed, exhausted_verify_lenses(state)}
+
+      rerun_capped?(state) and fix_exhausted?(state) ->
+        {:fix_failed, exhausted_fix_lenses(state)}
+
+      true ->
+        {:budget_exhausted, budget_reason(state)}
     end
   end
 
   defp verify_exhausted?(state), do: exhausted_verify_lenses(state) != []
+
+  defp fix_exhausted?(state), do: exhausted_fix_lenses(state) != []
 
   # The lenses of `reverse_verify: true` stages that hit their rerun cap with
   # `findings:<lens>` STILL live — the loop gave up while verification was failing.
@@ -2642,6 +3045,21 @@ defmodule JidoClaw.RouteComposer do
   # be capped with findings live.
   defp exhausted_verify_lenses(state) do
     for {name, %Stage{reverse_verify: true, lens: lens}} <- state.catalog,
+        is_binary(lens),
+        Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
+        MapSet.member?(state.live, "findings:#{lens}"),
+        do: lens
+  end
+
+  # AR-4: the FORWARD (non-`reverse_verify`) twin of `exhausted_verify_lenses/1` —
+  # the lenses of self-heal reviewer stages that hit their rerun cap with
+  # `findings:<lens>` STILL live (the reviewers kept rejecting the fix). Keyed off
+  # the unique STAGE (`rerun_counts[name] > cap`) so it is participation-scoped: an
+  # off-route stage (e.g. `sketch-review` on a `code` run) never re-ran, so its
+  # `rerun_counts` is 0 and it is never reported. Disjoint from the verify set.
+  defp exhausted_fix_lenses(state) do
+    for {name, %Stage{reverse_verify: rv, lens: lens}} <- state.catalog,
+        rv != true,
         is_binary(lens),
         Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
         MapSet.member?(state.live, "findings:#{lens}"),

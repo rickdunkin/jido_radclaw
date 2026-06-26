@@ -290,13 +290,130 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   @doc """
   The `:agent_templates_override` map pointing every Phase-1 template at `module`
   (a single shared stub worker; the stub picks its canned output by
-  `agent_template`).
+  `agent_template`). Includes the AR-4 `fixer` template so the same override
+  drives the self-heal fixture (`self_heal_fixture_catalog/0`); the extra entry is
+  harmless for catalogs without a fixer stage.
   """
   @spec phase1_template_override(module()) :: %{String.t() => map()}
   def phase1_template_override(module) do
-    Map.new(~w(researcher verifier coder reviewer), fn name ->
+    Map.new(~w(researcher verifier coder reviewer fixer), fn name ->
       {name, %{module: module, description: "phase-1 stub", model: :fast, max_iterations: 1}}
     end)
+  end
+
+  # ---------------------------------------------------------------------------
+  # AR-4 self-heal fixtures (review → fix → re-review → converge)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A validator-clean, gate-free catalog mirroring the real `code` path's self-heal
+  shape: `planner → implementer → {quality,correctness,security}-reviewer` with a
+  `fixer` closing the loop. The reviewers optional-input `fix` and subscribe
+  `code-written` (security subscribes `auth-surface` — initially quiet, SUMMONED
+  when the fixer emits it); the fixer subscribes the `findings` family, reads
+  `diff` + the loop-injected `review-feedback`/`review-action`, and re-emits
+  `code-written` + the touched-domain signals. Findings ride the SIGNAL, not a
+  data input, so the data graph stays acyclic.
+
+  Driven with `self_heal_seed_*`, a flagged review wave loops review → fix →
+  re-review until every lens is clean (`:route_converged`).
+  """
+  @spec self_heal_fixture_catalog() :: %{String.t() => Stage.t()}
+  def self_heal_fixture_catalog do
+    key_named(%{
+      "planner" =>
+        stage(
+          unit: {:worker_template, "researcher"},
+          task: "Draft an implementation plan from the request; emit plan-ready.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["plan"],
+          pub: ["plan-ready", "scope-shift"]
+        ),
+      "implementer" =>
+        stage(
+          unit: {:worker_template, "coder"},
+          task: "Implement the plan; emit code-written.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["diff"],
+          pub: ["code-written", "scope-shift"]
+        ),
+      "quality-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "quality",
+          task: "Review the diff for quality; flag findings, else emit clean:quality.",
+          routes: ["code"],
+          sub: ["code-written"],
+          req: ["diff"],
+          opt: ["fix"],
+          out: ["findings", "action_needed"],
+          pub: ["clean:quality", "findings:quality", "scope-shift"]
+        ),
+      "correctness-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "correctness",
+          task: "Review the diff for correctness; flag findings, else emit clean:correctness.",
+          routes: ["code"],
+          sub: ["code-written"],
+          req: ["diff"],
+          opt: ["fix"],
+          out: ["findings", "action_needed"],
+          pub: ["clean:correctness", "findings:correctness", "scope-shift"]
+        ),
+      "security-reviewer" =>
+        stage(
+          unit: {:worker_template, "reviewer"},
+          lens: "security",
+          task: "Review the diff for auth-surface; flag findings, else emit clean:security.",
+          routes: ["code"],
+          sub: ["auth-surface"],
+          req: ["diff"],
+          opt: ["fix"],
+          out: ["findings", "action_needed"],
+          pub: ["clean:security", "findings:security", "scope-shift"]
+        ),
+      "fixer" =>
+        stage(
+          unit: {:worker_template, "fixer"},
+          task:
+            "Resolve the open review findings against the diff; emit code-written and the " <>
+              "touched-domain signals (auth-surface) for re-review.",
+          routes: ["code"],
+          sub: ["findings"],
+          req: ["diff"],
+          opt: ["review-feedback", "review-action"],
+          out: ["fix"],
+          pub: ["code-written", "scope-shift", "auth-surface", "significant-build"]
+        )
+    })
+  end
+
+  @doc "The self-heal seed live signals: the seed signal + the `code` path."
+  @spec self_heal_seed_live() :: [String.t()]
+  def self_heal_seed_live, do: ["request-received", "code"]
+
+  @doc "The self-heal seed artifact store (the seed `request`)."
+  @spec self_heal_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def self_heal_seed_artifacts, do: %{"request" => %{"seed" => "Build the auth feature"}}
+
+  @doc """
+  The static `template => canned typed output` map for the self-heal loop: the
+  `researcher` (planner) emits `plan-ready` + `plan`; the `coder` (implementer)
+  emits `code-written` + `diff`. The `reviewer` + `fixer` outputs are NOT here —
+  they are driven by `SystemLoopWorker` (per-lens flag schedule + the fixer's
+  domain signals).
+  """
+  @spec self_heal_stub_outputs() :: %{String.t() => map()}
+  def self_heal_stub_outputs do
+    %{
+      "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: build the auth feature"},
+      "coder" => %{"signals" => ["code-written"], "diff" => "DIFF: +def authenticate(user)"}
+    }
   end
 
   # ---------------------------------------------------------------------------

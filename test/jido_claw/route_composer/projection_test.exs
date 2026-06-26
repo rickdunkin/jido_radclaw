@@ -311,6 +311,69 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
       # wave_index = completed-wave count.
       assert projected.wave_index == 3
     end
+
+    # AR-4: the self-heal hooks WELD their rerun markers into the wave commit and
+    # mirror them in memory via `apply_markers/2`. Proving `apply_markers == project`
+    # over the SAME marker batch is the projection-equivalence invariant for the
+    # welded path — a crash after a fixer wave re-projects exactly the in-memory
+    # mirror (no "fixer ran, no re-review trigger" half-state).
+    test "apply_markers (welded in-memory mirror) == project (durable fold) — Hook R batch" do
+      s =
+        seed(%{
+          ran: MapSet.new(["quality-reviewer", "correctness-reviewer", "fixer"]),
+          artifacts: %{
+            # this round's flagged correctness findings/action_needed
+            "findings" => %{"correctness-reviewer" => {:ref, "art_fc"}},
+            "action_needed" => %{"correctness-reviewer" => {:ref, "art_ac"}},
+            # a since-cleaned lens's STALE feedback from a prior round
+            "review-feedback" => %{"quality-reviewer" => {:ref, "art_old"}},
+            "review-action" => %{"quality-reviewer" => {:ref, "art_oldA"}}
+          },
+          rerun_counts: %{}
+        })
+
+      # The Hook R welded batch, in canonical order: clear the stale feedback,
+      # produce this round's, then re-fire the (already-ran) fixer.
+      markers = [
+        {:artifacts_invalidated,
+         %{
+           artifacts: [
+             %{name: "review-feedback", producer: "quality-reviewer"},
+             %{name: "review-action", producer: "quality-reviewer"}
+           ]
+         }},
+        {:artifacts_produced,
+         %{
+           artifacts: [
+             %{name: "review-feedback", producer: "correctness-reviewer", ref: "art_fc"},
+             %{name: "review-action", producer: "correctness-reviewer", ref: "art_ac"}
+           ]
+         }},
+        {:stages_invalidated, %{stages: ["fixer"]}}
+      ]
+
+      in_memory = Projection.apply_markers(s, markers)
+
+      durable_events =
+        markers
+        |> Enum.with_index(1)
+        |> Enum.map(fn {{k, p}, i} -> event(k, p, i) end)
+
+      durable = Projection.project(s, durable_events)
+
+      # Equivalence by construction (both fold the same markers via apply_event).
+      assert in_memory == durable
+
+      # And the effects are right: the stale quality feedback is gone, this round's
+      # correctness feed is in, the fixer left `ran` (re-fires), counts bumped.
+      assert in_memory.artifacts["review-feedback"] == %{
+               "correctness-reviewer" => {:ref, "art_fc"}
+             }
+
+      assert in_memory.artifacts["review-action"] == %{"correctness-reviewer" => {:ref, "art_ac"}}
+      refute MapSet.member?(in_memory.ran, "fixer")
+      assert in_memory.rerun_counts == %{"fixer" => 1}
+    end
   end
 
   # The loop's diff helpers, mirrored: published = post \ pre, retracted = pre \ post.

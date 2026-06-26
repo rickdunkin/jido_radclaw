@@ -78,6 +78,33 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     assert "scope-shift" in stage.publishes
   end
 
+  test "AR-4: the fixer is a first-class `fixer` template with out-of-band feedback inputs" do
+    stage = Catalog.get("fixer")
+    # A dedicated `fixer` template (not a `coder` reuse) so it can emit `signals`.
+    assert %Stage{unit: {:worker_template, "fixer"}} = stage
+    assert stage.routes == ["code"]
+    # Findings ride the SIGNAL; the open findings reach it via producerless
+    # optional inputs (loop-injected) — declaring `findings` as data would cycle.
+    assert stage.subscribes == ["findings"]
+    assert stage.input == %{required: ["diff"], optional: ["review-feedback", "review-action"]}
+    assert stage.output == ["fix"]
+    # The domain signals it self-reports drive the loop's re-review set.
+    assert "code-written" in stage.publishes
+    assert "auth-surface" in stage.publishes
+    assert "significant-build" in stage.publishes
+    assert "scope-shift" in stage.publishes
+  end
+
+  test "AR-4: every code-path reviewer optional-inputs `fix` and outputs `action_needed`" do
+    for name <- ~w(security-reviewer quality-reviewer correctness-reviewer architecture-reviewer) do
+      stage = Catalog.get(name)
+      # The reviewers read the fixer's `fix` on re-review (the fixer→reviewer edge).
+      assert "fix" in stage.input.optional, "#{name} should optional-input fix"
+      # AR-3 deferral closed: `action_needed` now persists (the fixer consumes it).
+      assert stage.output == ["findings", "action_needed"], "#{name} should output action_needed"
+    end
+  end
+
   test "AR-8c: the plan-gate is dropped from the system path (routes: [code] only)" do
     assert %Stage{routes: ["code"]} = Catalog.get("plan-gate")
     # The planner still serves both paths.

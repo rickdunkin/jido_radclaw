@@ -133,12 +133,12 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 12 templates" do
-      # 7 general-purpose workers + the AR-8b composer-private `sketch_build` +
-      # the AR-8b-2 composer-private `sketch_reviewer` + the AR-8b-2 F2
-      # composer-private `sketch_build_exec` + the AR-8c composer-private
+    test "should contain all 13 templates" do
+      # 7 general-purpose workers + the AR-4 `fixer` + the AR-8b composer-private
+      # `sketch_build` + the AR-8b-2 composer-private `sketch_reviewer` + the
+      # AR-8b-2 F2 composer-private `sketch_build_exec` + the AR-8c composer-private
       # `system_executor` + `system_verifier`.
-      assert map_size(Templates.list()) == 12
+      assert map_size(Templates.list()) == 13
     end
 
     test "should have all expected template names as keys" do
@@ -164,8 +164,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 12 names" do
-      assert Enum.count(Templates.names()) == 12
+    test "should return exactly 13 names" do
+      assert Enum.count(Templates.names()) == 13
     end
 
     test "should include all 7 expected template names" do
@@ -374,6 +374,11 @@ defmodule JidoClaw.Agent.TemplatesTest do
       for name <- @valid_names do
         refute Templates.composer_private?(name)
       end
+    end
+
+    test "is false for the AR-4 fixer (a regular, reachable worker — not composer-private)" do
+      refute Templates.composer_private?("fixer")
+      assert Templates.external_tools?("fixer")
     end
 
     test "is false for main / unknown templates" do

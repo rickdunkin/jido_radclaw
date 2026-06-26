@@ -406,6 +406,23 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     end
   end
 
+  # AR-4: pins WHY the fixer's findings feed must be out-of-band. If the fixer
+  # declared `findings` as a real data input, `graph.ex` would add reviewer→fixer
+  # edges; with the existing `fixer→reviewer` edge (the reviewers optional-input
+  # `fix`) that is a 2-cycle invariant 10 rejects at load. The shipped catalog
+  # avoids it by feeding findings through producerless optional inputs
+  # (`review-feedback` / `review-action`) the loop injects.
+  test "a producer-backed `findings` input on the fixer would cycle (why the feed is out-of-band)" do
+    catalog = Catalog.all()
+    fixer = catalog["fixer"]
+    bad_fixer = %{fixer | input: %{fixer.input | required: ["diff", "findings"]}}
+    bad = %{catalog | "fixer" => bad_fixer}
+
+    # The shipped catalog is clean; only the producer-backed variant cycles.
+    assert CatalogValidator.validate(catalog) == []
+    assert Enum.any?(CatalogValidator.validate(bad), &String.contains?(&1, "cycle"))
+  end
+
   test "a data-graph cycle is flagged" do
     cat = %{
       "a" =>

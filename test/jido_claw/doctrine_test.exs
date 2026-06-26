@@ -10,7 +10,15 @@ defmodule JidoClaw.DoctrineTest do
 
   describe "slice/1" do
     test "returns non-empty text for each known slice key" do
-      for key <- [:base, :artifacts, :reviewer_min, :reviewer_contract, :system_verify] do
+      for key <- [
+            :base,
+            :artifacts,
+            :reviewer_min,
+            :reviewer_contract,
+            :system_verify,
+            :fixer_contract,
+            :emit_signals
+          ] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
       end
@@ -24,6 +32,8 @@ defmodule JidoClaw.DoctrineTest do
       assert Enum.sort(Doctrine.list()) == [
                :artifacts,
                :base,
+               :emit_signals,
+               :fixer_contract,
                :reviewer_contract,
                :reviewer_min,
                :system_verify
@@ -32,11 +42,26 @@ defmodule JidoClaw.DoctrineTest do
   end
 
   describe "for_template/1" do
-    test "a producing worker gets base + artifacts, never the reviewer slice" do
+    test "the coder gets base + artifacts + emit-signals (it self-reports), never the reviewer slice" do
       doctrine = Doctrine.for_template("coder")
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Runtime artifacts"
+      # AR-4: the coder (implementer + test-author) self-reports its completion
+      # signals, so it carries the `:emit_signals` slice.
+      assert doctrine =~ "Emitted signals"
+      assert doctrine =~ "tests-ready"
+      refute doctrine =~ "Review discipline"
+    end
+
+    test "the AR-4 fixer is a producing worker WITH its own fixer-contract (base + artifacts + fixer-contract)" do
+      doctrine = Doctrine.for_template("fixer")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Runtime artifacts"
+      assert doctrine =~ "Fixer Contract"
+      assert doctrine =~ "self-report"
+      # It is a producer, not a judge — never the reviewer discipline.
       refute doctrine =~ "Review discipline"
     end
 

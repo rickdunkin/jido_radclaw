@@ -27,6 +27,7 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubStore
   alias JidoClaw.RouteComposer.TestSupport.StubWorker
+  alias JidoClaw.RouteComposer.TestSupport.SystemLoopWorker
   alias JidoClaw.Test.ForgeStub
 
   @all_stages ~w(planner approver implementer quality-reviewer security-reviewer)
@@ -514,31 +515,54 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     end
   end
 
-  test "a reviewer returning findings terminates :not_converged (forward-only, no rerun)", ctx do
+  test "a flagged review wave loops review → fix → re-review and converges (AR-4 self-heal)",
+       ctx do
+    # AR-4 inverts the old forward-only behavior: an open finding on a fixer-bearing
+    # CODE path no longer terminates :not_converged — it loops review → fix →
+    # re-review to :converged. (The surviving :not_converged-on-findings case is the
+    # fixer-less sketch-review path; exhaustion → :route_fix_failed is covered by
+    # composer_self_heal_loop_test.) Re-point to the self-heal fixture + the driven
+    # worker (quality flags once, then cleans after the fix).
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      TestFixtures.phase1_template_override(SystemLoopWorker)
+    )
+
     Application.put_env(
       :jido_claw,
       :route_composer_stub_outputs,
-      TestFixtures.phase1_stub_outputs(TestFixtures.phase1_findings_reviewer())
+      TestFixtures.self_heal_stub_outputs()
     )
 
-    assert {:ok, summary} = run(ctx)
+    Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => [1]})
+    on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_review_flag_on) end)
 
-    assert summary.terminal == :not_converged
-    assert MapSet.member?(summary.final_live, "findings:quality")
-    refute MapSet.member?(summary.final_live, "clean:quality")
-    # still terminates — not a spin or hang — with every stage having run once.
-    assert MapSet.equal?(summary.ran, MapSet.new(@all_stages))
+    assert {:ok, summary} =
+             RouteComposer.run_sync(
+               catalog: TestFixtures.self_heal_fixture_catalog(),
+               live: TestFixtures.self_heal_seed_live(),
+               artifacts: TestFixtures.self_heal_seed_artifacts(),
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               max_waves: 20,
+               timeout: 30_000
+             )
 
-    # Phase 2a: a :not_converged terminal takes the parent to :failed, with the
-    # terminal (not the nil reason) as the error string.
+    assert summary.terminal == :converged
+    # The flagged lens cleared and the fixer ran on the path.
+    assert MapSet.member?(summary.final_live, "clean:quality")
+    refute MapSet.member?(summary.final_live, "findings:quality")
+    assert MapSet.member?(summary.ran, "fixer")
+
     assert {:ok, parent} =
              WorkflowRun.by_id(summary.parent_run_id,
                tenant: ctx.tenant,
                actor: actor_for(ctx.tenant)
              )
 
-    assert parent.status == :failed
-    assert parent.error == "not_converged"
+    assert parent.status == :completed
   end
 
   test "a wave failure records a failed history entry surfacing child_run_id", ctx do

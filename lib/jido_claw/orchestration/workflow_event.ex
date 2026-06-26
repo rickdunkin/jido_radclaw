@@ -148,6 +148,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # the operator query distinguishes it from a generic budget stop. App-level
           # `one_of` (stored as text, like `WorkflowRun.status`) — no migration.
           :route_verify_failed,
+          # AR-4: the self-heal twin — a `code` change whose reviewers kept rejecting
+          # the fix past the per-stage rerun cap (findings:<lens> still open). Also
+          # projects onto `:failed` but carries `result.disposition: "fix_failed"`, so
+          # an operator tells it apart from `verify_failed` AND a generic budget stop.
+          # App-level `one_of` (stored as text) — no migration.
+          :route_fix_failed,
           :route_failed,
           :route_rejected,
           :route_abandoned

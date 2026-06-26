@@ -6,17 +6,28 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   Given a `%JidoClaw.Workflows.StepResult{}` and the stage meta projection
   `%{name, emit, lens, output, publishes}`, it derives:
 
-    1. **Reviewer verdict** — when the typed output is reviewer-shaped (`overall
+    1. **Blocked-producer refusal** (AR-4 P1) — a non-reviewer producer (`lens
+       == nil`) that reports `status: :blocked` produced no usable output. Its
+       named artifact (`diff`/`fix`/`plan`/`prototype`/`system-change`) is never
+       a schema field, so the artifact step below would fabricate it from the
+       blocked `summary` (`StepResult.result`). Instead it returns `{:error,
+       {:producer_blocked, name}}`, so `WaveCollect` fails the wave
+       (`route_failed`) rather than advancing a downstream consumer against a
+       "BLOCKED…" string — or silently converging with no lens having run.
+       `:partial`/`:completed` proceed (a `:partial` summary is real, if
+       incomplete, output); reviewers (`lens` set) carry `overall`, not
+       `status`, so they never match.
+    2. **Reviewer verdict** — when the typed output is reviewer-shaped (`overall
        ∈ {approve, request_changes, comment}`): `overall == :approve` with no
        findings emits `clean:<lens>`, else `findings:<lens>` plus a `findings`
        artifact. A reviewer-shaped stage with no `lens` is a coherence error.
-    2. **Explicit signals** — the producer's declared emitted-signal list under
+    3. **Explicit signals** — the producer's declared emitted-signal list under
        `typed_output[:signals]` / `typed_output["signals"]` (the Phase-1 `:default`
        convention for non-reviewer producers).
-    3. **Artifacts** — each `stage.output` name mapped to a value pulled from
+    4. **Artifacts** — each `stage.output` name mapped to a value pulled from
        `typed_output` / `StepResult.artifacts` / `StepResult.result` (in that
        precedence), coerced json-safe (inline values — Phase 1).
-    4. **⊆ `publishes`** — every emitted signal must be a declared `publishes`
+    5. **⊆ `publishes`** — every emitted signal must be a declared `publishes`
        topic. A signal outside `publishes` returns `{:error, _}`, which
        `WaveCollect` propagates as a wave failure — **never a silent drop** (a
        dropped `findings:<lens>` would let the loop converge as clean when it is
@@ -43,19 +54,43 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
 
   @doc """
   Map a `%StepResult{}` + stage meta to a `%StageEmission{}`, or `{:error,
-  reason}` on an undeclared signal or a reviewer-without-lens coherence error.
+  reason}` on a blocked non-reviewer producer, an undeclared signal, or a
+  reviewer-without-lens coherence error.
   """
   @spec map(StepResult.t(), meta()) :: {:ok, StageEmission.t()} | {:error, term()}
   def map(%StepResult{} = result, meta) do
     typed = result.typed_output || %{}
 
-    with {:ok, {verdict_signals, verdict_artifacts}} <- verdict(typed, meta),
+    with :ok <- refuse_blocked_producer(typed, meta),
+         {:ok, {verdict_signals, verdict_artifacts}} <- verdict(typed, meta),
          signals = Enum.uniq(verdict_signals ++ explicit_signals(typed)),
          :ok <- validate_publishes(signals, meta) do
       artifacts = Map.merge(verdict_artifacts, output_artifacts(result, typed, meta))
       {:ok, %StageEmission{stage: meta.name, signals: signals, artifacts: artifacts}}
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # 0. Blocked-producer refusal (AR-4 P1)
+  # ---------------------------------------------------------------------------
+
+  # A non-reviewer producer (`lens == nil`) that reports `status: :blocked`
+  # produced no usable output — its named artifact (`diff`/`fix`/`plan`/
+  # `prototype`/`system-change`) is never a schema field, so `output_value/3`
+  # would fabricate it from the blocked `summary` (`result.result`). Refuse it
+  # LOUDLY so `WaveCollect` fails the wave (`route_failed`) rather than advancing
+  # a downstream consumer against a "BLOCKED…" string — or silently converging.
+  # Reviewers (`lens` set) carry `overall`, not `status`, so they never match.
+  # `:partial`/`:completed` proceed (a `:partial` summary is real, if thin,
+  # output).
+  defp refuse_blocked_producer(typed, %{lens: nil, name: name}) do
+    case known(typed, :status, "status") do
+      s when s in [:blocked, "blocked"] -> {:error, {:producer_blocked, name}}
+      _ -> :ok
+    end
+  end
+
+  defp refuse_blocked_producer(_typed, _meta), do: :ok
 
   # ---------------------------------------------------------------------------
   # 1. Reviewer verdict

@@ -7,9 +7,14 @@ defmodule JidoClaw.RouteComposer.Catalog do
   Every consumed signal, required artifact, and lock `while` / `until` has a
   declared producer, so the catalog validates clean. Seeds are
   `request-received` (signal) and `request` (artifact). The data graph is a DAG:
-  `triage → planner → {plan-gate, test-author, implementer}` and `implementer →
-  {reviewers, fixer}`. The review → fix → re-review loop is **dynamic** (a later
-  phase, via the `findings` / `code-written` signal edges), never a data cycle.
+  `triage → planner → {plan-gate, test-author, implementer}`, `implementer →
+  {reviewers, fixer}`, and `fixer → reviewers` (the reviewers optional-input the
+  `fix`). The AR-4 review → fix → re-review loop is **dynamic**: the composer
+  drops the touched reviewers from `ran` (`stages_invalidated`) and feeds the
+  fixer the open findings OUT-OF-BAND (the producerless `review-feedback` /
+  `review-action` inputs) — so the loop runs WITHOUT a data cycle. Declaring
+  `findings` as a real fixer input would cycle (`fixer → reviewers` via `fix` +
+  `reviewers → fixer` via `findings`); `CatalogValidator` invariant 10 rejects it.
 
   Three guards run at **compile time** (fail fast, not just a test):
 
@@ -80,6 +85,10 @@ defmodule JidoClaw.RouteComposer.Catalog do
       subscribes: ["plan-needed", "plan-rejected"],
       input: %{required: ["intent"], optional: []},
       output: ["plan"],
+      # `plan-ready` is loop-GUARANTEED: `RouteComposer.enforce_completion_signals/2`
+      # injects it into the planner's emission even if the model omits it (a no-lens
+      # producer whose omission would SILENTLY `:converge`). The `task` still nudges
+      # the emit (belt-and-suspenders); `scope-shift` stays self-reported.
       publishes: ["plan-ready", "scope-shift"]
     },
     # AR-8c (decision 1): the plan-gate is dropped from the SYSTEM path — system
@@ -122,6 +131,9 @@ defmodule JidoClaw.RouteComposer.Catalog do
       subscribes: ["plan-ready"],
       input: %{required: ["plan"], optional: []},
       output: ["diff"],
+      # `code-written` is loop-GUARANTEED (`enforce_completion_signals/2` injects it
+      # if the model omits it — the silent-converge fix; it triggers the quality +
+      # correctness lenses). `scope-shift` stays self-reported (conditional).
       publishes: ["code-written", "scope-shift"],
       lock: [
         %{while: "needs-tests", until: "tests-ready"},
@@ -137,8 +149,8 @@ defmodule JidoClaw.RouteComposer.Catalog do
           "flag findings, else emit clean:security.",
       routes: ["code"],
       subscribes: ["auth-surface"],
-      input: %{required: ["diff"], optional: []},
-      output: ["findings"],
+      input: %{required: ["diff"], optional: ["fix"]},
+      output: ["findings", "action_needed"],
       publishes: ["findings:security", "clean:security", "scope-shift"]
     },
     "quality-reviewer" => %Stage{
@@ -149,8 +161,8 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff for style, clarity, and duplication; flag findings, else emit clean:quality.",
       routes: ["code"],
       subscribes: ["code-written"],
-      input: %{required: ["diff"], optional: []},
-      output: ["findings"],
+      input: %{required: ["diff"], optional: ["fix"]},
+      output: ["findings", "action_needed"],
       publishes: ["findings:quality", "clean:quality", "scope-shift"]
     },
     "correctness-reviewer" => %Stage{
@@ -161,8 +173,8 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff for logic and edge-case correctness; flag findings, else emit clean:correctness.",
       routes: ["code"],
       subscribes: ["code-written"],
-      input: %{required: ["diff"], optional: []},
-      output: ["findings"],
+      input: %{required: ["diff"], optional: ["fix"]},
+      output: ["findings", "action_needed"],
       publishes: ["findings:correctness", "clean:correctness", "scope-shift"]
     },
     "architecture-reviewer" => %Stage{
@@ -173,19 +185,33 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff against the system's architecture; flag findings, else emit clean:architecture.",
       routes: ["code"],
       subscribes: ["significant-build"],
-      input: %{required: ["diff"], optional: []},
-      output: ["findings"],
+      input: %{required: ["diff"], optional: ["fix"]},
+      output: ["findings", "action_needed"],
       publishes: ["findings:architecture", "clean:architecture", "scope-shift"]
     },
+    # AR-4 self-heal fixer. A first-class `fixer` template (not `coder`) so it can
+    # emit the domain signals it self-reports (`code-written` always; `auth-surface`
+    # / `significant-build` for any domain it touched) — those drive the loop's
+    # re-review set. `findings` rides the `subscribes` SIGNAL (the reviewers'
+    # `findings:<lens>`), not a data input; the open findings reach it OUT-OF-BAND
+    # via the two producerless optional inputs `review-feedback` / `review-action`
+    # (loop-injected at invalidation time). Declaring `findings` as a real input
+    # would add reviewer→fixer edges that, with the `fixer→reviewer` edge (the
+    # reviewers optional-input `fix`), form a 2-cycle `CatalogValidator` invariant
+    # 10 rejects — so the feed is producerless (no edge, `graph.ex`), keeping the
+    # static data DAG acyclic.
     "fixer" => %Stage{
       name: "fixer",
-      unit: {:worker_template, "coder"},
-      task: "Resolve the open review findings against the diff; emit code-written for re-review.",
+      unit: {:worker_template, "fixer"},
+      task:
+        "Resolve the open review findings against the diff; always emit code-written, and ALSO " <>
+          "emit the domain signal for any domain you touched (auth-surface for auth/permissions/" <>
+          "secrets, significant-build for architectural changes) so the right lenses re-review.",
       routes: ["code"],
       subscribes: ["findings"],
-      input: %{required: ["diff"], optional: []},
+      input: %{required: ["diff"], optional: ["review-feedback", "review-action"]},
       output: ["fix"],
-      publishes: ["code-written", "scope-shift"]
+      publishes: ["code-written", "scope-shift", "auth-surface", "significant-build"]
     },
     # AR-8b sketch path (file-only). AR-8b-2 F2 (D4-B) retargets its trigger off
     # the seed `request-received` onto the `sketch-plain` discriminator — so it is

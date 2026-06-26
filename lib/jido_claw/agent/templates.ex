@@ -90,6 +90,16 @@ defmodule JidoClaw.Agent.Templates do
       description: "Full-capability coding agent with all tools",
       model: :fast
     },
+    # AR-4: the self-heal fixer — a dedicated template (not a `coder` reuse) for its
+    # DIFFERENT contract: `fixer_result/0`'s **required** `signals` (vs the coder's
+    # optional `coder_result/0` one — self-reporting the touched domains IS the
+    # fixer's whole job) plus its own `fixer_contract` doctrine slice (doctrine is
+    # keyed by template name). See `JidoClaw.Agent.Workers.Fixer`.
+    "fixer" => %{
+      module: JidoClaw.Agent.Workers.Fixer,
+      description: "Resolves open review findings, then self-reports the domains it touched",
+      model: :fast
+    },
     "test_runner" => %{
       module: JidoClaw.Agent.Workers.TestRunner,
       description: "Runs tests and reports results (read-only)",

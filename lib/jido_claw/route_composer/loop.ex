@@ -11,10 +11,12 @@ defmodule JidoClaw.RouteComposer.Loop do
       never converge.
     * `terminal/2` — classifies the run when no unrun cohort remains:
       `:converged` (nothing held and every ran lens clean), `:not_converged`
-      (a ran lens still has open findings and, with self-heal/rerun deferred in
-      forward-only Phase 1, nothing will resolve it — an explicit terminal
-      failure, not a spin), or `:deadlock` (a non-empty `held` no runnable stage
-      can ever release — surfaced, not a busy-wait).
+      (a ran lens still has open findings and NO fixer shares its route to resolve
+      them — the `sketch-review` report-only case; a `code` path WITH a fixer
+      instead loops review → fix → re-review via the composer's AR-4 hooks,
+      reaching `:converged` or `:fix_failed`, so it never reaches here with open
+      findings), or `:deadlock` (a non-empty `held` no runnable stage can ever
+      release — surfaced, not a busy-wait).
     * `lenses_clean?/3` — every `ran` stage carrying a `lens` has its
       `clean:<lens>` live (the fold's paired-verdict invariant guarantees
       exactly one of the pair is live per lens).

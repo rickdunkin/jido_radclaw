@@ -36,12 +36,14 @@ defmodule JidoClaw.RouteComposer.Stage do
     * `:lens` — the review-lens identity (e.g. `"security"`); carried for later
       phases, never a router input.
     * `:reverse_verify` — `true` marks a verifier stage whose open
-      `findings:<lens>` re-fire its upstream producer (the AR-8c reverse-verify
-      loop), bounded by the per-stage rerun cap; `false` (default) is the
-      forward-only reviewer (open findings terminate `:not_converged`). A
-      `reverse_verify: true` stage must carry a `lens` and exactly one required
-      input (`JidoClaw.RouteComposer.CatalogValidator`). Read by the loop, never
-      by the router.
+      `findings:<lens>` re-fire its upstream PRODUCER (the AR-8c reverse-verify
+      loop), bounded by the per-stage rerun cap; `false` (default) is a forward
+      reviewer, whose open findings re-fire the FIXER on its route (the AR-4
+      self-heal loop) — or, where no fixer shares the route (`sketch-review`),
+      terminate `:not_converged`. A `reverse_verify: true` stage must carry a
+      `lens` and exactly one required input
+      (`JidoClaw.RouteComposer.CatalogValidator`). Read by the loop, never by the
+      router.
     * `:guard` — `:sticky` keeps a once-triggered stage in the display route
       after its signal goes quiet (only `merge_sticky/3` reads it), or `nil`.
     * `:model` / `:effort` — spawn-time tiering overrides for later phases

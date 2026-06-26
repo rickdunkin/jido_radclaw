@@ -5,7 +5,7 @@ defmodule JidoClaw.Agent.Workers.Coder do
   use JidoClaw.Agent.Defaults,
     name: "jido_claw_coder",
     description:
-      "Full-capability coding agent. Reads, writes, edits files, runs commands, manages git, and searches code. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), and `notes` for caveats.",
+      "Full-capability coding agent. Reads, writes, edits files, runs commands, manages git, and searches code. Return a structured result with `status` (`completed`/`partial`/`blocked`), a short `summary`, `files_changed` (list of paths), `notes` for caveats, and `signals` — the completion/domain signals your stage publishes (`code-written` when you implemented code, `tests-ready` when you authored the failing tests, plus `scope-shift` if the change outgrew the plan).",
     tools: [
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.WriteFile,
@@ -25,7 +25,7 @@ defmodule JidoClaw.Agent.Workers.Coder do
     tool_timeout_ms: 30_000,
     compaction: [mode: :auto],
     output: %{
-      schema: OutputSchema.builder_result(),
+      schema: OutputSchema.coder_result(),
       retries: 1,
       on_validation_error: :repair
     }

@@ -81,7 +81,13 @@ defmodule JidoClaw.RouteComposer.LoopTest do
       assert Loop.terminal(%{held: %{}}, state) == :converged
     end
 
-    test "not_converged: a ran lens still has open findings (forward-only)", %{catalog: catalog} do
+    test "not_converged: a ran lens still has open findings (the fixer-less terminal)", %{
+      catalog: catalog
+    } do
+      # `Loop.terminal/2` is the pure FINAL classifier; the AR-4 fix loop (re-firing
+      # the fixer on open findings) runs in the composer BEFORE this is reached, so a
+      # lens with open findings reaches here only on a fixer-less path (phase1_catalog
+      # has no fixer — the `sketch-review` shape).
       state = %{
         catalog: catalog,
         ran: MapSet.new(["quality-reviewer"]),

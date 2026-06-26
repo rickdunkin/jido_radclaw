@@ -71,20 +71,38 @@ defmodule JidoClaw.RouteComposer.Commit do
           optional(:artifacts_produced) => [%{optional(atom()) => String.t()}]
         }
 
+  # AR-4: an ordered `{kind, payload}` rerun marker the self-heal hooks WELD into
+  # the wave commit (computed pre-commit by `RouteComposer.decide_rerun/2`).
+  # Explicitly typed + a separate parameter — NOT smuggled into `@type deltas`,
+  # which stays wave-CONTENT only.
+  @type hook_marker :: {atom(), map()}
+
   @doc """
   Commit one wave's durable effects atomically. `deltas` is the JSON-safe delta
-  map the loop derives by diffing pre/post `Fold` state. Returns `:ok`,
-  `{:error, :parent_terminal}` (the run ended externally — stop, do not
-  re-terminalize), or `{:error, reason}` (a leg failed — terminalize the parent).
+  map the loop derives by diffing pre/post `Fold` state. `hook_markers` (AR-4) is
+  an ordered, already-JSON-safe `[{kind, payload}]` batch — the self-heal rerun
+  decision (`stages_invalidated` / `artifacts_produced` / `artifacts_invalidated`)
+  WELDED into the same transaction so a crash can never re-project "fixer ran"
+  without its re-review trigger; it is appended **after** `wave_completed` + the
+  content events (the canonical `seq` fold order) and **before** the ref
+  activation. The feedback `artifacts_produced` markers point at the wave's OWN
+  just-produced artifacts (ref-pointers), so they create no second row — only the
+  wave's own artifacts go through the pending→active activation step. The default
+  `[]` preserves the plain `commit_wave/4` (no welded markers) for callers that
+  weld nothing.
+
+  Returns `:ok`, `{:error, :parent_terminal}` (the run ended externally — stop, do
+  not re-terminalize), or `{:error, reason}` (a leg failed — terminalize the
+  parent).
   """
-  @spec commit_wave(WorkflowRun.t(), non_neg_integer(), deltas(), keyword()) ::
+  @spec commit_wave(WorkflowRun.t(), non_neg_integer(), deltas(), [hook_marker()], keyword()) ::
           :ok | {:error, term()}
-  def commit_wave(%WorkflowRun{} = parent, wave_index, deltas, opts) do
+  def commit_wave(%WorkflowRun{} = parent, wave_index, deltas, hook_markers \\ [], opts) do
     guarded_wave_txn(
       [WorkflowEvent, WorkflowRun, ComposerArtifact],
       parent,
       opts,
-      fn locked -> do_commit(locked, wave_index, deltas, opts) end
+      fn locked -> do_commit(locked, wave_index, deltas, hook_markers, opts) end
     )
   end
 
@@ -151,7 +169,12 @@ defmodule JidoClaw.RouteComposer.Commit do
   defp unwrap_transact({:ok, :parent_terminal}), do: {:error, :parent_terminal}
   defp unwrap_transact({:error, reason}), do: {:error, reason}
 
-  defp do_commit(locked, wave_index, deltas, opts) do
+  # Canonical `seq` fold order (load-bearing — the projection folds in `seq`
+  # order): `wave_completed` → the wave's content events → the AR-4 hook markers,
+  # then the ref activation. A hook marker BEFORE `wave_completed` could re-add a
+  # just-invalidated stage; within Hook R the markers are themselves pre-ordered
+  # `artifacts_invalidated` → `artifacts_produced` → `stages_invalidated`.
+  defp do_commit(locked, wave_index, deltas, hook_markers, opts) do
     with {:ok, _marker} <-
            WorkflowLog.append(
              locked,
@@ -160,6 +183,7 @@ defmodule JidoClaw.RouteComposer.Commit do
              opts
            ),
          :ok <- append_each(locked, content_events(deltas), opts),
+         :ok <- append_each(locked, hook_markers, opts),
          {:ok, _promoted} <- ComposerArtifact.activate_for_wave(locked.id, wave_index, opts) do
       :ok
     end

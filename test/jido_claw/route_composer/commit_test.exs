@@ -134,6 +134,69 @@ defmodule JidoClaw.RouteComposer.CommitTest do
     assert state_of(ctx, r2) == :pending
   end
 
+  test "AR-4: welds the hook_markers into the same commit, after wave_completed + content", ctx do
+    r = ref()
+
+    assert {:ok, _} =
+             store_pending(ctx, %{ref: r, name: "findings", producer: "quality-reviewer"})
+
+    deltas = %{
+      stages: ["quality-reviewer"],
+      signals_published: ["findings:quality"],
+      signals_retracted: [],
+      artifacts_produced: [%{name: "findings", producer: "quality-reviewer", ref: r}]
+    }
+
+    # The Hook R welded batch: a feedback ref-pointer to the wave's OWN findings
+    # (no new row) + a fixer re-fire.
+    hook_markers = [
+      {:artifacts_produced,
+       %{artifacts: [%{name: "review-feedback", producer: "quality-reviewer", ref: r}]}},
+      {:stages_invalidated, %{stages: ["fixer"]}}
+    ]
+
+    assert :ok = Commit.commit_wave(ctx.parent, 0, deltas, hook_markers, opts(ctx))
+
+    {:ok, events} = WorkflowEvent.for_run(ctx.parent.id, opts(ctx))
+
+    ordered =
+      events
+      |> Enum.sort_by(& &1.seq)
+      |> Enum.map(& &1.kind)
+
+    assert :wave_completed in ordered
+    assert :stages_invalidated in ordered
+    # Canonical fold order: wave_completed → content → hook markers (stages_invalidated last).
+    assert Enum.find_index(ordered, &(&1 == :stages_invalidated)) >
+             Enum.find_index(ordered, &(&1 == :wave_completed))
+
+    # The wave's own findings ref is :active; the feedback ref-pointer created no row.
+    assert state_of(ctx, r) == :active
+  end
+
+  test "AR-4: a forced leg failure rolls back the welded hook_markers too (atomic)", ctx do
+    r1 = ref()
+    r2 = ref()
+    assert {:ok, _} = store_pending(ctx, %{ref: r1, name: "plan", producer: "planner"})
+    assert {:ok, _} = store_pending(ctx, %{ref: r2, name: "plan", producer: "planner"})
+
+    deltas = %{
+      stages: ["planner"],
+      signals_published: [],
+      signals_retracted: [],
+      artifacts_produced: []
+    }
+
+    hook_markers = [{:stages_invalidated, %{stages: ["fixer"]}}]
+
+    # The duplicate {plan, planner, wave 0} pendings make activate_for_wave violate
+    # the active-key index → the whole txn (incl. the welded markers) rolls back.
+    assert {:error, _reason} = Commit.commit_wave(ctx.parent, 0, deltas, hook_markers, opts(ctx))
+
+    refute :wave_completed in kinds(ctx)
+    refute :stages_invalidated in kinds(ctx)
+  end
+
   test "an already-terminal parent is refused before any write (FOR UPDATE guard)", ctx do
     r = ref()
     assert {:ok, _} = store_pending(ctx, %{ref: r, name: "plan", producer: "planner"})

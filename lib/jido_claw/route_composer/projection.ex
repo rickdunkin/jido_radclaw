@@ -68,6 +68,26 @@ defmodule JidoClaw.RouteComposer.Projection do
     |> Enum.reduce(seed_state, &apply_event/2)
   end
 
+  @doc """
+  Fold an ordered `[{kind, payload}]` marker batch into composer state in-memory,
+  reusing the SAME per-event logic `project/2` applies (AR-4).
+
+  The AR-4 self-heal hooks weld their rerun markers (`stages_invalidated` /
+  `artifacts_produced` / `artifacts_invalidated`) into the wave commit and must
+  mirror them in memory on `:ok`. Routing that mirror through this — the
+  projection's own fold — makes `project(seed, log) == in-memory` hold **by
+  construction**: the in-memory mutation can never drift from what a later
+  `project/2` over the same durable markers produces. `payload`s are atom-keyed
+  in-memory and `apply_event` tolerates both (`EventPayload`), so a live mirror
+  and a JSONB-reloaded fold agree.
+  """
+  @spec apply_markers(map(), [{atom(), map()}]) :: map()
+  def apply_markers(state, markers) do
+    Enum.reduce(markers, state, fn {kind, payload}, acc ->
+      apply_event(%{kind: kind, payload: payload}, acc)
+    end)
+  end
+
   # `route_composed` is the only kind carrying `premises`/`prev_route`; its
   # `live`/`available` snapshot is legibility only (the published/retracted deltas
   # are the authority), so it is NOT folded into `live`.

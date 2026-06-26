@@ -187,31 +187,43 @@ end
 
 defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
   @moduledoc """
-  AR-8c reverse-verify-loop worker stub. Like `StubWorker` (one shared agent wired
-  in as every system-path worker template), but the `system_verifier` template's
-  output is **counter-driven**: it returns a `request_changes` (→ `findings:system`)
-  verdict for the first `:route_composer_system_verify_fails` invocations (default
-  1), then `approve` (→ `clean:system`) — so the reverse-verify loop re-fires the
-  executor + verifier and then converges (or, with the cap below the fail count,
-  exhausts into `:route_verify_failed`). Every other template falls back to the
-  static `:route_composer_stub_outputs` map (the planner + the executor).
+  AR-8c reverse-verify-loop + AR-4 self-heal worker stub. Like `StubWorker` (one
+  shared agent wired in as every templated worker), but three templates are
+  **driven**, not static:
+
+    * `system_verifier` (AR-8c) — **counter-driven**: `request_changes` (→
+      `findings:system`) for the first `:route_composer_system_verify_fails`
+      invocations (default 1), then `approve` (→ `clean:system`).
+    * `reviewer` (AR-4) — **per-lens** verdict, deterministic and race-free: the
+      lens is derived from the reviewer's task (it names its `clean:<lens>`
+      target), and a per-lens counter + the `:route_composer_review_flag_on`
+      config (`%{lens => [call_numbers] | :always}`) decide flag-vs-clean — so two
+      same-template reviewers in one parallel wave never race a shared counter.
+    * `fixer` (AR-4) — emits `code-written` + `auth-surface` (re-firing the
+      touched lenses AND summoning the never-run `security` lens) and produces the
+      `fix` artifact.
+
+  Every other template falls back to the static `:route_composer_stub_outputs`
+  map. Reuses `TestFixtures.phase1_{findings,clean}_reviewer/0` for the verdict
+  bodies (no new verdict literals).
   """
 
   use Jido.Agent,
     name: "route_composer_system_loop_worker",
-    description: "AR-8c system reverse-verify-loop stub worker (exports ask/3)"
+    description: "AR-8c/AR-4 reverse-verify + self-heal stub worker (exports ask/3)"
 
+  alias JidoClaw.RouteComposer.TestFixtures
   alias JidoClaw.RouteComposer.TestSupport.StubStore
 
   @spec ask(pid(), term(), keyword()) :: {:ok, %{id: term()}}
-  def ask(_pid, _task, opts) when is_list(opts) do
+  def ask(_pid, task, opts) when is_list(opts) do
     request_id = Keyword.fetch!(opts, :request_id)
     tool_context = Keyword.fetch!(opts, :tool_context)
     template = Map.fetch!(tool_context, :agent_template)
 
     StubStore.put(request_id, %{
       status: :completed,
-      result: output_for(template),
+      result: output_for(template, task),
       meta: %{output: %{status: :validated, schema_kind: :map}}
     })
 
@@ -221,7 +233,7 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
   # The verifier verdict flips from findings → clean once the per-test fail count
   # is exhausted. `StubStore.bump/1` is atomic; the verifier runs one wave at a
   # time (sequential), so no race.
-  defp output_for("system_verifier") do
+  defp output_for("system_verifier", _task) do
     n = StubStore.bump(:system_verifier_calls)
     fails = Application.get_env(:jido_claw, :route_composer_system_verify_fails, 1)
 
@@ -249,9 +261,60 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     end
   end
 
-  defp output_for(template) do
+  # AR-4: a forward-lens reviewer. The lens comes from the task; the per-lens
+  # counter + `:route_composer_review_flag_on` decide the verdict (race-free —
+  # each lens has its own counter, each reviewer stage names a distinct lens).
+  defp output_for("reviewer", task) do
+    lens = lens_from_task(task)
+    n = StubStore.bump({:reviewer_calls, lens})
+
+    if review_flag?(lens, n),
+      do: TestFixtures.phase1_findings_reviewer(),
+      else: TestFixtures.phase1_clean_reviewer()
+  end
+
+  # AR-4: the self-heal fixer. By default emits `code-written` (re-fire the quality +
+  # correctness lenses) AND `auth-surface` (summon the never-run security lens), and
+  # produces the `fix` artifact the reviewers read on re-review. The signals are
+  # overridable via `:route_composer_fixer_signals` so the P1 regression can drive a
+  # fixer that OMITS `code-written` (`["auth-surface"]`) and prove injection re-adds
+  # it (mirrors the reviewer/verifier env knobs; counter-free + non-contiguous).
+  defp output_for("fixer", _task) do
+    %{
+      "signals" =>
+        Application.get_env(:jido_claw, :route_composer_fixer_signals, [
+          "code-written",
+          "auth-surface"
+        ]),
+      "fix" => "FIX: resolved the open findings and touched the auth surface"
+    }
+  end
+
+  defp output_for(template, _task) do
     :jido_claw
     |> Application.fetch_env!(:route_composer_stub_outputs)
     |> Map.fetch!(template)
+  end
+
+  # The reviewer's task names its `clean:<lens>` emit target — a stable, per-stage
+  # discriminator (the rendered artifacts never contain a `clean:` topic).
+  defp lens_from_task(task) do
+    cond do
+      String.contains?(task, "clean:quality") -> "quality"
+      String.contains?(task, "clean:correctness") -> "correctness"
+      String.contains?(task, "clean:security") -> "security"
+      String.contains?(task, "clean:architecture") -> "architecture"
+      true -> "unknown"
+    end
+  end
+
+  # `:route_composer_review_flag_on` is `%{lens => [call_numbers] | :always}`; a
+  # lens absent from the map never flags (always clean).
+  defp review_flag?(lens, n) do
+    case Map.get(Application.get_env(:jido_claw, :route_composer_review_flag_on, %{}), lens) do
+      :always -> true
+      calls when is_list(calls) -> n in calls
+      _ -> false
+    end
   end
 end

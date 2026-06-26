@@ -38,19 +38,41 @@ defmodule JidoClaw.Doctrine do
                         "doctrine",
                         "system_verify.md"
                       ])
+  @fixer_contract_priv Path.join([
+                         __DIR__,
+                         "..",
+                         "..",
+                         "priv",
+                         "defaults",
+                         "doctrine",
+                         "fixer_contract.md"
+                       ])
+  @emit_signals_priv Path.join([
+                       __DIR__,
+                       "..",
+                       "..",
+                       "priv",
+                       "defaults",
+                       "doctrine",
+                       "emit_signals.md"
+                     ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
   @external_resource @reviewer_min_priv
   @external_resource @reviewer_contract_priv
   @external_resource @system_verify_priv
+  @external_resource @fixer_contract_priv
+  @external_resource @emit_signals_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
     artifacts: String.trim(File.read!(@artifacts_priv)),
     reviewer_min: String.trim(File.read!(@reviewer_min_priv)),
     reviewer_contract: String.trim(File.read!(@reviewer_contract_priv)),
-    system_verify: String.trim(File.read!(@system_verify_priv))
+    system_verify: String.trim(File.read!(@system_verify_priv)),
+    fixer_contract: String.trim(File.read!(@fixer_contract_priv)),
+    emit_signals: String.trim(File.read!(@emit_signals_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -63,10 +85,24 @@ defmodule JidoClaw.Doctrine do
   # (`pass`/`fail` + confidence + reasoning), so the field-shape contract must not
   # be injected into it.
   @template_slices %{
-    "coder" => [:base, :artifacts],
+    # AR-4: `coder` (backs both `implementer` + `test-author`) and `researcher`
+    # (the `planner`) now self-report via a `signals` field, so they ALSO get the
+    # `:emit_signals` slice — the prose half of `coder_result/0`'s / the researcher
+    # schema's new `signals` list (which completion + domain signals to emit per
+    # role: `code-written` / `tests-ready` for the coder, `plan-ready` for the
+    # planner, `scope-shift` when scope grows). The composer loop-guarantees the
+    # baseline `code-written` / `plan-ready` (`enforce_completion_signals/2`), but
+    # `tests-ready` / `scope-shift` are self-reported only — so the steering matters.
+    "coder" => [:base, :artifacts, :emit_signals],
+    # AR-4: the self-heal fixer is a producing worker (`:artifacts`, like `coder`)
+    # PLUS the new `:fixer_contract` slice — the prose half of `fixer_result/0`:
+    # resolve the open findings, then self-report the touched domains (the
+    # `signals` the loop derives the re-review set from). Required by the drift
+    # guard (`doctrine_test.exs`, `template_names() == Templates.names()`).
+    "fixer" => [:base, :artifacts, :fixer_contract],
     "refactorer" => [:base, :artifacts],
     "docs_writer" => [:base, :artifacts],
-    "researcher" => [:base, :artifacts],
+    "researcher" => [:base, :artifacts, :emit_signals],
     "test_runner" => [:base, :artifacts],
     "reviewer" => [:base, :reviewer_min, :reviewer_contract],
     "verifier" => [:base, :reviewer_min],

@@ -30,6 +30,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubStore
   alias JidoClaw.RouteComposer.TestSupport.StubWorker
+  alias JidoClaw.RouteComposer.TestSupport.SystemLoopWorker
 
   @supervisor JidoClaw.RouteComposer.Supervisor
   @registry JidoClaw.RouteComposer.Registry
@@ -96,6 +97,21 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   defp run_sync(ctx), do: RouteComposer.run_sync(Keyword.put(base_opts(ctx), :timeout, 30_000))
+
+  # AR-4: a run on the self-heal fixture with the driven worker (quality flags once
+  # then cleans). The caller arms the worker override + `:route_composer_review_flag_on`.
+  defp run_sync_self_heal(ctx) do
+    RouteComposer.run_sync(
+      catalog: TestFixtures.self_heal_fixture_catalog(),
+      live: TestFixtures.self_heal_seed_live(),
+      artifacts: TestFixtures.self_heal_seed_artifacts(),
+      tenant: ctx.tenant,
+      actor: ctx.actor,
+      context: ctx.context,
+      max_waves: 20,
+      timeout: 30_000
+    )
+  end
 
   defp converging_outputs do
     Application.put_env(
@@ -164,24 +180,43 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert reload(summary.parent_run_id, ctx).status == :completed
     end
 
-    test "a findings reviewer → route_not_converged (→ :failed); summary stays :not_converged",
-         ctx do
+    test "AR-4: a flagged review wave self-heals to route_converged (the durable twin)", ctx do
+      # The durable counterpart to the inverted forward-only test: an open finding
+      # on a fixer-bearing CODE path loops review → fix → re-review to
+      # route_converged, with a welded stages_invalidated marker (NO
+      # closed_wave_index) re-reviewing the touched lenses.
+      Application.put_env(
+        :jido_claw,
+        :agent_templates_override,
+        TestFixtures.phase1_template_override(SystemLoopWorker)
+      )
+
       Application.put_env(
         :jido_claw,
         :route_composer_stub_outputs,
-        TestFixtures.phase1_stub_outputs(TestFixtures.phase1_findings_reviewer())
+        TestFixtures.self_heal_stub_outputs()
       )
 
-      assert {:ok, summary} = run_sync(ctx)
-      assert summary.terminal == :not_converged
+      Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => [1]})
+      on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_review_flag_on) end)
+
+      assert {:ok, summary} = run_sync_self_heal(ctx)
+      assert summary.terminal == :converged
 
       ks = kinds(summary.parent_run_id, ctx)
-      assert :route_not_converged in ks
-      refute :route_converged in ks
+      assert :route_converged in ks
+      refute :route_not_converged in ks
+      assert :stages_invalidated in ks
+
+      {:ok, events} =
+        WorkflowEvent.for_run(summary.parent_run_id, tenant: ctx.tenant, actor: ctx.actor)
+
+      inv = Enum.find(events, &(&1.kind == :stages_invalidated))
+      assert Enum.sort(inv.payload["stages"]) == ["correctness-reviewer", "quality-reviewer"]
+      refute Map.has_key?(inv.payload, "closed_wave_index")
 
       parent = reload(summary.parent_run_id, ctx)
-      assert parent.status == :failed
-      assert parent.error == "not_converged"
+      assert parent.status == :completed
     end
 
     test "a wave failure → route_failed (→ :failed)", ctx do
@@ -189,6 +224,40 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
         put_in(TestFixtures.phase1_stub_outputs(), ["researcher", "signals"], ["bogus-signal"])
 
       Application.put_env(:jido_claw, :route_composer_stub_outputs, bad)
+
+      assert {:ok, summary} = run_sync(ctx)
+      assert summary.terminal == :failed
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_failed in ks
+
+      parent = reload(summary.parent_run_id, ctx)
+      assert parent.status == :failed
+      assert String.starts_with?(parent.error, "failed:")
+    end
+
+    # AR-4 P1: a blocked non-reviewer producer is refused at the mapper
+    # (`DefaultMapper.refuse_blocked_producer/2`) → the wave route-fails instead of
+    # fabricating its named artifact from the blocked `summary` and advancing the
+    # downstream consumer (or silently converging with no lens having run).
+    test "a blocked implementer → route_failed (→ :failed), never advancing the reviewers", ctx do
+      blocked = put_in(TestFixtures.phase1_stub_outputs(), ["coder", "status"], "blocked")
+      Application.put_env(:jido_claw, :route_composer_stub_outputs, blocked)
+
+      assert {:ok, summary} = run_sync(ctx)
+      assert summary.terminal == :failed
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_failed in ks
+
+      parent = reload(summary.parent_run_id, ctx)
+      assert parent.status == :failed
+      assert String.starts_with?(parent.error, "failed:")
+    end
+
+    test "a blocked planner → route_failed (→ :failed), never advancing the implementer", ctx do
+      blocked = put_in(TestFixtures.phase1_stub_outputs(), ["researcher", "status"], "blocked")
+      Application.put_env(:jido_claw, :route_composer_stub_outputs, blocked)
 
       assert {:ok, summary} = run_sync(ctx)
       assert summary.terminal == :failed

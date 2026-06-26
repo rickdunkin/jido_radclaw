@@ -31,6 +31,7 @@ defmodule JidoClaw.RouteComposer.Router do
   """
 
   alias JidoClaw.RouteComposer.Graph
+  alias JidoClaw.RouteComposer.SignalMatch
   alias JidoClaw.RouteComposer.Stage
 
   @paths ~w(talk sketch code system)
@@ -134,7 +135,7 @@ defmodule JidoClaw.RouteComposer.Router do
   end
 
   defp put_first_match(acc, name, subscribes, live) do
-    case Enum.find(subscribes, fn sig -> matches?(sig, live) end) do
+    case Enum.find(subscribes, fn sig -> SignalMatch.matches?(sig, live) end) do
       nil -> acc
       sig -> Map.put(acc, name, sig)
     end
@@ -193,7 +194,7 @@ defmodule JidoClaw.RouteComposer.Router do
 
   defp active_locks(%Stage{lock: locks}, live) do
     Enum.filter(locks, fn lock ->
-      matches?(lock.while, live) and not matches?(lock.until, live)
+      SignalMatch.matches?(lock.while, live) and not SignalMatch.matches?(lock.until, live)
     end)
   end
 
@@ -284,12 +285,8 @@ defmodule JidoClaw.RouteComposer.Router do
     }
   end
 
-  # ---------------------------------------------------------------------------
-  # Shared matcher — one-directional family prefix (cf. CatalogValidator's
-  # bidirectional family_match?/2; the two are deliberately not shared).
-  # ---------------------------------------------------------------------------
-
-  defp matches?(sub, live) do
-    Enum.any?(live, fn topic -> topic == sub or String.starts_with?(topic, sub <> ":") end)
-  end
+  # The one-directional family-prefix matcher (`trigger` + `active_locks`) lives in
+  # `JidoClaw.RouteComposer.SignalMatch` — single-sourced with the AR-4 self-heal
+  # helpers; cf. CatalogValidator's bidirectional `family_match?/2`, which is
+  # deliberately NOT shared.
 end
