@@ -168,6 +168,16 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   Any other halt (status unchanged, or `{:halted}` from `max_iterations`) stays
   a defensive failure via `ensure_failed/3`.
 
+  WS1 fence A guards the halt path too. The `{:halted, _}` clause is a `cond`
+  ordered like `handle_exit/3` and `finalize({:error, _})`: `:cancelled` first
+  (a run cancelled during the halt keeps the cancellation vocabulary), then a
+  `fenced?` check — a halt under a **rotated** token (a reclaimer took the run
+  between the gate's `approval_requested` commit and the checkpoint write, or the
+  reclaimer itself parked it at the gate) returns the clean `{:error, :fenced,
+  run}` with **no checkpoint** — and only then the `:awaiting_approval` pause.
+  No-op when the tokens match ⇒ byte-identical for single-node and every legit
+  pause.
+
   `finalize/3` is the **shared finalizer**: `JidoClaw.Orchestration.GateResume`
   reuses it so the initial run and every resume complete/fail/re-pause through
   one path. The terminal-clears-checkpoint rule lives in the projection
@@ -191,6 +201,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Security.SensitiveScrub
@@ -294,6 +305,15 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
              tenant,
              actor
            ) do
+      # WS1 lease: generate a fresh fencing token in the CALLER and thread it
+      # into both the reactor context (the sidecar + the in-txn terminal fence
+      # B read it) and `finalize_opts` (the runner-side fence A reads it). The
+      # row STAMP happens later, in `WorkflowLease.Middleware.init/1` inside
+      # `Reactor.run` — reached only after this run wins `RunRegistry`
+      # registration — as a CAS on the prior token. Generation here ≠ ownership;
+      # only the execution winner rotates the token.
+      claim_token = Ash.UUID.generate()
+
       # Build the merged context (run-identity base wins over the caller's
       # extra `:context`) and the finalizer opts here, so `execute/7` stays
       # within the arity budget.
@@ -303,6 +323,8 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
           actor: actor,
           workflow_run: run,
           reactor: identity,
+          # WS1 lease fencing token (base map ⇒ wins over the caller's `:context`).
+          claim_token: claim_token,
           # AR-2 Phase 2b marker, in the base map so it wins over the caller's
           # `:context` and reaches both the AgentRunner scope boundary and the
           # inline `ReactorMiddleware` sanitize read.
@@ -314,6 +336,9 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
         actor: actor,
         inputs: inputs,
         reactor_module: reactor_module,
+        # WS1 lease: the held token for fence A's reload-first compare and for
+        # `append_failed/2`'s in-txn fence assertion (fence B).
+        claim_token: claim_token,
         # AR-2 Phase 2b (P1b): a marked run's terminal-backstop `run_failed`
         # (pre-`init/1` validation / `{:exit, _}` kill, where the middleware's
         # `error/2` never fired) scrubs its reason in `append_failed/2`. Default
@@ -354,23 +379,40 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   @spec build_runnable(module() | Reactor.t()) :: {:ok, Reactor.t()} | {:error, term()}
   defp build_runnable(reactor) when is_atom(reactor) do
     if Spark.Dsl.is?(reactor, Reactor) do
-      ensure_middleware(reactor.reactor())
+      normalize_middleware(reactor.reactor())
     else
       {:error, :not_a_reactor}
     end
   end
 
   # A compiled-skill struct is passed through as-is (struct path skips the
-  # `Spark.Dsl.is?` module check); middleware is added via the same dedup check.
-  defp build_runnable(%Reactor{} = reactor), do: ensure_middleware(reactor)
+  # `Spark.Dsl.is?` module check); middleware is normalized via the same seam.
+  defp build_runnable(%Reactor{} = reactor), do: normalize_middleware(reactor)
 
   defp build_runnable(_reactor), do: {:error, :not_a_reactor}
 
-  defp ensure_middleware(base) do
-    if ReactorMiddleware in base.middleware do
-      {:ok, base}
-    else
-      Builder.add_middleware(base, ReactorMiddleware)
+  @doc """
+  Normalize `base`'s middleware list to `[WorkflowLease.Middleware,
+  ReactorMiddleware | rest]`, idempotently (both are stripped first, so a
+  reactor that already declares either runs with exactly one of each).
+
+  The order is load-bearing: `init/1` runs in list order, so `Lease.init`
+  stamps the claim at `:pending` **before** `ReactorMiddleware.init` appends
+  `run_started` — a crash in the gap leaves a `:pending` + claimed row, never an
+  ambiguous `:running`-unclaimed crack. `GateResume` reuses this so a checkpoint
+  written before WS1 still re-establishes the lease on resume. No-raise (a
+  `with`, not a `{:ok, _} = …` match): an `add_middleware/2` failure returns
+  `{:error, reason}` → the runner's `{:error, reason, nil}` pre-run path.
+  """
+  @spec normalize_middleware(Reactor.t()) :: {:ok, Reactor.t()} | {:error, term()}
+  def normalize_middleware(base) do
+    rest = Enum.reject(base.middleware, &(&1 in [ReactorMiddleware, WorkflowLease.Middleware]))
+
+    # add_middleware prepends, so adding ReactorMiddleware then WorkflowLease.Middleware
+    # yields [WorkflowLease.Middleware, ReactorMiddleware | rest]. The inner add is the
+    # `with`'s result directly (its own {:ok, _}/{:error, _}) — no redundant rebind.
+    with {:ok, builder} <- Builder.add_middleware(%{base | middleware: rest}, ReactorMiddleware) do
+      Builder.add_middleware(builder, WorkflowLease.Middleware)
     end
   end
 
@@ -590,12 +632,35 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp handle_exit(run, reason, opts) do
     reloaded = reload(run, opts)
 
-    if reloaded.status == :cancelled do
-      {:error, :cancelled, reloaded}
-    else
-      formatted = {:exit, Reason.format(reason)}
-      ensure_failed(reloaded, formatted, opts)
-      {:error, formatted, reload(run, opts)}
+    cond do
+      reloaded.status == :cancelled ->
+        {:error, :cancelled, reloaded}
+
+      # WS1 fence A: a rotated token means a reclaimer (the sidecar's kill, or a
+      # WS3 reclaim) owns the run — stop with NO terminal; the new owner is the
+      # truth. Covers the sidecar-kill `{:exit, :killed}` path.
+      fenced?(reloaded, opts) ->
+        {:error, :fenced, reloaded}
+
+      true ->
+        formatted = {:exit, Reason.format(reason)}
+        ensure_failed(reloaded, formatted, opts)
+        {:error, formatted, reload(run, opts)}
+    end
+  end
+
+  # WS1 fence A: a terminal-writing path is fenced when the reloaded row carries
+  # a DIFFERENT non-nil token than the one we hold — a reclaimer rotated it.
+  # When the token matches (every non-fenced case, all of single-node) this is a
+  # no-op, so the terminal paths stay byte-identical. A nil held token
+  # (legacy/degraded) or a nil reloaded token (never stamped) is never fenced.
+  defp fenced?(reloaded, opts) do
+    case Keyword.get(opts, :claim_token) do
+      held when is_binary(held) ->
+        is_binary(reloaded.claim_token) and reloaded.claim_token != held
+
+      _ ->
+        false
     end
   end
 
@@ -624,6 +689,26 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   def finalize({:ok, value}, run, opts), do: {:ok, value, reload(run, opts)}
   def finalize({:ok, value, _reactor}, run, opts), do: {:ok, value, reload(run, opts)}
 
+  # WS1 fence A — the CAS-lost `Lease.init` abort ("I don't own it"): write NO
+  # terminal in any branch. The reloaded row's token is the WINNER's, so a
+  # `:cancelled`/`:failed`/`:completed` that landed first is the clean truth
+  # (`:cancelled` keeps its own vocab; any other terminal → `:already_terminal`),
+  # and a still-non-terminal row means a live owner is running it (`:fenced`).
+  # Scoped to the `{:lease_lost, _}` reason — placed BEFORE the generic clause —
+  # so a real step error still surfaces its own reason rather than being swallowed
+  # into `:already_terminal`. The other lease aborts (`{:lease_sidecar, _}` /
+  # `{:lease_claim, _}`, where the executor DOES own the lease but can't run
+  # safely) flow through the generic clause, which fails the run it owns.
+  def finalize({:error, {:lease_lost, _id}}, run, opts) do
+    reloaded = reload(run, opts)
+
+    cond do
+      reloaded.status == :cancelled -> {:error, :cancelled, reloaded}
+      reloaded.status in @non_terminal -> {:error, :fenced, reloaded}
+      true -> {:error, :already_terminal, reloaded}
+    end
+  end
+
   # Reload-first: a cancelled run's late `run_started`/`run_completed` append
   # fails as an illegal transition and PROPAGATES out of `Reactor.run` as
   # `{:error, %Ash.Error.Invalid{}}` via the middleware's `init`/`complete` —
@@ -633,11 +718,18 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   def finalize({:error, reason}, run, opts) do
     reloaded = reload(run, opts)
 
-    if reloaded.status == :cancelled do
-      {:error, :cancelled, reloaded}
-    else
-      ensure_failed(reloaded, reason, opts)
-      {:error, reason, reload(run, opts)}
+    cond do
+      reloaded.status == :cancelled ->
+        {:error, :cancelled, reloaded}
+
+      # WS1 fence A: a fenced `complete/2` (rejected by Allocate's fence B) or a
+      # step-error-while-fenced reloads a rotated token — stop clean, no terminal.
+      fenced?(reloaded, opts) ->
+        {:error, :fenced, reloaded}
+
+      true ->
+        ensure_failed(reloaded, reason, opts)
+        {:error, reason, reload(run, opts)}
     end
   end
 
@@ -645,15 +737,33 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # `:awaiting_approval` — only the gate step's in-transaction
   # `approval_requested` flips it there. Any other halt (status unchanged, or
   # `{:halted}` from `max_iterations`) is defensively failed so a run never
-  # strands non-terminal.
+  # strands non-terminal. The branch order mirrors `handle_exit/3` /
+  # `finalize({:error, _})`.
   def finalize({:halted, reactor}, run, opts) do
     reloaded = reload(run, opts)
 
-    if reloaded.status == :awaiting_approval do
-      handle_gate_pause(reactor, reloaded, opts)
-    else
-      ensure_failed(run, :unexpected_halt, opts)
-      {:error, :unexpected_halt, reload(run, opts)}
+    cond do
+      # A run cancelled during the halt keeps the cancellation vocabulary (placed
+      # ahead of fenced? so it surfaces the clean {:error, :cancelled, run} rather
+      # than :fenced/:unexpected_halt), consistent with the other two fence paths.
+      reloaded.status == :cancelled ->
+        {:error, :cancelled, reloaded}
+
+      # WS1 fence A on the halt path: a rotated token means a reclaimer owns the
+      # run — stop with NO checkpoint and NO terminal. Closes the
+      # append→checkpoint TOCTOU (the token rotates after a legit
+      # `approval_requested` commits but before the checkpoint write) and the case
+      # where the reclaimer itself parked the run at the gate. No-op when tokens
+      # match ⇒ byte-identical for every legit pause.
+      fenced?(reloaded, opts) ->
+        {:error, :fenced, reloaded}
+
+      reloaded.status == :awaiting_approval ->
+        handle_gate_pause(reactor, reloaded, opts)
+
+      true ->
+        ensure_failed(run, :unexpected_halt, opts)
+        {:error, :unexpected_halt, reload(run, opts)}
     end
   end
 
@@ -777,7 +887,12 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
     case WorkflowLog.append(run, :run_failed, %{error: formatted},
            tenant: Keyword.get(opts, :tenant, run.tenant_id),
-           actor: Keyword.get(opts, :actor)
+           actor: Keyword.get(opts, :actor),
+           # WS1 fence B: assert our ownership at the DB level. We only reach the
+           # backstop for runs we own (fence A short-circuits fenced runs first),
+           # so this normally matches; if a fenced executor ever reached here, the
+           # in-txn guard rejects the terminal rather than failing a live run.
+           claim_fence_token: Keyword.get(opts, :claim_token)
          ) do
       {:ok, event} ->
         # Backstop broadcast: fires ONLY when this actually writes the terminal,

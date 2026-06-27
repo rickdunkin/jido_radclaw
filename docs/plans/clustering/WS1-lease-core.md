@@ -3,11 +3,46 @@
 *Builds: the durable `WorkflowRun` claim-lease. Depends on: nothing. Blocks:
 WS2, WS3, WS4, WS5.*
 
-> **What this owns.** The `:claim_next` / `:renew` actions, the `Pooler`, and
-> `Reactor.Middleware.Lease` — the mechanism gust G1-1 and Squidie §4.11
-> converge on, applied to a *single* `WorkflowRun` (the composer-spanning unit is
-> WS2; dead-node reclaim semantics are WS3). See
+> **What this owns.** The lease **mechanism** — `WorkflowLease.{stamp,renew,claim_next}`,
+> the `WorkflowLease.Middleware` + `Sidecar`, and **self-claim on launch** — the
+> mechanism gust G1-1 and Squidie §4.11 converge on, applied to a *single*
+> `WorkflowRun` (the composer-spanning unit is WS2; the **Pooler** + dead-node
+> reclaim semantics are **WS3**). See
 > [README §coverage matrix](README.md#coverage-matrix--every-explicitly-deferred-clustering-item).
+
+> **✅ Implementation status (shipped).** WS1 shipped the lease *mechanism only*:
+> `JidoClaw.Orchestration.WorkflowLease` (`stamp/4` — a status-guarded CAS ·
+> `renew/2` — fenced · `claim_next/1` · `fence_decision/3` · `start_sidecar/4`),
+> `WorkflowLease.Middleware` + `Sidecar`, **self-claim on launch** (D1 → **(b)**),
+> the `:claimable` read action, both fences (runner-side **A** + append-side **B**),
+> config (`:workflow_lease`), the `LeaseRegistry`/`LeaseTaskSupervisor` children,
+> and `test/jido_claw/orchestration/workflow_lease_test.exs`. Two reframings vs the
+> sketch below:
+>
+> - **Not Ash `:claim_next`/`:renew` actions.** `stamp`/`renew` are **raw-SQL**
+>   CAS / fenced `UPDATE`s on the DB clock (`now() + interval`), touching only the
+>   three claim columns — keeping `status` strictly projection-owned. The reclaim
+>   read is the `:claimable` Ash action; `claim_next/1` wraps it in `FOR UPDATE
+>   SKIP LOCKED`.
+> - **Pooler → WS3; `claim_next` + the fence branches are unit-tested, not
+>   production-triggered.** Every run executes **in-process holding its reactor**
+>   (`run_execution.ex`), and there is **no general "reconstruct a reactor from a
+>   stored `WorkflowRun` and run it" seam** — so a Pooler that *claims* an orphan
+>   can't *dispatch* it. `claim_next/1` and the `:claimable`/fence paths ship as a
+>   bounded, named-consumer deferral (WS3). **Component 4 (Pooler) and D2 below
+>   are deferred to WS3.**
+> - **Fence scope = every status-authority + checkpoint write, not just terminals.**
+>   A stale owner can flip truth at any *status-authority* append, not only the
+>   terminals — the **gate halt** is the load-bearing example (a `GateStep` opens
+>   an `AgentCase`, flips the run to `:awaiting_approval` via `approval_requested`,
+>   and persists a resume checkpoint). So fence **B** (`Allocate.claim_fenced?`)
+>   keys on `Projection.status_authority?/1` — rejecting a rotated-token append on
+>   *any* status flip, terminal **or** the gate's `approval_requested` (threaded
+>   `GateStep → gate_open → append`) — and fence **A** guards all of the runner's
+>   reload-first finalizes: the `{:error, _}`/`{:exit, _}` paths **and** the
+>   `{:halted, _}` gate-pause clause, so a rotated token also blocks the durable
+>   checkpoint write. Together they cover the gate-halt path; the rule is a no-op
+>   without a present, mismatched token, so single-node stays byte-identical.
 
 ## The target
 
@@ -109,7 +144,12 @@ projection's status barrier rejects a terminal from a non-owning generation.
 The renew timer is per-run and node-local; it lives with the executor task, not a
 central process.
 
-### Component 4 — `Pooler` (per-node GenServer)
+### Component 4 — `Pooler` (per-node GenServer) — ⏭️ DEFERRED TO WS3
+
+> Not built in WS1. There is no reactor-reconstruction seam, so a Pooler that
+> *claims* an orphan can't *dispatch* it. WS1 ships the claim primitive
+> (`WorkflowLease.claim_next/1`, unit-tested); WS3 owns the Pooler, the always-on
+> reclaim poll, and the dispatch. The sketch below is retained as WS3 input.
 
 Per `REACTOR-ADOPTION.md:677-678`: a per-node GenServer that polls (+ is
 PubSub-triggered on new-run notifications) → `:claim_next` → starts the claimed
@@ -156,7 +196,14 @@ the existing launch path rather than a new dispatch architecture, and it keeps
 single-node behavior byte-identical when nothing ever expires. Resolve before
 coding — it shapes every other component.
 
-### D2 — Pooler always-on vs `cluster_enabled`-gated
+### D2 — Pooler always-on vs `cluster_enabled`-gated — ⏭️ DEFERRED TO WS3
+
+> The Pooler is WS3, so its gating decision moves there too. WS1 shipped the
+> always-active half regardless: **self-claim + renew + both fences run in every
+> mode** (single-node included — `LeaseRegistry`/`LeaseTaskSupervisor` start
+> unconditionally), with `fail_or_degrade/2` keeping single-node byte-identical
+> (a claim/sidecar failure degrades to unleased rather than aborting). What WS3
+> decides is whether the *reclaim poll* is `cluster_enabled`-gated.
 
 Recommended: the **claim/renew/fence is always active** (so single-node runs
 carry an owner + lease, making WS3's reclaim uniform), but the **Pooler's
@@ -176,23 +223,42 @@ keep it out of payloads regardless.
 
 ## Test plan
 
-- **`:claim_next` race** — N concurrent claimers, one row: exactly one wins, the
-  rest get the next rows or none (`FOR UPDATE SKIP LOCKED`). Reuse the
-  `BackfillWorker` claim tests as a template.
-- **Fence** — `:renew` with a rotated token returns `{0, _}`; with the held token
-  returns `{1, _}`.
-- **Lease middleware halt** — a run whose token is rotated mid-execution halts at
-  the next renew tick and writes no terminal.
-- **Reclaim selection** — a `:running` run with `claim_expires_at` in the past is
-  selected by `:claim_next`; one with a future expiry is skipped.
-- **Status untouched** — `:claim_next` and `:renew` never change `status` (the
-  projection-ownership invariant); a claimed run still flips status only via
-  `run_started`.
-- **Single-node identity** — with `cluster_enabled: false`, behavior is unchanged
-  (no expirations, no reclaim sweeps firing).
+Shipped in `test/jido_claw/orchestration/workflow_lease_test.exs` (21 tests,
+`async: false` + shared sandbox so the executor task + sidecar share the
+connection; expired leases / rotated tokens seeded via raw `Repo.query!`):
 
-Multi-node tests (real reclaim across BEAM nodes) are WS6; WS1 lands with
-single-node + concurrent-transaction tests.
+- **`claim_next` lock + selection** — a true N-claimer race is impossible under
+  the Ecto sandbox (uncommitted rows are invisible/unlockable from a second
+  connection — the `retention_sweeper_test` reality), so this **SQL-pins** the
+  lock (`query.lock == "FOR UPDATE SKIP LOCKED"` + `Repo.to_sql =~ "SKIP LOCKED"`)
+  and asserts **selection**: oldest-first, stamped once, exhausts to `:none`;
+  claimed/future-expiry/terminal rows skipped.
+- **Fence (`renew/2`)** — a rotated token renews `{:ok, 0}`; the held token
+  `{:ok, 1}`.
+- **Lease middleware halt (fence A)** — a blocking run's token is rotated; the
+  sidecar's next (test-driven) renew tick sees `{:ok, 0}` → kills the executor →
+  `{:error, :fenced, run}` with **no terminal** + status still `:running`.
+- **Reclaim selection** — an expired-claimed run is re-stamped; a future-expiry
+  one is skipped.
+- **Status untouched** — `stamp`/`renew`/`claim_next` never write `status`; the
+  projection still flips it via `run_started`.
+- **Single-node identity** — `cluster_enabled: false`: a module reactor runs to
+  `:completed` with the usual event timeline **and** is self-claimed
+  (`claim_token` non-nil, `claimed_by == to_string(Node.self())`).
+- **Gate-halt fence** — the status-authority gate flip is fenced like a terminal:
+  a stale-token `approval_requested` is rejected in-txn (status stays `:running`),
+  the current token flips it `:awaiting_approval` (fence B); a `{:halted, _}`
+  finalize under a rotated token returns `{:error, :fenced, run}` with **no**
+  checkpoint (fence A); and end-to-end `GateStep.run/3` rolls back the whole
+  `gate_open` (no flip, no `AgentCase`) when its threaded token is stale.
+- **Fence B**, **same-node duplicate** (loser never stamps), **CAS** (matching /
+  stale / nil-safe), **middleware ordering / resume normalization**, **expired
+  claimed `:pending`**, **sidecar readiness fail-closed vs degrade**, **pure
+  `fence_decision/3`**, **raw-SQL UUID binding**, **cancel-before-`Lease.init`**,
+  and the **status-guarded CAS on a non-cancel terminal**.
+
+Multi-node tests (real reclaim across BEAM nodes) are WS6; WS1 landed with
+single-node + sandbox-pinned tests.
 
 ## Open questions
 

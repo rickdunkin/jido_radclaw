@@ -149,16 +149,46 @@ defmodule JidoClaw.Orchestration.GateResume do
   # The killable-execution seam (mirrors ReactorRunner.execute): `tenant_id:`
   # is RunExecution-local registry metadata and never reaches Reactor.run.
   defp run_reactor(run, module, reactor, inputs, decision, tenant, actor) do
+    # WS1 lease: generate a fresh fencing token here (decoupled from the row
+    # stamp, which `Lease.init` performs as a CAS on the run's CURRENT token — so
+    # only one resumer wins, closing the approve-vs-recovery race). Threaded into
+    # the context (sidecar + fence B) and finalize_opts (fence A). The fresh
+    # context token wins over any baked-in one: Reactor deep-merges runtime
+    # context over `reactor.context`, RHS wins.
+    claim_token = Ash.UUID.generate()
+
     context = %{
       tenant: tenant,
       actor: actor,
       workflow_run: run,
       reactor: inspect(module),
-      approval: decision
+      approval: decision,
+      claim_token: claim_token
     }
 
-    finalize_opts = [tenant: tenant, actor: actor, inputs: inputs, reactor_module: module]
+    finalize_opts = [
+      tenant: tenant,
+      actor: actor,
+      inputs: inputs,
+      reactor_module: module,
+      claim_token: claim_token
+    ]
 
+    # Re-establish `Lease.Middleware` on the DECODED reactor before running, so a
+    # checkpoint written before WS1 still claims its lease on resume (don't rely
+    # on the deserialized reactor carrying it). A normalize failure routes
+    # through the same fail-with-audit path as a decode/decrypt failure — never a
+    # raise.
+    case ReactorRunner.normalize_middleware(reactor) do
+      {:ok, normalized} ->
+        run_normalized(run, normalized, inputs, context, finalize_opts, tenant, actor)
+
+      {:error, reason} ->
+        fail_with_audit(run, {:lease_middleware, reason}, tenant, actor)
+    end
+  end
+
+  defp run_normalized(run, reactor, inputs, context, finalize_opts, tenant, actor) do
     case RunExecution.run_killable(reactor, inputs, context,
            run_id: run.id,
            tenant_id: run.tenant_id,

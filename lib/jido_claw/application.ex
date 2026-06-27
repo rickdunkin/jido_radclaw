@@ -152,6 +152,13 @@ defmodule JidoClaw.Application do
       # so they must be torn down before those services on app shutdown.
       {Registry, keys: :unique, name: JidoClaw.Orchestration.RunRegistry},
       {Task.Supervisor, name: JidoClaw.Orchestration.RunTaskSupervisor},
+      # WS1 workflow lease: the run-id → lease-sidecar registry and the task
+      # supervisor the heartbeat sidecars run under. All modes (inert until a run
+      # launches and claims) — no `cluster_enabled` gate; the reclaim Pooler that
+      # WOULD be cluster-gated is WS3. Same placement rationale as RunRegistry:
+      # after Repo/Vault/PubSub, so DB-heavy sidecars tear down before them.
+      {Registry, keys: :unique, name: JidoClaw.Orchestration.LeaseRegistry},
+      {Task.Supervisor, name: JidoClaw.Orchestration.LeaseTaskSupervisor},
       # AR-2 composer supervised lifecycle (Phase 2c): the parent-run-id → composer
       # GenServer registry + the DynamicSupervisor its `:transient` children run
       # under. `max_restarts: 10`/`max_seconds: 30` matches the root supervisor's

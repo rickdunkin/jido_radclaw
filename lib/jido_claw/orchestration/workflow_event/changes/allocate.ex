@@ -104,30 +104,67 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate do
 
     case lock_run(run_id, tenant, actor) do
       {:ok, run} ->
-        raw_payload = Changeset.get_attribute(changeset, :payload) || %{}
-        raw_metadata = Changeset.get_attribute(changeset, :metadata) || %{}
+        if claim_fenced?(changeset, run) do
+          # WS1 fence B: a stale owner's status-authority write (a terminal, OR the
+          # gate flip `approval_requested`) arriving between renew ticks is rejected
+          # at the single append chokepoint, reusing the FOR UPDATE lock `lock_run`
+          # already holds (race-free, 0 extra round-trips). Rolls back like the
+          # `:illegal`-transition path; fence A maps the resulting `{:error, _}` to a
+          # clean fenced stop. No change to status logic.
+          Changeset.add_error(changeset,
+            field: :workflow_run_id,
+            message: "claim token mismatch"
+          )
+        else
+          raw_payload = Changeset.get_attribute(changeset, :payload) || %{}
+          raw_metadata = Changeset.get_attribute(changeset, :metadata) || %{}
 
-        # Capped raw → context stash (bounds WorkflowRun.result /
-        # WorkflowStep.output, which store raw by design — size-only,
-        # no redaction). Redact-the-ORIGINAL-then-cap → persisted columns:
-        # truncating first could cut a long secret below the redaction
-        # regex's match threshold and persist an unredacted partial secret.
-        # This is a per-leaf bound, NOT a whole-payload budget — many
-        # under-cap leaves can still grow; current payload shapes are
-        # single-large-LLM-text leaves.
-        changeset
-        |> Changeset.set_context(%{
-          workflow_event: %{current_status: run.status, raw_payload: capped(raw_payload)}
-        })
-        |> Changeset.force_change_attribute(:seq, next_seq(run_id, tenant, actor))
-        |> Changeset.force_change_attribute(:payload, capped(Transcript.redact(raw_payload)))
-        |> Changeset.force_change_attribute(:metadata, capped(Transcript.redact(raw_metadata)))
+          # Capped raw → context stash (bounds WorkflowRun.result /
+          # WorkflowStep.output, which store raw by design — size-only,
+          # no redaction). Redact-the-ORIGINAL-then-cap → persisted columns:
+          # truncating first could cut a long secret below the redaction
+          # regex's match threshold and persist an unredacted partial secret.
+          # This is a per-leaf bound, NOT a whole-payload budget — many
+          # under-cap leaves can still grow; current payload shapes are
+          # single-large-LLM-text leaves.
+          changeset
+          |> Changeset.set_context(%{
+            workflow_event: %{current_status: run.status, raw_payload: capped(raw_payload)}
+          })
+          |> Changeset.force_change_attribute(:seq, next_seq(run_id, tenant, actor))
+          |> Changeset.force_change_attribute(:payload, capped(Transcript.redact(raw_payload)))
+          |> Changeset.force_change_attribute(:metadata, capped(Transcript.redact(raw_metadata)))
+        end
 
       :error ->
         Changeset.add_error(changeset,
           field: :workflow_run_id,
           message: "workflow run not found for tenant"
         )
+    end
+  end
+
+  # WS1 fence B: a status-authority append — any kind the projection folds into
+  # `WorkflowRun.status` (`run_completed`/`run_failed`, the gate flip
+  # `approval_requested`, the composer `route_*` terminals, …) — is fenced ONLY
+  # when it carries a present `:claim_fence_token` (threaded by the leased
+  # executor's `WorkflowLog.append` via the action `context:`) whose value differs
+  # from the run's CURRENT `claim_token`. A no-op for every other case — a
+  # non-authority kind, an append with no token (operator cancel/decide, recovery,
+  # legacy callers), or a never-claimed run (`claim_token` is nil) — so existing
+  # appends are byte-identical. The authority set is single-sourced to
+  # `Projection.status_authority?/1` (already called by `maybe_update_status`), so
+  # the fence and the status writer can never disagree about which writes a stale
+  # owner is forbidden. The leading `is_atom/1` guard keeps the `status_authority?`
+  # call total (it has no non-atom clause).
+  defp claim_fenced?(changeset, run) do
+    with kind when is_atom(kind) <- Changeset.get_attribute(changeset, :kind),
+         true <- Projection.status_authority?(kind),
+         token when is_binary(token) <- changeset.context[:claim_fence_token],
+         current when is_binary(current) <- run.claim_token do
+      current != token
+    else
+      _ -> false
     end
   end
 

@@ -69,7 +69,7 @@ works when enabled:
 | Embedding cross-node dispatch budget (Postgres UPSERT counter) | ✅ shipped (active even single-node) | `embeddings/rate_pacer.ex` |
 | Embedding backfill claim + row-lease (`FOR UPDATE SKIP LOCKED`) | ✅ shipped — **the reference pattern for WS1** | `embeddings/backfill_worker.ex:5,19,178-190` |
 | Memory consolidator cross-node lock (session `pg_try_advisory_lock`) | ✅ shipped | `memory/consolidator/lock_owner.ex`, `memory/scope.ex:217-225` |
-| `WorkflowRun` claim/lease **columns + global indexes** | ⚠️ shipped but **dead — zero callers** | `workflow_run.ex:333-346`, `:73-74` |
+| `WorkflowRun` claim/lease **mechanism** (self-claim on launch + token CAS + renew-fence + both terminal fences + `claim_next` primitive) | ✅ **WS1 shipped** — the columns now have a live consumer; **Pooler + reclaim-dispatch = WS3** | `orchestration/workflow_lease.ex`, `workflow_lease/{middleware,sidecar}.ex`, `workflow_run.ex` |
 | Step-level idempotency keys (`composer:<parent>:<wave>`, `cron:<job>:<window>`) | ✅ shipped | `reactor_runner.ex:243-328` |
 
 So "make clustering real" is **not** about building libcluster. It is about
@@ -147,11 +147,11 @@ owns it.
 
 | Deferred item | Source | Covered by |
 |---|---|---|
-| Distributed run-claiming (lease + fence + `SKIP LOCKED`) | gust G1-1 (`gust/FEATURES-WORTH-BORROWING.md:88-178`) | **WS1** |
-| `:claim_next` Ash action | REACTOR §4.11 (`REACTOR-ADOPTION.md:670-674`) | **WS1** |
-| `:renew` Ash action (fenced by `(id, claim_token)`) | REACTOR §4.11 (`:675-676`) | **WS1** |
-| `Pooler` GenServer (claim loop → DynamicSupervisor) | REACTOR §4.11 (`:677-678`) | **WS1** |
-| `Reactor.Middleware.Lease` (timer renew + halt on stale token) | REACTOR §4.11 (`:679-680`) | **WS1** |
+| Distributed run-claiming (lease + fence + `SKIP LOCKED`) | gust G1-1 (`gust/FEATURES-WORTH-BORROWING.md:88-178`) | ✅ **WS1 shipped** |
+| `claim_next` (selector; shipped as a raw-SQL CAS primitive, not an Ash action — unit-tested, WS3-triggered) | REACTOR §4.11 (`REACTOR-ADOPTION.md:670-674`) | ✅ **WS1 shipped** |
+| `renew` (fenced by `(id, claim_token)`; raw-SQL, not an Ash action) | REACTOR §4.11 (`:675-676`) | ✅ **WS1 shipped** |
+| `Pooler` GenServer (claim loop → DynamicSupervisor) | REACTOR §4.11 (`:677-678`) | **WS3** (no reactor-reconstruction seam in WS1) |
+| `Reactor.Middleware.Lease` (renew sidecar + halt on stale token) | REACTOR §4.11 (`:679-680`) | ✅ **WS1 shipped** |
 | Lease tuning (60s/15s) + mandatory step idempotency keys | REACTOR §4.11 (`:686-690`); AR-2 §10.1 (`:887-890`) | **WS1** (keys already shipped) |
 | "Lease/fencing for multi-worker execution" (out of scope) | T1-1 (`T1-1-WORKFLOW-EVENT-LOG-PLAN.md:512-513`) | **WS1** |
 | "Lease/fencing claim discipline for workers" (still deferred) | T2-4 (`squidie/FEATURES-WORTH-BORROWING.md:280-294`) | **WS1** |
@@ -160,6 +160,7 @@ owns it.
 | Composer renews parent across waves + gate pause; no release-on-park | AR-2 §10.1 (`:891-900`) | **WS2** |
 | Lease behavior across gate park/resume (`GateResume` re-claims on resuming node) | gust cross-ref (`gust/…:176-177`) | **WS2**, **WS3** |
 | Lease-expiry → continuous dead-node recovery (replaces boot reconciler when clustered) | REACTOR §4.11 (`:687-689`); T1-1 (`:432-434`); §4.8 (`:641-643`) | **WS3** |
+| Single-node intra-node **task-death** (the executor task dies but the node stays up — "No owner-monitor"; today only a node *restart* triggers recovery) | codebase (`run_execution.ex` "Caller-death semantics … No owner-monitor") | **WS3** (the reclaim mandate spans dead-node **and** intra-node task-death) |
 | `owns_recovery?` disabled under clustering with no replacement | codebase (`workflow_recovery.ex:468-472`) | **WS3** |
 | Leader election for singletons (cron scheduler) — prefer `:pg` over advisory-lock | REACTOR §4.11 (`:681-684`) | **WS4** |
 | Avoid gust's session-bound leader-lock partition failure | gust (`:144`) | **WS4** |

@@ -19,6 +19,14 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   @doc """
   Append one event for `run`. `tenant`/`actor` default to the run's own
   tenant + a system actor; `metadata` defaults to `%{}`.
+
+  WS1 lease: an optional `:claim_fence_token` opt is forwarded to
+  `WorkflowEvent.append` via the action `context:` (NOT the payload — it must
+  not be persisted), where `Allocate`'s in-txn fence B compares it to the run's
+  current `claim_token` and rejects a stale-owner status-authority write — a
+  terminal (`run_completed`/`run_failed`) OR the gate flip `approval_requested`
+  (forwarded by `gate_open/3`). Only the leased-executor producers pass it; the
+  other helpers (operator cancel/decide, recovery) never fence their writes.
   """
   @spec append(WorkflowRun.t(), atom(), map() | nil, keyword()) ::
           {:ok, WorkflowEvent.t()} | {:error, term()}
@@ -30,8 +38,18 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
       metadata: Keyword.get(opts, :metadata) || %{}
     }
 
-    WorkflowEvent.append(attrs, tenant: tenant(run, opts), actor: actor(run, opts))
+    event_opts =
+      [tenant: tenant(run, opts), actor: actor(run, opts)] ++
+        fence_context(Keyword.get(opts, :claim_fence_token))
+
+    WorkflowEvent.append(attrs, event_opts)
   end
+
+  # The fence token rides the action `context:` so fence B can read it off
+  # `changeset.context` without persisting it. Absent/nil ⇒ no context key ⇒ the
+  # fence is a no-op (the catch-all in `Allocate.claim_fenced?`).
+  defp fence_context(token) when is_binary(token), do: [context: %{claim_fence_token: token}]
+  defp fence_context(_token), do: []
 
   @doc """
   Append a batch of `{kind, payload}` events for `run` in one transaction —
@@ -91,6 +109,14 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   wraps it `{:ok, _}` — and any `{:error, reason}` from the `with` bubbles up
   to roll back cleanly (never a match-fail).
 
+  WS1 fence B: an optional `:claim_fence_token` opt is forwarded **only** to the
+  `approval_requested` append (not `AgentCase.create`/`case_event` — those are
+  not `WorkflowEvent` appends, and the surrounding transaction rolls them back
+  with it). `GateStep` passes the held lease token, so a stale owner that reaches
+  a gate after a reclaimer rotated the token has its whole `gate_open` rolled
+  back — no duplicate `AgentCase`, no `:awaiting_approval` flip — instead of
+  opening a duplicate gate. nil ⇒ the fence no-ops (degraded/legacy run).
+
   Deliberately does **NOT** broadcast: a gate is announced only after its
   durable resume checkpoint exists, so the runner's `finalize` broadcasts
   `{:gate_requested, …}` *after* persisting the checkpoint (Step 5) — closing
@@ -110,7 +136,11 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
                :approval_requested,
                %{agent_case_id: gate.id, step_name: gate.step_name, kind: gate.kind},
                tenant: tenant,
-               actor: actor
+               actor: actor,
+               # WS1 fence B: a stale owner's gate flip is rejected in-txn, rolling
+               # back the whole gate_open (no duplicate case, no status flip). nil
+               # (operator/legacy callers) ⇒ no-op.
+               claim_fence_token: Keyword.get(opts, :claim_fence_token)
              ),
            {:ok, _case_event} <-
              case_event(

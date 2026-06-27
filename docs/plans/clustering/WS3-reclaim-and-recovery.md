@@ -7,6 +7,19 @@ the load-bearing gotcha.*
 > **What this owns.** Making lease-expiry the continuous dead-node recovery path,
 > and fixing the fact that enabling clustering today *silently disables*
 > stranded-run recovery (README §"the load-bearing gotcha").
+>
+> **Mandate broadened (WS1 hand-off).** WS1 shipped the lease *mechanism* but no
+> consumer of `WorkflowLease.claim_next/1`, because there is **no general
+> "reconstruct a reactor from a stored `WorkflowRun` and run it" seam** (runs
+> execute in-process holding their reactor). So WS3 now also owns: **(1) the
+> Pooler** (the per-node claim→dispatch loop, formerly WS1 Component 4) **and its
+> always-on-vs-`cluster_enabled` gating** (formerly WS1 D2); **(2) the
+> reconstruction/dispatch seam** a claimed orphan needs to actually run; **(3)
+> the production trigger** for WS1's already-shipped-but-dormant `claim_next/1`
+> and the runner/append fence branches. The reclaim mandate spans **both**
+> clustering dead-node reclaim **and** single-node intra-node task-death (the
+> "No owner-monitor" gap — a run whose in-process executor task dies without the
+> node restarting; see README §coverage matrix).
 
 ## The two recovery mechanisms
 

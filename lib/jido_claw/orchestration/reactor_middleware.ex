@@ -411,7 +411,13 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   defp append(run, kind, payload, context) do
     WorkflowLog.append(run, kind, sanitize_payload(kind, payload, context),
       tenant: run.tenant_id,
-      actor: context_actor(context, run)
+      actor: context_actor(context, run),
+      # WS1 fence B: thread the run's held lease token (seeded into the reactor
+      # context by `ReactorRunner.run/3` / `GateResume`) so `complete/2`'s
+      # `run_completed` and `error/2`'s `run_failed` are rejected in-transaction
+      # if the row's token has rotated to a reclaimer. nil for a degraded/legacy
+      # caller ⇒ the fence no-ops. `Map.get/2` tolerates the bare-map context.
+      claim_fence_token: Map.get(context, :claim_token)
     )
   end
 

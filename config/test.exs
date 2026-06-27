@@ -15,6 +15,12 @@ config :jido_claw, :reasoning_telemetry_sync, true
 # directly inside the Ecto sandbox, so an ungated boot scan never runs.
 config :jido_claw, :workflow_recovery, enabled?: false
 
+# WS1 lease: a very large `renew_seconds` so the production auto-renew timer
+# never races a test inside its own scope — tests drive the sidecar explicitly
+# via the `{:lease_tick, from}` seam. `lease_seconds` keeps the prod default so
+# `fence_decision/3`'s lease-window math is exercised realistically.
+config :jido_claw, :workflow_lease, lease_seconds: 60, renew_seconds: 86_400
+
 # Output shaping off in test so the existing 10KB-truncation tests stay
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false

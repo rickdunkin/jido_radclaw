@@ -9,6 +9,11 @@ defmodule JidoClaw.Orchestration.GateStep do
   `{:halt, agent_case_id}`. The runner's `finalize` then persists the durable
   resume checkpoint and broadcasts the gate request.
 
+  WS1 fence B: it threads the held lease `context[:claim_token]` into
+  `gate_open/3`, so a stale (reclaimed) owner's gate open is rejected
+  in-transaction — the whole `gate_open` rolls back rather than opening a
+  duplicate gate and flipping the run out from under the rotated-token winner.
+
   Position the gate **before** the irreversible downstream write: approve runs
   the downstream steps, reject cancels the run before they execute (Decision 9).
   Order downstream steps after the gate with `wait_for`; a step that needs the
@@ -61,7 +66,13 @@ defmodule JidoClaw.Orchestration.GateStep do
 
     case WorkflowLog.gate_open(run, attrs,
            tenant: run.tenant_id,
-           actor: context[:actor] || Actor.system(run.tenant_id)
+           actor: context[:actor] || Actor.system(run.tenant_id),
+           # WS1 fence B: thread the held lease token (seeded into the reactor
+           # context by `ReactorRunner.run/3` / `GateResume`) so a stale owner that
+           # reaches the gate after a reclaim has its `gate_open` rolled back rather
+           # than opening a duplicate gate + flipping the run. nil for a
+           # degraded/legacy run ⇒ the fence no-ops.
+           claim_fence_token: context[:claim_token]
          ) do
       {:ok, agent_case} -> {:halt, agent_case.id}
       {:error, reason} -> {:error, reason}

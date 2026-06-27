@@ -1,0 +1,647 @@
+defmodule JidoClaw.Orchestration.WorkflowLeaseTest.OkStep do
+  @moduledoc false
+  use Reactor.Step
+
+  @impl Reactor.Step
+  def run(_args, _context, _opts), do: {:ok, :done}
+end
+
+defmodule JidoClaw.Orchestration.WorkflowLeaseTest.OkReactor do
+  @moduledoc false
+  use Reactor
+
+  step(:only, JidoClaw.Orchestration.WorkflowLeaseTest.OkStep)
+  return(:only)
+end
+
+defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
+  @moduledoc """
+  WS1 lease core: the stamp/renew/claim_next primitives, the `Lease.Middleware`
+  + `Sidecar`, self-claim on launch, and the two fences (runner-side A,
+  append-side B).
+
+  `async: false` + the shared sandbox (`JidoClaw.TenantCase`) so the executor
+  task and its lease sidecar — both off the test process — share the sandbox
+  connection. Expired leases / rotated tokens are seeded via raw `Repo.query!`
+  (the `retention_sweeper_test` backdating precedent); the production auto-renew
+  timer is parked by `renew_seconds: 86_400` in test config, so tests drive the
+  sidecar through the `{:lease_tick, from}` seam.
+  """
+  use JidoClaw.TenantCase, async: false
+
+  alias JidoClaw.Gates.TestIrreversibleWrite
+  alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.GateStep
+  alias JidoClaw.Orchestration.ReactorRunner
+  alias JidoClaw.Orchestration.Reactors.BlockingTestReactor
+  alias JidoClaw.Orchestration.RunExecution
+  alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLease
+  alias JidoClaw.Orchestration.WorkflowLease.Middleware, as: LeaseMiddleware
+  alias JidoClaw.Orchestration.WorkflowLeaseTest.OkReactor
+  alias JidoClaw.Orchestration.WorkflowLog
+  alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Repo
+  alias Reactor.Builder
+
+  @lease_registry JidoClaw.Orchestration.LeaseRegistry
+
+  setup do
+    tenant = seed_tenant("lease")
+
+    # Backstop: kill any executor/sidecar leaked by an assertion failure before
+    # a per-launch on_exit tracked it. Safe only because the file is async:
+    # false (no other test's tasks are on these singletons).
+    on_exit(fn ->
+      for sup <- [
+            JidoClaw.Orchestration.RunTaskSupervisor,
+            JidoClaw.Orchestration.LeaseTaskSupervisor
+          ],
+          pid <- Task.Supervisor.children(sup) do
+        Process.exit(pid, :kill)
+      end
+    end)
+
+    {:ok, tenant: tenant, actor: actor_for(tenant)}
+  end
+
+  # ── 1. claim_next: lock pin + selection ────────────────────────────────────
+
+  describe "claim_next/1 lock + selection" do
+    test "the :claimable query carries FOR UPDATE SKIP LOCKED down to the SQL" do
+      query =
+        WorkflowRun.query_to_claimable()
+        |> Ash.Query.limit(1)
+        |> Ash.Query.lock("FOR UPDATE SKIP LOCKED")
+
+      assert query.lock == "FOR UPDATE SKIP LOCKED"
+
+      %{query: ecto_query} = Ash.data_layer_query!(query)
+      {sql, _params} = Repo.to_sql(:all, ecto_query)
+      assert sql =~ "FOR UPDATE"
+      assert sql =~ "SKIP LOCKED"
+    end
+
+    test "selects oldest-first, stamps once, exhausts to :none; claimed/future skipped", ctx do
+      # Three pending-unclaimed runs (claimable), backdated for a deterministic
+      # oldest-first order.
+      oldest = seed_run(ctx, "oldest")
+      mid = seed_run(ctx, "mid")
+      newest = seed_run(ctx, "newest")
+      backdate_inserted!(oldest.id, 180)
+      backdate_inserted!(mid.id, 120)
+      backdate_inserted!(newest.id, 60)
+
+      # A future-expiry claimed run and a terminal run — both NON-claimable.
+      future = seed_run(ctx, "future")
+      set_claim!(future.id, Ash.UUID.generate(), 600)
+      terminal = seed_run(ctx, "terminal")
+      set_status!(terminal.id, "failed")
+
+      assert {:ok, %WorkflowRun{} = a} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = b} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = c} = WorkflowLease.claim_next()
+      assert :none = WorkflowLease.claim_next()
+
+      assert [a.id, b.id, c.id] == [oldest.id, mid.id, newest.id]
+      assert Enum.all?([a, b, c], &is_binary(&1.claim_token))
+      # The non-claimable rows were never touched.
+      assert is_nil(reload_global(future.id).claim_token) == false
+      assert reload_global(terminal.id).status == :failed
+    end
+  end
+
+  # ── 2. fence: renew/2 ───────────────────────────────────────────────────────
+
+  describe "renew/2 fence" do
+    test "renews on the current token, fails (0) on a rotated one", ctx do
+      run = seed_run(ctx)
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      assert {:ok, 1} = WorkflowLease.renew(run.id, token)
+
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+
+      assert {:ok, 0} = WorkflowLease.renew(run.id, token)
+      assert {:ok, 1} = WorkflowLease.renew(run.id, rotated)
+    end
+  end
+
+  # ── 3. Lease middleware halt (fence A via the sidecar kill) ─────────────────
+
+  describe "lease middleware halt (fence A)" do
+    test "a rotated token fences the live executor: kill → {:error, :fenced}, no terminal", ctx do
+      {launcher, run_id, _executor} = launch_blocking(ctx)
+
+      original = reload_global(run_id)
+      assert is_binary(original.claim_token)
+
+      # A reclaimer rotates the token out from under the live owner.
+      reclaimer_token = Ash.UUID.generate()
+      rotate_token!(run_id, reclaimer_token)
+
+      # Drive the sidecar's heartbeat manually (prod timer is parked in test).
+      assert [{sidecar, _meta}] = Registry.lookup(@lease_registry, run_id)
+      send(sidecar, {:lease_tick, self()})
+      # The renew with the stale token renews 0 rows → fence_decision → kill.
+      assert_receive {:lease_ticked, {:ok, 0}}, 5_000
+
+      # The kill surfaces as the clean fenced stop, with NO terminal written.
+      assert {:error, :fenced, %WorkflowRun{status: :running} = run} = Task.await(launcher, 5_000)
+      assert run.claim_token == reclaimer_token
+
+      run_kinds = kinds(run_id, ctx)
+      refute :run_failed in run_kinds
+      refute :run_completed in run_kinds
+    end
+  end
+
+  # ── 4. reclaim selection (expired-claimed re-stamped; future skipped) ───────
+
+  describe "reclaim selection" do
+    test "an expired-claimed run is reclaimed + re-stamped; a future-expiry one is skipped",
+         ctx do
+      expired = seed_run(ctx, "expired")
+      set_status!(expired.id, "running")
+      old_token = Ash.UUID.generate()
+      set_claim!(expired.id, old_token, -120)
+
+      fresh = seed_run(ctx, "fresh")
+      set_status!(fresh.id, "running")
+      fresh_token = Ash.UUID.generate()
+      set_claim!(fresh.id, fresh_token, 600)
+
+      assert {:ok, %WorkflowRun{} = claimed} = WorkflowLease.claim_next()
+      assert claimed.id == expired.id
+      assert is_binary(claimed.claim_token) and claimed.claim_token != old_token
+
+      # The future-expiry run was never a candidate — nothing left claimable.
+      assert :none = WorkflowLease.claim_next()
+      assert reload_global(fresh.id).claim_token == fresh_token
+    end
+  end
+
+  # ── 5. status untouched by claim ops ────────────────────────────────────────
+
+  describe "projection-ownership invariant" do
+    test "stamp/renew never write status; the projection still flips it", ctx do
+      run = seed_run(ctx)
+      token = Ash.UUID.generate()
+
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      assert {:ok, 1} = WorkflowLease.renew(run.id, token)
+      assert reload_global(run.id).status == :pending
+
+      assert {:ok, _event} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+      assert reload_global(run.id).status == :running
+    end
+  end
+
+  # ── 6. single-node identity (byte-identical + self-claimed) ─────────────────
+
+  describe "single-node self-claim" do
+    test "a module reactor completes with the usual events and is self-claimed", ctx do
+      assert {:ok, :done, run} = ReactorRunner.run(OkReactor, %{}, scope(ctx))
+      assert run.status == :completed
+
+      # Self-claimed: the execution winner stamped its identity + token, and the
+      # terminal leaves the claim columns intact (only the checkpoint is cleared).
+      reloaded = reload_global(run.id)
+      assert is_binary(reloaded.claim_token)
+      assert reloaded.claimed_by == to_string(Node.self())
+
+      # The lease middleware emits no events — the timeline is byte-identical.
+      assert kinds(run.id, ctx) ==
+               [:run_started, :step_started, :step_completed, :run_completed]
+    end
+  end
+
+  # ── 7. terminal-append fence (fence B) ──────────────────────────────────────
+
+  describe "terminal-append fence (fence B)" do
+    test "a stale-token terminal is rejected in-transaction; the current token succeeds", ctx do
+      run = seed_run(ctx)
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+
+      # Stale fence token (the old owner) → rejected, run stays :running.
+      assert {:error, _} =
+               WorkflowLog.append(
+                 run,
+                 :run_completed,
+                 %{},
+                 Keyword.put(scope(ctx), :claim_fence_token, token)
+               )
+
+      assert reload_global(run.id).status == :running
+
+      # The current owner's token → the terminal lands.
+      assert {:ok, _} =
+               WorkflowLog.append(
+                 run,
+                 :run_completed,
+                 %{},
+                 Keyword.put(scope(ctx), :claim_fence_token, rotated)
+               )
+
+      assert reload_global(run.id).status == :completed
+    end
+  end
+
+  # ── 8. same-node duplicate (loser never reaches Lease.init) ─────────────────
+
+  describe "same-node duplicate" do
+    test "a duplicate run_killable returns {:duplicate, _} and never re-stamps", ctx do
+      {_launcher, run_id, _executor} = launch_blocking(ctx)
+      original = reload_global(run_id)
+      assert is_binary(original.claim_token)
+
+      # A second executor for the same run id loses RunRegistry registration and
+      # returns the conflict sentinel without running the reactor — so Lease.init
+      # (and the stamp) is never reached.
+      assert {:duplicate, _pid} =
+               RunExecution.run_killable(OkReactor, %{}, %{},
+                 run_id: run_id,
+                 tenant_id: ctx.tenant
+               )
+
+      assert reload_global(run_id).claim_token == original.claim_token
+    end
+  end
+
+  # ── 9. CAS / cross-node duplicate ───────────────────────────────────────────
+
+  describe "stamp/4 compare-and-swap" do
+    test "claims on a matching expected token, loses on a stale one (nil-safe)", ctx do
+      run = seed_run(ctx)
+
+      # nil expected on a never-claimed row → claimed (genesis).
+      t1 = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, t1, nil)
+
+      # A stale expected → lost, no mutation.
+      assert {:ok, :lost} = WorkflowLease.stamp(run.id, Ash.UUID.generate(), Ash.UUID.generate())
+      assert reload_global(run.id).claim_token == t1
+
+      # The matching current token → claimed (rotates to t2).
+      t2 = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, t2, t1)
+      assert reload_global(run.id).claim_token == t2
+
+      # nil expected on a now-non-nil row → lost.
+      assert {:ok, :lost} = WorkflowLease.stamp(run.id, Ash.UUID.generate(), nil)
+    end
+  end
+
+  # ── 10 & 16. middleware ordering / resume normalization ─────────────────────
+
+  describe "normalize_middleware/1" do
+    test "prepends [WorkflowLease.Middleware, ReactorMiddleware] when ReactorMiddleware is declared" do
+      {:ok, base} =
+        Builder.add_middleware(Builder.new(), JidoClaw.Orchestration.ReactorMiddleware)
+
+      assert {:ok, normalized} = ReactorRunner.normalize_middleware(base)
+
+      assert [
+               JidoClaw.Orchestration.WorkflowLease.Middleware,
+               JidoClaw.Orchestration.ReactorMiddleware
+             ] = normalized.middleware
+    end
+
+    test "re-establishes the lease on a reactor whose middleware lacks it (resume path)" do
+      base = Builder.new()
+      assert base.middleware == []
+
+      assert {:ok, normalized} = ReactorRunner.normalize_middleware(base)
+
+      assert [
+               JidoClaw.Orchestration.WorkflowLease.Middleware,
+               JidoClaw.Orchestration.ReactorMiddleware
+             ] = normalized.middleware
+    end
+  end
+
+  # ── 11. expired *claimed* :pending is selectable ────────────────────────────
+
+  describe "claimable shapes" do
+    test "an expired claimed :pending run (crash-after-stamp shape) is claimable", ctx do
+      run = seed_run(ctx)
+      # :pending + a non-nil but expired claim — the crash-after-stamp shape.
+      set_claim!(run.id, Ash.UUID.generate(), -90)
+
+      assert {:ok, claimable} = WorkflowLease.claim_next()
+      assert claimable.id == run.id
+    end
+  end
+
+  # ── 12. sidecar readiness fail-closed vs degrade ────────────────────────────
+
+  describe "sidecar readiness" do
+    @tag :capture_log
+    test "a sidecar that can't arm fails the claim under clustering, degrades single-node", ctx do
+      # Inject a start failure by pre-owning the run-id key so the sidecar's
+      # Registry.register loses and it exits before signalling ready.
+      run_a = seed_run(ctx, "fail-closed")
+      {:ok, _} = Registry.register(@lease_registry, run_a.id, :blocker)
+      ctx_a = %{claim_token: Ash.UUID.generate(), workflow_run: run_a}
+
+      with_cluster_enabled(true, fn ->
+        assert {:error, {:lease_sidecar, _reason}} = LeaseMiddleware.init(ctx_a)
+      end)
+
+      run_b = seed_run(ctx, "degrade")
+      {:ok, _} = Registry.register(@lease_registry, run_b.id, :blocker)
+      ctx_b = %{claim_token: Ash.UUID.generate(), workflow_run: run_b}
+
+      with_cluster_enabled(false, fn ->
+        assert {:ok, ^ctx_b} = LeaseMiddleware.init(ctx_b)
+      end)
+    end
+  end
+
+  # ── 13. fail-closed renew (pure fence_decision) ─────────────────────────────
+
+  describe "fence_decision/3" do
+    test "is pure and fails closed" do
+      lease_ms = 60_000
+
+      assert :renewed = WorkflowLease.fence_decision({:ok, 1}, 0, lease_ms)
+      assert :kill = WorkflowLease.fence_decision({:ok, 0}, 0, lease_ms)
+      # DB error past the lease window → kill (fail-closed).
+      assert :kill = WorkflowLease.fence_decision({:error, :boom}, lease_ms, lease_ms)
+      assert :kill = WorkflowLease.fence_decision({:error, :boom}, lease_ms + 1, lease_ms)
+      # DB error still inside the window → bounded retry.
+      assert {:retry, ms} = WorkflowLease.fence_decision({:error, :boom}, 0, lease_ms)
+      assert ms > 0
+    end
+  end
+
+  # ── 14. raw-SQL UUID binding round-trip ─────────────────────────────────────
+
+  describe "raw-SQL UUID binding" do
+    test "stamp + renew round-trip the dumped id/token", ctx do
+      run = seed_run(ctx)
+      token = Ash.UUID.generate()
+
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      reloaded = reload_global(run.id)
+      assert reloaded.claim_token == token
+      assert %DateTime{} = reloaded.claim_expires_at
+
+      # renew matches the dumped token exactly (binary binding is consistent).
+      assert {:ok, 1} = WorkflowLease.renew(run.id, token)
+    end
+  end
+
+  # ── 15. cancel before Lease.init ────────────────────────────────────────────
+
+  describe "cancel before Lease.init" do
+    test "a terminal landing first makes the late stamp a no-op → no terminal, no registry",
+         ctx do
+      run = seed_run(ctx)
+      assert {:ok, _} = WorkflowLog.append(run, :run_cancelled, %{}, scope(ctx))
+      cancelled = reload_global(run.id)
+      assert cancelled.status == :cancelled
+
+      token = Ash.UUID.generate()
+      context = %{claim_token: token, workflow_run: cancelled}
+
+      # The status-guarded stamp returns {:ok, :lost} (cancelled ∉ pending/running).
+      assert {:error, {:lease_lost, _id}} = LeaseMiddleware.init(context)
+
+      # Nothing was claimed, nothing registered, status untouched.
+      assert is_nil(reload_global(run.id).claim_token)
+      assert Registry.lookup(@lease_registry, run.id) == []
+      assert reload_global(run.id).status == :cancelled
+
+      # The runner maps the abort to the clean cancellation envelope.
+      opts = Keyword.put(scope(ctx), :claim_token, token)
+
+      assert {:error, :cancelled, %WorkflowRun{status: :cancelled}} =
+               ReactorRunner.finalize({:error, {:lease_lost, run.id}}, cancelled, opts)
+    end
+  end
+
+  # ── 17. status-guarded CAS on a non-cancel terminal ─────────────────────────
+
+  describe "status-guarded CAS" do
+    test "a matching-token stamp on a :failed/:completed row is a no-op (not just cancel-shaped)",
+         ctx do
+      for status <- ["failed", "completed"] do
+        run = seed_run(ctx, "terminal-#{status}")
+        token = Ash.UUID.generate()
+        assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+        before = reload_global(run.id)
+        set_status!(run.id, status)
+
+        # Even with the MATCHING expected token, the status guard refuses.
+        assert {:ok, :lost} = WorkflowLease.stamp(run.id, Ash.UUID.generate(), token)
+
+        after_guard = reload_global(run.id)
+        assert after_guard.claim_token == before.claim_token
+        assert after_guard.claimed_by == before.claimed_by
+      end
+    end
+  end
+
+  # ── 18. gate-halt fence (fence B gate flip + fence A halt) ──────────────────
+
+  describe "gate-halt fence" do
+    test "fence B rejects a stale approval_requested; the current token flips the gate", ctx do
+      run = seed_run(ctx)
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+
+      payload = %{agent_case_id: Ash.UUID.generate()}
+
+      # Stale fence token (the old owner) → rejected in-txn, run stays :running.
+      assert {:error, _} =
+               WorkflowLog.append(
+                 run,
+                 :approval_requested,
+                 payload,
+                 Keyword.put(scope(ctx), :claim_fence_token, token)
+               )
+
+      assert reload_global(run.id).status == :running
+
+      # The current owner's token → the gate flip lands.
+      assert {:ok, _} =
+               WorkflowLog.append(
+                 run,
+                 :approval_requested,
+                 payload,
+                 Keyword.put(scope(ctx), :claim_fence_token, rotated)
+               )
+
+      assert reload_global(run.id).status == :awaiting_approval
+    end
+
+    test "fence A on a rotated-token halt writes no checkpoint", ctx do
+      run = seed_run(ctx)
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      # A legit gate flip under the held token T parks the run at the gate.
+      assert {:ok, _} =
+               WorkflowLog.append(
+                 run,
+                 :approval_requested,
+                 %{agent_case_id: Ash.UUID.generate()},
+                 Keyword.put(scope(ctx), :claim_fence_token, token)
+               )
+
+      reloaded = reload_global(run.id)
+      assert reloaded.status == :awaiting_approval
+
+      # A reclaimer rotates the token AFTER approval_requested commits but BEFORE
+      # the checkpoint write (the append→checkpoint TOCTOU).
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+
+      # scope(ctx) tenant/actor are REQUIRED: finalize's reload reads
+      # WorkflowRun.by_id(tenant:, actor:) and, on a nil-tenant miss, falls back
+      # to the stale in-memory run — which carries the pre-rotation token and
+      # would defeat the fence.
+      opts = Keyword.merge(scope(ctx), claim_token: token, inputs: %{}, reactor_module: nil)
+
+      # The reactor arg is inert: the fence short-circuits before handle_gate_pause.
+      assert {:error, :fenced, %WorkflowRun{}} =
+               ReactorRunner.finalize({:halted, Builder.new()}, reloaded, opts)
+
+      assert is_nil(reload_global(run.id).encrypted_resume_checkpoint)
+    end
+
+    test "GateStep.run/3 threads the held token; a stale owner's gate open rolls back", ctx do
+      run = seed_run(ctx)
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+      running = reload_global(run.id)
+
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+
+      assert {:error, _} =
+               GateStep.run(
+                 %{},
+                 %{workflow_run: running, actor: ctx.actor, claim_token: token},
+                 gate_module: TestIrreversibleWrite,
+                 step_name: "gate",
+                 details: %{}
+               )
+
+      # The whole gate_open transaction rolled back: no flip, no AgentCase.
+      assert reload_global(run.id).status == :running
+      assert {:ok, []} = AgentCase.pending_for_run(run.id, scope(ctx))
+    end
+  end
+
+  # ── helpers ─────────────────────────────────────────────────────────────────
+
+  defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]
+
+  defp seed_run(%{tenant: tenant, actor: actor}, name \\ "lease-test") do
+    {:ok, run} =
+      WorkflowRun.create(%{name: name, workflow_type: "reactor"}, tenant: tenant, actor: actor)
+
+    run
+  end
+
+  defp reload_global(run_id) do
+    {:ok, %WorkflowRun{} = run} = WorkflowRun.by_id_global(run_id)
+    run
+  end
+
+  defp kinds(run_id, ctx) do
+    {:ok, events} = WorkflowEvent.for_run(run_id, scope(ctx))
+    Enum.map(events, & &1.kind)
+  end
+
+  # Launch a forever-blocking run via the full runner path (so it stamps its
+  # lease + starts a sidecar), and return the launcher Task, run id, and executor
+  # pid. Mirrors cancellation_test: raw-pid kills in on_exit (off the owner
+  # process, where Task.shutdown raises); killing a dead pid is a no-op.
+  defp launch_blocking(ctx) do
+    test_pid = self()
+
+    launcher =
+      Task.async(fn ->
+        ReactorRunner.run(
+          BlockingTestReactor,
+          %{},
+          Keyword.put(scope(ctx), :context, %{test_pid: test_pid})
+        )
+      end)
+
+    assert_receive {:blocking_step_started, _step_pid, run_id}, 5_000
+    assert {:ok, executor, _tenant} = RunExecution.lookup(run_id)
+
+    launcher_pid = launcher.pid
+
+    on_exit(fn ->
+      Process.exit(executor, :kill)
+      Process.exit(launcher_pid, :kill)
+    end)
+
+    {launcher, run_id, executor}
+  end
+
+  defp with_cluster_enabled(value, fun) do
+    prev = Application.get_env(:jido_claw, :cluster_enabled, false)
+    Application.put_env(:jido_claw, :cluster_enabled, value)
+
+    try do
+      fun.()
+    after
+      Application.put_env(:jido_claw, :cluster_enabled, prev)
+    end
+  end
+
+  # -- raw SQL seeding (the retention_sweeper_test backdating precedent) --
+
+  defp set_claim!(run_id, token, expires_in_seconds) do
+    Repo.query!(
+      "UPDATE workflow_runs SET claim_token = $1, claimed_by = $2, " <>
+        "claim_expires_at = now() + ($3 || ' seconds')::interval WHERE id = $4",
+      [dump_token(token), "seed-node", to_string(expires_in_seconds), Ecto.UUID.dump!(run_id)]
+    )
+  end
+
+  defp rotate_token!(run_id, token) do
+    Repo.query!(
+      "UPDATE workflow_runs SET claim_token = $1 WHERE id = $2",
+      [Ecto.UUID.dump!(token), Ecto.UUID.dump!(run_id)]
+    )
+  end
+
+  defp set_status!(run_id, status) do
+    Repo.query!(
+      "UPDATE workflow_runs SET status = $1 WHERE id = $2",
+      [status, Ecto.UUID.dump!(run_id)]
+    )
+  end
+
+  defp backdate_inserted!(run_id, seconds_ago) do
+    Repo.query!(
+      "UPDATE workflow_runs SET inserted_at = now() - ($1 || ' seconds')::interval WHERE id = $2",
+      [to_string(seconds_ago), Ecto.UUID.dump!(run_id)]
+    )
+  end
+
+  defp dump_token(nil), do: nil
+  defp dump_token(token), do: Ecto.UUID.dump!(token)
+end

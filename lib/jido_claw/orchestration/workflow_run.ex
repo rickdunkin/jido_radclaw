@@ -21,7 +21,12 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     extensions: [AshCloak]
 
   policies do
-    bypass action([:by_id_global, :list_non_terminal_global, :referencing_prototype_global]) do
+    bypass action([
+             :by_id_global,
+             :list_non_terminal_global,
+             :referencing_prototype_global,
+             :claimable
+           ]) do
       authorize_if(always())
     end
 
@@ -88,6 +93,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:list_active)
     define(:list_by_project, action: :by_project)
     define(:list_non_terminal_global)
+    define(:claimable)
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
     define(:by_idempotency_key, args: [:idempotency_key], get?: true)
@@ -227,6 +233,25 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
         expr(
           status in [:pending, :running, :awaiting_approval] and
             config["premises"]["prototype_id"] == ^arg(:prototype_id)
+        )
+      )
+    end
+
+    # §4.11 lease reclaim scan (WS1, WS3-triggered): a never-claimed `:pending`
+    # run, or a `:pending`/`:running` run whose lease lapsed; oldest-first.
+    # Cross-tenant system scan by `WorkflowLease.claim_next/1` (policy-bypassed
+    # above + `multitenancy(:bypass)`, like `list_non_terminal_global`).
+    read :claimable do
+      description("Cross-tenant pending-unclaimed or lease-expired runs (WS1 reclaim scan).")
+      public?(false)
+      multitenancy(:bypass)
+      prepare(build(sort: [inserted_at: :asc]))
+
+      filter(
+        expr(
+          (status == :pending and is_nil(claim_token)) or
+            (status in [:pending, :running] and not is_nil(claim_expires_at) and
+               claim_expires_at < now())
         )
       )
     end

@@ -254,6 +254,13 @@ config :jido_claw, :triage_sensitive_deadline_ms, 1_800_000
 # tests drive WorkflowRecovery.reconcile_all/0 directly inside the sandbox.
 config :jido_claw, :workflow_recovery, enabled?: true
 
+# WS1 workflow lease (JidoClaw.Orchestration.WorkflowLease). Durable owner-fence
+# for a WorkflowRun: a run is self-claimed on launch and the lease heartbeat
+# renews every `renew_seconds`; a fenced (superseded) executor is killed before
+# it can write a terminal. Single-node stays byte-identical (nothing expires).
+# `lease_seconds` is the claim window; `renew_seconds` the heartbeat interval.
+config :jido_claw, :workflow_lease, lease_seconds: 60, renew_seconds: 15
+
 # AR-5 central doctrine injection (JidoClaw.Doctrine → spawn/skill sub-agents).
 # Kill switch: disabling restores legacy no-doctrine worker behavior.
 config :jido_claw, :doctrine, enabled?: true
