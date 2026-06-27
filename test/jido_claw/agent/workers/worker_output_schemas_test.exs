@@ -113,7 +113,8 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                    %{
                      "topic" => "supervision tree",
                      "detail" => "Application boots Core then Gateway",
-                     "references" => ["lib/jido_claw/application.ex"]
+                     "references" => ["lib/jido_claw/application.ex"],
+                     "confidence" => "likely"
                    }
                  ],
                  "artifacts" => %{}
@@ -124,6 +125,10 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       assert is_list(parsed.findings)
       [finding] = parsed.findings
       assert finding.topic == "supervision tree"
+      # AR-7: the top-level `confidence` is an ATOM enum (low|medium|high), but the
+      # per-finding evidence tag is a STRING enum (likely|unsure) — clean artifact
+      # round-trip — and is REQUIRED, so the fixture above must carry it.
+      assert finding.confidence == "likely"
     end
 
     # AR-4: the `planner` (a `researcher`) self-reports `plan-ready` / `scope-shift`
@@ -154,6 +159,27 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "summary" => "Looked at the module graph",
                  "confidence" => "medium",
                  "findings" => [],
+                 "artifacts" => %{}
+               })
+    end
+
+    # AR-7: each finding's `confidence` evidence tag is REQUIRED (Zoi default,
+    # mirroring the reviewer finding's required `confidence`). A finding that omits
+    # it is rejected at the schema layer; `on_validation_error: :repair` recovers a
+    # transient omission at runtime.
+    test "rejects a finding missing the now-required per-finding confidence tag" do
+      assert {:error, _} =
+               Output.parse(output_for(Researcher), %{
+                 "summary" => "Looked at the module graph",
+                 "status" => "completed",
+                 "confidence" => "medium",
+                 "findings" => [
+                   %{
+                     "topic" => "supervision tree",
+                     "detail" => "Application boots Core then Gateway",
+                     "references" => ["lib/jido_claw/application.ex"]
+                   }
+                 ],
                  "artifacts" => %{}
                })
     end

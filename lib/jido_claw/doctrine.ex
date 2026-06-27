@@ -56,6 +56,15 @@ defmodule JidoClaw.Doctrine do
                        "doctrine",
                        "emit_signals.md"
                      ])
+  @confidence_tagging_priv Path.join([
+                             __DIR__,
+                             "..",
+                             "..",
+                             "priv",
+                             "defaults",
+                             "doctrine",
+                             "confidence_tagging.md"
+                           ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
@@ -64,6 +73,7 @@ defmodule JidoClaw.Doctrine do
   @external_resource @system_verify_priv
   @external_resource @fixer_contract_priv
   @external_resource @emit_signals_priv
+  @external_resource @confidence_tagging_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
@@ -72,7 +82,8 @@ defmodule JidoClaw.Doctrine do
     reviewer_contract: String.trim(File.read!(@reviewer_contract_priv)),
     system_verify: String.trim(File.read!(@system_verify_priv)),
     fixer_contract: String.trim(File.read!(@fixer_contract_priv)),
-    emit_signals: String.trim(File.read!(@emit_signals_priv))
+    emit_signals: String.trim(File.read!(@emit_signals_priv)),
+    confidence_tagging: String.trim(File.read!(@confidence_tagging_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -84,6 +95,16 @@ defmodule JidoClaw.Doctrine do
   # confidence tagging). `verifier` does NOT — it judges with a different schema
   # (`pass`/`fail` + confidence + reasoning), so the field-shape contract must not
   # be injected into it.
+  #
+  # AR-7: the standalone :confidence_tagging slice (inline per-claim
+  # `[likely]`/`[unsure]` tagging in prose + the source-URL rule) reaches the 10
+  # NON-reviewer templates. The reviewer family (`reviewer`, `sketch_reviewer`,
+  # `system_verifier`) is EXCLUDED — `:reviewer_contract` already carries the
+  # equivalent per-finding `confidence` tag, so adding it there would duplicate the
+  # contract (and trip the content-overlap smell). The tag is structurally enforced
+  # only on `researcher` findings (a required Zoi enum) and the reviewer family's
+  # findings (AR-3); for the other non-reviewer workers it is a prompt-enforced
+  # convention on their prose output (`summary`/`notes`/`reasoning`).
   @template_slices %{
     # AR-4: `coder` (backs both `implementer` + `test-author`) and `researcher`
     # (the `planner`) now self-report via a `signals` field, so they ALSO get the
@@ -93,32 +114,32 @@ defmodule JidoClaw.Doctrine do
     # planner, `scope-shift` when scope grows). The composer loop-guarantees the
     # baseline `code-written` / `plan-ready` (`enforce_completion_signals/2`), but
     # `tests-ready` / `scope-shift` are self-reported only — so the steering matters.
-    "coder" => [:base, :artifacts, :emit_signals],
+    "coder" => [:base, :artifacts, :emit_signals, :confidence_tagging],
     # AR-4: the self-heal fixer is a producing worker (`:artifacts`, like `coder`)
     # PLUS the new `:fixer_contract` slice — the prose half of `fixer_result/0`:
     # resolve the open findings, then self-report the touched domains (the
     # `signals` the loop derives the re-review set from). Required by the drift
     # guard (`doctrine_test.exs`, `template_names() == Templates.names()`).
-    "fixer" => [:base, :artifacts, :fixer_contract],
-    "refactorer" => [:base, :artifacts],
-    "docs_writer" => [:base, :artifacts],
-    "researcher" => [:base, :artifacts, :emit_signals],
-    "test_runner" => [:base, :artifacts],
+    "fixer" => [:base, :artifacts, :fixer_contract, :confidence_tagging],
+    "refactorer" => [:base, :artifacts, :confidence_tagging],
+    "docs_writer" => [:base, :artifacts, :confidence_tagging],
+    "researcher" => [:base, :artifacts, :emit_signals, :confidence_tagging],
+    "test_runner" => [:base, :artifacts, :confidence_tagging],
     "reviewer" => [:base, :reviewer_min, :reviewer_contract],
-    "verifier" => [:base, :reviewer_min],
-    "sketch_build" => [:base, :artifacts],
+    "verifier" => [:base, :reviewer_min, :confidence_tagging],
+    "sketch_build" => [:base, :artifacts, :confidence_tagging],
     "sketch_reviewer" => [:base, :reviewer_min, :reviewer_contract],
     # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
     # `:artifacts` slice (no new priv file). Required: the drift guard
     # (`doctrine_test.exs`, `template_names() == names()`) fails without it.
-    "sketch_build_exec" => [:base, :artifacts],
+    "sketch_build_exec" => [:base, :artifacts, :confidence_tagging],
     # AR-8c: the system-path workers. The executor is a producer (`:artifacts`,
     # like `coder`); the verifier is a read-only judge (`:reviewer_min` +
     # `:reviewer_contract`, since it shares `reviewer_verdict/0`) PLUS the new
     # `:system_verify` slice that defines what "verified" means on the real
     # machine (idempotent re-check / state assertion / exit code; cite the
     # evidence). Both required by the drift guard (`template_names() == names()`).
-    "system_executor" => [:base, :artifacts],
+    "system_executor" => [:base, :artifacts, :confidence_tagging],
     "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify]
   }
 

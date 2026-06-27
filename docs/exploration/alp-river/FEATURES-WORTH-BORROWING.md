@@ -24,7 +24,40 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
-## Status reconciliation — 2026-06-26 (AR-6 shipped; only AR-7's pervasive extension + AR-2's deferred tails remain)
+## Status reconciliation — 2026-06-27 (AR-7 shipped in full; only AR-2's deferred tails remain)
+
+**This section supersedes the "only AR-7's pervasive extension remains" claims in the
+2026-06-26 reconciliation and every entry below.** The Alp River source-audit baseline is
+unchanged; only jido_radclaw's implementation has moved. AR-7 was the last open *independent*
+borrow.
+
+- **AR-7 (confidence-tagging) — DONE** (2026-06-27). The pervasive convention now ships as a
+  standalone reach-all doctrine slice. `priv/defaults/doctrine/confidence_tagging.md` (registered
+  in `JidoClaw.Doctrine` as the 8th slice) defines the `likely`/`unsure` evidence tag as a
+  **per-claim or per-finding** marker — set in a finding's own `confidence` field where one
+  exists, otherwise tagged inline in prose (`[likely]`/`[unsure]`) — plus the rule that a worker
+  with an *overall* confidence field on another scale (`low`/`medium`/`high`) keeps that scale and
+  never emits `likely`/`unsure` into it, and the **source-URL requirement** for web-sourced
+  claims. It reaches the **10 non-reviewer** sub-agent templates (`coder`, `fixer`, `refactorer`,
+  `docs_writer`, `researcher`, `test_runner`, `verifier`, `sketch_build`, `sketch_build_exec`,
+  `system_executor`); the reviewer family (`reviewer`, `sketch_reviewer`, `system_verifier`) is
+  **excluded** because its `reviewer_contract` slice already carries the equivalent per-finding tag
+  (avoiding the content-overlap smell). Enforcement is honest about its two tiers: the tag is
+  **structurally enforced** (a required Zoi string enum) on exactly one non-reviewer surface —
+  `researcher` findings, which gained a per-finding `confidence` + the source-URL-in-`references`
+  rule (the reviewer family already had theirs from AR-3) — and is a **prompt-enforced
+  convention** on the other nine workers' prose output (`summary`/`notes`/`reasoning`), whose
+  schemas have no per-claim list to attach a field to. The `verifier` receives the doctrine prose
+  only (its flat `verdict`/`confidence`/`reasoning` schema is unchanged — the deliberate "verifier
+  has a different schema" boundary), and the main agent is untouched (AR-7 stays on the sub-agent
+  doctrine seam, consistent with AR-3/AR-5/AR-6 — `priv/defaults/system_prompt.md` is not edited).
+  `mix precommit` green.
+
+**Remaining live backlog**: only AR-2's explicitly-deferred tails (cluster lease, YAML catalog
+overlay). Every *independent* prompt-layer borrow (AR-3, AR-5, AR-6, AR-7) and the
+composer/review/self-heal/triage stack (AR-2, AR-3, AR-4, AR-8) has shipped.
+
+## Status reconciliation — 2026-06-26 (AR-6 shipped; AR-7 partial — its pervasive extension since shipped 2026-06-27)
 
 **This section supersedes the "AR-6 remains / NOT STARTED" claims in the 2026-06-25
 reconciliation and the entry below.** The Alp River source-audit baseline is unchanged; only
@@ -53,10 +86,12 @@ jido_radclaw's implementation has moved. AR-6 was the last not-started *independ
   `design/ux-prototyper` analog in this catalog). No per-project overrides (v1 non-goal).
   `mix precommit` green.
 
-**Remaining live backlog**: AR-7's pervasive confidence-tagging extension (its reviewer-surface
-core shipped in AR-3), plus AR-2's explicitly-deferred tails (cluster lease, YAML catalog overlay).
+**Remaining live backlog** *(at this 2026-06-26 snapshot; AR-7's pervasive extension has since
+shipped 2026-06-27 — see the reconciliation above)*: AR-7's pervasive confidence-tagging extension
+(its reviewer-surface core shipped in AR-3), plus AR-2's explicitly-deferred tails (cluster lease,
+YAML catalog overlay).
 
-## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-4 / AR-5 / AR-8 shipped; AR-6 since shipped 2026-06-26, AR-7 partial)
+## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-4 / AR-5 / AR-8 shipped; AR-6 since shipped 2026-06-26, AR-7 since done 2026-06-27)
 
 **This section supersedes the forward-looking claims in the 2026-06-11 reconciliation below**
 (notably its "None of AR-2 … AR-8 has landed" line — true when written, now stale). The Alp
@@ -110,14 +145,16 @@ shipped:
 - **AR-6 (personas) — NOT STARTED** *(true at this 2026-06-25 snapshot; **since shipped
   2026-06-26** — see the reconciliation above)*. No code; AR-5 left no pre-wired `## PSYCHOLOGY`
   seam, so it remained a clean greenfield add on top of the now-existing doctrine registry.
-- **AR-7 (confidence-tagging) — PARTIAL.** Its core — the `likely`/`unsure` per-finding tag and the
-  reporting threshold — shipped folded into AR-3 on the reviewer surface (the `reviewer_contract`
-  slice + the schema `confidence` field). The *pervasive* convention (codebase-wide claim tagging
-  on `researcher` / web-sourced agents, the source-URL requirement) is still not started.
+- **AR-7 (confidence-tagging) — PARTIAL** *(true at this 2026-06-25 snapshot; the pervasive
+  extension **since shipped 2026-06-27** — see the reconciliation above)*. Its core — the
+  `likely`/`unsure` per-finding tag and the reporting threshold — shipped folded into AR-3 on the
+  reviewer surface (the `reviewer_contract` slice + the schema `confidence` field). The *pervasive*
+  convention (codebase-wide claim tagging on `researcher` / web-sourced agents, the source-URL
+  requirement) was still not started at this snapshot.
 
-**Remaining live backlog** *(at this 2026-06-25 snapshot; AR-6 has since shipped 2026-06-26)*:
-AR-6 (personas), AR-7 (extend confidence-tagging past the reviewer surface) — plus AR-2's
-explicitly-deferred tails (cluster lease, YAML catalog overlay).
+**Remaining live backlog** *(at this 2026-06-25 snapshot; AR-6 has since shipped 2026-06-26 and
+AR-7 since 2026-06-27)*: AR-6 (personas), AR-7 (extend confidence-tagging past the reviewer
+surface) — plus AR-2's explicitly-deferred tails (cluster lease, YAML catalog overlay).
 
 ## Status reconciliation — 2026-06-11 (Squidie shipped; AR-1 landed)
 
@@ -146,8 +183,8 @@ sole event producer, human gates durably halt/resume via `GateStep`/`GateResume`
   personas, no triage front door. The BUILD-ON items are **unblocked**; AR-2 (the composer)
   is now the natural next feature. *(Superseded as of 2026-06-25 — see the reconciliation above:
   AR-2, AR-3, AR-4, AR-5, and AR-8 have since shipped and AR-1's tail closed, with AR-7's core
-  folded into AR-3; AR-6 has since shipped too (2026-06-26), leaving only AR-7's pervasive
-  extension open.)*
+  folded into AR-3; AR-6 has since shipped too (2026-06-26) and AR-7's pervasive extension
+  (2026-06-27), leaving only AR-2's explicitly-deferred tails open.)*
 
 **Alp River drift since the inventory**: one commit (2026-06-06, v1.2.5 → **1.2.6**): a
 deterministic **`/audit` self-scorecard** (`hooks/audit.py`, scoring five health categories
@@ -166,9 +203,9 @@ practice is the same determinism-over-prose philosophy AR-2 already captures.
 sits *above* the engine Squidie built. The original call — ship Squidie unchanged, fold in
 exactly one thing (gate semantics), everything else builds on the new engine afterward or is
 independent — played out exactly: Squidie shipped (Phases 0–5) with AR-1 folded into
-Phase 2. The BUILD-ON/INDEPENDENT backlog has since shipped too — as of 2026-06-26:
-AR-2, AR-3, AR-4, AR-5, AR-6, and AR-8 done (AR-7's core folded into AR-3); only AR-7's
-pervasive extension remains.**
+Phase 2. The BUILD-ON/INDEPENDENT backlog has since shipped in full — as of 2026-06-27:
+AR-2, AR-3, AR-4, AR-5, AR-6, AR-7, and AR-8 done (AR-7's reviewer-surface core folded into
+AR-3, its pervasive extension shipped 2026-06-27); only AR-2's explicitly-deferred tails remain.**
 
 Alp River and Squidie/Reactor solve **different layers**:
 
@@ -187,7 +224,7 @@ That is the headline insight: **the "dynamic, not-a-declared-DAG" space Squidie 
 the free-form agent loop can instead be a deterministic, signal-composed loop** — and Alp
 River is a mature, working reference for it.
 
-| Alp River capability | Relationship to the Squidie work | Status (2026-06-26) |
+| Alp River capability | Relationship to the Squidie work | Status (2026-06-27) |
 | --- | --- | --- |
 | **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE** — Phase 2; tail closed by AR-2 Phase 4 (AR-1) |
 | **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **DONE** — Phases 0–5 (AR-2) |
@@ -195,7 +232,7 @@ River is a mature, working reference for it.
 | **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **DONE** — first-class fixer + domain-touched RE_RUN_SET + summoning + `:route_fix_failed` (AR-4) |
 | **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **DONE** (AR-5) |
 | **Psychology / persona layer** | **Independent** — pure prompt assembly | **DONE** — stage-first `## PSYCHOLOGY` injection through the AR-5 seam (AR-6) |
-| **Confidence-tagging convention** | **Independent** — output/prompt convention | **PARTIAL** — reviewer-surface core folded into AR-3; pervasive extension open (AR-7) |
+| **Confidence-tagging convention** | **Independent** — output/prompt convention | **DONE** — reviewer-surface core folded into AR-3; pervasive `confidence_tagging` slice (10 non-reviewer templates) + `researcher` per-finding tag (AR-7) |
 | **Conversation-type triage** (talk/sketch/code/system) | **Independent** front door; folds into AR-2 if built | **DONE** — all four paths, folded into AR-2 (AR-8) |
 | Hook substrate, `.md`/`.py` artifacts, render-card UX, compaction/reinject | Re-implement or already covered | **SKIP** (§4) |
 
@@ -553,14 +590,14 @@ deferral, closed because the fixer consumes it).
 
 These are pure prompt/output assembly. They need **neither** Reactor nor the composer and can
 be picked up opportunistically without touching the Squidie roadmap. AR-5 is the enabler AR-3's
-shared contract and AR-6's persona layer already ride (shipped 2026-06-25 / 2026-06-26), and that
-AR-7's pervasive extension still will.
+shared contract, AR-6's persona layer, and AR-7's pervasive confidence-tagging slice all ride
+(shipped 2026-06-25 / 2026-06-26 / 2026-06-27).
 
 ### AR-5. Central doctrine injection into sub-agents
 
 **Recommendation**: INDEPENDENT — **DONE (2026-06-22)**. The highest-leverage prompt-layer
-borrow; it is now the live substrate AR-3's contract and AR-6's personas ride, and AR-7's
-pervasive extension still should.
+borrow; it is now the live substrate AR-3's contract, AR-6's personas, and AR-7's pervasive
+confidence-tagging slice all ride.
 
 **Where** (Alp River): `hooks/user-context-injector.sh` — a `PreToolUse(Agent)` hook that
 prepends four blocks to **every sub-agent's** prompt: `## DOCTRINE` (per-agent slices from
@@ -600,11 +637,11 @@ reused Memory blocks (`PromptSections.blocks_section/1`) + JIDO.md, injected via
 duplicated worker schemas are single-sourced in `Agent.Workers.OutputSchema`. Config-gated,
 best-effort, tested. **Open borders (not AR-5 failures):** AR-3 has since filled `reviewer_min`
 (no longer a placeholder) and added the `reviewer_contract` slice carrying the confidence tag — so
-AR-7's reviewer-surface core now rides the seam, and **AR-6 has since added the `## PSYCHOLOGY`
-persona section through it** (2026-06-26); what's left unauthored is a *pervasive*
-`confidence-tagging` slice (AR-7's extension) and a `code-doctrine` slice, and "project docs" is
-JIDO.md only (no `docs/` READ_MAP). The seam is the live substrate AR-6's personas now ride and
-AR-7's extension still will.
+AR-7's reviewer-surface core now rides the seam, **AR-6 has since added the `## PSYCHOLOGY`
+persona section through it** (2026-06-26), and **AR-7 has since added the standalone
+`confidence_tagging` slice** (2026-06-27, reaching the 10 non-reviewer templates); what's left
+unauthored is only a `code-doctrine` slice, and "project docs" is JIDO.md only (no `docs/`
+READ_MAP). The seam is the live substrate AR-6's personas and AR-7's pervasive tagging now ride.
 
 ### AR-6. Psychology / persona layer
 
@@ -655,8 +692,9 @@ per-project overrides (v1 non-goal). `mix precommit` green.
 
 ### AR-7. Confidence-tagging as a pervasive convention
 
-**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5) — **PARTIAL** (the
-reviewer-surface core shipped folded into AR-3, 2026-06-25; the pervasive convention is not started).
+**Recommendation**: INDEPENDENT (ships as a doctrine slice via AR-5) — **DONE** (the
+reviewer-surface core shipped folded into AR-3, 2026-06-25; the pervasive convention shipped
+2026-06-27). See the status update at the end of this entry.
 
 **Where** (Alp River): `doctrine/confidence-tagging.md` — every finding carries `[likely]`
 (evidence-based: code read, official docs, observed) or `[unsure]` (judgment, single-source,
@@ -672,21 +710,60 @@ instruction to mark assumptions or distinguish observed-vs-inferred.
 **Relationship to Squidie**: orthogonal; pairs with AR-3 (it *is* part of the reviewer
 contract) and AR-5 (it ships as a doctrine slice).
 
-**Adoption sketch**: add a `confidence-tagging` doctrine slice injected into citing agents;
-extend the Reviewer/Researcher/Verifier output schemas to carry the tag + reporting threshold.
-Cheap once AR-5 exists.
+**Adoption sketch** *(updated to what shipped 2026-06-27)*: add a standalone reach-all
+`confidence_tagging` doctrine slice (inline `[likely]`/`[unsure]` prose tagging + the source-URL
+rule) injected via AR-5 into the 10 non-reviewer templates; the reviewer family already carries the
+equivalent through `reviewer_contract` (AR-3), so it is excluded. Give the one non-reviewer surface
+with a findings list — **`researcher`** — a required per-finding `confidence` tag (reusing its
+`references` field for source URLs). The **`verifier`** and the producer workers receive the
+doctrine prose only, with **no** schema change: the verifier keeps its distinct
+`verdict`/`confidence`/`reasoning` shape (the deliberate "verifier has a different schema"
+boundary), and the producers have no per-claim list to attach a field to. (This corrects the
+original sketch, which had proposed extending the Reviewer/Researcher/**Verifier** output schemas —
+the verifier schema was deliberately left unchanged; machine-checking every claim everywhere would
+mean inventing a findings list on schemas that have none, which is out of scope.)
 
-**Status update (2026-06-25): PARTIAL — the reviewer-surface core shipped folded into AR-3.** The
+**Status update (2026-06-25): PARTIAL — the reviewer-surface core shipped folded into AR-3**
+*(snapshot; superseded by the 2026-06-27 update below)*. The
 `Agent.Workers.OutputSchema.reviewer_verdict/0` schema now carries a per-finding `confidence` tag
 (`likely`/`unsure`), and the new `reviewer_contract` doctrine slice defines both tags (evidence-based
 vs. judgment/single-source/inferred) and the reporting threshold (every `likely`; an `unsure` only at
 high impact — correctness/security/data risk) plus the concrete-consequence bar — injected into the
-three `reviewer_verdict/0` workers. What remains is the **pervasive** convention: no codebase-wide
-`[likely]`/`[unsure]` tagging beyond reviewer findings, `researcher` still carries only its own
-`low|medium|high` confidence (no per-claim tag, no source-URL requirement for web-sourced claims),
-and there is no standalone reach-all `confidence-tagging` slice. The three narrow typed slots called
-out in 2026-06-11 (Researcher/Verifier `low|medium|high`, `verify_certificate` float) are otherwise
-unchanged. Cheap to extend now that the tag, the threshold prose, and the AR-5 seam all exist.
+three `reviewer_verdict/0` workers. What remained at this snapshot was the **pervasive** convention:
+no codebase-wide `[likely]`/`[unsure]` tagging beyond reviewer findings, `researcher` still carried
+only its own `low|medium|high` confidence (no per-claim tag, no source-URL requirement for
+web-sourced claims), and there was no standalone reach-all `confidence-tagging` slice. The three
+narrow typed slots called out in 2026-06-11 (Researcher/Verifier `low|medium|high`,
+`verify_certificate` float) were otherwise unchanged. It was cheap to extend once the tag, the
+threshold prose, and the AR-5 seam all existed — done 2026-06-27 (see the update below).
+
+**Status update (2026-06-27): DONE — the pervasive convention shipped as a standalone reach-all
+slice.** `priv/defaults/doctrine/confidence_tagging.md` is the 8th `JidoClaw.Doctrine` slice,
+authored deliberately distinct from `reviewer_contract.md`: where the contract frames a *structured
+finding field*, this slice frames *inline `[likely]`/`[unsure]` claim-tagging in prose* and adds the
+**source-URL rule** the contract lacks — it has to cover both forms because most of its reach is
+prose-only while `researcher` also has a structured per-finding field. It scopes the tag to
+**per-claim/per-finding** use and explicitly tells a worker with an *overall* confidence field on a
+different scale (`researcher`'s and `verifier`'s `low|medium|high`) to keep that scale and never emit
+`likely`/`unsure` into it — so the slice can never nudge the LLM into a value those fields reject. It
+reaches the **10 non-reviewer** sub-agent templates (`coder`, `fixer`, `refactorer`, `docs_writer`,
+`researcher`, `test_runner`, `verifier`, `sketch_build`, `sketch_build_exec`, `system_executor`)
+through the existing AR-5 `## DOCTRINE` section; the reviewer family (`reviewer`, `sketch_reviewer`,
+`system_verifier`) is **excluded** because `reviewer_contract` already carries the equivalent
+per-finding tag (no engine or composer change — it rides the AR-5 doctrine seam). The enforcement is
+**honest about its two tiers**: the `likely`/`unsure` tag is **structurally enforced** (a required
+Zoi string enum) on exactly one non-reviewer surface — `researcher` findings, which gained a
+per-finding `confidence` + the source-URL-in-`references` rule (mirroring the AR-3 reviewer
+precedent; the top-level `low|medium|high` confidence is kept as the orthogonal overall axis) — plus
+the reviewer family's findings already (AR-3); for the other nine non-reviewer workers it is a
+**prompt-enforced convention** on their prose output (`summary`/`notes`/`reasoning`), whose schemas
+are producer/verdict shapes with no per-claim list to attach a field to. Machine-checking everywhere
+would mean inventing a findings/claims list on those nine schemas — deliberately out of scope (the
+"verifier prose-only" decision generalized). The `verifier` receives the doctrine prose only (its
+flat `verdict`/`confidence`/`reasoning` schema is unchanged — the deliberate "verifier has a
+different schema" boundary), and the main agent is **untouched** (AR-7 stays on the sub-agent
+doctrine seam, consistent with AR-3/AR-5/AR-6 — `priv/defaults/system_prompt.md` is not edited).
+`mix precommit` green.
 
 ### AR-8. Conversation-type triage (talk / sketch / code / system)
 
@@ -778,13 +855,13 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
 | **Durability** (log, status, recovery, gates) | **the envelope** (`WorkflowEvent`, projection, reconciler, human gates) | ephemeral signal state + reinject hook | **shipped** — event log + projection + recovery (stranding bug fixed) |
 | **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | **shipped** — `RouteComposer` composes waves from live signals (AR-2) |
 | **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **shipped** — 4-lens fan-out + authored shared contract (AR-3) + the self-heal fixer loop with domain-touched RE_RUN_SET (AR-4) |
-| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence + persona shipped** to sub-agents (AR-5, AR-3, AR-6); pervasive confidence-tagging (AR-7) not started |
+| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence + persona + pervasive confidence-tagging shipped** to sub-agents (AR-5, AR-3, AR-6, AR-7) |
 
 The top two rows are Squidie — **shipped 2026-06-08..10**. The bottom three are Alp River — and
-as of **2026-06-26** they are no longer hypothetical: the composer (AR-2), review fan-out + the
-shared contract (AR-3), doctrine injection (AR-5), the self-heal fixer loop (AR-4), and the
-persona layer (AR-6) are shipped, with AR-7's confidence-tagging core folded into AR-3; only
-AR-7's pervasive extension remains.
+as of **2026-06-27** they are no longer hypothetical: the composer (AR-2), review fan-out + the
+shared contract (AR-3), doctrine injection (AR-5), the self-heal fixer loop (AR-4), the persona
+layer (AR-6), and AR-7's confidence-tagging (reviewer core in AR-3, the pervasive
+`confidence_tagging` slice 2026-06-27) are all shipped; only AR-2's deferred tails remain.
 
 ## Sequencing recommendation
 
@@ -807,10 +884,10 @@ AR-7's pervasive extension remains.
    (first-class fixer + domain-touched RE_RUN_SET + never-ran summoning + the `:route_fix_failed`
    terminal) built on the rerun primitive already in place.
 5. **AR-5 → AR-6/AR-7, and AR-8** — **AR-5 done (2026-06-22)** and **AR-8 done (2026-06-23..25,
-   folded into AR-2's triage seed)**; **AR-7's reviewer-surface core done** (folded into AR-3,
-   2026-06-25); **AR-6 done (2026-06-26)** — the persona layer riding the AR-5 doctrine seam, the
-   last not-started independent borrow. **Only AR-7's pervasive extension remains** of the cheap
-   greenfield prompt-layer wins.
+   folded into AR-2's triage seed)**; **AR-6 done (2026-06-26)** — the persona layer riding the
+   AR-5 doctrine seam; **AR-7 done** — its reviewer-surface core folded into AR-3 (2026-06-25) and
+   its pervasive `confidence_tagging` slice shipped on the same seam (2026-06-27), the last
+   not-started independent borrow. **All the cheap greenfield prompt-layer wins are now shipped.**
 
 ## Bottom line
 
@@ -818,9 +895,10 @@ Alp River is the most architecturally relevant project in this folder *and* the 
 easily misread as a reason to pivot. It is not. It is the **methodology layer that sits above
 the engine Squidie built**: the deterministic composer for the dynamic middle ground Squidie
 deliberately leaves to free-form ReAct, plus the multi-agent review, self-heal,
-doctrine-injection, and persona content to run on top. As of **2026-06-26** nearly all of that
-backlog has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then
+doctrine-injection, and persona content to run on top. As of **2026-06-27** the whole backlog
+has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then
 **the composer itself (AR-2, Phases 0–5), reviewer fan-out + the shared Reviewer Contract (AR-3),
 doctrine injection (AR-5), the four-path triage front door (AR-8), the self-heal fixer loop
-(AR-4), and the persona layer (AR-6)** — with AR-7's confidence-tagging core folded into AR-3.
-What remains is a single short tail: extend confidence-tagging (AR-7) past the reviewer surface.
+(AR-4), the persona layer (AR-6), and the pervasive confidence-tagging convention (AR-7, core in
+AR-3 + the standalone slice 2026-06-27)**. What remains is only AR-2's explicitly-deferred tails
+(the cluster lease and the optional YAML catalog overlay).

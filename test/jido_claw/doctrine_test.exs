@@ -17,7 +17,8 @@ defmodule JidoClaw.DoctrineTest do
             :reviewer_contract,
             :system_verify,
             :fixer_contract,
-            :emit_signals
+            :emit_signals,
+            :confidence_tagging
           ] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
@@ -32,6 +33,7 @@ defmodule JidoClaw.DoctrineTest do
       assert Enum.sort(Doctrine.list()) == [
                :artifacts,
                :base,
+               :confidence_tagging,
                :emit_signals,
                :fixer_contract,
                :reviewer_contract,
@@ -51,6 +53,8 @@ defmodule JidoClaw.DoctrineTest do
       # signals, so it carries the `:emit_signals` slice.
       assert doctrine =~ "Emitted signals"
       assert doctrine =~ "tests-ready"
+      # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
+      assert doctrine =~ "Confidence tagging"
       refute doctrine =~ "Review discipline"
     end
 
@@ -61,6 +65,8 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Runtime artifacts"
       assert doctrine =~ "Fixer Contract"
       assert doctrine =~ "self-report"
+      # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
+      assert doctrine =~ "Confidence tagging"
       # It is a producer, not a judge — never the reviewer discipline.
       refute doctrine =~ "Review discipline"
     end
@@ -72,6 +78,10 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Review discipline"
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
+      # AR-7: the reviewer family is EXCLUDED from the standalone slice — its
+      # `reviewer_contract` already carries the equivalent per-finding tag (the
+      # `=~ "likely"` above), so the header anchor must NOT appear.
+      refute doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"
     end
 
@@ -81,6 +91,9 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Review discipline"
       refute doctrine =~ "Reviewer Contract"
+      # AR-7: the verifier gets the prose slice (prose-only — its flat
+      # verdict/confidence/reasoning schema is unchanged), unlike the reviewer family.
+      assert doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"
     end
 
@@ -91,6 +104,8 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Review discipline"
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
+      # AR-7: reviewer family — excluded from the standalone slice.
+      refute doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"
     end
 
@@ -99,6 +114,8 @@ defmodule JidoClaw.DoctrineTest do
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Runtime artifacts"
+      # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
+      assert doctrine =~ "Confidence tagging"
       refute doctrine =~ "Review discipline"
     end
 
@@ -107,6 +124,8 @@ defmodule JidoClaw.DoctrineTest do
 
       assert doctrine =~ "specialized sub-agent"
       assert doctrine =~ "Runtime artifacts"
+      # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
+      assert doctrine =~ "Confidence tagging"
       refute doctrine =~ "Review discipline"
     end
 
@@ -118,7 +137,23 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
       assert doctrine =~ "System verification discipline"
+      # AR-7: reviewer family — excluded from the standalone slice.
+      refute doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"
+    end
+
+    test "the AR-7 researcher carries the confidence-tagging slice (base + artifacts + emit-signals + confidence-tagging)" do
+      doctrine = Doctrine.for_template("researcher")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Runtime artifacts"
+      assert doctrine =~ "Emitted signals"
+      # AR-7: the researcher is the one non-reviewer worker with a STRUCTURAL
+      # per-finding tag; it also carries the prose slice, including the unique
+      # source-URL rule. Both anchors are absent from `reviewer_contract`.
+      assert doctrine =~ "Confidence tagging"
+      assert doctrine =~ "Source your web claims"
+      refute doctrine =~ "Review discipline"
     end
 
     test "\"main\" maps to no doctrine (it uses Prompt — doctrine never double-applies)" do
