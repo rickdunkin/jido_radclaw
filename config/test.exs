@@ -24,6 +24,11 @@ config :jido_claw, :output_shaping, enabled?: false
 # Application.put_env + on_exit (async: false).
 config :jido_claw, :doctrine, enabled?: false
 
+# AR-6 personas off in test so existing spawn/skill prompt tests stay on today's
+# behavior; the persona tests opt in via Application.put_env + on_exit (async: false),
+# mirroring :doctrine.
+config :jido_claw, :psychology, enabled?: false
+
 # Tool-call approval gate off in test so the broad tool suite isn't gated;
 # the gate's own tests drive JidoClaw.Security.ToolApproval.gate/4 with explicit
 # `enabled?: true` + `require:` opts (env-free, DestinationPolicy style).

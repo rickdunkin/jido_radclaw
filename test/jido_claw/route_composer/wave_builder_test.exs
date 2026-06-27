@@ -3,6 +3,7 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
 
   alias JidoClaw.RouteComposer.TestFixtures
   alias JidoClaw.RouteComposer.WaveBuilder
+  alias JidoClaw.Skills.Steps.AgentStep
   alias JidoClaw.Workflows.StepIds
 
   defp worker(name),
@@ -26,6 +27,18 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
 
     assert step_names == [:__collect__, :step_1, :step_2]
     assert reactor.return == :__collect__
+  end
+
+  test "AR-6: a worker stage carries catalog_stage_name (dedicated), distinct from step_name" do
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([worker("security-reviewer")])
+
+    step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, options} = step.impl
+
+    # The wave-builder is the ONLY producer of catalog_stage_name — it equals the stage name
+    # here, but is a SEPARATE keyword from step_name (the StepResult label) by construction.
+    assert Keyword.get(options, :catalog_stage_name) == "security-reviewer"
+    assert Keyword.get(options, :step_name) == "security-reviewer"
   end
 
   test "builds a solo gate stage as its named gate-producer module reactor (Phase 4a)" do

@@ -51,6 +51,58 @@ defmodule JidoClaw.Agent.SubagentPromptTest do
     end
   end
 
+  describe "build/3 — AR-6 persona section (psychology-gated)" do
+    setup do
+      # Snapshot/restore the section toggle so flipping it on never leaks into the
+      # doctrine-only describes above (which run on the test.exs default — off).
+      original = Application.get_env(:jido_claw, :psychology)
+
+      on_exit(fn ->
+        case original do
+          nil -> Application.delete_env(:jido_claw, :psychology)
+          val -> Application.put_env(:jido_claw, :psychology, val)
+        end
+      end)
+
+      :ok
+    end
+
+    test "a stage-keyed reviewer renders the stage persona, contract before voice",
+         %{project_dir: dir} do
+      Application.put_env(:jido_claw, :psychology, enabled?: true)
+
+      prompt = SubagentPrompt.build("reviewer", %{project_dir: dir}, "security-reviewer")
+
+      # Per-stage keying: the security-reviewer stage over the `reviewer` template is Defender.
+      assert prompt =~ "## PSYCHOLOGY: Defender"
+      assert prompt =~ "the role and the codebase win"
+      # The mandatory contract still renders AND precedes the advisory voice.
+      assert prompt =~ "## DOCTRINE"
+      assert prompt =~ "Review discipline"
+      assert prompt =~ ~r/## DOCTRINE.*## PSYCHOLOGY/s
+    end
+
+    test "a template-only spawn (nil stage) renders the template-fallback persona",
+         %{project_dir: dir} do
+      Application.put_env(:jido_claw, :psychology, enabled?: true)
+
+      prompt = SubagentPrompt.build("reviewer", %{project_dir: dir})
+
+      # No catalog stage → the bare `reviewer` template persona is Skeptic.
+      assert prompt =~ "## PSYCHOLOGY: Skeptic"
+    end
+
+    test "psychology OFF omits the PSYCHOLOGY block; doctrine is unaffected",
+         %{project_dir: dir} do
+      Application.put_env(:jido_claw, :psychology, enabled?: false)
+
+      prompt = SubagentPrompt.build("reviewer", %{project_dir: dir}, "security-reviewer")
+
+      refute prompt =~ "## PSYCHOLOGY"
+      assert prompt =~ "## DOCTRINE"
+    end
+  end
+
   describe "build/2 — Memory Block tier from a resolved scope (DB)" do
     test "a workspace-scoped Block renders into the prompt", %{project_dir: dir} do
       tenant_id = seed_tenant("ar5-blocks")

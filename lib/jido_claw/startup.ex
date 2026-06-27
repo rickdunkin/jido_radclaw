@@ -139,17 +139,25 @@ defmodule JidoClaw.Startup do
   `config :jido_claw, :doctrine, enabled?:` (disabled → no-op `:ok`). Best-effort: any
   failure logs and returns `:ok`, never blocking the spawn. Reuses `do_inject/5`
   (emits `[:jido_claw, :agent, :prompt_injected]`, source `:doctrine`).
+
+  `catalog_stage_name` (AR-6) is the composer stage the worker runs as — set ONLY by the
+  wave-builder path, `nil` for a direct spawn / follow-up / non-composer skill step. It
+  steers persona resolution inside `SubagentPrompt.build/3` and rides the telemetry as
+  `metadata.stage`. The `:doctrine` flag remains the master gate (off → no injection at
+  all); `:psychology` only toggles the `## PSYCHOLOGY` section within an injected prompt.
   """
-  @spec inject_subagent_prompt(pid(), String.t(), map()) :: :ok
-  def inject_subagent_prompt(pid, template_name, tool_context)
+  @spec inject_subagent_prompt(pid(), String.t(), map(), String.t() | nil) :: :ok
+  def inject_subagent_prompt(pid, template_name, tool_context, catalog_stage_name \\ nil)
       when is_pid(pid) and is_binary(template_name) do
     if doctrine_enabled?() do
       project_dir = Map.get(tool_context, :project_dir) || File.cwd!()
-      prompt = SubagentPrompt.build(template_name, tool_context)
+      prompt = SubagentPrompt.build(template_name, tool_context, catalog_stage_name)
 
       # do_inject/5 returns :ok | {:error, reason} — log the error tuple too, not
       # just raises/exits.
-      case do_inject(pid, prompt, project_dir, :doctrine, %{template: template_name}) do
+      meta = %{template: template_name, stage: catalog_stage_name}
+
+      case do_inject(pid, prompt, project_dir, :doctrine, meta) do
         :ok ->
           :ok
 

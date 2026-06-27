@@ -11,7 +11,8 @@ defmodule JidoClaw.StartupSubagentPromptTest do
   alias JidoClaw.Startup
 
   setup do
-    original = Application.get_env(:jido_claw, :doctrine)
+    original_doctrine = Application.get_env(:jido_claw, :doctrine)
+    original_psychology = Application.get_env(:jido_claw, :psychology)
     handler_id = "ar5-startup-#{System.unique_integer([:positive])}"
 
     :telemetry.attach(
@@ -25,15 +26,15 @@ defmodule JidoClaw.StartupSubagentPromptTest do
 
     on_exit(fn ->
       :telemetry.detach(handler_id)
-
-      case original do
-        nil -> Application.delete_env(:jido_claw, :doctrine)
-        val -> Application.put_env(:jido_claw, :doctrine, val)
-      end
+      restore_env(:doctrine, original_doctrine)
+      restore_env(:psychology, original_psychology)
     end)
 
     :ok
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:jido_claw, key)
+  defp restore_env(key, val), do: Application.put_env(:jido_claw, key, val)
 
   @tag :capture_log
   test "flag ON: injects, returns :ok, and fires the :doctrine telemetry event" do
@@ -57,6 +58,38 @@ defmodule JidoClaw.StartupSubagentPromptTest do
 
     assert :ok = Startup.inject_subagent_prompt(pid, "coder", %{project_dir: File.cwd!()})
     refute_receive {:prompt_injected, _, _}, 300
+  end
+
+  @tag :capture_log
+  test "AR-6: the 4-arg call rides the catalog stage through to telemetry as metadata.stage" do
+    Application.put_env(:jido_claw, :doctrine, enabled?: true)
+    Application.put_env(:jido_claw, :psychology, enabled?: true)
+    pid = start_worker()
+
+    assert :ok =
+             Startup.inject_subagent_prompt(
+               pid,
+               "reviewer",
+               %{project_dir: File.cwd!()},
+               "security-reviewer"
+             )
+
+    assert_receive {:prompt_injected, _measurements, metadata}, 5_000
+    assert metadata.source == :doctrine
+    assert metadata.template == "reviewer"
+    assert metadata.stage == "security-reviewer"
+  end
+
+  @tag :capture_log
+  test "AR-6: the 3-arg call yields metadata.stage == nil (direct spawn / follow-up)" do
+    Application.put_env(:jido_claw, :doctrine, enabled?: true)
+    pid = start_worker()
+
+    assert :ok = Startup.inject_subagent_prompt(pid, "coder", %{project_dir: File.cwd!()})
+
+    assert_receive {:prompt_injected, _measurements, metadata}, 5_000
+    assert metadata.template == "coder"
+    assert metadata.stage == nil
   end
 
   @tag :capture_log

@@ -50,12 +50,14 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
 
   `step_name` becomes `StepResult.name` verbatim — the YAML step name, or
   `nil` for an unnamed step (so downstream label rendering falls back to the
-  template). `context` is the Reactor context. Returns
+  template). `context` is the Reactor context. `catalog_stage_name` (AR-6) is the
+  composer stage the worker runs as — set only by the wave-builder path, `nil` for a
+  skill step / saga cleanup — and only steers the injected persona. Returns
   `{:ok, %StepResult{}}` or `{:error, binary()}`.
   """
-  @spec run(String.t(), String.t(), String.t() | nil, map()) ::
+  @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil) ::
           {:ok, StepResult.t()} | {:error, binary()}
-  def run(template_name, task, step_name, context) do
+  def run(template_name, task, step_name, context, catalog_stage_name \\ nil) do
     with {:ok, template} <- Templates.get(template_name),
          :ok <- validate_sandbox_scope(template, context),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
@@ -75,8 +77,15 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
 
       # AR-5: inject the doctrine system prompt onto the freshly-spawned worker
       # before its single-shot turn — the first system prompt step workers receive.
-      # Best-effort + gated; never blocks the step.
-      _ = JidoClaw.Startup.inject_subagent_prompt(pid, template_name, tool_context)
+      # Best-effort + gated; never blocks the step. AR-6: thread the composer stage so a
+      # wave-builder step resolves its per-stage persona (nil for a skill step → template).
+      _ =
+        JidoClaw.Startup.inject_subagent_prompt(
+          pid,
+          template_name,
+          tool_context,
+          catalog_stage_name
+        )
 
       case JidoClaw.register_child_correlation(tool_context) do
         {:ok, request_id} ->

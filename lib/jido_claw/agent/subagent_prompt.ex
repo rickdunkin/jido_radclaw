@@ -5,27 +5,37 @@ defmodule JidoClaw.Agent.SubagentPrompt do
   alias JidoClaw.Doctrine
   alias JidoClaw.Memory
   alias JidoClaw.Memory.Scope
+  alias JidoClaw.Persona
 
   # Ash CRUD + Postgrex faults the Scope-resolve + Block-tier read can hit; narrowed
   # so a real bug surfaces instead of silently dropping the Block tier (mirrors
   # prompt.ex:23 / memory.ex).
   @db_errors JidoClaw.Core.AshErrors.db_errors()
 
+  # AR-6 persona section toggle, checked WITHIN this assembly point — independent of
+  # `:doctrine` (the master injection gate in `Startup.inject_subagent_prompt`). When
+  # off, the `## PSYCHOLOGY` block is omitted; the rest of the prompt is unchanged.
+  @psychology_defaults [enabled?: true]
+
   @doc """
   Build a sub-agent system prompt for `template_name` from the worker's `tool_context`
   (carries project_dir + scope keys). Composition: role (worker module `description/0`) +
-  `## DOCTRINE` (`Doctrine.for_template/1`) + reused Memory blocks (scope resolved from the
-  tool_context, best-effort) + reused JIDO.md. Total/never-raises: unknown template →
-  generic role line; unresolvable/absent scope → no Block tier (mirrors the main-agent
-  nil-scope path).
+  `## DOCTRINE` (`Doctrine.for_template/1`, the mandatory contract) + `## PSYCHOLOGY`
+  (`Persona`, the advisory voice — AR-6, gated by `:psychology`) + reused Memory blocks
+  (scope resolved from the tool_context, best-effort) + reused JIDO.md. `catalog_stage_name`
+  is the composer stage the worker runs as (`nil` for a direct spawn / follow-up /
+  non-composer skill step) and only steers persona resolution. Total/never-raises: unknown
+  template → generic role line; unresolvable/absent scope → no Block tier (mirrors the
+  main-agent nil-scope path).
   """
-  @spec build(String.t(), map()) :: String.t()
-  def build(template_name, tool_context)
+  @spec build(String.t(), map(), String.t() | nil) :: String.t()
+  def build(template_name, tool_context, catalog_stage_name \\ nil)
       when is_binary(template_name) and is_map(tool_context) do
     project_dir = Map.get(tool_context, :project_dir) || File.cwd!()
 
     role_section(template_name) <>
       doctrine_section(template_name) <>
+      persona_section(template_name, catalog_stage_name) <>
       PromptSections.blocks_section(blocks_for_context(tool_context)) <>
       PromptSections.jido_md_section(PromptSections.load_jido_md(project_dir))
   end
@@ -57,6 +67,27 @@ defmodule JidoClaw.Agent.SubagentPrompt do
       "" -> ""
       text -> "\n## DOCTRINE\n\n" <> text <> "\n"
     end
+  end
+
+  # AR-6: the advisory persona voice (`Persona.render_for/2` prepends its own
+  # `## PSYCHOLOGY: <Name>` header + appends the single-sourced conflict rule). Omit
+  # the block when the persona layer is off or no persona resolves. Gated HERE — the
+  # `:doctrine` master gate in `Startup` still governs whether ANY prompt is injected.
+  defp persona_section(template_name, catalog_stage_name) do
+    if psychology_enabled?() do
+      case Persona.render_for(catalog_stage_name, template_name) do
+        "" -> ""
+        text -> "\n" <> text <> "\n"
+      end
+    else
+      ""
+    end
+  end
+
+  defp psychology_enabled? do
+    :jido_claw
+    |> Application.get_env(:psychology, [])
+    |> Keyword.get(:enabled?, @psychology_defaults[:enabled?])
   end
 
   # Reuse the main-agent Block-tier read via the flat tool_context the spawn paths

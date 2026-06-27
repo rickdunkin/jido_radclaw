@@ -53,6 +53,10 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
     raw_task = Keyword.fetch!(options, :task)
     produces = Keyword.get(options, :produces)
     step_name = Keyword.get(options, :step_name)
+    # AR-6: the composer stage (wave-builder-only), distinct from `step_name`. `nil` for a
+    # skill step, so a YAML step named like a catalog stage gets the template persona, not
+    # the stage one.
+    catalog_stage_name = Keyword.get(options, :catalog_stage_name)
     context_format = Keyword.get(options, :context_format, :deps)
     upstream = Keyword.get(options, :upstream, [])
     consumes = Keyword.get(options, :consumes, [])
@@ -65,7 +69,7 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
     task = AgentRunner.inject_produces_instruction(raw_task, produces)
     full_task = ContextBuilder.build_task(task, extra_context, dep_context, artifact_context)
 
-    AgentRunner.run(template, full_task, step_name, context)
+    AgentRunner.run(template, full_task, step_name, context, catalog_stage_name)
   end
 
   # Per-step capability, derived from the impl options — NOT the generated

@@ -258,6 +258,11 @@ config :jido_claw, :workflow_recovery, enabled?: true
 # Kill switch: disabling restores legacy no-doctrine worker behavior.
 config :jido_claw, :doctrine, enabled?: true
 
+# AR-6 persona block, gated WITHIN the (`:doctrine`-master-gated) sub-agent prompt. Toggling
+# `:psychology` adds/removes ONLY the `## PSYCHOLOGY` section; it does NOT re-enable injection
+# when `:doctrine` is off — `:doctrine` remains the master injection switch.
+config :jido_claw, :psychology, enabled?: true
+
 # Tool output shaping (JidoClaw.Tools.OutputShaper). Format-aware compression
 # of verbose command output — success noise becomes counts, error detail stays
 # verbatim — with the full captured output stored under a ref retrievable via

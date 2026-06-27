@@ -24,7 +24,39 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
-## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-4 / AR-5 / AR-8 shipped; AR-6 remains, AR-7 partial)
+## Status reconciliation — 2026-06-26 (AR-6 shipped; only AR-7's pervasive extension + AR-2's deferred tails remain)
+
+**This section supersedes the "AR-6 remains / NOT STARTED" claims in the 2026-06-25
+reconciliation and the entry below.** The Alp River source-audit baseline is unchanged; only
+jido_radclaw's implementation has moved. AR-6 was the last not-started *independent* borrow.
+
+- **AR-6 (personas) — DONE** (2026-06-26). `JidoClaw.Persona` (`lib/jido_claw/persona.ex`) is a
+  priv-file-backed persona registry — 9 personas in `priv/defaults/persona/*.md` (cynic, skeptic,
+  detective, defender, optimist, pragmatist, teacher, user-advocate, craftsperson) — injected as a
+  `## PSYCHOLOGY: <Name>` block through the AR-5 `Agent.SubagentPrompt` seam (`build/2` → `build/3`).
+  The borrow's one structural improvement over the source: personas resolve **stage-first** (the
+  catalog stage name) with a **template-name fallback**, so the four reviewer *stages* over the
+  single `reviewer` template get **distinct** voices (security→defender, quality→craftsperson,
+  correctness→skeptic, architecture→pragmatist) — template-only keying (how Doctrine keys) would
+  collapse them to one. Advisory-only: the renderer **single-sources** the mandatory conflict rule
+  ("your role contract is mandatory; persona is advisory voice; on conflict the role and the
+  codebase win") onto every block, so it can never drift. The composer stage travels on a
+  **dedicated `catalog_stage_name` option** set only by `WaveBuilder` (never the overloaded
+  `step_name`, which doubles as the YAML/skill-step label) — threaded through
+  `AgentStep`/`AgentRunner` → `Startup.inject_subagent_prompt/4` (which also adds `stage:` to the
+  `[:jido_claw, :agent, :prompt_injected]` telemetry). Section-gated by a new `config :jido_claw,
+  :psychology` (with `:doctrine` still the **master** injection gate — psychology off never
+  re-enables injection, psychology only toggles the one section). Reaches exactly the AR-5 seam's
+  three sub-agent paths (initial spawn, skill/composer step, follow-up turn); the main agent and
+  handoff-routed workers get **neither** doctrine nor persona — AR-5's boundary, unchanged. 8 of 9
+  personas are selected; `user-advocate` ships and renders but is intentionally unused (no
+  `design/ux-prototyper` analog in this catalog). No per-project overrides (v1 non-goal).
+  `mix precommit` green.
+
+**Remaining live backlog**: AR-7's pervasive confidence-tagging extension (its reviewer-surface
+core shipped in AR-3), plus AR-2's explicitly-deferred tails (cluster lease, YAML catalog overlay).
+
+## Status reconciliation — 2026-06-25 (AR-2 / AR-3 / AR-4 / AR-5 / AR-8 shipped; AR-6 since shipped 2026-06-26, AR-7 partial)
 
 **This section supersedes the forward-looking claims in the 2026-06-11 reconciliation below**
 (notably its "None of AR-2 … AR-8 has landed" line — true when written, now stale). The Alp
@@ -75,15 +107,17 @@ shipped:
   the `code` path: the domain-touched RE_RUN_SET (flagged ∪ domain-touched ∩ ran) with never-ran
   lens summoning, and a distinct `:route_fix_failed` terminal on cap exhaustion. (The AR-8c
   system-path reverse-verify loop is its sibling — a different feature.)
-- **AR-6 (personas) — NOT STARTED.** No code; AR-5 left no pre-wired `## PSYCHOLOGY` seam, so it
-  remains a clean greenfield add on top of the now-existing doctrine registry.
+- **AR-6 (personas) — NOT STARTED** *(true at this 2026-06-25 snapshot; **since shipped
+  2026-06-26** — see the reconciliation above)*. No code; AR-5 left no pre-wired `## PSYCHOLOGY`
+  seam, so it remained a clean greenfield add on top of the now-existing doctrine registry.
 - **AR-7 (confidence-tagging) — PARTIAL.** Its core — the `likely`/`unsure` per-finding tag and the
   reporting threshold — shipped folded into AR-3 on the reviewer surface (the `reviewer_contract`
   slice + the schema `confidence` field). The *pervasive* convention (codebase-wide claim tagging
   on `researcher` / web-sourced agents, the source-URL requirement) is still not started.
 
-**Remaining live backlog**: AR-6 (personas), AR-7 (extend confidence-tagging past the reviewer
-surface) — plus AR-2's explicitly-deferred tails (cluster lease, YAML catalog overlay).
+**Remaining live backlog** *(at this 2026-06-25 snapshot; AR-6 has since shipped 2026-06-26)*:
+AR-6 (personas), AR-7 (extend confidence-tagging past the reviewer surface) — plus AR-2's
+explicitly-deferred tails (cluster lease, YAML catalog overlay).
 
 ## Status reconciliation — 2026-06-11 (Squidie shipped; AR-1 landed)
 
@@ -112,7 +146,8 @@ sole event producer, human gates durably halt/resume via `GateStep`/`GateResume`
   personas, no triage front door. The BUILD-ON items are **unblocked**; AR-2 (the composer)
   is now the natural next feature. *(Superseded as of 2026-06-25 — see the reconciliation above:
   AR-2, AR-3, AR-4, AR-5, and AR-8 have since shipped and AR-1's tail closed, with AR-7's core
-  folded into AR-3; only AR-6 remains not-started, and AR-7's pervasive extension is still open.)*
+  folded into AR-3; AR-6 has since shipped too (2026-06-26), leaving only AR-7's pervasive
+  extension open.)*
 
 **Alp River drift since the inventory**: one commit (2026-06-06, v1.2.5 → **1.2.6**): a
 deterministic **`/audit` self-scorecard** (`hooks/audit.py`, scoring five health categories
@@ -131,9 +166,9 @@ practice is the same determinism-over-prose philosophy AR-2 already captures.
 sits *above* the engine Squidie built. The original call — ship Squidie unchanged, fold in
 exactly one thing (gate semantics), everything else builds on the new engine afterward or is
 independent — played out exactly: Squidie shipped (Phases 0–5) with AR-1 folded into
-Phase 2. The BUILD-ON/INDEPENDENT backlog has since largely shipped too — as of 2026-06-25:
-AR-2, AR-3, AR-4, AR-5, and AR-8 done (AR-7's core folded into AR-3); only AR-6 and AR-7's
-pervasive extension remain.**
+Phase 2. The BUILD-ON/INDEPENDENT backlog has since shipped too — as of 2026-06-26:
+AR-2, AR-3, AR-4, AR-5, AR-6, and AR-8 done (AR-7's core folded into AR-3); only AR-7's
+pervasive extension remains.**
 
 Alp River and Squidie/Reactor solve **different layers**:
 
@@ -152,14 +187,14 @@ That is the headline insight: **the "dynamic, not-a-declared-DAG" space Squidie 
 the free-form agent loop can instead be a deterministic, signal-composed loop** — and Alp
 River is a mature, working reference for it.
 
-| Alp River capability | Relationship to the Squidie work | Status (2026-06-25) |
+| Alp River capability | Relationship to the Squidie work | Status (2026-06-26) |
 | --- | --- | --- |
 | **Gate / lock semantics** (while/until, abandon-terminal, stale-approval retraction) | **Informed** Squidie Phase 2 (human-gate DSL, `REACTOR-ADOPTION.md` §4.5) | **DONE** — Phase 2; tail closed by AR-2 Phase 4 (AR-1) |
 | **Signal-driven route composer** (the crown jewel) | **Builds on** Reactor — the dynamic layer above the engine | **DONE** — Phases 0–5 (AR-2) |
 | **Reviewer fan-out + shared contract** | **Builds on** Reactor — a concrete first workflow | **DONE** — 4-lens fan-out + authored contract content (AR-3) |
 | **Self-heal fixer loop** | **Builds on** Reactor's `recurse`/iterative steps | **DONE** — first-class fixer + domain-touched RE_RUN_SET + summoning + `:route_fix_failed` (AR-4) |
 | **Central doctrine injection into sub-agents** | **Independent** of the engine — pure prompt assembly | **DONE** (AR-5) |
-| **Psychology / persona layer** | **Independent** — pure prompt assembly | **NOT STARTED** (AR-6) |
+| **Psychology / persona layer** | **Independent** — pure prompt assembly | **DONE** — stage-first `## PSYCHOLOGY` injection through the AR-5 seam (AR-6) |
 | **Confidence-tagging convention** | **Independent** — output/prompt convention | **PARTIAL** — reviewer-surface core folded into AR-3; pervasive extension open (AR-7) |
 | **Conversation-type triage** (talk/sketch/code/system) | **Independent** front door; folds into AR-2 if built | **DONE** — all four paths, folded into AR-2 (AR-8) |
 | Hook substrate, `.md`/`.py` artifacts, render-card UX, compaction/reinject | Re-implement or already covered | **SKIP** (§4) |
@@ -518,13 +553,14 @@ deferral, closed because the fixer consumes it).
 
 These are pure prompt/output assembly. They need **neither** Reactor nor the composer and can
 be picked up opportunistically without touching the Squidie roadmap. AR-5 is the enabler AR-3's
-shared contract already rides (shipped 2026-06-25), and that AR-6 and AR-7's pervasive extension
-still will.
+shared contract and AR-6's persona layer already ride (shipped 2026-06-25 / 2026-06-26), and that
+AR-7's pervasive extension still will.
 
 ### AR-5. Central doctrine injection into sub-agents
 
 **Recommendation**: INDEPENDENT — **DONE (2026-06-22)**. The highest-leverage prompt-layer
-borrow; it is now the live substrate AR-3's contract, AR-6, and AR-7 should ride.
+borrow; it is now the live substrate AR-3's contract and AR-6's personas ride, and AR-7's
+pervasive extension still should.
 
 **Where** (Alp River): `hooks/user-context-injector.sh` — a `PreToolUse(Agent)` hook that
 prepends four blocks to **every sub-agent's** prompt: `## DOCTRINE` (per-agent slices from
@@ -564,15 +600,16 @@ reused Memory blocks (`PromptSections.blocks_section/1`) + JIDO.md, injected via
 duplicated worker schemas are single-sourced in `Agent.Workers.OutputSchema`. Config-gated,
 best-effort, tested. **Open borders (not AR-5 failures):** AR-3 has since filled `reviewer_min`
 (no longer a placeholder) and added the `reviewer_contract` slice carrying the confidence tag — so
-AR-7's reviewer-surface core now rides the seam; what's left unauthored is a *pervasive*
-`confidence-tagging` slice (AR-7's extension) and `code-doctrine` (AR-6's neighbor), and "project
-docs" is JIDO.md only (no `docs/` READ_MAP). The seam is the live substrate AR-6 and AR-7's
-extension still ride.
+AR-7's reviewer-surface core now rides the seam, and **AR-6 has since added the `## PSYCHOLOGY`
+persona section through it** (2026-06-26); what's left unauthored is a *pervasive*
+`confidence-tagging` slice (AR-7's extension) and a `code-doctrine` slice, and "project docs" is
+JIDO.md only (no `docs/` READ_MAP). The seam is the live substrate AR-6's personas now ride and
+AR-7's extension still will.
 
 ### AR-6. Psychology / persona layer
 
-**Recommendation**: INDEPENDENT — **NOT STARTED**. Cheap, genuinely novel, ~a day on top of
-AR-5 (now shipped, so this is unblocked).
+**Recommendation**: INDEPENDENT — **DONE (2026-06-26)**. Cheap and genuinely novel, as forecast —
+shipped in about a day on top of AR-5. See the status update at the end of this entry.
 
 **Where** (Alp River): `psychology/*.md` — 9 personas (cynic, skeptic, detective, defender,
 optimist, pragmatist, teacher, user-advocate, craftsperson), each a 5-line
@@ -594,12 +631,27 @@ with the role-wins conflict rule carried verbatim. Differentiates how sub-agents
 (a skeptic plan-challenger probes assumptions; a cynic fixer asks what to delete) for very
 little code.
 
-**Status update (2026-06-25): NOT STARTED.** An exhaustive sweep for
-persona/psychology/skeptic/cynic/optimist/pragmatist across `lib priv test config` returns only
-false positives; there is no `JidoClaw.Agent.Persona`, no persona texts, and no template→persona
-map. AR-5 shipped **without** a pre-wired `## PSYCHOLOGY` seam, so this is a clean greenfield add
-on top of the now-existing doctrine registry (drop persona slices + a template→persona map, render
-a fifth prompt section through the AR-5 assembler).
+**Status update (2026-06-26): DONE.** `JidoClaw.Persona` (`lib/jido_claw/persona.ex`) is a
+priv-file-backed registry — 9 personas in `priv/defaults/persona/*.md` — rendered as a
+`## PSYCHOLOGY: <Name>` block and injected through the AR-5 seam: `Agent.SubagentPrompt.build/2` →
+`build/3` splices it **after** `## DOCTRINE` (mandatory contract first, advisory voice second). One
+deliberate improvement over the sketch above: resolution is **stage-first** (the catalog stage
+name) with a **template-name fallback**, because the four reviewer lenses are four catalog *stages*
+over the single `reviewer` template — so template-only keying (the sketch's plain "template→persona
+map", how Doctrine keys) would collapse them to one voice; per-stage keying gives defender /
+craftsperson / skeptic / pragmatist. The stage travels on a **dedicated `catalog_stage_name`
+option** set only by `WaveBuilder` — not the overloaded `step_name` (which doubles as the arbitrary
+YAML/skill-step label), so a skill step that happens to be *named* like a stage does **not** inherit
+the stage persona (it falls through to the template). The conflict rule is **single-sourced** in the
+renderer (`@conflict_rule`, appended to every block) rather than repeated per-file as in the source,
+so the role-wins safety valve can never drift. Section-gated by a new `config :jido_claw,
+:psychology` — `:doctrine` stays the **master** injection gate (psychology off never re-enables
+injection; it only toggles the one section). Reaches the AR-5 seam's three sub-agent paths (initial
+spawn `tools/spawn_agent.ex`, skill/composer step `skills/steps/agent_runner.ex`, follow-up turn
+`tools/send_to_agent.ex`); the main agent and handoff-routed workers get neither doctrine nor
+persona — AR-5's boundary, unchanged. 8 of 9 personas are selected (`user-advocate` ships and
+renders but is intentionally unused — no `design/ux-prototyper` analog in this catalog); no
+per-project overrides (v1 non-goal). `mix precommit` green.
 
 ### AR-7. Confidence-tagging as a pervasive convention
 
@@ -726,13 +778,13 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
 | **Durability** (log, status, recovery, gates) | **the envelope** (`WorkflowEvent`, projection, reconciler, human gates) | ephemeral signal state + reinject hook | **shipped** — event log + projection + recovery (stranding bug fixed) |
 | **Dynamic composition** of the stage set | *out of scope* (§6 → free-form ReAct) | **the signal router** (`route.py`) — the gap-filler | **shipped** — `RouteComposer` composes waves from live signals (AR-2) |
 | **Multi-agent quality** (review fan-out, self-heal) | — | **15 lenses + contract + fixer** | **shipped** — 4-lens fan-out + authored shared contract (AR-3) + the self-heal fixer loop with domain-touched RE_RUN_SET (AR-4) |
-| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence shipped** to sub-agents (AR-5, AR-3); persona (AR-6) / pervasive confidence-tagging (AR-7) not started |
+| **Prompt assembly** (doctrine, persona, context) | — | **injector hook** (doctrine/persona/context) | **doctrine + reviewer contract/confidence + persona shipped** to sub-agents (AR-5, AR-3, AR-6); pervasive confidence-tagging (AR-7) not started |
 
 The top two rows are Squidie — **shipped 2026-06-08..10**. The bottom three are Alp River — and
-as of **2026-06-25** they are no longer hypothetical: the composer (AR-2), review fan-out + the
-shared contract (AR-3), doctrine injection (AR-5), and the self-heal fixer loop (AR-4) are
-shipped, with AR-7's confidence-tagging core folded into AR-3; only persona (AR-6) and AR-7's
-pervasive extension remain.
+as of **2026-06-26** they are no longer hypothetical: the composer (AR-2), review fan-out + the
+shared contract (AR-3), doctrine injection (AR-5), the self-heal fixer loop (AR-4), and the
+persona layer (AR-6) are shipped, with AR-7's confidence-tagging core folded into AR-3; only
+AR-7's pervasive extension remains.
 
 ## Sequencing recommendation
 
@@ -756,8 +808,9 @@ pervasive extension remain.
    terminal) built on the rerun primitive already in place.
 5. **AR-5 → AR-6/AR-7, and AR-8** — **AR-5 done (2026-06-22)** and **AR-8 done (2026-06-23..25,
    folded into AR-2's triage seed)**; **AR-7's reviewer-surface core done** (folded into AR-3,
-   2026-06-25). **AR-6 and AR-7's pervasive extension remain** the cheap greenfield prompt-layer
-   wins, now unblocked by the shipped AR-5 doctrine seam.
+   2026-06-25); **AR-6 done (2026-06-26)** — the persona layer riding the AR-5 doctrine seam, the
+   last not-started independent borrow. **Only AR-7's pervasive extension remains** of the cheap
+   greenfield prompt-layer wins.
 
 ## Bottom line
 
@@ -765,10 +818,9 @@ Alp River is the most architecturally relevant project in this folder *and* the 
 easily misread as a reason to pivot. It is not. It is the **methodology layer that sits above
 the engine Squidie built**: the deterministic composer for the dynamic middle ground Squidie
 deliberately leaves to free-form ReAct, plus the multi-agent review, self-heal,
-doctrine-injection, and persona content to run on top. As of **2026-06-25** most of that backlog
-has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then **the
-composer itself (AR-2, Phases 0–5), reviewer fan-out + the shared Reviewer Contract (AR-3),
-doctrine injection (AR-5), the four-path triage front door (AR-8), and the self-heal fixer loop
-(AR-4)** — with AR-7's confidence-tagging core folded into AR-3. What remains is a short tail:
-extend confidence-tagging (AR-7) past the reviewer surface, and pick up the cheap persona borrow
-(AR-6) whenever there's a spare afternoon.
+doctrine-injection, and persona content to run on top. As of **2026-06-26** nearly all of that
+backlog has shipped: Squidie (Phases 0–5) and the gate semantics (AR-1, tail since closed), then
+**the composer itself (AR-2, Phases 0–5), reviewer fan-out + the shared Reviewer Contract (AR-3),
+doctrine injection (AR-5), the four-path triage front door (AR-8), the self-heal fixer loop
+(AR-4), and the persona layer (AR-6)** — with AR-7's confidence-tagging core folded into AR-3.
+What remains is a single short tail: extend confidence-tagging (AR-7) past the reviewer surface.

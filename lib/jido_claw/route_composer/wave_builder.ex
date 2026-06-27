@@ -148,6 +148,10 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
       template: template,
       task: stage.task,
       step_name: stage.name,
+      # AR-6: the dedicated stage carrier, set ONLY here (the wave-builder path), distinct
+      # from `step_name` (the StepResult label, which a skill step may name arbitrarily).
+      # Steers per-stage persona resolution downstream; inert for the saga cleanup path.
+      catalog_stage_name: stage.name,
       context_format: :deps,
       upstream: [],
       consumes: []
