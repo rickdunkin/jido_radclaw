@@ -131,7 +131,7 @@ WS1 + WS3 have landed (see the gotcha above).
 | WS | Doc | Size | Depends on |
 |---|---|---|---|
 | WS1 | [WS1-lease-core.md](WS1-lease-core.md) | L (~1–2 releases) | — |
-| WS2 | [WS2-composer-lease.md](WS2-composer-lease.md) | S–M | WS1 |
+| WS2 | [WS2-composer-lease.md](WS2-composer-lease.md) | M | WS1 |
 | WS3 | [WS3-reclaim-and-recovery.md](WS3-reclaim-and-recovery.md) | M | WS1, WS2 |
 | WS4 | [WS4-leader-election-and-singletons.md](WS4-leader-election-and-singletons.md) | M–L | WS1 |
 | WS5 | [WS5-cross-node-cancellation.md](WS5-cross-node-cancellation.md) | S–M | WS1 |

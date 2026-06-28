@@ -346,7 +346,10 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
     @tag :capture_log
     test "a sidecar that can't arm fails the claim under clustering, degrades single-node", ctx do
       # Inject a start failure by pre-owning the run-id key so the sidecar's
-      # Registry.register loses and it exits before signalling ready.
+      # Registry.register loses and it exits before signalling ready. WS2: a
+      # PERMANENT blocker is never freed, so the sidecar exhausts its bounded
+      # registration retries (~500 ms, still < the 5 s readiness deadline) before
+      # exiting — the outcome below is unchanged (just slightly slower).
       run_a = seed_run(ctx, "fail-closed")
       {:ok, _} = Registry.register(@lease_registry, run_a.id, :blocker)
       ctx_a = %{claim_token: Ash.UUID.generate(), workflow_run: run_a}
@@ -362,6 +365,44 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       with_cluster_enabled(false, fn ->
         assert {:ok, ^ctx_b} = LeaseMiddleware.init(ctx_b)
       end)
+    end
+  end
+
+  # ── 12b. sidecar registration retry (WS2 lease-handoff race) ────────────────
+
+  describe "sidecar registration retry" do
+    test "start_sidecar retries on :already_registered until the prior owner frees the key",
+         ctx do
+      # The lease-handoff race WS2's restart hits: a TEMPORARY blocker pre-owns the
+      # `:unique` key (the prior sidecar mid-`:DOWN`) then frees it shortly after, so
+      # the new sidecar's first Registry.register loses but a bounded retry wins.
+      run = seed_run(ctx, "register-retry")
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      test_pid = self()
+
+      blocker =
+        spawn(fn ->
+          {:ok, _} = Registry.register(@lease_registry, run.id, :blocker)
+          send(test_pid, :blocker_registered)
+          Process.sleep(100)
+          Registry.unregister(@lease_registry, run.id)
+          send(test_pid, :blocker_unregistered)
+        end)
+
+      assert_receive :blocker_registered, 1_000
+
+      # start_sidecar consumes the readiness handshake internally; the sidecar retries
+      # registration (~50 ms cadence, < the 5 s readiness deadline) until the blocker
+      # frees the key, then arms its monitor + signals ready.
+      assert :ok = WorkflowLease.start_sidecar(self(), run.id, ctx.tenant, token)
+
+      # The retry won the key — the sidecar (not the blocker) now owns it.
+      assert [{sidecar, %{token: ^token}}] = Registry.lookup(@lease_registry, run.id)
+      assert is_pid(sidecar)
+      assert sidecar != blocker
+      assert_receive :blocker_unregistered, 1_000
     end
   end
 

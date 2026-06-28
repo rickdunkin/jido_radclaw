@@ -140,6 +140,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.ArtifactContext
@@ -350,6 +351,12 @@ defmodule JidoClaw.RouteComposer do
       # can reconstruct the launch inputs (`build_start_opts/2`).
       config = parent_config(opts, deadline_ms, marked)
 
+      # WS2 genesis self-claim (D1b): generate the lease token OUTSIDE the txn so it
+      # survives the rollback boundary for the post-commit struct-set + start_opts
+      # freeze. It is stamped INSIDE the txn (`claim_genesis/2`) on the still-:pending
+      # row, mirroring WS1's `:pending`-claim invariant.
+      claim_token = Ash.UUID.generate()
+
       genesis =
         Ash.transact([WorkflowRun, WorkflowEvent, ComposerArtifact], fn ->
           with {:ok, parent} <-
@@ -357,6 +364,14 @@ defmodule JidoClaw.RouteComposer do
                    tenant: tenant,
                    actor: actor
                  ),
+               # WS2: stamp the parent's lease nil → fresh token BEFORE `run_started`
+               # flips it :running. The raw stamp UPDATE joins this Ash.transact
+               # connection, so it sees the uncommitted :pending row. Claiming AFTER
+               # `run_started` would leave a crash-in-the-gap as `:running + nil
+               # claim_token` — a shape `:claimable` does NOT select (permanently
+               # stranded); claiming HERE leaves either nothing (rolled back) or
+               # `:running + claimed` (reclaimable on expiry).
+               :ok <- claim_genesis(parent, claim_token),
                {:ok, _event} <-
                  WorkflowLog.append(parent, :run_started, %{}, tenant: tenant, actor: actor),
                # AFTER create + run_started (order matters, H11b): the seed rows'
@@ -370,9 +385,28 @@ defmodule JidoClaw.RouteComposer do
         end)
 
       case genesis do
-        {:ok, parent} -> reload_running_parent(parent, tenant, actor)
-        {:error, reason} -> {:error, {:start_failed, reason}}
+        # Thread the held token onto the reloaded struct so `build_start_opts/2` and
+        # the reload-failure `terminalize_parent` both carry the genesis token.
+        {:ok, parent} ->
+          reload_running_parent(%{parent | claim_token: claim_token}, tenant, actor)
+
+        {:error, reason} ->
+          {:error, {:start_failed, reason}}
       end
+    end
+  end
+
+  # WS2 genesis self-claim helper: stamp the parent's lease nil → `token` (the CAS
+  # genesis case). `{:ok, :claimed}` is the only success; anything else rolls the
+  # whole genesis back (no half-baked row). The `{:error, :lease_lost}` sentinel is
+  # NOT matched outside the transact (the outer `case` stays generic) — routing a
+  # specific atom through Ash.transact's polymorphic error channel would let
+  # Dialyzer erase it (`project_ash_transact_dialyzer_error_channel`).
+  defp claim_genesis(%WorkflowRun{id: id}, token) do
+    case WorkflowLease.stamp(id, token, nil) do
+      {:ok, :claimed} -> :ok
+      {:ok, :lost} -> {:error, :lease_lost}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -571,7 +605,8 @@ defmodule JidoClaw.RouteComposer do
           parent,
           {:composer_start_failed, reason},
           Keyword.fetch!(opts, :tenant),
-          Keyword.fetch!(opts, :actor)
+          Keyword.fetch!(opts, :actor),
+          parent.claim_token
         )
 
         {:error, {:start_failed, reason}}
@@ -618,7 +653,8 @@ defmodule JidoClaw.RouteComposer do
         parent,
         {:composer_start_failed, reason},
         Keyword.fetch!(opts, :tenant),
-        Keyword.fetch!(opts, :actor)
+        Keyword.fetch!(opts, :actor),
+        parent.claim_token
       )
     end
 
@@ -704,6 +740,13 @@ defmodule JidoClaw.RouteComposer do
   defp build_start_opts(opts, %WorkflowRun{config: config} = parent) do
     opts
     |> Keyword.put(:parent_run_id, parent.id)
+    # WS2: FREEZE the parent's lease token into the supervised child spec so it
+    # survives a `:transient` restart (the held token must come from the frozen
+    # start_opts, never a re-read of the row — a restarted zombie that re-read the
+    # row would renew the RECLAIMER's token and steal the claim back). The reload
+    # path (recovery / WS3 reclaim) carries the persisted/claim_next token through
+    # the same seam. `nil` (a `loop_state` raw-state tick) ⇒ unleased.
+    |> Keyword.put(:claim_token, parent.claim_token)
     |> Keyword.put(:deadline_at_ms, config["deadline_at_ms"])
     |> put_start_catalog(config["catalog"])
     |> Keyword.put(:premises, config["premises"] || opts[:premises] || %{})
@@ -794,6 +837,10 @@ defmodule JidoClaw.RouteComposer do
       The in-flight wave runs under `async_nolink`, survives the kill, and
       finishes durably "into the void" — true mid-wave cancellation is out of
       scope for this spike.
+    * `{:error, :stopped_without_terminal}` — the composer stopped cleanly without
+      delivering a terminal to this caller (a lease fence/reclaim, an external
+      cancel, a zombie restart, or a left-`:running`-for-recovery stop). The parent
+      is intentionally untouched here — re-read it if the cause matters.
     * `{:error, {:start_failed, reason}}` — `create_parent_run/1` or
       `start_composer/2` failed; the parent (if it reached `:running`) is
       terminalized.
@@ -805,6 +852,7 @@ defmodule JidoClaw.RouteComposer do
   @spec run_sync(keyword()) ::
           {:ok, summary()}
           | {:error, :timeout}
+          | {:error, :stopped_without_terminal}
           | {:error, {:start_failed, term()}}
           | {:error, {:crashed, term()}}
           | {:error, {:terminalize_failed, term()}}
@@ -828,13 +876,21 @@ defmodule JidoClaw.RouteComposer do
     |> Keyword.merge(notify: self(), ref: notify_ref)
   end
 
-  # The composer is unlinked + monitored: a `{:done, _}` notify means it appended
-  # its own terminal in finish/2; a `{:terminalize_failed, _}` means that write
-  # failed; an abnormal `:DOWN` (before finish/2) or a timeout leaves the parent
-  # `:running`, so terminalize it live. A `:DOWN :normal` is the composer's own
-  # `{:stop, :normal}` *after* it already sent the notify — finish/2 sends before
-  # stopping, so the matching `{:done, _}` is enqueued first and wins; the `when
-  # reason != :normal` guard keeps that benign DOWN from being read as a crash.
+  # The composer is unlinked + monitored, so it reaches this caller four ways:
+  #   * a `{:done, _}` notify — it appended its own terminal in finish/2;
+  #   * a `{:terminalize_failed, _}` notify — that terminal write failed;
+  #   * an abnormal `:DOWN` (died before finish/2) or a timeout — the parent is left
+  #     `:running`, so terminalize it live;
+  #   * a benign `:DOWN :normal` with NO preceding notify — a no-notify
+  #     `{:stop, :normal}` arm (a lease fence/reclaim, the parent already terminal, a
+  #     zombie restart, or a stop that left the parent `:running` for recovery). This
+  #     one MUST NOT terminalize: the parent is already terminal or owned by another
+  #     node, so a live terminalize would be wrong (a stale-token one is a fenced
+  #     no-op anyway) — return `:stopped_without_terminal` promptly instead.
+  # When finish/2 DID notify, it sends before it stops, so Erlang's signal-ordering
+  # guarantee enqueues the `{:done, _}`/`{:terminalize_failed, _}` ahead of the
+  # `:DOWN :normal`; clause 1/2 is tried first and wins — the benign-DOWN clause
+  # fires only when no notify preceded the clean stop.
   defp await_terminal(parent, pid, notify_ref, monitor_ref, timeout, tenant, actor) do
     receive do
       {:route_composer, ^notify_ref, {:done, summary}} ->
@@ -846,13 +902,16 @@ defmodule JidoClaw.RouteComposer do
         {:error, {:terminalize_failed, reason}}
 
       {:DOWN, ^monitor_ref, :process, ^pid, reason} when reason != :normal ->
-        terminalize_parent(parent, {:composer_crashed, reason}, tenant, actor)
+        terminalize_parent(parent, {:composer_crashed, reason}, tenant, actor, parent.claim_token)
         {:error, {:crashed, reason}}
+
+      {:DOWN, ^monitor_ref, :process, ^pid, :normal} ->
+        {:error, :stopped_without_terminal}
     after
       timeout ->
         Process.demonitor(monitor_ref, [:flush])
         Process.exit(pid, :kill)
-        terminalize_parent(parent, :composer_timeout, tenant, actor)
+        terminalize_parent(parent, :composer_timeout, tenant, actor, parent.claim_token)
         {:error, :timeout}
     end
   end
@@ -867,8 +926,9 @@ defmodule JidoClaw.RouteComposer do
       other ->
         # run_started committed → the parent is :running and ownerless.
         # Terminalize before surfacing the error so we never leak a
-        # perpetually-:running parent.
-        terminalize_parent(parent, :composer_reload_failed, tenant, actor)
+        # perpetually-:running parent. WS2: thread the genesis token (carried on the
+        # struct from create_parent_run) so the fence accepts this owner's terminal.
+        terminalize_parent(parent, :composer_reload_failed, tenant, actor, parent.claim_token)
         {:error, {:start_failed, {:reload_failed, other}}}
     end
   end
@@ -904,6 +964,10 @@ defmodule JidoClaw.RouteComposer do
       wave_index: 0,
       parent_run_id: Keyword.fetch!(opts, :parent_run_id),
       parent: nil,
+      # WS2: the frozen lease token (nil ⇒ unleased — every runtime lease behavior
+      # is gated on `is_binary(claim_token)`, so a nil-token tick is byte-identical
+      # to the pre-WS2 path: no preflight, no sidecar, no marker/terminal fence).
+      claim_token: Keyword.get(opts, :claim_token),
       tenant: Keyword.fetch!(opts, :tenant),
       actor: Keyword.fetch!(opts, :actor),
       context:
@@ -1018,12 +1082,85 @@ defmodule JidoClaw.RouteComposer do
         rebuilt =
           ComposerProjection.project(%{state | parent: parent, rebuild_attempts: 0}, events)
 
-        resume_or_tick(rebuilt, events)
+        # WS2: preflight the held lease BEFORE resuming. `state` (pre-projection) is
+        # threaded so a transient-error retry preserves `rebuild_attempts` (the
+        # projection resets it to 0).
+        lease_preflight_and_resume(rebuilt, state, events)
 
       {:error, reason} ->
         retry_rebuild_or_stop(state, reason)
     end
   end
+
+  # WS2 master compatibility switch: lease behavior is gated on a binary held token.
+  # A real launch always claims (genesis is unconditional), so it runs leased; a nil
+  # token (a `loop_state/3` raw-state tick or any path bypassing `create_parent_run`)
+  # ⇒ the byte-identical unleased path (no preflight, no sidecar).
+  #
+  # Preflight `renew/2` on the FROZEN start_opts token (never `parent.claim_token`):
+  #   * `{:ok, 1}` → still owner → start the heartbeat sidecar, then resume.
+  #   * `{:ok, 0}` → the row token was rotated by a reclaiming node → this is a
+  #     zombie (a fence-kill restart, or a cross-node steal) → `{:stop, :normal}`
+  #     writing NO parent events, so the reclaiming node's rebuilt state stays
+  #     authoritative.
+  #   * `{:error, _}` → a transient DB blip → the existing capped rebuild backoff
+  #     (on the ORIGINAL state, so the attempt counter is honored).
+  defp lease_preflight_and_resume(%{claim_token: token} = rebuilt, original, events)
+       when is_binary(token) do
+    case WorkflowLease.renew(rebuilt.parent_run_id, token) do
+      {:ok, 1} -> start_parent_sidecar_and_resume(rebuilt, events)
+      {:ok, 0} -> {:stop, :normal, rebuilt}
+      {:error, reason} -> retry_rebuild_or_stop(original, reason)
+    end
+  end
+
+  defp lease_preflight_and_resume(rebuilt, _original, events), do: resume_or_tick(rebuilt, events)
+
+  # Start the parent heartbeat sidecar (WS2 Approach A): the RouteComposer GenServer
+  # is the sidecar's "executor" — the sidecar renews the parent lease every
+  # `renew_seconds` OFF-PROCESS, so a wave blocked synchronously in `ReactorRunner.run/3`
+  # (up to `wave_timeout_ms`, far longer than the 60s lease) never lets the lease lapse,
+  # and on a stale fence the sidecar `Process.exit(composer, :kill)`s. `start_sidecar/4`
+  # blocks ≤5s for the readiness handshake — acceptable inside `do_rebuild` (already DB
+  # work). On a start failure, mirror `Middleware.fail_or_degrade/2`, KEEPING
+  # `state.claim_token` either way (the durable fences + restart preflight rely on the
+  # held token): under clustering → fail closed `{:stop, :normal}` (a heartbeat-less
+  # composer would let the lease lapse and another node reclaim; the parent stays
+  # `:running + claimed` for WS3); single-node → log + proceed DEGRADED (no heartbeat —
+  # the held token still matches the row so the fences never false-positive, and nothing
+  # reclaims an expired single-node lease). NOT `retry_rebuild_or_stop` — `do_rebuild`
+  # resets `rebuild_attempts` to 0 on each successful reload, so a post-reload retry
+  # never trips the cap (infinite loop); the bounded retry lives in the Sidecar's
+  # registration, this is only the backstop.
+  defp start_parent_sidecar_and_resume(state, events) do
+    case WorkflowLease.start_sidecar(self(), state.parent_run_id, state.tenant, state.claim_token) do
+      :ok ->
+        resume_or_tick(state, events)
+
+      {:error, reason} ->
+        sidecar_fail_or_degrade(state, events, reason)
+    end
+  end
+
+  defp sidecar_fail_or_degrade(state, events, reason) do
+    if cluster_enabled?() do
+      Logger.error(
+        "[RouteComposer] parent lease sidecar failed for #{state.parent_run_id} " <>
+          "(#{inspect(reason)}); stopping under clustering — parent left :running + claimed for reclaim"
+      )
+
+      {:stop, :normal, state}
+    else
+      Logger.warning(
+        "[RouteComposer] parent lease sidecar failed for #{state.parent_run_id} " <>
+          "(#{inspect(reason)}); degraded (single-node), proceeding with no heartbeat"
+      )
+
+      resume_or_tick(state, events)
+    end
+  end
+
+  defp cluster_enabled?, do: Application.get_env(:jido_claw, :cluster_enabled, false)
 
   # On rebuild, resume a parked gate WITHOUT re-dispatching it (Phase 4d): if the
   # log shows an open gate wave (`wave_started(N)` for a gate, no
@@ -1154,6 +1291,9 @@ defmodule JidoClaw.RouteComposer do
       |> handle_wave_result(dispatch, display, state)
     else
       {:error, :parent_terminal} -> {:stop, :normal, state}
+      # WS2: another owner has the parent (token rotated) — stop clean, write
+      # nothing, launch nothing.
+      {:error, :parent_fenced} -> {:stop, :normal, state}
       {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
   end
@@ -1229,6 +1369,9 @@ defmodule JidoClaw.RouteComposer do
       # don't re-terminalize and don't launch the wave — consistent with the
       # `commit_wave` `:parent_terminal` arm in `handle_wave_value/5`.
       {:error, :parent_terminal} -> {:stop, :normal, state}
+      # WS2: another owner reclaimed the parent (token rotated, in `record_wave_start`
+      # or the `ensure_parent_live` re-check) — stop clean, write/launch nothing.
+      {:error, :parent_fenced} -> {:stop, :normal, state}
       {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
   end
@@ -1242,13 +1385,29 @@ defmodule JidoClaw.RouteComposer do
   # terminalization rides the Phase 6 cluster lease (§10.1).
   defp ensure_parent_live(state) do
     case WorkflowRun.by_id(state.parent_run_id, tenant: state.tenant, actor: state.actor) do
-      {:ok, %WorkflowRun{status: status}} ->
-        if Projection.terminal_status?(status), do: {:error, :parent_terminal}, else: :ok
+      {:ok, %WorkflowRun{status: status, claim_token: current}} ->
+        # WS2: also fence the post-marker / pre-child-create reclaim window — a node
+        # that rotated the token here ⇒ `:parent_fenced` (caught by `run_built_wave`'s
+        # else). A reload blip (`_other`) still proceeds (the wave's fold is fenced at
+        # `commit_wave/4`). Order: terminal first (a true end), then the token fence.
+        cond do
+          Projection.terminal_status?(status) -> {:error, :parent_terminal}
+          token_mismatch?(state.claim_token, current) -> {:error, :parent_fenced}
+          true -> :ok
+        end
 
       _other ->
         :ok
     end
   end
+
+  # Nil-safe held-vs-row token mismatch: only a leased run (binary held token)
+  # against a claimed row (binary current token) can be fenced. An unleased run or
+  # a never-claimed row is never fenced (byte-identical to pre-WS2).
+  defp token_mismatch?(held, current) when is_binary(held) and is_binary(current),
+    do: current != held
+
+  defp token_mismatch?(_held, _current), do: false
 
   # A gate wave halted at its `GateStep` (Phase 4b): the run promptly returned
   # `{:ok, {:paused, case_id}, run}` (one DB write, no LLM). PARK — subscribe to
@@ -1344,7 +1503,7 @@ defmodule JidoClaw.RouteComposer do
            state.wave_index,
            deltas,
            hook_markers,
-           auth_opts(state)
+           commit_opts(state)
          ) do
       :ok ->
         next = record_wave(apply_fn.(next_fold), dispatch, display, run, emissions)
@@ -1354,6 +1513,11 @@ defmodule JidoClaw.RouteComposer do
       # returned): stop cleanly, don't re-terminalize (the terminal append already
       # no-ops a terminal parent).
       {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      # WS2: a reclaiming node rotated the parent token while this wave returned —
+      # stop clean, write nothing, so the new owner's fold of this wave is canonical.
+      {:error, :parent_fenced} ->
         {:stop, :normal, state}
 
       # A commit leg failed: terminalize the parent `route_failed` — do NOT
@@ -1469,9 +1633,12 @@ defmodule JidoClaw.RouteComposer do
       wave_started: wave_started_payload(dispatch, display, state)
     ]
 
-    case Commit.start_wave(state.parent, markers, auth_opts(state)) do
+    case Commit.start_wave(state.parent, markers, commit_opts(state)) do
       :ok -> :ok
       {:error, :parent_terminal} = halt -> halt
+      # WS2: propagate the token-fence so the caller's else stops clean (the wave
+      # never launches un-recorded under a stale claim).
+      {:error, :parent_fenced} = halt -> halt
       {:error, reason} -> {:error, {:wave_start_append_failed, reason}}
     end
   end
@@ -1572,6 +1739,17 @@ defmodule JidoClaw.RouteComposer do
 
   defp auth_opts(state), do: [tenant: state.tenant, actor: state.actor]
 
+  # WS2: `auth_opts` + the held lease token, for the PARENT-targeting `Commit.*`
+  # marker/fold writes (all target `state.parent`). The token engages the durable
+  # token-fence in `Commit.guarded_wave_txn/4`, so a stale owner's markers roll
+  # back instead of corrupting the reclaimer's log. nil token (unleased) ⇒
+  # byte-identical to `auth_opts` (`WorkflowLog.append`'s `fence_context(nil)` adds
+  # no context key; the fence is nil-safe). NOT used for the non-parent
+  # `auth_opts` append in `teardown_parked_gate` (a parent token on a child write
+  # would mis-fence).
+  defp commit_opts(state),
+    do: Keyword.put(auth_opts(state), :claim_fence_token, state.claim_token)
+
   # ---------------------------------------------------------------------------
   # Gate park / wake (Phase 4)
   # ---------------------------------------------------------------------------
@@ -1608,13 +1786,20 @@ defmodule JidoClaw.RouteComposer do
     case Commit.append_markers(
            state.parent,
            [wave_paused: wave_paused_payload(park)],
-           auth_opts(state)
+           commit_opts(state)
          ) do
       :ok ->
         {:noreply, state}
 
       {:error, :parent_terminal} ->
         teardown_parked_gate(state)
+
+      # WS2: a fence is NOT a parent terminal — another owner reclaimed this still-
+      # `:running` parent. Stop clean and leave the gate `AgentCase` OPEN (do NOT
+      # tear it down) so the reclaiming node re-parks it. This is the deliberate
+      # divergence from the `:parent_terminal` arm above.
+      {:error, :parent_fenced} ->
+        {:stop, :normal, state}
 
       {:error, reason} when attempt < @max_wave_paused_attempts ->
         Logger.warning(
@@ -1743,7 +1928,7 @@ defmodule JidoClaw.RouteComposer do
     case Commit.append_markers(
            cleared.parent,
            [wave_resumed: wave_resumed_payload(park)],
-           auth_opts(cleared)
+           commit_opts(cleared)
          ) do
       :ok ->
         handle_wave_value(
@@ -1755,6 +1940,11 @@ defmodule JidoClaw.RouteComposer do
         )
 
       {:error, :parent_terminal} ->
+        {:stop, :normal, cleared}
+
+      # WS2: a reclaiming node rotated the token while we resumed — stop clean and
+      # write nothing, leaving the gate's fold to the new owner.
+      {:error, :parent_fenced} ->
         {:stop, :normal, cleared}
 
       {:error, reason} ->
@@ -1950,12 +2140,16 @@ defmodule JidoClaw.RouteComposer do
       stages_invalidated: %{stages: rerun_set, closed_wave_index: park.wave_index}
     ]
 
-    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+    case Commit.append_markers(state.parent, markers, commit_opts(state)) do
       :ok ->
         next = apply_reject_replan(state, rerun_set, park.wave_index)
         {:noreply, next, {:continue, :tick}}
 
       {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      # WS2: a reclaiming node owns the parent now — stop clean, write nothing.
+      {:error, :parent_fenced} ->
         {:stop, :normal, state}
 
       {:error, _reason} ->
@@ -2373,11 +2567,15 @@ defmodule JidoClaw.RouteComposer do
     artifacts_put = Keyword.get(opts, :artifacts_put, %{})
     markers = [stages_invalidated: %{stages: rerun_set}] ++ extra_markers
 
-    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+    case Commit.append_markers(state.parent, markers, commit_opts(state)) do
       :ok ->
         {:noreply, apply_invalidation(state, rerun_set, artifacts_put), {:continue, :tick}}
 
       {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      # WS2: a reclaiming node owns the parent now — stop clean, write nothing.
+      {:error, :parent_fenced} ->
         {:stop, :normal, state}
 
       {:error, _reason} ->
@@ -2436,11 +2634,15 @@ defmodule JidoClaw.RouteComposer do
   end
 
   defp commit_stale_retraction(state, rerun_set, markers) do
-    case Commit.append_markers(state.parent, markers, auth_opts(state)) do
+    case Commit.append_markers(state.parent, markers, commit_opts(state)) do
       :ok ->
         {:noreply, apply_stale_retraction(state, rerun_set), {:continue, :tick}}
 
       {:error, :parent_terminal} ->
+        {:stop, :normal, state}
+
+      # WS2: a reclaiming node owns the parent now — stop clean, write nothing.
+      {:error, :parent_fenced} ->
         {:stop, :normal, state}
 
       {:error, _reason} ->
@@ -2666,7 +2868,8 @@ defmodule JidoClaw.RouteComposer do
         :route_converged,
         %{result: terminal_summary_subset(summary)},
         state.tenant,
-        state.actor
+        state.actor,
+        state.claim_token
       )
 
     maybe_teardown_forge_session(result, :converged, state)
@@ -2686,7 +2889,8 @@ defmodule JidoClaw.RouteComposer do
         route_cancelled_kind(kind),
         %{result: %{disposition: Atom.to_string(kind)}},
         state.tenant,
-        state.actor
+        state.actor,
+        state.claim_token
       )
 
     maybe_teardown_forge_session(result, kind, state)
@@ -2707,7 +2911,8 @@ defmodule JidoClaw.RouteComposer do
           result: %{disposition: "verify_failed"}
         },
         state.tenant,
-        state.actor
+        state.actor,
+        state.claim_token
       )
 
     maybe_teardown_forge_session(result, :verify_failed, state)
@@ -2729,7 +2934,8 @@ defmodule JidoClaw.RouteComposer do
           result: %{disposition: "fix_failed"}
         },
         state.tenant,
-        state.actor
+        state.actor,
+        state.claim_token
       )
 
     maybe_teardown_forge_session(result, :fix_failed, state)
@@ -2743,7 +2949,8 @@ defmodule JidoClaw.RouteComposer do
         route_terminal_kind(kind),
         %{error: format_terminal_error(kind, reason)},
         state.tenant,
-        state.actor
+        state.actor,
+        state.claim_token
       )
 
     maybe_teardown_forge_session(result, kind, state)
@@ -2867,7 +3074,7 @@ defmodule JidoClaw.RouteComposer do
   # `:illegal` transition rolls it back), so a raw append is NOT a harmless
   # no-op. Returns `:ok` or `{:error, reason}`; never raises (the Ash code
   # interface returns tagged tuples, not exceptions).
-  defp append_parent_terminal(parent_run_id, kind, payload, tenant, actor) do
+  defp append_parent_terminal(parent_run_id, kind, payload, tenant, actor, claim_token) do
     case WorkflowRun.by_id(parent_run_id, tenant: tenant, actor: actor) do
       {:ok, %WorkflowRun{} = parent} ->
         if Projection.terminal_status?(parent.status) do
@@ -2875,7 +3082,15 @@ defmodule JidoClaw.RouteComposer do
         else
           scrubbed = scrub_terminal_payload(kind, payload, parent)
 
-          case WorkflowLog.append(parent, kind, scrubbed, tenant: tenant, actor: actor) do
+          # WS2: the `route_*` terminals (and the abnormal-path `run_failed`) are
+          # status-authority, so threading the held token engages `Allocate.claim_fenced?`
+          # (fence B) — a stale owner's terminal rolls back rather than clobbering the
+          # reclaimed parent. nil token ⇒ no fence context ⇒ byte-identical.
+          case WorkflowLog.append(parent, kind, scrubbed,
+                 tenant: tenant,
+                 actor: actor,
+                 claim_fence_token: claim_token
+               ) do
             {:ok, _event} -> :ok
             {:error, reason} -> {:error, reason}
           end
@@ -2909,13 +3124,21 @@ defmodule JidoClaw.RouteComposer do
   # wins (the caller returns it), so a terminalize failure here is logged loudly —
   # a parent left `:running` must be visible, never masked — and `:ok` is returned
   # so the caller proceeds to surface its original error.
-  defp terminalize_parent(%WorkflowRun{} = parent, reason, tenant, actor) do
+  # WS2: callers thread the held token (`parent.claim_token`) — these parents are
+  # NOT all unclaimed launch-failures. `await_terminal` terminalizes a parent that
+  # actively ran (crash/timeout), and `start_composer`/`maybe_terminalize_orphan`/
+  # `reload_running_parent` all act on a parent `create_parent_run` already claimed.
+  # A `nil` `claim_fence_token` would bypass the Ash fence and let a stale node
+  # clobber a reclaimed parent's terminal. Harmless where held == row (immediate
+  # launch failures); correctness-relevant on the run_sync crash/timeout paths.
+  defp terminalize_parent(%WorkflowRun{} = parent, reason, tenant, actor, claim_token) do
     case append_parent_terminal(
            parent.id,
            :run_failed,
            %{error: format_terminalize_reason(reason)},
            tenant,
-           actor
+           actor,
+           claim_token
          ) do
       :ok ->
         :ok

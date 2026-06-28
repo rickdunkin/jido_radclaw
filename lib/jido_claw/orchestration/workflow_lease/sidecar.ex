@@ -35,6 +35,17 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
 
   @registry JidoClaw.Orchestration.LeaseRegistry
 
+  # Lease-handoff registration retry (WS2): the `:unique` `LeaseRegistry` frees a
+  # key the instant the prior owner exits/unregisters, but on an ordinary
+  # crash-restart with the SAME token the supervisor can restart the executor (and
+  # this sidecar) before the prior sidecar has processed its `:DOWN` and
+  # unregistered — so `Registry.register` transiently hits `:already_registered`.
+  # Bounded-retry on that one error (~10 × 50 ms, well inside the 5 s readiness
+  # deadline) before failing. Lives here, not in a caller busy-poll, because it is
+  # the generic lease-handoff race the WS3 reclaim path hits too.
+  @register_max_attempts 10
+  @register_retry_ms 50
+
   @typep state :: %{
            executor: pid(),
            run_id: String.t(),
@@ -50,7 +61,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
   """
   @spec run(pid(), pid(), String.t(), term(), String.t()) :: :ok | no_return()
   def run(caller_pid, executor_pid, run_id, tenant_id, token) do
-    case Registry.register(@registry, run_id, %{executor: executor_pid, token: token}) do
+    case register_with_retry(run_id, executor_pid, token, @register_max_attempts) do
       {:ok, _owner} ->
         # Arm the monitor BEFORE signalling ready — no miss-the-`:DOWN` window.
         ref = Process.monitor(executor_pid)
@@ -70,6 +81,25 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
       {:error, reason} ->
         # No ready signal → start_sidecar/4 surfaces `{:sidecar_down, _}`.
         exit({:lease_register_failed, reason})
+    end
+  end
+
+  # Bounded-retry registration on the transient lease-handoff `:already_registered`
+  # ONLY (the prior sidecar is mid-`:DOWN`), BEFORE the monitor-arm / ready
+  # handshake so those invariants are untouched. Any other register error — or
+  # `:already_registered` after the attempt budget is spent (a genuinely
+  # pre-owned key) — fails immediately, exactly the pre-WS2 behavior.
+  defp register_with_retry(run_id, executor_pid, token, attempts_left) do
+    case Registry.register(@registry, run_id, %{executor: executor_pid, token: token}) do
+      {:ok, _owner} = ok ->
+        ok
+
+      {:error, {:already_registered, _pid}} when attempts_left > 1 ->
+        Process.sleep(@register_retry_ms)
+        register_with_retry(run_id, executor_pid, token, attempts_left - 1)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

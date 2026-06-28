@@ -52,8 +52,10 @@ defmodule JidoClaw.RouteComposer.Commit do
   empty read-only txn that commits harmlessly), yielding `{:ok, :parent_terminal}`
   → remapped to `{:error, :parent_terminal}` there; this keeps the atom visible to
   callers (routing it through the txn's error channel lets Ash.transact's
-  polymorphic-return type erase it). A fn returning `{:error, _}` rolls the txn
-  back and stays `{:error, _}`.
+  polymorphic-return type erase it). The WS2 token-fence guard travels the same
+  success channel as the bare atom `:parent_fenced`, remapped to
+  `{:error, :parent_fenced}` for the same reason. A fn returning `{:error, _}`
+  rolls the txn back and stays `{:error, _}`.
   """
 
   require Ash.Query, as: Query
@@ -143,20 +145,40 @@ defmodule JidoClaw.RouteComposer.Commit do
   end
 
   # `commit_wave/4` and `start_wave/3` differ only in the resources touched and the
-  # work run under the lock. A terminal parent → `:parent_terminal` BEFORE any write
-  # (the read-only txn commits harmlessly); else `proceed_fun` runs under the held
-  # FOR UPDATE lock.
+  # work run under the lock. Under the held FOR UPDATE lock, the parent is checked
+  # in order: a **token fence** (WS2 — a stale owner whose held `:claim_fence_token`
+  # no longer matches the row's `claim_token`) → `:parent_fenced` BEFORE any write;
+  # a terminal parent → `:parent_terminal`; else `proceed_fun` runs. The fence comes
+  # FIRST so a reclaimed parent that is *also* terminal still reads as `:parent_fenced`
+  # — the loop must then stop WITHOUT tearing a gate down (the reclaiming node re-parks
+  # it), whereas `:parent_terminal` tears it down. Both pre-write checks are an empty
+  # read-only txn that commits harmlessly.
   defp guarded_wave_txn(resources, parent, opts, proceed_fun) do
     resources
     |> Ash.transact(fn ->
       with {:ok, locked} <- reload_for_update(parent, opts) do
-        if Projection.terminal_status?(locked.status),
-          do: :parent_terminal,
-          else: proceed_fun.(locked)
+        cond do
+          fenced?(locked, opts[:claim_fence_token]) -> :parent_fenced
+          Projection.terminal_status?(locked.status) -> :parent_terminal
+          true -> proceed_fun.(locked)
+        end
       end
     end)
     |> unwrap_transact()
   end
+
+  # WS2 durable token-fence for the parent's **non-status-authority** composer
+  # markers. `Allocate`'s fence B (`claim_fenced?`) guards only status-authority
+  # writes, so without this a stale (not-yet-killed) zombie composer could still
+  # append `wave_completed` / content / lifecycle markers onto a reclaimed parent's
+  # log and corrupt the new owner's projected state. Nil-safe: an unleased run (no
+  # held token) or a never-claimed row (`claim_token` nil) skips the fence, so every
+  # pre-WS2 / single-node-unleased caller is byte-identical.
+  defp fenced?(%WorkflowRun{claim_token: current}, held)
+       when is_binary(held) and is_binary(current),
+       do: current != held
+
+  defp fenced?(_locked, _held), do: false
 
   # `Ash.transact` wraps the fn's non-error return as `{:ok, _}`. The terminal guard
   # deliberately travels the SUCCESS channel as the bare atom `:parent_terminal` (an
@@ -167,6 +189,7 @@ defmodule JidoClaw.RouteComposer.Commit do
   # `{:error, reason}` (the fn returned `{:error, _}`, rolling the txn back).
   defp unwrap_transact({:ok, :ok}), do: :ok
   defp unwrap_transact({:ok, :parent_terminal}), do: {:error, :parent_terminal}
+  defp unwrap_transact({:ok, :parent_fenced}), do: {:error, :parent_fenced}
   defp unwrap_transact({:error, reason}), do: {:error, reason}
 
   # Canonical `seq` fold order (load-bearing — the projection folds in `seq`
@@ -184,10 +207,18 @@ defmodule JidoClaw.RouteComposer.Commit do
            ),
          :ok <- append_each(locked, content_events(deltas), opts),
          :ok <- append_each(locked, hook_markers, opts),
-         {:ok, _promoted} <- ComposerArtifact.activate_for_wave(locked.id, wave_index, opts) do
+         # `activate_for_wave` is a STRICT Ash code interface — it rejects the WS2
+         # `:claim_fence_token` opt the marker appends carry (the fence is the
+         # `guarded_wave_txn` chokepoint above, not the ref-flip). Pass auth opts only.
+         {:ok, _promoted} <-
+           ComposerArtifact.activate_for_wave(locked.id, wave_index, auth_only(opts)) do
       :ok
     end
   end
+
+  # Strip WS2's `:claim_fence_token` (and any future fence opts) before handing opts
+  # to a strict Ash code interface; the fence lives in `guarded_wave_txn/4`.
+  defp auth_only(opts), do: Keyword.take(opts, [:tenant, :actor])
 
   # FOR UPDATE on the parent row — the same per-run serialization point Allocate
   # uses (`allocate.ex`). Re-locking the same row within this txn is fine
