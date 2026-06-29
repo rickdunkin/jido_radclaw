@@ -113,7 +113,14 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   @impl GenServer
   def handle_info(:scan, state) do
-    do_scan(state)
+    # Leader-gate ONLY the periodic backstop scan: every claim is
+    # `FOR UPDATE SKIP LOCKED` + a row-lease, so N pollers are safe — the gate
+    # just cuts redundant cross-node polling. A follower skips the scan and
+    # re-arms the normal next tick. The targeted hint-path (`{:hint_pending,
+    # _}`) and the manual `tick/0` (`handle_cast(:tick)`) stay UNGATED: hints
+    # are claim-safe and the leader's scan still sweeps any rows a follower
+    # would have hint-claimed; `tick/0` is an operator/test force-scan.
+    if JidoClaw.Cluster.leader?(), do: do_scan(state)
     {:noreply, schedule_scan(state)}
   end
 

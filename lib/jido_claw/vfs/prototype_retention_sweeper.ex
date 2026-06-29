@@ -47,7 +47,10 @@ defmodule JidoClaw.VFS.PrototypeRetentionSweeper do
 
   @impl GenServer
   def handle_info(:sweep, state) do
-    sweep()
+    # Leader-gate the periodic sweep: the dir GC + WorkflowRun reference check
+    # is fail-safe and idempotent on every node, so the gate only cuts
+    # cross-node-redundant work. A follower skips the sweep and always re-arms.
+    if JidoClaw.Cluster.leader?(), do: sweep()
     schedule_next()
     {:noreply, state}
   end

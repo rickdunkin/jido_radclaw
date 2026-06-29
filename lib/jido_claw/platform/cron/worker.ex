@@ -157,8 +157,22 @@ defmodule JidoClaw.Cron.Worker do
   # to the window the timer was armed for, never to a freshly advanced one.
   @impl GenServer
   def handle_info({:tick, window}, %{status: :active, next_run: window} = state) do
-    state = execute_job(state, {:scheduled, window})
-    {:noreply, after_fire(state)}
+    if leader_gated?(state) and not JidoClaw.Cluster.leader?() do
+      # Off-leader replicated :system_job tick: re-arm WITHOUT firing. The
+      # leader fires this tick; this follower just keeps its timer alive. When
+      # leadership moves, the new leader's worker fires on the next cron
+      # boundary — failover is automatic, no leadership listener needed.
+      #
+      # Recurring-only: schedule_next/1 here is correct for :cron/:every (every
+      # :system_job today is recurring). A future one-shot {:at, _} system job
+      # would hit schedule_next/1's elapsed-:at disable path on a follower
+      # (wrong — a follower must not disable a one-shot it never ran); that
+      # would require a bounded re-check instead. No such job exists today.
+      {:noreply, schedule_next(state)}
+    else
+      state = execute_job(state, {:scheduled, window})
+      {:noreply, after_fire(state)}
+    end
   end
 
   # Stale/duplicate window, or a disabled worker: swallow WITHOUT executing
@@ -171,6 +185,18 @@ defmodule JidoClaw.Cron.Worker do
   end
 
   # -- Private --
+
+  # Only platform `:system_job` ticks gate on the cluster leader — they are the
+  # always-on jobs the supervision tree replicates on every node (the memory
+  # consolidator tick). User `:agent`/`:workflow`/`:mfa` jobs short-circuit and
+  # fire on every node as today (no leader call, no regression). A manual
+  # `trigger/2` is never gated (it bypasses this clause entirely — operator
+  # override). The gate is FIRST-LINE only: the brief two-leaders window during
+  # `:pg` convergence can still fire a `:system_job` on two nodes, so every
+  # system job must stay idempotent / row-claimed / DB-leased independently
+  # (see `JidoClaw.Cluster.Leader`).
+  defp leader_gated?(%{mode: :system_job}), do: true
+  defp leader_gated?(_state), do: false
 
   # `fire` is the firing provenance ({:scheduled, window} from a timer tick,
   # :manual from trigger/2). It rides a LOCAL dispatch copy only — every state

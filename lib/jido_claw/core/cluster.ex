@@ -70,6 +70,19 @@ defmodule JidoClaw.Cluster do
     :pg.get_members(@pg_scope, group)
   end
 
+  @doc """
+  Monitor a process group for membership changes.
+
+  Returns `{ref, current_members}`. Subsequent membership changes are
+  delivered to the caller as `{ref, :join | :leave, group, [pid()]}`
+  messages (OTP 25+). The ref identifies this monitor for the `handle_info`
+  match and for `:pg.demonitor/2`.
+  """
+  @spec monitor_group(term()) :: {reference(), [pid()]}
+  def monitor_group(group) do
+    :pg.monitor(@pg_scope, group)
+  end
+
   @doc "Get local members only."
   @spec local_members(term()) :: [pid()]
   def local_members(group) do
@@ -80,6 +93,25 @@ defmodule JidoClaw.Cluster do
   @spec groups() :: [term()]
   def groups do
     :pg.which_groups(@pg_scope)
+  end
+
+  # -- Leadership --
+
+  @doc """
+  Whether the local node is the cluster leader.
+
+  Singletons that should run on exactly one node gate periodic work on this.
+  Delegates to `JidoClaw.Cluster.Leader` (the `:cluster_leader_module` seam,
+  swappable in tests) — which returns `true` trivially on a single node and
+  fails closed (`false`) when leadership is indeterminate. See
+  `JidoClaw.Cluster.Leader` for the election algorithm and the standing
+  idempotency invariant for gated work.
+  """
+  @spec leader?() :: boolean()
+  def leader?, do: leader_module().leader?()
+
+  defp leader_module do
+    Application.get_env(:jido_claw, :cluster_leader_module, JidoClaw.Cluster.Leader)
   end
 
   # -- Topology Configuration --

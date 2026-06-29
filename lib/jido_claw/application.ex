@@ -443,7 +443,23 @@ defmodule JidoClaw.Application do
       topologies = JidoClaw.Cluster.topology()
 
       [
-        %{id: :pg_jido_claw, start: {:pg, :start_link, [:jido_claw]}},
+        # `:pg` scope + the leader-election GenServer restart TOGETHER under a
+        # `:rest_for_one` sub-supervisor: a `:pg` crash restarts BOTH in order
+        # (Leader re-inits → fresh join + monitor), so the Leader can never be
+        # left holding a stale monitor ref against a restarted scope; a Leader
+        # crash restarts only the Leader. The root supervisor is `:one_for_one`,
+        # which would not give this coupling. libcluster's `Cluster.Supervisor`
+        # stays an independent sibling (it manages Node connections, not the
+        # `:pg` scope; the scope registers globally as `:jido_claw` regardless
+        # of which supervisor starts it).
+        supervisor_child(
+          JidoClaw.Cluster.LeadershipSupervisor,
+          [
+            %{id: :pg_jido_claw, start: {:pg, :start_link, [:jido_claw]}},
+            JidoClaw.Cluster.Leader
+          ],
+          :rest_for_one
+        ),
         {Cluster.Supervisor, [topologies, [name: JidoClaw.ClusterSupervisor]]}
       ]
     else

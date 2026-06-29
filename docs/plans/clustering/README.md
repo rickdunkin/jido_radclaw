@@ -134,6 +134,7 @@ WS1 + WS3 have landed (see the gotcha above).
 | WS2 | [WS2-composer-lease.md](WS2-composer-lease.md) | M | WS1 |
 | WS3 | [WS3-reclaim-and-recovery.md](WS3-reclaim-and-recovery.md) | M | WS1, WS2 |
 | WS4 | [WS4-leader-election-and-singletons.md](WS4-leader-election-and-singletons.md) | M–L | WS1 |
+| WS4a | [WS4a-clustered-cron-ownership.md](WS4a-clustered-cron-ownership.md) | M | WS4 |
 | WS5 | [WS5-cross-node-cancellation.md](WS5-cross-node-cancellation.md) | S–M | WS1 |
 | WS6 | [WS6-testing-and-ops.md](WS6-testing-and-ops.md) | M | all |
 
@@ -162,11 +163,12 @@ owns it.
 | Lease-expiry → continuous dead-node recovery (replaces boot reconciler when clustered) | REACTOR §4.11 (`:687-689`); T1-1 (`:432-434`); §4.8 (`:641-643`) | **WS3** |
 | Single-node intra-node **task-death** (the executor task dies but the node stays up — "No owner-monitor"; today only a node *restart* triggers recovery) | codebase (`run_execution.ex` "Caller-death semantics … No owner-monitor") | **WS3** (the reclaim mandate spans dead-node **and** intra-node task-death) |
 | `owns_recovery?` disabled under clustering with no replacement | codebase (`workflow_recovery.ex:468-472`) | **WS3** |
-| Leader election for singletons (cron scheduler) — prefer `:pg` over advisory-lock | REACTOR §4.11 (`:681-684`) | **WS4** |
-| Avoid gust's session-bound leader-lock partition failure | gust (`:144`) | **WS4** |
+| Leader election for singletons (cron scheduler) — prefer `:pg` over advisory-lock | REACTOR §4.11 (`:681-684`) | ✅ **WS4 shipped** (`JidoClaw.Cluster.Leader`) |
+| Avoid gust's session-bound leader-lock partition failure | gust (`:144`) | ✅ **WS4 shipped** (`:pg` membership, not a held lock) |
 | Cluster-correct cancellation (current kill switch is single-node only) | T2-4 (`:294`); gust (`:119-122`) | **WS5** |
 | Work-stealing / graceful-drain between live nodes | gust (`:145`) | **WS4** (recorded as non-goal/future) |
-| Cron firing not idempotent against leader flapping | gust (`:147-149`) | **WS4** (idempotency keys shipped; leader-gate the scheduler) |
+| Cron firing not idempotent against leader flapping | gust (`:147-149`) | ✅ **WS4 shipped** — `:system_job` ticks leader-gated; idempotency-key backstop |
+| Clustered **user**-cron ownership (CLI-loaded → multi-fire / gateway → no-fire) | codebase (`repl.ex:315`, `cron/scheduler.ex`) | **WS4a** (spun out of WS4) |
 | Embedding cross-node counter ignores `:cluster_enabled` (doc-vs-code gap) | doc said gated (`PLAN-v0.6-memory.md:1731-1734`), code unconditional | **WS6** (trivial) |
 | Multi-node test harness (only single-node mock exists) | codebase (`test/jido_claw/forge/clustering_test.exs`) | **WS6** |
 

@@ -226,6 +226,17 @@ defmodule JidoClaw.Cron.Scheduler do
 
   Returns `:ok` regardless — failures Logger.warning out so a dead
   config can never block app boot.
+
+  ## Clustering invariant (WS4)
+
+  These `:system_job` rows are replicated on every node and would multi-fire
+  under clustering. `Cron.Worker` leader-gates their ticks (`leader_gated?/1`),
+  but the gate is first-line only — `:pg` leadership is eventually-consistent,
+  so a brief two-leaders window can fire a tick on two nodes. **Every system
+  job registered here must therefore stay idempotent / row-claimed / DB-leased
+  independently of the gate.** The memory consolidator's `pg_try_advisory_lock`
+  (`JidoClaw.Memory.Consolidator.LockOwner`) is the model; a `:workflow`-target
+  system job would additionally carry the `cron:<job>:<window>` idempotency key.
   """
   @spec start_system_jobs() :: :ok
   def start_system_jobs do

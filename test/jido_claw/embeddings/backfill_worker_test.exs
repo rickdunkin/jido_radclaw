@@ -142,9 +142,57 @@ defmodule JidoClaw.Embeddings.BackfillWorkerTest do
     end
   end
 
+  describe ":scan leader gate (WS4)" do
+    setup do
+      Application.put_env(:jido_claw, :cluster_leader_module, JidoClaw.ClusterLeaderStub)
+      Application.put_env(:jido_claw, :rate_pacer, PassRatePacer)
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :cluster_leader_module)
+        Application.delete_env(:jido_claw, :cluster_leader_stub_result)
+      end)
+
+      :ok
+    end
+
+    test "off-leader: a periodic :scan claims nothing (row stays pending)",
+         %{tenant_id: tenant_id} do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, false)
+
+      ws = workspace_fixture(tenant_id, embedding_policy: :default)
+      id = insert_pending_solution(tenant_id, ws.id, "gated-content")
+
+      scan_once()
+
+      refute_received :voyage_called
+      assert column(id, "embedding_status") == "pending"
+    end
+
+    test "on-leader: a periodic :scan claims + dispatches the pending row",
+         %{tenant_id: tenant_id} do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, true)
+
+      ws = workspace_fixture(tenant_id, embedding_policy: :default)
+      id = insert_pending_solution(tenant_id, ws.id, "leader-content")
+
+      scan_once()
+
+      assert_received :voyage_called
+      assert column(id, "embedding_status") == "ready"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  # Drive the periodic :scan path (gated), not the manual tick/0 cast (ungated).
+  # The :sys.get_state barrier waits out do_scan/1's inline Stream.run.
+  defp scan_once do
+    send(BackfillWorker, :scan)
+    _ = :sys.get_state(BackfillWorker)
+    :ok
+  end
 
   defp insert_pending_solution(tenant_id, workspace_id, content) do
     id = UUID.generate()

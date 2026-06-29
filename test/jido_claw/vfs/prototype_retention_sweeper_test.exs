@@ -135,4 +135,41 @@ defmodule JidoClaw.VFS.PrototypeRetentionSweeperTest do
 
     assert File.dir?(scratch)
   end
+
+  describe "leader gate (WS4)" do
+    setup do
+      saved = Application.fetch_env(:jido_claw, :cluster_leader_module)
+      Application.put_env(:jido_claw, :cluster_leader_module, JidoClaw.ClusterLeaderStub)
+
+      on_exit(fn ->
+        restore(:cluster_leader_module, saved)
+        Application.delete_env(:jido_claw, :cluster_leader_stub_result)
+      end)
+
+      :ok
+    end
+
+    test "off-leader: a stale, unreferenced prototype is kept (the sweep is gated)",
+         %{base: base} do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, false)
+      enable!(30)
+      {dir, _id} = make_prototype!(base)
+      backdate!(dir, 60)
+
+      tick!()
+
+      assert File.dir?(dir)
+    end
+
+    test "on-leader: a stale, unreferenced prototype is swept", %{base: base} do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, true)
+      enable!(30)
+      {dir, _id} = make_prototype!(base)
+      backdate!(dir, 60)
+
+      tick!()
+
+      refute File.dir?(dir)
+    end
+  end
 end

@@ -49,14 +49,22 @@ defmodule JidoClaw.Trace.RetentionSweeper do
 
   @impl GenServer
   def handle_info(:sweep, state) do
-    case sweep() do
-      {:ok, _deleted, true} ->
-        # Full batch cleanly deleted — there might be more. Don't wait for
-        # the next tick.
-        send(self(), :sweep)
+    # Leader-gate the periodic sweep: this DELETE is idempotent on every node,
+    # so running it everywhere is wasteful-but-safe — the gate just cuts the
+    # cross-node-redundant work. A follower skips the sweep and re-arms the
+    # normal next tick; failover is automatic (the next leader sweeps).
+    if JidoClaw.Cluster.leader?() do
+      case sweep() do
+        {:ok, _deleted, true} ->
+          # Full batch cleanly deleted — there might be more. Don't wait for
+          # the next tick.
+          send(self(), :sweep)
 
-      _ ->
-        schedule_next()
+        _ ->
+          schedule_next()
+      end
+    else
+      schedule_next()
     end
 
     {:noreply, state}

@@ -37,13 +37,20 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Sweeper do
 
   @impl GenServer
   def handle_info(:sweep, state) do
-    case sweep() do
-      {:ok, count} when count >= @full_batch ->
-        # Full batch — there might be more. Don't wait for the next tick.
-        send(self(), :sweep)
+    # Leader-gate the periodic prune: the DELETE is idempotent on every node,
+    # so the gate only cuts cross-node-redundant work. A follower skips the
+    # prune and re-arms the normal next tick; failover is automatic.
+    if JidoClaw.Cluster.leader?() do
+      case sweep() do
+        {:ok, count} when count >= @full_batch ->
+          # Full batch — there might be more. Don't wait for the next tick.
+          send(self(), :sweep)
 
-      _ ->
-        schedule_next()
+        _ ->
+          schedule_next()
+      end
+    else
+      schedule_next()
     end
 
     {:noreply, state}

@@ -144,9 +144,51 @@ defmodule JidoClaw.Trace.RetentionSweeperTest do
     end
   end
 
+  describe "leader gate (WS4)" do
+    setup do
+      saved = Application.fetch_env(:jido_claw, :cluster_leader_module)
+      Application.put_env(:jido_claw, :cluster_leader_module, JidoClaw.ClusterLeaderStub)
+
+      on_exit(fn ->
+        restore_env(:cluster_leader_module, saved)
+        Application.delete_env(:jido_claw, :cluster_leader_stub_result)
+      end)
+
+      :ok
+    end
+
+    test "off-leader: the :sweep tick is a no-op even with retention configured", ctx do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, false)
+      put_retention!(ctx.previous_trace_cfg, 30)
+      expired = seed_trace!("gate-off-#{unique()}")
+      backdate_run!(expired, 60)
+
+      tick_sweeper!()
+
+      # The follower skips the prune — the expired row survives for the leader.
+      assert run_count(expired) == 1
+      assert event_count(expired) == 2
+    end
+
+    test "on-leader: the :sweep tick prunes", ctx do
+      Application.put_env(:jido_claw, :cluster_leader_stub_result, true)
+      put_retention!(ctx.previous_trace_cfg, 30)
+      expired = seed_trace!("gate-on-#{unique()}")
+      backdate_run!(expired, 60)
+
+      tick_sweeper!()
+
+      assert run_count(expired) == 0
+      assert event_count(expired) == 0
+    end
+  end
+
   # -- Helpers --
 
   defp unique, do: System.unique_integer([:positive])
+
+  defp restore_env(key, :error), do: Application.delete_env(:jido_claw, key)
+  defp restore_env(key, {:ok, value}), do: Application.put_env(:jido_claw, key, value)
 
   # Pin the nested trace config by merging over the baseline, never replacing
   # the whole keyword list.
