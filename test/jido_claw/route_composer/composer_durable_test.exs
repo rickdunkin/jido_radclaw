@@ -23,17 +23,32 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   alias JidoClaw.Orchestration.WorkflowRecovery
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
-  alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.TestFixtures
-  alias JidoClaw.RouteComposer.TestSupport.BlockingAgentServer
   alias JidoClaw.RouteComposer.TestSupport.GatedAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubStore
   alias JidoClaw.RouteComposer.TestSupport.StubWorker
   alias JidoClaw.RouteComposer.TestSupport.SystemLoopWorker
 
+  # WS3: the composer crash-recovery crafting fixtures now live in `TestFixtures`
+  # (shared with `reclaim_pooler_test`). `append_event/4`, `reload/2`, `generate_ref/0`
+  # stay local — they are used pervasively by this file's other helpers.
+  import JidoClaw.RouteComposer.TestFixtures,
+    only: [
+      base_opts: 1,
+      recoverable_parent: 1,
+      recoverable_parent: 2,
+      craft_child: 4,
+      commit_wave0: 3
+    ]
+
+  # WS3 P2: the raw-SQL token rotation + cross-tenant reload seeders (shared with the
+  # lease/reclaim suites) drive the stale-owner scenarios ensure_started/2 now evicts.
+  import JidoClaw.Orchestration.LeaseHelpers, only: [rotate_token!: 2, reload_global: 1]
+
   @supervisor JidoClaw.RouteComposer.Supervisor
   @registry JidoClaw.RouteComposer.Registry
+  @lease_registry JidoClaw.Orchestration.LeaseRegistry
 
   setup do
     StubStore.setup()
@@ -83,18 +98,6 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   # --- Shared run helpers ---
-
-  defp base_opts(ctx) do
-    [
-      catalog: TestFixtures.phase1_catalog(),
-      live: TestFixtures.phase1_seed_live(),
-      artifacts: TestFixtures.phase1_seed_artifacts(),
-      tenant: ctx.tenant,
-      actor: ctx.actor,
-      context: ctx.context,
-      max_waves: 10
-    ]
-  end
 
   defp run_sync(ctx), do: RouteComposer.run_sync(Keyword.put(base_opts(ctx), :timeout, 30_000))
 
@@ -453,14 +456,14 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
   describe "supervised lifecycle" do
     test "ensure_started is single-owner per parent_run_id", ctx do
-      # A blocked first wave keeps the composer alive across both (synchronous,
-      # back-to-back) ensure_started calls.
-      Application.put_env(:jido_claw, :step_agent_server, BlockingAgentServer)
-      converging_outputs()
+      # A composer PARKED on a gate is idle-alive, so a second ensure_started with
+      # the SAME (held) token returns the live owner via the ownership probe (WS3 P2)
+      # rather than starting a duplicate — the single-owner invariant. (A composer
+      # actively running a wave would be busy, not idle; the park is the clean idle
+      # state that lets the probe resolve.)
+      {parent, _case_id} = start_and_park_gate(ctx)
+      [{pid1, _}] = Registry.lookup(@registry, parent.id)
 
-      {:ok, parent} = RouteComposer.create_parent_run(tenant: ctx.tenant, actor: ctx.actor)
-
-      assert {:ok, pid1} = RouteComposer.ensure_started(base_opts(ctx), parent)
       assert {:ok, pid2} = RouteComposer.ensure_started(base_opts(ctx), parent)
 
       assert pid1 == pid2
@@ -572,6 +575,97 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
       keys = Enum.map(actives, &{&1.name, &1.producer})
       assert keys == Enum.uniq(keys)
+    end
+  end
+
+  # ===========================================================================
+  # WS3 P1 — single-node parent-sidecar failure SUSPENDS the claim (NULL expiry,
+  # token kept) so the always-on Pooler can't reclaim a live, heartbeat-less
+  # composer, then proceeds degraded only when the suspend took.
+  # ===========================================================================
+
+  describe "WS3 P1 single-node parent-sidecar degrade" do
+    @tag :capture_log
+    test "a parent sidecar that can't arm suspends the claim + still converges", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+
+      # Permanently pre-own the parent's lease key so its heartbeat sidecar can
+      # never arm (the middleware fail-closed sub-case, applied to the composer
+      # parent) → the single-node degrade path fires.
+      {:ok, _} = Registry.register(@lease_registry, parent.id, :blocker)
+
+      assert {:ok, _pid} = RouteComposer.ensure_started(base_opts(ctx), parent)
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      # The degrade suspended the claim: NULL expiry (unreclaimable), token retained
+      # (the terminal fence still matched). The route converged unleased regardless.
+      reloaded = reload_global(parent.id)
+      assert is_nil(reloaded.claim_expires_at)
+      assert reloaded.claim_token == parent.claim_token
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+  end
+
+  # ===========================================================================
+  # WS3 P2 — ensure_started/2 returns a registered composer ONLY if it still holds
+  # the run's (possibly just-reclaimed) token by EXACT identity; a stale owner left
+  # when claim_next rotated the token is evicted + restarted so the rotated token
+  # reaches a live process (the swallowed-reclaim bug).
+  # ===========================================================================
+
+  describe "WS3 P2 token-validating ensure_started" do
+    test "handle_call(:get_claim_token) replies with state.claim_token", ctx do
+      {parent, _case_id} = start_and_park_gate(ctx)
+      [{pid, _}] = Registry.lookup(@registry, parent.id)
+      assert GenServer.call(pid, :get_claim_token) == parent.claim_token
+    end
+
+    test "stale (rotated) token → the owner is evicted + restarted with the rotated token", ctx do
+      {parent, _case_id} = start_and_park_gate(ctx)
+      [{old_pid, _}] = Registry.lookup(@registry, parent.id)
+      assert GenServer.call(old_pid, :get_claim_token) == parent.claim_token
+
+      # A live reclaim rotated the parent token (claim_next), leaving this local
+      # composer stale (it still holds the OLD token).
+      token_b = Ash.UUID.generate()
+      rotate_token!(parent.id, token_b)
+      run_b = reload_global(parent.id)
+      assert run_b.claim_token == token_b
+
+      # Recovery's minimal opts (config-authoritative catalog), the production seam.
+      assert {:ok, new_pid} = RouteComposer.ensure_started(recovery_opts(ctx), run_b)
+      assert new_pid != old_pid
+      refute Process.alive?(old_pid)
+
+      # The rotated token reached a LIVE process — the new composer re-parks holding
+      # token_b (pre-fix the stale old-token composer was returned as-is).
+      await_wave_paused_count(parent.id, ctx, 2)
+      assert [{^new_pid, _}] = Registry.lookup(@registry, parent.id)
+      assert GenServer.call(new_pid, :get_claim_token) == token_b
+    end
+
+    test "strict identity: nil==nil keeps the owner; held nil + incoming binary evicts", ctx do
+      {parent_nil, _case_id} = park_unleased_gate(ctx)
+      [{pid, _}] = Registry.lookup(@registry, parent_nil.id)
+      assert GenServer.call(pid, :get_claim_token) == nil
+
+      # Both nil (unleased idempotency) → the same owner, no eviction.
+      assert {:ok, ^pid} = RouteComposer.ensure_started(recovery_opts(ctx), parent_nil)
+      assert Process.alive?(pid)
+
+      # Held nil + a binary reclaim token → EVICT. This is the case the nil-permissive
+      # fence helper (`token_mismatch?/2`) would have wrongly KEPT; exact equality
+      # (nil != binary) evicts so the reclaim token reaches a live process.
+      token_b = Ash.UUID.generate()
+      rotate_token!(parent_nil.id, token_b)
+      run_b = reload_global(parent_nil.id)
+
+      assert {:ok, new_pid} = RouteComposer.ensure_started(recovery_opts(ctx), run_b)
+      assert new_pid != pid
+      refute Process.alive?(pid)
+      await_wave_paused_count(parent_nil.id, ctx, 2)
+      assert GenServer.call(new_pid, :get_claim_token) == token_b
     end
   end
 
@@ -1074,14 +1168,8 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   # --- recovery crafting helpers ---
-
-  # A recoverable parent: create_parent_run with the full base_opts, so config
-  # carries the serialized catalog + bounds and genesis records the seed
-  # live/artifacts events. `extra_opts` adds e.g. premises / the sensitive marker.
-  defp recoverable_parent(ctx, extra_opts \\ []) do
-    {:ok, parent} = RouteComposer.create_parent_run(Keyword.merge(base_opts(ctx), extra_opts))
-    parent
-  end
+  # (`recoverable_parent/2`, `craft_child/4`, `commit_wave0/3` are imported from
+  # `TestFixtures` — shared with `reclaim_pooler_test`.)
 
   # A :running composer parent whose `config["catalog"]` is malformed — it decodes
   # atom-safe to a default `%Stage{}` but is NOT validator-clean, so the recovery
@@ -1102,52 +1190,6 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
 
     {:ok, _} = append_event(parent, :run_started, %{}, ctx)
     reload(parent.id, ctx)
-  end
-
-  # Create a wave child under the deterministic composer:<parent>:<wave> launch
-  # key and drive it to `status` via its own event log.
-  defp craft_child(parent, ctx, wave_index, status) do
-    {:ok, child} =
-      WorkflowRun.create(
-        %{
-          name: "wave-#{wave_index}",
-          workflow_type: "reactor",
-          parent_run_id: parent.id,
-          idempotency_key: "composer:#{parent.id}:#{wave_index}"
-        },
-        tenant: ctx.tenant,
-        actor: ctx.actor
-      )
-
-    drive_child(child, status, ctx)
-  end
-
-  defp drive_child(child, :pending, _ctx), do: child
-
-  defp drive_child(child, :running, ctx) do
-    {:ok, _} = append_event(child, :run_started, %{}, ctx)
-    reload(child.id, ctx)
-  end
-
-  defp drive_child(child, :completed, ctx) do
-    {:ok, _} = append_event(child, :run_started, %{}, ctx)
-    {:ok, _} = append_event(child, :run_completed, %{result: %{}}, ctx)
-    reload(child.id, ctx)
-  end
-
-  defp drive_child(child, :cancelled, ctx) do
-    {:ok, _} = append_event(child, :run_started, %{}, ctx)
-    {:ok, _} = append_event(child, :run_cancelled, %{}, ctx)
-    reload(child.id, ctx)
-  end
-
-  # `run_abandoned` is legal only from :awaiting_approval (projection guard), so
-  # park the child via approval_requested first.
-  defp drive_child(child, :abandoned, ctx) do
-    {:ok, _} = append_event(child, :run_started, %{}, ctx)
-    {:ok, _} = append_event(child, :approval_requested, %{}, ctx)
-    {:ok, _} = append_event(child, :run_abandoned, %{}, ctx)
-    reload(child.id, ctx)
   end
 
   # A recoverable gate-fixture parent: config carries the serialized gate fixture
@@ -1188,37 +1230,6 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       )
 
     {reload(child.id, ctx), gate}
-  end
-
-  # Commit wave 0's durable fold (the dropped-fold recovery shape): store the plan
-  # as a :pending row that Commit.commit_wave activates, alongside wave_completed
-  # + the content deltas.
-  defp commit_wave0(parent, child, ctx) do
-    plan_ref = generate_ref()
-
-    {:ok, _} =
-      ComposerArtifact.store_pending(
-        %{
-          ref: plan_ref,
-          name: "plan",
-          producer: "planner",
-          term: "PLAN: build the auth feature",
-          child_run_id: child.id,
-          parent_run_id: parent.id,
-          wave_index: 0
-        },
-        tenant: ctx.tenant,
-        actor: ctx.actor
-      )
-
-    deltas = %{
-      stages: ["planner"],
-      signals_published: ["plan-ready"],
-      signals_retracted: [],
-      artifacts_produced: [%{name: "plan", producer: "planner", ref: plan_ref}]
-    }
-
-    :ok = Commit.commit_wave(parent, 0, deltas, tenant: ctx.tenant, actor: ctx.actor)
   end
 
   defp append_event(run, kind, payload, ctx),
@@ -1303,6 +1314,41 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     assert_receive {:gate_requested, _child_id, %{agent_case_id: case_id}}, 15_000
     await_wave_paused(parent.id, ctx)
     {parent, case_id}
+  end
+
+  # The WS3 reclaim/boot seam: minimal opts (no catalog/seed), so `build_start_opts`
+  # reconstructs everything config-authoritatively — mirrors
+  # `WorkflowRecovery.start_recovered_composer/3`.
+  defp recovery_opts(ctx), do: [tenant: ctx.tenant, actor: ctx.actor]
+
+  # Start a parked gate composer with its genesis lease STRIPPED, so it runs
+  # UNLEASED (nil held token) — the WS3 P2 strict-identity nil cases.
+  defp park_unleased_gate(ctx) do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.gate_fixture_stub_outputs()
+    )
+
+    RunPubSub.subscribe_gates()
+    opts = gate_opts(ctx, TestFixtures.gate_fixture_catalog())
+    {:ok, parent} = RouteComposer.create_parent_run(opts)
+    null_claim!(parent.id)
+    parent_nil = reload_global(parent.id)
+    {:ok, _pid} = RouteComposer.ensure_started(opts, parent_nil)
+
+    assert_receive {:gate_requested, _child_id, %{agent_case_id: case_id}}, 15_000
+    await_wave_paused(parent.id, ctx)
+    {parent_nil, case_id}
+  end
+
+  # Strip a run's whole claim (token + expiry + owner) — the unleased shape no lease
+  # primitive produces (`release_with_cooldown`/`suspend_claim` keep the token).
+  defp null_claim!(run_id) do
+    JidoClaw.Repo.query!(
+      "UPDATE workflow_runs SET claim_token = NULL, claim_expires_at = NULL, claimed_by = NULL WHERE id = $1",
+      [Ecto.UUID.dump!(run_id)]
+    )
   end
 
   defp stages_invalidated_event(parent_id, ctx) do

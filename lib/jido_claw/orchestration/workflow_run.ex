@@ -93,7 +93,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:list_active)
     define(:list_by_project, action: :by_project)
     define(:list_non_terminal_global)
-    define(:claimable)
+    define(:claimable, args: [:pending_cutoff])
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
     define(:by_idempotency_key, args: [:idempotency_key], get?: true)
@@ -237,21 +237,28 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       )
     end
 
-    # §4.11 lease reclaim scan (WS1, WS3-triggered): a never-claimed `:pending`
-    # run, or a `:pending`/`:running` run whose lease lapsed; oldest-first.
-    # Cross-tenant system scan by `WorkflowLease.claim_next/1` (policy-bypassed
-    # above + `multitenancy(:bypass)`, like `list_non_terminal_global`).
+    # §4.11 lease reclaim scan (WS1; WS3 production caller): a `:pending`/`:running`
+    # run whose lease lapsed, or an aged never-claimed `:pending` run; oldest-first.
+    # Cross-tenant system scan by `WorkflowLease.claim_next/1` + `claim_run/1`
+    # (policy-bypassed + `multitenancy(:bypass)`, like `list_non_terminal_global`).
+    # WS3 Component 2: the genesis clause (never-claimed `:pending`+nil-token) gains an
+    # age cutoff so the always-on Pooler can't steal a just-created run in the
+    # create→lease-stamp gap (boot never races live launches; the Pooler does). It
+    # rides the `:pending_cutoff` `argument` (a runtime grace a static filter can't
+    # carry; `read_claimable/0` computes `now() - pending_grace_seconds`).
     read :claimable do
-      description("Cross-tenant pending-unclaimed or lease-expired runs (WS1 reclaim scan).")
+      description("Cross-tenant lease-expired or aged-pending-unclaimed runs (WS3 reclaim scan).")
       public?(false)
       multitenancy(:bypass)
+      argument(:pending_cutoff, :utc_datetime_usec, allow_nil?: false)
       prepare(build(sort: [inserted_at: :asc]))
 
       filter(
         expr(
-          (status == :pending and is_nil(claim_token)) or
-            (status in [:pending, :running] and not is_nil(claim_expires_at) and
-               claim_expires_at < now())
+          (status in [:pending, :running] and not is_nil(claim_expires_at) and
+             claim_expires_at < now()) or
+            (status == :pending and is_nil(claim_token) and
+               inserted_at < ^arg(:pending_cutoff))
         )
       )
     end

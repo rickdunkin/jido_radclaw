@@ -4,6 +4,47 @@
 clustering. Depends on: WS1 (claim selector), WS2 (composer state rebuild). Closes
 the load-bearing gotcha.*
 
+> **Status: shipped.** `JidoClaw.Orchestration.ReclaimPooler` (the per-node
+> claim→dispatch loop) + `WorkflowRecovery.reclaim/1` / `reconcile_one/1` (the
+> live-reclaim entries) + the safe `:claimable` selector (Component 2) + the
+> lease-aware, zombie-fencing composer child-step (Component 4). The Pooler is
+> **always-on in every serve mode** (incl. `:mcp`) and both single- and multi-node.
+
+> **Post-ship review (P1/P2 fixes).** The always-on Pooler exposed two issues the
+> single-node degrade path created, now fixed: **(P1)** a single-node "degrade
+> without heartbeat" (middleware sidecar fail, composer parent sidecar fail) no
+> longer leaves a stamped-but-unrenewed lease that lapses into reclaim of a *live*
+> executor — it now **suspends** the claim via `WorkflowLease.degrade_gate/2`
+> (`suspend_claim/2`: NULL `claim_expires_at`, **keep** `claim_token`) ⇒
+> unreclaimable + boot-recovery-only, and proceeds degraded **only when the suspend
+> took**; a lost/failed suspend **fails closed** (abort/stop), the row left for
+> reclaim/boot. **(P2)** a live reclaim that rotates the parent token no longer has
+> the rotated token swallowed by a stale local composer: `RouteComposer.ensure_started/2`
+> now validates ownership by **exact token identity** (`:get_claim_token` handshake)
+> and evicts + restarts a stale owner so the rotated token reaches a live process.
+
+> **Post-ship review (P1 follow-up — stamp-error fail-close + reclaim re-arm).** The
+> genesis-shaped stamp-error degrade in `Lease.Middleware` was *also* claim-blind: a
+> `GateResume`/boot-recovery **re-stamp** of an already-claimed run (`:running` +
+> checkpoint + `approval_resolved`, or a gate-parked-then-approved run) that hits a
+> transient `stamp/4` `{:error, _}` would, single-node, proceed DEGRADED while the row
+> still held the PRIOR token and the resume held a FRESH one — lapsing into reclaim of
+> a *live* executor **and** stranding it behind fences A/B (which reject the fresh
+> executor's own terminal). Fixed: the stamp-error path is now **claim-aware**
+> (`stamp_error_degrade/4`). Only a **genesis** (`nil`-prior) stamp-error still degrades
+> single-node (byte-identical); an **already-claimed** re-stamp **fails closed in both
+> modes** — no executor runs, and finalize's fence A (prior ≠ fresh held token) leaves
+> the run `:running` with NO terminal, to be re-resumed from the checkpoint by
+> reclaim/boot. Before failing closed it **re-arms** the prior claim's expiry
+> (`WorkflowLease.release_for_reclaim/2`, a `now() + reclaim_cooldown` token-fenced
+> push, single-sourced with `WorkflowRecovery`'s release-on-defer) so a NULL-expiry
+> sidecar-degrade residual (`{prior, NULL, :running}`, which `:claimable` excludes) is
+> **Pooler-reclaimable, not boot-recovery-only**. The cooldown (not `now()`) is
+> load-bearing — this fail-close can itself run inside a Pooler `reclaim → GateResume`
+> drain, so a `now()` re-arm would hot-loop. The **composer parent needs no analogue**:
+> it stamps only at genesis and re-*renews* (not re-stamps) on resume, and its
+> sidecar-degrade already re-arms via `renew`.
+
 > **What this owns.** Making lease-expiry the continuous dead-node recovery path,
 > and fixing the fact that enabling clustering today *silently disables*
 > stranded-run recovery (README §"the load-bearing gotcha").
@@ -13,9 +54,12 @@ the load-bearing gotcha.*
 > "reconstruct a reactor from a stored `WorkflowRun` and run it" seam** (runs
 > execute in-process holding their reactor). So WS3 now also owns: **(1) the
 > Pooler** (the per-node claim→dispatch loop, formerly WS1 Component 4) **and its
-> always-on-vs-`cluster_enabled` gating** (formerly WS1 D2); **(2) the
-> reconstruction/dispatch seam** a claimed orphan needs to actually run; **(3)
-> the production trigger** for WS1's already-shipped-but-dormant `claim_next/1`
+ always-on gating** (formerly WS1 D2 — **decided: always-on**, in every serve mode
+> incl. `:mcp`); **(2) the dispatch routing** a claimed orphan needs — which, under
+> Q1, requires **no reactor-reconstruction seam**: a stranded plain run is *failed*
+> (re-run needs step-level idempotency, deferred), and a composer parent rebuilds via
+> WS2; **(3) the production trigger** for WS1's already-shipped-but-dormant
+> `claim_next/1`
 > and the runner/append fence branches. The reclaim mandate spans **both**
 > clustering dead-node reclaim **and** single-node intra-node task-death (the
 > "No owner-monitor" gap — a run whose in-process executor task dies without the
@@ -29,9 +73,10 @@ There are two, and they are **complementary, not redundant**
 1. **Boot reconciler** — `WorkflowRecovery` reconciles runs left non-terminal by a
    crash, at node boot. Handles the **single-node restart** case. Shipped.
 2. **Lease-expiry reclaim** — a dead node's runs become claimable once their lease
-   lapses; another node claims and resumes them. Handles the **continuous
-   multi-node dead-node** case, with a bounded recovery window = lease length.
-   **Deferred — this is WS3.**
+   lapses; the always-on `ReclaimPooler` claims and resumes them. Handles the
+   **continuous multi-node dead-node** case (and the single-node "no owner-monitor"
+   intra-node task-death gap), with a bounded recovery window = lease length.
+   **Shipped — this is WS3.**
 
 ## The gotcha, precisely
 
@@ -69,36 +114,68 @@ only then is flipping the flag safe.
 
 ## Design
 
+### Boot ≠ reclaim: the governing insight
+
+Boot recovery and live reclaim are **different paths with different liveness
+assumptions, and must not share child-disposition logic verbatim.**
+
+- **Boot** runs once when the BEAM has just restarted, so *nothing from the prior
+  runtime is live* — every non-terminal run is dead by construction, decidable from
+  DB state alone, with no surviving executor to fence.
+- **Live reclaim** runs continuously *alongside live launches and executors* — a
+  lease expiry proves only *that one run's* owner died, not its neighbours', and a
+  still-alive zombie (a partition) may need actively fencing.
+
+The unifying rule WS3 adopts: **the lease is the liveness oracle.** A run (parent
+*or* child) is dead — and reclaimable — **iff its lease has expired (or it is an
+aged, never-claimed `:pending` row — the one leaseless case)**; and the act of
+claiming it **rotates its token**, which fences any surviving zombie (its stale-token
+renew returns 0 → its sidecar self-kills, and any terminal it attempts trips
+fence B).
+
 ### Reclaim drives the existing reconciliation
 
-When a node's `:claim_next` returns a run it reclaimed (an expired `:running`
-run), it routes the run through the **same `WorkflowRecovery` reconciliation
-branches** the boot reconciler uses, then resumes it:
+When the Pooler's `claim_next/1` returns a run it reclaimed (token already rotated),
+it routes the run through `WorkflowRecovery.reclaim/1`, then resumes it:
 
-- **Plain reactor run** — reconcile by `(status, checkpoint)`: an ungated
-  `:running` reclaim with no checkpoint is stranded → re-run (idempotency key makes
-  this safe); a gated `:awaiting_approval` reclaim with a checkpoint resumes via
-  `GateResume` **on the reclaiming node** (this is the "`GateResume` re-claims on
-  whichever node resumes" point, gust cross-ref `gust/…:176-177`).
-- **Composer parent** (`workflow_type: "composer"`) — rebuild state from the parent
-  log and resume mid-route (WS2 / AR-2 §6), re-parking if a child gate is still
-  open.
+- **Plain reactor run** — reconcile by `(status, checkpoint)`: an ungated `:running`
+  reclaim with no checkpoint is stranded → **fail** (boot-parity, Q1). The
+  idempotency key is *launch-dedupe, not step-idempotency*, so re-running a
+  partially-executed reactor double-executes side effects regardless of any key —
+  there is no safe re-run today (the re-run seam is deferred until step-level
+  idempotency exists). A `:running` reclaim that carries a checkpoint **and** a
+  recorded `approval_resolved` event resumes via `GateResume(recovered: true)` **on
+  the reclaiming node** (the "`GateResume` re-claims on whichever node resumes"
+  point). A parked `:awaiting_approval` run is *not* in the reclaim set at all
+  (`:claimable` selects only `:pending`/`:running`).
+- **Composer parent** (`workflow_type: "composer"`) — the **reclaim-specific
+  child-step**: for each non-terminal child, drive it through `claim_run/1`'s full
+  `:claimable` predicate under a `FOR UPDATE` lock; a claimable (expired/aged) child
+  is **token-rotated** (fencing a surviving zombie child) + failed, while a
+  live-lease child and a parked gate are **left** for `restartable?/3` to defer on.
+  Then rebuild state from the parent log and resume mid-route (WS2 / AR-2 §6). On a
+  deferred restart the parent lease is released on a `poll_interval` **cooldown** (not
+  `now()`) so it re-claims on the next poll, never within the same drain. (Boot's
+  fail-*all*-children path is unchanged and used only at boot, where its premise —
+  nothing live — holds.)
 
-### Re-frame `owns_recovery?` as claim-driven under clustering
+### `owns_recovery?` unchanged; the Pooler is always-on
 
-The fix is **not** to re-enable the boot sweep under clustering (it would race
-live owners). Instead:
+The fix is **not** to re-enable the boot sweep under clustering (it would race live
+owners), and **not** to gate the Pooler the way the boot sweep is gated. Instead:
 
-- **Single-node (`cluster_enabled: false`):** boot reconciler runs as today
-  (unchanged).
-- **Clustered (`cluster_enabled: true`):** recovery becomes **claim-driven** — the
-  Pooler's reclaim sweep (WS1 D2) continuously picks up expired runs and routes
-  them through the reconciliation branches. The boot reconciler stays off; the
-  reclaim sweep replaces it.
+- **Boot sweep (`owns_recovery?`)** stays single-node / non-MCP / non-clustered
+  (**unchanged**) because it is *unguarded* — it blind-fails every non-terminal run,
+  so concurrent owners would race.
+- **Reclaim Pooler (`owns_reclaim?` = `reclaim_enabled?`)** carries **no**
+  serve-mode/cluster conditions: every claim is a `FOR UPDATE SKIP LOCKED` +
+  token-CAS, so it is safe everywhere precisely *because* it is claim-gated. MCP
+  launches workflows too (`run_skill` → `ReactorRunner.run`), so it must be covered.
 
-So `owns_recovery?` keeps gating the *boot sweep*, and WS3 adds the *reclaim sweep*
-as the clustered-mode equivalent. The two never both run on the same run (boot
-sweep only when `cluster_enabled: false`; reclaim only when `true`).
+The two are **complementary**, not mutually exclusive: the `FOR UPDATE` +
+the `:illegal` terminal-on-terminal guard make any single-node overlap idempotent
+(≤ one terminal; a second attempt is a no-op), and the Pooler's `initial_delay_ms`
+lets the boot one-shot win the first sweep.
 
 ### Bounded window + telemetry
 
@@ -117,9 +194,12 @@ so reclaim is observable: claimed / renewed / reclaimed / fenced-out counts.
   no live owner, by design. The **composer parent** is the exception (it *does*
   hold a lease across the pause — WS2), so a dead-node composer parent IS
   reclaimed.
-- **D2 — re-run vs resume for stranded `:running`.** Reuse `WorkflowRecovery`'s
-  existing decision (checkpoint present → resume; absent → re-run under
-  idempotency key). No new policy.
+- **D2 — resume vs fail for stranded `:running` (decided: fail).** Reuse
+  `WorkflowRecovery`'s classification: a checkpoint **+ a recorded `approval_resolved`
+  event** resumes via `GateResume`; **no checkpoint → fail** (NOT re-run). The
+  idempotency key is launch-dedupe, not step-idempotency, so a partially-run reactor
+  cannot be safely re-run — the re-run seam is deferred until step-level idempotency
+  lands (no current workstream). **No reactor-reconstruction seam is needed.**
 
 ## Test plan
 
@@ -128,10 +208,18 @@ so reclaim is observable: claimed / renewed / reclaimed / fenced-out counts.
 - **Composer reclaim** — a composer parent whose owner "died" (lease expired)
   rebuilds state from the log and resumes from the next wave (folding completed
   waves, not re-running them).
-- **No double-recovery** — with `cluster_enabled: true`, the boot reconciler does
-  not run; with `false`, the reclaim sweep does not run. Exactly one path per mode.
+- **Always-on, both modes** — `cluster_enabled: true` → boot off, reclaim on;
+  `false` → both may touch one stranded run, with ≤1 terminal (the second attempt
+  hits the `:illegal` terminal-on-terminal guard, a no-op). The Pooler runs in every
+  serve mode, including `:mcp`.
+- **No fresh-pending steal** — a just-created `:pending`+nil-token run is not
+  claimable within the genesis grace (Component 2's age cutoff); aged past it, it is.
+- **Child token rotation fences a zombie** — a reclaimed corpse child's token is
+  rotated, so a reconnecting zombie's stale-token renew returns 0 and any terminal it
+  attempts trips fence B.
 - **Bounded window** — a run is reclaimable no sooner than its lease expiry and no
-  later than expiry + one poll interval.
+  later than expiry + one poll interval (asserted with a clock-skew grace band:
+  eligibility is app-clock, expiry DB-stamped).
 
 Cross-node "kill a node, watch another reclaim its runs" is the WS6 multi-node
 integration test.

@@ -144,12 +144,15 @@ projection's status barrier rejects a terminal from a non-owning generation.
 The renew timer is per-run and node-local; it lives with the executor task, not a
 central process.
 
-### Component 4 — `Pooler` (per-node GenServer) — ⏭️ DEFERRED TO WS3
+### Component 4 — `Pooler` (per-node GenServer) — ⏭️ DEFERRED TO WS3 (✅ now shipped there)
 
-> Not built in WS1. There is no reactor-reconstruction seam, so a Pooler that
-> *claims* an orphan can't *dispatch* it. WS1 ships the claim primitive
-> (`WorkflowLease.claim_next/1`, unit-tested); WS3 owns the Pooler, the always-on
-> reclaim poll, and the dispatch. The sketch below is retained as WS3 input.
+> Not built in WS1; **shipped in WS3** as `JidoClaw.Orchestration.ReclaimPooler`.
+> WS1 ships the claim primitive (`WorkflowLease.claim_next/1`, unit-tested); WS3
+> owns the Pooler, the always-on reclaim poll, and the dispatch — and resolved the
+> "no reactor-reconstruction seam" blocker under Q1 (a stranded plain run is *failed*,
+> a composer parent rebuilds via WS2 — so no such seam is needed). The sketch below
+> was the WS3 input; the shipped Pooler routes claims through
+> `WorkflowRecovery.reclaim/1` rather than a bare `DynamicSupervisor` dispatch.
 
 Per `REACTOR-ADOPTION.md:677-678`: a per-node GenServer that polls (+ is
 PubSub-triggered on new-run notifications) → `:claim_next` → starts the claimed
@@ -196,21 +199,33 @@ the existing launch path rather than a new dispatch architecture, and it keeps
 single-node behavior byte-identical when nothing ever expires. Resolve before
 coding — it shapes every other component.
 
-### D2 — Pooler always-on vs `cluster_enabled`-gated — ⏭️ DEFERRED TO WS3
+### D2 — Pooler always-on vs `cluster_enabled`-gated — ✅ DECIDED (WS3): always-on
 
-> The Pooler is WS3, so its gating decision moves there too. WS1 shipped the
-> always-active half regardless: **self-claim + renew + both fences run in every
-> mode** (single-node included — `LeaseRegistry`/`LeaseTaskSupervisor` start
-> unconditionally), with `fail_or_degrade/2` keeping single-node byte-identical
-> (a claim/sidecar failure degrades to unleased rather than aborting). What WS3
-> decides is whether the *reclaim poll* is `cluster_enabled`-gated.
+> Decided in WS3: the reclaim Pooler (`JidoClaw.Orchestration.ReclaimPooler`) is
+> **always-on in every serve mode (incl. `:mcp`) and both single- and multi-node** —
+> NOT `cluster_enabled`-gated. The earlier "gate only the cross-node reclaim sweep"
+> lean was **reversed**: the Pooler is safe everywhere precisely because every claim
+> is a `FOR UPDATE SKIP LOCKED` + token-CAS, where the boot sweep it complements is
+> *unguarded* and therefore stays single-node/non-MCP. WS1 shipped the always-active
+> half (self-claim + renew + both fences in every mode, `stamp_error_degrade/4`
+> keeping single-node byte-identical **only for a genesis stamp error** — a re-stamp
+> fails closed + re-arms the prior claim for reclaim, WS3 P1 follow-up); WS3 made the
+> reclaim poll always-on too.
 
-Recommended: the **claim/renew/fence is always active** (so single-node runs
-carry an owner + lease, making WS3's reclaim uniform), but the **Pooler's
-reclaim-poll** is the part that matters only when clustered. Keep the renew
-machinery unconditional (cheap: one fenced `update_all` per interval) and gate
-only the cross-node reclaim sweep. This mirrors how the embedding counter and
-consolidator lock run unconditionally today (README baseline table).
+Two WS3 notes that touched WS1's already-shipped surface:
+
+- **`:claimable` clause 1 gained an age-grace argument.** Its first production caller
+  (the always-on Pooler) runs *alongside* live launches, so the never-claimed
+  `:pending`+nil-token clause now also requires
+  `inserted_at < now() - pending_grace_seconds` (default `lease_seconds`), passed as a
+  `:pending_cutoff` action argument — so the Pooler can't steal a just-created run in
+  the create→stamp gap. The expired-lease clause is unchanged. (Boot never raced live
+  launches; the Pooler does.)
+- **`claim_next/1` and `claim_run/1` share the CAS-rotate.** WS3 added `claim_run/1`
+  — the by-id sibling that re-checks the **full** `:claimable` predicate under a
+  `FOR UPDATE` lock before rotating (the composer child-step's TOCTOU-safe inline
+  claim) — and routed both through one locked-claim core, so the token rotation lives
+  once.
 
 ### D3 — token plaintext vs hashed
 

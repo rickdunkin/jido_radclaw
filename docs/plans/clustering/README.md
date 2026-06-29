@@ -69,8 +69,8 @@ works when enabled:
 | Embedding cross-node dispatch budget (Postgres UPSERT counter) | ✅ shipped (active even single-node) | `embeddings/rate_pacer.ex` |
 | Embedding backfill claim + row-lease (`FOR UPDATE SKIP LOCKED`) | ✅ shipped — **the reference pattern for WS1** | `embeddings/backfill_worker.ex:5,19,178-190` |
 | Memory consolidator cross-node lock (session `pg_try_advisory_lock`) | ✅ shipped | `memory/consolidator/lock_owner.ex`, `memory/scope.ex:217-225` |
-| `WorkflowRun` claim/lease **mechanism** (self-claim on launch + token CAS + renew-fence + both terminal fences + `claim_next` primitive) | ✅ **WS1 shipped** — the columns now have a live consumer; **Pooler + reclaim-dispatch = WS3** | `orchestration/workflow_lease.ex`, `workflow_lease/{middleware,sidecar}.ex`, `workflow_run.ex` |
-| Step-level idempotency keys (`composer:<parent>:<wave>`, `cron:<job>:<window>`) | ✅ shipped | `reactor_runner.ex:243-328` |
+| `WorkflowRun` claim/lease **mechanism** (self-claim on launch + token CAS + renew-fence + both terminal fences + `claim_next`/`claim_run` primitives) | ✅ **WS1 + WS3 shipped** — the columns now have a live consumer: the always-on `ReclaimPooler` → `WorkflowRecovery.reclaim/1` (every serve mode, incl. `:mcp`) | `orchestration/workflow_lease.ex`, `orchestration/reclaim_pooler.ex`, `workflow_lease/{middleware,sidecar}.ex`, `workflow_run.ex` |
+| Run-level launch-dedupe key (`composer:<parent>:<wave>`, `cron:<job>:<window>`) — **launch-dedupe, not step-idempotency**; a composer parent carries none, so a partially-run reactor is failed (not re-run) on reclaim | ✅ shipped | `reactor_runner.ex:243-328` |
 
 So "make clustering real" is **not** about building libcluster. It is about
 making multi-node *workflow execution* correct, and auditing the always-on

@@ -159,6 +159,15 @@ defmodule JidoClaw.Application do
       # after Repo/Vault/PubSub, so DB-heavy sidecars tear down before them.
       {Registry, keys: :unique, name: JidoClaw.Orchestration.LeaseRegistry},
       {Task.Supervisor, name: JidoClaw.Orchestration.LeaseTaskSupervisor},
+      # WS3 reclaim Pooler: the always-on per-node claim→dispatch loop that drains
+      # the lease-expiry reclaim selector and routes each claimed orphan through
+      # `WorkflowRecovery.reclaim/1`. `:permanent` (a long-lived poll loop); placed
+      # after Repo (above) which it queries. Self-gates to `:ignore` when disabled
+      # (test). Always-on in EVERY serve mode (incl. `:mcp`, which launches workflows)
+      # and both single-/multi-node — safe because every claim is claim-gated
+      # (`FOR UPDATE SKIP LOCKED` + token-CAS), where the boot `WorkflowRecovery`
+      # sweep is unguarded (hence cluster/MCP-excluded).
+      JidoClaw.Orchestration.ReclaimPooler,
       # AR-2 composer supervised lifecycle (Phase 2c): the parent-run-id → composer
       # GenServer registry + the DynamicSupervisor its `:transient` children run
       # under. `max_restarts: 10`/`max_seconds: 30` matches the root supervisor's

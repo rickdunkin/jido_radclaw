@@ -11,6 +11,11 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
 
   import ExUnit.Assertions
 
+  alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.WorkflowLog
+  alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.Stage
 
@@ -801,6 +806,130 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: update nginx + reload"},
       "system_executor" => %{"system-change" => "CHANGE: wrote nginx.conf, reloaded the service"}
     }
+  end
+
+  # ===========================================================================
+  # Crash-recovery / WS3-reclaim crafting fixtures (shared by composer_durable_test
+  # + reclaim_pooler_test). DB-touching: they create real parent/child runs and
+  # drive them through the durable event log. Extracted from composer_durable_test
+  # for cross-suite reuse; `ctx` is the test context (`%{tenant:, actor:, context:}`).
+  # ===========================================================================
+
+  @doc """
+  The base composer-launch opts for the phase-1 catalog — catalog + seed
+  live/artifacts + tenant/actor/context + `max_waves: 10`.
+  """
+  @spec base_opts(map()) :: keyword()
+  def base_opts(ctx) do
+    [
+      catalog: phase1_catalog(),
+      live: phase1_seed_live(),
+      artifacts: phase1_seed_artifacts(),
+      tenant: ctx.tenant,
+      actor: ctx.actor,
+      context: ctx.context,
+      max_waves: 10
+    ]
+  end
+
+  @doc """
+  A recoverable composer parent: `create_parent_run` with the full `base_opts/1`, so
+  `config` carries the serialized catalog + bounds and genesis records the seed
+  live/artifacts events. `extra_opts` adds e.g. premises / the sensitive marker.
+  """
+  @spec recoverable_parent(map(), keyword()) :: WorkflowRun.t()
+  def recoverable_parent(ctx, extra_opts \\ []) do
+    {:ok, parent} = RouteComposer.create_parent_run(Keyword.merge(base_opts(ctx), extra_opts))
+    parent
+  end
+
+  @doc """
+  Create a wave child under the deterministic `composer:<parent>:<wave>` launch key
+  and drive it to `status` via its own event log.
+  """
+  @spec craft_child(WorkflowRun.t(), map(), non_neg_integer(), atom()) :: WorkflowRun.t()
+  def craft_child(parent, ctx, wave_index, status) do
+    {:ok, child} =
+      WorkflowRun.create(
+        %{
+          name: "wave-#{wave_index}",
+          workflow_type: "reactor",
+          parent_run_id: parent.id,
+          idempotency_key: "composer:#{parent.id}:#{wave_index}"
+        },
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    drive_child(child, status, ctx)
+  end
+
+  @doc """
+  Commit wave 0's durable fold (the dropped-fold recovery shape): store the plan as a
+  `:pending` row that `Commit.commit_wave` activates, alongside `wave_completed` + the
+  content deltas.
+  """
+  @spec commit_wave0(WorkflowRun.t(), WorkflowRun.t(), map()) :: :ok
+  def commit_wave0(parent, child, ctx) do
+    # Route through the single production construction site for the wave-artifact
+    # create-attrs shape (`child.parent_run_id == parent.id`, so semantics are
+    # identical to the former inline `store_pending`) so the fixture is NOT a third
+    # copy of that 7-key map (`.reach.exs` `fixed_shape_map`).
+    {:ok, plan_ref} =
+      ComposerArtifact.store_wave_artifact(
+        "plan",
+        "planner",
+        "PLAN: build the auth feature",
+        child,
+        0,
+        tenant: ctx.tenant,
+        actor: ctx.actor
+      )
+
+    deltas = %{
+      stages: ["planner"],
+      signals_published: ["plan-ready"],
+      signals_retracted: [],
+      artifacts_produced: [%{name: "plan", producer: "planner", ref: plan_ref}]
+    }
+
+    :ok = Commit.commit_wave(parent, 0, deltas, tenant: ctx.tenant, actor: ctx.actor)
+  end
+
+  defp drive_child(child, :pending, _ctx), do: child
+
+  defp drive_child(child, :running, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  defp drive_child(child, :completed, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :run_completed, %{result: %{}}, ctx)
+    reload(child.id, ctx)
+  end
+
+  defp drive_child(child, :cancelled, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :run_cancelled, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  # `run_abandoned` is legal only from :awaiting_approval (projection guard), so park
+  # the child via approval_requested first.
+  defp drive_child(child, :abandoned, ctx) do
+    {:ok, _} = append_event(child, :run_started, %{}, ctx)
+    {:ok, _} = append_event(child, :approval_requested, %{}, ctx)
+    {:ok, _} = append_event(child, :run_abandoned, %{}, ctx)
+    reload(child.id, ctx)
+  end
+
+  defp append_event(run, kind, payload, ctx),
+    do: WorkflowLog.append(run, kind, payload, tenant: ctx.tenant, actor: ctx.actor)
+
+  defp reload(run_id, ctx) do
+    {:ok, run} = WorkflowRun.by_id(run_id, tenant: ctx.tenant, actor: ctx.actor)
+    run
   end
 
   # Stamp each stage's `name` from its catalog key.

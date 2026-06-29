@@ -21,6 +21,15 @@ config :jido_claw, :workflow_recovery, enabled?: false
 # `fence_decision/3`'s lease-window math is exercised realistically.
 config :jido_claw, :workflow_lease, lease_seconds: 60, renew_seconds: 86_400
 
+# WS3 reclaim Pooler off in test — tests drive `ReclaimPooler.reclaim_once/0`
+# directly inside the Ecto sandbox (like `WorkflowRecovery.reconcile_all/0`), so
+# the always-on poll loop never races a test in its own scope. The timing knobs
+# keep prod defaults so the bounded-window math is exercised realistically.
+config :jido_claw, :reclaim_pooler,
+  enabled?: false,
+  poll_interval_ms: 15_000,
+  initial_delay_ms: 5_000
+
 # Output shaping off in test so the existing 10KB-truncation tests stay
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false

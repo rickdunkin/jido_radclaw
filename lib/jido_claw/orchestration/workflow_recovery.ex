@@ -75,8 +75,36 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   this process is the sole owner of workflow execution: `:workflow_recovery`
   is enabled (default true; **false in test**), `:serve_mode` is not `:mcp`,
   and clustering is off. Boot recovery is explicitly the single-node restart
-  mechanism (Reactor doc §4.8); multi-node reclaim is the deferred
-  lease/fencing work (§4.11).
+  mechanism (Reactor doc §4.8); multi-node reclaim is the lease/fencing work
+  (§4.11) `reclaim/1` now drives below.
+
+  ## Boot recovery vs live reclaim (WS3)
+
+  Two entrypoints, two liveness premises — they must **not** share child-disposition
+  logic verbatim:
+
+    * `run/1` → `reconcile_all/0` — the **boot** one-shot. Runs once when the BEAM
+      has just restarted, so *nothing from the prior runtime is live*: every
+      non-terminal run is dead by construction, decidable from DB state alone, and
+      `reconcile_children/3` fails *all* non-terminal children (no surviving
+      executor to fence, no token to rotate). Single-node, non-MCP, non-clustered
+      (`owns_recovery?/0`) precisely because it is **unguarded** — concurrent owners
+      would race.
+    * `reclaim/1` — the **live-reclaim** entry, driven continuously by the always-on
+      `JidoClaw.Orchestration.ReclaimPooler` *alongside* live launches and executors.
+      A lease expiry proves only *that one run's* owner died, not its neighbours',
+      and a still-alive zombie (a partition) may need fencing. The unifying rule:
+      **the lease is the liveness oracle** — a run (parent *or* child) is reclaimable
+      **iff its lease has expired, or it is an aged never-claimed `:pending` row** —
+      and the act of claiming it **rotates its token**, which fences any survivor.
+      The composer child-step (`reclaim_children/3`) therefore claim-rotates + fails
+      only *claimable* (expired/aged) children and LEAVES live-lease ones, where boot
+      fails them all.
+
+  Boot and reclaim are **complementary**: the Pooler is expiry-gated and touches only
+  provably-dead runs (safe in every mode), the `FOR UPDATE` (`lock_run`) + `:illegal`
+  terminal-on-terminal guard makes any single-node overlap idempotent, and the
+  Pooler's `initial_delay_ms` lets the boot one-shot win the first sweep.
   """
 
   use Task
@@ -88,6 +116,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   alias JidoClaw.Orchestration.GateResume
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
@@ -129,6 +158,40 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     :ok
   end
+
+  @doc """
+  Reclaim ONE run the `ReclaimPooler` just claimed (its token already rotated by
+  `WorkflowLease.claim_next/1`, fencing any surviving zombie owner).
+
+  A `:running` composer parent takes the reclaim-specific child-step
+  (`reclaim_composer/1`: claim-rotate + fail expired children, leave live-lease ones
+  and parked gates, restart via the shared tail or release-on-defer). Every other
+  run is a plain reactor run reconciled through `reconcile_one/1` — boot-parity
+  under Q1 (a stranded `:running` no-checkpoint run is failed, not re-run: the
+  idempotency key is launch-dedupe, not step-idempotency, so a partially-executed
+  reactor cannot be safely re-run today).
+  """
+  @spec reclaim(WorkflowRun.t()) :: :ok
+  def reclaim(%WorkflowRun{workflow_type: "composer", status: :running} = run) do
+    reclaim_composer(run)
+    :ok
+  end
+
+  def reclaim(run) do
+    reconcile_one(run)
+    :ok
+  end
+
+  @doc """
+  Reconcile ONE already-claimed run through the shared status/checkpoint
+  classification — the live-reclaim per-run entry, mirroring boot's `reconcile_run/1`
+  (the private classifier the boot scan loops). The caller has already rotated the
+  run's token (so a surviving zombie is fenced); this only classifies + drives the
+  disposition (fail-stranded / `GateResume` / parked no-op / …). Returns the branch's
+  outcome via `emit/2` telemetry; the value is incidental (callers are side-effecting).
+  """
+  @spec reconcile_one(WorkflowRun.t()) :: term()
+  def reconcile_one(run), do: reconcile_run(run)
 
   # Composer parents are reconciled FIRST (Phase 2d): a parent's children must be
   # reconciled (and the composer restarted) before the `others` loop touches them,
@@ -344,6 +407,102 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     handled
   end
+
+  # ── WS3 live reclaim (Component 4) ──────────────────────────────────────────
+  # The reclaim-specific composer parent path. Mirrors `resume_composer/1`'s
+  # restart decision (reusing `restartable?/3` + `start_recovered_composer/3`), but
+  # swaps boot's fail-ALL-children `reconcile_children/3` for the lease-aware
+  # `reclaim_children/3` (claim-rotate + fail only EXPIRED children, leave live-lease
+  # ones), and on a deferred restart performs the token-fenced cooldown release
+  # instead of just logging. Drives one parent (no `others` exclusion — the Pooler
+  # processes one claimed run per `claim_next`), so it returns `:ok`, not a child-id
+  # set. The parent's token was rotated by `claim_next`; `start_recovered_composer/3`
+  # freezes it into the restarted composer's start_opts (`build_start_opts/2`), whose
+  # `lease_preflight_and_resume` renews it → `{:ok, 1}` → resume.
+  defp reclaim_composer(run) do
+    tenant = run.tenant_id
+    actor = Actor.system(tenant)
+
+    if recoverable_catalog?(run) do
+      reclaim_children(run, tenant, actor)
+
+      if restartable?(run, tenant, actor) do
+        start_recovered_composer(run, tenant, actor)
+      else
+        # A non-claimable non-terminal child remains (a live-lease worker, or a
+        # fresh-pending child within grace): `restartable?/3` defers. Release the
+        # parent lease on a `poll_interval` COOLDOWN (not `now()`) so it is
+        # re-claimable on the next poll, never within this drain (which would
+        # hot-loop). The durably-`async_nolink`-completing child is folded on the
+        # eventual restart — no lost work, no double-exec.
+        release_on_defer(run)
+        emit(run, :composer)
+      end
+    else
+      # Absent/un-decodable catalog → un-recoverable (mirrors the boot branch): a
+      # composer on a degenerate catalog would false-converge. Leave `:running` +
+      # release the lease on a cooldown so a later sweep retries.
+      Logger.warning(
+        "[WorkflowRecovery] reclaimed composer parent #{run.id} has no recoverable catalog; " <>
+          "leaving :running"
+      )
+
+      release_on_defer(run)
+      emit(run, :composer)
+    end
+  end
+
+  # Drive EVERY non-terminal child through `WorkflowLease.claim_run/1`'s full
+  # `:claimable` predicate under a `FOR UPDATE` lock — NOT a pre-filter to
+  # expired-lease only. Two load-bearing properties:
+  #   * a claimable child (expired lease OR aged never-claimed `:pending`) has its
+  #     token ROTATED (fencing a surviving zombie child) and is reconciled to
+  #     `:failed` via the shared `reconcile_one/1`;
+  #   * an aged `:pending`+nil-token wave child (crashed before `Middleware` stamped
+  #     it) is caught by clause 2 and failed HERE, rather than skipped and then
+  #     permanently blocking `restartable?/3` (which rejects any non-terminal non-gate
+  #     child).
+  # A non-claimable child (live lease, fresh-pending within grace, or a leaseless
+  # parked `:awaiting_approval` gate — `:claimable` excludes that status) is LEFT for
+  # `restartable?/3` to defer on (parked gates don't block; a live worker does).
+  defp reclaim_children(run, tenant, actor) do
+    case load_child_runs(run, tenant, actor) do
+      {:ok, children} ->
+        children
+        |> Enum.filter(&non_terminal?/1)
+        |> Enum.each(&reclaim_child/1)
+
+      :error ->
+        :ok
+    end
+  end
+
+  defp reclaim_child(child) do
+    case WorkflowLease.claim_run(child.id) do
+      {:ok, rotated} ->
+        reconcile_one(rotated)
+
+      :lost ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[WorkflowRecovery] child claim failed for #{child.id}: #{inspect(reason)}; leaving"
+        )
+    end
+  end
+
+  # Token-fenced cooldown release on defer: push the (rotated) parent token's expiry
+  # to `now() + poll_interval` so the parent is re-claimable on the NEXT poll, not
+  # within this `reclaim_once/0` drain. Delegates to the shared
+  # `WorkflowLease.release_for_reclaim/2` (single-sourced with the lease middleware's
+  # stamp-error re-arm — same cooldown, same best-effort `{:ok, 0}`/error swallow).
+  # A nil token (unleased path) has nothing to release.
+  defp release_on_defer(%WorkflowRun{claim_token: token} = run) when is_binary(token) do
+    WorkflowLease.release_for_reclaim(run.id, token)
+  end
+
+  defp release_on_defer(_run), do: :ok
 
   # Reconcile every NON-TERMINAL child through the shipped reactor branches
   # (children are `workflow_type: "reactor"`): a `:running` no-checkpoint child →

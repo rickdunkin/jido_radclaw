@@ -162,6 +162,12 @@ defmodule JidoClaw.RouteComposer do
   @registry JidoClaw.RouteComposer.Registry
   @supervisor JidoClaw.RouteComposer.Supervisor
 
+  # Deadline for the `:get_claim_token` ownership handshake in `ensure_started/2`
+  # (WS3 P2). A live owner answers immediately (idle/parked) or once its current
+  # wave returns; a call that exits (dead/stale registry entry) is treated as a
+  # non-owner and evicted.
+  @owner_call_timeout 5_000
+
   @default_max_waves 20
   @default_timeout_ms 60_000
   @default_run_name "route_composer"
@@ -624,6 +630,13 @@ defmodule JidoClaw.RouteComposer do
   resumes; normal terminal → no restart." Supervised runs have no sync caller, so
   `:notify`/`:ref` are omitted (the durable terminal is the source of truth).
 
+  On a **hit**, the registered composer is returned ONLY if it is still the current
+  owner — it holds `parent.claim_token` by exact identity (`ensure_current_owner/3`).
+  A stale owner (left when a live reclaim's `claim_next` rotated the parent token —
+  WS3 P2) or a dead/stale registry entry is evicted and restarted so the reclaimed
+  token reaches a live process; otherwise recovery would hand back a composer holding
+  the OLD token and the rotated token would never run (the swallowed-reclaim bug).
+
   `opts[:terminalize_on_failure?]` (default `false`) is **opt-in** orphan cleanup
   (Phase 3b / R3-P1): the **front door** passes `true` so a `create_parent_run`
   success + failed start yields a clean terminal parent behind its "couldn't
@@ -633,14 +646,60 @@ defmodule JidoClaw.RouteComposer do
   @spec ensure_started(keyword(), WorkflowRun.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(opts, %WorkflowRun{} = parent) do
     case Registry.lookup(@registry, parent.id) do
-      [{pid, _value}] ->
-        {:ok, pid}
+      [{pid, _value}] -> ensure_current_owner(pid, opts, parent)
+      [] -> start_or_terminalize(opts, parent)
+    end
+  end
 
-      [] ->
-        case start_supervised_composer(build_start_opts(opts, parent), parent.id) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, reason} = error -> maybe_terminalize_orphan(opts, parent, reason, error)
-        end
+  # A registered composer is the current owner ONLY if it still holds the run's
+  # (possibly just-reclaimed) token, by exact identity. A stale owner — left when
+  # `claim_next` rotated the parent token (P2) — or a dead/stale registry entry
+  # (call exits) is evicted and restarted so the reclaimed token reaches a live
+  # process. Launch (miss) and boot/unleased (nil==nil) are no-ops. `terminate_child`
+  # is synchronous (old pid dead on return), so the caller sees the new pid at once.
+  defp ensure_current_owner(pid, opts, parent) do
+    if current_owner?(pid, parent.claim_token) do
+      {:ok, pid}
+    else
+      _ = DynamicSupervisor.terminate_child(@supervisor, pid)
+      await_deregistered(parent.id)
+      start_or_terminalize(opts, parent)
+    end
+  end
+
+  # Ownership is EXACT equality `held == incoming`, NOT the nil-permissive fence
+  # helper `token_mismatch?/2`: a binary reclaim token against a nil/old held token
+  # must NOT count as the current owner (that is the swallowed-reclaim bug). Only a
+  # nil incoming matches a nil held owner (unleased idempotency); a binary incoming
+  # requires the live owner to return that exact binary. A call that exits (dead or
+  # stale registry entry) is a non-owner → evict (the `VFS.Workspace` precedent).
+  defp current_owner?(pid, incoming_token) do
+    GenServer.call(pid, :get_claim_token, @owner_call_timeout) == incoming_token
+  catch
+    :exit, _ -> false
+  end
+
+  defp start_or_terminalize(opts, parent) do
+    case start_supervised_composer(build_start_opts(opts, parent), parent.id) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, reason} = error -> maybe_terminalize_orphan(opts, parent, reason, error)
+    end
+  end
+
+  # Registry frees the via-tuple key async after `terminate_child`; wait (bounded)
+  # before restarting so `start_supervised_composer`'s `{:already_started, pid}`
+  # collapse can't hand back the dead pid. Mirrors the test `await_deregistered/2`.
+  defp await_deregistered(parent_id, tries \\ 200) do
+    cond do
+      Registry.lookup(@registry, parent_id) == [] ->
+        :ok
+
+      tries > 0 ->
+        Process.sleep(10)
+        await_deregistered(parent_id, tries - 1)
+
+      true ->
+        :ok
     end
   end
 
@@ -1036,6 +1095,13 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
+  # WS3 P2: the ownership probe `ensure_started/2` uses to tell a current owner
+  # (still holds the run's possibly-just-reclaimed token) from a stale one left
+  # behind when `claim_next` rotated the parent token. Answered immediately when the
+  # composer is idle/parked, or once its in-flight wave returns.
+  @impl GenServer
+  def handle_call(:get_claim_token, _from, state), do: {:reply, state.claim_token, state}
+
   @impl GenServer
   def handle_info(:rebuild_retry, state), do: do_rebuild(state)
 
@@ -1122,16 +1188,18 @@ defmodule JidoClaw.RouteComposer do
   # (up to `wave_timeout_ms`, far longer than the 60s lease) never lets the lease lapse,
   # and on a stale fence the sidecar `Process.exit(composer, :kill)`s. `start_sidecar/4`
   # blocks ≤5s for the readiness handshake — acceptable inside `do_rebuild` (already DB
-  # work). On a start failure, mirror `Middleware.fail_or_degrade/2`, KEEPING
+  # work). On a start failure, mirror `Middleware.suspend_or_fail_closed/4`, KEEPING
   # `state.claim_token` either way (the durable fences + restart preflight rely on the
   # held token): under clustering → fail closed `{:stop, :normal}` (a heartbeat-less
   # composer would let the lease lapse and another node reclaim; the parent stays
-  # `:running + claimed` for WS3); single-node → log + proceed DEGRADED (no heartbeat —
-  # the held token still matches the row so the fences never false-positive, and nothing
-  # reclaims an expired single-node lease). NOT `retry_rebuild_or_stop` — `do_rebuild`
-  # resets `rebuild_attempts` to 0 on each successful reload, so a post-reload retry
-  # never trips the cap (infinite loop); the bounded retry lives in the Sidecar's
-  # registration, this is only the backstop.
+  # `:running + claimed` for WS3); single-node → `degrade_gate/2` SUSPENDS the claim
+  # (NULL expiry, keep token) so the always-on Pooler cannot reclaim this live,
+  # heartbeat-less composer, then proceeds DEGRADED — but ONLY when the suspend took;
+  # a lost/failed suspend fails closed `{:stop, :normal}` (the still-stamped row is
+  # left for a legitimate dead-owner reclaim/boot). NOT `retry_rebuild_or_stop` —
+  # `do_rebuild` resets `rebuild_attempts` to 0 on each successful reload, so a
+  # post-reload retry never trips the cap (infinite loop); the bounded retry lives in
+  # the Sidecar's registration, this is only the backstop.
   defp start_parent_sidecar_and_resume(state, events) do
     case WorkflowLease.start_sidecar(self(), state.parent_run_id, state.tenant, state.claim_token) do
       :ok ->
@@ -1151,12 +1219,28 @@ defmodule JidoClaw.RouteComposer do
 
       {:stop, :normal, state}
     else
-      Logger.warning(
-        "[RouteComposer] parent lease sidecar failed for #{state.parent_run_id} " <>
-          "(#{inspect(reason)}); degraded (single-node), proceeding with no heartbeat"
-      )
+      # Single-node: suspend the held claim (NULL expiry, keep the token) so the
+      # always-on Pooler cannot reclaim a live, heartbeat-less composer, and only
+      # proceed degraded when the suspend took. A lost/failed suspend ⇒ fail closed
+      # (stop): no live executor remains, so the later Pooler reclaim of the still-
+      # stamped row is a legitimate dead-owner reclaim, not the P1 live-reclaim hazard.
+      case WorkflowLease.degrade_gate(state.parent_run_id, state.claim_token) do
+        :degrade ->
+          Logger.warning(
+            "[RouteComposer] parent lease sidecar failed for #{state.parent_run_id} " <>
+              "(#{inspect(reason)}); degraded (single-node), suspended claim + proceeding with no heartbeat"
+          )
 
-      resume_or_tick(state, events)
+          resume_or_tick(state, events)
+
+        :fail_closed ->
+          Logger.error(
+            "[RouteComposer] parent lease sidecar failed for #{state.parent_run_id} " <>
+              "(#{inspect(reason)}); claim suspend lost/failed — stopping (parent left :running + claimed for reclaim/boot)"
+          )
+
+          {:stop, :normal, state}
+      end
     end
   end
 

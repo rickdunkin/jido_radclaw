@@ -17,10 +17,16 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
     * `renew/2` — a **fenced** heartbeat (`WHERE claim_token = $token`): a
       rotated token renews 0 rows, so a superseded owner learns it lost.
     * `claim_next/1` — the oldest-first reclaim primitive (`FOR UPDATE SKIP
-      LOCKED` over the `:claimable` set). **Unit-tested but not production-
-      triggered until WS3** (no Pooler ships here): there is no general
-      "reconstruct a reactor from a stored run" seam, so a claimed orphan can't
-      yet be dispatched.
+      LOCKED` over the `:claimable` set); `claim_run/1` — the by-id variant that
+      re-checks the full `:claimable` predicate under a `FOR UPDATE` lock before
+      rotating (the composer reclaim child-step's TOCTOU-safe inline claim). Both
+      CAS-rotate the token via the shared locked-claim core (`claim_one`), and
+      that rotation is what fences a surviving zombie. **WS3** ships the
+      production caller (`ReclaimPooler` → `WorkflowRecovery.reclaim/1`).
+    * `release_with_cooldown/3` — a token-fenced short-interval `renew` used when
+      a composer reclaim **defers** restart, pushing the parent's expiry to
+      `now() + poll_interval` (re-claimable on the next poll, never within the
+      same drain — see `JidoClaw.Orchestration.WorkflowRecovery`).
     * `fence_decision/3` — the pure, **fail-closed** renew-result interpreter
       the `Sidecar` runs.
     * `start_sidecar/4` — a **synchronous readiness handshake** that arms the
@@ -42,6 +48,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   `claimed_by` / `claim_expires_at` / `claim_token` — never `status`.
   """
 
+  require Ash.Query
+  require Logger
+
+  alias Ash.Query
   alias JidoClaw.Cluster
   alias JidoClaw.Orchestration.WorkflowLease.Sidecar
   alias JidoClaw.Orchestration.WorkflowRun
@@ -79,6 +89,18 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
    WHERE id = $2 AND claim_token = $3
   """
 
+  # Suspend a held claim's expiry: NULL `claim_expires_at` on the held token,
+  # KEEPING `claimed_by`/`claim_token`. A `:claimable`-clause-1 match needs
+  # `claim_expires_at IS NOT NULL`, so a NULL expiry makes a `:running` row
+  # unreclaimable (clause 2 needs `:pending`) — a single-node degrade leaves an
+  # unleased-but-unstealable row that only boot recovery can adopt. Token-fenced
+  # like `@renew_sql` so a reclaimer that already rotated the token suspends 0 rows.
+  @suspend_claim_sql """
+  UPDATE workflow_runs
+     SET claim_expires_at = NULL
+   WHERE id = $1 AND claim_token = $2
+  """
+
   @typedoc "Outcome of a CAS row-claim."
   @type stamp_result :: {:ok, :claimed} | {:ok, :lost} | {:error, term()}
 
@@ -93,6 +115,16 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   @doc "Heartbeat interval in seconds (config `:workflow_lease[:renew_seconds]`, default 15)."
   @spec renew_seconds() :: pos_integer()
   def renew_seconds, do: config(:renew_seconds, 15)
+
+  @doc """
+  Genesis-orphan grace in seconds (config `:workflow_lease[:pending_grace_seconds]`,
+  default `lease_seconds/0`). A never-claimed `:pending` row is reclaimable only
+  once it has aged past this grace — long enough for `Lease.Middleware` to stamp a
+  legitimately just-created run, so the always-on Pooler cannot steal it in the
+  create→stamp gap (WS3 Component 2, the "no fresh-pending steal" guard).
+  """
+  @spec pending_grace_seconds() :: pos_integer()
+  def pending_grace_seconds, do: config(:pending_grace_seconds, lease_seconds())
 
   defp config(key, default) do
     Keyword.get(Application.get_env(:jido_claw, :workflow_lease, []), key, default)
@@ -130,8 +162,62 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   or `{:error, term()}` on a DB error.
   """
   @spec renew(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def renew(run_id, token) do
-    params = [to_string(lease_seconds()), Ecto.UUID.dump!(run_id), Ecto.UUID.dump!(token)]
+  def renew(run_id, token), do: renew_for(run_id, token, lease_seconds())
+
+  @doc """
+  Fenced **cooldown release** of a held lease: set `run_id`'s expiry to
+  `now() + cooldown_seconds` iff its current token is `token` — the `@renew_sql`
+  write with a caller-supplied interval. Used when a composer reclaim **defers**
+  restart (a non-claimable child remains): the cooldown (NOT `now()`) is
+  load-bearing — expiring to `now()` would make the parent re-claimable within the
+  SAME `reclaim_once/0` drain (claim→defer→claim hot-loop), whereas a
+  `poll_interval` cooldown makes it re-claimable on the NEXT poll (convergence
+  ~`poll_interval`, no spin).
+
+  Returns `{:ok, 1}` (released on the held token), `{:ok, 0}` (fenced/rotated — a
+  reclaimer already took it), or `{:error, term()}`.
+  """
+  @spec release_with_cooldown(String.t(), String.t(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def release_with_cooldown(run_id, token, cooldown_seconds),
+    do: renew_for(run_id, token, cooldown_seconds)
+
+  @doc """
+  The reclaim cooldown in seconds — the `ReclaimPooler`'s poll cadence (config
+  `:reclaim_pooler[:poll_interval_ms]`, default 15_000), floored at 1s. Read here
+  (the module that owns `release_with_cooldown/3`) so both the lease middleware's
+  stamp-error re-arm and `WorkflowRecovery`'s release-on-defer share one source —
+  no module dependency on the Pooler, no clone-gate duplication.
+  """
+  @spec reclaim_cooldown_seconds() :: pos_integer()
+  def reclaim_cooldown_seconds do
+    ms = Application.get_env(:jido_claw, :reclaim_pooler, [])[:poll_interval_ms] || 15_000
+    max(div(ms, 1000), 1)
+  end
+
+  @doc """
+  Best-effort token-fenced re-arm for reclaim: push `token`'s expiry to
+  `now() + reclaim_cooldown_seconds/0` so the always-on `ReclaimPooler` re-claims
+  this held-token row on the NEXT poll (never the same drain — the cooldown, not
+  `now()`, is the anti-hot-loop, since this can itself run inside a Pooler
+  `reclaim → GateResume` drain). Always returns `:ok`: a `{:ok, 0}` (token already
+  rotated) or `{:error, _}` (DB blip) is swallowed — the `claim_next/1` lease window
+  still bounds re-claim. Single-sourced with `WorkflowRecovery.release_on_defer/1`.
+  """
+  @spec release_for_reclaim(String.t(), String.t()) :: :ok
+  def release_for_reclaim(run_id, token) do
+    case release_with_cooldown(run_id, token, reclaim_cooldown_seconds()) do
+      {:ok, _rows} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[WorkflowLease] reclaim re-arm failed for #{run_id}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp renew_for(run_id, token, interval_seconds) do
+    params = [to_string(interval_seconds), Ecto.UUID.dump!(run_id), Ecto.UUID.dump!(token)]
 
     case Repo.query(@renew_sql, params) do
       {:ok, %{num_rows: rows}} -> {:ok, rows}
@@ -140,51 +226,128 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   end
 
   @doc """
-  Claim the oldest reclaimable run (a system-level, cross-tenant scan), stamp a
-  fresh token, and return the reloaded run.
-
-  `FOR UPDATE SKIP LOCKED` + `LIMIT 1` over the `:claimable` set (oldest first)
-  picks one unlocked candidate; the CAS is redundant under the held row lock but
-  kept uniform. Returns `{:ok, run}`, `:none` (nothing claimable), or
-  `{:error, term()}`.
-
-  **WS1 ships this unit-tested but not production-triggered** — no caller scans
-  yet (the reclaim-dispatch Pooler is WS3, gated on a reactor-reconstruction
-  seam that does not exist here).
+  Suspend a held lease's expiry: NULL `run_id`'s `claim_expires_at` iff its current
+  token is `token`, KEEPING `claimed_by`/`claim_token`. `{:ok, 1}` suspended,
+  `{:ok, 0}` fenced/rotated (a reclaimer already took it), `{:error, term()}`.
   """
-  @spec claim_next(keyword()) :: {:ok, WorkflowRun.t()} | :none | {:error, term()}
-  def claim_next(_opts \\ []) do
-    case Repo.transaction(fn ->
-           case read_claimable() do
-             {:ok, [run]} -> claim_one(run)
-             {:ok, []} -> :none
-             {:error, reason} -> Repo.rollback(reason)
-           end
-         end) do
-      {:ok, :none} -> :none
-      {:ok, %WorkflowRun{} = run} -> {:ok, run}
+  @spec suspend_claim(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def suspend_claim(run_id, token) do
+    params = [Ecto.UUID.dump!(run_id), Ecto.UUID.dump!(token)]
+
+    case Repo.query(@suspend_claim_sql, params) do
+      {:ok, %{num_rows: rows}} -> {:ok, rows}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  # `query_to_claimable/0` is the Ash-generated builder for the `:claimable`
-  # read (the `query_to_*` code-interface helper). NOTE: Ash compiles the
-  # action's `now()` filter to an APP-clock bound parameter (not SQL `now()`),
-  # so this eligibility scan is app-clock — acceptable because the *time*
-  # comparison is only reclaim-eligibility (WS3-triggered), while the actual
-  # double-run safety is the clock-free token CAS (`stamp/4`) + renew-fence
-  # (`renew/2`); the lease *expiry* is stamped on the DB clock. No actor: the
-  # action is policy-bypassed + `multitenancy(:bypass)` (a system scan, like
-  # `list_non_terminal_global`).
+  @doc """
+  Single-node degrade gate — single-sourced so the reactor middleware and the
+  route-composer parent cannot diverge. Suspends the held claim and reports whether
+  the caller may proceed degraded: `:degrade` **iff the suspend took** (`{:ok, 1}`);
+  `:fail_closed` on a lost/failed suspend (`{:ok, 0}` / `{:error, _}`), where the
+  unsafe stamped-but-unrenewed state persists so the caller MUST abort/stop and
+  leave the row for reclaim/boot. Returns a decision (never fire-and-forget) so a
+  caller cannot ignore a failed suspend and keep running.
+  """
+  @spec degrade_gate(String.t(), String.t()) :: :degrade | :fail_closed
+  def degrade_gate(run_id, token) do
+    case suspend_claim(run_id, token) do
+      {:ok, 1} -> :degrade
+      _ -> :fail_closed
+    end
+  end
+
+  @doc """
+  Claim the oldest reclaimable run (a system-level, cross-tenant scan), rotate its
+  token, and return the reloaded run.
+
+  `FOR UPDATE SKIP LOCKED` + `LIMIT 1` over the `:claimable` set (oldest first)
+  picks one unlocked candidate; the CAS is redundant under the held row lock but
+  kept uniform. Returns `{:ok, run}`, `:none` (nothing claimable), or
+  `{:error, term()}`. The WS3 `ReclaimPooler` drains this to `:none` each poll.
+  """
+  @spec claim_next(keyword()) :: {:ok, WorkflowRun.t()} | :none | {:error, term()}
+  def claim_next(_opts \\ []), do: claim_locked(&read_claimable/0, :none)
+
+  @doc """
+  Claim ONE specific run by id IF it is currently `:claimable`, rotating its token.
+
+  The by-id sibling of `claim_next/1` for the composer reclaim child-step: lock the
+  row `FOR UPDATE`, re-check the **full** `:claimable` predicate under the lock
+  (expired lease **or** aged never-claimed `:pending`), and only on a match
+  CAS-rotate + reload. Returns `{:ok, run}` (rotated — a zombie owner is now
+  fenced), `:lost` (not claimable — live lease, fresh-pending within grace, parked
+  leaseless gate, terminal, or skipped), or `{:error, term()}`.
+
+  The under-lock predicate re-check is the TOCTOU fence: `stamp/4` alone guards
+  token+status but **not expiry**, so a bare CAS would steal a child that *renewed*
+  between the parent's child-load and this claim (`renew/2` keeps the token, so the
+  CAS would still match). The expiry re-check under the lock rejects it (`:lost`).
+  """
+  @spec claim_run(String.t()) :: {:ok, WorkflowRun.t()} | :lost | {:error, term()}
+  def claim_run(run_id), do: claim_locked(fn -> read_claimable_by_id(run_id) end, :lost)
+
+  # The shared locked-claim core. Run `select` inside a transaction; on a single
+  # locked claimable run, CAS-rotate its token + reload (the rotation that fences a
+  # surviving zombie); on the empty set return `empty` (`:none` for the oldest-first
+  # scan, `:lost` for the by-id reclaim). The CAS-rotate (`claim_one`) lives here
+  # ONCE for both `claim_next` and `claim_run` (clone gate).
+  defp claim_locked(select, empty) do
+    case Repo.transaction(fn ->
+           case select.() do
+             {:ok, [run]} -> claim_one(run)
+             {:ok, []} -> empty
+             {:error, reason} -> Repo.rollback(reason)
+           end
+         end) do
+      {:ok, %WorkflowRun{} = run} -> {:ok, run}
+      {:ok, ^empty} -> empty
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # `query_to_claimable/1` is the Ash-generated builder for the `:claimable` read
+  # (the `query_to_*` code-interface helper), now arg-bearing — the genesis-orphan
+  # clause needs the runtime age cutoff (WS3 Component 2). NOTE: Ash compiles the
+  # action's `now()` filter to an APP-clock bound parameter (not SQL `now()`), so
+  # this eligibility scan is app-clock — acceptable because the *time* comparison is
+  # only reclaim-eligibility, while the actual double-run safety is the clock-free
+  # token CAS (`stamp/4`) + renew-fence (`renew/2`); the lease *expiry* is stamped on
+  # the DB clock. No actor: the action is policy-bypassed + `multitenancy(:bypass)`
+  # (a system scan, like `list_non_terminal_global`).
   defp read_claimable do
-    WorkflowRun.query_to_claimable()
+    pending_cutoff()
+    |> WorkflowRun.query_to_claimable()
     # Exact upper-case literal: ash_postgres clause-matches the string to emit
     # SKIP LOCKED (the `:for_update` atom form emits none) — the trace_run.ex
     # retention-sweep precedent.
-    |> Ash.Query.lock("FOR UPDATE SKIP LOCKED")
-    |> Ash.Query.limit(1)
+    |> Query.lock("FOR UPDATE SKIP LOCKED")
+    |> Query.limit(1)
     |> Ash.read()
   end
+
+  # The by-id variant of `read_claimable/0` for `claim_run/1`: the SAME `:claimable`
+  # predicate, narrowed to one row and locked `FOR UPDATE` (blocking, NOT SKIP
+  # LOCKED — a targeted reclaim WAITS through a brief append lock then re-checks
+  # under it, where the oldest-first SCAN skips contended rows and moves on). Driving
+  # *every* non-terminal child through this FULL predicate — not a pre-filter to
+  # expired-lease only — is what lets an aged `:pending`+nil-token wave child (one
+  # that crashed before `Middleware` stamped it) be claimed+failed rather than
+  # skipped and permanently blocking `restartable?/3`.
+  defp read_claimable_by_id(run_id) do
+    pending_cutoff()
+    |> WorkflowRun.query_to_claimable()
+    |> Query.filter(id == ^run_id)
+    |> Query.lock("FOR UPDATE")
+    |> Query.limit(1)
+    |> Ash.read()
+  end
+
+  # The genesis-orphan age cutoff passed as the `:claimable` arg: a never-claimed
+  # `:pending` row is reclaimable only once `inserted_at < now() - grace`. App-clock
+  # `utc_now` (matched to the app-clock `now()` Ash compiles the expired-lease clause
+  # to). Computed per scan so each poll uses a fresh cutoff.
+  defp pending_cutoff, do: DateTime.add(DateTime.utc_now(), -pending_grace_seconds(), :second)
 
   # Under the held FOR UPDATE the row can't change beneath us, so a `:lost`/error
   # here is a genuine fault — roll the whole claim back rather than return a

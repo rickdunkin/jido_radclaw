@@ -697,8 +697,12 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   # Scoped to the `{:lease_lost, _}` reason — placed BEFORE the generic clause —
   # so a real step error still surfaces its own reason rather than being swallowed
   # into `:already_terminal`. The other lease aborts (`{:lease_sidecar, _}` /
-  # `{:lease_claim, _}`, where the executor DOES own the lease but can't run
-  # safely) flow through the generic clause, which fails the run it owns.
+  # `{:lease_claim, _}`) flow through the generic clause below, whose disposition
+  # depends on the reloaded token: when it equals the held token — a sidecar-fail,
+  # or a genesis cluster stamp-error where the row was never stamped — `fenced?/2`
+  # is false and the run it owns is failed; but a re-stamp `{:lease_claim, _}` (a
+  # `GateResume`/recovery resume) leaves the row on the PRIOR token ≠ the fresh held
+  # token → `fenced?/2` true → NO terminal, left `:running` for reclaim/boot.
   def finalize({:error, {:lease_lost, _id}}, run, opts) do
     reloaded = reload(run, opts)
 

@@ -29,13 +29,13 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  import JidoClaw.Orchestration.LeaseHelpers
+
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.GateStep
   alias JidoClaw.Orchestration.ReactorRunner
-  alias JidoClaw.Orchestration.Reactors.BlockingTestReactor
   alias JidoClaw.Orchestration.RunExecution
-  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLease.Middleware, as: LeaseMiddleware
   alias JidoClaw.Orchestration.WorkflowLeaseTest.OkReactor
@@ -70,7 +70,8 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
   describe "claim_next/1 lock + selection" do
     test "the :claimable query carries FOR UPDATE SKIP LOCKED down to the SQL" do
       query =
-        WorkflowRun.query_to_claimable()
+        DateTime.utc_now()
+        |> WorkflowRun.query_to_claimable()
         |> Ash.Query.limit(1)
         |> Ash.Query.lock("FOR UPDATE SKIP LOCKED")
 
@@ -126,6 +127,79 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
 
       assert {:ok, 0} = WorkflowLease.renew(run.id, token)
       assert {:ok, 1} = WorkflowLease.renew(run.id, rotated)
+    end
+  end
+
+  # ── 2b. suspend_claim/2 + degrade_gate/2 (WS3 P1 single-node degrade) ────────
+
+  describe "suspend_claim/2" do
+    test "NULLs the expiry on the held token (keeping token/claimed_by) → unreclaimable", ctx do
+      run = seed_run(ctx)
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      before = reload_global(run.id)
+      refute is_nil(before.claim_expires_at)
+      assert before.claim_token == token
+
+      assert {:ok, 1} = WorkflowLease.suspend_claim(run.id, token)
+
+      after_suspend = reload_global(run.id)
+      assert is_nil(after_suspend.claim_expires_at)
+      # Token + owner retained — the durable fences + restart preflight still match.
+      assert after_suspend.claim_token == token
+      assert after_suspend.claimed_by == before.claimed_by
+
+      # A NULL expiry + non-nil token is selected by neither :claimable clause.
+      assert :none = WorkflowLease.claim_next()
+    end
+
+    test "is token-fenced: a rotated token suspends 0 rows + leaves the expiry untouched", ctx do
+      run = seed_run(ctx)
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+      before = reload_global(run.id)
+
+      # The held (now-stale) token's CAS matches 0 rows.
+      assert {:ok, 0} = WorkflowLease.suspend_claim(run.id, token)
+
+      after_attempt = reload_global(run.id)
+      assert after_attempt.claim_token == rotated
+      refute is_nil(after_attempt.claim_expires_at)
+      assert after_attempt.claim_expires_at == before.claim_expires_at
+    end
+  end
+
+  describe "degrade_gate/2" do
+    test "matching token → :degrade + the expiry is NULLed", ctx do
+      run = seed_run(ctx, "degrade-ok")
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      assert :degrade = WorkflowLease.degrade_gate(run.id, token)
+      assert is_nil(reload_global(run.id).claim_expires_at)
+    end
+
+    test "rotated token (suspend 0) → :fail_closed + the row is unchanged", ctx do
+      run = seed_run(ctx, "degrade-lost")
+      held = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, held, nil)
+
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+      before = reload_global(run.id)
+
+      # The suspend lost the CAS, so the gate refuses to let the caller proceed —
+      # guarding "degrade proceeds ONLY when the suspend succeeds" at the single
+      # source both call sites branch on.
+      assert :fail_closed = WorkflowLease.degrade_gate(run.id, held)
+
+      after_gate = reload_global(run.id)
+      assert after_gate.claim_token == rotated
+      assert after_gate.claim_expires_at == before.claim_expires_at
     end
   end
 
@@ -344,7 +418,8 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
 
   describe "sidecar readiness" do
     @tag :capture_log
-    test "a sidecar that can't arm fails the claim under clustering, degrades single-node", ctx do
+    test "a sidecar that can't arm fails closed under clustering; single-node suspends + degrades",
+         ctx do
       # Inject a start failure by pre-owning the run-id key so the sidecar's
       # Registry.register loses and it exits before signalling ready. WS2: a
       # PERMANENT blocker is never freed, so the sidecar exhausts its bounded
@@ -352,19 +427,33 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       # exiting — the outcome below is unchanged (just slightly slower).
       run_a = seed_run(ctx, "fail-closed")
       {:ok, _} = Registry.register(@lease_registry, run_a.id, :blocker)
-      ctx_a = %{claim_token: Ash.UUID.generate(), workflow_run: run_a}
+      token_a = Ash.UUID.generate()
+      ctx_a = %{claim_token: token_a, workflow_run: run_a}
 
       with_cluster_enabled(true, fn ->
         assert {:error, {:lease_sidecar, _reason}} = LeaseMiddleware.init(ctx_a)
       end)
 
+      # Cluster: the stamped row is LEFT stamped (no suspend) so the runner's
+      # finalize + WS3 reclaim handle it.
+      reloaded_a = reload_global(run_a.id)
+      assert reloaded_a.claim_token == token_a
+      refute is_nil(reloaded_a.claim_expires_at)
+
       run_b = seed_run(ctx, "degrade")
       {:ok, _} = Registry.register(@lease_registry, run_b.id, :blocker)
-      ctx_b = %{claim_token: Ash.UUID.generate(), workflow_run: run_b}
+      token_b = Ash.UUID.generate()
+      ctx_b = %{claim_token: token_b, workflow_run: run_b}
 
       with_cluster_enabled(false, fn ->
         assert {:ok, ^ctx_b} = LeaseMiddleware.init(ctx_b)
       end)
+
+      # Single-node: degrade SUSPENDED the just-stamped claim (NULL expiry, token
+      # kept) so the always-on Pooler cannot reclaim this live, unleased executor.
+      reloaded_b = reload_global(run_b.id)
+      assert reloaded_b.claim_token == token_b
+      assert is_nil(reloaded_b.claim_expires_at)
     end
   end
 
@@ -591,98 +680,151 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
     end
   end
 
-  # ── helpers ─────────────────────────────────────────────────────────────────
+  # ── 19. stamp-error fail-close (claim-aware) ────────────────────────────────
 
-  defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]
+  describe "stamp-error fail-close (claim-aware)" do
+    @tag :capture_log
+    test "genesis (nil prior) single-node degrades: {:ok, ctx}, row left unstamped", ctx do
+      run = seed_run(ctx, "genesis-degrade")
+      ctx_in = %{claim_token: Ash.UUID.generate(), workflow_run: run}
 
-  defp seed_run(%{tenant: tenant, actor: actor}, name \\ "lease-test") do
-    {:ok, run} =
-      WorkflowRun.create(%{name: name, workflow_type: "reactor"}, tenant: tenant, actor: actor)
-
-    run
-  end
-
-  defp reload_global(run_id) do
-    {:ok, %WorkflowRun{} = run} = WorkflowRun.by_id_global(run_id)
-    run
-  end
-
-  defp kinds(run_id, ctx) do
-    {:ok, events} = WorkflowEvent.for_run(run_id, scope(ctx))
-    Enum.map(events, & &1.kind)
-  end
-
-  # Launch a forever-blocking run via the full runner path (so it stamps its
-  # lease + starts a sidecar), and return the launcher Task, run id, and executor
-  # pid. Mirrors cancellation_test: raw-pid kills in on_exit (off the owner
-  # process, where Task.shutdown raises); killing a dead pid is a no-op.
-  defp launch_blocking(ctx) do
-    test_pid = self()
-
-    launcher =
-      Task.async(fn ->
-        ReactorRunner.run(
-          BlockingTestReactor,
-          %{},
-          Keyword.put(scope(ctx), :context, %{test_pid: test_pid})
-        )
+      with_forced_stamp_error(fn ->
+        with_cluster_enabled(false, fn ->
+          assert {:ok, ^ctx_in} = LeaseMiddleware.init(ctx_in)
+        end)
       end)
 
-    assert_receive {:blocking_step_started, _step_pid, run_id}, 5_000
-    assert {:ok, executor, _tenant} = RunExecution.lookup(run_id)
+      # Nothing was ever stamped — byte-identical to the pre-lease world.
+      reloaded = reload_global(run.id)
+      assert is_nil(reloaded.claim_token)
+      assert is_nil(reloaded.claim_expires_at)
+    end
 
-    launcher_pid = launcher.pid
+    @tag :capture_log
+    test "genesis (nil prior) cluster fails closed: {:error, {:lease_claim, :forced}}", ctx do
+      run = seed_run(ctx, "genesis-cluster")
+      ctx_in = %{claim_token: Ash.UUID.generate(), workflow_run: run}
 
-    on_exit(fn ->
-      Process.exit(executor, :kill)
-      Process.exit(launcher_pid, :kill)
-    end)
+      with_forced_stamp_error(fn ->
+        with_cluster_enabled(true, fn ->
+          assert {:error, {:lease_claim, :forced}} = LeaseMiddleware.init(ctx_in)
+        end)
+      end)
 
-    {launcher, run_id, executor}
-  end
+      assert is_nil(reload_global(run.id).claim_token)
+    end
 
-  defp with_cluster_enabled(value, fun) do
-    prev = Application.get_env(:jido_claw, :cluster_enabled, false)
-    Application.put_env(:jido_claw, :cluster_enabled, value)
+    @tag :capture_log
+    test "already-claimed + NULL prior expiry: fails closed single-node + re-arms for reclaim",
+         ctx do
+      # Seed the sidecar-degrade residual shape: {prior token, NULL expiry, :running}.
+      run = seed_run(ctx, "reclaim-rearm")
+      set_status!(run.id, "running")
+      prior = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, prior, nil)
+      assert {:ok, 1} = WorkflowLease.suspend_claim(run.id, prior)
+      assert is_nil(reload_global(run.id).claim_expires_at)
 
-    try do
-      fun.()
-    after
-      Application.put_env(:jido_claw, :cluster_enabled, prev)
+      # A GateResume/recovery re-stamp puts a FRESH token in ctx on a row that still
+      # holds the PRIOR token. The forced stamp error never rotates it.
+      fresh = Ash.UUID.generate()
+      ctx_in = %{claim_token: fresh, workflow_run: reload_global(run.id)}
+
+      with_forced_stamp_error(fn ->
+        with_cluster_enabled(false, fn ->
+          assert {:error, {:lease_claim, :forced}} = LeaseMiddleware.init(ctx_in)
+        end)
+      end)
+
+      # Fail closed (no degrade): the row still holds the PRIOR token, but the re-arm
+      # pushed its NULL expiry NON-NULL so the always-on Pooler can reclaim it.
+      after_init = reload_global(run.id)
+      assert after_init.claim_token == prior
+      refute is_nil(after_init.claim_expires_at)
+
+      # Backdate the re-armed expiry and prove claim_next/0 actually claims it — the
+      # residual is now Pooler-reclaimable, not boot-recovery-only.
+      set_claim!(run.id, prior, -1)
+      assert {:ok, claimed} = WorkflowLease.claim_next()
+      assert claimed.id == run.id
+    end
+
+    @tag :capture_log
+    test "already-claimed cluster also fails closed (re-stamp branch is mode-independent)", ctx do
+      run = seed_run(ctx, "reclaim-cluster")
+      set_status!(run.id, "running")
+      prior = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, prior, nil)
+
+      ctx_in = %{claim_token: Ash.UUID.generate(), workflow_run: reload_global(run.id)}
+
+      with_forced_stamp_error(fn ->
+        with_cluster_enabled(true, fn ->
+          assert {:error, {:lease_claim, :forced}} = LeaseMiddleware.init(ctx_in)
+        end)
+      end)
+
+      # The failed CAS did not rotate — the row stays on the prior token.
+      assert reload_global(run.id).claim_token == prior
+    end
+
+    @tag :capture_log
+    test "finalize on a re-stamp lease_claim error is fenced (no terminal), re-resumable", ctx do
+      run = seed_run(ctx, "finalize-fenced")
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+      prior = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, prior, nil)
+      running = reload_global(run.id)
+      assert running.status == :running
+      assert running.claim_token == prior
+
+      # The resume holds a FRESH token; the row is still on the PRIOR one → fence A.
+      opts = Keyword.put(scope(ctx), :claim_token, Ash.UUID.generate())
+
+      assert {:error, :fenced, %WorkflowRun{status: :running}} =
+               ReactorRunner.finalize({:error, {:lease_claim, :forced}}, running, opts)
+
+      # No terminal written — the run is left :running, re-resumable by reclaim/boot.
+      refute :run_failed in kinds(run.id, ctx)
+    end
+
+    @tag :capture_log
+    test "release_for_reclaim/2 re-arms a held token (rotated = no-op); cooldown floors at 1s",
+         ctx do
+      run = seed_run(ctx, "rearm-unit")
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      assert {:ok, 1} = WorkflowLease.suspend_claim(run.id, token)
+      assert is_nil(reload_global(run.id).claim_expires_at)
+
+      # Held token → re-armed to a non-NULL expiry (~now()+cooldown), token kept.
+      assert :ok = WorkflowLease.release_for_reclaim(run.id, token)
+      rearmed = reload_global(run.id)
+      refute is_nil(rearmed.claim_expires_at)
+      assert rearmed.claim_token == token
+
+      # Rotated token → token-fenced no-op (0 rows), still :ok, expiry untouched.
+      rotated = Ash.UUID.generate()
+      rotate_token!(run.id, rotated)
+      before = reload_global(run.id)
+      assert :ok = WorkflowLease.release_for_reclaim(run.id, token)
+      after_attempt = reload_global(run.id)
+      assert after_attempt.claim_token == rotated
+      assert after_attempt.claim_expires_at == before.claim_expires_at
+
+      # The cooldown floors at 1s even with a sub-second poll interval.
+      prev = Application.get_env(:jido_claw, :reclaim_pooler, [])
+      Application.put_env(:jido_claw, :reclaim_pooler, Keyword.put(prev, :poll_interval_ms, 500))
+
+      try do
+        assert WorkflowLease.reclaim_cooldown_seconds() == 1
+      after
+        Application.put_env(:jido_claw, :reclaim_pooler, prev)
+      end
     end
   end
 
-  # -- raw SQL seeding (the retention_sweeper_test backdating precedent) --
+  # ── helpers ─────────────────────────────────────────────────────────────────
 
-  defp set_claim!(run_id, token, expires_in_seconds) do
-    Repo.query!(
-      "UPDATE workflow_runs SET claim_token = $1, claimed_by = $2, " <>
-        "claim_expires_at = now() + ($3 || ' seconds')::interval WHERE id = $4",
-      [dump_token(token), "seed-node", to_string(expires_in_seconds), Ecto.UUID.dump!(run_id)]
-    )
-  end
-
-  defp rotate_token!(run_id, token) do
-    Repo.query!(
-      "UPDATE workflow_runs SET claim_token = $1 WHERE id = $2",
-      [Ecto.UUID.dump!(token), Ecto.UUID.dump!(run_id)]
-    )
-  end
-
-  defp set_status!(run_id, status) do
-    Repo.query!(
-      "UPDATE workflow_runs SET status = $1 WHERE id = $2",
-      [status, Ecto.UUID.dump!(run_id)]
-    )
-  end
-
-  defp backdate_inserted!(run_id, seconds_ago) do
-    Repo.query!(
-      "UPDATE workflow_runs SET inserted_at = now() - ($1 || ' seconds')::interval WHERE id = $2",
-      [to_string(seconds_ago), Ecto.UUID.dump!(run_id)]
-    )
-  end
-
-  defp dump_token(nil), do: nil
-  defp dump_token(token), do: Ecto.UUID.dump!(token)
+  defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]
 end
