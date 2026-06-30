@@ -153,6 +153,15 @@ defmodule JidoClaw.Application do
       # so they must be torn down before those services on app shutdown.
       {Registry, keys: :unique, name: JidoClaw.Orchestration.RunRegistry},
       {Task.Supervisor, name: JidoClaw.Orchestration.RunTaskSupervisor},
+      # WS5 cross-node cancellation: the per-node receiver that turns a routed
+      # remote kill (`Cancellation` cast) into a local `RunExecution.kill_local/2`.
+      # Reactive-only/stateless (no timer/DB/PubSub) — inert until a remote cast
+      # arrives, so it is NOT `cluster_enabled`-gated: always-on in every serve
+      # mode and on every node (the single-node local cancel path resolves
+      # `:local` and never casts here, but the process is still present). Adjacent
+      # to RunRegistry, which `kill_local/2` looks up through; inside
+      # infra_children so it tears down before Repo/PubSub on shutdown.
+      JidoClaw.Orchestration.RunTerminator,
       # WS1 workflow lease: the run-id → lease-sidecar registry and the task
       # supervisor the heartbeat sidecars run under. All modes (inert until a run
       # launches and claims) — no `cluster_enabled` gate; the reclaim Pooler that

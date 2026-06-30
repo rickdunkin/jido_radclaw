@@ -35,6 +35,7 @@ defmodule JidoClaw.Orchestration.CancellationTest do
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Repo
 
   setup do
     TestIrreversibleWrite.reset()
@@ -158,6 +159,19 @@ defmodule JidoClaw.Orchestration.CancellationTest do
       assert :run_cancelled in kinds(run.id, ctx)
     end
 
+    # WS5's named acceptance item: the durable cancel must land even when the
+    # owning node is unroutable, proving the run_cancelled append precedes — and
+    # is independent of — kill routing.
+    test "a cancel of a run owned by an unroutable node still lands durably", ctx do
+      run = strand_running(ctx)
+      # Owned by a bogus, unconnected node ⇒ the kill resolves :unroutable (a
+      # no-op); durable-decision-first means the cancel still commits.
+      assert run.claimed_by == "jidoclaw@ghost"
+
+      assert {:ok, %WorkflowRun{status: :cancelled}} = Cancellation.cancel(run.id, scope(ctx))
+      assert :run_cancelled in kinds(run.id, ctx)
+    end
+
     test "a late terminal append on a cancelled run fails cleanly, status stays", ctx do
       {launcher, run_id, _executor} = launch_blocking(ctx)
       assert {:ok, cancelled} = Cancellation.cancel(run_id, scope(ctx))
@@ -232,11 +246,19 @@ defmodule JidoClaw.Orchestration.CancellationTest do
     {launcher, run_id, executor}
   end
 
-  # Strand a run mid-flight (recovery-test pattern): created + run_started,
-  # no live process behind it.
+  # Strand a run mid-flight (recovery-test pattern): created + run_started, no
+  # live process behind it. Stamped with a bogus, unconnected owner so the WS5
+  # kill routes :unroutable — `claimed_by` is public?: false, so it's set with a
+  # direct UPDATE.
   defp strand_running(ctx) do
     {:ok, run} = WorkflowRun.create(%{name: "stranded"}, scope(ctx))
     {:ok, _} = WorkflowLog.append(run, :run_started, %{})
+
+    Repo.query!(
+      "UPDATE workflow_runs SET claimed_by = 'jidoclaw@ghost' WHERE id = $1",
+      [Ecto.UUID.dump!(run.id)]
+    )
+
     reload(run.id, ctx)
   end
 

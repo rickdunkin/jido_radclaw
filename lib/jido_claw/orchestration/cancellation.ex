@@ -25,9 +25,13 @@ defmodule JidoClaw.Orchestration.Cancellation do
   any pending cases in **one transaction** via
   `WorkflowLog.terminate_cancelling_cases/4` (a resumed multi-gate run can
   hold a pending case while `:running`) — and only after that commit does it
-  kill the executor (`RunExecution.lookup/1` → `Process.exit(pid, :kill)`,
-  with a defensive tenant check on the registry value). **Never a kill after
-  a failed durable decision.**
+  reload the (now-terminal, frozen-`claimed_by`) run and route the kill to the
+  owning node: `resolve_kill_target/3` resolves `:local` (call
+  `RunExecution.kill_local/2` synchronously), `{:remote, node}` (fire-and-forget
+  `GenServer.cast` to that node's `RunTerminator`, which calls `kill_local/2`
+  there), or `:unroutable` (no-op — WS3 reclaim covers a gone/disconnected
+  owner). The kill is a latency/waste optimization; the durable decision is the
+  guarantee. **Never a kill after a failed durable decision.**
 
   ## Races (all resolve to durable truth)
 
@@ -57,11 +61,14 @@ defmodule JidoClaw.Orchestration.Cancellation do
 
   require Logger
 
+  alias JidoClaw.Cluster
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.RunPubSub
+  alias JidoClaw.Orchestration.RunTerminator
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -171,8 +178,16 @@ defmodule JidoClaw.Orchestration.Cancellation do
            actor: actor
          ) do
       {:ok, _event} ->
-        kill_if_live(run)
-        finish(run, tenant, actor)
+        # Reload once after the terminal commits, then route + broadcast off the
+        # SAME fresh struct. The post-append `claimed_by` is frozen (no new stamp
+        # can win once terminal — `WorkflowLease.stamp/4` gates on
+        # status IN ('pending','running')), so routing on it is authoritative and
+        # closes the stale-`claimed_by` race; the reload also feeds the broadcast,
+        # collapsing what was two reads into one. A freak reload failure degrades
+        # to the entry-time struct (the durable cancel already won).
+        reloaded = reload(run, tenant, actor)
+        kill_if_live(reloaded)
+        finish(reloaded)
 
       {:error, error} ->
         explain_append_failure(run, error, tenant, actor)
@@ -189,36 +204,67 @@ defmodule JidoClaw.Orchestration.Cancellation do
     end
   end
 
-  # Kill the live executor iff the registry value (the tenant the executor
-  # registered with) matches the run's tenant — a defensive cross-tenant
-  # guard. A registry miss is a no-op: the cancel already landed durably.
-  defp kill_if_live(%WorkflowRun{tenant_id: run_tenant} = run) do
-    case RunExecution.lookup(run.id) do
-      {:ok, pid, ^run_tenant} ->
-        Process.exit(pid, :kill)
-        :ok
+  @doc """
+  Resolve where a run's executor should be killed: pure routing decision over
+  the run's `claimed_by` (the WS1 lease-owner identity, or `nil` when
+  unclaimed), this node's identity (`WorkflowLease.node_identity/0`), and the
+  connected remote nodes (`Cluster.nodes/0`).
 
-      {:ok, pid, other_tenant} ->
-        Logger.warning(
-          "[Cancellation] registry tenant mismatch for run #{run.id}: " <>
-            "registered #{inspect(other_tenant)}, run has #{inspect(run_tenant)} — " <>
-            "not killing #{inspect(pid)}"
-        )
+    * `:local` — unclaimed (`nil`) or owned by this node ⇒ kill here.
+      Byte-identical to the pre-WS5 unconditional local kill.
+    * `{:remote, node}` — owned by a connected node ⇒ route the kill there.
+    * `:unroutable` — owner gone/disconnected ⇒ no-op (WS3 reclaim covers it).
 
-        :ok
+  Matches node *strings* against the candidate atoms (never
+  `String.to_existing_atom/1`, which would crash on an unknown node name).
+  Pure (identity strings + node atoms in, decision out) so it is unit-tested
+  directly, like `JidoClaw.Cluster.Leader.elect/1`.
+  """
+  @spec resolve_kill_target(String.t() | nil, String.t(), [node()]) ::
+          :local | {:remote, node()} | :unroutable
+  def resolve_kill_target(nil, _self_identity, _other_nodes), do: :local
 
-      :error ->
+  def resolve_kill_target(claimed_by, self_identity, other_nodes) do
+    if claimed_by == self_identity do
+      :local
+    else
+      case Enum.find(other_nodes, &(to_string(&1) == claimed_by)) do
+        nil -> :unroutable
+        node -> {:remote, node}
+      end
+    end
+  end
+
+  # Route the post-append kill to the node that owns the run (WS5), via the pure
+  # `resolve_kill_target/3`. `:local` calls `RunExecution.kill_local/2`
+  # synchronously (the single-node path, byte-identical to pre-WS5).
+  # `{:remote, node}` fire-and-forgets a cast to that node's `RunTerminator`,
+  # which calls `kill_local/2` there — the durable decision is the guarantee, so
+  # a bounded cross-node `call` would only add a timeout failure surface for zero
+  # correctness gain (matching `Cron.Owner`'s follower cast, not its `call`-based
+  # `trigger/2`). `:unroutable` is a no-op (owner gone/disconnected — WS3 reclaim
+  # covers it). The tenant pin and the registry-miss no-op both live in
+  # `RunExecution.kill_local/2`.
+  defp kill_if_live(%WorkflowRun{} = run) do
+    case resolve_kill_target(run.claimed_by, WorkflowLease.node_identity(), Cluster.nodes()) do
+      :local ->
+        RunExecution.kill_local(run.id, run.tenant_id)
+
+      {:remote, node} ->
+        Logger.debug("[Cancellation] routing kill for #{run.id} to #{node}")
+        GenServer.cast({RunTerminator, node}, {:kill, run.id, run.tenant_id})
+
+      :unroutable ->
         :ok
     end
   end
 
-  # Reload for the authoritative post-cancel state (in-memory fallback on a
-  # freak read failure — the durable cancel has already committed), broadcast
-  # in the runner's backstop shape, return the run. WorkflowsLive refreshes
-  # synchronously today; the broadcast exists for a live-update follow-up.
-  defp finish(run, tenant, actor) do
-    reloaded = reload(run, tenant, actor)
-
+  # Broadcast the post-cancel terminal in the runner's backstop shape and return
+  # the run. Takes the already-reloaded struct — `cancel_live/4` reloads once
+  # after the terminal commits and reuses it for both routing and this
+  # broadcast. WorkflowsLive refreshes synchronously today; the broadcast exists
+  # for a live-update follow-up.
+  defp finish(%WorkflowRun{} = reloaded) do
     RunPubSub.broadcast(
       reloaded.id,
       {:run_cancelled, reloaded.id,

@@ -63,6 +63,8 @@ defmodule JidoClaw.Orchestration.RunExecution do
   death before this seam existed. No owner-monitor.
   """
 
+  require Logger
+
   @registry JidoClaw.Orchestration.RunRegistry
   @task_supervisor JidoClaw.Orchestration.RunTaskSupervisor
 
@@ -140,6 +142,36 @@ defmodule JidoClaw.Orchestration.RunExecution do
     case Registry.lookup(@registry, to_string(run_id)) do
       [{pid, tenant_id}] -> {:ok, pid, tenant_id}
       [] -> :error
+    end
+  end
+
+  @doc """
+  Kill the local executor for `run_id` iff the registry value (the tenant the
+  executor registered with) matches `tenant_id` — a defensive cross-tenant
+  guard. A tenant mismatch logs a warning and does **not** kill; a registry
+  miss is a no-op (the cancel already landed durably). The single source of
+  truth for the tenant-pinned local kill, called by both the local cancel path
+  (`Cancellation.kill_if_live/1`'s `:local` branch) and the per-node
+  `RunTerminator` (the remote-routed branch). Always `:ok`.
+  """
+  @spec kill_local(String.t(), term()) :: :ok
+  def kill_local(run_id, tenant_id) do
+    case lookup(run_id) do
+      {:ok, pid, ^tenant_id} ->
+        Process.exit(pid, :kill)
+        :ok
+
+      {:ok, pid, other_tenant} ->
+        Logger.warning(
+          "[RunExecution] registry tenant mismatch for run #{run_id}: " <>
+            "registered #{inspect(other_tenant)}, run has #{inspect(tenant_id)} — " <>
+            "not killing #{inspect(pid)}"
+        )
+
+        :ok
+
+      :error ->
+        :ok
     end
   end
 end
