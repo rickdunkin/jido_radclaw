@@ -4,11 +4,21 @@
 Depends on: WS4 (the leader + `leader?/0` + `leader_changed` telemetry).
 Spun out of WS4 per "no deferrals → its own doc."*
 
-> **Status: design (not yet built).** WS4 closed the *always-on-tree* cron case
-> (the `:system_job` consolidator tick — leader-gated). WS4a closes the
-> **orthogonal** case WS4 deliberately did not touch: user cron jobs, which are
-> node-local and CLI-loaded, so under clustering they neither multi-fire via the
-> always-on tree (WS4's concern) nor run exactly-once cluster-wide.
+> **Status: shipped (single-BEAM).** Delivered as `JidoClaw.Cron.Owner` — the
+> leader loads/schedules every non-disabled `cron_jobs` row for every active
+> tenant (boot + `leader_changed` + periodic reconcile); followers run none.
+> Write tools/commands (`schedule_task`, `unschedule_task`, `/cron
+> add|remove|disable`) are DB-write-then-`notify_changed`; `/cron trigger` routes
+> through `Cron.Owner.trigger/2` (reconcile-then-fire, fail-closed); list views
+> read persisted rows. The eager per-REPL `load_cron_jobs` is gone. The only
+> piece not provable single-BEAM — the cross-BEAM `:peer` failover proof — is
+> tracked as a WS6 test-plan row, exactly as WS1/WS3/WS4's cross-BEAM proofs are.
+>
+> WS4 closed the *always-on-tree* cron case (the `:system_job` consolidator tick
+> — leader-gated). WS4a closes the **orthogonal** case WS4 deliberately did not
+> touch: user cron jobs, which were node-local and CLI-loaded, so under
+> clustering they neither multi-fired via the always-on tree (WS4's concern) nor
+> ran exactly-once cluster-wide.
 
 ## Why this is *not* WS4
 

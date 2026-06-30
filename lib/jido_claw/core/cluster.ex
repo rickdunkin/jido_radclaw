@@ -110,6 +110,18 @@ defmodule JidoClaw.Cluster do
   @spec leader?() :: boolean()
   def leader?, do: leader_module().leader?()
 
+  @doc """
+  The current leader node (single node ⇒ the local node; clustered ⇒ the
+  elected node, or `nil` when leadership is indeterminate).
+
+  The cross-node routing facade for run-less singletons like
+  `JidoClaw.Cron.Owner` (a follower casts a reconcile/trigger to
+  `{Owner, Cluster.leader()}`). Delegates to the same `:cluster_leader_module`
+  seam as `leader?/0`, so it is swappable in tests.
+  """
+  @spec leader() :: node() | nil
+  def leader, do: leader_module().leader()
+
   defp leader_module do
     Application.get_env(:jido_claw, :cluster_leader_module, JidoClaw.Cluster.Leader)
   end

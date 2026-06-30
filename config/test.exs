@@ -30,6 +30,11 @@ config :jido_claw, :reclaim_pooler,
   poll_interval_ms: 15_000,
   initial_delay_ms: 5_000
 
+# WS4a user-cron Owner off in test so the boot singleton can't collide with the
+# `start_supervised`-started Owners the owner_test drives explicitly (those pass
+# `enabled?: true`), nor touch the SQL sandbox outside the test owner.
+config :jido_claw, :cron_owner, enabled?: false
+
 # Output shaping off in test so the existing 10KB-truncation tests stay
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false

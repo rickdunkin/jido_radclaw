@@ -12,8 +12,15 @@ defmodule JidoClaw.ClusterLeaderStub do
 
   A single configurable module — not a `Leader`/`Follower` pair — so it cannot
   read as a `behaviour_candidate` smell.
+
+  `leader/0` (WS4a's `Cluster.leader/0` facade) returns the configured
+  `:cluster_leader_stub_node` (default `Node.self()`), so a follower-routing test
+  can point `{Owner, leader_node}` at the local Owner.
   """
 
   @spec leader?() :: boolean()
   def leader?, do: Application.get_env(:jido_claw, :cluster_leader_stub_result, true)
+
+  @spec leader() :: node()
+  def leader, do: Application.get_env(:jido_claw, :cluster_leader_stub_node, Node.self())
 end

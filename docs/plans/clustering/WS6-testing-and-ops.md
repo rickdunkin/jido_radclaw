@@ -96,6 +96,12 @@ Lease behavior must be visible in the dashboard and telemetry:
   promptly via the terminator route, `run_cancelled` already durable (WS5).
 - **Leader election** — exactly one leader across peers; re-elects on leader death
   (WS4).
+- **User-cron exactly-once failover** — two `:peer` nodes; exactly one runs a
+  given user job (the leader's `Cron.Owner`); kill the leader, assert the
+  survivor's Owner reloads within the election + reconcile window and continues
+  firing, with no double-fire (WS4a). The only WS4a behavior not provable
+  single-BEAM; rides this harness exactly as the WS1/WS3/WS4 cross-BEAM proofs
+  do.
 
 ## Cross-references
 
@@ -104,4 +110,4 @@ Lease behavior must be visible in the dashboard and telemetry:
 - Embedding counter — `embeddings/rate_pacer.ex`; design `PLAN-v0.6-memory.md:1731-1834`.
 - Observe surface — AR-2 §10.2 (`AR-2-COMPOSER-PLAN.md:906-926`); gust DB-backed
   payoff `gust/FEATURES-WORTH-BORROWING.md:127-128`.
-- Validates: WS1–WS5.
+- Validates: WS1–WS5, WS4a.

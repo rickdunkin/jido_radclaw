@@ -11,8 +11,8 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.CLI.Setup, as: CLISetup
   alias JidoClaw.Cron.Job, as: CronJob
   alias JidoClaw.Cron.NextRun
+  alias JidoClaw.Cron.Owner, as: CronOwner
   alias JidoClaw.Cron.Scheduler, as: CronScheduler
-  alias JidoClaw.Cron.Worker, as: CronWorker
   alias JidoClaw.Display.StatusBar
   alias JidoClaw.Display.SwarmBox
   alias JidoClaw.Memory.Block, as: MemoryBlock
@@ -551,13 +551,15 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/cron remove " <> id, state) do
     id = String.trim(id)
-    CronScheduler.unschedule("default", id)
     actor = Actor.system("default")
 
     case CronJob.by_job_id(id, tenant: "default", actor: actor) do
       {:ok, job} -> _ = CronJob.remove(job, tenant: "default", actor: actor)
       _ -> :ok
     end
+
+    # Row removed; the leader's Owner prunes the worker.
+    CronOwner.notify_changed("default")
 
     IO.puts("")
     IO.puts("  \e[32m✓\e[0m Removed job '\e[1m#{id}\e[0m'")
@@ -567,22 +569,37 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/cron trigger " <> id, state) do
     id = String.trim(id)
-    CronScheduler.trigger("default", id)
-    IO.puts("")
-    IO.puts("  \e[32m✓\e[0m Triggered job '\e[1m#{id}\e[0m'")
-    IO.puts("")
+
+    # Through the leader's Owner (reconcile-then-fire). Print "Triggered" only on
+    # :ok — a dropped trigger has no reconcile backstop, so it must not look like
+    # success.
+    case CronOwner.trigger("default", id) do
+      :ok ->
+        IO.puts("")
+        IO.puts("  \e[32m✓\e[0m Triggered job '\e[1m#{id}\e[0m'")
+        IO.puts("")
+
+      {:error, reason} ->
+        IO.puts("")
+        IO.puts("  \e[31m✗\e[0m Could not trigger '\e[1m#{id}\e[0m': #{inspect(reason)}")
+        IO.puts("")
+    end
+
     {:ok, state}
   end
 
   def handle("/cron disable " <> id, state) do
     id = String.trim(id)
-    CronWorker.disable("default", id)
     actor = Actor.system("default")
 
     case CronJob.by_job_id(id, tenant: "default", actor: actor) do
       {:ok, job} -> _ = CronJob.disable(job, tenant: "default", actor: actor)
       _ -> :ok
     end
+
+    # Row disabled; the leader's Owner prunes the worker (disabled rows are
+    # excluded from the desired set).
+    CronOwner.notify_changed("default")
 
     IO.puts("")
     IO.puts("  \e[32m✓\e[0m Disabled job '\e[1m#{id}\e[0m'")
@@ -605,7 +622,13 @@ defmodule JidoClaw.CLI.Commands do
   def handle("/gates", state), do: Approvals.list(state)
 
   def handle("/cron", state) do
-    jobs = CronScheduler.list_jobs("default")
+    # Read persisted rows (the source of truth) — on a follower no workers run
+    # locally, so a worker-backed list would show nothing.
+    jobs =
+      case CronJob.for_tenant_all(tenant: "default", actor: Actor.system("default")) do
+        {:ok, rows} -> rows
+        {:error, _} -> []
+      end
 
     IO.puts("")
     IO.puts("  \e[1mCron Jobs\e[0m")
@@ -1019,7 +1042,6 @@ defmodule JidoClaw.CLI.Commands do
   defp format_cron_schedule({:every, ms}) when ms >= 60_000, do: "every #{div(ms, 60_000)}m"
   defp format_cron_schedule({:every, ms}), do: "every #{div(ms, 1000)}s"
   defp format_cron_schedule({:at, dt}), do: "at: #{DateTime.to_iso8601(dt)}"
-  defp format_cron_schedule(other), do: inspect(other)
 
   defp format_relative_time(dt) do
     diff = DateTime.diff(dt, DateTime.utc_now(), :second)
@@ -1623,20 +1645,12 @@ defmodule JidoClaw.CLI.Commands do
   # -- /cron add helpers --
 
   defp add_cron_job(state, id, schedule, task) do
-    # Validate before scheduling — same discipline as the schedule_task tool.
-    # An invalid cron must not start a worker AND persist an active bad row
-    # (whose worker-side disable no-ops because the row doesn't exist yet).
+    # Validate before persisting — same discipline as the schedule_task tool. An
+    # invalid cron must not persist a row (the row is the source of truth; the
+    # leader's Owner schedules the worker from it via notify_changed).
     case parse_cron_schedule(schedule) do
-      {:ok, schedule_tuple} ->
-        opts = [id: id, task: task, schedule: schedule_tuple, mode: :main]
-
-        case CronScheduler.schedule("default", opts) do
-          {:ok, ^id, _pid} -> persist_cron_job(id, task, schedule, schedule_tuple)
-          {:error, reason} -> print_cron_schedule_error(reason)
-        end
-
-      {:error, reason} ->
-        print_cron_schedule_error(reason)
+      {:ok, schedule_tuple} -> persist_cron_job(id, task, schedule, schedule_tuple)
+      {:error, reason} -> print_cron_schedule_error(reason)
     end
 
     {:ok, state}
@@ -1678,8 +1692,12 @@ defmodule JidoClaw.CLI.Commands do
     }
 
     case CronJob.upsert(persist_attrs, tenant: "default", actor: Actor.system("default")) do
-      {:ok, _} -> print_cron_persist_ok(id, task, schedule)
-      {:error, err} -> print_cron_persist_warn(err)
+      {:ok, _} ->
+        CronOwner.notify_changed("default")
+        print_cron_persist_ok(id, task, schedule)
+
+      {:error, err} ->
+        print_cron_persist_warn(err)
     end
   end
 
@@ -1714,17 +1732,21 @@ defmodule JidoClaw.CLI.Commands do
     {:ok, state}
   end
 
+  # Renders a persisted Cron.Job row (the source of truth), not a worker — the
+  # enabled/disabled state comes from disabled_at, run_count/last_run_at from the
+  # durability counters. next_run is runtime state (not persisted), so it is
+  # recomputed for an enabled :cron row for display only.
   defp print_cron_job(job) do
-    status_icon = cron_status_icon(job.status)
-    schedule_str = format_cron_schedule(job.schedule)
-    next_str = if job.next_run, do: " next: #{format_relative_time(job.next_run)}", else: ""
+    status_icon = cron_status_icon(job)
+    schedule = CronScheduler.hydrate_schedule(job.schedule_kind, job.schedule_value)
+    schedule_str = format_cron_schedule(schedule)
 
     IO.puts(
-      "  #{status_icon} \e[1m#{job.id}\e[0m  #{schedule_str}#{cron_tz_label(job)}#{next_str}"
+      "  #{status_icon} \e[1m#{job.job_id}\e[0m  #{schedule_str}#{cron_tz_label(job)}#{cron_next_label(job, schedule)}"
     )
 
     IO.puts(
-      "    \e[2m\"#{job.task}\"\e[0m  #{cron_target_label(job)}failures: #{job.failure_count}"
+      "    \e[2m\"#{job.task}\"\e[0m  #{cron_target_label(job)}runs: #{job.run_count}#{cron_last_run_label(job)}"
     )
   end
 
@@ -1732,12 +1754,27 @@ defmodule JidoClaw.CLI.Commands do
   defp cron_target_label(%{target: target}) when not is_nil(target), do: "target: #{target}  "
   defp cron_target_label(_), do: ""
 
-  # Non-UTC only — keeps the default /cron listing clean (worker state carries
-  # :timezone). Mirrors the ListScheduledTasks tool's tz segment.
+  # Non-UTC only — keeps the default /cron listing clean. Mirrors the
+  # ListScheduledTasks tool's tz segment.
   defp cron_tz_label(%{timezone: tz}) when is_binary(tz) and tz != "Etc/UTC", do: "  tz: #{tz}"
   defp cron_tz_label(_), do: ""
 
-  defp cron_status_icon(:active), do: "\e[32m●\e[0m"
-  defp cron_status_icon(:disabled), do: "\e[31m✗\e[0m"
-  defp cron_status_icon(_), do: "\e[2m○\e[0m"
+  defp cron_next_label(%{disabled_at: %DateTime{}}, _schedule), do: ""
+
+  defp cron_next_label(job, {:cron, expr}) do
+    case NextRun.compute_next_cron_utc(expr, job.timezone) do
+      {:ok, dt} -> " next: #{format_relative_time(dt)}"
+      {:error, _} -> ""
+    end
+  end
+
+  defp cron_next_label(_job, _schedule), do: ""
+
+  defp cron_last_run_label(%{last_run_at: %DateTime{} = dt}),
+    do: "  last: #{Calendar.strftime(dt, "%Y-%m-%d %H:%M")}"
+
+  defp cron_last_run_label(_), do: ""
+
+  defp cron_status_icon(%{disabled_at: %DateTime{}}), do: "\e[31m✗\e[0m"
+  defp cron_status_icon(_), do: "\e[32m●\e[0m"
 end

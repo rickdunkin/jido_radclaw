@@ -140,16 +140,27 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
-  defp hydrate_schedule(:cron, expr), do: {:cron, expr}
+  @doc """
+  Hydrate a persisted `(schedule_kind, schedule_value)` pair into the runtime
+  schedule tuple (`{:cron, expr}` | `{:every, ms}` | `{:at, dt}`).
 
-  defp hydrate_schedule(:every, ms_str) do
+  Shared by the worker build path (`build_persistent_opts/1`) and the
+  row-backed list views (CLI `/cron`, the `list_scheduled_tasks` tool), so the
+  display reads the same shape the worker runs. A malformed `:every`/`:at`
+  value falls back to `{:cron, value}` — the worker rejects that as a config
+  error rather than firing a silently-wrong schedule.
+  """
+  @spec hydrate_schedule(atom(), String.t() | nil) :: {atom(), term()}
+  def hydrate_schedule(:cron, expr), do: {:cron, expr}
+
+  def hydrate_schedule(:every, ms_str) do
     case Integer.parse(ms_str || "") do
       {ms, _} when ms > 0 -> {:every, ms}
       _ -> {:cron, ms_str || ""}
     end
   end
 
-  defp hydrate_schedule(:at, iso) do
+  def hydrate_schedule(:at, iso) do
     case DateTime.from_iso8601(iso || "") do
       {:ok, dt, _} -> {:at, dt}
       _ -> {:cron, ""}
@@ -174,6 +185,91 @@ defmodule JidoClaw.Cron.Scheduler do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Schedule one persisted `Cron.Job` row — the per-job form of the reload path,
+  used by `JidoClaw.Cron.Owner`'s reconcile to bring a missing worker up.
+
+  Reuses `build_persistent_opts/1` (so an unbuildable row — `:workflow` with no
+  `workflow_name`, `:mfa`/`:system_job` with a bad module — is logged and
+  skipped rather than booting a doomed worker). Idempotent: a benign
+  `{:already_started, _}` race with a concurrent reconcile is treated as `:ok`
+  — the fingerprint pass (`changed?/2`) owns *config changes*, not creation.
+  """
+  @spec schedule_persisted(String.t(), Job.t()) :: :ok | {:error, term()}
+  def schedule_persisted(tenant_id, %Job{} = job) do
+    case build_persistent_opts(job) do
+      {:ok, opts} ->
+        case schedule(tenant_id, opts) do
+          {:ok, _id, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        Logger.warning("[Cron] Skipping invalid persisted job #{job.job_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Whether a persisted `Cron.Job` row's config differs from the running
+  `Cron.Worker`'s state — the reconcile restart decision.
+
+  Compares only the *config* fields (schedule, task, mode, target,
+  workflow_name, workflow_input, mfa, timezone), never runtime
+  status/failure_count/next_run/last_run. Returns `{:error, _}` for an
+  unbuildable desired row so the caller can KEEP the working worker rather than
+  unschedule it before a reschedule that would fail.
+  """
+  @spec changed?(Job.t(), Worker.t()) :: {:ok, boolean()} | {:error, term()}
+  def changed?(%Job{} = job, %Worker{} = worker) do
+    case desired_fingerprint(job) do
+      {:ok, desired} -> {:ok, desired != worker_fingerprint(worker)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  The comparable config fingerprint of a persisted `Cron.Job` row, or
+  `{:error, _}` when the row cannot be built into worker opts.
+  """
+  @spec desired_fingerprint(Job.t()) :: {:ok, map()} | {:error, term()}
+  def desired_fingerprint(%Job{} = job) do
+    case build_persistent_opts(job) do
+      {:ok, opts} -> {:ok, fingerprint_from_opts(opts)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The config projection both sides reduce to. `build_persistent_opts/1`
+  # already hydrates the schedule and omits :mfa when nil, so a nil-mfa row and
+  # a nil-mfa worker compare equal.
+  defp fingerprint_from_opts(opts) do
+    %{
+      schedule: Keyword.get(opts, :schedule),
+      task: Keyword.get(opts, :task),
+      mode: Keyword.get(opts, :mode),
+      target: Keyword.get(opts, :target),
+      workflow_name: Keyword.get(opts, :workflow_name),
+      workflow_input: Keyword.get(opts, :workflow_input),
+      mfa: Keyword.get(opts, :mfa),
+      timezone: Keyword.get(opts, :timezone)
+    }
+  end
+
+  defp worker_fingerprint(%Worker{} = w) do
+    %{
+      schedule: w.schedule,
+      task: w.task,
+      mode: w.mode,
+      target: w.target,
+      workflow_name: w.workflow_name,
+      workflow_input: w.workflow_input,
+      mfa: w.mfa,
+      timezone: w.timezone
+    }
   end
 
   @spec unschedule(String.t(), String.t()) :: :ok | {:error, :not_found}
@@ -211,9 +307,35 @@ defmodule JidoClaw.Cron.Scheduler do
     end
   end
 
-  @spec trigger(String.t(), String.t()) :: :ok
+  @doc """
+  Every locally-running USER cron worker, as `{tenant_id, job_id}` pairs.
+
+  A `Registry.select` over `JidoClaw.TenantRegistry` for `{:cron, t, id}` keys,
+  rejecting the reserved `"system"` tenant (whose only worker is the WS4-managed
+  `:system_job` consolidator tick). Pure local runtime state — **no Postgres** —
+  so `JidoClaw.Cron.Owner`'s follower-drop path sheds workers even when the DB
+  is unreachable.
+  """
+  @spec local_user_cron_workers() :: [{String.t(), String.t()}]
+  def local_user_cron_workers do
+    JidoClaw.TenantRegistry
+    |> Registry.select([{{{:cron, :"$1", :"$2"}, :_, :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.reject(fn {tenant_id, _job_id} -> tenant_id == "system" end)
+  end
+
+  @doc """
+  Fire a job's worker now. Returns `{:error, :not_found}` when no worker is
+  registered (so `JidoClaw.Cron.Owner.trigger/2` reports an honest result),
+  else delegates to the worker's manual-trigger cast.
+  """
+  @spec trigger(String.t(), String.t()) :: :ok | {:error, :not_found}
   def trigger(tenant_id, job_id) do
-    Worker.trigger(tenant_id, job_id)
+    name = {:via, Registry, {JidoClaw.TenantRegistry, {:cron, tenant_id, job_id}}}
+
+    case GenServer.whereis(name) do
+      nil -> {:error, :not_found}
+      _pid -> Worker.trigger(tenant_id, job_id)
+    end
   end
 
   @doc """

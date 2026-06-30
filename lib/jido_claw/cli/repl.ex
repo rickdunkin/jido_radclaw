@@ -15,7 +15,6 @@ defmodule JidoClaw.CLI.Repl do
   alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Conversations.SessionId
-  alias JidoClaw.Cron.Scheduler, as: CronScheduler
   alias JidoClaw.FrontDoor
   alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
   alias JidoClaw.Reasoning.StrategyRegistry
@@ -245,7 +244,8 @@ defmodule JidoClaw.CLI.Repl do
     profile = resolve_profile(session_id)
     Display.set_profile(profile)
 
-    load_cron_jobs(project_dir)
+    # User cron is loaded cluster-wide by JidoClaw.Cron.Owner (the leader owns
+    # every persisted row), not eagerly per-REPL — WS4a.
 
     %__MODULE__{
       agent_pid: pid,
@@ -309,13 +309,6 @@ defmodule JidoClaw.CLI.Repl do
       context_window,
       model_meta
     )
-  end
-
-  defp load_cron_jobs(project_dir) do
-    case CronScheduler.load_persistent_jobs("default", project_dir) do
-      {:ok, 0} -> :ok
-      {:ok, n} -> IO.puts("  \e[32m✓\e[0m  cron        \e[1m#{n} jobs loaded\e[0m")
-    end
   end
 
   defp loop(state) do

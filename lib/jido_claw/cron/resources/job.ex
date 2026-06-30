@@ -60,6 +60,7 @@ defmodule JidoClaw.Cron.Job do
     define(:enable, action: :enable)
     define(:record_run, action: :record_run)
     define(:for_tenant, action: :for_tenant)
+    define(:for_tenant_all, action: :for_tenant_all)
   end
 
   actions do
@@ -83,6 +84,12 @@ defmodule JidoClaw.Cron.Job do
         :mfa_function,
         :mfa_args,
         :metadata,
+        # Clearing disabled_at on conflict is what makes re-scheduling an existing
+        # job_id re-enable a previously auto-disabled row (WS4a source-of-truth
+        # model). Omitted fields are preserved on conflict, so it must be in the
+        # whitelist; the `set_attribute(:disabled_at, nil)` change below writes
+        # the value.
+        :disabled_at,
         :updated_at
       ])
 
@@ -101,6 +108,12 @@ defmodule JidoClaw.Cron.Job do
         :mfa_args,
         :metadata
       ])
+
+      # (Re)scheduling a job_id clears any auto-disable so the Owner reloads it —
+      # otherwise `for_tenant` (is_nil(disabled_at)) keeps filtering it out. Paired
+      # with `:disabled_at` in upsert_fields so the cleared value is written on
+      # conflict, not just on insert.
+      change(set_attribute(:disabled_at, nil))
 
       # Defense in depth: a bad row can't silently always-fail at dispatch.
       # `where:` ANDs its conditions, so the MFA requirement is two separate
@@ -156,6 +169,14 @@ defmodule JidoClaw.Cron.Job do
 
     read :for_tenant do
       filter(expr(is_nil(disabled_at)))
+      prepare(build(sort: [inserted_at: :asc]))
+    end
+
+    # Like :for_tenant but WITHOUT the disabled filter — the read for list views
+    # (CLI /cron, list_scheduled_tasks) so a disabled job still shows (with its
+    # disabled state) rather than vanishing. The Owner's desired-state read stays
+    # :for_tenant (non-disabled only).
+    read :for_tenant_all do
       prepare(build(sort: [inserted_at: :asc]))
     end
   end

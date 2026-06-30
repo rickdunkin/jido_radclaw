@@ -107,7 +107,9 @@ defmodule JidoClaw.CLI.CommandsCronTest do
         end)
 
       assert output =~ "Scheduled"
-      assert worker_registered?(id)
+      # WS4a: /cron add persists the row (the source of truth) and hands off to
+      # the leader's Cron.Owner; with the Owner disabled in test no local worker
+      # starts, so we assert the persisted row, not a worker.
       assert {:ok, row} = CronJob.by_job_id(id, tenant: @tenant, actor: Actor.system(@tenant))
       assert row.schedule_kind == :cron
       # CLI add omits timezone -> resource default applies.
@@ -116,31 +118,38 @@ defmodule JidoClaw.CLI.CommandsCronTest do
   end
 
   describe "/cron timezone display" do
-    test "renders a non-UTC job's tz and omits UTC's" do
+    test "renders a non-UTC job's tz and omits UTC's (from persisted rows)" do
       ny = "cli-ny-#{System.unique_integer([:positive])}"
       utc = "cli-utc-#{System.unique_integer([:positive])}"
+      actor = Actor.system(@tenant)
 
-      {:ok, ^ny, _} =
-        Scheduler.schedule(@tenant,
-          id: ny,
-          task: "t",
-          mode: :main,
-          schedule: {:every, 86_400_000},
-          timezone: "America/New_York"
+      # WS4a: /cron reads persisted rows, not local workers.
+      {:ok, _} =
+        CronJob.upsert(
+          %{
+            job_id: ny,
+            task: "t",
+            mode: :main,
+            schedule_kind: :every,
+            schedule_value: "86400000",
+            timezone: "America/New_York"
+          },
+          tenant: @tenant,
+          actor: actor
         )
 
-      {:ok, ^utc, _} =
-        Scheduler.schedule(@tenant,
-          id: utc,
-          task: "t",
-          mode: :main,
-          schedule: {:every, 86_400_000}
+      {:ok, _} =
+        CronJob.upsert(
+          %{
+            job_id: utc,
+            task: "t",
+            mode: :main,
+            schedule_kind: :every,
+            schedule_value: "86400000"
+          },
+          tenant: @tenant,
+          actor: actor
         )
-
-      on_exit(fn ->
-        _ = Scheduler.unschedule(@tenant, ny)
-        _ = Scheduler.unschedule(@tenant, utc)
-      end)
 
       output =
         capture_io(fn ->

@@ -68,7 +68,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.NextRun
-  alias JidoClaw.Cron.Scheduler
+  alias JidoClaw.Cron.Owner, as: CronOwner
   alias JidoClaw.Skills
 
   @impl Jido.Action
@@ -96,24 +96,13 @@ defmodule JidoClaw.Tools.ScheduleTask do
     end
   end
 
+  # Persist first (the row is the source of truth), then hand off to the leader's
+  # Cron.Owner. Validation already ran in run/2's `with`, so an invalid schedule
+  # never reaches here. On a single node / leader notify_changed schedules the
+  # worker synchronously; on a follower it casts to the leader (the durable row +
+  # reconcile backstop is the guarantee). Re-using a job_id updates the row — and
+  # because :upsert clears disabled_at, re-scheduling a disabled id re-enables it.
   defp schedule_and_persist(req) do
-    opts =
-      [
-        id: req.id,
-        task: req.task,
-        schedule: req.schedule_tuple,
-        mode: req.mode,
-        timezone: req.timezone
-      ] ++
-        Map.to_list(req.target_attrs)
-
-    case Scheduler.schedule(req.tenant_id, opts) do
-      {:ok, _id, _pid} -> persist(req)
-      {:error, reason} -> {:error, "Failed to schedule task: #{inspect(reason)}"}
-    end
-  end
-
-  defp persist(req) do
     {kind, value} = persistable_schedule(req.schedule_tuple)
 
     persist_attrs =
@@ -130,8 +119,12 @@ defmodule JidoClaw.Tools.ScheduleTask do
       )
 
     case Job.upsert(persist_attrs, tenant: req.tenant_id, actor: req.actor) do
-      {:ok, _job} -> {:ok, %{result: success_message(req)}}
-      {:error, reason} -> {:error, "Failed to persist job: #{inspect(reason)}"}
+      {:ok, _job} ->
+        CronOwner.notify_changed(req.tenant_id)
+        {:ok, %{result: success_message(req)}}
+
+      {:error, reason} ->
+        {:error, "Failed to persist job: #{inspect(reason)}"}
     end
   end
 

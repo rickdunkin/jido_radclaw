@@ -18,6 +18,7 @@ defmodule JidoClaw.Application do
   require Logger
 
   alias JidoClaw.Core.DependencyPatches
+  alias JidoClaw.Cron.Owner, as: CronOwner
   alias JidoClaw.Embeddings.BootGuard
   alias JidoClaw.MCP.Consumer, as: MCPConsumer
   alias JidoClaw.Security.Redaction.LogRedactor
@@ -279,6 +280,13 @@ defmodule JidoClaw.Application do
         restart: :transient
       },
 
+      # WS4a cluster-wide user-cron owner: the leader loads/schedules every
+      # non-disabled cron_jobs row for every active tenant; followers run none.
+      # Placed after TenantRuntimeSupervisor (Tenant.Manager / cron_sup infra)
+      # and co-located with the boot-reconcilers above. Serve-mode/test gated
+      # (absent under :mcp; the suite starts its own under start_supervised).
+      cron_owner_children(),
+
       # Solutions engine — Store + Reputation GenServers retired
       # in v0.6.1; Solutions live in Postgres now (see
       # JidoClaw.Solutions.Solution and JidoClaw.Solutions.Reputation
@@ -329,6 +337,23 @@ defmodule JidoClaw.Application do
          Application.get_env(:jido_claw, :mcp_consumer_enabled?, true)
        ) do
       [MCPConsumer]
+    else
+      []
+    end
+  end
+
+  # WS4a user-cron owner — gated off in MCP serve mode (stdio is JSON-RPC) and
+  # in test (the suite starts its own under start_supervised). Present otherwise
+  # (`:cli`/`:gateway`/`:both`). The pure `Owner.start?/2` keeps the gate
+  # testable; the Owner's `init/1` self-gate is the belt-and-suspenders.
+  defp cron_owner_children do
+    enabled? =
+      :jido_claw
+      |> Application.get_env(:cron_owner, [])
+      |> Keyword.get(:enabled?, true)
+
+    if CronOwner.start?(Application.get_env(:jido_claw, :serve_mode), enabled?) do
+      [CronOwner]
     else
       []
     end

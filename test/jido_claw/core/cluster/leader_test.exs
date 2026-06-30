@@ -123,6 +123,8 @@ defmodule JidoClaw.Cluster.LeaderTest do
     test "leader/0 returns the local node with clustering disabled" do
       Application.put_env(:jido_claw, :cluster_enabled, false)
       assert Leader.leader() == Cluster.local_node()
+      # Façade delegates to the real module (no stub installed).
+      assert Cluster.leader() == Cluster.local_node()
     end
   end
 
@@ -133,6 +135,19 @@ defmodule JidoClaw.Cluster.LeaderTest do
 
       assert Leader.leader?() == false
       assert Leader.leader() == nil
+      # The Cluster.leader/0 façade is also nil (indeterminate leadership).
+      assert Cluster.leader() == nil
+    end
+  end
+
+  describe "Cluster.leader/0 façade — seam" do
+    test "delegates to the configured :cluster_leader_module" do
+      Application.put_env(:jido_claw, :cluster_leader_module, JidoClaw.ClusterLeaderStub)
+      Application.put_env(:jido_claw, :cluster_leader_stub_node, :owner@elsewhere)
+
+      on_exit(fn -> Application.delete_env(:jido_claw, :cluster_leader_stub_node) end)
+
+      assert Cluster.leader() == :owner@elsewhere
     end
   end
 

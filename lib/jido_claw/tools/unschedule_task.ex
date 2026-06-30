@@ -18,7 +18,7 @@ defmodule JidoClaw.Tools.UnscheduleTask do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
-  alias JidoClaw.Cron.Scheduler
+  alias JidoClaw.Cron.Owner, as: CronOwner
 
   @impl Jido.Action
   def run(params, context) do
@@ -30,38 +30,48 @@ defmodule JidoClaw.Tools.UnscheduleTask do
 
     id = String.trim(params.id)
 
-    sched_result = Scheduler.unschedule(tenant_id, id)
-    persist_result = remove_persistent(tenant_id, id, actor)
+    # The row is the source of truth: remove it, then hand off to the leader's
+    # Cron.Owner to prune the worker (which lives on the leader, never a follower).
+    case remove_persistent(tenant_id, id, actor) do
+      :ok ->
+        CronOwner.notify_changed(tenant_id)
+        {:ok, %{result: "Removed task '#{id}' from the persistent store."}}
 
-    case {sched_result, persist_result} do
-      {:ok, :ok} ->
-        {:ok, %{result: "Removed task '#{id}' from scheduler and persistent store."}}
+      {:error, :not_found} ->
+        {:ok, %{result: "Task '#{id}' not found in the persistent store."}}
 
-      {:ok, {:error, :not_found}} ->
-        {:ok, %{result: "Removed task '#{id}' from scheduler (was not in persistent store)."}}
-
-      {{:error, :not_found}, :ok} ->
-        {:ok, %{result: "Task '#{id}' was not running but removed from persistent store."}}
-
-      {{:error, :not_found}, {:error, :not_found}} ->
-        {:ok, %{result: "Task '#{id}' not found in scheduler or persistent store."}}
-
-      {_, _} ->
-        {:ok, %{result: "Cleaned up task '#{id}'."}}
+      {:error, {_stage, reason}} ->
+        {:error, "Failed to remove task '#{id}': #{inspect(reason)}"}
     end
   end
 
   defp remove_persistent(tenant_id, id, actor) do
     case Job.by_job_id(id, tenant: tenant_id, actor: actor) do
-      {:ok, job} ->
-        case Job.remove(job, tenant: tenant_id, actor: actor) do
-          :ok -> :ok
-          {:ok, _} -> :ok
-          err -> err
-        end
-
-      {:error, _} ->
-        {:error, :not_found}
+      {:ok, job} -> do_remove(job, tenant_id, actor)
+      {:error, reason} -> read_error(reason)
     end
   end
+
+  defp do_remove(job, tenant_id, actor) do
+    case Job.remove(job, tenant: tenant_id, actor: actor) do
+      :ok -> :ok
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:remove_failed, reason}}
+    end
+  end
+
+  # A get? read surfaces not-found either bare or wrapped in Ash.Error.Invalid;
+  # both mean "gone", anything else is a real read failure worth surfacing.
+  defp read_error(reason) do
+    if not_found_error?(reason),
+      do: {:error, :not_found},
+      else: {:error, {:read_failed, reason}}
+  end
+
+  defp not_found_error?(%Ash.Error.Query.NotFound{}), do: true
+
+  defp not_found_error?(%Ash.Error.Invalid{errors: errors}) when is_list(errors),
+    do: Enum.any?(errors, &not_found_error?/1)
+
+  defp not_found_error?(_), do: false
 end
