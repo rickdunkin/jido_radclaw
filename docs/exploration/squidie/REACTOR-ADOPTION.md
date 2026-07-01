@@ -24,13 +24,14 @@ diverged from the sketch; **Phase 5 (read-models + graph viz: T2-1, T2-2,
 T2-3, T3-1/T3-2) shipped 2026-06-10** — see the Phase 5 block below. What
 shipped beyond the durable spine:
 
-- **§4.11 claim/fencing data model** — `claimed_by` / `claim_expires_at` /
+- **§4.11 claim/fencing data model + behavior** — `claimed_by` / `claim_expires_at` /
   `claim_token` columns + the two **global** (`all_tenants?: true`) scan
-  indexes landed on `WorkflowRun`. The Pooler/Lease *implementation*
-  (`:claim_next`, heartbeat, reclaim — the multi-node story) remains
-  deferred — columns only, no behavior. **Kill-based single-node live-run
-  cancellation shipped separately 2026-06-10** (next bullet); the lease is
-  what would make it cluster-correct.
+  indexes landed on `WorkflowRun` (2026-06-10), and the Pooler/Lease
+  *implementation* (`:claim_next`, heartbeat/renew, reclaim, `:pg` leader — the
+  multi-node story) **has since shipped in full** as the clustering workstream
+  (WS1–WS5 + WS4a, 2026-06-27..30 — `docs/plans/clustering/`; see §4.11 below).
+  **Kill-based single-node live-run cancellation shipped separately 2026-06-10**
+  (next bullet), and WS5 made it cross-node-correct.
 - **Live-run cancellation (2026-06-10)** — every `Reactor.run` (both
   chokepoints: `ReactorRunner.execute` and `GateResume.run_reactor`, so
   `Replay`/`WorkflowRecovery`/cron inherit) now executes in a registered
@@ -173,9 +174,10 @@ shipped beyond the durable spine:
   deadline thresholds cross without any event, so a small poll is the honest
   mechanism.
 
-**Next-phase scope (NOT started):** the §4.11 lease *implementation* (gated
-on clustering) and the async step-timeline `Writer`. (Live-run cancellation
-shipped 2026-06-10 — see the status bullet above.)
+**Next-phase scope:** the §4.11 lease *implementation* **has since shipped**
+(the clustering workstream WS1–WS5 + WS4a, 2026-06-27..30 — `docs/plans/clustering/`);
+what remains NOT started is the async step-timeline `Writer`. (Live-run cancellation
+shipped 2026-06-10, made cross-node-correct by WS5 — see the status bullet above.)
 
 ---
 
@@ -280,7 +282,7 @@ after adopting Reactor.
 | T2-1 deadlines | **orthogonal** | Read-model over event-log timestamps. |
 | T2-2 actor-visibility redaction | **orthogonal** | Projection-layer concern. |
 | T2-3 cron idempotency | **orthogonal** | Run-identity gate *in front of* `Reactor.run`. |
-| T2-4 lease/fencing | **specified (§4.11)** | Concrete plan borrowed from gust — durable claim + fence token; for the clustered-tailnet (argus) future. |
+| T2-4 lease/fencing | **✅ shipped (§4.11)** | Borrowed from gust — durable claim + fence token; shipped as the clustering workstream (WS1–WS5+WS4a, 2026-06-27..30). |
 
 ## 4. Component design
 
@@ -658,6 +660,16 @@ returns the existing run instead of starting a second reactor.
 
 ### 4.11 Distributed work-claiming (when clustered) — borrowed from gust
 
+> ✅ **SHIPPED IN FULL (2026-06-27..30).** What follows was the *plan*; it landed as the
+> clustering workstream **WS1–WS5 + WS4a** — `orchestration/workflow_lease.ex` (claim / renew /
+> `claim_next`), `.../workflow_lease/{middleware,sidecar}.ex` (renew + stale-fence halt),
+> `orchestration/reclaim_pooler.ex` (the Pooler, WS3), `core/cluster/leader.ex` (`:pg` leader,
+> WS4), `platform/cron/owner.ex` (clustered cron, WS4a), and cross-node cancel (WS5). The port
+> applied the tune-ups below (60s/15s lease, `:pg` leader) and re-derived the lease around the
+> AR-2 composer unit (WS2). The authoritative "what landed where" record is
+> [`../../plans/clustering/`](../../plans/clustering/README.md); only WS6 (multi-node test
+> harness + ops) remains.
+
 Today jido_radclaw is single-node, so a run executes in-process and §4.8's boot reconciler
 suffices. For the clustered-tailnet future (argus), durable multi-node claiming is the
 mechanism — and the **gust** project ships a clean, verified reference implementation
@@ -687,7 +699,9 @@ Tune lease/renew **up** from gust's 15s/5s to ~60s/15s and add **step-level idem
 keys** — double-calling an LLM/tool is costly. Lease expiry then becomes the multi-node
 complement to §4.8: a dead node's runs become reclaimable after the lease lapses (bounded
 recovery window = lease length), while the boot reconciler handles single-node restarts.
-Defer *implementation* until clustering is real; land the *data model* now.
+*(Original guidance: defer implementation until clustering is real; land the data model now.)*
+**Both done — the data model landed 2026-06-10 and the implementation shipped 2026-06-27..30
+(WS1–WS5 + WS4a); see the SHIPPED banner at the top of this section.**
 
 ## 5. Skills on Reactor (compiling YAML → `Reactor.Builder`)
 

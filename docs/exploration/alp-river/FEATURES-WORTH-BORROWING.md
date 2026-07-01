@@ -24,6 +24,20 @@ parallel, and self-heals.
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
 
+## Status reconciliation — 2026-07-01 (AR-2's cluster-lease tail has since shipped)
+
+**This section supersedes every "cluster lease deferred / parked until clustering" claim
+below (including the 2026-06-27 header).** AR-2's Phase-6 **cluster lease** (gust G1-1) — the
+one deferred tail that was about durable multi-node claiming — **shipped in full** as the
+clustering workstream **WS1–WS5 + WS4a** (2026-06-27..30, [`../../plans/clustering/`](../../plans/clustering/README.md)),
+re-derived around the composer unit (WS2 renews the parent composer across waves and gate
+pauses; WS3 rebuilds composer state from the event log and resumes mid-route). Cross-node
+cancel (gust G3-1) shipped with it (WS5). **The only AR-2 tail still open** is the *optional*
+`.jido/` YAML catalog overlay + debounced watcher (gust G3-2) — the composer catalog shipped
+as compile-time `%Stage{}` code, not YAML-on-disk, so gust G3-3's disk-of-truth reconciliation
+stays mooted. See [`../gust/FEATURES-WORTH-BORROWING.md`](../gust/FEATURES-WORTH-BORROWING.md)
+§G1-1 for the component-by-component record.
+
 ## Status reconciliation — 2026-06-27 (AR-7 shipped in full; only AR-2's deferred tails remain)
 
 **This section supersedes the "only AR-7's pervasive extension remains" claims in the
@@ -427,7 +441,7 @@ next — it is a feature, not a patch.
 **Cross-reference ([gust](../gust/FEATURES-WORTH-BORROWING.md), added 2026-06-11)**: three
 gust borrows interact with the composer; the AR-2 exploration doc should own the first.
 
-- **G1-1 (lease/fence, `REACTOR-ADOPTION.md` §4.11 — columns landed, behavior deferred)**
+- **G1-1 (lease/fence, `REACTOR-ADOPTION.md` §4.11 — ✅ SHIPPED in full, WS1–WS5+WS4a, 2026-06-27..30)**
   assumes *run = one `Reactor.run`*; a composed run is a composer loop spanning N waves.
   Re-derive the lease around that unit (the Pooler starts *composers*; the composer renews
   across waves and halts on a stale fence). The payoff is mutual: the lease makes the
@@ -458,11 +472,13 @@ Phase-2 blocker); crash recovery (`WorkflowRecovery` resumes a `:running` compos
 gates in the composer (Phase 4, which also closed AR-1's tail); and MCP observe (Phase 5 —
 `inspect_workflow` + `workflow_status` learn composer state; the `jido://workflows/catalog`
 resource is registered). 222 composer test cases, zero skips; clean compile. Detailed plan docs:
-`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`. **Deferred (as the plan always
-intended):** the Phase-6 cluster lease (gust G1-1 — columns exist, behavior parked until
-clustering is real) and the optional `.jido/` YAML catalog overlay + debounced watcher (gust
-G3-2; G3-3's DB mirror is mooted as recommended). (The AR-4 self-heal fixer workflow that reused
-the rerun primitive has since shipped.) Per-stage
+`AR-2-COMPOSER-PLAN.md`, `AR-2-PHASE-2-DURABLE-ENVELOPE.md`. **Formerly deferred — now shipped
+(2026-07-01 update):** the Phase-6 cluster lease (gust G1-1) landed in full as the clustering
+workstream WS1–WS5 + WS4a (2026-06-27..30), re-derived around the composer unit (WS2/WS3).
+**Still deferred:** only the optional `.jido/` YAML catalog overlay + debounced watcher (gust
+G3-2; G3-3's DB mirror stays mooted — the catalog shipped as compile-time `%Stage{}` code, not
+YAML-on-disk). (The AR-4 self-heal fixer workflow that reused the rerun primitive has since
+shipped.) Per-stage
 model/effort tiering: the `Stage` struct carries the fields, but the end-to-end spawn-time
 override seam was not confirmed wired.
 
