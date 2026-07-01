@@ -48,6 +48,11 @@ defmodule JidoClaw.MCPServer do
         # design (the `workflow_status` precedent: not on the in-REPL agent).
         JidoClaw.Tools.InspectWorkflow,
 
+        # Raw per-run event feed (G2-1a, the get_logs_on_task analogue) —
+        # byte-paginated; MCP-only by design, like inspect_workflow (absent from
+        # the in-REPL agent's tool list).
+        JidoClaw.Tools.WorkflowEvents,
+
         # Workflow replay (Phase 4) — MCP-only by design: the in-REPL agent's
         # tool list deliberately does NOT carry this side-effect lever.
         JidoClaw.Tools.ReplayWorkflow

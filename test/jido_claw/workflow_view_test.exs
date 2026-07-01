@@ -3,6 +3,8 @@ defmodule JidoClaw.WorkflowViewTest do
 
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Test.ReplayFixtures
+  alias JidoClaw.Tools.WorkflowEvents
   alias JidoClaw.Tools.WorkflowStatus
   alias JidoClaw.WorkflowView
 
@@ -234,7 +236,95 @@ defmodule JidoClaw.WorkflowViewTest do
     end
   end
 
+  describe "event_feed/3" do
+    test "accepts opts as a keyword list AND an atom-keyed map (both contract shapes)",
+         %{tenant_a: tenant} do
+      run = feed_run!(tenant, 3)
+
+      assert {:ok, from_kw} = WorkflowView.event_feed(run.id, %{tenant_id: tenant}, limit: 2)
+      assert {:ok, from_map} = WorkflowView.event_feed(run.id, %{tenant_id: tenant}, %{limit: 2})
+
+      assert from_kw.count == 2
+      assert from_map.count == 2
+      assert Enum.map(from_kw.events, & &1["seq"]) == [1, 2]
+      assert Enum.map(from_map.events, & &1["seq"]) == [1, 2]
+      assert from_kw.next_seq == 2
+      assert from_map.next_seq == 2
+    end
+
+    test "a page is byte-bounded, not merely count-bounded", %{tenant_a: tenant} do
+      run = feed_run!(tenant, 0)
+      big = String.duplicate("x", 20_000)
+      for i <- 1..5, do: append!(run, :artifacts_produced, %{"blob" => big, "i" => i}, tenant)
+
+      # Requested 5, but the 24 KB page budget stops it short — byte-, not count-trim.
+      assert {:ok, feed} = WorkflowView.event_feed(run.id, %{tenant_id: tenant}, limit: 5)
+      assert feed.count < 5
+      assert feed.next_seq != nil
+      assert byte_size(Jason.encode!(feed.events)) <= 24 * 1024
+    end
+
+    test "a single oversized event is fit to a bounded marker, never dropped",
+         %{tenant_a: tenant} do
+      run = feed_run!(tenant, 0)
+      huge = String.duplicate("y", 100_000)
+      append!(run, :artifacts_produced, %{"blob" => huge}, tenant)
+
+      assert {:ok, feed} = WorkflowView.event_feed(run.id, %{tenant_id: tenant}, limit: 5)
+      assert feed.count == 1
+      [event] = feed.events
+      assert event["truncated"] == true
+      assert is_map(event["payload"])
+      assert event["payload"]["truncated"] == true
+      assert byte_size(Jason.encode!(event)) <= 24 * 1024
+    end
+
+    test "an event-read failure surfaces :event_feed_unavailable, never an empty feed",
+         %{tenant_a: tenant} do
+      run = feed_run!(tenant, 2)
+      # Force the read (through the same EventReader seam the impl uses) to fail.
+      ReplayFixtures.put_failing_event_reader!()
+
+      # Direct API: the raw tuple.
+      assert {:error, :event_feed_unavailable} =
+               WorkflowView.event_feed(run.id, %{tenant_id: tenant}, [])
+
+      # Through the tool: the normalized wire error.
+      assert {:error, %{code: :event_feed_unavailable}} =
+               WorkflowEvents.run(%{run_id: run.id}, %{tool_context: %{tenant_id: tenant}})
+    end
+
+    test "unknown run id and a cross-tenant run are both not_found",
+         %{tenant_a: tenant_a, tenant_b: tenant_b} do
+      run = feed_run!(tenant_a, 1)
+
+      assert {:error, :not_found} =
+               WorkflowView.event_feed(Ash.UUID.generate(), %{tenant_id: tenant_a}, [])
+
+      assert {:error, :not_found} = WorkflowView.event_feed(run.id, %{tenant_id: tenant_b}, [])
+    end
+
+    test "tenant scope is required", %{tenant_a: tenant} do
+      run = feed_run!(tenant, 1)
+      assert {:error, :tenant_required} = WorkflowView.event_feed(run.id, %{}, [])
+    end
+  end
+
   # -- composer test helpers --
+
+  # A run carrying `count` non-status-authority events (seq 1..count); it stays
+  # :pending, so seq counting is clean. `count: 0` seeds an empty run for the
+  # byte-budget / oversized-event tests to append their own large payloads.
+  defp feed_run!(tenant, count) do
+    {:ok, run} =
+      WorkflowRun.create(%{name: "feed", workflow_type: "composer"},
+        tenant: tenant,
+        actor: actor_for(tenant)
+      )
+
+    for i <- 1..count//1, do: append!(run, :signals_published, %{"n" => i}, tenant)
+    run
+  end
 
   defp composer_run!(tenant, name) do
     {:ok, run} =

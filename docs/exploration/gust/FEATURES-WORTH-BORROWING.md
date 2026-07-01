@@ -48,7 +48,7 @@ Don't adopt it; take one genuinely valuable pattern and two cheap-later ones.**
 | --- | --- | --- |
 | Core executor (dag/stage/task workers) | ❌ No | Nothing — Reactor wins on every axis |
 | **Distributed run-claiming** | ❌ No | **The lease + fence-token + `SKIP LOCKED` + leader mechanism (G1-1 — the gem; ✅ SHIPPED in full, WS1–WS5+WS4a, with the port's fixes applied)** |
-| `gust_web` (UI + MCP) | ❌ No | The MCP workflow-control-surface *shape* (G2-1 — largely shipped; small tail open) |
+| `gust_web` (UI + MCP) | ❌ No | The MCP workflow-control-surface *shape* (G2-1 — shipped, incl. the G2-1a per-run event feed; only the G2-1b per-`<id>` resource remains, design-doc'd) |
 | `gust_py` (Python via uv) | ❌ No | The framed-port JSON-RPC *protocol* for Forge (G2-2 — still open) |
 
 Gust's *executor* is a hand-rolled, weaker cousin of Reactor — no saga compensation/undo,
@@ -254,10 +254,18 @@ AR-2 Phases 0–5; composer state landed in `inspect_workflow`, while `workflow_
 a tenant rollup). The divergence holds: gust hands cancel/restart to MCP clients; jido_radclaw
 deliberately keeps destructive controls — live-run cancellation and the replay
 `force`/`allow_irreversible` overrides — dashboard-only (`Cancellation`'s moduledoc states it).
-**Still open** (narrower than before): (a) **per-run raw logs/events over MCP** — no
-`get_logs_on_task` analogue; `inspect_workflow` returns a derived summary, not the
-`WorkflowEvent` feed; and (b) **per-`<id>` resources** `jido://workflows/<id>` — only the
-single catalog resource exists (jido_mcp's publish schema has no `resource_templates` key).
+**Status of the two tails (2026-07-01)**: (a) **per-run raw logs/events over MCP** is now
+**SHIPPED** — the `workflow_events` tool (`lib/jido_claw/tools/workflow_events.ex`) returns a
+run's raw `WorkflowEvent` feed (seq / kind / occurred_at / payload / metadata),
+**byte-bounded + seq-paginated** via `WorkflowView.event_feed/3` (a per-page serialized-size
+budget + per-event fit/truncate + a seq cursor), MCP-only like `inspect_workflow` — the
+`get_logs_on_task` analogue that `inspect_workflow`'s *derived* composer summary is not. (b)
+**per-`<id>` resources** `jido://workflows/<id>` (a drill-down on the catalog to ONE composer
+stage) remains open and is **scoped into its own phased design doc** —
+[`docs/plans/mcp-workflow-resources/README.md`](../../plans/mcp-workflow-resources/README.md)
+— because its mechanism (jido_mcp's `publish` has no `resource_templates` key; the chosen path
+is an anubis `component` template resource, no dep patch) carries dep-integration risk a
+compile-time + live-read **Phase 0 spike** must settle before implementation.
 
 ### G2-2. Framed-port JSON-RPC for external runtimes
 
@@ -368,7 +376,7 @@ call would stall the worker).
 | **Distributed claiming** | **lease + fence + `SKIP LOCKED` + leader** | ✅ shipped in full (WS1–WS5+WS4a, 2026-06-27..30) | **gust → borrowed & shipped** |
 | Scheduling | `quantum`, leader-only | tenant-scoped `crontab` cron + idempotent cron run-identity | jido_radclaw |
 | Python tasks | `uv` framed-port runner | Forge (future) | gust pattern usable |
-| MCP | HTTP, workflow-control tools | stdio (`jido_mcp`) + `run_skill`/`workflow_status`/`inspect_workflow`/`replay_workflow` + `jido://workflows/catalog` resource | shape borrowed (G2-1); per-run logs + per-`<id>` resources still open |
+| MCP | HTTP, workflow-control tools | stdio (`jido_mcp`) + `run_skill`/`workflow_status`/`inspect_workflow`/`replay_workflow`/`workflow_events` + `jido://workflows/catalog` resource | shape borrowed (G2-1); per-run event feed shipped (G2-1a); per-`<id>` resources design-doc'd (G2-1b) |
 | Maturity | ~6 mo, 1 author, Ecto | Reactor 1.0.2 via Ash (in-tree) | Reactor |
 
 ## Bottom line
@@ -380,7 +388,8 @@ claim/lease/fence + leader mechanism (G1-1), specified in the Reactor doc §4.11
 the clustering workstream (WS1–WS5+WS4a, 2026-06-27..30, with the port's fixes — `:pg` leader,
 60s/15s tuning, composer-unit lease, and cross-node cancel G3-1); only the WS6 multi-node
 test harness / ops layer remains. The two cheap-later patterns: the MCP control surface (G2-1
-— largely shipped, incl. a `jido://workflows/catalog` resource + `inspect_workflow`, cancel
-deliberately dashboard-only; only per-run logs + per-`<id>` resources still open) and the
+— largely shipped, incl. a `jido://workflows/catalog` resource + `inspect_workflow` + the
+`workflow_events` per-run feed (G2-1a), cancel deliberately dashboard-only; only the
+per-`<id>` stage resource (G2-1b) remains, scoped to its own design doc) and the
 framed-port RPC for Forge (G2-2 — still open). Everything else is covered better by Reactor +
 the envelope (shipped) or by what jido_radclaw already has.
