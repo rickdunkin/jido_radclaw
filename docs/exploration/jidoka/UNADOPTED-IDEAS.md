@@ -35,6 +35,8 @@ Compiled **2026-07-02**, against jidoka `9469dc09` (2026-06-17, `0.8.0-beta.1`) 
 
 **Trigger**: transcripts showing recurring multi-step freestyle tool-looping that a bounded plan would structure, or an operator ask for ad-hoc routes without writing YAML.
 
+**Cross-link (2026-07-02)**: the medium half — sandboxed LLM-facing Lua — resurfaced in [`../amber/FEATURES-WORTH-BORROWING.md`](../amber/FEATURES-WORTH-BORROWING.md) **AM-1**: a read-only `docs` + `eval` code-mode pair over the Ash read-models that *computes reads* rather than authoring plans, so this verdict stands (the "certainly not embedded Lua" clause above is about plan authorship, and AM-1 stays off that axis — argued inline in its entry). AM-1 lifts V2-7's `Lua.Policy` envelope + `call_trace` shape; if this trigger fires, AM-1's binding substrate is where a `jido.workflow(...)` binding would slot in, behind this entry's own posture gate.
+
 ## 3. Cron async dispatch + stuck watchdog (V1 T2-5 operational note)
 
 **Standing**: dispatch is still synchronous inside `Platform.Cron.Worker`'s tick (the in-code comment keeps the deferral explicit: a watchdog "would need async dispatch"); a hung dispatch blocks that job's GenServer indefinitely, undetected. WS4a's `Cron.Owner` reconcile converges *missing* workers, but a stuck worker is alive — reconcile doesn't help. The risk profile has grown since the note: cron is now cluster-wide across every active tenant, and `:agent`/`:workflow` targets can legitimately run long.
