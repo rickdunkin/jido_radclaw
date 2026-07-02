@@ -1,17 +1,20 @@
 # Features Worth Borrowing from Gust
 
 Exploration notes — not a plan, not a commitment. Inventory **2026-06-04**; re-verified
-**2026-06-11**, and again **2026-07-01** against the jido_radclaw tree (gust not re-checked
-upstream on the last pass — the borrows are settled). **Headline change since 2026-06-11:**
+**2026-06-11**, **2026-07-01** (jido_radclaw tree only), and **2026-07-02** — this last pass
+re-pulled gust upstream (`590335e`, 87 commits past the 2026-05-29 snapshot; the borrows stay
+settled). **Headline change since 2026-06-11:**
 the clustering workstream (WS1–WS5 + WS4a, shipped 2026-06-27..30 — `docs/plans/clustering/`)
 landed the Tier-1 borrow **G1-1** (distributed claiming) *and* the Tier-3 **G3-1** (cross-node
-cancel) **in full**, and G2-1 grew a catalog resource + `inspect_workflow`. See the dated
-**Status** notes per entry.
+cancel) **in full**, and G2-1 grew a catalog resource + `inspect_workflow`. **Headline change
+upstream (2026-07-02 pass):** gust grew a durable task-level **wait/resume** primitive
+(`wait_for:` + `TaskWaiter` + a 12th MCP tool `resume_task`, 2026-06-26..07-02) — folded in
+per entry; the determination is unchanged. See the dated **Status** notes per entry.
 
 Source: `~/workspace/claws/gust` — **Gust** (author: marciok), "a task orchestration
 system designed to be efficient, fast and developer-friendly" — an **Apache Airflow
 alternative** for Elixir (the README motivation: "kept what we liked about Airflow and
-ditched what we didn't"). An **umbrella** project, ~7k LOC across three Hex packages:
+ditched what we didn't"). An **umbrella** project, ~9k lib LOC across three Hex packages:
 
 - `apps/gust` — core: a compile-time `Gust.DSL` for DAGs/tasks, DAG parser/loader, a
   hand-rolled OTP execution engine (dag → stage → task workers + supervisors), a
@@ -23,9 +26,10 @@ ditched what we didn't"). An **umbrella** project, ~7k LOC across three Hex pack
   (workflow-control tools + DAG-file resources) + `mermaid` DAG diagrams.
 - `apps/gust_py` — **Python task execution** via `uv` over a framed-port JSON protocol.
 
-384 commits since 2025-11-27 (latest 2026-05-29); single primary author. Deps:
-`ecto_sql`, `postgrex`, `quantum`, `cloak_ecto`, `file_system`, `phoenix_pubsub`,
-`dns_cluster`, `req`, `swoosh`. **No Ash.**
+471 commits since 2025-11-27 (latest 2026-07-02); single primary author (423/471, now with a
+few small contributors). Deps: `ecto_sql`, `postgrex`, `quantum`, `cloak_ecto`,
+`file_system` (dev/test-only now), `phoenix_pubsub`, `dns_cluster`, `req` (`swoosh` has
+been dropped). **No Ash.**
 
 Read alongside [`../squidie/REACTOR-ADOPTION.md`](../squidie/REACTOR-ADOPTION.md) — the
 one Tier-1 borrow here (distributed claiming) was folded into that doc's §4.11, and has
@@ -38,6 +42,10 @@ AR-2 (the composer) interacts with three borrows here — G1-1 (the lease's unit
 since re-derived around the composer via WS2/WS3), G2-1 (its catalog shipped as the
 `jido://workflows/catalog` MCP resource), G3-2/G3-3 (catalog storage choice) — notes
 inline per entry.
+
+Live deferrals and watch entries from this doc are rolled up in
+[`UNADOPTED-IDEAS.md`](UNADOPTED-IDEAS.md) (2026-07-02) — standing, verdict, and adoption
+trigger for each, in one place.
 
 ## Determination (TL;DR)
 
@@ -53,12 +61,18 @@ Don't adopt it; take one genuinely valuable pattern and two cheap-later ones.**
 
 Gust's *executor* is a hand-rolled, weaker cousin of Reactor — no saga compensation/undo,
 no typed step I/O (tasks pass data by re-querying the DB by string name —
-`dsl.ex:46-51`), no halt/resume, **hardcoded 3 retries** at `5s·2ⁿ`
-(`stage_coordinator/retrying_task.ex`, `task_delayer/calculator.ex`), only stages for
-structure. The two late additions (2026-05-28) don't change that calculus: `skip_if` (a
-predicate that skips a task and cascade-skips its downstream) and a JSON `params` map on
-Run (settable via API/CLI/MCP, read back by re-querying `run.params` — the same
-DB-as-databus). It's raw Ecto. jido_radclaw has since **shipped** Reactor + the durable
+`dsl.ex:45-51`), no general halt/resume, **hardcoded 3 retries** at `5s·2ⁿ`
+(`stage_coordinator/retrying_task.ex`, `task_delayer/calculator.ex`), only stages (plus a
+`map_over` fan-out) for structure. The later additions don't change that calculus: `skip_if`
+(a predicate that skips a task and cascade-skips its downstream) and a JSON `params` map on
+Run (2026-05-25..28; params settable via API/CLI/MCP, read back by re-querying
+`run.params`), `map_over` (2026-06; one parallel task instance per item of an upstream
+list result), and — the real capability add (2026-06-26) — **task-level wait/resume**:
+`wait_for: "<event key>"` parks the task *and its run* as `:waiting` (the run's worker
+stops, so no lease is held) until `Gust.DAG.TaskWaiter.resume/2` (REST or the `resume_task`
+MCP tool) stamps it satisfied and re-dispatches the run; the resume payload arrives by
+re-querying `params["__gust_wait_payload__"]` — the same DB-as-databus. Event-key matching,
+not gate/approval semantics. It's raw Ecto. jido_radclaw has since **shipped** Reactor + the durable
 envelope (squidie T1-1 complete 2026-06-09; Phase 5 read-models/viz 2026-06-10), so
 gust's engine is a regression and its platform pieces (cron, dashboard, vault, MCP)
 overlap what jido_radclaw already has. But its **distributed run-claiming** is the best
@@ -78,7 +92,7 @@ the capability the Reactor doc had marked "deferred" (T2-4), specified as §4.11
    tenant-scoped; gust's is not).
 4. **Umbrella shape.** Gust assumes you're standing up a new Phoenix app; it's a product,
    not an embeddable library.
-5. **Maturity / deps.** ~6 months, one author; would add `quantum` + a second raw
+5. **Maturity / deps.** ~7 months, one primary author; would add `quantum` + a second raw
    `ecto_sql` surface alongside Ash.
 
 ## How to read this document
@@ -201,9 +215,11 @@ that unit exactly as sketched. **WS2** renews the *parent composer* across waves
 pauses (no release-on-park) and halts on a stale fence; **WS3** lets a reclaiming node rebuild
 composer state from the `WorkflowEvent` log and **resume mid-route** (strictly better than
 gust's blind re-run). Both corollaries landed: wave boundaries multiply reclaim surface, so
-step idempotency keys became mandatory (shipped); and the gate question gust never faced — an
+step idempotency keys became mandatory (shipped); and the gate question gust hadn't yet faced — an
 `:awaiting_approval` run holds no lease, `GateResume` re-claims on whichever node resumes — is
-handled across WS2/WS3. See `route_composer/route_composer.ex` +
+handled across WS2/WS3. (Convergent evolution, 2026-06-26: gust's `wait_for` now answers the
+same question the same way — a `:waiting` run's worker stops, no lease held, and `resume_task`
+re-dispatches for a fresh claim.) See `route_composer/route_composer.ex` +
 `docs/plans/clustering/WS2-composer-lease.md`.
 
 ---
@@ -214,15 +230,17 @@ handled across WS2/WS3. See `route_composer/route_composer.ex` +
 
 **Recommendation**: BORROW-PATTERN (the *shape*, not the code; cheap once Reactor lands).
 
-**Where**: `apps/gust_web/lib/gust_web/mcp/tools/list.ex` (11 tools), `mcp/resources/list.ex`
+**Where**: `apps/gust_web/lib/gust_web/mcp/tools/list.ex` (12 tools), `mcp/resources/list.ex`
 (DAG files as resources), `mcp/server.ex` (hand-rolled JSON-RPC over HTTP).
 
 **What**: Exposes workflow lifecycle as MCP **tools** (`trigger_dag_run`, `restart_run`,
-`restart_task`, `cancel_task`, `query_dag_run`, `get_tasks_on_run`, `get_logs_on_task`,
-`get_dag_def`, `toggle_enabled_dag`, `list_dags`, `list_secrets`) and workflow definitions
-as MCP **resources** (each DAG file readable by URI). `trigger_dag_run` accepts an
-optional `params` object since 2026-05-28. An LLM client gets a clean
-discover → inspect → trigger → observe loop.
+`restart_task`, `cancel_task`, `resume_task`, `query_dag_run`, `get_tasks_on_run`,
+`get_logs_on_task`, `get_dag_def`, `toggle_enabled_dag`, `list_dags`, `list_secrets`) and
+workflow definitions as MCP **resources** (each DAG file readable by URI). `trigger_dag_run`
+accepts an optional `params` object since 2026-05-28; `resume_task` (added with the
+2026-06-26 wait feature) resumes `:waiting` tasks by event key with an optional payload, and
+`cancel_task` now cancels them too. An LLM client gets a clean
+discover → inspect → trigger → observe → resume loop.
 
 **Gap in jido_radclaw**: It has an MCP server (`jido_mcp` over stdio) with file/git/code
 tools, but no first-class "drive and observe workflows over MCP" surface (no
@@ -251,9 +269,11 @@ composable stage's unit / routes / inputs-outputs / subscribes-publishes / locks
 `application/json`. That lands the 2026-06-11 open item *workflow-defs-as-resources* and
 resolves the AR-2 convergence (the catalog resource **and** `inspect_workflow` shipped with
 AR-2 Phases 0–5; composer state landed in `inspect_workflow`, while `workflow_status` stayed
-a tenant rollup). The divergence holds: gust hands cancel/restart to MCP clients; jido_radclaw
-deliberately keeps destructive controls — live-run cancellation and the replay
-`force`/`allow_irreversible` overrides — dashboard-only (`Cancellation`'s moduledoc states it).
+a tenant rollup). The divergence holds, and has widened — since 2026-06-26 gust also hands
+wait-**resume** to MCP clients (`resume_task`): jido_radclaw deliberately keeps destructive
+controls — live-run cancellation and the replay `force`/`allow_irreversible` overrides —
+dashboard-only (`Cancellation`'s moduledoc states it), and gate approve/deny on operator
+surfaces (REPL `/gates`, web `/approvals`), not MCP.
 **Status of the two tails (2026-07-01)**: (a) **per-run raw logs/events over MCP** is now
 **SHIPPED** — the `workflow_events` tool (`lib/jido_claw/tools/workflow_events.ex`) returns a
 run's raw `WorkflowEvent` feed (seq / kind / occurred_at / payload / metadata),
@@ -307,7 +327,8 @@ call would stall the worker).
 
 - **G3-1. Cross-node command routing — BORROW-PATTERN.** `terminator/worker.ex`: look up
   the owning node from a resource field and `GenServer.cast({Name, node}, …)`. The pattern
-  for cancelling a swarm sub-agent on a remote node. ~50 lines. *✅ **SHIPPED (WS5,
+  for cancelling a swarm sub-agent on a remote node. ~80 lines (grew cross-node
+  `cancel_waiting`/`cancel_timer` variants with the 2026-06-26 wait feature). *✅ **SHIPPED (WS5,
   2026-06-30)** as `orchestration/run_terminator.ex` + `orchestration/cancellation.ex`:
   `Cancellation` appends the durable `run_cancelled` locally, then `resolve_kill_target/3`
   reads the run's `claimed_by` (the WS1 lease-owner node) and routes `:local` (call
@@ -368,16 +389,16 @@ call would stall the worker).
 
 | Capability | gust | Reactor + envelope (shipped 2026-06-08..10) | Winner |
 | --- | --- | --- | --- |
-| DAG execution | hand-rolled stage/task workers | Reactor (typed args, async, `map`/`switch`/`compose`) | Reactor |
+| DAG execution | hand-rolled stage/task workers (+ `map_over` fan-out) | Reactor (typed args, async, `map`/`switch`/`compose`) | Reactor |
 | Saga / undo | none (`upstream_failed` + `skip_if` cascade only) | `compensate`/`undo`, durable Ash undo | Reactor |
 | Retry | hardcoded 3× / `5s·2ⁿ` | per-step `max_retries` + backoff | Reactor |
-| Pause/resume (human gates) | none (`restart_run` = reset-in-place requeue) | `{:halt}` → resume (gate DSL + approvals) | Reactor |
+| Pause/resume (human gates) | `wait_for` event-key task parks + `resume_task` w/ payload (2026-06-26) — no approval semantics; `restart_run` = reset-in-place requeue | `{:halt}` → resume (gate DSL + approvals) | Reactor (gap narrowed) |
 | Persistence | raw Ecto, DB-as-databus | Ash event log + projection | Reactor/envelope |
 | **Distributed claiming** | **lease + fence + `SKIP LOCKED` + leader** | ✅ shipped in full (WS1–WS5+WS4a, 2026-06-27..30) | **gust → borrowed & shipped** |
 | Scheduling | `quantum`, leader-only | tenant-scoped `crontab` cron + idempotent cron run-identity | jido_radclaw |
 | Python tasks | `uv` framed-port runner | Forge (future) | gust pattern usable |
 | MCP | HTTP, workflow-control tools | stdio (`jido_mcp`) + `run_skill`/`workflow_status`/`inspect_workflow`/`replay_workflow`/`workflow_events` + `jido://workflows/catalog` resource | shape borrowed (G2-1); per-run event feed shipped (G2-1a); per-`<id>` resources design-doc'd (G2-1b) |
-| Maturity | ~6 mo, 1 author, Ecto | Reactor 1.0.2 via Ash (in-tree) | Reactor |
+| Maturity | ~7 mo, 1 primary author, Ecto | Reactor 1.0.2 via Ash (in-tree) | Reactor |
 
 ## Bottom line
 

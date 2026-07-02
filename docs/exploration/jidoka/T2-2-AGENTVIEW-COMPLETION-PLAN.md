@@ -18,9 +18,11 @@ Baseline date: 2026-05-31.
 > - `inspect_agent`'s MCP `kind` enum became `module|session|request`, exactly
 >   as Resolved Decision 5 recommended. The Search Checks grep for the old
 >   `auto … agent_id …` enum therefore no longer matches anything.
-> - The MCP publish list has since grown to **21 tools** (`replay_workflow`
->   joined 2026-06-09), so the `publishes 17 tools` search check is stale; the
->   count assertion lives in `test/jido_claw/mcp_server_test.exs`.
+> - The MCP publish list has since grown to **24 tools** (`replay_workflow`
+>   joined 2026-06-09; `fetch_output`, `inspect_workflow` — AR-2 Phase 5,
+>   2026-06-22 — and `workflow_events` — G2-1a, 2026-07-01 — followed), so the
+>   `publishes 17 tools` search check is stale; the count assertion lives in
+>   `test/jido_claw/mcp_server_test.exs`.
 > - `RunSummaryFeed` was deleted outright (the "or replace it with a
 >   `WorkflowView` read" branch), not made tenant-keyed.
 > - Resolved Decision 6 shipped with one deliberate deviation: `WorkflowRun`

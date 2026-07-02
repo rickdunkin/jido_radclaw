@@ -65,6 +65,15 @@ Line-cites below were re-verified against v1.3.3 — the `route.py`, `triage.md`
 drifted ones (AR-5's injector spans, AR-3's lens list, AR-6's persona count, §4's
 reinject/tiering/produces cites) are updated inline.
 
+**Follow-up (2026-07-02, same day)**: the delta's unadopted candidates now have their own
+doc — [`FEATURES-WORTH-BORROWING-V2.md`](FEATURES-WORTH-BORROWING-V2.md) continues the AR
+numbering with full entries for the multi-plan/plan-arbiter wave (AR-9) and the shipping
+tail (AR-10), a note on the 1.3.0 artifact-handle extension this drift note missed
+(AR-11), and covered/skip determinations for the rest of the delta (premises, watchdog,
+run-state recovery, tiering, the smaller items). This note's "determinations unchanged"
+stands for AR-1..AR-8; the V2 doc owns everything new. The standing-and-triggers rollup of
+everything still unadopted across both docs is [`UNADOPTED-IDEAS.md`](UNADOPTED-IDEAS.md).
+
 ## Status reconciliation — 2026-07-01 (AR-2's cluster-lease tail has since shipped)
 
 **This section supersedes every "cluster lease deferred / parked until clustering" claim
