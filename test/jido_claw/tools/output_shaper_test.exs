@@ -281,7 +281,7 @@ defmodule JidoClaw.Tools.OutputShaperTest do
       assert result.exit_code == 1
       assert result.truncated == false
       assert is_integer(result.captured_bytes) and result.captured_bytes > 0
-      assert result.output_ref =~ ~r/^out_[0-9a-f]{12}$/
+      assert result.output_ref =~ ~r/^out_[0-9a-f]{24}$/
       assert result.summary.passed == 311
       assert result.summary.failed == 2
 

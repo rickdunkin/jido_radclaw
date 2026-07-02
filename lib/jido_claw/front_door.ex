@@ -921,9 +921,12 @@ defmodule JidoClaw.FrontDoor do
 
   # `:secrets` ∈ signals → mark sensitive + a bounded deadline. The scrubber then
   # redacts derived plaintext in every durable sink and the deadline caps secret-state
-  # lifetime. `create_parent_run` rejects a marked run with no positive `:deadline_ms`
-  # (validate_sensitive_deadline/2), so both are set together; a non-secrets run is
-  # returned unchanged (unmarked, unbounded — today's behavior).
+  # lifetime — now including PARKED (gate-awaiting) time (O-M2): a marked run's gate
+  # park is time-boxed by a `RouteComposer` deadline timer that auto-abandons it, so a
+  # `:secrets` run can no longer outlive this bound waiting on a human. `create_parent_run`
+  # rejects a marked run with no positive `:deadline_ms` (validate_sensitive_deadline/2),
+  # so both are set together; a non-secrets run is returned unchanged (unmarked, unbounded
+  # — today's behavior, and its gate park waits indefinitely by design).
   defp mark_sensitive(opts, true),
     do:
       Keyword.merge(opts, sanitize_sensitive_context: true, deadline_ms: sensitive_deadline_ms())

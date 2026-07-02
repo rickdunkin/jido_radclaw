@@ -253,10 +253,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       argument(:pending_cutoff, :utc_datetime_usec, allow_nil?: false)
       prepare(build(sort: [inserted_at: :asc]))
 
+      # C-M5: the expired-lease clause compares against the DB clock via a raw
+      # `fragment("? < now()", ...)` (SQL `now()`, no bound param) — NOT Ash `now()`
+      # (an app-clock param), closing the whole cross-node skew window. The
+      # `:pending_cutoff` clause stays app-clock (see `WorkflowLease` for the note).
       filter(
         expr(
           (status in [:pending, :running] and not is_nil(claim_expires_at) and
-             claim_expires_at < now()) or
+             fragment("? < now()", claim_expires_at)) or
             (status == :pending and is_nil(claim_token) and
                inserted_at < ^arg(:pending_cutoff))
         )
@@ -391,11 +395,11 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       public?(false)
     end
 
-    # §4.11 claim/fencing data model: which node owns the run, until when,
-    # and the fencing token a claimant must present. Columns land now
-    # (greenfield — no later migration); the Pooler/Lease implementation
-    # (`:claim_next`, heartbeat, reclaim) is deliberately deferred. All three
-    # stay nil until that ships.
+    # §4.11 claim/fencing data model: node owner (`claimed_by`), expiry
+    # (`claim_expires_at`), fencing token (`claim_token`). SHIPPED (WS1–WS5):
+    # DB-clock stamped/renewed by `WorkflowLease`, CAS-rotated on reclaim
+    # (`claim_next`/`claim_run`), read by `:claimable`. All three are nil only while
+    # a run is UNLEASED (byte-identical to pre-lease: no preflight/sidecar/fence).
     attribute :claimed_by, :string do
       allow_nil?(true)
       public?(false)

@@ -194,7 +194,11 @@ defmodule JidoClaw.Cron.Worker do
   # override). The gate is FIRST-LINE only: the brief two-leaders window during
   # `:pg` convergence can still fire a `:system_job` on two nodes, so every
   # system job must stay idempotent / row-claimed / DB-leased independently
-  # (see `JidoClaw.Cluster.Leader`).
+  # (see `JidoClaw.Cluster.Leader`). C-M1 INVARIANT for future system jobs: a
+  # FUNCTION-target (`:mfa`) system job MUST carry its OWN cross-node guard (the
+  # memory consolidator's advisory lock is the precedent) — the leader gate is
+  # first-line, not a fence. A WORKFLOW-target tick is already safe by construction:
+  # it rides the `cron:<job>:<window>` launch-idempotency key (T2-3).
   defp leader_gated?(%{mode: :system_job}), do: true
   defp leader_gated?(_state), do: false
 

@@ -14,6 +14,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   import ExUnit.CaptureLog
 
   alias JidoClaw.Conversations.RequestCorrelation
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.RunPubSub
@@ -23,6 +24,8 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   alias JidoClaw.Orchestration.WorkflowRecovery
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.Fold
+  alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.TestFixtures
   alias JidoClaw.RouteComposer.TestSupport.GatedAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
@@ -1059,6 +1062,98 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert reload(gate_child.id, ctx).status == :awaiting_approval
     end
 
+    test "7e: killed while parked, approve+resume FAILED while down → recovery terminalizes :failed",
+         ctx do
+      {parent, case_id} = start_and_park_gate(ctx)
+      kill_supervised(parent.id)
+
+      # An approval landed while down but its resume FAILED (`GateResume.
+      # fail_with_audit`): craft the failure durably — case :approved, gate child
+      # (wave 1) :awaiting_approval → :running → :failed. Recovery's re-entered
+      # park must terminalize the parent route_failed, not re-park forever on the
+      # :failed child.
+      {:ok, gate} = AgentCase.by_id(case_id, tenant: ctx.tenant, actor: ctx.actor)
+      {:ok, _approved} = AgentCase.approve(gate, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      [child] = wave_children(parent, ctx, 1)
+
+      {:ok, _} =
+        append_event(
+          child,
+          :approval_resolved,
+          %{agent_case_id: case_id, decision: :approve},
+          ctx
+        )
+
+      {:ok, _} =
+        append_event(child, :run_failed, %{error: "gate resume failed: corrupt blob"}, ctx)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+      assert :route_failed in kinds(parent.id, ctx)
+      refute :route_abandoned in kinds(parent.id, ctx)
+    end
+
+    test "7f: a parked gate pair under a TERMINAL composer parent is closed by recovery",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+
+      # The parent terminalized while the child + pending case survived — the
+      # shape the composer's best-effort paths can leave behind a partial
+      # failure (the O-M2 TTL-wins blip; teardown_parked_gate's error path).
+      # Without reconciliation the case stays open and DECIDABLE forever behind
+      # a route that already ended.
+      {:ok, _} = append_event(parent, :route_abandoned, %{reason: "ttl"}, ctx)
+      assert reload(parent.id, ctx).status == :cancelled
+      assert reload(child.id, ctx).status == :awaiting_approval
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+
+      # The orphaned pair is closed atomically: child failed (checkpoint cleared
+      # by the projection), case cancelled — no dangling decidable approval.
+      assert reload(child.id, ctx).status == :failed
+      assert {:ok, []} = AgentCase.pending_for_run(child.id, tenant: ctx.tenant, actor: ctx.actor)
+      {:ok, closed} = AgentCase.by_id(gate.id, tenant: ctx.tenant, actor: ctx.actor)
+      assert closed.status == :cancelled
+    end
+
+    test "7g: a raced-approved :running child under a TERMINAL composer parent is failed, never re-resumed",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+
+      # The raced approve committed durably (case :approved, child
+      # :awaiting_approval → :running) before the parent terminalized — the
+      # window teardown's cancel can miss (kill/crash between). Recovery's
+      # `:decision_recorded` classification must NOT re-resume it: the route
+      # already ended, so re-running the gate's downstream steps would
+      # re-execute side effects with nobody to fold the output.
+      {:ok, _approved} = AgentCase.approve(gate, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      {:ok, _} =
+        append_event(
+          child,
+          :approval_resolved,
+          %{agent_case_id: gate.id, decision: :approve},
+          ctx
+        )
+
+      {:ok, _} = append_event(parent, :route_abandoned, %{reason: "ttl"}, ctx)
+      assert reload(parent.id, ctx).status == :cancelled
+      assert reload(child.id, ctx).status == :running
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+
+      # Converged via the recovery audit pair. `:run_recovered` is the
+      # load-bearing non-resume discriminator: a real resume attempt appends
+      # only `run_failed` (`GateResume.fail_with_audit`), never
+      # `run_recovered` — status alone is ambiguous with the dummy checkpoint.
+      assert reload(child.id, ctx).status == :failed
+      child_kinds = kinds(child.id, ctx)
+      assert :run_recovered in child_kinds
+      assert :run_failed in child_kinds
+    end
+
     test "8: seed premises survive a pre-first-wave crash", ctx do
       converging_outputs()
       # A genesis-only crash (no route_composed marker yet) with a non-empty seed
@@ -1167,6 +1262,352 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     end
   end
 
+  describe "sensitive-park deadline (O-M2)" do
+    test "a marked run past its deadline auto-abandons the parked child (pending case → Cases.abandon) and terminalizes the parent",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+      ref = make_ref()
+      state = parked_deadline_state(parent, ctx, child, gate.id, ref)
+
+      assert {:stop, :normal, _final} =
+               RouteComposer.handle_info({:park_deadline, ref, child.id, gate.id}, state)
+
+      # Child terminalized (never left :awaiting_approval); its pending case abandoned.
+      assert reload(child.id, ctx).status == :abandoned
+      assert {:ok, []} = AgentCase.pending_for_run(child.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      # Parent finished via the composer's own :abandoned terminal (route_abandoned →
+      # :cancelled with disposition "abandoned").
+      assert :route_abandoned in kinds(parent.id, ctx)
+      parent_final = reload(parent.id, ctx)
+      assert parent_final.status == :cancelled
+      assert parent_final.result["disposition"] == "abandoned"
+    end
+
+    test "a genuinely case-less parked child is terminalized via the direct child-terminal append",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+
+      # :awaiting_approval WITHOUT a gate case (run_started → approval_requested, no
+      # gate_open) — the recovery edge where recovered_case_id is nil AND no case exists.
+      running = craft_child(parent, ctx, 0, :running)
+      {:ok, _} = append_event(running, :approval_requested, %{}, ctx)
+      child = reload(running.id, ctx)
+      assert child.status == :awaiting_approval
+      assert {:ok, []} = AgentCase.pending_for_run(child.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      ref = make_ref()
+      state = parked_deadline_state(parent, ctx, child, nil, ref)
+
+      assert {:stop, :normal, _final} =
+               RouteComposer.handle_info({:park_deadline, ref, child.id, nil}, state)
+
+      assert reload(child.id, ctx).status == :abandoned
+      assert reload(parent.id, ctx).status == :cancelled
+    end
+
+    test "a stale :park_deadline (no park, or a mismatched deadline_ref) is ignored — no wrong abandon",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+
+      # No park: any :park_deadline is a no-op.
+      no_park =
+        loop_state(parent, ctx,
+          sanitize_sensitive_context: true,
+          deadline_at_ms: System.os_time(:millisecond) - 1_000
+        )
+
+      assert {:noreply, ^no_park} =
+               RouteComposer.handle_info({:park_deadline, make_ref(), child.id, gate.id}, no_park)
+
+      # Parked, but the fired ref doesn't match the current deadline_ref → ignored,
+      # and the parked child is NOT abandoned.
+      state = parked_deadline_state(parent, ctx, child, gate.id, make_ref())
+
+      assert {:noreply, ^state} =
+               RouteComposer.handle_info({:park_deadline, make_ref(), child.id, gate.id}, state)
+
+      assert reload(child.id, ctx).status == :awaiting_approval
+    end
+
+    test "a committed APPROVAL beats a raced park-deadline: the stale fire folds the gate, never abandons",
+         ctx do
+      # THE P1 race: `Cases.decide(:approve)` commits case + child transitions in
+      # one transaction and only THEN broadcasts — a `{:park_deadline, …}` timer
+      # message already in the mailbox is processed after the commit. The disposal
+      # must observe the decided child and route through the normal gate-resolution
+      # fold; the pre-fix code saw no pending case, mis-fired `run_abandoned` at a
+      # non-parked child, and abandoned the parent — losing the approval.
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+      ref = make_ref()
+      state = gate_deadline_state(parent, ctx, child, gate.id, ref)
+
+      # Craft the committed approval durably (a crafted child's dummy checkpoint
+      # cannot truly resume, so no `Cases.decide(:approve)`): case :pending →
+      # :approved, child :awaiting_approval → :running → :completed carrying the
+      # real plan-gate result envelope (ref-stored approved-plan).
+      {:ok, _approved} = AgentCase.approve(gate, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      {:ok, _} =
+        append_event(
+          child,
+          :approval_resolved,
+          %{agent_case_id: gate.id, decision: :approve},
+          ctx
+        )
+
+      {:ok, plan_ref} =
+        ComposerArtifact.store_wave_artifact(
+          "approved-plan",
+          "plan-gate",
+          "PLAN: build the auth feature",
+          child,
+          0,
+          tenant: ctx.tenant,
+          actor: ctx.actor
+        )
+
+      envelope = %{
+        "wave_index" => 0,
+        "emissions" => [
+          %{
+            "stage" => "plan-gate",
+            "signals" => ["plan-approved"],
+            "artifacts" => %{"approved-plan" => plan_ref}
+          }
+        ]
+      }
+
+      {:ok, _} = append_event(child, :run_completed, %{result: envelope}, ctx)
+
+      # The stale fire folds the approval (wave_resumed + wave_completed), never
+      # bulldozes the parent.
+      assert {:noreply, next, {:continue, :tick}} =
+               RouteComposer.handle_info({:park_deadline, ref, child.id, gate.id}, state)
+
+      refute :route_abandoned in kinds(parent.id, ctx)
+      assert :wave_resumed in kinds(parent.id, ctx)
+      assert :wave_completed in kinds(parent.id, ctx)
+      assert reload(child.id, ctx).status == :completed
+
+      # The run-level backstop (the documented deadline semantics): the decision
+      # wins the GATE, but the RUN stays bounded — the very next tick terminalizes
+      # via the deadline BUDGET path, not route_abandoned.
+      assert {:stop, :normal, _final} = RouteComposer.handle_continue(:tick, next)
+      assert :route_budget_exhausted in kinds(parent.id, ctx)
+      refute :route_abandoned in kinds(parent.id, ctx)
+    end
+
+    test "a committed REJECT beats a raced park-deadline: route_rejected, never route_abandoned",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+      ref = make_ref()
+      state = gate_deadline_state(parent, ctx, child, gate.id, ref)
+
+      # A real operator reject commits before the (already-mailboxed) timer message
+      # is processed — reject never resumes, so `Cases.decide/4` works on a crafted
+      # child directly: child :awaiting_approval → :cancelled.
+      assert {:ok, _} = Cases.decide(gate.id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+      assert reload(child.id, ctx).status == :cancelled
+
+      # The stale fire terminalizes through the DISPOSITION path: the fixture's
+      # plan-gate publishes plan-rejected but nothing subscribes it, so no re-plan —
+      # route_rejected (the pre-fix code mis-terminalized this route_abandoned).
+      assert {:stop, :normal, _final} =
+               RouteComposer.handle_info({:park_deadline, ref, child.id, gate.id}, state)
+
+      refute :route_abandoned in kinds(parent.id, ctx)
+      assert :route_rejected in kinds(parent.id, ctx)
+      parent_final = reload(parent.id, ctx)
+      assert parent_final.status == :cancelled
+      assert parent_final.result["disposition"] == "rejected"
+
+      # The child is never illegally re-terminalized (no run_abandoned after
+      # run_cancelled).
+      assert reload(child.id, ctx).status == :cancelled
+      refute :run_abandoned in kinds(child.id, ctx)
+    end
+
+    test "an approved-then-FAILED resume beats a raced park-deadline: route_failed, never stranded parked",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+      ref = make_ref()
+      state = gate_deadline_state(parent, ctx, child, gate.id, ref)
+
+      # An approval committed but the resume FAILED before the (already-mailboxed)
+      # timer message is processed (`GateResume.fail_with_audit` — corrupt blob /
+      # missing approved case): case :approved, child :awaiting_approval →
+      # :running → :failed.
+      {:ok, _approved} = AgentCase.approve(gate, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      {:ok, _} =
+        append_event(
+          child,
+          :approval_resolved,
+          %{agent_case_id: gate.id, decision: :approve},
+          ctx
+        )
+
+      {:ok, _} =
+        append_event(child, :run_failed, %{error: "gate resume failed: corrupt blob"}, ctx)
+
+      assert reload(child.id, ctx).status == :failed
+
+      # The stale fire must TERMINALIZE the parent (route_failed): the reload-blip
+      # catch-all would keep it parked with the timer already consumed — no wake
+      # ever coming — stranding the sensitive run past its retention deadline.
+      assert {:stop, :normal, _final} =
+               RouteComposer.handle_info({:park_deadline, ref, child.id, gate.id}, state)
+
+      assert :route_failed in kinds(parent.id, ctx)
+      refute :route_abandoned in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).status == :failed
+    end
+
+    test "an UNMARKED run keeps its gate park past its deadline (no timer armed)", ctx do
+      # A non-sensitive run may carry a deadline, but its park is NOT time-boxed — a
+      # parked composer never ticks, so the deadline is unenforced while parked. The
+      # deadline (1.5s) is comfortably after the wave-0 gate dispatch (parks first),
+      # and the wait carries the check past it — a MARKED run would have abandoned.
+      # (resolve-before-deadline is the mirror happy path; the deadline_ref
+      # match-guard in handle_info — tested above — is the real defense, timer
+      # cancellation at the park-exit is belt-and-suspenders.)
+      {parent, _case_id} =
+        park_gate_on(
+          ctx,
+          TestFixtures.gate_fixture_catalog(),
+          TestFixtures.gate_fixture_stub_outputs(),
+          deadline_ms: 1_500
+        )
+
+      Process.sleep(1_500)
+      # The parent stays :running across the child gate park (§6) — NOT :cancelled;
+      # no `route_abandoned` fired, so the deadline armed no park timer.
+      assert reload(parent.id, ctx).status == :running
+      refute :route_abandoned in kinds(parent.id, ctx)
+    end
+  end
+
+  describe "terminal-parent teardown convergence (P1)" do
+    test "teardown cancels a child whose raced approve flipped it :running under the terminal parent",
+         ctx do
+      parent = gate_recoverable_parent(ctx)
+      {child, gate} = craft_gate_child(parent, ctx, 0)
+
+      # The raced approve committed durably before the composer processed its
+      # teardown (case :approved, child :awaiting_approval → :running) — the
+      # `{:decided, :running}` outcome teardown used to discard, leaving the
+      # child resuming under a parent nobody will ever fold.
+      {:ok, _approved} = AgentCase.approve(gate, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      {:ok, _} =
+        append_event(
+          child,
+          :approval_resolved,
+          %{agent_case_id: gate.id, decision: :approve},
+          ctx
+        )
+
+      assert reload(child.id, ctx).status == :running
+
+      # The parent terminalized externally during the park.
+      {:ok, _} = append_event(parent, :route_abandoned, %{reason: "external cancel"}, ctx)
+      assert reload(parent.id, ctx).status == :cancelled
+
+      # Drive the public seam: a parked composer retrying its wave_paused
+      # marker hits the parent-terminal fence in `Commit.append_markers` →
+      # `teardown_parked_gate`. Pre-fix the disposition's `{:decided,
+      # :running}` was discarded and the child stayed :running.
+      state = parked_teardown_state(reload(parent.id, ctx), ctx, child, gate.id)
+
+      assert {:stop, :normal, _final} =
+               RouteComposer.handle_info({:retry_wave_paused, child.id, 1}, state)
+
+      # Converged: the raced resume is durably cancelled (`Cancellation.cancel`
+      # kills any mid-resume executor; the crafted child has none), and the
+      # parent's terminal stands untouched.
+      assert reload(child.id, ctx).status == :cancelled
+      assert :run_cancelled in kinds(child.id, ctx)
+      assert reload(parent.id, ctx).status == :cancelled
+    end
+  end
+
+  # A hand-built parked composer state (through the real `init/1`, so it can't drift
+  # from the seed shape) pointed at `child`, marked + already PAST its deadline, with
+  # a known `deadline_ref` — so a `{:park_deadline, …}` handle_info deterministically
+  # disposes without a running GenServer or timer timing (O-M2). `extra` overrides
+  # the `loop_state` seed (e.g. the gate catalog for decided-child paths).
+  defp parked_deadline_state(parent, ctx, child, case_id, deadline_ref, extra \\ []) do
+    overrides =
+      Keyword.merge(
+        [sanitize_sensitive_context: true, deadline_at_ms: System.os_time(:millisecond) - 1_000],
+        extra
+      )
+
+    state = loop_state(parent, ctx, overrides)
+
+    %{
+      state
+      | parked: %{
+          wave_index: 0,
+          case_id: case_id,
+          child_run_id: child.id,
+          dispatch: ["plan-gate"],
+          display: []
+        },
+        deadline_ref: deadline_ref
+    }
+  end
+
+  # The raced-decision variants resolve through paths that read `state.catalog`
+  # (`Map.fetch!` on the parked "plan-gate" dispatch in the fold/disposition
+  # branches) — `loop_state`'s phase1 default catalog has NO "plan-gate" key and
+  # would KeyError, so thread the gate fixture catalog + matching seeds. The fold
+  # path also records the wave off the park's DISPLAY (`record_wave` reads
+  # `display.route`/`display.held`), so compose a real display from the built
+  # state the same way recovery's `build_recovery_park` does — the abandon-path
+  # tests' `[]` placeholder would BadMapError.
+  defp gate_deadline_state(parent, ctx, child, case_id, deadline_ref) do
+    state =
+      parked_deadline_state(parent, ctx, child, case_id, deadline_ref,
+        catalog: TestFixtures.gate_fixture_catalog(),
+        live: TestFixtures.gate_fixture_seed_live(),
+        artifacts: TestFixtures.gate_fixture_seed_artifacts()
+      )
+
+    available = Fold.available(state.artifacts)
+    result = Router.compose_route(state.catalog, state.live, available, state.ran)
+    display = Router.merge_sticky(state.catalog, state.prev_route, result)
+
+    %{state | parked: %{state.parked | display: display}}
+  end
+
+  # A hand-built parked composer state for the teardown seam
+  # (`{:retry_wave_paused, …}` → attempt_wave_paused → parent-terminal fence →
+  # teardown_parked_gate): only the park identity matters — the teardown/cancel
+  # path never reads the catalog or the park's display, so `loop_state`'s
+  # phase1 defaults suffice (no deadline/sensitive marking either — this is not
+  # the O-M2 shape).
+  defp parked_teardown_state(parent, ctx, child, case_id) do
+    state = loop_state(parent, ctx, [])
+
+    %{
+      state
+      | parked: %{
+          wave_index: 0,
+          case_id: case_id,
+          child_run_id: child.id,
+          dispatch: ["plan-gate"],
+          display: []
+        }
+    }
+  end
+
   # --- recovery crafting helpers ---
   # (`recoverable_parent/2`, `craft_child/4`, `commit_wave0/3` are imported from
   # `TestFixtures` — shared with `reclaim_pooler_test`.)
@@ -1270,7 +1711,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     assert keys == Enum.uniq(keys)
   end
 
-  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp generate_ref, do: JidoClaw.Refs.mint("art_")
 
   # --- Phase-4 gate helpers ---
 

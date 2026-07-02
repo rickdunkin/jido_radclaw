@@ -16,7 +16,11 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     * `:awaiting_approval` **+ checkpoint** → **parked**: correctly waiting on a
       human *iff* the pending `AgentCase` still exists — then a no-op (the case
-      is open for an operator to decide). If the case is missing
+      is open for an operator to decide) — **unless** the run's parent is a
+      **terminal composer** (nothing can ever fold the decision; the composer's
+      best-effort teardown/deadline paths may leave this pair behind a partial
+      failure), in which case the pair is closed atomically (cases cancelled +
+      `run_recovered`/`run_failed`). If the case is missing
       (deleted/corrupt), the park can never be decided (no inbox row → no
       decision → no terminal, forever), so it is cancelled (`run_cancelled`); a
       transient lookup error is left for the next boot.
@@ -31,11 +35,15 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
       log is this **decision already recorded** (approve committed
       `approval_resolved` → `:running`, then crashed before/within resume) —
       `GateResume.resume(recovered: true)` re-runs the durable downstream
-      steps. `init/1` appends `run_resumed`; the gate's `after_approved` hook
-      is **skipped** (Decision 8); downstream steps must be idempotent
-      (Decision 7 caveat). With **no** `approval_resolved` in the log the
-      pair is forbidden — fail-with-audit, never blind-resume past a gate.
-      A transient log-read error is left for the next boot.
+      steps, **unless** the run's parent is a **terminal composer** (a raced
+      approve orphaned by the ended route — re-resuming would re-execute it
+      with nobody to fold the output), in which case it is failed with the
+      recovery audit instead. `init/1` appends `run_resumed`; the gate's
+      `after_approved` hook is **skipped** (Decision 8); downstream steps must
+      be idempotent (Decision 7 caveat). With **no** `approval_resolved` in
+      the log the pair is forbidden — fail-with-audit, never blind-resume past
+      a gate. A transient log-read or parent-read error is left for the next
+      boot.
     * `:running` **+ no checkpoint** → genuinely stranded → `run_recovered` +
       `run_failed`.
     * `:pending` **+ no checkpoint** → never started → `run_recovered` +
@@ -112,7 +120,10 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   require Logger
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cluster
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.Cancellation
+  alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.GateResume
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
@@ -123,6 +134,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   @dangling_gate_reason "recovered: dangling gate"
   @parked_orphan_reason "recovered: parked gate, pending case missing"
+  @parked_terminal_parent_reason "recovered: parked gate orphaned by terminal composer parent"
 
   @spec start_link(keyword()) :: {:ok, pid()}
   def start_link(opts) do
@@ -159,6 +171,10 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     :ok
   end
 
+  @doc "Reclaim with no known prior lease owner (boot / compat) — never kill-casts. See `reclaim/2`."
+  @spec reclaim(WorkflowRun.t()) :: :ok
+  def reclaim(run), do: reclaim(run, nil)
+
   @doc """
   Reclaim ONE run the `ReclaimPooler` just claimed (its token already rotated by
   `WorkflowLease.claim_next/1`, fencing any surviving zombie owner).
@@ -170,15 +186,26 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   under Q1 (a stranded `:running` no-checkpoint run is failed, not re-run: the
   idempotency key is launch-dedupe, not step-idempotency, so a partially-executed
   reactor cannot be safely re-run today).
+
+  `prior_owner` is the pre-rotation lease owner (`nil` for a never-claimed genesis
+  orphan / the boot path). After a PLAIN run reaches terminal, best-effort
+  kill-cast `prior_owner` (C-H1 MITIGATION, not a fence — the fence is the token
+  CAS): it stops an alive-but-fenced executor (sidecar-dead / renew-hung) from
+  scheduling further steps, but already-started `async_nolink` steps still run to
+  completion into the void (documented orphaned-async limit — full elimination
+  needs per-step idempotency keys). Composer PARENTS are restarted (their own
+  fence-kill covers the old executor) → no kill-cast; composer CHILDREN kill-cast
+  via `reclaim_child/1`.
   """
-  @spec reclaim(WorkflowRun.t()) :: :ok
-  def reclaim(%WorkflowRun{workflow_type: "composer", status: :running} = run) do
+  @spec reclaim(WorkflowRun.t(), String.t() | nil) :: :ok
+  def reclaim(%WorkflowRun{workflow_type: "composer", status: :running} = run, _prior_owner) do
     reclaim_composer(run)
     :ok
   end
 
-  def reclaim(run) do
+  def reclaim(run, prior_owner) do
     reconcile_one(run)
+    cast_kill_if_terminal(run, prior_owner)
     :ok
   end
 
@@ -255,7 +282,8 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   defp classify(%WorkflowRun{}), do: :stranded
 
-  # Parked: correctly waiting on a human iff the pending case still exists. A
+  # Parked: correctly waiting on a human iff the pending case still exists AND
+  # something can still fold the decision (`reconcile_parked_with_case/3`). A
   # missing case means the park can never be decided (no inbox row), so it is
   # cancelled to reach a terminal — the projection clears the checkpoint
   # (Decision 7). A transient lookup error is left for the next boot.
@@ -265,7 +293,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     case AgentCase.pending_for_run(run.id, tenant: tenant, actor: actor) do
       {:ok, [_ | _]} ->
-        emit(run, :parked)
+        reconcile_parked_with_case(run, tenant, actor)
 
       {:ok, []} ->
         run
@@ -283,38 +311,36 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   end
 
   # Dangling gate: the full recovery audit — `run_recovered` (provenance) +
-  # the terminal `run_failed`, PLUS the orphaned pending case cancelled (with
-  # its `:cancelled` timeline event), all in one transaction via the shared
-  # WorkflowLog helper (the same choreography the runner's gate-pause failure
-  # path uses). `run_failed` legally folds `:awaiting_approval -> :failed` and
-  # clears the checkpoint. A crash-reaped gate is a *failure*, not an operator
-  # cancel — `run_cancelled` is reserved for deliberate decisions.
+  # the terminal `run_failed`, PLUS any orphaned pending case cancelled (with
+  # its `:cancelled` timeline event), all through the FENCED aggregate primitive
+  # (`GateDisposition` — run lock first + status re-check on the locked row, so
+  # a raced `Cases.abandon` is never bulldozed). `run_failed` legally folds
+  # `:awaiting_approval -> :failed` and clears the checkpoint. A crash-reaped
+  # gate is a *failure*, not an operator cancel — `run_cancelled` is reserved
+  # for deliberate decisions.
   defp reconcile_branch(:dangling_gate, run) do
-    run
-    |> WorkflowLog.terminate_cancelling_cases(
-      [
-        {:run_recovered, %{reason: @dangling_gate_reason, prior_status: run.status}},
-        {:run_failed, %{error: @dangling_gate_reason}}
-      ],
-      @dangling_gate_reason,
+    run.id
+    |> GateDisposition.cancel_dangling_gate(@dangling_gate_reason,
       tenant: run.tenant_id,
       actor: Actor.system(run.tenant_id)
     )
-    |> finish(run, :dangling_gate)
+    |> finish_disposition(run, :dangling_gate)
   end
 
   # `:running` + checkpoint: resume ONLY on the recorded `approval_resolved`
   # event — the explicit decision key, not the (status, checkpoint) pair alone.
   # No recorded decision -> forbidden pair -> fail-with-audit, never
-  # blind-resume past the gate. A transient log-read error is left for the
-  # next boot (like the parked-case lookup).
+  # blind-resume past the gate. A recorded decision resumes only under a
+  # foldable parent (`resume_unless_orphaned/3` — a terminal composer parent
+  # means re-resuming would re-execute the orphan). A transient log-read error
+  # is left for the next boot (like the parked-case lookup).
   defp reconcile_branch(:decision_recorded, run) do
     tenant = run.tenant_id
     actor = Actor.system(tenant)
 
     case decision_recorded?(run, tenant, actor) do
       {:ok, true} ->
-        resume_recorded_decision(run)
+        resume_unless_orphaned(run, tenant, actor)
 
       {:ok, false} ->
         Logger.warning(
@@ -372,6 +398,95 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
       emit(run, :composer)
       MapSet.new()
     end
+  end
+
+  # An approved child under a TERMINAL composer parent must never be
+  # re-resumed: the route already ended, so `GateResume` would re-execute the
+  # gate's side-effectful downstream steps with no live composer to fold the
+  # output (and every ReclaimPooler/boot pass would repeat it). Converge via
+  # the recovery audit pair (`run_recovered` + `run_failed`) — NOT
+  # `Cancellation.cancel`: `run_cancelled` is reserved for deliberate operator
+  # decisions, there is no live executor to kill on this branch (boot has
+  # none; the reclaim path already kill-casts the prior owner), and the
+  # non-raced sibling path (`fail_orphaned_parked_child`) lands the same
+  # `:failed` terminal.
+  defp resume_unless_orphaned(run, tenant, actor) do
+    case GateDisposition.terminal_composer_parent(run, tenant, actor) do
+      :terminal ->
+        fail_stranded(run, :orphaned_terminal_parent)
+
+      :not_terminal ->
+        resume_recorded_decision(run)
+
+      {:error, reason} ->
+        # Uncertain parent state: neither fail nor resume — leave for the next
+        # boot/reclaim pass (the branch's existing transient idiom).
+        Logger.warning(
+          "[WorkflowRecovery] parent lookup failed for run #{run.id}: #{inspect(reason)}"
+        )
+    end
+  end
+
+  # A parked child with a live pending case is correctly waiting on a human ONLY
+  # while something can still fold the decision. Under a TERMINAL composer parent
+  # (the route already ended — abandoned/rejected/failed/converged) no composer
+  # will ever wake for it: the case is orphaned-but-DECIDABLE — an operator
+  # approving it would resume a gate whose output nobody consumes, and a
+  # sensitive child would keep holding gate context past its retention bound.
+  # Close the pair through the FENCED aggregate primitive (`GateDisposition` —
+  # run lock first + status re-check, so a raced live decision is never
+  # bulldozed; cases cancelled + `run_recovered`/`run_failed` in one
+  # transaction). A same-scan raced APPROVE (`{:decided, :running}`) is
+  # CONVERGED by `finish_disposition`, not no-op'd — the resume has no owner.
+  # This is the terminal-parent reconciliation the composer's best-effort paths
+  # lean on (`teardown_parked_gate`'s error path; the O-M2 deadline TTL-wins
+  # blip path): each may terminalize the parent while the child+case pair
+  # survives a partial failure, and this branch is the janitor that eventually
+  # closes that pair. Uncertain parent state (`{:error, _}`) never closes
+  # anything — keep the no-op park and retry next boot.
+  defp reconcile_parked_with_case(run, tenant, actor) do
+    case GateDisposition.terminal_composer_parent(run, tenant, actor) do
+      :terminal ->
+        run.id
+        |> GateDisposition.fail_orphaned_parked_child(@parked_terminal_parent_reason,
+          tenant: tenant,
+          actor: actor
+        )
+        |> finish_disposition(run, :parked_terminal_parent)
+
+      _not_terminal_or_error ->
+        emit(run, :parked)
+    end
+  end
+
+  # `GateDisposition` outcome → the recovery telemetry/log idiom. A TERMINAL
+  # `{:decided, status}` means a fenced live decision won the race and closed
+  # the pair itself — recovery wrote nothing, which is the correct no-op,
+  # tagged distinctly so the scan's outcome stays observable.
+  defp finish_disposition({:ok, :disposed}, run, branch), do: emit(run, branch)
+
+  # A raced operator APPROVE won the disposition fence mid-scan and is resuming
+  # the child under its terminal parent — reachable only from the `:parked`
+  # branch (a checkpoint-less `:dangling_gate` child can never be approved past
+  # `Cases`' `guard_resumable`). Nothing was written by the disposition and no
+  # live composer will ever fold the resume's output, so CONVERGE instead of
+  # no-op: the same `run_recovered` + `run_failed` audit pair as the non-raced
+  # sibling path (`run_abandoned` is illegal from `:running`; `run_cancelled`
+  # is reserved for deliberate operator decisions). Deterministically testing
+  # this exact clause needs a mid-scan interleave (the child flips between
+  # classify and lock — no race-injection seam exists); its reaction is the
+  # identical `fail_stranded(:orphaned_terminal_parent)` the
+  # `:decision_recorded` guard exercises (composer_durable test 7g).
+  defp finish_disposition({:error, {:decided, :running}}, run, _branch),
+    do: fail_stranded(run, :orphaned_terminal_parent)
+
+  defp finish_disposition({:error, {:decided, _status}}, run, _branch),
+    do: emit(run, :decided_elsewhere)
+
+  defp finish_disposition({:error, reason}, run, branch) do
+    Logger.warning(
+      "[WorkflowRecovery] failed to reconcile run #{run.id} (#{branch}): #{inspect(reason)}"
+    )
   end
 
   # Delegates to the shared `RouteComposer.decode_config_catalog/1`: recoverable
@@ -479,8 +594,9 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   defp reclaim_child(child) do
     case WorkflowLease.claim_run(child.id) do
-      {:ok, rotated} ->
+      {:ok, rotated, prior_owner} ->
         reconcile_one(rotated)
+        cast_kill_if_terminal(rotated, prior_owner)
 
       :lost ->
         :ok
@@ -489,6 +605,43 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
         Logger.warning(
           "[WorkflowRecovery] child claim failed for #{child.id}: #{inspect(reason)}; leaving"
         )
+    end
+  end
+
+  # Best-effort kill-cast to a reclaimed run's PRIOR lease owner once the run is
+  # terminal — C-H1 MITIGATION (the fence is the token CAS; this shaves the
+  # renew-fence sidecar's one-heartbeat zombie window and covers the sidecar-dead /
+  # renew-hung cases). Reload + confirm terminal FIRST (reviewer note 3):
+  # `RunExecution.kill_local/2` kills by run-id from the LOCAL registry, so a cast
+  # issued after a branch RESUMED + re-registered the run (`:decision_recorded` →
+  # `GateResume`) would kill a fresh, legitimate executor — only cast when the
+  # post-reconcile reload confirms terminal. A nil prior owner (boot / genesis
+  # orphan) is a no-op; a lost/wrong-node cast is harmless (tenant-pinned,
+  # registry-miss no-op in `kill_local/2`).
+  defp cast_kill_if_terminal(_run, nil), do: :ok
+
+  defp cast_kill_if_terminal(run, prior_owner) do
+    case reload_global_terminal(run) do
+      {:ok, terminal} ->
+        prior_owner
+        |> Cancellation.resolve_kill_target(WorkflowLease.node_identity(), Cluster.nodes())
+        |> Cancellation.cast_kill(terminal)
+
+      :not_terminal ->
+        :ok
+    end
+  end
+
+  # Reload cross-tenant (a system scan) and gate on a terminal status — the guard
+  # that prevents killing a freshly-resumed executor. Any load failure or a
+  # non-terminal status is `:not_terminal` (no cast).
+  defp reload_global_terminal(run) do
+    case WorkflowRun.by_id_global(run.id) do
+      {:ok, %WorkflowRun{status: status} = reloaded} ->
+        if Projection.terminal_status?(status), do: {:ok, reloaded}, else: :not_terminal
+
+      _ ->
+        :not_terminal
     end
   end
 

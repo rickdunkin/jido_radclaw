@@ -264,12 +264,14 @@ config :jido_claw, :workflow_lease, lease_seconds: 60, renew_seconds: 15
 # WS3 reclaim Pooler (JidoClaw.Orchestration.ReclaimPooler). The always-on,
 # per-node claim→dispatch loop that drains the lease-expiry reclaim selector
 # (`WorkflowRun.:claimable`) and routes each claimed orphan through
-# `WorkflowRecovery.reclaim/1`. Safe in EVERY serve mode (gateway / both / mcp)
+# `WorkflowRecovery.reclaim/2`. Safe in EVERY serve mode (gateway / both / mcp)
 # and both single- and multi-node — every claim is a `FOR UPDATE SKIP LOCKED` +
 # token-CAS, where the boot sweep is unguarded (so the Pooler needs no
-# serve-mode/cluster exclusion). `poll_interval_ms` is the re-poll cadence (and
-# the composer release-on-defer cooldown); `initial_delay_ms` lets the boot
-# one-shot win the first sweep. The genesis-orphan age grace lives at
+# serve-mode/cluster exclusion). The always-on 15s `poll_interval_ms` scan is
+# INTENDED in every mode (not accidental load): a `:claimable` poll that finds
+# nothing is a bounded `SKIP LOCKED LIMIT 1` read, and the cadence doubles as the
+# composer release-on-defer cooldown; `initial_delay_ms` lets the boot one-shot
+# win the first sweep. The genesis-orphan age grace lives at
 # `:workflow_lease[:pending_grace_seconds]` (default `lease_seconds`).
 config :jido_claw, :reclaim_pooler,
   enabled?: true,

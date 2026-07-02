@@ -107,6 +107,20 @@ defmodule JidoClaw.RouteComposer do
   `:deadline_ms`, C2) marks every wave, so the subagent's derived durable output
   is sanitized at all six sinks — real `diff`/`approved-plan` values may now flow.
 
+  ### Sensitive-park deadline (O-M2)
+
+  A marked run parks on a gate like any other, but — because it carries a bounded
+  `deadline_at_ms` — its park is time-boxed: `park_gate`/recovery re-park arm a
+  `Process.send_after` timer keyed by a distinct `deadline_ref` identity, and once
+  the durable deadline is genuinely past the run auto-abandons (child
+  `run_abandoned` + case cancellation via the fenced
+  `GateDisposition.deadline_abandon_parked_child/3`, then the parent finishes
+  `:abandoned`), keeping a secret-bearing run inside its retention bound
+  even when a human never decides. A decision that durably committed first wins
+  the gate (`{:decided, _}` routes through the normal resolution path); the run
+  still terminates at the next tick's deadline budget check. A NORMAL (unmarked)
+  run has no such timer and waits on its gate **indefinitely by design**.
+
   ## Rerun consumers
 
   The rerun/invalidation **primitive** (Phase 4e — `stages_invalidated` with an
@@ -134,7 +148,9 @@ defmodule JidoClaw.RouteComposer do
 
   require Logger
 
+  alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunPubSub
@@ -583,7 +599,7 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp generate_ref, do: JidoClaw.Refs.mint("art_")
 
   defp append_genesis_event(parent, kind, payload, tenant, actor) do
     case WorkflowLog.append(parent, kind, payload, tenant: tenant, actor: actor) do
@@ -1050,6 +1066,14 @@ defmodule JidoClaw.RouteComposer do
       # restart/re-park doesn't double-subscribe.
       parked: nil,
       gates_subscribed: false,
+      # Sensitive-park deadline (O-M2): a `:sanitize_sensitive_context` run with a
+      # durable `deadline_at_ms` arms a park-time timer so it can't outlive its
+      # secret-retention bound while gate-parked (normal runs wait indefinitely).
+      # `deadline_ref` is a distinct `make_ref/0` identity the handler match-guards
+      # against a stale fire; `timer_ref` is the `Process.send_after` handle to
+      # cancel. Both nil unless armed.
+      deadline_ref: nil,
+      timer_ref: nil,
       # Rerun primitive (Phase 4e): `rerun_counts` is the per-stage invalidation
       # tally the rerun cap reads (rebuilt from the log by `ComposerProjection`),
       # `rerun_cap` the ceiling before `route_budget_exhausted`.
@@ -1126,6 +1150,26 @@ defmodule JidoClaw.RouteComposer do
   def handle_info({:retry_wave_paused, child_run_id, attempt}, state) do
     if match?(%{child_run_id: ^child_run_id}, state.parked) do
       attempt_wave_paused(state, attempt)
+    else
+      {:noreply, state}
+    end
+  end
+
+  # Sensitive-park deadline fired (O-M2). Only dispose when the timer's identity
+  # (`deadline_ref` + `child_run_id`) still matches the CURRENT park AND the durable
+  # `deadline_at_ms` is genuinely past (a bare timer can fire after the gate resolved,
+  # after a LATER park, or before an extended deadline — never abandon the wrong
+  # case). The durable deadline is authoritative; the timer is only the wake.
+  #
+  # The deadline is a hard bound on the RUN, not a retroactive invalidator of
+  # committed gate decisions: a decision that durably committed before this
+  # message is processed wins the GATE (`dispose_park_deadline`'s fenced
+  # primitive refuses `{:decided, _}` and routes through `resolve_parked_gate`),
+  # and the RUN still terminates at the very next tick via `over_budget?/1`'s
+  # `past_deadline?` — so the retention bound holds to within one fold.
+  def handle_info({:park_deadline, deadline_ref, child_run_id, case_id}, state) do
+    if park_deadline_match?(state, deadline_ref, child_run_id) and past_deadline?(state) do
+      dispose_park_deadline(state, child_run_id, case_id)
     else
       {:noreply, state}
     end
@@ -1854,7 +1898,9 @@ defmodule JidoClaw.RouteComposer do
       display: display
     }
 
-    attempt_wave_paused(%{state | parked: park}, 0)
+    %{state | parked: park}
+    |> arm_park_deadline()
+    |> attempt_wave_paused(0)
   end
 
   # Append `wave_paused` under the parent-terminal fence, with the retry/exhaust/
@@ -1911,26 +1957,50 @@ defmodule JidoClaw.RouteComposer do
   end
 
   # The ONLY teardown path: the parent was cancelled externally during the park,
-  # so the open gate case is a real orphan. Cancel it + fail the child in one
-  # transaction (`terminate_cancelling_cases`), then stop `:normal`. If that
-  # teardown also errors, stop `:normal` anyway and leave it for recovery's
-  # terminal-parent child reconciliation — never a busy-loop.
+  # so the open gate case is a real orphan. Dispose it through the FENCED
+  # aggregate primitive (run lock first + status re-check, so a raced operator
+  # decision is never bulldozed). A raced reject/abandon (`{:decided,
+  # :cancelled/:abandoned}`) already converged the pair itself; a raced APPROVE
+  # (`{:decided, :running}`) did NOT — it is resuming the child under a parent
+  # nobody will ever fold, so it is converged here (`converge_raced_teardown`).
+  # Always stop `:normal` — disposition/cancel failures are left for recovery's
+  # terminal-parent reconciliation (`WorkflowRecovery`'s `:parked` /
+  # `:decision_recorded` branches) — never a busy-loop.
   defp teardown_parked_gate(%{parked: park} = state) do
-    case WorkflowRun.by_id(park.child_run_id, tenant: state.tenant, actor: state.actor) do
-      {:ok, %WorkflowRun{} = child} ->
-        WorkflowLog.terminate_cancelling_cases(
-          child,
-          [{:run_failed, %{error: "composer parent terminal during gate park"}}],
-          "composer parent terminal during gate park",
-          auth_opts(state)
-        )
-
-      _other ->
-        :ok
-    end
+    park.child_run_id
+    |> GateDisposition.fail_orphaned_parked_child(
+      "composer parent terminal during gate park",
+      auth_opts(state)
+    )
+    |> converge_raced_teardown(park.child_run_id, state)
 
     {:stop, :normal, state}
   end
+
+  # A raced approve won the disposition fence and is resuming the child under
+  # the terminal parent: cancel it — `Cancellation.cancel/2` is the centralized
+  # stop-a-running-run producer (durable `run_cancelled` first, then kills the
+  # mid-resume executor, cross-node included). `:already_terminal` means the
+  # resume finished before the cancel landed — its side effects already ran
+  # (the accepted sub-millisecond residual; `Cases.decide/4`'s approve refusal
+  # minimizes entry into this window).
+  defp converge_raced_teardown({:error, {:decided, :running}}, child_run_id, state) do
+    case Cancellation.cancel(child_run_id, auth_opts(state)) do
+      {:ok, _run} ->
+        :ok
+
+      {:error, :already_terminal} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[RouteComposer] teardown cancel of raced child #{child_run_id} failed: " <>
+            "#{inspect(reason)}; leaving for recovery"
+        )
+    end
+  end
+
+  defp converge_raced_teardown(_other, _child_run_id, _state), do: :ok
 
   defp ensure_gates_subscribed(%{gates_subscribed: true} = state), do: state
 
@@ -1942,6 +2012,8 @@ defmodule JidoClaw.RouteComposer do
   # The wake decision: reload the parked child and branch on its terminal STATUS
   # (the truth), polling a not-yet-terminal child (approve broadcast landed before
   # `GateResume` finished) to terminal first. Reused by recovery's `re_enter_park`.
+  # `:failed` gets an EXPLICIT arm — left to the reload-blip catch-all it would
+  # keep the parent parked forever (see `terminalize_failed_gate_child`).
   defp resolve_parked_gate(%{parked: park} = state) do
     case WorkflowRun.by_id(park.child_run_id, tenant: state.tenant, actor: state.actor) do
       {:ok, %WorkflowRun{status: :completed} = child} ->
@@ -1956,6 +2028,9 @@ defmodule JidoClaw.RouteComposer do
 
       {:ok, %WorkflowRun{status: :abandoned} = child} ->
         terminalize_gate_disposition(:abandoned, child, state)
+
+      {:ok, %WorkflowRun{status: :failed} = child} ->
+        terminalize_failed_gate_child(child, state)
 
       other ->
         # Reload failed (a DB blip): stay parked and leave it for recovery's
@@ -2007,7 +2082,7 @@ defmodule JidoClaw.RouteComposer do
   # the implementer's lock is inactive → it dispatches. `wave_index` is unchanged
   # (the park never bumped it), so `commit_wave` keys on the gate's own wave index.
   defp fold_resumed_gate(child, %{parked: park} = state) do
-    cleared = %{state | parked: nil}
+    cleared = clear_park(state)
 
     case Commit.append_markers(
            cleared.parent,
@@ -2057,17 +2132,29 @@ defmodule JidoClaw.RouteComposer do
     # takes the `else` branch (cancel — the user declined the change), never loops
     # back to planning.
     if "plan-rejected" in gate_stage.publishes and any_subscriber?(state.catalog, "plan-rejected") do
-      replan_after_reject(park, gate_stage, %{state | parked: nil})
+      replan_after_reject(park, gate_stage, clear_park(state))
     else
-      finish({:rejected, {:child_cancelled, child.id}}, %{state | parked: nil})
+      finish({:rejected, {:child_cancelled, child.id}}, clear_park(state))
     end
   end
 
   defp terminalize_gate_disposition(:rejected, child, state),
-    do: finish({:rejected, {:child_cancelled, child.id}}, %{state | parked: nil})
+    do: finish({:rejected, {:child_cancelled, child.id}}, clear_park(state))
 
   defp terminalize_gate_disposition(:abandoned, child, state),
-    do: finish({:abandoned, {:child_abandoned, child.id}}, %{state | parked: nil})
+    do: finish({:abandoned, {:child_abandoned, child.id}}, clear_park(state))
+
+  # An approved-then-FAILED gate child (`GateResume.fail_with_audit` appends
+  # `run_failed` after `approval_resolved` on a corrupt checkpoint / missing
+  # approved case / resume crash): the gate can never make progress, so the
+  # parent terminalizes `route_failed`. This must be an EXPLICIT arm in both
+  # resolvers — `:failed` falling into their reload-blip catch-alls keeps the
+  # parent parked with no wake ever coming (the decision broadcast resolves to
+  # the same `:failed` read), stranding a sensitive run past its retention
+  # deadline across restarts.
+  defp terminalize_failed_gate_child(child, %{parked: park} = state) do
+    finish_failed({:child_failed, child.id}, child, park.dispatch, park.display, state)
+  end
 
   defp wave_paused_payload(park) do
     %{wave_index: park.wave_index, agent_case_id: park.case_id, child_run_id: park.child_run_id}
@@ -2075,6 +2162,117 @@ defmodule JidoClaw.RouteComposer do
 
   defp wave_resumed_payload(park) do
     %{wave_index: park.wave_index, agent_case_id: park.case_id, child_run_id: park.child_run_id}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Sensitive-park deadline (O-M2)
+  #
+  # Deadline semantics for a delayed timer (decided): the deadline is a hard
+  # bound on the RUN, not a retroactive invalidator of committed gate decisions.
+  # `Cases.decide/4` commits case + child transitions in one transaction and
+  # only THEN broadcasts, so a `{:park_deadline, …}` message already in the
+  # mailbox can be processed after a decision durably committed. Such a fire is
+  # STALE: the disposal reloads the child FIRST and routes a decided child
+  # through the normal gate-resolution path (fold an approval, reject-terminal a
+  # reject) instead of bulldozing the parent `route_abandoned`. The RUN still
+  # terminates at the very next tick — `over_budget?/1` includes
+  # `past_deadline?` and `budget_reason/1` yields `{:deadline, deadline_at_ms}`
+  # — so the sensitive-retention bound holds to within one fold. Retroactively
+  # discarding a committed approval (comparing the decision timestamp to
+  # `deadline_at_ms`) is rejected by design: it would abandon a parent whose
+  # approved child is legitimately running/resuming (the C-H1 orphan shape) and
+  # mix timestamp authorities, buying only one tick of earlier termination.
+  # ---------------------------------------------------------------------------
+
+  @park_deadline_reason "sensitive-context gate deadline exceeded"
+
+  # Arm a park-time deadline timer ONLY for a sensitive-marked run carrying a
+  # durable `deadline_at_ms` (a normal run waits on the gate indefinitely by
+  # design). `Process.send_after` returns the timer handle, so the identity that
+  # guards a stale fire must be a SEPARATE `make_ref/0` carried IN the message. An
+  # already-past deadline gives `max(…, 0) = 0` → fires next and disposes at once.
+  defp arm_park_deadline(
+         %{
+           sanitize_sensitive_context: true,
+           deadline_at_ms: deadline_at_ms,
+           parked: %{child_run_id: child_run_id, case_id: case_id}
+         } = state
+       )
+       when is_integer(deadline_at_ms) do
+    deadline_ref = make_ref()
+    delay = max(deadline_at_ms - System.os_time(:millisecond), 0)
+
+    timer_ref =
+      Process.send_after(self(), {:park_deadline, deadline_ref, child_run_id, case_id}, delay)
+
+    %{state | deadline_ref: deadline_ref, timer_ref: timer_ref}
+  end
+
+  defp arm_park_deadline(state), do: state
+
+  # Clear the park AND cancel any armed deadline timer — the single park-exit point
+  # (used at every `parked → nil` site). Idempotent: cancelling a nil or
+  # already-fired timer is a harmless no-op.
+  defp clear_park(%{timer_ref: timer_ref} = state) do
+    cancel_park_timer(timer_ref)
+    %{state | parked: nil, deadline_ref: nil, timer_ref: nil}
+  end
+
+  defp cancel_park_timer(nil), do: :ok
+  defp cancel_park_timer(timer_ref), do: Process.cancel_timer(timer_ref)
+
+  # The fired timer's `deadline_ref` + `child_run_id` must match the CURRENT park
+  # slot. A mismatch means the gate resolved, a later gate re-parked (fresh
+  # `deadline_ref`), or a re-arm superseded this one — ignore the stale fire.
+  defp park_deadline_match?(%{parked: park, deadline_ref: deadline_ref}, fired_ref, child_run_id) do
+    is_map(park) and not is_nil(deadline_ref) and deadline_ref == fired_ref and
+      park.child_run_id == child_run_id
+  end
+
+  defp park_deadline_match?(_state, _fired_ref, _child_run_id), do: false
+
+  # Deadline reached while parked: dispose the child + its pending case(s)
+  # through the FENCED aggregate primitive (`GateDisposition` — run lock FIRST
+  # in the global run → case → events order, status re-check on the LOCKED row,
+  # case cancellations + child `run_abandoned` in one transaction), and branch
+  # on its classified outcome. A decision committed before this message was
+  # processed (approve → `:running`/`:completed`, reject → `:cancelled`,
+  # abandon → `:abandoned`, failed resume → `:failed`) surfaces as
+  # `{:decided, status}` with nothing written — the fire is STALE: route through
+  # the normal gate-resolution path, never bulldoze the parent (the run itself
+  # still terminates at the next tick's `past_deadline?` budget check; see the
+  # section comment). A read/write blip: the sensitive-retention TTL wins — the
+  # parent still terminalizes (best-effort; a pair the blip left un-disposed is
+  # closed later by recovery's terminal-parent branch).
+  defp dispose_park_deadline(state, child_run_id, _case_id) do
+    case GateDisposition.deadline_abandon_parked_child(
+           child_run_id,
+           @park_deadline_reason,
+           auth_opts(state)
+         ) do
+      {:ok, :disposed} ->
+        finish({:abandoned, {:child_abandoned, child_run_id}}, clear_park(state))
+
+      {:error, {:decided, _status}} ->
+        resolve_parked_gate(state)
+
+      {:error, reason} ->
+        finish_past_deadline_child(state, child_run_id, reason)
+    end
+  end
+
+  # The TTL-wins terminal: warn that the child pair could not be disposed, then
+  # finish the PARENT `:abandoned` via the composer's own terminal path (which
+  # also clears the park + cancels the already-fired timer). The un-disposed
+  # parked-child + open-case pair stays CONSISTENT and is closed by recovery's
+  # terminal-parent reconciliation (`WorkflowRecovery`'s `:parked` branch).
+  defp finish_past_deadline_child(state, child_run_id, reason) do
+    Logger.warning(
+      "[RouteComposer] park-deadline child-terminal skipped for #{child_run_id} " <>
+        "(#{inspect(reason)}); parent still terminalizes"
+    )
+
+    finish({:abandoned, {:child_abandoned, child_run_id}}, clear_park(state))
   end
 
   # ---------------------------------------------------------------------------
@@ -2135,9 +2333,11 @@ defmodule JidoClaw.RouteComposer do
       {:ok, %WorkflowRun{status: :awaiting_approval}} when first? ->
         resolve_recovered_gate(ensure_gates_subscribed(state), false)
 
-      # Genuinely still parked (now subscribed): re-append `wave_paused` and wait.
+      # Genuinely still parked (now subscribed): re-arm the sensitive-park deadline
+      # (O-M2 — if already past deadline the `max(…, 0)` delay fires it immediately),
+      # re-append `wave_paused`, and wait.
       {:ok, %WorkflowRun{status: :awaiting_approval}} ->
-        attempt_wave_paused(state, 0)
+        attempt_wave_paused(arm_park_deadline(state), 0)
 
       {:ok, %WorkflowRun{status: :completed} = child} ->
         fold_resumed_gate(child, state)
@@ -2147,6 +2347,9 @@ defmodule JidoClaw.RouteComposer do
 
       {:ok, %WorkflowRun{status: :abandoned} = child} ->
         terminalize_gate_disposition(:abandoned, child, state)
+
+      {:ok, %WorkflowRun{status: :failed} = child} ->
+        terminalize_failed_gate_child(child, state)
 
       # Decided-then-resuming while down (rare — reconcile usually finishes the
       # resume first): observe to terminal, then fold/terminalize.
@@ -2945,93 +3148,18 @@ defmodule JidoClaw.RouteComposer do
 
   defp log_supervised_terminal_failure(_payload, _state), do: :ok
 
-  defp parent_terminal_notify(:converged, _reason, summary, state) do
-    result =
-      append_parent_terminal(
-        state.parent_run_id,
-        :route_converged,
-        %{result: terminal_summary_subset(summary)},
-        state.tenant,
-        state.actor,
-        state.claim_token
-      )
-
-    maybe_teardown_forge_session(result, :converged, state)
-    notify_payload(result, summary)
-  end
-
-  # Phase 2d gate-decided-then-crash terminals: append the cancelled-family event
-  # carrying a STRING disposition in `result` (NOT `error`, H10 — JSONB-safe,
-  # matching the `terminal_summary_subset`/`json_safe` stringify discipline; the
-  # projection lifts `result.disposition` onto the run via
-  # `terminal_lifting_result(:cancelled, …)`). Placed before the failure catch-all.
-  defp parent_terminal_notify(kind, _reason, summary, state)
-       when kind in [:rejected, :abandoned] do
-    result =
-      append_parent_terminal(
-        state.parent_run_id,
-        route_cancelled_kind(kind),
-        %{result: %{disposition: Atom.to_string(kind)}},
-        state.tenant,
-        state.actor,
-        state.claim_token
-      )
-
-    maybe_teardown_forge_session(result, kind, state)
-    notify_payload(result, summary)
-  end
-
-  # AR-8c verify-failed: the novel `:failed`-WITH-disposition append — `:error`
-  # carries the (scrubbable) findings-derived reason, `result.disposition` the
-  # non-sensitive `"verify_failed"` marker the operator query keys on. Placed
-  # BEFORE the generic failure catch-all (which lifts only `:error`).
-  defp parent_terminal_notify(:verify_failed, reason, summary, state) do
-    result =
-      append_parent_terminal(
-        state.parent_run_id,
-        :route_verify_failed,
-        %{
-          error: format_terminal_error(:verify_failed, reason),
-          result: %{disposition: "verify_failed"}
-        },
-        state.tenant,
-        state.actor,
-        state.claim_token
-      )
-
-    maybe_teardown_forge_session(result, :verify_failed, state)
-    notify_payload(result, summary)
-  end
-
-  # AR-4 fix-failed: the self-heal twin of `:verify_failed` — a `:failed`-WITH-
-  # disposition append. `:error` carries the (scrubbable) exhausted-lenses reason,
-  # `result.disposition` the non-sensitive `"fix_failed"` the operator query keys
-  # on (distinguishing "the reviewers kept rejecting the fix" from a generic budget
-  # stop). Placed BEFORE the generic failure catch-all (which lifts only `:error`).
-  defp parent_terminal_notify(:fix_failed, reason, summary, state) do
-    result =
-      append_parent_terminal(
-        state.parent_run_id,
-        :route_fix_failed,
-        %{
-          error: format_terminal_error(:fix_failed, reason),
-          result: %{disposition: "fix_failed"}
-        },
-        state.tenant,
-        state.actor,
-        state.claim_token
-      )
-
-    maybe_teardown_forge_session(result, :fix_failed, state)
-    notify_payload(result, summary)
-  end
-
+  # All five terminals share one shape — append the (kind-specific) event +
+  # payload under the lease fence, tear the Forge session down on the ORIGINAL
+  # `kind`, and notify. `terminal_event/3` data-drives the only two things that
+  # vary: the durable event kind and its payload.
   defp parent_terminal_notify(kind, reason, summary, state) do
+    {event_kind, payload} = terminal_event(kind, reason, summary)
+
     result =
       append_parent_terminal(
         state.parent_run_id,
-        route_terminal_kind(kind),
-        %{error: format_terminal_error(kind, reason)},
+        event_kind,
+        payload,
         state.tenant,
         state.actor,
         state.claim_token
@@ -3040,6 +3168,42 @@ defmodule JidoClaw.RouteComposer do
     maybe_teardown_forge_session(result, kind, state)
     notify_payload(result, summary)
   end
+
+  # `{event_kind, payload}` per terminal kind. The disposition-carrying cases are
+  # SPECIFIC clauses; the generic failure kind is an EXPLICIT default (last) — kept
+  # distinct so the specific/fallback line never blurs (the default lifts only
+  # `:error`, no disposition).
+  #
+  #   * `:converged` → `route_converged` + the summary subset.
+  #   * `:rejected`/`:abandoned` (Phase 2d) → the cancelled-family event carrying a
+  #     STRING disposition in `result` (NOT `error`, H10 — JSONB-safe; the projection
+  #     lifts `result.disposition` via `terminal_lifting_result(:cancelled, …)`).
+  #   * `:verify_failed` (AR-8c) / `:fix_failed` (AR-4) → a `:failed`-WITH-disposition
+  #     append: `:error` carries the scrubbable reason, `result.disposition` the
+  #     non-sensitive operator-query marker.
+  defp terminal_event(:converged, _reason, summary),
+    do: {:route_converged, %{result: terminal_summary_subset(summary)}}
+
+  defp terminal_event(kind, _reason, _summary) when kind in [:rejected, :abandoned],
+    do: {route_cancelled_kind(kind), %{result: %{disposition: Atom.to_string(kind)}}}
+
+  defp terminal_event(:verify_failed, reason, _summary),
+    do:
+      {:route_verify_failed,
+       %{
+         error: format_terminal_error(:verify_failed, reason),
+         result: %{disposition: "verify_failed"}
+       }}
+
+  defp terminal_event(:fix_failed, reason, _summary),
+    do:
+      {:route_fix_failed,
+       %{error: format_terminal_error(:fix_failed, reason), result: %{disposition: "fix_failed"}}}
+
+  # Explicit default (the former catch-all): a generic failure kind — lift `:error`
+  # only, no disposition.
+  defp terminal_event(kind, reason, _summary),
+    do: {route_terminal_kind(kind), %{error: format_terminal_error(kind, reason)}}
 
   # AR-8b-2 F2 (5.6 / D3 — the review's headline gap): tear the exec Forge session
   # down on EVERY terminal, not just `:converged`. `:converged → complete_session`

@@ -370,7 +370,7 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
     end
   end
 
-  defp generate_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp generate_ref, do: JidoClaw.Refs.mint("art_")
 
   defp load_value(row, opts) do
     case Ash.load(row, :value, tenant: opts[:tenant], actor: opts[:actor]) do

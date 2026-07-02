@@ -110,5 +110,5 @@ defmodule JidoClaw.Orchestration.Reactors.PlanGateTest do
 
   defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]
 
-  defp gen_ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp gen_ref, do: JidoClaw.Refs.mint("art_")
 end

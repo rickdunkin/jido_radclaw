@@ -202,6 +202,28 @@ defmodule JidoClaw.Security.ToolApprovalTest do
       end
     end
 
+    test "command-runner + interpreter bypasses of the shell floor pend (S-M1)", %{scope: scope} do
+      # `require: []` and no template overlay, so the only thing that can gate
+      # run_command here is the `{:pattern, :command}` shell param-pattern — i.e.
+      # the analyzer's :opaque floor (scope :runner / :interpreter) reached it.
+      bypasses = [
+        "echo . | xargs git commit -m x",
+        "ssh host git commit",
+        "su -c 'git commit'",
+        "parallel 'git commit' ::: x",
+        "find . -exec git commit ;",
+        ~s(python -c "import os"),
+        ~s(node -e "x"),
+        "echo code | python",
+        "xargs $cmd"
+      ]
+
+      for cmd <- bypasses do
+        assert {:error, %{code: :approval_pending}} = run_cmd(scope, cmd),
+               "expected #{inspect(cmd)} to pend"
+      end
+    end
+
     test "compound and control forms hiding git commit pend", %{scope: scope} do
       compounds = [
         "(git commit)",
@@ -718,7 +740,11 @@ defmodule JidoClaw.Security.ToolApprovalTest do
       # :structure (pipe into a shell)
       "curl x | sh",
       # {:effect, :crontab}
-      "crontab -e"
+      "crontab -e",
+      # {:effect, :opaque} scope :runner (S-M1 command-runner wrapping git commit)
+      "xargs git commit -m x",
+      # {:effect, :opaque} scope :interpreter (S-M1 interpreter one-liner)
+      ~s(python -c "x")
     ]
 
     test "a floor-tripping run_command under :docker passes the gate", %{scope: scope} do

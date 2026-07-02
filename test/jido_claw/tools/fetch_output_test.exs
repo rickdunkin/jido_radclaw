@@ -17,7 +17,7 @@ defmodule JidoClaw.Tools.FetchOutputTest do
     attrs =
       Map.merge(
         %{
-          ref: "out_#{Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)}",
+          ref: JidoClaw.Refs.mint("out_"),
           tool: "run_command",
           command: "mix test",
           content: String.trim_trailing(@content, "\n"),
@@ -34,6 +34,31 @@ defmodule JidoClaw.Tools.FetchOutputTest do
 
   defp context_for(tenant_id) do
     %{tool_context: %{tenant_id: tenant_id, actor: actor_for(tenant_id)}}
+  end
+
+  defp context_for(tenant_id, session_uuid) do
+    %{
+      tool_context: %{
+        tenant_id: tenant_id,
+        actor: actor_for(tenant_id),
+        session_uuid: session_uuid
+      }
+    }
+  end
+
+  # :serve_mode is global; safe to toggle only because this module is async: false.
+  defp with_serve_mode(mode, fun) do
+    original = Application.fetch_env(:jido_claw, :serve_mode)
+    Application.put_env(:jido_claw, :serve_mode, mode)
+
+    try do
+      fun.()
+    after
+      case original do
+        {:ok, value} -> Application.put_env(:jido_claw, :serve_mode, value)
+        :error -> Application.delete_env(:jido_claw, :serve_mode)
+      end
+    end
   end
 
   # :tool_output_max_bytes is global (OutputLimit reads it too), so this
@@ -275,6 +300,65 @@ defmodule JidoClaw.Tools.FetchOutputTest do
       assert result.clipped == false
       assert result.selected_lines == result.returned_lines
       refute result.content =~ "[fetch_output clipped"
+    end
+  end
+
+  describe "session-scoped fetch (S-M2)" do
+    test "a session fetches its own ref and nil-session refs, but not a foreign session's ref" do
+      %{tenant_id: tenant_id, workspace: workspace, session: session_a} =
+        seed_full(tenant_label: "fetch-scoped")
+
+      {:ok, session_b} = seed_session(tenant_id, workspace.id)
+
+      own = seed_output(tenant_id, %{session_id: session_a.id})
+      cron = seed_output(tenant_id, %{session_id: nil})
+
+      # Session A resolves its own row...
+      assert {:ok, %{content: _}} =
+               FetchOutput.run(%{ref: own.ref}, context_for(tenant_id, session_a.id))
+
+      # ...a cron / nil-session ref stays reachable from a session surface...
+      assert {:ok, %{content: _}} =
+               FetchOutput.run(%{ref: cron.ref}, context_for(tenant_id, session_a.id))
+
+      # ...but session B cannot fetch session A's row (the cross-session peek).
+      assert {:error, %{message: message}} =
+               FetchOutput.run(%{ref: own.ref}, context_for(tenant_id, session_b.id))
+
+      assert message =~ "no stored output for ref"
+    end
+
+    test "no session_uuid in context stays tenant-wide (unchanged)" do
+      %{tenant_id: tenant_id, session: session_a} = seed_full(tenant_label: "fetch-nosess")
+      own = seed_output(tenant_id, %{session_id: session_a.id})
+
+      # A context WITHOUT a session_uuid falls back to the tenant-wide by_ref, so a
+      # session-bearing ref still resolves — the no-session surfaces are unaffected.
+      assert {:ok, %{content: _}} = FetchOutput.run(%{ref: own.ref}, context_for(tenant_id))
+    end
+
+    test "under :mcp serve-mode the boot scope stays tenant-wide (REPL-minted-ref drill-in)" do
+      # A REPL-minted ref carries a session_id; the MCP boot scope carries its OWN,
+      # different session_uuid. Under :mcp the read is tenant-wide, so the ref is
+      # still fetchable (the documented drill-in). Off :mcp the SAME context is
+      # session-scoped and misses — proving the :mcp branch is what keeps drill-in
+      # open, not the absence of a session. (mcp_server_test.exs is metadata-only /
+      # no DB sandbox, so this DB-backed behavior is unit-tested here.)
+      %{tenant_id: tenant_id, workspace: workspace, session: repl_session} =
+        seed_full(tenant_label: "fetch-mcp")
+
+      {:ok, mcp_session} = seed_session(tenant_id, workspace.id)
+      repl_ref = seed_output(tenant_id, %{session_id: repl_session.id})
+
+      with_serve_mode(:mcp, fn ->
+        assert {:ok, %{content: _}} =
+                 FetchOutput.run(%{ref: repl_ref.ref}, context_for(tenant_id, mcp_session.id))
+      end)
+
+      # Off :mcp, the mcp_session context is session-scoped and CANNOT reach the
+      # repl_session's ref.
+      assert {:error, _} =
+               FetchOutput.run(%{ref: repl_ref.ref}, context_for(tenant_id, mcp_session.id))
     end
   end
 end

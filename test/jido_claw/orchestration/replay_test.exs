@@ -24,6 +24,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.Replay
   alias JidoClaw.Orchestration.Replay.Diagnostics
+  alias JidoClaw.Orchestration.Replay.Safety
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Skills
@@ -503,6 +504,22 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       assert {:error, {:not_replayable, :irreversible_check_failed}} =
                Replay.replay(run.id, tenant: ctx.tenant, actor: ctx.actor)
+    end
+
+    @tag :capture_log
+    test "the irreversible gate reads ONLY the step kinds Safety inspects (O-M1 bounded-read contract)",
+         ctx do
+      # Behavior tests can't catch a silently-dropped `query:` (the filter only
+      # excludes events the check already ignores) — capture the reader's opts
+      # and pin the contract to `Safety.irreversible_kinds/0` directly.
+      put_capturing_event_reader!(self())
+      run = forge_readfail_run!("forge-bounded-read", ctx)
+
+      assert {:error, {:not_replayable, :irreversible_check_failed}} =
+               Replay.replay(run.id, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert_receive {:reader_opts, _run_id, opts}
+      assert opts[:query][:filter] == [kind: [in: Safety.irreversible_kinds()]]
     end
 
     @tag :capture_log

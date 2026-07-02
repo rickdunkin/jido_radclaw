@@ -141,6 +141,20 @@ defmodule JidoClaw.Orchestration.LeaseHelpers do
     )
   end
 
+  @doc """
+  Expire a run's lease by backdating `claim_expires_at` `seconds_ago`, KEEPING its
+  `claimed_by`/`claim_token` — unlike `set_claim!/3`, which restamps a literal
+  `"seed-node"` owner. Use when a scenario needs the REAL middleware-stamped owner
+  (`node_identity/0`) preserved so a reclaim kill-cast routes `:local` (C-H1).
+  """
+  @spec expire_claim!(String.t(), pos_integer()) :: term()
+  def expire_claim!(run_id, seconds_ago \\ 120) do
+    Repo.query!(
+      "UPDATE workflow_runs SET claim_expires_at = now() - ($1 || ' seconds')::interval WHERE id = $2",
+      [to_string(seconds_ago), Ecto.UUID.dump!(run_id)]
+    )
+  end
+
   @doc "Rotate a run's `claim_token` directly (no expiry change) — the reclaimer-steal seed."
   @spec rotate_token!(String.t(), String.t()) :: term()
   def rotate_token!(run_id, token) do

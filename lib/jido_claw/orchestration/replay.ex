@@ -223,7 +223,15 @@ defmodule JidoClaw.Orchestration.Replay do
   defp check_irreversible(_original, _tenant, _actor, true), do: :ok
 
   defp check_irreversible(original, tenant, actor, false) do
-    case EventReader.for_run(original.id, tenant: tenant, actor: actor) do
+    # O-M1: only the step kinds `Safety.irreversible_executed?/1` inspects
+    # (single-sourced in `Safety.irreversible_kinds/0`) — the gate no longer
+    # loads the ENTIRE event log. Bounded by step count; no `kind` index, so
+    # the win is fewer rows decoded/folded.
+    case EventReader.for_run(original.id,
+           query: [filter: [kind: [in: Safety.irreversible_kinds()]]],
+           tenant: tenant,
+           actor: actor
+         ) do
       {:ok, events} ->
         if Safety.irreversible_executed?(events) do
           {:error, :irreversible_steps_executed}

@@ -263,10 +263,13 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   `FOR UPDATE SKIP LOCKED` + `LIMIT 1` over the `:claimable` set (oldest first)
   picks one unlocked candidate; the CAS is redundant under the held row lock but
-  kept uniform. Returns `{:ok, run}`, `:none` (nothing claimable), or
-  `{:error, term()}`. The WS3 `ReclaimPooler` drains this to `:none` each poll.
+  kept uniform. Returns `{:ok, run, prior_owner}` (`prior_owner` = the pre-rotation
+  `claimed_by`, the fenced zombie's node or `nil` — C-H1 kill-cast input), `:none`
+  (nothing claimable), or `{:error, term()}`. The WS3 `ReclaimPooler` drains this
+  to `:none` each poll.
   """
-  @spec claim_next(keyword()) :: {:ok, WorkflowRun.t()} | :none | {:error, term()}
+  @spec claim_next(keyword()) ::
+          {:ok, WorkflowRun.t(), String.t() | nil} | :none | {:error, term()}
   def claim_next(_opts \\ []), do: claim_locked(&read_claimable/0, :none)
 
   @doc """
@@ -275,16 +278,18 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   The by-id sibling of `claim_next/1` for the composer reclaim child-step: lock the
   row `FOR UPDATE`, re-check the **full** `:claimable` predicate under the lock
   (expired lease **or** aged never-claimed `:pending`), and only on a match
-  CAS-rotate + reload. Returns `{:ok, run}` (rotated — a zombie owner is now
-  fenced), `:lost` (not claimable — live lease, fresh-pending within grace, parked
-  leaseless gate, terminal, or skipped), or `{:error, term()}`.
+  CAS-rotate + reload. Returns `{:ok, run, prior_owner}` (rotated — a zombie owner
+  is now fenced; `prior_owner` is the pre-rotation `claimed_by` for the C-H1
+  kill-cast), `:lost` (not claimable — live lease, fresh-pending within grace,
+  parked leaseless gate, terminal, or skipped), or `{:error, term()}`.
 
   The under-lock predicate re-check is the TOCTOU fence: `stamp/4` alone guards
   token+status but **not expiry**, so a bare CAS would steal a child that *renewed*
   between the parent's child-load and this claim (`renew/2` keeps the token, so the
   CAS would still match). The expiry re-check under the lock rejects it (`:lost`).
   """
-  @spec claim_run(String.t()) :: {:ok, WorkflowRun.t()} | :lost | {:error, term()}
+  @spec claim_run(String.t()) ::
+          {:ok, WorkflowRun.t(), String.t() | nil} | :lost | {:error, term()}
   def claim_run(run_id), do: claim_locked(fn -> read_claimable_by_id(run_id) end, :lost)
 
   # The shared locked-claim core. Run `select` inside a transaction; on a single
@@ -300,7 +305,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
              {:error, reason} -> Repo.rollback(reason)
            end
          end) do
-      {:ok, %WorkflowRun{} = run} -> {:ok, run}
+      {:ok, {%WorkflowRun{} = run, prior_owner}} -> {:ok, run, prior_owner}
       {:ok, ^empty} -> empty
       {:error, reason} -> {:error, reason}
     end
@@ -308,12 +313,15 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   # `query_to_claimable/1` is the Ash-generated builder for the `:claimable` read
   # (the `query_to_*` code-interface helper), now arg-bearing — the genesis-orphan
-  # clause needs the runtime age cutoff (WS3 Component 2). NOTE: Ash compiles the
-  # action's `now()` filter to an APP-clock bound parameter (not SQL `now()`), so
-  # this eligibility scan is app-clock — acceptable because the *time* comparison is
-  # only reclaim-eligibility, while the actual double-run safety is the clock-free
-  # token CAS (`stamp/4`) + renew-fence (`renew/2`); the lease *expiry* is stamped on
-  # the DB clock. No actor: the action is policy-bypassed + `multitenancy(:bypass)`
+  # clause needs the runtime age cutoff (WS3 Component 2). Clock authority (C-M5):
+  # the expired-lease clause compares `claim_expires_at` against the DB clock via a
+  # raw `fragment("? < now()", ...)` (workflow_run.ex `:claimable`), and lease
+  # expiry is itself stamped on the DB clock (`@stamp_sql`/`@renew_sql` use SQL
+  # `now() + interval`), so eligibility is DB-clock on both sides — no cross-node
+  # skew band remains. Only the genesis `:pending_cutoff` arg stays app-clock
+  # (matched to app-written `inserted_at`). Double-run safety was never the clock's
+  # job anyway: the fence is the clock-free token CAS (`stamp/4`) + renew-fence
+  # (`renew/2`). No actor: the action is policy-bypassed + `multitenancy(:bypass)`
   # (a system scan, like `list_non_terminal_global`).
   defp read_claimable do
     pending_cutoff()
@@ -351,10 +359,14 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   # Under the held FOR UPDATE the row can't change beneath us, so a `:lost`/error
   # here is a genuine fault — roll the whole claim back rather than return a
-  # half-claimed run.
+  # half-claimed run. Returns `{reloaded_run, prior_owner}`: `prior_owner` is the
+  # PRE-rotation `claimed_by` (the fenced zombie's node, or `nil` for a
+  # never-claimed genesis orphan), captured here off the locked SELECT before the
+  # CAS rotates the token — C-H1 threads it out so a reclaimer can best-effort
+  # kill-cast the old executor after driving the run terminal.
   defp claim_one(run) do
     case stamp(run.id, Ash.UUID.generate(), run.claim_token, tenant: run.tenant_id) do
-      {:ok, :claimed} -> reload_claimed(run)
+      {:ok, :claimed} -> {reload_claimed(run), run.claimed_by}
       {:ok, :lost} -> Repo.rollback(:claim_lost)
       {:error, reason} -> Repo.rollback(reason)
     end

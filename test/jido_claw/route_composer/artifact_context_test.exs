@@ -39,7 +39,7 @@ defmodule JidoClaw.RouteComposer.ArtifactContextTest do
     {:ok, row} =
       ComposerArtifact.store_pending(
         %{
-          ref: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower),
+          ref: JidoClaw.Refs.mint("art_"),
           name: name,
           producer: producer,
           term: value,
@@ -153,7 +153,7 @@ defmodule JidoClaw.RouteComposer.ArtifactContextTest do
     {:ok, row} =
       ComposerArtifact.store_pending(
         %{
-          ref: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower),
+          ref: JidoClaw.Refs.mint("art_"),
           name: "request",
           producer: "seed",
           term: "Build the auth feature",

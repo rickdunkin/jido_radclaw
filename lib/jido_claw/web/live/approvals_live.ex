@@ -214,6 +214,19 @@ defmodule JidoClaw.Web.ApprovalsLive do
          |> put_flash(:info, tool_call_flash(decision))
          |> assign(gates: load_gates(socket))}
 
+      {:error, :parent_terminal} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "The parent route has already ended — this gate can no longer be approved " <>
+             "(reject or abandon to close it)."
+         )}
+
+      {:error, :parent_state_unknown} ->
+        {:noreply,
+         put_flash(socket, :error, "Could not verify the parent route's state — try again.")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not #{decision} gate: #{inspect(reason)}")}
     end

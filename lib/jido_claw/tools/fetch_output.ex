@@ -5,8 +5,13 @@ defmodule JidoClaw.Tools.FetchOutput do
 
   Shaped tool results (e.g. a compressed `mix test` run) carry a footer
   like `[full output: 184320 bytes — fetch_output ref=out_a1b2c3d4e5f6]`.
-  This tool fetches that stored text — tenant-scoped — and slices it so
-  the agent can drill into detail without re-running the command.
+  This tool fetches that stored text and slices it so the agent can drill
+  into detail without re-running the command. The read is always
+  tenant-scoped; on session-meaningful surfaces (a REPL / gateway turn
+  with a resolved `session_uuid`) it is ALSO session-scoped (S-M2), so one
+  session can't fetch another's output — while system/cron-minted
+  (`session_id: nil`) refs stay reachable. Under `:mcp` serve-mode the boot
+  scope stays tenant-wide (the documented REPL-minted-ref drill-in flow).
 
   Built with `use JidoClaw.Tools.Action`, so the shared markers and
   pipeline come free; the shaper's allowlist keeps it from shaping its
@@ -124,11 +129,38 @@ defmodule JidoClaw.Tools.FetchOutput do
   defp lookup(ref, tenant_id, tool_context) do
     actor = Map.get(tool_context, :actor) || Actor.system(tenant_id)
 
-    case ToolOutput.by_ref(ref, tenant: tenant_id, actor: actor) do
+    result =
+      case scoped_session(tool_context) do
+        {:ok, session_uuid} ->
+          ToolOutput.by_ref_scoped(ref, session_uuid, tenant: tenant_id, actor: actor)
+
+        :tenant_wide ->
+          ToolOutput.by_ref(ref, tenant: tenant_id, actor: actor)
+      end
+
+    case result do
       {:ok, row} -> {:ok, row}
       {:error, _} -> {:error, "no stored output for ref #{ref} (expired or unknown)"}
     end
   end
+
+  # S-M2: session-scope the ref read on session-meaningful surfaces (a REPL /
+  # gateway turn carrying a resolved `session_uuid`), so one session can't fetch
+  # another's stored output. Under `:mcp` serve-mode the boot scope stays
+  # tenant-wide — the documented REPL-minted-ref drill-in flow — even though the
+  # MCP scope carries its OWN `session_uuid`; the SURFACE (serve_mode), not
+  # "caller has a session", is the discriminator. Uses `session_uuid` (the DB uuid
+  # the store writes), NOT the human `session_id` string.
+  defp scoped_session(tool_context) do
+    with false <- mcp_serve_mode?(),
+         session_uuid when is_binary(session_uuid) <- Map.get(tool_context, :session_uuid) do
+      {:ok, session_uuid}
+    else
+      _ -> :tenant_wide
+    end
+  end
+
+  defp mcp_serve_mode?, do: Application.get_env(:jido_claw, :serve_mode) == :mcp
 
   # Precedence: grep > tail > head > offset/limit. Slicers return the
   # rendered line list plus the keep-direction the clip step honors when

@@ -211,6 +211,53 @@ defmodule JidoClaw.Orchestration.CancellationTest do
     end
   end
 
+  describe "reclaim-vs-cancel interleaving (C-H2)" do
+    test "a claim reclaimed to another owner: cancel lands the terminal once and routes the kill off the fresh owner, not the local zombie",
+         ctx do
+      {:ok, run} = WorkflowRun.create(%{name: "reclaim-vs-cancel"}, scope(ctx))
+      {:ok, _} = WorkflowLog.append(run, :run_started, %{})
+      run_id = run.id
+
+      # A live local executor stand-in (registry value is the tenant, as
+      # run_killable writes it), left behind as a ZOMBIE when this node's lease
+      # was reclaimed elsewhere. No sidecar — so ONLY the cancel could kill it.
+      parent = self()
+
+      {:ok, executor} =
+        Task.start(fn ->
+          {:ok, _} = Registry.register(JidoClaw.Orchestration.RunRegistry, run_id, ctx.tenant)
+          send(parent, :registered)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :registered
+
+      # A reclaimer rotated the claim to a second owner (an unconnected node)
+      # mid-flight — the single-BEAM reclaim-vs-cancel interleaving (cross-node
+      # kill delivery is WS6).
+      Repo.query!(
+        "UPDATE workflow_runs SET claimed_by = 'jidoclaw@ghost' WHERE id = $1",
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      ref = Process.monitor(executor)
+
+      assert {:ok, %WorkflowRun{status: :cancelled}} = Cancellation.cancel(run_id, scope(ctx))
+
+      # The terminal landed exactly once (per-run FOR UPDATE lock; first wins).
+      assert Enum.count(kinds(run_id, ctx), &(&1 == :run_cancelled)) == 1
+
+      # The kill routed off the FRESH post-terminal reload (owner = ghost ⇒
+      # :unroutable), NOT the local zombie — the new owner / WS3 reclaim covers
+      # that. `kill_local/2` is synchronous, so a local route would already have
+      # killed E by the time cancel returned.
+      refute_receive {:DOWN, ^ref, :process, ^executor, _}, 300
+      assert Process.alive?(executor)
+
+      Process.exit(executor, :kill)
+    end
+  end
+
   # -- Helpers --
 
   # Launch BlockingTestReactor on a linked launcher task and block until the

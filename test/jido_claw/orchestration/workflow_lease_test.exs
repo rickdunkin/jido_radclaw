@@ -99,9 +99,9 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       terminal = seed_run(ctx, "terminal")
       set_status!(terminal.id, "failed")
 
-      assert {:ok, %WorkflowRun{} = a} = WorkflowLease.claim_next()
-      assert {:ok, %WorkflowRun{} = b} = WorkflowLease.claim_next()
-      assert {:ok, %WorkflowRun{} = c} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = a, _prior} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = b, _prior} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = c, _prior} = WorkflowLease.claim_next()
       assert :none = WorkflowLease.claim_next()
 
       assert [a.id, b.id, c.id] == [oldest.id, mid.id, newest.id]
@@ -247,7 +247,7 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       fresh_token = Ash.UUID.generate()
       set_claim!(fresh.id, fresh_token, 600)
 
-      assert {:ok, %WorkflowRun{} = claimed} = WorkflowLease.claim_next()
+      assert {:ok, %WorkflowRun{} = claimed, _prior} = WorkflowLease.claim_next()
       assert claimed.id == expired.id
       assert is_binary(claimed.claim_token) and claimed.claim_token != old_token
 
@@ -409,7 +409,7 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       # :pending + a non-nil but expired claim — the crash-after-stamp shape.
       set_claim!(run.id, Ash.UUID.generate(), -90)
 
-      assert {:ok, claimable} = WorkflowLease.claim_next()
+      assert {:ok, claimable, _prior} = WorkflowLease.claim_next()
       assert claimable.id == run.id
     end
   end
@@ -745,7 +745,7 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       # Backdate the re-armed expiry and prove claim_next/0 actually claims it — the
       # residual is now Pooler-reclaimable, not boot-recovery-only.
       set_claim!(run.id, prior, -1)
-      assert {:ok, claimed} = WorkflowLease.claim_next()
+      assert {:ok, claimed, _prior} = WorkflowLease.claim_next()
       assert claimed.id == run.id
     end
 

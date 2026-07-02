@@ -10,7 +10,8 @@ defmodule JidoClaw.Security.ShellCommand do
   equivalent) — regardless of how it is dressed up. Brittle regexes over the raw
   string miss quoting (`git -C "my dir" commit`), separators (`a && git commit`),
   multiline, env prefixes (`FOO=bar git commit`), wrappers (`sudo git commit`),
-  paths (`/usr/bin/git commit`), and interpreters (`sh -c "git commit"`).
+  paths (`/usr/bin/git commit`), interpreters (`sh -c "git commit"`, `python -c
+  …`), and command-runners (`xargs git commit`, `ssh host git commit`).
 
   `analyze/1` tokenizes with a `nimble_parsec` grammar the way a shell would
   (quote/escape-aware), splits on shell separators and group boundaries, strips
@@ -40,11 +41,14 @@ defmodule JidoClaw.Security.ShellCommand do
     * `:command_substitution` / `:backtick` / `:pipe_to_shell` — suspicious shell
       structure (also surfaced in `structure`, tunable by the gate).
     * `:opaque` — the single fail-closed fact, carrying `%{scope, reason}` where
-      `scope ∈ {:parse, :interpreter, :git}`. Anywhere analysis cannot confidently
-      resolve — an incomplete parse, an over-length input, the recursion/
-      sub-command caps, a here-doc feeding a shell, a parameter-expansion command
-      word, an unrecognized wrapper flag (`scope: :parse`), a dynamic
-      interpreter/eval script (`scope: :interpreter`), or a git-resolution
+      `scope ∈ {:parse, :interpreter, :runner, :git}`. Anywhere analysis cannot
+      confidently resolve — an incomplete parse, an over-length input, the
+      recursion/sub-command caps, a here-doc feeding a shell, a
+      parameter-expansion command word, an unrecognized wrapper flag
+      (`scope: :parse`); a dynamic interpreter/eval script, an interpreter
+      one-liner (`python -c`, `node -e`), or a piped/stdin interpreter
+      (`scope: :interpreter`); a command-runner wrapping a gated root/shell
+      (`xargs`/`ssh`/`su -c`/`find -exec`, `scope: :runner`); or a git-resolution
       uncertainty (`scope: :git`) — it emits an `{:opaque, _}` effect.
 
   **Invariant:** `opaque?: true` ⟺ at least one `{:opaque, _}` effect is present.
@@ -91,6 +95,14 @@ defmodule JidoClaw.Security.ShellCommand do
   interpreter/eval script (`sh -c "$cmd"`) are all gated even though opaque.
   `$VAR`/`${…}` in a plain *argument* position stays benign — it does not obscure
   the command word.
+
+  Command-runners and interpreters extend the floor (S-M1): a runner wrapping a
+  gated root or shell (`xargs`/`ssh`/`su -c`/`find -exec`, or a dynamic runner
+  arg) and an interpreter one-liner or stdin program (`python -c`,
+  `echo … | python`, `python -`) gate. But the `npx`/`nix run` family (running
+  an arbitrary package is statically unknowable) and an interpreter *script-file*
+  invocation (`python foo.py`, `… | python foo.py`) stay residuals — same class
+  as `bash deploy.sh`.
   """
   import NimbleParsec
 
@@ -170,6 +182,35 @@ defmodule JidoClaw.Security.ShellCommand do
   # control structure resolves (`then git commit`, `do git commit`). Group
   # delimiters `( ) { }` are split boundaries (handled in split/1), not words.
   @control_keywords ~w(! if then elif else fi for while until do done case esac in select function coproc)
+
+  # ---- Command-runner / interpreter approval floor (S-M1) ----
+  #
+  # Command-runners execute an argument-supplied command, so a gated root
+  # (`git`/`crontab`) or a shell wrapped by one runs unapproved unless the wrapper
+  # is recognized. `find` runs commands only via its `-exec`-family predicates, so
+  # it is special-cased (gate on those or a dynamic arg — not on gated-root reach).
+  @command_runners ~w(xargs parallel watch entr chronic ts ssh su flock script strace unbuffer)
+  @find_exec_flags ~w(-exec -execdir -ok -okdir)
+
+  # Gated command roots a runner might wrap (basename-compared, alongside @shells).
+  @gated_roots ~w(git crontab)
+
+  # Interpreters and the argv flags that make each EVALUATE code from the command
+  # line (not run a script file). Table-driven per interpreter — a global
+  # `-c/-e/-r` rule would miss `node -p/--print` and make `ruby -r` (which does run
+  # code) accidental. We never parse the code: the flag's presence alone fails
+  # closed. Bundled (`-e'code'`) and `=` (`--eval=code`) forms are matched.
+  @interpreter_eval_flags %{
+    "python" => ~w(-c),
+    "python3" => ~w(-c),
+    "perl" => ~w(-e -E),
+    "ruby" => ~w(-e -r),
+    "node" => ~w(-e --eval -p --print),
+    "deno" => ~w(eval),
+    "bun" => ~w(-e),
+    "php" => ~w(-r)
+  }
+  @interpreters Map.keys(@interpreter_eval_flags)
 
   # Per-wrapper flag-arity table as DATA. `bool`: flags taking no value;
   # `val`: flags taking a separate value (or a bundled `-fVALUE`/`--flag=value`);
@@ -500,7 +541,10 @@ defmodule JidoClaw.Security.ShellCommand do
         structure_effects(structure) ++
         git_env_effects(elements, commands) ++
         crontab_effects(commands) ++
-        Enum.flat_map(commands, &git_command_effects/1)
+        Enum.flat_map(commands, &git_command_effects/1) ++
+        Enum.flat_map(commands, &runner_effects/1) ++
+        Enum.flat_map(commands, &interpreter_effects/1) ++
+        stdin_interpreter_effects(resolved, commands)
 
     base = analysis(commands, structure, effects)
     merge_recursions(base, commands, depth)
@@ -597,6 +641,110 @@ defmodule JidoClaw.Security.ShellCommand do
 
   defp opaque_effect(nil), do: []
   defp opaque_effect(reason), do: [effect(:opaque, %{scope: :git, reason: reason})]
+
+  # ---- Command-runner / interpreter effects (S-M1) ----
+
+  # A command-runner (`xargs`, `ssh host …`, `su -c …`, `flock … git commit`, …)
+  # executes an argument-supplied command, so a gated root or shell it wraps runs
+  # unapproved. Emit `:opaque` (scope :runner) when a wrapped arg word resolves to
+  # a gated root/shell, or fail closed on any dynamic arg (an unresolved `$var`
+  # the analyzer can't prove inert). `find` reaches a command only via its
+  # `-exec`-family predicates, so it gates on those (or a dynamic arg) — a literal
+  # `find . -name git` reaches no command and stays inert.
+  defp runner_effects(%Command{cmd: "find", args: args, arg_dyns: arg_dyns}) do
+    cond do
+      Enum.any?(args, &(&1 in @find_exec_flags)) ->
+        [effect(:opaque, %{scope: :runner, reason: :find_exec})]
+
+      any_dyn?(arg_dyns) ->
+        [effect(:opaque, %{scope: :runner, reason: :dynamic_runner})]
+
+      true ->
+        []
+    end
+  end
+
+  defp runner_effects(%Command{cmd: cmd, args: args, arg_dyns: arg_dyns})
+       when cmd in @command_runners do
+    cond do
+      runner_reaches_gated?(args) -> [effect(:opaque, %{scope: :runner, reason: :command_runner})]
+      any_dyn?(arg_dyns) -> [effect(:opaque, %{scope: :runner, reason: :dynamic_runner})]
+      true -> []
+    end
+  end
+
+  defp runner_effects(_command), do: []
+
+  # Split each literal arg on whitespace first (the quoting fix): a runner
+  # template passed as ONE argv word (`parallel 'git commit' ::: x`,
+  # `ssh host "git commit"`) still exposes the gated root. Basename-compared.
+  defp runner_reaches_gated?(args) do
+    args
+    |> Enum.flat_map(&String.split/1)
+    |> Enum.map(&Path.basename/1)
+    |> Enum.any?(&(&1 in @gated_roots or &1 in @shells))
+  end
+
+  # An interpreter one-liner (`python -c`, `node -e/-p`, `perl -e`, …) is the
+  # likeliest LLM evasion of the shell `-c` floor. Gate on the eval flag alone
+  # (never parse the code); also fail closed on a dynamic argv token.
+  defp interpreter_effects(%Command{cmd: cmd, args: args, arg_dyns: arg_dyns})
+       when cmd in @interpreters do
+    cond do
+      interpreter_eval_flag?(cmd, args) ->
+        [effect(:opaque, %{scope: :interpreter, reason: :interpreter_eval})]
+
+      any_dyn?(arg_dyns) ->
+        [effect(:opaque, %{scope: :interpreter, reason: :dynamic_interpreter_arg})]
+
+      true ->
+        []
+    end
+  end
+
+  defp interpreter_effects(_command), do: []
+
+  defp interpreter_eval_flag?(cmd, args) do
+    flags = Map.fetch!(@interpreter_eval_flags, cmd)
+    Enum.any?(args, fn arg -> Enum.any?(flags, &eval_flag_match?(&1, arg)) end)
+  end
+
+  # A flag matches an arg exactly, bundled (`-e'code'`, short flags only), or via
+  # the `=` form (`--eval=code`) — mirrors `bundled_value?/2`'s bundling rule.
+  defp eval_flag_match?(flag, arg) do
+    arg == flag or
+      (String.starts_with?(arg, flag) and arg != flag and
+         (byte_size(flag) == 2 or String.starts_with?(arg, flag <> "=")))
+  end
+
+  # Piped / stdin interpreter execution the eval-flag table misses: `echo … |
+  # python` (a pipe sink with no script-file arg reads its program from stdin)
+  # and `python -` / `… | python -` (an explicit stdin arg). A piped interpreter
+  # WITH a script-file arg (`… | python foo.py`) ignores stdin → documented
+  # residual, like `bash deploy.sh`. Kept out of pipe_structure/1 (which flattens
+  # to `{kind, %{}}` and loses the evidence) — a dedicated mapper over the
+  # pipe-tagged `resolved` (sink) plus `commands` (the `-`-arg case).
+  defp stdin_interpreter_effects(resolved, commands) do
+    if Enum.any?(commands, &interpreter_reads_stdin_dash?/1) or
+         Enum.any?(resolved, &piped_bare_interpreter?/1) do
+      [effect(:opaque, %{scope: :interpreter, reason: :stdin_interpreter})]
+    else
+      []
+    end
+  end
+
+  defp interpreter_reads_stdin_dash?(%Command{cmd: cmd, args: args}) when cmd in @interpreters,
+    do: "-" in args
+
+  defp interpreter_reads_stdin_dash?(_command), do: false
+
+  defp piped_bare_interpreter?({:pipe, %Command{cmd: cmd, args: args, arg_dyns: arg_dyns}})
+       when cmd in @interpreters,
+       do: first_non_flag(Enum.zip(args, arg_dyns)) == nil
+
+  defp piped_bare_interpreter?(_resolved), do: false
+
+  defp any_dyn?(arg_dyns), do: Enum.any?(arg_dyns, &(&1 != []))
 
   # ---- git-env detection ----
 

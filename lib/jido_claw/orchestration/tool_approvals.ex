@@ -299,6 +299,12 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
 
   # -- Fingerprint canonicalization (DefinitionFingerprint discipline) --
 
+  # S-L3 INVARIANT: canonicalization must only reorder/stringify keys — it must
+  # NEVER collapse two DIFFERENT tool-call payloads to the same canonical form, or
+  # a single human approval would authorize a distinct command (approvals are
+  # single-use, keyed on this fingerprint). Any future normalization added here
+  # (case-folding, whitespace trimming, arg dropping) must preserve command
+  # distinctness: when unsure, keep the value verbatim.
   defp canonical_params(params), do: canonical(params)
 
   defp canonical(map) when is_map(map) and not is_struct(map) do

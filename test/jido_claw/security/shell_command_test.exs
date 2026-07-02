@@ -269,6 +269,106 @@ defmodule JidoClaw.Security.ShellCommandTest do
     end
   end
 
+  describe "command-runner floor (S-M1)" do
+    test "a runner wrapping a gated root or shell gates (literal reach)" do
+      for cmd <- [
+            "echo . | xargs git commit -m x",
+            "ssh host git commit",
+            "su -c 'git commit'",
+            "flock /tmp/lock git commit",
+            "strace git commit",
+            "xargs crontab -",
+            "parallel bash ::: x"
+          ] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :runner, reason: :command_runner)
+      end
+    end
+
+    test "a single-argv-word runner template still exposes the gated root (quoting fix)" do
+      # `parallel 'git commit' ::: x` / `ssh host "git commit"` pass the template
+      # as ONE argv word — split on whitespace before the gated-root match.
+      for cmd <- ["parallel 'git commit' ::: x", ~s(ssh host "git commit")] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :runner, reason: :command_runner)
+      end
+    end
+
+    test "find gates on any -exec-family predicate" do
+      for cmd <- [
+            "find . -exec git commit ;",
+            "find . -execdir crontab - ;",
+            "find . -ok rm {} ;",
+            "find . -okdir sh -c x ;"
+          ] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :runner, reason: :find_exec)
+      end
+    end
+
+    test "a runner or find with a dynamic arg fails closed" do
+      for cmd <- ["xargs $cmd", ~s(find . "$predicate")] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :runner, reason: :dynamic_runner)
+      end
+    end
+
+    test "a runner reaching git gates even on a non-commit sub-command (documented FP)" do
+      # `watch git status` re-runs a git command; the floor gates ANY git reach,
+      # so this is a conscious false positive (asks for approval, never silent).
+      assert gated?("watch git status")
+      assert_opaque("watch git status", scope: :runner, reason: :command_runner)
+    end
+
+    test "a runner not reaching a gated root, and a literal find, pass through" do
+      for cmd <- ["xargs ls", "ssh host ls", "find . -name git", "find . -type f"] do
+        refute gated?(cmd), "expected #{inspect(cmd)} to pass through"
+        refute opaque?(cmd)
+      end
+    end
+  end
+
+  describe "interpreter one-liner + stdin floor (S-M1)" do
+    test "an interpreter eval one-liner (every trigger shape) gates" do
+      for cmd <- [
+            ~s(python -c "x"),
+            "python3 -c 'x'",
+            ~s(node -e "x"),
+            ~s(node -p "x"),
+            "node --eval=x",
+            ~s(perl -e "x"),
+            "perl -E'x'",
+            "ruby -e 'x'",
+            "ruby -r lib",
+            ~s(deno eval "x"),
+            ~s(bun -e "x"),
+            "php -r 'x'"
+          ] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :interpreter, reason: :interpreter_eval)
+      end
+    end
+
+    test "a piped / stdin interpreter (no script-file arg) gates" do
+      for cmd <- ["echo code | python", "printf 'x' | python", "cat x | python -", "python -"] do
+        assert gated?(cmd), "expected #{inspect(cmd)} to gate"
+        assert_opaque(cmd, scope: :interpreter, reason: :stdin_interpreter)
+      end
+    end
+
+    test "an interpreter with a dynamic argv token fails closed" do
+      assert gated?(~s(python "$x"))
+      assert_opaque(~s(python "$x"), scope: :interpreter, reason: :dynamic_interpreter_arg)
+    end
+
+    test "an interpreter script-file invocation (even piped) passes through — residual" do
+      for cmd <- ["python foo.py", "cat data | python foo.py", "node app.js", "ruby script.rb"] do
+        refute gated?(cmd), "expected #{inspect(cmd)} to pass through"
+        refute opaque?(cmd)
+      end
+    end
+  end
+
   describe "git effects: resolved commit (:git_commit, honest)" do
     test "an inline alias / global-flag form resolving to commit IS a :git_commit" do
       for cmd <- [

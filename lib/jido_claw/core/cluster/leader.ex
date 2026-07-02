@@ -45,6 +45,14 @@ defmodule JidoClaw.Cluster.Leader do
   trivially `true` and never touches `:pg` or a process, which is what keeps
   single-node behavior byte-identical.
 
+  A distinct residual (C-M2), **accepted by design**: a leader that stays elected
+  but whose own singleton work WEDGES stalls the maintenance IT owns — followers
+  correctly stand down (`leader?/0` false), so the wedged tick is not re-run
+  elsewhere. That is the safe direction (a stalled maintenance tick beats N
+  concurrent ones), and the work resumes once leadership moves (membership drops
+  the unreachable node). A tick merely SKIPPED under leadership flap is likewise
+  bounded — it re-arms and the next boundary fires under the new leader.
+
   ## Testability
 
   `elect/1` and `recompute/2` are pure module functions over **node-name

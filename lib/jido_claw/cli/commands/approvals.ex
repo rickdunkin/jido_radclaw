@@ -64,6 +64,15 @@ defmodule JidoClaw.CLI.Commands.Approvals do
       {:error, :not_yet_resumable} ->
         IO.puts("  \e[33m⚠\e[0m  Gate not ready yet (checkpoint still being written). Try again.")
 
+      {:error, :parent_terminal} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  The parent route has already ended — this gate can no longer be " <>
+            "approved (reject or abandon to close it)."
+        )
+
+      {:error, :parent_state_unknown} ->
+        IO.puts("  \e[33m⚠\e[0m  Could not verify the parent route's state — try again.")
+
       {:error, :not_found} ->
         IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
 

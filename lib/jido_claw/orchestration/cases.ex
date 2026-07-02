@@ -104,6 +104,7 @@ defmodule JidoClaw.Orchestration.Cases do
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
   alias JidoClaw.Orchestration.GateContext
+  alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.GateResume
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent
@@ -124,9 +125,13 @@ defmodule JidoClaw.Orchestration.Cases do
   `:actor`; `resume: false` (approve only) commits the decision without
   resuming the reactor. Returns `{:ok, run}` with the run's resulting state on
   success, or `{:error, reason}` — including `:not_yet_resumable` when the
-  checkpoint is not yet persisted, and `:not_pending` when the case has already
+  checkpoint is not yet persisted, `:not_pending` when the case has already
   been decided (the duplicate/concurrent loser, fenced by the in-transaction
-  `FOR UPDATE` reload-and-recheck).
+  `FOR UPDATE` reload-and-recheck), `:parent_terminal` when an **approve**
+  targets a gate whose composer parent already ended (nothing can ever fold
+  the resumed child's output — reject/abandon stay allowed, they converge the
+  pair), and `:parent_state_unknown` when the parent's state could not be read
+  (approve fails closed — retry).
   """
   @spec decide(Ecto.UUID.t(), decision(), map(), keyword()) ::
           {:ok, WorkflowRun.t() | AgentCase.t()} | {:error, term()}
@@ -183,17 +188,7 @@ defmodule JidoClaw.Orchestration.Cases do
       # alongside the gates-topic resolution above. Payload from the RELOADED
       # run — the decision-time snapshot predates the terminal flip, so its
       # completed_at is still nil.
-      RunPubSub.broadcast(
-        run.id,
-        {:run_abandoned, run.id,
-         %{
-           tenant_id: abandoned_run.tenant_id,
-           name: abandoned_run.name,
-           workflow_type: abandoned_run.workflow_type,
-           status: :abandoned,
-           completed_at: abandoned_run.completed_at
-         }}
-      )
+      RunPubSub.broadcast_run_terminal(abandoned_run, :run_abandoned, :abandoned)
 
       {:ok, abandoned_run}
     end
@@ -272,8 +267,30 @@ defmodule JidoClaw.Orchestration.Cases do
 
   defp guard_resumable(%WorkflowRun{}), do: :ok
 
+  # APPROVE ONLY: a gate child under a TERMINAL composer parent must not be
+  # approved — approve synchronously resumes the child's side-effectful steps,
+  # and with the route already ended nothing can ever fold its output
+  # (`fold_resumed_gate` stops clean at `:parent_terminal`). Reject/abandon
+  # deliberately stay allowed: they converge the pair, which the composer's
+  # teardown and recovery's janitor want. Pre-transaction (like the abandon
+  # guard above — an in-transaction `{:error, atom}` is wrapped opaque by
+  # `Ash.transact`) and UNLOCKED — no path co-locks parent + child today, so
+  # the residual approve-vs-parent-terminal race is converged downstream
+  # (`teardown_parked_gate`'s raced-child cancel; recovery's
+  # `:orphaned_terminal_parent` branches). Fail CLOSED on uncertain parent
+  # state: refusing a retriable approve is cheap; resuming a gate nobody can
+  # fold is not.
+  defp refuse_orphaned_by_terminal_parent(run, tenant, actor) do
+    case GateDisposition.terminal_composer_parent(run, tenant, actor) do
+      :not_terminal -> :ok
+      :terminal -> {:error, :parent_terminal}
+      {:error, _reason} -> {:error, :parent_state_unknown}
+    end
+  end
+
   defp dispatch(:approve, agent_case, run, attrs, tenant, actor, resume?) do
-    with {:ok, gate} <- commit_approve(agent_case, run, attrs, tenant, actor) do
+    with :ok <- refuse_orphaned_by_terminal_parent(run, tenant, actor),
+         {:ok, gate} <- commit_approve(agent_case, run, attrs, tenant, actor) do
       # `run` is the decision-time snapshot — fine for the best-effort hook and
       # the id-only broadcast; the authoritative post-resume run is returned by
       # GateResume (which reloads internally).
@@ -351,10 +368,7 @@ defmodule JidoClaw.Orchestration.Cases do
   defp hook_for(:reject), do: :after_rejected
 
   defp broadcast_resolved_runless(gate, decision) do
-    RunPubSub.broadcast_gate(
-      {:gate_resolved, nil,
-       %{tenant_id: gate.tenant_id, agent_case_id: gate.id, decision: decision}}
-    )
+    RunPubSub.broadcast_gate_resolved(nil, gate.tenant_id, gate.id, decision)
   end
 
   # P1: case decision, status event, and case timeline event commit together
@@ -626,9 +640,6 @@ defmodule JidoClaw.Orchestration.Cases do
   defp hook_timeout, do: Application.get_env(:jido_claw, :gate_hook_timeout, 30_000)
 
   defp broadcast_resolved(run, gate, decision) do
-    RunPubSub.broadcast_gate(
-      {:gate_resolved, run.id,
-       %{tenant_id: run.tenant_id, agent_case_id: gate.id, decision: decision}}
-    )
+    RunPubSub.broadcast_gate_resolved(run.id, run.tenant_id, gate.id, decision)
   end
 end

@@ -15,7 +15,7 @@ defmodule JidoClaw.RouteComposer.CommitTest do
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.Commit
 
-  defp ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp ref, do: JidoClaw.Refs.mint("art_")
 
   setup do
     tenant = seed_tenant("commit")

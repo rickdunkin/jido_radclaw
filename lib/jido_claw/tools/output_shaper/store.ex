@@ -161,9 +161,7 @@ defmodule JidoClaw.Tools.OutputShaper.Store do
   defp command_fingerprint(_raw_command, %{sanitize_sensitive_context: true}), do: nil
   defp command_fingerprint(raw_command, _tool_context), do: fingerprint(raw_command)
 
-  defp generate_ref do
-    "out_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
-  end
+  defp generate_ref, do: JidoClaw.Refs.mint("out_")
 
   # Best-effort prune-on-insert: delete rows older than the configured
   # TTL for this tenant. Fully rescued — a prune failure never fails

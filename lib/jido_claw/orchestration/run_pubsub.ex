@@ -1,5 +1,8 @@
 defmodule JidoClaw.Orchestration.RunPubSub do
   @moduledoc false
+
+  alias JidoClaw.Orchestration.WorkflowRun
+
   @spec run_topic(term()) :: String.t()
   def run_topic(run_id), do: "orchestration:run:#{run_id}"
 
@@ -39,5 +42,43 @@ defmodule JidoClaw.Orchestration.RunPubSub do
   @spec broadcast_gate(term()) :: :ok | {:error, term()}
   def broadcast_gate(event) do
     Phoenix.PubSub.broadcast(JidoClaw.PubSub, gates_topic(), event)
+  end
+
+  @doc """
+  Broadcast a gate resolution on the gates topic — the ONE construction site for
+  the `{:gate_resolved, run_id, info}` payload (shared by `Cases`' operator
+  decisions and `GateDisposition`'s deadline abandon, so the shape can never
+  drift). `run_id` is nil for a run-less tool-call case.
+  """
+  @spec broadcast_gate_resolved(term() | nil, String.t(), Ecto.UUID.t(), atom()) ::
+          :ok | {:error, term()}
+  def broadcast_gate_resolved(run_id, tenant_id, agent_case_id, decision) do
+    broadcast_gate(
+      {:gate_resolved, run_id,
+       %{tenant_id: tenant_id, agent_case_id: agent_case_id, decision: decision}}
+    )
+  end
+
+  @doc """
+  Broadcast a run-lifecycle terminal on the run + runs topics — the ONE
+  construction site for the dashboard-refresh payload (shared by
+  `Cases.abandon/3`, `Cancellation`, and `GateDisposition`). Pass the RELOADED
+  terminal run (a pre-terminal snapshot's `completed_at` is still nil) and the
+  terminal `status` explicitly — a degraded reload may hand back a pre-terminal
+  snapshot, and the event must still carry the status that durably committed.
+  """
+  @spec broadcast_run_terminal(WorkflowRun.t(), atom(), atom()) :: :ok | {:error, term()}
+  def broadcast_run_terminal(%WorkflowRun{} = run, event_kind, status) do
+    broadcast(
+      run.id,
+      {event_kind, run.id,
+       %{
+         tenant_id: run.tenant_id,
+         name: run.name,
+         workflow_type: run.workflow_type,
+         status: status,
+         completed_at: run.completed_at
+       }}
+    )
   end
 end

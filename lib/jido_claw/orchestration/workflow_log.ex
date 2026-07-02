@@ -8,6 +8,8 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   commit together (e.g. recovery's `run_recovered` + `run_failed`).
   """
 
+  require Ash.Query, as: Query
+
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
@@ -173,14 +175,21 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
 
   @doc """
   Terminate `run` AND cancel its pending `AgentCase`(s) in one transaction:
-  cancel every pending case with `case_reason` (each appending a `:cancelled`
-  timeline event), then append `events` — a `{kind, payload}` list whose final
-  element must be a terminal event the projection folds to a terminal status
-  (clearing the checkpoint per Decision 7). Either everything persists or
-  nothing does, so run status, the operator inbox, and the case timelines
-  never disagree. Shared by the runner's gate-pause failure path and
-  recovery's dangling-gate branch (which passes the
-  `[{:run_recovered, …}, {:run_failed, …}]` recovery pair).
+  lock the RUN row first (the global run → case → events order — a case-first
+  write would take the run lock LAST inside the event allocator and deadlock
+  against a live `Cases.decide/4`), re-read + cancel every pending case with
+  `case_reason` under the held lock (each appending a `:cancelled` timeline
+  event), then append `events` — a `{kind, payload}` list whose final element
+  must be a terminal event the projection folds to a terminal status (clearing
+  the checkpoint per Decision 7). Either everything persists or nothing does,
+  so run status, the operator inbox, and the case timelines never disagree.
+
+  Direct callers are the runner's gate-pause failure path and the cancel kill
+  path — flows whose run is NOT a parked gate awaiting a decision. Parked-gate
+  DISPOSITIONS (deadline abandon, terminal-parent orphan, dangling gate) go
+  through `JidoClaw.Orchestration.GateDisposition`, which adds the
+  status-recheck-on-the-locked-row so a raced operator decision is refused
+  rather than overwritten.
   """
   @spec terminate_cancelling_cases(WorkflowRun.t(), [{atom(), map()}], String.t(), keyword()) ::
           {:ok, WorkflowEvent.t()} | {:error, term()}
@@ -189,11 +198,26 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
     actor = actor(run, opts)
 
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _} <- cancel_pending_cases(run, case_reason, tenant, actor),
-           {:ok, event} <- append_each(run, events, tenant: tenant, actor: actor) do
+      with {:ok, locked} <- lock_run_row(run.id, tenant, actor),
+           {:ok, _} <- cancel_pending_cases(locked, case_reason, tenant, actor),
+           {:ok, event} <- append_each(locked, events, tenant: tenant, actor: actor) do
         event
       end
     end)
+  end
+
+  # The house per-run FOR UPDATE idiom (mirroring `Cases.lock_run/3`,
+  # `GateDisposition`, `WorkflowEvent.Changes.Allocate`): the aggregate's FIRST
+  # lock, so this teardown and a live decision strictly serialize.
+  defp lock_run_row(run_id, tenant, actor) do
+    WorkflowRun
+    |> Query.filter(id == ^run_id)
+    |> Query.lock("FOR UPDATE")
+    |> Ash.read_one(tenant: tenant, actor: actor)
+    |> case do
+      {:ok, %WorkflowRun{} = locked} -> {:ok, locked}
+      _other -> {:error, :not_found}
+    end
   end
 
   # Sequential appends inside the caller's transaction; returns the last event.

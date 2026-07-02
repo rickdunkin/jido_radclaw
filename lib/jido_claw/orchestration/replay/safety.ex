@@ -31,6 +31,15 @@ defmodule JidoClaw.Orchestration.Replay.Safety do
   def terminal_status?(status), do: Projection.terminal_status?(status)
 
   @doc """
+  The event kinds `irreversible_executed?/1` inspects — public so the replay
+  gate (`Replay.check_irreversible/4`) and the preflight
+  (`Diagnostics.diagnose_irreversible/3`) bound their `EventReader` reads to
+  exactly these kinds (O-M1) and cannot drift from the check itself.
+  """
+  @spec irreversible_kinds() :: [atom()]
+  def irreversible_kinds, do: @irreversible_kinds
+
+  @doc """
   Whether any of `events` proves an `irreversible: true` step executed.
   """
   @spec irreversible_executed?([WorkflowEvent.t()]) :: boolean()

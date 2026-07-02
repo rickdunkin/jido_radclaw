@@ -81,7 +81,8 @@ defmodule JidoClaw.Orchestration.ReclaimPooler do
 
   @doc """
   Drain the reclaim selector to `:none`, routing each claimed run through
-  `WorkflowRecovery.reclaim/1`, and return the number of runs reclaimed this sweep.
+  `WorkflowRecovery.reclaim/2` (with the pre-rotation `prior_owner` for the C-H1
+  kill-cast), and return the number of runs reclaimed this sweep.
 
   A stateless module function (like `WorkflowRecovery.reconcile_all/0`) so tests
   drive it directly. Tracks the ids processed this sweep: if `claim_next/1` ever
@@ -100,14 +101,14 @@ defmodule JidoClaw.Orchestration.ReclaimPooler do
       :none ->
         count
 
-      {:ok, run} ->
+      {:ok, run, prior_owner} ->
         if run.id in seen do
           # Looped back to an already-handled run (its deferred-cooldown release did
           # not apply) — stop the drain to avoid a spin; the next poll retries.
           count
         else
           emit_reclaimed(run)
-          WorkflowRecovery.reclaim(run)
+          WorkflowRecovery.reclaim(run, prior_owner)
           drain([run.id | seen], count + 1)
         end
 

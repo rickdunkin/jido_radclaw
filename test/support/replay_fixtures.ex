@@ -66,11 +66,27 @@ defmodule JidoClaw.Test.ReplayFixtures do
   """
   @spec put_failing_event_reader!() :: :ok
   def put_failing_event_reader! do
-    prior = Application.fetch_env(:jido_claw, :replay_event_reader)
+    put_event_reader!(fn _run_id, _opts -> {:error, :simulated} end)
+  end
 
-    Application.put_env(:jido_claw, :replay_event_reader, fn _run_id, _opts ->
-      {:error, :simulated}
+  @doc """
+  Swap the `Replay.EventReader` seam to one that reports each `(run_id, opts)`
+  call to `test_pid` as `{:reader_opts, run_id, opts}` and then fails — so a
+  test can assert the exact read CONTRACT (e.g. the O-M1 bounded `query:`
+  filter) without launching anything (the `{:error, _}` return makes replay
+  refuse deterministically). Restores the prior value on exit.
+  """
+  @spec put_capturing_event_reader!(pid()) :: :ok
+  def put_capturing_event_reader!(test_pid) do
+    put_event_reader!(fn run_id, opts ->
+      send(test_pid, {:reader_opts, run_id, opts})
+      {:error, :injected}
     end)
+  end
+
+  defp put_event_reader!(reader) do
+    prior = Application.fetch_env(:jido_claw, :replay_event_reader)
+    Application.put_env(:jido_claw, :replay_event_reader, reader)
 
     ExUnit.Callbacks.on_exit(fn ->
       case prior do

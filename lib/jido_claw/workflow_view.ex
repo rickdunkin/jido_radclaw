@@ -10,7 +10,6 @@ defmodule JidoClaw.WorkflowView do
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.Replay.EventReader
   alias JidoClaw.Orchestration.Visibility
-  alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.Observe
@@ -182,8 +181,28 @@ defmodule JidoClaw.WorkflowView do
   # a run that has not composed its first wave `available: false, reason:
   # :not_yet_composed`. A non-composer run is unchanged (no `:composer` key).
   defp put_composer(view, %WorkflowRun{workflow_type: "composer", id: id}, tenant_id, actor) do
+    # O-M1: kind-filter the observe read to only the four marker kinds
+    # `Observe.summarize/1` folds (route_composed / wave_completed /
+    # stages_invalidated / wave_started — it deliberately ignores wave_paused),
+    # shedding the per-step event spam that dwarfs composer deltas on a long run.
+    # NOT row-limited: `net_ran` folds cumulative history, so a `limit:` would
+    # wrongly drop early `wave_completed`s. Bounded by wave count (⊆ `max_waves`).
+    # No index covers `kind` (only `[tenant_id, workflow_run_id, seq]`), so the
+    # win is fewer rows decoded/folded in the BEAM, not a cheaper scan. Reuses the
+    # swappable `EventReader` `query:` seam (default `WorkflowEvent.for_run/2`).
     composer =
-      case WorkflowEvent.for_run(id, tenant: tenant_id, actor: actor) do
+      case EventReader.for_run(id,
+             query: [
+               filter: [
+                 kind: [
+                   in: [:route_composed, :wave_completed, :stages_invalidated, :wave_started]
+                 ]
+               ],
+               sort: [seq: :asc]
+             ],
+             tenant: tenant_id,
+             actor: actor
+           ) do
         {:ok, events} ->
           case Observe.summarize(events) do
             nil ->

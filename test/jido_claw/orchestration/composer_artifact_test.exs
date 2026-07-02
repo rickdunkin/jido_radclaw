@@ -19,7 +19,7 @@ defmodule JidoClaw.Orchestration.ComposerArtifactTest do
   alias JidoClaw.Orchestration.ComposerArtifact.Envelope
   alias JidoClaw.Orchestration.WorkflowRun
 
-  defp ref, do: "art_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  defp ref, do: JidoClaw.Refs.mint("art_")
 
   defp seed_lineage(label) do
     tenant_id = seed_tenant(label)

@@ -18,6 +18,7 @@ defmodule JidoClaw.Orchestration.ReclaimPoolerTest do
     only: [recoverable_parent: 1, craft_child: 4, commit_wave0: 3]
 
   alias JidoClaw.Orchestration.ReclaimPooler
+  alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
@@ -114,11 +115,16 @@ defmodule JidoClaw.Orchestration.ReclaimPoolerTest do
       # No sooner than claim_expires_at.
       assert :none = WorkflowLease.claim_next()
 
-      # Just past expiry (−2s clears the app-clock-vs-DB-clock skew band on one host).
+      # −1s: expired on the DB clock. Post-C-M5 both sides of the `:claimable`
+      # expiry comparison are the DB clock (`set_claim!` stamps `now() + interval`;
+      # the read filters `fragment("? < now()", ...)`), so there is NO app-vs-DB
+      # skew band to clear — any past expiry is immediately claimable and the tight
+      # margin here documents that. A regression back to an app-clock `now()`
+      # comparison would reintroduce a skew band this margin no longer tolerates.
       expired = seed_run(ctx, "expired")
       set_status!(expired.id, "running")
-      set_claim!(expired.id, Ash.UUID.generate(), -2)
-      assert {:ok, claimed} = WorkflowLease.claim_next()
+      set_claim!(expired.id, Ash.UUID.generate(), -1)
+      assert {:ok, claimed, _prior} = WorkflowLease.claim_next()
       assert claimed.id == expired.id
 
       # The future-expiry run was never a candidate.
@@ -166,6 +172,34 @@ defmodule JidoClaw.Orchestration.ReclaimPoolerTest do
       assert 1 == ReclaimPooler.reclaim_once()
       assert reload_global(run_id).status == :failed
     end
+
+    test "kill-cast: a sidecar-dead zombie executor (alive + registered) is killed on reclaim (C-H1)",
+         ctx do
+      {launcher, run_id, executor} = launch_blocking(ctx)
+
+      # Simulate a DEAD heartbeat sidecar — the case the kill-cast covers beyond the
+      # sidecar's own one-heartbeat self-kill. Killing the sidecar (it monitors,
+      # never links, the executor) leaves the executor ALIVE + registered: a zombie
+      # owned by THIS node (the real middleware stamped claimed_by = node_identity()).
+      assert [{sidecar, _meta}] = Registry.lookup(@lease_registry, run_id)
+      Process.exit(sidecar, :kill)
+      assert Process.alive?(executor)
+      assert {:ok, ^executor, _tenant} = RunExecution.lookup(run_id)
+      ref = Process.monitor(executor)
+
+      # Expire the lease KEEPING claimed_by = node_identity() (expire_claim!, not
+      # set_claim! which restamps "seed-node" → :unroutable). The Pooler reclaims →
+      # fails the stranded :running run → kill-casts the prior owner (this node →
+      # :local → kill_local on the still-registered zombie executor).
+      expire_claim!(run_id)
+      assert 1 == ReclaimPooler.reclaim_once()
+
+      assert reload_global(run_id).status == :failed
+      assert_receive {:DOWN, ^ref, :process, ^executor, _}, 5_000
+      refute Process.alive?(executor)
+
+      Task.shutdown(launcher, :brutal_kill)
+    end
   end
 
   # ── claim_run/1: rotation fence + TOCTOU re-check ───────────────────────────
@@ -178,7 +212,7 @@ defmodule JidoClaw.Orchestration.ReclaimPoolerTest do
       old_token = Ash.UUID.generate()
       set_claim!(child.id, old_token, -120)
 
-      assert {:ok, rotated} = WorkflowLease.claim_run(child.id)
+      assert {:ok, rotated, _prior} = WorkflowLease.claim_run(child.id)
       assert rotated.claim_token != old_token
 
       # A reconnecting zombie holding old_token: its heartbeat renew returns 0 (fenced)…

@@ -566,6 +566,8 @@ defmodule JidoClaw.MCP.Consumer do
   # compares the pid's LIVE modules to the target, so it converges regardless of
   # how the pid got out of sync (no remembered diff needed for a retry).
   defp stale_names(current_modules, reach_by_name) do
+    warn_changed_definitions(current_modules, reach_by_name)
+
     current_modules
     |> Enum.filter(fn module ->
       case Map.get(reach_by_name, module.name()) do
@@ -574,6 +576,30 @@ defmodule JidoClaw.MCP.Consumer do
       end
     end)
     |> MapSet.new(fn module -> module.name() end)
+  end
+
+  # S-L1: warn when a tool's NAME persists across re-discovery but its generated
+  # module atom changed — the remote re-advertised a changed description/schema
+  # (`ProxyGenerator.definition_hash/5` is baked into the module atom, so a
+  # different atom for the same name IS the changed-definition signal; there is no
+  # retained per-tool digest to diff). Tool names/descriptions are prompt-trusted
+  # before any call, so post-vetting drift is a (low) injection surface with no
+  # operator signal otherwise. `Logger.warning` only — `JidoClaw.Display` has no
+  # generic notice API (a visible banner would need a new Display surface, a
+  # follow-up out of scope for this hardening batch).
+  defp warn_changed_definitions(current_modules, reach_by_name) do
+    Enum.each(current_modules, fn module ->
+      case Map.get(reach_by_name, module.name()) do
+        target when not is_nil(target) and target != module ->
+          Logger.warning(
+            "[MCP.Consumer] tool #{module.name()} re-discovered with a changed definition " <>
+              "(description/schema); verify the server has not been tampered with"
+          )
+
+        _unchanged_or_removed ->
+          :ok
+      end
+    end)
   end
 
   defp start_reconcile_task(pid, reach) do

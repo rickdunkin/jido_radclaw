@@ -344,7 +344,15 @@ defmodule JidoClaw.Orchestration.Replay.Diagnostics do
   # -- Irreversible axis (shares Safety with the replay gate) --
 
   defp diagnose_irreversible(run, tenant, actor) do
-    case EventReader.for_run(run.id, tenant: tenant, actor: actor) do
+    # O-M1: only the step kinds `Safety.irreversible_executed?/1` inspects
+    # (single-sourced in `Safety.irreversible_kinds/0`) — the preflight no longer
+    # loads the ENTIRE event log next to the byte-paginated feed. Bounded by step
+    # count; no `kind` index, so the win is fewer rows folded.
+    case EventReader.for_run(run.id,
+           query: [filter: [kind: [in: Safety.irreversible_kinds()]]],
+           tenant: tenant,
+           actor: actor
+         ) do
       {:ok, events} ->
         executed? = Safety.irreversible_executed?(events)
         blockers = if executed?, do: [:irreversible_steps_executed], else: []

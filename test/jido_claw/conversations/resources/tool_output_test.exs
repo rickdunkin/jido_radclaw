@@ -10,7 +10,7 @@ defmodule JidoClaw.Conversations.ToolOutputTest do
   defp store_attrs(overrides \\ %{}) do
     Map.merge(
       %{
-        ref: "out_#{Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)}",
+        ref: JidoClaw.Refs.mint("out_"),
         tool: "run_command",
         command: "mix test",
         command_fingerprint: Store.fingerprint("mix test"),
@@ -102,6 +102,36 @@ defmodule JidoClaw.Conversations.ToolOutputTest do
              )
 
     assert Exception.message(error) =~ "cross_tenant_fk_mismatch"
+  end
+
+  test "by_ref_scoped resolves own-session and nil-session rows, blocks a foreign session (S-M2)" do
+    %{tenant_id: tenant_id, workspace: workspace, session: session_a} =
+      seed_full(tenant_label: "tool-output-scoped")
+
+    {:ok, session_b} = seed_session(tenant_id, workspace.id)
+    actor = actor_for(tenant_id)
+
+    own = store_attrs(%{session_id: session_a.id})
+    cron = store_attrs(%{session_id: nil})
+    assert {:ok, _} = ToolOutput.store(own, tenant: tenant_id, actor: actor)
+    assert {:ok, _} = ToolOutput.store(cron, tenant: tenant_id, actor: actor)
+
+    # Own session resolves its row.
+    assert {:ok, hit} =
+             ToolOutput.by_ref_scoped(own.ref, session_a.id, tenant: tenant_id, actor: actor)
+
+    assert hit.ref == own.ref
+
+    # A nil-session (system/cron-minted) row stays reachable from any session.
+    assert {:ok, _} =
+             ToolOutput.by_ref_scoped(cron.ref, session_a.id, tenant: tenant_id, actor: actor)
+
+    # A DIFFERENT session cannot resolve the first session's row (cross-session peek).
+    assert {:error, _} =
+             ToolOutput.by_ref_scoped(own.ref, session_b.id, tenant: tenant_id, actor: actor)
+
+    # The tenant-wide by_ref still resolves it (unchanged, for tenant-wide callers).
+    assert {:ok, _} = ToolOutput.by_ref(own.ref, tenant: tenant_id, actor: actor)
   end
 
   test "latest_for_fingerprint returns the newest row for (session, fingerprint, tool)" do

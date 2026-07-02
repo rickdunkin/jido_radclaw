@@ -56,6 +56,7 @@ defmodule JidoClaw.Conversations.ToolOutput do
   code_interface do
     define(:store, action: :store)
     define(:by_ref, action: :by_ref, args: [:ref], get?: true)
+    define(:by_ref_scoped, action: :by_ref_scoped, args: [:ref, :session_id], get?: true)
 
     define(:latest_for_fingerprint,
       action: :latest_for_fingerprint,
@@ -107,6 +108,21 @@ defmodule JidoClaw.Conversations.ToolOutput do
       get?(true)
       argument(:ref, :string, allow_nil?: false)
       filter(expr(ref == ^arg(:ref)))
+    end
+
+    # Session-scoped ref fetch (S-M2): the same ref lookup as `by_ref`, narrowed
+    # so a session resolves only its OWN rows — plus system/cron-minted rows
+    # (`session_id: nil`, e.g. the `workflow_runner`-minted refs), which stay
+    # REPL-fetchable via the `is_nil` arm. Only a DIFFERENT session's rows
+    # (session_id set AND mismatched) are blocked — the actual cross-session-peek
+    # threat. `by_ref/1` stays for tenant-wide callers (`fetch_output` under
+    # `:mcp`, `OutputShaper`).
+    read :by_ref_scoped do
+      get?(true)
+      argument(:ref, :string, allow_nil?: false)
+      argument(:session_id, :uuid, allow_nil?: false)
+
+      filter(expr(ref == ^arg(:ref) and (session_id == ^arg(:session_id) or is_nil(session_id))))
     end
 
     # Latest stored output for the same command in the same session — the
