@@ -14,7 +14,7 @@ defmodule JidoClaw.Orchestration.AgentCase do
   is the durable, queryable operator record (the inbox source, the decision
   audit). Each case transition additionally appends an immutable
   `AgentCaseEvent` timeline row in the same transaction (opened / approved /
-  rejected / cancelled / abandoned / retracted).
+  rejected / cancelled / abandoned).
 
   ## Concurrency fence
 
@@ -97,7 +97,6 @@ defmodule JidoClaw.Orchestration.AgentCase do
     define(:reject)
     define(:cancel)
     define(:abandon)
-    define(:reopen)
 
     # Tool-call (run-less) case API.
     define(:open_tool_call)
@@ -197,23 +196,6 @@ defmodule JidoClaw.Orchestration.AgentCase do
       change(filter(expr(status == :pending)))
       change(set_attribute(:status, :abandoned))
       change(set_attribute(:decided_at, &DateTime.utc_now/0))
-    end
-
-    # Stale-approval retraction (AR-1): a recorded-but-not-yet-acted approval
-    # is withdrawn pre-resume, so the reopened case carries NO stale decision
-    # data. Lock-fenced in `commit_retract` (the case row is reloaded
-    # `FOR UPDATE` and re-checked `:approved` before this runs); the `filter`
-    # here is an in-memory precondition, and the event-log half of the race
-    # fence lives in `Cases.retract/3`.
-    update :reopen do
-      description("Reopen an approved case whose approval was retracted pre-resume.")
-      accept([])
-      change(filter(expr(status == :approved)))
-      change(set_attribute(:status, :pending))
-      change(set_attribute(:decision, nil))
-      change(set_attribute(:decided_at, nil))
-      change(set_attribute(:decision_comment, nil))
-      change(set_attribute(:decided_by_id, nil))
     end
 
     # Single-use claim on an approved tool-call case. The `filter` change is

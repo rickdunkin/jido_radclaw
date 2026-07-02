@@ -8,7 +8,10 @@ defmodule JidoClaw.Gates.PlanGate do
   reactor, which `GateStep`s on this module — the case `kind` is sourced from
   the `kind(:plan)` DSL below. Approve resumes and emits `plan-approved`
   (releasing the held implementer); reject/abandon take the route terminal;
-  stale-approval retraction on re-plan rides `Cases.retract/3`. The hooks keep
+  stale-approval retraction on re-plan rides the composer's **signal axis**
+  (`RouteComposer`'s `stale_approval?` check commits `signals_retracted` /
+  `stages_invalidated` markers withdrawing `plan-approved` and re-gating), not
+  any case-level retraction API. The hooks keep
   the `HumanGate` no-op defaults — the composer's durable park/wake is the
   must-happen work, never a best-effort hook.
   """

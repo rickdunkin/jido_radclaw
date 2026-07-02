@@ -1,7 +1,7 @@
 defmodule JidoClaw.Orchestration.CasesToolCallTest do
   @moduledoc """
   The run-less branch of `Cases.decide/4`: approving/rejecting a tool-call case,
-  the abandon/retract refusals, the decide idempotency fence, and the full
+  the abandon refusal, the decide idempotency fence, and the full
   request → decide → request loop end-to-end.
   """
   use JidoClaw.TenantCase, async: false
@@ -124,12 +124,6 @@ defmodule JidoClaw.Orchestration.CasesToolCallTest do
     test "abandon is refused", ctx do
       opened = open(ctx)
       assert {:error, :not_workflow_case} = Cases.abandon(opened.id, %{}, opts(ctx))
-    end
-
-    test "retract is refused", ctx do
-      opened = open(ctx)
-      {:ok, _approved} = Cases.decide(opened.id, :approve, %{}, opts(ctx))
-      assert {:error, :not_workflow_case} = Cases.retract(opened.id, %{}, opts(ctx))
     end
   end
 

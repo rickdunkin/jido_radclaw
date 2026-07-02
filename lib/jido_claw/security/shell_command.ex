@@ -6,8 +6,9 @@ defmodule JidoClaw.Security.ShellCommand do
   string to a real shell (`sh -c …` on the host backend, a remote login shell
   over SSH), and `JidoClaw.Security.ToolApproval` must decide *before* dispatch
   whether the string reaches a gated capability — `git commit` (the shell
-  equivalent of the `git_commit` tool) or `crontab` (the `schedule_task`
-  equivalent) — regardless of how it is dressed up. Brittle regexes over the raw
+  equivalent of the `git_commit` tool), `git push` (publishing to a remote), or
+  `crontab` (the `schedule_task` equivalent) — regardless of how it is dressed
+  up. Brittle regexes over the raw
   string miss quoting (`git -C "my dir" commit`), separators (`a && git commit`),
   multiline, env prefixes (`FOO=bar git commit`), wrappers (`sudo git commit`),
   paths (`/usr/bin/git commit`), interpreters (`sh -c "git commit"`, `python -c
@@ -29,6 +30,8 @@ defmodule JidoClaw.Security.ShellCommand do
     * `:git_commit` — a git sub-command *definitively* resolves (literally or
       through a fully-expanded alias chain) to `commit`. Git-resolution
       *uncertainty* never masquerades as a commit.
+    * `:git_push` — a git sub-command *definitively* resolves (same rules) to
+      `push` — publishing to a remote. Same honesty contract as `:git_commit`.
     * `:git_config_injection` — config injected into a git run: a visible
       `GIT_CONFIG_*` env mutation co-occurring with a `git` command, an inline
       `-c include.path=…` directive, a `--config-env` value from an unreadable
@@ -60,8 +63,10 @@ defmodule JidoClaw.Security.ShellCommand do
   `has_effect?/2` answers "is this kind present?". `command_present?/3` and
   `structure_present?/2` are thin, effect-based shims kept for the gate's
   operator-config matchers (`{:cmd, …}`) and the unit-test helpers: the git
-  `subcommand: "commit"` form returns the git gating floor (`:git_commit` |
-  `:git_config_injection` | `:git_config_persistent_write` | `opaque?`).
+  `subcommand: "commit"` form is the **legacy commit/config matcher**
+  (`:git_commit` | `:git_config_injection` | `:git_config_persistent_write` |
+  `opaque?`) — it deliberately does NOT fold in `:git_push`, whose gate path
+  is the `{:effect, :git_push}` matcher.
 
   ## Git-aware sub-command resolution
 
@@ -139,6 +144,7 @@ defmodule JidoClaw.Security.ShellCommand do
   @typedoc "Effect kind — drives gating."
   @type effect_kind ::
           :git_commit
+          | :git_push
           | :git_config_injection
           | :git_config_persistent_write
           | :crontab
@@ -156,6 +162,7 @@ defmodule JidoClaw.Security.ShellCommand do
   # the effect_kind/0 union above.
   @effect_kinds [
     :git_commit,
+    :git_push,
     :git_config_injection,
     :git_config_persistent_write,
     :crontab,
@@ -433,9 +440,12 @@ defmodule JidoClaw.Security.ShellCommand do
   Whether a sub-command runs `name` (optionally with `:subcommand` among its
   non-flag args). `opaque?: true` always matches (fail closed).
 
-  For `("git", subcommand: "commit")` this is the git gating floor (`:git_commit`
-  | `:git_config_injection` | `:git_config_persistent_write` | `opaque?`); every
-  other form uses the generic "first non-flag token" heuristic over `commands`.
+  For `("git", subcommand: "commit")` this is the legacy git commit/config
+  matcher (`:git_commit` | `:git_config_injection` |
+  `:git_config_persistent_write` | `opaque?`) — it keeps matching commit only
+  (a resolved push gates via the `{:effect, :git_push}` matcher, not here);
+  every other form uses the generic "first non-flag token" heuristic over
+  `commands`.
   """
   @spec command_present?(t(), String.t(), keyword()) :: boolean()
   def command_present?(analysis, name, opts \\ [])
@@ -618,6 +628,7 @@ defmodule JidoClaw.Security.ShellCommand do
 
   defp invocation_effects(inv) do
     commit_effect(inv.commits?) ++
+      push_effect(inv.pushes?) ++
       Enum.map(inv.inline_injections, &injection_effect/1) ++
       Enum.map(inv.config_writes, &write_effect/1) ++
       opaque_effect(inv.opaque_reason)
@@ -625,6 +636,9 @@ defmodule JidoClaw.Security.ShellCommand do
 
   defp commit_effect(true), do: [effect(:git_commit, %{reason: :resolved})]
   defp commit_effect(false), do: []
+
+  defp push_effect(true), do: [effect(:git_push, %{reason: :resolved})]
+  defp push_effect(false), do: []
 
   defp injection_effect({:config_include, key}),
     do: effect(:git_config_injection, %{reason: :config_include, key: key})

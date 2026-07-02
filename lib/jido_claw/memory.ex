@@ -46,6 +46,7 @@ defmodule JidoClaw.Memory do
   # keeps unexpected bugs surfacing instead of silently swallowed by `[]`.
   @db_errors JidoClaw.Core.AshErrors.db_errors()
 
+  alias Ash.Query
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.MapKeys
@@ -217,6 +218,35 @@ defmodule JidoClaw.Memory do
   defp scope_fk_for_block(%{scope_kind: :workspace, workspace_id: id}), do: id
   defp scope_fk_for_block(%{scope_kind: :user, user_id: id}), do: id
 
+  # DB-side count of DISTINCT labels over the same scope-chain filter
+  # `list_blocks_for_scope_chain/1` reads — equal to the deduped list length
+  # by construction (the rank/min_by there only picks WHICH row wins per
+  # label, never how many labels there are), without loading rows.
+  # `unset(:sort)` drops the read action's pinned `(position, inserted_at)`
+  # sort before `distinct(:label)` so the `DISTINCT ON` subquery orders by
+  # `label` alone. Mirrors the list read's fail-soft contract (errors → 0).
+  defp count_blocks_for_scope_chain(scope) do
+    chain_maps =
+      Enum.map(Scope.chain(scope), fn {kind, fk} -> %{scope_kind: kind, fk_id: fk} end)
+
+    chain_maps
+    |> Block.query_to_for_scope_chain()
+    |> Query.unset(:sort)
+    |> Query.select([:label])
+    |> Query.distinct(:label)
+    |> Ash.count(tenant: scope.tenant_id, actor: Actor.system(scope.tenant_id))
+    |> case do
+      {:ok, count} -> count
+      _ -> 0
+    end
+  rescue
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      0
+  catch
+    :exit, _ -> 0
+  end
+
   @doc """
   Resolve the memory namespace for a `tool_context`-like map.
 
@@ -226,9 +256,12 @@ defmodule JidoClaw.Memory do
   scope record — or `nil` when the scope is unresolvable (e.g. missing
   tenant). Sources `JidoClaw.Inspection.Summary.memory`.
 
-  Reuses `Scope.resolve/1` (loads ancestor FKs) and
-  `list_blocks_for_scope_chain/1`, which reads as `Actor.system/1`
-  internally — so `blocks_count` is scope-complete. Returns a bare
+  Reuses `Scope.resolve/1` (loads ancestor FKs); `blocks_count` is a DB-side
+  count of **distinct labels** over the same scope-chain filter
+  `list_blocks_for_scope_chain/1` reads (equal to the deduped list length by
+  construction — rank only picks *which* row wins per label, never how many
+  labels there are), read as `Actor.system/1` internally — so it is
+  scope-complete without loading rows. Returns a bare
   map/`nil`, consistent with the nil-friendly Memory read API.
   """
   @spec namespace_info(map()) ::
@@ -239,7 +272,7 @@ defmodule JidoClaw.Memory do
       {:ok, scope} ->
         %{
           namespace: namespace_label(scope),
-          blocks_count: length(list_blocks_for_scope_chain(scope)),
+          blocks_count: count_blocks_for_scope_chain(scope),
           scope: scope
         }
 

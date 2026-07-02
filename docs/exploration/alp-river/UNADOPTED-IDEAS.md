@@ -20,7 +20,7 @@ Ordered by trigger proximity — nearest first.
 | 1 | Per-stage model/effort tiering (wire the seam) | V1 §4 + V2 §4 | Not alone — nearest; rides #2 or first cost/quality pressure | AR-9 shipping, or judge-stage quality pain at uniform `:fast` |
 | 2 | Multi-plan + plan-arbiter (judge-panel plan wave) | V2 AR-9 | Not yet — the next substantive composer increment | Wanting a composer increment; recurring plan-shape failures on significant builds |
 | 3 | Hand `premises` to stage agents | V2 §4 refinement | No — rider | Any composer increment (bundle in) |
-| 4 | Shipping tail (`ship-gate` → `ship-executor`) | V2 AR-10 | No (its footnoted `git push` sibling: yes) | Ship/commit/PR asks after composed runs becoming routine |
+| 4 | Shipping tail (`ship-gate` → `ship-executor`) | V2 AR-10 | No (its footnoted `git push` sibling: **shipped 2026-07-02**) | Ship/commit/PR asks after composed runs becoming routine |
 | 5 | `code-doctrine` slice + `docs/` READ_MAP | V1 AR-5 open borders | No | Next doctrine authoring pass, or recurring producer-quality feedback |
 | 6 | Artifact handles (refs instead of inline stage inputs) | V2 AR-11 | No — telemetry-gated | Prompt-cost evidence: large many-consumer artifacts dominating sub-agent cost |
 | 7 | Milestone loop (verified increments on big builds) | V1 §4 | No — pain-gated | Composed builds outgrowing the single end-review pass |
@@ -91,8 +91,8 @@ is double-gating (resolved in the V2 entry toward the ship gate pre-minting the 
 approval for the executor's exact fingerprint).
 
 **Now?** No — ergonomics plus a durable `shipped` terminal, not new safety. (The one
-*now* item its analysis surfaced — the missing `git push` approval pattern — is
-independent of the borrow; see the footnote.)
+*now* item its analysis surfaced — the missing `git push` approval pattern — was
+independent of the borrow and **shipped 2026-07-02**; see the footnote.)
 
 **Trigger**: ship/commit/PR asks immediately after composed code runs becoming a routine
 pattern — the moment the conversational follow-up is boilerplate, the route-level tail
@@ -182,16 +182,20 @@ latency pain that a ~120s idle kill would roughly halve.
 
 **Minor footnotes** (tracked here so the inventories stay clean):
 
-- **`git push` approval pattern** — the immediately-actionable item from AR-10's
-  analysis, independent of the borrow: `tool_approval.ex` gates `git commit` but has no
-  `push` pattern, so `run_command "git push"` publishes to a remote ungated. A one-line
-  require-pattern add; do it opportunistically next time someone is in `ToolApproval`.
-- **AR-1 residuals** — `gates/plan_gate.ex:11` still claims retraction "rides
-  `Cases.retract/3`" (it doesn't; the composer's signal-axis path is live), and
-  `Cases.retract/3` itself remains vestigial (comment/moduledoc references only in
-  `lib/`, no live caller — re-verified 2026-07-02). Fixing the moduledoc line is a
-  one-liner; deleting `Cases.retract` needs a small doc sweep first (three other
-  moduledocs cite it as the race-fence anchor).
+- **`git push` approval pattern** — **shipped 2026-07-02**. Not the one-liner the
+  first note guessed: an unresolved git subcommand was benign (not opaque), so the
+  gate needed real detection — a `pushes?` invocation fact in
+  `ShellCommand.Git` mirroring `commits?`, a `:git_push` effect kind, and the
+  `{:effect, :git_push}` require-pattern in `tool_approval.ex`. `run_command
+  "git push"` (and its shell dressings) now pends like commit.
+- **AR-1 residuals** — **both resolved 2026-07-02**: `gates/plan_gate.ex` now points
+  retraction at the composer's signal-axis path, and the vestigial `Cases.retract/3`
+  was deleted whole (with `commit_retract/5`, `ensure_not_resumed/3`, the
+  `:approval_retracted` durable kind + projection arms, `AgentCase.reopen`, and the
+  `:retracted` timeline kind — zero production callers). The citation sweep touched
+  four files, not the three this note originally counted (`gate_disposition.ex`,
+  `agent_case.ex`, `workflow_event/projection.ex`, plus `workflow_log.ex`'s passing
+  mention).
 - **More review lenses** (`simplicity-reviewer` et al.) — content adds over the shipped
   4-lens fan-out; add opportunistically when a review gap shows, don't plan. The
   simplicity lens overlaps the harness-level `/simplify` skill and the `quality` lens.

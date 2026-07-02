@@ -53,8 +53,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # is what flips the run to `:awaiting_approval`). The gate kinds carry
   # authority: `approval_requested` (→ `:awaiting_approval`),
   # `approval_resolved` (approve = "decision recorded, resuming" → `:running`),
-  # `approval_retracted` (stale approval withdrawn pre-resume →
-  # `:awaiting_approval`), and `run_abandoned` (operator gave up on a parked
+  # and `run_abandoned` (operator gave up on a parked
   # gate → terminal `:abandoned`). The composer's additive/subtractive wave deltas
   # are deliberately NOT authority — they persist as pure-log events and the parent
   # stays `:running` across a wave; only `@route_terminal_kinds` carry authority.
@@ -66,8 +65,7 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
                             :run_cancelled,
                             :run_abandoned,
                             :approval_requested,
-                            :approval_resolved,
-                            :approval_retracted
+                            :approval_resolved
                           ] ++ @route_terminal_kinds
 
   @non_terminal [:pending, :running, :awaiting_approval]
@@ -112,10 +110,6 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       lease/cancellation semantics (§4.11).
     * `approval_requested` only from `:running` (a gate step pauses the run)
     * `approval_resolved` only from `:awaiting_approval` (approve = resuming)
-    * `approval_retracted` only from `:running` — a recorded-but-not-yet-acted
-      approval is withdrawn pre-resume, parking the run back at
-      `:awaiting_approval` so a revised plan must re-earn its approval. The
-      pre-resume race fence lives in `Cases.retract/3`.
     * `run_resumed` from `:awaiting_approval` **or** `:running` — the latter is
       idempotent: on the operator approve path `approval_resolved` already set
       `:running`, and `init/1` then appends `run_resumed` (Decision 6), so the
@@ -131,7 +125,6 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def next_status(:awaiting_approval, :run_abandoned), do: {:ok, :abandoned}
   def next_status(:running, :approval_requested), do: {:ok, :awaiting_approval}
   def next_status(:awaiting_approval, :approval_resolved), do: {:ok, :running}
-  def next_status(:running, :approval_retracted), do: {:ok, :awaiting_approval}
   def next_status(:awaiting_approval, :run_resumed), do: {:ok, :running}
   def next_status(:running, :run_resumed), do: {:ok, :running}
 
@@ -181,8 +174,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   argument: routing `nil` through AshCloak's encrypt rewrite would store
   ciphertext-of-nil, and every presence check (recovery classification,
   `guard_resumable`, `GateResume`) would read it as "checkpoint present". The
-  non-terminal clauses (`approval_requested` / `approval_retracted` →
-  `:awaiting_approval`, `approval_resolved` / `run_resumed` → `:running`)
+  non-terminal clauses (`approval_requested` → `:awaiting_approval`,
+  `approval_resolved` / `run_resumed` → `:running`)
   leave it untouched: the checkpoint is written by the runner on pause and
   must survive until the run terminates.
   """
@@ -207,11 +200,6 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
 
   def status_attrs(:approval_resolved, _payload, _occurred_at),
     do: %{status: :running}
-
-  # Retraction parks the run back at the gate; the checkpoint is deliberately
-  # untouched — it is exactly what the eventual (re-)resume needs.
-  def status_attrs(:approval_retracted, _payload, _occurred_at),
-    do: %{status: :awaiting_approval}
 
   def status_attrs(:run_resumed, _payload, _occurred_at),
     do: %{status: :running}

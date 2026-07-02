@@ -16,7 +16,7 @@ by hand). Ordered by trigger proximity — nearest first.
 
 | # | Idea | Source entry | Adopt now? | Trigger distance |
 | --- | --- | --- | --- | --- |
-| 1 | Per-`<id>` catalog resources (`jido://workflows/<stage>`) | G2-1b | Not yet — nearest | Phase 0 spike is scoped + standalone; runs next time the MCP surface is touched |
+| 1 | Per-`<id>` catalog resources (`jido://workflows/<stage>`) | G2-1b | **SHIPPED 2026-07-02** | Spike ran green; Phases 1+3 landed the same day (no dep patch) |
 | 2 | Multi-node validation + lease ops (WS6) | G1-1 tail | Scheduled — circumstance-gated | Fires when a real second node (the argus tailnet) is imminent |
 | 3 | Debounced `.jido/` YAML file-watch | G3-2 | No — dev QoL | Skill-YAML iteration friction, or a second live-reload consumer |
 | 4 | Framed-port JSON-RPC runner protocol | G2-2 | No | A Python/non-CLI Forge runner (or hermes T1-1) reaching the roadmap |
@@ -26,22 +26,17 @@ by hand). Ordered by trigger proximity — nearest first.
 
 ## 1. Per-`<id>` catalog resources (G2-1b)
 
-**Standing**: the one gust tail with its own plan —
-[`docs/plans/mcp-workflow-resources/README.md`](../../plans/mcp-workflow-resources/README.md)
-scoped it out of G2-1a: `jido://workflows/<stage>` reads **one** composer-stage definition by
-URI, a drill-down on the shipped `jido://workflows/catalog`. The cheap parts are done on
-paper: serialization is already single-sourced (`Stage.to_map/1`), the id space is finite and
-compile-time (`Catalog.names/0` / `get/1` / `valid?/1`), and the mechanism is chosen (an
-anubis `component` template resource — jido_mcp's `publish` has no `resource_templates` key;
-no dep patch). What blocks code: that registration is novel inside a `use Jido.MCP.Server`
-module, so the plan gates **all** (b) code behind a compile-time + live-read Phase 0 spike.
-
-**Now?** Not yet, but nearest of the five — this is adopted-in-principle with the risk
-already isolated into a spike deliberately sized to run standalone.
-
-**Trigger**: the next MCP-server work session (run the spike then — green or kill), or an
-MCP client demonstrably needing per-stage reads (catalog-payload size complaints are the
-smell to watch for).
+**SHIPPED 2026-07-02.** The Phase 0 spike ran **green on all four gate points** (the
+anubis `component` template registers compile-time inside the `use Jido.MCP.Server`
+module, lists under `resources/templates/list`, routes template reads to `read/2` with
+the parsed name, and static-before-template ordering keeps the catalog URI untouched), so
+Phases 1+3 landed the same day with **no dep patch** (Phase 2 never fired).
+`JidoClaw.MCPServer.Resources.WorkflowStage` (`uri_template: "jido://workflows/{name}"`)
+single-sources `Stage.to_map/1`, so a per-stage read is byte-identical to the catalog's
+entry; unknown stage ⇒ resource not-found. Tests drive the real server module in-process
+(`workflow_stage_test.exs`); registration is asserted via `__components__(:resource)` +
+the templates-list handler, never `__publish__()` (the plan's false-green trap). Details:
+[`docs/plans/mcp-workflow-resources/README.md`](../../plans/mcp-workflow-resources/README.md).
 
 ## 2. Multi-node validation + lease ops — the WS6 tail (G1-1)
 

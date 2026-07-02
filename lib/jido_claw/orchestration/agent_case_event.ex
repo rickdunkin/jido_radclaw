@@ -3,12 +3,12 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent do
   Append-only audit timeline for one `AgentCase` — the per-case event log
   T1-4's thesis called the product ("for an agent that acts while you sleep,
   the audit timeline *is* the product"). One immutable row per case
-  transition: opened, approved, rejected, cancelled, abandoned, retracted,
+  transition: opened, approved, rejected, cancelled, abandoned,
   consumed (the tool-call single-use/deny-once claim).
 
   Every append happens **inside the same transaction** as the case-status
   flip it records (`WorkflowLog.gate_open/3`, `Cases.commit_approve/5` /
-  `commit_reject/5` / abandon / retract, and the cancel paths) — the case row
+  `commit_reject/5` / abandon, and the cancel paths) — the case row
   and its timeline can never disagree.
 
   Mirrors `WorkflowEvent`'s shape: deliberately a plain `use Ash.Resource`
@@ -105,7 +105,6 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent do
           :rejected,
           :cancelled,
           :abandoned,
-          :retracted,
           # Tool-call single-use approval / deny-once rejection claim.
           :consumed
         ]

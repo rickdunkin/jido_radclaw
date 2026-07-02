@@ -35,6 +35,8 @@ Baseline date: 2026-06-04.
 >   `:abandoned`) and `approval_retracted` (stale-approval retraction,
 >   `:running → :awaiting_approval`) joined the vocabulary, both
 >   status-authority; `AgentCaseEvent` is the per-case immutable timeline.
+>   *(`approval_retracted` was removed 2026-07-02 — vestigial, no production
+>   caller.)*
 > - **Deliberately still deferred:** the async step-timeline `Writer` +
 >   barrier (§4.3) — synchronous appends under the per-run `FOR UPDATE` lock
 >   stay; an `iterative` skill projects as one step row. (The Phase 4/5

@@ -78,9 +78,9 @@ Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
 Some sensitive operations require operator approval before they run (e.g.
 `git_commit`, `network_share`, `kill_agent`, `schedule_task`, `forget`, and
-shell commands equivalent to them such as `git commit ...`). When a call needs
-approval the tool returns an `approval_pending` error carrying a case id
-instead of executing. When that happens:
+shell commands equivalent to them such as `git commit ...` or `git push ...`).
+When a call needs approval the tool returns an `approval_pending` error
+carrying a case id instead of executing. When that happens:
 
 - Relay the case id to the user and tell them to approve it with
   `/gates approve <id>` (REPL) or the Approvals dashboard.

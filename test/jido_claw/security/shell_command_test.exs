@@ -398,6 +398,47 @@ defmodule JidoClaw.Security.ShellCommandTest do
     end
   end
 
+  describe "git effects: resolved push (:git_push, honest)" do
+    test "every shell dressing of a resolved push carries :git_push (no opacity)" do
+      for cmd <- [
+            "git push",
+            "git push origin main",
+            ~s(git push origin "$branch"),
+            ~s(git -C "my dir" push),
+            "FOO=bar git push",
+            "sudo git push",
+            "/usr/bin/git push",
+            ~s(sh -c "git push"),
+            "bash -lc 'git push'",
+            "echo x\ngit push",
+            "git push &",
+            "git -c alias.p=push p",
+            "git > out push"
+          ] do
+        assert_effect(cmd, :git_push)
+        refute opaque?(cmd), "expected #{inspect(cmd)} to gate via :git_push, not opacity"
+      end
+    end
+
+    test "push-adjacent benign forms carry no :git_push" do
+      for cmd <- [
+            "git log && echo push",
+            ~s(echo "git push"),
+            "git -c alias.p=status p",
+            ~s(git fetch origin "$branch")
+          ] do
+        refute_effect(cmd, :git_push)
+        refute git?(cmd), "expected #{inspect(cmd)} to pass through"
+      end
+    end
+
+    test "a !-shell alias to push stays opaque, never a resolved :git_push" do
+      cmd = ~s(git -c alias.p='!git push' p)
+      assert_opaque(cmd, scope: :git, reason: :shell_alias)
+      refute_effect(cmd, :git_push)
+    end
+  end
+
   describe "git effects: opacity (:opaque scope :git, never a false :git_commit)" do
     test "git-resolution uncertainty is honest opacity, not a commit" do
       for {cmd, reason} <- [
@@ -595,7 +636,7 @@ defmodule JidoClaw.Security.ShellCommandTest do
       for cmd <- [
             ~s(git config user.name "$val"),
             ~s(git -C "$dir" status),
-            ~s(git push origin "$branch"),
+            ~s(git fetch origin "$branch"),
             ~s(git checkout "$b")
           ] do
         refute git?(cmd), "expected #{inspect(cmd)} to pass through"

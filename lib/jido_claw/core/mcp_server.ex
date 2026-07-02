@@ -64,6 +64,16 @@ defmodule JidoClaw.MCPServer do
       ]
     }
 
+  # Per-stage drill-down template at jido://workflows/{name} (G2-1b). An anubis
+  # `component` (the macro arrives via `use Jido.MCP.Server` → `use
+  # Anubis.Server`), deliberately NOT in `publish:` — templates never go there
+  # (jido_mcp's publish DSL has no template concept). It registers compile-time
+  # into `__components__(:resource)`, is listed by `resources/templates/list`,
+  # and anubis's read path routes matching URIs directly to the component's
+  # `read/2` — static resources match first, so the catalog URI above is
+  # unaffected.
+  component(JidoClaw.MCPServer.Resources.WorkflowStage)
+
   @doc """
   The MCP-published tool modules, derived from the generated `__publish__/0`
   so the tool-wrapper marker sweeps cover every publication surface (not just

@@ -190,7 +190,8 @@ shipped:
   stale-approval retraction **automatic** in the composer (`route_composer.ex`
   `retract_stale_approval`), so AR-1's "only `irreversible_write` has a producer / retraction is
   operator-initiated" tail no longer holds. (See the amended AR-1 outcome note for the two
-  residuals: the now-vestigial case-axis `Cases.retract`, and two stale in-code/in-doc claims.)
+  residuals — the vestigial case-axis `Cases.retract` and a stale in-code claim — **both
+  resolved 2026-07-02**: the retract surface deleted whole, the `plan_gate.ex` claim fixed.)
 - **AR-3 (reviewer fan-out + contract) — DONE** (`2026-06-25`). The fan-out was already built (the
   composer catalog instantiates the one `reviewer` template as four risk-gated lenses — security,
   quality, correctness, architecture — dispatched as a parallel wave with lens-scoped findings);
@@ -389,9 +390,10 @@ blockquote, and its §8 Phase 2 line reads "folding in Alp River AR-1's gate lif
 taxonomy (`:tool_call | :plan | :irreversible_write`, single-sourced in `Gate.Kinds`);
 **abandon is a run-terminal** (`Orchestration.Cases.abandon` → `run_abandoned` →
 `:abandoned`, every pending case dropped, only legal from `:awaiting_approval`); and
-**stale-approval retraction** is `Cases.retract` (`approval_retracted`: case reopened with
-decision data cleared, run parked back at `:awaiting_approval`, race-fenced against
-`run_resumed` under the per-run lock) — both carry "AR-1" comments in the code.
+**stale-approval retraction** was, at the time of this record, `Cases.retract`
+(`approval_retracted`: case reopened with decision data cleared, run parked back at
+`:awaiting_approval`, race-fenced against `run_resumed` under the per-run lock — since
+deleted; see the Tail update below) — both carried "AR-1" comments in the code.
 
 **Tail update (2026-06-25): the open tail is now CLOSED.** AR-2 Phase 4 (composer human gates,
 `ed483619`, 2026-06-22) gave both the `plan` gate (`gates/plan_gate.ex` → `Reactors.PlanGate`,
@@ -401,15 +403,16 @@ stale-approval retraction **automatic**: the composer detects a post-approval sc
 retracts the `plan-approved` *signal* (`route_composer.ex` `stale_approval?` →
 `retract_stale_approval`, tested in `composer_durable_test.exs`), re-gating so the revised plan
 must re-earn approval — a faithful realization of Alp River's "remove `#plan-approved` from the
-live set" lock. Two residuals remain: (1) the *case-axis* `Cases.retract` named just above is now
-**vestigial** — test-only, with no live caller and no operator surface, because the shipped
-automatic path retracts the signal and re-gates (minting a fresh case) rather than reopening the
-existing case; and (2) *(re-verified 2026-07-02)* one stale in-code claim remains —
-`gates/plan_gate.ex`'s moduledoc says retraction "rides `Cases.retract/3`" (it doesn't; the
-composer's signal-axis path is the live mechanism). `gate/kinds.ex`'s moduledoc — the stale
-claim originally named here — has since been fixed (it now documents live producers for all
-three kinds), and the outcome paragraph above stands as the AR-1-era record this Tail update
-corrects.
+live set" lock. Two residuals remained; **both resolved 2026-07-02**: (1) the *case-axis*
+`Cases.retract` named just above — vestigial (test-only, no live caller, no operator surface)
+because the shipped automatic path retracts the signal and re-gates (minting a fresh case)
+rather than reopening the existing case — was **deleted whole** (with `commit_retract/5`,
+`ensure_not_resumed/3`, the `:approval_retracted` durable event kind + its projection arms,
+`AgentCase.reopen`, and the `:retracted` timeline kind); and (2) `gates/plan_gate.ex`'s
+moduledoc, which said retraction "rides `Cases.retract/3`", now points at the composer's
+signal-axis path. `gate/kinds.ex`'s moduledoc — the stale claim originally named here — had
+already been fixed, and the outcome paragraph above stands as the AR-1-era record this Tail
+update corrects.
 
 ---
 

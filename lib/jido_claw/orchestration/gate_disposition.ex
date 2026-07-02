@@ -4,8 +4,8 @@ defmodule JidoClaw.Orchestration.GateDisposition do
   `AgentCase` aggregate outside an operator decision.
 
   A parked gate's pending `AgentCase` and its child `WorkflowRun` are ONE
-  aggregate. The operator surface (`Cases.decide/4`, `Cases.abandon/3`,
-  `Cases.retract/3`) commits the pair under the global **run → case → events**
+  aggregate. The operator surface (`Cases.decide/4`, `Cases.abandon/3`)
+  commits the pair under the global **run → case → events**
   lock order (`cases.ex`), so every OTHER writer that terminalizes the same pair
   — the composer's sensitive-park deadline (O-M2), its terminal-parent teardown,
   recovery's dangling-gate and orphaned-park branches — must serialize on the

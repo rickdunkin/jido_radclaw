@@ -108,7 +108,6 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           :step_undone,
           :approval_requested,
           :approval_resolved,
-          :approval_retracted,
           :run_halted,
           :run_completed,
           :run_failed,

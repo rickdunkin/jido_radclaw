@@ -819,7 +819,8 @@ route (held if *any* entry is active, runnable when *all* active entries release
 the `until` signal to land in `live`. What *produces* that `until` is a separate stage — for a
 human approval, a **gate-producer**, which is where AR-1 plugs in: `Cases.abandon` makes
 `abandon` run-terminal and `Cases.retract` (`approval_retracted`) is the §4 stale-approval
-retraction. The decision-kind taxonomy is single-sourced in `Gate.Kinds`
+retraction *(removed 2026-07-02 — vestigial, no production caller; the shipped signal-axis
+retraction below superseded it)*. The decision-kind taxonomy is single-sourced in `Gate.Kinds`
 (`:tool_call | :plan | :irreversible_write`); the composer's plan-approval and safety
 gate-producers map onto `:plan` and `:irreversible_write`.
 

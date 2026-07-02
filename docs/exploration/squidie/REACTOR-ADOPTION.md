@@ -86,7 +86,9 @@ shipped beyond the durable spine:
   fenced on no-`run_resumed`-after-`approval_resolved` under the per-run
   lock). `Cases.decide/4` gained the `resume: false` commit-only seam that
   makes the pre-resume window real; the live re-plan trigger arrives with the
-  future `plan`-gate producer.
+  future `plan`-gate producer. *(The retract half was removed 2026-07-02 —
+  vestigial, no production caller; the composer's signal-axis retraction
+  superseded it.)*
 - **§4.8 recovery fixes** — dangling gate now reconciles to **`:failed`**
   with the full audit (`run_recovered` + `run_failed` + case cancelled, one
   transaction); the `:running`+checkpoint branch is re-keyed on the recorded

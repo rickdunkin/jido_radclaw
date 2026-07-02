@@ -12,6 +12,9 @@ defmodule JidoClaw.Security.ShellCommand.Git do
       expanded alias chain) to `commit`. This is the only thing that becomes a
       `:git_commit` effect; git-resolution *uncertainty* never masquerades as a
       commit.
+    * `pushes?` — the sub-command resolves (literally, or through a fully
+      expanded alias chain) to `push` — publishing to a remote. Same honesty
+      contract: only a resolved push becomes a `:git_push` effect.
     * `inline_injections` — config injected into *this* run via global `-c` /
       `--config-env`: a config-include directive, a `--config-env` value read
       from an unreadable env var, or a dynamic inline `-c` value.
@@ -56,6 +59,7 @@ defmodule JidoClaw.Security.ShellCommand.Git do
     """
     defstruct subcommand: nil,
               commits?: false,
+              pushes?: false,
               inline_injections: [],
               config_writes: [],
               opaque_reason: nil
@@ -68,6 +72,7 @@ defmodule JidoClaw.Security.ShellCommand.Git do
     @type t :: %__MODULE__{
             subcommand: subcommand(),
             commits?: boolean(),
+            pushes?: boolean(),
             inline_injections: [injection()],
             config_writes: [config_write()],
             opaque_reason: opaque_reason()
@@ -205,6 +210,9 @@ defmodule JidoClaw.Security.ShellCommand.Git do
 
   defp classify_candidate({"commit", _dyns}, _rest, _aliases, inv, _depth, _retok),
     do: %{inv | commits?: true}
+
+  defp classify_candidate({"push", _dyns}, _rest, _aliases, inv, _depth, _retok),
+    do: %{inv | pushes?: true}
 
   defp classify_candidate({text, _dyns}, _rest, aliases, inv, depth, retok),
     do: resolve_alias(text, aliases, inv, depth, retok)

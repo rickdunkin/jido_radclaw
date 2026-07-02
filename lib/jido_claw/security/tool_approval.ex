@@ -51,11 +51,16 @@ defmodule JidoClaw.Security.ToolApproval do
   and emits **honest semantic effects** the gate matches on (`{:effect, kind}`).
   So `git commit`, `git -C "my dir" commit`, `FOO=bar git commit`,
   `sudo git commit`, `/usr/bin/git commit`, `sh -c "git commit"`, and the
-  multiline / separator variants all gate (`:git_commit`), as does `crontab`
-  (`:crontab`, the `schedule_task` equivalent). For `git` the analyzer resolves
+  multiline / separator variants all gate (`:git_commit`), as do `git push`
+  and its dressings (`:git_push` — a push publishes to a remote, and there is
+  no native `git_push` tool to require-list, so the pattern is the whole gate)
+  and `crontab` (`:crontab`, the `schedule_task` equivalent). For `git` the
+  analyzer resolves
   the *true* sub-command past global options, inline `-c alias.X=Y` definitions,
-  and alias chains, emitting `:git_commit` **only** for a definitively resolved
-  commit; git-resolution uncertainty (a dynamic sub-command `git $x`, an unknown
+  and alias chains, emitting `:git_commit`/`:git_push` **only** for a
+  definitively resolved
+  commit/push; git-resolution uncertainty (a dynamic sub-command `git $x`, an
+  unknown
   pre-sub-command flag `git --frobnicate commit`, an alias cycle, a `!`-shell
   alias) surfaces as `:opaque` (scope `:git`) — gated, but never a *false*
   `:git_commit`. Config injection (`:git_config_injection`) covers an inline
@@ -101,8 +106,8 @@ defmodule JidoClaw.Security.ToolApproval do
   patterns for other tools but a typo'd config entry can never disable the
   shipped ones (defaults win on merge, and malformed entries are
   warn-and-skipped). `:suspicious_shell_structure_kinds` narrows the `:structure`
-  matcher — a literal `[]` disables structural gating (the
-  `:git_commit`/`:git_config_injection`/`:git_config_persistent_write`/`:crontab`
+  matcher — a literal `[]` disables structural gating (the `:git_commit`/
+  `:git_push`/`:git_config_injection`/`:git_config_persistent_write`/`:crontab`
   effect matchers and the `:opaque` fail-closed floor remain), an unknown/
   malformed value falls back to the default. The `{:effect, _}` matchers are
   intentionally not disable-able.
@@ -145,11 +150,12 @@ defmodule JidoClaw.Security.ToolApproval do
   # config), or a `%Regex{}` (raw-string fallback). These close the bypass where
   # the general-purpose run_command reaches a gated capability.
   #
-  # The five `{:effect, _}` entries are the non-disable-able floor (defaults win
+  # The six `{:effect, _}` entries are the non-disable-able floor (defaults win
   # on merge in require_patterns/1); `:structure` is narrowed/disabled via
   # :suspicious_shell_structure_kinds. The analyzer's effects are honest semantic
-  # facts: `:git_commit` only for a definitively resolved commit (git-resolution
-  # uncertainty surfaces as `:opaque`, scope :git), `:git_config_injection` for
+  # facts: `:git_commit`/`:git_push` only for a definitively resolved commit/push
+  # (git-resolution uncertainty surfaces as `:opaque`, scope :git),
+  # `:git_config_injection` for
   # inline `-c`/`--config-env`/`GIT_CONFIG_*`-env config injection, and
   # `:git_config_persistent_write` for a `git config` write that PLANTS config a
   # later turn honors (an `alias.*`/`include.*` key, a dynamic key, a section
@@ -163,6 +169,11 @@ defmodule JidoClaw.Security.ToolApproval do
          # shell dressing — quoting, separators, env/wrapper/path prefixes,
          # aliases, `sh -c`, multiline. `git log && echo commit` stays unmatched.
          {:effect, :git_commit},
+         # git-push equivalence: a push publishes to a remote (there is no
+         # native git_push tool to require-list, so this pattern is the whole
+         # gate). Same honest resolution as commit — only a definitively
+         # resolved push matches.
+         {:effect, :git_push},
          # git config injection (inline -c include/--config-env, GIT_CONFIG_* env).
          {:effect, :git_config_injection},
          # a persistent `git config` write that plants config for a later turn.
@@ -258,8 +269,8 @@ defmodule JidoClaw.Security.ToolApproval do
 
       docker_run_command?(tool, context) ->
         # AR-8b-2 F2 (D2-b): a `run_command` under `sandbox: :docker` skips the
-        # whole shell `pattern_match/3` matcher set — the five non-disableable
-        # `{:effect, _}` floors (git_commit/git_config_injection/
+        # whole shell `pattern_match/3` matcher set — the six non-disableable
+        # `{:effect, _}` floors (git_commit/git_push/git_config_injection/
         # git_config_persistent_write/crontab/opaque) PLUS the `:structure`
         # matcher — because their *reasons* (host git/crontab/opaque, pipe-to-
         # host-shell) are inapplicable in-container: a `:docker` worker runs in a

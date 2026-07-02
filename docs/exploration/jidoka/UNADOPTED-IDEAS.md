@@ -101,4 +101,4 @@ Compiled **2026-07-02**, against jidoka `9469dc09` (2026-06-17, `0.8.0-beta.1`) 
 
 ---
 
-**Minor footnote** (tracked here so the inventories stay clean): T2-4's `blocks_count` still loads full `Block` rows to `length/1` — swap to `Ash.count/2` opportunistically next time someone is in `Memory`/`Inspection`; not worth a work item.
+**Minor footnote** (tracked here so the inventories stay clean): ~~T2-4's `blocks_count` still loads full `Block` rows to `length/1` — swap to `Ash.count/2` opportunistically next time someone is in `Memory`/`Inspection`; not worth a work item.~~ **Done 2026-07-02** — but not the naive swap: the list is label-deduped, so a raw-row `Ash.count` would over-count; `namespace_info/1` now counts DB-side via `Ash.Query.distinct(:label)` over the same scope-chain read (pinned by a same-label-two-scopes test).

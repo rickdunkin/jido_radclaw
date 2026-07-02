@@ -22,8 +22,7 @@ defmodule JidoClaw.Orchestration.Cases do
   re-runs the reactor's durable downstream steps. Pass `resume: false` to
   commit the decision **without** resuming — the seam tests and the future
   plan-gate producer's approve-then-batch-resume flow use; the run stays
-  `:running` with its checkpoint intact until something resumes it (or the
-  approval is retracted).
+  `:running` with its checkpoint intact until something resumes it.
 
   ## Reject
 
@@ -51,23 +50,6 @@ defmodule JidoClaw.Orchestration.Cases do
   executor and delegates *parked* runs here. Distinct from reject (a decision
   about the gate) and from recovery's cancel (crash-reaped).
 
-  ## Stale-approval retraction (AR-1)
-
-  `retract/3` withdraws a recorded-but-not-yet-acted approval so a revised
-  plan must re-earn it: `:running --approval_retracted--> :awaiting_approval`,
-  the `AgentCase` flips back to `:pending` with **all decision data cleared**
-  (`decision`, `decided_at`, `decision_comment`, `decided_by_id`), and a
-  `:retracted` timeline event records it. Race-fenced to the pre-resume
-  window: (a) the case row is reloaded `FOR UPDATE` and re-checked `:approved`
-  on the fresh, locked struct before it is reopened (`lock_case/3` +
-  `ensure_case_approved/1`), and (b) inside the same transaction — under the
-  per-run `FOR UPDATE` lock every event append takes — the run's log is checked
-  for a `run_resumed` **after** the `approval_resolved`; if one exists the
-  reactor is live and retraction is refused with `{:error, :already_resumed}`.
-  The live trigger (re-plan
-  detection) arrives with the future plan-gate producer; today the window is
-  opened deliberately via `decide(..., resume: false)`.
-
   ## Idempotency / concurrency
 
   Every decision commit reloads the `AgentCase` row `FOR UPDATE` inside its
@@ -93,9 +75,9 @@ defmodule JidoClaw.Orchestration.Cases do
   `:rejected` timeline event in **one transaction** (no `WorkflowEvent` — there
   is no run), fires the gate's best-effort hook with a `%GateContext{run: nil}`,
   broadcasts `{:gate_resolved, nil, …}`, and returns `{:ok, %AgentCase{}}` (the
-  decided case, not a run — callers branch on the struct). `abandon/3` and
-  `retract/3` are workflow-only and refuse a tool-call case with
-  `{:error, :not_workflow_case}` (there is no run to abandon or resume).
+  decided case, not a run — callers branch on the struct). `abandon/3` is
+  workflow-only and refuses a tool-call case with
+  `{:error, :not_workflow_case}` (there is no run to abandon).
   """
 
   require Ash.Query, as: Query
@@ -191,42 +173,6 @@ defmodule JidoClaw.Orchestration.Cases do
       RunPubSub.broadcast_run_terminal(abandoned_run, :run_abandoned, :abandoned)
 
       {:ok, abandoned_run}
-    end
-  end
-
-  @doc """
-  Retract the recorded-but-not-yet-acted approval on the `AgentCase`
-  identified by `case_id` (AR-1 stale-approval retraction).
-
-  Only legal in the pre-resume window: the case must still be `:approved` and
-  the run `:running` with **no** `run_resumed` event after the
-  `approval_resolved` (checked under the per-run `FOR UPDATE` event lock).
-  A reactor already resuming refuses with `{:error, :already_resumed}`. On
-  success the run parks back at `:awaiting_approval` (checkpoint intact), the
-  case reopens `:pending` with all decision data cleared, and `{:ok, run}` is
-  returned.
-  """
-  @spec retract(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, WorkflowRun.t()} | {:error, term()}
-  def retract(case_id, attrs \\ %{}, opts \\ []) do
-    tenant = Keyword.fetch!(opts, :tenant)
-    actor = Keyword.fetch!(opts, :actor)
-
-    with {:ok, agent_case, run} <- load(case_id, tenant, actor),
-         # Tool-call cases have no run to resume — refuse deterministically.
-         :ok <- ensure_workflow_case(run),
-         # Pre-transaction guards for the deterministic refusals (clean atoms
-         # — Ash.transact wraps in-transaction errors); the same checks
-         # re-run inside the transaction under the run lock as the race fence.
-         :ok <- ensure_case_approved(agent_case),
-         :ok <- ensure_not_resumed(run.id, tenant, actor),
-         {:ok, gate} <- commit_retract(agent_case, run, attrs, tenant, actor),
-         {:ok, parked_run} <- WorkflowRun.by_id(run.id, tenant: tenant, actor: actor) do
-      RunPubSub.broadcast_gate(
-        {:gate_requested, run.id, %{tenant_id: run.tenant_id, agent_case_id: gate.id}}
-      )
-
-      {:ok, parked_run}
     end
   end
 
@@ -381,9 +327,9 @@ defmodule JidoClaw.Orchestration.Cases do
   # reads the winner's committed status, and rolls back `{:error, :not_pending}`
   # (the `change filter` on the action is in-memory defence-in-depth, NOT the DB
   # fence — see `AgentCase`). Locks are taken in one global order
-  # (run -> case -> events): every workflow commit takes the RUN lock first, so
-  # taking the case-row UPDATE before the run lock would invert
-  # `commit_retract`'s order and open a deadlock window.
+  # (run -> case -> events): every workflow commit takes the RUN lock first —
+  # a commit that took the case-row UPDATE before the run lock would invert
+  # that order and open a deadlock window.
   defp commit_approve(agent_case, run, attrs, tenant, actor) do
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
       with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
@@ -463,9 +409,6 @@ defmodule JidoClaw.Orchestration.Cases do
   defp ensure_case_pending(%AgentCase{status: :pending}), do: :ok
   defp ensure_case_pending(%AgentCase{}), do: {:error, :not_pending}
 
-  defp ensure_case_approved(%AgentCase{status: :approved}), do: :ok
-  defp ensure_case_approved(%AgentCase{}), do: {:error, :not_approved}
-
   defp abandon_cases(cases, attrs, reason, tenant, actor) do
     Enum.reduce_while(cases, {:ok, :done}, fn pending_case, _acc ->
       with {:ok, abandoned} <-
@@ -479,43 +422,10 @@ defmodule JidoClaw.Orchestration.Cases do
     end)
   end
 
-  # The retract commit (run -> case lock order): (1) take the same per-run
-  # FOR UPDATE lock every event append takes, serializing against any in-flight
-  # resume's `run_resumed`; (2) reload the case row FOR UPDATE and re-check it
-  # is still `:approved` on that fresh, locked struct (`lock_case` +
-  # `ensure_case_approved`) — the fence against a concurrent double-retract;
-  # (3) under the run lock, verify no `run_resumed` postdates the
-  # `approval_resolved`; (4) reopen the LOCKED case (clearing all decision
-  # data); (5) append `approval_retracted` (`:running -> :awaiting_approval`);
-  # (6) the `:retracted` timeline event.
-  defp commit_retract(agent_case, run, attrs, tenant, actor) do
-    comment = Map.get(attrs, :decision_comment)
-
-    Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
-           {:ok, locked} <- lock_case(agent_case.id, tenant, actor),
-           :ok <- ensure_case_approved(locked),
-           :ok <- ensure_not_resumed(run.id, tenant, actor),
-           {:ok, gate} <- AgentCase.reopen(locked, %{}, tenant: tenant, actor: actor),
-           {:ok, _event} <-
-             WorkflowLog.append(
-               run,
-               :approval_retracted,
-               %{agent_case_id: gate.id, reason: comment},
-               tenant: tenant,
-               actor: actor
-             ),
-           {:ok, _case_event} <-
-             WorkflowLog.case_event(gate, :retracted, %{reason: comment}, tenant, actor) do
-        gate
-      end
-    end)
-  end
-
   # The same per-run FOR UPDATE the event allocator takes — holding it for the
   # rest of the transaction means a concurrent resume's `run_resumed` append
   # (which must take this lock) serializes strictly before or after this
-  # retraction, never interleaved.
+  # commit, never interleaved.
   defp lock_run(run_id, tenant, actor) do
     WorkflowRun
     |> Query.filter(id == ^run_id)
@@ -531,7 +441,7 @@ defmodule JidoClaw.Orchestration.Cases do
   # commit transaction so the status re-check runs on a fresh, locked struct —
   # never the pre-transaction `load`. A concurrent decider that loaded the same
   # `:pending` struct blocks here until the winner commits, then reads the
-  # winner's status and rolls back at `ensure_case_pending`/`ensure_case_approved`.
+  # winner's status and rolls back at `ensure_case_pending`.
   # The house row-lock idiom, mirroring `lock_run/3` (and `Allocate.lock_case/3`,
   # `ToolApprovals.lock_by_fingerprint/3`).
   defp lock_case(case_id, tenant, actor) do
@@ -542,32 +452,6 @@ defmodule JidoClaw.Orchestration.Cases do
     |> case do
       {:ok, %AgentCase{} = locked} -> {:ok, locked}
       _ -> {:error, :not_found}
-    end
-  end
-
-  # Under the held lock: a `run_resumed` after the latest `approval_resolved`
-  # means the reactor is (or was) live past the decision — refuse.
-  defp ensure_not_resumed(run_id, tenant, actor) do
-    case WorkflowEvent.for_run(run_id, tenant: tenant, actor: actor) do
-      {:ok, events} ->
-        resolved_seq =
-          events
-          |> Enum.filter(&(&1.kind == :approval_resolved))
-          |> Enum.map(& &1.seq)
-          |> Enum.max(fn -> nil end)
-
-        resumed_after? =
-          is_integer(resolved_seq) and
-            Enum.any?(events, &(&1.kind == :run_resumed and &1.seq > resolved_seq))
-
-        cond do
-          is_nil(resolved_seq) -> {:error, :no_recorded_approval}
-          resumed_after? -> {:error, :already_resumed}
-          true -> :ok
-        end
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

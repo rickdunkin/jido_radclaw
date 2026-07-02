@@ -30,7 +30,7 @@ item by item.
 | Delta item (v1.2.6 → v1.3.3) | Verdict | Entry |
 | --- | --- | --- |
 | **Multi-plan exploration + `plan-arbiter`** (1.2.13) | **BUILD-ON** (AR-2/3/5/6 substrate) — the one substantive new borrow; opt-in arming, not urgent | AR-9 |
-| **Shipping tail** (`ship-gate`/`ship-executor`, 1.2.17/1.3.2) | **BUILD-ON, small** — route-level ship flow over the already-gated git tools; surfaces that `git push` is ungated today | AR-10 |
+| **Shipping tail** (`ship-gate`/`ship-executor`, 1.2.17/1.3.2) | **BUILD-ON, small** — route-level ship flow over the already-gated git tools; surfaced that `git push` was ungated (fixed 2026-07-02) | AR-10 |
 | **Artifact handles** (1.3.0 — missed by V1's drift note) | **NOTE, minor** — adopt only on prompt-cost evidence | AR-11 |
 | Premises (4th loop-state piece) | **covered** — composer state has carried `premises` since AR-2 Phase 1; one refinement flagged | §4 |
 | Background dispatch + mtime/deadline watchdog | **covered** — wave/run/park deadlines; idle-based early kill noted as a refinement | §4 |
@@ -168,8 +168,9 @@ not a now item.
 ### AR-10. The shipping tail — ship-gate + ship-executor at convergence
 
 **Recommendation**: BUILD-ON (AR-2), **small**. Route-level ship ergonomics plus a durable
-`shipped` terminal in the run record — and the analysis surfaces one real conversation-axis
-observation (ungated `git push`) that is worth acting on *independently* of the borrow.
+`shipped` terminal in the run record — and the analysis surfaced one real conversation-axis
+observation (ungated `git push`) that was acted on *independently* of the borrow
+(**shipped 2026-07-02** — see the gap paragraph below).
 
 **Where** (Alp River): `WORKFLOW.md` `## Shipping`; `agents/ship-gate.md` /
 `agents/ship-executor.md` (added 1.2.17; ship-to-main default 1.3.2, commit `09766a5`);
@@ -194,12 +195,14 @@ Shipping happens on the conversation axis afterward: the operator asks, and the
 `git_commit` tool (in `ToolApproval.default_require/0`) plus the `run_command`
 `git commit` param-pattern gate the commit. GitHub PR machinery exists
 (`PullRequestCoordinator`) but nothing route-level composes a ship step. **The
-observation**: the approval patterns cover `git commit` (and crontab / git-config
-injection) but there is **no `git push` pattern** (`security/tool_approval.ex`, rg
-verified) — so remote publication via `run_command "git push"` is ungated on the
-conversation axis today. That gap is fixable with a one-line pattern add regardless of
-whether this borrow ships; the route-level ship gate would additionally give the composed
-flow a proper human checkpoint on publication.
+observation** (as of 2026-07-02, now **resolved**): the approval patterns covered
+`git commit` (and crontab / git-config injection) but had **no `git push` pattern**, so
+remote publication via `run_command "git push"` was ungated on the conversation axis.
+**Closed 2026-07-02** — not the one-line add this entry guessed: the analyzer treated an
+unresolved git subcommand as benign, so the fix added a `pushes?` invocation fact
+(`ShellCommand.Git`, mirroring `commits?`), a `:git_push` effect kind, and the
+`{:effect, :git_push}` require-pattern. The route-level ship gate would still additionally
+give the composed flow a proper human checkpoint on publication.
 
 **Relationship to the shipped stack**: maps onto three existing parts — a triage marker
 signal (`ship-requested`, exactly like the path + early-signal emissions triage already
@@ -220,8 +223,9 @@ conversation-axis floor. (a) is the honest design.
 `ship-ready` — the convergence-time emit is the one new composer touch) and
 `ship-executor` (a thin worker over `git_commit` + `run_command` `git push` /
 `gh pr create --draft`, publishing `shipped`); (3) resolve double-gating per (a); (4)
-independently of all of the above, consider adding a `git push` require-pattern to
-`ToolApproval` — the cheapest piece and arguably the most valuable.
+~~independently of all of the above, consider adding a `git push` require-pattern to
+`ToolApproval` — the cheapest piece and arguably the most valuable~~ **done 2026-07-02**
+(the `{:effect, :git_push}` pattern, backed by real subcommand resolution).
 
 ---
 
@@ -330,6 +334,6 @@ What it does teach is concentrated in **AR-9** — a judge-panel plan wave whose
 be structurally safer than the original (catalog-enforced sole-publisher invariant, native
 atomic co-publish, the human gate unchanged) and which doubles as the first consumer of
 the unwired per-stage tiering seam. **AR-10** is a small ergonomic tail on parts that all
-exist — and its analysis yields one immediately actionable observation (`git push` has no
-approval pattern today) that stands on its own. **AR-11** is a recorded idea awaiting cost
-evidence. None of it is urgent; all of it is now written down.
+exist — and its analysis yielded one immediately actionable observation (`git push` had no
+approval pattern) that stood on its own and **shipped 2026-07-02**. **AR-11** is a
+recorded idea awaiting cost evidence. None of it is urgent; all of it is now written down.

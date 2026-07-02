@@ -193,7 +193,15 @@ defmodule JidoClaw.Security.ToolApprovalTest do
         "git config rename-section foo alias",
         "git config --rename-section foo include",
         "git config edit",
-        ~s(K=alias.ci; git config "$K" commit; git ci)
+        ~s(K=alias.ci; git config "$K" commit; git ci),
+        # git-push equivalence (item 1a): a push publishes to a remote, so it
+        # gates like commit in any shell dressing.
+        "git push",
+        "git push origin main",
+        ~s(git push origin "$branch"),
+        "sudo git push",
+        ~s(sh -c "git push"),
+        "git -c alias.p=push p"
       ]
 
       for cmd <- bypasses do
@@ -278,7 +286,7 @@ defmodule JidoClaw.Security.ToolApprovalTest do
         "gc",
         # git-aware resolution keeps common benign dynamic-arg usage un-gated:
         # a dynamic value is not a sub-command.
-        ~s(git push origin "$branch"),
+        ~s(git fetch origin "$branch"),
         ~s(git -C "$dir" status),
         # config-injection benign regressions (review F1/F2/F3): a GIT_CONFIG token
         # with no git command, a non-GIT_CONFIG env prefix, a non-include `-c`, and
@@ -735,6 +743,8 @@ defmodule JidoClaw.Security.ToolApprovalTest do
     @floor_tripping [
       # {:effect, :git_commit}
       "git commit -m x",
+      # {:effect, :git_push}
+      "git push origin main",
       # {:effect, :opaque} / :structure (command substitution)
       "echo $(date)",
       # :structure (pipe into a shell)

@@ -1,9 +1,7 @@
 defmodule JidoClaw.Orchestration.GateLifecycleTest do
   @moduledoc """
   WS5/WS7: the `AgentCaseEvent` timeline (every case transition appends in
-  the same transaction) and the AR-1 gate lifecycle — operator `abandon` and
-  stale-approval `retract` (exercised through the `resume: false` commit-only
-  seam).
+  the same transaction) and the AR-1 gate lifecycle — operator `abandon`.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -127,73 +125,6 @@ defmodule JidoClaw.Orchestration.GateLifecycleTest do
 
       assert {:ok, _} = Cases.decide(case_id, :approve, %{}, scope(ctx))
       assert {:error, :not_pending} = Cases.abandon(case_id, %{}, scope(ctx))
-    end
-  end
-
-  describe "stale-approval retraction (AR-1)" do
-    test "retract pre-resume reopens the case clean and re-earns the approval", ctx do
-      {result, inputs} = run_gated(ctx.tenant, ctx.actor)
-      assert {:ok, {:paused, case_id}, run} = result
-
-      # Commit-only approve: the pre-resume window, made real by the seam.
-      assert {:ok, running} =
-               Cases.decide(
-                 case_id,
-                 :approve,
-                 %{decision_comment: "lgtm", decided_by_id: Ecto.UUID.generate()},
-                 Keyword.put(scope(ctx), :resume, false)
-               )
-
-      assert running.status == :running
-      assert is_binary(running.encrypted_resume_checkpoint)
-      assert {:ok, %AgentCase{status: :approved}} = AgentCase.by_id(case_id, scope(ctx))
-      refute workspace_exists?(inputs.workspace_path, ctx)
-
-      # Retract: the run parks back at the gate, the case reopens with ALL
-      # decision data cleared, the checkpoint survives.
-      assert {:ok, parked} = Cases.retract(case_id, %{decision_comment: "re-plan"}, scope(ctx))
-      assert parked.status == :awaiting_approval
-      assert is_binary(parked.encrypted_resume_checkpoint)
-
-      assert {:ok, reopened} = AgentCase.by_id(case_id, scope(ctx))
-      assert reopened.status == :pending
-      assert is_nil(reopened.decision)
-      assert is_nil(reopened.decided_at)
-      assert is_nil(reopened.decision_comment)
-      assert is_nil(reopened.decided_by_id)
-
-      assert :approval_retracted in kinds(run, ctx)
-
-      assert {:ok, case_events} = AgentCaseEvent.for_case(case_id, scope(ctx))
-      assert Enum.map(case_events, & &1.type) == [:opened, :approved, :retracted]
-
-      # The revised plan re-earns its approval: a full approve now resumes to
-      # completion.
-      assert {:ok, completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
-      assert completed.status == :completed
-      assert workspace_exists?(inputs.workspace_path, ctx)
-    end
-
-    test "retract after the reactor resumed is refused with :already_resumed", ctx do
-      {result, _inputs} = run_gated(ctx.tenant, ctx.actor)
-      assert {:ok, {:paused, case_id}, _run} = result
-
-      # Full approve: approval_resolved + run_resumed (the resume ran).
-      assert {:ok, completed} = Cases.decide(case_id, :approve, %{}, scope(ctx))
-      assert completed.status == :completed
-
-      assert {:error, :already_resumed} = Cases.retract(case_id, %{}, scope(ctx))
-
-      # Nothing changed: the case keeps its decision.
-      assert {:ok, %AgentCase{status: :approved}} = AgentCase.by_id(case_id, scope(ctx))
-    end
-
-    test "retract of a still-pending case is refused (nothing to retract)", ctx do
-      {result, _inputs} = run_gated(ctx.tenant, ctx.actor)
-      assert {:ok, {:paused, case_id}, _run} = result
-
-      assert {:error, :not_approved} = Cases.retract(case_id, %{}, scope(ctx))
-      assert {:ok, %AgentCase{status: :pending}} = AgentCase.by_id(case_id, scope(ctx))
     end
   end
 

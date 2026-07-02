@@ -46,6 +46,36 @@ defmodule JidoClaw.Memory.NamespaceInfoTest do
       assert result.namespace == "workspace:#{ws.id}"
     end
 
+    test "blocks_count counts label-DEDUPED rows across the chain, not raw rows", %{
+      tenant_id: tenant_id,
+      workspace: ws
+    } do
+      {:ok, session} = seed_session(tenant_id, ws.id)
+      actor = actor_for(tenant_id)
+
+      # The SAME label at two chain scopes (session overrides workspace — one
+      # deduped row) plus one unique label: 3 raw rows, 2 distinct labels. A
+      # raw row count would report 3.
+      for attrs <- [
+            %{scope_kind: :workspace, workspace_id: ws.id, label: "style_guide", value: "ws"},
+            %{scope_kind: :session, session_id: session.id, label: "style_guide", value: "sess"},
+            %{scope_kind: :workspace, workspace_id: ws.id, label: "conventions", value: "c"}
+          ] do
+        assert {:ok, _} =
+                 Block.write(Map.put(attrs, :source, :user), tenant: tenant_id, actor: actor)
+      end
+
+      result =
+        Memory.namespace_info(%{
+          tenant_id: tenant_id,
+          session_uuid: session.id,
+          workspace_uuid: ws.id
+        })
+
+      assert %{namespace: "session:" <> _, blocks_count: 2, scope: %{scope_kind: :session}} =
+               result
+    end
+
     test "returns nil when the scope is unresolvable (no tenant)" do
       assert Memory.namespace_info(%{}) == nil
     end

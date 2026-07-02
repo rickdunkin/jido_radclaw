@@ -161,7 +161,7 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   Append one immutable `AgentCaseEvent` to `gate`'s timeline. Must be called
   inside the same transaction as the case-status flip it records — every
   caller is one of the single-transaction choke-points (`gate_open/3`,
-  `Cases` decision/abandon/retract commits, `terminate_cancelling_cases/5`).
+  `Cases` decision/abandon commits, `terminate_cancelling_cases/5`).
   """
   @spec case_event(AgentCase.t(), atom(), map(), String.t(), term()) ::
           {:ok, AgentCaseEvent.t()} | {:error, term()}

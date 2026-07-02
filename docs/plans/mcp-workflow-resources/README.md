@@ -1,5 +1,17 @@
 # Plan: Per-`<id>` MCP workflow resources (`jido://workflows/<stage>`)
 
+> **Status (2026-07-02): SHIPPED.** Phase 0 ran **green on all four gate points**
+> (in-process drive of `Anubis.Server.Handlers.Resources` against the real
+> `JidoClaw.MCPServer`, frame built through the generated `init/2`:
+> `__components__(:resource)` + templates-list carry the component; a template
+> read routes to `read/2` with the parsed `name`; the static catalog read is
+> untouched). Phases 1+3 landed the same day —
+> `lib/jido_claw/core/mcp_server/resources/workflow_stage.ex` +
+> `test/jido_claw/core/mcp_server/resources/workflow_stage_test.exs` + the
+> AGENTS.md resource line. **Phase 2 was not needed** (no dep patch). One
+> test-harness note: `%Resource{}` implements the built-in `JSON.Encoder`, not
+> Jason — round-trip protocol-casing assertions must use `JSON`.
+
 *Design direction + phased adoption — not a commitment. Closes G2-1(b), the last
 open tail of "MCP as a workflow-control surface."*
 
