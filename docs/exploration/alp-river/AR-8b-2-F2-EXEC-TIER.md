@@ -5,6 +5,20 @@
 implementation passes** — Phase 1 (plumbing) then Phase 2 (activation). Greenfield: no
 migration/back-compat. **Done = `mix precommit` green.***
 
+> **Status — SHIPPED (Phase 1 `fc9fd38b` 2026-06-24, Phase 2 `c3d3df99` 2026-06-25; reconciled
+> 2026-07-02).** All the load-bearing pieces are in-tree as designed:
+> `Tools.RunCommand.ForgeBridge` (+ the `run_command` dispatch branch), the
+> `sketch_build_exec` worker on the shared `SketchWorker` macro with the `sandbox: :docker`
+> template (and D5's `forward_context: {:only, …}`), the `must-execute` 4-file thread
+> (schema/verdict/prompt/catalog), `Forge.start_session_ready/3`, and the D2-a
+> `isolate_global_config` opt-out in the Docker backend. One refinement over the text below:
+> the exec working directory is stamped from `sandbox_spec.workdir` (a general flag) rather
+> than a hardcoded `--workdir /proto` branch. The verification posture holds as written — the
+> real in-microVM path (no-egress, mount round-trip, workdir) is proven only by the manual
+> `:docker_sandbox`-tagged run, excluded from CI by design (the "sole caveat" the
+> FEATURES-WORTH-BORROWING AR-8 entry records). The Non-goals stand (no per-tool approval
+> overlay; no auto-merge; file tools stay host-mounted).
+
 ---
 
 ## Context — why this, and why a new tier

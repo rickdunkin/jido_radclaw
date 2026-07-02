@@ -2,10 +2,35 @@
 
 *Architecture direction — extends AR-2 §8 / AR-8. Not a commitment.*
 
-**Status.** The substrate this needs has all shipped (AR-2 Composer Phases 0–5): the durable
-composer loop, human gates in the composer (Phase 4), and the `stages_invalidated` rerun
-primitive (Phase 4e). This doc is the design for the system-specific stages that ride that
-substrate; nothing here is blocked on further engine work.
+**Status — SHIPPED (2026-06-25; reconciled 2026-07-02).** The system path is live end-to-end:
+`triage → planner → safety-gate → system-executor → system-verifier` with the reverse-verify
+loop and its own terminal. How the forks resolved:
+
+- **A** — both workers shipped (`system_executor` producer, `system_verifier` judge); the
+  verifier fork resolved to **(i) verdict-family** (the recommendation): `lens: "system"` on
+  the stage, `clean:system` / `findings:system` driving the shared lens-clean convergence.
+- **B** — `Reactors.SafetyGate` + `Gates.SafetyGate` shipped; the kind fork resolved to
+  **`:irreversible_write`** (the recommendation — `Kinds.@kinds` unchanged). One deliberate
+  deviation from the design below: the gate is **always-on**, subscribing `plan-ready` — not
+  triggered by the risk signals — matching the source's "the system path always confirms"; the
+  `destructive-op`/`irreversible` topics remain consumer-less in the catalog (the always-on
+  gate makes them unnecessary as triggers).
+- **The two-gates question folded**: `plan-gate` is now `routes: ["code"]` only — the system
+  path runs the **single** safety checkpoint (the skeleton's matured shape), and the executor's
+  lock shipped as `%{while: "plan-ready", until: "safety-approved"}` (no `plan-approved` exists
+  on the path to subscribe to).
+- **C** — the reverse-verify loop shipped as the third `stages_invalidated` consumer (kept on
+  its own exact-payload emitter beside the shared `invalidate_stages` helper AR-4 uses).
+- **D** — resolved to **(ii)** (the recommendation): a distinct `:route_verify_failed` composer
+  kind projecting onto `:failed` with `result.disposition: "verify_failed"`.
+- The "what does *verified* mean" open question resolved as the suggested doctrine slice:
+  `system_verify` (idempotent re-check / state assertion / exit code; cite the evidence),
+  reaching `system_verifier` via AR-5.
+
+*(Write-time status, kept for the record:)* The substrate this needs has all shipped (AR-2
+Composer Phases 0–5): the durable composer loop, human gates in the composer (Phase 4), and the
+`stages_invalidated` rerun primitive (Phase 4e). This doc is the design for the system-specific
+stages that ride that substrate; nothing here is blocked on further engine work.
 
 ## Context
 

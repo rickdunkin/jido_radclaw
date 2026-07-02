@@ -16,6 +16,42 @@ sits above), [`../squidie/T1-1-WORKFLOW-EVENT-LOG-PLAN.md`](../squidie/T1-1-WORK
 > shipped Reactor envelope (Squidie, done), the gate DSL (AR-1, done), or AR-3/AR-4 (the first
 > workflows that *run on* the composer — referenced in §12, designed elsewhere).
 
+## Status — SHIPPED (reconciled 2026-07-02)
+
+**This design shipped as Phases 0–5 (2026-06-18..22) and is live on the real turn path**
+(`FrontDoor.decide/2` → `JidoClaw.RouteComposer`); the section below ("where this sits") and
+every `path:line` cite describe the **pre-implementation tree (2026-06-17)** and stand as the
+design-time record. Reconciliation against the shipped tree:
+
+- **The design held.** The §13 "genuinely new" modules all exist under the planned names:
+  `router.ex` (`compute_route` + `merge_sticky`), `Stage`, `StageEmission` + the `emit`
+  mappers (`emit/`), `Steps.WaveCollect`, `catalog.ex` + `catalog_validator.ex`,
+  `signal_match.ex` (the shared `matches?/2`), `Reactors.PlanGate`/`SafetyGate` (§9's named
+  gate reactors), the additive **and** subtractive composer event kinds (§6's full proposed
+  set), the `belongs_to :parent_run` relationship with the cross-tenant FK guard, the literal
+  `composer:<parent_run_id>:<wave_index>` idempotency key, and the parent launched as
+  `workflow_type: "composer"`.
+- **Deviations (small).** The §6 launch helper shipped as a durable-genesis-first *split*
+  (create the parent `WorkflowRun`, then `start_composer/2`), not a single `start_run/N`.
+  §15.3 resolved as **refs + AshCloak**: the provenance-keyed store is the encrypted
+  `Orchestration.ComposerArtifact` ref-store. The terminal family grew past this doc's four:
+  AR-4 added `:route_fix_failed` and AR-8c `:route_verify_failed` beside
+  `route_budget_exhausted`. §10.3 shipped the **compile-time `%Stage{}` catalog only** — the
+  `.jido/` YAML overlay + debounced watcher is the one open tail (gust G3-2; §16's
+  `file_system` promotion is moot until then, and G3-3 stays mooted). §12's per-stage
+  model/effort tiering is **still unwired**: `Stage` carries the fields ("for later phases"),
+  `WaveBuilder` never reads them.
+- **Phase 6 has since shipped too.** The §10.1 cluster lease landed in full as the clustering
+  workstream **WS1–WS5 + WS4a** (2026-06-27..30, `../../plans/clustering/`), re-derived around
+  the composer unit exactly as §10.1 prescribes — the lease renews across waves *and* gate
+  pauses with no release-on-park (WS2), a reclaiming node rebuilds composer state from the
+  parent log and resumes mid-route (WS3), and cross-node cancel shipped with it (WS5).
+- **§15 forks** were committed per the recommendations (§15.1 parent envelope, §15.2 named
+  gate modules, §15.4 explicit invalidation, §15.8 `:cancelled` + disposition, §15.9
+  precompute, §15.11 single catalog resource) — except §15.5, resolved to **code-only** (no
+  YAML overlay yet, above). §15.10/§15.12 (skill-as-stage compose seam; retryable stage
+  failure) remain open by design.
+
 ## Status / where this sits
 
 - **The engine exists.** Reactor + the durable envelope shipped (Squidie Phases 0–5,
@@ -24,7 +60,9 @@ sits above), [`../squidie/T1-1-WORKFLOW-EVENT-LOG-PLAN.md`](../squidie/T1-1-WORK
   is the single front door, human gates halt/resume durably (AR-1 gate taxonomy +
   abandon/retraction shipped in Phase 2), and `WorkflowRecovery` reconciles stranded runs at
   boot. The composer **reuses all of this** — it adds no execution substrate.
-- **The reasoning layer is still static** — the Reactor migration never touched it.
+- **The reasoning layer is still static** *(write-time; the composer this doc designs has
+  since shipped and fills exactly this gap — see the Status block above)* — the Reactor
+  migration never touched it.
   `Classifier.recommend/2` (`reasoning/classifier.ex:142-181`) picks **one** strategy by
   pure scoring; `PipelineStore` holds static linear chains and `RunPipeline.execute/4`
   (`tools/run_pipeline.ex:234-273`) is a fixed `Enum.reduce_while` over a pre-materialized
@@ -34,7 +72,8 @@ sits above), [`../squidie/T1-1-WORKFLOW-EVENT-LOG-PLAN.md`](../squidie/T1-1-WORK
 - **The gust data model landed, behavior deferred.** `WorkflowRun` already carries
   `claimed_by` / `claim_expires_at` / `claim_token` + two global scan indexes
   (`workflow_run.ex:328-341`, `:65-72`) with **zero callers** — lease *columns* exist; lease
-  *behavior* waits for clustering (§10.1).
+  *behavior* waits for clustering (§10.1). *(Since shipped: clustering WS1–WS5 + WS4a gave the
+  columns their callers, re-derived around the composer unit per §10.1.)*
 
 ## TL;DR — the target
 
@@ -901,7 +940,10 @@ executions — so the lease unit is the **parent (composer) run**, not the wave:
 
 **Deferred until clustering is real** (per §4.11) — single-node crash-correctness (boot recovery,
 §6) ships first and stands alone; this section is the design the lease must satisfy so the
-Phase-2 envelope doesn't foreclose it.
+Phase-2 envelope doesn't foreclose it. *(Since shipped in full — clustering WS1–WS5 + WS4a,
+2026-06-27..30, implemented exactly this design: composer-unit lease, renewal across waves and
+gate pauses with no release-on-park, log-rebuild + mid-route resume on reclaim, cross-node
+cancel. See `../../plans/clustering/README.md`.)*
 
 ### §10.2 — G2-1: catalog as MCP resources + composer-aware status
 
@@ -930,7 +972,9 @@ segment cannot be registered as one resource. Two pieces, shipped together:
 **Recommendation: built-in catalog as a compile-time map + a `.jido/` YAML overlay** — mirror
 `StrategyRegistry` (`@strategies` map) + `StrategyStore`/`PipelineStore` (YAML overlay via the
 shared `YamlStore` GenServer). A thin metadata layer keyed to existing workers/skills, no DB
-mirror.
+mirror. *(Outcome: the compile-time half shipped — `catalog.ex` as `%Stage{}` code — and the
+YAML-overlay + watcher half is the one AR-2 tail still open; until it lands, the `file_system`
+caveat below and §16's promotion question are moot.)*
 
 - **G3-2 (debounced file-watch) — dev-only by default.** A `file_system` watcher debounces
   `.jido/composer/*.yaml` changes and drives the catalog cache's `reload/0` (the
@@ -978,7 +1022,9 @@ unbounded-and-free-form on the agent's. (And, per §1a, this is also why we don'
   template. The seam is a per-spawn `model`/`effort` override carried from the `Stage` and threaded
   through `AgentRunner` into `JidoClaw.Jido.start_subagent` (and the worker's `ask/3` run opts) — a
   small `AgentRunner` extension, named here so it isn't mistaken for free catalog metadata. The 7
-  workers run uniformly at `:fast` today; a high-value refinement riding the catalog.
+  workers run uniformly at `:fast` today; a high-value refinement riding the catalog. *(Post-ship
+  2026-07-02: still true — now 13 templates, all `:fast`; the `Stage` fields shipped, the spawn
+  seam did not.)*
 
 ## §13 — Reuse map
 
@@ -1003,6 +1049,9 @@ The pure router (§3), the `RouteComposer` GenServer (§4), the catalog (§2), a
 extends or reuses shipped code.
 
 ## §14 — Phased adoption path
+
+*(Outcome: Phases 0–5 all shipped, 2026-06-18..22; Phase 6 shipped later as clustering
+WS1–WS5 + WS4a, 2026-06-27..30 — see the Status block.)*
 
 Each phase ends **green** (`mix precommit` passes) and is independently valuable.
 

@@ -2,11 +2,32 @@
 
 *Architecture direction — the deferred half of AR-8b. Extends AR-8b / AR-2 §8. Not a commitment.*
 
-**Status.** AR-8b shipped the **sketch path itself** as a genuine composer route with a real
-capability boundary: a `sketch` turn launches a `sketch-build` worker in a hard-isolated,
-per-prototype `<project>/.prototypes/<uuid>/` sandbox (file tools only), and the run **converges
-trivially** when the worker finishes. This doc designs the parts AR-8b deferred — all **cross-run**
-or **richer-isolation** concerns that the in-run sketch path does not need.
+**Status — SHIPPED in full (C1+C2+C3 `40383c2a` 2026-06-23, F1+F3 `d72b655d` 2026-06-24, F2
+2026-06-24..25; reconciled 2026-07-02).** How each phase resolved against its forks:
+
+- **C1** — as recommended: **reference + summary** (`premises["graduated_from"]` + an `intent`
+  summary, stashed even when nil); the real run starts fresh, never auto-merges.
+- **C2** — as recommended: **debounce**, off a bounded `metadata["path_transitions"]` log,
+  fail-open, surfacing a "re-send to confirm" ack instead of a silent block.
+- **C3** — as recommended: **never-GC default + opt-in TTL sweep** —
+  `VFS.PrototypeRetentionSweeper` (`config :jido_claw, prototype_retention: [max_age_days: N]`,
+  hourly, and the referenced-check is fail-safe via `Orchestration.PrototypeReference`).
+- **F1** — shipped **report-only** (the recommended fork), with one design correction: this
+  doc's `subscribes: ["prototype"]` names an *artifact*, which the validator rightly rejects
+  (signals and artifacts are different namespaces) — the shipped `sketch-review` subscribes
+  `request-received` and depends on the prototype via `input.required`.
+- **F2** — shipped as its own plan ([`AR-8b-2-F2-EXEC-TIER.md`](AR-8b-2-F2-EXEC-TIER.md)):
+  `sketch_build_exec` / `sandbox: :docker`, hard-fail (never host fallback), no-egress.
+- **F3** — shipped as the **dedicated read-only tools** *alternative* (`read_real_file` /
+  `search_real_code` / `list_real_directory`), not the read-only-mount recommendation; the
+  invariant held (every write stays in `.prototypes/<id>/`).
+
+*(Write-time status, kept for the record:)* AR-8b shipped the **sketch path itself** as a genuine
+composer route with a real capability boundary: a `sketch` turn launches a `sketch-build` worker
+in a hard-isolated, per-prototype `<project>/.prototypes/<uuid>/` sandbox (file tools only), and
+the run **converges trivially** when the worker finishes. This doc designs the parts AR-8b
+deferred — all **cross-run** or **richer-isolation** concerns that the in-run sketch path does
+not need.
 
 ## What shipped in AR-8b (the substrate this builds on)
 

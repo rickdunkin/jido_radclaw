@@ -2,9 +2,39 @@
 
 *Architecture direction — extends AR-2 §8 / AR-8. Not a commitment.*
 
-**Status.** Unblocked and independent of AR-8c and of Phase 4 gates. The isolation substrate (VFS
-workspaces + the project-dir jail) and the composer/worker machinery all shipped; the new parts
-are the sketch workspace rooting, a `sketch-build` worker, and a cross-run graduation flow.
+**Status — SHIPPED (2026-06-23..25; reconciled 2026-07-02).** The sketch path is live:
+`Triage.Verdict.composer?/1` includes `:sketch`, and the run roots in a **per-prototype,
+hard-isolated `.prototypes/<id>/`** sandbox (symlink-safe — a refinement over this doc's single
+`.prototypes` root). How the phases and forks resolved:
+
+- **A** — tiered exactly as recommended: the first cut is a file-tools-only, VFS-jailed
+  `sketch-build`; sandboxed *execution* landed later as the AR-8b-2 **F2 `:docker` exec tier**
+  (`RunCommand`↔Forge bridge, no-egress + global-config isolation —
+  [`AR-8b-2-F2-EXEC-TIER.md`](AR-8b-2-F2-EXEC-TIER.md)).
+- **B** — shipped with one deviation from the sketch here: the trigger is **not** a bare
+  `request-received` subscription on `sketch-build`. The front door seeds **exactly one
+  discriminator topic** — `sketch-plain`, or `must-execute` for the exec tier — and the two
+  build stages subscribe to those (`sketch-review` does subscribe `request-received`,
+  route-filtered to `sketch`). No plan gate on the path, as designed.
+- **C** — graduation shipped as AR-8b-2 C1–C3
+  ([`AR-8b-2-GRADUATION.md`](AR-8b-2-GRADUATION.md)); the provenance fork resolved to
+  **summary-only** (the recommended reference/summary option, in its summary form — the real
+  run starts fresh, the prototype informs, never auto-merges).
+- **D** — resolved as the *light lens*: `sketch-review` carries `lens: "correctness"` and stays
+  **report-only** (no fixer on the sketch path — the surviving `:not_converged`-on-findings
+  case).
+
+Every open question at the end has since resolved: backend (tiered, A above), provenance
+(summary, C), retention/GC (never-GC default **plus** the opt-in TTL
+`VFS.PrototypeRetentionSweeper` — AR-8b-2 C3), and exec-tier gating (isolation-not-approval; a
+per-tool approval overlay stays an explicit non-goal). AR-8b-2 also added **F3**'s read-only
+real-tree tools (`read_real_file` / `search_real_code` / `list_real_directory`), relaxing the
+full-isolation first cut without touching the writes-stay-in-`.prototypes/` boundary.
+
+*(Write-time status, kept for the record:)* Unblocked and independent of AR-8c and of Phase 4
+gates. The isolation substrate (VFS workspaces + the project-dir jail) and the composer/worker
+machinery all shipped; the new parts are the sketch workspace rooting, a `sketch-build` worker,
+and a cross-run graduation flow.
 
 ## Context
 

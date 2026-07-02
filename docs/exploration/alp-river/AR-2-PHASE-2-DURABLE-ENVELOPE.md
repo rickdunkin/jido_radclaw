@@ -10,6 +10,25 @@ green — and resolves the one decision (§15.3) that blocked Phase 2.
 It does **not** re-open the architecture. Where the parent plan and this doc disagree, the
 parent plan wins on *design*; this doc wins on *sequencing*.
 
+> **Status — SHIPPED in full (reconciled 2026-07-02).** All four sub-phases landed: 2a as
+> recorded below, and 2b/2c/2d as planned — the `ComposerArtifact` choreography is in-tree
+> exactly as specified (`store_pending` encoding, `activate_for_wave` as a `public?(false)`
+> generic action *with* the `action_type(:action)` policy clause, the tombstone lifecycle, the
+> named active partial index, `art_<hex>` refs); the sanitization marker rides
+> `@canonical_keys` (`:sanitize_sensitive_context` + `:request_correlation_expires_at`) into a
+> durable `RequestCorrelation` field, and `ReactorRunner.run/3` gained the
+> `:omit_replay_inputs` / `:execution_timeout` / `:sanitize_sensitive_context` opts; the 2c
+> terminal vocabulary shipped and was later extended **again by the same purely-additive
+> pattern** — AR-4's `route_fix_failed` and AR-8c's `route_verify_failed` (each with a
+> `result.disposition`) now sit beside the kinds named here; the 2d recovery branch is real
+> (`classify/1` → `:composer`, rebuilt + resumed) and has since become reclaim-aware
+> (clustering WS3). Two shipped refinements this doc predates: seed artifacts persist via
+> `store_pending` under `producer: "seed"` / `wave_index: -1`, and refs are minted through the
+> shared `JidoClaw.Refs` (single-sourced with the `ToolOutput` refs). The one item that did
+> **not** ship is the optional parenthetical "(2c defense-in-depth refinement)" — `resolve_ref`
+> remains the single any-state reader, fold-gated as designed, not split into an
+> `:active`-only public reader + a recovery-only one.
+
 ---
 
 ## Why Phase 2 is decomposed

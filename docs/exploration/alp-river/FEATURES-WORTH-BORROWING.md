@@ -1,14 +1,15 @@
 # Features Worth Borrowing from Alp River
 
 Exploration notes — not a plan, not a commitment. Inventory **2026-06-06**, re-audited
-**2026-06-11** against alp-river v1.2.6 and the post-Reactor jido_radclaw tree (see the
-status section).
+**2026-06-11** against alp-river v1.2.6 and the post-Reactor jido_radclaw tree; source
+re-stamped **2026-07-02** against v1.3.3 `7088685` (see the source-drift note).
 
-Source: `~/workspace/claws/alp-river` — **Alp River** (author: Alper Ortac; MIT; v1.2.6;
-73 commits, 2026-04-26 → 2026-06-06, single author). It is a **Claude Code plugin**, not an
-Elixir library: ~3,740 lines of markdown agent definitions (48 of them), ~2,150 lines of
-Python+Bash hooks (excluding tests), a 429-line `WORKFLOW.md` doctrine, 8 doctrine files,
-and 9 persona files.
+Source: `~/workspace/claws/alp-river` — **Alp River** (author: Alper Ortac; MIT; v1.3.3;
+91 commits, 2026-04-26 → 2026-07-02, single author). It is a **Claude Code plugin**, not an
+Elixir library: ~4,060 lines of markdown agent definitions (52 of them), ~2,600 lines of
+Python+Bash hooks (excluding tests), a 515-line `WORKFLOW.md` doctrine, 11 doctrine files,
+and 10 persona files (at the v1.2.6 audit: 48 agents / ~3,740 lines, ~2,150 hook lines, a
+429-line `WORKFLOW.md`, 8 doctrine files, 9 personas).
 Tagline: "a river of agents, composed to the task." It is a **multi-agent workflow
 methodology** — a deterministic router (`hooks/route.py`) composes the exact pipeline of
 specialized sub-agents a task needs, grows it as the task reveals itself, reviews in
@@ -23,6 +24,46 @@ parallel, and self-heals.
 > here is mistaken for a reason to delay or reshape Squidie. **The Squidie work has since
 > shipped** (Phases 0–5, 2026-06-08..10) — with this document's one fold-in (AR-1) folded
 > in as recommended. The lens stands; outcomes are annotated inline below.
+
+## Source drift — 2026-07-02 (alp-river v1.2.6 → v1.3.3; determinations unchanged)
+
+**Every reconciliation below tracks jido_radclaw drift; this one re-stamps the *source*.**
+Alp River gained 18 commits since the 2026-06-11 audit (v1.2.6 → v1.3.3, `7088685`, still
+single-author): agents 48 → 52 (~4,060 lines), hooks (excl. tests) ~2,148 → ~2,606 lines,
+`WORKFLOW.md` 429 → 515 lines, doctrine 8 → 11 files (+`briefs.md`, `multi-plan.md`,
+`render-card.md`), personas 9 → 10. What changed, and what it touches below:
+
+- **Durable run-state recovery (1.3.0/1.3.2)** — the headline: `reinject-canonical-state.sh`
+  is gone, replaced by a hard step-4 run-state write each loop turn (an off-route
+  `run-state-writer` subagent persisting `{route, live, available, ran, premises, …}` to
+  `.alp-river/runs/<run-id>/run-state.json`) plus a SessionStart recovery hook
+  (`hooks/recover-run-state.sh`) offering resume-after-interruption. Alp River converged on
+  exactly the durability direction Squidie/AR-2 already shipped — validation, not a new gap;
+  §4's SKIP verdict stands (the event-log projection remains the durable, general version).
+- **The loop grew a fourth state piece** — `premises` (the assumptions the route was built
+  on; stages report breaks) — plus background dispatch with an mtime/deadline watchdog for
+  hang-prone stages, and card-only narration (`doctrine/render-card.md` owns the grammar;
+  **briefs** replaced the surfacing ladder). AR-2's "route → render → run → update →
+  recompose" sketch still holds; the recompose is now folded into the single per-turn
+  router call.
+- **Multi-plan exploration (1.2.13)** — a big change can fan out genuinely different plans
+  in parallel, then a new `plan-arbiter` stage steelmans each and picks or grafts
+  (`doctrine/multi-plan.md`; the per-plan challengers go critique-only and the arbiter
+  publishes `#plan-approved` on its Adopt verdict). The one genuinely new *unadopted* idea
+  in the delta — jido_radclaw's composer has a single-plan gate; a judge-panel plan wave
+  would be a new borrow (noted, not recommended here).
+- **Model tiering re-tiered (1.3.3)** — the top tier is now `fable` (Mythos-class) for the
+  planning/judging/deep-build stages; `sonnet` executes settled decisions; `haiku`
+  classifies (effort `medium/high/max` unchanged). §4's tiering note updated.
+- **Smaller**: `simplicity-reviewer` (lens agent files 14 → 15) and the ship executor/gate
+  agents (ship-to-main default, 1.2.17/1.3.2); the `arbiter` persona (10th;
+  `agent-map.json` now 13 entries; most personas gained a leading `## Anchor` line);
+  `/audit` now scores eight health categories (was five at 1.2.6).
+
+Line-cites below were re-verified against v1.3.3 — the `route.py`, `triage.md`,
+`correctness-reviewer.md`, `fixer.md`, and `reviewer-contract.md` cites all still hold; the
+drifted ones (AR-5's injector spans, AR-3's lens list, AR-6's persona count, §4's
+reinject/tiering/produces cites) are updated inline.
 
 ## Status reconciliation — 2026-07-01 (AR-2's cluster-lease tail has since shipped)
 
@@ -262,8 +303,8 @@ under-uses** — `Jido.Signal.Bus` (still observability-only), YAML-defined skil
 (bare scaffolding at the time; shipped for real with Reactor Phase 2 — see AR-1's outcome
 note), `ToolContext` child-forwarding, and the `Reviewer` worker with Zoi structured outputs.
 
-A second, quieter advantage: Alp River's own orchestrator is **an LLM following ~430 lines of
-prose** (`WORKFLOW.md`). Only the *route composition* is deterministic (`route.py` is a pure
+A second, quieter advantage: Alp River's own orchestrator is **an LLM following ~515 lines of
+prose** (`WORKFLOW.md`; ~430 at the audit). Only the *route composition* is deterministic (`route.py` is a pure
 function the LLM calls). A jido_radclaw port can make the **whole composer** a real GenServer
 + pure function — strictly more reliable than the source.
 
@@ -273,7 +314,8 @@ Recommendation axis: **FOLD-IN** (inform the Squidie build — done; the one FOL
 / **BUILD-ON** (needs the engine — which now exists) / **INDEPENDENT** (orthogonal to the
 engine) / **SKIP**. Per entry: **Recommendation**, **Where** (Alp River cites),
 **jido_radclaw gap**, **Relationship to Squidie**, **Adoption sketch**. Alp-River cites are
-accurate to the file (re-checked against v1.2.6); jido_radclaw cites were verified by
+accurate to the file (re-checked against v1.2.6; line-cites re-verified **2026-07-02**
+against v1.3.3, drifted ones updated inline — see the source-drift note); jido_radclaw cites were verified by
 subagent sweep of `lib/` and re-verified 2026-06-11 after the Reactor migration — stale
 cites updated inline.
 
@@ -353,9 +395,12 @@ must re-earn approval — a faithful realization of Alp River's "remove `#plan-a
 live set" lock. Two residuals remain: (1) the *case-axis* `Cases.retract` named just above is now
 **vestigial** — test-only, with no live caller and no operator surface, because the shipped
 automatic path retracts the signal and re-gates (minting a fresh case) rather than reopening the
-existing case; and (2) two stale claims should be reconciled — `gate/kinds.ex`'s moduledoc still
-asserts only `:irreversible_write` has a producer (now false on two counts), and the paragraph
-immediately above still describes the tail as open.
+existing case; and (2) *(re-verified 2026-07-02)* one stale in-code claim remains —
+`gates/plan_gate.ex`'s moduledoc says retraction "rides `Cases.retract/3`" (it doesn't; the
+composer's signal-axis path is the live mechanism). `gate/kinds.ex`'s moduledoc — the stale
+claim originally named here — has since been fixed (it now documents live producers for all
+three kinds), and the outcome paragraph above stands as the AR-1-era record this Tail update
+corrects.
 
 ---
 
@@ -479,19 +524,22 @@ workstream WS1–WS5 + WS4a (2026-06-27..30), re-derived around the composer uni
 G3-2; G3-3's DB mirror stays mooted — the catalog shipped as compile-time `%Stage{}` code, not
 YAML-on-disk). (The AR-4 self-heal fixer workflow that reused the rerun primitive has since
 shipped.) Per-stage
-model/effort tiering: the `Stage` struct carries the fields, but the end-to-end spawn-time
-override seam was not confirmed wired.
+model/effort tiering: the `Stage` struct carries the fields (marked "for later phases"), but
+the spawn-time override seam is **not wired** — `WaveBuilder` never reads them (re-verified
+2026-07-02).
 
 ### AR-3. Reviewer fan-out + a shared Reviewer Contract
 
 **Recommendation**: BUILD-ON — **DONE** (the 4-lens fan-out and the shared contract's authored
 content both ship). A concrete, high-value first workflow to run on the new engine.
 
-**Where** (Alp River): 15+ specialized review lenses (correctness, quality, architecture,
-security, performance, accessibility, design-consistency, ux, consistency, structure, reuse,
-naming-clarity, assumptions, acceptance, plan-adherence), each a thin agent file that **cites
-a shared contract** rather than restating it — `agents/correctness-reviewer.md:18` ("Follows
-the Reviewer Contract in your DOCTRINE block"). The contract (`doctrine/reviewer-contract.md`)
+**Where** (Alp River): 15 specialized review-lens agent files (correctness, quality,
+simplicity — added post-1.2.6 — architecture, security, performance, accessibility,
+design-consistency, ux, consistency, structure, reuse, acceptance, plan-adherence,
+test-review), each a thin agent file that **cites a shared contract** rather than restating
+it — `agents/correctness-reviewer.md:18` ("Follows the Reviewer Contract in your DOCTRINE
+block"); the contract's own lens list also names naming-clarity and assumptions as criteria
+with no standalone agent file. The contract (`doctrine/reviewer-contract.md`)
 is the single source of the VERDICT/FINDINGS/ACTION_NEEDED shape, the confidence-tag reporting
 threshold, the **concrete-consequence bar** ("name a concrete observable consequence … 'this
 could be cleaner' does not clear it"), and the **anti-double-flag rule** (don't flag an issue
@@ -617,8 +665,8 @@ confidence-tagging slice all ride.
 
 **Where** (Alp River): `hooks/user-context-injector.sh` — a `PreToolUse(Agent)` hook that
 prepends four blocks to **every sub-agent's** prompt: `## DOCTRINE` (per-agent slices from
-`doctrine/`, gated by a `DOCTRINE_MAP`, `:163-191`), `## USER_CONTEXT` (MEMORY.md + linked
-files, `:309-337`), `## PROJECT_CONTEXT` (`docs/` slices per a `READ_MAP`, `:339-399`), and
+`doctrine/`, gated by a `DOCTRINE_MAP`, `:165-197`), `## USER_CONTEXT` (MEMORY.md + linked
+files, `:317-343`), `## PROJECT_CONTEXT` (`docs/` slices per a `READ_MAP`, `:346-405`), and
 `## PSYCHOLOGY` (AR-6). Agents stay thin by **citing** "your DOCTRINE block" instead of
 carrying the rules inline — the contract is single-sourced (`doctrine/code-doctrine.md`,
 `reviewer-contract.md`, `confidence-tagging.md` are each authored once and injected into the
@@ -664,11 +712,12 @@ READ_MAP). The seam is the live substrate AR-6's personas and AR-7's pervasive t
 **Recommendation**: INDEPENDENT — **DONE (2026-06-26)**. Cheap and genuinely novel, as forecast —
 shipped in about a day on top of AR-5. See the status update at the end of this entry.
 
-**Where** (Alp River): `psychology/*.md` — 9 personas (cynic, skeptic, detective, defender,
-optimist, pragmatist, teacher, user-advocate, craftsperson), each a 5-line
-Belief/Drive/Default-move/Voice/**Conflict-rule** block (`psychology/skeptic.md`,
-`cynic.md`). `psychology/agent-map.json` assigns one per agent (skeptic→plan-challenger,
-defender→security-reviewer, cynic→fixer, detective→investigators). The safety valve is the
+**Where** (Alp River): `psychology/*.md` — 10 personas (cynic, skeptic, detective, defender,
+optimist, pragmatist, teacher, user-advocate, craftsperson, and — post-1.2.6 — arbiter),
+each a Belief/Drive/Default-move/Voice/**Conflict-rule** block, most now led by a one-line
+`## Anchor` (`psychology/skeptic.md`, `cynic.md`). `psychology/agent-map.json` (13 entries)
+assigns one per agent (skeptic→plan-challenger, defender→security-reviewer, cynic→fixer,
+detective→investigators, arbiter→plan-arbiter). The safety valve is the
 **conflict rule**, identical in every persona: "role contract is mandatory; persona is
 advisory voice; on conflict the role and the codebase win." Per-project overrides via
 `alpRiver.psychologyOverrides`.
@@ -816,7 +865,9 @@ routes on it (live at `lib/jido_claw.ex` and the REPL), and the catalog `triage`
 stays inline (no composer, no artifact); **code** is the normal reviewed-change engine route
 (planner → plan-gate → test-author/implementer → 4 reviewers → fixer); **sketch** (AR-8b) is a
 hard-isolated `.prototypes/<id>/` throwaway, with cross-run **graduation** (AR-8b-2 C1–C3,
-summary-only) and a `:docker` sandbox **exec tier** (AR-8b-2 F2 — `RunCommand`↔Forge bridge,
+summary-only, plus the F1 report-only `sketch-review` lens, the F3 read-only real-tree tools,
+and the C3 opt-in retention sweeper), and a `:docker` sandbox **exec tier** (AR-8b-2 F2 —
+`RunCommand`↔Forge bridge,
 no-egress + global-config isolation); **system** (AR-8c) is a verified machine change gated by the
 always-on `SafetyGate` (`:irreversible_write`) with an executor⇄verifier reverse-verify loop and a
 distinct `:route_verify_failed` terminal. Plan docs: `AR-8b-SKETCH-PATH.md`,
@@ -834,10 +885,13 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
   concept* (frontmatter → machine-readable stage index; `hooks/gen-catalog.py` →
   `generated/catalog.json`) transfers to AR-2; the Python/Bash/markdown *artifacts* are
   Claude-Code-harness-specific.
-- **Compaction / `reinject-canonical-state.sh`** → **SKIP.** jido_radclaw's
-  `Reasoning.Compactor` is more sophisticated (per-`Identity` keying, `RequestTransformer`,
-  persisted snapshots — `reasoning/compactor.ex`). Alp River's reinject hook is a weaker
-  cousin; the composer-state-from-event-log idea in AR-2 supersedes it.
+- **Compaction / run-state recovery** (was `reinject-canonical-state.sh`; replaced in 1.3.0
+  by durable per-run state snapshots + a SessionStart recovery hook,
+  `hooks/recover-run-state.sh`) → **SKIP.** jido_radclaw's `Reasoning.Compactor` is more
+  sophisticated (per-`Identity` keying, `RequestTransformer`, persisted snapshots —
+  `reasoning/compactor.ex`), and the composer-state-from-event-log recovery AR-2 shipped is
+  the durable, general version of what the source now approximates with disk snapshots (see
+  the source-drift note).
 - **Reconcile-from-tree recovery** (`WORKFLOW.md` `## Recovery`) → **mostly covered.** Squidie's
   event-log recovery (`REACTOR-ADOPTION.md` §4.8, shipped as `WorkflowRecovery`) is the
   durable, general version; for code
@@ -847,16 +901,18 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
 - **Render-card / card-only narration / status surface** (`WORKFLOW.md` `## Pipeline` step 2) →
   **SKIP.** That is Claude-Code-REPL UX; jido_radclaw has its own `Display` + the Phoenix
   LiveView dashboard.
-- **Model + effort tiering per stage** (`WORKFLOW.md` `## Model Tiering`: opus/sonnet/haiku +
-  medium/high/max) → **note, minor.** jido_radclaw already has model selection, but the 7
-  workers run uniformly at `:fast` (no per-role escalation). Per-stage model+effort is a small
-  refinement worth folding into AR-2's catalog metadata, not a standalone borrow.
+- **Model + effort tiering per stage** (`WORKFLOW.md` `## Model Tiering`: fable/sonnet/haiku
+  since 1.3.3 — opus at the audit — + medium/high/max) → **note, minor.** jido_radclaw
+  already has model selection, but the workers (now 13 templates) still run uniformly at
+  `:fast` (no per-role escalation). Per-stage model+effort is a small refinement worth
+  folding into AR-2's catalog metadata, not a standalone borrow — AR-2's `%Stage{}` carries
+  the `model`/`effort` fields, still unwired (see its status update).
 - **Milestone loop** (`WORKFLOW.md` `## Milestone loop`) → **future follow-on of AR-2/AR-3.**
   Large builds as verified increments maps onto Reactor compositional steps + the gate
   machinery (both shipped); not separate substrate.
 - **Input/Output template contracts** (`WORKFLOW.md` `## Input Template Contract`) →
   **partially covered.** Zoi structured outputs + the skill runner's `produces`-injection
-  (`AgentRunner.inject_produces_instruction/2`, `skills/agent_runner.ex:205-209` — carried
+  (`AgentRunner.inject_produces_instruction/2`, `skills/steps/agent_runner.ex:338-342` — carried
   over from the retired `StepAction` in Phase 3) already cover most of it. The verbatim-relay
   discipline (never paraphrase a predecessor's output) is worth adopting as an orchestrator
   convention if AR-2 is built.
