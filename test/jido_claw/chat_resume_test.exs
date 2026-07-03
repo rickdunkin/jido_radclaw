@@ -101,7 +101,7 @@ defmodule JidoClaw.ChatResumeTest do
     saved =
       Map.new(
         ~w(triage_impl triage_canned_verdict ask_runtime dispatch_capture_target
-           dispatch_capture_response recorder_flush_timeout context_restore_impl
+           dispatch_capture_response context_restore_impl
            jido_runtime chat_resume_worker_pid capturing_restore_target)a,
         &{&1, Application.fetch_env(:jido_claw, &1)}
       )
@@ -111,7 +111,6 @@ defmodule JidoClaw.ChatResumeTest do
     Application.put_env(:jido_claw, :ask_runtime, HandoffDispatchCapture)
     Application.put_env(:jido_claw, :dispatch_capture_target, self())
     Application.put_env(:jido_claw, :dispatch_capture_response, {:ok, "stub answer"})
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       Enum.each(saved, fn

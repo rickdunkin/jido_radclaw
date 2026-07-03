@@ -18,6 +18,7 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
   alias JidoClaw.Conversations.{Message, Session, SubagentTranscript}
   alias JidoClaw.Reasoning.Compactor
   alias JidoClaw.Reasoning.Compactor.{Config, RequestTransformer, Snapshot}
+  alias JidoClaw.Test.TerminalSignal
 
   # Records the prompt each summarizer call receives, so we can prove a
   # given agent's summarizer saw only its own slice.
@@ -205,6 +206,9 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
       # main owns a turn; the sub-agent writes a complete task → terminal slice.
       append(ctx, "main", false, :user, "main asks", "req_m1")
       :ok = SubagentTranscript.record_task(child_ctx, "req_c1", "do the sub task")
+      # record_result flushes the Recorder; no stub in this loop, so emit the
+      # terminal signal directly to release the flush barrier.
+      TerminalSignal.emit_completed("req_c1")
       :done = SubagentTranscript.record_result(child_ctx, "req_c1", {:ok, "sub done"})
 
       # Sub-agent slice has both the task and the terminal turn.

@@ -159,6 +159,8 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule FakeWorker do
     @moduledoc false
 
+    alias JidoClaw.Test.TerminalSignal
+
     @spec ask_sync(pid(), String.t(), keyword()) :: :ok
     def ask_sync(pid, message, opts) do
       send(Application.fetch_env!(:jido_claw, :send_to_agent_test_pid), {
@@ -169,6 +171,7 @@ defmodule JidoClaw.Tools.SendToAgentTest do
         opts
       })
 
+      TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
       :ok
     end
   end
@@ -184,10 +187,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
   defmodule BlockingWorker do
     @moduledoc false
 
+    alias JidoClaw.Test.TerminalSignal
+
     # Holds the follow-up dispatch open until the test releases it, so the
     # in-flight tracker state can be asserted deterministically.
     @spec ask_sync(pid(), String.t(), keyword()) :: :ok
-    def ask_sync(_pid, message, _opts) do
+    def ask_sync(_pid, message, opts) do
       test_pid = Application.fetch_env!(:jido_claw, :send_to_agent_test_pid)
       send(test_pid, {:ask_sync_started, self(), message})
 
@@ -196,6 +201,9 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       after
         5_000 -> :ok
       end
+
+      TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
+      :ok
     end
   end
 
@@ -210,7 +218,6 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     original_tracker = Application.get_env(:jido_claw, :agent_tracker)
     original_templates = Application.get_env(:jido_claw, :agent_templates)
     original_test_pid = Application.get_env(:jido_claw, :send_to_agent_test_pid)
-    original_flush_timeout = Application.get_env(:jido_claw, :recorder_flush_timeout)
     original_task_supervisor = Application.get_env(:jido_claw, :task_supervisor)
     original_mcp_facade = Application.get_env(:jido_claw, :mcp_facade)
     original_mcp_target = Application.get_env(:jido_claw, :mcp_facade_capture_target)
@@ -219,17 +226,12 @@ defmodule JidoClaw.Tools.SendToAgentTest do
     Application.put_env(:jido_claw, :agent_tracker, FakeTracker)
     Application.put_env(:jido_claw, :agent_templates, FakeTemplates)
     Application.put_env(:jido_claw, :send_to_agent_test_pid, self())
-    # The follow-up orchestration's terminal record flushes the Recorder; no
-    # ai.* signals flow in these tests, so shrink the wait from the 30s
-    # default to keep spawned orchestrators short-lived.
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       restore_env(:jido_runtime, original_jido)
       restore_env(:agent_tracker, original_tracker)
       restore_env(:agent_templates, original_templates)
       restore_env(:send_to_agent_test_pid, original_test_pid)
-      restore_env(:recorder_flush_timeout, original_flush_timeout)
       restore_env(:task_supervisor, original_task_supervisor)
       restore_env(:mcp_facade, original_mcp_facade)
       restore_env(:mcp_facade_capture_target, original_mcp_target)
@@ -435,10 +437,16 @@ defmodule JidoClaw.Tools.SendToAgentTest do
 
       on_exit(fn -> JidoClaw.AgentTracker.reset() end)
 
-      :ok
+      # Per-test unique id: an earlier test's orchestration task can outlive
+      # its test (the straggler-absorber convention on the fake trackers) and
+      # its late `mark_complete` cast then resolves the restored env — the
+      # REAL tracker. A shared "docs_writer_123" here would let that stray
+      # cast flip this test's re-engaged entry mid-assertion.
+      {:ok, agent_id: "docs_writer_#{System.unique_integer([:positive])}"}
     end
 
-    test "marks the entry running for the dispatch and completes it with the outcome" do
+    test "marks the entry running for the dispatch and completes it with the outcome",
+         %{agent_id: agent_id} do
       alias JidoClaw.AgentTracker
 
       Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
@@ -446,52 +454,53 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       # FakeJido.whereis returns self(), so track the test process as the
       # child pid to satisfy mark_running's pid-identity check.
       assert :ok =
-               AgentTracker.register("docs_writer_123", self(), "docs_writer", "initial task",
+               AgentTracker.register(agent_id, self(), "docs_writer", "initial task",
                  tenant_id: @tenant_id
                )
 
-      AgentTracker.mark_complete("docs_writer_123", :done)
+      AgentTracker.mark_complete(agent_id, :done)
       _ = AgentTracker.get_state()
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
 
       assert {:ok, %{status: "message_sent"}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round two"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "round two"}, ctx())
 
       assert_receive {:ask_sync_started, worker_pid, "round two"}, 1_000
 
       # While the follow-up is in flight the entry is running again and
       # re-consumes the spawn cap.
-      assert %{status: :running} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :running} = AgentTracker.get_agent(agent_id)
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
 
       send(worker_pid, :release)
 
       wait_until(fn ->
-        match?(%{status: :done}, AgentTracker.get_agent("docs_writer_123"))
+        match?(%{status: :done}, AgentTracker.get_agent(agent_id))
       end)
 
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
     end
 
-    test "a killed follow-up orchestration forces the entry terminal and frees the cap (M17)" do
+    test "a killed follow-up orchestration forces the entry terminal and frees the cap (M17)",
+         %{agent_id: agent_id} do
       alias JidoClaw.AgentTracker
 
       Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
 
       assert :ok =
-               AgentTracker.register("docs_writer_123", self(), "docs_writer", "initial task",
+               AgentTracker.register(agent_id, self(), "docs_writer", "initial task",
                  tenant_id: @tenant_id
                )
 
-      AgentTracker.mark_complete("docs_writer_123", :done)
+      AgentTracker.mark_complete(agent_id, :done)
       _ = AgentTracker.get_state()
 
       assert {:ok, %{status: "message_sent"}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round two"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "round two"}, ctx())
 
       # `self()` inside BlockingWorker.ask_sync is the orchestration task.
       assert_receive {:ask_sync_started, task_pid, "round two"}, 1_000
-      assert %{status: :running} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :running} = AgentTracker.get_agent(agent_id)
 
       # Kill the orchestrator (uncatchable — the in-task try/catch never
       # runs). The monitor backstop must release the re-activated entry; the
@@ -499,54 +508,55 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       Process.exit(task_pid, :kill)
 
       wait_until(fn ->
-        match?(%{status: :error}, AgentTracker.get_agent("docs_writer_123"))
+        match?(%{status: :error}, AgentTracker.get_agent(agent_id))
       end)
 
-      assert %{error: error} = AgentTracker.get_agent("docs_writer_123")
+      assert %{error: error} = AgentTracker.get_agent(agent_id)
       assert error =~ "orchestrator died"
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
     end
 
-    test "leaves the entry terminal when the template lookup fails" do
+    test "leaves the entry terminal when the template lookup fails", %{agent_id: agent_id} do
       alias JidoClaw.AgentTracker
 
       # The tracked template is unknown to the templates module, so the
       # follow-up fails before the mark_running gate.
       assert :ok =
-               AgentTracker.register("docs_writer_123", self(), "mystery_template", "initial",
+               AgentTracker.register(agent_id, self(), "mystery_template", "initial",
                  tenant_id: @tenant_id
                )
 
-      AgentTracker.mark_complete("docs_writer_123", :done)
+      AgentTracker.mark_complete(agent_id, :done)
       _ = AgentTracker.get_state()
 
       assert {:error, %{code: :execution_error, details: %{phase: :template_lookup}}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "hi"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "hi"}, ctx())
 
-      assert %{status: :done} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :done} = AgentTracker.get_agent(agent_id)
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
     end
 
-    test "a start failure on a busy agent leaves the in-flight run intact (P2-1 regression)" do
+    test "a start failure on a busy agent leaves the in-flight run intact (P2-1 regression)",
+         %{agent_id: agent_id} do
       alias JidoClaw.AgentTracker
 
       Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
 
       assert :ok =
-               AgentTracker.register("docs_writer_123", self(), "docs_writer", "initial task",
+               AgentTracker.register(agent_id, self(), "docs_writer", "initial task",
                  tenant_id: @tenant_id
                )
 
-      AgentTracker.mark_complete("docs_writer_123", :done)
+      AgentTracker.mark_complete(agent_id, :done)
       _ = AgentTracker.get_state()
 
       # First follow-up engages the agent for real and is held open by the
       # blocking worker.
       assert {:ok, %{status: "message_sent"}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round two"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "round two"}, ctx())
 
       assert_receive {:ask_sync_started, task1, "round two"}, 1_000
-      assert %{status: :running} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :running} = AgentTracker.get_agent(agent_id)
 
       # Second follow-up hits the busy agent and its orchestration fails to
       # start: the in-flight run must be left untouched — still running,
@@ -556,9 +566,9 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       Application.put_env(:jido_claw, :task_supervisor, __MODULE__.CrampedTaskSup)
 
       assert {:error, %{code: :execution_error, details: %{phase: :dispatch}}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round three"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "round three"}, ctx())
 
-      assert %{status: :running} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :running} = AgentTracker.get_agent(agent_id)
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 1
 
       # The kept-monitor proof: killing the in-flight orchestrator must
@@ -566,25 +576,26 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       Process.exit(task1, :kill)
 
       wait_until(fn ->
-        match?(%{status: :error}, AgentTracker.get_agent("docs_writer_123"))
+        match?(%{status: :error}, AgentTracker.get_agent(agent_id))
       end)
 
-      assert %{error: error} = AgentTracker.get_agent("docs_writer_123")
+      assert %{error: error} = AgentTracker.get_agent(agent_id)
       assert error =~ "orchestrator died"
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
     end
 
-    test "a start failure on a re-engaged terminal entry forces it back terminal" do
+    test "a start failure on a re-engaged terminal entry forces it back terminal",
+         %{agent_id: agent_id} do
       alias JidoClaw.AgentTracker
 
       Application.put_env(:jido_claw, :agent_templates, BlockingTemplates)
 
       assert :ok =
-               AgentTracker.register("docs_writer_123", self(), "docs_writer", "initial task",
+               AgentTracker.register(agent_id, self(), "docs_writer", "initial task",
                  tenant_id: @tenant_id
                )
 
-      AgentTracker.mark_complete("docs_writer_123", :done)
+      AgentTracker.mark_complete(agent_id, :done)
       _ = AgentTracker.get_state()
 
       start_supervised!({Task.Supervisor, name: __MODULE__.CrampedTaskSup, max_children: 0})
@@ -592,13 +603,13 @@ defmodule JidoClaw.Tools.SendToAgentTest do
       Application.put_env(:jido_claw, :task_supervisor, __MODULE__.CrampedTaskSup)
 
       assert {:error, %{code: :execution_error, details: %{phase: :dispatch}}} =
-               SendToAgent.run(%{agent_id: "docs_writer_123", message: "round two"}, ctx())
+               SendToAgent.run(%{agent_id: agent_id, message: "round two"}, ctx())
 
       # This call's mark_running re-activated the terminal entry; with no
       # orchestration behind it, the failure path must force it back
       # terminal — cap free, agent (the test process) alive and
       # re-engageable.
-      assert %{status: :error} = AgentTracker.get_agent("docs_writer_123")
+      assert %{status: :error} = AgentTracker.get_agent(agent_id)
       assert AgentTracker.child_count(tenant_id: @tenant_id) == 0
     end
 

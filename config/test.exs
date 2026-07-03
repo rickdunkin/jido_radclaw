@@ -82,16 +82,27 @@ config :jido_claw, :trace, persist?: false
 # that exercises triage flips `:triage_canned_verdict` / injects a custom impl.
 config :jido_claw, :triage_impl, JidoClaw.Test.TriageStub
 
-# Recorder flush barrier: tests rarely emit the real `ai.request.completed`
-# terminal signal (LLM calls are stubbed), so the dispatcher / sub-agent
-# transcript flush would otherwise block on the 30s production default. A
-# short timeout keeps the best-effort flush from stalling test runs; tests
-# that need a specific value override it locally. 50 matches the local
-# overrides already in the suite; the cap only bites when the terminal
-# signal never arrives (flush returns early on success), and a full run
-# hits ~500 such timeouts — each ms here costs ~0.5s of suite wall time
-# (200 → 50 measured: 234s → 159s serial).
+# Recorder flush barrier: the test-support LLM stubs emit the terminal
+# `ai.request.completed` / `ai.request.failed` signal themselves (via
+# `JidoClaw.Test.TerminalSignal`), so flush returns immediately on stubbed
+# paths. The 50ms cap remains as backstop for the paths that intentionally
+# don't emit: subagent_transcript_test's direct flush calls, the opted-out
+# correlation test (agent_runner_test.exs, `:echo_stub_emit_terminal`
+# false), recorder_test's own timeout-contract test, and Recorder
+# bus-restart windows. A full serial run hits ~7 flush timeouts (was
+# ~500 ≈ 25s of dead wait before the stubs emitted; 159s → 113s serial).
 config :jido_claw, :recorder_flush_timeout, 50
+
+# Disarm the memory-consolidator system cron (config.exs arms it
+# `0 */6 * * *` UTC): a suite run crossing that boundary gets a tick that
+# sweeps EVERY workspace the run has accumulated, fanning out advisory-lock
+# tasks that drain the shared sandbox pool and cascade queue-timeout
+# failures across whichever module is running (observed: 12
+# composer_durable failures at an 18:00 UTC crossing). `enabled` only
+# gates the boot-time cron registration (`Scheduler.start_system_jobs/0`);
+# consolidator tests drive tick/run_now/RunServer directly and keep the
+# rest of this config block via the per-key merge.
+config :jido_claw, JidoClaw.Memory.Consolidator, enabled: false
 
 # Tests don't have VOYAGE_API_KEY set; the per-call defense in
 # `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`

@@ -92,6 +92,8 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   end
 
   defmodule FakeWorker do
+    alias JidoClaw.Test.TerminalSignal
+
     @spec ask_sync(pid(), String.t(), keyword()) :: :ok
     def ask_sync(pid, task, opts) do
       send(
@@ -99,6 +101,7 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
         {:ask_sync, pid, task, opts}
       )
 
+      TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
       :ok
     end
   end
@@ -112,11 +115,13 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
   end
 
   defmodule BlockingWorker do
+    alias JidoClaw.Test.TerminalSignal
+
     # Holds the spawn orchestration open until released. `ask_sync` runs
     # inside the supervised orchestration task, so `self()` here IS the
     # orchestrator pid — the test uses it to kill the task mid-flight.
     @spec ask_sync(pid(), String.t(), keyword()) :: :ok
-    def ask_sync(_pid, task, _opts) do
+    def ask_sync(_pid, task, opts) do
       test_pid = Application.fetch_env!(:jido_claw, :spawn_agent_test_pid)
       send(test_pid, {:ask_sync_started, self(), task})
 
@@ -125,6 +130,9 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
       after
         5_000 -> :ok
       end
+
+      TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
+      :ok
     end
   end
 

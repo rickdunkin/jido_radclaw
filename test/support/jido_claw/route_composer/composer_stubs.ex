@@ -147,14 +147,20 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubAgentServer do
   """
 
   alias JidoClaw.RouteComposer.TestSupport.StubStore
+  alias JidoClaw.Test.TerminalSignal
 
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
   def await_completion(_pid, opts) do
     request_id = request_id_from(opts)
 
     case StubStore.fetch(request_id) do
-      {:ok, canned} -> {:ok, %{status: :completed, result: canned}}
-      :error -> {:ok, %{status: :failed, result: {:no_canned_output, request_id}}}
+      {:ok, canned} ->
+        TerminalSignal.emit_completed(request_id)
+        {:ok, %{status: :completed, result: canned}}
+
+      :error ->
+        TerminalSignal.emit_failed(request_id)
+        {:ok, %{status: :failed, result: {:no_canned_output, request_id}}}
     end
   end
 
@@ -172,9 +178,14 @@ defmodule JidoClaw.RouteComposer.TestSupport.BlockingAgentServer do
   that the orphaned (`async_nolink`) wave executor drains quickly within the
   test's sandbox once released by the sleep.
   """
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
     Process.sleep(Application.get_env(:jido_claw, :route_composer_block_ms, 600))
+    # A *late* terminal run, not a never-completing one: the drained wave still
+    # finishes (failed), so its transcript flush deserves the terminal signal.
+    TerminalSignal.emit_from_await(opts, "ai.request.failed")
     {:ok, %{status: :failed, result: :blocked}}
   end
 end

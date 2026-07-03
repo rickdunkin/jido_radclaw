@@ -34,7 +34,7 @@ defmodule JidoClaw.SkillsTest do
 
     on_exit(fn ->
       # Stop our test instance and let the supervisor restart the real one
-      if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+      stop_quietly(pid)
 
       if app_sup && Process.alive?(app_sup) do
         Supervisor.restart_child(app_sup, JidoClaw.Skills)
@@ -42,6 +42,18 @@ defmodule JidoClaw.SkillsTest do
     end)
 
     pid
+  end
+
+  # Under full-suite load a neighboring teardown can already be taking the
+  # (name-registered) pid down between the alive? check and the stop, so
+  # GenServer.stop exits with the mismatched reason (:shutdown ≠ :normal).
+  # The process being gone is exactly what this teardown wants — absorb it
+  # (mirrors chat_resume_test's stop_agent).
+  defp stop_quietly(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 5000)
+    :ok
+  catch
+    :exit, _ -> :ok
   end
 
   # ---------------------------------------------------------------------------

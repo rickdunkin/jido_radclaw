@@ -505,6 +505,18 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     end
 
     test "child correlation carries the parent's user_id end-to-end" do
+      # Opt out of EchoStub's terminal-signal emit: finalization would
+      # Cache.delete the correlation entry this test asserts on.
+      prev = Application.fetch_env(:jido_claw, :echo_stub_emit_terminal)
+      Application.put_env(:jido_claw, :echo_stub_emit_terminal, false)
+
+      on_exit(fn ->
+        case prev do
+          {:ok, val} -> Application.put_env(:jido_claw, :echo_stub_emit_terminal, val)
+          :error -> Application.delete_env(:jido_claw, :echo_stub_emit_terminal)
+        end
+      end)
+
       %{context: context, session: session, user_id: user_id} = real_scope_context()
 
       assert {:ok, _} = AgentRunner.run("echo_public", "go", "s", context)
@@ -662,8 +674,12 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ValidatedFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts)
+
     {:ok,
      %{
        status: :completed,
@@ -678,8 +694,12 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ErrorFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts)
+
     {:ok,
      %{
        status: :completed,
@@ -694,8 +714,12 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.SummaryFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts)
+
     {:ok,
      %{
        status: :completed,
@@ -710,8 +734,12 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.ArtifactsFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts)
+
     {:ok,
      %{
        status: :completed,
@@ -732,8 +760,12 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.FreeFormFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts)
+
     {:ok,
      %{
        status: :completed,
@@ -747,8 +779,11 @@ end
 
 defmodule JidoClaw.Skills.Steps.AgentRunnerTest.FailedFakeAgentServer do
   @moduledoc false
+  alias JidoClaw.Test.TerminalSignal
+
   @spec await_completion(pid(), keyword()) :: {:ok, map()}
-  def await_completion(_pid, _opts) do
+  def await_completion(_pid, opts) do
+    TerminalSignal.emit_from_await(opts, "ai.request.failed")
     {:ok, %{status: :failed, result: :boom}}
   end
 end

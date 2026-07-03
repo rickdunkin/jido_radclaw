@@ -44,8 +44,7 @@ defmodule JidoClaw.Cron.DispatcherTest do
       test_pid: Application.fetch_env(:jido_claw, :dispatcher_test_pid),
       ask_runtime: Application.fetch_env(:jido_claw, :ask_runtime),
       capture_target: Application.fetch_env(:jido_claw, :dispatch_capture_target),
-      capture_response: Application.fetch_env(:jido_claw, :dispatch_capture_response),
-      recorder_flush_timeout: Application.fetch_env(:jido_claw, :recorder_flush_timeout)
+      capture_response: Application.fetch_env(:jido_claw, :dispatch_capture_response)
     }
 
     Application.put_env(:jido_claw, :cron_workflow_runner, StubRunner)
@@ -53,7 +52,6 @@ defmodule JidoClaw.Cron.DispatcherTest do
     Application.put_env(:jido_claw, :ask_runtime, JidoClaw.Test.HandoffDispatchCapture)
     Application.put_env(:jido_claw, :dispatch_capture_target, self())
     Application.put_env(:jido_claw, :dispatch_capture_response, {:ok, "captured"})
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       restore_env(:cron_workflow_runner, previous.runner)
@@ -61,7 +59,6 @@ defmodule JidoClaw.Cron.DispatcherTest do
       restore_env(:ask_runtime, previous.ask_runtime)
       restore_env(:dispatch_capture_target, previous.capture_target)
       restore_env(:dispatch_capture_response, previous.capture_response)
-      restore_env(:recorder_flush_timeout, previous.recorder_flush_timeout)
     end)
 
     {:ok, tenant: tenant}

@@ -38,7 +38,7 @@ defmodule JidoClaw.FrontDoorTest do
       Map.new(
         ~w(triage_impl triage_canned_verdict triage_capture front_door_composer
            front_door_create_mode front_door_ensure_mode ask_runtime
-           dispatch_capture_target dispatch_capture_response recorder_flush_timeout
+           dispatch_capture_target dispatch_capture_response
            triage_sensitive_deadline_ms)a,
         &{&1, Application.fetch_env(:jido_claw, &1)}
       )
@@ -49,7 +49,6 @@ defmodule JidoClaw.FrontDoorTest do
     Application.put_env(:jido_claw, :front_door_composer, JidoClaw.Test.FrontDoorComposerStub)
     Application.put_env(:jido_claw, :front_door_create_mode, :delegate)
     Application.put_env(:jido_claw, :front_door_ensure_mode, :noop)
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       Enum.each(saved, fn

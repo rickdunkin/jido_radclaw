@@ -41,24 +41,17 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
     previous = %{
       ask_runtime: Application.fetch_env(:jido_claw, :ask_runtime),
       target: Application.fetch_env(:jido_claw, :dispatch_capture_target),
-      response: Application.fetch_env(:jido_claw, :dispatch_capture_response),
-      recorder_flush_timeout: Application.fetch_env(:jido_claw, :recorder_flush_timeout)
+      response: Application.fetch_env(:jido_claw, :dispatch_capture_response)
     }
 
     Application.put_env(:jido_claw, :ask_runtime, HandoffDispatchCapture)
     Application.put_env(:jido_claw, :dispatch_capture_target, self())
     Application.put_env(:jido_claw, :dispatch_capture_response, {:ok, "captured"})
-    # The capture stub does not emit a Recorder completion signal, so
-    # the default 30s flush wait would time out for every chat() call
-    # under test. 50 ms is long enough for a real completion signal to
-    # arrive in this test process but short enough to keep the suite snappy.
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
 
     on_exit(fn ->
       restore_env(:ask_runtime, previous.ask_runtime)
       restore_env(:dispatch_capture_target, previous.target)
       restore_env(:dispatch_capture_response, previous.response)
-      restore_env(:recorder_flush_timeout, previous.recorder_flush_timeout)
       HandoffRegistry.clear(tenant_id, runtime_session_id)
       File.rm_rf!(tmp)
     end)

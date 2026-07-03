@@ -29,6 +29,7 @@ defmodule JidoClaw.CLI.RunCommandTest do
 
     alias JidoClaw.Authorization.Actor, as: GateActor
     alias JidoClaw.Orchestration.AgentCase, as: GateCase
+    alias JidoClaw.Test.TerminalSignal
 
     @spec ask_sync(pid(), term(), keyword()) :: {:ok, String.t()}
     def ask_sync(_pid, _query, opts) do
@@ -47,6 +48,7 @@ defmodule JidoClaw.CLI.RunCommandTest do
           actor: GateActor.system(tool_context.tenant_id)
         )
 
+      TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
       {:ok, "I need approval before running that tool."}
     end
   end
@@ -58,7 +60,7 @@ defmodule JidoClaw.CLI.RunCommandTest do
   end
 
   @env_keys ~w(triage_impl triage_canned_verdict ask_runtime dispatch_capture_target
-               dispatch_capture_response recorder_flush_timeout front_door_composer
+               dispatch_capture_response front_door_composer
                front_door_create_mode front_door_ensure_mode context_restore_impl
                mode skip_discord project_dir)a
 
@@ -79,7 +81,6 @@ defmodule JidoClaw.CLI.RunCommandTest do
     Application.put_env(:jido_claw, :ask_runtime, HandoffDispatchCapture)
     Application.put_env(:jido_claw, :dispatch_capture_target, self())
     Application.put_env(:jido_claw, :dispatch_capture_response, {:ok, "one-shot answer"})
-    Application.put_env(:jido_claw, :recorder_flush_timeout, 50)
     Application.put_env(:jido_claw, :front_door_composer, JidoClaw.Test.FrontDoorComposerStub)
     Application.put_env(:jido_claw, :front_door_create_mode, :delegate)
     Application.put_env(:jido_claw, :front_door_ensure_mode, :noop)

@@ -11,6 +11,8 @@ defmodule JidoClaw.Test.EchoStub do
     name: "echo_stub",
     description: "Test-only echo agent that captures the tool_context"
 
+  alias JidoClaw.Test.TerminalSignal
+
   @doc """
   Override of the default ask_sync interface. Forwards the supplied
   `tool_context` opt **and** the query (task) to the configured target
@@ -26,6 +28,13 @@ defmodule JidoClaw.Test.EchoStub do
     target = Application.get_env(:jido_claw, :echo_stub_target, self())
     send(target, {:echo_stub, :tool_context, Keyword.get(opts, :tool_context)})
     send(target, {:echo_stub, :task, query})
+
+    # Gated so the correlation-cache test (agent_runner_test.exs) can keep the
+    # pre-finalize ETS entry alive; every other EchoStub turn emits and skips
+    # the Recorder flush timeout.
+    if Application.get_env(:jido_claw, :echo_stub_emit_terminal, true),
+      do: TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
+
     {:ok, %{last_answer: "echoed"}}
   end
 end

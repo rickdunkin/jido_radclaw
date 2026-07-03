@@ -9,10 +9,13 @@ defmodule JidoClaw.Test.PassStub do
     name: "pass_stub",
     description: "Test-only stub that returns VERDICT: PASS"
 
+  alias JidoClaw.Test.TerminalSignal
+
   @spec ask_sync(term(), term(), keyword()) :: {:ok, map()}
   def ask_sync(_pid, _query, opts) when is_list(opts) do
     target = Application.get_env(:jido_claw, :echo_stub_target, self())
     send(target, {:echo_stub, :tool_context, Keyword.get(opts, :tool_context)})
+    TerminalSignal.emit_completed(Keyword.get(opts, :request_id))
     {:ok, %{last_answer: "Looks good. VERDICT: PASS"}}
   end
 end
