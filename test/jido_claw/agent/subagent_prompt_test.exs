@@ -49,6 +49,19 @@ defmodule JidoClaw.Agent.SubagentPromptTest do
       # Unmapped template → no DOCTRINE section.
       refute prompt =~ "## DOCTRINE"
     end
+
+    test "AR-9: plan_drafter's assembled doctrine omits the emit-signals slice (deviation c)",
+         %{project_dir: dir} do
+      prompt = SubagentPrompt.build("plan_drafter", %{project_dir: dir}, "planner-risk-first")
+
+      assert prompt =~ "## DOCTRINE"
+      assert prompt =~ "Runtime artifacts"
+      # The emit_signals slice instructs emitting `plan-ready` when a plan is
+      # drafted — undeclared on a lens stage, so its anchor must never reach the
+      # drafter's prompt. (The ROLE text says "never emit plan-ready" — a negative
+      # instruction — so the pin is on the slice anchor, not the literal topic.)
+      refute prompt =~ "Emitted signals"
+    end
   end
 
   describe "build/3 — AR-6 persona section (psychology-gated)" do
@@ -100,6 +113,17 @@ defmodule JidoClaw.Agent.SubagentPromptTest do
 
       refute prompt =~ "## PSYCHOLOGY"
       assert prompt =~ "## DOCTRINE"
+    end
+
+    test "AR-9: plan_arbiter over the plan-arbiter stage assembles Arbiter psychology + tie-break doctrine",
+         %{project_dir: dir} do
+      Application.put_env(:jido_claw, :psychology, enabled?: true)
+
+      prompt = SubagentPrompt.build("plan_arbiter", %{project_dir: dir}, "plan-arbiter")
+
+      assert prompt =~ "## PSYCHOLOGY: Arbiter"
+      assert prompt =~ "## DOCTRINE"
+      assert prompt =~ "Plan arbitration"
     end
   end
 

@@ -51,7 +51,8 @@ single-author): agents 48 → 52 (~4,060 lines), hooks (excl. tests) ~2,148 → 
   (`doctrine/multi-plan.md`; the per-plan challengers go critique-only and the arbiter
   publishes `#plan-approved` on its Adopt verdict). The one genuinely new *unadopted* idea
   in the delta — jido_radclaw's composer has a single-plan gate; a judge-panel plan wave
-  would be a new borrow (noted, not recommended here).
+  would be a new borrow (noted, not recommended here). *[2026-07-03: V2 opened it as
+  AR-9 and it shipped — the plan phase is single-plan only when unarmed now.]*
 - **Model tiering re-tiered (1.3.3)** — the top tier is now `fable` (Mythos-class) for the
   planning/judging/deep-build stages; `sonnet` executes settled decisions; `haiku`
   classifies (effort `medium/high/max` unchanged). §4's tiering note updated.
@@ -129,7 +130,8 @@ jido_radclaw's implementation has moved. AR-6 was the last not-started *independ
 
 - **AR-6 (personas) — DONE** (2026-06-26). `JidoClaw.Persona` (`lib/jido_claw/persona.ex`) is a
   priv-file-backed persona registry — 9 personas in `priv/defaults/persona/*.md` (cynic, skeptic,
-  detective, defender, optimist, pragmatist, teacher, user-advocate, craftsperson) — injected as a
+  detective, defender, optimist, pragmatist, teacher, user-advocate, craftsperson; *2026-07-03:
+  10 — `arbiter` joined with AR-9*) — injected as a
   `## PSYCHOLOGY: <Name>` block through the AR-5 `Agent.SubagentPrompt` seam (`build/2` → `build/3`).
   The borrow's one structural improvement over the source: personas resolve **stage-first** (the
   catalog stage name) with a **template-name fallback**, so the four reviewer *stages* over the
@@ -543,7 +545,9 @@ PR-1) — and not as a spawn-time override, which jido_ai has no seam for (worke
 compile-time; `ask/3` drops `:model`): `WaveBuilder` carries the fields into the stage
 step's options and the composed `Compactor.RequestTransformer` applies them per LLM turn
 (`model:` / `llm_opts: [reasoning_effort: e]` overrides). No catalog stage declares a tier
-yet.]*
+yet.]* *[2026-07-03: historical — AR-9 PR-4 shipped the first declaration; the
+`plan-arbiter` stage now runs `model: :capable, effort: :high` while templates remain
+`:fast` by design.]*
 
 ### AR-3. Reviewer fan-out + a shared Reviewer Contract
 
@@ -770,7 +774,8 @@ spawn `tools/spawn_agent.ex`, skill/composer step `skills/steps/agent_runner.ex`
 `tools/send_to_agent.ex`); the main agent and handoff-routed workers get neither doctrine nor
 persona — AR-5's boundary, unchanged. 8 of 9 personas are selected (`user-advocate` ships and
 renders but is intentionally unused — no `design/ux-prototyper` analog in this catalog); no
-per-project overrides (v1 non-goal). `mix precommit` green.
+per-project overrides (v1 non-goal). `mix precommit` green. *[2026-07-03: now 10 personas /
+9 selected — `arbiter` shipped with AR-9's `plan-arbiter` stage.]*
 
 ### AR-7. Confidence-tagging as a pervasive convention
 
@@ -925,6 +930,8 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
   folding into AR-2's catalog metadata, not a standalone borrow — AR-2's `%Stage{}` carries
   the `model`/`effort` fields, still unwired (see its status update). *[Update 2026-07-02:
   seam wired — see the AR-2 status update; declaration awaits AR-9's arbiter.]*
+  *[2026-07-03: declared — AR-9 shipped; the `plan-arbiter` STAGE runs `model: :capable,
+  effort: :high` (16 templates now, still uniformly `:fast` at the template layer by design).]*
 - **Milestone loop** (`WORKFLOW.md` `## Milestone loop`) → **future follow-on of AR-2/AR-3.**
   Large builds as verified increments maps onto Reactor compositional steps + the gate
   machinery (both shipped); not separate substrate.

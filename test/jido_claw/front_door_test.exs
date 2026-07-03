@@ -292,6 +292,51 @@ defmodule JidoClaw.FrontDoorTest do
     end
   end
 
+  # AR-9: arming = triage judgment (`multi_plan?`) ∧ `significant-build`,
+  # enforced in front-door CODE (`armed?/1`); `multi-plan` is seeded LITERALLY,
+  # never via the mapped-signals list, so the conjunction can't be bypassed.
+  # An armed run seeds `multi-plan` INSTEAD OF `plan-needed`.
+  describe "decide/2 AR-9 multi-plan arming (all three conjunction cells)" do
+    test "an armed verdict (multi_plan? ∧ significant-build) seeds multi-plan, NOT plan-needed",
+         %{ctx: ctx} do
+      canned(%Verdict{path: :code, multi_plan?: true, signals: [:significant_build]})
+
+      assert {:composer, {:ok, %{path: :code, parent_run_id: id}}} =
+               FrontDoor.decide("build the orchestration subsystem", ctx)
+
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "multi-plan" in live
+      refute "plan-needed" in live
+      # The rest of the seed is unchanged: path + seed signal + mapped signals.
+      assert "code" in live
+      assert "request-received" in live
+      assert "significant-build" in live
+    end
+
+    test "multi_plan? WITHOUT significant-build seeds plan-needed (arming denied)", %{ctx: ctx} do
+      canned(%Verdict{path: :code, multi_plan?: true, signals: [:needs_tests]})
+
+      assert {:composer, {:ok, %{parent_run_id: id}}} =
+               FrontDoor.decide("implement the feature", ctx)
+
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "plan-needed" in live
+      refute "multi-plan" in live
+    end
+
+    test "significant-build WITHOUT multi_plan? seeds plan-needed (the other half)", %{ctx: ctx} do
+      canned(%Verdict{path: :code, multi_plan?: false, signals: [:significant_build]})
+
+      assert {:composer, {:ok, %{parent_run_id: id}}} =
+               FrontDoor.decide("build the big-but-obvious feature", ctx)
+
+      live = event(id, ctx, :signals_published).payload["signals"]
+      assert "plan-needed" in live
+      refute "multi-plan" in live
+      assert "significant-build" in live
+    end
+  end
+
   describe "decide/2 P1 sensitive marking (the :secrets early signal)" do
     test "a :secrets verdict marks the run sensitive + bounded and the ack omits the intent",
          %{ctx: ctx} do

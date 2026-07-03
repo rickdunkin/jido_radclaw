@@ -22,8 +22,8 @@ are as-of 2026-07-02.
 | --- | --- | --- | --- | --- |
 | 1 | ✅ **DONE 2026-07-02** — `git push` approval pattern + footnote hygiene sweep | alp-river footnotes + jidoka footnote | XS–S (half-day) | One session |
 | 2 | ✅ **DONE 2026-07-02** — G2-1b: Phase 0 spike → `jido://workflows/<stage>` resources | gust #1 | S–M (1–2 days green path) | Spike green same day; no dep patch |
-| 3 | AR-9 judge-panel plan wave, pulling in tiering seam + premises threading | alp-river #2 + #1 + #3 | M–L (~1 week) | **Must be broken down — 4 PRs** |
-| 4 | `code-doctrine` slice (riding #3's authoring pass) | alp-river #5 (slice half only) | S (≤1 day) | Single PR, or a commit inside #3 |
+| 3 | ✅ **DONE 2026-07-03** (PR-1/PR-2 2026-07-02) — AR-9 judge-panel plan wave, pulling in tiering seam + premises threading | alp-river #2 + #1 + #3 | M–L (~1 week) | **Must be broken down — 4 PRs** |
+| 4 | ✅ **DONE 2026-07-03** (slice half; READ_MAP still deferred) — `code-doctrine` slice (riding #3's authoring pass) | alp-river #5 (slice half only) | S (≤1 day) | Single PR, or a commit inside #3 |
 | 5 | Deterministic eval harness, minimal slice | jidoka #1 | M (2–3 days) | 2 parts |
 
 **Sequencing.** Items 1 and 2 are independent of everything and of each other —
@@ -108,9 +108,38 @@ an anubis `component` template resource is unverifiable on paper.
    (preferred over an anubis handler patch), or record a clean kill. That
    decision point is exactly why the spike stands alone.
 
-## 3. AR-9 multi-plan + plan-arbiter, with its two riders — M–L
+## 3. AR-9 multi-plan + plan-arbiter, with its two riders — M–L — ✅ DONE 2026-07-03
 
-> **PR-1 + PR-2 DONE 2026-07-02** (PR-3/PR-4 pending), with two corrections to
+> **PR-3 + PR-4 DONE 2026-07-03**, with three recorded deviations from the V2
+> sketch (and from this entry's own PR-3 bullet): (a) sketch step 5's "arbiter →
+> gate on Adopt; Hybrid/Revise-first ride `plan-rejected`" became **planner
+> finalizes** — the arbiter is a pure adjudicator whose `decision-memo` carries
+> the verdict INSIDE the artifact (no verdict-driven routing; hybrid/
+> revise_first do NOT ride `plan-rejected`), and the single `planner` stage
+> always finalizes `plan` from the memo + the competing plans + critiques as
+> optional inputs, so the human-reject → re-plan machinery is untouched and the
+> armed reject rerun set is provably `{planner}`. (b) "the gate presents the
+> memo" was dropped — `GateStep` reads `details` from compile-time options
+> shared with `SafetyGate`, so threading dynamic memo details would touch 5
+> shared-gate-infra files for redundant value; the human approves the
+> *finalized* plan and the memo stays an inspectable composer artifact
+> (plan-gate byte-identical). (c) "lens planner stages over the existing
+> planner template" became a dedicated composer-private **`plan_drafter`**
+> template — the researcher's role text and `emit_signals` doctrine slice both
+> instruct emitting `plan-ready` when a plan is drafted, and emitted signals
+> are strictly checked against the stage's `publishes`, so a real LLM following
+> the stale instruction on a lens stage would route-fail the wave; the
+> `plan-drafted:<lens>` advisory signals were dropped entirely (all seven new
+> stages publish only `scope-shift` — sequencing is artifact-driven via
+> `plan:<lens>` → `critique:<lens>` → `decision-memo`). Arming is the triage
+> `multi_plan` judgment ∧ `significant-build`, enforced in
+> `FrontDoor.armed?/1`; armed runs seed `multi-plan` INSTEAD OF `plan-needed`
+> (no config kill-switch). PR-4 shipped as designed: the `plan-arbiter` stage
+> declares `model: :capable, effort: :high` — the tiering seam's first
+> declarer, making the PR-1 note's "no catalog stage declares a tier yet"
+> historical as of 2026-07-03.
+
+> **PR-1 + PR-2 DONE 2026-07-02**, with two corrections to
 > this entry's own claims: (a) PR-1's "`WaveBuilder` reads the fields **at spawn
 > time**" described a seam that does not exist — worker model is compile-time
 > (`use JidoClaw.Agent.Defaults, model:` wins at server init) and `ask/3` drops
@@ -132,7 +161,8 @@ an anubis `component` template resource is unverifiable on paper.
 > template metadata). Behavior today is unchanged (no catalog stage declares a
 > tier; default premises `%{}` render to `""`); once a stage declares `effort`,
 > `reasoning_effort` reaches the provider even while `:fast`/`:capable` point at
-> the same model.
+> the same model. *(2026-07-03: "no catalog stage declares a tier" is now
+> historical — PR-4's `plan-arbiter` stage declares one.)*
 
 The [alp-river rollup](../../exploration/alp-river/UNADOPTED-IDEAS.md) names
 this "the next substantive composer increment," to adopt "when a composer
@@ -145,7 +175,7 @@ stays the sole emitter. Full sketch:
 [AR-9 in FEATURES-WORTH-BORROWING-V2.md](../../exploration/alp-river/FEATURES-WORTH-BORROWING-V2.md).
 
 **This is the item that must be broken down. Suggested 4 PRs (PR-1/PR-2
-landed 2026-07-02 — see the progress note above):**
+landed 2026-07-02, PR-3/PR-4 2026-07-03 — see the progress notes above):**
 
 1. **PR-1 — tiering seam (S) — DONE 2026-07-02:** landed, though not as the
    sketched spawn-time read (no such seam exists — worker model is
@@ -161,28 +191,42 @@ landed 2026-07-02 — see the progress note above):**
    `:extra_context` under a dedicated `### Premises` block (gate waves
    excluded), so `scope-shift` self-reports cite an explicit list instead of
    reporting blind.
-3. **PR-3 — the plan wave itself (M, follow the V2 AR-9 sketch steps 1–5):**
-   arming signal (`multi-plan` published only when `significant-build` is live
-   and the design space is wide — never default); 2–3 lens planner stages over
-   the existing planner template (lens folded into stage `task`, emitting
-   `plan:<lens>`/`plan-drafted:<lens>`); critique-only challenger stages
-   emitting `critique:<lens>`; a `plan_arbiter` worker with a Zoi decision-memo
-   schema (**string** verdict enum `adopt|hybrid|revise_first`, per the Envelope
-   round-trip rule) plus the arbiter persona and a tie-break doctrine slice;
-   wire waves → the existing plan-gate (Adopt ⇒ gate presents the memo;
-   Hybrid/Revise-first ride the existing `plan-rejected` re-plan edge — no new
-   gate kind).
-4. **PR-4 (or folded into PR-3):** arbiter stage declares high tier via PR-1's
-   seam (sketch step 6 — the seam's designed first consumer); lens planners stay
-   standard.
+3. **PR-3 — the plan wave itself (M) — DONE 2026-07-03**, with deviations
+   (a)–(c) recorded in the progress note above: arming = triage `multi_plan`
+   judgment ∧ `significant-build` (front-door code, seeds `multi-plan` instead
+   of `plan-needed`); three lens planner stages over a dedicated
+   `plan_drafter` template (smallest-shippable / risk-first / reuse-first —
+   NOT the researcher, whose prompt surface names `plan-ready`; no
+   `plan-drafted:<lens>` signals exist); critique-only `plan_challenger`
+   stages producing `critique:<lens>`; a `plan_arbiter` worker with the Zoi
+   decision-memo schema (**string** verdict enum `adopt|hybrid|revise_first`,
+   per the Envelope round-trip rule) plus the arbiter persona (the 10th) and
+   the tie-break doctrine slice; the planner finalizes on every verdict and
+   the plan-gate stays byte-identical.
+4. **PR-4 — DONE 2026-07-03:** the `plan-arbiter` stage declares
+   `model: :capable, effort: :high` via PR-1's seam (the seam's designed first
+   consumer); lens planners stay standard.
 
 Opt-in arming is load-bearing: the single-plan default path must be
-behavior-unchanged. The cheap per-stage prompt-size telemetry rider landed
+behavior-unchanged (shipped: the unarmed compose and front-door seeding are
+pinned byte-identical). The cheap per-stage prompt-size telemetry rider landed
 with PR-1/PR-2, in `agent_step.ex` (`[:jido_claw, :composer, :stage_prompt]`)
 — the assembled prompt only exists there, not in `wave_builder.ex` — so AR-11
 (artifact handles) stays honestly evidence-gated on real numbers.
 
-## 4. `code-doctrine` slice — S, riding item 3
+## 4. `code-doctrine` slice — S, riding item 3 — ✅ DONE 2026-07-03 (slice half)
+
+> **Done 2026-07-03**, riding item 3's doctrine authoring pass as planned. The
+> `code_doctrine` slice (`## Code craft` — match what's there, no drive-by
+> refactors, handle the error paths, no dead weight, leave it verifiable)
+> targets the three templates that WRITE application code — `coder`
+> (implementer + test-author both ride it), `fixer`, `refactorer` — not
+> literally "every producer": sketch builders are excluded (throwaway
+> tracer-bullets — craft fights their speed purpose), `system_executor`
+> (machine/config changes, not application code), and docs_writer/researcher/
+> plan_drafter/plan_challenger/plan_arbiter (write no code). The registry now
+> counts 11 slices (this entry's "the existing 8 slices" is historical). The
+> READ_MAP half stays deferred — still speculative.
 
 Alp-river #5's trigger is "the next doctrine authoring pass (cheapest moment to
 write the slice)" — item 3's PR-3 *is* that pass (new arbiter persona +

@@ -65,6 +65,33 @@ defmodule JidoClaw.Doctrine do
                              "doctrine",
                              "confidence_tagging.md"
                            ])
+  @tie_break_priv Path.join([
+                    __DIR__,
+                    "..",
+                    "..",
+                    "priv",
+                    "defaults",
+                    "doctrine",
+                    "tie_break.md"
+                  ])
+  @challenger_contract_priv Path.join([
+                              __DIR__,
+                              "..",
+                              "..",
+                              "priv",
+                              "defaults",
+                              "doctrine",
+                              "challenger_contract.md"
+                            ])
+  @code_doctrine_priv Path.join([
+                        __DIR__,
+                        "..",
+                        "..",
+                        "priv",
+                        "defaults",
+                        "doctrine",
+                        "code_doctrine.md"
+                      ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
@@ -74,6 +101,9 @@ defmodule JidoClaw.Doctrine do
   @external_resource @fixer_contract_priv
   @external_resource @emit_signals_priv
   @external_resource @confidence_tagging_priv
+  @external_resource @tie_break_priv
+  @external_resource @challenger_contract_priv
+  @external_resource @code_doctrine_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
@@ -83,7 +113,10 @@ defmodule JidoClaw.Doctrine do
     system_verify: String.trim(File.read!(@system_verify_priv)),
     fixer_contract: String.trim(File.read!(@fixer_contract_priv)),
     emit_signals: String.trim(File.read!(@emit_signals_priv)),
-    confidence_tagging: String.trim(File.read!(@confidence_tagging_priv))
+    confidence_tagging: String.trim(File.read!(@confidence_tagging_priv)),
+    tie_break: String.trim(File.read!(@tie_break_priv)),
+    challenger_contract: String.trim(File.read!(@challenger_contract_priv)),
+    code_doctrine: String.trim(File.read!(@code_doctrine_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -105,6 +138,15 @@ defmodule JidoClaw.Doctrine do
   # only on `researcher` findings (a required Zoi enum) and the reviewer family's
   # findings (AR-3); for the other non-reviewer workers it is a prompt-enforced
   # convention on their prose output (`summary`/`notes`/`reasoning`).
+  # Item 4 (AR-9 unit 2): the `:code_doctrine` slice ("Code craft" — match
+  # what's there, no drive-by refactors, handle error paths, no dead weight,
+  # leave it verifiable) reaches the three templates that WRITE application
+  # code: `coder` (implementer + test-author both ride it), `fixer`, and
+  # `refactorer`. Deliberately excluded: `sketch_build`/`sketch_build_exec`
+  # (throwaway tracer-bullets — craft fights their speed purpose),
+  # `system_executor` (machine/config changes, not application code), and
+  # `docs_writer`/`researcher`/`plan_drafter`/`plan_challenger`/`plan_arbiter`
+  # (write no code).
   @template_slices %{
     # AR-4: `coder` (backs both `implementer` + `test-author`) and `researcher`
     # (the `planner`) now self-report via a `signals` field, so they ALSO get the
@@ -114,14 +156,14 @@ defmodule JidoClaw.Doctrine do
     # planner, `scope-shift` when scope grows). The composer loop-guarantees the
     # baseline `code-written` / `plan-ready` (`enforce_completion_signals/2`), but
     # `tests-ready` / `scope-shift` are self-reported only — so the steering matters.
-    "coder" => [:base, :artifacts, :emit_signals, :confidence_tagging],
+    "coder" => [:base, :artifacts, :code_doctrine, :emit_signals, :confidence_tagging],
     # AR-4: the self-heal fixer is a producing worker (`:artifacts`, like `coder`)
     # PLUS the new `:fixer_contract` slice — the prose half of `fixer_result/0`:
     # resolve the open findings, then self-report the touched domains (the
     # `signals` the loop derives the re-review set from). Required by the drift
     # guard (`doctrine_test.exs`, `template_names() == Templates.names()`).
-    "fixer" => [:base, :artifacts, :fixer_contract, :confidence_tagging],
-    "refactorer" => [:base, :artifacts, :confidence_tagging],
+    "fixer" => [:base, :artifacts, :code_doctrine, :fixer_contract, :confidence_tagging],
+    "refactorer" => [:base, :artifacts, :code_doctrine, :confidence_tagging],
     "docs_writer" => [:base, :artifacts, :confidence_tagging],
     "researcher" => [:base, :artifacts, :emit_signals, :confidence_tagging],
     "test_runner" => [:base, :artifacts, :confidence_tagging],
@@ -140,7 +182,17 @@ defmodule JidoClaw.Doctrine do
     # machine (idempotent re-check / state assertion / exit code; cite the
     # evidence). Both required by the drift guard (`template_names() == names()`).
     "system_executor" => [:base, :artifacts, :confidence_tagging],
-    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify]
+    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify],
+    # AR-9: the plan-wave workers. The drafter is a producing worker — but with
+    # NO `:emit_signals` (deviation c): that slice instructs emitting
+    # `plan-ready` when a plan is drafted, and a lens stage declares only
+    # `scope-shift`, so under strict emit checking the stale instruction would
+    # route-fail the wave. The challenger gets its critique-only contract; the
+    # arbiter gets the tie-break ladder. All three required by the drift guard
+    # (`template_names() == Templates.names()`).
+    "plan_drafter" => [:base, :artifacts, :confidence_tagging],
+    "plan_challenger" => [:base, :artifacts, :challenger_contract, :confidence_tagging],
+    "plan_arbiter" => [:base, :artifacts, :tie_break, :confidence_tagging]
   }
 
   @doc "Return one doctrine slice's text, or `\"\"` for an unknown key."

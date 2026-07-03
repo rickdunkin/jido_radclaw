@@ -9,13 +9,13 @@ defmodule JidoClaw.Persona do
   (checked in `SubagentPrompt`).
   """
 
-  # Load the 9 uniform persona files with ONE comprehension over @persona_names — deliberately
+  # Load the 10 uniform persona files with ONE comprehension over @persona_names — deliberately
   # unlike Doctrine's per-slice @xxx_priv attributes, so the two registries never form an ExDNA
   # clone family. Each file is an @external_resource (recompile on edit).
   @persona_dir Path.join([__DIR__, "..", "..", "priv", "defaults", "persona"])
-  @persona_names ~w(craftsperson cynic defender detective optimist pragmatist skeptic teacher user-advocate)
+  @persona_names ~w(arbiter craftsperson cynic defender detective optimist pragmatist skeptic teacher user-advocate)
 
-  # The advisory safety valve — single-sourced HERE, not duplicated in the 9 files. Guarantees
+  # The advisory safety valve — single-sourced HERE, not duplicated in the 10 files. Guarantees
   # every rendered persona carries the byte-identical role-wins rule; impossible to drift.
   @conflict_rule "Your role contract is mandatory; persona is advisory voice. " <>
                    "On conflict, the role and the codebase win."
@@ -43,11 +43,21 @@ defmodule JidoClaw.Persona do
     "sketch-build-exec" => "optimist",
     "sketch-review" => "skeptic",
     "system-executor" => "teacher",
-    "system-verifier" => "detective"
+    "system-verifier" => "detective",
+    # AR-9: the multi-plan wave. The lens planners keep the planner-class voice
+    # (the lens is a TASK bias, not a persona); the challengers judge like the
+    # reviewer stages; the arbiter gets the dedicated 10th persona.
+    "planner-smallest-shippable" => "detective",
+    "planner-risk-first" => "detective",
+    "planner-reuse-first" => "detective",
+    "challenger-smallest-shippable" => "skeptic",
+    "challenger-risk-first" => "skeptic",
+    "challenger-reuse-first" => "skeptic",
+    "plan-arbiter" => "arbiter"
   }
 
   # TEMPLATE name → persona — the fallback for a direct spawn / follow-up / non-catalog step.
-  # Total over all 13 worker templates (the drift guard asserts equality with `Templates.names/0`).
+  # Total over all 16 worker templates (the drift guard asserts equality with `Templates.names/0`).
   @template_persona %{
     "coder" => "craftsperson",
     "fixer" => "cynic",
@@ -61,7 +71,10 @@ defmodule JidoClaw.Persona do
     "sketch_reviewer" => "skeptic",
     "sketch_build_exec" => "optimist",
     "system_executor" => "teacher",
-    "system_verifier" => "detective"
+    "system_verifier" => "detective",
+    "plan_drafter" => "detective",
+    "plan_challenger" => "skeptic",
+    "plan_arbiter" => "arbiter"
   }
 
   @doc """

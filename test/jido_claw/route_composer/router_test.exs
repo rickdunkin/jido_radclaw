@@ -450,6 +450,61 @@ defmodule JidoClaw.RouteComposer.RouterTest do
     end
   end
 
+  describe "AR-9 multi-plan wave — starter catalog (armed vs unarmed)" do
+    test "an armed seed composes the whole plan pipeline as 4 Kahn levels in ONE compose" do
+      # The front-door armed seed: `multi-plan` INSTEAD OF `plan-needed`, plus
+      # the mapped `significant-build` early signal (the arming conjunction).
+      res =
+        compose(Catalog.all(), ["request-received", "code", "multi-plan", "significant-build"],
+          available: ["request", "intent"],
+          ran: ["triage"]
+        )
+
+      # [lens×3] → [challengers×3] → [plan-arbiter] → [planner]: the data graph
+      # (plan:<lens> → critique:<lens> → decision-memo → the planner's optional
+      # inputs) sequences the pipeline with NO lens/challenger/arbiter signals.
+      assert res.waves == [
+               ["planner-reuse-first", "planner-risk-first", "planner-smallest-shippable"],
+               [
+                 "challenger-reuse-first",
+                 "challenger-risk-first",
+                 "challenger-smallest-shippable"
+               ],
+               ["plan-arbiter"],
+               ["planner"]
+             ]
+
+      assert res.route == Enum.concat(res.waves)
+
+      # The gate/implementer arrive in a LATER compose (off `plan-ready`); the
+      # architecture reviewer (← significant-build) drops until a diff exists.
+      refute "plan-gate" in res.route
+      refute "implementer" in res.route
+      assert res.dropped["architecture-reviewer"] == :unsatisfiable_input
+    end
+
+    test "an unarmed seed keeps the planner at level 0 with all 7 new stages untriggered (byte-identity)" do
+      res =
+        compose(Catalog.all(), ["request-received", "code", "plan-needed"],
+          available: ["request", "intent"],
+          ran: ["triage"]
+        )
+
+      # Exactly today's unarmed route: the planner alone in wave 0 — the new
+      # optional inputs create no edge when their producers are absent.
+      assert res.route == ["planner"]
+      assert res.waves == [["planner"]]
+
+      for lens <- ~w(smallest-shippable risk-first reuse-first) do
+        refute "planner-#{lens}" in res.route
+        refute "challenger-#{lens}" in res.route
+        refute Map.has_key?(res.dropped, "planner-#{lens}")
+      end
+
+      refute "plan-arbiter" in res.route
+    end
+  end
+
   defp assert_lock_case(res, %{held: nil}) do
     assert_in_route(res, "impl")
     refute Map.has_key?(res.held, "impl")

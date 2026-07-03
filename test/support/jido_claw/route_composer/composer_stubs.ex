@@ -82,7 +82,7 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     maybe_capture(:route_composer_capture_task, {:wave_task, template, task})
 
     outputs = Application.fetch_env!(:jido_claw, :route_composer_stub_outputs)
-    typed = Map.fetch!(outputs, template)
+    typed = lookup_output!(outputs, template, task)
 
     StubStore.put(request_id, %{
       status: :completed,
@@ -91,6 +91,33 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     })
 
     {:ok, %{id: request_id}}
+  end
+
+  # AR-9 per-STAGE override: `tool_context` carries `:agent_template` but not
+  # the stage name, so two stages over one template are told apart by a task
+  # fragment — `{template, fragment}` tuple keys beside the plain template
+  # keys. Matching is deterministic and LOUD: when any tuple keys exist for the
+  # resolved template, exactly ONE fragment must match the assembled task —
+  # zero or several matches raise (a silent fallback or arbitrary pick would
+  # feed the wrong canned plan to the mapper and quietly weaken the e2e). Only
+  # a template with NO tuple keys falls back to the plain template key, so
+  # plain-keyed existing fixtures are untouched.
+  defp lookup_output!(outputs, template, task) do
+    case for {{^template, fragment}, _out} <- outputs, do: fragment do
+      [] ->
+        Map.fetch!(outputs, template)
+
+      fragments ->
+        case Enum.filter(fragments, &String.contains?(task, &1)) do
+          [fragment] ->
+            Map.fetch!(outputs, {template, fragment})
+
+          matched ->
+            raise "expected exactly one {#{inspect(template)}, fragment} stub to match the " <>
+                    "task, got #{inspect(matched)} from fragments #{inspect(fragments)} " <>
+                    "for task: #{inspect(task)}"
+        end
+    end
   end
 
   # Optional capture hooks, one shared sender (env key → message), off by default:

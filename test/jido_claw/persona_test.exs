@@ -73,6 +73,11 @@ defmodule JidoClaw.PersonaTest do
     test "renders the template-fallback block when the stage is nil" do
       assert Persona.render_for(nil, "reviewer") =~ "## PSYCHOLOGY: Skeptic"
     end
+
+    test "AR-9: the plan-arbiter stage renders the arbiter persona (the 10th)" do
+      assert Persona.render_for("plan-arbiter", "plan_arbiter") =~ "## PSYCHOLOGY: Arbiter"
+      assert Persona.render("arbiter") != ""
+    end
   end
 
   describe "registry-drift guard" do

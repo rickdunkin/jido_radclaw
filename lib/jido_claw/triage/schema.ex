@@ -46,6 +46,10 @@ defmodule JidoClaw.Triage.Schema do
         Zoi.optional(Zoi.enum(xs: "XS", s: "S", m: "M", l: "L", xl: "XL", xxl: "XXL")),
       "intent" => Zoi.optional(Zoi.string()),
       "intent_confirmed" => Zoi.optional(Zoi.boolean()),
+      # AR-9: the multi-plan arming judgment — true ONLY on a significant build
+      # whose design space is wide (see the prompt section). The front door
+      # enforces the conjunction with `significant-build` in code.
+      "multi_plan" => Zoi.optional(Zoi.boolean()),
       "reasons" => Zoi.optional(Zoi.map(Zoi.string(), Zoi.string()))
     })
   end

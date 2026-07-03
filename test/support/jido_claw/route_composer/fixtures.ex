@@ -302,7 +302,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   @spec phase1_template_override(module()) :: %{String.t() => map()}
   def phase1_template_override(module) do
     Map.new(~w(researcher verifier coder reviewer fixer), fn name ->
-      {name, %{module: module, description: "phase-1 stub", model: :fast, max_iterations: 1}}
+      {name, stub_template(module, "phase-1 stub")}
     end)
   end
 
@@ -789,7 +789,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   @spec system_loop_template_override(module()) :: %{String.t() => map()}
   def system_loop_template_override(module) do
     Map.new(~w(researcher system_executor system_verifier), fn name ->
-      {name, %{module: module, description: "system-loop stub", model: :fast, max_iterations: 1}}
+      {name, stub_template(module, "system-loop stub")}
     end)
   end
 
@@ -806,6 +806,142 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       "researcher" => %{"signals" => ["plan-ready"], "plan" => "PLAN: update nginx + reload"},
       "system_executor" => %{"system-change" => "CHANGE: wrote nginx.conf, reloaded the service"}
     }
+  end
+
+  # ---------------------------------------------------------------------------
+  # AR-9 armed multi-plan fixtures (the judge-panel wave on the REAL catalog)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  The armed front-door seed (mimics `FrontDoor.seed_live/2` for an armed `code`
+  verdict): `multi-plan` INSTEAD OF `plan-needed`, plus the mapped
+  `significant-build` early signal — the arming conjunction's other half.
+  """
+  @spec armed_seed_live() :: [String.t()]
+  def armed_seed_live, do: ["request-received", "code", "multi-plan", "significant-build"]
+
+  @doc "The armed seed artifact store (the Option-A `request` + `intent`)."
+  @spec armed_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def armed_seed_artifacts do
+    %{
+      "request" => %{"seed" => "Build the orchestration subsystem"},
+      "intent" => %{"triage" => "Build the orchestration subsystem"}
+    }
+  end
+
+  @doc """
+  The `:agent_templates_override` for an armed run on the REAL catalog: the
+  phase-1 override (researcher/verifier/coder/reviewer/fixer) plus the three
+  AR-9 plan-wave templates, all pointed at `module`.
+  """
+  @spec armed_template_override(module()) :: %{String.t() => map()}
+  def armed_template_override(module) do
+    Map.merge(
+      phase1_template_override(module),
+      Map.new(~w(plan_drafter plan_challenger plan_arbiter), fn name ->
+        {name, stub_template(module, "armed stub")}
+      end)
+    )
+  end
+
+  @doc """
+  The armed stub outputs — FULLY schema-shaped (the stub path stamps
+  `:validated`, bypassing Zoi, so each map carries exactly the fields the real
+  schema produces): NO dynamic artifact keys (every `plan:<lens>` /
+  `critique:<lens>` / `decision-memo` / `plan` / `diff` artifact resolves via
+  the summary fallback — the path a real run takes, since Zoi drops unknown
+  keys) and NO canned `signals` anywhere (`scope-shift` IS declared on all
+  seven new stages, so a canned one would trigger real rescope behavior
+  mid-e2e; the finalizer's `plan-ready` and the implementer's `code-written`
+  are loop-injected). The three per-stage drafter overrides MERGE the base
+  drafter stub with a distinct summary — fully schema-shaped by construction —
+  so the finalizer-context assertion can prove three meaningfully different
+  plans arrive. `arbiter` swaps the memo map (adopt / revise_first variants).
+  """
+  @spec armed_stub_outputs(map()) :: map()
+  def armed_stub_outputs(arbiter \\ armed_adopt_arbiter()) do
+    drafter_stub = %{
+      "summary" => "PLAN (lens draft): a competing plan.",
+      "status" => "completed",
+      "confidence" => "high",
+      "artifacts" => %{}
+    }
+
+    %{
+      # The finalizer planner (researcher) — full researcher shape; `plan`
+      # resolves to THIS summary via the fallback.
+      "researcher" => %{
+        "summary" => "PLAN (final): adopt Plan A, smallest-shippable.",
+        "status" => "completed",
+        "confidence" => "high",
+        "findings" => [],
+        "artifacts" => %{}
+      },
+      # Template-key fallback for any drafter stage a fragment doesn't cover.
+      "plan_drafter" => drafter_stub,
+      {"plan_drafter", "smallest-shippable"} =>
+        Map.put(drafter_stub, "summary", "PLAN A: minimal viable slice."),
+      {"plan_drafter", "risk-first"} =>
+        Map.put(drafter_stub, "summary", "PLAN B: de-risk the hard part first."),
+      {"plan_drafter", "reuse-first"} =>
+        Map.put(drafter_stub, "summary", "PLAN C: reuse the existing pipeline."),
+      # One challenger map serves all three challenger stages.
+      "plan_challenger" => %{
+        "summary" => "CRITIQUE: blockers/concerns/strengths.",
+        "status" => "completed",
+        "confidence" => "high",
+        "blockers" => [],
+        "concerns" => ["over-scoped"],
+        "strengths" => ["reuses tested code"],
+        "artifacts" => %{}
+      },
+      "plan_arbiter" => arbiter,
+      # The post-gate half: a coder-schema-shaped implementer (`diff` = summary
+      # fallback; `code-written` loop-injected) + clean reviewers.
+      "coder" => %{
+        "summary" => "DIFF: implemented the adopted plan.",
+        "status" => "completed",
+        "files_changed" => ["lib/feature.ex"],
+        "notes" => "n/a",
+        "artifacts" => %{}
+      },
+      "reviewer" => phase1_clean_reviewer()
+    }
+  end
+
+  @doc "The armed ADOPT arbiter memo (fully schema-shaped)."
+  @spec armed_adopt_arbiter() :: %{String.t() => term()}
+  def armed_adopt_arbiter do
+    %{
+      "summary" =>
+        "DECISION MEMO — verdict: adopt. Selected Plan A (smallest-shippable). " <>
+          "Tie-break: correctness.",
+      "status" => "completed",
+      "confidence" => "high",
+      "assessments" => [],
+      "tie_break_rung" => "correctness",
+      "selection" => "smallest-shippable",
+      "verdict" => "adopt",
+      "revision_directive" => "none",
+      "artifacts" => %{}
+    }
+  end
+
+  @doc """
+  The REVISE_FIRST arbiter variant — differs from `armed_adopt_arbiter/0` ONLY
+  in summary/verdict/directive (the assertion that pins "no verdict-driven
+  routing": the route is identical on every verdict).
+  """
+  @spec armed_revise_first_arbiter() :: %{String.t() => term()}
+  def armed_revise_first_arbiter do
+    armed_adopt_arbiter()
+    |> Map.put(
+      "summary",
+      "DECISION MEMO — verdict: revise_first. No plan is safe as written; " <>
+        "resolve the rollback blocker, then redraft."
+    )
+    |> Map.put("verdict", "revise_first")
+    |> Map.put("revision_directive", "resolve the rollback blocker before implementation")
   end
 
   # ===========================================================================
@@ -935,5 +1071,12 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   # Stamp each stage's `name` from its catalog key.
   defp key_named(map) do
     Map.new(map, fn {name, stage} -> {name, %{stage | name: name}} end)
+  end
+
+  # The ONE construction site for a stub template-override entry — the three
+  # override builders share it so the map shape exists once (reach
+  # `fixed_shape_map` counts shape repeats across test/support).
+  defp stub_template(module, description) do
+    %{module: module, description: description, model: :fast, max_iterations: 1}
   end
 end

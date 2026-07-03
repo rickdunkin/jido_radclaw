@@ -17,11 +17,11 @@ Ordered by trigger proximity — nearest first.
 
 | # | Idea | Source entry | Adopt now? | Trigger distance |
 | --- | --- | --- | --- | --- |
-| 1 | Per-stage model/effort tiering (wire the seam) | V1 §4 + V2 §4 | **Seam WIRED 2026-07-02** — remainder (a catalog stage declaring a tier) rides #2's arbiter | AR-9 shipping (arbiter = designed first declarer) |
-| 2 | Multi-plan + plan-arbiter (judge-panel plan wave) | V2 AR-9 | Not yet — the next substantive composer increment | Wanting a composer increment; recurring plan-shape failures on significant builds |
+| 1 | Per-stage model/effort tiering (wire the seam) | V1 §4 + V2 §4 | **DONE** — seam wired 2026-07-02; first declarer (the AR-9 arbiter stage) **shipped 2026-07-03** | — (fired) |
+| 2 | Multi-plan + plan-arbiter (judge-panel plan wave) | V2 AR-9 | **SHIPPED 2026-07-03** (with deviations a–c — see the entry) | — |
 | 3 | Hand `premises` to stage agents | V2 §4 refinement | **DONE 2026-07-02** (rider landed ahead of #2) | — |
 | 4 | Shipping tail (`ship-gate` → `ship-executor`) | V2 AR-10 | No (its footnoted `git push` sibling: **shipped 2026-07-02**) | Ship/commit/PR asks after composed runs becoming routine |
-| 5 | `code-doctrine` slice + `docs/` READ_MAP | V1 AR-5 open borders | No | Next doctrine authoring pass, or recurring producer-quality feedback |
+| 5 | `code-doctrine` slice + `docs/` READ_MAP | V1 AR-5 open borders | **Slice half DONE 2026-07-03**; READ_MAP still open | READ_MAP: per-template project-doc needs showing up |
 | 6 | Artifact handles (refs instead of inline stage inputs) | V2 AR-11 | No — telemetry-gated | Prompt-cost evidence: large many-consumer artifacts dominating sub-agent cost |
 | 7 | Milestone loop (verified increments on big builds) | V1 §4 | No — pain-gated | Composed builds outgrowing the single end-review pass |
 | 8 | `.jido/` YAML catalog overlay + watcher | V1 AR-2 deferred tail (gust G3-2) | No — demand-gated | Needing catalog changes without recompiling (per-project stages) |
@@ -39,43 +39,43 @@ untiered stages stay byte-identical), `AgentRunner.run/6` threads them into the 
 `model:` / `llm_opts: [reasoning_effort: e]` overrides. Note the earlier framing here —
 "the work is the `WaveBuilder` spawn-time override seam" — described a seam that does not
 exist: worker model is compile-time and `ask/3` drops a `:model` opt; jido_ai's only
-per-turn seam is the `request_transformer`, which is what shipped. No catalog stage
-declares a tier yet, so all 13 worker templates still run uniformly at `:fast`. The
-source meanwhile re-tiered to fable/sonnet/haiku at 1.3.3 and runs its arbiter at
-`fable`/`max`.
+per-turn seam is the `request_transformer`, which is what shipped. *(2026-07-03: the
+"no catalog stage declares a tier yet / all 13 templates uniformly `:fast`" line below is
+now historical — the AR-9 `plan-arbiter` STAGE declares `model: :capable, effort: :high`,
+and the registry counts 16 templates; the TEMPLATES all stay `:fast` by design, the tier
+being a per-stage declaration.)* The source meanwhile re-tiered to fable/sonnet/haiku at
+1.3.3 and runs its arbiter at `fable`/`max`.
 
-**Now?** The mechanism is done; the remainder is a *declaration* (a catalog stage setting
-`model:`/`effort:`), which rides #2's arbiter — the designed first consumer.
+**Now?** **DONE** — the mechanism (2026-07-02) and the first declaration (2026-07-03,
+#2's arbiter — the designed first consumer) have both shipped.
 
-**Trigger** (for the declaration): AR-9's plan wave shipping (its arbiter declares the
-high tier — V2 AR-9 sketch step 6), or observed judge-stage quality/cost pressure at
-uniform `:fast` (reviewers and gates deserving a higher tier than mechanical producers).
-Caveat now the seam is live: declaring `effort` alone changes provider input
+**Trigger**: fired 2026-07-03 (AR-9's plan wave shipped; its arbiter declares the high
+tier). The live caveat stands: declaring `effort` alone changes provider input
 (`reasoning_effort` is a canonical ReqLLM option) even while `:fast`/`:capable` resolve
-to the same model; a `model:` declaration stays inert until the operator re-points
-`:capable`.
+to the same model; the `model: :capable` declaration stays inert until the operator
+re-points `:capable`.
 
-## 2. Multi-plan + plan-arbiter — the judge-panel plan wave (V2 AR-9)
+## 2. Multi-plan + plan-arbiter — the judge-panel plan wave (V2 AR-9) — ✅ SHIPPED 2026-07-03
 
-**Standing**: opened as a full entry in V2 (2026-07-02) after V1's drift note declined it
-("noted, not recommended here"). The composer's plan phase is strictly single-plan —
-`planner` (`catalog.ex:79`) → the human `plan-gate` (`catalog.ex:100`), with `plan-rejected`
-re-firing the planner. Every substrate piece exists (AR-3's lens-instantiation pattern,
-stage-first personas, the emission ⊆ `publishes` coherence check that makes the source's
-convention-enforced sole-publisher invariant structural here, welded wave commits for the
-atomic co-publish); nothing is built.
-
-**Now?** Not yet — it's the next *substantive* composer increment, deliberately opt-in
-(armed only on wide-design-space significant builds; ~2–3× planning cost when armed).
-Adopt when a composer increment is next wanted, not on a calendar.
-
-**Trigger**: wanting the next composer increment, or evidence that first-plan *shape* is
-the recurring risk — approved plans on significant builds repeatedly scope-shifting or
-riding the `plan-rejected` re-plan edge. When it fires, follow the V2 AR-9 sketch
-(lens-scoped `plan:<lens>` stages → critique-only challengers → arbiter → the existing
-human gate). Its two riders (#1 tiering seam, #3 premises) **pre-landed 2026-07-02**;
-what remains is the plan wave itself plus the arbiter *declaring* its tier through the
-now-wired seam.
+**Standing**: **shipped 2026-07-03** (AR-9 program PR-3 + PR-4), with three recorded
+deviations from the V2 sketch: (a) sketch step 5's "arbiter → gate on Adopt;
+Hybrid/Revise-first ride `plan-rejected`" became **planner finalizes** — the arbiter is a
+pure adjudicator whose `decision-memo` artifact carries the verdict
+(`adopt|hybrid|revise_first`) INSIDE it, and the single `planner` stage finalizes `plan`
+on every verdict from the memo + competing plans + critiques (optional inputs), keeping
+the human-reject → re-plan machinery untouched (armed reject rerun set = `{planner}`,
+provenance-derived); (b) the gate presents the *finalized plan*, not the memo (the memo
+stays an inspectable composer artifact; plan-gate byte-identical); (c) the lens stages
+run a dedicated composer-private **`plan_drafter`** template, not the researcher (whose
+role text + `emit_signals` slice name `plan-ready` — a route-failing emission on a lens
+stage under strict emit checking), and the sketch's `plan-drafted:<lens>` advisory
+signals were dropped — all seven new stages publish only `scope-shift`; sequencing is
+artifact-driven (`plan:<lens>` → `critique:<lens>` → `decision-memo`). Arming = the
+triage `multi_plan` judgment ∧ `significant-build`, enforced in `FrontDoor.armed?/1`
+(armed runs seed `multi-plan` INSTEAD OF `plan-needed`; no config kill-switch). The
+arbiter stage declares `model: :capable, effort: :high` through #1's seam (PR-4). The
+"strictly single-plan" plan phase this entry described is history; the unarmed path is
+pinned byte-identical.
 
 ## 3. Hand `premises` to stage agents (V2 §4 refinement) — ✅ DONE 2026-07-02
 
@@ -96,7 +96,7 @@ the source (`WORKFLOW.md` ### The loop).
 
 **Standing**: opened in V2 (2026-07-02). The `code` path converges with a dirty working
 tree; shipping is a conversation-axis follow-up (`git_commit`, approval-gated) and the
-16-stage catalog has no ship stage. The source's tail (triage `#ship-requested` marker →
+catalog (16 stages when compiled; 23 since AR-9 shipped 2026-07-03) has no ship stage. The source's tail (triage `#ship-requested` marker →
 convergence-emitted `#ship-ready` → sticky ship-gate picking main vs branch+draft-PR →
 locked executor → `#shipped`) maps onto three existing parts; the one real design question
 is double-gating (resolved in the V2 entry toward the ship gate pre-minting the tool
@@ -110,23 +110,23 @@ independent of the borrow and **shipped 2026-07-02**; see the footnote.)
 pattern — the moment the conversational follow-up is boilerplate, the route-level tail
 pays for itself.
 
-## 5. `code-doctrine` slice + `docs/` READ_MAP (V1 AR-5 open borders)
+## 5. `code-doctrine` slice + `docs/` READ_MAP (V1 AR-5 open borders) — slice half ✅ DONE 2026-07-03
 
-**Standing**: AR-5's seam shipped and now carries 8 slices (`priv/defaults/doctrine/`:
-`base`, `artifacts`, `emit_signals`, `reviewer_min`, `reviewer_contract`,
-`fixer_contract`, `system_verify`, `confidence_tagging` — verified 2026-07-02), but the
-two open borders V1 named are still open: no `code-doctrine` slice (the source authors
-`doctrine/code-doctrine.md` once and injects it into every producer — coder, fixer,
-implementer), and "project docs" remains JIDO.md only (no `READ_MAP`-style per-template
-`docs/` slices).
+**Standing**: the **slice half shipped 2026-07-03**, riding AR-9's doctrine authoring
+pass exactly as its trigger predicted. `priv/defaults/doctrine/code_doctrine.md`
+(`## Code craft`) targets the three templates that WRITE application code — `coder`
+(implementer + test-author), `fixer`, `refactorer` — not literally "every producer"
+(sketch builders excluded as throwaway tracer-bullets, `system_executor` as
+machine-not-application changes, the docs/research/plan-wave templates as writing no
+code). The registry now carries **11 slices** (the 8 this entry counted plus
+`tie_break`, `challenger_contract`, `code_doctrine`). The READ_MAP half stays open:
+"project docs" remains JIDO.md only (no `READ_MAP`-style per-template `docs/` slices).
 
-**Now?** No — the producers work; a code-doctrine slice is content authoring, not
-mechanism, and the READ_MAP half is speculative until per-template project-doc needs show
-up.
+**Now?** (READ_MAP half) No — still speculative until per-template project-doc needs
+show up.
 
-**Trigger**: the next doctrine authoring pass (cheapest moment to write the slice), or
-recurring code-quality feedback to producer workers that a single-sourced slice would
-standardize — the same "duplicated guidance" smell that justified AR-5 originally.
+**Trigger** (READ_MAP half): per-template project-doc needs showing up — a worker class
+that repeatedly needs a curated doc subset JIDO.md doesn't carry.
 
 ## 6. Artifact handles — refs instead of inline stage inputs (V2 AR-11)
 
@@ -213,7 +213,8 @@ latency pain that a ~120s idle kill would roughly halve.
   simplicity lens overlaps the harness-level `/simplify` skill and the `quality` lens.
 - **Persona v1 non-goals** — per-project persona overrides and the shipped-but-unused
   `user-advocate` stay by design; trigger would be per-project voice tuning demand or a
-  `ux-prototyper`-analog stage joining the catalog. The `arbiter` persona rides #2.
+  `ux-prototyper`-analog stage joining the catalog. The `arbiter` persona **shipped
+  2026-07-03** with #2 (the 10th persona, keyed by the `plan-arbiter` stage).
 - **Verbatim-relay discipline** (V1 §4 "worth adopting as an orchestrator convention if
   AR-2 is built") — settled **by construction**, recorded here since V1 never dispositioned
   it: the composer relays artifacts mechanically (resolved from `ComposerArtifact` at the

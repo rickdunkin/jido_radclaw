@@ -149,6 +149,114 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     assert "scope-shift" in stage.publishes
   end
 
+  # AR-9 (PR-3/PR-4): the multi-plan judge-panel stages. All seven are lens-nil,
+  # artifact-driven (publishes ONLY the mandatory scope-shift — sequencing rides
+  # the plan:<lens>/critique:<lens>/decision-memo data edges, never advisory
+  # signals), and off-route unless the `multi-plan` arming topic is live.
+  describe "AR-9 multi-plan stages" do
+    test "the three lens planners are pinned (plan_drafter, artifact-driven)" do
+      for lens <- ~w(smallest-shippable risk-first reuse-first) do
+        stage = Catalog.get("planner-#{lens}")
+        assert %Stage{unit: {:worker_template, "plan_drafter"}} = stage
+        assert stage.routes == ["code", "system"]
+        assert stage.subscribes == ["multi-plan"]
+        assert stage.input == %{required: ["intent"], optional: []}
+        assert stage.output == ["plan:#{lens}"]
+        # No advisory `plan-drafted:<lens>` signal exists (deviation c) — only
+        # the mandatory scope-shift.
+        assert stage.publishes == ["scope-shift"]
+        assert stage.lens == nil
+        assert stage.lock == []
+        # The lens stages carry no tier — only the arbiter STAGE declares one.
+        assert stage.model == nil and stage.effort == nil
+      end
+    end
+
+    test "the three challengers are pinned (plan_challenger, one plan each)" do
+      for lens <- ~w(smallest-shippable risk-first reuse-first) do
+        stage = Catalog.get("challenger-#{lens}")
+        assert %Stage{unit: {:worker_template, "plan_challenger"}} = stage
+        assert stage.routes == ["code", "system"]
+        assert stage.subscribes == ["multi-plan"]
+        assert stage.input == %{required: ["plan:#{lens}"], optional: []}
+        assert stage.output == ["critique:#{lens}"]
+        # `critique:<lens>` must NOT ride the findings:/clean: families (the
+        # fixer subscribes bare `findings`) — and no approval signal exists.
+        assert stage.publishes == ["scope-shift"]
+        assert stage.lens == nil
+        assert stage.model == nil and stage.effort == nil
+      end
+    end
+
+    test "PR-4: the plan-arbiter is pinned — the tiering seam's first declarer" do
+      stage = Catalog.get("plan-arbiter")
+      assert %Stage{unit: {:worker_template, "plan_arbiter"}} = stage
+      # The designed first tier declaration (AR-9 PR-4).
+      assert stage.model == :capable
+      assert stage.effort == :high
+      assert stage.routes == ["code", "system"]
+      assert stage.subscribes == ["multi-plan"]
+
+      assert stage.input == %{
+               required: [
+                 "plan:smallest-shippable",
+                 "plan:risk-first",
+                 "plan:reuse-first",
+                 "critique:smallest-shippable",
+                 "critique:risk-first",
+                 "critique:reuse-first"
+               ],
+               optional: []
+             }
+
+      assert stage.output == ["decision-memo"]
+      assert stage.publishes == ["scope-shift"]
+      assert stage.lens == nil
+    end
+
+    test "the finalizer planner subscribes multi-plan LAST and optional-inputs memo + plans + critiques" do
+      stage = Catalog.get("planner")
+      # Unarmed `triggered_by` stays `plan-needed` (first match); armed-reject
+      # still matches `plan-rejected` before `multi-plan`.
+      assert stage.subscribes == ["plan-needed", "plan-rejected", "multi-plan"]
+      assert stage.input.required == ["intent"]
+
+      # The critiques ride along so "redraft per the critiques" is honest —
+      # ArtifactContext forwards only NAMED inputs.
+      assert stage.input.optional == [
+               "decision-memo",
+               "plan:smallest-shippable",
+               "plan:risk-first",
+               "plan:reuse-first",
+               "critique:smallest-shippable",
+               "critique:risk-first",
+               "critique:reuse-first"
+             ]
+
+      # The planner stays the SOLE `plan` producer (the human-reject rerun set).
+      assert stage.output == ["plan"]
+      assert "plan-ready" in stage.publishes
+    end
+
+    test "triage declares the multi-plan publish (the arming topic has a publisher)" do
+      assert "multi-plan" in Catalog.get("triage").publishes
+    end
+
+    test "the plan-gate is untouched by the multi-plan wave (deviation b)" do
+      stage = Catalog.get("plan-gate")
+      assert %Stage{unit: {:gate, "plan"}} = stage
+      assert stage.subscribes == ["plan-ready"]
+      assert stage.input == %{required: ["plan"], optional: []}
+
+      assert stage.publishes == [
+               "plan-approved",
+               "plan-rejected",
+               "plan-abandoned",
+               "scope-shift"
+             ]
+    end
+  end
+
   describe "to_map/from_map serialization (Phase 2d — durable catalog)" do
     test "round-trips the built-in catalog (incl. the :seed + :gate units)" do
       assert Catalog.from_map(Catalog.to_map(Catalog.all())) == Catalog.all()

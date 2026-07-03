@@ -19,6 +19,9 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     Coder,
     DocsWriter,
     Fixer,
+    PlanArbiter,
+    PlanChallenger,
+    PlanDrafter,
     Refactorer,
     Researcher,
     Reviewer,
@@ -449,5 +452,167 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
     test "its tool list includes RunCommand (it re-checks state on the machine)" do
       assert JidoClaw.Tools.RunCommand in tools_for(SystemVerifier)
     end
+  end
+
+  # AR-9: PlanDrafter is the lens-stage drafter — a LEAN producer schema
+  # (summary/status/confidence + optional signals + artifacts). Deliberately NO
+  # `overall` (a lens-nil stage whose typed output carried `overall` would trip
+  # `DefaultMapper`'s `{:reviewer_without_lens, _}` wave failure) and NO dynamic
+  # artifact keys: the `plan:<lens>` artifact resolves via the summary fallback,
+  # so the SUMMARY IS THE PLAN.
+  describe "PlanDrafter schema" do
+    test "parses a valid sample; status/confidence are atom enums (never persisted)" do
+      assert {:ok, parsed} = Output.parse(output_for(PlanDrafter), drafter_sample())
+
+      assert parsed.status == :completed
+      assert parsed.confidence == :high
+      assert parsed.summary =~ "smallest-shippable"
+      assert is_map(parsed.artifacts)
+    end
+
+    test "parses a sample carrying a signals string list (scope-shift self-report only)" do
+      sample = Map.put(drafter_sample(), "signals", ["scope-shift"])
+      assert {:ok, parsed} = Output.parse(output_for(PlanDrafter), sample)
+      assert parsed.signals == ["scope-shift"]
+    end
+
+    test "rejects a sample missing any required field" do
+      for field <- ~w(summary status confidence artifacts) do
+        assert {:error, _} =
+                 Output.parse(output_for(PlanDrafter), Map.delete(drafter_sample(), field)),
+               "expected a sample missing #{field} to be rejected"
+      end
+    end
+
+    test "drops a sneaked `overall` key (reviewer-path regression)" do
+      sample = Map.put(drafter_sample(), "overall", "approve")
+      assert {:ok, parsed} = Output.parse(output_for(PlanDrafter), sample)
+      refute Map.has_key?(parsed, :overall)
+      refute Map.has_key?(parsed, "overall")
+    end
+
+    test "drops an unknown dynamic artifact key (pins the summary-fallback reality)" do
+      # A model that tries to hand the artifact over as a dynamic `plan:<lens>`
+      # key loses it at the schema layer — `output_artifacts` then resolves the
+      # declared output via `result.result` (the summary), which the composer
+      # stubs and the e2e assertions rely on.
+      sample = Map.put(drafter_sample(), "plan:smallest-shippable", "SNEAKED PLAN")
+      assert {:ok, parsed} = Output.parse(output_for(PlanDrafter), sample)
+      refute Map.has_key?(parsed, "plan:smallest-shippable")
+      assert Enum.sort(Map.keys(parsed)) == [:artifacts, :confidence, :status, :summary]
+    end
+  end
+
+  # AR-9: PlanChallenger is critique-only — the three lists (blockers/concerns/
+  # strengths) plus the lean producer base. NO `overall` (same lens-nil mapper
+  # rule as the drafter); its `critique:<lens>` artifact is the summary fallback.
+  describe "PlanChallenger schema" do
+    test "parses a valid critique with the three required lists" do
+      assert {:ok, parsed} = Output.parse(output_for(PlanChallenger), challenger_sample())
+
+      assert parsed.status == :completed
+      assert parsed.blockers == ["drops the audit log on rollback"]
+      assert parsed.concerns == ["migration cost underestimated"]
+      assert parsed.strengths == ["reuses the tested pipeline"]
+      assert Enum.all?(parsed.blockers ++ parsed.concerns ++ parsed.strengths, &is_binary/1)
+    end
+
+    test "rejects a sample missing any required field" do
+      for field <- ~w(summary status confidence artifacts blockers concerns strengths) do
+        assert {:error, _} =
+                 Output.parse(output_for(PlanChallenger), Map.delete(challenger_sample(), field)),
+               "expected a sample missing #{field} to be rejected"
+      end
+    end
+
+    test "drops a sneaked `overall` key (reviewer-path regression)" do
+      sample = Map.put(challenger_sample(), "overall", "request_changes")
+      assert {:ok, parsed} = Output.parse(output_for(PlanChallenger), sample)
+      refute Map.has_key?(parsed, :overall)
+      refute Map.has_key?(parsed, "overall")
+    end
+  end
+
+  # AR-9: PlanArbiter writes the decision memo. `verdict` + `tie_break_rung` are
+  # STRING enums (persisted-adjacent — `Envelope.normalize/1` would store an atom
+  # enum as `":adopt"`); `status`/`confidence` stay atom enums (never persisted).
+  describe "PlanArbiter schema" do
+    test "parses a valid memo; verdict/tie_break_rung stay STRINGS, status stays an atom" do
+      assert {:ok, parsed} = Output.parse(output_for(PlanArbiter), arbiter_sample())
+
+      assert parsed.status == :completed
+      assert parsed.verdict == "adopt"
+      assert parsed.tie_break_rung == "correctness"
+      assert parsed.selection == "smallest-shippable"
+      assert parsed.revision_directive == "none"
+      [assessment] = parsed.assessments
+      assert assessment.lens == "smallest-shippable"
+      assert assessment.steelman =~ "least code"
+    end
+
+    test "rejects a sample missing any required field" do
+      for field <-
+            ~w(summary status confidence artifacts assessments tie_break_rung selection
+               verdict revision_directive) do
+        assert {:error, _} =
+                 Output.parse(output_for(PlanArbiter), Map.delete(arbiter_sample(), field)),
+               "expected a sample missing #{field} to be rejected"
+      end
+    end
+
+    test "rejects an out-of-enum verdict and an out-of-ladder tie_break_rung" do
+      assert {:error, _} =
+               Output.parse(output_for(PlanArbiter), %{arbiter_sample() | "verdict" => "maybe"})
+
+      assert {:error, _} =
+               Output.parse(
+                 output_for(PlanArbiter),
+                 %{arbiter_sample() | "tie_break_rung" => "vibes"}
+               )
+    end
+  end
+
+  # Valid string-keyed samples for the AR-9 plan-wave workers (the shape a real
+  # LLM run returns), shared by the parse/reject cases above.
+  defp drafter_sample do
+    %{
+      "summary" => "PLAN (smallest-shippable): ship the minimal slice first.",
+      "status" => "completed",
+      "confidence" => "high",
+      "artifacts" => %{}
+    }
+  end
+
+  defp challenger_sample do
+    %{
+      "summary" => "CRITIQUE: one real blocker, one concern, one strength.",
+      "status" => "completed",
+      "confidence" => "medium",
+      "blockers" => ["drops the audit log on rollback"],
+      "concerns" => ["migration cost underestimated"],
+      "strengths" => ["reuses the tested pipeline"],
+      "artifacts" => %{}
+    }
+  end
+
+  defp arbiter_sample do
+    %{
+      "summary" => "DECISION MEMO — verdict: adopt. Selected smallest-shippable (correctness).",
+      "status" => "completed",
+      "confidence" => "high",
+      "assessments" => [
+        %{
+          "lens" => "smallest-shippable",
+          "steelman" => "the least code that proves the value",
+          "strengths" => "smallest surface",
+          "blockers" => "none"
+        }
+      ],
+      "tie_break_rung" => "correctness",
+      "selection" => "smallest-shippable",
+      "verdict" => "adopt",
+      "revision_directive" => "none",
+      "artifacts" => %{}
+    }
   end
 end

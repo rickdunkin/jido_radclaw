@@ -1,6 +1,11 @@
 defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
   use ExUnit.Case, async: true
 
+  alias Jido.AI.Output, as: AIOutput
+  alias JidoClaw.Agent.Workers.PlanArbiter
+  alias JidoClaw.Agent.Workers.PlanChallenger
+  alias JidoClaw.Agent.Workers.PlanDrafter
+  alias JidoClaw.Reasoning.Output, as: ReasoningOutput
   alias JidoClaw.RouteComposer.Emit.DefaultMapper
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.Workflows.StepResult
@@ -298,6 +303,102 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
       assert artifacts["action_needed"] == "add the nil check before the deref"
       assert artifacts["findings"] == findings
     end
+  end
+
+  # AR-9 parser+mapper weld: the composer e2e stubs enter AFTER parsing (they
+  # stamp `:validated`, bypassing Zoi), so THIS is where the real parser and the
+  # mapper meet for the plan-wave shapes. Each case runs `AIOutput.parse/2` over
+  # the worker's REAL schema, builds the `%StepResult{}` the way `agent_runner`
+  # does (`result` = `ReasoningOutput.extract_result/1` = the summary), maps
+  # with the literal catalog stage meta, and pins that the declared artifact
+  # EQUALS the parsed summary (the summary-fallback path the stubs and the e2e
+  # assertions rely on) with ZERO signals emitted (artifact-driven sequencing).
+  describe "AR-9 plan-wave weld (real parse → StepResult → mapper)" do
+    test "drafter: plan:<lens> equals the parsed summary, no signals" do
+      {:ok, parsed} =
+        AIOutput.parse(worker_output(PlanDrafter), %{
+          "summary" => "PLAN B: de-risk the hard part first.",
+          "status" => "completed",
+          "confidence" => "high",
+          "artifacts" => %{}
+        })
+
+      meta = %{
+        name: "planner-risk-first",
+        emit: :default,
+        lens: nil,
+        output: ["plan:risk-first"],
+        publishes: ["scope-shift"]
+      }
+
+      assert {:ok, %StageEmission{signals: [], artifacts: artifacts}} =
+               DefaultMapper.map(step_result("planner-risk-first", parsed), meta)
+
+      assert artifacts == %{"plan:risk-first" => parsed.summary}
+    end
+
+    test "challenger: critique:<lens> equals the parsed summary, no signals" do
+      {:ok, parsed} =
+        AIOutput.parse(worker_output(PlanChallenger), %{
+          "summary" => "CRITIQUE: the rollback story is a real blocker.",
+          "status" => "completed",
+          "confidence" => "medium",
+          "blockers" => ["rollback loses the audit log"],
+          "concerns" => [],
+          "strengths" => ["small surface"],
+          "artifacts" => %{}
+        })
+
+      meta = %{
+        name: "challenger-risk-first",
+        emit: :default,
+        lens: nil,
+        output: ["critique:risk-first"],
+        publishes: ["scope-shift"]
+      }
+
+      assert {:ok, %StageEmission{signals: [], artifacts: artifacts}} =
+               DefaultMapper.map(step_result("challenger-risk-first", parsed), meta)
+
+      assert artifacts == %{"critique:risk-first" => parsed.summary}
+    end
+
+    test "arbiter: decision-memo equals the parsed summary, no signals (verdict stays inside)" do
+      {:ok, parsed} =
+        AIOutput.parse(worker_output(PlanArbiter), %{
+          "summary" => "DECISION MEMO — verdict: adopt. Selected risk-first (grounding).",
+          "status" => "completed",
+          "confidence" => "high",
+          "assessments" => [],
+          "tie_break_rung" => "grounding",
+          "selection" => "risk-first",
+          "verdict" => "adopt",
+          "revision_directive" => "none",
+          "artifacts" => %{}
+        })
+
+      meta = %{
+        name: "plan-arbiter",
+        emit: :default,
+        lens: nil,
+        output: ["decision-memo"],
+        publishes: ["scope-shift"]
+      }
+
+      assert {:ok, %StageEmission{signals: [], artifacts: artifacts}} =
+               DefaultMapper.map(step_result("plan-arbiter", parsed), meta)
+
+      # The memo (summary) IS the artifact; the typed verdict never becomes a
+      # signal or a routing decision (decision 1 — planner finalizes).
+      assert artifacts == %{"decision-memo" => parsed.summary}
+      assert parsed.verdict == "adopt"
+    end
+  end
+
+  defp worker_output(module), do: Keyword.fetch!(module.strategy_opts(), :output)
+
+  defp step_result(name, parsed) do
+    %StepResult{name: name, result: ReasoningOutput.extract_result(parsed), typed_output: parsed}
   end
 
   test "atom-keyed and string-keyed typed_output behave identically" do

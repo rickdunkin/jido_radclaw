@@ -186,6 +186,40 @@ defmodule JidoClaw.Agent.Templates do
       model: :fast,
       forward_context: :none,
       composer_private: true
+    },
+    # AR-9: the three plan-wave workers (the multi-plan judge panel). Like the
+    # AR-8c system workers they carry the explicit `composer_private: true` flag
+    # with `sandbox: :none` (plain read-only tools; privacy rides the flag, not a
+    # sandbox tier) — instantiable ONLY through the composer's wave-builder,
+    # never by spawn/handoff, and external-MCP-tool-free. `forward_context:
+    # :none` keeps their scope tight. The TIER is a STAGE declaration (PR-4: the
+    # `plan-arbiter` stage runs `model: :capable, effort: :high`), so all three
+    # TEMPLATES stay `model: :fast`.
+    "plan_drafter" => %{
+      module: JidoClaw.Agent.Workers.PlanDrafter,
+      description:
+        "Drafts ONE competing implementation plan under a stage-named bias (read-only)",
+      model: :fast,
+      forward_context: :none,
+      sandbox: :none,
+      composer_private: true
+    },
+    "plan_challenger" => %{
+      module: JidoClaw.Agent.Workers.PlanChallenger,
+      description:
+        "Critiques ONE competing plan — blockers/concerns/strengths for the arbiter (read-only)",
+      model: :fast,
+      forward_context: :none,
+      sandbox: :none,
+      composer_private: true
+    },
+    "plan_arbiter" => %{
+      module: JidoClaw.Agent.Workers.PlanArbiter,
+      description: "Adjudicates the competing plans + critiques into a decision memo (read-only)",
+      model: :fast,
+      forward_context: :none,
+      sandbox: :none,
+      composer_private: true
     }
   }
 

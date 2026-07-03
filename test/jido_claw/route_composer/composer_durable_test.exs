@@ -24,6 +24,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   alias JidoClaw.Orchestration.WorkflowRecovery
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.TestFixtures
@@ -801,6 +802,47 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert inv.payload["closed_wave_index"] == 1
 
       # Re-approve the re-fired gate → converges.
+      assert {:ok, _} =
+               Cases.decide(case_id2, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+    end
+
+    test "AR-9 armed reject: the rerun set is exactly [planner] — the judge panel stays ran",
+         ctx do
+      # The armed pipeline on the REAL catalog parks at the plan-gate after
+      # [lens×3] → [challengers×3] → [plan-arbiter] → [planner]. A human reject
+      # re-plans via the provenance-derived rerun set: ONLY the planner produced
+      # the gated `plan` (lens planners produce `plan:<lens>`, the arbiter
+      # `decision-memo`), so the judge panel is NOT re-run.
+      Application.put_env(
+        :jido_claw,
+        :agent_templates_override,
+        TestFixtures.armed_template_override(StubWorker)
+      )
+
+      {parent, case_id} =
+        park_gate_on(
+          ctx,
+          Catalog.all(),
+          TestFixtures.armed_stub_outputs(),
+          live: TestFixtures.armed_seed_live(),
+          artifacts: TestFixtures.armed_seed_artifacts(),
+          ran: ["triage"],
+          max_waves: 15
+        )
+
+      assert {:ok, _} = Cases.decide(case_id, :reject, %{}, tenant: ctx.tenant, actor: ctx.actor)
+
+      assert_receive {:gate_requested, _child2, %{agent_case_id: case_id2}}, 15_000
+      await_wave_paused_count(parent.id, ctx, 2)
+
+      inv = stages_invalidated_event(parent.id, ctx)
+      assert inv.payload["stages"] == ["planner"]
+
+      # Re-approve the re-fired gate → the run converges (implementer + the
+      # three live-lens reviewers), with the judge panel having run exactly once.
       assert {:ok, _} =
                Cases.decide(case_id2, :approve, %{}, tenant: ctx.tenant, actor: ctx.actor)
 

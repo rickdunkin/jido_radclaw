@@ -9,7 +9,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
   `request-received` (signal) and `request` (artifact). The data graph is a DAG:
   `triage → planner → {plan-gate, test-author, implementer}`, `implementer →
   {reviewers, fixer}`, and `fixer → reviewers` (the reviewers optional-input the
-  `fix`). The AR-4 review → fix → re-review loop is **dynamic**: the composer
+  `fix`). On an **armed** run (AR-9: the front door seeds `multi-plan` instead
+  of `plan-needed`) the planner is preceded by the judge panel — `[3 lens
+  planners] → [3 challengers] → [plan-arbiter] → planner` — sequenced purely by
+  the `plan:<lens>` / `critique:<lens>` / `decision-memo` artifacts (no advisory
+  signals); the planner remains the sole `plan` producer and the plan-gate is
+  untouched. The AR-4 review → fix → re-review loop is **dynamic**: the composer
   drops the touched reviewers from `ran` (`stages_invalidated`) and feeds the
   fixer the open findings OUT-OF-BAND (the producerless `review-feedback` /
   `review-action` inputs) — so the loop runs WITHOUT a data cycle. Declaring
@@ -49,6 +54,13 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "code",
         "system",
         "plan-needed",
+        # AR-9: the multi-plan arming topic. The front door seeds it INSTEAD OF
+        # `plan-needed` when the triage verdict arms (`multi_plan?` ∧
+        # `significant-build` — enforced in `FrontDoor.armed?/1`, never mapped
+        # from the signals list). Declared here so the seven judge-panel stages'
+        # subscriptions satisfy `CatalogValidator` invariant 3; NOT in the front
+        # door's `@signal_topics`, so `mapped_signals/1` never auto-injects it.
+        "multi-plan",
         # AR-8b-2 F2 (D4-B): the two sketch-builder discriminators. The front door
         # seeds EXACTLY ONE (the launch decision, §2.4), making `sketch-build` and
         # `sketch-build-exec` mutually exclusive by construction. Declared here so
@@ -75,21 +87,161 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "scope-shift"
       ]
     },
+    # AR-9: the planner stays the SOLE producer of `plan` in BOTH modes (armed
+    # human-reject rerun set = {planner} only — `gate_input_producers` is
+    # provenance-derived). Armed, it subscribes `multi-plan` (appended LAST so
+    # the unarmed `triggered_by` stays `plan-needed` and armed-reject still
+    # matches `plan-rejected` first) and optional-inputs the decision memo, the
+    # competing plans, AND the critiques (so "redraft per the critiques" is
+    # honest — `ArtifactContext` forwards only named inputs). Absent optional
+    # producers create no edge, so the unarmed route is byte-identical.
     "planner" => %Stage{
       name: "planner",
       unit: {:worker_template, "researcher"},
-      task: "Draft an implementation plan from the confirmed intent; emit plan-ready.",
+      task:
+        "Draft an implementation plan from the confirmed intent; emit plan-ready. With a " <>
+          "decision-memo present, reproduce the adopted plan faithfully, graft per a hybrid " <>
+          "memo, or redraft per the critiques on revise_first.",
       routes: ["code", "system"],
       # `plan-rejected` is the Phase-4e re-plan opt-in: a rejected plan re-fires
       # the planner (its publisher is `plan-gate`'s extended `publishes`).
-      subscribes: ["plan-needed", "plan-rejected"],
-      input: %{required: ["intent"], optional: []},
+      subscribes: ["plan-needed", "plan-rejected", "multi-plan"],
+      input: %{
+        required: ["intent"],
+        optional: [
+          "decision-memo",
+          "plan:smallest-shippable",
+          "plan:risk-first",
+          "plan:reuse-first",
+          "critique:smallest-shippable",
+          "critique:risk-first",
+          "critique:reuse-first"
+        ]
+      },
       output: ["plan"],
       # `plan-ready` is loop-GUARANTEED: `RouteComposer.enforce_completion_signals/2`
       # injects it into the planner's emission even if the model omits it (a no-lens
-      # producer whose omission would SILENTLY `:converge`). The `task` still nudges
-      # the emit (belt-and-suspenders); `scope-shift` stays self-reported.
+      # producer whose omission would SILENTLY `:converge`) — at Kahn level 4 of an
+      # armed route exactly as at level 1 unarmed. The `task` still nudges the emit
+      # (belt-and-suspenders); `scope-shift` stays self-reported.
       publishes: ["plan-ready", "scope-shift"]
+    },
+    # =========================================================================
+    # AR-9 (PR-3): the multi-plan judge panel — [lens×3] → [challengers×3] →
+    # [plan-arbiter] → [planner]. All seven stages are lens-nil (invisible to
+    # `lenses_clean?` and validator invariant 8) and publish ONLY the mandatory
+    # `scope-shift`: sequencing is ARTIFACT-driven (`plan:<lens>` →
+    # `critique:<lens>` → `decision-memo` → the planner's optional inputs) —
+    # no advisory signals exist (deviation c: `plan-drafted:<lens>` was
+    # dropped). The `critique:<lens>` family deliberately avoids `findings:`
+    # (the fixer subscribes bare `findings`). The arbiter is a pure adjudicator
+    # (decision 1): its memo carries the verdict INSIDE the artifact — no
+    # verdict-driven routing; the planner finalizes on all three verdicts.
+    # =========================================================================
+    "planner-smallest-shippable" => %Stage{
+      name: "planner-smallest-shippable",
+      unit: {:worker_template, "plan_drafter"},
+      task:
+        "Draft the smallest-shippable implementation plan for the confirmed intent — the " <>
+          "least code that ships real value. Yours is one of several competing plans; an " <>
+          "arbiter selects.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["intent"], optional: []},
+      output: ["plan:smallest-shippable"],
+      publishes: ["scope-shift"]
+    },
+    "planner-risk-first" => %Stage{
+      name: "planner-risk-first",
+      unit: {:worker_template, "plan_drafter"},
+      task:
+        "Draft the risk-first implementation plan for the confirmed intent — attack the " <>
+          "hardest unknowns before the easy work. Yours is one of several competing plans; " <>
+          "an arbiter selects.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["intent"], optional: []},
+      output: ["plan:risk-first"],
+      publishes: ["scope-shift"]
+    },
+    "planner-reuse-first" => %Stage{
+      name: "planner-reuse-first",
+      unit: {:worker_template, "plan_drafter"},
+      task:
+        "Draft the reuse-first implementation plan for the confirmed intent — lean on " <>
+          "existing modules and patterns over new code. Yours is one of several competing " <>
+          "plans; an arbiter selects.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["intent"], optional: []},
+      output: ["plan:reuse-first"],
+      publishes: ["scope-shift"]
+    },
+    "challenger-smallest-shippable" => %Stage{
+      name: "challenger-smallest-shippable",
+      unit: {:worker_template, "plan_challenger"},
+      task:
+        "Critique ONLY the smallest-shippable plan — surface blockers, concerns, and " <>
+          "strengths for the arbiter; never approve or select.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["plan:smallest-shippable"], optional: []},
+      output: ["critique:smallest-shippable"],
+      publishes: ["scope-shift"]
+    },
+    "challenger-risk-first" => %Stage{
+      name: "challenger-risk-first",
+      unit: {:worker_template, "plan_challenger"},
+      task:
+        "Critique ONLY the risk-first plan — surface blockers, concerns, and strengths " <>
+          "for the arbiter; never approve or select.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["plan:risk-first"], optional: []},
+      output: ["critique:risk-first"],
+      publishes: ["scope-shift"]
+    },
+    "challenger-reuse-first" => %Stage{
+      name: "challenger-reuse-first",
+      unit: {:worker_template, "plan_challenger"},
+      task:
+        "Critique ONLY the reuse-first plan — surface blockers, concerns, and strengths " <>
+          "for the arbiter; never approve or select.",
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{required: ["plan:reuse-first"], optional: []},
+      output: ["critique:reuse-first"],
+      publishes: ["scope-shift"]
+    },
+    # PR-4: the tiering seam's designed FIRST DECLARER — the adjudication is the
+    # one stage worth a capable model at high effort (`WaveBuilder` carries the
+    # tier into the step options; the composed `RequestTransformer` applies it
+    # per LLM turn). Everything else in the panel stays on the session default.
+    "plan-arbiter" => %Stage{
+      name: "plan-arbiter",
+      unit: {:worker_template, "plan_arbiter"},
+      task:
+        "Select or graft the best plan across the three plans and their critiques — steelman " <>
+          "each; tie-break correctness > grounding > simpler-first > validation-rollback > " <>
+          "cost; write a decision memo naming one verdict (adopt|hybrid|revise_first), the " <>
+          "selection, and the deciding rung.",
+      model: :capable,
+      effort: :high,
+      routes: ["code", "system"],
+      subscribes: ["multi-plan"],
+      input: %{
+        required: [
+          "plan:smallest-shippable",
+          "plan:risk-first",
+          "plan:reuse-first",
+          "critique:smallest-shippable",
+          "critique:risk-first",
+          "critique:reuse-first"
+        ],
+        optional: []
+      },
+      output: ["decision-memo"],
+      publishes: ["scope-shift"]
     },
     # AR-8c (decision 1): the plan-gate is dropped from the SYSTEM path — system
     # ops run through the always-on `safety-gate` instead, so `plan-approved` is

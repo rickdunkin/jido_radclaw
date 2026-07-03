@@ -133,12 +133,13 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_map(Templates.list())
     end
 
-    test "should contain all 13 templates" do
+    test "should contain all 16 templates" do
       # 7 general-purpose workers + the AR-4 `fixer` + the AR-8b composer-private
       # `sketch_build` + the AR-8b-2 composer-private `sketch_reviewer` + the
       # AR-8b-2 F2 composer-private `sketch_build_exec` + the AR-8c composer-private
-      # `system_executor` + `system_verifier`.
-      assert map_size(Templates.list()) == 13
+      # `system_executor` + `system_verifier` + the AR-9 composer-private
+      # `plan_drafter` + `plan_challenger` + `plan_arbiter`.
+      assert map_size(Templates.list()) == 16
     end
 
     test "should have all expected template names as keys" do
@@ -164,8 +165,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert is_list(Templates.names())
     end
 
-    test "should return exactly 13 names" do
-      assert Enum.count(Templates.names()) == 13
+    test "should return exactly 16 names" do
+      assert Enum.count(Templates.names()) == 16
     end
 
     test "should include all 7 expected template names" do
@@ -279,6 +280,35 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
+  # Every composer-private template shares one set of structural invariants,
+  # asserted table-driven over the registry itself — so the NEXT private template
+  # is covered by adding it to the expected-name list, never by re-growing a
+  # bespoke exists?/external_tools? block. Per-template FIELD pins (module,
+  # forward_context, sandbox, composer_private) stay in their own describes below.
+  describe "composer-private templates — shared invariants (table-driven)" do
+    test "every composer-private template resolves, is external-tool-free, and stays out of the public set" do
+      private =
+        for {name, _template} <- Templates.list(), Templates.composer_private?(name), do: name
+
+      # 3 sketch (AR-8b/AR-8b-2) + 2 system (AR-8c) + 3 plan-wave (AR-9) templates.
+      assert Enum.sort(private) ==
+               ~w(plan_arbiter plan_challenger plan_drafter sketch_build sketch_build_exec
+                  sketch_reviewer system_executor system_verifier)
+
+      for name <- private do
+        assert {:ok, template} = Templates.get(name)
+        assert is_atom(template.module), "#{name} must resolve to a worker module"
+        assert Templates.composer_private_template?(template)
+        # External MCP tools are withheld from every private template.
+        refute Templates.external_tools?(name)
+        # Deliberately NOT in @valid_names (the public forward_context: :public loop).
+        refute name in @valid_names
+        assert Templates.exists?(name)
+        assert name in Templates.names()
+      end
+    end
+  end
+
   # The composer-private sketch templates are deliberately NOT in @valid_names
   # (the 7 public workers looped above asserting forward_context: :public): both
   # are forward_context: :none + sandbox: :prototype, so they are pinned here.
@@ -313,15 +343,6 @@ defmodule JidoClaw.Agent.TemplatesTest do
                 sandbox: :docker
               }} = Templates.get("sketch_build_exec")
     end
-
-    test "exists?/1 + names/0 include all three sketch templates" do
-      assert Templates.exists?("sketch_build")
-      assert Templates.exists?("sketch_reviewer")
-      assert Templates.exists?("sketch_build_exec")
-      assert "sketch_build" in Templates.names()
-      assert "sketch_reviewer" in Templates.names()
-      assert "sketch_build_exec" in Templates.names()
-    end
   end
 
   # AR-8c: the system-path workers. Unlike the sketch templates, they are
@@ -349,27 +370,53 @@ defmodule JidoClaw.Agent.TemplatesTest do
                 composer_private: true
               }} = Templates.get("system_verifier")
     end
+  end
 
-    test "exists?/1 + names/0 include both system templates" do
-      assert Templates.exists?("system_executor")
-      assert Templates.exists?("system_verifier")
-      assert "system_executor" in Templates.names()
-      assert "system_verifier" in Templates.names()
+  # AR-9: the plan-wave workers (multi-plan judge panel). Like the AR-8c system
+  # workers they are `sandbox: :none` with the explicit `composer_private: true`
+  # flag (they run plain read-only tools; privacy rides the flag, not a sandbox
+  # tier) and `forward_context: :none`. The TIER lives on the `plan-arbiter`
+  # STAGE (`model: :capable, effort: :high` — PR-4), never on the template.
+  describe "AR-9 composer-private plan-wave templates" do
+    test "plan_drafter is composer_private + forward_context: :none + sandbox: :none" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.PlanDrafter,
+                forward_context: :none,
+                sandbox: :none,
+                composer_private: true,
+                model: :fast
+              }} = Templates.get("plan_drafter")
+    end
+
+    test "plan_challenger is composer_private + forward_context: :none + sandbox: :none" do
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.PlanChallenger,
+                forward_context: :none,
+                sandbox: :none,
+                composer_private: true,
+                model: :fast
+              }} = Templates.get("plan_challenger")
+    end
+
+    test "plan_arbiter is composer_private + forward_context: :none + sandbox: :none + model: :fast" do
+      # `model: :fast` on the TEMPLATE is deliberate — the arbiter's `:capable`
+      # tier is a STAGE declaration applied per turn by the request transformer.
+      assert {:ok,
+              %{
+                module: JidoClaw.Agent.Workers.PlanArbiter,
+                forward_context: :none,
+                sandbox: :none,
+                composer_private: true,
+                model: :fast
+              }} = Templates.get("plan_arbiter")
     end
   end
 
   describe "composer_private?/1 (AR-8c central predicate)" do
-    test "is true for the sandboxed sketch templates (sandbox arm)" do
-      assert Templates.composer_private?("sketch_build")
-      assert Templates.composer_private?("sketch_reviewer")
-      assert Templates.composer_private?("sketch_build_exec")
-    end
-
-    test "is true for the system templates (explicit flag arm, sandbox: :none)" do
-      assert Templates.composer_private?("system_executor")
-      assert Templates.composer_private?("system_verifier")
-    end
-
+    # The per-private-template positive cases live in the table-driven shared
+    # invariants above; this describe keeps the negative/edge surface.
     test "is false for the public workers" do
       for name <- @valid_names do
         refute Templates.composer_private?(name)

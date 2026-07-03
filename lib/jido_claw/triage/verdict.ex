@@ -3,7 +3,9 @@ defmodule JidoClaw.Triage.Verdict do
   The AR-8 triage result (AR-2 §8/§14): exactly one *path* the front door routes
   on — `talk` (answer inline) / `sketch` (throwaway) / `code` (a reviewed change)
   / `system` (a machine change) — plus advisory early signals, an `est_size`, the
-  distilled `intent`, and `intent_confirmed?`.
+  distilled `intent`, `intent_confirmed?`, and the AR-9 `multi_plan?` arming
+  judgment (armed only in conjunction with `:significant_build`, enforced in
+  `JidoClaw.FrontDoor`).
 
   This struct is the durable contract between the LLM classifier and
   `JidoClaw.FrontDoor`. It carries **no `@enforce_keys`** on purpose: the
@@ -27,6 +29,7 @@ defmodule JidoClaw.Triage.Verdict do
           est_size: atom() | nil,
           intent: String.t() | nil,
           intent_confirmed?: boolean(),
+          multi_plan?: boolean(),
           reasons: %{optional(String.t()) => String.t()}
         }
 
@@ -35,6 +38,7 @@ defmodule JidoClaw.Triage.Verdict do
             est_size: nil,
             intent: nil,
             intent_confirmed?: false,
+            multi_plan?: false,
             reasons: %{}
 
   # Fixed whitelists — the only place a model-generated string becomes an atom.
@@ -91,6 +95,11 @@ defmodule JidoClaw.Triage.Verdict do
            est_size: norm_size(get(out, :est_size)),
            intent: norm_intent(get(out, :intent)),
            intent_confirmed?: get(out, :intent_confirmed) == true,
+           # AR-9: the multi-plan arming judgment (only a literal true arms —
+           # the same coercion as intent_confirmed). The front door additionally
+           # requires :significant_build in signals (the conjunction lives in
+           # `FrontDoor.armed?/1`, never here).
+           multi_plan?: get(out, :multi_plan) == true,
            reasons: norm_reasons(get(out, :reasons))
          }}
     end

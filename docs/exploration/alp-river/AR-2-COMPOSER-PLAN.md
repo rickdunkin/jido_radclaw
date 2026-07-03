@@ -1035,6 +1035,8 @@ unbounded-and-free-form on the agent's. (And, per §1a, this is also why we don'
   composed `Compactor.RequestTransformer`, which returns `model:` / `llm_opts:
   [reasoning_effort: e]` overrides per LLM turn. The §13 reuse-map row's "spawn-time
   `model`/`effort` override" is superseded the same way. No catalog stage declares a tier yet.]*
+  *[2026-07-03: the `plan-arbiter` stage (AR-9 PR-4) now declares `model: :capable,
+  effort: :high` — the seam's first declarer.]*
 
 ## §13 — Reuse map
 

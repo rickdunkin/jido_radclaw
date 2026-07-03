@@ -126,7 +126,7 @@ This entry **deprecates hermes T1-2** as the adoption sketch — Jidoka's Elixir
 
 ### T1-3. Structured final output with repair-retry (`Jidoka.Output`)
 
-**Status (2026-05-26)**: ADOPTED — all worker templates carry structured-output contracts. No `JidoClaw.Agent.Output` behaviour was ported (the original adoption sketch called for one); instead, jido_radclaw consumes upstream `Jido.AI.Output` directly via `use Jido.AI.Agent, output: %{schema, retries, on_validation_error}`. Verifier and Reviewer landed in `46e1f87`; Coder, Researcher, TestRunner, Refactorer, and DocsWriter completed the rollout. The family has since grown to 13 templates (2026-06-23..26: AR-4's Fixer, AR-8b's SketchBuild/SketchBuildExec/SketchReviewer, AR-8c's SystemExecutor/SystemVerifier), each shipping with a contract from birth; the recurring shapes are single-sourced in `JidoClaw.Agent.Workers.OutputSchema` (AR-5).
+**Status (2026-05-26)**: ADOPTED — all worker templates carry structured-output contracts. No `JidoClaw.Agent.Output` behaviour was ported (the original adoption sketch called for one); instead, jido_radclaw consumes upstream `Jido.AI.Output` directly via `use Jido.AI.Agent, output: %{schema, retries, on_validation_error}`. Verifier and Reviewer landed in `46e1f87`; Coder, Researcher, TestRunner, Refactorer, and DocsWriter completed the rollout. The family has since grown to 13 templates (2026-06-23..26: AR-4's Fixer, AR-8b's SketchBuild/SketchBuildExec/SketchReviewer, AR-8c's SystemExecutor/SystemVerifier) — 16 as of 2026-07-03 (AR-9's PlanDrafter/PlanChallenger/PlanArbiter) — each shipping with a contract from birth; the recurring shapes are single-sourced in `JidoClaw.Agent.Workers.OutputSchema` (AR-5).
 
 Key facts:
 
@@ -405,7 +405,7 @@ The Tier 1 four and the first Tier 2 borrows cluster into a dependency graph. Un
 T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView/projections ✓
                │                    ├──> T2-4 Inspection ✓ (:memory now sourced)
                │                    └──> T2-1 Handoff ✓ (emits trace events)
-               ├──> T1-2 Compaction ✓ (per-agent keying + retries; all 13 workers + sub-agents compact)
+               ├──> T1-2 Compaction ✓ (per-agent keying + retries; all workers — 16 as of 2026-07-03 — + sub-agents compact)
                └──> T1-3 Output ✓ (emits trace events)
 ```
 
@@ -413,8 +413,8 @@ T1-4 Error ✓ ──┬──> T1-1 Trace ✓ ──┬──> T2-2 AgentView/p
 
 1. **T1-4 Error** — ADOPTED. Splode root with four classes (`invalid`, `execution`, `config`, `internal`), merging with `Ash.Error`.
 2. **T1-1 Trace** — ADOPTED. `JidoClaw.Trace` + `Trace.Collector` + `TraceRun`/`TraceEvent` Ash resources for durable replay.
-3. **T1-2 Compaction** — ADOPTED 2026-05-30. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; per-key Postgres snapshots in `Session.metadata["compactions"][key]`. Per-`{agent_id, context_ref}` keying + summarizer retries closed; all 13 worker templates + handoff/spawned sub-agents compact on their own slices (durable transcripts completed via `SubagentTranscript`).
-4. **T1-3 Output** — ADOPTED 2026-05-26. All 13 worker templates carry structured-output contracts via upstream `Jido.AI.Output` (recurring shapes single-sourced in `Workers.OutputSchema`).
+3. **T1-2 Compaction** — ADOPTED 2026-05-30. `JidoClaw.Reasoning.Compactor` + `RequestTransformer`; per-key Postgres snapshots in `Session.metadata["compactions"][key]`. Per-`{agent_id, context_ref}` keying + summarizer retries closed; all 13 worker templates (16 as of 2026-07-03) + handoff/spawned sub-agents compact on their own slices (durable transcripts completed via `SubagentTranscript`).
+4. **T1-3 Output** — ADOPTED 2026-05-26. All 13 worker templates (16 as of 2026-07-03) carry structured-output contracts via upstream `Jido.AI.Output` (recurring shapes single-sourced in `Workers.OutputSchema`).
 
 **Tier 2 sequencing** (T1-1/T1-2/T1-3/T1-4 ADOPTED; T2-1 ADOPTED 2026-05-27; T2-3 + T2-4 ADOPTED 2026-05-29; T2-2 ADOPTED 2026-05-31; remaining items unblocked):
 

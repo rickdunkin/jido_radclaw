@@ -78,6 +78,15 @@ defmodule JidoClaw.Triage.Prompt do
 
   A rough sense of the change's size for a `code`/`system` turn. Omit for `talk`.
 
+  ## `multi_plan` (optional, default false)
+
+  Set `multi_plan` to true ONLY on a significant build whose DESIGN SPACE is
+  wide: several materially different architectural approaches are plausible, and
+  picking one up front would be a guess. Stylistic variants of one approach do
+  not count — a wide design space is the positive signal, never the default.
+  When true, the pipeline drafts competing plans in parallel and adjudicates
+  between them before implementing.
+
   ## `reasons` (optional)
 
   A small map of short string→string notes explaining the call (e.g.

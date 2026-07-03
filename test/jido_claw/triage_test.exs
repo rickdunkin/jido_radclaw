@@ -11,6 +11,7 @@ defmodule JidoClaw.TriageTest do
 
   alias JidoClaw.Triage
   alias JidoClaw.Triage.LLM
+  alias JidoClaw.Triage.Schema
   alias JidoClaw.Triage.Verdict
 
   # --- Custom impls exercising every façade fail-safe branch ---
@@ -103,6 +104,29 @@ defmodule JidoClaw.TriageTest do
 
       assert verdict.path == :sketch
       assert verdict.signals == [:must_execute]
+    end
+
+    test "AR-9: multi_plan defaults false and coerces only a literal true (mirrors intent_confirmed)" do
+      assert {:ok, %Verdict{multi_plan?: false}} = Verdict.from_map(%{"path" => "code"})
+
+      assert {:ok, %Verdict{multi_plan?: true}} =
+               Verdict.from_map(%{"path" => "code", "multi_plan" => true})
+
+      # Atom-safe / falsy coercion: any non-literal-true value stays false.
+      for bad <- ["true", 1, nil, false, "yes"] do
+        assert {:ok, %Verdict{multi_plan?: false}} =
+                 Verdict.from_map(%{"path" => "code", "multi_plan" => bad})
+      end
+    end
+
+    test "AR-9: the triage schema accepts the optional multi_plan boolean" do
+      schema = Schema.zoi()
+
+      # Optional: a verdict omitting it still validates; present it must be a bool.
+      assert {:ok, _} = Zoi.parse(schema, %{"path" => "code"})
+      assert {:ok, parsed} = Zoi.parse(schema, %{"path" => "code", "multi_plan" => true})
+      assert parsed["multi_plan"] == true
+      assert {:error, _} = Zoi.parse(schema, %{"path" => "code", "multi_plan" => "yes"})
     end
 
     test "a malformed or absent path is {:error, :invalid_verdict} (R6-P2)" do

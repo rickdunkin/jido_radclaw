@@ -18,7 +18,10 @@ defmodule JidoClaw.DoctrineTest do
             :system_verify,
             :fixer_contract,
             :emit_signals,
-            :confidence_tagging
+            :confidence_tagging,
+            :tie_break,
+            :challenger_contract,
+            :code_doctrine
           ] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
@@ -33,12 +36,15 @@ defmodule JidoClaw.DoctrineTest do
       assert Enum.sort(Doctrine.list()) == [
                :artifacts,
                :base,
+               :challenger_contract,
+               :code_doctrine,
                :confidence_tagging,
                :emit_signals,
                :fixer_contract,
                :reviewer_contract,
                :reviewer_min,
-               :system_verify
+               :system_verify,
+               :tie_break
              ]
     end
   end
@@ -154,6 +160,54 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Confidence tagging"
       assert doctrine =~ "Source your web claims"
       refute doctrine =~ "Review discipline"
+    end
+
+    test "the AR-9 plan_arbiter is a producing adjudicator (base + artifacts + tie-break)" do
+      doctrine = Doctrine.for_template("plan_arbiter")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Plan arbitration"
+      assert doctrine =~ "Runtime artifacts"
+      assert doctrine =~ "Confidence tagging"
+      # A selector over plans, not a code judge — never the reviewer discipline.
+      refute doctrine =~ "Review discipline"
+    end
+
+    test "the AR-9 plan_challenger carries the critique-only contract" do
+      doctrine = Doctrine.for_template("plan_challenger")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Plan critique"
+      assert doctrine =~ "Runtime artifacts"
+      assert doctrine =~ "Confidence tagging"
+      # Its critique lists are NOT the reviewer_verdict shape — never that contract.
+      refute doctrine =~ "Reviewer Contract"
+    end
+
+    test "the AR-9 plan_drafter NEVER carries the emit-signals slice (deviation c)" do
+      doctrine = Doctrine.for_template("plan_drafter")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Runtime artifacts"
+      assert doctrine =~ "Confidence tagging"
+      # The `emit_signals` slice instructs emitting `plan-ready` when a plan is
+      # drafted — undeclared on a lens stage under strict emit checking, so the
+      # drafter's prompt surface must never carry that anchor.
+      refute doctrine =~ "Emitted signals"
+      refute doctrine =~ "plan-ready"
+      refute doctrine =~ "Review discipline"
+    end
+
+    test "item 4: coder/fixer/refactorer carry the code-doctrine slice; judges and non-code producers do not" do
+      for template <- ~w(coder fixer refactorer) do
+        assert Doctrine.for_template(template) =~ "Code craft",
+               "#{template} should carry the code_doctrine slice"
+      end
+
+      for template <- ~w(reviewer researcher) do
+        refute Doctrine.for_template(template) =~ "Code craft",
+               "#{template} should NOT carry the code_doctrine slice"
+      end
     end
 
     test "\"main\" maps to no doctrine (it uses Prompt — doctrine never double-applies)" do

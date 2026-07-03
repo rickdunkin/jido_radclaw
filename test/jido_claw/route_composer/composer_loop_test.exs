@@ -16,6 +16,7 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   import ExUnit.CaptureLog
 
   alias JidoClaw.Orchestration.Cases
+  alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowEvent
@@ -416,6 +417,199 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     assert :wave_resumed in ks
     assert :route_converged in ks
     drain_run_registry(2_000)
+  end
+
+  # ===========================================================================
+  # AR-9 (PR-3/PR-4) — the armed multi-plan wave on the REAL catalog.
+  # ===========================================================================
+
+  describe "AR-9 armed multi-plan wave (e2e, real catalog)" do
+    # Every stub map is FULLY schema-shaped and signal-less (the stub path
+    # stamps :validated, bypassing Zoi): artifacts resolve via the summary
+    # fallback, `plan-ready`/`code-written` are loop-injected, and a canned
+    # `scope-shift` would trigger real rescope behavior — so none exists.
+    defp put_armed_env(arbiter) do
+      Application.put_env(
+        :jido_claw,
+        :agent_templates_override,
+        TestFixtures.armed_template_override(StubWorker)
+      )
+
+      Application.put_env(
+        :jido_claw,
+        :route_composer_stub_outputs,
+        TestFixtures.armed_stub_outputs(arbiter)
+      )
+    end
+
+    # Drive an armed run to terminal: seed → 4 planning waves → the plan-gate
+    # parks → approve → implementer + reviewers → terminal summary.
+    defp run_armed(ctx) do
+      RunPubSub.subscribe_gates()
+
+      task =
+        Task.async(fn ->
+          RouteComposer.run_sync(
+            catalog: Catalog.all(),
+            live: TestFixtures.armed_seed_live(),
+            artifacts: TestFixtures.armed_seed_artifacts(),
+            ran: ["triage"],
+            tenant: ctx.tenant,
+            actor: actor_for(ctx.tenant),
+            context: ctx.context,
+            max_waves: 15,
+            timeout: 30_000
+          )
+        end)
+
+      assert_receive {:gate_requested, child_id, %{agent_case_id: case_id}}, 15_000
+      parent_id = parent_of(child_id, ctx)
+      await_wave_paused(parent_id, ctx)
+
+      assert {:ok, _} =
+               Cases.decide(case_id, :approve, %{},
+                 tenant: ctx.tenant,
+                 actor: actor_for(ctx.tenant)
+               )
+
+      assert {:ok, summary} = Task.await(task, 30_000)
+      drain_run_registry(2_000)
+      summary
+    end
+
+    # `summary.artifacts` holds refs — resolve to the stored value so the
+    # assertions pin VALUES (the summary-fallback path), not mere presence.
+    defp resolve_artifact(summary, name, producer, ctx) do
+      ref = get_in(summary.artifacts, [name, producer])
+      assert is_binary(ref), "expected #{name} produced by #{producer}"
+
+      {:ok, value} =
+        ComposerArtifact.resolve_value(ref, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+      value
+    end
+
+    @planning_waves [
+      ["planner-reuse-first", "planner-risk-first", "planner-smallest-shippable"],
+      ["challenger-reuse-first", "challenger-risk-first", "challenger-smallest-shippable"],
+      ["plan-arbiter"],
+      ["planner"]
+    ]
+
+    test "armed adopt: 4 planning waves → gate → implementer → reviewers → converged", ctx do
+      put_armed_env(TestFixtures.armed_adopt_arbiter())
+      summary = run_armed(ctx)
+
+      assert summary.terminal == :converged
+      assert Enum.take(Enum.map(summary.history, & &1.stages), 4) == @planning_waves
+
+      # Every plan-wave artifact carries the right producer AND equals its
+      # producing stage's canned summary — the three plans DISTINCT.
+      assert resolve_artifact(
+               summary,
+               "plan:smallest-shippable",
+               "planner-smallest-shippable",
+               ctx
+             ) == "PLAN A: minimal viable slice."
+
+      assert resolve_artifact(summary, "plan:risk-first", "planner-risk-first", ctx) ==
+               "PLAN B: de-risk the hard part first."
+
+      assert resolve_artifact(summary, "plan:reuse-first", "planner-reuse-first", ctx) ==
+               "PLAN C: reuse the existing pipeline."
+
+      for lens <- ~w(smallest-shippable risk-first reuse-first) do
+        assert resolve_artifact(summary, "critique:#{lens}", "challenger-#{lens}", ctx) ==
+                 "CRITIQUE: blockers/concerns/strengths."
+      end
+
+      assert resolve_artifact(summary, "decision-memo", "plan-arbiter", ctx) =~ "verdict: adopt"
+
+      # The planner stays the SOLE producer of `plan` — the finalizer summary.
+      assert Map.keys(summary.artifacts["plan"]) == ["planner"]
+
+      assert resolve_artifact(summary, "plan", "planner", ctx) ==
+               "PLAN (final): adopt Plan A, smallest-shippable."
+
+      # Post-gate half: implementer ran; the three live-lens reviewers all clean
+      # (architecture joined off the armed seed's significant-build).
+      assert MapSet.member?(summary.ran, "implementer")
+      assert MapSet.member?(summary.final_live, "clean:quality")
+      assert MapSet.member?(summary.final_live, "clean:correctness")
+      assert MapSet.member?(summary.final_live, "clean:architecture")
+    end
+
+    test "the finalizer's assembled task carries the memo + all three DISTINCT plans + critiques",
+         ctx do
+      put_armed_env(TestFixtures.armed_adopt_arbiter())
+      Application.put_env(:jido_claw, :route_composer_capture_task, self())
+      on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_task) end)
+
+      summary = run_armed(ctx)
+      assert summary.terminal == :converged
+
+      # The single researcher dispatch is the finalizer (wave 3) — its assembled
+      # task carries the decision-memo section plus all three distinct competing
+      # plans and the critiques (`ArtifactContext` forwards the named optional
+      # inputs), so "redraft per the critiques" is honest.
+      assert_receive {:wave_task, "researcher", final_task}
+      assert final_task =~ "decision-memo"
+      assert final_task =~ "verdict: adopt"
+      assert final_task =~ "PLAN A: minimal viable slice."
+      assert final_task =~ "PLAN B: de-risk the hard part first."
+      assert final_task =~ "PLAN C: reuse the existing pipeline."
+      assert final_task =~ "CRITIQUE: blockers/concerns/strengths."
+    end
+
+    test "revise_first routes IDENTICALLY to adopt (no verdict-driven routing)", ctx do
+      # Decision 1: the verdict lives INSIDE the memo; hybrid/revise_first do
+      # NOT ride plan-rejected. Only the arbiter map differs — the route must not.
+      put_armed_env(TestFixtures.armed_revise_first_arbiter())
+      summary = run_armed(ctx)
+
+      assert summary.terminal == :converged
+      assert Enum.take(Enum.map(summary.history, & &1.stages), 4) == @planning_waves
+
+      assert resolve_artifact(summary, "decision-memo", "plan-arbiter", ctx) =~
+               "verdict: revise_first"
+
+      assert Map.keys(summary.artifacts["plan"]) == ["planner"]
+    end
+
+    test "a blocked lens planner route-fails the wave loudly", ctx do
+      put_armed_env(TestFixtures.armed_adopt_arbiter())
+
+      blocked =
+        Map.update!(
+          TestFixtures.armed_stub_outputs(),
+          {"plan_drafter", "risk-first"},
+          &Map.put(&1, "status", "blocked")
+        )
+
+      Application.put_env(:jido_claw, :route_composer_stub_outputs, blocked)
+
+      # No gate is ever reached — wave 0 fails on the blocked-producer refusal
+      # (`refuse_blocked_producer` applies to the lens-nil drafter exactly as to
+      # the finalizer), so run_sync directly.
+      assert {:ok, summary} =
+               RouteComposer.run_sync(
+                 catalog: Catalog.all(),
+                 live: TestFixtures.armed_seed_live(),
+                 artifacts: TestFixtures.armed_seed_artifacts(),
+                 ran: ["triage"],
+                 tenant: ctx.tenant,
+                 actor: actor_for(ctx.tenant),
+                 context: ctx.context,
+                 max_waves: 15,
+                 timeout: 30_000
+               )
+
+      assert summary.terminal == :failed
+      assert [entry] = summary.history
+      assert entry.failed
+      assert entry.stages == hd(@planning_waves)
+      assert :route_failed in event_kinds(summary.parent_run_id, ctx)
+    end
   end
 
   test "composes a code-path route end-to-end and converges clean", ctx do

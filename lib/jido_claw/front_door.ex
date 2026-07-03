@@ -460,8 +460,11 @@ defmodule JidoClaw.FrontDoor do
   # for any sketch that isn't exec (`:plain_degraded` or a plain `:plain` sketch).
   # The `++ mapped_signals/1` tail is safe ONLY because neither discriminator is
   # in `@signal_topics` (Part 4), so `mapped_signals` never re-injects either. A
-  # `code`/`system` run always seeds `plan-needed` (triage's catalog publish that
-  # `planner` subscribes — without it the route is empty and falsely converges).
+  # `code`/`system` run always seeds exactly ONE planning topic — `multi-plan`
+  # when the verdict arms (AR-9), else `plan-needed` (triage's catalog publish
+  # that `planner` subscribes — without one the route is empty and falsely
+  # converges). Neither planning topic is in `@signal_topics`, so the choice is
+  # made HERE only, never re-injected via the signals list.
   defp seed_live({:exec, _scope, _premises, _key}, verdict),
     do: sketch_seed("must-execute", verdict)
 
@@ -472,7 +475,18 @@ defmodule JidoClaw.FrontDoor do
     do: sketch_seed("sketch-plain", verdict)
 
   defp seed_live({:plain, _scope, _premises}, %Verdict{path: path} = verdict),
-    do: Enum.uniq(["request-received", to_string(path), "plan-needed"] ++ mapped_signals(verdict))
+    do:
+      Enum.uniq(
+        ["request-received", to_string(path), planning_seed(verdict)] ++ mapped_signals(verdict)
+      )
+
+  defp planning_seed(verdict), do: if(armed?(verdict), do: "multi-plan", else: "plan-needed")
+
+  # The ONE place arming is decided (AR-9): the triage judgment (`multi_plan?`)
+  # in conjunction with the `significant-build` early signal — triage-only, no
+  # config kill-switch. Armed runs seed `multi-plan` INSTEAD OF `plan-needed`.
+  defp armed?(%Verdict{multi_plan?: true, signals: signals}), do: :significant_build in signals
+  defp armed?(_verdict), do: false
 
   defp sketch_seed(discriminator, verdict),
     do: Enum.uniq(["request-received", "sketch", discriminator] ++ mapped_signals(verdict))
