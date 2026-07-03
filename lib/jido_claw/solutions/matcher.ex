@@ -66,6 +66,16 @@ defmodule JidoClaw.Solutions.Matcher do
     * `:query_embedding` — pre-computed embedding from the caller. If
       `nil` (or the workspace policy is `:disabled`), the ANN pool is
       skipped.
+    * `:resolve_embedding?` — default `true`. Pass `false` to skip
+      embedding resolution entirely (no policy lookup, no Voyage HTTP):
+      exact `by_signature` + FTS/trigram still run. The no-egress seam
+      for the sandboxed Lua `jido.solutions` binding — a "read-only"
+      binding must not trigger external egress/cost, and
+      `query_embedding: nil` cannot express that (nil means "resolve
+      via policy"). `false` means "do not *compute* an embedding", not
+      "force lexical-only": an explicit caller-supplied
+      `:query_embedding` still wins (returned without any policy
+      lookup or Voyage call) and the ANN pool still runs with it.
     * `:policy_resolver`, `:voyage_module` — test seams, default to
       the real production modules.
 
@@ -103,7 +113,18 @@ defmodule JidoClaw.Solutions.Matcher do
         query = Enum.join(query_fp.search_terms, " ")
         query = if query == "", do: problem_description, else: query
 
-        embedding = resolve_embedding(query, workspace_id, opts)
+        # An explicit caller-supplied :query_embedding needs no resolution —
+        # EmbeddingResolver returns it without touching the policy resolver or
+        # Voyage — so it survives resolve_embedding?: false, which only skips
+        # the policy/Voyage resolution that would otherwise compute a vector.
+        explicit_embedding? = Keyword.get(opts, :query_embedding) != nil
+
+        embedding =
+          if explicit_embedding? or Keyword.get(opts, :resolve_embedding?, true) do
+            resolve_embedding(query, workspace_id, opts)
+          else
+            nil
+          end
 
         search_args = %{
           query: query,

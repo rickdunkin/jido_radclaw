@@ -65,8 +65,15 @@ defmodule JidoClaw.MCPServerTest do
       assert is_list(publish.tools)
     end
 
-    test "publishes 24 tools" do
-      assert Enum.count(MCPServer.__publish__().tools) == 24
+    test "publishes 26 tools" do
+      assert Enum.count(MCPServer.__publish__().tools) == 26
+    end
+
+    test "includes the Lua code-mode pair" do
+      tools = MCPServer.__publish__().tools
+
+      assert JidoClaw.Tools.LuaQuery in tools
+      assert JidoClaw.Tools.LuaDocs in tools
     end
 
     test "includes introspection tools" do

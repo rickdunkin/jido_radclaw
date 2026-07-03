@@ -69,7 +69,32 @@ behavior from its hexdocs (v0.1.6) — re-verify at adoption time (the author ma
 ### AM-1. "Code mode": a scoped `docs` + `eval` Lua pair over the app's data layer
 
 **Recommendation**: BORROW-PATTERN (hand-roll on the in-tree Lua VM; ash_lua itself is
-version-blocked today — see sketch). **Status (2026-07-02)**: NOT_ADOPTED — no
+version-blocked today — see sketch). **Status (2026-07-03): ADOPTED** — Path A shipped
+as the **`lua_query` + `lua_docs`** pair (`JidoClaw.Tools.LuaQuery`/`LuaDocs`; sandbox
+internals `JidoClaw.Tools.Lua.{Policy, CallTrace, Bindings, Runner}` — Policy/CallTrace
+ported from jidoka @ 9469dc09, Apache-2.0), registered on BOTH surfaces (in-REPL agent
+and served MCP — now 26 published tools), read-only ⇒ not require-listed exactly per
+the gate-policy note below. Deviations from this entry's sketch, all deliberate:
+(1) **names** — `lua_query`/`lua_docs` (the Path-A module name; avoids colliding with
+the dep's generic `lua_eval` action name and resolves this doc's own title
+inconsistency); (2) **six bindings, not four** — the sketched `jido.runs/events/cases/
+solutions` plus `jido.run(id)` (run snapshot) and `jido.output(ref, opts)` (stored
+tool-output slice behind fetch_output's S-M2 scoping, via the extracted shared
+`Tools.OutputRef`), by operator decision 2026-07-03; (3) jidoka's `max_parallel_calls`
+**dropped** — the binding surface has no parallel host calls; (4) `:lua_timeout` is
+**non-retryable** (deviation from LuaEval's retryable timeout: the same script under
+the same caps re-times-out); (5) the solutions binding is **lexical-only** via a new
+narrow `resolve_embedding?: false` opt on `Matcher.find_solutions/2` — a read-only
+sandbox binding must not trigger Voyage egress/cost; (6) an **engine-side
+`max_result_bytes` aggregate bound** (32KB default) — this entry's security note
+overstated the pipeline: `OutputLimit` caps individual string *leaves* only and
+`OutputShaper` never shapes this tool, so nothing downstream bounds a large structured
+map/list result; the Runner measures the final envelope's JSON bytes itself.
+**Load-bearing correction** (also fixed inline below): `lua 1.0.0-rc.3` is a
+**from-scratch pure-Elixir Lua VM, not Luerl** (Luerl backed only `lua ≤ 0.x` — the
+line ash_lua still pins); the new VM's deterministic budgets (`max_instructions`,
+`max_string_bytes`) don't exist in LuaEval and are wired as policy caps.
+Prior status — **Status (2026-07-02)**: NOT_ADOPTED — no
 scriptable query surface exists on any tool surface (REPL agent or served MCP).
 
 **Where (amber)**: `lib/amber/agents/mcp_actions.ex:6-10` — the whole feature:
@@ -97,8 +122,9 @@ answers "which paddocks hold more dinosaurs than their comfort threshold?" in **
 tool call** carrying a small script — filter/join/aggregate run server-side — instead
 of N list-tool round-trips with every intermediate row inflating model context.
 
-**Gap in jido_radclaw**: The corpus has circled this from three directions — two on
-the payoff axis (where the standing plans are both heavy), one on the medium:
+**Gap in jido_radclaw** (as of 2026-07-02; closed by the adoption above): The corpus
+has circled this from three directions — two on the payoff axis (where the standing
+plans are both heavy), one on the medium:
 
 - **hermes T1-1** (programmatic tool calling): LLM-authored *Python* batching tool
   calls over a UDS/file RPC into the host — NOT_ADOPTED, needs Forge hosting + a stub
@@ -136,17 +162,23 @@ tree already has:
   `{:lua, "~> 1.0.0-rc.1"}` (`deps/jido_shell/mix.exs:81`; locked `1.0.0-rc.3`).
 - A **hardened eval action already compiles in this tree and is registered nowhere**:
   `Jido.Tools.LuaEval` (`deps/jido_action/lib/jido_tools/lua_eval.ex`, beam present in
-  `_build`) — sandboxed-by-default Luerl (no `os`/`io`/`package`/`load`; Lua.ex 1.0 has
-  no host shell/filesystem access at all), plus the execution hardening ash_lua does
-  NOT document: `timeout_ms` with kill + watchdog, `max_heap_bytes` (default 64MB,
-  `kill: true`), `max_call_depth`, deadline propagation from tool context.
+  `_build`) — sandboxed by default on the `lua` 1.0 VM (a **from-scratch pure-Elixir
+  VM, not Luerl** — Luerl backed only `lua ≤ 0.x`; correction 2026-07-03): no
+  `os`/`io`/`package`/`load`, and no host shell/filesystem access at all. Plus the
+  execution hardening ash_lua does NOT document: `timeout_ms` with kill + watchdog,
+  `max_heap_bytes` (default 64MB, `kill: true`), `max_call_depth`, deadline
+  propagation from tool context. The 1.0 VM additionally offers deterministic budgets
+  LuaEval doesn't use — `max_instructions` (CPU bound without wall-clock dependence)
+  and `max_string_bytes` (string bombs refused pre-allocation) — both adopted as
+  policy caps.
   What it lacks is exactly amber's point: **bindings into the app's data with
   authorization** — bare `globals:` injection only.
 - The natural binding targets are **already Ash resources with tenant-scoped read
   paths**: the orchestration read-models (`WorkflowRun`, `WorkflowEvent`,
-  `AgentCase`), Solutions, Memory. Today an MCP client composing a question across
-  runs pages `workflow_events` (byte-budgeted), calls `inspect_workflow` per run, and
-  does the correlation in model context.
+  `AgentCase`), Solutions, Memory. Until this shipped, an MCP client composing a
+  question across runs paged `workflow_events` (byte-budgeted), called
+  `inspect_workflow` per run, and did the correlation in model context — the exact
+  loop `lua_query` now collapses to one call.
 
 **Why it matters**: The token/latency argument from hermes T1-1 ("a 10-tool-call
 investigation collapses to 1 inference turn; intermediate results never enter LLM
@@ -156,7 +188,8 @@ capability-scoped (only declared actions exist in the sandbox — this is not
 `python -c`), and policy-correct by construction (actor/tenant pinned by the host,
 unreachable from the script). It composes with, rather than competes against, the
 shipped MCP workflow surface: `workflow_events`/`inspect_workflow` stay the raw/derived
-per-run reads; `lua_eval` becomes the cross-run *ad-hoc computation* surface. Honest
+per-run reads; `lua_query` (shipped name) becomes the cross-run *ad-hoc computation*
+surface. Honest
 scope note: this does **not** close hermes T1-1 — no `run_command`, no web tools, no
 file I/O in the sandbox (that's still Forge/G2-2 territory). It closes the
 query/aggregate slice, which is the slice MCP clients actually hit today.
@@ -195,12 +228,18 @@ query/aggregate slice, which is the slice MCP clients actually hit today.
   lua-1.x support **and** we want broad Ash-wide exposure rather than a curated
   binding table.
 
-**Security notes** (why this doesn't reopen settled review ground): Luerl executes on
+**Security notes** (why this doesn't reopen settled review ground): the `lua` 1.0 VM
+(from-scratch pure Elixir — not Luerl; correction 2026-07-03) executes on
 the BEAM with no NIF/FFI/ambient I/O; the remaining abuse surfaces are CPU/memory
-(bounded by LuaEval's kill-on-timeout + `max_heap_size` — keep both) and data volume
-(bounded by the existing pipeline: `OutputRedaction` at the root, `OutputShaper`,
-`OutputLimit`'s 32KB inline cap + ref-store — an eval result is just another tool
-output). Bind reads only; never bind `run_command`-class actions into the VM.
+(bounded by LuaEval's kill-on-timeout + `max_heap_size` — keep both — plus the 1.0
+VM's own `max_instructions`/`max_string_bytes` budgets) and data volume — where this
+entry originally overstated the pipeline: `OutputRedaction` does scrub the result and
+`OutputLimit` caps string *leaves*, but nothing in the wrapper bounds a large
+structured map/list (`OutputShaper` never shapes this tool), so the shipped Runner
+enforces its own aggregate `max_result_bytes` bound on the final envelope. Bind reads
+only; never bind `run_command`-class actions into the VM. (`print`/`debug` also
+turned out to need explicit post-`Lua.new` sandboxing — the default sandbox misses
+them, and `print` writes model-controlled text to host `IO.puts`.)
 
 ---
 
@@ -263,7 +302,8 @@ ash_authentication) are past the 5.0 RC line; scope `mcp` (read-rollup tools) fi
 and keep the standing doctrine — destructive controls (cancel, replay overrides,
 gate decisions) stay dashboard/REPL-only regardless of transport. Amber's
 ranger/visitor policy split is the template for the actor model: same tool list,
-policy-scoped reach. Pair with AM-1: a *read-only* `lua_docs`/`lua_eval` pair is the
+policy-scoped reach. Pair with AM-1: the *read-only* `lua_docs`/`lua_query` pair
+(shipped 2026-07-03) is the
 single highest-leverage thing to put behind such an endpoint (one tool, whole
 read-model), which is exactly amber's configuration.
 
@@ -310,8 +350,8 @@ comes second.
 | MCP transport | HTTP (`AshAi.Mcp.Router`, streamable) | stdio (`jido_mcp`/anubis); anubis `streamable_http` present but unused | AM-2 (deferred) |
 | MCP authn | OAuth 2.1 bearer + DCR + consent | none (local stdio; tailnet for gateway) | AM-2 (deferred) |
 | MCP authz | per-user actor → Ash policies (role split) | tenant-wide boot scope, curated tool list, approval gates | AM-2 design note |
-| Tool surface shape | **2 tools: `docs` + `eval` (code mode)** | 24 curated tools + 2 resources | **AM-1 — borrow** |
-| Script sandbox | Luerl via ash_lua (no host I/O; no documented limits) | Luerl already in-tree (`jido_shell`→`lua 1.0.0-rc.3`) + `Jido.Tools.LuaEval` hardening (timeout/heap/depth), unregistered | **AM-1 — assemble ours** |
+| Tool surface shape | **2 tools: `docs` + `eval` (code mode)** | 26 curated tools + 2 resources (incl. the shipped `lua_query`/`lua_docs` pair) | **AM-1 — ADOPTED 2026-07-03** |
+| Script sandbox | Luerl via ash_lua (no host I/O; no documented limits) | `lua 1.0.0-rc.3` in-tree via jido_shell (**from-scratch pure-Elixir VM, not Luerl**) + LuaEval hardening (timeout/heap/depth) + VM budgets (instructions/string bytes), assembled into `Tools.Lua.Runner` | **AM-1 — ADOPTED 2026-07-03** |
 | Data layer for agents | Ash actions + policies | Ash resources behind tenant-scoped code interfaces | AM-1 Path A binds explicitly |
 | Heavy code execution | — | Forge (containers, runners) — unchanged; hermes T1-1 / gust G2-2 still the plan of record for *general* scripted tool-calling | complementary |
 | LLM-authored plans | — (amber's eval computes, never plans) | jidoka V2-7 WATCH: deterministic composer is doctrine; `compose_skill` (sans Lua) is the translation if triggered | AM-1 orthogonal — verdict untouched |
@@ -319,11 +359,12 @@ comes second.
 ## Bottom line
 
 Amber is a ~40-line demo wrapped in 4.4k lines of scaffolding — and one of those 40
-lines is worth the visit. The **code-mode tool pair** (AM-1) is the cheapest credible
+lines is worth the visit. The **code-mode tool pair** (AM-1, **adopted 2026-07-03**)
+is the cheapest credible
 attack on the programmatic-tool-calling gap this repo has tracked since the hermes
 review (T1-1), re-confirmed via gust (G2-2) — and whose medium jidoka V2-7 already
 weighed for the plan-authoring axis and put on watch, a verdict AM-1 deliberately
-leaves standing (its `Lua.Policy` envelope gets borrowed; its posture question does
+leaves standing (its `Lua.Policy` envelope got borrowed; its posture question did
 not get reopened). Not by hosting Python in Forge, and not by handing the LLM route
 authorship, but by
 binding a curated, read-only, tenant-pinned slice of the Ash read-models into a Lua

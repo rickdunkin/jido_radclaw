@@ -131,6 +131,8 @@ The genuinely novel V2 idea: an LLM (or operator) writes a tiny sandboxed Lua sc
 
 **Cross-link (2026-07-02 — amber AM-1)**: the *medium* (sandboxed LLM-facing Lua) now has a second corpus entry — [`../amber/FEATURES-WORTH-BORROWING.md`](../amber/FEATURES-WORTH-BORROWING.md) **AM-1**, a read-only `docs` + `eval` code-mode pair over the Ash read-models (per amber's AshLua demo). Different axis, deliberately: AM-1's script *computes reads* and returns a value — it authors no plan, drives no workflow, writes nothing — so this entry's authorship-posture verdict is untouched (AM-1 argues the distinction inline; the `compose_skill` translation above also cannot absorb its slice, since a composed plan's step results still enter model context). AM-1 borrows two pieces of this entry's design: the `Lua.Policy` reach envelope (call budget / script-size cap / read-only invariant) and the `call_trace` audit shape. Conversely, if this entry's trigger ever fires, AM-1's binding table + policy envelope is the substrate a `jido.workflow(...)` binding would slot into — behind this entry's posture decision, which stays its own gate.
 
+**Cross-link update (2026-07-03 — AM-1 shipped)**: the two borrowed pieces now live in-tree as `JidoClaw.Tools.Lua.Policy` and `JidoClaw.Tools.Lua.CallTrace` (ported from this repo @ `9469dc09`, Apache-2.0, attribution in their moduledocs; `max_parallel_calls` dropped — AM-1's binding surface has no parallel host calls), behind the `lua_query`/`lua_docs` tool pair. This entry's verdict is unchanged: still WATCH, still plan-authoring only — and the substrate note above is now concrete (a future `jido.workflow(...)` binding would slot into `JidoClaw.Tools.Lua.Bindings`, behind this entry's own posture gate AND that module's read-only invariant, which a write-capable binding must clear deliberately).
+
 ---
 
 ## Already Covered / N/A
@@ -174,7 +176,7 @@ Relationship to the other exploration docs:
 - [`UNADOPTED-IDEAS.md`](UNADOPTED-IDEAS.md) — the live remainder rolled up across both inventories (2026-07-02): every deferred/watch idea with its current standing, verdict, and the trigger that would change it.
 - `docs/exploration/squidie/REACTOR-ADOPTION.md` — the workflow-axis convergence story (event log, fingerprint, replay, gates); V2-1 and V2-4 deliberately reuse its vocabulary.
 - `docs/exploration/hermes/FEATURES-WORTH-BORROWING.md` — unaffected; the hermes re-evaluation note in the V1 doc still stands.
-- `docs/exploration/amber/FEATURES-WORTH-BORROWING.md` — AM-1 (2026-07-02) takes V2-7's medium (sandboxed Lua) for read-only query composition and borrows its `Lua.Policy`/`call_trace` hardening; V2-7's plan-authoring verdict is unaffected (dated cross-link on the entry).
+- `docs/exploration/amber/FEATURES-WORTH-BORROWING.md` — AM-1 (2026-07-02; **adopted 2026-07-03** as `lua_query`/`lua_docs`) takes V2-7's medium (sandboxed Lua) for read-only query composition and borrows its `Lua.Policy`/`call_trace` hardening (now `JidoClaw.Tools.Lua.{Policy, CallTrace}`); V2-7's plan-authoring verdict is unaffected (dated cross-links on the entry).
 
 Upstream watch triggers (re-audit this doc if either fires):
 

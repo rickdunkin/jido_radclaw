@@ -55,7 +55,14 @@ defmodule JidoClaw.MCPServer do
 
         # Workflow replay (Phase 4) — MCP-only by design: the in-REPL agent's
         # tool list deliberately does NOT carry this side-effect lever.
-        JidoClaw.Tools.ReplayWorkflow
+        JidoClaw.Tools.ReplayWorkflow,
+
+        # Lua code-mode pair (amber AM-1 + jidoka V2-7): sandboxed read-only
+        # cross-run queries server-side. Read-only by construction
+        # (Bindings.assert_read_only!/0 per eval) ⇒ deliberately NOT on the
+        # approval require list.
+        JidoClaw.Tools.LuaQuery,
+        JidoClaw.Tools.LuaDocs
       ],
       resources: [
         # The route-composer catalog at jido://workflows/catalog (AR-2 Phase 5,

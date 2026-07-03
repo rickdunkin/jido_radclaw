@@ -57,7 +57,7 @@ re-verify at build time).
 | --- | --- | --- | --- | --- | --- |
 | 1 | A | Headless one-shot + CLI session resume — ✅ DONE 2026-07-03 | osa OS1-5 (+ CC2-2 rider) | S | One session |
 | 2 | A | Doom-loop guard — ✅ DONE 2026-07-03 | osa OS1-2 | S | One session (pure module + pipeline hook) |
-| 3 | A | Lua code-mode pair (`lua_docs`/`lua_eval`) | amber AM-1 | S–M | Single PR (two tools + policy envelope) |
+| 3 | A | Lua code-mode pair (`lua_docs`/`lua_query`) — ✅ DONE 2026-07-03 | amber AM-1 (+ jidoka V2-7 hardening) | S–M | Single PR (two tools + policy envelope) |
 | 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) | camus C1-3 | M | Single PR |
 | 5 | B | Deterministic verify authority + sealed heads | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
 | 6 | B | Honest terminal statuses + stall detection | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
@@ -199,7 +199,33 @@ re-running a failing tool.
    `Miosa-osa/OSA @ f60e933b, Apache-2.0`); emit `:guardrail` Trace events;
    property-test the windows (reset-on-success, consecutive vs windowed).
 
-## 3. Lua code-mode pair — S–M (amber AM-1)
+## 3. Lua code-mode pair — S–M (amber AM-1) — ✅ DONE 2026-07-03
+
+> **Done 2026-07-03**, with corrections to this entry's claims (mirrored into
+> the source entry, amber AM-1): shipped as **`lua_query`** + `lua_docs`
+> (operator decision — the entry's own title said `lua_eval`, colliding with
+> the dep's generic action name) with **six** bindings, not four: the sketched
+> `jido.runs/events/cases/solutions` plus `jido.run(id)`
+> (`WorkflowView.snapshot/2`) and `jido.output(ref, opts)` (stored tool-output
+> slices behind fetch_output's S-M2 scoping, via the extracted shared
+> `Tools.OutputRef`). Corrections: (a) **the VM is not Luerl** — `lua
+> 1.0.0-rc.3` is a from-scratch pure-Elixir VM (Luerl backed only `≤ 0.x`),
+> and its deterministic budgets (`max_instructions`, `max_string_bytes`,
+> absent from LuaEval) are wired as policy caps; (b) step 1's "ToolApproval →
+> redaction → shaping → cap wrap it automatically" **overstated the cap**:
+> `OutputLimit` bounds string *leaves* only and the shaper never touches this
+> tool, so the Runner enforces its own aggregate `max_result_bytes` (32KB)
+> bound on the final envelope — over-cap results ERROR (`:lua_result_too_large`),
+> never silently truncate; (c) the default sandbox misses `print`/`debug` —
+> `print` writes model-controlled text to host `IO.puts` past the redaction
+> boundary — so both are sandboxed post-`Lua.new`; (d) budget refusals are
+> latched in `CallTrace.refused?/1` and re-checked **post-eval** because
+> in-script `pcall` can swallow the refusal raise; (e) jidoka's
+> `max_parallel_calls` dropped (no parallel host calls), `:lua_timeout` made
+> non-retryable (same script + same caps re-times-out — deviation from
+> LuaEval), and the solutions binding is **lexical-only** via a new
+> `resolve_embedding?: false` Matcher opt (a read-only sandbox must not
+> trigger Voyage egress/cost).
 
 The amber doc's gem, Path A (no new deps): the VM is already a hard dep
 (`lua 1.0.0-rc.3` via jido_shell) and the hardened eval action

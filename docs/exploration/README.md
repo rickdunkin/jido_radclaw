@@ -22,7 +22,7 @@ below are abridged from each doc's Determination.
 | Subject | Docs | What it is / headline verdict |
 | --- | --- | --- |
 | [alp-river](alp-river/) | inventory, V2, unadopted rollup, AR-* program docs | Methodology layer above our engine; source of the AR-* program family (composer, sketch/system paths, multi-plan arbiter) |
-| [amber](amber/) | inventory | Own code: nothing to adopt; the stack it demos: one high-value borrow, one watch-with-trigger |
+| [amber](amber/) | inventory | Own code: nothing to adopt; the stack it demos: one high-value borrow (AM-1 code-mode pair — adopted 2026-07-03 as `lua_query`/`lua_docs`), one watch-with-trigger |
 | [argus](argus/) | OVERVIEW | Greenfield codename: tailnet-wide multi-agent control plane — decisions + open questions, not a subject repo |
 | [camus](camus/) | inventory | Claude Code plan/loop/review product; engine no (ours supersets it), judgment layer nearly wholesale (deterministic verify, honest statuses, git evidence) |
 | [empirica](empirica/) | inventory | Deliberately short list: negative knowledge with decision-point re-surfacing + confidence-calibration ledger |

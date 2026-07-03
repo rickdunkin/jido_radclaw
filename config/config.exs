@@ -333,6 +333,30 @@ config :jido_claw, :loop_guard,
   idle_ttl_ms: 1_800_000,
   sweep_interval_ms: 60_000
 
+# Lua code-mode sandbox caps (JidoClaw.Tools.LuaQuery / lua_docs; amber AM-1
+# + jidoka V2-7). Every `lua_query` eval runs in an unlinked task under
+# these bounds — wall clock, host-call count, VM call depth, script size,
+# per-process heap kill, the lua 1.0 VM's deterministic instruction/string
+# budgets, and the aggregate result byte bound (the wrapper pipeline caps
+# string LEAVES only; this is the whole-envelope bound). There is
+# deliberately NO `enabled?` key: registration is the switch (drop the pair
+# from agent.ex / mcp_server.ex), and Policy clamps every value into a safe
+# range so bad config can tighten or loosen limits but never disable them.
+# jidoka's `max_parallel_calls` is dropped — the binding surface has no
+# parallel host calls.
+config :jido_claw, :lua,
+  timeout_ms: 1_500,
+  max_calls: 12,
+  max_call_depth: 64,
+  max_script_bytes: 6_000,
+  max_heap_bytes: 64 * 1024 * 1024,
+  max_instructions: 10_000_000,
+  # kept below max_heap_bytes (the VM's own guidance: an oversized string
+  # is refused deterministically instead of tripping the GC-timing-
+  # dependent heap killer mid-allocation)
+  max_string_bytes: 8 * 1024 * 1024,
+  max_result_bytes: 32_768
+
 # Destination policy for LLM-controlled egress (JidoClaw.Security.DestinationPolicy,
 # gating the browse_web tool). The headless browser otherwise navigates to ANY
 # model-supplied URL — an injected page can steer it at loopback / RFC-1918 /

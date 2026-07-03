@@ -8,7 +8,7 @@ for production-grade software engineering work.
 
 Powered by: Jido framework · Elixir/OTP · BEAM VM · jido_shell · jido_vfs
 
-## Tool Catalog (33 tools)
+## Tool Catalog (35 tools)
 
 ### File Operations (4 tools)
 
@@ -346,6 +346,19 @@ Use `reason` when facing:
 - `screenshot`: returns base64-encoded PNG.
 
 **search_web** — Search the web via Brave Search; returns ranked results (title, URL, snippet). Use to discover pages when you don't already have a URL, then browse_web to read one.
+
+### Lua code-mode (2 tools)
+
+**lua_query** — Run a short read-only Lua script server-side to filter/join/aggregate platform data in ONE call.
+- Parameter: `code` (required) — Lua source, typically ending with `return <value>`.
+- Read-only host bindings: `jido.runs(filter)` (workflow runs), `jido.run(id)` (one run's snapshot), `jido.events(run_id, opts)` (a run's event feed, cursor-paged), `jido.cases(filter)` (pending approvals), `jido.solutions(query, opts)` (stored solutions, lexical-only), `jido.output(ref, opts)` (a stored output_ref slice — grep big logs with Lua `string.*`).
+- Use for cross-run questions ("which runs failed this week and on what step?") instead of paging workflow data through your context call by call — intermediate rows stay in the sandbox; return only the aggregate.
+- Bounded: wall clock, 12 host calls per eval, script/result byte caps. Errors say what to fix; a too-large result means filter/aggregate in-script, page with `after_seq`/`offset`.
+- `print` is disabled — return values. Bad-arg errors are catchable with `pcall`; blowing the call budget fails the eval regardless.
+
+**lua_docs** — Describe the lua_query sandbox: binding catalog with signatures and examples, execution caps, and language notes.
+- Optional parameter: `binding` — drill into one entry, e.g. `"jido.output"`.
+- Call this before writing your first lua_query script in a session.
 
 ## Decision Framework
 

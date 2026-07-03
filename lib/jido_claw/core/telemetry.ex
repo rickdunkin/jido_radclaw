@@ -50,6 +50,11 @@ defmodule JidoClaw.Telemetry do
       # `:guardrail` events carry the per-key timeline; this is the rollup.
       counter("jido_claw.loop_guard.total", tags: [:event, :trigger]),
 
+      # Lua code-mode evals (JidoClaw.Tools.Lua.Runner) — one count per
+      # lua_query eval; `status` is completed/failed (plus the discrete
+      # budget_refused emission), `trigger` the `:lua_*` failure code.
+      counter("jido_claw.lua_eval.total", tags: [:status, :trigger]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -202,6 +207,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :loop_guard],
       %{total: 1},
       %{tool: tool, event: event, trigger: trigger}
+    )
+  end
+
+  @spec emit_lua_eval(atom(), atom(), map()) :: :ok
+  def emit_lua_eval(status, trigger, metadata) do
+    :telemetry.execute(
+      [:jido_claw, :lua_eval],
+      %{total: 1},
+      Map.merge(metadata, %{status: status, trigger: trigger})
     )
   end
 

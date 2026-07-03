@@ -50,12 +50,62 @@ defmodule JidoClaw.WorkflowView do
             recent_completions: [],
             generated_at: nil
 
+  # runs/2 status/pagination bounds: callers (the Lua `jido.runs` binding)
+  # get a bounded read whatever they pass.
+  @runs_default_limit 25
+  @runs_max_limit 50
+
   @spec list(map() | keyword()) :: {:ok, t()} | {:error, :tenant_required}
   def list(scope_or_opts) do
     with {:ok, opts} <- JidoClaw.RuntimeScope.require_tenant(scope_or_opts, scope_keys()) do
       {:ok, build(opts)}
     end
   end
+
+  @doc """
+  Tenant-scoped run listing with honest errors — the data source for the
+  Lua `jido.runs` binding (contrast `list/1`, a best-effort dashboard
+  rollup that swallows read errors into `[]`; here a read failure
+  surfaces `{:error, :runs_unavailable}`, never a misleading empty page).
+
+  `opts` (keyword list or atom-keyed map):
+
+    * `:statuses` — list of run-status atoms to include (callers validate
+      raw input against the enum; default #{inspect(@active_statuses)}).
+    * `:limit` — clamped to 1..#{@runs_max_limit}, default #{@runs_default_limit}.
+
+  Returns `{:ok, [map]}` of `Visibility.run_view(:operator)` projections,
+  sorted `started_at: :desc`.
+  """
+  @spec runs(map() | keyword(), map() | keyword()) ::
+          {:ok, [map()]} | {:error, :tenant_required | :runs_unavailable}
+  def runs(scope_or_opts, opts \\ []) do
+    with {:ok, scope} <- JidoClaw.RuntimeScope.require_tenant(scope_or_opts, scope_keys()) do
+      tenant_id = Keyword.fetch!(scope, :tenant_id)
+      actor = Keyword.get(scope, :actor) || Actor.system(tenant_id)
+      opts = Enum.to_list(opts)
+      statuses = Keyword.get(opts, :statuses) || @active_statuses
+      limit = clamp_runs_limit(Keyword.get(opts, :limit))
+
+      WorkflowRun
+      |> Query.filter(status in ^statuses)
+      |> Query.sort(started_at: :desc)
+      |> Query.limit(limit)
+      |> Ash.read(tenant: tenant_id, actor: actor)
+      |> case do
+        {:ok, runs} ->
+          now = DateTime.utc_now()
+          {:ok, Enum.map(runs, &run_to_map(&1, now))}
+
+        {:error, _} ->
+          {:error, :runs_unavailable}
+      end
+    end
+  end
+
+  @doc "The default (active) status set `runs/2` filters by — single-sourced for callers validating status input."
+  @spec active_statuses() :: [atom()]
+  def active_statuses, do: @active_statuses
 
   @spec snapshot(String.t(), map() | keyword()) :: {:ok, map()} | {:error, atom()}
   def snapshot(run_id, scope_or_opts) when is_binary(run_id) do
@@ -307,6 +357,11 @@ defmodule JidoClaw.WorkflowView do
     do: min(max(limit, 1), @event_feed_max_limit)
 
   defp clamp_limit(_), do: @event_feed_default_limit
+
+  defp clamp_runs_limit(limit) when is_integer(limit),
+    do: min(max(limit, 1), @runs_max_limit)
+
+  defp clamp_runs_limit(_), do: @runs_default_limit
 
   defp non_neg_seq(seq) when is_integer(seq) and seq >= 0, do: seq
   defp non_neg_seq(_), do: nil

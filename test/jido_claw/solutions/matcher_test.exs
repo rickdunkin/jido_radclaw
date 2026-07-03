@@ -184,4 +184,111 @@ defmodule JidoClaw.Solutions.MatcherTest do
       refute_received {:voyage_called_at, _}
     end
   end
+
+  # Resolver spy for the `resolve_embedding?: false` seam: proves the policy
+  # lookup itself is skipped, not just the Voyage call.
+  defmodule SpyResolver do
+    @moduledoc false
+    @spec resolve(term()) :: :default
+    def resolve(workspace_id) do
+      send(self(), {:resolver_called, workspace_id})
+      :default
+    end
+
+    @spec model_for_query(term()) :: map()
+    def model_for_query(_),
+      do: %{provider: :voyage, request_model: "voyage-4", stored_model: "voyage-4-large"}
+  end
+
+  describe "resolve_embedding?: false (the Lua binding's no-egress seam)" do
+    test "default (opt absent) still resolves embeddings via the policy path",
+         %{tenant_id: tenant_id, workspace: ws} do
+      _sol = solution_fixture(tenant_id, ws.id, "kafka consumer lag alerting")
+
+      _ =
+        Matcher.find_solutions("kafka consumer lag",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          policy_resolver: SpyResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
+
+      assert_received {:resolver_called, _}
+      assert_received {:voyage_called_at, _}
+    end
+
+    test "explicit resolve_embedding?: true behaves like the default",
+         %{tenant_id: tenant_id, workspace: ws} do
+      _sol = solution_fixture(tenant_id, ws.id, "kafka consumer lag alerting")
+
+      _ =
+        Matcher.find_solutions("kafka consumer lag",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          resolve_embedding?: true,
+          policy_resolver: SpyResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
+
+      assert_received {:resolver_called, _}
+      assert_received {:voyage_called_at, _}
+    end
+
+    test "resolve_embedding?: false never invokes the policy resolver or Voyage, and lexical retrieval still works",
+         %{tenant_id: tenant_id, workspace: ws} do
+      sol = solution_fixture(tenant_id, ws.id, "kafka consumer lag alerting")
+
+      results =
+        Matcher.find_solutions("kafka consumer lag",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          resolve_embedding?: false,
+          policy_resolver: SpyResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
+
+      refute_received {:resolver_called, _}
+      refute_received {:voyage_called_at, _}
+      assert Enum.any?(results, fn m -> m.solution.id == sol.id end)
+    end
+
+    test "an explicit query_embedding still wins under resolve_embedding?: false (ANN runs, zero egress)",
+         %{tenant_id: tenant_id, workspace: ws} do
+      vec = List.duplicate(0.05, 1024)
+
+      # Content shares no tokens/trigrams with the query, so the FTS and
+      # lexical pools cannot surface this row — only the ANN pool (via the
+      # explicit vector) can. Pre-fix, resolve_embedding?: false dropped the
+      # vector and this row was unreachable.
+      sol =
+        solution_fixture(tenant_id, ws.id, "postgres vacuum autotune runbook",
+          embedding: vec,
+          embedding_status: :ready
+        )
+
+      results =
+        Matcher.find_solutions("frobnicate zymurgy quixotic",
+          tenant_id: tenant_id,
+          workspace_id: ws.id,
+          threshold: 0.0,
+          query_embedding: vec,
+          resolve_embedding?: false,
+          policy_resolver: SpyResolver,
+          voyage_module: SpyVoyage,
+          rate_pacer: NoopRatePacer
+        )
+
+      refute_received {:resolver_called, _}
+      refute_received {:voyage_called_at, _}
+
+      assert Enum.any?(results, fn m -> m.solution.id == sol.id end),
+             "explicit query_embedding must reach the ANN pool under resolve_embedding?: false"
+    end
+  end
 end

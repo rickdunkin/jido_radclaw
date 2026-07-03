@@ -46,7 +46,10 @@ defmodule JidoClaw.Agent do
       JidoClaw.Tools.UnscheduleTask,
       JidoClaw.Tools.ListScheduledTasks,
       # Handoff (1)
-      JidoClaw.Tools.Handoff
+      JidoClaw.Tools.Handoff,
+      # Lua code-mode (2)
+      JidoClaw.Tools.LuaQuery,
+      JidoClaw.Tools.LuaDocs
     ],
     model: :fast,
     max_iterations: 25,
