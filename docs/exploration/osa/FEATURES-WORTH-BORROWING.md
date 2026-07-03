@@ -62,6 +62,42 @@ Companion docs: **hermes** (`hermes/FEATURES-WORTH-BORROWING.md`) overlaps OSA m
 
 **Recommendation**: BORROW-PATTERN. **Lift**: verbatim for the detection logic + suggestion table (pure), reshape the integration (their recovery counter lives in the process dictionary — ours goes in tracked state).
 
+> **Done 2026-07-03** (next-ten #2) — landed as `JidoClaw.Agent.LoopGuard`
+> (pure core + facade) + `LoopGuard.Store` (per-`{tenant, session, agent}`
+> KeyStates; in-memory, per NODE — honestly labeled: clustered cron `:agent`
+> jobs fire per node, so worst-case budget scales with node count), wired into
+> the shared `Tools.Action` pipeline after the approval gate: pre-execution
+> `check` — the 4th identical call and the 101st call never run, an
+> improvement over OSA's post-batch detection — plus post-normalize
+> `observe_result` with a skip-list for approval/doom envelopes
+> (non-executions). Thresholds, halt texts, directive, and suggestion table
+> verbatim (`# Ported from Miosa-osa/OSA @ f60e933b, Apache-2.0`; tool names
+> remapped); halts sticky for `halt_ttl_ms` (5 min) then the key resets; idle
+> keys expire after 30 min. Corrections to this entry's claims: (a) "On
+> trigger it does *not* hard-halt" overgeneralized — OSA stages ONLY the
+> failure-signature mechanism; identical-call and cap hard-halt immediately
+> (ours match). (b) "reset on any clean success" is moduledoc-only — OSA's
+> *code* never clears accumulated signatures (it only skips appending the
+> clean iteration's); we shipped **per-tool** clearing, deviating from both
+> (clear-all masks the archetypal edit-fail→read-ok→edit-fail repair loop;
+> never-clear over-triggers). (c) The sketch's
+> `:ok | {:nudge, _} | {:halt, _}` contract is our redesign — OSA returns
+> `{:ok, state} | {:halt, message, state}` with the nudge folded into `:ok`
+> via system-message injection and a process-dictionary recovery counter.
+> (d) `@error_indicators` string sniffing replaced by typed classification
+> (`{:error, _}` tuples / `{:ok, %{exit_code: n}}` with `n != 0` / the MCP
+> proxies' re-surfaced `{:ok, %{"isError" => true}}` domain failures);
+> `phash2` replaced by full SHA-256 over deterministic ETF. (e) The sketch's "fed from
+> the shared `Tools.Action` pipeline (which already sees every call +
+> normalized error)" holds only for calls that reach the action's `run/2` —
+> param-validation, Exec/Turn-timeout, raised-exception, and output-schema
+> validation failures happen outside it and are documented residuals (the
+> last is a false-success direction, neutralized cross-tool by the per-tool
+> clearing and pinned by tests). (f) No upstream tests existed; the property
+> suite (reset-on-success per-tool, consecutive-vs-windowed, non-adjacent
+> 3-in-20, cap+warn, staged recovery, sticky halt) is net-new — and the
+> repo's first property tests (stream_data).
+
 **Where in OSA** (wired via `react_loop.ex:457-460`; no upstream tests): `loop/doom_loop.ex:51-85` runs three checks after every tool batch — (1) **identical-call window**: fingerprint `{name, :erlang.phash2(args)}`, halt on 4+ consecutive identical calls in a window of 8, *success-agnostic* (catches useless-success loops like re-listing the same directory, `94-149`); (2) **failure signatures**: `"<tool>:<first-100-chars-of-error>"` accumulated only for error-indicating results, fire when any signature hits 3 in a window of 20, **reset on any clean success** (`153-194`); (3) **absolute cap**: 100 tool calls per session, warn at 80% (`217-254`). On trigger it does *not* hard-halt: it injects a recovery directive up to twice (system message: read the target, use *completely different* arguments), clearing signatures each time, and only halts on the third trip (`256-339`). `build_suggestion/1` (`341-374`) pattern-matches the error to targeted advice ("old_string not found" → read the file first; "command not found" → check with `which`).
 
 **Gap in jido_radclaw**: the only guard on the in-REPL agent's tool loop is jido_ai's soft nudge on *consecutive identical* signatures (`deps/jido_ai/.../react/runner.ex:25-27,204-218`) — no failure-awareness, no window (A-B-A-B oscillation passes), no hard stop short of `max_iterations: 25` (`agent/agent.ex:52`). Closest relatives are coordination-loop caps, not tool-level: `PullRequestCoordinator` `@max_attempts 3`, composer `@default_rerun_cap 2`/`route_budget_exhausted`. Hermes T2-9 (NOT_ADOPTED) is the OS-process-level cousin (strikes + global circuit breaker for background processes) — different layer, both eventually wanted.
@@ -276,7 +312,7 @@ Build order that follows: **OS1-5** (thinnest, substrate exists) → **OS1-2** (
 | Agent loop | Hand-rolled GenServer ReAct (fragile per own KNOWN_ISSUES) | `Jido.AI.Agent` ReAct — stronger, but hookable seams are fewer |
 | Durability | SQLite + ETS + process dict; ledgers lost on restart | Ash/Postgres, event-sourced composer, Trace — stronger |
 | Compaction | 6-step ladder, 4 steps LLM-free; overflow recovery; iterative 8-section summary | Single LLM summary, best-effort; no degrade, no overflow recovery |
-| Loop safety | 3-mechanism doom detector + staged recovery | Soft consecutive-identical nudge + iteration cap |
+| Loop safety | 3-mechanism doom detector + staged recovery | Ported 2026-07-03 (OS1-2): 3-mechanism LoopGuard in the tool pipeline, pre-execution halts + staged recovery |
 | Tool prompt cost | Deferred loading + `tool_search` | All 33 schemas every request |
 | Injection defense | 3-tier deterministic guard, 308-case corpus (direct input only) | None general; one narrow untrusted-data wrapper |
 | Provider resilience | Circuit breaker + fallback chain (warts) + credential pool (half-wired) | 429/transport retry only; no 5xx retry, no fallback |

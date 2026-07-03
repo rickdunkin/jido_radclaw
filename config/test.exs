@@ -39,6 +39,11 @@ config :jido_claw, :cron_owner, enabled?: false
 # green; shaping tests opt in via Application.put_env + on_exit restore.
 config :jido_claw, :output_shaping, enabled?: false
 
+# Doom-loop guard off in test so the broad tool suite isn't guarded; the
+# guard's own tests pass explicit opts (pure/store) or opt in via
+# Application.put_env + on_exit restore (integration, async: false).
+config :jido_claw, :loop_guard, enabled?: false
+
 # AR-5 doctrine injection off in test so existing spawn/skill tests run on
 # today's no-doctrine behavior; doctrine's own tests opt in via
 # Application.put_env + on_exit (async: false).

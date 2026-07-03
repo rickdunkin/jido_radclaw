@@ -56,7 +56,7 @@ re-verify at build time).
 | # | Wave | Item | Source | Effort | Shape |
 | --- | --- | --- | --- | --- | --- |
 | 1 | A | Headless one-shot + CLI session resume — ✅ DONE 2026-07-03 | osa OS1-5 (+ CC2-2 rider) | S | One session |
-| 2 | A | Doom-loop guard | osa OS1-2 | S | One session (pure module + pipeline hook) |
+| 2 | A | Doom-loop guard — ✅ DONE 2026-07-03 | osa OS1-2 | S | One session (pure module + pipeline hook) |
 | 3 | A | Lua code-mode pair (`lua_docs`/`lua_eval`) | amber AM-1 | S–M | Single PR (two tools + policy envelope) |
 | 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) | camus C1-3 | M | Single PR |
 | 5 | B | Deterministic verify authority + sealed heads | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
@@ -143,7 +143,35 @@ mints a fresh `SessionId`.
 external harnesses, piping — and the entry point #7's canary rider and the eval
 harness both want.
 
-## 2. Doom-loop guard — S (osa OS1-2)
+## 2. Doom-loop guard — S (osa OS1-2) — ✅ DONE 2026-07-03
+
+> **Done 2026-07-03**, with corrections to this entry's claims (mirrored into
+> the source entry, osa OS1-2): landed as `JidoClaw.Agent.LoopGuard` (pure core
+> + fail-open facade) + `LoopGuard.Store` (per-`{tenant, session, agent}`
+> KeyStates keyed via `Compactor.Identity`; in-memory, **per node**), wired
+> into `Tools.Action` after the approval gate — pre-execution `check` (the 4th
+> identical call / 101st call never runs; an improvement over OSA's post-batch
+> check) + post-normalize `observe_result` (skip-lists approval/doom envelopes
+> as non-executions). Corrections: (a) step 1's contract shape shipped, but as
+> our redesign — OSA folds the nudge into `:ok` via system-message injection +
+> a pdict counter; (b) "reset on any clean success" was OSA's *moduledoc*, not
+> its code (which never cleared) — we shipped **per-tool** clearing so the
+> edit-fail→read-ok→edit-fail repair loop still accumulates; (c) step 2's
+> "pipeline … already sees every call + normalized error" holds only for calls
+> reaching `run/2` — param-validation/timeout/exception/output-validation
+> failures are documented, test-pinned residuals; (d) `(tool, args_hash,
+> error?)` shipped typed: SHA-256 over deterministic ETF (not `phash2`), typed
+> error classification incl. both error-bearing OK shapes — run_command's
+> nonzero exit (directive appended to `output`, not `message`) and the MCP
+> proxies' re-surfaced `{:ok, %{"isError" => true}}` domain failures
+> (directive appended as a `content` text item) — no `@error_indicators`
+> sniffing; (e)
+> the halt envelope carries `details: %{retry: false, trigger: …}` — proven
+> non-retryable at BOTH retry layers by an Exec/Turn-driven contract test
+> (`:doom_loop` is outside jido_ai's whitelist AND jido_action defaults
+> unknown-code maps to retryable without the hint); (f) the property tests
+> (step 4) are the repo's first. Halt decay: sticky 5 min (`halt_ttl_ms`) then
+> full key reset; idle keys expire after 30 min; cap is per key **per node**.
 
 The only guard on the tool loop today is jido_ai's soft nudge on *consecutive
 identical* signatures — no failure-awareness, no window (A-B-A-B oscillation

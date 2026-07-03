@@ -46,6 +46,10 @@ defmodule JidoClaw.Telemetry do
       counter("jido_claw.tool.shaping.total", tags: [:tool, :format]),
       sum("jido_claw.tool.shaping.bytes_saved", tags: [:tool]),
 
+      # Doom-loop guard metrics (JidoClaw.Agent.LoopGuard) — the Trace
+      # `:guardrail` events carry the per-key timeline; this is the rollup.
+      counter("jido_claw.loop_guard.total", tags: [:event, :trigger]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -189,6 +193,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :tool, :shaping],
       %{bytes_saved: bytes_saved, total: 1},
       %{tool: tool, format: format}
+    )
+  end
+
+  @spec emit_loop_guard(String.t(), atom(), atom()) :: :ok
+  def emit_loop_guard(tool, event, trigger) do
+    :telemetry.execute(
+      [:jido_claw, :loop_guard],
+      %{total: 1},
+      %{tool: tool, event: event, trigger: trigger}
     )
   end
 

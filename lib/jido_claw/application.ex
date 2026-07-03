@@ -322,6 +322,12 @@ defmodule JidoClaw.Application do
       # Agent tracking (per-agent stats for swarm display)
       JidoClaw.AgentTracker,
 
+      # Doom-loop guard windows, keyed per {tenant, session, agent} —
+      # in-memory and PER NODE (see the LoopGuard moduledoc). Present on
+      # every surface (MCP serve mode included: MCP-driven turns are a
+      # guarded target).
+      JidoClaw.Agent.LoopGuard.Store,
+
       # External MCP tool consumption (JidoClaw.MCP.Consumer). After
       # AgentTracker — the `:prepared` rehydrate reads it to re-attach live
       # tracked agents. Serve-mode/test gated (absent under :mcp; stdio is

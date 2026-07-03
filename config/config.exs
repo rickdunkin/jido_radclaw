@@ -305,6 +305,34 @@ config :jido_claw, :output_shaping,
   generic_head_bytes: 2_048,
   generic_tail_bytes: 4_096
 
+# Doom-loop guard (JidoClaw.Agent.LoopGuard, osa OS1-2). Three mechanisms on
+# every `Tools.Action` call, keyed per {tenant, session, agent}: a trailing
+# run of `repeat_threshold` identical {tool, args} calls within the last
+# `repeat_window` recorded calls halts PRE-execution; a failure signature
+# repeating `failure_threshold` times within the last `failure_window`
+# error results nudges the LLM (`max_recoveries` recovery directives) then
+# halts; `max_calls` executed calls hard-cap the key (one-time warn at
+# `warn_pct`). Halts are sticky for `halt_ttl_ms`, then the key resets
+# fresh; idle keys expire after `idle_ttl_ms`. `enabled?` is the single
+# kill switch: disabling restores the unguarded tool loop verbatim.
+# NOTE: state is in-memory and PER NODE — in cluster mode user cron
+# `:agent` jobs fire on every node, so the worst-case budget scales with
+# node count.
+config :jido_claw, :loop_guard,
+  enabled?: true,
+  repeat_threshold: 4,
+  repeat_window: 8,
+  failure_threshold: 3,
+  failure_window: 20,
+  max_calls: 100,
+  warn_pct: 0.80,
+  max_recoveries: 2,
+  # 5 min — sticky-halt decay, then full key reset
+  halt_ttl_ms: 300_000,
+  # 30 min — idle-window expiry
+  idle_ttl_ms: 1_800_000,
+  sweep_interval_ms: 60_000
+
 # Destination policy for LLM-controlled egress (JidoClaw.Security.DestinationPolicy,
 # gating the browse_web tool). The headless browser otherwise navigates to ANY
 # model-supplied URL — an injected page can steer it at loopback / RFC-1918 /

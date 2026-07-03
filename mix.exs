@@ -136,6 +136,10 @@ defmodule JidoClaw.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_harness, "~> 0.1", only: [:dev, :test], runtime: false},
+      # Property testing (LoopGuard windows). Already in mix.lock transitively
+      # via ash — which requires it in ALL envs (optional: false), so `only:`
+      # would diverge; declared direct so the use is explicit.
+      {:stream_data, "~> 1.3"},
       {:usage_rules, "~> 1.0", only: [:dev]},
       {:tidewave, "~> 0.5", only: :dev},
       {:igniter, "~> 0.5", only: [:dev, :test]},
