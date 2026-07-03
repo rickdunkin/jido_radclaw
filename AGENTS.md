@@ -12,6 +12,7 @@ mix test                               # full suite (runs ash.setup --quiet firs
 mix test test/jido_claw/foo_test.exs   # single test file
 mix test test/path_test.exs:42         # single test by line
 mix test --failed                      # re-run failures
+scripts/test-partitioned.sh [N]        # suite in N parallel partitions (default 4, ~2.2x faster; --failed caveat in header)
 mix jidoclaw                           # run CLI REPL (setup wizard on first run)
 mix jidoclaw --mcp                     # run as MCP server (stdio)
 mix escript.build                      # build standalone binary

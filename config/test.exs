@@ -86,8 +86,12 @@ config :jido_claw, :triage_impl, JidoClaw.Test.TriageStub
 # terminal signal (LLM calls are stubbed), so the dispatcher / sub-agent
 # transcript flush would otherwise block on the 30s production default. A
 # short timeout keeps the best-effort flush from stalling test runs; tests
-# that need a specific value override it locally.
-config :jido_claw, :recorder_flush_timeout, 200
+# that need a specific value override it locally. 50 matches the local
+# overrides already in the suite; the cap only bites when the terminal
+# signal never arrives (flush returns early on success), and a full run
+# hits ~500 such timeouts — each ms here costs ~0.5s of suite wall time
+# (200 → 50 measured: 234s → 159s serial).
+config :jido_claw, :recorder_flush_timeout, 50
 
 # Tests don't have VOYAGE_API_KEY set; the per-call defense in
 # `JidoClaw.Embeddings.Voyage` already returns `{:error, :missing_api_key}`
