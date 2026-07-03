@@ -21,7 +21,7 @@ below are abridged from each doc's Determination.
 
 | Subject | Docs | What it is / headline verdict |
 | --- | --- | --- |
-| [ades](ades/) | landscape scan | Agent-cockpit/control-plane landscape feeding argus: three parallel-worktree desktop comparables (traycer, emdash, termic), two read-mostly attention dashboards (claude-command-center, muxara), one prompt blueprint (Xantham); initial scan only — worktree-domain and review-editor references identified, argus's §5 edit-and-resume confirmed novel in the set, no deep-dives yet |
+| [ades](ades/) | landscape scan, traycer inventory | Agent-cockpit/control-plane landscape feeding argus: three parallel-worktree desktop comparables (traycer, emdash, termic), two read-mostly attention dashboards (claude-command-center, muxara), one prompt blueprint (Xantham). Traycer deep-dive (TR-*) done 2026-07-03: closest *contract-layer* comparable (host closed-source; epic isn't a DAG) — headline borrows are the versioned-RPC skew layer + released-surface golden tests for argus §6.3 and worktree schema/affinity cribs for §3; edit-and-resume slot verified empty (argus §5 stays novel), plus one INDEPENDENT correction to the §5 `expectedSeq` sketch; emdash/CCC digs still queued |
 | [alp-river](alp-river/) | inventory, V2, unadopted rollup, AR-* program docs | Methodology layer above our engine; source of the AR-* program family (composer, sketch/system paths, multi-plan arbiter) |
 | [amber](amber/) | inventory | Own code: nothing to adopt; the stack it demos: one high-value borrow (AM-1 code-mode pair — adopted 2026-07-03 as `lua_query`/`lua_docs`), one watch-with-trigger |
 | [argus](argus/) | OVERVIEW | Greenfield codename: tailnet-wide multi-agent control plane — decisions + open questions, not a subject repo |

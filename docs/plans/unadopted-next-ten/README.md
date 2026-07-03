@@ -362,6 +362,17 @@ fingerprint.
 5. **Rider — camus C3-2:** a `resume_hint` field on gate cases (populated by
    the raising stage, rendered verbatim on all surfaces) — trivial once the
    new kind exists; the camus doc says "do it with C1-4."
+6. **Rider — ades/traycer TR1-2a (added 2026-07-03,
+   [inventory](../../exploration/ades/traycer/FEATURES-WORTH-BORROWING.md)):**
+   the MCP served-surface golden test — freeze the served tool-name list +
+   `jido://` resource URIs against a committed fixture (traycer's
+   released-surface discipline; editor clients already consume this surface,
+   and this item's step 4 touches those tools' outputs — names, not output
+   shapes, so no conflict). ~1h, zero dependencies; good same-session filler.
+   Coordination note while in the gate family: argus §5's `:review` kind
+   extends the same `Gate.Kinds` list `review_stall` joins — design the
+   disposition vocabularies together (traycer TR3-2's `superseded` belongs in
+   that conversation; second lander rebases a one-line list edit).
 
 ## 7. Executor seam — M–L, must be broken down (camus C1-1)
 

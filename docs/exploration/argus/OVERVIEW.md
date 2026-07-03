@@ -86,6 +86,8 @@ Worktree is **not** an existing concept in JidoClaw. The closest existing thing 
 
 Cross-domain `belongs_to :project` works fine in Ash 3.
 
+> **External reference (2026-07-03)**: design this resource with the traycer dig open — [ades/traycer TR1-3/TR1-4, TR2-1/TR2-2](../ades/traycer/FEATURES-WORTH-BORROWING.md): setup-state telemetry (a six-state `setup_status` distinct from lifecycle `status`), `origin: :created | :imported`, computed-never-persisted disk-truth, clone-not-migrate node affinity, busy-checked phased deletion, committable per-repo environment scripts.
+
 Proposed shape:
 
 ```elixir
@@ -164,9 +166,9 @@ Worktree is git-shaped; Workspace is not. The two model different concerns and n
 - `Workspace` is the directory anchor, memory/audit parent — present whenever an agent operates in a directory. Gains a `node` field so cluster-aware queries route correctly without relying on path-existence checks at query time.
 - `Worktree belongs_to :workspace, allow_nil?: false` and `belongs_to :project, allow_nil?: false`. It is a *facet* on Workspace, present only when the workspace is a managed git checkout under a known Project.
 - A Workspace can exist without a Worktree (CLI, non-git, scratch). A Worktree always has exactly one Workspace. `Workspace has_one :worktree`.
-- Path lives on Workspace; Worktree adds `branch`, `status`, `last_activity_at`. Both carry `node`, because both anchor data tied to a specific machine's filesystem. Use the lease layer's identity convention — `to_string(Node.self())`, the same value `WorkflowRun.claimed_by` stores (`WorkflowLease.node_identity/0`) — so node comparisons work across subsystems.
+- Path lives on Workspace; Worktree adds `branch`, `status`, `last_activity_at`. Both carry `node`, because both anchor data tied to a specific machine's filesystem. Use the lease layer's identity convention — `WorkflowLease.node_identity/0`, which is `to_string(Cluster.local_node())` (the `Cluster` wrapper, not raw `Node.self()` — corrected 2026-07-03), the same value `WorkflowRun.claimed_by` stores — so node comparisons work across subsystems.
 
-This stays mostly additive: a new `node` column on Workspace, populated automatically by `Workspaces.Resolver.ensure_workspace/3` (which sets `node: Node.self()`) — none of the 7+ bootstrap surfaces need to change. Existing rows backfill trivially from the current node since the system is single-node today. No policy refactor.
+This stays mostly additive: a new `node` column on Workspace, populated automatically by `Workspaces.Resolver.ensure_workspace/3` (which sets `node: Cluster.local_node()`) — none of the 7+ bootstrap surfaces need to change. Existing rows backfill trivially from the current node since the system is single-node today. No policy refactor. **One non-additive edit hides here (2026-07-03)**: Workspace's partial-unique identities are `(tenant_id, user_id, path)` / `(tenant_id, path)` (`workspace.ex:245-251`), so the same path checked out on two machines would collide — `node` must also join the identity key lists, the `identity_wheres_to_sql` partial-index SQL (`workspace.ex:28-31`), and the resolver's upsert attrs, not just the attribute block.
 
 For the UI: `Project.has_many :worktrees`, drill into a Worktree, list activity via `worktree.workspace.conversation_sessions`. Workspace is invisible to the operator but does the work underneath. The `Workspace.project_id` field — currently nullable and inconsistently populated — should be kept in sync with `worktree.project_id` when a Worktree exists, so project-scoped queries can reach Workspace-anchored data without always going through Worktree.
 
@@ -313,7 +315,7 @@ type Mutation {
 input ReviseStepOutputInput {
   stepId: ID!
   output: JSON!
-  expectedSeq: Int!  # run's event-log seq at read time — optimistic locking via the append CAS
+  expectedSeq: Int!  # run's event-log seq at read time — checked inside the append's FOR-UPDATE txn (§5.4 correction note)
 }
 ```
 
@@ -450,7 +452,7 @@ The list is intentionally short. Adding an editor type is a coordinated change b
   GraphQL: mutation reviseStepOutput(stepId, output, expectedSeq)
   Revision payload stored via the encrypted ref-store; a revision event is appended
   Projection updates WorkflowStep.output to the head; the original survives in the log
-  Optimistic concurrency: expectedSeq must match — the event append is the CAS
+  Optimistic concurrency: expectedSeq must match — checked inside the append transaction
 
 [user approves]
   GraphQL: mutation decideCase(caseId, APPROVE)
@@ -464,6 +466,8 @@ The list is intentionally short. Adding an editor type is a coordinated change b
 ```
 
 The one behavioral change to the gate family is the resume rule: promote the head revision instead of re-emitting the original. Everything upstream of that — durable halt, encrypted checkpoint, decision surfaces, audit timeline — already exists and is reused as-is.
+
+> **Correction (2026-07-03, traycer-dig seams pass)**: this section originally said "the event append is the CAS." It is not — the append is *pessimistic*: `Changes.Allocate` takes `FOR UPDATE` on the run row and allocates `seq = max+1` under that lock (`workflow_event/changes/allocate.ex:171-195`); the only CAS in the path is the WS1 lease-token fence, which fences ownership, not sequencing. The `expectedSeq` check is therefore small **net-new** machinery with an easy home: compare the caller's `expectedSeq` against the current max seq *after* acquiring the existing lock; mismatch returns a typed `stale_revision` error carrying the current seq (client refetches and re-edits — the CCC mtime-409 flow). See [ades/traycer TR2-3](../ades/traycer/FEATURES-WORTH-BORROWING.md).
 
 ### 5.5 Open design questions for editors
 
@@ -479,7 +483,7 @@ Things we explicitly deferred during the exploration. Each has a real decision t
 
 1. **Review-gate declaration details.** The mechanism is settled (§5.2: skill-step annotation compiled to an interposed `:review` gate; catalog gate stage for composer routes). Open: the exact YAML key shape, how editor metadata rides the gate's declared fields, and whether composer stages declare review per-stage (like `lock`) or via dedicated catalog gate entries.
 2. **Push notification trigger taxonomy.** With the React PWA + Web Push path settled (§2.6), the open question is *which* events warrant a push: gate opened (case awaiting decision), run failed, run converged, replay preflight blocked, long-running job complete? Worth defining the trigger set before wiring the subscription endpoint.
-3. **GraphQL codegen tooling.** Apollo's recommended client codegen approach has shifted (the older `typescript-react-apollo` plugin is no longer the recommendation). Pick the current Apollo-blessed option when the time comes, rather than locking in now.
+3. **GraphQL codegen tooling.** Apollo's recommended client codegen approach has shifted (the older `typescript-react-apollo` plugin is no longer the recommendation). Pick the current Apollo-blessed option when the time comes, rather than locking in now. The harder half of this question — schema *skew* between a rolling-upgraded cluster and a service-worker-cached PWA shell — now has a worked external reference (2026-07-03): [ades/traycer TR1-1/TR1-2/TR2-4](../ades/traycer/FEATURES-WORTH-BORROWING.md) — per-topic version manifests for the Channels layer, golden-SDL / released-surface CI guards, and block-with-refresh recovery UX.
 4. **Codename.** `argus` is provisional, though the clustering and Reactor-adoption docs already refer to "the argus second node" / "the clustered-tailnet future (argus)" — it has de facto stuck. Other options floated mentally: `helm`, `atlas`, `tower`, `bridge`. Bikeshed-class.
 
 ---
