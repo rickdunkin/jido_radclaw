@@ -6,7 +6,7 @@ Compiled **2026-07-02**, against jidoka `9469dc09` (2026-06-17, `0.8.0-beta.1`) 
 
 | # | Idea | Source entry | Adopt now? | Trigger distance |
 | --- | --- | --- | --- | --- |
-| 1 | Deterministic eval harness | V2-5 | Not yet — nearest | AR-5/6/7 built the prompt surface it would protect; awaiting first regression |
+| 1 | Deterministic eval harness | V2-5 | ✅ Adopted 2026-07-03 | Trigger fired (unadopted-next-five items 3+4 rewrote the doctrine surface); shipped as `JidoClaw.Eval` |
 | 2 | LLM-authored bounded plans (`compose_skill`) | V2-7 | No — watch | AR-2 built the substrate; authorship posture change still unjustified |
 | 3 | Cron async dispatch + stuck watchdog | V1 T2-5 note | No | First stuck job, or long agent turns on cron becoming routine |
 | 4 | Per-tool MCP approval overlay | V2-2 deferral | No | A server mixing benign + dangerous tools that one template needs both of |
@@ -19,13 +19,13 @@ Compiled **2026-07-02**, against jidoka `9469dc09` (2026-06-17, `0.8.0-beta.1`) 
 
 ---
 
-## 1. Deterministic eval harness (V2-5)
+## 1. Deterministic eval harness (V2-5) — ✅ ADOPTED 2026-07-03
 
-**Standing**: still test-stubs-only — scripted backends in `test/support/` (`echo_stub`, `pass_stub`, `forge_stub`, `mcp_client_stub`, `front_door_composer_stub`, `strategy_test_helper`) consumed by ordinary ExUnit tests; no case/assertion harness shape. What changed since the inventory: the prompt surface such a harness would protect grew substantially — AR-5's central doctrine slices (`JidoClaw.Doctrine`, injected into sub-agent prompts), AR-6's persona layer (`JidoClaw.Persona`), AR-3's reviewer contract, and AR-7's confidence-tagging convention. Prompt-as-data is now load-bearing in the composer loop: a doctrine slice is the *prose half* of the `reviewer_verdict`/per-finding-`confidence` field contracts the workers' Zoi schemas enforce.
+**Standing**: SHIPPED as the minimal slice — `JidoClaw.Eval` + `JidoClaw.Eval.{Case, Run}` in `lib/jido_claw/eval/` (unadopted-next-five item 5). `Case` packages `{kind, request, assertions}` and `run_case/2` executes it against **production functions only** (the jidoka design intent, preserved: the runner adds no new runtime path) across four kinds — `:prompt` (the assembled `SubagentPrompt.build/3`), `:schema` (`Jido.AI.Output.parse/2` over a worker's `strategy_opts()[:output]`), `:composer` (`RouteComposer.run_sync/1` through the real gate dance), and `:coherence` (a doctrine slice's prose vs per-token schema probes — pinning the prose-half/schema-half field contracts this entry called load-bearing). 10 seed cases in `test/jido_claw/eval/` pin the post-AR-9 surface: the coder/reviewer/plan-drafter/plan-arbiter assembled prompts, the reviewer-verdict and arbiter decision-memo schemas, the tie-break rung/verdict and `likely`/`unsure` token coherences, and an armed adopt-memo composer e2e. Unknown assertion keys fail loudly (an `:unknown_assertion` record fails the run) — a deliberate deviation from jidoka's silent skip, since drift-catching is the point. **Stub-list note**: the six stubs this entry named (and the V2-5 entry's four) are accurate-but-partial subsets of `test/support/` — all seven files exist — but the shipped harness consumes *none* of them directly; it calls production functions, and the composer case arms the existing composer stubs via app env exactly as the loop tests do.
 
-**Now?** Closest to worth-it of the ten, but still no — the entry's own bar was "when reasoning-strategy or prompt regressions start biting," and surface growth half-meets it; an incident would meet it.
+**Now?** Done. The bar was met, not skipped: items 3+4 of the unadopted-next-five program were "the next material rewrite of the doctrine slices" — a new arbiter persona (the 10th), two new doctrine slices (`tie_break`, `code_doctrine` — registry now 11), and the arbiter memo's prose-half/schema-half field contract.
 
-**Trigger**: the first doctrine/persona regression the ordinary suite misses, or the next material rewrite of the doctrine slices. When it fires, lift `Jidoka.Eval.Case`'s shape (spec + request + assertions run against fake or live capabilities) rather than accreting more one-off stubs — the fake-capability halves already exist in `test/support/`.
+**Trigger**: fired 2026-07-03 (items 3+4 above). Follow-on growth stays demand-gated — add a seed case when a prompt-surface regression escapes the ordinary suite, not ahead of it; the scope guard was "a harness plus a first case set, not an eval program."
 
 ## 2. LLM-authored bounded plans / `compose_skill` (V2-7)
 

@@ -1,6 +1,6 @@
 # Argus — Unified Control Plane for Multi-Agent JidoClaw
 
-Exploration notes — not a plan, not a commitment. Codename `argus` (Greek myth: hundred-eyed watcher) is provisional. Compared against jido_radclaw as of 2026-05-10.
+Exploration notes — not a plan, not a commitment. Codename `argus` (Greek myth: hundred-eyed watcher) is provisional, though sibling docs already cite the program by this name. Compared against jido_radclaw as of 2026-07-03.
 
 ## How to read this document
 
@@ -29,13 +29,13 @@ The control plane is not LiveView. It is a decoupled client that speaks to *any*
 
 Each device runs a full JidoClaw instance. The instances form an Erlang cluster over Tailscale using libcluster. Tailscale's MagicDNS gives stable hostnames and the network layer handles auth, which is exactly the configuration where Erlang distribution shines.
 
-JidoClaw already has the wiring (`:cluster_enabled`, libcluster + `:pg` per AGENTS.md) — this just means turning it on and picking a strategy (likely a static list of MagicDNS names, or `Cluster.Strategy.Epmd` with explicit nodes).
+The cluster layer is real, not aspirational: `:cluster_enabled` starts libcluster plus a leadership stack (a dedicated `:pg` scope and `JidoClaw.Cluster.Leader`), and the clustering program (`docs/plans/clustering/`, WS1–WS5) covers run leases with CAS fencing, reclaim & recovery of runs from dead nodes, leader election + singleton audit, clustered cron ownership, and cross-node cancellation. WS6 — multi-node validation — explicitly waits on the argus second node, so argus is the forcing function for exercising all of it outside tests. One placement note: `:cluster_strategy` defaults to `:gossip`, which depends on UDP multicast and will not traverse a tailnet; for Tailscale, configure the `:epmd` strategy with an explicit list of MagicDNS node names (`:cluster_nodes`).
 
 ### 2.2 Database: shared Postgres on an always-on desktop
 
 One device hosts Postgres; all JidoClaw nodes connect to it. Daily backups on the host. This unifies persisted data — Projects, Workspaces, Worktrees, Conversations, WorkflowRuns, Memories, Knowledge, Audit — across the cluster automatically.
 
-**Tradeoff acknowledged**: the desktop becomes a hard dependency. A laptop that drops off the tailnet loses DB access and effectively cannot run JidoClaw. This is acceptable for the use case (always-online tailnet, agents that need shared memory anyway), but is the single biggest fragility in the design.
+**Tradeoff acknowledged**: the desktop becomes a hard dependency. A laptop that drops off the tailnet loses DB access and effectively cannot run JidoClaw. This is acceptable for the use case (always-online tailnet, agents that need shared memory anyway), but is the single biggest fragility in the design. Node loss for in-flight *runs* is handled separately (leases + reclaim, appendix A.6); the DB is the remaining single point of failure.
 
 **Offline behavior**: when a node loses DB access, it exits or returns an offline error to any incoming request — *no* local-only degraded mode. The shared DB is the system of record; operating without it would split-brain memory and audit. Easier to recover from "everything just stops" than from divergent state.
 
@@ -55,11 +55,13 @@ The client connects to one node; that node serves as the gateway for cluster-wid
 
 **Phoenix Channels** for the live event layer. AshGraphql supports subscriptions but Channels are more battle-tested, the forge subsystem already broadcasts via Phoenix.PubSub, and using Channels keeps a single live transport regardless of how the query layer evolves.
 
-Two transports, each used for what it's best at: GraphQL for "fetch this tree of data" and "perform this action," Channels for "tell me when X changes."
+A third surface exists and stays: **MCP**. The stdio server already exposes workflow observe/control tools (`workflow_status`, `inspect_workflow`, `workflow_events`, `replay_workflow`) plus the `jido://workflows/catalog` and `jido://workflows/{name}` resources — the right surface for editor-embedded agent clients, and proof the read-models exist. It is not the control-plane transport (no phone client, no typed cache, no subscription fan-out), but the GraphQL resolvers should reuse the same view modules those tools read (`WorkflowView`, `RouteComposer.Observe`) rather than growing a parallel query layer.
+
+Two client-facing transports, each used for what it's best at: GraphQL for "fetch this tree of data" and "perform this action," Channels for "tell me when X changes."
 
 ### 2.5 Cross-node concerns: fan-out for in-memory state
 
-Shared Postgres unifies *persisted* data. It does **not** unify per-node in-memory state (`AgentTracker` ETS, `Forge.Manager` GenServer state, `Platform.Approval` ETS, `JidoClaw.SessionRegistry`). Any "what is each node doing right now?" query needs cross-node fan-out via `:erpc.multicall` or `Task.Supervisor.async_stream` over `Node.list()`. The gateway node aggregates and returns.
+Shared Postgres unifies *persisted* data — and because workflow state is event-sourced (appendix A.4), even live run/wave/gate state is DB-projected: answering "what is this workflow doing right now" needs no fan-out. Human approvals are durable `AgentCase` rows, likewise fan-out-free. What remains genuinely per-node and in-memory: `AgentTracker` (GenServer state — live agents, current tool, in-flight tokens), `Forge.Manager` state, `JidoClaw.SessionRegistry`, and shell sessions. "What is each node doing right now?" queries over those need cross-node fan-out via `:erpc.multicall` or `Task.Supervisor.async_stream` over `Node.list()`. The gateway node aggregates and returns.
 
 ### 2.6 UI client: React + Apollo Client
 
@@ -79,7 +81,7 @@ Worktree is **not** an existing concept in JidoClaw. The closest existing thing 
 
 **Why a new `Worktrees` domain rather than nesting under `Projects`:**
 
-- Matches the codebase convention. JidoClaw groups domains by bounded context, not hierarchy: `Workspaces`, `Conversations`, `Forge`, `Orchestration`, `Audit` are all standalone even though they reference `Projects`. `Projects` is a single-resource metadata domain (`projects.ex:1-11`) — meant to stay focused.
+- Matches the codebase convention. JidoClaw groups domains by bounded context, not hierarchy: `Workspaces`, `Conversations`, `Forge`, `Orchestration`, `Audit` are all standalone even though they reference `Projects`. `Projects` is a single-resource metadata domain — meant to stay focused.
 - Worktree is operationally heavy (shell side-effects via `git worktree add/remove`, node-affinity, lifecycle status) and is the natural parent for likely future siblings: per-worktree sandbox metadata, per-worktree memory partitions, attached background processes. All want to live in a domain together.
 
 Cross-domain `belongs_to :project` works fine in Ash 3.
@@ -142,19 +144,18 @@ Implications:
 
 ### 3.2 `Projects.Project` enhancements
 
-Today: `id`, `name`, `github_full_name`, `default_branch`, `settings`, timestamps. No "active" concept, no list API.
+Today: `id`, `name`, `github_full_name`, `default_branch`, `settings`, timestamps, plus a `code_interface` for CRUD and `get_by_github_full_name`. No "active" concept, no scoped list.
 
 Add:
 - `attribute :status, :atom, constraints: [one_of: [:active, :archived]], default: :active` (or `archived_at` for soft-delete style).
-- `read :list_active` on the resource.
-- `code_interface` entries so `Projects.list_active!()` is a one-liner.
+- `read :list_active` on the resource, with a matching `code_interface` entry so `Projects.list_active!()` is a one-liner.
 - `has_many :worktrees, JidoClaw.Worktrees.Worktree`.
 
 ### 3.3 Workspace and Worktree stack rather than collapse
 
 Worktree is git-shaped; Workspace is not. The two model different concerns and neither subsumes the other.
 
-**What Workspace is**: a tenant-scoped, durable anchor for *operating in a directory*. It carries identity (`tenant_id + path + optional user_id + optional project_id`), memory-egress policy (`embedding_policy`, `consolidation_policy`, with cross-row aggregates in `Workspaces.PolicyTransitions`), and a dual-identity quirk — the same path can have separate rows for an authed user and for anonymous CLI use (`workspace.ex:219-225`). It is the parent UUID for `Conversations.Session`, `Solutions.Solution`, `Reasoning.Outcome`, `RequestCorrelation`, and the polymorphic target for `Audit.Event`. It is bootstrapped lazily from 7+ surfaces (REPL, web RPC, shell, MCP, network node, mix tasks) via `Workspaces.Resolver.ensure_workspace/3` — none of which require a git checkout. The CLI running in `/tmp/scratch` creates a real Workspace.
+**What Workspace is**: a tenant-scoped, durable anchor for *operating in a directory*. It carries identity (`tenant_id + path + optional user_id + optional project_id`), memory-egress policy (`embedding_policy`, `consolidation_policy`, with cross-row aggregates in `Workspaces.PolicyTransitions`), and a dual-identity quirk — the same path can have separate rows for an authed user and for anonymous CLI use (`workspace.ex:245-251`). It is the parent UUID for `Conversations.Session`, `Solutions.Solution`, `Reasoning.Outcome`, `RequestCorrelation`, and the polymorphic target for `Audit.Event`. It is bootstrapped lazily from 7+ surfaces (REPL, web RPC, shell, MCP, network node, mix tasks) via `Workspaces.Resolver.ensure_workspace/3` — none of which require a git checkout. The CLI running in `/tmp/scratch` creates a real Workspace.
 
 **Why collapsing fails**: forcing every working directory to be a git worktree excludes the non-git cases above; alternatively, watering down "Worktree" until it accepts non-git directories makes the name misleading and loses the value of having a focused project + git facet.
 
@@ -163,33 +164,31 @@ Worktree is git-shaped; Workspace is not. The two model different concerns and n
 - `Workspace` is the directory anchor, memory/audit parent — present whenever an agent operates in a directory. Gains a `node` field so cluster-aware queries route correctly without relying on path-existence checks at query time.
 - `Worktree belongs_to :workspace, allow_nil?: false` and `belongs_to :project, allow_nil?: false`. It is a *facet* on Workspace, present only when the workspace is a managed git checkout under a known Project.
 - A Workspace can exist without a Worktree (CLI, non-git, scratch). A Worktree always has exactly one Workspace. `Workspace has_one :worktree`.
-- Path lives on Workspace; Worktree adds `branch`, `status`, `last_activity_at`. Both carry `node`, because both anchor data tied to a specific machine's filesystem.
+- Path lives on Workspace; Worktree adds `branch`, `status`, `last_activity_at`. Both carry `node`, because both anchor data tied to a specific machine's filesystem. Use the lease layer's identity convention — `to_string(Node.self())`, the same value `WorkflowRun.claimed_by` stores (`WorkflowLease.node_identity/0`) — so node comparisons work across subsystems.
 
 This stays mostly additive: a new `node` column on Workspace, populated automatically by `Workspaces.Resolver.ensure_workspace/3` (which sets `node: Node.self()`) — none of the 7+ bootstrap surfaces need to change. Existing rows backfill trivially from the current node since the system is single-node today. No policy refactor.
 
 For the UI: `Project.has_many :worktrees`, drill into a Worktree, list activity via `worktree.workspace.conversation_sessions`. Workspace is invisible to the operator but does the work underneath. The `Workspace.project_id` field — currently nullable and inconsistently populated — should be kept in sync with `worktree.project_id` when a Worktree exists, so project-scoped queries can reach Workspace-anchored data without always going through Worktree.
 
-### 3.4 Finish the workflow runner so it uses the schema
+### 3.4 The execution substrate — what exists, and the delta argus needs
 
-**Workflows and Skills are distinct concepts.** Skills (`.jido/skills/`) extend AI agent capabilities — a skill might wrap a single tool, drive a multi-turn interaction, or *invoke a workflow* as one of its actions. A workflow is its own definition with its own runner and persistent state machine; it is the thing that pauses, persists steps, and supports the editable-draft feature in §5. The existing code partially conflates the two (skill YAML and workflow runner both have DAG-of-steps shapes); cleanly separating them is part of this work.
+**Workflows and Skills converged rather than separated.** Skills (`.jido/skills/` YAML — `name`, `template`, `task`, `depends_on`, `produces`, `consumes`) are the workflow definitions: `Skills.Compiler` compiles a skill into an `%Reactor{}`, and `ReactorRunner` + `ReactorMiddleware` execute it inside a durable envelope shared by every run — cron-triggered runs and composer waves alike. There is no separate workflow YAML format, and argus should not introduce one (§5.2).
 
-This is the upstream blocker for the entire "edit drafts" feature. Current state (see appendix A.4):
+The substrate is event-sourced (details in appendix A.4):
 
-- `Orchestration.WorkflowRun`, `WorkflowStep`, `ApprovalGate` exist as Ash resources with full state-machine actions (`:await_approval`, `:resume`, `:approve`).
-- The actual runner (`workflows/plan_workflow.ex`) uses `Task.async_stream` in-memory, never reads or writes any of these tables, never checks gates.
-- `Orchestration.RunPubSub`'s run-level lifecycle events (`:run_started`/`:run_completed`/`:run_failed`) are now published by `WorkflowRunner` and consumed by `DashboardLive`; `plan_workflow.ex` still publishes no per-step transitions.
+- **Durable spine.** Every run appends to an immutable `WorkflowEvent` log; `WorkflowRun.status` and `WorkflowStep` rows are *projections* of that log — the only status writer lives inside the event-append transaction. Runs carry encrypted resume checkpoints and replay inputs; `Replay` can re-run any terminal run from its stored inputs, behind safety gates (definition-hash drift, irreversible steps).
+- **Gate family.** A `GateStep` halts a run `:awaiting_approval` and opens a durable `AgentCase` (workflow-axis kinds `:plan` and `:irreversible_write`; the conversation-axis tool-approval gate uses `:tool_call`). Operators decide through `Cases.decide/4` from the REPL (`/gates`) or the web (`/approvals`); on approve, `GateResume` re-runs the persisted checkpoint, seeding only the decision atom.
+- **Composer.** `RouteComposer` is the multi-wave orchestration loop on top of the Reactor envelope: a compile-time stage catalog (`%Stage{}` with data + signal graphs, locks, and per-stage model/effort tiers), Kahn-level waves, a parent "composer" run plus one child run per wave, an encrypted `art_…` artifact ref-store (`ComposerArtifact`), and full observability (held/dropped stages, live signals, gate-block state) over MCP.
+- **Leases.** Single-writer-per-run is enforced, not assumed: `WorkflowRun.claimed_by`/`claim_token` with CAS stamping, commit-time token fencing, and reclaim/recovery of runs whose node died.
 
-The runner needs to be rewritten to:
-1. Create a `WorkflowRun` row at start.
-2. Create a `WorkflowStep` row per step, transitioning `:pending → :running → :completed/awaiting_review`.
-3. Persist each step's `output` to the row.
-4. Honor `pause_for_review` on a step (see §5) by transitioning the run to `:awaiting_approval` and the step to a new `:awaiting_review` status.
-5. Broadcast every transition on `Orchestration.RunPubSub`.
-6. On `:resume`, read the (possibly edited) `WorkflowStep.output` from the DB and feed it to the next step.
+**The delta argus needs from this substrate** — this is the actual backend work, and it is small relative to what exists:
 
-This is mostly a rewrite of one file, not a redesign. The schema is already correct.
+1. **An edit path at gates.** Today gates are approve/reject/abandon only: declared gate fields fold into a free-text `decision_comment`, and the plan gate re-emits the *original* artifact from its encrypted ref, unchanged. The reviewable-editor feature (§5) needs a `:review` gate kind whose resume promotes the *head revision* — the operator's edit if one exists, else the original.
+2. **Per-step review checkpoints.** Gates are standalone stages wired per-reactor; a `pause_for_review` annotation on any skill step, compiled into an interposed review gate, makes checkpointing declarative.
+3. **Channel-layer streaming.** Run lifecycle and gate events broadcast on `Orchestration.RunPubSub` today, but only LiveView consumes them; per-step transitions exist only in the durable event log. The channel layer proxies the former and projects the latter.
+4. **Worktree node-affinity.** A run operating on a checkout must execute on the machine that has it. The lease machinery already records the claiming node; argus adds the placement policy — claim on `worktree.node` — same constraint as Forge sandboxes and direct tool execution.
 
-**Where the runner runs**: on the worktree's owning node. Because the workflow operates on files in the checkout (and the checkout only exists on one machine), the runner naturally pins to `worktree.node` — same constraint as Forge sandboxes and direct tool execution. This gives a single writer per `run_id` for free, and Phoenix.PubSub guarantees FIFO delivery cluster-wide from a single publisher — so subscribers see step transitions in order without any consumer-side reordering logic. No cluster-wide process registry needed.
+**Where the runner runs**: on the worktree's owning node, per delta 4. This preserves the existing single-writer guarantee (leases), and Phoenix.PubSub guarantees FIFO delivery cluster-wide from a single publisher — so subscribers see transitions in order without consumer-side reordering. No cluster-wide process registry needed.
 
 ---
 
@@ -255,8 +254,10 @@ type WorkflowRun {
   status: WorkflowRunStatus!
   startedAt: DateTime
   worktree: Worktree
+  parentRun: WorkflowRun          # composer lineage
+  childRuns: [WorkflowRun!]!
   steps: [WorkflowStep!]!
-  pendingApprovalGate: ApprovalGate
+  pendingCase: AgentCase          # the gate blocking this run, if any
 }
 
 type WorkflowStep {
@@ -264,14 +265,18 @@ type WorkflowStep {
   sequence: Int!
   name: String!
   status: WorkflowStepStatus!
-  output: JSON
-  pauseForReview: PauseForReviewMeta
+  output: JSON                    # projection head — reflects operator revisions
   outputRevisions: [StepOutputRevision!]!
 }
 
-type PauseForReviewMeta {
-  editor: EditorType!   # MARKDOWN | CODE_DIFF | JSON | PROMPT | COMMAND_LIST
-  label: String
+type AgentCase {
+  id: ID!
+  kind: CaseKind!                 # PLAN | IRREVERSIBLE_WRITE | TOOL_CALL | REVIEW
+  status: CaseStatus!
+  title: String
+  editor: EditorType              # for REVIEW cases (§5)
+  targetStep: WorkflowStep
+  decisionComment: String
 }
 
 type StepOutputRevision {
@@ -281,8 +286,8 @@ type StepOutputRevision {
   editedAt: DateTime!
 }
 
-enum WorkflowRunStatus { PENDING RUNNING AWAITING_APPROVAL COMPLETED FAILED CANCELLED }
-enum WorkflowStepStatus { PENDING RUNNING AWAITING_REVIEW COMPLETED FAILED SKIPPED }
+enum WorkflowRunStatus { PENDING RUNNING AWAITING_APPROVAL COMPLETED FAILED CANCELLED ABANDONED }
+enum WorkflowStepStatus { PENDING RUNNING COMPLETED FAILED SKIPPED }
 
 # Top-level queries
 type Query {
@@ -290,6 +295,7 @@ type Query {
   project(id: ID!): Project
   worktree(id: ID!): Worktree
   workflowRun(id: ID!): WorkflowRun
+  workflowEvents(runId: ID!, afterSeq: Int, limit: Int): WorkflowEventPage!  # durable feed; reconnect catch-up
   auditEvents(filter: AuditEventFilter): [AuditEvent!]!   # source of agent activity history
   cluster: ClusterStatus!                                  # cross-node fan-out
 }
@@ -297,21 +303,21 @@ type Query {
 # Mutations
 type Mutation {
   startWorkflowRun(input: StartWorkflowRunInput!): WorkflowRunPayload!
-  editWorkflowStepOutput(input: EditStepOutputInput!): WorkflowStepPayload!
-  resumeWorkflowRun(input: ResumeRunInput!): WorkflowRunPayload!
-  approveGate(input: ApproveGateInput!): ApprovalGatePayload!
-  rejectGate(input: RejectGateInput!): ApprovalGatePayload!
+  reviseStepOutput(input: ReviseStepOutputInput!): WorkflowStepPayload!  # appends a revision event
+  decideCase(input: DecideCaseInput!): AgentCasePayload!                 # approve resumes; reject cancels; abandon parks
+  cancelWorkflowRun(input: CancelRunInput!): WorkflowRunPayload!
+  replayWorkflowRun(input: ReplayRunInput!): WorkflowRunPayload!
   archiveWorktree(input: ArchiveWorktreeInput!): WorktreePayload!
 }
 
-input EditStepOutputInput {
+input ReviseStepOutputInput {
   stepId: ID!
   output: JSON!
-  expectedVersion: Int!  # optimistic locking
+  expectedSeq: Int!  # run's event-log seq at read time — optimistic locking via the append CAS
 }
 ```
 
-Most of this is generated by AshGraphql from the resource definitions; the manual surface is the queries/mutations exposed and any custom field resolvers (e.g., `cluster` for the cross-node fan-out).
+Most of this is generated by AshGraphql from the resource definitions; the manual surface is the queries/mutations exposed and any custom field resolvers (e.g., `cluster` for the cross-node fan-out). Note that `WorkflowStep` is a projection — `reviseStepOutput` appends an event rather than mutating the row (§5.4), and `decideCase` wraps the same `Cases.decide/4` the REPL and LiveView use.
 
 ### 4.2 Phoenix Channels (live layer)
 
@@ -321,24 +327,24 @@ Most of this is generated by AshGraphql from the resource definitions; the manua
 | `forge:session:<id>` | `JidoClaw.Forge.PubSub` | Already broadcast; needs channel proxy |
 | `worktrees:project:<project_id>` | New PubSub topic | Broadcast on Worktree create/update/archive |
 | `conversations:session:<id>` | New PubSub topic + bridge from SignalBus | Bridge `Conversations.Recorder` to also broadcast |
-| `workflows:run:<id>` | `Orchestration.RunPubSub` (published by `WorkflowRunner`) | Already broadcast; needs channel proxy |
+| `workflows:run:<id>` | `Orchestration.RunPubSub` (run lifecycle, published by `ReactorMiddleware`) | Already broadcast; needs channel proxy. Per-step deltas exist only in the `WorkflowEvent` log — project them to subscribers (or add a broadcast in the event-append path) |
 | `workflows:project:<project_id>` | New aggregated topic | For the project-level workflow list |
-| `approvals:user:<user_id>` | `Platform.Approval` topic exists | Channel proxy + filter |
+| `gates:user:<user_id>` | `Orchestration.RunPubSub` gates topic | Already broadcast (ApprovalsLive consumes); needs channel proxy + per-user filter |
 | `cluster:nodes` | New | `:net_kernel.monitor_nodes/1` → broadcast |
 
 Channel events carry minimal payloads (resource id + change type). The client refetches via GraphQL using the id. This avoids duplicating shape between the channel payload and the GraphQL schema.
 
-On reconnect, the client refetches the current state via GraphQL — no event replay, no sequence tracking on the wire. Workflow runs are pinned to a single writer (§3.4), so events arrive in order while connected; missed-while-offline events are recovered by simply re-querying.
+On reconnect, workflow topics catch up from the durable event feed — the `workflowEvents(afterSeq:)` query pages the same append-only log the `workflow_events` MCP tool reads, so nothing is lost while offline. Other topics simply refetch current state via GraphQL; no sequence tracking on the wire. Workflow runs are single-writer (leases, §3.4), so events arrive in order while connected.
 
 ### 4.3 Plain controllers / GraphQL fields for non-Ash, runtime/cluster data
 
 Some data isn't backed by Ash resources — per-node in-memory state, YAML skills, cluster topology. Two options: bespoke Phoenix controllers, or generic Ash actions on a synthetic `System` resource exposed through GraphQL. The latter keeps the client surface uniform (one transport for queries) at the cost of a slightly contorted resource:
 
-- `cluster: ClusterStatus` — node list, version per node, uptime per node. Implementation: `:erpc.multicall` fan-out.
-- `agentRuntime: [NodeAgentSnapshot!]!` — per-node `AgentTracker` snapshot for **live** state only (currently running agents, current tool, in-flight tokens). Fanned out and merged via `:erpc.multicall`. **Historical** agent activity is sourced from `Audit.Event` aggregations via the regular AshGraphql side — `AgentTracker` stays in-memory per-node and is not promoted to a DB-backed resource.
+- `cluster: ClusterStatus` — node list, current leader (`Cluster.Leader`), version + uptime per node. Implementation: `:erpc.multicall` fan-out.
+- `agentRuntime: [NodeAgentSnapshot!]!` — per-node `AgentTracker` snapshot for **live** state only (currently running agents, current tool, in-flight tokens). Fanned out and merged via `:erpc.multicall`; the tracker's scoped view projections (AgentView) are the read-model to expose. **Historical** agent activity is sourced from `Audit.Event` aggregations via the regular AshGraphql side — `AgentTracker` stays in-memory per-node and is not promoted to a DB-backed resource.
 - `forgeRuntime: [NodeForgeSnapshot!]!` — per-node `Forge.Manager` state.
 - `skills: [Skill!]!` — list YAML skills available on each node (skills are not DB rows).
-- `runSkill(input: RunSkillInput!): SkillRunPayload!` — kick a skill on a chosen node.
+- `runSkill(input: RunSkillInput!): SkillRunPayload!` — kick a skill on a chosen node (the MCP `run_skill` tool does this for the local node; the GraphQL mutation adds node targeting).
 
 Lean: GraphQL via synthetic resources for uniformity. The fan-out implementation lives in custom resolvers.
 
@@ -357,27 +363,26 @@ The control plane is **not** intended for open-internet exposure; access is gate
 ### 4.6 Endpoints replaced
 
 - `/ws` channel `rpc:*` — the current `gateway.status`, `sessions.list`, `sessions.create`, `sessions.sendMessage` handlers either move to GraphQL mutations (`createSession`, `sendMessage`) or get superseded by the new channel topics. Old channel can stay during transition.
-- All LiveView pages become optional (the new client replaces them) but don't need to be removed — the dashboard remains useful for local operator work.
+- All LiveView pages remain — the dashboard is a capable local operator surface (workflow drill-in with step graph, replay with preflight diagnostics, cancellation, the approvals queue) and keeps working. Argus differentiates on decoupled lifecycle, phone form-factor, and cluster-wide aggregation, not on replacing it.
 
 ---
 
 ## 5. The Novel Feature — Step-Type-Specific Editors
 
-The "edit the draft output between steps" feature is what makes this control plane interesting. It's also the part that requires the most design.
+The "edit the draft output between steps" feature is what makes this control plane interesting. It's also the part that requires the most design — and the one capability the gate family does not have: gates today are approve/reject/abandon, and resume re-emits the original artifact untouched.
 
 ### 5.1 Concept
 
-Every workflow step produces an `output`. By default, the next step consumes it as-is. With `pause_for_review`, the run pauses after the step completes; the UI shows an editor *typed for the kind of output*; the user edits or approves; the (possibly edited) output is what the next step receives.
+Every workflow step produces an `output`. By default, the next step consumes it as-is. With a review checkpoint, the run pauses at a gate after the step completes; the UI shows an editor *typed for the kind of output*; the user edits or approves; the (possibly edited) output is what the next step receives.
 
-A diff-editor for code patches, a markdown editor for prose, a JSON editor for structured data, a prompt editor for "the next instruction to send to the model." The editor is chosen by the step's declared editor type, not by the UI guessing.
+A diff-editor for code patches, a markdown editor for prose, a JSON editor for structured data, a prompt editor for "the next instruction to send to the model." The editor is chosen by the checkpoint's declared editor type, not by the UI guessing.
 
-### 5.2 Workflow definition format
+### 5.2 Declaring review checkpoints
 
-Workflows are defined separately from skills (see §3.4 — a skill may *invoke* a workflow but is not itself a workflow). A workflow definition lives somewhere distinct from `.jido/skills/` — likely `.jido/workflows/`, exact location TBD (see §6) — and looks like:
+No new definition format. Skills are the workflow definitions (§3.4), so the checkpoint is a per-step annotation in skill YAML, compiled by `Skills.Compiler` into an interposed review-gate step — the same `GateStep`/`AgentCase` machinery the plan and safety gates use, with a new `:review` kind carrying editor metadata. Composer routes get the same capability as a catalog gate stage.
 
 ```yaml
 name: feature_with_review
-type: pipeline
 steps:
   - name: research
     template: researcher
@@ -386,7 +391,7 @@ steps:
     pause_for_review:
       editor: markdown
       label: "Review research before outlining"
-      
+
   - name: outline
     depends_on: [research]
     template: planner
@@ -395,7 +400,7 @@ steps:
     produces: implementation_plan
     pause_for_review:
       editor: markdown
-      
+
   - name: implement
     depends_on: [outline]
     template: coder
@@ -405,7 +410,7 @@ steps:
     pause_for_review:
       editor: code_diff
       label: "Review patch before applying"
-      
+
   - name: apply
     depends_on: [implement]
     template: applier
@@ -426,46 +431,45 @@ A small set of editor types, each mapped to a UI component on the client:
 | `command_list` | Editable list of shell commands | `[string]` |
 | `none` | (no UI; auto-proceed) | — |
 
-The list is intentionally short. Adding an editor type is a coordinated change between the YAML schema, the runner, and the client — that friction is good; it stops the surface from sprawling.
+The list is intentionally short. Adding an editor type is a coordinated change between the YAML schema, the gate declaration, and the client — that friction is good; it stops the surface from sprawling.
 
 ### 5.4 Lifecycle
 
 ```
-[step starts]
-  WorkflowStep.status: :pending → :running
-
-[step completes, pause_for_review present]
-  WorkflowStep.output: <model output>
-  WorkflowStep.status: :running → :awaiting_review        ← new state
-  WorkflowRun.status: :running → :awaiting_approval
-  ApprovalGate row created with editor metadata
-  Broadcast on workflows:run:<id>
+[step completes; a review checkpoint follows]
+  step_completed event appended → WorkflowStep projected :completed
+  review GateStep runs: halts the run (:awaiting_approval),
+    opens AgentCase (kind :review, editor metadata, ref to the output under review)
+  broadcast on workflows:run:<id> and gates:user:<user_id>
 
 [user views in UI]
-  GraphQL: query { workflowStep(id) { output, pauseForReview { editor, label } } }
+  GraphQL: query { workflowRun(id) { pendingCase { editor, targetStep { output, outputRevisions } } } }
   Client renders matching editor
 
 [user edits]
-  GraphQL: mutation editWorkflowStepOutput(stepId, output, expectedVersion)
-  Each edit appended to a step_output_revisions table (audit trail)
-  Optimistic concurrency: expectedVersion must match current
+  GraphQL: mutation reviseStepOutput(stepId, output, expectedSeq)
+  Revision payload stored via the encrypted ref-store; a revision event is appended
+  Projection updates WorkflowStep.output to the head; the original survives in the log
+  Optimistic concurrency: expectedSeq must match — the event append is the CAS
 
 [user approves]
-  GraphQL: mutation resumeWorkflowRun(runId)
-  WorkflowStep.status → :completed
-  WorkflowRun.status → :running
-  Next step starts; consumes the edited output
+  GraphQL: mutation decideCase(caseId, APPROVE)
+  Cases.decide → GateResume re-runs the persisted checkpoint
+  Resume promotes the HEAD revision (operator's edit if any, else the original)
+  WorkflowRun.status → :running; next step consumes the edited output
 
 [user rejects]
-  GraphQL: mutation cancelWorkflowRun(runId)  (or)
-  GraphQL: mutation retryWorkflowStep(stepId)  (re-run with same inputs)
+  GraphQL: mutation decideCase(caseId, REJECT)   → run :cancelled   (or)
+  GraphQL: mutation replayWorkflowRun(runId)     → re-run from stored inputs
 ```
+
+The one behavioral change to the gate family is the resume rule: promote the head revision instead of re-emitting the original. Everything upstream of that — durable halt, encrypted checkpoint, decision surfaces, audit timeline — already exists and is reused as-is.
 
 ### 5.5 Open design questions for editors
 
-- **Edit in place vs. revisions table?** Editing `WorkflowStep.output` directly is simple but loses the original LLM output. A `step_output_revisions` table preserves history at small cost. **Lean: revisions table** — audit value is high.
-- **Server-side validation per editor type?** Should `code_diff` editor reject malformed diffs server-side, or trust the client? **Lean: server-side parse, return GraphQL field errors.**
-- **Concurrent reviewers?** Two users open the same paused step. **Lean: optimistic locking via `expectedVersion` field on the mutation.**
+- **Where do revision payloads live?** Inline in the revision event, or in the encrypted ref-store with the event carrying the ref? **Lean: ref-store** (`art_…`-style refs) — payloads can be large, events stay small, and gate resume already resolves values by ref. The event log doubles as the audit trail, so a separate revisions table is unnecessary.
+- **Server-side validation per editor type?** Should `code_diff` reject malformed diffs server-side, or trust the client? **Lean: server-side parse, return GraphQL field errors.**
+- **Does `:review` subsume `:plan`?** A plan approval is arguably a review checkpoint with a markdown editor. **Lean: keep them distinct initially** — plan/safety gates have bespoke promote semantics — and revisit once editors are real.
 
 ---
 
@@ -473,10 +477,10 @@ The list is intentionally short. Adding an editor type is a coordinated change b
 
 Things we explicitly deferred during the exploration. Each has a real decision to make before building.
 
-1. **Workflow definition format & location.** Workflows are distinct from skills (§3.4) and need their own definition format and home — likely `.jido/workflows/`, with a YAML (or other) format the runner reads. The shape may resemble the existing skill DAG, but it should be its own format, not a reuse. Open: file format details, directory layout, and the conventions for invoking a workflow from a skill.
-2. **Push notification trigger taxonomy.** With the React PWA + Web Push path settled (§2.6), the open question is *which* events warrant a push: workflow step needs review, workflow failure, approval gate timeout, long-running job complete? Worth defining the trigger set before wiring the subscription endpoint.
+1. **Review-gate declaration details.** The mechanism is settled (§5.2: skill-step annotation compiled to an interposed `:review` gate; catalog gate stage for composer routes). Open: the exact YAML key shape, how editor metadata rides the gate's declared fields, and whether composer stages declare review per-stage (like `lock`) or via dedicated catalog gate entries.
+2. **Push notification trigger taxonomy.** With the React PWA + Web Push path settled (§2.6), the open question is *which* events warrant a push: gate opened (case awaiting decision), run failed, run converged, replay preflight blocked, long-running job complete? Worth defining the trigger set before wiring the subscription endpoint.
 3. **GraphQL codegen tooling.** Apollo's recommended client codegen approach has shifted (the older `typescript-react-apollo` plugin is no longer the recommendation). Pick the current Apollo-blessed option when the time comes, rather than locking in now.
-4. **Codename.** `argus` is provisional. Other options floated mentally: `helm`, `atlas`, `tower`, `bridge`. Bikeshed-class.
+4. **Codename.** `argus` is provisional, though the clustering and Reactor-adoption docs already refer to "the argus second node" / "the clustered-tailnet future (argus)" — it has de facto stuck. Other options floated mentally: `helm`, `atlas`, `tower`, `bridge`. Bikeshed-class.
 
 ---
 
@@ -484,17 +488,16 @@ Things we explicitly deferred during the exploration. Each has a real decision t
 
 This is suggestive, not prescriptive. Each item is roughly self-contained and shippable.
 
-1. **Finish the workflow runner** — wire `plan_workflow.ex` (still in-memory `Task.async_stream`) to persist `WorkflowRun`/`WorkflowStep` rows. The cron-driven `WorkflowRunner` already creates a `WorkflowRun` row and broadcasts run-level lifecycle events on `RunPubSub`, but no code persists `WorkflowStep` rows yet. Unblocks every "view workflows" feature with zero new resources.
-2. **Add `pause_for_review` to the runner** without editor types — just a binary "pauses on user approval, resumes." Validates the lifecycle before committing to editor-type design.
-3. **Introduce `Worktrees` domain + `Worktree` resource** layered on top of existing `Workspace` (per §3.3). Worktree is created when a workspace's path is a managed git checkout under a known Project. No changes to Workspace's schema, callers, or policy aggregates. Smallest schema change that unlocks the UI's main hierarchy.
-4. **Stand up AshGraphql** on the resources from §4.1. Mostly mechanical — extension declarations + the schema module + custom resolvers for the synthetic `System` resource. Wire Apollo Client + GraphQL codegen on the React side (codegen tooling per §6.3).
-5. **Bridge `Conversations.Recorder` to a Phoenix.PubSub topic** so live message activity reaches the channel layer.
-6. **Wire Phoenix Channels** for `forge:session:<id>`, `workflows:run:<id>`, `conversations:session:<id>`. Build the first non-LiveView client against this.
-7. **Editor types** — add the YAML extension and editor metadata to `pause_for_review`; build the first editor (markdown) end-to-end; iterate.
-8. **Cluster fan-out resolvers** — the `cluster`, `agentRuntime`, `forgeRuntime`, `skills` GraphQL fields. Lower priority; useful but not blocking.
-9. **Push notifications** via Web Push for the installed PWA. Define the trigger taxonomy (§6.2) and wire the subscription endpoint.
+1. **Introduce `Worktrees` domain + `Worktree` resource** layered on top of existing `Workspace` (per §3.3), plus the `node` column on Workspace. Worktree is created when a workspace's path is a managed git checkout under a known Project. No changes to Workspace's callers or policy aggregates. Smallest schema change that unlocks the UI's main hierarchy.
+2. **Stand up AshGraphql** on the resources from §4.1 — runs, steps, events, cases, projects, worktrees. Mostly mechanical: extension declarations + the schema module + custom resolvers for the synthetic `System` resource, reusing the existing view modules (`WorkflowView`, `Observe`, AgentView). Wire Apollo Client + GraphQL codegen on the React side (tooling per §6.3).
+3. **Wire Phoenix Channels**: proxy the existing run-lifecycle and gates PubSub topics, project per-step deltas from the `WorkflowEvent` log, and bridge `Conversations.Recorder` to a PubSub topic for live message activity. Build the first non-LiveView client against this.
+4. **The edit path** (§5.4): revision events + ref-store storage, the `:review` gate kind, and the `GateResume` head-promotion rule. Ship with the binary markdown editor end-to-end — this is the first genuinely novel change to the gate family and wants a design pass on the revision-event shape.
+5. **`pause_for_review` compilation** in `Skills.Compiler`, so any skill step can checkpoint declaratively; catalog gate-stage equivalent for composer routes.
+6. **Editor registry expansion** — `code_diff`, `json`, `prompt`, `command_list`; iterate against real runs.
+7. **Cluster fan-out resolvers** — the `cluster`, `agentRuntime`, `forgeRuntime`, `skills` GraphQL fields. Lower priority; useful but not blocking.
+8. **Push notifications** via Web Push for the installed PWA. Define the trigger taxonomy (§6.2) and wire the subscription endpoint.
 
-Steps 1-2 could each be a single PR; step 3 is one Ash resource and a migration; step 4 is mostly boilerplate; step 7 is the "interesting" UX work and probably wants real-world iteration before polishing.
+Steps 1 and 4 are each a PR or two; step 2 is mostly boilerplate; step 6 is the "interesting" UX work and probably wants real-world iteration before polishing.
 
 ---
 
@@ -505,91 +508,98 @@ File:line citations for the existing surface, captured during this exploration. 
 ### A.1 External API surfaces today
 
 **MCP server (stdio)** — `mix jidoclaw --mcp`
-- Entry point: `mix/tasks/jidoclaw.ex:10` sets `:serve_mode = :mcp`.
-- Wiring: `jido_claw/application.ex:269-295` starts `JidoClaw.MCPServer` only in MCP mode.
-- Server module: `jido_claw/core/mcp_server.ex` — `use Jido.MCP.Server`, lists 15 tools at lines 17-35.
+- Wiring: `jido_claw/application.ex:505-530` starts `JidoClaw.MCPServer` only in MCP mode, `transport: :stdio` (`application.ex:524`).
+- Server module: `jido_claw/core/mcp_server.ex` — `use Jido.MCP.Server`, 24 tools at lines 16-59. Workflow-control tools among them: `workflow_status` (tenant rollup), `inspect_workflow` (single-run drill-in incl. composer route/waves/held/dropped/gate-block), `workflow_events` (raw byte-paginated `WorkflowEvent` feed, `after_seq`/`limit`), `replay_workflow` (no force/irreversible overrides — those are dashboard-only). The last three are MCP-only by design.
+- Resources: `jido://workflows/catalog` (`core/mcp_server/resources/workflow_catalog.ex:22`, published at `mcp_server.ex:60-64`) — the full composer stage catalog as JSON; `jido://workflows/{name}` template (`core/mcp_server/resources/workflow_stage.ex:24`, component at `mcp_server.ex:75`) — per-stage drill-down, byte-identical to the catalog entry.
 - Transport: stdio only. No auth (process trust).
 - Internal-only loopback MCP for the consolidator: `jido_claw/memory/consolidator/mcp_endpoint.ex:17-28` (Bandit, `127.0.0.1:0`).
+- Separately, `lib/jido_claw/mcp/` (Consumer/EndpointConfig/ProxyGenerator/Client) is *outbound* MCP consumption — JidoClaw dialing external servers — not an inbound surface.
 
-**Phoenix HTTP API** — `jido_claw/web/router.ex`, started when `:mode in [:gateway, :both]` (`application.ex:244-253`)
-- `GET /health` (line 38) — unauth health/version.
-- `POST /v1/chat/completions` (line 45) — OpenAI-compatible chat with SSE streaming, auth via `Authorization: Bearer` or `x-api-key` against Ash users (`web/plugs/api_key_auth.ex`).
-- `POST /webhooks/github` (line 51) — HMAC-verified webhook ingress.
-- `/admin` (Ash Admin), `/live-dashboard` (dev only), LiveViews at `/`, `/forge`, `/workflows`, `/agents`, `/projects`, `/settings`, `/folio`, `/sign-in`, `/setup`.
-- WebSocket `/ws` mounted at `web/endpoint.ex:20`. Channel `rpc:*` (`web/channels/rpc_channel.ex`) handles `gateway.status`, `sessions.list`, `sessions.create`, `sessions.sendMessage`. `sessions.list` reads in-memory `JidoClaw.SessionRegistry` only — does NOT see `Conversations.Session` rows.
+**Phoenix HTTP API** — `jido_claw/web/router.ex`, started when `:mode in [:gateway, :both]` (`application.ex:456-464`)
+- `GET /health` (line 50) — unauth health/version.
+- `POST /v1/chat/completions` (line 57) — OpenAI-compatible chat with SSE streaming, auth via `Authorization: Bearer` or `x-api-key` against Ash users (`web/plugs/api_key_auth.ex:41,45`).
+- `POST /webhooks/github` (line 63) — HMAC-SHA256-verified webhook ingress (`github/webhook_signature.ex:12-17`).
+- `/admin` (Ash Admin, line 43), `/live-dashboard` (dev only, lines 104-113), LiveViews at `/`, `/dashboard`, `/forge`, `/workflows`, `/agents`, `/projects`, `/settings`, `/approvals` (lines 92-99), `/sign-in` (line 79), `/setup` (line 83).
+- WebSocket `/ws` mounted at `web/endpoint.ex:20` (`UserSocket` — Ash session auth only, `user_socket.ex:10-32`). Channel `rpc:*` (`web/channels/rpc_channel.ex`) handles `gateway.status` (:19), `sessions.list` (:29), `sessions.create` (:40), `sessions.sendMessage` (:76). `sessions.list` reads the in-memory `JidoClaw.SessionRegistry` via `Session.Supervisor.list_sessions/1` (`platform/session/supervisor.ex:50-57`) — does NOT see `Conversations.Session` rows.
 
 **Discord bot** — `jido_claw/platform/channel/discord_consumer.ex`
-- Enabled when `DISCORD_TOKEN` is set (`application.ex:38-53`); MCP mode forces it off.
-- Only handles `MESSAGE_CREATE` and `READY`. **No slash commands, no application commands registered.**
+- Enabled when `DISCORD_BOT_TOKEN` is set (`application.ex:86-102`); MCP mode forces it off.
+- Only handles `MESSAGE_CREATE` (`discord_consumer.ex:12`) and `READY` (`:29`). **No slash commands, no application commands registered.**
 - Inbound messages routed to `JidoClaw.chat/3` keyed by `discord_<channel_id>`.
 
 ### A.2 Project/Worktree concept
 
-- `JidoClaw.Projects.Project` Ash resource — `projects/project.ex:1-77`. Attributes: `id`, `name`, `github_full_name`, `default_branch`, `settings`, timestamps. Domain at `projects.ex:1-11`.
-- `/projects` LiveView — `web/live/projects_live.ex:6-9` does `Ash.read!(Project, authorize?: false)`, renders static table.
-- `Workspace.project_id` field exists at `workspaces/resources/workspace.ex:164-167`, used in `workspaces/resolver.ex:47`. **Nullable, and the RPC `sessions.create` path (`web/channels/rpc_channel.ex:57-58`) does not pass it.**
-- **No `worktree` references in the codebase.** Grep for `worktree` in `lib/` returns no hits. No `git worktree` shell calls anywhere.
+- `JidoClaw.Projects.Project` Ash resource — `projects/project.ex`. Attributes: `id`, `name`, `github_full_name`, `default_branch`, `settings`, timestamps (`:72-102`). Actions: CRUD + `:reactor_undo` (`:22-56`); `code_interface` for CRUD + `get_by_github_full_name` (`:14-20`). Domain at `projects.ex:16-18` (single resource).
+- `/projects` LiveView — `web/live/projects_live.ex:11-18` reads actor-scoped via `Project.read(actor: ...)`, renders a static table. No create/archive UI.
+- `Workspace.project_id` field exists at `workspaces/resources/workspace.ex:187-190` (nullable; `belongs_to :project` at `:238-242`), used in `workspaces/resolver.ex:49`. **The RPC `sessions.create` path (`web/channels/rpc_channel.ex:59-60`) does not pass it.**
+- **No worktree functionality in the codebase.** The only textual match for `worktree` in `lib/` is the `--worktree` flag token in the shell-command analyzer's git-config allowlist (`security/shell_command/git.ex:150`). No `git worktree` shell calls anywhere.
 
 ### A.3 Session / activity history
 
 **Persisted:**
-- `Conversations.Message` — `conversations/resources/message.ex:1-80`. Roles `[:user, :assistant, :tool_call, :tool_result, :reasoning, :system]`, monotonic per-session sequence. Written by `Conversations.Recorder` (`conversations/recorder.ex:1-60`) which subscribes to `ai.*` signals on `JidoClaw.SignalBus`.
-- `Audit.Event` — `audit/resources/event.ex:1-80`. Append-only `audit_events`.
-- `Forge.Resources.Event` — `forge/resources/event.ex:1-100`. Per-forge-session events with `read :for_session` (paginates by `after`, `event_types`, `after_sequence`).
-- `AgentTracker` — `agent_tracker.ex:1-273`. **In-memory only**, per-agent tokens / tool calls / status. Subscribes to SignalBus patterns `jido_claw.tool.*`, `jido_claw.agent.*`. No persistence; resets between conversations.
+- `Conversations.Message` — `conversations/resources/message.ex`. Roles `[:user, :assistant, :tool_call, :tool_result, :reasoning, :system]` (`:73`), monotonic per-session sequence allocated by a raw `UPDATE … RETURNING` on the session row (`:517-560`). `Conversations.Recorder` (`conversations/recorder.ex:115-122, 257-258`) subscribes to `ai.*` signals on `JidoClaw.SignalBus` and writes the `tool_call`/`tool_result`/`reasoning` rows; `user`/`assistant`/`system` turns land via the dispatcher and `Conversations.SubagentTranscript` (which closes each spawned sub-agent's durable slice, stamped `subagent: true`).
+- `Conversations.Session` — `conversations/resources/session.ex`. Kinds `repl/discord/web_rpc/cron/api/mcp/imported_legacy`; `metadata` carries per-agent compaction snapshots under `"compactions"` via atomic `jsonb_set` actions (`:146-152`). Session `:start`/`:close` append durable `Audit.Event` rows via producers (`:107`, `:119`) — durable, not PubSub.
+- `Conversations.ToolOutput` — tenant-scoped full-output store under unguessable `out_…` refs; backs `OutputShaper` reversibility and the `fetch_output` tool.
+- `Audit.Event` — `audit/resources/event.ex`. Append-only `audit_events` with polymorphic `target_kind`/`target_id`.
+- `Forge.Resources.Event` — `forge/resources/event.ex`. Per-forge-session events with `read :for_session` (`:35`).
+- `AgentTracker` — `agent_tracker.ex` (~750 lines). **In-memory only** — plain GenServer state, no ETS, no persistence. Per-agent tokens/tool-calls/status counted via telemetry on `[:jido, :ai, :tool, :execute, :*]` (`:266-278`); scoped tenant/session/workspace projections (`:734-736`); child-pid + orchestrator monitoring, terminal-TTL sweep, spawn caps. The MCP Consumer re-attaches proxy tools to live worker pids by reading it (`mcp/consumer.ex:709-720`).
 
 **Live streaming:**
-- `JidoClaw.SignalBus` — `core/signal_bus.ex:1`. Wraps `Jido.Signal.Bus`. Used by Recorder/Tracker.
-- `JidoClaw.Forge.PubSub` — `forge/pubsub.ex:1-43`. Topics `forge:sessions` and `forge:session:<id>`. **Broadcasts are real and active**: `forge/manager.ex:116,139,182,207` (lifecycle), `forge/harness.ex:116,275,290,312,539,543,551,559,611,638` (`:ready`, `:needs_input`, `:error`, `:stopped`).
-- Approval requests: topic `"approvals"` at `platform/approval.ex:103-107`.
+- `JidoClaw.SignalBus` — `core/signal_bus.ex`. Wraps `Jido.Signal.Bus`. Used by Recorder.
+- `JidoClaw.Forge.PubSub` — `forge/pubsub.ex:6,12`. Topics `forge:sessions` and `forge:session:<id>`. **Broadcasts are real and active**: `forge/manager.ex:127,170,197,225` (lifecycle), `forge/harness.ex` (`:ready` :240/:359/:374/:396, `:error` :436/:682/:739, `:needs_input` :662/:666/:674, `:stopped` :769).
 - **No PubSub for `Conversations.Message` appends or `Conversations.Session` lifecycle.** The Recorder writes to Postgres but doesn't fan out.
 
 ### A.4 Workflows / orchestration
 
-**Persisted state machine (full schema, mostly unused):**
-- `Orchestration.WorkflowRun` — `orchestration/workflow_run.ex:1-174`. Status `[:pending, :running, :awaiting_approval, :completed, :failed, :cancelled]`. Transition actions: `start`, `await_approval`, `resume`, `complete`, `fail`, `cancel`. `belongs_to :project`. Reads include `:list_active` and `:by_project`.
-- `Orchestration.WorkflowStep` — `orchestration/workflow_step.ex:1-118`. Status `[:pending, :running, :completed, :failed, :skipped]`. Has `output :map`, `sequence :integer`, `belongs_to :workflow_run`.
-- `Orchestration.ApprovalGate` — `orchestration/approval_gate.ex:1-109`. Status `[:pending, :approved, :rejected]`. Actions `:create`, `:approve`, `:reject`, `:list_pending_for_run`. `belongs_to :workflow_run`, `:requester`.
+**Durable spine (event-sourced):**
+- `Orchestration.WorkflowEvent` — the append-only log. Step kinds `step_started/step_completed/step_failed/step_retried/step_compensated/step_undone` (`workflow_event.ex:104-108`); composer kinds `route_composed, wave_started, wave_completed, signals_published, artifacts_produced, wave_paused/resumed, signals_retracted, stages_invalidated, artifacts_invalidated` plus terminals (`route_converged` → `:completed`; `route_not_converged/…/route_failed` → `:failed`; `route_rejected/route_abandoned` → `:cancelled`) (`:126-158`). The append transaction also projects run status and step rows.
+- `Orchestration.WorkflowRun` — `orchestration/workflow_run.ex`. Statuses `[:pending, :running, :awaiting_approval, :completed, :failed, :cancelled, :abandoned]` (`:294-305`). **Status is projection-owned**: the only writer is the private `set_status` action (`:140-165`), called solely from the event-append path. Reads include `:list_active` (`:179`), `:by_project` (`:198`), `:claimable`. Lease columns `claimed_by`/`claim_token`/`claim_expires_at` (`:403-406`, index `:79`); AshCloak-encrypted `resume_checkpoint`/`replay_inputs`; composer lineage `parent_run`/`child_runs` (`:453-455`); `belongs_to :project` (`:444`).
+- `Orchestration.WorkflowStep` — a **read-model projected from `step_*` events** (moduledoc `workflow_step.ex:1-7`) via upserts `record_started/record_completed/record_failed` (`:75-133`). Statuses `[:pending, :running, :completed, :failed, :skipped]` (`:203`), `output :map` (`:237`), `sequence` (`:193`), `belongs_to :workflow_run` (`:261`).
 
-**The runner does not use any of this.**
-- `workflows/plan_workflow.ex:1-100` uses synchronous `Task.async_stream` over phases.
-- Never reads or writes `WorkflowRun` / `WorkflowStep` rows.
-- Never checks `ApprovalGate`.
-- `Workflows.StepResult` (`workflows/step_result.ex`) is a transient struct, not persisted.
+**Execution envelope:**
+- `Skills.Compiler` compiles `.jido/skills/*.yaml` (fields `name`, `template`, `task`, `depends_on`, `produces`, `consumes`) into `%Reactor{}`. There is no `.jido/workflows/` directory and no separate workflow YAML; the composer catalog is the second, compile-time DAG format.
+- `ReactorRunner` executes; `ReactorMiddleware` appends the events and broadcasts run lifecycle (`reactor_middleware.ex:158,213,242`; step-event mapping `:273-295`; terminal backstop `reactor_runner.ex:908`). `WorkflowRunner` is a thin cron adapter (moduledoc `workflow_runner.ex:8-11`). `Workflows.StepResult` (`workflows/step_result.ex:1-21`) remains a transient in-memory struct.
+- `Orchestration.Replay` (`replay.ex:1-60`) re-runs a terminal run from durably-stored `replay_inputs`, behind two safety gates (definition-hash drift; irreversible steps executed).
 
-**Skill YAML format** (`.jido/skills/iterative_feature.yaml`): fields `name`, `template`, `task`, `depends_on`, `produces`, `consumes`. This is a *skill* definition — skills extend agent capabilities and may invoke workflows, but are conceptually distinct (see §3.4). **No separate workflow definition format exists today**; `plan_workflow.ex` operates on phases derived in code rather than from a workflow file. `pause_for_review` doesn't exist anywhere yet.
+**Gate family (human-in-the-loop):**
+- Kinds `:plan`, `:irreversible_write` (workflow axis) and `:tool_call` (conversation axis), single-sourced in `gate/kinds.ex:15`. A `GateStep` halts the run `:awaiting_approval` and opens a durable `AgentCase` with an `AgentCaseEvent` timeline. Operator-facing gate declarations (`use JidoClaw.Orchestration.HumanGate`: title/description/fields) live in `lib/jido_claw/gates/`.
+- Decisions flow through `Cases.decide/4` (`cases.ex:118`) from REPL `/gates` (`cli/commands/approvals.ex`) and web `/approvals` (`web/live/approvals_live.ex`). **Approve/reject/abandon only — no edit path**: declared field values fold into the free-text `decision_comment` (`approvals_live.ex:122, 256-267`); `GateResume` re-runs the persisted encrypted checkpoint seeding only the decision atom (`gate_resume.ex:160-167, 278-284`); the plan gate re-emits the *original* plan from its `plan_ref`, unchanged (`reactors/plan_gate.ex:60-79`). §5's edit path is the delta.
+- Tool-call axis: `Security.ToolApproval.gate/4` (`security/tool_approval.ex:199-211`) → `Orchestration.ToolApprovals.request/3` (`tool_approvals.ex:87`) → run-less `AgentCase` (`kind: :tool_call`), fingerprint-keyed, single-use approve / deny-once. Gate requests broadcast on the gates topic (`tool_approvals.ex:294-298`).
 
-**`Platform.Approval`** (`platform/approval.ex:1-149`): tool-call approval only, ETS + GenServer, in-memory. **NOT wired to `Orchestration.ApprovalGate`.** Two separate concepts in the codebase.
+**Composer (multi-wave orchestration):**
+- `JidoClaw.RouteComposer` (`route_composer/route_composer.ex`, moduledoc `:1-98`) — supervised single-run GenServer loop: seed → `compose_route` → dispatch next unrun wave → run on Reactor → fold signals/artifacts → recompose → converge. Sole user-turn caller is `FrontDoor` (`front_door.ex:37, 275`).
+- Compile-time stage catalog (`route_composer/catalog.ex`; `%Stage{}` fields incl. two graphs — data `input`/`output`, signal `subscribes`/`publishes` — plus `lock`, and per-stage `model`/`effort` tiers, `stage.ex:106-122`). Router computes runnable waves plus `held`/`dropped` (`router.ex:20-30, 225-232`). `WaveBuilder` (`wave_builder.ex:61`) builds a worker-cohort reactor per wave, or a solo gate wave. Multi-plan arming (`front_door.ex:485-488`) inserts the judge panel: 3 lens planners → 3 challengers → plan-arbiter (`catalog.ex:11-22`).
+- Durability: parent `workflow_type: "composer"` run + one child run per wave; `commit.ex` welds each wave's effects into one `Ash.transact` with a FOR-UPDATE token fence (`:156-168, 177-181`). `Orchestration.ComposerArtifact` is the encrypted `art_…` ref-store (`composer_artifact.ex:25-34`; refs minted by `JidoClaw.Refs.mint/1`, `refs.ex:22`) — durable surfaces carry only opaque refs, values decrypt at the wave boundary.
+- Observability: `RouteComposer.Observe` (`observe.ex:48-49, 95-96`) derives route/waves/held/dropped/live-signals plus the authoritative blocked-on-a-gate determination from the event log — the read-model behind `inspect_workflow`.
 
-**Live broadcast:**
-- `Orchestration.RunPubSub` — `orchestration/run_pubsub.ex:1-17`. Defines topics `orchestration:run:<id>` and `orchestration:runs`. `DashboardLive` subscribes via `RunPubSub.subscribe_all/0` (`dashboard_live.ex:17`), handling run events at `dashboard_live.ex:97`.
-- **`RunPubSub.broadcast/2` is published by `WorkflowRunner`** (`:run_started`/`:run_completed`/`:run_failed` at `workflow_runner.ex:108,172,199` via the helper at `:218`) and consumed by `DashboardLive` (`dashboard_live.ex:97`).
+**Live broadcast + UI:**
+- `Orchestration.RunPubSub` — topics `orchestration:run:<id>` (`run_pubsub.ex:7`), `orchestration:runs` (`:10`), `orchestration:gates` (`:13`). Run lifecycle published by `ReactorMiddleware`; gate requests/decisions on the gates topic. `DashboardLive` subscribes to both (`dashboard_live.ex:17-18`, handlers `:103-113`); `ApprovalsLive` consumes gates (`approvals_live.ex:25, 185`). **Per-step transitions are durable-log-only — nothing broadcasts them.**
+- `/workflows` LiveView — `web/live/workflows_live.ex`: expandable per-run step drill-in (`:55`), step graph/table toggle (`:79-85`), replay with preflight diagnostics + force/irreversible overrides (`:109-160`), cancel (`:165`), payload-reveal auditor scope (`:91`); actor-scoped reads (`:504, 519`). Approvals live separately at `/approvals`.
 
-**`/workflows` LiveView** — `web/live/workflows_live.ex:1-52`. Trivial: `Ash.read!(WorkflowRun, authorize?: false)`, table of name/type/status/started_at. No drill-in, no steps, no approvals UI.
+**Not present anywhere:** `pause_for_review`, an `:awaiting_review` step status, or any operator edit-before-resume path. The pause primitive that exists is the run-level `:awaiting_approval` gate.
 
 ### A.5 RPC channel coverage
 
-`web/channels/rpc_channel.ex:14-94` handles only:
-- `gateway.status`
-- `sessions.list` (in-memory `SessionRegistry`, NOT DB rows)
-- `sessions.create`
-- `sessions.sendMessage`
-- catch-all error
+`web/channels/rpc_channel.ex` handles only:
+- `gateway.status` (:19)
+- `sessions.list` (:29 — in-memory registry, NOT DB rows)
+- `sessions.create` (:40)
+- `sessions.sendMessage` (:76)
+- catch-all error (:100)
 
 **Available-but-unrouted PubSub topics** the channel could trivially proxy:
-- `forge:sessions`, `forge:session:<id>` (`forge/pubsub.ex:6-8`) — fully populated.
-- `"approvals"` (`platform/approval.ex:105`) — populated for tool-call approvals.
-- `orchestration:run:<id>`, `orchestration:runs` — defined; published by `WorkflowRunner`, consumed by `DashboardLive`.
+- `forge:sessions`, `forge:session:<id>` (`forge/pubsub.ex:6,12`) — fully populated.
+- `orchestration:run:<id>`, `orchestration:runs`, `orchestration:gates` (`run_pubsub.ex:7-13`) — populated; consumed today only by LiveView.
 
 **Missing entirely:**
 - PubSub for Project, Worktree, Workspace lifecycle.
 - PubSub for Conversations.Message appends and Conversations.Session open/close.
-- PubSub for ApprovalGate state changes.
-- PubSub for WorkflowStep transitions.
-- RPC handlers for `projects.*`, `worktrees.*`, `workflows.*` (start, approve, edit step output), `sessions.history`.
+- PubSub for per-step transitions (durable `WorkflowEvent`s exist; no broadcast).
+- RPC handlers for `projects.*`, `worktrees.*`, `workflows.*` (start, revise output, decide case), `sessions.history`.
 
 ### A.6 Cluster wiring
 
-- libcluster is a dep; `:cluster_enabled` config flag controls activation (per AGENTS.md "Cluster: libcluster + `:pg`").
-- `:pg` is the process group registry — used for cluster-aware PubSub fanout.
-- Phoenix.PubSub default adapter (PG2-equivalent) broadcasts cluster-wide once nodes are connected. **No additional configuration needed for cross-node PubSub once the cluster forms.**
+- Cluster children start in `application.ex:466-502`, gated by `:cluster_enabled` (`:468`): a `:rest_for_one` LeadershipSupervisor with the dedicated `:pg` scope `:jido_claw` (`:492`) + `JidoClaw.Cluster.Leader` (`:493`), then libcluster's `Cluster.Supervisor` (`:497`).
+- Topology from `JidoClaw.Cluster.topology/0` (`core/cluster.ex:141-181`), selected by `:cluster_strategy`: **default `:gossip`** (UDP multicast `230.1.1.251:45892`, requires `JIDOCLAW_CLUSTER_SECRET`) — multicast does not traverse a tailnet, so argus uses `:epmd` with explicit `:cluster_nodes`; also `:kubernetes` and `:none`.
+- Phoenix.PubSub default adapter (PG2) broadcasts cluster-wide once nodes connect (`application.ex:148`). No additional configuration needed for cross-node PubSub.
+- Single-writer runs: `WorkflowRun.claimed_by`/`claim_token` stamped via CAS by `WorkflowLease` (`workflow_lease.ex:78`; node identity = `to_string(Node.self())`, `:108-109`), commit-time fencing in the composer (`commit.ex:177-181`), reclaim & recovery of expired claims. Full program: `docs/plans/clustering/` WS1–WS5 (lease core, composer lease, reclaim/recovery, leader election + singleton audit, clustered cron ownership, cross-node cancellation); WS6 multi-node validation awaits the argus second node.

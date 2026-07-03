@@ -24,7 +24,7 @@ are as-of 2026-07-02.
 | 2 | ✅ **DONE 2026-07-02** — G2-1b: Phase 0 spike → `jido://workflows/<stage>` resources | gust #1 | S–M (1–2 days green path) | Spike green same day; no dep patch |
 | 3 | ✅ **DONE 2026-07-03** (PR-1/PR-2 2026-07-02) — AR-9 judge-panel plan wave, pulling in tiering seam + premises threading | alp-river #2 + #1 + #3 | M–L (~1 week) | **Must be broken down — 4 PRs** |
 | 4 | ✅ **DONE 2026-07-03** (slice half; READ_MAP still deferred) — `code-doctrine` slice (riding #3's authoring pass) | alp-river #5 (slice half only) | S (≤1 day) | Single PR, or a commit inside #3 |
-| 5 | Deterministic eval harness, minimal slice | jidoka #1 | M (2–3 days) | 2 parts |
+| 5 | ✅ **DONE 2026-07-03** — Deterministic eval harness, minimal slice | jidoka #1 | M (2–3 days) | 2 parts |
 
 **Sequencing.** Items 1 and 2 are independent of everything and of each other —
 good first/filler work. Item 3 is the program centerpiece (its PR-1 can also
@@ -237,7 +237,26 @@ add injection tests mirroring the existing 8 slices'. Explicitly defer the
 READ_MAP half — still speculative. Mostly content authoring; single PR or a
 commit inside item 3.
 
-## 5. Deterministic eval harness, minimal slice — M, last
+## 5. Deterministic eval harness, minimal slice — M, last — ✅ DONE 2026-07-03
+
+> **Done 2026-07-03** — `JidoClaw.Eval` + `JidoClaw.Eval.{Case, Run}` in
+> `lib/jido_claw/eval/`, with five deviations from / refinements of this
+> entry's own sketch: (a) the harness runs FOUR kinds — `:prompt`, `:schema`,
+> `:composer` (a real armed wave through `RouteComposer.run_sync/1`), and a
+> `:coherence` kind this entry didn't name (a doctrine slice's prose vs
+> per-token schema probes, pinning the prose-half/schema-half contracts
+> directly); (b) plain `defstruct`, not Zoi — jidoka's Zoi validated
+> `Agent.Spec`/`Turn.Request` sub-structs with no analogue here, so the
+> kind-keyed request map keeps a few guarded clauses instead; (c) step 1's
+> "the fake-capability halves already exist in `test/support/`" held, but the
+> harness consumes NONE of those stubs directly — it calls production
+> functions only, and the composer seed case arms the existing composer stubs
+> via app env exactly as `composer_loop_test` does; (d) 10 seed cases (top of
+> the "~6–10") across three files in `test/jido_claw/eval/`, plus harness
+> unit tests (`test/jido_claw/eval_test.exs`); (e) unknown assertion keys
+> FAIL LOUDLY (an `:unknown_assertion` record fails the run) — a deliberate
+> deviation from jidoka's silent-skip parity, since the harness's purpose is
+> drift-catching and a typo'd key must not shrink the assertion set and pass.
 
 Jidoka's "closest to worth-it of the ten." Its own trigger is "the next material
 rewrite of the doctrine slices" — items 3+4 fire it: a new persona, two new
