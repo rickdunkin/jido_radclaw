@@ -1,0 +1,23 @@
+{
+  "skill_name": "explore-repo",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "please review ~/workspace/research/sandboxes/ysa/ and determine what may be worth adopting in this project. it's part of the sandbox scan under docs/exploration/sandboxes/ — same deal as the nono deep-dive, it's fine if the answer is 'nothing'",
+      "expected_output": "A docs/exploration/sandboxes/ysa/FEATURES-WORTH-BORROWING.md following the conventions in docs/exploration/README.md (umbrella-member mode): header with disclaimer + both shas pinned, Determination TL;DR with as-a-dependency table, tiered entries with Where/What/Gap(file:line, dated)/Why/Adoption-sketch, Skip/Already-Covered citing local equivalents, open questions, dependency graph, bottom line. Sandboxes scan README updated (next-step checked off, link, one-line verdict). Corpus index row added. Final message: files-to-stage + docs: commit message, no git mutations. Research should show parallel subject readers + one jido_radclaw seams-mapper.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "i cloned github.com/foo/agent-relay into ~/workspace/research/agent-relay yesterday — it's a little go daemon that multiplexes agent sessions over one websocket. anything in there we should steal? mostly curious about how it handles reconnects and backpressure",
+      "expected_output": "Recognizes this as an initial-inventory exploration even though 'exploration doc' is never said. Reads docs/exploration/README.md first, scopes the subject (size, maturity signals via git log/CHANGELOG — not shortlog/tag which the guard blocks), pins both shas, fans out readers appropriate to a small repo (possibly self-read + one seams-mapper over our session/channel surfaces), and produces docs/exploration/agent-relay/FEATURES-WORTH-BORROWING.md with the user's focus areas (reconnects, backpressure) getting sharpest-question treatment. 'Nothing worth borrowing' is an acceptable determination if evidenced. Index table updated; files-to-stage + commit message at the end.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "the hermes exploration doc is from early june and both hermes and our tree have moved a lot since — can you do a re-review pass and refresh the statuses?",
+      "expected_output": "Re-review mode, not a new doc: re-pins both shas, diffs subject movement since the last pass, fans out verification passes shaped by the existing entries (subject-side claim checks + our-side Gap re-verification hunting for shipped equivalents), then edits docs/exploration/hermes/FEATURES-WORTH-BORROWING.md in place: dated Status lines per entry (strict ADOPTED bar — deferrals stay PARTIAL), subject-side refresh lines only where hermes materially moved, a dated re-review summary added at the top (newest first), whole-entry reconciliation for shipped items, companion rollup/queue updates. Does NOT create a V2 doc or hand off to doc-reconcile.",
+      "files": []
+    }
+  ]
+}
