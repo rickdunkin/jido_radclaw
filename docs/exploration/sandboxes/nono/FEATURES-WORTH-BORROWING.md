@@ -16,7 +16,9 @@ below is from reading docs + source; **nono was not installed or executed during
 review** — runtime claims (latency above all) are per-docs until the install spike.
 
 Companion docs: the [sandbox landscape scan](../README.md) (this doc answers its nono
-deep-dive item; its pi-sbx/ysa items are siblings on the microVM/container tiers),
+deep-dive item; its pi-sbx/ysa items are siblings on the microVM/container tiers — and
+the [ysa deep-dive](../ysa/FEATURES-WORTH-BORROWING.md) leans on this one: ysa's network
+policy is superseded by N2-4 and its raw-key-in-env credential path by N2-2),
 `docs/exploration/camus/FEATURES-WORTH-BORROWING.md` (C2-7 frozen judge assets and C2-8
 trust-boundary laws are adjacent to nono's trust layer and review doctrine), and the
 house threat model (personal, tailnet-only: LLM misbehavior + secret/data leakage
@@ -349,6 +351,26 @@ redaction pipeline protects *model-facing output*; nothing protects the *child p
 own memory/env* from the code it runs — which is precisely the layer prompt-injection
 attacks.
 
+*(2026-07-03, cross-dig correction: the Forge-runner clause above did not survive the
+sibling digs' verification — both shipped runners, and the consolidator's headless runs
+that drive them, authenticate by **synced OAuth file, never env key** (zero `*_API_KEY`
+hits in `forge/`; the fail-closed `:no_credentials` checks are file-presence): see
+[ysa S-2](../ysa/FEATURES-WORTH-BORROWING.md),
+[openshell OSH1-1](../openshell/FEATURES-WORTH-BORROWING.md) — which opens "corrected a
+premise this dig started with" — and
+[pi-sbx PS1-2 fact (c)](../pi-sbx-llamacpp/FEATURES-WORTH-BORROWING.md). And phantom
+tokens cannot broker file-based OAuth — OSH1-1's ceiling finding: even OpenShell doesn't
+(its proxy never rewrites responses, so a client-driven token-refresh exchange can't be
+intercepted); the industry answer for OAuth-file tools is "contain the file's blast
+radius," which is operator doctrine here too. So the runner-CLI first target in the
+sketch below moves off this entry to the egress-containment axis (OSH1-1 rung 1, riding
+PS1-1); N2-2's live targets are the children that genuinely hold env keys — MCP stdio
+servers via operator endpoint `env:` overrides, and any future key-authenticated runner.
+When one appears, weigh this entry against the sbx-native sibling tier,
+`serviceDomains`/`serviceAuth`/`proxyManaged`
+([pi-sbx PS2-1](../pi-sbx-llamacpp/FEATURES-WORTH-BORROWING.md)): host-tier
+`nono run --credential` vs platform-side proxy injection.)*
+
 **Why it matters**: For a personal platform whose agents run third-party code with
 API-key-bearing environments, this eliminates the single worst leak: the key itself. It
 also composes with N2-1 for free — a credentialed route is inherently egress-scoped to
@@ -405,6 +427,13 @@ parse `--diagnostics-json` instead of heuristics, and optionally run
 `nono why --config <manifest> --json <denied-path>` host-side to name the exact rule.
 Emit `[:jido_claw, :tool, :containment_denial]` telemetry either way.
 
+*(2026-07-03, cross-dig: two same-day siblings, one envelope design —
+[openshell OSH1-2](../openshell/FEATURES-WORTH-BORROWING.md)'s deny-envelope `next_steps`
+enrichment is this same extension on the ToolApproval/DestinationPolicy side (design the
+`sandbox_denial` block and `next_steps` as one policy-denial shape, not two), and
+[agentos AO2-4](../agentos/FEATURES-WORTH-BORROWING.md) is the before-the-wall
+complement: tell the agent the box's shape so fewer denials happen at all.)*
+
 ---
 
 ### N2-4. Their network-policy semantics as the spec for sbx `allowedDomains`
@@ -428,7 +457,22 @@ reviewed, and regression-tested by a security team.
 **Gap in jido_radclaw**: The scan README's next-step #4 — `allowedDomains` in the sbx
 `sandbox_spec`, between today's binary default/`--network none` — has no semantics spec
 yet. These are exactly the decisions we'd otherwise re-derive (and plausibly get wrong:
-the bare-domain wildcard trap and the empty-list ambiguity are classic).
+the bare-domain wildcard trap and the empty-list ambiguity are classic). *(2026-07-03:
+the mechanics half is now specced —
+[pi-sbx-llamacpp PS1-1](../pi-sbx-llamacpp/FEATURES-WORTH-BORROWING.md): kit synthesis
+via `--kit`, sbx `deniedDomains` as the non-overridable carrier for this entry's
+metadata floor, and the spike OQs incl. "verify the proxy's DNS-rebinding stance"
+from this sketch.)* *(Also 2026-07-03: the
+[openshell deep-dive](../openshell/FEATURES-WORTH-BORROWING.md) is the third reference
+point on the same program — OSH2-2 contributes the *lifecycle* rules (static-vs-hot
+split, last-known-good, revision stamps, enforce-not-audit default) beside this entry's
+semantics, and OSH2-3 the delta-review concept for later policy-change gating.)* *(And
+the [agentos dig](../agentos/FEATURES-WORTH-BORROWING.md), same day, closes the set:
+AO2-5 supplies the **default posture** the program hadn't chosen — deny + LLM-provider
+allowlist for agent runners, with its replace-vs-merge footgun (operator lists must merge
+over the runner floor, or warn when the resolved list can't reach the provider) — and one
+test case for this entry's non-overridable metadata floor: the IPv4-mapped-IPv6 bypass
+`::ffff:169.254.169.254`, which secure-exec's classifier defeats.)*
 
 **Why it matters**: One vocabulary across tiers. When both the host-contained tier
 (N2-1) and the sbx microVM tier speak "exact + `*.suffix`, metadata floor,
@@ -582,6 +626,11 @@ N1-1 (wrap the spawn) ──┬──> N1-2 (:contained approval tier)
 N3-1 (rollback)      — trigger: unsealed autonomous host mutation
 N3-2 (tool-sandbox)  — trigger: nono webhook approval backend ships
 ```
+
+*(2026-07-03 addendum: [agentos AO2-1](../agentos/FEATURES-WORTH-BORROWING.md)'s
+spawn-site guard test is the proof mechanism for N1-1's wrap-or-refuse discipline — once
+`Containment.wrap_spawn/3` exists, that guard's allowlist is what shows nothing spawns
+around it.)*
 
 Suggested first wave: **install spike + N1-1 + N1-3**, config-gated off-by-default — one
 `Containment` module, two spawn sites, the latency/toolchain checklist from N1-1 — then

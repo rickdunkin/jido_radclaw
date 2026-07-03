@@ -21,6 +21,7 @@ below are abridged from each doc's Determination.
 
 | Subject | Docs | What it is / headline verdict |
 | --- | --- | --- |
+| [ades](ades/) | landscape scan | Agent-cockpit/control-plane landscape feeding argus: three parallel-worktree desktop comparables (traycer, emdash, termic), two read-mostly attention dashboards (claude-command-center, muxara), one prompt blueprint (Xantham); initial scan only — worktree-domain and review-editor references identified, argus's §5 edit-and-resume confirmed novel in the set, no deep-dives yet |
 | [alp-river](alp-river/) | inventory, V2, unadopted rollup, AR-* program docs | Methodology layer above our engine; source of the AR-* program family (composer, sketch/system paths, multi-plan arbiter) |
 | [amber](amber/) | inventory | Own code: nothing to adopt; the stack it demos: one high-value borrow (AM-1 code-mode pair — adopted 2026-07-03 as `lua_query`/`lua_docs`), one watch-with-trigger |
 | [argus](argus/) | OVERVIEW | Greenfield codename: tailnet-wide multi-agent control plane — decisions + open questions, not a subject repo |
@@ -34,7 +35,7 @@ below are abridged from each doc's Determination.
 | [osa](osa/) | inventory | Elixir "Signal Theory" agent app; strongest per-entry list since hermes, first subject where "borrow" sometimes means lifting Elixir directly |
 | [osa-claude-code](osa-claude-code/) | inventory | Non-running Elixir transliteration of Claude Code; SKIP as a codebase, reference-grade for Claude Code's contract shapes |
 | [ouroboros](ouroboros/) | inventory | Python loop-owner agent; borrows concentrated at the composer's two weak ends (front-door triage, convergence) |
-| [sandboxes](sandboxes/) | landscape scan, nono inventory | Multi-repo sandbox landscape; nono deep-dive is the corpus's first **ADOPT-AS-TOOL** verdict |
+| [sandboxes](sandboxes/) | landscape scan, nono + ysa + coderunner + ghostty_ex + pi-sbx-llamacpp + agentos + openshell + crabbox inventories | Multi-repo sandbox landscape; nono deep-dive is the corpus's first **ADOPT-AS-TOOL** verdict; ysa deep-dive is mostly SKIP (wrong tier, superseded by nono) with two narrow borrows; coderunner is a **trial-scoped adopt-as-tool** (config-only MCP consumption) whose durable ideas are the stateful-executor and agent-skills patterns; ghostty_ex is the corpus's first **ADOPT-AS-DEP** (scoped: render-only dashboard terminal is the gating consumer; emulation kept out of the redaction root); pi-sbx-llamacpp is pure **BORROW-REFERENCE** (a zero-code guide — the mechanics + spike spec for the sbx backend's allowedDomains and host-inference features, plus dig-surfaced deniedDomains floors / serviceAuth / a decorative-base_url fix); agentos (dug together with its pinned `secure-exec` engine sibling) is **SKIP-as-dep, richest concept donor** — its marketed claims shrink on contact with its own code/baselines, and the live borrows are the Forge transcript pair (persist-then-resume from the runner events we already parse) plus CI-guard discipline (spawn-site needle-scan, bounded-by-default limits audit); openshell (NVIDIA) is **TRACK-as-platform with three Tier-1 pattern borrows** — placeholder-credential brokering reference (its seams pass surfaced our claude_code login-file exposure), the deny→propose→human-gate policy loop, and the OCSF audit rubric for our `audit_events`; crabbox is **SKIP-as-dep, borrow the security discipline** — a team-scale remote-exec control plane on the scale-out (not isolation) axis, but the dig found two present-day defects its patterns fix (CB1-1 credential-destination provenance — an LLM editing `.jido/config.yaml` can redirect a host-env SSH password; CB1-2 ownership proof before the `forge-*` sandbox reaper) plus CB2-1's capsule-replay taxonomy folding into camus C1-3 |
 | [squidie](squidie/) | inventory, plan docs | Three-workflow-engine comparison that produced the Reactor adoption (event log, gates, replay) |
 
 ## Doc types
@@ -109,7 +110,7 @@ work queues. **Bottom line** — the two-to-four ideas that must not slip.
 - **BORROW-RUBRIC** — lift evaluative criteria/prompt text, not machinery.
 - **BUILD-ON** — ours to design; the subject supplies the enabling guarantee or precedent.
 - **ADOPT-AS-TOOL** — shell out to the subject's binary/CLI as-is (earned first by nono).
-- **ADOPT-AS-DEP** — take the subject as a library dependency (axis exists; unused so far).
+- **ADOPT-AS-DEP** — take the subject as a library dependency (first used by ghostty_ex).
 - **FOLD-IN** — absorb into an existing planned item rather than standing alone.
 - **INDEPENDENT** — worth doing regardless of the subject; the doc is just where it surfaced.
 - **TRACK** — parked with a **named trigger** (never a bare "later").
