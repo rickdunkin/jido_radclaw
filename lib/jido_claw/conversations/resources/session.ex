@@ -35,6 +35,10 @@ defmodule JidoClaw.Conversations.Session do
     custom_indexes do
       index([:workspace_id, :started_at])
       index([:tenant_id, :last_active_at])
+
+      # `:most_recent_for_workspace` sorts by recency under a workspace filter;
+      # neither existing index covers that pair.
+      index([:workspace_id, :last_active_at])
     end
   end
 
@@ -68,6 +72,12 @@ defmodule JidoClaw.Conversations.Session do
 
     define(:by_id, action: :by_id, args: [:id], get?: true)
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
+
+    define(:most_recent_for_workspace,
+      action: :most_recent_for_workspace,
+      args: [:workspace_id],
+      get?: true
+    )
   end
 
   actions do
@@ -227,6 +237,24 @@ defmodule JidoClaw.Conversations.Session do
       )
     end
 
+    # The CLI `--continue` selector: newest OPEN session on a workspace whose
+    # kind is CLI-resumable (`:repl` / `:cli_run`). Deliberately excludes web
+    # `:api` (and every other) kind so `--continue` can never resume some web
+    # API caller's thread; `--resume <uuid>` (`:by_id`) resumes anything.
+    read :most_recent_for_workspace do
+      get?(true)
+      argument(:workspace_id, :uuid, allow_nil?: false)
+
+      filter(
+        expr(
+          workspace_id == ^arg(:workspace_id) and kind in [:repl, :cli_run] and
+            is_nil(closed_at)
+        )
+      )
+
+      prepare(build(sort: [last_active_at: :desc], limit: 1))
+    end
+
     read :by_id do
       get?(true)
       argument(:id, :uuid, allow_nil?: false)
@@ -268,7 +296,9 @@ defmodule JidoClaw.Conversations.Session do
       allow_nil?(false)
       public?(true)
 
-      constraints(one_of: [:repl, :discord, :web_rpc, :cron, :api, :mcp, :imported_legacy])
+      constraints(
+        one_of: [:repl, :discord, :web_rpc, :cron, :api, :mcp, :cli_run, :imported_legacy]
+      )
     end
 
     attribute :external_id, :string do

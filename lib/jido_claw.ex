@@ -22,6 +22,7 @@ defmodule JidoClaw do
   alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations
+  alias JidoClaw.Conversations.ContextRestore
   alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.RequestCorrelation
@@ -71,14 +72,27 @@ defmodule JidoClaw do
 
   ## Options
 
-    * `:kind` — required. One of `:repl, :discord, :web_rpc, :cron, :api, :mcp`
+    * `:kind` — required. One of `:repl, :discord, :web_rpc, :cron, :api, :mcp, :cli_run`
     * `:external_id` — defaults to `session_id`
     * `:workspace_id` — project directory anchor; defaults to `File.cwd!()`
     * `:user_id` — UUID of the authenticated user; nil for unauthenticated surfaces
     * `:metadata` — free-form map persisted on the Session row
+    * `:context_restore` — `:best_effort` (default) or `:strict`. When the
+      agent process is FRESH (no live pid for this session), the persisted
+      chat transcript is restored into the LLM context before the turn via
+      `JidoClaw.Conversations.ContextRestore`. Best-effort logs a warning and
+      proceeds on restore failure (background surfaces — cron, web); strict
+      (the CLI's explicit `--session`/`--continue` resume) fails the turn
+      with `{:error, {:context_restore_failed, reason}}` — a user who
+      explicitly asked for history must never get a silent amnesic turn.
+      Side effect worth naming: cron `:main`-mode sessions become
+      resume-safe across node restarts for free.
+    * `:composer_ack` — `:detailed` opts into the structural return shapes
+      documented on `run_chat_turn` (route/status/run_id); default returns
+      the historical plain `{:ok, binary}` for every route.
   """
   @spec chat(String.t(), String.t(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
+          {:ok, String.t() | map()} | {:error, term()}
   def chat(tenant_id, session_id, message, opts) when is_list(opts) do
     case Keyword.fetch(opts, :kind) do
       {:ok, kind} when is_atom(kind) ->
@@ -106,12 +120,14 @@ defmodule JidoClaw do
         with {:ok, _} <- JidoClaw.Startup.ensure_project_state(project_dir),
              {:ok, _pid} <-
                JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id, actor: actor),
-             {:ok, agent_pid} <- resolve_agent_pid(session_id),
+             {:ok, agent_pid, fresh_agent?} <- resolve_agent_pid(session_id),
              {:ok, workspace, session} <-
                resolve_persistence(tenant_id, project_dir, session_id, kind, opts),
              :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session.id),
              :ok <-
-               JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session) do
+               JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session),
+             :ok <-
+               maybe_restore_context(fresh_agent?, agent_pid, session, project_dir, actor, opts) do
           run_chat_turn(
             agent_pid,
             tenant_id,
@@ -162,19 +178,54 @@ defmodule JidoClaw do
   defp recorder_flush_timeout,
     do: Application.get_env(:jido_claw, :recorder_flush_timeout, 30_000)
 
+  # The context-restore facade, behind a seam so chat-level tests can force
+  # restore failures deterministically (mirrors :ask_runtime / :mcp_facade).
+  defp context_restore_impl,
+    do: Application.get_env(:jido_claw, :context_restore_impl, ContextRestore)
+
+  # Resolves the session's agent pid and reports freshness: `true` only when
+  # this call actually started the process. A live pid (whereis hit or a lost
+  # already_started/already_registered race) is NOT fresh — it already carries
+  # its LLM context, so the restore path must skip it.
   defp resolve_agent_pid(session_id) do
     case Jido.whereis(JidoClaw.Jido, session_id) do
       pid when is_pid(pid) ->
-        {:ok, pid}
+        {:ok, pid, false}
 
       nil ->
         case JidoClaw.Jido.start_agent(JidoClaw.Agent, id: session_id) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          {:error, {:already_registered, pid}} -> {:ok, pid}
+          {:ok, pid} -> {:ok, pid, true}
+          {:error, {:already_started, pid}} -> {:ok, pid, false}
+          {:error, {:already_registered, pid}} -> {:ok, pid, false}
           {:error, reason} -> {:error, reason}
         end
     end
+  end
+
+  # Restore the persisted chat transcript into a FRESH agent process's LLM
+  # context (live pid ⇒ skip; ContextRestore's rows-empty no-op is defense in
+  # depth). Ordering matters: inject_system_prompt has already run, and the
+  # current user message is appended at ask time, after this restore.
+  defp maybe_restore_context(false, _pid, _session, _project_dir, _actor, _opts), do: :ok
+
+  defp maybe_restore_context(true, agent_pid, session, project_dir, actor, opts) do
+    case context_restore_impl().restore(agent_pid, session, project_dir, actor: actor) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        restore_failure(Keyword.get(opts, :context_restore, :best_effort), reason)
+    end
+  end
+
+  # Strict (explicit resume — the one-shot's `--session`/`--continue`): fail
+  # the turn rather than run silently amnesic. Best-effort (background
+  # surfaces): logged, never silent, never blocking.
+  defp restore_failure(:strict, reason), do: {:error, {:context_restore_failed, reason}}
+
+  defp restore_failure(_best_effort, reason) do
+    Logger.warning("[chat] context restore failed (best-effort, proceeding): #{inspect(reason)}")
+    :ok
   end
 
   defp run_chat_turn(
@@ -196,7 +247,7 @@ defmodule JidoClaw do
           do: %{user_id: user_id, tenant_id: tenant_id},
           else: Actor.system(tenant_id)
 
-    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} =
+    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, worker_fresh?, owner} =
       HandoffRouter.resolve_session_owner(
         tenant_id,
         session_id,
@@ -207,6 +258,65 @@ defmodule JidoClaw do
         session_record: session,
         default_agent_id: session_id
       )
+
+    # A cold resume of a handoff-owned session routes to a worker the router
+    # just started. A rehydrated owner gets the BASE prompt only (no live
+    # handoff context to clobber), so the persisted transcript must be
+    # restored onto THAT pid too — otherwise the model answering this turn is
+    # amnesic while main holds the history. Must precede the
+    # `add_message(:user, …)` in the continuation: restore loads
+    # `Message.for_session_primary`, so appending first would double-append
+    # the current user message. Fresh workers under a LIVE (non-rehydrated)
+    # handoff keep their designed preamble + handoff-prompt behavior and are
+    # never restored. Same strict/best-effort policy as the main-pid restore.
+    restore_worker? = worker_fresh? and HandoffRouter.rehydrated_owner?(owner)
+
+    env = %{
+      tenant_id: tenant_id,
+      session_id: session_id,
+      message: message,
+      project_dir: project_dir,
+      workspace: workspace,
+      session: session,
+      opts: opts,
+      user_id: user_id,
+      request_id: request_id,
+      actor: actor
+    }
+
+    case maybe_restore_context(restore_worker?, routed_pid, session, project_dir, actor, opts) do
+      :ok ->
+        continue_chat_turn(
+          {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner},
+          env
+        )
+
+      {:error, _} = err ->
+        err
+    end
+
+    # Public API turn entry — any unexpected fault is normalized to {:error, _}
+    # so callers never see an exception escape.
+  rescue
+    # reach:disable-next-line bare_rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    :exit, reason -> {:error, inspect(reason)}
+  end
+
+  # The turn body after routing + worker restore: attach MCP proxies, register
+  # correlation, build preamble/tool_context, and dispatch through the front
+  # door. Extracted from `run_chat_turn/8` so the worker-restore result gates
+  # it without nesting the whole body in a case; the caller's rescue/catch
+  # still wraps this call.
+  defp continue_chat_turn(routed, env) do
+    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} = routed
+
+    # Split rebinds (not one mirror of the env literal above) so the builder
+    # and this unpack don't register as a duplicated block.
+    %{tenant_id: tenant_id, session_id: session_id, message: message, opts: opts} = env
+    %{project_dir: project_dir, workspace: workspace, session: session} = env
+    %{user_id: user_id, request_id: request_id, actor: actor} = env
 
     # Best-effort: register any configured external MCP proxies onto the
     # resolved owner — the *routed* worker, not the pre-routing main pid — so a
@@ -271,14 +381,17 @@ defmodule JidoClaw do
 
     case FrontDoor.decide(message, front_door_ctx) do
       {:inline, _verdict} ->
-        dispatch_inline(
-          routed_pid,
-          preamble <> message,
-          tool_context,
-          {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
-        )
+        inline_ack =
+          dispatch_inline(
+            routed_pid,
+            preamble <> message,
+            tool_context,
+            {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
+          )
 
-      {:composer, {_status, resp}} ->
+        shape_inline_ack(inline_ack, opts)
+
+      {:composer, {status, resp}} ->
         # Both composer tags (launched / failed-to-start) render `resp.message` as
         # the assistant response and never touch the inline agent (P1). The divert
         # creates no tool/reasoning rows under this request_id, so the assistant row
@@ -294,16 +407,48 @@ defmodule JidoClaw do
         )
 
         SessionWorker.add_message(tenant_id, session_id, :assistant, resp.message, request_id)
-        ack
+        shape_composer_ack(status, resp, opts)
     end
+  end
 
-    # Public API turn entry — any unexpected fault is normalized to {:error, _}
-    # so callers never see an exception escape.
-  rescue
-    # reach:disable-next-line bare_rescue
-    e -> {:error, Exception.message(e)}
-  catch
-    :exit, reason -> {:error, inspect(reason)}
+  # Structural ack shaping (OS1-5): `composer_ack: :detailed` opts into
+  # `{:ok, map}` returns so a programmatic caller (the one-shot CLI runner)
+  # can await the created composer run instead of parsing the human ack text:
+  #
+  #   * inline           → `{:ok, %{route: :inline, message: msg}}`
+  #   * composer launch  → `{:ok, %{route: :composer, status: :launched,
+  #                          run_id: parent_run_id, message: msg}}`
+  #   * composer no-start → `{:ok, %{route: :composer, status: :failed_to_start,
+  #                          run_id: nil, message: msg}}`
+  #
+  # The default (opt absent) stays byte-identical `{:ok, binary}` for every
+  # route — cron's auto-disable-after-3-failures and the web/discord surfaces
+  # depend on that shape. Errors pass through unshaped in both modes.
+  defp detailed_ack?(opts), do: Keyword.get(opts, :composer_ack) == :detailed
+
+  defp shape_inline_ack({:ok, message}, opts) do
+    if detailed_ack?(opts) do
+      {:ok, %{route: :inline, message: message}}
+    else
+      {:ok, message}
+    end
+  end
+
+  defp shape_inline_ack(other, _opts), do: other
+
+  defp shape_composer_ack(:ok, resp, opts),
+    do: composer_ack(opts, resp.message, :launched, resp.parent_run_id)
+
+  defp shape_composer_ack(:error, resp, opts),
+    do: composer_ack(opts, resp.message, :failed_to_start, nil)
+
+  # The single construction site of the detailed composer-ack map.
+  defp composer_ack(opts, message, status, run_id) do
+    if detailed_ack?(opts) do
+      {:ok, %{route: :composer, status: status, run_id: run_id, message: message}}
+    else
+      {:ok, message}
+    end
   end
 
   # Today's inline dispatch, gated behind the front door (only a `talk`/`sketch`
@@ -570,7 +715,7 @@ defmodule JidoClaw do
   ## Required opts
 
     * `:kind` — required. One of
-      `:repl, :discord, :web_rpc, :cron, :api, :mcp, :imported_legacy`.
+      `:repl, :discord, :web_rpc, :cron, :api, :mcp, :cli_run, :imported_legacy`.
       A missing `:kind` raises `KeyError`. Required because the unique
       identity for sessions is `(tenant, workspace, kind, external_id)`
       — defaulting `:kind` would silently mis-resolve REPL / Discord

@@ -6,6 +6,7 @@ defmodule JidoClaw.CLI.Commands do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.Branding
   alias JidoClaw.CLI.Commands.Approvals
+  alias JidoClaw.CLI.Commands.Sessions
   alias JidoClaw.CLI.Commands.SolutionsStats
   alias JidoClaw.CLI.Formatter
   alias JidoClaw.CLI.Setup, as: CLISetup
@@ -621,6 +622,8 @@ defmodule JidoClaw.CLI.Commands do
 
   def handle("/gates", state), do: Approvals.list(state)
 
+  def handle("/sessions", state), do: Sessions.list(state)
+
   def handle("/cron", state) do
     # Read persisted rows (the source of truth) — on a follower no workers run
     # locally, so a worker-backed list would show nothing.
@@ -892,16 +895,20 @@ defmodule JidoClaw.CLI.Commands do
   end
 
   # -- Session-scope helper --
+
+  @doc false
   # Reads tenant_id + workspace_uuid from the REPL state struct (set
   # during `ensure_persisted_session/3` at REPL start). Returns
   # `:missing` when persistence wasn't reachable at boot (degraded
-  # mode — see repl.ex:506).
-  defp session_scope(%{tenant_id: tenant_id, workspace_uuid: workspace_uuid})
-       when is_binary(tenant_id) and is_binary(workspace_uuid) do
+  # mode — see repl.ex:506). Public (@doc false) so sibling command
+  # modules (`Commands.Sessions`) share the same scope check.
+  @spec session_scope(map()) :: {:ok, String.t(), String.t()} | :missing
+  def session_scope(%{tenant_id: tenant_id, workspace_uuid: workspace_uuid})
+      when is_binary(tenant_id) and is_binary(workspace_uuid) do
     {:ok, tenant_id, workspace_uuid}
   end
 
-  defp session_scope(_state), do: :missing
+  def session_scope(_state), do: :missing
 
   # -- Memory helpers --
 

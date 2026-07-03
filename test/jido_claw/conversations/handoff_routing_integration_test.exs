@@ -102,7 +102,7 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     :ok = TraceTestHelpers.sync_collector()
 
     # ---- 2. First post-handoff turn — Router returns Reviewer pid, preamble built ----
-    {pid1, template1, agent_id1, first1, owner1} =
+    {pid1, template1, agent_id1, first1, _fresh1, owner1} =
       HandoffRouter.resolve_session_owner(t, rsid, session.id, default_pid, actor,
         project_dir: File.cwd!(),
         session_record: fresh,
@@ -124,7 +124,7 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     :ok = HandoffRegistry.mark_preamble_consumed(t, rsid)
 
     # ---- 3. Subsequent turn — same Reviewer pid, no preamble ----
-    {pid2, template2, _, first2, _} =
+    {pid2, template2, _, first2, _, _} =
       HandoffRouter.resolve_session_owner(t, rsid, session.id, default_pid, actor,
         project_dir: File.cwd!(),
         session_record: fresh,
@@ -144,7 +144,7 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     refute Map.has_key?(reread.metadata || %{}, "current_agent_template")
 
     # ---- 5. Next turn routes to main again ----
-    {pid3, template3, agent_id3, first3, owner3} =
+    {pid3, template3, agent_id3, first3, _fresh3, owner3} =
       HandoffRouter.resolve_session_owner(t, rsid, session.id, default_pid, actor,
         project_dir: File.cwd!(),
         session_record: reread,
@@ -184,7 +184,7 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
                ctx
              )
 
-    {_, _, _, first1, _} =
+    {_, _, _, first1, _, _} =
       HandoffRouter.resolve_session_owner(t, rsid, session.id, default_pid, actor,
         project_dir: File.cwd!(),
         session_record: session,
@@ -196,7 +196,7 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     refute HandoffRegistry.owner(t, rsid).preamble_consumed?
 
     # Next call still gets first_post_handoff? = true.
-    {_, _, _, first2, _} =
+    {_, _, _, first2, _, _} =
       HandoffRouter.resolve_session_owner(t, rsid, session.id, default_pid, actor,
         project_dir: File.cwd!(),
         session_record: session,

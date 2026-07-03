@@ -268,7 +268,7 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
       :ok = HandoffRegistry.put_owner(ctx.tenant_id, rsid, handoff)
 
       # Exercise the REAL router path → maybe_inject_prompt → inject_handoff_prompt.
-      {_pid, "reviewer", _agent_id, _first?, _owner} =
+      {_pid, "reviewer", _agent_id, _first?, _fresh?, _owner} =
         HandoffRouter.resolve_session_owner(
           ctx.tenant_id,
           rsid,
@@ -347,7 +347,7 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
 
       :ok = HandoffRegistry.put_owner(ctx.tenant_id, rsid, handoff)
 
-      {_pid, "reviewer", _agent_id, _first?, _owner} =
+      {_pid, "reviewer", _agent_id, _first?, _fresh?, _owner} =
         HandoffRouter.resolve_session_owner(
           ctx.tenant_id,
           rsid,
@@ -418,7 +418,7 @@ defmodule JidoClaw.Reasoning.Compactor.CoherenceTest do
 
       :ok = HandoffRegistry.put_owner(ctx.tenant_id, rsid, handoff)
 
-      {_pid, "reviewer", _agent_id, _first?, _owner} =
+      {_pid, "reviewer", _agent_id, _first?, _fresh?, _owner} =
         HandoffRouter.resolve_session_owner(
           ctx.tenant_id,
           rsid,

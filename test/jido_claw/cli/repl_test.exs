@@ -168,7 +168,7 @@ defmodule JidoClaw.CLI.ReplTest do
 
       # No owner + session_uuid: nil ⇒ router returns the default tuple without
       # touching Postgres; the bounded attach threads the routed (main) pid.
-      assert {^main_pid, "main", "main", false, nil} = Repl.resolve_owner_and_attach(state)
+      assert {^main_pid, "main", "main", false, false, nil} = Repl.resolve_owner_and_attach(state)
       assert_receive {:mcp_ensure_attached, ^main_pid, "main", 8_000}
     end
 
@@ -217,7 +217,7 @@ defmodule JidoClaw.CLI.ReplTest do
         cwd: nil
       }
 
-      assert {^worker_pid, "reviewer", _agent_id, false, _owner} =
+      assert {^worker_pid, "reviewer", _agent_id, false, true, _owner} =
                Repl.resolve_owner_and_attach(state)
 
       refute worker_pid == main_pid

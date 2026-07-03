@@ -4,9 +4,9 @@ defmodule JidoClaw.Agent.Handoff.Router do
 
   `resolve_session_owner/6` is called from every entry point (REPL,
   `JidoClaw.run_chat_turn/8`) before a turn is dispatched. It returns
-  the pid, template name, agent id, and first-post-handoff flag the
-  dispatcher should use. When no handoff is active, the caller's
-  default pid/agent id are returned unchanged.
+  the pid, template name, agent id, first-post-handoff flag, and
+  worker-freshness flag the dispatcher should use. When no handoff is
+  active, the caller's default pid/agent id are returned unchanged.
 
   `build_preamble/3` constructs the bounded handoff preamble that the
   dispatcher prepends to the user message on the first turn after a
@@ -94,6 +94,11 @@ defmodule JidoClaw.Agent.Handoff.Router do
     * `routed_agent_id` — opaque runtime identity to thread through tool_context
     * `first_post_handoff?` — true if this is the first turn after a handoff
       and the preamble should be prepended
+    * `worker_fresh?` — true only when THIS call actually started the routed
+      worker process (a whereis hit or a lost already-started race is not
+      fresh). The dispatchers combine it with `rehydrated_owner?/1` to
+      restore the persisted transcript onto a cold-resumed worker; the
+      default/fallback path always reports `false`
     * `owner` — the registry owner record, or `nil` for the default path
 
   `default_agent_id` is required in `opts` so the call site (REPL,
@@ -109,7 +114,8 @@ defmodule JidoClaw.Agent.Handoff.Router do
           resolve_opts()
         ) ::
           {routed_pid :: pid(), routed_template :: String.t(), routed_agent_id :: String.t(),
-           first_post_handoff? :: boolean(), owner :: HandoffRegistry.owner() | nil}
+           first_post_handoff? :: boolean(), worker_fresh? :: boolean(),
+           owner :: HandoffRegistry.owner() | nil}
   def resolve_session_owner(
         tenant_id,
         runtime_session_id,
@@ -147,6 +153,22 @@ defmodule JidoClaw.Agent.Handoff.Router do
       %{} = owner -> route_with_owner(owner, ctx)
     end
   end
+
+  @doc """
+  True when the routed owner is a rehydration placeholder — durable
+  ownership (session metadata) whose runtime state was lost across a boot.
+
+  The dispatchers (`JidoClaw.run_chat_turn/8`, the REPL) combine this with
+  the `worker_fresh?` flag from `resolve_session_owner/6` to decide whether
+  a freshly-started worker needs the persisted transcript restored: a
+  rehydrated owner's worker is exactly the cold-resume class (no live
+  handoff prompt to clobber — the router injects the base prompt for it).
+  Lives here rather than at the call sites because the Router owns
+  `%Handoff{}`-struct knowledge.
+  """
+  @spec rehydrated_owner?(HandoffRegistry.owner() | nil) :: boolean()
+  def rehydrated_owner?(%{handoff: %Handoff{} = handoff}), do: Handoff.rehydrated?(handoff)
+  def rehydrated_owner?(_owner), do: false
 
   @doc """
   Build the bounded handoff preamble for the first post-handoff turn.
@@ -259,7 +281,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
   end
 
   defp default_tuple(%Ctx{default_pid: pid, default_agent_id: agent_id}) do
-    {pid, "main", agent_id, false, nil}
+    {pid, "main", agent_id, false, false, nil}
   end
 
   defp fetch_metadata_template(nil, _tenant_id, _actor), do: :none
@@ -398,7 +420,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
     agent_id = worker_agent_id(ctx.effective_uuid, template_name)
 
     case ensure_worker_pid(module, agent_id) do
-      {:ok, pid} ->
+      {:ok, pid, worker_fresh?} ->
         maybe_inject_prompt(
           pid,
           owner,
@@ -409,7 +431,7 @@ defmodule JidoClaw.Agent.Handoff.Router do
         )
 
         first_post_handoff? = not Map.get(owner, :preamble_consumed?, false)
-        {pid, template_name, agent_id, first_post_handoff?, owner}
+        {pid, template_name, agent_id, first_post_handoff?, worker_fresh?, owner}
 
       {:error, reason} ->
         Logger.warning(
@@ -420,16 +442,20 @@ defmodule JidoClaw.Agent.Handoff.Router do
     end
   end
 
+  # Freshness mirrors `JidoClaw.resolve_agent_pid/1`: `true` only when THIS
+  # call actually started the worker; a whereis hit or a lost
+  # already-started/already-registered race is NOT fresh — that pid already
+  # carries its LLM context.
   defp ensure_worker_pid(module, agent_id) do
     case jido_whereis(agent_id) do
       pid when is_pid(pid) ->
-        {:ok, pid}
+        {:ok, pid, false}
 
       nil ->
         case jido_start_agent(module, id: agent_id) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          {:error, {:already_registered, pid}} -> {:ok, pid}
+          {:ok, pid} -> {:ok, pid, true}
+          {:error, {:already_started, pid}} -> {:ok, pid, false}
+          {:error, {:already_registered, pid}} -> {:ok, pid, false}
           {:error, _} = err -> err
         end
     end

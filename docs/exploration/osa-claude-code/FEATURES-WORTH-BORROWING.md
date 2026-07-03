@@ -126,6 +126,24 @@ Companion docs: **osa** (`osa/FEATURES-WORTH-BORROWING.md`) is the primary cross
 
 **Recommendation**: BORROW-REFERENCE, gated on OSA OS1-5 (CLI resume). **Lift**: design-only.
 
+> **Status: landed 2026-07-03 with OS1-5** (next-ten #1). Our cached prefix =
+> the **system block + tools array** (messages are not cached; Anthropic path
+> marks exactly those two segments). Identity across resume comes from two
+> mechanisms, both tested: the frozen `prompt_snapshot` is the single byte
+> source for injection AND for the restored context's `system_prompt`
+> (`Startup.resolve_prompt/2`, now public, shared by `inject_system_prompt/3`
+> and `ContextRestore` — `context_restore_prefix_test.exs` asserts injected-
+> fresh == injected-resumed == restored bytes; nb. `:cli_run` sessions get
+> snapshots, only `:cron` skips), and the tools wire order is deterministic
+> (`Config.reqllm_tools/1` = `Map.values` over the same key-set —
+> `tool_prefix_identity_test.exs` pins it on the real wire artifact, NOT the
+> sorted `fingerprint/1`). **Scope, honestly**: byte-identity is proven for the
+> native/no-MCP tool set, plus resume-neutrality (a resume emits no
+> register/unregister_tool signals, so it can't shift the last-tool cache
+> breakpoint — this repo's exact regression class). Mid-session external-MCP
+> attach can still extend the tool map by design — pre-existing behavior,
+> independent of resume, unchanged here.
+
 **Where in osa-claude-code** (WIRED — the one genuinely-wired, non-obvious thing in the whole repo): `utils/session_storage.ex:224-228, 752-757`. On the live save path (`Session.terminate` → `save_session` → `write_transcript`), `should_save_message?` **preserves exactly** `["deferred_tools_delta", "mcp_instructions_delta", "hook_additional_context"]` while dropping other attachments and all progress messages. The comment (ported from a community `cc-cache-fix`, ref issue anthropics/claude-code#2638) explains why: upstream once stripped `deferred_tools_delta` on save, so on resume the tool announcements re-emitted, **shifting the cached prompt prefix and burning `cache_creation` tokens**.
 
 **What**: a specific, real gotcha — persisting/resuming a session against a cached prompt prefix requires preserving the exact attachment types that constitute that prefix, or you pay a cache-creation regression on every resume.

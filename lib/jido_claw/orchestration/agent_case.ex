@@ -104,6 +104,7 @@ defmodule JidoClaw.Orchestration.AgentCase do
     define(:consume_rejection)
     define(:by_fingerprint, args: [:fingerprint])
     define(:pending_for_session, args: [:session_id])
+    define(:pending_for_run_tree, args: [:run_id])
   end
 
   actions do
@@ -260,6 +261,22 @@ defmodule JidoClaw.Orchestration.AgentCase do
       description("Pending tool-call cases for a session — the awaiting-approval status probe.")
       argument(:session_id, :uuid, allow_nil?: false)
       filter(expr(session_id == ^arg(:session_id) and status == :pending))
+    end
+
+    # The one-shot runner's composer gate probe: a composer PARENT stays
+    # `:running` while parked on a human gate — the child wave run goes
+    # `:awaiting_approval` and carries the AgentCase — so probing the parent's
+    # own id alone would miss it. This covers both depths of the run tree.
+    read :pending_for_run_tree do
+      description("Pending cases on a run OR any of its direct child runs.")
+      argument(:run_id, :uuid, allow_nil?: false)
+
+      filter(
+        expr(
+          (workflow_run_id == ^arg(:run_id) or workflow_run.parent_run_id == ^arg(:run_id)) and
+            status == :pending
+        )
+      )
     end
   end
 

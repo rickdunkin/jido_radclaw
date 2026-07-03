@@ -239,12 +239,24 @@ defmodule JidoClaw.Startup do
   defp present_or(value, _default) when is_binary(value) and value != "", do: value
   defp present_or(_value, default), do: default
 
-  defp resolve_prompt(%{metadata: %{"prompt_snapshot" => snap}}, _project_dir)
-       when is_binary(snap) and snap != "" do
+  @doc """
+  Resolve the system prompt for a session: the persisted
+  `metadata["prompt_snapshot"]` verbatim when present, else a live
+  `Prompt.build/1` from disk.
+
+  Public so `JidoClaw.Conversations.ContextRestore` shares the exact byte
+  source with `inject_system_prompt/3` — a restored context must carry the
+  same system-prompt bytes the injection path uses, or the prompt-cache
+  prefix breaks on resume (CC2-2).
+  """
+  @spec resolve_prompt(JidoClaw.Conversations.Session.t() | map() | nil, String.t()) ::
+          String.t()
+  def resolve_prompt(%{metadata: %{"prompt_snapshot" => snap}}, _project_dir)
+      when is_binary(snap) and snap != "" do
     snap
   end
 
-  defp resolve_prompt(_session, project_dir), do: Prompt.build(project_dir)
+  def resolve_prompt(_session, project_dir), do: Prompt.build(project_dir)
 
   defp source_of(%{metadata: %{"prompt_snapshot" => snap}}) when is_binary(snap) and snap != "",
     do: :snapshot

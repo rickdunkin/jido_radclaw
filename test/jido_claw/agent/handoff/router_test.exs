@@ -116,11 +116,11 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
   end
 
   describe "resolve_session_owner/6 — default path" do
-    test "no owner returns the default pid, 'main', default agent_id, false, nil",
+    test "no owner returns the default pid, 'main', default agent_id, false, false, nil",
          %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do
       pid = default_pid()
 
-      assert {^pid, "main", "main", false, nil} =
+      assert {^pid, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(
                  t,
                  rsid,
@@ -157,7 +157,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
       install_handoff(t, rsid, session.id, "reviewer", JidoClaw.Agent.Workers.Reviewer)
       default = default_pid()
 
-      assert {worker_pid, "reviewer", agent_id, true, owner} =
+      assert {worker_pid, "reviewer", agent_id, true, true, owner} =
                HandoffRouter.resolve_session_owner(
                  t,
                  rsid,
@@ -180,7 +180,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
       install_handoff(t, rsid, session.id, "reviewer", JidoClaw.Agent.Workers.Reviewer)
       default = default_pid()
 
-      {_, _, _, first_a, _} =
+      {_, _, _, first_a, _, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
           project_dir: File.cwd!(),
           session_record: session,
@@ -191,7 +191,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       :ok = HandoffRegistry.mark_preamble_consumed(t, rsid)
 
-      {_, _, _, first_b, _} =
+      {_, _, _, first_b, _, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
           project_dir: File.cwd!(),
           session_record: session,
@@ -223,7 +223,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
       default = default_pid()
 
       # First resolve — injects.
-      {_, _, _, _, _} =
+      {_, _, _, _, _, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
           project_dir: File.cwd!(),
           session_record: session,
@@ -237,7 +237,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
       flush_prompt_events()
 
       # Second resolve — must not re-inject.
-      {_, _, _, _, _} =
+      {_, _, _, _, _, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
           project_dir: File.cwd!(),
           session_record: session,
@@ -275,7 +275,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -304,7 +304,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -331,7 +331,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -363,7 +363,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -382,7 +382,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -415,7 +415,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -437,7 +437,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -465,7 +465,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {worker_pid, "reviewer", agent_id, false, owner} =
+      assert {worker_pid, "reviewer", agent_id, false, true, owner} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -491,7 +491,7 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       default = default_pid()
 
-      assert {^default, "main", "main", false, nil} =
+      assert {^default, "main", "main", false, false, nil} =
                HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor,
                  project_dir: File.cwd!(),
                  session_record: session,
@@ -534,15 +534,16 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
 
       opts = [project_dir: File.cwd!(), session_record: session, default_agent_id: "main"]
 
-      # First route: worker created and primed at pid1.
-      {pid1, "reviewer", _, _, _} =
+      # First route: worker created and primed at pid1 — reported fresh.
+      {pid1, "reviewer", _, _, true, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
 
       assert_receive {:injected_prompt, ^pid1, _prompt}, 2_000
       assert HandoffRegistry.owner(t, rsid).prompt_injected_pid == pid1
 
-      # Same live worker: the pid-keyed marker skips re-injection.
-      {^pid1, _, _, _, _} =
+      # Same live worker: the pid-keyed marker skips re-injection, and the
+      # whereis hit reports NOT fresh.
+      {^pid1, _, _, _, false, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
 
       refute_receive {:injected_prompt, _, _}, 300
@@ -553,12 +554,60 @@ defmodule JidoClaw.Agent.Handoff.RouterTest do
       Process.exit(pid1, :kill)
       assert_receive {:DOWN, ^ref, :process, _, _}
 
-      {pid2, "reviewer", _, _, _} =
+      {pid2, "reviewer", _, _, true, _} =
         HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
 
       assert pid2 != pid1
       assert_receive {:injected_prompt, ^pid2, _prompt}, 2_000
       assert HandoffRegistry.owner(t, rsid).prompt_injected_pid == pid2
+    end
+
+    test "cold-start synthesis reports worker_fresh? true once, then false on a whereis hit",
+         %{tenant_id: t, session: session, runtime_session_id: rsid, actor: actor} do
+      # No registry entry — only the durable metadata mirror. This IS the
+      # cold-resume state the dispatchers key the worker restore on.
+      {:ok, s} = ConversationsSession.by_id(session.id, tenant: t, actor: actor)
+
+      {:ok, _} =
+        ConversationsSession.set_current_agent_template(s, "reviewer", tenant: t, actor: actor)
+
+      assert HandoffRegistry.owner(t, rsid) == nil
+
+      default = default_pid()
+      opts = [project_dir: File.cwd!(), session_record: session, default_agent_id: "main"]
+
+      assert {worker_pid, "reviewer", _, false, true, owner} =
+               HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
+
+      assert is_pid(worker_pid)
+      assert HandoffRouter.rehydrated_owner?(owner)
+
+      # Second resolve finds the live worker — NOT fresh, restore must skip.
+      assert {^worker_pid, "reviewer", _, false, false, _} =
+               HandoffRouter.resolve_session_owner(t, rsid, session.id, default, actor, opts)
+    end
+  end
+
+  describe "rehydrated_owner?/1" do
+    test "true only for an owner carrying a rehydration-placeholder handoff",
+         %{tenant_id: t, session: session, runtime_session_id: rsid} do
+      rehydrated =
+        Handoff.new(%{
+          tenant_id: t,
+          runtime_session_id: rsid,
+          session_uuid: session.id,
+          from_template: Handoff.rehydrated_marker(),
+          to_template: "reviewer",
+          to_module: JidoClaw.Agent.Workers.Reviewer,
+          message: Handoff.rehydrated_marker()
+        })
+
+      live = install_handoff(t, rsid, session.id, "reviewer", JidoClaw.Agent.Workers.Reviewer)
+
+      assert HandoffRouter.rehydrated_owner?(%{handoff: rehydrated})
+      refute HandoffRouter.rehydrated_owner?(%{handoff: live})
+      refute HandoffRouter.rehydrated_owner?(nil)
+      refute HandoffRouter.rehydrated_owner?(%{template: "reviewer"})
     end
   end
 

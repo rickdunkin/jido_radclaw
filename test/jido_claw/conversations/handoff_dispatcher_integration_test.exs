@@ -16,7 +16,10 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
 
   use JidoClaw.TenantCase, async: false
 
+  alias Jido.Agent.Strategy.State, as: StratState
+  alias Jido.AI.Context, as: AIContext
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
+  alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Session.Supervisor, as: SessionSupervisor
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Test.HandoffDispatchCapture
@@ -248,5 +251,80 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
 
     assert_receive {:dispatch_capture, _, retry_message, _}, 5_000
     assert String.starts_with?(retry_message, "[HANDOFF CONTEXT")
+  end
+
+  # The P1 review-fix e2e the seam tests can't cover: a REAL Reviewer worker
+  # (real runtime, real ContextRestore — only the LLM ask is stubbed)
+  # accepting the `ai.react.context.modify` restore signal.
+  test "cold resume of a handoff-owned session restores the routed worker's LLM context",
+       %{
+         tenant_id: t,
+         session: session,
+         runtime_session_id: rsid,
+         actor: actor,
+         tmp: tmp
+       } do
+    # Turn 1: plain chat (no handoff) seeds durable user+assistant rows.
+    {:ok, _} =
+      JidoClaw.chat(t, rsid, "first question",
+        kind: :api,
+        workspace_id: tmp,
+        external_id: rsid,
+        actor: actor
+      )
+
+    assert_receive {:dispatch_capture, _pid, _msg, _opts}, 5_000
+
+    # Cold-resume state: durable ownership at "reviewer", registry EMPTY (no
+    # HandoffTool.run) — exactly what a fresh boot resumes into.
+    {:ok, _} =
+      ConversationsSession.set_current_agent_template(session, "reviewer",
+        tenant: t,
+        actor: actor
+      )
+
+    assert HandoffRegistry.owner(t, rsid) == nil
+
+    # Turn 2: the real router synthesizes the rehydrated owner, starts a real
+    # Reviewer worker, and the real ContextRestore delivers the transcript.
+    {:ok, _} =
+      JidoClaw.chat(t, rsid, "what did I ask?",
+        kind: :api,
+        workspace_id: tmp,
+        external_id: rsid,
+        actor: actor
+      )
+
+    assert_receive {:dispatch_capture, dispatched_pid, _msg, _opts}, 5_000
+
+    worker_pid = Jido.whereis(JidoClaw.Jido, "handoff:#{session.id}:reviewer")
+    assert is_pid(worker_pid)
+    assert dispatched_pid == worker_pid
+
+    # The worker's strategy context carries EXACTLY turn 1's chat rows: turn
+    # 2's own user message rides the stubbed ask (restore precedes the
+    # user-row append), and main was alive from turn 1, so only the worker
+    # restore fired.
+    context = worker_strategy_context(worker_pid)
+    assert %AIContext{} = context
+
+    entries = Enum.reverse(context.entries)
+
+    assert Enum.map(entries, &{&1.role, &1.content}) == [
+             {:user, "first question"},
+             {:assistant, "captured"}
+           ]
+
+    # The restored context must carry the system prompt (strategy has no
+    # config fallback at ask time — nil would silently drop it).
+    assert is_binary(context.system_prompt) and context.system_prompt != ""
+  end
+
+  defp worker_strategy_context(pid) do
+    {:ok, server_state} = Jido.AgentServer.state(pid)
+
+    server_state.agent
+    |> StratState.get(%{})
+    |> Map.get(:context)
   end
 end

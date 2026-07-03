@@ -12,6 +12,7 @@ defmodule JidoClaw.CLI.Repl do
   alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.{Branding, Commands, Formatter, Setup}
+  alias JidoClaw.Conversations.ContextRestore
   alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Conversations.SessionId
@@ -20,6 +21,7 @@ defmodule JidoClaw.CLI.Repl do
   alias JidoClaw.Reasoning.StrategyRegistry
   alias JidoClaw.Shell.ProfileManager
   alias JidoClaw.Workspaces.PolicyTransitions
+  alias JidoClaw.Workspaces.Resolver, as: WorkspacesResolver
   alias JidoClaw.Workspaces.Workspace
   alias Nostrum.Cache.Me
 
@@ -51,7 +53,16 @@ defmodule JidoClaw.CLI.Repl do
   @type t :: %__MODULE__{}
 
   @spec start(String.t()) :: :ok
-  def start(project_dir) do
+  def start(project_dir), do: start(project_dir, [])
+
+  @doc """
+  Start the REPL. `opts` may carry `resume: <session uuid>` or
+  `continue: true` to resume a durable session (see
+  `resolve_boot_session/3`); both fall back to a fresh session with a
+  printed warning rather than aborting the boot.
+  """
+  @spec start(String.t(), keyword()) :: :ok
+  def start(project_dir, opts) when is_list(opts) do
     config = ensure_config(project_dir)
     model = Config.model(config)
 
@@ -72,7 +83,7 @@ defmodule JidoClaw.CLI.Repl do
         # main agent. The natural delay before the first prompt covers the
         # async registration. Best-effort (no-op when no Consumer is running).
         _ = mcp().attach_to_agent(pid, "main")
-        state = boot_repl_session(pid, project_dir, config, model, strategy)
+        state = boot_repl_session(pid, project_dir, config, model, strategy, opts)
         loop(state)
 
       {:error, reason} ->
@@ -197,9 +208,10 @@ defmodule JidoClaw.CLI.Repl do
     IO.puts("")
   end
 
-  defp boot_repl_session(pid, project_dir, config, model, strategy) do
-    session_id = SessionId.new()
+  defp boot_repl_session(pid, project_dir, config, model, strategy, opts) do
     tenant_id = "default"
+
+    {session_id, resumed_record} = resolve_boot_session(tenant_id, project_dir, opts)
 
     ensure_session_worker!(tenant_id, session_id)
 
@@ -208,8 +220,15 @@ defmodule JidoClaw.CLI.Repl do
     # workspace_uuid + session_uuid. CLI runs unauthenticated so
     # user_id is nil; the partial-unique :unique_user_path_cli
     # identity keeps these rows from colliding with web/RPC rows.
+    #
+    # A RESUMED record bypasses `ensure_persisted_session`'s create — its
+    # kind may be `:api` etc., and re-ensuring with `:repl` would mint a
+    # different `(workspace, kind, external_id)` row. Touch it instead.
     {workspace_uuid, session_uuid, session_record} =
-      ensure_persisted_session(tenant_id, project_dir, session_id)
+      case resumed_record do
+        nil -> ensure_persisted_session(tenant_id, project_dir, session_id)
+        record -> touch_resumed_session(tenant_id, record)
+      end
 
     # Phase 2 — wire the Worker to the persisted session UUID so
     # Worker.add_message can write Conversations.Message rows.
@@ -221,6 +240,11 @@ defmodule JidoClaw.CLI.Repl do
     # frozen-snapshot path can read `metadata["prompt_snapshot"]`
     # and the Anthropic prompt cache stays warm across turns.
     inject_system_prompt_with_warning(pid, project_dir, session_record)
+
+    # A resumed session also restores the persisted chat transcript into the
+    # agent's LLM context — the worker hydration above is view-only; without
+    # this the session LOOKS resumed while the model remembers nothing.
+    maybe_restore_boot_context(pid, resumed_record != nil, session_record, project_dir, tenant_id)
 
     # Bind agent process to session for crash tracking
     bind_agent_to_worker(tenant_id, session_id, pid)
@@ -291,6 +315,134 @@ defmodule JidoClaw.CLI.Repl do
     end
   end
 
+  @doc false
+  # Resolve which durable session this REPL boot runs as. Public (@doc false)
+  # so the resume-selection logic is testable without driving the IO loop.
+  #
+  #   * `resume: <uuid>` — resume that session IF it belongs to this
+  #     directory's workspace; a missing uuid or a workspace mismatch warns
+  #     prominently and falls back to a fresh mint (interactive surface: stay
+  #     usable, never silently run a session against the wrong cwd).
+  #   * `continue: true` — the workspace's most recent open CLI session
+  #     (`Session.most_recent_for_workspace`, `:repl`/`:cli_run` kinds only).
+  #   * neither — today's fresh `SessionId.new()` mint.
+  #
+  # Returns `{runtime_session_id, resumed_record_or_nil}`.
+  @spec resolve_boot_session(String.t(), String.t(), keyword()) ::
+          {String.t(), ConversationsSession.t() | nil}
+  def resolve_boot_session(tenant_id, project_dir, opts) do
+    cond do
+      is_binary(Keyword.get(opts, :resume)) ->
+        resolve_resume_session(tenant_id, project_dir, Keyword.fetch!(opts, :resume))
+
+      Keyword.get(opts, :continue, false) ->
+        resolve_continue_session(tenant_id, project_dir)
+
+      true ->
+        {SessionId.new(), nil}
+    end
+  rescue
+    e ->
+      IO.puts(
+        "  \e[33m⚠\e[0m  session resume raised: \e[1m#{Exception.message(e)}\e[0m — starting a FRESH session"
+      )
+
+      {SessionId.new(), nil}
+  end
+
+  defp resolve_resume_session(tenant_id, project_dir, uuid) do
+    actor = Actor.system(tenant_id)
+
+    with {:ok, session} <- ConversationsSession.by_id(uuid, tenant: tenant_id, actor: actor),
+         {:ok, workspace} <- WorkspacesResolver.ensure_workspace(tenant_id, project_dir) do
+      if session.workspace_id == workspace.id do
+        {session.external_id, session}
+      else
+        warn_foreign_workspace(session, tenant_id, actor)
+        {SessionId.new(), nil}
+      end
+    else
+      _ ->
+        IO.puts("  \e[33m⚠\e[0m  session \e[1m#{uuid}\e[0m not found — starting a FRESH session")
+
+        {SessionId.new(), nil}
+    end
+  end
+
+  defp warn_foreign_workspace(session, tenant_id, actor) do
+    where =
+      case Workspace.by_id(session.workspace_id, tenant: tenant_id, actor: actor) do
+        {:ok, ws} -> ws.path
+        _ -> "a different workspace"
+      end
+
+    IO.puts(
+      "  \e[33m⚠\e[0m  session \e[1m#{session.id}\e[0m belongs to \e[1m#{where}\e[0m — " <>
+        "starting a FRESH session here; cd there to resume it"
+    )
+  end
+
+  defp resolve_continue_session(tenant_id, project_dir) do
+    actor = Actor.system(tenant_id)
+
+    with {:ok, workspace} <- WorkspacesResolver.ensure_workspace(tenant_id, project_dir),
+         {:ok, session} <-
+           ConversationsSession.most_recent_for_workspace(workspace.id,
+             tenant: tenant_id,
+             actor: actor
+           ) do
+      {session.external_id, session}
+    else
+      _ ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  no open CLI session to continue in this workspace — starting a FRESH session"
+        )
+
+        {SessionId.new(), nil}
+    end
+  end
+
+  # Resumed sessions bump last_active_at (best-effort) instead of re-running
+  # the `:start` create. Mirrors `ensure_persisted_session/3`'s return shape.
+  defp touch_resumed_session(tenant_id, record) do
+    actor = Actor.system(tenant_id)
+
+    touched =
+      case ConversationsSession.touch(record, tenant: tenant_id, actor: actor) do
+        {:ok, t} -> t
+        _ -> record
+      end
+
+    {touched.workspace_id, touched.id, touched}
+  rescue
+    _ -> {record.workspace_id, record.id, record}
+  end
+
+  defp maybe_restore_boot_context(_pid, false, _record, _project_dir, _tenant_id), do: :ok
+  defp maybe_restore_boot_context(_pid, true, nil, _project_dir, _tenant_id), do: :ok
+
+  defp maybe_restore_boot_context(pid, true, session_record, project_dir, tenant_id) do
+    case ContextRestore.restore(pid, session_record, project_dir, actor: Actor.system(tenant_id)) do
+      :ok ->
+        prior = prior_message_count(tenant_id, session_record.external_id)
+
+        IO.puts(
+          "  \e[32m✓\e[0m  Resumed session \e[1m#{session_record.id}\e[0m — #{prior} prior message(s)"
+        )
+
+      {:error, reason} ->
+        warn_history_not_restored(inspect(reason))
+    end
+  rescue
+    e -> warn_history_not_restored(Exception.message(e))
+  end
+
+  defp prior_message_count(tenant_id, runtime_session_id) do
+    length(Worker.get_messages(tenant_id, runtime_session_id))
+  rescue
+    _ -> 0
+  end
+
   defp bind_agent_to_worker(tenant_id, session_id, pid) do
     Worker.set_agent(tenant_id, session_id, pid)
   end
@@ -350,7 +502,7 @@ defmodule JidoClaw.CLI.Repl do
     Display.exit_input_mode()
     Display.start_thinking()
 
-    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, owner} =
+    {routed_pid, routed_template, routed_agent_id, first_post_handoff?, _worker_fresh?, owner} =
       resolve_owner_and_attach(state)
 
     # Register correlation AFTER routing (so the stamped compaction identity
@@ -511,9 +663,10 @@ defmodule JidoClaw.CLI.Repl do
   end
 
   @doc """
-  Test seam: resolve the handoff-aware session owner for this turn and
-  eagerly register the routed worker's template-allowlisted external MCP
-  proxies before dispatch.
+  Test seam: resolve the handoff-aware session owner for this turn, eagerly
+  register the routed worker's template-allowlisted external MCP proxies,
+  and — for a cold-resumed handoff-owned session — restore the persisted
+  transcript onto the freshly-started worker before dispatch.
 
   Mirrors the programmatic chat path (`JidoClaw.run_chat_turn/8`): the
   bounded `ensure_attached/3` runs against the *routed* pid/template — a
@@ -522,11 +675,24 @@ defmodule JidoClaw.CLI.Repl do
   dispatch. Best-effort: a `:timeout`/`:mcp_unavailable`/`:skipped` result
   leaves the turn tool-less rather than blocking it.
 
+  The worker restore fires only when the router reports `worker_fresh?` AND
+  the owner is a rehydration placeholder (`Router.rehydrated_owner?/1`) —
+  the cold-resume class, where the router injected the base prompt and the
+  worker would otherwise answer amnesic while the boot restore primed only
+  main. Interactive posture (mirrors the boot restore): a failure prints the
+  ⚠ history-NOT-restored warning and proceeds, never aborting the turn.
+  Intentional fire-once residual: after a failed warn-and-proceed restore
+  the worker pid is live, so `worker_fresh?` is false on every later turn
+  and the restore never re-fires — the session stays amnesic until the
+  worker dies or the REPL restarts. Separate deferred residual: a worker
+  that crashes mid-LIVE-handoff is lazily recreated amnesic (restoring it
+  needs a prompt-choice-aware restore carrying the combined handoff prompt).
+
   Returns the `JidoClaw.Agent.Handoff.Router.resolve_session_owner/6`
-  5-tuple unchanged.
+  6-tuple unchanged.
   """
   @spec resolve_owner_and_attach(t()) ::
-          {pid(), String.t(), String.t(), boolean(),
+          {pid(), String.t(), String.t(), boolean(), boolean(),
            JidoClaw.Agent.Handoff.Registry.owner() | nil}
   def resolve_owner_and_attach(%__MODULE__{} = state) do
     actor = Actor.system(state.tenant_id)
@@ -544,13 +710,44 @@ defmodule JidoClaw.CLI.Repl do
         default_agent_id: state.agent_id
       )
 
-    {routed_pid, routed_template, _, _, _} = routed
+    {routed_pid, routed_template, _, _, worker_fresh?, owner} = routed
 
     # Bounded: register the routed worker's template-allowlisted MCP proxies
     # before the turn; blocks only this turn, never the Consumer (best-effort).
     _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
+
+    # ContextRestore's guards require a binary project dir; repl_test drives
+    # this seam with cwd: nil, and a nil session_record has nothing to restore.
+    if worker_fresh? and HandoffRouter.rehydrated_owner?(owner) and
+         session_record != nil and is_binary(state.cwd) do
+      restore_worker_context(routed_pid, session_record, state.cwd, actor)
+    end
+
     routed
   end
+
+  # Restore the persisted transcript onto a cold-resumed handoff worker.
+  # Same warn-and-proceed posture (and rescue) as maybe_restore_boot_context.
+  defp restore_worker_context(pid, session_record, cwd, actor) do
+    case context_restore_impl().restore(pid, session_record, cwd, actor: actor) do
+      :ok -> :ok
+      {:error, reason} -> warn_history_not_restored(inspect(reason))
+    end
+  rescue
+    e -> warn_history_not_restored(Exception.message(e))
+  end
+
+  defp warn_history_not_restored(detail) do
+    IO.puts(
+      "  \e[33m⚠\e[0m  history NOT restored — the model will not remember prior turns: " <>
+        "\e[1m#{detail}\e[0m"
+    )
+  end
+
+  # The context-restore facade, behind a seam so REPL tests can capture or
+  # force worker restores deterministically. Mirrors `JidoClaw.context_restore_impl/0`.
+  defp context_restore_impl,
+    do: Application.get_env(:jido_claw, :context_restore_impl, ContextRestore)
 
   # The MCP facade, behind a seam so call-site tests can assert the
   # pid/template passed to `ensure_attached/3` and `attach_to_agent/2` (the
@@ -777,7 +974,7 @@ defmodule JidoClaw.CLI.Repl do
   # without a running database) rather than crashing.
   defp ensure_persisted_session(tenant_id, project_dir, session_id) do
     with {:ok, workspace} <-
-           JidoClaw.Workspaces.Resolver.ensure_workspace(tenant_id, project_dir),
+           WorkspacesResolver.ensure_workspace(tenant_id, project_dir),
          {:ok, _} <- maybe_apply_workspace_policies(workspace, project_dir),
          {:ok, session} <-
            JidoClaw.Conversations.Resolver.ensure_session(

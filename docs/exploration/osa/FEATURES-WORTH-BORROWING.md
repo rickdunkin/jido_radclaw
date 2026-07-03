@@ -98,6 +98,27 @@ Companion docs: **hermes** (`hermes/FEATURES-WORTH-BORROWING.md`) overlaps OSA m
 
 **Recommendation**: BORROW-PATTERN (the command shape; our substrate exists). **Lift**: design-only.
 
+> **Done 2026-07-03** (next-ten #1) — landed as `mix jidoclaw run "<prompt>" [dir]
+> [--session <uuid> | --continue] [--timeout <s>] [--format text|json]` (escript
+> mirrored), REPL `--resume <uuid>` / `--continue`, and a `/sessions` list split
+> into CLI-resumable vs resume-by-UUID-only groups. Three corrections to this
+> entry's claims: (a) it says `JidoClaw.chat/3` — shipped on **`chat/4`**, with a
+> new `composer_ack: :detailed` opt returning structural acks (route/status/
+> `parent_run_id`) because the plain-binary default is a pinned contract for
+> cron/web; (b) "ensure_session (existing UUID or fresh)" undersold resume —
+> the session identity includes **kind**, so a resumed row must carry its OWN
+> `kind`/`external_id` back through `unique_external` (one-shot sessions got a
+> new **`:cli_run`** kind so `--continue` can never resume a web `:api` thread);
+> (c) "the Worker already hydrates `state.messages`" was true but **view-only**
+> — nothing seeded `Jido.AI.Context` from Postgres, so the genuinely net-new
+> mechanism was `JidoClaw.Conversations.ContextRestore` (chat-transcript-only
+> `:replace`/`:restore` context op, `refs.request_id` preserved so compaction
+> survives resume, snapshot-sourced system prompt so the cached prefix stays
+> byte-identical — the CC2-2 rider, tested both halves). Resume was generalized
+> into `chat/4` (`context_restore: :best_effort | :strict`), so cron `:main`
+> sessions became restart-resumable for free. OQ-4 answered below. stream-json
+> stayed out of scope.
+
 **Where in OSA** (wired): `lib/mix/tasks/osa.run.ex` (188 LOC) — `mix osa.run "prompt"` boots the app, creates (or `--resume`s) a session, starts the same `Agent.Loop` every channel uses, runs one `process_message`, prints, exits; `--format text|json|stream-json`, stdin piping, NDJSON streaming by subscribing bus handlers for `:streaming_token`/`:tool_call` (`149-177`). Interactive `/resume` restores a checkpointed session (`channels/cli/session.ex:124`, `loop.ex:266`).
 
 **Gap in jido_radclaw**: no one-shot CLI — every non-flag arg to `mix jidoclaw` is treated as a project dir and drops into the interactive REPL (`cli/repl.ex:314-342`); the programmatic entry `JidoClaw.chat/3` already exists and is what cron and the web surface call. No resume — the REPL mints a fresh `SessionId.new()` per boot (`repl.ex:201`) and creates a new `Conversations.Session` row, even though sessions are durable and the Worker already hydrates `state.messages` from Postgres when rows exist for the session UUID (`repl.ex:214-218`). Both gaps are thin plumbing over shipped substrate.
@@ -230,6 +251,7 @@ Companion docs: **hermes** (`hermes/FEATURES-WORTH-BORROWING.md`) overlaps OSA m
 - **OQ-2 — Injection-scan disposition (OS1-4).** For tool results / web content: wrap-and-warn only, or configurable block? And exact pipeline order relative to `OutputRedaction` (scan-after-redact proposed — verify the normalizer belongs in redaction's root pass too, where ANSI-strip already lives).
 - **OQ-3 — Overflow-recovery seam (OS1-1b).** Where does the provider error surface cleanly enough to trigger collapse-and-retry — a jido_ai `on_error` hook, a wrapper around the runner, or (narrowest) an upstream req_llm retry-step contribution? Composer stage agents need the same recovery.
 - **OQ-4 — Headless approval contract (OS1-5).** Non-interactive run hits a gated tool: print the pending case id and exit with a distinct code, or auto-fail? (The gate family already yields `:approval_pending`; this is purely an exit-contract decision.)
+  **Answered 2026-07-03 (shipped with OS1-5)**: distinct code — the contract is `0` success · `1` error/failed-run/await-timeout · `2` usage/config error · `3` approval gate pending (case ids printed with `/gates approve <id>` guidance; JSON envelope carries `pending_cases: [{id, fresh}]`). Two detection subtleties the answer had to absorb: an **inline** gate is invisible in `chat/4`'s return (the gate error becomes a tool result the LLM relays as text), so the runner probes `AgentCase.pending_for_session/1` after the turn — and deliberately does NOT filter by `inserted_at >= turn_start`, because `ToolApprovals` reuses an existing pending case for the same fingerprint (the `fresh` flag distinguishes them instead; a leftover pending is an honest 3). A **composer** gate parks the *child* wave run while the parent stays `:running`, so the awaiter probes the run tree (`AgentCase.pending_for_run_tree/1`) and polls `WorkflowRun.by_id` as the authoritative terminal detector (composer-parent terminals don't broadcast; pubsub is early-wake only).
 - **OQ-5 — The dynamic-context lane (OS2-3, OS3-1).** Matched skill instructions and `@`-ref content both want per-turn injection without thawing the frozen prompt snapshot. One shared turn-preamble lane (as compaction summaries use), designed once?
 
 ## Cross-references and dependencies
