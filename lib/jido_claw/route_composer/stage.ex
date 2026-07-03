@@ -46,8 +46,12 @@ defmodule JidoClaw.RouteComposer.Stage do
       router.
     * `:guard` — `:sticky` keeps a once-triggered stage in the display route
       after its signal goes quiet (only `merge_sticky/3` reads it), or `nil`.
-    * `:model` / `:effort` — spawn-time tiering overrides for later phases
-      (§12); never read by the router.
+    * `:model` / `:effort` — per-stage tiering overrides (AR-9): read by
+      `JidoClaw.RouteComposer.WaveBuilder` at wave build (carried into the
+      stage step's options) and applied per LLM turn by the composed
+      `JidoClaw.Reasoning.Compactor.RequestTransformer` (`model:` swaps the
+      provider via `Jido.AI.resolve_model/1`; `effort:` rides the canonical
+      ReqLLM `reasoning_effort` llm_opt). Never read by the router.
     * `:emit` — `:default` (map `output` + the worker verdict to artifacts +
       signals) or `{:mapper, name}` (a registered mapper); carried for §7.
     * `:routes` — the validated subset of `["talk", "sketch", "code",

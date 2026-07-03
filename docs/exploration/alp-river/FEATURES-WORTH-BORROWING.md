@@ -538,7 +538,12 @@ YAML-on-disk). (The AR-4 self-heal fixer workflow that reused the rerun primitiv
 shipped.) Per-stage
 model/effort tiering: the `Stage` struct carries the fields (marked "for later phases"), but
 the spawn-time override seam is **not wired** — `WaveBuilder` never reads them (re-verified
-2026-07-02).
+2026-07-02). *[Update 2026-07-02, later the same day: the seam **shipped** (AR-9 program
+PR-1) — and not as a spawn-time override, which jido_ai has no seam for (worker model is
+compile-time; `ask/3` drops `:model`): `WaveBuilder` carries the fields into the stage
+step's options and the composed `Compactor.RequestTransformer` applies them per LLM turn
+(`model:` / `llm_opts: [reasoning_effort: e]` overrides). No catalog stage declares a tier
+yet.]*
 
 ### AR-3. Reviewer fan-out + a shared Reviewer Contract
 
@@ -918,7 +923,8 @@ design (per-tool approval overlay for the exec tier; auto-merging a graduated pr
   already has model selection, but the workers (now 13 templates) still run uniformly at
   `:fast` (no per-role escalation). Per-stage model+effort is a small refinement worth
   folding into AR-2's catalog metadata, not a standalone borrow — AR-2's `%Stage{}` carries
-  the `model`/`effort` fields, still unwired (see its status update).
+  the `model`/`effort` fields, still unwired (see its status update). *[Update 2026-07-02:
+  seam wired — see the AR-2 status update; declaration awaits AR-9's arbiter.]*
 - **Milestone loop** (`WORKFLOW.md` `## Milestone loop`) → **future follow-on of AR-2/AR-3.**
   Large builds as verified increments maps onto Reactor compositional steps + the gate
   machinery (both shipped); not separate substrate.

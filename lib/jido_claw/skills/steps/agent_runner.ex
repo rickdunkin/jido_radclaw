@@ -27,6 +27,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Forge
+  alias JidoClaw.Reasoning.Compactor.RequestTransformer
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.VFS.Sandbox
   alias JidoClaw.Workflows.StepResult
@@ -52,12 +53,16 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   `nil` for an unnamed step (so downstream label rendering falls back to the
   template). `context` is the Reactor context. `catalog_stage_name` (AR-6) is the
   composer stage the worker runs as — set only by the wave-builder path, `nil` for a
-  skill step / saga cleanup — and only steers the injected persona. Returns
-  `{:ok, %StepResult{}}` or `{:error, binary()}`.
+  skill step / saga cleanup — and only steers the injected persona. `tier` (AR-9)
+  is the stage's declared `[model: m, effort: e]` halves (non-nil only; `[]` for
+  an untiered stage / skill step) — threaded into `tool_context` under
+  `RequestTransformer.stage_tier_key/0` and applied per-turn by pre-setting the
+  composed request transformer on the ask. Returns `{:ok, %StepResult{}}` or
+  `{:error, binary()}`.
   """
-  @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil) ::
+  @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil, keyword()) ::
           {:ok, StepResult.t()} | {:error, binary()}
-  def run(template_name, task, step_name, context, catalog_stage_name \\ nil) do
+  def run(template_name, task, step_name, context, catalog_stage_name \\ nil, tier \\ []) do
     with {:ok, template} <- Templates.get(template_name),
          :ok <- validate_sandbox_scope(template, context),
          tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
@@ -65,9 +70,13 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
          visibility = Map.get(template, :forward_context, :public),
          scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
          # resolve_scope/2 omits :agent_template (build/1 nils it); set it so the
-         # per-template approval policy applies to step workers too.
+         # per-template approval policy applies to step workers too. AR-9: a
+         # declared stage tier rides the same map under the transformer's key.
          tool_context =
-           Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
+           maybe_put_tier(
+             Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
+             tier
+           ),
          {:ok, pid} <- JidoClaw.Jido.start_subagent(template.module, id: tag) do
       # Bounded: register this step template's allowlisted external MCP proxies
       # onto the freshly-spawned worker before its single-shot turn. Best-effort
@@ -183,6 +192,22 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   # clause never fails.
   defp stamp_sandbox(scope, %{sandbox: s}), do: Map.put(scope, :sandbox, s)
 
+  # AR-9: put the declared tier halves under the composed transformer's
+  # stage-tier key. Nil halves are dropped defensively; an empty result leaves
+  # the map UNCHANGED — an untiered step's tool_context stays byte-identical,
+  # and `transformer_opt/1` (which keys on presence) adds nothing downstream.
+  defp maybe_put_tier(tool_context, tier) do
+    tier_map =
+      tier
+      |> Keyword.take([:model, :effort])
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+
+    if map_size(tier_map) == 0,
+      do: tool_context,
+      else: Map.put(tool_context, RequestTransformer.stage_tier_key(), tier_map)
+  end
+
   # The post-correlation step lifecycle: record the task turn, run the step,
   # record its terminal, and (in `after`) stop the worker. A real supervisor
   # stop, not `Process.exit(pid, :normal)` — an exit signal with reason
@@ -245,7 +270,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   end
 
   defp run_step_async(module, pid, request_id, task, tool_context, step_name, template_name) do
-    case module.ask(pid, task, request_id: request_id, tool_context: tool_context) do
+    case ask_step(module, pid, request_id, task, tool_context) do
       {:ok, %{id: ^request_id}} ->
         await_step(pid, request_id, step_name, template_name)
 
@@ -254,6 +279,29 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
 
       other ->
         {:error, "Step #{template_name} failed: unexpected ask reply: #{inspect(other)}"}
+    end
+  end
+
+  # AR-9: pre-set the app's composed transformer whenever a tier rides the
+  # tool_context, so the tier applies even when compaction is `:off`/skipped.
+  # Same module the Compactor installs ⇒ no `:existing_request_transformer`
+  # collision, and `install_overrides` preserves the tier key. Two full
+  # literal ask forms — never a built opts list or a present-nil
+  # `request_transformer:` — so the untiered call stays byte-identical AND
+  # the ToolContextShapeTest static contract (every `Agent.ask*` site
+  # literally carries `tool_context:`) keeps holding. The sync path
+  # (`run_step_sync`, plain agents without `ask/3` — test stubs) carries the
+  # tier in tool_context but adds no transformer opt: composer waves run real
+  # `ask/3` workers.
+  defp ask_step(module, pid, request_id, task, tool_context) do
+    if Map.has_key?(tool_context, RequestTransformer.stage_tier_key()) do
+      module.ask(pid, task,
+        request_id: request_id,
+        tool_context: tool_context,
+        request_transformer: RequestTransformer
+      )
+    else
+      module.ask(pid, task, request_id: request_id, tool_context: tool_context)
     end
   end
 

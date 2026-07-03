@@ -110,6 +110,30 @@ an anubis `component` template resource is unverifiable on paper.
 
 ## 3. AR-9 multi-plan + plan-arbiter, with its two riders — M–L
 
+> **PR-1 + PR-2 DONE 2026-07-02** (PR-3/PR-4 pending), with two corrections to
+> this entry's own claims: (a) PR-1's "`WaveBuilder` reads the fields **at spawn
+> time**" described a seam that does not exist — worker model is compile-time
+> (`use JidoClaw.Agent.Defaults, model:` wins at server init) and `ask/3` drops
+> a `:model` opt; the only per-turn seam jido_ai provides is a
+> `request_transformer` returning `%{model:, llm_opts:}` overrides. PR-1
+> therefore lands as: `WaveBuilder` carries the `%Stage{}` tier into the stage
+> step's options (conditionally-put, byte-identical when absent) → `AgentStep` →
+> `AgentRunner.run/6` puts it in `tool_context` under
+> `RequestTransformer.stage_tier_key()` and pre-sets the app's **composed**
+> transformer (`JidoClaw.Reasoning.Compactor.RequestTransformer`, now
+> compaction + tiering; same module ⇒ no Compactor collision), which emits
+> `model:` / `llm_opts: [reasoning_effort: e]` per turn. (b) PR-2 threads at
+> `route_composer.ex` (`compose_extra_context/2`) via the new
+> `JidoClaw.RouteComposer.PremisesContext` renderer — not
+> `wave_builder.ex`/`agent_runner.ex`; premises ride the wave's
+> `:extra_context`, gate waves intentionally excluded. The telemetry rider
+> landed too, in `agent_step.ex` (not `wave_builder.ex`) — the assembled prompt
+> only exists there ([:jido_claw, :composer, :stage_prompt], `bytes` + stage/
+> template metadata). Behavior today is unchanged (no catalog stage declares a
+> tier; default premises `%{}` render to `""`); once a stage declares `effort`,
+> `reasoning_effort` reaches the provider even while `:fast`/`:capable` point at
+> the same model.
+
 The [alp-river rollup](../../exploration/alp-river/UNADOPTED-IDEAS.md) names
 this "the next substantive composer increment," to adopt "when a composer
 increment is next wanted" — and explicitly says to pull #1 (tiering seam) and
@@ -120,18 +144,23 @@ simply never declare `plan-approved` in `publishes`, and the human plan-gate
 stays the sole emitter. Full sketch:
 [AR-9 in FEATURES-WORTH-BORROWING-V2.md](../../exploration/alp-river/FEATURES-WORTH-BORROWING-V2.md).
 
-**This is the item that must be broken down. Suggested 4 PRs:**
+**This is the item that must be broken down. Suggested 4 PRs (PR-1/PR-2
+landed 2026-07-02 — see the progress note above):**
 
-1. **PR-1 — tiering seam (S, can land immediately):** `WaveBuilder` reads the
-   existing-but-unwired `%Stage{}` `model`/`effort` fields at spawn time; absent
-   fields keep today's uniform `:fast` byte-identically. Watch the present-nil
-   `Map.get` trap in the spawn-opts builder (conditionally-put on write, test
-   the real builder output — this bit `RouteComposer.build_start_opts` before).
-2. **PR-2 — premises threading (S):** thread the run's `premises` list into
-   stage task context in `wave_builder.ex`/`agent_runner.ex` so `scope-shift`
-   self-reports cite an explicit list instead of reporting blind. Small
-   prompt-threading change; use a dedicated context key, not an overloaded
-   carrier.
+1. **PR-1 — tiering seam (S) — DONE 2026-07-02:** landed, though not as the
+   sketched spawn-time read (no such seam exists — worker model is
+   compile-time and `ask/3` drops a `:model` opt): `WaveBuilder` carries the
+   `%Stage{}` `model`/`effort` tier into the stage step's options, applied
+   per turn via the composed `Compactor.RequestTransformer`; absent fields
+   stay byte-identical. (The present-nil `Map.get` trap note held — tier opts
+   are conditionally-put, tested on the real builder output.)
+2. **PR-2 — premises threading (S) — DONE 2026-07-02:** landed in
+   `route_composer.ex` (`compose_extra_context/2`) via the new
+   `JidoClaw.RouteComposer.PremisesContext` renderer — not
+   `wave_builder.ex`/`agent_runner.ex`. Premises ride the wave's
+   `:extra_context` under a dedicated `### Premises` block (gate waves
+   excluded), so `scope-shift` self-reports cite an explicit list instead of
+   reporting blind.
 3. **PR-3 — the plan wave itself (M, follow the V2 AR-9 sketch steps 1–5):**
    arming signal (`multi-plan` published only when `significant-build` is live
    and the design space is wide — never default); 2–3 lens planner stages over
@@ -148,9 +177,10 @@ stays the sole emitter. Full sketch:
    standard.
 
 Opt-in arming is load-bearing: the single-plan default path must be
-behavior-unchanged. Optional cheap rider: emit per-stage prompt-size telemetry
-while in `wave_builder.ex`, so AR-11 (artifact handles) stays honestly
-evidence-gated on real numbers.
+behavior-unchanged. The cheap per-stage prompt-size telemetry rider landed
+with PR-1/PR-2, in `agent_step.ex` (`[:jido_claw, :composer, :stage_prompt]`)
+— the assembled prompt only exists there, not in `wave_builder.ex` — so AR-11
+(artifact handles) stays honestly evidence-gated on real numbers.
 
 ## 4. `code-doctrine` slice — S, riding item 3
 

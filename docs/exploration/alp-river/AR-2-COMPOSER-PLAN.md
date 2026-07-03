@@ -40,7 +40,9 @@ design-time record. Reconciliation against the shipped tree:
   `.jido/` YAML overlay + debounced watcher is the one open tail (gust G3-2; §16's
   `file_system` promotion is moot until then, and G3-3 stays mooted). §12's per-stage
   model/effort tiering is **still unwired**: `Stage` carries the fields ("for later phases"),
-  `WaveBuilder` never reads them.
+  `WaveBuilder` never reads them. *[Update 2026-07-02: wired (AR-9 program PR-1) — via the
+  per-turn request-transformer, not §12's spawn-time override design; see the dated
+  correction on the §12 entry below.]*
 - **Phase 6 has since shipped too.** The §10.1 cluster lease landed in full as the clustering
   workstream **WS1–WS5 + WS4a** (2026-06-27..30, `../../plans/clustering/`), re-derived around
   the composer unit exactly as §10.1 prescribes — the lease renews across waves *and* gate
@@ -1025,7 +1027,14 @@ unbounded-and-free-form on the agent's. (And, per §1a, this is also why we don'
   small `AgentRunner` extension, named here so it isn't mistaken for free catalog metadata. The 7
   workers run uniformly at `:fast` today; a high-value refinement riding the catalog. *(Post-ship
   2026-07-02: still true — now 13 templates, all `:fast`; the `Stage` fields shipped, the spawn
-  seam did not.)*
+  seam did not.)* *[Correction, later 2026-07-02 (AR-9 program PR-1): the seam **shipped**, but
+  not as sketched here — there IS no spawn-time model seam to thread (`start_subagent` can't
+  override a worker's compile-time `model:`, and `ask/3` silently drops a `:model` opt). The
+  wired mechanism is jido_ai's one per-turn seam: `WaveBuilder` carries `model`/`effort` into
+  the stage step options → `AgentRunner.run/6` puts them in `tool_context` and pre-sets the
+  composed `Compactor.RequestTransformer`, which returns `model:` / `llm_opts:
+  [reasoning_effort: e]` overrides per LLM turn. The §13 reuse-map row's "spawn-time
+  `model`/`effort` override" is superseded the same way. No catalog stage declares a tier yet.]*
 
 ## §13 — Reuse map
 
@@ -1223,6 +1232,8 @@ clustering is real.
   (`agent_runner.ex:50`) takes a **template-name string** + a **required `task`** → `Templates.get`
   (`templates.ex:43`, every template static `model: :fast`). The composer feeds `stage.task`; per-
   stage tiering needs a spawn-time `model`/`effort` override seam (§12) the template can't carry.
+  *[2026-07-02: shipped as `run/6` + the per-turn request-transformer, not a spawn seam — see §12's
+  dated correction.]*
 - `JidoClaw.Agent.Workers.Reviewer` — output schema `overall`/`summary`/`findings`
   (`reviewer.ex:19-37`); the per-lens `clean:<lens>` / `findings:<lens>` verdict (§4 convergence) is
   the `emit` mapper's derivation (§7/§12), **not** a schema change.

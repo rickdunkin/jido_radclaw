@@ -1,8 +1,17 @@
 defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
   @moduledoc """
-  `Jido.AI.Reasoning.ReAct.RequestTransformer` implementation that drops
-  already-summarized messages from the projected LLM request and prepends
-  a single delimited summary as a user-role message.
+  The app's single **composed** `Jido.AI.Reasoning.ReAct.RequestTransformer`:
+  context compaction (drop already-summarized messages, prepend a delimited
+  summary) **plus** AR-9 per-stage model/effort tiering. jido_ai allows one
+  transformer per ask, so both concerns ride this module — the Compactor
+  treats it as non-foreign (`existing_transformer_collision?/1`), and
+  `JidoClaw.Skills.Steps.AgentRunner` pre-sets it whenever a composer stage
+  declares a tier.
+
+  ## Compaction (messages override)
+
+  Drops already-summarized messages from the projected LLM request and
+  prepends a single delimited summary as a user-role message.
 
   ## Filter rule (role-aware, deterministic)
 
@@ -29,6 +38,18 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
       <summary>
       [End of summary]
 
+  ## Stage tiering (model / llm_opts overrides)
+
+  When `runtime_context[stage_tier_key()]` carries a `%{model: m, effort: e}`
+  tier map (either half optional — `AgentRunner` puts only declared halves),
+  the returned overrides gain `model: m` and/or
+  `llm_opts: [reasoning_effort: e]`. `:model` swaps the provider for the turn
+  via `Jido.AI.resolve_model/1`; `reasoning_effort` is a canonical ReqLLM
+  option merged into the base `llm_opts` (providers translate or ignore it).
+  Disjoint from the compaction `:messages` key, so both compose freely. A
+  missing or malformed tier value adds nothing — the historical override
+  shapes are returned byte-identically.
+
   ## Test hooks
 
   When `runtime_context[:__jido_claw_compaction_test_capture__]` is a PID,
@@ -41,6 +62,7 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
   @behaviour Jido.AI.Reasoning.ReAct.RequestTransformer
 
   @runtime_context_key :__jido_claw_compaction__
+  @stage_tier_key :__jido_claw_stage_tier__
   @test_capture_key :__jido_claw_compaction_test_capture__
 
   @doc """
@@ -49,6 +71,15 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
   """
   @spec runtime_context_key() :: atom()
   def runtime_context_key, do: @runtime_context_key
+
+  @doc """
+  Public accessor for the runtime-context key carrying the AR-9 per-stage
+  tier map (`%{model: m, effort: e}`, either half optional). Set by
+  `JidoClaw.Skills.Steps.AgentRunner` from the wave-builder's stage options;
+  read here to emit the per-turn `model`/`llm_opts` overrides.
+  """
+  @spec stage_tier_key() :: atom()
+  def stage_tier_key, do: @stage_tier_key
 
   @doc """
   Public accessor for the test-capture runtime-context key. Setting this
@@ -62,21 +93,43 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformer do
   @impl Jido.AI.Reasoning.ReAct.RequestTransformer
   def transform_request(request, _state, _config, runtime_context)
       when is_map(request) and is_map(runtime_context) do
+    tier = tier_overrides(Map.get(runtime_context, @stage_tier_key))
+
     case Map.get(runtime_context, @runtime_context_key) do
       nil ->
         maybe_capture(request.messages, runtime_context)
-        {:ok, %{}}
+        {:ok, tier}
 
       %JidoClaw.Reasoning.Compactor.Snapshot{} = snapshot ->
         new_messages = apply_snapshot(request.messages, snapshot)
         maybe_capture(new_messages, runtime_context)
-        {:ok, %{messages: new_messages}}
+        {:ok, Map.put(tier, :messages, new_messages)}
 
       _other ->
         maybe_capture(request.messages, runtime_context)
-        {:ok, %{}}
+        {:ok, tier}
     end
   end
+
+  # AR-9: the tier map → behaviour overrides. `:model` swaps the per-turn
+  # provider; `:effort` rides the canonical ReqLLM `reasoning_effort` llm_opt
+  # (merged into base opts by the runner). Total: an absent/malformed tier or
+  # nil halves contribute nothing, keeping the no-tier return byte-identical.
+  defp tier_overrides(tier) when is_map(tier) do
+    %{}
+    |> put_tier_model(Map.get(tier, :model))
+    |> put_tier_effort(Map.get(tier, :effort))
+  end
+
+  defp tier_overrides(_absent_or_malformed), do: %{}
+
+  defp put_tier_model(overrides, nil), do: overrides
+  defp put_tier_model(overrides, model), do: Map.put(overrides, :model, model)
+
+  defp put_tier_effort(overrides, nil), do: overrides
+
+  defp put_tier_effort(overrides, effort),
+    do: Map.put(overrides, :llm_opts, reasoning_effort: effort)
 
   defp apply_snapshot(messages, snapshot) do
     id_set = MapSet.new(snapshot.summarized_request_ids)

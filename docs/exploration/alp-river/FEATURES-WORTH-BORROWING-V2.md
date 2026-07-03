@@ -36,7 +36,7 @@ item by item.
 | Background dispatch + mtime/deadline watchdog | **covered** — wave/run/park deadlines; idle-based early kill noted as a refinement | §4 |
 | Durable run-state recovery (1.3.0/1.3.2) | **SKIP stands** (adjudicated in V1's drift note) | §4 |
 | Briefs / render-card / card-only narration | **SKIP stands** (V1 §4) | §4 |
-| Model re-tiering (fable/sonnet/haiku) | **already tracked** — the unwired `%Stage{}` seam; AR-9 is its natural first consumer | §4 |
+| Model re-tiering (fable/sonnet/haiku) | **already tracked** — the `%Stage{}` seam (**wired 2026-07-02**); AR-9's arbiter is its natural first declarer | §4 |
 | `simplicity-reviewer`, `/audit` 8 categories, arbiter persona, `## Anchor` lines | content-level / rides AR-9 / skip | §4 |
 
 ---
@@ -125,10 +125,12 @@ weakest points get structurally stronger in the port:
   Revise-first map onto the existing `plan-rejected` → planner re-fire edge, with the
   arbiter's graft seams / blocking critiques as the revision directive. No new gate kind,
   no `Gate.Kinds` change.
-- **First consumer of the unwired tiering seam.** The source runs the arbiter at its top
-  tier (`fable`/`max`). `%Stage{}` already carries `model`/`effort` fields that
-  `WaveBuilder` never reads (V1 §4, re-verified 2026-07-02) — the arbiter stage is the
-  natural first wiring of that seam (arbiter high-tier, lens planners standard).
+- **First declarer of the tiering seam (wired 2026-07-02).** The source runs the arbiter
+  at its top tier (`fable`/`max`). The `%Stage{}` `model`/`effort` seam is now wired
+  end-to-end (WaveBuilder → step options → `AgentRunner.run/6` → the composed
+  request-transformer's per-turn `model`/`reasoning_effort` overrides — AR-9 program
+  PR-1); no catalog stage declares a tier yet, so the arbiter stage is the natural first
+  *declaration* (arbiter high-tier, lens planners standard).
 
 **Cost, honestly**: an armed run pays roughly 2–3× the planning phase (N planners + N
 critique-only challenger runs + one arbiter) before the gate. The single-plan path already
@@ -158,8 +160,9 @@ not a now item.
    ordering verbatim (via AR-5).
 5. **Wire**: planners (one parallel Kahn wave) → challengers (second wave) → arbiter →
    the existing plan-gate presenting the memo; Hybrid/Revise-first ride `plan-rejected`.
-6. Wire `%Stage{}` `model`/`effort` in `WaveBuilder` for the arbiter stage (the tiering
-   seam's first consumer).
+6. The arbiter stage **declares** a tier (`model:`/`effort:` on its catalog entry) via
+   the seam wired 2026-07-02 — declaration only; the mechanism (WaveBuilder → step
+   options → composed request-transformer overrides) already ships.
 
 ---
 
@@ -283,13 +286,15 @@ one tool round-trip per consumer — measure before building.
   the event log (`projection.ex:177-180`), with premise-break self-reporting *enforced by
   the catalog validator* — every stage must declare `scope-shift` ∈ `publishes`
   (`catalog_validator.ex:34`) — and consumed by the automatic stale-approval retraction
-  (`route_composer.ex:2894-2898`). Convergent evolution, not a gap. **One residual
-  refinement**: Alp River *hands each stage the premises* so breaks are reported against
-  an explicit list ("each stage is handed these and reports breaks", `WORKFLOW.md`
-  ### The loop); here stages self-report `scope-shift` without seeing the premise list
-  (no premises threading in `wave_builder.ex`/`agent_runner.ex` [likely — rg sweep]).
-  Threading premises into the stage task context would ground the self-reports —
-  note-tier, bundle with the next composer increment.
+  (`route_composer.ex:2894-2898`). Convergent evolution, not a gap. The **one residual
+  refinement** this bullet flagged — Alp River *hands each stage the premises* so breaks
+  are reported against an explicit list ("each stage is handed these and reports breaks",
+  `WORKFLOW.md` ### The loop) — **shipped 2026-07-02** (AR-9 program PR-2), at a
+  different seam than the `wave_builder.ex`/`agent_runner.ex` guess:
+  `route_composer.ex`'s `compose_extra_context/2` prepends the
+  `JidoClaw.RouteComposer.PremisesContext` block (sorted premises + the `scope-shift`
+  instruction) to every worker wave's `:extra_context`; gate waves excluded, empty
+  premises byte-identical.
 - **Background dispatch + mtime/deadline watchdog** → **covered.** The hang problem the
   source solves with background Agent dispatch + a transcript-mtime freeze check (~120s)
   + an absolute wall-clock deadline (+ `TaskStop`, missing-output recovery) is handled
@@ -310,9 +315,10 @@ one tool round-trip per consumer — measure before building.
 - **Briefs / render-card / card-only narration** → **SKIP stands** (V1 §4): Claude-Code
   REPL UX; `Display` + the LiveView dashboard own this surface here.
 - **Model re-tiering (fable/sonnet/haiku since 1.3.3)** → **already tracked**: V1 §4
-  carries it; the `%Stage{}` `model`/`effort` fields remain unwired (`WaveBuilder` never
-  reads them, re-verified 2026-07-02). AR-9's arbiter is the natural first consumer — see
-  that entry, sketch step 6.
+  carries it; the `%Stage{}` `model`/`effort` seam is now **wired** (2026-07-02, AR-9
+  program PR-1 — WaveBuilder reads the fields; the composed request transformer applies
+  them per turn) with no catalog declarer yet. AR-9's arbiter is the natural first
+  declaration — see that entry, sketch step 6.
 - **`simplicity-reviewer` (15th lens)** → content-level, no entry. AR-3 deliberately
   started with 4 of the source's lenses; a simplicity lens is a cheap catalog + persona
   add if wanted, and partially overlaps the harness-level `/simplify` skill and the
@@ -332,8 +338,9 @@ durability and state-tracking the composer already had in stronger form (run-sta
 snapshots vs. the event log; premises vs. the composer's since-Phase-1 premises).
 What it does teach is concentrated in **AR-9** — a judge-panel plan wave whose port would
 be structurally safer than the original (catalog-enforced sole-publisher invariant, native
-atomic co-publish, the human gate unchanged) and which doubles as the first consumer of
-the unwired per-stage tiering seam. **AR-10** is a small ergonomic tail on parts that all
+atomic co-publish, the human gate unchanged) and whose arbiter is the designed first
+declarer of the per-stage tiering seam (wired 2026-07-02, alongside the premises
+threading — both riders pre-landed). **AR-10** is a small ergonomic tail on parts that all
 exist — and its analysis yielded one immediately actionable observation (`git push` had no
 approval pattern) that stood on its own and **shipped 2026-07-02**. **AR-11** is a
 recorded idea awaiting cost evidence. None of it is urgent; all of it is now written down.

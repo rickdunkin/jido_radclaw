@@ -90,6 +90,55 @@ defmodule JidoClaw.Reasoning.CompactorTest do
     end
   end
 
+  describe "maybe_compact/3 — AR-9 stage-tier composition" do
+    test "pre-set own transformer + tier key: no collision, tier preserved, snapshot added" do
+      %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "tier")
+      actor = actor_for(tenant_id)
+
+      # Above-threshold slice so a real snapshot is installed alongside the tier.
+      seed_turns(session, tenant_id, actor, 12, msgs_per_turn: 2)
+
+      config =
+        Config.new!(
+          mode: :auto,
+          max_messages: 20,
+          recompact_delta_threshold: 10,
+          keep_last_turns: 2,
+          protect_first_n_turns: 1,
+          summarizer_timeout_ms: 1_000
+        )
+
+      tier = %{model: :capable, effort: :high}
+
+      # The live composition point: AgentRunner pre-sets the (same-module)
+      # transformer + tier key, THEN Compactor.maybe_compact/3 runs.
+      action =
+        {:ai_react_start,
+         %{
+           query: "go",
+           request_transformer: RequestTransformer,
+           tool_context: %{
+             RequestTransformer.stage_tier_key() => tier,
+             tenant_id: tenant_id,
+             session_uuid: session.id,
+             actor: actor
+           }
+         }}
+
+      # Same module ⇒ non-foreign: no :existing_request_transformer.
+      assert {:ok, {:ai_react_start, params}} = Compactor.maybe_compact(nil, action, config)
+
+      assert params.request_transformer == RequestTransformer
+
+      # install_overrides ADDS to tool_context rather than replacing it: the
+      # tier key survives, the snapshot key is added beside it.
+      assert Map.get(params.tool_context, RequestTransformer.stage_tier_key()) == tier
+
+      assert %Snapshot{status: :summarized} =
+               Map.get(params.tool_context, Compactor.runtime_context_key())
+    end
+  end
+
   describe "maybe_compact/3 — below threshold" do
     test "installs transformer with no snapshot when slice is below threshold" do
       %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "below")

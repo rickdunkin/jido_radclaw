@@ -115,6 +115,48 @@ defmodule JidoClaw.Skills.Steps.AgentStepTest do
     assert task =~ "elixir_module"
   end
 
+  describe "run/3 — AR-9 per-stage prompt-size telemetry" do
+    setup do
+      handler_id = "ar9-stage-prompt-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:jido_claw, :composer, :stage_prompt],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:stage_prompt, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+      :ok
+    end
+
+    test "a composer stage (catalog_stage_name set) emits the assembled prompt size" do
+      options = base_options(step_name: "planner", catalog_stage_name: "planner")
+
+      assert {:ok, _} =
+               AgentStep.run(
+                 %{extra_context: "### Premises\n- **risk**: low"},
+                 context(),
+                 options
+               )
+
+      assert_receive {:stage_prompt, %{bytes: bytes}, metadata}
+      assert is_integer(bytes) and bytes > 0
+      assert metadata.stage == "planner"
+      assert metadata.template == "echo"
+    end
+
+    test "a skill step (no catalog_stage_name) emits nothing" do
+      options = base_options(step_name: "planner")
+
+      assert {:ok, _} = AgentStep.run(%{extra_context: ""}, context(), options)
+      refute_receive {:stage_prompt, _, _}, 100
+    end
+  end
+
   describe "run/3 — AR-6 composer-stage persona seam (real worker telemetry)" do
     setup do
       original_doctrine = Application.get_env(:jido_claw, :doctrine)

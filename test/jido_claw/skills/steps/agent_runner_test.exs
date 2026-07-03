@@ -20,6 +20,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Forge
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
+  alias JidoClaw.Reasoning.Compactor.RequestTransformer
   alias JidoClaw.Skills.Steps.AgentRunner
   alias JidoClaw.Test.{EchoAskStub, EchoStub, StubSandbox}
   alias JidoClaw.Workflows.StepResult
@@ -183,6 +184,78 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
 
       assert {:error, msg} = AgentRunner.run("echo_async", "go", "s", %{})
       assert msg =~ "failed"
+    end
+  end
+
+  describe "run/6 — AR-9 stage tier threading" do
+    setup do
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "echo_async" => %{
+          module: EchoAskStub,
+          description: "test-only async echo template",
+          model: :fast,
+          max_iterations: 1
+        }
+      })
+
+      Application.put_env(:jido_claw, :step_agent_server, ValidatedFakeAgentServer)
+      Application.put_env(:jido_claw, :echo_ask_stub_target, self())
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :step_agent_server)
+        Application.delete_env(:jido_claw, :echo_ask_stub_target)
+      end)
+
+      :ok
+    end
+
+    test "non-tiered run: NO :request_transformer opt, NO tier key (byte-identity guard)" do
+      assert {:ok, %StepResult{}} = AgentRunner.run("echo_async", "go", "s", %{})
+
+      assert_receive {:echo_ask_stub, :opts, opts}
+      refute Keyword.has_key?(opts, :request_transformer)
+
+      tool_context = Keyword.fetch!(opts, :tool_context)
+      refute Map.has_key?(tool_context, RequestTransformer.stage_tier_key())
+    end
+
+    test "tiered run/6: transformer opt pre-set, tier map under stage_tier_key in tool_context" do
+      assert {:ok, %StepResult{}} =
+               AgentRunner.run("echo_async", "go", "s", %{}, nil,
+                 model: :capable,
+                 effort: :high
+               )
+
+      assert_receive {:echo_ask_stub, :opts, opts}
+      assert Keyword.get(opts, :request_transformer) == RequestTransformer
+
+      tool_context = Keyword.fetch!(opts, :tool_context)
+
+      assert Map.get(tool_context, RequestTransformer.stage_tier_key()) ==
+               %{model: :capable, effort: :high}
+    end
+
+    test "half-tiered run/6 carries only the declared half" do
+      assert {:ok, %StepResult{}} =
+               AgentRunner.run("echo_async", "go", "s", %{}, nil, effort: :low)
+
+      assert_receive {:echo_ask_stub, :opts, opts}
+      assert Keyword.get(opts, :request_transformer) == RequestTransformer
+
+      tool_context = Keyword.fetch!(opts, :tool_context)
+      assert Map.get(tool_context, RequestTransformer.stage_tier_key()) == %{effort: :low}
+    end
+
+    test "an all-nil tier is treated as untiered (defensive nil-half rejection)" do
+      assert {:ok, %StepResult{}} =
+               AgentRunner.run("echo_async", "go", "s", %{}, nil, model: nil, effort: nil)
+
+      assert_receive {:echo_ask_stub, :opts, opts}
+      refute Keyword.has_key?(opts, :request_transformer)
+
+      tool_context = Keyword.fetch!(opts, :tool_context)
+      refute Map.has_key?(tool_context, RequestTransformer.stage_tier_key())
     end
   end
 

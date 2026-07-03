@@ -41,6 +41,68 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
     assert Keyword.get(options, :step_name) == "security-reviewer"
   end
 
+  test "AR-9: a non-tiered stage's options carry NO :model/:effort keys (byte-identity guard)" do
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([worker("quality-reviewer")])
+
+    step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, options} = step.impl
+
+    # Conditional-put on write (the present-nil Map.get trap): an untiered
+    # catalog stage must produce byte-identical options to today's — no
+    # present-nil tier keys downstream code would have to distinguish.
+    refute Keyword.has_key?(options, :model)
+    refute Keyword.has_key?(options, :effort)
+  end
+
+  test "AR-9: a tiered stage carries both :model and :effort in its step options" do
+    stage =
+      TestFixtures.stage(
+        name: "arbiter",
+        unit: {:worker_template, "reviewer"},
+        task: "t",
+        model: :capable,
+        effort: :high
+      )
+
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([stage])
+
+    step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, options} = step.impl
+
+    assert Keyword.get(options, :model) == :capable
+    assert Keyword.get(options, :effort) == :high
+  end
+
+  test "AR-9: a half-tiered stage carries only the declared half" do
+    model_only =
+      TestFixtures.stage(
+        name: "m",
+        unit: {:worker_template, "reviewer"},
+        task: "t",
+        model: :capable
+      )
+
+    effort_only =
+      TestFixtures.stage(
+        name: "e",
+        unit: {:worker_template, "reviewer"},
+        task: "t",
+        effort: :low
+      )
+
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([model_only, effort_only])
+
+    model_step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, model_opts} = model_step.impl
+    assert Keyword.get(model_opts, :model) == :capable
+    refute Keyword.has_key?(model_opts, :effort)
+
+    effort_step = Enum.find(reactor.steps, &(&1.name == :step_2))
+    assert {AgentStep, effort_opts} = effort_step.impl
+    assert Keyword.get(effort_opts, :effort) == :low
+    refute Keyword.has_key?(effort_opts, :model)
+  end
+
   test "builds a solo gate stage as its named gate-producer module reactor (Phase 4a)" do
     stage = gate("plan-gate")
 

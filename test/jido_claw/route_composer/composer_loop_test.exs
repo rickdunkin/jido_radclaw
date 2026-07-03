@@ -20,6 +20,7 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
   alias JidoClaw.Orchestration.RunRegistry
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Reasoning.Compactor.RequestTransformer
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.TestFixtures
@@ -465,6 +466,101 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
       assert child.parent_run_id == parent_id
       assert child.idempotency_key == "composer:#{parent_id}:#{entry.index}"
     end
+  end
+
+  test "AR-9: a tiered catalog stage's worker gets the tier map; untiered stages don't", ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.phase1_stub_outputs()
+    )
+
+    Application.put_env(:jido_claw, :route_composer_capture_context, self())
+    on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_context) end)
+
+    tiered_catalog =
+      Map.update!(TestFixtures.phase1_catalog(), "planner", fn stage ->
+        %{stage | model: :capable, effort: :high}
+      end)
+
+    assert {:ok, summary} =
+             RouteComposer.run_sync(
+               catalog: tiered_catalog,
+               live: TestFixtures.phase1_seed_live(),
+               artifacts: TestFixtures.phase1_seed_artifacts(),
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               max_waves: 10,
+               timeout: 30_000
+             )
+
+    assert summary.terminal == :converged
+
+    tier_key = RequestTransformer.stage_tier_key()
+
+    # The tiered planner (template "researcher", wave 0) carries the tier map
+    # end-to-end: catalog → WaveBuilder options → AgentStep → AgentRunner →
+    # the worker's tool_context (which the transformer reads per turn).
+    assert_receive {:wave_context, "researcher", planner_tc}
+    assert Map.get(planner_tc, tier_key) == %{model: :capable, effort: :high}
+
+    # An untiered stage's worker context has NO tier key (byte-identity guard).
+    assert_receive {:wave_context, "verifier", approver_tc}
+    refute Map.has_key?(approver_tc, tier_key)
+  end
+
+  test "AR-9: seeded premises render into a worker wave's task (with the scope-shift line)",
+       ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.phase1_stub_outputs()
+    )
+
+    Application.put_env(:jido_claw, :route_composer_capture_task, self())
+    on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_task) end)
+
+    assert {:ok, summary} =
+             RouteComposer.run_sync(
+               catalog: TestFixtures.phase1_catalog(),
+               live: TestFixtures.phase1_seed_live(),
+               artifacts: TestFixtures.phase1_seed_artifacts(),
+               premises: %{"risk" => "low"},
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               max_waves: 10,
+               timeout: 30_000
+             )
+
+    assert summary.terminal == :converged
+
+    # Wave 0's planner task opens with the rendered premises block — threaded
+    # launch → durable config → state.premises → compose_extra_context →
+    # ContextBuilder.build_task → the worker's assembled task.
+    assert_receive {:wave_task, "researcher", task}
+    assert task =~ "### Premises"
+    assert task =~ "- **risk**: low"
+    assert task =~ "scope-shift"
+  end
+
+  test "AR-9: a default (premises-less) run's task carries NO premises block (byte-identity)",
+       ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.phase1_stub_outputs()
+    )
+
+    Application.put_env(:jido_claw, :route_composer_capture_task, self())
+    on_exit(fn -> Application.delete_env(:jido_claw, :route_composer_capture_task) end)
+
+    assert {:ok, summary} = run(ctx)
+    assert summary.terminal == :converged
+
+    assert_receive {:wave_task, "researcher", task}
+    refute task =~ "### Premises"
   end
 
   test "the implementer is held while the approver runs, then released", ctx do

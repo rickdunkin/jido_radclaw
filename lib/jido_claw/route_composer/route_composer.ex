@@ -165,6 +165,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Loop
+  alias JidoClaw.RouteComposer.PremisesContext
   alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.SignalMatch
@@ -1406,8 +1407,10 @@ defmodule JidoClaw.RouteComposer do
   # serializable, Decision 1). It returns promptly at the `GateStep` halt as
   # `{:ok, {:paused, case_id}, run}`; `handle_wave_result` parks on it. No
   # `:extra_context` (the gate stores the raw plan from its ref, feeds no worker),
-  # so the formatting/cap path is skipped. A `:parent_terminal` from the fence
-  # stops cleanly without launching; any other pre-launch error fails the wave.
+  # so the formatting/cap path is skipped — which intentionally excludes the
+  # AR-9 premises block too (a human gate doesn't self-report `scope-shift`).
+  # A `:parent_terminal` from the fence stops cleanly without launching; any
+  # other pre-launch error fails the wave.
   defp run_gate_wave(module, gate_inputs, dispatch, display, state) do
     gate_stage = Map.fetch!(state.catalog, hd(dispatch))
 
@@ -1485,12 +1488,12 @@ defmodule JidoClaw.RouteComposer do
   # survives a kill". Closing it needs composer cancellation / a child-create
   # terminal coupling, out of this follow-up's scope.
   defp run_built_wave(reactor, stages, dispatch, display, state) do
-    with {:ok, extra_context} <-
+    with {:ok, artifact_context} <-
            ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor),
          :ok <- record_wave_start(dispatch, display, state),
          :ok <- ensure_parent_live(state) do
       reactor
-      |> run_reactor(extra_context, state)
+      |> run_reactor(compose_extra_context(state.premises, artifact_context), state)
       |> handle_wave_result(dispatch, display, state)
     else
       # The run ended externally (operator cancel between waves): stop cleanly,
@@ -1502,6 +1505,18 @@ defmodule JidoClaw.RouteComposer do
       {:error, :parent_fenced} -> {:stop, :normal, state}
       {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
+  end
+
+  # AR-9 (alp-river #3): every worker wave's `:extra_context` opens with the
+  # rendered premises block, then the artifact context. Empty premises render
+  # `""` and are rejected, so a premises-less run's extra_context stays
+  # byte-identical to the artifact context alone. Recovery is free: the durable
+  # `config["premises"]` is restored into `state.premises` by
+  # `build_start_opts`, and this reads state at wave time.
+  defp compose_extra_context(premises, artifact_context) do
+    [PremisesContext.render(premises), artifact_context]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
   end
 
   # Belt-and-suspenders parent-terminal re-check in the launch path (Phase 4c):

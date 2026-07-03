@@ -144,24 +144,33 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
   end
 
   defp add_stage_step(reactor, %Stage{unit: {:worker_template, template}} = stage, idx) do
-    options = [
-      template: template,
-      task: stage.task,
-      step_name: stage.name,
-      # AR-6: the dedicated stage carrier, set ONLY here (the wave-builder path), distinct
-      # from `step_name` (the StepResult label, which a skill step may name arbitrarily).
-      # Steers per-stage persona resolution downstream; inert for the saga cleanup path.
-      catalog_stage_name: stage.name,
-      context_format: :deps,
-      upstream: [],
-      consumes: []
-    ]
+    options =
+      [
+        template: template,
+        task: stage.task,
+        step_name: stage.name,
+        # AR-6: the dedicated stage carrier, set ONLY here (the wave-builder path), distinct
+        # from `step_name` (the StepResult label, which a skill step may name arbitrarily).
+        # Steers per-stage persona resolution downstream; inert for the saga cleanup path.
+        catalog_stage_name: stage.name,
+        context_format: :deps,
+        upstream: [],
+        consumes: []
+      ] ++ tier_opts(stage)
 
     Builder.add_step(reactor, step_id!(idx), {AgentStep, options}, [input_arg()],
       async?: true,
       max_retries: 0
     )
   end
+
+  # AR-9: the per-stage tiering seam. Only DECLARED halves are put (an untiered
+  # stage's options stay byte-identical to today's — never a present-nil key a
+  # downstream `Keyword.get` default would be defeated by).
+  defp tier_opts(%Stage{model: nil, effort: nil}), do: []
+
+  defp tier_opts(%Stage{model: model, effort: effort}),
+    do: Enum.reject([model: model, effort: effort], fn {_key, value} -> is_nil(value) end)
 
   defp add_collect(reactor, indexed, wave_index) do
     args = Enum.map(indexed, fn {_stage, idx} -> result_arg(step_id!(idx)) end)

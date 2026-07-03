@@ -17,9 +17,9 @@ Ordered by trigger proximity — nearest first.
 
 | # | Idea | Source entry | Adopt now? | Trigger distance |
 | --- | --- | --- | --- | --- |
-| 1 | Per-stage model/effort tiering (wire the seam) | V1 §4 + V2 §4 | Not alone — nearest; rides #2 or first cost/quality pressure | AR-9 shipping, or judge-stage quality pain at uniform `:fast` |
+| 1 | Per-stage model/effort tiering (wire the seam) | V1 §4 + V2 §4 | **Seam WIRED 2026-07-02** — remainder (a catalog stage declaring a tier) rides #2's arbiter | AR-9 shipping (arbiter = designed first declarer) |
 | 2 | Multi-plan + plan-arbiter (judge-panel plan wave) | V2 AR-9 | Not yet — the next substantive composer increment | Wanting a composer increment; recurring plan-shape failures on significant builds |
-| 3 | Hand `premises` to stage agents | V2 §4 refinement | No — rider | Any composer increment (bundle in) |
+| 3 | Hand `premises` to stage agents | V2 §4 refinement | **DONE 2026-07-02** (rider landed ahead of #2) | — |
 | 4 | Shipping tail (`ship-gate` → `ship-executor`) | V2 AR-10 | No (its footnoted `git push` sibling: **shipped 2026-07-02**) | Ship/commit/PR asks after composed runs becoming routine |
 | 5 | `code-doctrine` slice + `docs/` READ_MAP | V1 AR-5 open borders | No | Next doctrine authoring pass, or recurring producer-quality feedback |
 | 6 | Artifact handles (refs instead of inline stage inputs) | V2 AR-11 | No — telemetry-gated | Prompt-cost evidence: large many-consumer artifacts dominating sub-agent cost |
@@ -31,18 +31,29 @@ Ordered by trigger proximity — nearest first.
 
 ## 1. Per-stage model/effort tiering — wire the seam (V1 §4, updated V2 §4)
 
-**Standing**: half-built since AR-2 — `%Stage{}` carries `model`/`effort` fields (marked
-"for later phases") but `WaveBuilder` never reads them, so all 13 worker templates run
-uniformly at `:fast` (re-verified 2026-07-02). The source meanwhile re-tiered to
-fable/sonnet/haiku at 1.3.3 and runs its arbiter at `fable`/`max`.
+**Standing**: **seam WIRED 2026-07-02** (AR-9 program PR-1). `WaveBuilder` now carries a
+stage's declared `model`/`effort` into the stage step's options (conditionally-put —
+untiered stages stay byte-identical), `AgentRunner.run/6` threads them into the worker's
+`tool_context`, and the per-turn application rides the app's **composed**
+`JidoClaw.Reasoning.Compactor.RequestTransformer` (compaction + tiering), which returns
+`model:` / `llm_opts: [reasoning_effort: e]` overrides. Note the earlier framing here —
+"the work is the `WaveBuilder` spawn-time override seam" — described a seam that does not
+exist: worker model is compile-time and `ask/3` drops a `:model` opt; jido_ai's only
+per-turn seam is the `request_transformer`, which is what shipped. No catalog stage
+declares a tier yet, so all 13 worker templates still run uniformly at `:fast`. The
+source meanwhile re-tiered to fable/sonnet/haiku at 1.3.3 and runs its arbiter at
+`fable`/`max`.
 
-**Now?** Not as a standalone item — but it's first in line, because it's the cheapest
-entry here (the fields exist; the work is the `WaveBuilder` spawn-time override seam) and
-two triggers point at it.
+**Now?** The mechanism is done; the remainder is a *declaration* (a catalog stage setting
+`model:`/`effort:`), which rides #2's arbiter — the designed first consumer.
 
-**Trigger**: AR-9 shipping (its arbiter is the designed first consumer — V2 AR-9 sketch
-step 6), or observed judge-stage quality/cost pressure at uniform `:fast` (reviewers and
-gates deserving a higher tier than mechanical producers). Whichever fires first.
+**Trigger** (for the declaration): AR-9's plan wave shipping (its arbiter declares the
+high tier — V2 AR-9 sketch step 6), or observed judge-stage quality/cost pressure at
+uniform `:fast` (reviewers and gates deserving a higher tier than mechanical producers).
+Caveat now the seam is live: declaring `effort` alone changes provider input
+(`reasoning_effort` is a canonical ReqLLM option) even while `:fast`/`:capable` resolve
+to the same model; a `model:` declaration stays inert until the operator re-points
+`:capable`.
 
 ## 2. Multi-plan + plan-arbiter — the judge-panel plan wave (V2 AR-9)
 
@@ -62,23 +73,24 @@ Adopt when a composer increment is next wanted, not on a calendar.
 the recurring risk — approved plans on significant builds repeatedly scope-shifting or
 riding the `plan-rejected` re-plan edge. When it fires, follow the V2 AR-9 sketch
 (lens-scoped `plan:<lens>` stages → critique-only challengers → arbiter → the existing
-human gate) and pull #1 and #3 in with it.
+human gate). Its two riders (#1 tiering seam, #3 premises) **pre-landed 2026-07-02**;
+what remains is the plan wave itself plus the arbiter *declaring* its tier through the
+now-wired seam.
 
-## 3. Hand `premises` to stage agents (V2 §4 refinement)
+## 3. Hand `premises` to stage agents (V2 §4 refinement) — ✅ DONE 2026-07-02
 
-**Standing**: the composer has carried `premises` as first-class state since its first
-phase (`c7a428af`), and every stage must declare `scope-shift` ∈ `publishes`
-(`catalog_validator.ex:34`) — but stages self-report premise breaks *blind*: the premise
-list is never threaded into the stage task context (no `premises` in
-`wave_builder.ex`/`agent_runner.ex`, rg-verified). The source hands each stage the
-premises so breaks are reported against an explicit list (`WORKFLOW.md` ### The loop).
-
-**Now?** No — it's a rider, not a feature: a small prompt-threading change with no
-standalone justification.
-
-**Trigger**: any composer increment (bundle it in — #2 being the likeliest vehicle). If
-scope-shift self-reports prove noisy or miss real breaks before then, that's the same
-trigger arriving early.
+**Standing**: **shipped 2026-07-02** (AR-9 program PR-2), landing ahead of #2 rather than
+bundled into it. The earlier "never threaded" claim (and its
+`wave_builder.ex`/`agent_runner.ex` location guess) is resolved at a different seam than
+sketched: `route_composer.ex`'s `compose_extra_context/2` prepends the new
+`JidoClaw.RouteComposer.PremisesContext.render/1` block to every worker wave's
+`:extra_context` (header + deterministic key-sorted lines + the instruction to include
+`scope-shift` in the typed `signals` output on contradiction). Empty/default premises
+render `""` — byte-identical prompts; gate waves are intentionally excluded (a human gate
+doesn't self-report `scope-shift`); recovery is free (`config["premises"]` →
+`state.premises`); the renderer is total over any durable value (malformed ⇒ no block,
+never a crashed wave). Stages now self-report breaks against an explicit list, matching
+the source (`WORKFLOW.md` ### The loop).
 
 ## 4. Shipping tail — ship-gate → ship-executor (V2 AR-10)
 

@@ -13,8 +13,10 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   step's static config: `:template`, `:task`, `:produces`, `:step_name` (the
   YAML name or `nil`), `:context_format` (`:deps` | `:preceding`), `:upstream`
   (`[{step_id, yaml_name}]`, the `depends_on` set), `:consumes`
-  (`[{step_id, yaml_name, produces_map}]`), and the saga metadata `:retry` /
-  `:compensate` / `:irreversible`.
+  (`[{step_id, yaml_name, produces_map}]`), the saga metadata `:retry` /
+  `:compensate` / `:irreversible`, and (wave-builder path only, AR-9) the
+  optional per-stage tier halves `:model` / `:effort` forwarded to
+  `AgentRunner.run/6`.
 
   ## Saga callbacks (`retry:` / `compensate:` / `irreversible:`)
 
@@ -63,13 +65,34 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
 
     extra_context = Map.get(arguments, :extra_context, "")
 
+    # AR-9: the wave-builder's per-stage tier keys (absent for a skill step —
+    # WaveBuilder puts only declared halves, so a plain take suffices; the
+    # runner drops nil halves defensively). Saga cleanup stays untiered run/4.
+    tier = Keyword.take(options, [:model, :effort])
+
     dep_context = build_dep_context(arguments, upstream, context_format)
     artifact_context = build_artifact_context(arguments, consumes)
 
     task = AgentRunner.inject_produces_instruction(raw_task, produces)
     full_task = ContextBuilder.build_task(task, extra_context, dep_context, artifact_context)
 
-    AgentRunner.run(template, full_task, step_name, context, catalog_stage_name)
+    emit_stage_prompt_telemetry(catalog_stage_name, template, full_task)
+
+    AgentRunner.run(template, full_task, step_name, context, catalog_stage_name, tier)
+  end
+
+  # AR-9 evidence rider (feeds AR-11): per-stage prompt-size telemetry for
+  # composer waves only — a skill step carries no catalog_stage_name and stays
+  # silent. Emitted HERE (not the wave builder) because the fully-assembled
+  # prompt (task + extra_context + dep/artifact context) only exists here.
+  defp emit_stage_prompt_telemetry(nil, _template, _full_task), do: :ok
+
+  defp emit_stage_prompt_telemetry(stage, template, full_task) do
+    :telemetry.execute(
+      [:jido_claw, :composer, :stage_prompt],
+      %{bytes: byte_size(full_task)},
+      %{stage: stage, template: template}
+    )
   end
 
   # Per-step capability, derived from the impl options — NOT the generated

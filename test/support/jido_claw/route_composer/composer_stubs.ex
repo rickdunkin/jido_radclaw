@@ -73,12 +73,13 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
   alias JidoClaw.RouteComposer.TestSupport.StubStore
 
   @spec ask(pid(), term(), keyword()) :: {:ok, %{id: term()}}
-  def ask(_pid, _task, opts) when is_list(opts) do
+  def ask(_pid, task, opts) when is_list(opts) do
     request_id = Keyword.fetch!(opts, :request_id)
     tool_context = Keyword.fetch!(opts, :tool_context)
     template = Map.fetch!(tool_context, :agent_template)
 
-    maybe_capture_context(template, tool_context)
+    maybe_capture(:route_composer_capture_context, {:wave_context, template, tool_context})
+    maybe_capture(:route_composer_capture_task, {:wave_task, template, task})
 
     outputs = Application.fetch_env!(:jido_claw, :route_composer_stub_outputs)
     typed = Map.fetch!(outputs, template)
@@ -92,14 +93,18 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     {:ok, %{id: request_id}}
   end
 
-  # Optional context capture (AR-2 Phase 3b recovery test): when
-  # `:route_composer_capture_context` is a pid, report the `tool_context` a wave
-  # worker received, so a test can assert a recovered composer threaded the
-  # persisted-then-re-atomized scope (real `workspace_id`/`project_dir`/
-  # `session_uuid`, not the `wf_<tag>` / `File.cwd!()` fallback). Off by default.
-  defp maybe_capture_context(template, tool_context) do
-    case Application.get_env(:jido_claw, :route_composer_capture_context) do
-      pid when is_pid(pid) -> send(pid, {:wave_context, template, tool_context})
+  # Optional capture hooks, one shared sender (env key → message), off by default:
+  #   * `:route_composer_capture_context` (AR-2 Phase 3b recovery test) →
+  #     `{:wave_context, template, tool_context}` — assert a recovered composer
+  #     threaded the persisted-then-re-atomized scope (real `workspace_id`/
+  #     `project_dir`/`session_uuid`, not the `wf_<tag>` / `File.cwd!()`
+  #     fallback); also carries the AR-9 stage-tier key.
+  #   * `:route_composer_capture_task` (AR-9 premises threading) →
+  #     `{:wave_task, template, task}` — assert the assembled wave task carries
+  #     (or byte-identically omits) the rendered `### Premises` block.
+  defp maybe_capture(env_key, message) do
+    case Application.get_env(:jido_claw, env_key) do
+      pid when is_pid(pid) -> send(pid, message)
       _other -> :ok
     end
   end

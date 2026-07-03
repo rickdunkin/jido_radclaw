@@ -203,6 +203,72 @@ defmodule JidoClaw.Reasoning.Compactor.RequestTransformerTest do
       assert captured == result
     end
 
+    test "AR-9: a stage tier WITHOUT a snapshot returns model + reasoning_effort overrides" do
+      msgs = [atom_msg(:user, "hi", %{request_id: "r1"})]
+      ctx = %{RequestTransformer.stage_tier_key() => %{model: :capable, effort: :high}}
+
+      assert RequestTransformer.transform_request(request(msgs), nil, nil, ctx) ==
+               {:ok, %{model: :capable, llm_opts: [reasoning_effort: :high]}}
+    end
+
+    test "AR-9: a stage tier WITH a snapshot returns :messages AND the tier keys" do
+      msgs = [
+        atom_msg(:user, "old", %{request_id: "r1"}),
+        atom_msg(:user, "new", %{request_id: "r2"})
+      ]
+
+      snap = %Snapshot{summary: "S", summarized_request_ids: ["r1"]}
+
+      ctx = %{
+        RequestTransformer.runtime_context_key() => snap,
+        RequestTransformer.stage_tier_key() => %{model: :capable, effort: :high}
+      }
+
+      assert {:ok, %{messages: result, model: :capable, llm_opts: [reasoning_effort: :high]}} =
+               RequestTransformer.transform_request(request(msgs), nil, nil, ctx)
+
+      assert [summary_msg, kept_msg] = result
+      assert String.contains?(summary_msg.content, "[Compacted summary")
+      assert kept_msg == atom_msg(:user, "new", %{request_id: "r2"})
+    end
+
+    test "AR-9: a model-only tier returns only :model; an effort-only tier only :llm_opts" do
+      msgs = [atom_msg(:user, "hi", %{request_id: "r1"})]
+
+      model_ctx = %{RequestTransformer.stage_tier_key() => %{model: :capable}}
+
+      assert RequestTransformer.transform_request(request(msgs), nil, nil, model_ctx) ==
+               {:ok, %{model: :capable}}
+
+      effort_ctx = %{RequestTransformer.stage_tier_key() => %{effort: :low}}
+
+      assert RequestTransformer.transform_request(request(msgs), nil, nil, effort_ctx) ==
+               {:ok, %{llm_opts: [reasoning_effort: :low]}}
+    end
+
+    test "AR-9: no tier key (or a malformed one) leaves both paths byte-identical to today" do
+      msgs = [
+        atom_msg(:user, "old", %{request_id: "r1"}),
+        atom_msg(:user, "new", %{request_id: "r2"})
+      ]
+
+      # Regression guard: absent tier, nil-snapshot path.
+      assert RequestTransformer.transform_request(request(msgs), nil, nil, %{}) == {:ok, %{}}
+
+      # A malformed tier value (not a map) is ignored, never crashes the turn.
+      bad_ctx = %{RequestTransformer.stage_tier_key() => [:not, :a, :map]}
+      assert RequestTransformer.transform_request(request(msgs), nil, nil, bad_ctx) == {:ok, %{}}
+
+      # Absent tier, snapshot path: exactly the historical single-key override.
+      snap = %Snapshot{summary: "S", summarized_request_ids: ["r1"]}
+      snap_ctx = %{RequestTransformer.runtime_context_key() => snap}
+
+      assert {:ok, overrides} =
+               RequestTransformer.transform_request(request(msgs), nil, nil, snap_ctx)
+
+      assert Map.keys(overrides) == [:messages]
+    end
+
     test "20 messages, 12 in summarized set, results in 8 + 1 summary = 9" do
       msgs =
         for i <- 1..20 do
