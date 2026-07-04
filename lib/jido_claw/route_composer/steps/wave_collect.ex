@@ -100,7 +100,22 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
     )
   end
 
+  # `"outcome"` is emitted ONLY when not `:ok` (camus C1-3) — existing persisted
+  # result maps stay byte-identical, and `StageEmission.from_map/1` reads the
+  # absent key back as `:ok`.
   defp to_map(%StageEmission{} = emission, ref_artifacts) do
-    %{"stage" => emission.stage, "signals" => emission.signals, "artifacts" => ref_artifacts}
+    base = %{
+      "stage" => emission.stage,
+      "signals" => emission.signals,
+      "artifacts" => ref_artifacts
+    }
+
+    case emission.outcome do
+      :ok -> base
+      outcome -> Map.put(base, "outcome", encode_outcome(outcome))
+    end
   end
+
+  defp encode_outcome({kind, reason}) when kind in [:infra, :inconclusive],
+    do: %{"kind" => Atom.to_string(kind), "reason" => reason}
 end

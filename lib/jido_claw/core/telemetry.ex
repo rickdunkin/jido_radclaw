@@ -55,6 +55,12 @@ defmodule JidoClaw.Telemetry do
       # budget_refused emission), `trigger` the `:lua_*` failure code.
       counter("jido_claw.lua_eval.total", tags: [:status, :trigger]),
 
+      # Composer verdict-infra events (camus C1-3) — one count per infra'd
+      # stage; `lane` is :output (a judge's unusable verdict) or :wave_error
+      # (a lens-only wave execution failure). The Trace `:composer` events
+      # carry the per-run timeline; this is the rollup.
+      counter("jido_claw.composer.infra.total", tags: [:lane, :stage]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -207,6 +213,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :loop_guard],
       %{total: 1},
       %{tool: tool, event: event, trigger: trigger}
+    )
+  end
+
+  @spec emit_composer_infra(atom(), String.t()) :: :ok
+  def emit_composer_infra(lane, stage) do
+    :telemetry.execute(
+      [:jido_claw, :composer, :infra],
+      %{total: 1},
+      %{lane: lane, stage: stage}
     )
   end
 

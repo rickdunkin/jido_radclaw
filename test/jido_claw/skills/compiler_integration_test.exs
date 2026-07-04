@@ -34,6 +34,14 @@ defmodule JidoClaw.Skills.CompilerIntegrationTest do
         description: "test-only echo template",
         model: :fast,
         max_iterations: 1
+      },
+      # A REAL failing verdict for the iterative cap-out test — EchoStub's
+      # tokenless "echoed" is an *infra* input under the camus C1-3 contract.
+      "fail_test" => %{
+        module: JidoClaw.Test.FailStub,
+        description: "test-only VERDICT: FAIL template",
+        model: :fast,
+        max_iterations: 1
       }
     })
 
@@ -115,13 +123,13 @@ defmodule JidoClaw.Skills.CompilerIntegrationTest do
           "template" => "echo_test",
           "task" => "build"
         },
-        %{"name" => "verify", "role" => "evaluator", "template" => "echo_test", "task" => "check"}
+        %{"name" => "verify", "role" => "evaluator", "template" => "fail_test", "task" => "check"}
       ]
     }
 
     {value, run} = run_skill(skill, ctx)
 
-    # gen + eval (EchoStub never passes; max_iterations: 1) → 2 results.
+    # gen + eval (FailStub never passes; max_iterations: 1) → 2 results.
     assert value.steps_completed == 2
     assert run.result["steps_completed"] == 2
 

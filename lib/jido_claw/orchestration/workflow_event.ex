@@ -133,6 +133,13 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # Subtractive — wave deltas (parent stays `:running`; NOT status-authority).
           :signals_retracted,
           :stages_invalidated,
+          # Camus C1-3: a lens stage's judge produced no usable verdict (schema
+          # drift / empty output / self-contradiction / lens-only wave-exec
+          # failure). Bumps the per-stage `infra_counts` in the composer
+          # projection — never `ran`, never `rerun_counts`. Optional
+          # `closed_wave_index` closes a failed (never-completed) wave so the
+          # retry gets a fresh launch key. NOT status-authority.
+          :stage_infra,
           :artifacts_invalidated,
           # Parent-terminal — the composer's own terminal vocabulary. Status-authority
           # (see `WorkflowEvent.Projection`): the four failure kinds + not-converged
@@ -153,6 +160,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # an operator tells it apart from `verify_failed` AND a generic budget stop.
           # App-level `one_of` (stored as text) — no migration.
           :route_fix_failed,
+          # Camus C1-3: a judge never produced a trustworthy verdict past the
+          # per-stage infra retry cap — a *review-infrastructure* failure, never a
+          # findings-derived one. Projects onto `:failed` carrying
+          # `result.disposition: "review_infra_failed"` (the verify/fix_failed
+          # precedent). App-level `one_of` (stored as text) — no migration.
+          :route_review_infra_failed,
           :route_failed,
           :route_rejected,
           :route_abandoned

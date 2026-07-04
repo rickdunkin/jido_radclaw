@@ -29,6 +29,7 @@ defmodule JidoClaw.Orchestration.ReplayTest do
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Skills
   alias JidoClaw.Test.EchoStub
+  alias JidoClaw.Test.FailStub
   alias JidoClaw.Test.ReplayFixtures
   alias JidoClaw.Test.SecretErrorStub
   alias JidoClaw.Tools.ReplayWorkflow
@@ -244,8 +245,15 @@ defmodule JidoClaw.Orchestration.ReplayTest do
     test "an iterative loop with an irreversible role is stamped and gated", ctx do
       dir = tmp_project_dir!()
 
-      # EchoStub never emits a VERDICT token → the evaluator fails → the loop
-      # caps at max_iterations: 1 and the run still completes.
+      # The evaluator must emit a REAL failing verdict (FailStub's
+      # `VERDICT: FAIL`) so the loop caps at max_iterations: 1 and the run
+      # still completes — EchoStub's tokenless "echoed" is an *infra* input
+      # under the camus C1-3 normalizer contract and would fail the run.
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "researcher" => template(EchoStub),
+        "docs_writer" => template(FailStub)
+      })
+
       write_fixture!(dir, """
       name: replay_fixture
       description: irreversible iterative fixture

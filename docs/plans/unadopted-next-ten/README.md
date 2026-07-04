@@ -58,7 +58,7 @@ re-verify at build time).
 | 1 | A | Headless one-shot + CLI session resume — ✅ DONE 2026-07-03 | osa OS1-5 (+ CC2-2 rider) | S | One session |
 | 2 | A | Doom-loop guard — ✅ DONE 2026-07-03 | osa OS1-2 | S | One session (pure module + pipeline hook) |
 | 3 | A | Lua code-mode pair (`lua_docs`/`lua_query`) — ✅ DONE 2026-07-03 | amber AM-1 (+ jidoka V2-7 hardening) | S–M | Single PR (two tools + policy envelope) |
-| 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) | camus C1-3 | M | Single PR |
+| 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) — ✅ DONE 2026-07-03 | camus C1-3 | M | Single PR |
 | 5 | B | Deterministic verify authority + sealed heads | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
 | 6 | B | Honest terminal statuses + stall detection | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
 | 7 | B | Executor seam (cross-vendor review first config) | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
@@ -257,7 +257,41 @@ context; this collapses it to one scripted read.
 `1.0.0-rc.3`); V2-7's plan-authorship verdict stays untouched (this computes
 reads, authors nothing).
 
-## 4. Verdict normalizer — M (camus C1-3)
+## 4. Verdict normalizer — M (camus C1-3) — ✅ DONE 2026-07-03
+
+> **Done 2026-07-03**, with corrections to this entry's claims (mirrored into
+> the source entry, camus C1-3): shipped as `JidoClaw.Orchestration.Verdict`
+> (envelope + behaviour + `format_reason/1` bounded renderer) with two kind
+> modules (`Verdict.Review`, `Verdict.IterativeEval`), the emission `outcome`
+> carrier (`StageEmission` — fail-closed decode on the DB trust boundary), the
+> `:stage_infra` / `:route_review_infra_failed` durable vocabulary, and both
+> composer lanes. Corrections: (a) `parse_verdict/1` was at clauses :134-154
+> (spec :133), not ":133-154" — now **deleted**, subsumed by
+> `Verdict.IterativeEval` (map/text parsing preserved incl. last-token-wins);
+> (b) the "malformed verdict → failed iteration" framing **understated the
+> composer half**: `DefaultMapper.verdict/2` dispatched on output *shape*, so
+> a reviewer whose `overall` drifted out of enum silently emitted an EMPTY
+> emission — the lens never went clean and the run mis-terminalized
+> `:not_converged` (never `:route_failed`), and a degenerate `request_changes`
+> with zero findings summoned the fixer with empty feedback, burning
+> `rerun_cap` toward a false `:fix_failed`; the fix dispatches on **lens
+> presence, not shape**. (c) Step 2's "decrements a separate infra-retry
+> budget" shipped per-STAGE (`infra_counts`/`infra_cap`, default 2 ⇒ 3
+> attempts = camus's total) and **persisted in parent config** so a restart
+> keeps a caller's override (`rerun_cap` still has that gap — noted, not
+> swept). Scope grew by operator decision: the self-contradiction guard covers
+> ANY non-approve (`request_changes` OR `comment`) with zero findings; a
+> **lens-only cohort's wave-execution error** rides the same infra budget
+> (Lane B, incl. the recovered-failed-child dedupe arm and — post-review P1
+> fix — the dedupe-hit observe arms, observed-failed / observe-timeout /
+> observe-reload, which pre-fix bypassed Lane B to a generic `route_failed`
+> purely on failure timing relative to a restart; `closed_wave_index`
+> closes the failed wave for rebuild AND `Observe`/`WorkflowView` — mixed
+> cohorts keep `route_failed`); Review field coverage is routing-critical-only
+> (camus-faithful; prose fields pass through). `{:inconclusive, _}` is typed +
+> consumed defensively but producer-less until #5. Rider C2-8 landed as
+> `docs/TRUST-BOUNDARIES.md` (five laws + the materialized durability
+> checklist) with the AGENTS.md pointer.
 
 First of the verification program because everything downstream lands on it:
 there is no single normalization module for judge outputs, and the crucial loop

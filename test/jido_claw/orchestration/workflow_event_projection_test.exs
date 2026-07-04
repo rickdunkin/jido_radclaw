@@ -77,6 +77,18 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
         assert Projection.next_status(status, :route_fix_failed) == :illegal
       end
     end
+
+    test "camus C1-3 route_review_infra_failed: any non-terminal -> :failed, terminal -> :illegal" do
+      assert Projection.status_authority?(:route_review_infra_failed)
+
+      for status <- [:pending, :running, :awaiting_approval] do
+        assert Projection.next_status(status, :route_review_infra_failed) == {:ok, :failed}
+      end
+
+      for status <- [:completed, :failed, :cancelled, :abandoned] do
+        assert Projection.next_status(status, :route_review_infra_failed) == :illegal
+      end
+    end
   end
 
   describe "status_attrs/3 (pure)" do
@@ -193,6 +205,46 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
       assert attrs.status == :failed
       assert attrs.error == "boom"
       assert attrs.result == %{"disposition" => "fix_failed"}
+    end
+
+    # Camus C1-3 — the exact spot where verify/fix_failed needed careful clause
+    # ordering vs `@route_failed_kinds`: the explicit clause must lift BOTH
+    # `error` and `result.disposition` (the error-only family clause would
+    # shadow it if the kind ever joined `@route_failed_kinds`).
+    test "camus C1-3 route_review_infra_failed lifts BOTH error and result (atom-keyed)", %{
+      occurred_at: at
+    } do
+      attrs =
+        Projection.status_attrs(
+          :route_review_infra_failed,
+          %{
+            error: "review_infra_failed: stages=quality-reviewer",
+            result: %{disposition: "review_infra_failed"}
+          },
+          at
+        )
+
+      assert attrs == %{
+               status: :failed,
+               completed_at: at,
+               error: "review_infra_failed: stages=quality-reviewer",
+               result: %{disposition: "review_infra_failed"},
+               clear_checkpoint: true
+             }
+    end
+
+    test "camus C1-3 route_review_infra_failed tolerates string-keyed (JSONB-reloaded) payload",
+         %{occurred_at: at} do
+      attrs =
+        Projection.status_attrs(
+          :route_review_infra_failed,
+          %{"error" => "boom", "result" => %{"disposition" => "review_infra_failed"}},
+          at
+        )
+
+      assert attrs.status == :failed
+      assert attrs.error == "boom"
+      assert attrs.result == %{"disposition" => "review_infra_failed"}
     end
   end
 

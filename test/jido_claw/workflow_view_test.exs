@@ -224,6 +224,31 @@ defmodule JidoClaw.WorkflowViewTest do
       assert snapshot.composer == %{available: false, reason: :not_yet_composed}
     end
 
+    # Camus C1-3: `:stage_infra` is in the O-M1 kind filter, so the observe view
+    # sees the wave-error lane's closing marker — a lane-B run reads
+    # wave_in_flight: false, not in-flight forever.
+    test "a lane-B stage_infra (closed_wave_index) closes the wave in the snapshot",
+         %{tenant_a: tenant} do
+      run = composer_run!(tenant, "lane-b-infra")
+      append!(run, :route_composed, composed_payload(), tenant)
+      append!(run, :wave_started, %{wave_index: 0, stages: ["planner"]}, tenant)
+
+      append!(
+        run,
+        :stage_infra,
+        %{stages: ["planner"], closed_wave_index: 0},
+        tenant
+      )
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+
+      composer = snapshot.composer
+      assert composer.available == true
+      assert composer.wave_in_flight == false
+      # An infra'd stage was never folded — ran stays empty.
+      assert composer.ran == []
+    end
+
     test "a non-composer run carries no :composer key", %{tenant_a: tenant} do
       {:ok, run} =
         WorkflowRun.create(%{name: "plain", workflow_type: "reactor"},

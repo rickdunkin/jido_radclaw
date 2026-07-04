@@ -140,6 +140,80 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
     end
   end
 
+  # Camus C1-3: a lens-carrying stage IS a reviewer whatever its output looks
+  # like — a malformed/empty/drifted verdict becomes `outcome: {:infra, _}` with
+  # NO signals and NO artifacts (the old shape-dispatch emitted a silent empty
+  # emission that never went clean), while valid verdicts stay `outcome: :ok`.
+  describe "camus C1-3: lens stages route through the verdict normalizer" do
+    test "a drifted overall becomes an infra outcome with nothing else" do
+      result = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{"overall" => "maybe", "findings" => []}
+      }
+
+      assert {:ok, %StageEmission{} = emission} = DefaultMapper.map(result, reviewer_meta())
+      assert emission.signals == []
+      assert emission.artifacts == %{}
+      assert {:infra, reason} = emission.outcome
+      assert reason =~ "invalid_overall"
+    end
+
+    test "a missing/empty typed output becomes an infra outcome" do
+      for typed <- [nil, %{}] do
+        result = %StepResult{name: "quality-reviewer", typed_output: typed}
+
+        assert {:ok, %StageEmission{outcome: {:infra, _}, signals: [], artifacts: %{}}} =
+                 DefaultMapper.map(result, reviewer_meta())
+      end
+    end
+
+    test "an out-of-enum severity refuses to demote (infra, not a finding)" do
+      result = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{
+          "overall" => "request_changes",
+          "findings" => [%{"severity" => "critical", "description" => "d"}]
+        }
+      }
+
+      assert {:ok, %StageEmission{outcome: {:infra, reason}}} =
+               DefaultMapper.map(result, reviewer_meta())
+
+      assert reason =~ "invalid_severity"
+    end
+
+    test "a degenerate request_changes with zero findings is infra (self-contradiction)" do
+      result = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{"overall" => "request_changes", "findings" => []}
+      }
+
+      assert {:ok, %StageEmission{outcome: {:infra, "self_contradiction"}}} =
+               DefaultMapper.map(result, reviewer_meta())
+    end
+
+    test "valid clean and findings verdicts keep outcome: :ok (regression)" do
+      clean = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{"overall" => "approve", "findings" => []}
+      }
+
+      assert {:ok, %StageEmission{signals: ["clean:quality"], outcome: :ok}} =
+               DefaultMapper.map(clean, reviewer_meta())
+
+      flagged = %StepResult{
+        name: "quality-reviewer",
+        typed_output: %{
+          "overall" => "request_changes",
+          "findings" => [%{"severity" => "error", "description" => "bug"}]
+        }
+      }
+
+      assert {:ok, %StageEmission{signals: ["findings:quality"], outcome: :ok}} =
+               DefaultMapper.map(flagged, reviewer_meta())
+    end
+  end
+
   describe "explicit signals + output artifacts" do
     test "emits declared signals and maps each output name from typed_output" do
       result = %StepResult{

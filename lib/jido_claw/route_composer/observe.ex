@@ -90,7 +90,7 @@ defmodule JidoClaw.RouteComposer.Observe do
   end
 
   # Reliable "a wave is launched but not yet folded" signal: the latest
-  # `wave_started.wave_index` has no matching `wave_completed`. Deliberately does
+  # `wave_started.wave_index` has not been CLOSED. Deliberately does
   # NOT read `wave_paused` (non-load-bearing per `route_composer.ex`), so the
   # parked-gate case — `wave_started(N)`, no `wave_completed(N)`, NO `wave_paused`
   # — still reads in-flight. The authoritative *blocked-on-a-gate* determination
@@ -98,14 +98,20 @@ defmodule JidoClaw.RouteComposer.Observe do
   defp wave_in_flight?(events) do
     case latest_started_wave_index(events) do
       nil -> false
-      idx -> not wave_completed?(events, idx)
+      idx -> not wave_closed?(events, idx)
     end
   end
 
-  defp wave_completed?(events, idx) do
+  # A wave is closed by its `wave_completed` OR by ANY event whose payload
+  # carries `closed_wave_index == idx` — `stage_infra` (the camus C1-3
+  # wave-error lane) and `stages_invalidated` (the reject-parked-gate path)
+  # uniformly. Those waves deliberately never write `wave_completed`; without
+  # this they — including a terminal `review_infra_failed` run — would read as
+  # in-flight forever.
+  defp wave_closed?(events, idx) do
     Enum.any?(events, fn
       %{kind: :wave_completed, payload: p} -> EventPayload.int(p, :wave_index) == idx
-      _event -> false
+      %{payload: p} -> EventPayload.int(p, :closed_wave_index) == idx
     end)
   end
 

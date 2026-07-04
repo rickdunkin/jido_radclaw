@@ -81,6 +81,35 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 **Recommendation**: BORROW-PATTERN.
 
+> **Status: ✅ ADOPTED 2026-07-03** (next-ten #4). Shipped as
+> `JidoClaw.Orchestration.Verdict` (envelope + behaviour + bounded
+> `format_reason/1`) with `Verdict.Review` + `Verdict.IterativeEval` kind
+> modules — the adapter.py rules verbatim incl. refuse-to-demote severity and
+> the self-contradiction guard (widened, operator decision, to ANY non-approve
+> with zero findings). Both engine boundaries consume it: `DefaultMapper` now
+> dispatches on **lens presence, not output shape** (an infra'd reviewer emits
+> `outcome: {:infra, reason}` — no signals, never folded), and the composer
+> retries on a separate per-stage `infra_cap` budget (default 2 ⇒ camus's 3
+> attempts; persisted in parent config) via durable `:stage_infra` events,
+> terminalizing `:route_review_infra_failed` (disposition
+> `"review_infra_failed"`). A **lens-only cohort's wave-execution error** rides
+> the same budget (operator decision; `closed_wave_index` closes the failed
+> wave for rebuild + observe; mixed cohorts keep `route_failed`).
+> `IterativeStep` routes through `normalize(:iterative_eval, _)` with an
+> `infra_retries` evaluator-only lane (proven red→green — the named live bug).
+> Corrections to this entry: `parse_verdict/1` clauses were :134-154 (spec
+> :133) and are now DELETED; the gap paragraph understated the composer half —
+> a drifted `overall` fell through `DefaultMapper`'s shape-dispatch as a
+> silent EMPTY emission, so the lens never went clean and the run
+> mis-terminalized `:not_converged` (never `:route_failed`), while a
+> degenerate `request_changes` with zero findings summoned the fixer with
+> empty feedback and burned `rerun_cap` toward a false `:fix_failed`.
+> `{:inconclusive, _}` is typed + defensively folded into the infra lane but
+> producer-less until C1-2 (next-ten #5). Trace `:composer` events (bounded
+> reasons, `run_id`-indexed) + `jido_claw.composer.infra.total`. The crabbox
+> CB2-1 vocabulary now has its landing envelope. Rider C2-8 landed with it
+> (see below).
+
 **Where in camus**: `packages/cli/skills/camus/scripts/adapter.py:46-111` (`normalize_codex` fails closed to `ran:false` on: nonzero exit, empty output, unparseable JSON, out-of-enum verdict, missing findings list, out-of-range priority — "refuse to silently demote a drifted priority to a nit" — and the self-contradiction guard: "patch is incorrect" with zero blocking findings is an *infra* error); `SKILL.md:106-109` (Hard Rule #2: infra failure is retried with backoff, **never fed to the fix loop as a rejection, never counted as clean** — "the #1 cause of runaway loops"); `camus-loop.workflow.js:328-345` (`asGate`/`asVerify` force unparseable output to infra/inconclusive, not to a verdict); `README.md:101-104` ("a broken environment never reads as broken code… enforced in the adapter, not in a prompt").
 
 **What**: Every boundary where a probabilistic judge's output enters the engine passes through a deterministic normalizer with three distinct exits — verdict (clean/revise), infra (`ran:false`, retry with backoff), inconclusive (environment couldn't answer) — and schema drift fails closed to infra rather than being coerced into a verdict.
@@ -246,6 +275,15 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 ### C2-8. The trust-boundary doctrine (five laws) as an orchestration review checklist
 
 **Recommendation**: BORROW-PATTERN (documentation-only).
+
+> **Status: ✅ ADOPTED 2026-07-03** (rider on next-ten #4). Landed as
+> `docs/TRUST-BOUNDARIES.md` — the five laws adapted to our vocabulary
+> ("script" → engine/gate code, "green" → verdict/disposition) **plus the
+> event-sourced durability checklist materialized from house memory as law 3's
+> working form** (it previously lived only in operator memory), with a pointer
+> + summary from AGENTS.md's Verdict Normalizer bullet. Framed as the review
+> rubric for orchestration/gate changes and the acceptance frame for C1-3
+> (shipped, see above) and C1-2 (next-ten #5).
 
 **Where in camus**: `docs/ROADMAP-0.3.md:21-36` — "Camus is a distributed transaction manager wrapped around probabilistic agents; bugs live at the trust boundaries." Every phase/handoff must satisfy: (1) allowed mutations live in allowlisted deterministic code; (2) every handoff needs script-written evidence — agent relays are cross-checks, never sources of truth; (3) every crash window needs resume semantics; (4) every "green" proves exactly what state it certified; (5) every helper agent is untrusted around state-changing commands. "A feature that can't answer all five isn't designed yet."
 

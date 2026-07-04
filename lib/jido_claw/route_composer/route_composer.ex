@@ -154,6 +154,9 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunPubSub
+  # The camus C1-3 normalizer — NOT JidoClaw.Triage.Verdict (different
+  # subsystem; never alias both in one module).
+  alias JidoClaw.Orchestration.Verdict
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLease
@@ -211,6 +214,14 @@ defmodule JidoClaw.RouteComposer do
   # the bound on a non-progressing re-plan loop (reused by AR-4/AR-8c reruns).
   @default_rerun_cap 2
 
+  # Per-stage infra retry cap (camus C1-3, its INFRA_RETRIES): a lens stage whose
+  # judge produced no usable verdict is re-offered at most this many times —
+  # `count > cap` trips on the 4th attempt, so 3 attempts total, matching camus —
+  # before the run takes the `review_infra_failed` terminal. A SEPARATE budget
+  # from `rerun_cap`: an untrustworthy judge must never burn the fix loop's
+  # findings-driven budget (nor terminalize as `fix_failed`).
+  @default_infra_retry_cap 2
+
   # Per-wave wall-clock kill deadline (AR-2 Phase 2b C3) — a composer wave that
   # runs longer than this is killed and the child wave fails. ~5 min default.
   @default_wave_timeout_ms 300_000
@@ -257,6 +268,10 @@ defmodule JidoClaw.RouteComposer do
     # (sensitive); the scrub replaces ONLY `:error`, so `result.disposition:
     # "fix_failed"` survives — exactly like `:route_verify_failed`.
     :route_fix_failed,
+    # Camus C1-3: the review-infra error string names the exhausted stages
+    # (coarse-scrubbed like its siblings); `result.disposition:
+    # "review_infra_failed"` survives.
+    :route_review_infra_failed,
     :route_failed
   ]
 
@@ -282,6 +297,7 @@ defmodule JidoClaw.RouteComposer do
           | :budget_exhausted
           | :verify_failed
           | :fix_failed
+          | :review_infra_failed
           | :failed
           | :rejected
           | :abandoned
@@ -292,7 +308,14 @@ defmodule JidoClaw.RouteComposer do
           child_run_id: term(),
           route: [String.t()],
           held_before: %{optional(String.t()) => [String.t()]},
-          emissions: [%{stage: String.t(), signals: [String.t()], artifacts: map()}],
+          emissions: [
+            %{
+              stage: String.t(),
+              signals: [String.t()],
+              artifacts: map(),
+              outcome: StageEmission.outcome()
+            }
+          ],
           failed: boolean()
         }
 
@@ -457,6 +480,10 @@ defmodule JidoClaw.RouteComposer do
     |> maybe_put_catalog(Keyword.get(opts, :catalog))
     |> maybe_put("max_waves", Keyword.get(opts, :max_waves))
     |> maybe_put("wave_timeout_ms", Keyword.get(opts, :wave_timeout_ms))
+    # Conditional-put (the present-nil rule): a restarted composer must keep the
+    # caller's `infra_cap: 1`, not silently reset to the default. (`rerun_cap`
+    # has the same pre-existing gap — out of scope, not swept in.)
+    |> maybe_put("infra_cap", Keyword.get(opts, :infra_cap))
     |> maybe_put_premises(Keyword.get(opts, :premises))
     |> maybe_put_context(Keyword.get(opts, :context))
   end
@@ -831,6 +858,10 @@ defmodule JidoClaw.RouteComposer do
       :wave_timeout_ms,
       config["wave_timeout_ms"] || opts[:wave_timeout_ms] || @default_wave_timeout_ms
     )
+    |> Keyword.put(
+      :infra_cap,
+      config["infra_cap"] || opts[:infra_cap] || @default_infra_retry_cap
+    )
     |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
     |> Keyword.put(:context, start_context(config["context"], opts[:context]))
   end
@@ -1080,6 +1111,13 @@ defmodule JidoClaw.RouteComposer do
       # `rerun_cap` the ceiling before `route_budget_exhausted`.
       rerun_counts: %{},
       rerun_cap: Keyword.get(opts, :rerun_cap, @default_rerun_cap),
+      # Infra retry primitive (camus C1-3): `infra_counts` is the per-stage
+      # no-usable-verdict tally (rebuilt from `stage_infra` events by
+      # `ComposerProjection`), `infra_cap` the ceiling before
+      # `review_infra_failed` — persisted in the parent config so a restart
+      # keeps a caller's override.
+      infra_counts: %{},
+      infra_cap: Keyword.get(opts, :infra_cap, @default_infra_retry_cap),
       terminal: nil,
       reason: nil,
       summary: nil
@@ -1589,10 +1627,24 @@ defmodule JidoClaw.RouteComposer do
       # mid-recovery crashes walk `wave_index` forward, bounded by `max_waves`).
       # The old `:failed` child is a harmless orphan, told apart by `wave_index`.
       # This differs DELIBERATELY from `observe_existing_child`'s non-completed
-      # terminal (H8): there a `:failed` is a genuine just-now wave failure that
-      # must fail the route; here it is a stale corpse from a prior crash.
+      # terminal (H8) — but post-review P1 narrowed the difference: lens-only
+      # cohorts ride Lane B on BOTH sides now, so what remains distinct is the
+      # mixed/producer else (there `finish_failed`, here the plain wave-index
+      # bump — a stale corpse from a prior crash re-dispatches under a fresh
+      # key rather than failing the route) and the just-now-vs-stale framing.
+      #
+      # Camus C1-3 Lane B, third entry point: a lens-only cohort's failed child
+      # means the composer crashed AFTER the child failed but BEFORE
+      # `stage_infra` was appended — the plain bump would bypass `infra_counts`
+      # and end as generic budget exhaustion. Route it through the same infra
+      # helper; there is no live `reason` here, so pass `run.error ||
+      # :failed_child` for trace/fallback consistency with the live arms.
       :failed ->
-        {:noreply, %{state | wave_index: state.wave_index + 1}, {:continue, :tick}}
+        if lens_only_dispatch?(dispatch, state.catalog) do
+          wave_infra_failed(run.error || :failed_child, run, dispatch, display, state)
+        else
+          {:noreply, %{state | wave_index: state.wave_index + 1}, {:continue, :tick}}
+        end
 
       # A gate-decided-then-crash (Phase 2d/4c): the gate's decision already drove
       # the child to a terminal before the composer could observe it. Routed through
@@ -1615,42 +1667,71 @@ defmodule JidoClaw.RouteComposer do
   end
 
   # run_reactor failure: `run` is the (possibly nil, on a pre-run error) child
-  # WorkflowRun whose id the failed-wave history entry surfaces.
+  # WorkflowRun whose id the failed-wave history entry surfaces. A lens-only
+  # cohort's execution failure is camus's exec-failure class — the judge never
+  # produced a verdict — so it rides the infra lane (Lane B); a mixed/producer
+  # cohort keeps the loud `route_failed` (the shared `wave_failed/5` gate).
   defp handle_wave_result({:error, reason, run}, dispatch, display, state) do
-    finish_failed(reason, run, dispatch, display, state)
+    wave_failed(reason, run, dispatch, display, state)
   end
 
-  # The durable commit path (Phase 2c; AR-4 self-heal). First INJECT the guaranteed
-  # completion signals into the producers' emissions (`enforce_completion_signals/2`
-  # — the silent-converge fix, applied BEFORE the fold so it flows into live state,
-  # the durable `signals_published` delta, the never-ran summon, AND the fixer's
-  # re-review derivation in one place). Then compute the pure fold, derive the
-  # wave's content deltas by DIFFING pre/post `Fold` state (so the durable log
-  # equals the in-memory fold by construction — incl. a paired-verdict flip that
-  # retracts a live signal, captured as `signals_retracted`), then compute the AR-4
-  # self-heal rerun decision as a PURE function of the folded state
-  # (`decide_rerun/2`) and WELD its markers into the SAME `commit_wave` transaction
-  # (the crash-window fix: a "fixer ran" `wave_completed` can never land without its
-  # re-review trigger). Only on `:ok` do we mirror those markers in memory
-  # (`apply_fn`, the projection's own fold) and continue. The AR-8c verify loop +
-  # stale-approval stay on their existing POST-commit path
-  # (`maybe_rerun_after_findings`).
+  # The durable commit path (Phase 2c; AR-4 self-heal; camus C1-3 Lane A). First
+  # INJECT the guaranteed completion signals into the producers' emissions
+  # (`enforce_completion_signals/2` — the silent-converge fix, applied BEFORE the
+  # fold so it flows into live state, the durable `signals_published` delta, the
+  # never-ran summon, AND the fixer's re-review derivation in one place; it only
+  # touches lens-nil producers, so infra'd reviewers are untouched). Then
+  # PARTITION on the emission `outcome`: only verdict emissions fold —
+  # `Fold.fold_ran` adds every folded stage to `ran`, so an infra'd stage staying
+  # OUT of the fold (and out of `wave_completed.stages`, keeping durable ≡
+  # in-memory) is what makes its publishes stay unsatisfied and the next tick
+  # re-offer it (a fresh wave, fresh idempotency key). Derive the wave's content
+  # deltas by DIFFING pre/post `Fold` state (so the durable log equals the
+  # in-memory fold by construction — incl. a paired-verdict flip that retracts a
+  # live signal, captured as `signals_retracted`), compute the AR-4 self-heal
+  # rerun decision as a PURE function of the folded state over the VERDICT
+  # emissions only (`decide_rerun/2` — an infra'd reviewer emitted nothing this
+  # wave), and WELD the `stage_infra` markers + rerun markers into the SAME
+  # `commit_wave` transaction (the crash-window fix: a "fixer ran"
+  # `wave_completed` can never land without its re-review trigger; an infra'd
+  # wave can never re-project without its `infra_counts` bump). The `stage_infra`
+  # payload carries stage names ONLY — no reasons (redaction posture) and no
+  # `closed_wave_index` (this wave's `wave_completed` advances the index). Only
+  # on `:ok` do we mirror those markers in memory (`ComposerProjection.apply_markers/2`,
+  # the projection's own fold), emit the infra trace/telemetry (durable-then-
+  # notify), and continue — full emissions (incl. infra'd ones, with `outcome`)
+  # go to history for legibility. The AR-8c verify loop + stale-approval stay on
+  # their existing POST-commit path (`maybe_rerun_after_findings`), reading the
+  # verdict emissions only.
   defp handle_wave_value({:ok, raw_emissions}, run, dispatch, display, state) do
     emissions = enforce_completion_signals(raw_emissions, state)
-    next_fold = Fold.fold(state, emissions)
-    deltas = wave_deltas(state, next_fold, dispatch)
-    {hook_markers, apply_fn} = decide_rerun(next_fold, emissions)
+    {verdict_emissions, infra_emissions} = Enum.split_with(emissions, &(&1.outcome == :ok))
+    infra_stages = Enum.map(infra_emissions, & &1.stage)
+    next_fold = Fold.fold(state, verdict_emissions)
+    deltas = wave_deltas(state, next_fold, dispatch, infra_stages)
+    {rerun_markers, _rerun_only_apply} = decide_rerun(next_fold, verdict_emissions)
+    markers = infra_markers(infra_stages) ++ rerun_markers
 
     case Commit.commit_wave(
            state.parent,
            state.wave_index,
            deltas,
-           hook_markers,
+           markers,
            commit_opts(state)
          ) do
       :ok ->
-        next = record_wave(apply_fn.(next_fold), dispatch, display, run, emissions)
-        maybe_rerun_after_findings(next, emissions)
+        emit_infra_observability(infra_outcomes(infra_emissions), :output, state)
+
+        next =
+          record_wave(
+            ComposerProjection.apply_markers(next_fold, markers),
+            dispatch,
+            display,
+            run,
+            emissions
+          )
+
+        maybe_rerun_after_findings(next, verdict_emissions)
 
       # The run ended externally (an operator cancel landed while the wave
       # returned): stop cleanly, don't re-terminalize (the terminal append already
@@ -1670,8 +1751,11 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
-  defp handle_wave_value({:error, reason}, run, dispatch, display, state),
-    do: finish_failed(reason, run, dispatch, display, state)
+  # Wave decode / `:bad_wave_return` failure — Lane B's second entry point: a
+  # lens-only cohort rides the infra lane, anything else stays `route_failed`.
+  defp handle_wave_value({:error, reason}, run, dispatch, display, state) do
+    wave_failed(reason, run, dispatch, display, state)
+  end
 
   # Record the attempted-but-failed wave (empty emissions, `failed: true`,
   # surfacing `child_run_id`) before stamping the `:failed` terminal, so the
@@ -1679,6 +1763,129 @@ defmodule JidoClaw.RouteComposer do
   defp finish_failed(reason, run, dispatch, display, state) do
     next = record_wave(state, dispatch, display, run, [], true)
     finish({:failed, reason}, next)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Camus C1-3 — the infra lane
+  # ---------------------------------------------------------------------------
+
+  # The shared lens-vs-producer gate for a failed wave: a lens-only cohort
+  # rides the infra lane (Lane B), anything else keeps the loud `route_failed`.
+  # Serves the live reactor-run failure, the decode/`:bad_wave_return` failure,
+  # and the dedupe-hit observe arms (observed just-now-`:failed`, observe
+  # timeout, observe reload failure). For those observe arms the immediate
+  # failure came from observation/recovery machinery, but the composer still
+  # has no trustworthy verdict for the lens — so they are DELIBERATELY review
+  # infra, the fail-closed posture of `docs/TRUST-BOUNDARIES.md` (post-review
+  # P1: routing them to `finish_failed` conflated infra with a real verdict
+  # failure purely on failure timing relative to a restart).
+  defp wave_failed(reason, run, dispatch, display, state) do
+    if lens_only_dispatch?(dispatch, state.catalog) do
+      wave_infra_failed(reason, run, dispatch, display, state)
+    else
+      finish_failed(reason, run, dispatch, display, state)
+    end
+  end
+
+  # Lane B (wave-execution-error infra), five entry points: a live reactor-run
+  # failure, a decode/`:bad_wave_return` failure, and the two dedupe-hit
+  # observe arms (observed non-completed terminal / observe error) — all four
+  # through the shared `wave_failed/5` gate — plus the recovered-failed-child
+  # dedupe arm, which gates on `lens_only_dispatch?/2` itself (its else is the
+  # plain wave-index bump, not `finish_failed`). Appends the durable
+  # `stage_infra` marker WITH
+  # `closed_wave_index` (load-bearing, the reject-parked-gate precedent: the
+  # failed wave never wrote `wave_completed`, so without it a restart rebuilds
+  # the old `wave_index` and the relaunch dedupes onto the failed child via
+  # `composer:<parent>:<wave_index>`), records a failed history entry, mirrors
+  # the marker in memory, and continues to `:tick` — each retry is a fresh wave
+  # under a fresh idempotency key. Ordering avoids a double-advance:
+  # `record_wave` bumps to `idx + 1` first, so `apply_markers`'
+  # `max(current, idx + 1)` is idempotent. A failed marker append terminalizes
+  # loudly (house rule: commit-failure terminalizes); `:parent_terminal` /
+  # `:parent_fenced` stop clean like every other durable write path.
+  defp wave_infra_failed(reason, run, dispatch, display, state) do
+    markers = [stage_infra: %{stages: dispatch, closed_wave_index: state.wave_index}]
+
+    case Commit.append_markers(state.parent, markers, commit_opts(state)) do
+      :ok ->
+        reason_string = Verdict.format_reason({:wave_execution_failed, reason})
+        emit_infra_observability(Enum.map(dispatch, &{&1, reason_string}), :wave_error, state)
+
+        next =
+          state
+          |> record_wave(dispatch, display, run, [], true)
+          |> then(&ComposerProjection.apply_markers(&1, markers))
+
+        {:noreply, next, {:continue, :tick}}
+
+      {:error, halt} when halt in [:parent_terminal, :parent_fenced] ->
+        {:stop, :normal, state}
+
+      {:error, append_reason} ->
+        finish_failed({:infra_marker_append_failed, append_reason}, run, dispatch, display, state)
+    end
+  end
+
+  # A cohort is infra-eligible when EVERY dispatched stage is a lens stage (its
+  # judge is what failed). Mixed cohorts and producer waves keep today's loud
+  # `route_failed` — a producer's execution failure is not a judge problem.
+  defp lens_only_dispatch?(dispatch, catalog) do
+    dispatch != [] and
+      Enum.all?(dispatch, fn name ->
+        match?({:ok, %Stage{lens: lens}} when is_binary(lens), Map.fetch(catalog, name))
+      end)
+  end
+
+  # Lane A's durable marker: stage names only — no reasons (redaction posture)
+  # and no `closed_wave_index` (the same commit's `wave_completed` advances the
+  # index).
+  defp infra_markers([]), do: []
+  defp infra_markers(stages), do: [stage_infra: %{stages: stages}]
+
+  # The observability projection of the non-`:ok` emissions. `handle_wave_value`'s
+  # split, `infra_stages`, and `infra_markers` already fold BOTH `{:infra, _}`
+  # and the reserved `{:inconclusive, _}` (StageEmission decodes/encodes it across
+  # the child-result DB trust boundary — #5's deterministic verifier will produce
+  # it) into the infra lane by stage name, so this consumer folds both too — the
+  # "consumers fold `{:inconclusive, _}` into the infra lane defensively" contract
+  # (the `IterativeStep` precedent). Matching `{:infra, _}` alone would
+  # `FunctionClauseError` on an inconclusive emission AFTER `commit_wave` already
+  # wrote its marker.
+  defp infra_outcomes(infra_emissions) do
+    Enum.map(infra_emissions, fn %StageEmission{stage: stage, outcome: {kind, reason}}
+                                 when kind in [:infra, :inconclusive] ->
+      {stage, reason}
+    end)
+  end
+
+  # One trace + one counter per infra'd stage, fired POST-commit (durable-then-
+  # notify). Called before `record_wave` bumps the index, so `wave_index` names
+  # the infra'd wave. The bounded `reason` string rides the trace channel only,
+  # never the durable `stage_infra` payload; `run_id` is included because the
+  # trace collector indexes by `:run_id`/`:request_id`, and `tenant_id`
+  # (post-review P2) because the `by_run` index has no public reader — the
+  # tenant stamp is what makes the per-run timeline reachable
+  # (`Trace.list({:tenant, …})`) and tenant-scopes the durable sink rows.
+  defp emit_infra_observability(stage_reasons, lane, state) do
+    Enum.each(stage_reasons, fn {stage, reason} ->
+      JidoClaw.Telemetry.emit_composer_infra(lane, stage)
+
+      JidoClaw.Trace.emit(
+        :composer,
+        %{
+          event: :review_infra,
+          run_id: state.parent_run_id,
+          parent_run_id: state.parent_run_id,
+          stage: stage,
+          reason: reason,
+          wave_index: state.wave_index,
+          lane: lane,
+          tenant_id: state.tenant
+        },
+        %{count: 1}
+      )
+    end)
   end
 
   # Struct path, ungated; blocks until the wave completes (`async?: true` only
@@ -1751,8 +1958,15 @@ defmodule JidoClaw.RouteComposer do
     }
   end
 
+  # `outcome` rides into history (camus C1-3) so an infra'd stage's entry is
+  # legible — the entry would otherwise silently drop it.
   defp emission_entry(%StageEmission{} = emission) do
-    %{stage: emission.stage, signals: emission.signals, artifacts: emission.artifacts}
+    %{
+      stage: emission.stage,
+      signals: emission.signals,
+      artifacts: emission.artifacts,
+      outcome: emission.outcome
+    }
   end
 
   # ---------------------------------------------------------------------------
@@ -1814,9 +2028,12 @@ defmodule JidoClaw.RouteComposer do
   # in-memory fold. Signals are sorted lists (JSON-safe + deterministic);
   # `signals_retracted` captures a paired-verdict flip (NOT assumed empty);
   # artifacts are the new/changed `{name, producer, ref}` triples (bare ref).
-  defp wave_deltas(state, next_fold, dispatch) do
+  # `infra_stages` (camus C1-3) are subtracted from `wave_completed.stages` —
+  # an infra'd stage was never folded into `ran`, so recording it as completed
+  # would make the durable rebuild diverge from the in-memory fold.
+  defp wave_deltas(state, next_fold, dispatch, infra_stages) do
     %{
-      stages: dispatch,
+      stages: dispatch -- infra_stages,
       signals_published: signals_diff(next_fold.live, state.live),
       signals_retracted: signals_diff(state.live, next_fold.live),
       artifacts_produced: artifacts_diff(state.artifacts, next_fold.artifacts)
@@ -3043,9 +3260,14 @@ defmodule JidoClaw.RouteComposer do
   # `:completed` folds + commits its durable emission. A `:cancelled`/`:abandoned`
   # terminal is gate-aware (Phase 4c): for a **gate** dispatch it is a legitimate
   # operator decision → the disposition terminal (via the SHARED
-  # `terminalize_gate_disposition/3`), while for a **worker** dispatch (and any
-  # other terminal or the observe timeout) it stays the conservative
-  # `finish_failed`.
+  # `terminalize_gate_disposition/3`), while for a **worker** dispatch it stays
+  # the conservative `finish_failed` — an operator decision is never infra, so
+  # retrying would override the operator. Any other non-completed terminal and
+  # the observe errors (timeout / reload failure) go through `wave_failed/5`
+  # (post-review P1): a lens-only cohort rides Lane B — the composer has no
+  # trustworthy verdict for the lens even though the immediate failure came
+  # from observation/recovery machinery — while mixed/producer cohorts keep
+  # the loud `finish_failed`.
   defp observe_existing_child(run, dispatch, display, state) do
     case await_existing_child(run, state) do
       {:ok, %WorkflowRun{status: :completed} = done} ->
@@ -3054,8 +3276,10 @@ defmodule JidoClaw.RouteComposer do
       {:ok, %WorkflowRun{status: status} = other} when status in [:cancelled, :abandoned] ->
         observe_terminal(status, other, dispatch, display, state)
 
+      # The reloaded child (not the stale `run`) rides through, so a failed
+      # history entry carries the right `child_run_id`.
       {:ok, %WorkflowRun{} = other} ->
-        finish_failed(
+        wave_failed(
           {:existing_run_not_completed, other.status},
           other,
           dispatch,
@@ -3064,7 +3288,7 @@ defmodule JidoClaw.RouteComposer do
         )
 
       {:error, reason} ->
-        finish_failed(reason, run, dispatch, display, state)
+        wave_failed(reason, run, dispatch, display, state)
     end
   end
 
@@ -3215,6 +3439,16 @@ defmodule JidoClaw.RouteComposer do
       {:route_fix_failed,
        %{error: format_terminal_error(:fix_failed, reason), result: %{disposition: "fix_failed"}}}
 
+  # Camus C1-3: the judge-never-produced-a-trustworthy-verdict terminal — a
+  # `:failed`-WITH-disposition append like its verify/fix siblings.
+  defp terminal_event(:review_infra_failed, reason, _summary),
+    do:
+      {:route_review_infra_failed,
+       %{
+         error: format_terminal_error(:review_infra_failed, reason),
+         result: %{disposition: "review_infra_failed"}
+       }}
+
   # Explicit default (the former catch-all): a generic failure kind — lift `:error`
   # only, no disposition.
   defp terminal_event(kind, reason, _summary),
@@ -3291,6 +3525,8 @@ defmodule JidoClaw.RouteComposer do
   defp classify_terminal({:verify_failed, reason}), do: {:verify_failed, reason}
   # AR-4: fix-failed carries the exhausted forward lenses as its reason.
   defp classify_terminal({:fix_failed, reason}), do: {:fix_failed, reason}
+  # Camus C1-3: review-infra-failed carries the infra-exhausted stages as its reason.
+  defp classify_terminal({:review_infra_failed, reason}), do: {:review_infra_failed, reason}
   # Phase 2d gate-decided-then-crash terminals (carry a disposition reason).
   defp classify_terminal({:rejected, reason}), do: {:rejected, reason}
   defp classify_terminal({:abandoned, reason}), do: {:abandoned, reason}
@@ -3450,6 +3686,10 @@ defmodule JidoClaw.RouteComposer do
   defp format_terminal_error(:fix_failed, lenses) when is_list(lenses),
     do: "fix_failed: lenses=#{Enum.join(lenses, ",")}"
 
+  # Camus C1-3: the reason is the list of stages whose infra count tripped the cap.
+  defp format_terminal_error(:review_infra_failed, stages) when is_list(stages),
+    do: "review_infra_failed: stages=#{Enum.join(stages, ",")}"
+
   defp format_terminal_error(kind, _reason), do: Atom.to_string(kind)
 
   # Abnormal-path reason → error string. Every caller passes a bare atom
@@ -3468,13 +3708,21 @@ defmodule JidoClaw.RouteComposer do
   # ---------------------------------------------------------------------------
 
   defp over_budget?(state) do
-    state.wave_index >= state.max_waves or past_deadline?(state) or rerun_capped?(state)
+    state.wave_index >= state.max_waves or past_deadline?(state) or rerun_capped?(state) or
+      infra_capped?(state)
   end
 
   # A stage invalidated more than `rerun_cap` times is a non-progressing re-plan
   # loop (an oscillation guard) → the `route_budget_exhausted` terminal (Phase 4e).
   defp rerun_capped?(state) do
     Enum.any?(state.rerun_counts, fn {_stage, count} -> count > state.rerun_cap end)
+  end
+
+  # A stage infra'd more than `infra_cap` times never produced a trustworthy
+  # verdict → the `review_infra_failed` terminal (camus C1-3). Mirrors
+  # `rerun_capped?/1` over the separate `infra_counts` budget.
+  defp infra_capped?(state) do
+    Enum.any?(state.infra_counts, fn {_stage, count} -> count > state.infra_cap end)
   end
 
   # Wall-clock against the durable `deadline_at_ms` (C1) — the live loop and 2d
@@ -3508,6 +3756,12 @@ defmodule JidoClaw.RouteComposer do
   # invalidation that just removed the stage from `ran`.
   defp budget_terminal(state) do
     cond do
+      # Camus C1-3, FIRST: a judge that never produced a trustworthy verdict
+      # outranks findings-derived exhaustion — the run must terminalize as a
+      # review-infrastructure failure, never `fix_failed`/`verify_failed`.
+      infra_capped?(state) ->
+        {:review_infra_failed, infra_exhausted_stages(state)}
+
       rerun_capped?(state) and verify_exhausted?(state) ->
         {:verify_failed, exhausted_verify_lenses(state)}
 
@@ -3517,6 +3771,13 @@ defmodule JidoClaw.RouteComposer do
       true ->
         {:budget_exhausted, budget_reason(state)}
     end
+  end
+
+  # The stages whose infra count tripped the cap — sorted for a deterministic
+  # terminal error string.
+  defp infra_exhausted_stages(state) do
+    for({stage, count} <- state.infra_counts, count > state.infra_cap, do: stage)
+    |> Enum.sort()
   end
 
   defp verify_exhausted?(state), do: exhausted_verify_lenses(state) != []

@@ -108,7 +108,8 @@ defmodule JidoClaw.Trace.Collector do
     [:jido_claw, :output, :event],
     [:jido_claw, :schedule, :event],
     [:jido_claw, :compaction, :event],
-    [:jido_claw, :reasoning, :event]
+    [:jido_claw, :reasoning, :event],
+    [:jido_claw, :composer, :event]
   ]
 
   defstruct enabled?: true,

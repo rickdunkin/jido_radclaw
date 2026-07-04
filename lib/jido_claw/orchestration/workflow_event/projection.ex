@@ -38,14 +38,20 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     :route_failed
   ]
   @route_cancelled_kinds [:route_rejected, :route_abandoned]
-  # AR-8c `:route_verify_failed` and AR-4 `:route_fix_failed` are status-authority
-  # TERMINALS (they must fold into the status column), but they are deliberately
-  # kept OUT of `@route_failed_kinds` and `@route_cancelled_kinds` — those drive the
-  # guard clauses in `next_status`/`status_attrs`, and membership there would shadow
-  # the explicit `:route_verify_failed` / `:route_fix_failed` clauses (which lift
-  # BOTH `error` and the `result.disposition`, a `:failed`-with-result combination
-  # neither family does).
-  @route_terminal_kinds [:route_converged, :route_verify_failed, :route_fix_failed] ++
+  # AR-8c `:route_verify_failed`, AR-4 `:route_fix_failed`, and camus C1-3
+  # `:route_review_infra_failed` are status-authority TERMINALS (they must fold
+  # into the status column), but they are deliberately kept OUT of
+  # `@route_failed_kinds` and `@route_cancelled_kinds` — those drive the guard
+  # clauses in `next_status`/`status_attrs`, and membership there would shadow
+  # the explicit per-kind clauses (which lift BOTH `error` and the
+  # `result.disposition`, a `:failed`-with-result combination neither family
+  # does).
+  @route_terminal_kinds [
+                          :route_converged,
+                          :route_verify_failed,
+                          :route_fix_failed,
+                          :route_review_infra_failed
+                        ] ++
                           @route_failed_kinds ++ @route_cancelled_kinds
 
   # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
@@ -146,6 +152,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # from `@route_failed_kinds` (which would shadow the disposition-lifting clause).
   def next_status(status, :route_fix_failed) when status in @non_terminal, do: {:ok, :failed}
 
+  # Camus C1-3: a review-infra-failed run projects onto `:failed`, from any
+  # non-terminal. An explicit clause for the same shadowing reason as its two
+  # disposition-lifting siblings above.
+  def next_status(status, :route_review_infra_failed) when status in @non_terminal,
+    do: {:ok, :failed}
+
   def next_status(status, kind) when status in @non_terminal and kind in @route_failed_kinds,
     do: {:ok, :failed}
 
@@ -224,6 +236,9 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def status_attrs(:route_fix_failed, payload, occurred_at),
     do: terminal_lifting_error_and_result(:failed, payload, occurred_at)
 
+  def status_attrs(:route_review_infra_failed, payload, occurred_at),
+    do: terminal_lifting_error_and_result(:failed, payload, occurred_at)
+
   def status_attrs(kind, payload, occurred_at) when kind in @route_failed_kinds,
     do: terminal_lifting_error(:failed, payload, occurred_at)
 
@@ -252,10 +267,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     }
   end
 
-  # AR-8c / AR-4 — `:failed` lifting BOTH `error` and `result` (the disposition).
-  # The verify-failed AND fix-failed terminals share this exact shape (single-
-  # sourced, not cloned): the error string is the (scrubbable) findings-derived
-  # reason, the result the non-sensitive disposition marker.
+  # AR-8c / AR-4 / camus C1-3 — `:failed` lifting BOTH `error` and `result` (the
+  # disposition). The verify-failed, fix-failed, AND review-infra-failed terminals
+  # share this exact shape (single-sourced, not cloned): the error string is the
+  # (scrubbable) reason, the result the non-sensitive disposition marker.
   defp terminal_lifting_error_and_result(status, payload, occurred_at) do
     %{
       status: status,

@@ -237,10 +237,13 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     * `system_verifier` (AR-8c) — **counter-driven**: `request_changes` (→
       `findings:system`) for the first `:route_composer_system_verify_fails`
       invocations (default 1), then `approve` (→ `clean:system`).
-    * `reviewer` (AR-4) — **per-lens** verdict, deterministic and race-free: the
-      lens is derived from the reviewer's task (it names its `clean:<lens>`
-      target), and a per-lens counter + the `:route_composer_review_flag_on`
-      config (`%{lens => [call_numbers] | :always}`) decide flag-vs-clean — so two
+    * `reviewer` (AR-4 + camus C1-3) — **per-lens** outcome, deterministic and
+      race-free: the lens is derived from the reviewer's task (it names its
+      `clean:<lens>` target), and a per-lens counter + three env knobs (each
+      `%{lens => [call_numbers] | :always}`) decide the outcome —
+      `:route_composer_review_error_on` (the whole wave fails, Lane B),
+      `:route_composer_review_infra_on` (a drifted out-of-enum verdict, Lane A),
+      `:route_composer_review_flag_on` (a real findings verdict) — so two
       same-template reviewers in one parallel wave never race a shared counter.
     * `fixer` (AR-4) — emits `code-written` + `auth-surface` (re-firing the
       touched lenses AND summoning the never-run `security` lens) and produces the
@@ -264,11 +267,20 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     tool_context = Keyword.fetch!(opts, :tool_context)
     template = Map.fetch!(tool_context, :agent_template)
 
-    StubStore.put(request_id, %{
-      status: :completed,
-      result: output_for(template, task),
-      meta: %{output: %{status: :validated, schema_kind: :map}}
-    })
+    case output_for(template, task) do
+      # Camus C1-3 Lane B driver: store NOTHING — `StubAgentServer` then
+      # answers `status: :failed`, the wave reactor fails, and the composer
+      # takes the wave-error path.
+      :wave_error ->
+        :ok
+
+      typed ->
+        StubStore.put(request_id, %{
+          status: :completed,
+          result: typed,
+          meta: %{output: %{status: :validated, schema_kind: :map}}
+        })
+    end
 
     {:ok, %{id: request_id}}
   end
@@ -304,16 +316,29 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     end
   end
 
-  # AR-4: a forward-lens reviewer. The lens comes from the task; the per-lens
-  # counter + `:route_composer_review_flag_on` decide the verdict (race-free —
-  # each lens has its own counter, each reviewer stage names a distinct lens).
+  # AR-4 / camus C1-3: a forward-lens reviewer. The lens comes from the task;
+  # the per-lens counter + the three env knobs decide the outcome (race-free —
+  # each lens has its own counter, each reviewer stage names a distinct lens):
+  # `:route_composer_review_error_on` (Lane B — the whole wave fails),
+  # `:route_composer_review_infra_on` (Lane A — a drifted out-of-enum verdict),
+  # then `:route_composer_review_flag_on` (a real findings verdict).
   defp output_for("reviewer", task) do
     lens = lens_from_task(task)
     n = StubStore.bump({:reviewer_calls, lens})
 
-    if review_flag?(lens, n),
-      do: TestFixtures.phase1_findings_reviewer(),
-      else: TestFixtures.phase1_clean_reviewer()
+    cond do
+      driven_call?(:route_composer_review_error_on, lens, n) ->
+        :wave_error
+
+      driven_call?(:route_composer_review_infra_on, lens, n) ->
+        TestFixtures.phase1_infra_reviewer()
+
+      driven_call?(:route_composer_review_flag_on, lens, n) ->
+        TestFixtures.phase1_findings_reviewer()
+
+      true ->
+        TestFixtures.phase1_clean_reviewer()
+    end
   end
 
   # AR-4: the self-heal fixer. By default emits `code-written` (re-fire the quality +
@@ -351,10 +376,10 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     end
   end
 
-  # `:route_composer_review_flag_on` is `%{lens => [call_numbers] | :always}`; a
-  # lens absent from the map never flags (always clean).
-  defp review_flag?(lens, n) do
-    case Map.get(Application.get_env(:jido_claw, :route_composer_review_flag_on, %{}), lens) do
+  # Each knob is `%{lens => [call_numbers] | :always}`; a lens absent from the
+  # map is never driven by that knob.
+  defp driven_call?(env_key, lens, n) do
+    case Map.get(Application.get_env(:jido_claw, env_key, %{}), lens) do
       :always -> true
       calls when is_list(calls) -> n in calls
       _ -> false

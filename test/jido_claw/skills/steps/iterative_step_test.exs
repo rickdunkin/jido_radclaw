@@ -1,9 +1,12 @@
 defmodule JidoClaw.Skills.Steps.IterativeStepTest do
   @moduledoc """
   Tests the generator/evaluator loop ported from the retired
-  `IterativeWorkflow`: the pure `parse_verdict/1`, `extract_roles/1`, and
-  `cap_result/2`, plus the live loop driven by EchoStub/PassStub agents (a
-  failing evaluator runs to `max_iterations`, a passing one stops early).
+  `IterativeWorkflow`: the pure `extract_roles/1` and `cap_result/2`, plus the
+  live loop driven by stub agents (a FAIL-verdict evaluator runs to
+  `max_iterations`, a passing one stops early, and a garbled/tokenless one is
+  an INFRA input — retried in place on the `infra_retries` budget, never a
+  burned iteration; camus C1-3). Verdict parsing itself lives in
+  `JidoClaw.Orchestration.Verdict.IterativeEval` (see `verdict_test.exs`).
 
   The loop tests pass a Reactor context **without** `session_uuid`, so
   `AgentRunner` performs no durable writes — no sandbox needed.
@@ -11,32 +14,8 @@ defmodule JidoClaw.Skills.Steps.IterativeStepTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.Skills.Steps.IterativeStep
-  alias JidoClaw.Test.{EchoStub, PassStub}
+  alias JidoClaw.Test.{EchoStub, FailStub, PassStub}
   alias JidoClaw.Workflows.StepResult
-
-  describe "parse_verdict/1" do
-    test "parses VERDICT: PASS / FAIL (case-insensitive, last wins)" do
-      assert IterativeStep.parse_verdict("All good. VERDICT: PASS") == :pass
-      assert IterativeStep.parse_verdict("verdict: pass") == :pass
-      assert IterativeStep.parse_verdict("Found issues. VERDICT: FAIL") == :fail
-      assert IterativeStep.parse_verdict("VERDICT: FAIL\nActually VERDICT: PASS") == :pass
-      assert IterativeStep.parse_verdict("To get VERDICT: PASS, fix X. VERDICT: FAIL") == :fail
-    end
-
-    test "defaults to :fail for no verdict / empty / nil" do
-      assert IterativeStep.parse_verdict("nothing here") == :fail
-      assert IterativeStep.parse_verdict("") == :fail
-      assert IterativeStep.parse_verdict(nil) == :fail
-    end
-
-    test "accepts typed verdict maps (atom and string keyed)" do
-      assert IterativeStep.parse_verdict(%{verdict: :pass}) == :pass
-      assert IterativeStep.parse_verdict(%{verdict: :fail}) == :fail
-      assert IterativeStep.parse_verdict(%{"verdict" => "pass"}) == :pass
-      assert IterativeStep.parse_verdict(%{"verdict" => "fail"}) == :fail
-      assert IterativeStep.parse_verdict(%{verdict: :unknown}) == :fail
-    end
-  end
 
   describe "extract_roles/1" do
     test "extracts generator and evaluator by role" do
@@ -119,7 +98,10 @@ defmodule JidoClaw.Skills.Steps.IterativeStepTest do
 
       Application.put_env(:jido_claw, :agent_templates_override, %{
         "gen" => template(EchoStub),
-        "eval_fail" => template(EchoStub),
+        # A REAL failing verdict (VERDICT: FAIL) — EchoStub's tokenless
+        # "echoed" is an *infra* input under the camus C1-3 contract.
+        "eval_fail" => template(FailStub),
+        "eval_infra" => template(EchoStub),
         "eval_pass" => template(PassStub)
       })
 
@@ -161,6 +143,32 @@ defmodule JidoClaw.Skills.Steps.IterativeStepTest do
       assert eval.result =~ "VERDICT: PASS"
       # One iteration only: gen + eval = 2 spawns.
       assert capture_count(2) == 2
+      refute_received {:echo_stub, :tool_context, _}
+    end
+
+    # Camus C1-3 — the named live bug: an evaluator that emits NO verdict token
+    # used to parse as `:fail` and burn an iteration exactly like a real fail
+    # (the "#1 cause of runaway loops"). Under the normalizer it is INFRA:
+    # re-run the EVALUATOR ONLY (same iteration, same generator output) on the
+    # separate `infra_retries` budget, then a terminal error — never `{:ok, _}`,
+    # never a second generator turn.
+    test "an evaluator with no verdict token is infra — retried in place, never iterated" do
+      options = [
+        generator: role("implement", "gen", "generator"),
+        evaluator: role("verify", "eval_infra", "evaluator"),
+        max_iterations: 5,
+        infra_retries: 2
+      ]
+
+      assert {:error, message} =
+               IterativeStep.run(%{extra_context: ""}, no_db_context(), options)
+
+      assert message =~ "Evaluator infra failure after 2 retries"
+      assert message =~ "no_verdict_token"
+
+      # Generator ran ONCE; evaluator ran 1 + infra_retries = 3 times → exactly
+      # 4 spawns (an iterated loop would have re-run the generator too).
+      assert capture_count(4) == 4
       refute_received {:echo_stub, :tool_context, _}
     end
   end

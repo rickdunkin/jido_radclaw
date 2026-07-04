@@ -253,6 +253,20 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       "findings" => []
     }
 
+  @doc """
+  Canned reviewer typed output — INFRA (camus C1-3): the `overall` drifted out
+  of enum, so the normalizer refuses it (`{:infra, {:invalid_overall, _}}`)
+  rather than folding it as a verdict.
+  """
+  @spec phase1_infra_reviewer() :: %{String.t() => term()}
+  def phase1_infra_reviewer,
+    do: %{
+      "overall" => "maybe",
+      "summary" => "the judge drifted out of enum",
+      "action_needed" => "n/a",
+      "findings" => []
+    }
+
   @doc "Canned reviewer typed output — findings (request_changes)."
   @spec phase1_findings_reviewer() :: %{String.t() => term()}
   def phase1_findings_reviewer do

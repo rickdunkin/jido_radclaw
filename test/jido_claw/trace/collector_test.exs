@@ -65,6 +65,53 @@ defmodule JidoClaw.Trace.CollectorTest do
     end
   end
 
+  describe "composer trace channel (camus C1-3 post-review P2)" do
+    test "[:jido_claw, :composer, :event] is attached and a review_infra emit is retrievable by tenant" do
+      # The direct pin of the missed attach: the collector must subscribe the
+      # composer channel (pre-fix @jido_claw_events had no :composer entry and
+      # every composer trace event was silently dropped).
+      assert :telemetry.list_handlers([:jido_claw, :composer, :event]) != []
+
+      # End-to-end through the production emit shape (route_composer.ex
+      # `emit_infra_observability/3`, incl. the tenant_id stamp that makes the
+      # per-run timeline reachable via `Trace.list({:tenant, …})` — the by_run
+      # index has no public reader). Unique ids keep this collision-proof
+      # against prior in-memory entries from other trace tests.
+      tenant_id = "composer-tenant-#{System.unique_integer([:positive])}"
+      run_id = "composer-run-#{System.unique_integer([:positive])}"
+
+      Trace.emit(
+        :composer,
+        %{
+          event: :review_infra,
+          run_id: run_id,
+          parent_run_id: run_id,
+          stage: "quality-reviewer",
+          reason: "wave_execution_failed: observe timeout",
+          wave_index: 0,
+          lane: :output,
+          tenant_id: tenant_id
+        },
+        %{count: 1}
+      )
+
+      :ok = H.sync_collector()
+
+      assert {:ok, traces} = Trace.list({:tenant, tenant_id})
+
+      found =
+        traces
+        |> Enum.flat_map(& &1.events)
+        |> Enum.filter(
+          &(&1.category == :composer and &1.event == :review_infra and &1.run_id == run_id)
+        )
+
+      assert [_event] = found
+      # The trace carrying the event is tenant-stamped (the reachability fix).
+      assert Enum.all?(traces, &(&1.tenant_id == tenant_id))
+    end
+  end
+
   describe "robustness" do
     test "handles missing optional metadata fields without crashing" do
       :telemetry.execute([:jido, :ai, :request, :start], %{}, %{})

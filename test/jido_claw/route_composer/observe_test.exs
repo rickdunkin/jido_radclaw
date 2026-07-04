@@ -79,6 +79,45 @@ defmodule JidoClaw.RouteComposer.ObserveTest do
       assert Observe.summarize(events).wave_in_flight == false
     end
 
+    # Camus C1-3: a `closed_wave_index`-bearing event CLOSES a wave that
+    # deliberately never wrote `wave_completed` (`stage_infra` from the
+    # wave-error lane; `stages_invalidated` from the reject-parked-gate path).
+    # Without this a lane-B wave — including a terminal `review_infra_failed`
+    # run — would read as in-flight forever. `stage_infra` never touches `ran`.
+    test "wave_in_flight false when a stage_infra closes the wave via closed_wave_index" do
+      events = [
+        event(:route_composed, %{route: ["quality-reviewer"]}, 1),
+        event(:wave_started, %{wave_index: 0, stages: ["quality-reviewer"]}, 2),
+        event(:stage_infra, %{stages: ["quality-reviewer"], closed_wave_index: 0}, 3)
+      ]
+
+      summary = Observe.summarize(events)
+      assert summary.wave_in_flight == false
+      assert summary.ran == []
+    end
+
+    test "wave_in_flight false when a stages_invalidated closes the wave (string-keyed)" do
+      events = [
+        event(:route_composed, %{"route" => ["plan-gate"]}, 1),
+        event(:wave_started, %{"wave_index" => 1, "stages" => ["plan-gate"]}, 2),
+        event(:stages_invalidated, %{"stages" => ["planner"], "closed_wave_index" => 1}, 3)
+      ]
+
+      assert Observe.summarize(events).wave_in_flight == false
+    end
+
+    test "a Lane A stage_infra (no closed_wave_index) does NOT close the wave" do
+      # Lane A's marker rides the same commit as its wave_completed; a synthetic
+      # log with only the marker must not read the wave as closed.
+      events = [
+        event(:route_composed, %{route: ["quality-reviewer"]}, 1),
+        event(:wave_started, %{wave_index: 0, stages: ["quality-reviewer"]}, 2),
+        event(:stage_infra, %{stages: ["quality-reviewer"]}, 3)
+      ]
+
+      assert Observe.summarize(events).wave_in_flight == true
+    end
+
     test "wave_in_flight TRUE for a parked gate even with NO wave_paused recorded" do
       # The reviewer's non-load-bearing case: a gate wave started (index 1) with
       # no wave_completed(1) and deliberately NO wave_paused — wave_in_flight is

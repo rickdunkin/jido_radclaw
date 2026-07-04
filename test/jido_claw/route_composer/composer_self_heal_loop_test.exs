@@ -42,6 +42,8 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
       Application.delete_env(:jido_claw, :agent_templates_override)
       Application.delete_env(:jido_claw, :route_composer_stub_outputs)
       Application.delete_env(:jido_claw, :route_composer_review_flag_on)
+      Application.delete_env(:jido_claw, :route_composer_review_infra_on)
+      Application.delete_env(:jido_claw, :route_composer_review_error_on)
       Application.delete_env(:jido_claw, :route_composer_fixer_signals)
 
       case previous_server do
@@ -250,6 +252,144 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
     end
   end
 
+  describe "camus C1-3 Lane A: a judge's unusable verdict rides the infra budget" do
+    test "infra × 2 then clean → :converged; infra never consumed the fix budget", ctx do
+      # quality's overall drifts out of enum on its first two calls, then a
+      # clean approve on the third. Default infra_cap 2 → 3 attempts, camus's
+      # INFRA_RETRIES. Pre-fix, the drifted verdict fell through as a silent
+      # empty emission: the lens never went clean and the run mis-terminalized
+      # :not_converged.
+      Application.put_env(:jido_claw, :route_composer_review_infra_on, %{"quality" => [1, 2]})
+
+      assert {:ok, summary} = run(ctx)
+      assert summary.terminal == :converged
+      assert MapSet.member?(summary.final_live, "clean:quality")
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_converged in ks
+
+      # Two stage_infra events (one per unusable verdict), each naming ONLY the
+      # infra'd stage, with NO closed_wave_index (Lane A — the wave itself
+      # completed) and NO reason in the durable payload (redaction posture).
+      infra_events = events(summary.parent_run_id, ctx, :stage_infra)
+      assert [_, _] = infra_events
+
+      for e <- infra_events do
+        assert e.payload["stages"] == ["quality-reviewer"]
+        refute Map.has_key?(e.payload, "closed_wave_index")
+        refute Map.has_key?(e.payload, "reason")
+      end
+
+      # rerun_counts untouched: no findings ever emitted, so the fix loop's
+      # budget never moved (no stages_invalidated markers at all).
+      refute :stages_invalidated in ks
+    end
+
+    test "infra :always at infra_cap: 1 → :review_infra_failed (never :fix_failed)", ctx do
+      Application.put_env(:jido_claw, :route_composer_review_infra_on, %{"quality" => :always})
+
+      assert {:ok, summary} = run(ctx, infra_cap: 1)
+      assert summary.terminal == :review_infra_failed
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_review_infra_failed in ks
+      refute :route_fix_failed in ks
+      refute :route_budget_exhausted in ks
+
+      parent = reload(summary.parent_run_id, ctx)
+      assert parent.status == :failed
+      assert parent.result["disposition"] == "review_infra_failed"
+      assert String.starts_with?(parent.error, "review_infra_failed: stages=quality-reviewer")
+    end
+  end
+
+  describe "camus C1-3 Lane B: a lens-only wave execution error rides the infra budget" do
+    test "one failed lens wave → infra retry (fresh key) → :converged", ctx do
+      # quality's FIRST call sinks the whole reviewer wave (no canned output →
+      # the wave reactor fails); the retry wave re-offers both reviewers and
+      # both come back clean.
+      Application.put_env(:jido_claw, :route_composer_review_error_on, %{"quality" => [1]})
+
+      assert {:ok, summary} = run(ctx)
+      assert summary.terminal == :converged
+      assert MapSet.member?(summary.final_live, "clean:quality")
+      assert MapSet.member?(summary.final_live, "clean:correctness")
+
+      # ONE stage_infra event for the failed wave, naming the WHOLE dispatched
+      # cohort, WITH closed_wave_index (the failed wave never wrote
+      # wave_completed — without it a restart would dedupe onto the failed
+      # child). Convergence past it proves the retry ran under a fresh
+      # idempotency key rather than deduping onto the failed child.
+      assert [infra] = events(summary.parent_run_id, ctx, :stage_infra)
+
+      assert Enum.sort(infra.payload["stages"]) == [
+               "correctness-reviewer",
+               "quality-reviewer"
+             ]
+
+      assert is_integer(infra.payload["closed_wave_index"])
+    end
+
+    test "lens-only wave errors past infra_cap → :review_infra_failed", ctx do
+      Application.put_env(:jido_claw, :route_composer_review_error_on, %{"quality" => :always})
+
+      assert {:ok, summary} = run(ctx, infra_cap: 1)
+      assert summary.terminal == :review_infra_failed
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_review_infra_failed in ks
+      refute :route_failed in ks
+
+      parent = reload(summary.parent_run_id, ctx)
+      assert parent.status == :failed
+      assert parent.result["disposition"] == "review_infra_failed"
+      assert String.starts_with?(parent.error, "review_infra_failed: stages=")
+    end
+
+    test "a mixed (lens + producer) cohort's wave error keeps today's :route_failed", ctx do
+      # An early reviewer that subscribes plan-ready lands in the SAME Kahn
+      # level as the implementer → a genuinely mixed cohort. The implementer's
+      # :wave_error sinks that wave; the infra lane must NOT claim it.
+      early_reviewer =
+        TestFixtures.stage(
+          name: "architecture-reviewer",
+          unit: {:worker_template, "reviewer"},
+          lens: "architecture",
+          task: "Review the plan early; flag findings, else emit clean:architecture.",
+          routes: ["code"],
+          sub: ["plan-ready"],
+          req: ["plan"],
+          out: ["findings", "action_needed"],
+          pub: ["clean:architecture", "findings:architecture", "scope-shift"]
+        )
+
+      catalog =
+        Map.put(TestFixtures.self_heal_fixture_catalog(), "architecture-reviewer", early_reviewer)
+
+      outputs = Map.put(TestFixtures.self_heal_stub_outputs(), "coder", :wave_error)
+      Application.put_env(:jido_claw, :route_composer_stub_outputs, outputs)
+
+      assert {:ok, summary} =
+               RouteComposer.run_sync(
+                 catalog: catalog,
+                 live: TestFixtures.self_heal_seed_live(),
+                 artifacts: TestFixtures.self_heal_seed_artifacts(),
+                 tenant: ctx.tenant,
+                 actor: actor_for(ctx.tenant),
+                 context: ctx.context,
+                 max_waves: 20,
+                 timeout: 30_000
+               )
+
+      assert summary.terminal == :failed
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_failed in ks
+      refute :stage_infra in ks
+      refute :route_review_infra_failed in ks
+    end
+  end
+
   describe "exhaustion → :route_fix_failed (the reviewers keep rejecting the fix)" do
     test "a reviewer that always rejects past the rerun cap → :route_fix_failed (NOT budget_exhausted)",
          ctx do
@@ -288,7 +428,7 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
         context: ctx.context,
         max_waves: Keyword.get(opts, :max_waves, 20),
         timeout: 30_000
-      ] ++ Keyword.take(opts, [:rerun_cap])
+      ] ++ Keyword.take(opts, [:rerun_cap, :infra_cap])
     )
   end
 

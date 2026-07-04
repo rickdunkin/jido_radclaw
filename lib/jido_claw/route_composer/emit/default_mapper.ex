@@ -17,10 +17,18 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
        `:partial`/`:completed` proceed (a `:partial` summary is real, if
        incomplete, output); reviewers (`lens` set) carry `overall`, not
        `status`, so they never match.
-    2. **Reviewer verdict** — when the typed output is reviewer-shaped (`overall
-       ∈ {approve, request_changes, comment}`): `overall == :approve` with no
-       findings emits `clean:<lens>`, else `findings:<lens>` plus a `findings`
-       artifact. A reviewer-shaped stage with no `lens` is a coherence error.
+    2. **Reviewer verdict** (camus C1-3) — dispatched on **`lens` presence, not
+       output shape** (a malformed reviewer output is still recognized as a
+       reviewer). A lens-carrying stage routes through
+       `JidoClaw.Orchestration.Verdict.normalize(:review, typed)`: a clean
+       verdict emits `clean:<lens>`, findings emit `findings:<lens>` plus a
+       `findings` artifact, and an `{:infra, _}` exit (empty/drifted/
+       self-contradicting output) becomes an emission with **no signals, no
+       artifacts, and `outcome: {:infra, reason}`** — the composer retries it
+       on the infra budget instead of folding it (never silently clean, never
+       a burned rerun). A lens-nil stage whose output is reviewer-shaped
+       (`overall ∈ {approve, request_changes, comment}`) stays a coherence
+       error.
     3. **Explicit signals** — the producer's declared emitted-signal list under
        `typed_output[:signals]` / `typed_output["signals"]` (the Phase-1 `:default`
        convention for non-reviewer producers).
@@ -39,6 +47,9 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   """
 
   alias JidoClaw.Orchestration.ComposerArtifact.Envelope
+  # The orchestration normalizer — NOT JidoClaw.Triage.Verdict (different
+  # subsystem; never alias both in one module).
+  alias JidoClaw.Orchestration.Verdict
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.Workflows.StepResult
 
@@ -62,9 +73,22 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
     typed = result.typed_output || %{}
 
     with :ok <- refuse_blocked_producer(typed, meta),
-         {:ok, {verdict_signals, verdict_artifacts}} <- verdict(typed, meta),
-         signals = Enum.uniq(verdict_signals ++ explicit_signals(typed)),
-         :ok <- validate_publishes(signals, meta) do
+         {:ok, {verdict_signals, verdict_artifacts, outcome}} <- verdict(typed, meta) do
+      build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, outcome)
+    end
+  end
+
+  # An infra outcome suppresses explicit signals AND output artifacts — the
+  # judge produced no usable verdict, so nothing it "said" may enter the fold;
+  # the emission carries only the outcome for the composer's infra lane.
+  defp build_emission(_result, _typed, meta, _verdict, {:infra, _reason} = outcome) do
+    {:ok, %StageEmission{stage: meta.name, signals: [], artifacts: %{}, outcome: outcome}}
+  end
+
+  defp build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, :ok) do
+    signals = Enum.uniq(verdict_signals ++ explicit_signals(typed))
+
+    with :ok <- validate_publishes(signals, meta) do
       artifacts = Map.merge(verdict_artifacts, output_artifacts(result, typed, meta))
       {:ok, %StageEmission{stage: meta.name, signals: signals, artifacts: artifacts}}
     end
@@ -93,37 +117,37 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   defp refuse_blocked_producer(_typed, _meta), do: :ok
 
   # ---------------------------------------------------------------------------
-  # 1. Reviewer verdict
+  # 1. Reviewer verdict (camus C1-3 — dispatch on lens presence, never shape)
   # ---------------------------------------------------------------------------
 
-  defp verdict(typed, meta) do
-    overall = overall(typed)
+  # A lens-carrying stage IS a reviewer, whatever its output looks like: route
+  # the typed output through the normalizer. `{:infra, _}` (and the defensive
+  # `{:inconclusive, _}` — no producer yet) becomes the emission's outcome with
+  # a bounded, formatted reason; the old shape-dispatch let a drifted `overall`
+  # fall through as a silent empty emission that never went clean.
+  defp verdict(typed, %{lens: lens}) when is_binary(lens) do
+    case Verdict.normalize(:review, typed) do
+      {:verdict, %Verdict{clean?: true}} ->
+        {:ok, {["clean:#{lens}"], %{}, :ok}}
 
-    if overall in @verdicts do
-      reviewer_verdict(overall, typed, meta)
-    else
-      {:ok, {[], %{}}}
+      {:verdict, %Verdict{findings: findings}} ->
+        {:ok, {["findings:#{lens}"], %{"findings" => coerce(findings)}, :ok}}
+
+      {infra_or_inconclusive, reason}
+      when infra_or_inconclusive in [:infra, :inconclusive] ->
+        {:ok, {[], %{}, {:infra, Verdict.format_reason(reason)}}}
     end
   end
 
-  defp reviewer_verdict(overall, typed, %{lens: lens} = _meta) when is_binary(lens) do
-    if approve?(overall) and findings_empty?(typed) do
-      {:ok, {["clean:#{lens}"], %{}}}
+  # A lens-nil stage with a reviewer-shaped output is a coherence error; any
+  # other producer output passes through untouched (never the normalizer).
+  defp verdict(typed, %{lens: nil, name: name}) do
+    if known(typed, :overall, "overall") in @verdicts do
+      {:error, {:reviewer_without_lens, name}}
     else
-      {:ok, {["findings:#{lens}"], %{"findings" => coerce(findings(typed))}}}
+      {:ok, {[], %{}, :ok}}
     end
   end
-
-  defp reviewer_verdict(_overall, _typed, %{name: name}),
-    do: {:error, {:reviewer_without_lens, name}}
-
-  defp overall(typed), do: known(typed, :overall, "overall")
-
-  defp approve?(overall), do: overall in [:approve, "approve"]
-
-  defp findings(typed), do: known(typed, :findings, "findings") || []
-
-  defp findings_empty?(typed), do: findings(typed) == []
 
   # ---------------------------------------------------------------------------
   # 2. Explicit signals

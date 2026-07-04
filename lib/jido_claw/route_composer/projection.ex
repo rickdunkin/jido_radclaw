@@ -44,9 +44,13 @@ defmodule JidoClaw.RouteComposer.Projection do
   `signals_published`/`signals_retracted` (→ `live` union/difference),
   `artifacts_produced` (→ tagged store insert), `artifacts_invalidated` (→ store
   delete), `wave_paused`/`wave_resumed` (gate lifecycle provenance — no routing
-  effect), and `stages_invalidated` (Phase 4e rerun primitive → `ran` difference,
-  an optional `closed_wave_index` advance, + a per-stage `rerun_counts` increment).
-  Genesis, terminals, and any non-composer kind fold as no-ops.
+  effect), `stages_invalidated` (Phase 4e rerun primitive → `ran` difference,
+  an optional `closed_wave_index` advance, + a per-stage `rerun_counts`
+  increment), and `stage_infra` (camus C1-3 → a per-stage `infra_counts`
+  increment + the same optional `closed_wave_index` advance; **never touches
+  `ran`** — an infra'd stage was never folded, so its publishes stay unsatisfied
+  and the next tick re-offers it). Genesis, terminals, and any non-composer kind
+  fold as no-ops.
 
   ## Tolerant payload access
 
@@ -150,12 +154,20 @@ defmodule JidoClaw.RouteComposer.Projection do
         wave_index: advance_on_invalidation(state.wave_index, payload)
     }
 
-    Map.update(
-      base,
-      :rerun_counts,
-      bump_rerun_counts(%{}, stages),
-      &bump_rerun_counts(&1, stages)
-    )
+    bump_counts(base, :rerun_counts, stages)
+  end
+
+  # Per-stage infra tally (camus C1-3): a judge that produced no usable verdict.
+  # Bumps `infra_counts` (tolerantly, like `rerun_counts`) and honors the same
+  # OPTIONAL `closed_wave_index` advance as `stages_invalidated` — set by the
+  # wave-error lane (the failed wave never wrote `wave_completed`, so without it
+  # a restart would rebuild the old `wave_index` and the relaunch would dedupe
+  # onto the failed child); the output-boundary lane omits it (its
+  # `wave_completed` already advanced the index). NEVER touches `ran` — the
+  # infra'd stage was never folded, so the next tick re-offers it naturally.
+  defp apply_event(%{kind: :stage_infra, payload: payload}, state) do
+    base = %{state | wave_index: advance_on_invalidation(state.wave_index, payload)}
+    bump_counts(base, :infra_counts, EventPayload.list(payload, :stages))
   end
 
   # Gate lifecycle markers (Phase 4 producers): provenance only — no routing
@@ -196,7 +208,14 @@ defmodule JidoClaw.RouteComposer.Projection do
     end
   end
 
-  defp bump_rerun_counts(counts, stages) do
+  # Tolerant per-stage counter bump under `key` (`:rerun_counts` /
+  # `:infra_counts`) — added via `Map.update` because a synthetic-log test seed
+  # may omit the counts map entirely.
+  defp bump_counts(state, key, stages) do
+    Map.update(state, key, bump_stage_counts(%{}, stages), &bump_stage_counts(&1, stages))
+  end
+
+  defp bump_stage_counts(counts, stages) do
     Enum.reduce(stages, counts, fn stage, acc -> Map.update(acc, stage, 1, &(&1 + 1)) end)
   end
 

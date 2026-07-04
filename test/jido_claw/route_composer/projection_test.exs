@@ -183,6 +183,47 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
       assert result.rerun_counts == %{"planner" => 2, "plan-gate" => 1}
     end
 
+    # Camus C1-3: the infra tally fold. Never touches `ran` (the infra'd stage
+    # was never folded), bumps `infra_counts` per stage, and honors the same
+    # optional `closed_wave_index` advance as `stages_invalidated`.
+    test "stage_infra bumps infra_counts and leaves ran + rerun_counts alone" do
+      s = seed(%{ran: MapSet.new(["planner"]), rerun_counts: %{}, infra_counts: %{}})
+
+      result =
+        Projection.project(s, [
+          event(:stage_infra, %{stages: ["quality-reviewer"]}, 1),
+          event(:stage_infra, %{"stages" => ["quality-reviewer", "risk-reviewer"]}, 2)
+        ])
+
+      assert result.infra_counts == %{"quality-reviewer" => 2, "risk-reviewer" => 1}
+      assert MapSet.equal?(result.ran, MapSet.new(["planner"]))
+      assert result.rerun_counts == %{}
+    end
+
+    test "stage_infra advances wave_index ONLY when closed_wave_index is present (max-idempotent)" do
+      s = seed(%{wave_index: 1, infra_counts: %{}})
+
+      advanced =
+        Projection.project(s, [
+          event(:stage_infra, %{stages: ["quality-reviewer"], closed_wave_index: 1}, 1),
+          # A benign replay of the same closed index is idempotent (max).
+          event(:stage_infra, %{stages: ["quality-reviewer"], closed_wave_index: 1}, 2)
+        ])
+
+      assert advanced.wave_index == 2
+      assert advanced.infra_counts == %{"quality-reviewer" => 2}
+
+      unchanged =
+        Projection.project(s, [event(:stage_infra, %{stages: ["quality-reviewer"]}, 1)])
+
+      assert unchanged.wave_index == 1
+    end
+
+    test "stage_infra tolerates a seed with no infra_counts key (synthetic logs)" do
+      result = Projection.project(seed(), [event(:stage_infra, %{stages: ["r"]}, 1)])
+      assert result.infra_counts == %{"r" => 1}
+    end
+
     test "a retracted plan-approved + invalidated stages stay gone across the rebuild (4e)" do
       # The stale-approval shape: publish then retract plan-approved, invalidate the
       # planner+plan-gate. project(seed, log) is the NET state — nothing resurrected.

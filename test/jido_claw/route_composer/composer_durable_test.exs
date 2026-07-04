@@ -71,6 +71,7 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       Application.delete_env(:jido_claw, :route_composer_stub_outputs)
       Application.delete_env(:jido_claw, :route_composer_gate_armed)
       Application.delete_env(:jido_claw, :route_composer_gate_pid)
+      Application.delete_env(:jido_claw, :route_composer_review_error_on)
 
       case previous_server do
         nil -> Application.delete_env(:jido_claw, :step_agent_server)
@@ -1304,6 +1305,233 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
     end
   end
 
+  describe "camus C1-3 durable infra (crash recovery)" do
+    test "infra_counts are rebuilt from the stage_infra log (terminal-trip proof)", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx)
+
+      # Three durable stage_infra events (Lane A shape — no closed_wave_index)
+      # push the count past the DEFAULT cap (3 > 2). If the rebuild dropped
+      # them, the relaunched run would simply converge.
+      for _ <- 1..3 do
+        {:ok, _} = append_event(parent, :stage_infra, %{stages: ["quality-reviewer"]}, ctx)
+      end
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+
+      assert :route_review_infra_failed in kinds(parent.id, ctx)
+      reloaded = reload(parent.id, ctx)
+      assert reloaded.result["disposition"] == "review_infra_failed"
+      assert String.starts_with?(reloaded.error, "review_infra_failed: stages=quality-reviewer")
+    end
+
+    test "infra_cap: 1 survives restart via parent config (not reset to default)", ctx do
+      converging_outputs()
+      parent = recoverable_parent(ctx, infra_cap: 1)
+
+      # TWO events: under the DEFAULT cap (2 > 2 is false) the relaunched run
+      # would converge — tripping proves build_start_opts restored the
+      # persisted cap, not the default.
+      for _ <- 1..2 do
+        {:ok, _} = append_event(parent, :stage_infra, %{stages: ["quality-reviewer"]}, ctx)
+      end
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+      assert :route_review_infra_failed in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).result["disposition"] == "review_infra_failed"
+    end
+
+    test "lane B: closed_wave_index advances the rebuilt wave_index past the failed wave", ctx do
+      arm_lens_first_worker()
+      parent = lens_first_recoverable_parent(ctx)
+
+      # The crash-AFTER-append shape: the lens wave failed, stage_infra (WITH
+      # closed_wave_index) committed, then the composer died. The rebuild must
+      # advance past wave 0 so the retry launches a FRESH child — deduping onto
+      # the failed child would re-observe a corpse.
+      append_wave_started(parent, 0, ["quality-reviewer"], ctx)
+      failed = craft_child(parent, ctx, 0, :running)
+
+      {:ok, _} =
+        append_event(
+          parent,
+          :stage_infra,
+          %{stages: ["quality-reviewer"], closed_wave_index: 0},
+          ctx
+        )
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+      assert :route_converged in kinds(parent.id, ctx)
+
+      # The old wave-0 child is a stranded corpse; the retry ran at wave 1.
+      assert reload(failed.id, ctx).status == :failed
+      assert wave_children(parent, ctx, 1) != []
+
+      # Exactly the one pre-crash marker — the fresh-key retry never
+      # re-observed the failed child, so nothing double-counted.
+      assert Enum.count(kinds(parent.id, ctx), &(&1 == :stage_infra)) == 1
+    end
+
+    test "P1: a failed child at the current key with NO stage_infra yet is counted by the dedupe arm",
+         ctx do
+      arm_lens_first_worker()
+      # Every retry wave also fails (review_error_on :always), so with the
+      # persisted infra_cap: 1 the run must end review_infra_failed — the
+      # pre-fix plain-bump arm would bypass infra_counts and end as GENERIC
+      # budget exhaustion (max_waves) instead.
+      Application.put_env(:jido_claw, :route_composer_review_error_on, %{"quality" => :always})
+      parent = lens_first_recoverable_parent(ctx, infra_cap: 1)
+
+      # Crash BEFORE stage_infra was appended: wave 0 started, child failed
+      # (stranded :running → :failed by recovery), no marker yet. The relaunch
+      # rebuilds wave_index 0 and DEDUPES onto the failed child.
+      append_wave_started(parent, 0, ["quality-reviewer"], ctx)
+      _failed = craft_child(parent, ctx, 0, :running)
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+
+      ks = kinds(parent.id, ctx)
+      assert :route_review_infra_failed in ks
+      refute :route_budget_exhausted in ks
+
+      # The dedupe arm appended the first stage_infra (closing wave 0); the
+      # live retry failure appended the second (closing wave 1) → cap trip.
+      assert Enum.count(ks, &(&1 == :stage_infra)) == 2
+
+      reloaded = reload(parent.id, ctx)
+      assert reloaded.result["disposition"] == "review_infra_failed"
+      assert String.starts_with?(reloaded.error, "review_infra_failed: stages=quality-reviewer")
+    end
+
+    # Post-review P1: the dedupe-hit OBSERVE path must ride Lane B for a
+    # lens-only cohort. A corpse child (`:running` at the wave-0 key with NO
+    # live runner) forces the observe path deterministically — nothing can
+    # complete or fail it except the observe deadline. Branch-coverage note:
+    # the observed-just-now-`:failed` branch (`{:ok, %WorkflowRun{status:
+    # :failed}}`) is the same `wave_failed` call one clause above the
+    # `{:error, …}` arm exercised here; a deterministic integration test for it
+    # would need a new production seam to order the child's failure after the
+    # dedupe read (without one it's a coin-flip which arm runs — pre-fix
+    # sometimes green — and the house rule forbids probabilistic race tests).
+    # It is covered by this test (the observe `{:error, …}` arm) plus the
+    # existing dedupe-arm test on either side of the same helper.
+    test "observe failure on a lens-only corpse child is review infra (no trustworthy verdict) — retries and converges",
+         ctx do
+      arm_lens_first_worker()
+      parent = lens_first_recoverable_parent(ctx, wave_timeout_ms: 1_000)
+
+      # The exact recoverable :running parent state, constructed deliberately
+      # (create_parent_run's genesis already appended run_started): wave 0
+      # started, corpse child at the wave-0 dedupe key, no marker yet.
+      append_wave_started(parent, 0, ["quality-reviewer"], ctx)
+      _corpse = craft_child(parent, ctx, 0, :running)
+      recovered = reload(parent.id, ctx)
+      # Pin the precondition the test rides on.
+      assert recovered.status == :running
+
+      # ensure_started, NOT reconcile_all — recovery would flip the corpse
+      # :failed and take the already-tested dedupe arm instead of observe.
+      assert {:ok, _pid} = RouteComposer.ensure_started(recovery_opts(ctx), recovered)
+
+      # Flow: rebuild sees in-flight wave 0 → re-dispatch dedupe-hits the
+      # :running corpse → observe → deadline → {:error, {:observe_timeout,
+      # :running}} → Lane B: stage_infra with closed_wave_index 0 → re-tick →
+      # wave 1 under a fresh key runs the reviewer for real → clean verdict.
+      # Pre-fix the observe error went to finish_failed → :failed/route_failed.
+      assert :completed = await_status(parent.id, ctx, :completed, 30_000)
+
+      ks = kinds(parent.id, ctx)
+      assert :route_converged in ks
+      # The observe-timeout infra closed wave 0 — exactly one marker.
+      assert Enum.count(ks, &(&1 == :stage_infra)) == 1
+      refute :route_failed in ks
+    end
+
+    # Scope pin: the P1 fix must not widen infra to producer cohorts — a
+    # producer's observe timeout is not a judge problem and stays loud. Green
+    # before and after the fix.
+    test "observe timeout on a producer-cohort corpse child stays route_failed (no infra)",
+         ctx do
+      # Phase-1 catalog: wave 0 is "planner" (lens nil — a producer cohort).
+      parent = recoverable_parent(ctx, wave_timeout_ms: 1_000)
+
+      append_wave_started(parent, 0, ["planner"], ctx)
+      _corpse = craft_child(parent, ctx, 0, :running)
+      recovered = reload(parent.id, ctx)
+      assert recovered.status == :running
+
+      assert {:ok, _pid} = RouteComposer.ensure_started(recovery_opts(ctx), recovered)
+
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+      ks = kinds(parent.id, ctx)
+      assert :route_failed in ks
+      refute :stage_infra in ks
+    end
+
+    # Post-review P2b: an `{:inconclusive, _}` emission (reserved for #5's
+    # deterministic verifier) must fold into the infra lane, not crash. Both
+    # sides of the outcome round-trip already wire it — `WaveCollect.encode_outcome/1`
+    # encodes `:inconclusive`, `StageEmission.from_map/1` decodes it across the
+    # child-`WorkflowRun.result` DB trust boundary — and `handle_wave_value/5`'s
+    # split + `infra_stages` + `infra_markers` already admit it into the infra
+    # path by stage name; only `infra_outcomes/1` pattern-matched `{:infra, _}`
+    # alone and `FunctionClauseError`ed AFTER `commit_wave` wrote the marker.
+    # `DefaultMapper` folds inconclusive→infra on the live reviewer path, so the
+    # dedupe-hit `:completed` arm (a crafted child result carrying the outcome —
+    # exactly the DB-boundary shape #5 will produce) is the deterministic way it
+    # reaches `handle_wave_value`. Driven as ONE raw `handle_continue(:tick, …)`
+    # so a post-commit crash surfaces as a synchronous raise, not a supervised
+    # restart that would recover past the failed wave and mask the bug.
+    test "an inconclusive-outcome emission is folded into the infra lane, not a post-commit crash",
+         ctx do
+      arm_lens_first_worker()
+      parent = lens_first_recoverable_parent(ctx)
+
+      # A :completed child at the wave-0 dedupe key whose durable result carries
+      # an {:inconclusive, _} outcome for the lens stage.
+      child = craft_child(parent, ctx, 0, :running)
+
+      envelope = %{
+        "wave_index" => 0,
+        "emissions" => [
+          %{
+            "stage" => "quality-reviewer",
+            "signals" => [],
+            "artifacts" => %{},
+            "outcome" => %{
+              "kind" => "inconclusive",
+              "reason" => "deterministic verifier abstained"
+            }
+          }
+        ]
+      }
+
+      {:ok, _} = append_event(child, :run_completed, %{result: envelope}, ctx)
+
+      # A raw seed tick on the lens-first catalog: wave 0 dispatches
+      # ["quality-reviewer"], dedupe-hits the completed inconclusive child,
+      # `decode_emissions` → `handle_wave_value`. Pre-fix this raises a
+      # FunctionClauseError inside `infra_outcomes/1` (post-commit); post-fix it
+      # folds the inconclusive stage as infra and continues.
+      state = loop_state(reload(parent.id, ctx), ctx, catalog: lens_first_catalog())
+
+      assert {:noreply, _next, {:continue, :tick}} =
+               RouteComposer.handle_continue(:tick, state)
+
+      # Folded into the infra lane: the durable stage_infra marker names the
+      # lens (Lane A shape), this wave's wave_completed landed, and the run
+      # never went route_failed.
+      ks = kinds(parent.id, ctx)
+      assert :stage_infra in ks
+      assert :wave_completed in ks
+      refute :route_failed in ks
+    end
+  end
+
   describe "sensitive-park deadline (O-M2)" do
     test "a marked run past its deadline auto-abandons the parked child (pending case → Cases.abandon) and terminalizes the parent",
          ctx do
@@ -1648,6 +1876,41 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
           display: []
         }
     }
+  end
+
+  # --- camus C1-3 lens-first fixtures (wave 0 IS a lens-only cohort) ---
+
+  # A minimal validator-clean catalog whose FIRST wave is a single reviewer —
+  # the shape the Lane B durable tests need at the wave-0 dedupe key.
+  defp lens_first_catalog do
+    %{
+      "quality-reviewer" =>
+        TestFixtures.stage(
+          name: "quality-reviewer",
+          unit: {:worker_template, "reviewer"},
+          lens: "quality",
+          task: "Review the request for quality; flag findings, else emit clean:quality.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["findings", "action_needed"],
+          pub: ["clean:quality", "findings:quality", "scope-shift"]
+        )
+    }
+  end
+
+  defp lens_first_recoverable_parent(ctx, extra_opts \\ []) do
+    recoverable_parent(ctx, Keyword.put(extra_opts, :catalog, lens_first_catalog()))
+  end
+
+  # The reviewer template must be the DRIVEN worker (SystemLoopWorker) so the
+  # per-lens knobs steer it; the default clean verdict needs no stub outputs.
+  defp arm_lens_first_worker do
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      TestFixtures.phase1_template_override(SystemLoopWorker)
+    )
   end
 
   # --- recovery crafting helpers ---
