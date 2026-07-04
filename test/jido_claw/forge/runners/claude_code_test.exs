@@ -106,6 +106,50 @@ defmodule JidoClaw.Forge.Runners.ClaudeCodeTest do
     end
   end
 
+  describe "run_iteration/3" do
+    setup do
+      host = make_tmpdir!("claude_host_run")
+      File.write!(Path.join(host, "credentials.json"), ~s({"token":"sk-test"}\n))
+      File.write!(Path.join(host, "settings.json"), "{}")
+      Application.put_env(:jido_claw, :claude_home_dir, host)
+
+      forge_home = make_tmpdir!("forge_home_claude_run")
+
+      on_exit(fn ->
+        File.rm_rf(host)
+        File.rm_rf(forge_home)
+      end)
+
+      {:ok, client, _sid} = StubSandbox.create()
+
+      {:ok, state} =
+        ClaudeCode.init(client, %{forge_home: forge_home, prompt: "do work"})
+
+      {:ok, client: client, state: state}
+    end
+
+    test "timeout → harness_timeout", %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", :timeout})
+
+      assert {:ok, %{status: :error, error: "harness_timeout"}} =
+               ClaudeCode.run_iteration(client, state, [])
+    end
+
+    test "docker-manufactured timeout (exit 124) → harness_timeout", %{
+      client: client,
+      state: state
+    } do
+      # Docker maps a harness timeout to `{"timeout after \#{t}ms", 124}`, not the
+      # `:timeout` atom HostShell uses. `Sandbox.run/4` normalizes that EXACT
+      # tuple back to `:timeout`, so the runner classifies it as harness_timeout
+      # rather than the generic "claude cli failed" it fell into before the fix.
+      StubSandbox.program_run(client, {"timeout after 5000ms", 124})
+
+      assert {:ok, %{status: :error, error: "harness_timeout"}} =
+               ClaudeCode.run_iteration(client, state, timeout: 5000)
+    end
+  end
+
   defp make_tmpdir!(prefix) do
     dir = Path.join(System.tmp_dir!(), "#{prefix}_#{:erlang.unique_integer([:positive])}")
     File.mkdir_p!(dir)

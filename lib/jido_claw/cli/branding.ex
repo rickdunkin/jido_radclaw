@@ -3,6 +3,7 @@ defmodule JidoClaw.CLI.Branding do
   ASCII art, boot sequence, spinners, and visual identity for JidoClaw.
   """
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.CLI.Terminal
   alias JidoClaw.Display.StatusBar
   alias JidoClaw.ProjectType
@@ -55,6 +56,7 @@ defmodule JidoClaw.CLI.Branding do
       strategy: opts[:strategy] || "react",
       project_type: ProjectType.detect(project_dir),
       tools_count: opts[:tools_count] || length(JidoClaw.Agent.tool_modules()),
+      templates_count: opts[:templates_count] || length(Templates.names()),
       gateway: opts[:gateway] || false,
       skills_count: count_yaml_files(Path.join([project_dir, ".jido", "skills"])),
       agents_count: count_yaml_files(Path.join([project_dir, ".jido", "agents"]))
@@ -87,7 +89,7 @@ defmodule JidoClaw.CLI.Branding do
     animate_line("  \e[33m⚙\e[0m  model       \e[1m#{info.model}\e[0m")
     animate_line("  \e[33m⚙\e[0m  strategy    \e[1m#{info.strategy}\e[0m")
     animate_line("  \e[33m⚙\e[0m  tools       \e[1m#{info.tools_count} loaded\e[0m")
-    animate_line("  \e[33m⚙\e[0m  templates   \e[1m6 agent types\e[0m")
+    animate_line("  \e[33m⚙\e[0m  templates   \e[1m#{info.templates_count} agent types\e[0m")
   end
 
   defp boot_optional_counts(info) do

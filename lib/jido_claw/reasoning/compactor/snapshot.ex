@@ -18,6 +18,8 @@ defmodule JidoClaw.Reasoning.Compactor.Snapshot do
       every re-compaction merges in the new source IDs and dedupes.
   """
 
+  alias JidoClaw.Reasoning.Compactor.Text
+
   @type status :: :summarized | :skipped | :error
 
   @type t :: %__MODULE__{
@@ -150,11 +152,13 @@ defmodule JidoClaw.Reasoning.Compactor.Snapshot do
     |> truncate_with_ellipsis(limit)
   end
 
+  # `limit` is a BYTE budget; the byte-safe prefix keeps the preview valid UTF-8
+  # even when the cut would land inside a multibyte codepoint.
   defp truncate_with_ellipsis(string, limit) when is_binary(string) do
     if byte_size(string) <= limit do
       string
     else
-      <<head::binary-size(^limit), _rest::binary>> = string
+      head = Text.utf8_safe_prefix(string, limit)
       head <> "…"
     end
   end

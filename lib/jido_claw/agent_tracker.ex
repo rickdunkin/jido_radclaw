@@ -299,16 +299,15 @@ defmodule JidoClaw.AgentTracker do
   def handle_telemetry_event(
         [:jido, :ai, :tool, :execute, :stop],
         _measurements,
-        metadata,
+        _metadata,
         _config
       ) do
-    agent_id = metadata[:agent_id]
-    tool_name = metadata[:tool_name]
-
-    if agent_id && to_string(agent_id) != "main" do
-      # Also track via tool name for completions (redundant but ensures count)
-      if tool_name, do: track_tool(to_string(agent_id), to_string(tool_name))
-    end
+    # The :start handler above is the single source of truth for tool-call
+    # counts — one increment per call. The :stop event stays attached (for
+    # symmetry and any future duration tracking) but must NOT re-count, or
+    # every tool call would be tallied twice. Timeouts route to :exception,
+    # not :stop, so they are already counted once by :start.
+    :ok
   end
 
   def handle_telemetry_event(_, _, _, _), do: :ok

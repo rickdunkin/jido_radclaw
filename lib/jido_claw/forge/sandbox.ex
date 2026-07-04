@@ -27,12 +27,38 @@ defmodule JidoClaw.Forge.Sandbox do
   def run(client, agent_type, args, opts \\ []) do
     mod = impl_for(client)
 
-    if function_exported?(mod, :run, 4) do
-      mod.run(client, agent_type, args, opts)
-    else
-      # Fallback to exec for clients that don't implement run
-      command = Enum.join([agent_type | args], " ")
-      mod.exec(client, command, opts)
+    result =
+      if function_exported?(mod, :run, 4) do
+        mod.run(client, agent_type, args, opts)
+      else
+        # Fallback to exec for clients that don't implement run
+        command = Enum.join([agent_type | args], " ")
+        mod.exec(client, command, opts)
+      end
+
+    normalize_timeout(result, opts)
+  end
+
+  # Normalize the Docker backend's manufactured timeout tuple back to the
+  # `:timeout` atom the HostShell backend uses, so consumers (`runners/`) see
+  # one representation and classify it as a harness timeout. Match ONLY the
+  # exact `{"timeout after \#{t}ms", 124}` Docker builds for the timeout in play
+  # (`docker.ex`) — never a looser prefix/regex, which could misread a genuine
+  # exit-124 whose output happens to read "timeout after <n>ms". Absent or
+  # `:infinity` timeout ⇒ pass through unchanged (the `exec` path, which
+  # ForgeBridge matches on the literal 124, is untouched).
+  defp normalize_timeout(result, opts) do
+    case Keyword.fetch(opts, :timeout) do
+      {:ok, t} when is_integer(t) and t > 0 ->
+        expected = "timeout after #{t}ms"
+
+        case result do
+          {^expected, 124} -> {expected, :timeout}
+          other -> other
+        end
+
+      _absent_or_infinity ->
+        result
     end
   end
 

@@ -46,7 +46,12 @@ defmodule JidoClaw.Web.ProjectsLive do
                 {Calendar.strftime(project.inserted_at, "%Y-%m-%d")}
               </td>
             </tr>
-            <tr :if={@projects == []}>
+            <tr :if={@projects_error}>
+              <td colspan="4" style="text-align: center; color: var(--muted); padding: 2rem;">
+                {@projects_error}
+              </td>
+            </tr>
+            <tr :if={is_nil(@projects_error) and @projects == []}>
               <td colspan="4" style="text-align: center; color: var(--muted); padding: 2rem;">
                 No projects yet
               </td>

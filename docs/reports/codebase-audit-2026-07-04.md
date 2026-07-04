@@ -34,7 +34,17 @@ registered on the main agent, **26** exposed over MCP, **16** worker templates,
 
 ## 1. Bugs (all hand-verified)
 
-### 1.1 `[H]` AgentTracker double-counts tool calls
+> **Status — updated 2026-07-04.** Eleven of these bugs — **1.1–1.8, 1.10, 1.11, 1.13** —
+> are fixed in a single migration-free batch bugfix PR, each carrying a red→green regression
+> test (plan: `.claude/plans/please-review-docs-reports-codebase-audi-lexical-crown.md`).
+> Per-entry `✅ Fixed` markers, plus a `Resolved:` note wherever the implementation diverged
+> from the suggested fix, are inline below. **1.9** is **deferred** (needs a wire-vs-delete
+> product call + a DB migration) — findings preserved in
+> `docs/reports/forge-session-fields-1.9-followup.md`. **1.12** is folded into the §3 doc
+> sweep (JIDO.md is a regenerated doc); **1.14** is left as-is (dead code inside the §2.1
+> GitHub pipeline — only matters if that pipeline is revived).
+
+### 1.1 `[H]` AgentTracker double-counts tool calls — ✅ Fixed
 `lib/jido_claw/agent_tracker.ex:295,310,415` — both the `[:jido,:ai,:tool,:execute,:start]`
 and `:stop` telemetry handlers call `track_tool/2` (the `:stop` clause's own comment says
 "redundant but ensures count"), and the cast increments `tool_calls` unconditionally.
@@ -43,7 +53,7 @@ counts **2×** in the swarm UI and `swarm_status` MCP output — while timeouts 
 no `:stop`) count 1×, so the factor isn't even consistent. Fix: drop `track_tool` from the
 `:stop` handler.
 
-### 1.2 `[H]` Five LiveDashboard metrics can never fire (event-name mismatch)
+### 1.2 `[H]` Five LiveDashboard metrics can never fire (event-name mismatch) — ✅ Fixed
 `lib/jido_claw/core/telemetry.ex:27,33,40,70,96` — `Telemetry.Metrics` derives the event
 as all-but-the-last name segment (verified in `deps/telemetry_metrics`:561). So
 `summary("jido_claw.session.duration")` listens on `[:jido_claw, :session]`, but the emit
@@ -55,7 +65,12 @@ five are dead charts. Fix: rename to `…stop.duration` / give `tenant.count` an
 (§2.8), so `provider.request.*` / `tool.execute.*` events are never emitted at all —
 those dashboard rows are doubly dead. Impact is dev-only (`/live-dashboard` is dev-only).
 
-### 1.3 `[H]` `replay_workflow` reports a failed replay as a tool *error*
+> **Resolved:** an explicit `event_name:` was added to all five metrics. **3 of 5** tiles
+> now fire (session, cron, tenant); the `provider.request.*` / `tool.execute.*` tiles stay
+> empty because their emit helpers are dead (§2.8) — wiring or deleting those is a separate
+> decision.
+
+### 1.3 `[H]` `replay_workflow` reports a failed replay as a tool *error* — ✅ Fixed
 `lib/jido_claw/tools/replay_workflow.ex:29,112` — the tool returns `status:
 to_string(run.status)`, and the shared wrapper's `Error.normalize_result/1`
 (`tools/error.ex:81-84`) promotes `{:ok, %{status: s}} when s in [:failed, "failed",
@@ -66,7 +81,7 @@ success-with-status") and buries `new_run_id`. The sibling read tools use `run_s
 for exactly this reason (`inspect_workflow.ex:42-46`). Fix: `status` → `run_status` in
 `summarize/1` + `output_schema`.
 
-### 1.4 `[H]` Release patch registries desynced — STDIO patch beam not relocated in prod
+### 1.4 `[H]` Release patch registries desynced — STDIO patch beam not relocated in prod — ✅ Fixed
 `lib/mix/tasks/compile.jidoclaw_release_patches.ex:5-10` lists 4 patched dep beams;
 `lib/jido_claw/core/dependency_patches.ex:4-10` registers **5** — the missing one is
 `{Jido.MCP.Transport.STDIO, :jido_mcp}`, i.e. the MCP-subprocess env-scrubbing patch.
@@ -74,24 +89,40 @@ Under `MIX_ENV=prod` its patched beam is never relocated over the dep's, which i
 exact failure mode this compiler exists to prevent for the other four. Fix: add the
 STDIO entry to `@patched_dependency_beams`.
 
-### 1.5 `[H]` Consolidator reports `blocks_revised: 0` forever
+> **Resolved via a DRY single-source refactor** (not the minimal one-tuple add):
+> `DependencyPatches.patched_modules/0` is now the one patch inventory, and the compile
+> task's new `patched_beams/0` reads it; the `mix.exs` `ignore_module_conflict` comment was
+> corrected four→five. **Severity reframed:** the real impact is release *hygiene*, not a
+> missing runtime patch — `DependencyPatches.ensure_loaded!/0` (`application.ex:31`) already
+> force-loads the STDIO patch at boot in every env, so the env-scrub behavior held in prod
+> regardless; the bug was that prod shipped two beams for the module.
+
+### 1.5 `[H]` Consolidator reports `blocks_revised: 0` forever — ✅ Fixed
 `lib/jido_claw/memory/consolidator/run_server.ex:781,836-895` — `apply_block_updates/1`
 folds both `Block.write` and `Block.revise` outcomes into one accumulator reported as
 `blocks_written`, and `blocks_revised:` is a hardcoded `0`. A run that revises N blocks
 reports `written=N, revised=0` to the operator CLI (`cli/commands.ex:306`) and telemetry
 (`run_server.ex:1181`). Fix: split the accumulator by which branch ran.
 
-### 1.6 `[H]` Boot banner hardcodes "6 agent types"
+> **Resolved:** the accumulator is split by branch (`{:ok, :written | :revised, block}`).
+> Intended semantic change — `blocks_written` now counts writes **only** (a revise of an
+> existing active block increments `blocks_revised` instead of being conflated in).
+
+### 1.6 `[H]` Boot banner hardcodes "6 agent types" — ✅ Fixed
 `lib/jido_claw/cli/branding.ex:90` — sibling lines compute counts dynamically; this one is
 a stale literal (16 templates exist). Fix: derive from `Agent.Templates`.
 
-### 1.7 `[H]` `HostShell.exec/3` silently drops the caller's timeout
+### 1.7 `[H]` `HostShell.exec/3` silently drops the caller's timeout — ✅ Fixed
 `lib/jido_claw/forge/runner/host_shell.ex:69,87` — `exec(_, command, _opts)` hardcodes
 `timeout: :infinity` while siblings `exec_argv/4` and `run/4` honor `opts[:timeout]`, and
 the harness passes opts straight through (`harness.ex:515`). A Forge exec with a timeout
 never times out on the HostShell backend. Fix: `Keyword.get(opts, :timeout, :infinity)`.
 
-### 1.8 `[M]` Docker timeouts misclassified by the claude_code/codex runners
+> **Resolved — bigger than the audit's one-liner:** besides honoring `opts[:timeout]`, a
+> `{_partial, :timeout} -> {"timeout after …ms", 124}` case arm was added; without it a real
+> timeout raises `CaseClauseError` (caught by the `rescue`) and is misreported as exit 1.
+
+### 1.8 `[M]` Docker timeouts misclassified by the claude_code/codex runners — ✅ Fixed
 `lib/jido_claw/forge/runners/claude_code.ex:86`, `codex.ex:128` — both match
 `{_, :timeout}` → `harness_timeout`, but only HostShell returns that atom; the Docker
 backend maps a timeout to `{"timeout after …ms", 124}` (`docker.ex:389-391`), which falls
@@ -99,7 +130,12 @@ through to the generic "cli failed" arm. Since these runners target the real Doc
 sandbox, a timeout there is always misreported. Fix: also match exit 124 (and 153, the
 output-limit status), or normalize in `Sandbox.run`.
 
-### 1.9 `[H]` Forge session UI fields that can only ever be 0 / nil
+> **Resolved via central normalization in `Sandbox.run/4`** (not per-runner 124-matching):
+> only the exact `{"timeout after #{t}ms", 124}` tuple Docker manufactures for the timeout in
+> play is rewritten to `{…, :timeout}`, so a genuine exit-124 command is never misread; the
+> `exec` path (which ForgeBridge matches on the literal 124) and exit 153 are untouched.
+
+### 1.9 `[H]` Forge session UI fields that can only ever be 0 / nil — ⏸ Deferred
 `lib/jido_claw/forge/resources/session.ex:82,95,220` — `execution_count`'s only writer is
 `set_attribute(:execution_count, 0)` in `:start` (and it's in `upsert_fields`, so a
 re-upsert re-zeroes); `:mark_failed` (the only non-nil writer of `last_error`) has zero
@@ -108,7 +144,11 @@ rendered (`forge_view.ex:126,130`, `forge_live.ex:38`) and always show `0` / `ni
 Fix: increment on execution completion + route failures through `:mark_failed`, or drop
 the attributes.
 
-### 1.10 `[M]` UTF-8-unsafe byte truncation in compaction persistence
+> **Deferred** from the batch (needs a product wire-vs-delete call + a DB migration). Full
+> re-verified findings and both resolution paths are captured in
+> `docs/reports/forge-session-fields-1.9-followup.md`.
+
+### 1.10 `[M]` UTF-8-unsafe byte truncation in compaction persistence — ✅ Fixed
 `lib/jido_claw/reasoning/compactor/snapshot.ex:157` and
 `…/compactor/summarizer.ex:210` — both truncate with a raw
 `<<head::binary-size(^limit), _rest::binary>>`, which can split a multibyte codepoint and
@@ -117,7 +157,12 @@ compaction. Invalid UTF-8 then fails Jason/Postgrex encoding in `Storage.persist
 silently dropping that (best-effort) compaction. The module already ships
 `utf8_safe_prefix/2` (`compactor.ex:553`) — use it in both places.
 
-### 1.11 `[H]` LiveView load errors written to assigns that are never rendered
+> **Resolved:** the audit's "use it in both places" wasn't directly possible — that helper
+> was **private** to `compactor.ex`. It was extracted into a new public module
+> `JidoClaw.Reasoning.Compactor.Text` and all three call sites migrated (compactor,
+> snapshot, summarizer), so no duplicate-clone / trivial-forwarder gate trips.
+
+### 1.11 `[H]` LiveView load errors written to assigns that are never rendered — ✅ Fixed
 - `lib/jido_claw/web/live/workflows_live.ex:33` (+ :116,172,180,488) — `runs_error` is
   assigned in six places and `@runs_error` appears in no template; a runs-load failure
   renders as the "No workflow runs yet" empty state.
@@ -125,18 +170,22 @@ silently dropping that (best-effort) compaction. The module already ships
   ("No projects yet").
 Fix: render them like `@steps_error` (workflows_live.ex:301) — or drop the assigns.
 
-### 1.12 `[M]` JIDO.md generator emits self-contradictory template info
+> **Resolved:** both LiveViews now render an error row (mirroring `@steps_error`), gated
+> above the empty-state row. Minor audit correction — `workflows_live` has **5** `runs_error`
+> assign sites, not 6.
+
+### 1.12 `[M]` JIDO.md generator emits self-contradictory template info — ⏸ Deferred → §3 doc sweep
 `lib/jido_claw/platform/jido_md.ex:105-108` vs `:146-147` — the per-template detail
 section includes `verifier`, but the "Available template names:" summary lists only 6
 names without it. Every freshly-generated JIDO.md disagrees with itself. Fix: align the
 two lists (ideally derive both from `Agent.Templates`).
 
-### 1.13 `[M]` `Inspection.skills_summary/0` mislabels a field
+### 1.13 `[M]` `Inspection.skills_summary/0` mislabels a field — ✅ Fixed
 `lib/jido_claw/inspection.ex:363` — builds `version: Map.get(s, :max_iterations)`; the
 Skill struct has no `:version`, so the iterative-loop cap is shipped under a wrong name
 (local callers only — the MCP projection drops `skills`). Fix: rename the key.
 
-### 1.14 `[M]` `rescue` that claims to catch an exit (inside dead code)
+### 1.14 `[M]` `rescue` that claims to catch an exit (inside dead code) — ⏭ Not fixed (dead code, §2.1)
 `lib/jido_claw/github/agents/research_coordinator.ex:27-31` — documented to convert a
 `Task.await_many` crash into `{:error, :research_failed}`, but a crashed task **exits**
 the caller; `rescue` can't catch it (needs `catch :exit`). Only matters if the orphaned
@@ -484,10 +533,11 @@ the PullRequestCoordinator compile_check narrative.
 
 ## Suggested triage order
 
-1. **Small verified bug fixes** (§1.1-1.13): each is a one-to-few-line change —
-   `track_tool` dedupe, metric renames, `run_status`, STDIO beam entry, `blocks_revised`
-   split, banner count, HostShell timeout, Docker exit codes, UTF-8-safe truncation,
-   render the two error assigns, JIDO.md list alignment.
+1. **Small verified bug fixes** (§1.1-1.13): ✅ **done** — 1.1–1.8, 1.10, 1.11, 1.13 are
+   implemented in the 2026-07-04 batch bugfix PR (each with a regression test). Remaining:
+   **1.9** deferred (product call + DB migration; see
+   `docs/reports/forge-session-fields-1.9-followup.md`), **1.12** folded into the step-2 doc
+   sweep, **1.14** left as dead code (§2.1).
 2. **Doc sweep** (§3): README/ARCHITECTURE/CONTRIBUTING/SETUP/ROADMAP + JIDO.md
    regeneration + the moduledoc one-liners in §3b. Mostly mechanical; high payoff since
    several (JIDO.md, system prompts) are LLM-facing.

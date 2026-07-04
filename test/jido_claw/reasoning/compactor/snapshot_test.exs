@@ -114,5 +114,12 @@ defmodule JidoClaw.Reasoning.Compactor.SnapshotTest do
       assert Snapshot.preview(text, 200) == "one two three four five six"
       assert Snapshot.preview(text, 5) == "one t…"
     end
+
+    test "returns valid UTF-8 when the byte budget would split a multibyte codepoint" do
+      # 10 × "é" (2 bytes each) = 20 bytes; a raw 5-byte cut splits the 3rd
+      # codepoint and yields invalid UTF-8. The byte-safe prefix must not.
+      text = String.duplicate("é", 10)
+      assert String.valid?(Snapshot.preview(text, 5))
+    end
   end
 end

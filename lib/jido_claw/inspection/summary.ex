@@ -25,7 +25,11 @@ defmodule JidoClaw.Inspection.Summary do
   """
 
   @type tool_summary :: %{name: String.t(), description: String.t() | nil, version: term()}
-  @type skill_summary :: %{name: String.t(), description: String.t() | nil, version: term()}
+  @type skill_summary :: %{
+          name: String.t(),
+          description: String.t() | nil,
+          max_iterations: pos_integer() | nil
+        }
 
   @type subagent :: %{
           id: String.t(),

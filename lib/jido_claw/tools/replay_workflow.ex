@@ -26,7 +26,12 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
       new_run_id: [type: :string, required: true],
       retry_of_id: [type: :string, required: true],
       name: [type: :string, required: true],
-      status: [type: :string, required: true],
+      # `run_status`, NOT `status`: the shared `Tools.Error.normalize_result/1`
+      # promotes `{:ok, %{status: "failed"}}` to an `{:error, _}`. A replay that
+      # launched then failed is a normal, successful read of the run's terminal
+      # status (callers read `run_status`/`error`), so it rides a non-colliding
+      # key — the `inspect_workflow` precedent.
+      run_status: [type: :string, required: true],
       error: [type: :string],
       message: [type: :string, required: true]
     ],
@@ -109,7 +114,7 @@ defmodule JidoClaw.Tools.ReplayWorkflow do
       new_run_id: run.id,
       retry_of_id: run.retry_of_id,
       name: run.name,
-      status: to_string(run.status),
+      run_status: to_string(run.status),
       message: "Replay launched as run #{run.id} — status: #{run.status}."
     }
 

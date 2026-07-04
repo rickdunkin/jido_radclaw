@@ -360,7 +360,7 @@ defmodule JidoClaw.Inspection do
           %{
             name: Map.get(s, :name),
             description: Map.get(s, :description),
-            version: Map.get(s, :max_iterations)
+            max_iterations: Map.get(s, :max_iterations)
           }
         end)
 

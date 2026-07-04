@@ -82,6 +82,15 @@ defmodule JidoClaw.Reasoning.Compactor.SummarizerTest do
     end
   end
 
+  # Returns an all-multibyte summary so max_summary_chars trimming lands on a
+  # codepoint boundary.
+  defmodule MultibyteBackend do
+    @behaviour Summarizer
+
+    @impl Summarizer
+    def summarize(_prompt, _opts), do: {:ok, String.duplicate("😀", 10)}
+  end
+
   setup do
     original = Application.get_env(:jido_claw, :compaction_summarizer)
     on_exit(fn -> Application.put_env(:jido_claw, :compaction_summarizer, original) end)
@@ -114,6 +123,17 @@ defmodule JidoClaw.Reasoning.Compactor.SummarizerTest do
       cfg = config(250, max_summary_chars: 12)
       assert {:ok, summary} = Summarizer.summarize("hello world test", cfg)
       assert byte_size(summary) == 12
+    end
+
+    test "trims a multibyte summary to a valid UTF-8 prefix within max_summary_chars" do
+      Application.put_env(:jido_claw, :compaction_summarizer, MultibyteBackend)
+      # 10 × "😀" (4 bytes each); a raw 6-byte cut splits the 2nd codepoint into
+      # invalid UTF-8. The byte-safe prefix keeps the summary valid and within
+      # the (byte) budget.
+      cfg = config(250, max_summary_chars: 6)
+      assert {:ok, summary} = Summarizer.summarize("p", cfg)
+      assert String.valid?(summary)
+      assert byte_size(summary) <= 6
     end
 
     test "returns timeout error when backend exceeds timeout" do

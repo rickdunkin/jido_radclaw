@@ -47,6 +47,7 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
   alias JidoClaw.Error
   alias JidoClaw.Error.ExecutionError
   alias JidoClaw.Reasoning.Compactor.Config
+  alias JidoClaw.Reasoning.Compactor.Text
 
   @type prompt :: String.t()
   @type backend_opts :: keyword()
@@ -203,12 +204,14 @@ defmodule JidoClaw.Reasoning.Compactor.Summarizer do
       JidoClaw.Reasoning.Compactor.Summarizer.LLMBackend
   end
 
+  # `limit` (`max_summary_chars`) is really a BYTE budget; the byte-safe prefix
+  # keeps the trimmed summary valid UTF-8 so JSONB persistence never chokes on a
+  # split codepoint.
   defp trim_to_max(text, limit) when is_binary(text) and is_integer(limit) and limit > 0 do
     if byte_size(text) <= limit do
       text
     else
-      <<head::binary-size(^limit), _rest::binary>> = text
-      head
+      Text.utf8_safe_prefix(text, limit)
     end
   end
 

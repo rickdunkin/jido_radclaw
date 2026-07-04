@@ -66,12 +66,13 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
-  def exec(%__MODULE__{agent_pid: pid, sandbox_id: sid}, command, _opts) do
+  def exec(%__MODULE__{agent_pid: pid, sandbox_id: sid}, command, opts) do
     sandbox =
       Agent.get(pid, fn state -> Map.get(state, sid) end) ||
         %{dir: System.tmp_dir!(), env: %{}}
 
     env = Env.scrubbed_cmd_env(sandbox.env)
+    timeout = Keyword.get(opts, :timeout, :infinity)
 
     try do
       case shell_path() do
@@ -84,8 +85,13 @@ defmodule JidoClaw.Forge.Runner.HostShell do
           case OsCmd.run(sh, ["-c", ulimit_prelude() <> command],
                  cd: sandbox.dir,
                  env: env,
-                 timeout: :infinity
+                 timeout: timeout
                ) do
+            # A finite timeout that elapsed: report the Docker-parity tuple
+            # (`docker.ex` builds the same), so ForgeBridge's exact 124 match
+            # and the Behaviour's integer-only spec both hold. Only reachable
+            # with a finite `timeout`, so the interpolation is never `:infinity`.
+            {_partial, :timeout} -> {"timeout after #{timeout}ms", 124}
             {output, :output_limit} -> {output, Sandbox.output_limit_exit_status()}
             {output, status} when is_integer(status) -> {output, status}
           end

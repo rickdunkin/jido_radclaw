@@ -382,7 +382,12 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 </td>
               </tr>
             <% end %>
-            <tr :if={@runs == []}>
+            <tr :if={@runs_error}>
+              <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
+                {@runs_error}
+              </td>
+            </tr>
+            <tr :if={is_nil(@runs_error) and @runs == []}>
               <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
                 No workflow runs yet
               </td>

@@ -10,6 +10,15 @@ defmodule JidoClaw.Core.DependencyPatches do
   ]
 
   @doc """
+  The canonical `{module, dependency_app}` patch inventory — the SINGLE source
+  of truth for both this module's boot-time force-load and the release-time
+  BEAM relocation (`Mix.Tasks.Compile.JidoclawReleasePatches.patched_beams/0`
+  reads this so the two lists can never drift).
+  """
+  @spec patched_modules() :: [{module(), atom()}]
+  def patched_modules, do: @patched_modules
+
+  @doc """
   Force-load JidoClaw's patched dependency modules from this app's ebin.
 
   The project intentionally carries a small number of duplicate module

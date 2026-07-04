@@ -63,6 +63,16 @@ defmodule JidoClaw.InspectionTest do
       assert is_list(s.tool_names)
     end
 
+    test "skills entries expose :max_iterations, not the mislabeled :version" do
+      assert {:ok, %Summary{} = s} = Inspection.inspect_agent(JidoClaw.Agent)
+      assert [first | _] = s.skills
+
+      # The Skill struct carries :max_iterations and has no :version field; the
+      # summary must surface the value under the correct key (1.13).
+      assert Map.has_key?(first, :max_iterations)
+      refute Map.has_key?(first, :version)
+    end
+
     test "unknown module returns :unknown_target" do
       assert {:error, :unknown_target} = Inspection.inspect_agent(:totally_bogus)
     end

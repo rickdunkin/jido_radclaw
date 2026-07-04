@@ -244,6 +244,21 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
                Codex.run_iteration(client, state, [])
     end
 
+    test "docker-manufactured timeout (exit 124) → harness_timeout", %{
+      client: client,
+      state: state
+    } do
+      # Docker maps a harness timeout to `{"timeout after \#{t}ms", 124}`, not the
+      # `:timeout` atom HostShell uses. `Sandbox.run/4` normalizes that EXACT
+      # tuple (built from the same `:timeout` opt in play) back to `:timeout`, so
+      # the runner classifies it as harness_timeout — not the generic
+      # "codex cli failed" it fell into before the fix.
+      StubSandbox.program_run(client, {"timeout after 5000ms", 124})
+
+      assert {:ok, %{status: :error, error: "harness_timeout"}} =
+               Codex.run_iteration(client, state, timeout: 5000)
+    end
+
     test "parser maps thread/turn/item events to ClaudeCode-shape tool_events",
          %{client: client, state: state} do
       jsonl =

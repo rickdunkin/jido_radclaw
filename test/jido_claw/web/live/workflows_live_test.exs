@@ -72,6 +72,15 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
     assert count_substring(html, ~s(phx-click="toggle_steps" phx-value-id="#{run.id}")) == 5
   end
 
+  test "renders the runs_error row (not the empty state) when the load failed" do
+    # A load failure writes @runs_error; the template must surface it instead of
+    # the misleading "No workflow runs yet" empty state.
+    html = render_runs([], runs_error: "Could not load workflow runs")
+
+    assert html =~ "Could not load workflow runs"
+    refute html =~ "No workflow runs yet"
+  end
+
   # -- Helpers --
 
   defp count_substring(haystack, needle) do
@@ -86,7 +95,7 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
     running
   end
 
-  defp render_runs(runs) do
+  defp render_runs(runs, overrides \\ []) do
     %{
       __changed__: %{},
       runs: runs,
@@ -101,6 +110,7 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
       step_graph: nil,
       flash: %{}
     }
+    |> Map.merge(Map.new(overrides))
     |> WorkflowsLive.render()
     |> Safe.to_iodata()
     |> IO.iodata_to_binary()

@@ -14,6 +14,7 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
   alias Anubis.Server.Handlers.Tools, as: ToolsHandler
   alias Anubis.Server.Response
   alias JidoClaw.Test.EchoStub
+  alias JidoClaw.Test.ErrorStub
   alias JidoClaw.Test.ReplayFixtures
   alias JidoClaw.Tools.ReplayWorkflow
 
@@ -51,10 +52,36 @@ defmodule JidoClaw.Tools.ReplayWorkflowTest do
                ReplayWorkflow.run(%{run_id: original.id}, tool_ctx(ctx))
 
       assert output.retry_of_id == original.id
-      assert output.status == "completed"
+      assert output.run_status == "completed"
       assert output.name == original.name
       refute output.new_run_id == original.id
       assert output.message =~ output.new_run_id
+    end
+
+    @tag :capture_log
+    test "a replay whose new run fails stays {:ok, run_status: \"failed\"} with new_run_id",
+         ctx do
+      # Original completes under the setup's EchoStub override.
+      original = launch_fixture!(ctx)
+
+      # Swap the step's template to one that fails, so the REPLAY's NEW run ends
+      # :failed — driven through the launch (ReactorRunner), not the original's
+      # terminal status. The YAML (and thus the definition hash) is unchanged,
+      # so replay does not refuse on a definition change.
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "researcher" => %{module: ErrorStub, description: "fail", model: :fast, max_iterations: 1}
+      })
+
+      assert {:ok, output} = ReplayWorkflow.run(%{run_id: original.id}, tool_ctx(ctx))
+
+      # A launched-then-failed replay is a SUCCESSFUL read of the run's terminal
+      # status — NOT an {:error, _} envelope. The status rides `run_status` so
+      # the shared Error.normalize_result/1 does not promote {:ok, %{status:
+      # "failed"}} into an error (the inspect_workflow precedent).
+      assert output.run_status == "failed"
+      assert is_binary(output.new_run_id)
+      assert output.new_run_id != original.id
+      assert output.retry_of_id == original.id
     end
 
     test "a refusal maps to a clear error string (unknown run)", ctx do

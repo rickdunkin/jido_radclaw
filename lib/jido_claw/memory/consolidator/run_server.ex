@@ -765,7 +765,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp apply_proposals(state) do
-    blocks_written = apply_block_updates(state)
+    %{written: blocks_written, revised: blocks_revised} = apply_block_updates(state)
     {facts_added_from_adds, ids_from_adds} = apply_fact_adds(state)
 
     {added_from_updates, invalidated_from_updates, supersede_links, ids_from_updates} =
@@ -777,8 +777,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     counts = %{
       messages_processed: length(state.messages || []),
       facts_processed: length(state.inputs || []),
+      # `blocks_written` is writes-only; a revise of an existing active block
+      # increments `blocks_revised` instead (both were previously conflated
+      # into `blocks_written`, and `blocks_revised` was hardcoded 0).
       blocks_written: blocks_written,
-      blocks_revised: 0,
+      blocks_revised: blocks_revised,
       facts_added: facts_added_from_adds + added_from_updates,
       facts_invalidated: invalidated_from_deletes + invalidated_from_updates,
       links_added: links_added
@@ -834,23 +837,30 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   end
 
   defp apply_block_updates(state) do
-    Enum.reduce(Staging.entries(state.staging, :block_updates), 0, fn args, acc ->
-      attrs = build_block_attrs(state, args)
+    Enum.reduce(
+      Staging.entries(state.staging, :block_updates),
+      %{written: 0, revised: 0},
+      fn args, acc ->
+        attrs = build_block_attrs(state, args)
 
-      case maybe_revise_or_write_block(state, attrs) do
-        {:ok, _} ->
-          acc + 1
+        case maybe_revise_or_write_block(state, attrs) do
+          {:ok, :written, _block} ->
+            %{acc | written: acc.written + 1}
 
-        err ->
-          Logger.warning([
-            "[Consolidator] block update skipped: ",
-            "label=#{inspect(Map.get(args, :label))} ",
-            "error=#{inspect(err)}"
-          ])
+          {:ok, :revised, _block} ->
+            %{acc | revised: acc.revised + 1}
 
-          acc
+          err ->
+            Logger.warning([
+              "[Consolidator] block update skipped: ",
+              "label=#{inspect(Map.get(args, :label))} ",
+              "error=#{inspect(err)}"
+            ])
+
+            acc
+        end
       end
-    end)
+    )
   end
 
   defp build_block_attrs(state, args) do
@@ -887,14 +897,23 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         active = Enum.find(history, fn b -> is_nil(b.invalid_at) end)
 
         case active do
-          nil -> Block.write(attrs, tenant: tenant_id, actor: actor)
-          prior -> Block.revise(prior, attrs, actor: actor)
+          nil -> tag_write(Block.write(attrs, tenant: tenant_id, actor: actor))
+          prior -> tag_revise(Block.revise(prior, attrs, actor: actor))
         end
 
       _ ->
-        Block.write(attrs, tenant: tenant_id, actor: actor)
+        tag_write(Block.write(attrs, tenant: tenant_id, actor: actor))
     end
   end
+
+  # Tag a block persistence result with which kind of write it was, so the
+  # caller can split the writes-vs-revises counts. Errors pass through
+  # untagged for the caller's `err ->` branch.
+  defp tag_write({:ok, block}), do: {:ok, :written, block}
+  defp tag_write(other), do: other
+
+  defp tag_revise({:ok, block}), do: {:ok, :revised, block}
+  defp tag_revise(other), do: other
 
   defp apply_fact_adds(state) do
     tenant_id = state.scope.tenant_id

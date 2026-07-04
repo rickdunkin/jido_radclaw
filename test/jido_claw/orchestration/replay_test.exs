@@ -611,22 +611,24 @@ defmodule JidoClaw.Orchestration.ReplayTest do
 
       secret = SecretErrorStub.secret()
 
-      # The Tools.Action wrapper normalizes a `status: "failed"` result into
-      # an error envelope; the summarized fields ride in details.context.
-      assert {:error, %{code: :failed, details: %{context: context}} = envelope} =
+      # A launched-then-failed replay is a SUCCESSFUL read of the run's terminal
+      # status: the tool reports it under `run_status` (dodging the
+      # Error.normalize_result/1 `status: "failed"` → error promotion), and the
+      # redacted, truncated error rides `output.error`.
+      assert {:ok, output} =
                ReplayWorkflow.run(
                  %{run_id: original.id},
                  %{tool_context: %{tenant_id: ctx.tenant, actor: ctx.actor}}
                )
 
-      assert context.status == "failed"
+      assert output.run_status == "failed"
       # Operator scope, not overridable here: redacted then truncated to 200.
-      assert String.length(context.error) <= 200
-      refute inspect(envelope) =~ secret
+      assert String.length(output.error) <= 200
+      refute inspect(output) =~ secret
 
       # The raw secret IS on the run row (defense-in-depth is read-side).
       {:ok, replayed} =
-        WorkflowRun.by_id(context.new_run_id, tenant: ctx.tenant, actor: ctx.actor)
+        WorkflowRun.by_id(output.new_run_id, tenant: ctx.tenant, actor: ctx.actor)
 
       assert replayed.error =~ secret
     end

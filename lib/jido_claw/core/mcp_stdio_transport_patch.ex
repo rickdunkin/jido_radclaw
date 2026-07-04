@@ -25,10 +25,11 @@
 # ## Removal trigger
 #
 # Delete this file when `jido_mcp`/Anubis offers a per-endpoint env hook (a way
-# to default-deny inherited env), and drop the entry from
-# `JidoClaw.Core.DependencyPatches.@patched_modules`. Keep this copy in sync
-# with the dep version (`deps/jido_mcp/lib/jido_mcp/transport/stdio.ex`) until
-# then — only the `:env` construction may diverge.
+# to default-deny inherited env), and drop the entry from the single-source
+# patch inventory `JidoClaw.Core.DependencyPatches.patched_modules/0` (which the
+# release-relocation task reads too). Keep this copy in sync with the dep
+# version (`deps/jido_mcp/lib/jido_mcp/transport/stdio.ex`) until then — only
+# the `:env` construction may diverge.
 defmodule Jido.MCP.Transport.STDIO do
   @moduledoc false
 

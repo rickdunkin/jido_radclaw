@@ -129,6 +129,17 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
     end
   end
 
+  describe "exec/3 timeout" do
+    test "honors the caller's :timeout and reports it as exit 124", %{client: client} do
+      # exec/3 previously hardcoded `timeout: :infinity`, silently dropping the
+      # caller's opt (a `sleep 3` would run to completion). A real timeout must
+      # surface as the Docker-parity `{"timeout after <n>ms", 124}` tuple —
+      # ForgeBridge matches it exactly and the Behaviour spec is integer-only.
+      assert {output, 124} = HostShell.exec(client, "sleep 3", timeout: 500)
+      assert output == "timeout after 500ms"
+    end
+  end
+
   describe "exec_argv timeout" do
     test "returns {\"\", :timeout} and kills the OS process tree", %{client: client} do
       tmp =

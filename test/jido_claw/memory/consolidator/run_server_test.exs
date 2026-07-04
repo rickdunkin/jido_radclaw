@@ -92,6 +92,35 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert Enum.any?(facts, &(&1.label == "geo" and &1.content =~ "Canada"))
     end
 
+    test "revise of an active block counts blocks_revised, not blocks_written", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
+
+      # Seed an active block so the consolidator's propose_block_update for the
+      # same (scope, label) takes the REVISE branch (an active prior exists),
+      # not the write branch.
+      seed_active_block!(scope, "core_facts", "shipping enabled")
+
+      assert {:ok, run} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [
+                   {"propose_block_update",
+                    %{label: "core_facts", new_content: "shipping enabled to Canada"}}
+                 ],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run.status == :succeeded, "run failed: #{inspect(run)}"
+
+      # 1.5 fix: a revise increments blocks_revised (hardcoded 0 forever before
+      # the fix) and does NOT count toward blocks_written — the writes-only
+      # semantic. Exact counts (not >=) pin the split.
+      assert run.blocks_revised == 1
+      assert run.blocks_written == 0
+    end
+
     test "propose_link forwards relation, reason, confidence to a Link row", %{
       tenant_id: tenant_id
     } do
@@ -707,6 +736,33 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   # `:consolidator_promoted` rows are excluded by default and would
   # silently fail to load even when the test author thought timestamps
   # were the only thing that mattered.
+  # Seed an active (invalid_at: nil) block at `scope`+`label` so a subsequent
+  # propose_block_update for the same key routes through the revise branch.
+  # Mirrors `build_block_attrs/2` in run_server.ex.
+  defp seed_active_block!(scope, label, value) do
+    {:ok, block} =
+      Block.write(
+        %{
+          scope_kind: scope.scope_kind,
+          user_id: scope[:user_id],
+          workspace_id: scope[:workspace_id],
+          project_id: scope[:project_id],
+          session_id: scope[:session_id],
+          label: label,
+          value: value,
+          char_limit: 2000,
+          pinned: true,
+          position: 0,
+          source: :consolidator,
+          written_by: "test"
+        },
+        tenant: scope.tenant_id,
+        actor: actor_for(scope.tenant_id)
+      )
+
+    block
+  end
+
   defp seed_fact_simple!(scope, label) do
     Fact.record!(
       %{

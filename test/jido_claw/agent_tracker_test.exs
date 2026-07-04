@@ -81,6 +81,28 @@ defmodule JidoClaw.AgentTrackerTest do
     end
   end
 
+  describe "tool-call counting (telemetry)" do
+    test "counts one tool call per execution — :stop does not double-count :start" do
+      pid = live_pid()
+
+      assert :ok =
+               AgentTracker.register("tool-counter", pid, "coder", "t", tenant_id: @tenant_id)
+
+      # One tool call emits the full execute lifecycle: a :start then a :stop.
+      # The :start handler is the single source of truth (one increment per
+      # call); the :stop event stays attached but must NOT re-tally, or every
+      # call is counted twice.
+      emit_tool_execute("tool-counter", "read_file", :start)
+      emit_tool_execute("tool-counter", "read_file", :stop)
+      drain()
+
+      state = AgentTracker.get_state(tenant_id: @tenant_id)
+      assert state.agents["tool-counter"].tool_calls == 1
+
+      Process.exit(pid, :kill)
+    end
+  end
+
   describe "terminal transitions" do
     test ":DOWN on a running agent marks it :error" do
       pid = live_pid()
@@ -513,6 +535,14 @@ defmodule JidoClaw.AgentTrackerTest do
   end
 
   defp tool_ctx, do: %{tool_context: %{tenant_id: @tenant_id}}
+
+  defp emit_tool_execute(agent_id, tool_name, phase) do
+    :telemetry.execute(
+      [:jido, :ai, :tool, :execute, phase],
+      %{system_time: 0},
+      %{agent_id: agent_id, tool_name: tool_name}
+    )
+  end
 
   defp live_pid, do: spawn(fn -> Process.sleep(:infinity) end)
 

@@ -24,20 +24,32 @@ defmodule JidoClaw.Telemetry do
       # Session metrics
       counter("jido_claw.session.start.total"),
       counter("jido_claw.session.stop.total"),
-      summary("jido_claw.session.duration", unit: {:native, :millisecond}),
+      # The metric name's display segment (`duration`) diverges from the
+      # emitted event (`[…, :stop]`, measurement `%{duration: …}`), so an
+      # explicit `event_name:` is required or the tile never fires.
+      summary("jido_claw.session.duration",
+        unit: {:native, :millisecond},
+        event_name: [:jido_claw, :session, :stop]
+      ),
       counter("jido_claw.session.message.total", tags: [:role]),
 
       # Provider/LLM metrics
       counter("jido_claw.provider.request.start.total"),
       counter("jido_claw.provider.request.stop.total"),
-      summary("jido_claw.provider.request.duration", unit: {:native, :millisecond}),
+      summary("jido_claw.provider.request.duration",
+        unit: {:native, :millisecond},
+        event_name: [:jido_claw, :provider, :request, :stop]
+      ),
       counter("jido_claw.provider.request.exception.total"),
       sum("jido_claw.provider.tokens.total", tags: [:type]),
 
       # Tool execution metrics
       counter("jido_claw.tool.execute.start.total"),
       counter("jido_claw.tool.execute.stop.total"),
-      summary("jido_claw.tool.execute.duration", unit: {:native, :millisecond}),
+      summary("jido_claw.tool.execute.duration",
+        unit: {:native, :millisecond},
+        event_name: [:jido_claw, :tool, :execute, :stop]
+      ),
       counter("jido_claw.tool.execute.exception.total"),
 
       # Output shaping metrics — both derive from the single
@@ -69,7 +81,8 @@ defmodule JidoClaw.Telemetry do
       counter("jido_claw.cron.job.stop.total", tags: [:mode, :target, :dispatch_target]),
       summary("jido_claw.cron.job.duration",
         unit: {:native, :millisecond},
-        tags: [:mode, :target, :dispatch_target]
+        tags: [:mode, :target, :dispatch_target],
+        event_name: [:jido_claw, :cron, :job, :stop]
       ),
       counter("jido_claw.cron.job.exception.total", tags: [:mode, :target, :dispatch_target]),
 
@@ -93,7 +106,10 @@ defmodule JidoClaw.Telemetry do
       # Tenant metrics
       counter("jido_claw.tenant.create.total"),
       counter("jido_claw.tenant.destroy.total"),
-      last_value("jido_claw.tenant.count", measurement: :count),
+      last_value("jido_claw.tenant.count",
+        measurement: :count,
+        event_name: [:jido_claw, :tenant, :count]
+      ),
 
       # VM metrics
       last_value("vm.memory.total", unit: :byte),

@@ -75,6 +75,7 @@ defmodule JidoClaw.Reasoning.Compactor do
     Storage,
     Summarizer,
     Telemetry,
+    Text,
     TurnGrouping
   }
 
@@ -544,26 +545,9 @@ defmodule JidoClaw.Reasoning.Compactor do
     if byte_size(text) <= max_bytes do
       text
     else
-      head = utf8_safe_prefix(text, max_bytes)
+      head = Text.utf8_safe_prefix(text, max_bytes)
       extra = byte_size(text) - byte_size(head)
       head <> "… (truncated, #{extra} more bytes)"
-    end
-  end
-
-  defp utf8_safe_prefix(text, max_bytes) when is_binary(text) and is_integer(max_bytes) do
-    bounded = min(max_bytes, byte_size(text))
-    do_utf8_safe_prefix(text, bounded)
-  end
-
-  defp do_utf8_safe_prefix(_text, n) when n <= 0, do: ""
-
-  defp do_utf8_safe_prefix(text, n) do
-    candidate = binary_part(text, 0, n)
-
-    if String.valid?(candidate) do
-      candidate
-    else
-      do_utf8_safe_prefix(text, n - 1)
     end
   end
 

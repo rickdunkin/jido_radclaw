@@ -2,17 +2,28 @@ defmodule Mix.Tasks.Compile.JidoclawReleasePatches do
   @moduledoc false
   use Mix.Task.Compiler
 
-  @patched_dependency_beams [
-    {Anubis.Server.Handlers.Tools, :anubis_mcp},
-    {Jido.Shell.Command.Registry, :jido_shell},
-    {Jido.Shell.ShellSession, :jido_shell},
-    {Jido.Shell.ShellSessionServer, :jido_shell}
-  ]
+  alias JidoClaw.Core.DependencyPatches
+
+  @doc """
+  The `{module, dependency_app}` beams to relocate, read from the SINGLE
+  source of truth (`JidoClaw.Core.DependencyPatches.patched_modules/0`) so the
+  release-relocation list can never drift from the boot force-load list.
+
+  Compile ordering is safe: `compilers/0` in mix.exs inserts
+  `:jidoclaw_release_patches` AFTER `:elixir`, so `DependencyPatches` is already
+  compiled when this task runs; `Code.ensure_loaded!/1` is a belt-and-suspenders
+  guard.
+  """
+  @spec patched_beams() :: [{module(), atom()}]
+  def patched_beams do
+    Code.ensure_loaded!(DependencyPatches)
+    DependencyPatches.patched_modules()
+  end
 
   @impl Mix.Task.Compiler
   def run(_args) do
     if Mix.env() == :prod do
-      Enum.each(@patched_dependency_beams, &relocate_patch!/1)
+      Enum.each(patched_beams(), &relocate_patch!/1)
       :ok
     else
       :noop
