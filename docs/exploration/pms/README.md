@@ -6,7 +6,10 @@ OpenHelm no-dig was reversed on operator request; **the corpus's planned reads a
 complete**), plus a same-day **connective pass** stitching what the sequential digs
 couldn't see of each other — cross-cutting observations 9–13, the combined first
 wave at the bottom, and dated connective notes back into the inventories (the ades
-README's own connective-pass motion, applied here). Nine parallel read-only
+README's own connective-pass motion, applied here). The **cross-corpus half** —
+dated back-links into the [ades corpus](../ades/README.md)'s six inventories and
+README where these digs confirm, contradict, or extend them — ran **2026-07-05**
+([DIG-BRIEFS](DIG-BRIEFS.md) "After the digs", motion 1). Nine parallel read-only
 scan passes over the repos cloned at `~/workspace/research/pms/` — README + docs skim,
 manifests, top-level source layout, a handful of key files — plus git metadata. Treat
 every claim below as "per scan" until a dig verifies it: the sibling ades corpus's six

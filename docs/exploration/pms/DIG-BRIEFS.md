@@ -257,10 +257,16 @@ motions instead:
    contradict, or extend them. Same motion as the ades README's own
    connective pass, one level up. *(Status 2026-07-04: the **intra-pms** half
    ran — README observations 9–13, the combined first wave, dated connective
-   notes between the pms inventories. The cross-corpus half into the ades
-   inventories remains open, partially seeded by the per-dig edits already
-   landed in ades CC1-2, argus OVERVIEW deferred-questions 2/3, and hermes
-   T2-13.)*
+   notes between the pms inventories. **2026-07-05: the cross-corpus half ran**
+   — dated notes now sit in all six ades inventories (traycer TR1-1/-2/-3/-4,
+   TR2-1/TR2-3, OQ-2/OQ-3 plus the TR1-2a supersession; emdash EM1-1/-2/-3/-4,
+   EM2-1, OQ-1/OQ-3; termic TM1-2/TM1-3/TM2-2/TM2-5; CCC CC1-1/-2/-3,
+   CC2-2/-3/-4; muxara MX2-2; Xantham XA1-1/-2, XA2-1/-2/-3, XA3-2, OQ-1) and
+   in the ades README (observations 1–2 and 4–8, plus a first-wave status
+   update recording TR1-2a's supersession by pad PD1-1, XA2-3's queued closure
+   via SY-FIRST-WAVE item 1, CC1-2a's reply half via CH-FIRST-WAVE item 1, and
+   the XA2-1 three-subject convergence). The earlier per-dig seeds — ades
+   CC1-2, argus OVERVIEW deferred-questions 2/3, hermes T2-13 — stand as-is.)*
 2. **Per-slice re-reads with a re-pin rule**: each argus build slice already
    carries its ades reading list via FLOW's citations; refresh and re-pin any
    ades repo *before a build decision cites it* (emdash, termic, traycer, and

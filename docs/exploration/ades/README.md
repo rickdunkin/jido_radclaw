@@ -5,7 +5,12 @@ termic, claude-command-center, muxara, and (trigger-fired later the same day) Xa
 completed** (see each repo's "Dig outcome" paragraph and linked inventory), plus a
 same-day **connective pass** stitching what the parallel digs couldn't see of each
 other: cross-cutting observations 6–8, the combined first wave at the bottom, and
-dated back-links added into the earlier inventories.
+dated back-links added into the earlier inventories. A **cross-corpus pass**
+(2026-07-05) followed once the sibling [pms corpus](../pms/README.md) closed its
+eight digs (all 2026-07-04): pms findings that confirm, contradict, or extend this
+corpus are stitched back as dated 2026-07-05 notes in each inventory and in the
+observations / first-wave block below — the [DIG-BRIEFS revisit
+policy](../pms/DIG-BRIEFS.md)'s motion 1.
 The scan itself was a quick pass over the repos cloned at `~/workspace/research/ades/`
 — six parallel read-only scan passes (README + docs skim, manifests, top-level source
 layout, a handful of key files) plus git metadata. For the five dug repos, claims are
@@ -297,6 +302,19 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    spectrum** (host-owned traycer / app-owned emdash·termic·CCC / agent-owned
    muxara / harness-delegated Xantham) whose every step away from
    orchestrator-owned ops cost something observable.
+   *(Cross-corpus, 2026-07-05)*: the pms corpus broke the unanimity usefully —
+   worktree-per-task held in only five of nine subjects, and the exceptions paid
+   visibly (OpenHelm's shared project dir forced a **global concurrency cap of 1**;
+   upstream symphony's per-issue shallow clones were replaced by worktrees in its
+   fork — a clean isolated datapoint that worktrees win on cost at volume). The
+   teardown spectrum gained a branch/PR axis and members at both ends
+   ([pms observation 11](../pms/README.md)): orca force-deletes worktree *and
+   branch* (rejected work unrecoverable — below even CCC's delegate-to-agent),
+   myrlin's record-delete strands both, and symphony
+   [SY2-4](../pms/symphony/FEATURES-WORTH-BORROWING.md) contributes the only
+   PR-side sweep in either corpus (`before_remove` closes stranded open PRs). The
+   composite law argus FLOW §5 adopted: phased + dirty-checked (TR2-1/MX2-2) +
+   PR-aware (SY2-4) + a records↔worktrees reconciliation sweep.
 2. **Nobody has edit-step-output-and-resume.** The closest analogs: traycer's Epic
    checkpoint manifests (dig-confirmed 2026-07-03: per-turn file undo, not workflow
    checkpoints — the traycer slot is now *verified* empty), CCC's editable
@@ -319,6 +337,24 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    gate — XA S-11, closing the sweep across all six subjects) —
    (note the traycer dig's seams pass also corrected the argus sketch itself: the
    append is pessimistic, not a CAS; see TR2-3).
+   *(Cross-corpus, 2026-07-05)*: the pms corpus swept nine more subjects (the
+   16th through the **24th**) — the execution layer stayed empty at every one —
+   but found
+   the **plan-layer** variant this corpus lacked, three times, and all three
+   promote the operator's edit verbatim rather than re-prompting: Chorus's
+   proposal editor ([CH1-1](../pms/chorus/FEATURES-WORTH-BORROWING.md)), orca's
+   briefing Accept path, and myrlin's spinoff spec editor
+   ([MY2-1](../pms/myrlin-workbook/FEATURES-WORTH-BORROWING.md)). The argus §5
+   novelty claim narrows honestly to *execution-layer* head-promotion. The
+   field's gate defects also assembled into a §5.4 acceptance-criteria list
+   ([pms observation 9](../pms/README.md)): approve-fence (Chorus and orca both
+   double-materialize on double-approve; our FOR-UPDATE + single-use `:consume`
+   is the axis to keep), revision history (Chorus keeps one overwritten
+   `reviewNote`), restart durability (bosun's approved gates re-open to
+   pending), expiry (three subjects converge on XA2-1), timeout direction
+   (bosun defaults timeout-means-proceed — a gate timeout only ever fails
+   closed), plus MY2-1's severed-consumer criterion: prove the resumed step
+   consumes the head revision's bytes, not merely that the revision was stored.
 3. **Everyone else scrapes; we have events** — with one dig correction: emdash
    doesn't scrape. It gets structured signals via config-installed agent hooks
    (POSTing to a token-guarded localhost server) and ACP session updates (emdash
@@ -348,11 +384,22 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    `chat/4`, SignalBus, and the tool-approval gate; EM1-4), with one real design
    decision in the permission bridge (single-use consume vs ACP's `allow_always` —
    EM OQ-1).
+   *(Cross-corpus, 2026-07-05)*: multica supplies the strongest adoption
+   datapoint yet — the fastest-moving tracker in the pms corpus attaches its
+   newest backend drivers via ACP
+   ([multica dig](../pms/multica/FEATURES-WORTH-BORROWING.md)); the costed TRACK
+   and its trigger stand.
 5. **Argus's differentiators survive contact.** Multi-device cluster, shared Postgres,
    phone-first PWA with Web Push, real auth, durable event-sourced history — zero of
    six have any of them (CCC has the PWA shell only, explicitly rejects multi-user and
    persistence). The competitive gap is real; the sub-problem solutions are what's
    worth taking.
+   *(Cross-corpus, 2026-07-05)*: the pms corpus narrows the gap but confirms it —
+   five of nine subjects ship a second device and two run real server Postgres,
+   yet none has multi-node clustering with node-affine execution, a durable
+   event-feed catch-up contract behind the UI, an agent-unmintable decision
+   object, or execution-layer edit-and-resume
+   ([pms observation 5](../pms/README.md)).
 6. **The attention stack assembled itself across four digs — no single subject has
    all of it, and the composition is itself a finding** *(added in the 2026-07-03
    connective pass; the parallel digs each saw only their slice)*. Bottom-up: muxara
@@ -376,6 +423,20 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    fail-toward-attention), needs-input vs our non-blocking approvals (muxara OQ-1),
    and the attention/disposition vocabulary shared with camus C1-4/C1-5 (CCC
    OQ-1/OQ-2, next-ten #6).
+   *(Cross-corpus, 2026-07-05)*: the pms corpus supplied the **delivery-policy
+   layer** beneath this stack — assembled the same way, at its own connective
+   pass ([pms observation 10](../pms/README.md)): bosun owns aggregation
+   ([BO1-3](../pms/bosun/FEATURES-WORTH-BORROWING.md) — immediate-vs-digest
+   split, the edited-in-place live digest, the pinned status board), OpenHelm
+   owns storm semantics ([OH2-2](../pms/openhelm/FEATURES-WORTH-BORROWING.md) —
+   semantic dedup keys, touch-in-place escalation, incident collapse, the
+   never-vanish fallback row), myrlin owns the device-side rules
+   ([MY1-3](../pms/myrlin-workbook/FEATURES-WORTH-BORROWING.md) — replay
+   suppression, focus-ack-consumes, minimum-signal re-arm), and Chorus the
+   recipient model ([CH2-3](../pms/chorus/FEATURES-WORTH-BORROWING.md) —
+   per-kind mutes, wake ≠ read). The two-corpus stack now reads: MX1-1 per-agent
+   state → EM2-1 fold → CC1-2 feed → pms delivery policy → EM1-3/TM2-5/XA1-2
+   triggers.
 7. **Argus §6.2 (push triggers) is answered three times over, convergently — and
    the answers layer rather than compete** *(connective pass)*. emdash and termic
    independently shipped the same two triggers — agent finished + agent blocked on
@@ -393,6 +454,17 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    divergence is failure pushes (emdash excludes errors — defensible on a desktop;
    EM OQ-3 leans include for a control plane whose operator left). All of this is
    cross-referenced into argus OVERVIEW deferred-question 2.
+   *(Cross-corpus, 2026-07-05)*: now answered six times over. myrlin
+   independently re-derived **exactly** EM1-3's two triggers — five push
+   preference keys declared, precisely `session:complete` + `task:review` live
+   ([MY2-4](../pms/myrlin-workbook/FEATURES-WORTH-BORROWING.md)) — with the
+   corpus's sharpest cautionary attached: the product that *named* the
+   `fileConflicts` trigger ships it as dead code, so every trigger argus
+   declares needs a named, tested producer. The failure-push divergence is
+   settled: argus FLOW §12 includes run-failed — this operator has left the
+   desk — with bosun's immediate-vs-digest split and OpenHelm's guaranteed
+   escalation + additive email as the field mechanics that make error pushes
+   livable.
 8. **Doc/code drift is endemic in the set** *(connective pass)*: five of six digs
    shipped an explicit drift finding (emdash's flagship Plan Mode: deleted code with
    live docs; termic: six findings; CCC: an architecture doc describing a build ~14×
@@ -404,6 +476,15 @@ do-today credential canary (XA2-3). Edit-and-resume verified absent (XA S-11) �
    correct twenty scan claims between them (3+3+2+3+5+4). Keep that discipline for
    re-review passes; it's the same solo-author-plus-agent velocity pressure our own
    doc-reconcile habit exists to counter.
+   *(Cross-corpus, 2026-07-05)*: [pms observation 13](../pms/README.md) extends
+   this from doc drift to **wiring mortality** — all eight pms digs found dead
+   *code paths*, not just stale docs (26 corrections across the four digs that
+   tallied) — yielding two laws now written into the argus plans: advertisement
+   without mechanical enforcement rots (pad
+   [PD1-1](../pms/pad/FEATURES-WORTH-BORROWING.md), live in our own tree as the
+   MCP server's hardcoded `0.2.0`), and a dependency edge survives only if a
+   scheduler consumes it (four dead `blocked_by` implementations against two
+   live).
 
 ## Early read (to be challenged in the deep-dive)
 
@@ -489,3 +570,24 @@ canary joining the slice) · **XA2-1 + XA2-2** (approval TTL + hard-block tier �
 gate-hardening session, shadow-first per termic TM2-3) · then **CC1-1** (soft-block
 detector, with muxara MX3-1's fixture-corpus method) and **CC2-2** (ManagedDoc for
 `system_prompt.md`, with Xantham XA3-1 as second reference).
+
+**Cross-corpus status update (2026-07-05** — the [pms corpus](../pms/README.md)
+closed 2026-07-04, and its combined first wave moves four of the items above**)**:
+**TR1-2a is superseded** — pad [PD1-1](../pms/pad/FEATURES-WORTH-BORROWING.md)
+fuses the same golden-pin with the served-surface *advertisement* half traycer
+lacks into one queued stability-contract PR
+([PD-FIRST-WAVE](../pms/pad/PD-FIRST-WAVE.md)), which also kills the hardcoded
+MCP `0.2.0` the pad dig found live in our tree. **XA2-3 has its closing item
+queued** — the scheduled provider credential canary
+([SY-FIRST-WAVE](../pms/symphony/SY-FIRST-WAVE.md) item 1, built on
+`Config.check_provider/1`), with symphony SY1-4 the only shipped probe in either
+corpus and myrlin MY1-1's transient-never-marks-dead rule as the health-model
+upgrade. **CC1-2a gained its missing reply half** — surfacing Forge
+`:needs_input` without `Forge.apply_input/2` wired would show a park nobody can
+answer; the combined surface-plus-reply item is queued with done-when criteria
+at [CH-FIRST-WAVE item 1](../pms/chorus/CH-FIRST-WAVE.md). **XA2-1 is now a
+three-subject convergence** — bosun
+[BO2-5](../pms/bosun/FEATURES-WORTH-BORROWING.md) ships the reference
+implementation (expiry + reconcilers) and OpenHelm ships the same never-expire
+gap, both pointing at our missing `AgentCase` TTL/sweeper. EM2-3, TM1-1, CC1-1,
+and CC2-2 stand unchanged.
