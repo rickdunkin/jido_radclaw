@@ -222,7 +222,11 @@ so reclaim is observable: claimed / renewed / reclaimed / fenced-out counts.
   eligibility is app-clock, expiry DB-stamped).
 
 Cross-node "kill a node, watch another reclaim its runs" is the WS6 multi-node
-integration test.
+integration test. *(Rider, 2026-07-04 — OpenHelm dig,
+[OH-FIRST-WAVE](../../exploration/pms/openhelm/OH-FIRST-WAVE.md): add the
+rolling-deploy-overlap case to that WS6 suite — a rejoining node must not
+reclaim runs whose lease is healthy merely because the node itself just booted;
+OpenHelm's age-guarded orphan sweeps are the shipped reference, OH3-2.)*
 
 ## Cross-references
 

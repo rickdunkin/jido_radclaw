@@ -361,6 +361,22 @@ command and read the exit code itself.
 moves to #10; C1-6(d)/(e) (receipt rows, gate-owned git flags) wait for the
 AR-10 shipping tail, per the source entry.
 
+**Rider — orca OR2-2 (added 2026-07-04,
+[inventory](../../exploration/pms/orca/FEATURES-WORTH-BORROWING.md)):** orca
+ships this item's shape as product — fold in its wiring details (named gate
+registry + per-phase attach + per-unit override resolution;
+`GateStarted`/`GateRan` events carrying `triggering_phase_run_id` provenance;
+first-fail-stops-progression) and invert its one anti-pattern: an unresolvable
+gate name must fail loud, never silently skip.
+
+**Rider — OpenHelm OH1-3 (added 2026-07-04 connective pass,
+[inventory](../../exploration/pms/openhelm/FEATURES-WORTH-BORROWING.md) /
+[first wave](../../exploration/pms/openhelm/OH-FIRST-WAVE.md)):** give the judge
+**read-only deterministic tools** rather than transcript-only input (our
+`lua_query` is the natural vehicle — sandboxed, lexical-only, tenant-scoped);
+cap the judge and **force a committed verdict at the cap** (their
+`run-verifier.ts:42-64`) — never a silent failure.
+
 ## 6. Honest terminal statuses + stall detection — M (camus C1-4 + C1-5)
 
 Today every composer disposition projects into the `:failed` family — a run
@@ -407,6 +423,40 @@ fingerprint.
    extends the same `Gate.Kinds` list `review_stall` joins — design the
    disposition vocabularies together (traycer TR3-2's `superseded` belongs in
    that conversation; second lander rebases a one-line list edit).
+   *(Superseded as a standalone build 2026-07-04: pad PD1-1's fused
+   stability-contract PR — [PD-FIRST-WAVE item 1](../../exploration/pms/pad/PD-FIRST-WAVE.md)
+   — absorbs this golden test and adds the advertisement half (surface-version
+   constant, handshake/meta exposure); build that instead, then stamp the
+   traycer TR1-2(a) slice's Status PARTIAL per the pad first-wave's note.)*
+7. **Rider — orca OQ-1 (added 2026-07-04,
+   [inventory](../../exploration/pms/orca/FEATURES-WORTH-BORROWING.md)):** that
+   same disposition conversation gains a concrete question — does finding
+   severity grow a release-semantics axis (orca ships `blocking|advisory` in
+   the verdict itself) or does the release decision stay on the gate
+   (per-finding waive/ack at decision time), preserving C1-3's findings-win
+   conservatism? Decide once, for `review_stall` and argus `:review` together.
+8. **Rider — bosun BO2-6 (added 2026-07-04,
+   [inventory](../../exploration/pms/bosun/FEATURES-WORTH-BORROWING.md)):** the
+   disposition conversation also gains the field's shipped middle-terminal
+   vocabulary — bosun's `accept_with_debt` + severity-counted debt ledger is
+   `done_with_findings` as product (make the waved-through findings a queryable
+   ledger view — a filter over gate decisions in the event log, no new table);
+   its `reprompt_same | reprompt_new_session | new_attempt` split is a cleaner
+   retry vocabulary than a binary rerun; and its attempt-cap escalation
+   (`attemptCount >= 4` ⇒ `manual_review`) is a shipped trigger shape for
+   `review_stall`.
+9. **Rider — OpenHelm OH1-3 (added 2026-07-04 connective pass,
+   [inventory](../../exploration/pms/openhelm/FEATURES-WORTH-BORROWING.md)):**
+   the `partially_succeeded` / `permanent_failure` split with an **enforced
+   transition table** (`db/queries/runs.ts:48-57`) is the shipped field shape
+   for this item's dispositions — `succeeded` accepts no further transitions.
+10. **Rider — pad PD3-3 (added 2026-07-04 connective pass,
+    [inventory](../../exploration/pms/pad/FEATURES-WORTH-BORROWING.md)):** the
+    rider-6 disposition-vocabulary conversation (where traycer TR3-2's
+    `superseded` already sits) gains pad's derived-closure lineage badges — an
+    item pointed at by a terminal `supersedes`/`implements` link renders
+    closed-as-`superseded_by`/`implemented_by`, computed display-only, while
+    `split_from` deliberately does not auto-close.
 
 ## 7. Executor seam — M–L, must be broken down (camus C1-1)
 
@@ -483,6 +533,15 @@ cheaper, earlier intervention.
    premises — the labeled-partial-product posture, and `scope-shift`
    self-reports get sharper targets for free.
 
+**Rider — orca OR2-5 (added 2026-07-04,
+[inventory](../../exploration/pms/orca/FEATURES-WORTH-BORROWING.md)):** shipped
+field shapes for this loop — the ambiguity-ledger item (`{question,
+why_it_matters, risk_if_unanswered, recommended_default_assumption,
+user_input_required, status, user_answer}`), `readiness_status ∈
+ready_for_tasks | ready_with_assumptions | blocked_needs_user_input`, and the
+explicit accept-assumptions gate (unresolved `user_input_required` items block
+accept unless the operator opts into the recommended defaults).
+
 ## 9. Structured premises: acceptance criteria + lint — M (ouroboros OB1-2)
 
 The keystone entry — it upgrades three shipped mechanisms at once. The AR-9
@@ -512,6 +571,22 @@ PR-2 premises pipe carries launch *assumptions*, not criteria; certificate
 4. Reconcile the gepa cross-link when done: an AC that shipped with a run is a
    labeled eval-task candidate — this answers GP1-3's provenance question
    (gepa OQ-2) and feeds the item-5 harness case pool.
+
+**Rider — orca OR2-5/OQ-2 (added 2026-07-04,
+[inventory](../../exploration/pms/orca/FEATURES-WORTH-BORROWING.md)):** fold
+orca's deterministic per-task quality gate into step 2's lint (their
+`validate_task_quality`: ≥1 task, meaningful specs, relevant-files present —
+one repair re-prompt, then fail loud), and reserve the acceptance-criteria id
+linkage in step 1's schema so a criterion-mapped review payload (orca OR1-1's
+`criterion_mappings`, argus §5.3's stretch shape) has a producer when it's
+wanted.
+
+**Rider — OpenHelm OH1-3 (added 2026-07-04 connective pass,
+[inventory](../../exploration/pms/openhelm/FEATURES-WORTH-BORROWING.md)):**
+reserve `outcome_spec`-shaped fields (`endState` / `check` / `stopBound`) for
+the cron/automation producers — OpenHelm makes the contract **required at
+creation** for agent-created jobs; creation, not review time, is the
+enforcement point.
 
 ## 10. Evidence floor — M (ouroboros OB1-3, absorbing camus C1-6c)
 
@@ -549,6 +624,13 @@ analyzer.
 5. Second slice once #9's ACs exist: extract-assertions-then-grep (their
    `verification/` variant), same flip-only rule. OQ-3 scope for v1:
    `tests_passed` first, coder/fixer templates only, masking as findings-only.
+
+**Rider — OpenHelm OH1-3 (added 2026-07-04 connective pass,
+[inventory](../../exploration/pms/openhelm/FEATURES-WORTH-BORROWING.md)):**
+claimed-vs-observed as the sharpest single check (`verifiedDelta`,
+`planner/schemas.ts:142-185`) — and **count fabrication breaches** rather than
+only demoting the run; carry their compaction guard (suppress log-count-based
+demotion on compacted transcripts).
 
 ---
 

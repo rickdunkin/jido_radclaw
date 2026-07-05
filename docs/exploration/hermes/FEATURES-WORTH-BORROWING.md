@@ -490,6 +490,8 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 **Status (2026-06-04)**: NOT_ADOPTED (new entry). jido_radclaw has a Codex sibling runner inside Forge (`forge/runners/codex.ex`) — a *harness* sibling over `codex exec`, NOT the in-Jido.AI JSON-RPC transport adapter described here. `lib/jido_claw/providers/` only holds `ollama.ex`.
 
+**Cross-ref (2026-07-04)**: the pms symphony joint read landed a **same-language** reference for this exact protocol — [../pms/symphony/FEATURES-WORTH-BORROWING.md](../pms/symphony/FEATURES-WORTH-BORROWING.md) SY1-1 supersedes this entry as the working spec (Elixir, Apache-2.0, tested against mock frames; still NOT_ADOPTED on our side). Keep this entry's session-hardening details as the garnish the symphony client lacks: monotonic deadlines, post-tool wedge watchdog, wedged-session retire.
+
 **Hermes (2026-06-04)**: STABLE. The three-file transport (`codex_app_server.py` / `_session.py` / `_event_projector.py`) and `runtime_provider.py::codex_app_server` API mode are intact. Recent commits are housekeeping (TUI image handling `83f6a83b2`, import pruning `66827f894`). The broader codex_responses adapter saw separate fixes, but the app-server transport's JSON-RPC speaker / session machine is unchanged.
 
 **Where in hermes**: `agent/transports/codex_app_server.py` (JSON-RPC 2.0 stdio speaker), `agent/transports/codex_app_server_session.py` (876 LOC session adapter), `agent/transports/codex_event_projector.py`, `hermes_cli/runtime_provider.py` (`codex_app_server` API mode). Commits 091d8e103, d5a0815c3 (monotonic deadlines), 12f755c9e (wedge watchdog + OAuth refresh classify).
