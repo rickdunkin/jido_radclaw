@@ -36,8 +36,8 @@ defmodule JidoClaw.Forge.Runners.Codex do
 
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.{Runner, Sandbox}
+  alias JidoClaw.Forge.Runners.FileSync
   alias JidoClaw.Security.Redaction.PromptRedaction
-  require Logger
 
   # Whitelist trimmed: rules/ is inert under --ignore-rules; AGENTS.md is
   # read from `-C cwd`, not $CODEX_HOME. Auth + config are the only files
@@ -166,7 +166,9 @@ defmodule JidoClaw.Forge.Runners.Codex do
         Enum.each(@syncable_entries, fn entry ->
           source = Path.join(host_codex, entry)
           dest = "#{codex_home}/#{entry}"
-          if File.regular?(source), do: sync_file(client, source, dest)
+
+          if File.regular?(source),
+            do: FileSync.sync_file(client, source, dest, @auth_file, "Codex")
         end)
 
         :ok
@@ -307,23 +309,6 @@ defmodule JidoClaw.Forge.Runners.Codex do
     do: {events, terminal, turns}
 
   defp handle_event(_, events, terminal, turns), do: {events, terminal, turns}
-
-  # ex_dna:disable-for-next-line
-  defp sync_file(client, source, dest) do
-    case File.read(source) do
-      {:ok, content} ->
-        encoded = Base.encode64(content)
-        Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
-        # `echo > dest` uses the process umask (commonly 0644). Codex's
-        # auth.json is mode 600 on host; preserve that posture in the
-        # sandbox copy so it isn't world-readable.
-        if Path.basename(dest) == @auth_file,
-          do: Sandbox.exec(client, "chmod 600 #{dest}", [])
-
-      {:error, reason} ->
-        Logger.debug("[Codex] Skipping #{source}: #{reason}")
-    end
-  end
 
   defp default_forge_home,
     do: Application.get_env(:jido_claw, :forge_home, "/var/local/forge")

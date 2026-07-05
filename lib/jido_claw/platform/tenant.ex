@@ -30,7 +30,9 @@ defmodule JidoClaw.Tenant do
     }
   end
 
-  defp generate_id do
+  @doc false
+  @spec generate_id() :: String.t()
+  def generate_id do
     "tenant_" <> Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
   end
 end

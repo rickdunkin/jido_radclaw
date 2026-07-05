@@ -213,16 +213,17 @@ defmodule JidoClaw.Forge.Manager do
         {:ok, pid} ->
           Process.monitor(pid)
           handle = %{session_id: session_id, pid: pid}
+          scope = event_scope(spec)
 
           new_state = %{
             state
             | sessions: MapSet.put(state.sessions, session_id),
               session_runners: Map.put(state.session_runners, session_id, runner_type),
-              session_scopes: Map.put(state.session_scopes, session_id, event_scope(spec)),
+              session_scopes: Map.put(state.session_scopes, session_id, scope),
               runner_counts: Map.update(state.runner_counts, runner_type, 1, &(&1 + 1))
           }
 
-          ForgePubSub.broadcast_session_event({:session_started, session_id, event_scope(spec)})
+          ForgePubSub.broadcast_session_event({:session_started, session_id, scope})
           {:reply, {:ok, handle}, new_state}
 
         {:error, :already_claimed} ->

@@ -56,6 +56,7 @@ defmodule JidoClaw.Tools.InspectWorkflow do
     ]
 
   alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Tools.Projection
   alias JidoClaw.WorkflowView
 
   @impl Jido.Action
@@ -89,7 +90,7 @@ defmodule JidoClaw.Tools.InspectWorkflow do
     %{run_id: s.run_id}
     |> put_present(:name, s.name)
     |> put_present(:workflow_type, s.workflow_type)
-    |> put_present(:run_status, stringify_nilable(s.status))
+    |> put_present(:run_status, Projection.stringify_nilable(s.status))
     |> put_present(:duration_ms, s.duration_ms)
     |> put_present(:started_at, JsonSafe.encode(s.started_at))
     |> put_present(:completed_at, JsonSafe.encode(s.completed_at))
@@ -108,9 +109,4 @@ defmodule JidoClaw.Tools.InspectWorkflow do
   # non-composer run rather than `JsonSafe.encode(nil)`).
   defp encode_present(nil), do: nil
   defp encode_present(value), do: JsonSafe.encode(value)
-
-  # `status` is atom|string|nil; a bare `to_string/1` would emit "nil" (nil is an
-  # atom). Mirror `tools/inspect_agent.ex`.
-  defp stringify_nilable(nil), do: nil
-  defp stringify_nilable(value), do: to_string(value)
 end

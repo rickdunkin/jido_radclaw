@@ -990,11 +990,6 @@ defmodule JidoClaw.CLI.Commands do
     MemoryScope.resolve(memory_tool_context(state))
   end
 
-  defp primary_fk(%{scope_kind: :user, user_id: id}), do: id
-  defp primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
-  defp primary_fk(%{scope_kind: :project, project_id: id}), do: id
-  defp primary_fk(%{scope_kind: :session, session_id: id}), do: id
-
   # Parse `<label>` or `<label> --source model|user|all`.
   defp parse_forget_args(input) do
     case String.split(input, "--source", parts: 2) do
@@ -1488,14 +1483,8 @@ defmodule JidoClaw.CLI.Commands do
 
   defp same_scope?(scope, block) do
     scope.scope_kind == block.scope_kind and
-      primary_fk(scope) == block_primary_fk(block)
+      MemoryScope.primary_fk(scope) == MemoryScope.primary_fk_or_nil(block)
   end
-
-  defp block_primary_fk(%{scope_kind: :user, user_id: id}), do: id
-  defp block_primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
-  defp block_primary_fk(%{scope_kind: :project, project_id: id}), do: id
-  defp block_primary_fk(%{scope_kind: :session, session_id: id}), do: id
-  defp block_primary_fk(_), do: nil
 
   defp open_in_editor(initial_content, suffix) do
     alias JidoClaw.Security.Redaction.Env, as: EnvRedaction
@@ -1565,7 +1554,7 @@ defmodule JidoClaw.CLI.Commands do
   defp render_block_history(scope, label) do
     case MemoryBlock.history_for_label(
            scope.scope_kind,
-           primary_fk(scope),
+           MemoryScope.primary_fk(scope),
            label,
            tenant: scope.tenant_id,
            actor: Actor.system(scope.tenant_id)

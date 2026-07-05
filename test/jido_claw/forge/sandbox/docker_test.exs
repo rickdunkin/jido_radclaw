@@ -333,7 +333,7 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
     test "onecli env is empty when disabled" do
       Application.put_env(:jido_claw, :onecli, enabled: false)
 
-      # We can't directly call the private onecli_env/1, but we can verify
+      # We can't directly call the private onecli_env/0, but we can verify
       # that create doesn't inject proxy env when onecli is disabled.
       # This is an indirect test via the module's behavior.
       assert Application.get_env(:jido_claw, :onecli)[:enabled] == false

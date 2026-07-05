@@ -360,13 +360,7 @@ defmodule JidoClaw.Embeddings.RatePacer do
     rpm_floor = ceil(60 / rpm)
     tpm_floor = ceil(60 / tpm)
     candidates = [{configured, :configured}, {rpm_floor, :rpm}, {tpm_floor, :tpm}]
-    {window, source} = Enum.max_by(candidates, fn {n, _src} -> n end)
-
-    if source == :configured do
-      {window, :configured}
-    else
-      {window, source}
-    end
+    Enum.max_by(candidates, fn {n, _src} -> n end)
   end
 
   defp rpm_or_tpm(:rpm, rpm, _tpm), do: rpm

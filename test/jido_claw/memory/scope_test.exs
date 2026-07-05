@@ -113,4 +113,25 @@ defmodule JidoClaw.Memory.ScopeTest do
       assert Scope.primary_fk(%{scope_kind: :user, user_id: "u"}) == "u"
     end
   end
+
+  describe "primary_fk_or_nil/1" do
+    test "selects the FK matching scope_kind" do
+      assert Scope.primary_fk_or_nil(%{scope_kind: :session, session_id: "s"}) == "s"
+      assert Scope.primary_fk_or_nil(%{scope_kind: :project, project_id: "p"}) == "p"
+      assert Scope.primary_fk_or_nil(%{scope_kind: :workspace, workspace_id: "w"}) == "w"
+      assert Scope.primary_fk_or_nil(%{scope_kind: :user, user_id: "u"}) == "u"
+    end
+
+    test "unknown scope_kind returns nil" do
+      assert Scope.primary_fk_or_nil(%{scope_kind: :galaxy, galaxy_id: "g"}) == nil
+      assert Scope.primary_fk_or_nil(%{}) == nil
+    end
+
+    test "known scope_kind with the FK field absent returns nil (never raises)" do
+      assert Scope.primary_fk_or_nil(%{scope_kind: :session}) == nil
+      assert Scope.primary_fk_or_nil(%{scope_kind: :project}) == nil
+      assert Scope.primary_fk_or_nil(%{scope_kind: :workspace}) == nil
+      assert Scope.primary_fk_or_nil(%{scope_kind: :user}) == nil
+    end
+  end
 end

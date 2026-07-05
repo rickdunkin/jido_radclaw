@@ -249,7 +249,7 @@ defmodule JidoClaw.Shell.ProfileManager do
     {profiles, default_env} = load_from_disk(state.project_dir)
 
     Logger.debug(
-      "[ProfileManager] Loaded #{map_size(profiles)} profiles from #{config_path(state.project_dir)}"
+      "[ProfileManager] Loaded #{map_size(profiles)} profiles from #{ShellUtil.config_path(state.project_dir)}"
     )
 
     if state.ets_mirror? do
@@ -499,8 +499,6 @@ defmodule JidoClaw.Shell.ProfileManager do
   # Internals — loading
   # ---------------------------------------------------------------------------
 
-  defp config_path(project_dir), do: Path.join([project_dir, ".jido", "config.yaml"])
-
   defp load_from_disk(project_dir) do
     config = Config.load(project_dir)
     raw = Config.profiles(config)
@@ -519,8 +517,10 @@ defmodule JidoClaw.Shell.ProfileManager do
       Logger.warning("[ProfileManager] Skipping profile with empty name")
       acc
     else
+      context = "[ProfileManager] profile '#{clean_name}'"
+
       coerced =
-        Enum.reduce(env, %{}, fn {k, v}, kv -> coerce_entry(kv, clean_name, k, v) end)
+        Enum.reduce(env, %{}, fn {k, v}, kv -> ShellUtil.coerce_env_entry(kv, context, k, v) end)
 
       Map.put(acc, clean_name, coerced)
     end
@@ -539,36 +539,12 @@ defmodule JidoClaw.Shell.ProfileManager do
 
   # Non-binary name: the name itself is a structured term that could
   # carry a secret payload. Never inspect it — log only the type
-  # hint, mirroring the key/value policy in `coerce_entry/4`.
+  # hint, mirroring the key/value policy in `ShellUtil.coerce_env_entry/4`.
   defp parse_profile(acc, name, other) do
     Logger.warning(
       "[ProfileManager] Profile with non-string name (got: #{ShellUtil.type_hint(name)}, env: #{ShellUtil.type_hint(other)}) — skipping"
     )
 
     acc
-  end
-
-  defp coerce_entry(acc, profile, key, value) do
-    cond do
-      not is_binary(key) ->
-        Logger.warning(
-          "[ProfileManager] Non-string key in profile '#{profile}' (got: #{ShellUtil.type_hint(key)}) — skipping entry"
-        )
-
-        acc
-
-      is_binary(value) ->
-        Map.put(acc, key, value)
-
-      is_integer(value) ->
-        Map.put(acc, key, Integer.to_string(value))
-
-      true ->
-        Logger.warning(
-          "[ProfileManager] Non-string value for #{profile}.#{key} (got: #{ShellUtil.type_hint(value)}) — skipping entry"
-        )
-
-        acc
-    end
   end
 end

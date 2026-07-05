@@ -247,24 +247,8 @@ defmodule JidoClaw.Forge.Harness do
     persist(fn -> log_event(state, "sandbox.provisioning") end)
     persist(fn -> update_phase(state, :provisioning) end)
 
-    base_spec =
-      state.spec
-      |> Map.get(:sandbox_spec, %{})
-      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
-
-    create_spec = build_sandbox_spec(state, base_spec)
-
-    case state.sandbox_module.create(create_spec) do
-      {:ok, client, sandbox_id} ->
-        entry = %{client: client, sandbox_id: sandbox_id, spec: base_spec}
-
-        new_state = %{
-          state
-          | clients: Map.put(state.clients, state.default_client, entry),
-            sandbox_id: sandbox_id,
-            state: :bootstrapping
-        }
-
+    case create_default_sandbox(state) do
+      {:ok, new_state, sandbox_id} ->
         persist(fn -> log_event(new_state, "sandbox.provisioned", %{sandbox_id: sandbox_id}) end)
         persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
 
@@ -855,24 +839,8 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp recover_provision(state) do
-    base_spec =
-      state.spec
-      |> Map.get(:sandbox_spec, %{})
-      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
-
-    create_spec = build_sandbox_spec(state, base_spec)
-
-    case state.sandbox_module.create(create_spec) do
-      {:ok, client, sandbox_id} ->
-        entry = %{client: client, sandbox_id: sandbox_id, spec: base_spec}
-
-        new_state = %{
-          state
-          | clients: Map.put(state.clients, state.default_client, entry),
-            sandbox_id: sandbox_id,
-            state: :bootstrapping
-        }
-
+    case create_default_sandbox(state) do
+      {:ok, new_state, sandbox_id} ->
         persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
         {:ok, new_state}
 
@@ -1121,24 +1089,8 @@ defmodule JidoClaw.Forge.Harness do
   end
 
   defp provision_sandbox_sync(state) do
-    base_spec =
-      state.spec
-      |> Map.get(:sandbox_spec, %{})
-      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
-
-    create_spec = build_sandbox_spec(state, base_spec)
-
-    case state.sandbox_module.create(create_spec) do
-      {:ok, client, sandbox_id} ->
-        entry = %{client: client, sandbox_id: sandbox_id, spec: base_spec}
-
-        new_state = %{
-          state
-          | clients: Map.put(state.clients, state.default_client, entry),
-            sandbox_id: sandbox_id,
-            state: :bootstrapping
-        }
-
+    case create_default_sandbox(state) do
+      {:ok, new_state, sandbox_id} ->
         persist(fn -> log_event(new_state, "sandbox.provisioned", %{sandbox_id: sandbox_id}) end)
         persist(fn -> Persistence.record_sandbox_id(state.session_id, sandbox_id) end)
         {:ok, new_state}
@@ -1341,6 +1293,36 @@ defmodule JidoClaw.Forge.Harness do
   defp resolve_client(:fake), do: JidoClaw.Forge.Runner.HostShell
   defp resolve_client(:docker_sandbox), do: JidoClaw.Forge.Sandbox.Docker
   defp resolve_client(module) when is_atom(module), do: module
+
+  # Create the default sandbox from the session spec and install its client
+  # entry in state. Ends right after `new_state` is built — callers own their
+  # divergent logging/dispatch tails (`recover_provision/1` deliberately never
+  # logs "sandbox.provisioned").
+  defp create_default_sandbox(state) do
+    base_spec =
+      state.spec
+      |> Map.get(:sandbox_spec, %{})
+      |> Map.put_new(:runner, Map.get(state.spec, :runner, :shell))
+
+    create_spec = build_sandbox_spec(state, base_spec)
+
+    case state.sandbox_module.create(create_spec) do
+      {:ok, client, sandbox_id} ->
+        entry = %{client: client, sandbox_id: sandbox_id, spec: base_spec}
+
+        new_state = %{
+          state
+          | clients: Map.put(state.clients, state.default_client, entry),
+            sandbox_id: sandbox_id,
+            state: :bootstrapping
+        }
+
+        {:ok, new_state, sandbox_id}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @doc """
   Build the backend create spec from the per-session `base_spec` (AR-8b-2 F2 1.5).

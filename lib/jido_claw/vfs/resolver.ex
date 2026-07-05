@@ -469,7 +469,15 @@ defmodule JidoClaw.VFS.Resolver do
     end
   end
 
-  defp under_path?(path, root) do
+  @doc """
+  True when `path` is at or below `root` (never an escaping `../`).
+
+  Exposed for `JidoClaw.VFS.Sandbox`, which reuses this containment check to
+  validate a `.prototypes/<uuid>/` sandbox root rather than re-implement path
+  safety (AR-8b).
+  """
+  @spec under_path?(String.t(), String.t()) :: boolean()
+  def under_path?(path, root) do
     relative = Path.relative_to(path, root)
 
     relative == "." or

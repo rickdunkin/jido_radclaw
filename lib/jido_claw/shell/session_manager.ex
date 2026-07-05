@@ -778,7 +778,6 @@ defmodule JidoClaw.Shell.SessionManager do
 
   defp build_ssh_session(workspace_id, server_name, project_dir, state) do
     with {:ok, entry} <- lookup_server(server_name),
-         {:ok, _secrets} <- resolve_server_secrets(entry),
          effective_env = Map.merge(entry.env, profile_env(workspace_id)),
          {:ok, ssh_config} <- ServerRegistry.build_ssh_config(entry, project_dir, effective_env),
          session_id = ssh_session_id(workspace_id, server_name),
@@ -819,13 +818,6 @@ defmodule JidoClaw.Shell.SessionManager do
     end
   catch
     :exit, _ -> {:error, :server_not_found}
-  end
-
-  defp resolve_server_secrets(entry) do
-    case ServerRegistry.resolve_secrets(entry) do
-      {:ok, secrets} -> {:ok, secrets}
-      {:error, _} = error -> error
-    end
   end
 
   defp start_ssh_session(workspace_id, session_id, entry, ssh_config) do

@@ -20,7 +20,7 @@ defmodule JidoClaw.Security.Redaction.Memory do
   alias JidoClaw.Security.Redaction.Patterns
 
   @sensitive_keys ~w(password passwd pwd secret token api_key apikey access_key
-                     authorization auth_token bearer credential credentials)
+                     authorization bearer credential)
 
   @doc """
   Redact a Fact's content (binary). Returns the redacted string.

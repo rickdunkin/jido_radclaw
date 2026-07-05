@@ -170,7 +170,7 @@ defmodule JidoClaw.Reasoning.AutoSelect do
   # ---------------------------------------------------------------------------
 
   defp pick_from_ranked([{name, score} | _rest] = ranked, prompt, opts) do
-    alternatives = Enum.map(ranked, fn {n, s} -> {n, s} end)
+    alternatives = ranked
 
     case tie_candidates(ranked) do
       [_, _ | _] = tied ->

@@ -25,6 +25,14 @@ defmodule JidoClaw.Export.CanonicalTest do
     assert Canonical.encode!(a) == Canonical.encode!(b)
   end
 
+  test "encode!/1 is key-type and input-order independent (fingerprint-safe)" do
+    atom_keyed = %{b: %{z: 1, a: 2}, a: 3}
+    string_keyed = %{"a" => 3, "b" => %{"a" => 2, "z" => 1}}
+
+    assert Canonical.encode!(atom_keyed) == Canonical.encode!(string_keyed)
+    assert Canonical.encode!(atom_keyed) == ~s({"a":3,"b":{"a":2,"z":1}})
+  end
+
   test "encode!/1 formats DateTime to ISO8601 microseconds" do
     {:ok, dt, _} = DateTime.from_iso8601("2026-05-07T12:00:00.123456Z")
     assert Canonical.encode!(%{"t" => dt}) == ~s({"t":"2026-05-07T12:00:00.123456Z"})

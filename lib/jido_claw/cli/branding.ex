@@ -207,6 +207,7 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m    /memory consolidate  Run consolidator now        \e[36m│\e[0m
     \e[36m│\e[0m    /memory status   Show consolidation history     \e[36m│\e[0m
     \e[36m│\e[0m    /memory blocks edit <label> Edit block in $EDITOR\e[36m│\e[0m
+    \e[36m│\e[0m    /workspace       Embedding/consolidation policy  \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mSolutions\e[0m                                       \e[36m│\e[0m
     \e[36m│\e[0m    /solutions       List solution store stats        \e[36m│\e[0m
@@ -229,10 +230,12 @@ defmodule JidoClaw.CLI.Branding do
     \e[36m│\e[0m    /gateway         Show gateway status             \e[36m│\e[0m
     \e[36m│\e[0m    /tenants         List tenants                    \e[36m│\e[0m
     \e[36m│\e[0m    /channels        Discord consumer status         \e[36m│\e[0m
+    \e[36m│\e[0m    /gates           Pending tool approvals          \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m│\e[0m  \e[1mServers\e[0m                                         \e[36m│\e[0m
     \e[36m│\e[0m    /servers         List declared servers           \e[36m│\e[0m
     \e[36m│\e[0m    /servers test <n> Connectivity check             \e[36m│\e[0m
+    \e[36m│\e[0m    /profile         Show/switch shell profiles      \e[36m│\e[0m
     \e[36m│\e[0m                                                   \e[36m│\e[0m
     \e[36m╰───────────────────────────────────────────────────╯\e[0m
     """

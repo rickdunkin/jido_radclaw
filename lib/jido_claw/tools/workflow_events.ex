@@ -62,6 +62,7 @@ defmodule JidoClaw.Tools.WorkflowEvents do
       ]
     ]
 
+  alias JidoClaw.Tools.Projection
   alias JidoClaw.WorkflowView
 
   @impl Jido.Action
@@ -88,7 +89,7 @@ defmodule JidoClaw.Tools.WorkflowEvents do
   # only when non-nil (a present-but-nil `next_seq` would fail its `:integer`).
   defp project(feed) do
     %{run_id: feed.run_id, count: feed.count, events: feed.events}
-    |> put_present(:run_status, stringify_nilable(feed.run_status))
+    |> put_present(:run_status, Projection.stringify_nilable(feed.run_status))
     |> put_present(:next_seq, feed.next_seq)
   end
 
@@ -96,9 +97,4 @@ defmodule JidoClaw.Tools.WorkflowEvents do
   # validated when PRESENT, so a present-but-nil value would fail its type).
   defp put_present(map, _key, nil), do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
-
-  # `status` is atom|string|nil; a bare `to_string/1` would emit "nil" (nil is an
-  # atom). Mirror `tools/inspect_workflow.ex`.
-  defp stringify_nilable(nil), do: nil
-  defp stringify_nilable(value), do: to_string(value)
 end

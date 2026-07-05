@@ -485,49 +485,104 @@ the PullRequestCoordinator compile_check narrative.
 
 ## 4. Easy improvements
 
+> **Status — updated 2026-07-05.** Everything below except four deliberate deferrals is
+> implemented in a single migration-free batch PR (plan:
+> `.claude/plans/please-read-docs-reports-codebase-audit-serene-hoare.md`); per-entry
+> `✅ Done` / `⏭` markers inline. Deferred: the two test-suite dedups (`eventually` +
+> `kinds/2` — a 30+-file test-only churn, split into its own follow-up PR), the
+> `~w(talk sketch code system)` pair (port-fidelity skip), and the JIDO.md drift guard
+> (rides with the §3 doc sweep). Wherever removed code could be mistaken for load-bearing,
+> a new test pins the contract (canonical encode determinism, redaction-key subsumption,
+> `primary_fk_or_nil/1` nil-totality, cold-snapshot cap/count, stdio scrub exit status,
+> help entries). Two shared modules were introduced: `JidoClaw.Tools.Projection` and
+> `JidoClaw.Forge.Runners.FileSync`.
+
 **Duplication:**
 - `eventually`-style polling helper hand-rolled in **15 test files** — extract one
-  `test/support` helper. `[H]`
+  `test/support` helper. `[H]` ⏭ **Deferred** to a follow-up test-support dedup PR
+  (plan-time census: **19** files, not 15).
 - `defp kinds/2` duplicated in 13 composer/orchestration test files while
   `LeaseHelpers.kinds/2` exists (one file imports LeaseHelpers and still redefines it). `[M]`
+  ⏭ **Deferred** to the same follow-up PR.
 - `forge/harness.ex:255,863,1129` — the provision block triplicated verbatim. `[M]`
+  ✅ **Done** — extracted as `create_default_sandbox/1`, which ends right after `new_state`
+  is built so the three callers keep their divergent log/record/dispatch tails
+  (`recover_provision/1` deliberately never logs `sandbox.provisioned`).
 - `runners/claude_code.ex:183` / `codex.ex:312` — byte-identical `sync_file/3` (both
-  already carry ex_dna pragmas). `[M]`
+  already carry ex_dna pragmas). `[M]` ✅ **Done** — single-sourced as
+  `JidoClaw.Forge.Runners.FileSync.sync_file/5` (auth-file + log label parameterized);
+  both ex_dna pragmas deleted with the copies.
 - `vfs/sandbox.ex:202-207` `under?/2` duplicates `Resolver.under_path?/2` — a
-  containment check worth single-sourcing. `[M]`
+  containment check worth single-sourcing. `[M]` ✅ **Done** — `Resolver.under_path?/2`
+  promoted public (`@spec` + doc, the `realpath/1` precedent); Sandbox calls it and its
+  mirror is deleted.
 - `route_composer/router.ex:37` + `catalog_validator.ex:60` — `~w(talk sketch code
-  system)` duplicated (desync risk; port-fidelity caveat noted). `[M]`
+  system)` duplicated (desync risk; port-fidelity caveat noted). `[M]` ⏭ **Skipped
+  deliberately** — the two files are 1:1 ports of *separate* Alp River upstream files
+  (`route.py`, `check_catalog.py`); single-sourcing would couple the ports. Stays as
+  documented duplication unless port-fidelity stops binding.
 - `platform/tenant.ex:33-35` / `tenants/resources/tenant.ex:152-154` — `generate_id/0`
-  byte-identical twice. `[M]`
+  byte-identical twice. `[M]` ✅ **Done** — `JidoClaw.Tenant.generate_id/0` made public;
+  the Ash resource's attribute default points at it and the resource-local copy is deleted.
 - `cli/commands.ex:993,1494` — `primary_fk/1` duplicates `Memory.Scope.primary_fk/1`
-  (already aliased + called in the same file), plus a third near-copy. `[M]`
+  (already aliased + called in the same file), plus a third near-copy. `[M]` ✅ **Done** —
+  both commands.ex locals deleted; the nil-tolerant third copy became
+  `Memory.Scope.primary_fk_or_nil/1` at the canonical source, with explicit clauses (a
+  guard-on-kind delegate would still raise on a partial map, since `primary_fk/1`'s heads
+  also match the FK field) + nil-totality tests.
 - `stringify_nilable/1` copy-pasted in three MCP projection tools, each with a "Mirror"
   comment (`inspect_agent.ex:136`, `inspect_workflow.ex:114`, `workflow_events.ex:102`). `[M]`
+  ✅ **Done** — single-sourced in the new `JidoClaw.Tools.Projection`; all three copies +
+  "Mirror" comment chains deleted.
 - `shell/profile_manager.ex:551,502` / `server_registry.ex:466,315` — env coercion and
-  `config_path/1` duplicated; both alias `ShellUtil` already. `[M]`
+  `config_path/1` duplicated; both alias `ShellUtil` already. `[M]` ✅ **Done** — both
+  promoted to `Shell.Util` (`config_path/1`; `coerce_env_entry/4` takes a caller context
+  label with unified lowercase log wording — the two pinned profile-manager log assertions
+  updated to match).
 
 **Wasted work / no-ops:**
 - `agent_view.ex:348-349` — identical `for_session_primary` query runs twice per cold
-  snapshot (list + count). `[M]`
+  snapshot (list + count). `[M]` ✅ **Done** — a `messages_and_count/3` dispatcher keeps
+  warm/mixed paths byte-identical and runs the cold read once; the count stays the PRE-cap
+  filtered total (new cold-path test: 60 seeded messages → 50 rendered, `message_count` 60).
 - `shell/session_manager.ex:781` — SSH secrets resolved twice per session build. `[M]`
+  ✅ **Done** — the discarded-result `resolve_server_secrets` gate deleted
+  (`ServerRegistry.build_ssh_config/3` re-resolves internally and returns the same
+  `{:error, {:missing_env, _}}`), along with the then-dead private wrapper.
 - `export/canonical.ex:43` — sort immediately discarded by `Map.new/1` (re-sorted at
-  encode). `[M]`
+  encode). `[M]` ✅ **Done** — plus a pinning test for what the sort could be mistaken for
+  providing (atom/string-key equivalence, byte-identical output across input key orderings).
 - `embeddings/rate_pacer.ex:365` — both `if` branches identical; `reasoning/auto_select.ex:173`
   — identity `Enum.map`; `reasoning/telemetry.ex:289` — `Map.merge(%{}, m)` no-op;
-  `forge/manager.ex:221,225` — `event_scope` computed twice. `[M]`
+  `forge/manager.ex:221,225` — `event_scope` computed twice. `[M]` ✅ **All four done.**
 - `forge/sandbox/docker.ex:575` — `resolve_agent_token/2` ignores `_sandbox_id`
-  (name implies per-sandbox selection). `[M]`
+  (name implies per-sandbox selection). `[M]` ✅ **Done** — the dead `sandbox_id` thread
+  removed end-to-end (`resolve_agent_token/1`, `onecli_env/0`, `inject_onecli_env/2`);
+  the public test-facing `maybe_inject_onecli_env/4` keeps its arity with the param
+  underscored.
 - `security/redaction/memory.ex:22-23` — `auth_token`/`credentials` subsumed by
-  `token`/`credential` under contains-matching. `[low]`
+  `token`/`credential` under contains-matching. `[low]` ✅ **Done** — removed; a new
+  `security/redaction/memory_test.exs` pins the subsumption (`auth_token`/`credentials`/
+  `token` all still redact) so a future removal of the short forms can't silently
+  un-redact the long ones.
 
 **Test hygiene:**
 - `test/jido_claw/mcp/stdio_env_scrub_test.exs:44` — printenv-absent branch is a bare
   `assert true` (test passes asserting nothing on hosts without printenv). `[M]`
+  ✅ **Done** — rewritten to spawn POSIX-guaranteed `/bin/sh -c env` (no `find_executable`
+  fallback that can silently pass); the port collector now also returns the exit status,
+  asserted `== 0`.
 
 **Process:**
 - Add a JIDO.md drift guard (see §3) — the only generated-doc surface without one.
+  ⏭ **Deferred** — rides with the §3 doc-sweep PR.
 - CLI help: `/gates`, `/profile`, `/workspace` are routed but absent from
   `Branding.help_text/0` (missing rather than wrong — noted for completeness).
+  ✅ **Done** — one entry each (`/gates` → Platform, `/profile` → Servers, `/workspace` →
+  Memory), width-matched to section neighbors; `/exit`/`/config` stay omitted as pure
+  aliases of `/quit`/`/setup`. A new branding test pins presence + ANSI-stripped width
+  parity with a sibling line per section (the box is pre-existingly ragged — full
+  realignment to one interior width is a separate cosmetic follow-up).
 
 ---
 
@@ -546,4 +601,7 @@ the PullRequestCoordinator compile_check narrative.
    lifecycle, SecretRef, network initiation, forge scaffolding, error toolkit.
 4. **Mechanical dead-code deletes** (§2 lists): safe once (3) is decided; delete
    test-only Ash actions with their tests.
-5. **Improvements** (§4) opportunistically.
+5. **Improvements** (§4): ✅ **done** — the 2026-07-05 §4 batch PR implements everything
+   except the deferred test-suite dedups (`eventually`/`kinds/2` — own follow-up PR), the
+   port-fidelity-skipped `~w(talk sketch code system)` pair, and the JIDO.md drift guard
+   (folded into step 2's doc sweep).

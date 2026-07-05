@@ -345,8 +345,7 @@ defmodule JidoClaw.AgentView do
 
     {events, summary} = trace_events_and_summary(trace, opts)
 
-    messages = fetch_messages(base, worker_info, opts)
-    message_count = total_message_count(worker_info, base)
+    {messages, message_count} = messages_and_count(base, worker_info, opts)
 
     status = derive_status(trace, owner, worker_info, base)
     error = if status == :error, do: derive_error_payload(trace), else: nil
@@ -467,6 +466,19 @@ defmodule JidoClaw.AgentView do
     {capped, summary}
   end
 
+  # Warm/mixed paths are unchanged; a cold snapshot runs the unlimited
+  # `for_session_primary` read ONCE — count from the PRE-cap filtered rows
+  # (`cold_messages/1` already restricts to chat roles), never `length` of
+  # the capped list.
+  defp messages_and_count(base, {:ok, _} = worker_info, opts),
+    do: {fetch_messages(base, worker_info, opts), total_message_count(worker_info, base)}
+
+  defp messages_and_count(base, :no_worker, opts) do
+    rows = cold_messages(base)
+    limit = Keyword.get(opts, :messages_limit, @default_messages_limit)
+    {cap_messages(rows, limit), length(rows)}
+  end
+
   defp fetch_messages(base, worker_info, opts) do
     limit = Keyword.get(opts, :messages_limit, @default_messages_limit)
     raw = raw_messages(base, worker_info)
@@ -479,8 +491,6 @@ defmodule JidoClaw.AgentView do
       _ -> cold_messages(base)
     end
   end
-
-  defp raw_messages(base, :no_worker), do: cold_messages(base)
 
   defp cold_messages(%{session_uuid: nil}), do: []
 
@@ -515,25 +525,6 @@ defmodule JidoClaw.AgentView do
 
   defp total_message_count({:ok, %{message_count: count}}, _base) when is_integer(count),
     do: count
-
-  defp total_message_count(:no_worker, %{session_uuid: nil}), do: 0
-
-  defp total_message_count(:no_worker, %{
-         session_uuid: session_uuid,
-         tenant_id: tenant_id,
-         actor: actor
-       }) do
-    # Match the chat-visible count to what `to_view/1`/`cold_message_view/1`
-    # renders: primary rows (sub-agents excluded) restricted to chat roles.
-    case ConversationsMessage.for_session_primary(session_uuid, tenant: tenant_id, actor: actor) do
-      {:ok, rows} -> Enum.count(rows, &(&1.role in [:user, :assistant, :system]))
-      _ -> 0
-    end
-  rescue
-    _ in @db_errors ->
-      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
-      0
-  end
 
   defp derive_status(trace, owner, worker_info, base) do
     cond do

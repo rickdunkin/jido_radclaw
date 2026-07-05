@@ -263,7 +263,7 @@ defmodule JidoClaw.Shell.ServerRegistry do
     servers = load_from_disk(state.project_dir)
 
     Logger.debug(
-      "[ServerRegistry] Loaded #{map_size(servers)} servers from #{config_path(state.project_dir)}"
+      "[ServerRegistry] Loaded #{map_size(servers)} servers from #{ShellUtil.config_path(state.project_dir)}"
     )
 
     {:noreply, %{state | servers: servers}}
@@ -311,8 +311,6 @@ defmodule JidoClaw.Shell.ServerRegistry do
   # ---------------------------------------------------------------------------
   # Internals — loading & validation
   # ---------------------------------------------------------------------------
-
-  defp config_path(project_dir), do: Path.join([project_dir, ".jido", "config.yaml"])
 
   defp load_from_disk(project_dir) do
     project_dir
@@ -452,7 +450,9 @@ defmodule JidoClaw.Shell.ServerRegistry do
         %{}
 
       map when is_map(map) ->
-        Enum.reduce(map, %{}, fn {k, v}, acc -> coerce_env_entry(acc, name, k, v) end)
+        context = "[ServerRegistry] server '#{name}'"
+
+        Enum.reduce(map, %{}, fn {k, v}, acc -> ShellUtil.coerce_env_entry(acc, context, k, v) end)
 
       other ->
         Logger.warning(
@@ -460,30 +460,6 @@ defmodule JidoClaw.Shell.ServerRegistry do
         )
 
         %{}
-    end
-  end
-
-  defp coerce_env_entry(acc, name, key, value) do
-    cond do
-      not is_binary(key) ->
-        Logger.warning(
-          "[ServerRegistry] Server '#{name}' has non-string env key (got: #{ShellUtil.type_hint(key)}) — skipping entry"
-        )
-
-        acc
-
-      is_binary(value) ->
-        Map.put(acc, key, value)
-
-      is_integer(value) ->
-        Map.put(acc, key, Integer.to_string(value))
-
-      true ->
-        Logger.warning(
-          "[ServerRegistry] Server '#{name}' env.#{key} is #{ShellUtil.type_hint(value)} — skipping entry"
-        )
-
-        acc
     end
   end
 

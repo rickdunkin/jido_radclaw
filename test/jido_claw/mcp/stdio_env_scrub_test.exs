@@ -38,31 +38,27 @@ defmodule JidoClaw.MCP.StdioEnvScrubTest do
     System.put_env(@sentinel, "leakme")
     on_exit(fn -> System.delete_env(@sentinel) end)
 
-    case System.find_executable("printenv") do
-      nil ->
-        # No `printenv` available — the scrub unit test above still covers it.
-        assert true
+    # POSIX guarantees /bin/sh, and `env` emits KEY=VALUE lines — no
+    # find_executable fallback that could silently skip the assertion.
+    port =
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        [:binary, :exit_status, {:args, ["-c", "env"]}, {:env, Env.scrubbed_port_env([])}]
+      )
 
-      printenv ->
-        port =
-          Port.open(
-            {:spawn_executable, printenv},
-            [:binary, :exit_status, {:env, Env.scrubbed_port_env([])}]
-          )
+    {output, status} = collect_port_output(port, "")
 
-        output = collect_port_output(port, "")
-
-        refute output =~ "#{@sentinel}=leakme"
-        assert output =~ "PATH="
-    end
+    assert status == 0
+    refute output =~ "#{@sentinel}=leakme"
+    assert output =~ "PATH="
   end
 
   defp collect_port_output(port, acc) do
     receive do
       {^port, {:data, data}} -> collect_port_output(port, acc <> data)
-      {^port, {:exit_status, _status}} -> acc
+      {^port, {:exit_status, status}} -> {acc, status}
     after
-      3_000 -> acc
+      3_000 -> {acc, :timeout}
     end
   end
 end

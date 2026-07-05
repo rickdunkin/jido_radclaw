@@ -6,6 +6,7 @@ defmodule JidoClaw.AgentViewTest do
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.AgentView
+  alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Orchestration.ToolApprovals
   alias JidoClaw.Session.Worker, as: SessionWorker
@@ -390,6 +391,22 @@ defmodule JidoClaw.AgentViewTest do
       assert {:ok, view} = AgentView.snapshot(session, messages_limit: :infinity)
       assert Enum.count(view.messages) == 5
     end
+
+    test "cold snapshot (no worker) caps messages at the default while message_count keeps the pre-cap total",
+         %{tenant_id: tid, session: session, actor: actor} do
+      for i <- 1..60 do
+        {:ok, _} =
+          ConversationsMessage.append(
+            %{session_id: session.id, role: :user, content: "m#{i}"},
+            tenant: tid,
+            actor: actor
+          )
+      end
+
+      assert {:ok, view} = AgentView.snapshot(session)
+      assert Enum.count(view.messages) == 50
+      assert view.message_count == 60
+    end
   end
 
   describe "snapshot/2 — compaction" do
@@ -516,6 +533,11 @@ defmodule JidoClaw.AgentViewTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
+  # Any struct (DateTime, NaiveDateTime, Date, …) is JSON-unsafe at the MCP
+  # boundary. Must precede the `is_map/1` clause — structs are maps, and one
+  # reaching that clause would crash `Enum.any?` (structs aren't Enumerable).
+  defp leaf_violates?(value) when is_struct(value), do: true
+
   defp leaf_violates?(value) when is_map(value) do
     Enum.any?(value, fn {k, v} -> not is_binary(k) or leaf_violates?(v) end)
   end
@@ -525,8 +547,5 @@ defmodule JidoClaw.AgentViewTest do
   defp leaf_violates?(true), do: false
   defp leaf_violates?(false), do: false
   defp leaf_violates?(value) when is_atom(value), do: true
-
-  defp leaf_violates?(%DateTime{}), do: true
-  defp leaf_violates?(%NaiveDateTime{}), do: true
   defp leaf_violates?(_), do: false
 end

@@ -366,7 +366,7 @@ defmodule JidoClaw.Shell.ProfileManagerTest do
           )
 
           # replace_profiles_for_test replaces profiles directly; it
-          # doesn't re-run coerce_entry. To trigger the log path we
+          # doesn't re-run the env coercion. To trigger the log path we
           # invoke coerce via a reload that routes through parse_profile.
           # Simpler: write a config with a non-string YAML key and
           # reload.
@@ -381,7 +381,7 @@ defmodule JidoClaw.Shell.ProfileManagerTest do
           Process.sleep(50)
         end)
 
-      assert log =~ "Non-string key"
+      assert log =~ "non-string key"
       refute log =~ "leak-me-as-key"
     end
 
@@ -423,7 +423,8 @@ defmodule JidoClaw.Shell.ProfileManagerTest do
           Process.sleep(50)
         end)
 
-      assert log =~ "Non-string value for staging.DATABASE_PASSWORD"
+      assert log =~ "profile 'staging'"
+      assert log =~ "non-string value for DATABASE_PASSWORD"
       assert log =~ "list/1"
       refute log =~ "leak-me-please"
     end

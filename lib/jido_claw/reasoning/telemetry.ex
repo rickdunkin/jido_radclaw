@@ -285,8 +285,7 @@ defmodule JidoClaw.Reasoning.Telemetry do
       session_uuid: Keyword.get(opts, :session_uuid),
       project_dir: Keyword.get(opts, :project_dir),
       forge_session_key: Keyword.get(opts, :forge_session_key),
-      # Caller-supplied metadata wins on key collision.
-      metadata: Map.merge(%{}, caller_metadata),
+      metadata: caller_metadata,
       started_at: started_at,
       completed_at: completed_at
     }

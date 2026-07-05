@@ -40,7 +40,6 @@ defmodule JidoClaw.Export.Canonical do
   def canonicalize(value) when is_map(value) and not is_struct(value) do
     value
     |> Enum.map(fn {k, v} -> {to_string(k), canonicalize(v)} end)
-    |> Enum.sort_by(fn {k, _} -> k end)
     |> Map.new()
   end
 

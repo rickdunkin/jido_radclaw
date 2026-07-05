@@ -84,7 +84,7 @@ defmodule JidoClaw.VFS.Sandbox do
          {:ok, real_dir} <- Resolver.realpath(expanded),
          {:ok, real_parent} <- Resolver.realpath(parent),
          :ok <- ensure(Path.basename(real_parent) == ".prototypes", :symlinked_prototypes) do
-      ensure(under?(real_dir, real_parent), :escapes_prototypes)
+      ensure(Resolver.under_path?(real_dir, real_parent), :escapes_prototypes)
     end
   end
 
@@ -196,13 +196,4 @@ defmodule JidoClaw.VFS.Sandbox do
 
   defp ensure(true, _reason), do: :ok
   defp ensure(false, reason), do: {:error, reason}
-
-  # Mirror of Resolver.under_path?/2 (private there): `child` is at or below
-  # `parent` (never an escaping `../`).
-  defp under?(child, parent) do
-    relative = Path.relative_to(child, parent)
-
-    relative == "." or
-      (relative != child and relative != ".." and not String.starts_with?(relative, "../"))
-  end
 end

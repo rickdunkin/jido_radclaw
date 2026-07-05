@@ -105,7 +105,7 @@ defmodule JidoClaw.Tenants.Tenant do
       primary_key?(true)
       allow_nil?(false)
       public?(true)
-      default(&__MODULE__.generate_id/0)
+      default(&JidoClaw.Tenant.generate_id/0)
     end
 
     attribute :name, :string do
@@ -145,11 +145,5 @@ defmodule JidoClaw.Tenants.Tenant do
   @spec ensure(String.t()) :: {:ok, t()} | {:error, term()}
   def ensure(id) when is_binary(id) do
     register(%{id: id, name: id, status: :active})
-  end
-
-  @doc false
-  @spec generate_id() :: String.t()
-  def generate_id do
-    "tenant_" <> Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
   end
 end

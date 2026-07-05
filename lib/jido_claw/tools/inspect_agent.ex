@@ -57,6 +57,7 @@ defmodule JidoClaw.Tools.InspectAgent do
 
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Inspection
+  alias JidoClaw.Tools.Projection
 
   @impl Jido.Action
   def run(params, context) do
@@ -111,7 +112,7 @@ defmodule JidoClaw.Tools.InspectAgent do
 
     %{
       system_prompt: s.system_prompt,
-      model: stringify_nilable(s.model),
+      model: Projection.stringify_nilable(s.model),
       tool_names: s.tool_names,
       mcp_tools: s.mcp_tools,
       context_preview: s.context_preview,
@@ -123,18 +124,13 @@ defmodule JidoClaw.Tools.InspectAgent do
       memory: memory,
       usage: JsonSafe.encode(s.usage),
       duration_ms: s.duration_ms,
-      status: stringify_nilable(s.status),
+      status: Projection.stringify_nilable(s.status),
       error: JsonSafe.encode(s.error),
       message_count: s.message_count,
       request_id: s.request_id,
       input_kind: Atom.to_string(s.input_kind)
     }
   end
-
-  # `model`/`status` are atom-or-string-or-nil. A bare `to_string/1` would
-  # emit `"nil"` (nil is an atom) at the MCP boundary, so preserve nil.
-  defp stringify_nilable(nil), do: nil
-  defp stringify_nilable(value), do: to_string(value)
 
   # Expose only the scope *kind* + block count at the MCP boundary — never
   # an FK or raw UUID. Both the `scope` sub-map and the FK embedded in

@@ -88,19 +88,19 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   Public so a test can drive the skip at the real call site without a live `sbx`.
   """
   @spec maybe_inject_onecli_env(map(), t(), String.t(), String.t()) :: :ok
-  def maybe_inject_onecli_env(spec, client, sandbox_id, sandbox_name) do
+  def maybe_inject_onecli_env(spec, client, _sandbox_id, sandbox_name) do
     if isolate_global_config?(spec) do
       :ok
     else
-      inject_onecli_env(client, sandbox_id, sandbox_name)
+      inject_onecli_env(client, sandbox_name)
       :ok
     end
   end
 
   # Inject OneCLI proxy env if configured. Trusted config, pre-bootstrap —
   # a failure degrades proxying but must not fail sandbox creation.
-  defp inject_onecli_env(client, sandbox_id, sandbox_name) do
-    env = onecli_env(sandbox_id)
+  defp inject_onecli_env(client, sandbox_name) do
+    env = onecli_env()
 
     if map_size(env) > 0 do
       case inject_env(client, env) do
@@ -536,12 +536,12 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     Application.get_env(:jido_claw, :onecli, [])
   end
 
-  defp onecli_env(sandbox_id) do
+  defp onecli_env do
     config = onecli_config()
 
     if Keyword.get(config, :enabled, false) do
       gateway_url = Keyword.get(config, :gateway_url)
-      token = resolve_agent_token(sandbox_id, config)
+      token = resolve_agent_token(config)
 
       env = %{
         "HTTP_PROXY" => gateway_url,
@@ -572,7 +572,7 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     end
   end
 
-  defp resolve_agent_token(_sandbox_id, config) do
+  defp resolve_agent_token(config) do
     case Keyword.get(config, :agent_tokens, []) do
       [] -> nil
       tokens -> Enum.random(tokens)

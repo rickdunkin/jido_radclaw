@@ -2,6 +2,7 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @moduledoc false
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.{Runner, Sandbox}
+  alias JidoClaw.Forge.Runners.FileSync
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
 
@@ -169,29 +170,18 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
           dest = "#{forge_home}/.claude/#{entry}"
 
           cond do
-            File.regular?(source) -> sync_file(client, source, dest)
-            File.dir?(source) -> sync_dir(client, source, dest)
-            true -> :skip
+            File.regular?(source) ->
+              FileSync.sync_file(client, source, dest, @auth_file, "ClaudeCode")
+
+            File.dir?(source) ->
+              sync_dir(client, source, dest)
+
+            true ->
+              :skip
           end
         end)
 
         :ok
-    end
-  end
-
-  # ex_dna:disable-for-next-line
-  defp sync_file(client, source, dest) do
-    case File.read(source) do
-      {:ok, content} ->
-        encoded = Base.encode64(content)
-        Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
-        # `echo > dest` uses the process umask; `credentials.json` is mode 600
-        # on host, so preserve that posture in the sandbox copy.
-        if Path.basename(dest) == @auth_file,
-          do: Sandbox.exec(client, "chmod 600 #{dest}", [])
-
-      {:error, reason} ->
-        Logger.debug("[ClaudeCode] Skipping #{source}: #{reason}")
     end
   end
 
@@ -205,9 +195,14 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
           dest = "#{dest_dir}/#{entry}"
 
           cond do
-            File.regular?(source) -> sync_file(client, source, dest)
-            File.dir?(source) -> sync_dir(client, source, dest)
-            true -> :skip
+            File.regular?(source) ->
+              FileSync.sync_file(client, source, dest, @auth_file, "ClaudeCode")
+
+            File.dir?(source) ->
+              sync_dir(client, source, dest)
+
+            true ->
+              :skip
           end
         end)
 

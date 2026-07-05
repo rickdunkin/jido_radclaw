@@ -248,4 +248,21 @@ defmodule JidoClaw.Memory.Scope do
   def primary_fk(%{scope_kind: :project, project_id: id}), do: id
   def primary_fk(%{scope_kind: :workspace, workspace_id: id}), do: id
   def primary_fk(%{scope_kind: :user, user_id: id}), do: id
+
+  @doc """
+  Nil-total variant of `primary_fk/1` for possibly-partial scope maps
+  (e.g. a `Memory.Block` row's stored scope columns): an unknown
+  `scope_kind` or a missing FK field returns `nil` instead of raising.
+
+  The clauses are restated explicitly rather than delegating —
+  `primary_fk/1`'s heads also pattern-match the FK field, so a
+  guard-on-`scope_kind` delegate would still raise on
+  `%{scope_kind: :session}` without `session_id`.
+  """
+  @spec primary_fk_or_nil(map()) :: Ecto.UUID.t() | nil
+  def primary_fk_or_nil(%{scope_kind: :session, session_id: id}), do: id
+  def primary_fk_or_nil(%{scope_kind: :project, project_id: id}), do: id
+  def primary_fk_or_nil(%{scope_kind: :workspace, workspace_id: id}), do: id
+  def primary_fk_or_nil(%{scope_kind: :user, user_id: id}), do: id
+  def primary_fk_or_nil(_), do: nil
 end
