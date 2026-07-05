@@ -3,12 +3,16 @@
 **Living draft.** This document sketches how argus should work at the product
 layer — the shape we currently believe in, not a finalized spec. It extends
 [OVERVIEW.md](OVERVIEW.md) (architecture: cluster topology, API surface, the
-§5 editor family); where the two disagree, this document is newer. The pending
-pms-corpus digs (multica, Chorus, the symphony pair, orca —
-[../pms/README.md](../pms/README.md)) are expected to reshape details here;
-§13 lists the sections that should stay soft until they land. Corpus shorthand
-(`TR…`, `EM…`, `MX…`, `CC…`, `XA…`) resolves via
-[../ades/README.md](../ades/README.md); this doc answers pms observation 6
+§5 editor family); where the two disagree, this document is newer. The
+pms-corpus digs ([../pms/README.md](../pms/README.md)) have all landed
+(2026-07-04) and are folded in — §13 records what each hardened — and
+[SYNTHESIS.md](SYNTHESIS.md) (2026-07-05) rolls both corpora up by argus
+concern: the composite checklists, the merged do-now queue, and the
+open-question register this doc cites piecemeal. Corpus shorthand
+(`TR…`, `EM…`, `MX…`, `CC…`, `XA…` — ades; `MC…`, `CH…`, `SY…`, `OR…`,
+`BO…`, `PD…`, `MY…`, `OH…` — pms) resolves via the two corpus READMEs
+([../ades/README.md](../ades/README.md),
+[../pms/README.md](../pms/README.md)); this doc answers pms observation 6
 (the task layer) in the affirmative.
 
 ## 1. The shape of the system
@@ -160,8 +164,12 @@ a worktree at setup — never copied around by hand. Per-node CLI credentials
 follow the Forge OAuth file-sync approach. A worktree isn't offered to a
 thread until ready.
 
-**Deletion is phased and dirty-checked** (the corpus teardown spectrum's
-strong end: TR2-1, MX2-2) and never delegated to an agent (CC2-3).
+**Deletion is phased, dirty-checked, PR-aware, and reconciled** — the
+composite teardown law ([SYNTHESIS §5.3](SYNTHESIS.md)): phased +
+dirty-checked (the corpus spectrum's strong end: TR2-1, MX2-2), a
+teardown-time open-PR sweep (SY2-4), and a records↔worktrees
+reconciliation sweep (against myrlin's record-delete stranding, MY2-3) —
+and never delegated to an agent (CC2-3).
 
 ## 6. Sub-threads & fan-out
 
@@ -207,9 +215,10 @@ never hits the board unsorted; `ready` means automation-eligible; `done`
 releases dependents while `canceled` terminates without releasing (default
 policy); blocked is **computed** from dependencies, never a kind. User
 automations bind to statuses and lanes; *system* behavior binds to kinds:
-dependency release ("start B when A reaches a `done`-kind status" — orca's
-auto-queue), cross-project review queues, merge auto-advance, completion
-detection.
+dependency release ("queue B when A reaches a `done`-kind status" — orca's
+queue-then-release: release ≠ start; whether `ready`-kind is the arming bit
+or arming is per-task is the slice-3 OQ), cross-project review queues,
+merge auto-advance, completion detection.
 
 **Task ↔ thread is M:N with a strong default of one task per thread.** The
 M:N exists for the roll-in case: a task that turns out to be a dupe,
@@ -292,7 +301,7 @@ thread; a thread hosts many runs over its lifetime. "Select a workflow at
 creation" simply queues the thread's first run.
 
 The **react-flow visual editor** is UX over this schema (nodes = steps,
-edges = `depends_on`), and deliberately late (§11): YAML authoring +
+edges = `depends_on`), and deliberately late (§13, slice 7): YAML authoring +
 import/export works from the moment the resource exists, and the schema
 should stabilize before the editor freezes it visually.
 
@@ -305,8 +314,11 @@ Both paths exist, chosen per project (and overridable per landing):
   creation, a **review gate on the PR title/description** — the §5 editor
   family's first shipping use: a `:review` gate holding the PR metadata,
   a typed editor, and promote-the-edit-on-resume (the operator's edit *is*
-  what ships — not a re-prompt; the property the 15-repo corpus verified
-  nobody else has). Gate on by default; per-project/per-workflow setting to
+  what ships — not a re-prompt; **execution-layer** head-promotion, the
+  property the 15-repo corpus verified nobody else has — the plan-layer
+  variant ships three times, all promoting verbatim,
+  [SYNTHESIS §2](SYNTHESIS.md)). Gate on by default;
+  per-project/per-workflow setting to
   disable. The merge webhook auto-advances **explicitly linked** tasks (via
   status semantic kind) and offers phased worktree cleanup.
 - **In-argus quick-merge**: local merge to primary plus push, no PR — for
@@ -325,8 +337,8 @@ XA3-2).
 
 ## 11. Cockpit surfaces
 
-All of these are in v1's definition; they arrive in value order (§12), with
-the last two deliberately at the tail.
+All of these are in v1's definition; they arrive in value order (§13), with
+the last two slices (visual editor, terminal) deliberately at the tail.
 
 - **Diffs** — the review surface, three jobs: the live dirty diff of a
   worktree; branch-vs-base (child→parent for merge-backs, branch→primary
@@ -364,7 +376,11 @@ Adopt the corpus-merged answer to OVERVIEW §6.2 wholesale:
   attention (termic); per-kind daily caps, `==`-not-`>=` streak firing
   (Xantham); replay suppression during reconnect catch-up,
   focus-acknowledgement consumes pending state, minimum-signal re-arm floor
-  (myrlin MY1-3 — storm-tested 2026-07-02).
+  (myrlin MY1-3 — storm-tested 2026-07-02); immediate-vs-digest priority
+  split, a per-window live digest edited in place, the pinned always-current
+  status board (bosun BO1-3 — delivery mechanics only); infra-incident
+  collapse, guaranteed escalation, email-on-attention additive at
+  approval-or-priority≥80 (OpenHelm OH2-2).
 - **Architecture rules**: the notifier is the gateway layer subscribed to
   PubSub — never agent behavior (XA1-2); the *ask* may ride any channel, the
   *grant* only ever enters through authenticated non-model surfaces (XA1-1).
