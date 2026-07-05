@@ -281,6 +281,20 @@ renders.
 #6 (honest terminal statuses), #9 (structured premises), #10 (evidence floor). No new
 queue item; this entry is the field reference those four consume.
 
+> **Status (partial): the #5 rider ✅ FOLDED IN 2026-07-05** (next-ten #5
+> shipped). What landed of this entry's slice: the three verification judges
+> (`verifier`, `system_verifier`, `test_runner`) now carry **read-only
+> deterministic evidence tools** — `lua_query`/`lua_docs` (sandboxed,
+> lexical-only, tenant-scoped, `Lua.Policy`-capped) — instead of
+> transcript-only input, plus the camus `VERIFY_OATH` doctrine slice (the
+> engine envelope is the verdict authority on the code path; the LLM judges
+> diagnose reds). The **forced-verdict-at-cap** rule is satisfied
+> engine-side, documented in the item-5 design rather than new machinery:
+> every cap exhaustion terminalizes a NAMED disposition
+> (`verify_failed`/`review_infra_failed`/`verify_tampered`/
+> `budget_exhausted`) — never a silent failure. The #6/#9/#10 riders remain
+> queued.
+
 **Where in OpenHelm**: `agent/src/planner/outcome-assessor.ts:74-252,298-421` (the
 judge), schema `agent/src/planner/schemas.ts:142-185`, evaluator
 `agent/src/engine/evaluator.ts:46-169` + `shared/src/engine/types.ts:12-64`

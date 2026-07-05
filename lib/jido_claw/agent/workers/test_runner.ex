@@ -10,7 +10,11 @@ defmodule JidoClaw.Agent.Workers.TestRunner do
       JidoClaw.Tools.ReadFile,
       JidoClaw.Tools.RunCommand,
       JidoClaw.Tools.FetchOutput,
-      JidoClaw.Tools.SearchCode
+      JidoClaw.Tools.SearchCode,
+      # Item 5 rider (OpenHelm OH1-3): read-only deterministic evidence for
+      # the judge — sandboxed, lexical-only, tenant-scoped, Lua.Policy-capped.
+      JidoClaw.Tools.LuaQuery,
+      JidoClaw.Tools.LuaDocs
     ],
     model: :fast,
     max_iterations: 15,

@@ -45,12 +45,17 @@ defmodule JidoClaw.RouteComposer.Projection do
   `artifacts_produced` (→ tagged store insert), `artifacts_invalidated` (→ store
   delete), `wave_paused`/`wave_resumed` (gate lifecycle provenance — no routing
   effect), `stages_invalidated` (Phase 4e rerun primitive → `ran` difference,
-  an optional `closed_wave_index` advance, + a per-stage `rerun_counts`
-  increment), and `stage_infra` (camus C1-3 → a per-stage `infra_counts`
-  increment + the same optional `closed_wave_index` advance; **never touches
-  `ran`** — an infra'd stage was never folded, so its publishes stay unsatisfied
-  and the next tick re-offers it). Genesis, terminals, and any non-composer kind
-  fold as no-ops.
+  an optional `closed_wave_index` advance, a per-stage `rerun_counts`
+  increment, + item 5's `verified_integrity` clear when it covers the
+  certified verify stage), `stage_infra` (camus C1-3 → a per-stage
+  `infra_counts` increment + the same optional `closed_wave_index` advance;
+  **never touches `ran`** — an infra'd stage was never folded, so its
+  publishes stay unsatisfied and the next tick re-offers it), and the item-5
+  verify kinds: `stage_tampered` (→ `tampered_stages[stage] = {reason,
+  report_ref}`), `head_observed` (→ `observed_head` baseline / `sealed_head`
+  derivation), `verify_certified` (→ `verified_integrity`, latest wins), and
+  `verify_report_recorded` (provenance only). Genesis, terminals, and any
+  non-composer kind fold as no-ops.
 
   ## Tolerant payload access
 
@@ -135,14 +140,18 @@ defmodule JidoClaw.RouteComposer.Projection do
     %{state | artifacts: store}
   end
 
-  # Subtractive `ran` delta (Phase 4e rerun primitive). Two extras:
+  # Subtractive `ran` delta (Phase 4e rerun primitive). Three extras:
   #   * the OPTIONAL `closed_wave_index` advances `wave_index = max(_, idx + 1)`
   #     — set ONLY by the reject-parked-gate path (closing a never-completed gate
   #     wave so the re-fire gets a FRESH launch key); a generic completed-wave
   #     rerun omits it (its `wave_completed` already advanced the index, so
   #     re-advancing would skip a key + burn the `max_waves` budget);
   #   * `rerun_counts` increments per invalidated stage — the per-stage rerun cap
-  #     the loop's `over_budget?` reads (rebuilt here so the cap survives a crash).
+  #     the loop's `over_budget?` reads (rebuilt here so the cap survives a crash);
+  #   * item 5: invalidating the CERTIFIED verify stage clears
+  #     `verified_integrity` — a stale certificate must never back a later
+  #     green (the convergence-time re-check would otherwise compare against a
+  #     superseded bind).
   defp apply_event(%{kind: :stages_invalidated, payload: payload}, state) do
     stages = EventPayload.list(payload, :stages)
 
@@ -154,7 +163,9 @@ defmodule JidoClaw.RouteComposer.Projection do
         wave_index: advance_on_invalidation(state.wave_index, payload)
     }
 
-    bump_counts(base, :rerun_counts, stages)
+    base
+    |> clear_invalidated_certificate(stages)
+    |> bump_counts(:rerun_counts, stages)
   end
 
   # Per-stage infra tally (camus C1-3): a judge that produced no usable verdict.
@@ -169,6 +180,53 @@ defmodule JidoClaw.RouteComposer.Projection do
     base = %{state | wave_index: advance_on_invalidation(state.wave_index, payload)}
     bump_counts(base, :infra_counts, EventPayload.list(payload, :stages))
   end
+
+  # Item 5: the evidence-preserving tamper record — `tampered_stages[stage] =
+  # {reason, report_ref}` (added tolerantly: a synthetic-log seed may omit the
+  # map). The tick terminalizes `:verify_tampered` off this ahead of every
+  # other branch, so a crash between the wave commit and the terminal append
+  # re-terminalizes idempotently FROM PARENT EVENTS ALONE.
+  defp apply_event(%{kind: :stage_tampered, payload: payload}, state) do
+    case EventPayload.get(payload, :stage) do
+      stage when is_binary(stage) ->
+        detail = {EventPayload.get(payload, :reason), EventPayload.get(payload, :report_ref)}
+        Map.update(state, :tampered_stages, %{stage => detail}, &Map.put(&1, stage, detail))
+
+      _absent ->
+        state
+    end
+  end
+
+  # Item 5 (C1-6b): the engine's wave-boundary HEAD observation. The FIRST
+  # marker is the durable baseline (`observed_head`); a subsequent DIFFERING
+  # sha means the run committed work — `sealed_head` derives from it (flipping
+  # later verifies to sealed mode). Both added tolerantly.
+  defp apply_event(%{kind: :head_observed, payload: payload}, state) do
+    case EventPayload.get(payload, :head) do
+      sha when is_binary(sha) -> observe_head(state, sha)
+      _absent -> state
+    end
+  end
+
+  # Item 5: a green verify's compact certificate (latest wins — a single
+  # verify stage per catalog is validator-enforced, invariant 10) — the
+  # convergence-time re-check compares against this without decrypting the
+  # report. `mode` crosses the boundary as a string and is whitelist-decoded
+  # here; an unknown mode folds a certificate the re-check fails CLOSED on.
+  defp apply_event(%{kind: :verify_certified, payload: payload}, state) do
+    certificate = %{
+      stage: EventPayload.get(payload, :stage),
+      head: EventPayload.get(payload, :head),
+      tree_digest: EventPayload.get(payload, :tree_digest),
+      mode: decode_certified_mode(EventPayload.get(payload, :mode))
+    }
+
+    Map.put(state, :verified_integrity, certificate)
+  end
+
+  # Item 5: parent-log reachability for a non-`:ok` verify report — provenance
+  # only, no routing effect (the ref must never enter the artifact store).
+  defp apply_event(%{kind: :verify_report_recorded}, state), do: state
 
   # Gate lifecycle markers (Phase 4 producers): provenance only — no routing
   # effect, so they fold as no-ops.
@@ -214,6 +272,43 @@ defmodule JidoClaw.RouteComposer.Projection do
   defp bump_counts(state, key, stages) do
     Map.update(state, key, bump_stage_counts(%{}, stages), &bump_stage_counts(&1, stages))
   end
+
+  # First observation = baseline; a differing later sha = the seal (the run
+  # committed work — later verifies certify the COMMITTED state). Tolerant
+  # `Map.put` (a synthetic-log seed may omit both keys).
+  defp observe_head(state, sha) do
+    case Map.get(state, :observed_head) do
+      nil ->
+        Map.put(state, :observed_head, sha)
+
+      ^sha ->
+        state
+
+      _moved ->
+        state
+        |> Map.put(:observed_head, sha)
+        |> Map.put(:sealed_head, sha)
+    end
+  end
+
+  # Item 5: invalidating the stage that holds the live certificate clears it —
+  # a stale certificate must never back a later green. Tolerant `Map.get` (a
+  # synthetic-log seed may omit `verified_integrity`).
+  defp clear_invalidated_certificate(state, stages) do
+    case Map.get(state, :verified_integrity) do
+      %{stage: stage} when is_binary(stage) ->
+        if stage in stages, do: Map.put(state, :verified_integrity, nil), else: state
+
+      _absent ->
+        state
+    end
+  end
+
+  @certified_modes %{"working_tree" => :working_tree, "sealed" => :sealed}
+
+  defp decode_certified_mode(mode) when is_binary(mode), do: Map.get(@certified_modes, mode)
+  defp decode_certified_mode(mode) when mode in [:working_tree, :sealed], do: mode
+  defp decode_certified_mode(_mode), do: nil
 
   defp bump_stage_counts(counts, stages) do
     Enum.reduce(stages, counts, fn stage, acc -> Map.update(acc, stage, 1, &(&1 + 1)) end)

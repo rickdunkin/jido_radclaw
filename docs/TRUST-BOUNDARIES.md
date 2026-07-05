@@ -37,9 +37,14 @@ isn't designed yet.**
 
 4. **Every "green" proves exactly what state it certified.** A verdict or
    disposition must name what it checked: a clean review names its lens; a
-   deterministic verify must bind to the exact HEAD it certified and detect
-   the tree changing around it (item 5 / C1-2). A green that outlives the
-   state it certified is a laundered green.
+   deterministic verify binds to the exact state it certified and detects the
+   tree changing around it. A green that outlives the state it certified is a
+   laundered green. The shipped worked example (item 5 / C1-2):
+   `clean:verify` lands only with a same-commit `:verify_certified`
+   `{head, tree_digest, mode}` marker, convergence re-derives that tuple
+   before `:converged`, a would-be green with a failed integrity capture is
+   INCONCLUSIVE (never a pass), and tamper terminalizes ahead of every other
+   branch.
 
 5. **Every helper agent is untrusted around state-changing commands.** Prompts
    state enforced facts — they don't plead. Enforcement lives in the tool

@@ -357,6 +357,19 @@ config :jido_claw, :lua,
   max_string_bytes: 8 * 1024 * 1024,
   max_result_bytes: 32_768
 
+# Deterministic verify authority (next-ten item 5, camus C1-2 —
+# JidoClaw.Orchestration.Verify). Bounds for the engine-run verify checks:
+# per-check wall clock (15 min default — mix precommit on a cold build),
+# the OsCmd output capture cap, and how many redacted lines survive into the
+# envelope's log_tail. There is deliberately NO `enabled?` key (the :lua
+# posture): registration is the switch — a catalog without a `{:verify, _}`
+# stage never runs the engine verifier. The `runner:`/`git:` seam keys
+# (modules) exist for tests; unset ⇒ the real OsCmdRunner/Git.
+config :jido_claw, :verify,
+  timeout_ms: 900_000,
+  max_output_bytes: 10_000_000,
+  tail_lines: 40
+
 # Destination policy for LLM-controlled egress (JidoClaw.Security.DestinationPolicy,
 # gating the browse_web tool). The headless browser otherwise navigates to ANY
 # model-supplied URL — an injected page can steer it at loopback / RFC-1918 /

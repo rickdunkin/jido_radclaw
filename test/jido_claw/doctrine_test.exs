@@ -21,7 +21,8 @@ defmodule JidoClaw.DoctrineTest do
             :confidence_tagging,
             :tie_break,
             :challenger_contract,
-            :code_doctrine
+            :code_doctrine,
+            :verify_oath
           ] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
@@ -44,7 +45,8 @@ defmodule JidoClaw.DoctrineTest do
                :reviewer_contract,
                :reviewer_min,
                :system_verify,
-               :tie_break
+               :tie_break,
+               :verify_oath
              ]
     end
   end
@@ -100,7 +102,19 @@ defmodule JidoClaw.DoctrineTest do
       # AR-7: the verifier gets the prose slice (prose-only — its flat
       # verdict/confidence/reasoning schema is unchanged), unlike the reviewer family.
       assert doctrine =~ "Confidence tagging"
+      # Item 5: a verification judge carries the camus VERIFY_OATH.
+      assert doctrine =~ "Verify oath"
+      assert doctrine =~ "A RED result is a SUCCESSFUL run"
       refute doctrine =~ "Runtime artifacts"
+    end
+
+    test "the item-5 test_runner carries the verify oath (a verification judge)" do
+      doctrine = Doctrine.for_template("test_runner")
+
+      assert doctrine =~ "specialized sub-agent"
+      assert doctrine =~ "Verify oath"
+      assert doctrine =~ "destroys the evidence a human needs"
+      refute doctrine =~ "Review discipline"
     end
 
     test "the AR-8b-2 sketch_reviewer is a reviewer_verdict judge (base + reviewer-min + contract)" do
@@ -143,6 +157,8 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
       assert doctrine =~ "System verification discipline"
+      # Item 5: a verification judge carries the camus VERIFY_OATH.
+      assert doctrine =~ "Verify oath"
       # AR-7: reviewer family — excluded from the standalone slice.
       refute doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"

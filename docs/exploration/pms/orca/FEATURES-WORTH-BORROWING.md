@@ -409,6 +409,22 @@ The terminal-boundary exception maps exactly to FLOW §11's operator terminal.
 **Recommendation**: FOLD-IN → `docs/plans/unadopted-next-ten` item 5 (deterministic
 verify authority). Not a standalone adoption.
 
+> **Status: ✅ FOLDED IN 2026-07-05** (next-ten #5 shipped). What landed of
+> this entry: the **named-check registry** (`verify:` `checks:` in
+> `.jido/config.yaml` — ordered `{name, cmd, env?, timeout_ms?}` list, or the
+> scalar `verify_cmd:` ≡ one named check) with a **per-run override**
+> persisted in the composer parent config, and the inverted wart — an
+> override naming an unknown check **refuses loudly**
+> (`{:unknown_check, name, known}`), never a silent skip. Deviations, per the
+> item-5 design: checks run sequentially but **collect-all into ONE camus
+> envelope** (no per-check `GateRan` event kinds — the envelope's `checks[]`
+> carries name/cmd/exit, and the composer's existing wave events carry
+> provenance, so `triggering_phase_run_id` has no separate analogue);
+> **camus wins over orca on timeout** (timeout ⇒ inconclusive on the infra
+> lane, never a red verdict); first-fail-stops-progression is inherent
+> rather than wired (a red verify blocks convergence via `findings:verify`).
+> Commands are argv lists via `Core.OsCmd` — never a shell string.
+
 **Where in orca**: a gate is a named shell command with a timeout
 (`GateConfig {command, timeout_seconds}`, `settings.rs:180-184`), registered
 workspace-wide (`gates: {name → config}`) and attached per phase

@@ -26,8 +26,11 @@ defmodule JidoClaw.RouteComposer.Stage do
       the router keys on the map, not this field.
     * `:unit` — the executable this stage is metadata over: `{:seed, name}`
       (the always-on triage seed — *not* a worker template), `{:worker_template,
-      name}` (resolved via `JidoClaw.Agent.Templates`), `{:skill, name}`, or
-      `{:gate, name}` (a named gate reactor). Bare names only — no Alp-River
+      name}` (resolved via `JidoClaw.Agent.Templates`), `{:skill, name}`,
+      `{:gate, name}` (a named gate reactor), or `{:verify, name}` (a named
+      deterministic-verify reactor, item 5 — resolved via
+      `JidoClaw.RouteComposer.VerifyReactors`; non-halting, runs solo, its
+      verdict signals derive from `lens`). Bare names only — no Alp-River
       `@`/`?`/`#` sigils.
     * `:task` — the stage-specific instruction that makes two stages over the
       *same* template distinct (e.g. `security-reviewer` vs `quality-reviewer`
@@ -72,6 +75,7 @@ defmodule JidoClaw.RouteComposer.Stage do
           | {:worker_template, String.t()}
           | {:skill, String.t()}
           | {:gate, String.t()}
+          | {:verify, String.t()}
 
   @type emit :: :default | {:mapper, String.t()}
 
@@ -148,7 +152,8 @@ defmodule JidoClaw.RouteComposer.Stage do
     "seed" => :seed,
     "worker_template" => :worker_template,
     "skill" => :skill,
-    "gate" => :gate
+    "gate" => :gate,
+    "verify" => :verify
   }
   @guards %{"sticky" => :sticky}
   @models %{"fast" => :fast, "capable" => :capable}

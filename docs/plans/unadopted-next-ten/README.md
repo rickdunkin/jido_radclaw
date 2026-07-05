@@ -289,9 +289,9 @@ reads, authors nothing).
 > closes the failed wave for rebuild AND `Observe`/`WorkflowView` — mixed
 > cohorts keep `route_failed`); Review field coverage is routing-critical-only
 > (camus-faithful; prose fields pass through). `{:inconclusive, _}` is typed +
-> consumed defensively but producer-less until #5. Rider C2-8 landed as
-> `docs/TRUST-BOUNDARIES.md` (five laws + the materialized durability
-> checklist) with the AGENTS.md pointer.
+> consumed defensively; #5 (done 2026-07-05) is now its live producer. Rider
+> C2-8 landed as `docs/TRUST-BOUNDARIES.md` (five laws + the materialized
+> durability checklist) with the AGENTS.md pointer.
 
 First of the verification program because everything downstream lands on it:
 there is no single normalization module for judge outputs, and the crucial loop
@@ -323,7 +323,43 @@ camus's judge-boundary version is narrower and independently adoptable first.
 This normalizer is also #7's deposit-tool contract; build it with that consumer
 in mind.
 
-## 5. Deterministic verify authority + sealed heads — M (camus C1-2 + C1-6a)
+## 5. Deterministic verify authority + sealed heads — M (camus C1-2 + C1-6a) — ✅ DONE 2026-07-05
+
+> **Done 2026-07-05**, with corrections to this entry's claims (mirrored into
+> the source entries, camus C1-2 + C1-6): shipped as
+> `JidoClaw.Orchestration.Verify` (+ `Envelope`/`Git`/`OsCmdRunner`/`Config`),
+> the catalog's `{:verify, "default"}` stage (`Reactors.VerifyStage`, a
+> NON-halting module reactor — the gate shape minus the park), the
+> `:route_verify_tampered` terminal + `:stage_tampered`/`:head_observed`/
+> `:verify_certified`/`:verify_report_recorded` marker vocabulary, the
+> `verify_oath` doctrine slice (+ `lua_query`/`lua_docs` on the three judges,
+> the OH1-3 rider), and `Tools.GitCommit`'s engine facts (C1-6a). Corrections:
+> (a) step 2's envelope is richer than sketched (`checks[]`,
+> `integrity_note`, per-failure `exit`/`reason`, `mode`/`tree_digest`/
+> `sealed_head`) and runs TWO modes — camus's sealed model applies only when
+> an engine-observed `sealed_head` exists; today's non-committing routes get
+> a `working_tree` mode (dirty-before is a FACT, integrity = HEAD stability +
+> a content-addressed `git diff --binary` digest); (b) camus's degrade-OPEN
+> on failed git capture is corrected law-4-side: a would-be green with a
+> failed capture is `integrity_unavailable` INCONCLUSIVE, never a pass;
+> (c) "refuse loudly" = a loud inconclusive envelope riding the #4 infra
+> lane (config errors too — never a wave failure), not a raise; (d) step 3's
+> "convergence requires pass whose head matches" shipped as the welded
+> `:verify_certified` marker + an uncertified-green reclassification BEFORE
+> the fold + a convergence-time MODE-SPECIFIC re-check (retract + re-verify
+> on mismatch/unreadable, bounded by `rerun_cap` → `:verify_failed`);
+> (e) "wire as a stage" needed a NEW peel — Kahn leveling co-locates verify
+> with the reviewers, so `Loop.defer_solo_verify/2` (the INVERSE of the gate
+> peel) makes it run last; (f) the OR2-2 rider folded in as config shapes
+> (`verify:` `checks:` registry + per-run override persisted in parent
+> config; unknown-name override refuses loudly; camus wins over orca on
+> timeout ⇒ inconclusive), not as new event kinds — first-fail-stops is
+> inherent (a red blocks convergence); (g) OH1-3's forced-verdict-at-cap is
+> satisfied engine-side (cap exhaustion always terminalizes a named
+> disposition), no new machinery. No shell, ever: argv-list commands via
+> `Core.OsCmd` with execvp-style argv0 resolution. OQ-4's design note lives
+> in `Verify.Config`'s moduledoc; the camus C2-7 mid-run config-edit freeze
+> is a documented parked residual.
 
 The camus doc's "single most valuable item." Verification never gates on an
 exit code today: the verifier *agents* run `mix test` and self-report, the loop

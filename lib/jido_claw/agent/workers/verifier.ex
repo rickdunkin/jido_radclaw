@@ -15,7 +15,11 @@ defmodule JidoClaw.Agent.Workers.Verifier do
       JidoClaw.Tools.RunCommand,
       JidoClaw.Tools.FetchOutput,
       JidoClaw.Tools.ListDirectory,
-      JidoClaw.Tools.VerifyCertificate
+      JidoClaw.Tools.VerifyCertificate,
+      # Item 5 rider (OpenHelm OH1-3): the judge gets read-only deterministic
+      # evidence — sandboxed, lexical-only, tenant-scoped, Lua.Policy-capped.
+      JidoClaw.Tools.LuaQuery,
+      JidoClaw.Tools.LuaDocs
     ],
     model: :fast,
     max_iterations: 20,

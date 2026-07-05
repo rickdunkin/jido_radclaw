@@ -31,7 +31,10 @@ defmodule JidoClaw.RouteComposer.Catalog do
       validator never resolves it.)
     * every `{:gate, _}` stage must name a known
       `JidoClaw.RouteComposer.GateReactors` gate (the parallel guard — a typo'd
-      gate would otherwise fail only when the wave dispatches).
+      gate would otherwise fail only when the wave dispatches),
+    * every `{:verify, _}` stage must name a known
+      `JidoClaw.RouteComposer.VerifyReactors` reactor (item 5 — the same
+      typo-fails-the-build posture).
 
   Accessors mirror `JidoClaw.Reasoning.StrategyRegistry`.
   """
@@ -40,6 +43,7 @@ defmodule JidoClaw.RouteComposer.Catalog do
   alias JidoClaw.RouteComposer.CatalogValidator
   alias JidoClaw.RouteComposer.GateReactors
   alias JidoClaw.RouteComposer.Stage
+  alias JidoClaw.RouteComposer.VerifyReactors
 
   @catalog %{
     "triage" => %Stage{
@@ -424,6 +428,28 @@ defmodule JidoClaw.RouteComposer.Catalog do
       output: ["findings"],
       publishes: ["findings:correctness", "clean:correctness", "scope-shift"]
     },
+    # Item 5 (camus C1-2): the deterministic verify authority on the `code`
+    # path — a `{:verify, "default"}` unit (the engine runs the repo's verify
+    # command and reads the exit code itself; `VerifyReactors` resolves it to
+    # `Reactors.VerifyStage`, never a worker). Triggered by `code-written`
+    # (so every fixer run re-touches it — Hook F auto-invalidates a stale
+    # green); the optional `diff`/`fix` inputs are ORDERING edges only
+    # (implementer/fixer → verify; the reactor reads the working tree, not
+    # the store — `run_verify_wave` skips artifact resolution). Kahn leveling
+    # still co-locates it with the reviewers, so `Loop.defer_solo_verify/2`
+    # peels it to run LAST. Lens `verify` ⇒ `clean:verify`/`findings:verify`
+    # (invariant 8); a red's `findings`/`action_needed` artifacts ride the
+    # existing Hook R fixer re-fire unchanged.
+    "verify" => %Stage{
+      name: "verify",
+      unit: {:verify, "default"},
+      lens: "verify",
+      routes: ["code"],
+      subscribes: ["code-written"],
+      input: %{required: [], optional: ["diff", "fix"]},
+      output: ["findings", "action_needed"],
+      publishes: ["clean:verify", "findings:verify", "scope-shift"]
+    },
     # AR-8c system path: `triage → planner → safety-gate → system-executor →
     # system-verifier`. The always-on `safety-gate` (decision 1) gates every
     # machine change; the executor is held until the human approves; the verifier
@@ -489,6 +515,11 @@ defmodule JidoClaw.RouteComposer.Catalog do
   for {name, %Stage{unit: {:gate, gate_name}}} <- @catalog,
       not GateReactors.known?(gate_name) do
     raise "RouteComposer stage #{name} references unknown gate #{inspect(gate_name)}"
+  end
+
+  for {name, %Stage{unit: {:verify, verify_name}}} <- @catalog,
+      not VerifyReactors.known?(verify_name) do
+    raise "RouteComposer stage #{name} references unknown verify reactor #{inspect(verify_name)}"
   end
 
   @doc "Returns the whole starter catalog as a `%{name => %Stage{}}` map."

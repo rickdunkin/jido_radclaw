@@ -59,6 +59,18 @@ config :jido_claw, :psychology, enabled?: false
 # `enabled?: true` + `require:` opts (env-free, DestinationPolicy style).
 config :jido_claw, :tool_approval, enabled?: false
 
+# Deterministic verify (item 5): the runner + git seams point at the test stub
+# so any full-catalog composer launch stays hermetic — no subprocess, no real
+# git; the stub defaults to exit-0 checks + stable head/porcelain/digest (a
+# certified green) and is scripted per-test via :route_composer_verify_stub.
+# Timeout/output caps keep prod defaults (the stub never runs anything).
+config :jido_claw, :verify,
+  runner: JidoClaw.Test.VerifyStub,
+  git: JidoClaw.Test.VerifyStub,
+  timeout_ms: 900_000,
+  max_output_bytes: 10_000_000,
+  tail_lines: 40
+
 # External MCP consumption: the suite drives JidoClaw.MCP.Consumer through an
 # injectable Stub client (no real transport), and the boot Consumer is gated
 # off so consumer_test starts its own under start_supervised (the named

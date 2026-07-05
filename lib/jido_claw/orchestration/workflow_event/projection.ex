@@ -38,19 +38,21 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     :route_failed
   ]
   @route_cancelled_kinds [:route_rejected, :route_abandoned]
-  # AR-8c `:route_verify_failed`, AR-4 `:route_fix_failed`, and camus C1-3
-  # `:route_review_infra_failed` are status-authority TERMINALS (they must fold
-  # into the status column), but they are deliberately kept OUT of
-  # `@route_failed_kinds` and `@route_cancelled_kinds` — those drive the guard
-  # clauses in `next_status`/`status_attrs`, and membership there would shadow
-  # the explicit per-kind clauses (which lift BOTH `error` and the
+  # AR-8c `:route_verify_failed`, AR-4 `:route_fix_failed`, camus C1-3
+  # `:route_review_infra_failed`, and item 5's `:route_verify_tampered` are
+  # status-authority TERMINALS (they must fold into the status column), but
+  # they are deliberately kept OUT of `@route_failed_kinds` and
+  # `@route_cancelled_kinds` — those drive the guard clauses in
+  # `next_status`/`status_attrs`, and membership there would shadow the
+  # explicit per-kind clauses (which lift BOTH `error` and the
   # `result.disposition`, a `:failed`-with-result combination neither family
   # does).
   @route_terminal_kinds [
                           :route_converged,
                           :route_verify_failed,
                           :route_fix_failed,
-                          :route_review_infra_failed
+                          :route_review_infra_failed,
+                          :route_verify_tampered
                         ] ++
                           @route_failed_kinds ++ @route_cancelled_kinds
 
@@ -158,6 +160,11 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   def next_status(status, :route_review_infra_failed) when status in @non_terminal,
     do: {:ok, :failed}
 
+  # Item 5: a tampered verify projects onto `:failed`, from any non-terminal —
+  # an explicit clause for the same disposition-lifting reason as its siblings.
+  def next_status(status, :route_verify_tampered) when status in @non_terminal,
+    do: {:ok, :failed}
+
   def next_status(status, kind) when status in @non_terminal and kind in @route_failed_kinds,
     do: {:ok, :failed}
 
@@ -237,6 +244,9 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     do: terminal_lifting_error_and_result(:failed, payload, occurred_at)
 
   def status_attrs(:route_review_infra_failed, payload, occurred_at),
+    do: terminal_lifting_error_and_result(:failed, payload, occurred_at)
+
+  def status_attrs(:route_verify_tampered, payload, occurred_at),
     do: terminal_lifting_error_and_result(:failed, payload, occurred_at)
 
   def status_attrs(kind, payload, occurred_at) when kind in @route_failed_kinds,

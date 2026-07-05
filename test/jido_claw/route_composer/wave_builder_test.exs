@@ -140,6 +140,38 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
              {:error, {:unsupported_unit, "triage", {:seed, "triage"}}}
   end
 
+  test "builds a solo verify stage as its named verify reactor (item 5)" do
+    stage = TestFixtures.stage(name: "verify", unit: {:verify, "default"}, lens: "verify")
+
+    assert {:ok, {:verify_reactor, JidoClaw.Orchestration.Reactors.VerifyStage, inputs}} =
+             WaveBuilder.build_wave([stage], wave_index: 4)
+
+    assert inputs == %{wave_index: 4, stage_name: "verify", lens: "verify"}
+  end
+
+  test "rejects a verify mixed with workers — the {:verify_must_be_solo_wave, _} backstop" do
+    stage = TestFixtures.stage(name: "verify", unit: {:verify, "default"}, lens: "verify")
+
+    assert {:error, {:verify_must_be_solo_wave, names}} =
+             WaveBuilder.build_wave([stage, worker("quality-reviewer")])
+
+    assert Enum.sort(names) == ["quality-reviewer", "verify"]
+  end
+
+  test "rejects more than one verify in a cohort" do
+    a = TestFixtures.stage(name: "verify-a", unit: {:verify, "default"}, lens: "verify")
+    b = TestFixtures.stage(name: "verify-b", unit: {:verify, "default"}, lens: "verify")
+
+    assert {:error, {:verify_must_be_solo_wave, names}} = WaveBuilder.build_wave([a, b])
+    assert Enum.sort(names) == ["verify-a", "verify-b"]
+  end
+
+  test "rejects an unknown verify reactor name (no String.to_atom on catalog input)" do
+    stage = TestFixtures.stage(name: "verify", unit: {:verify, "hostile"}, lens: "verify")
+
+    assert WaveBuilder.build_wave([stage]) == {:error, {:unknown_verify, "verify", "hostile"}}
+  end
+
   test "rejects an oversized wave (more stages than StepIds.max/0)" do
     big = for i <- 1..(StepIds.max() + 1), do: worker("s#{i}")
     assert WaveBuilder.build_wave(big) == {:error, :wave_too_large}

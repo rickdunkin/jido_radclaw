@@ -12,8 +12,12 @@ defmodule JidoClaw.Orchestration.Verdict do
       as a distinct disposition — never folded as ran, never counted as a real
       rejection, never clean;
     * `{:inconclusive, reason}` — the judge ran but deliberately abstained.
-      No producer emits this yet (item 5's deterministic verify authority
-      will); consumers handle it defensively by folding it into the infra lane.
+      Produced by item 5's deterministic verify authority
+      (`JidoClaw.Orchestration.Verify` → the `Reactors.VerifyStage` emission:
+      `missing_tool`/`no_tests`/`timeout`/`output_limit`/
+      `integrity_unavailable` refusals, config-resolution errors, and the
+      composer's `"uncertified_green"` reclassification); consumers fold it
+      into the infra lane.
 
   `normalize/2` must be **total over arbitrary input** — it is also item 7's
   deposit-tool contract (external CLI JSON that never passed Zoi). Schema drift

@@ -224,6 +224,85 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
       assert result.infra_counts == %{"r" => 1}
     end
 
+    # Item 5: the tamper record fold — the tick terminalizes off this ahead of
+    # every other branch, so a crash-window rebuild re-terminalizes.
+    test "stage_tampered folds tampered_stages (string and atom keys), never ran" do
+      s = seed(%{ran: MapSet.new(["planner"])})
+
+      result =
+        Projection.project(s, [
+          event(:stage_tampered, %{stage: "verify", reason: "r1", report_ref: "art_a"}, 1),
+          event(
+            :stage_tampered,
+            %{"stage" => "verify", "reason" => "r2", "report_ref" => "art_b"},
+            2
+          )
+        ])
+
+      assert result.tampered_stages == %{"verify" => {"r2", "art_b"}}
+      assert MapSet.equal?(result.ran, MapSet.new(["planner"]))
+    end
+
+    # Item 5 (C1-6b): the first head_observed is the durable baseline; a later
+    # DIFFERING sha derives the seal (the run committed work).
+    test "head_observed derives observed_head (baseline) then sealed_head (on a change)" do
+      baseline = Projection.project(seed(), [event(:head_observed, %{head: "h1"}, 1)])
+      assert baseline.observed_head == "h1"
+      assert Map.get(baseline, :sealed_head) == nil
+
+      sealed =
+        Projection.project(seed(), [
+          event(:head_observed, %{head: "h1"}, 1),
+          # A benign same-sha replay derives nothing…
+          event(:head_observed, %{"head" => "h1"}, 2),
+          # …a change seals.
+          event(:head_observed, %{"head" => "h2"}, 3)
+        ])
+
+      assert sealed.observed_head == "h2"
+      assert sealed.sealed_head == "h2"
+    end
+
+    # Item 5: the certificate fold (latest wins) + the invalidation clear — a
+    # stale certificate must never back a later green.
+    test "verify_certified folds verified_integrity; invalidating the stage clears it" do
+      cert = %{stage: "verify", head: "h1", tree_digest: "d1", mode: "working_tree"}
+
+      certified = Projection.project(seed(), [event(:verify_certified, cert, 1)])
+
+      assert certified.verified_integrity == %{
+               stage: "verify",
+               head: "h1",
+               tree_digest: "d1",
+               mode: :working_tree
+             }
+
+      cleared =
+        Projection.project(seed(), [
+          event(:verify_certified, cert, 1),
+          event(:stages_invalidated, %{stages: ["verify"]}, 2)
+        ])
+
+      assert cleared.verified_integrity == nil
+
+      # Invalidating an UNRELATED stage keeps the certificate.
+      kept =
+        Projection.project(seed(%{ran: MapSet.new(["planner"])}), [
+          event(:verify_certified, cert, 1),
+          event(:stages_invalidated, %{stages: ["planner"]}, 2)
+        ])
+
+      assert kept.verified_integrity.stage == "verify"
+    end
+
+    test "verify_report_recorded is provenance-only (no state effect)" do
+      s = seed()
+
+      assert Projection.project(s, [
+               event(:verify_report_recorded, %{stage: "verify", report_ref: "art_x"}, 1)
+             ]) == s
+    end
+
     test "a retracted plan-approved + invalidated stages stay gone across the rebuild (4e)" do
       # The stale-approval shape: publish then retract plan-approved, invalidate the
       # planner+plan-gate. project(seed, log) is the NET state — nothing resurrected.

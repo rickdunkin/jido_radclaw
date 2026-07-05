@@ -66,6 +66,37 @@ defmodule JidoClaw.RouteComposer.LoopTest do
     end
   end
 
+  describe "defer_solo_verify/2 (item 5 — the INVERSE peel)" do
+    setup do
+      %{catalog: TestFixtures.verify_fixture_catalog()}
+    end
+
+    test "defers verify out of a mixed cohort — the OTHERS dispatch first", %{catalog: catalog} do
+      assert Loop.defer_solo_verify(["quality-reviewer", "verify"], catalog) ==
+               ["quality-reviewer"]
+    end
+
+    test "passes a solo verify through (the only remaining dispatchable stage)",
+         %{catalog: catalog} do
+      assert Loop.defer_solo_verify(["verify"], catalog) == ["verify"]
+    end
+
+    test "passes a verify-free cohort through unchanged", %{catalog: catalog} do
+      assert Loop.defer_solo_verify(["quality-reviewer", "fixer"], catalog) ==
+               ["quality-reviewer", "fixer"]
+    end
+
+    test "passes a multi-verify cohort through (the WaveBuilder backstop rejects it)" do
+      catalog = %{
+        "verify-a" => TestFixtures.stage(name: "verify-a", unit: {:verify, "default"}),
+        "verify-b" => TestFixtures.stage(name: "verify-b", unit: {:verify, "default"})
+      }
+
+      assert Loop.defer_solo_verify(["verify-a", "verify-b"], catalog) ==
+               ["verify-a", "verify-b"]
+    end
+  end
+
   describe "terminal/2 + lenses_clean?/3" do
     setup do
       %{catalog: TestFixtures.phase1_catalog()}

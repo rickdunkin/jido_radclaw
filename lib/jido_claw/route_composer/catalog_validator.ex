@@ -27,7 +27,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   `JidoClaw.RouteComposer.Catalog` compile-time guard checks worker-template
   existence separately.
 
-  ## Invariants (groups 1–9 + cycle = 10)
+  ## Invariants (groups 1–10 + cycle = 11)
 
     1. `routes` present, non-empty, and ⊆ `["talk", "sketch", "code",
        "system"]`.
@@ -47,7 +47,14 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
     9. a `reverse_verify: true` stage (AR-8c) carries a `lens` **and exactly
        one** required input (the reused rerun helper inspects only the first
        required artifact, so >1 would silently re-fire only one producer).
-    10. the producer → consumer data graph is acyclic.
+    10. a `{:verify, _}` unit stage (item 5) carries a `lens` (its verdict
+        signals derive from it; invariant 8 then requires both declared), and
+        the catalog holds **at most one** such stage — the composer retains a
+        single verify certificate (`verified_integrity`, latest wins), so a
+        second verify authority in another Kahn level would ping-pong
+        retract/re-verify at convergence; multi-check needs belong in one
+        stage's named `checks:` registry.
+    11. the producer → consumer data graph is acyclic.
 
   `family_match?/2` is **bidirectional** (an exact topic, a qualified member of
   the family, **or** the family base) and is deliberately distinct from the
@@ -61,7 +68,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   @seed_signals ~w(request-received)
   @seed_artifacts ~w(request)
   @template_exempt ~w(triage)
-  @unit_tags [:seed, :worker_template, :skill, :gate]
+  @unit_tags [:seed, :worker_template, :skill, :gate, :verify]
 
   @doc """
   Validates a catalog (`%{name => %Stage{}}`), returning a sorted list of
@@ -74,7 +81,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   def validate(catalog) do
     problems =
       case structural(catalog) do
-        [] -> coherence(catalog) ++ cycle(catalog)
+        [] -> coherence(catalog) ++ single_verify(catalog) ++ cycle(catalog)
         structural_problems -> structural_problems
       end
 
@@ -219,7 +226,8 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       check_locks(name, stage, published),
       check_self_dep(name, stage),
       check_verdict_publishes(name, stage),
-      check_reverse_verify(name, stage)
+      check_reverse_verify(name, stage),
+      check_verify_unit(name, stage)
     ])
   end
 
@@ -326,6 +334,42 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   end
 
   defp check_reverse_verify(_name, _stage), do: []
+
+  # A `{:verify, _}` unit stage (item 5) derives its verdict signals from its
+  # `lens` (`clean:<lens>` / `findings:<lens>` — invariant 8 then requires
+  # both declared), so a lens-less verify stage could never publish a verdict.
+  # Caught at load.
+  defp check_verify_unit(name, %Stage{unit: {:verify, _unit}, lens: lens}) do
+    if is_binary(lens), do: [], else: ["#{name}: verify stage must carry a `lens`"]
+  end
+
+  defp check_verify_unit(_name, _stage), do: []
+
+  # ---------------------------------------------------------------------------
+  # Invariant 10, catalog half — at most one `{:verify, _}` stage
+  # ---------------------------------------------------------------------------
+
+  # The composer retains a SINGLE verify certificate (`verified_integrity`,
+  # latest wins), and the convergence re-check tests every live verify clean
+  # against it — so a second verify authority in another Kahn level (the
+  # same-level cohort is already backstopped by WaveBuilder's
+  # `{:verify_must_be_solo_wave, _}`) would ping-pong retract/re-verify until
+  # the rerun budget terminalizes. Rejected at load; multi-check needs are
+  # served by one stage's named `checks:` registry.
+  defp single_verify(catalog) do
+    verify_names = for {name, %Stage{unit: {:verify, _unit}}} <- catalog, do: name
+
+    case Enum.sort(verify_names) do
+      [_first, _second | _rest] = names ->
+        [
+          "catalog: at most one {:verify, _} stage is supported (found: #{inspect(names)}) — " <>
+            "the composer retains a single verify certificate"
+        ]
+
+      _zero_or_one ->
+        []
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Cycle — the producer → consumer data graph must be acyclic

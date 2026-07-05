@@ -406,6 +406,53 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     end
   end
 
+  # Item 5 invariant 10: the composer retains a SINGLE verify certificate
+  # (`verified_integrity`, latest wins), so a second `{:verify, _}` stage in a
+  # different Kahn level would ping-pong retract/re-verify at convergence until
+  # the rerun budget terminalizes. Rejected at load; multi-check needs are
+  # served by one stage's named `checks:` registry.
+  describe "verify-unit invariants (invariant 10)" do
+    test "the single-verify fixture catalog validates clean" do
+      assert CatalogValidator.validate(TestFixtures.verify_fixture_catalog()) == []
+    end
+
+    test "a second {:verify, _} stage is rejected at load" do
+      verify2 =
+        stage(
+          name: "verify2",
+          unit: {:verify, "default"},
+          lens: "verify2",
+          routes: ["code"],
+          sub: ["code-written"],
+          pub: ["clean:verify2", "findings:verify2", "scope-shift"]
+        )
+
+      catalog = Map.put(TestFixtures.verify_fixture_catalog(), "verify2", verify2)
+      found = inspect(["verify", "verify2"])
+
+      assert CatalogValidator.validate(catalog) == [
+               "catalog: at most one {:verify, _} stage is supported (found: #{found}) — " <>
+                 "the composer retains a single verify certificate"
+             ]
+    end
+
+    test "a lens-less verify stage is flagged" do
+      cat = %{
+        "verify" =>
+          stage(
+            name: "verify",
+            unit: {:verify, "default"},
+            routes: ["code"],
+            sub: ["request-received"],
+            pub: ["scope-shift"]
+          )
+      }
+
+      problems = CatalogValidator.validate(cat)
+      assert Enum.any?(problems, &String.contains?(&1, "verify stage must carry a `lens`"))
+    end
+  end
+
   # AR-4: pins WHY the fixer's findings feed must be out-of-band. If the fixer
   # declared `findings` as a real data input, `graph.ex` would add reviewer→fixer
   # edges; with the existing `fixer→reviewer` edge (the reviewers optional-input

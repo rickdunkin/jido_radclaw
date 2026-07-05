@@ -140,6 +140,31 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # `closed_wave_index` closes a failed (never-completed) wave so the
           # retry gets a fresh launch key. NOT status-authority.
           :stage_infra,
+          # Item 5 (camus C1-2): the deterministic verify stage detected
+          # tampering (dirty sealed tree / tracked mutation / HEAD movement
+          # during verify). Payload `%{stage, reason, report_ref}` — the
+          # encrypted verify-report ref rides THIS marker, never
+          # `artifacts_produced` (a tamper report must not look routable).
+          # Folds `tampered_stages`; the tick terminalizes
+          # `:route_verify_tampered` ahead of every other terminal branch.
+          # NOT status-authority.
+          :stage_tampered,
+          # Item 5: the engine observed the repo HEAD at a wave boundary
+          # (payload `%{head: sha}`) — welded on the FIRST observation (the
+          # durable baseline) and on every observed change (a change derives
+          # `sealed_head`, flipping later verifies to sealed mode). NOT
+          # status-authority.
+          :head_observed,
+          # Item 5: a green verify's certification (`%{stage, head,
+          # tree_digest, mode}`), welded into the SAME wave commit as its
+          # `clean:<lens>` publish — the committed invariant behind the
+          # convergence-time integrity re-check. NOT status-authority.
+          :verify_certified,
+          # Item 5: parent-log reachability for a verify report whose emission
+          # was reclassified non-`:ok` (the composer's uncertified-green
+          # guard): `%{stage, report_ref, reason}` — NON-ROUTING (never
+          # `artifacts_produced`). NOT status-authority.
+          :verify_report_recorded,
           :artifacts_invalidated,
           # Parent-terminal — the composer's own terminal vocabulary. Status-authority
           # (see `WorkflowEvent.Projection`): the four failure kinds + not-converged
@@ -166,6 +191,13 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # `result.disposition: "review_infra_failed"` (the verify/fix_failed
           # precedent). App-level `one_of` (stored as text) — no migration.
           :route_review_infra_failed,
+          # Item 5 (camus C1-2 / VERIFY_OATH): the deterministic verify stage
+          # detected tampering — never auto-retried, never fed to the fixer
+          # (remediation destroys the evidence a human needs). Projects onto
+          # `:failed` carrying `result.disposition: "verify_tampered"` plus
+          # the verify-report ref; outranks every other terminal at the tick.
+          # App-level `one_of` (stored as text) — no migration.
+          :route_verify_tampered,
           :route_failed,
           :route_rejected,
           :route_abandoned

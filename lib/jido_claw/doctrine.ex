@@ -92,6 +92,15 @@ defmodule JidoClaw.Doctrine do
                         "doctrine",
                         "code_doctrine.md"
                       ])
+  @verify_oath_priv Path.join([
+                      __DIR__,
+                      "..",
+                      "..",
+                      "priv",
+                      "defaults",
+                      "doctrine",
+                      "verify_oath.md"
+                    ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
@@ -104,6 +113,7 @@ defmodule JidoClaw.Doctrine do
   @external_resource @tie_break_priv
   @external_resource @challenger_contract_priv
   @external_resource @code_doctrine_priv
+  @external_resource @verify_oath_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
@@ -116,7 +126,8 @@ defmodule JidoClaw.Doctrine do
     confidence_tagging: String.trim(File.read!(@confidence_tagging_priv)),
     tie_break: String.trim(File.read!(@tie_break_priv)),
     challenger_contract: String.trim(File.read!(@challenger_contract_priv)),
-    code_doctrine: String.trim(File.read!(@code_doctrine_priv))
+    code_doctrine: String.trim(File.read!(@code_doctrine_priv)),
+    verify_oath: String.trim(File.read!(@verify_oath_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -156,6 +167,13 @@ defmodule JidoClaw.Doctrine do
     # planner, `scope-shift` when scope grows). The composer loop-guarantees the
     # baseline `code-written` / `plan-ready` (`enforce_completion_signals/2`), but
     # `tests-ready` / `scope-shift` are self-reported only — so the steering matters.
+    # Item 5 (camus VERIFY_OATH + OpenHelm OH1-3): the three verification
+    # judges — `verifier`, `system_verifier`, `test_runner` — carry the
+    # `:verify_oath` slice: a RED verify result is a SUCCESSFUL run, report it
+    # verbatim and STOP — never edit/commit/re-run to turn it green (the
+    # engine's tree snapshot reports any tracked change as tampering). The
+    # ENGINE envelope is the verdict authority on the code path; these LLM
+    # judges diagnose reds.
     "coder" => [:base, :artifacts, :code_doctrine, :emit_signals, :confidence_tagging],
     # AR-4: the self-heal fixer is a producing worker (`:artifacts`, like `coder`)
     # PLUS the new `:fixer_contract` slice — the prose half of `fixer_result/0`:
@@ -166,9 +184,9 @@ defmodule JidoClaw.Doctrine do
     "refactorer" => [:base, :artifacts, :code_doctrine, :confidence_tagging],
     "docs_writer" => [:base, :artifacts, :confidence_tagging],
     "researcher" => [:base, :artifacts, :emit_signals, :confidence_tagging],
-    "test_runner" => [:base, :artifacts, :confidence_tagging],
+    "test_runner" => [:base, :artifacts, :confidence_tagging, :verify_oath],
     "reviewer" => [:base, :reviewer_min, :reviewer_contract],
-    "verifier" => [:base, :reviewer_min, :confidence_tagging],
+    "verifier" => [:base, :reviewer_min, :confidence_tagging, :verify_oath],
     "sketch_build" => [:base, :artifacts, :confidence_tagging],
     "sketch_reviewer" => [:base, :reviewer_min, :reviewer_contract],
     # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
@@ -182,7 +200,7 @@ defmodule JidoClaw.Doctrine do
     # machine (idempotent re-check / state assertion / exit code; cite the
     # evidence). Both required by the drift guard (`template_names() == names()`).
     "system_executor" => [:base, :artifacts, :confidence_tagging],
-    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify],
+    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify, :verify_oath],
     # AR-9: the plan-wave workers. The drafter is a producing worker — but with
     # NO `:emit_signals` (deviation c): that slice instructs emitting
     # `plan-ready` when a plan is drafted, and a lens stage declares only

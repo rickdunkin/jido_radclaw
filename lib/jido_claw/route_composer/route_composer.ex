@@ -157,6 +157,7 @@ defmodule JidoClaw.RouteComposer do
   # The camus C1-3 normalizer — NOT JidoClaw.Triage.Verdict (different
   # subsystem; never alias both in one module).
   alias JidoClaw.Orchestration.Verdict
+  alias JidoClaw.Orchestration.Verify
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLease
@@ -272,6 +273,10 @@ defmodule JidoClaw.RouteComposer do
     # (coarse-scrubbed like its siblings); `result.disposition:
     # "review_infra_failed"` survives.
     :route_review_infra_failed,
+    # Item 5: the tampered error string carries the bounded integrity detail
+    # (coarse-scrubbed for a marked run); `result.disposition:
+    # "verify_tampered"` + the opaque `report_ref` survive.
+    :route_verify_tampered,
     :route_failed
   ]
 
@@ -296,6 +301,7 @@ defmodule JidoClaw.RouteComposer do
           | :deadlock
           | :budget_exhausted
           | :verify_failed
+          | :verify_tampered
           | :fix_failed
           | :review_infra_failed
           | :failed
@@ -484,6 +490,10 @@ defmodule JidoClaw.RouteComposer do
     # caller's `infra_cap: 1`, not silently reset to the default. (`rerun_cap`
     # has the same pre-existing gap — out of scope, not swept in.)
     |> maybe_put("infra_cap", Keyword.get(opts, :infra_cap))
+    # Item 5: the per-run verify-command override (scalar/argv/map — JSON-safe
+    # by shape, validated at resolve time inside the verify stage).
+    # Conditional-put so a restart keeps the caller's override.
+    |> maybe_put("verify_override", Keyword.get(opts, :verify_override))
     |> maybe_put_premises(Keyword.get(opts, :premises))
     |> maybe_put_context(Keyword.get(opts, :context))
   end
@@ -862,6 +872,10 @@ defmodule JidoClaw.RouteComposer do
       :infra_cap,
       config["infra_cap"] || opts[:infra_cap] || @default_infra_retry_cap
     )
+    # Item 5: config-then-opts (nil when neither — the resolve chain then walks
+    # config.yaml → auto-detect). A nil put is harmless here: init's own
+    # default for the key is nil.
+    |> Keyword.put(:verify_override, config["verify_override"] || opts[:verify_override])
     |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
     |> Keyword.put(:context, start_context(config["context"], opts[:context]))
   end
@@ -1118,6 +1132,19 @@ defmodule JidoClaw.RouteComposer do
       # keeps a caller's override.
       infra_counts: %{},
       infra_cap: Keyword.get(opts, :infra_cap, @default_infra_retry_cap),
+      # Item 5 (deterministic verify authority): `tampered_stages` is the
+      # per-stage tamper record (rebuilt from `stage_tampered` markers — the
+      # tick terminalizes `:verify_tampered` ahead of every other branch);
+      # `observed_head`/`sealed_head` are the engine's wave-boundary HEAD
+      # observations (first `head_observed` = baseline, a later change =
+      # seal); `verified_integrity` is the last green verify's certificate
+      # (`verify_certified` fold, cleared when the verify stage is
+      # invalidated); `verify_override` the per-run command override.
+      tampered_stages: %{},
+      observed_head: nil,
+      sealed_head: nil,
+      verified_integrity: nil,
+      verify_override: Keyword.get(opts, :verify_override),
       terminal: nil,
       reason: nil,
       summary: nil
@@ -1138,6 +1165,16 @@ defmodule JidoClaw.RouteComposer do
   def handle_continue(:rebuild, state), do: do_rebuild(state)
 
   def handle_continue(:tick, state) do
+    # Item 5: tamper outranks EVERY other terminal branch — `:not_converged`/
+    # deadlock/max-wave/deadline logic must never mask a detected cover-up
+    # (VERIFY_OATH: the remedy is a human look, never a retry or a fixer).
+    case tampered_terminal(state) do
+      {:tampered, reason} -> finish({:verify_tampered, reason}, state)
+      nil -> tick(state)
+    end
+  end
+
+  defp tick(state) do
     available = Fold.available(state.artifacts)
     result = Router.compose_route(state.catalog, state.live, available, state.ran)
     display = Router.merge_sticky(state.catalog, state.prev_route, result)
@@ -1145,16 +1182,112 @@ defmodule JidoClaw.RouteComposer do
 
     cond do
       is_nil(dispatch) ->
-        finish(Loop.terminal(display, state), state)
+        finish_terminal(Loop.terminal(display, state), state)
 
       over_budget?(state) ->
         finish(budget_terminal(state), state)
 
       true ->
-        # Peel a solo gate out of a mixed Kahn cohort (Phase 4b): the router does
-        # not guarantee a gate is alone in its level, so dispatch the gate this
-        # turn and let the independent workers re-compose next tick.
-        run_wave(Loop.split_solo_gate(dispatch, state.catalog), display, state)
+        # Peel a solo gate out of a mixed Kahn cohort (Phase 4b), then DEFER a
+        # verify stage sharing its cohort (item 5 — verify runs last, after
+        # the reviewers in its Kahn level have emitted): the router does not
+        # guarantee either is alone in its level.
+        dispatch
+        |> Loop.split_solo_gate(state.catalog)
+        |> Loop.defer_solo_verify(state.catalog)
+        |> run_wave(display, state)
+    end
+  end
+
+  # The earliest durable tamper record wins (sorted for determinism); its
+  # `{reason, report_ref}` detail rides the terminal.
+  defp tampered_terminal(%{tampered_stages: tampered}) when map_size(tampered) > 0 do
+    {stage, {reason, report_ref}} = Enum.min_by(tampered, fn {stage, _detail} -> stage end)
+    {:tampered, {stage, reason, report_ref}}
+  end
+
+  defp tampered_terminal(_state), do: nil
+
+  # Item 5 convergence-time integrity re-check (law 4): before `:converged`
+  # lands on a run holding a live `clean:<verify-lens>`, re-derive the
+  # MODE-SPECIFIC integrity tuple and compare against the certified
+  # `verified_integrity` — an external edit/HEAD move mid-run or during
+  # post-crash downtime (or an UNREADABLE capture: no convergence on state we
+  # cannot name) retracts the green and re-verifies instead of converging.
+  defp finish_terminal(:converged, state) do
+    case stale_verified_cleans(state) do
+      [] -> finish(:converged, state)
+      [{stage, signal} | _rest] -> retract_and_reverify(stage, signal, state)
+    end
+  end
+
+  defp finish_terminal(terminal, state), do: finish(terminal, state)
+
+  # The live `clean:<lens>` signals of verify-unit stages whose certified
+  # integrity no longer holds (or was never certified — the defensive
+  # backstop: a live green with no `verified_integrity` fails closed).
+  defp stale_verified_cleans(state) do
+    Enum.reject(live_verify_cleans(state), fn {name, _signal} ->
+      verified_integrity_holds?(state, name)
+    end)
+  end
+
+  defp verified_integrity_holds?(%{verified_integrity: nil}, _stage), do: false
+
+  defp verified_integrity_holds?(%{verified_integrity: vi} = state, stage) do
+    vi.stage == stage and integrity_matches?(vi, verify_project_dir(state))
+  end
+
+  defp integrity_matches?(_vi, nil), do: false
+
+  defp integrity_matches?(%{mode: :working_tree} = vi, dir) do
+    git = Verify.git()
+    head = git.head(dir)
+    digest = git.diff_digest(dir)
+
+    is_binary(head) and is_binary(digest) and head == vi.head and digest == vi.tree_digest
+  end
+
+  defp integrity_matches?(%{mode: :sealed} = vi, dir) do
+    git = Verify.git()
+    head = git.head(dir)
+    porcelain = git.porcelain(dir)
+
+    is_binary(head) and is_binary(porcelain) and head == vi.head and
+      String.trim(porcelain) == ""
+  end
+
+  defp integrity_matches?(_vi, _dir), do: false
+
+  defp verify_project_dir(%{context: context}) when is_map(context) do
+    case context[:project_dir] do
+      dir when is_binary(dir) and dir != "" -> dir
+      _absent -> nil
+    end
+  end
+
+  defp verify_project_dir(_state), do: nil
+
+  # Retract the stale green + invalidate the verify stage (welded, mirrored
+  # via the projection's own fold so `project == in-memory` holds), then
+  # re-tick — the next dispatch re-offers verify. A failed append terminalizes
+  # (house rule: never converge on a green the log no longer backs, and never
+  # busy-loop the re-check).
+  defp retract_and_reverify(stage, signal, state) do
+    markers = [
+      signals_retracted: %{signals: [signal]},
+      stages_invalidated: %{stages: [stage]}
+    ]
+
+    case Commit.append_markers(state.parent, markers, commit_opts(state)) do
+      :ok ->
+        {:noreply, ComposerProjection.apply_markers(state, markers), {:continue, :tick}}
+
+      {:error, halt} when halt in [:parent_terminal, :parent_fenced] ->
+        {:stop, :normal, state}
+
+      {:error, reason} ->
+        finish({:failed, {:verify_recheck_append_failed, reason}}, state)
     end
   end
 
@@ -1429,6 +1562,11 @@ defmodule JidoClaw.RouteComposer do
       {:ok, {:module_reactor, module, gate_inputs}} ->
         run_gate_wave(module, gate_inputs, dispatch, display, state)
 
+      # A solo verify wave (item 5): a NON-halting module reactor — the engine
+      # runs the checks and the result folds like a worker wave.
+      {:ok, {:verify_reactor, module, verify_inputs}} ->
+        run_verify_wave(module, verify_inputs, dispatch, display, state)
+
       {:ok, %Reactor{} = reactor} ->
         run_built_wave(reactor, stages, dispatch, display, state)
 
@@ -1436,6 +1574,52 @@ defmodule JidoClaw.RouteComposer do
       {:error, reason} ->
         finish_failed(reason, nil, dispatch, display, state)
     end
+  end
+
+  # A verify wave (item 5) — the `run_gate_wave/5` shape minus the
+  # artifact-input resolution (the verify reactor reads the working tree, not
+  # the store) and minus the park (it never halts). The loop merges the
+  # run-scoped inputs: the check cwd from the persisted scope, the
+  # engine-observed `sealed_head` (mode auto-select), and the per-run command
+  # override. Completes into the generic `handle_wave_result` fold.
+  defp run_verify_wave(module, verify_inputs, dispatch, display, state) do
+    with :ok <- record_wave_start(dispatch, display, state),
+         :ok <- ensure_parent_live(state) do
+      inputs =
+        Map.merge(verify_inputs, %{
+          project_dir: verify_project_dir(state),
+          sealed_head: state.sealed_head,
+          verify_override: state.verify_override
+        })
+
+      module
+      |> run_verify_reactor(inputs, state)
+      |> handle_wave_result(dispatch, display, state)
+    else
+      {:error, :parent_terminal} -> {:stop, :normal, state}
+      # WS2: another owner has the parent (token rotated) — stop clean, write
+      # nothing, launch nothing.
+      {:error, :parent_fenced} -> {:stop, :normal, state}
+      {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
+    end
+  end
+
+  # Same envelope opts as `run_gate_reactor/3` (`async?: false`, deterministic
+  # `composer:<parent>:<wave_index>` key — a restart re-dispatch dedupes +
+  # observes the existing child rather than re-running the checks).
+  defp run_verify_reactor(module, inputs, state) do
+    ReactorRunner.run(module, inputs,
+      tenant: state.tenant,
+      actor: state.actor,
+      async?: false,
+      name: "route_composer:verify_#{state.wave_index}",
+      context: state.context,
+      parent_run_id: state.parent_run_id,
+      idempotency_key: "composer:#{state.parent_run_id}:#{state.wave_index}",
+      omit_replay_inputs: true,
+      sanitize_sensitive_context: state.sanitize_sensitive_context,
+      execution_timeout: state.wave_timeout_ms
+    )
   end
 
   # A gate wave (Phase 4b). Resolve the gate's required-input ref from the store
@@ -1704,13 +1888,38 @@ defmodule JidoClaw.RouteComposer do
   # their existing POST-commit path (`maybe_rerun_after_findings`), reading the
   # verdict emissions only.
   defp handle_wave_value({:ok, raw_emissions}, run, dispatch, display, state) do
-    emissions = enforce_completion_signals(raw_emissions, state)
-    {verdict_emissions, infra_emissions} = Enum.split_with(emissions, &(&1.outcome == :ok))
+    # Item 5, BEFORE the ok/infra split: a verify emission carrying its
+    # `clean:<lens>` with nil/invalid certification is RECLASSIFIED to
+    # `{:inconclusive, "uncertified_green"}` — the committed invariant is
+    # `clean:<lens>` ∈ signals ⇔ a `:verify_certified` marker in the SAME wave
+    # commit; an uncertified green never reaches the parent log (`Fold.fold`
+    # would publish its signal blindly). The already-stored report stays
+    # reachable via the NON-ROUTING `verify_report_recorded` marker.
+    {emissions, report_markers} =
+      raw_emissions
+      |> enforce_completion_signals(state)
+      |> reclassify_uncertified_greens(state)
+
+    {verdict_emissions, non_ok_emissions} = Enum.split_with(emissions, &(&1.outcome == :ok))
+
+    # Tampered is extracted BEFORE the infra lane (it must not bump
+    # `infra_counts` — VERIFY_OATH: never retried, never fed to the fixer).
+    {tampered_emissions, infra_emissions} =
+      Enum.split_with(non_ok_emissions, &match?({:tampered, _reason}, &1.outcome))
+
     infra_stages = Enum.map(infra_emissions, & &1.stage)
+    tampered_stages = Enum.map(tampered_emissions, & &1.stage)
     next_fold = Fold.fold(state, verdict_emissions)
-    deltas = wave_deltas(state, next_fold, dispatch, infra_stages)
+    deltas = wave_deltas(state, next_fold, dispatch, infra_stages ++ tampered_stages)
     {rerun_markers, _rerun_only_apply} = decide_rerun(next_fold, verdict_emissions)
-    markers = infra_markers(infra_stages) ++ rerun_markers
+
+    markers =
+      infra_markers(infra_stages) ++
+        tampered_markers(tampered_emissions) ++
+        report_markers ++
+        certified_markers(verdict_emissions, state) ++
+        head_observation_markers(next_fold, state) ++
+        rerun_markers
 
     case Commit.commit_wave(
            state.parent,
@@ -1721,6 +1930,7 @@ defmodule JidoClaw.RouteComposer do
          ) do
       :ok ->
         emit_infra_observability(infra_outcomes(infra_emissions), :output, state)
+        emit_tampered_observability(tampered_emissions, state)
 
         next =
           record_wave(
@@ -1843,13 +2053,194 @@ defmodule JidoClaw.RouteComposer do
   defp infra_markers([]), do: []
   defp infra_markers(stages), do: [stage_infra: %{stages: stages}]
 
-  # The observability projection of the non-`:ok` emissions. `handle_wave_value`'s
-  # split, `infra_stages`, and `infra_markers` already fold BOTH `{:infra, _}`
-  # and the reserved `{:inconclusive, _}` (StageEmission decodes/encodes it across
-  # the child-result DB trust boundary — #5's deterministic verifier will produce
-  # it) into the infra lane by stage name, so this consumer folds both too — the
-  # "consumers fold `{:inconclusive, _}` into the infra lane defensively" contract
-  # (the `IterativeStep` precedent). Matching `{:infra, _}` alone would
+  # ---------------------------------------------------------------------------
+  # Item 5 — deterministic verify: tamper markers, certification, sealed heads
+  # ---------------------------------------------------------------------------
+
+  # The evidence-preserving tamper record (payload bounded: stage + bounded
+  # reason + the report ref — log tails live only inside the encrypted
+  # report). The ref rides THIS marker, never `artifacts_produced` — a tamper
+  # report must not look routable via `Fold.available/1`; `commit_wave`'s
+  # wave-scoped pending→active promotion still activates the row.
+  defp tampered_markers(emissions) do
+    for %StageEmission{stage: stage, outcome: {:tampered, reason}} = emission <- emissions do
+      {:stage_tampered, %{stage: stage, reason: reason, report_ref: report_ref(emission)}}
+    end
+  end
+
+  defp report_ref(%StageEmission{artifacts: artifacts}) do
+    case Map.get(artifacts, "verify-report") do
+      ref when is_binary(ref) -> ref
+      _absent -> nil
+    end
+  end
+
+  # Fail closed BEFORE the durable green (law 4): a verify emission whose
+  # `clean:<lens>` carries no valid certification becomes an inconclusive
+  # infra retry — signals/artifacts stripped (a non-`:ok` emission is never
+  # folded), report reachability preserved via `verify_report_recorded`.
+  defp reclassify_uncertified_greens(emissions, state) do
+    {reclassified, marker_lists} =
+      Enum.map_reduce(emissions, [], fn emission, marker_lists ->
+        if uncertified_green?(emission, state) do
+          stripped = %{
+            emission
+            | signals: [],
+              artifacts: %{},
+              outcome: {:inconclusive, "uncertified_green"},
+              certification: nil
+          }
+
+          {stripped, [report_recorded_markers(emission) | marker_lists]}
+        else
+          {emission, marker_lists}
+        end
+      end)
+
+    {reclassified, List.flatten(Enum.reverse(marker_lists))}
+  end
+
+  defp uncertified_green?(
+         %StageEmission{outcome: :ok, certification: nil} = emission,
+         state
+       ) do
+    case verify_clean_signal(state.catalog, emission.stage) do
+      signal when is_binary(signal) -> signal in emission.signals
+      nil -> false
+    end
+  end
+
+  defp uncertified_green?(%StageEmission{}, _state), do: false
+
+  defp report_recorded_markers(emission) do
+    case report_ref(emission) do
+      nil ->
+        []
+
+      ref ->
+        [
+          verify_report_recorded: %{
+            stage: emission.stage,
+            report_ref: ref,
+            reason: "uncertified_green"
+          }
+        ]
+    end
+  end
+
+  # The compact green certificate, welded into the SAME commit as the
+  # `clean:<lens>` publish (shas/digests are not secrets): folded to
+  # `verified_integrity`, so the convergence-time re-check never decrypts the
+  # report.
+  defp certified_markers(verdict_emissions, state) do
+    for %StageEmission{certification: %{} = cert} = emission <- verdict_emissions,
+        signal = verify_clean_signal(state.catalog, emission.stage),
+        is_binary(signal),
+        signal in emission.signals do
+      {:verify_certified,
+       %{
+         stage: emission.stage,
+         head: cert.head,
+         tree_digest: cert.tree_digest,
+         mode: Atom.to_string(cert.mode)
+       }}
+    end
+  end
+
+  # The `clean:<lens>` signal a verify-unit stage publishes, or nil for any
+  # other stage (the canonical predicate every item-5 consumer routes through).
+  defp verify_clean_signal(catalog, name) do
+    case Map.get(catalog, name) do
+      %Stage{unit: {:verify, _unit}, lens: lens} when is_binary(lens) -> "clean:#{lens}"
+      _other -> nil
+    end
+  end
+
+  # Engine head observation at the wave boundary (C1-6b — runs with a verify
+  # stage + a project_dir only): weld `head_observed` on the FIRST observation
+  # (the durable baseline — an in-memory-only baseline could be laundered by a
+  # crash + external move before recovery) and on every observed change. A
+  # move while a `clean:<verify-lens>` is live also welds the retraction +
+  # re-verify markers into the SAME txn (no stale green survives the commit).
+  # An unreadable capture welds nothing — the convergence-time re-check is the
+  # backstop that refuses to converge on unverifiable state.
+  defp head_observation_markers(next_fold, state) do
+    with true <- has_verify_stage?(state.catalog),
+         dir when is_binary(dir) <- verify_project_dir(state),
+         sha when is_binary(sha) <- Verify.git().head(dir) do
+      head_markers(sha, next_fold, state.observed_head)
+    else
+      _unobservable -> []
+    end
+  end
+
+  defp head_markers(sha, _next_fold, nil), do: [head_observed: %{head: sha}]
+
+  defp head_markers(sha, next_fold, observed) when sha != observed do
+    [head_observed: %{head: sha}] ++ moved_head_retractions(next_fold)
+  end
+
+  defp head_markers(_sha, _next_fold, _observed), do: []
+
+  defp moved_head_retractions(next_fold) do
+    case live_verify_cleans(next_fold) do
+      [] ->
+        []
+
+      cleans ->
+        {stages, signals} = Enum.unzip(cleans)
+
+        [
+          signals_retracted: %{signals: Enum.sort(signals)},
+          stages_invalidated: %{stages: Enum.sort(stages)}
+        ]
+    end
+  end
+
+  # Verify-unit stages whose `clean:<lens>` is currently live, as
+  # `{stage, signal}` pairs. Works over the full state AND a `Fold.fold`
+  # result (both carry `:catalog` + `:live`).
+  defp live_verify_cleans(state) do
+    for {name, %Stage{unit: {:verify, _unit}, lens: lens}} <- state.catalog,
+        is_binary(lens),
+        MapSet.member?(state.live, "clean:#{lens}"),
+        do: {name, "clean:#{lens}"}
+  end
+
+  defp has_verify_stage?(catalog) do
+    Enum.any?(catalog, fn {_name, %Stage{unit: unit}} -> match?({:verify, _name}, unit) end)
+  end
+
+  # One loud trace per tampered stage, POST-commit (durable-then-notify). The
+  # bounded reason rides the trace channel; tails stay in the encrypted report.
+  # Trace ONLY — the `jido_claw.verify.total` counter is the reactor's single
+  # bump per engine verify (telemetry.ex), and this path also re-runs on a
+  # restart's dedupe-observe re-fold, where the reactor never fired.
+  defp emit_tampered_observability(emissions, state) do
+    Enum.each(emissions, fn %StageEmission{stage: stage, outcome: {:tampered, reason}} ->
+      JidoClaw.Trace.emit(
+        :composer,
+        %{
+          event: :verify_tampered,
+          run_id: state.parent_run_id,
+          parent_run_id: state.parent_run_id,
+          stage: stage,
+          reason: reason,
+          wave_index: state.wave_index,
+          tenant_id: state.tenant
+        },
+        %{count: 1}
+      )
+    end)
+  end
+
+  # The observability projection of the non-`:ok` emissions (tampered was
+  # extracted upstream). `handle_wave_value`'s split, `infra_stages`, and
+  # `infra_markers` fold BOTH `{:infra, _}` and `{:inconclusive, _}` (item 5's
+  # deterministic verify produces it — refusals + the uncertified-green
+  # reclassification) into the infra lane by stage name, so this consumer folds
+  # both too — the "consumers fold `{:inconclusive, _}` into the infra lane"
+  # contract (the `IterativeStep` precedent). Matching `{:infra, _}` alone would
   # `FunctionClauseError` on an inconclusive emission AFTER `commit_wave` already
   # wrote its marker.
   defp infra_outcomes(infra_emissions) do
@@ -2028,12 +2419,16 @@ defmodule JidoClaw.RouteComposer do
   # in-memory fold. Signals are sorted lists (JSON-safe + deterministic);
   # `signals_retracted` captures a paired-verdict flip (NOT assumed empty);
   # artifacts are the new/changed `{name, producer, ref}` triples (bare ref).
-  # `infra_stages` (camus C1-3) are subtracted from `wave_completed.stages` —
-  # an infra'd stage was never folded into `ran`, so recording it as completed
-  # would make the durable rebuild diverge from the in-memory fold.
-  defp wave_deltas(state, next_fold, dispatch, infra_stages) do
+  # `non_completed_stages` — the infra'd (camus C1-3) AND tampered (item 5)
+  # stages — are subtracted from `wave_completed.stages`: neither was folded
+  # into `ran` (only `infra_stages` additionally get `:stage_infra` markers;
+  # tampered stages get `:stage_tampered`), so recording either as completed
+  # would make the durable rebuild diverge from the in-memory fold — a rebuild
+  # folding a tampered stage into `ran` would dedupe onto the corpse instead
+  # of terminalizing.
+  defp wave_deltas(state, next_fold, dispatch, non_completed_stages) do
     %{
-      stages: dispatch -- infra_stages,
+      stages: dispatch -- non_completed_stages,
       signals_published: signals_diff(next_fold.live, state.live),
       signals_retracted: signals_diff(state.live, next_fold.live),
       artifacts_produced: artifacts_diff(state.artifacts, next_fold.artifacts)
@@ -2798,10 +3193,32 @@ defmodule JidoClaw.RouteComposer do
 
   # Hook F markers: invalidate the re-review set (the re-firing reviewers). Empty
   # when nothing in-`ran` is touched (then convergence falls out next tick).
+  # Item 5: a verify stage in the set with a live `clean:<lens>` ALSO gets that
+  # green retracted in the same welded batch — the laundered-green guard (no
+  # stale green visible between the fixer wave and the re-verify; the
+  # `stages_invalidated` fold additionally clears `verified_integrity`).
   defp hook_f_markers(state, emissions) do
     case fix_rerun_set(state, emissions) do
+      [] ->
+        []
+
+      rerun_set ->
+        invalidation = [stages_invalidated: %{stages: rerun_set}]
+
+        case verify_clean_retractions(state, rerun_set) do
+          [] -> invalidation
+          retractions -> retractions ++ invalidation
+        end
+    end
+  end
+
+  defp verify_clean_retractions(state, rerun_set) do
+    signals =
+      for {name, signal} <- live_verify_cleans(state), name in rerun_set, do: signal
+
+    case signals do
       [] -> []
-      rerun_set -> [stages_invalidated: %{stages: rerun_set}]
+      signals -> [signals_retracted: %{signals: Enum.sort(signals)}]
     end
   end
 
@@ -3449,10 +3866,27 @@ defmodule JidoClaw.RouteComposer do
          result: %{disposition: "review_infra_failed"}
        }}
 
+  # Item 5 (VERIFY_OATH): the tampered terminal — never retried, never fed to
+  # the fixer. `result` carries the disposition plus the opaque verify-report
+  # ref, so the evidence is reachable from the parent even when a marked run's
+  # error string is scrubbed.
+  defp terminal_event(:verify_tampered, {stage, detail, report_ref}, _summary),
+    do:
+      {:route_verify_tampered,
+       %{
+         error: format_terminal_error(:verify_tampered, {stage, detail, report_ref}),
+         result: verify_tampered_result(report_ref)
+       }}
+
   # Explicit default (the former catch-all): a generic failure kind — lift `:error`
   # only, no disposition.
   defp terminal_event(kind, reason, _summary),
     do: {route_terminal_kind(kind), %{error: format_terminal_error(kind, reason)}}
+
+  defp verify_tampered_result(report_ref) when is_binary(report_ref),
+    do: %{disposition: "verify_tampered", report_ref: report_ref}
+
+  defp verify_tampered_result(_absent), do: %{disposition: "verify_tampered"}
 
   # AR-8b-2 F2 (5.6 / D3 — the review's headline gap): tear the exec Forge session
   # down on EVERY terminal, not just `:converged`. `:converged → complete_session`
@@ -3523,6 +3957,8 @@ defmodule JidoClaw.RouteComposer do
   defp classify_terminal({:failed, reason}), do: {:failed, reason}
   # AR-8c: verify-failed carries the exhausted lenses as its reason.
   defp classify_terminal({:verify_failed, reason}), do: {:verify_failed, reason}
+  # Item 5: tampered carries `{stage, bounded_detail, report_ref}`.
+  defp classify_terminal({:verify_tampered, reason}), do: {:verify_tampered, reason}
   # AR-4: fix-failed carries the exhausted forward lenses as its reason.
   defp classify_terminal({:fix_failed, reason}), do: {:fix_failed, reason}
   # Camus C1-3: review-infra-failed carries the infra-exhausted stages as its reason.
@@ -3690,6 +4126,11 @@ defmodule JidoClaw.RouteComposer do
   defp format_terminal_error(:review_infra_failed, stages) when is_list(stages),
     do: "review_infra_failed: stages=#{Enum.join(stages, ",")}"
 
+  # Item 5: the stage + the bounded integrity detail (kinds + check names —
+  # log tails live only inside the encrypted report).
+  defp format_terminal_error(:verify_tampered, {stage, detail, _report_ref}),
+    do: "verify_tampered: stage=#{stage} #{detail}"
+
   defp format_terminal_error(kind, _reason), do: Atom.to_string(kind)
 
   # Abnormal-path reason → error string. Every caller passes a bare atom
@@ -3784,29 +4225,38 @@ defmodule JidoClaw.RouteComposer do
 
   defp fix_exhausted?(state), do: exhausted_fix_lenses(state) != []
 
-  # The lenses of `reverse_verify: true` stages that hit their rerun cap with
-  # `findings:<lens>` STILL live — the loop gave up while verification was failing.
-  # Keyed on `rerun_counts` + `live` (NOT `ran`): the cap-tripping invalidation
-  # just removed the stage from `ran`. If it had passed, `clean:<lens>` would have
-  # replaced `findings:<lens>` and the loop would have converged, so it would not
-  # be capped with findings live.
+  # The lenses of verification-authority stages — `reverse_verify: true`
+  # (AR-8c) OR a `{:verify, _}` unit (item 5's deterministic verify) — that hit
+  # their rerun cap with `findings:<lens>` STILL live: the loop gave up while
+  # verification was failing. Keyed on `rerun_counts` + `live` (NOT `ran`): the
+  # cap-tripping invalidation just removed the stage from `ran`. If it had
+  # passed, `clean:<lens>` would have replaced `findings:<lens>` and the loop
+  # would have converged, so it would not be capped with findings live.
   defp exhausted_verify_lenses(state) do
-    for {name, %Stage{reverse_verify: true, lens: lens}} <- state.catalog,
+    for {name, %Stage{lens: lens} = stage} <- state.catalog,
+        verify_authority_stage?(stage),
         is_binary(lens),
         Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
         MapSet.member?(state.live, "findings:#{lens}"),
         do: lens
   end
 
-  # AR-4: the FORWARD (non-`reverse_verify`) twin of `exhausted_verify_lenses/1` —
-  # the lenses of self-heal reviewer stages that hit their rerun cap with
-  # `findings:<lens>` STILL live (the reviewers kept rejecting the fix). Keyed off
-  # the unique STAGE (`rerun_counts[name] > cap`) so it is participation-scoped: an
-  # off-route stage (e.g. `sketch-review` on a `code` run) never re-ran, so its
-  # `rerun_counts` is 0 and it is never reported. Disjoint from the verify set.
+  defp verify_authority_stage?(%Stage{reverse_verify: true}), do: true
+  defp verify_authority_stage?(%Stage{unit: {:verify, _name}}), do: true
+  defp verify_authority_stage?(%Stage{}), do: false
+
+  # AR-4: the FORWARD twin of `exhausted_verify_lenses/1` — the lenses of
+  # self-heal reviewer stages that hit their rerun cap with `findings:<lens>`
+  # STILL live (the reviewers kept rejecting the fix). Excludes BOTH
+  # verification-authority families (reverse_verify AND the `{:verify, _}`
+  # unit — a red engine verify exhausting its budget is `verify_failed`, never
+  # `fix_failed`). Keyed off the unique STAGE (`rerun_counts[name] > cap`) so
+  # it is participation-scoped: an off-route stage (e.g. `sketch-review` on a
+  # `code` run) never re-ran, so its `rerun_counts` is 0 and it is never
+  # reported. Disjoint from the verify set.
   defp exhausted_fix_lenses(state) do
-    for {name, %Stage{reverse_verify: rv, lens: lens}} <- state.catalog,
-        rv != true,
+    for {name, %Stage{lens: lens} = stage} <- state.catalog,
+        not verify_authority_stage?(stage),
         is_binary(lens),
         Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
         MapSet.member?(state.live, "findings:#{lens}"),

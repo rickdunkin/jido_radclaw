@@ -32,6 +32,49 @@ defmodule JidoClaw.Tools.GitCommitTest do
              )
   end
 
+  # Item 5 (camus C1-6a): the tool output carries ENGINE facts — rev-parse
+  # before/after, committed ⇔ the head moved, full shas (never --short).
+  test "a commit carries engine facts: committed true, full sha, heads differ", %{dir: dir} do
+    File.write!(Path.join(dir, "seed.txt"), "seed\n")
+
+    assert {:ok, %{sha: first_sha}} =
+             GitCommit.run(%{message: "seed", files: ["seed.txt"]}, context(dir))
+
+    File.write!(Path.join(dir, "tracked.txt"), "content\n")
+
+    assert {:ok, facts} =
+             GitCommit.run(%{message: "add tracked", files: ["tracked.txt"]}, context(dir))
+
+    assert facts.status == "committed"
+    assert facts.committed == true
+    assert facts.sha =~ ~r/^[0-9a-f]{40}$/
+    assert facts.head_before == first_sha
+    assert facts.sha != facts.head_before
+
+    # The reported sha IS the live HEAD (the sha a later verify binds against).
+    assert {live, 0} =
+             System.cmd("git", ["rev-parse", "HEAD"], cd: dir, env: Env.scrubbed_cmd_env())
+
+    assert String.trim(live) == facts.sha
+  end
+
+  test "an empty stage is an explicit no_changes SUCCESS naming the live head", %{dir: dir} do
+    File.write!(Path.join(dir, "seed.txt"), "seed\n")
+
+    assert {:ok, %{sha: sha}} =
+             GitCommit.run(%{message: "seed", files: ["seed.txt"]}, context(dir))
+
+    # Re-committing the unchanged file stages nothing: never an error, never a
+    # silent "committed" — an explicit no_changes with the live head.
+    assert {:ok, facts} =
+             GitCommit.run(%{message: "again", files: ["seed.txt"]}, context(dir))
+
+    assert facts.status == "no_changes"
+    assert facts.committed == false
+    assert facts.sha == sha
+    assert facts.head_before == sha
+  end
+
   test "returns git add errors before committing already-staged files", %{dir: dir} do
     File.write!(Path.join(dir, "staged.txt"), "staged\n")
 

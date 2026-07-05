@@ -41,7 +41,10 @@ resource.
   deterministic tools** rather than transcript-only input (our `lua_query` is the
   natural vehicle — sandboxed, lexical-only, tenant-scoped); cap the judge and force a
   committed verdict at the cap (OpenHelm `run-verifier.ts:42-64` — never a silent
-  failure).
+  failure). — **✅ landed 2026-07-05 inside #5**: `lua_query`/`lua_docs` on the
+  three verification judges + the `verify_oath` doctrine slice;
+  forced-verdict-at-cap satisfied engine-side (every cap exhaustion
+  terminalizes a named disposition), no new machinery.
 - **next-ten #6 (honest terminal statuses)** ← OH1-3: the `partially_succeeded` /
   `permanent_failure` split with an enforced transition table
   (`db/queries/runs.ts:48-57`) is the field shape; `succeeded` accepts no further

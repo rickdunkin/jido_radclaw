@@ -708,6 +708,53 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   end
 
   # ---------------------------------------------------------------------------
+  # Item-5 deterministic-verify fixtures (the engine verify authority)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A validator-clean catalog exercising the item-5 verify stage inside the
+  self-heal shape: `planner → implementer → {quality-reviewer, verify} + fixer`.
+  The `{:verify, "default"}` stage subscribes `code-written` (so every fixer
+  run re-touches it), optional-inputs `diff`/`fix` (ORDERING edges only — the
+  engine reads the working tree, not the store), and its `lens: "verify"`
+  derives `clean:verify` / `findings:verify`. `Loop.defer_solo_verify/2` peels
+  it out of the reviewer cohort so it runs LAST; a red's `findings` /
+  `action_needed` ride the existing Hook R fixer re-fire.
+  """
+  @spec verify_fixture_catalog() :: %{String.t() => Stage.t()}
+  def verify_fixture_catalog do
+    base =
+      Map.take(self_heal_fixture_catalog(), [
+        "planner",
+        "implementer",
+        "quality-reviewer",
+        "fixer"
+      ])
+
+    verify =
+      stage(
+        name: "verify",
+        unit: {:verify, "default"},
+        lens: "verify",
+        routes: ["code"],
+        sub: ["code-written"],
+        opt: ["diff", "fix"],
+        out: ["findings", "action_needed"],
+        pub: ["clean:verify", "findings:verify", "scope-shift"]
+      )
+
+    Map.put(base, "verify", verify)
+  end
+
+  @doc "The verify-fixture seed live signals (the self-heal seed)."
+  @spec verify_seed_live() :: [String.t()]
+  def verify_seed_live, do: self_heal_seed_live()
+
+  @doc "The verify-fixture seed artifact store (the self-heal seed)."
+  @spec verify_seed_artifacts() :: %{String.t() => %{String.t() => String.t()}}
+  def verify_seed_artifacts, do: self_heal_seed_artifacts()
+
+  # ---------------------------------------------------------------------------
   # AR-8c system-path fixtures (the reverse-verify loop)
   # ---------------------------------------------------------------------------
 

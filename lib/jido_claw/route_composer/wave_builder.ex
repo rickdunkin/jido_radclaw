@@ -37,6 +37,7 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
   alias JidoClaw.RouteComposer.GateReactors
   alias JidoClaw.RouteComposer.Stage
   alias JidoClaw.RouteComposer.Steps.WaveCollect
+  alias JidoClaw.RouteComposer.VerifyReactors
   alias JidoClaw.Skills.Steps.AgentStep
   alias JidoClaw.Workflows.StepIds
   alias Reactor.Argument
@@ -48,15 +49,18 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
   Build `stages` (a list of `%Stage{}`, one Kahn level) into a runnable wave.
 
   Returns `{:ok, %Reactor{}}` for an all-worker cohort, `{:ok, {:module_reactor,
-  module, inputs}}` for a solo gate stage, or `{:error, reason}` on an
-  unsupported unit, a mixed/multi gate cohort, an unknown gate, or an oversized
-  worker wave.
+  module, inputs}}` for a solo gate stage, `{:ok, {:verify_reactor, module,
+  inputs}}` for a solo verify stage (item 5 — a NON-halting module reactor; the
+  loop merges the run-scoped `project_dir`/`sealed_head`/`verify_override`
+  inputs), or `{:error, reason}` on an unsupported unit, a mixed/multi
+  gate/verify cohort, an unknown gate/verify, or an oversized worker wave.
 
   Options: `:wave_index` (stamped into `WaveCollect` / the gate inputs; default `0`).
   """
   @spec build_wave([Stage.t()], keyword()) ::
           {:ok, Reactor.t()}
           | {:ok, {:module_reactor, module(), map()}}
+          | {:ok, {:verify_reactor, module(), map()}}
           | {:error, term()}
   def build_wave(stages, opts \\ []) do
     wave_index = Keyword.get(opts, :wave_index, 0)
@@ -70,22 +74,40 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
       {:solo_gate, stage} ->
         build_gate_wave(stage, wave_index)
 
+      {:solo_verify, stage} ->
+        build_verify_wave(stage, wave_index)
+
       {:error, _reason} = error ->
         error
     end
   end
 
   # Classify the dispatch cohort: an all-worker cohort takes the struct path; a
-  # lone gate becomes a named module reactor; a gate mixed with any other stage
-  # (or >1 gate) is rejected (the loop peels a solo gate, so this is the
-  # backstop). A `{:seed,_}`/`{:skill,_}` unit stays unsupported.
+  # lone gate/verify becomes a named module reactor; a gate or verify mixed
+  # with any other stage (or >1 of either) is rejected (the loop peels a solo
+  # gate and DEFERS a verify, so these are the backstops — the verify one
+  # doubly so, since CatalogValidator invariant 10 already rejects >1 verify
+  # stage per catalog at load). A `{:seed,_}`/`{:skill,_}` unit stays
+  # unsupported.
   defp classify(stages) do
     {gates, non_gates} = Enum.split_with(stages, &gate?/1)
+    {verifies, workers} = Enum.split_with(non_gates, &verify?/1)
 
     cond do
-      gates == [] -> classify_workers(non_gates)
-      match?([_single], gates) and non_gates == [] -> {:solo_gate, hd(gates)}
-      true -> {:error, {:gate_must_be_solo_wave, Enum.map(stages, & &1.name)}}
+      gates == [] and verifies == [] ->
+        classify_workers(workers)
+
+      match?([_single], gates) and non_gates == [] ->
+        {:solo_gate, hd(gates)}
+
+      match?([_single], verifies) and gates == [] and workers == [] ->
+        {:solo_verify, hd(verifies)}
+
+      gates != [] ->
+        {:error, {:gate_must_be_solo_wave, Enum.map(stages, & &1.name)}}
+
+      true ->
+        {:error, {:verify_must_be_solo_wave, Enum.map(stages, & &1.name)}}
     end
   end
 
@@ -98,6 +120,9 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
 
   defp gate?(%Stage{unit: {:gate, _name}}), do: true
   defp gate?(%Stage{}), do: false
+
+  defp verify?(%Stage{unit: {:verify, _name}}), do: true
+  defp verify?(%Stage{}), do: false
 
   # A solo gate wave is dispatched as its named gate-producer reactor module
   # (Phase 4a). `GateReactors` bounds the gate name → `{module, signal}` (no
@@ -117,6 +142,27 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
 
       nil ->
         {:error, {:unknown_gate, stage.name, gate_name}}
+    end
+  end
+
+  # A solo verify wave is dispatched as its named verify-stage reactor module
+  # (item 5 — the gate shape minus the park). `VerifyReactors` bounds the
+  # verify name → module (no `String.to_atom` on the catalog-sourced name); the
+  # loop merges the run-scoped `project_dir`/`sealed_head`/`verify_override`
+  # inputs (the builder has no run-state access).
+  defp build_verify_wave(%Stage{unit: {:verify, verify_name}} = stage, wave_index) do
+    case VerifyReactors.resolve(verify_name) do
+      nil ->
+        {:error, {:unknown_verify, stage.name, verify_name}}
+
+      module ->
+        inputs = %{
+          wave_index: wave_index,
+          stage_name: stage.name,
+          lens: stage.lens
+        }
+
+        {:ok, {:verify_reactor, module, inputs}}
     end
   end
 

@@ -223,9 +223,10 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
   # One evaluator attempt under the three-exit normalizer contract (camus C1-3):
   # a clean verdict returns, a fail burns an ITERATION (unchanged semantics), an
   # `{:infra, _}` exit re-runs the EVALUATOR ONLY on the separate
-  # `infra_retries` budget, and `{:inconclusive, _}` (no producer yet) is a
-  # defensive terminal error. An evaluator `AgentRunner` `{:error, _}` joins the
-  # infra retry lane — an evaluator run error is camus's exec-failure class.
+  # `infra_retries` budget, and `{:inconclusive, _}` (item 5's verify authority
+  # produces it, but never on this iterative-eval path) is a defensive terminal
+  # error. An evaluator `AgentRunner` `{:error, _}` joins the infra retry lane —
+  # an evaluator run error is camus's exec-failure class.
   defp attempt_evaluator(generator, evaluator, config, round, infra_attempt) do
     case AgentRunner.run(
            evaluator.template,

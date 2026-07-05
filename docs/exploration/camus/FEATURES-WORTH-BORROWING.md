@@ -65,6 +65,51 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 **Recommendation**: BORROW-PATTERN — the single most valuable item in this doc.
 
+> **Status: ✅ ADOPTED 2026-07-05** (next-ten #5, with C1-6a+b). Shipped as
+> `JidoClaw.Orchestration.Verify` (pure `build_result/2`, injected
+> runner/porcelain/head/diff-digest seams) + `Verify.Envelope` /
+> `Verify.Git` / `Verify.OsCmdRunner` / `Verify.Config`, dispatched as the
+> catalog's `{:verify, "default"}` stage (`Reactors.VerifyStage`, the gate
+> shape minus the park; `Loop.defer_solo_verify/2` — the INVERSE of the gate
+> peel — makes it run LAST in its Kahn level). Green ⇒ `clean:verify` + a
+> welded `:verify_certified` marker; red ⇒ `findings:verify` +
+> `findings`/`action_needed` riding the existing Hook R fixer re-fire (red
+> exhaustion → `:route_verify_failed`); inconclusive rides the C1-3 infra
+> lane; tampered ⇒ the new `:route_verify_tampered` terminal via a welded
+> `:stage_tampered` marker (report ref on the marker, never
+> `artifacts_produced`) — never retried, never fed to the fixer, and the tick
+> checks tamper AHEAD of every other terminal. `VERIFY_OATH` landed verbatim
+> as the `:verify_oath` doctrine slice on `verifier`/`system_verifier`/
+> `test_runner` (+ read-only `lua_query`/`lua_docs` evidence, OH1-3).
+> Corrections to this entry: (1) the shipped envelope is richer than the
+> summary — `checks[{name, cmd, exit}]`, `integrity_note`, per-failure
+> `exit`/`reason`, plus `mode`/`tree_digest`/`sealed_head`; (2) the
+> classification table is the five camus rows plus mix adaptations (the
+> `mix`-scoped task-not-found env lane, an `output_limit` inconclusive kind
+> for the OsCmd capture cap); (3) "refuse loudly when nothing resolves" is a
+> loud INCONCLUSIVE envelope (remedy in `log_tail`), not a raise — config
+> errors ride the infra lane, never a wave failure; (4) upstream is
+> sealed-only — we run TWO modes (`sealed_head` present ⇒ camus-verbatim
+> sealed; else `working_tree` for today's non-committing routes:
+> dirty-before is an envelope FACT and mid-verify integrity rides HEAD
+> stability + a content-addressed `git diff --no-ext-diff --no-textconv
+> --binary` digest, since porcelain can't see content edits to already-dirty
+> files); (5) camus's degrade-OPEN on a failed git capture is corrected to
+> inconclusive-on-would-be-green (`integrity_unavailable` — law 4: our
+> target is a git repo by definition, a green must name what it certified);
+> (6) "runs last" needed the inverse defer peel — Kahn leveling alone
+> co-locates verify with the reviewers; (7) no shell, ever: `cmd` is an argv
+> list (scalars whitespace-split only when metacharacter-free and not
+> env-assignment-led), executed via `Core.OsCmd` with execvp-style argv0
+> resolution against the check cwd / the EFFECTIVE child PATH. Convergence
+> re-derives the mode-specific integrity tuple against the folded
+> `verified_integrity` before `:converged` (retract + re-verify on mismatch
+> or unreadable capture), and an uncertified green is reclassified
+> `{:inconclusive, "uncertified_green"}` BEFORE the fold. OQ-4 is answered in
+> `Verify.Config`'s moduledoc (per-run override → `verify_cmd:`/`verify:` →
+> mix auto-detect → loud inconclusive; no tenant defaults in v1; camus C2-7
+> mid-run config-edit freeze deliberately parked).
+
 **Where in camus**: `packages/cli/skills/camus/scripts/verify.py:121-201` (stack auto-detect / `CAMUS_VERIFY_CMD` override), `:271-303` (`INCONCLUSIVE_KINDS = missing_tool | no_tests | timeout`; exit-127/timeout/pytest-5 classification), `:306-434` (the integrity envelope: tracked-file porcelain snapshot before/after, `uncommitted_state`/`tracked_mutation`/`head_moved` all **RED, never inconclusive**, and the verdict **names the HEAD it certified**); `:358-374` (no verifier detected = loud `pass:false` + inconclusive + remedy, never a pass); `camus-loop.workflow.js:52-55` (`VERIFY_OATH` — the runner is told a RED is a *successful run* and tampering is detected); canary GREEN stage (`canary.py:135-150`) proving `result.head == git rev-parse HEAD` round-trips.
 
 **What**: Verification is a process exit code, not an opinion. The envelope `{pass, inconclusive, tampered, failures[{stage, kind, log_tail}], head}` distinguishes "code is broken" from "environment couldn't answer" from "someone touched the tree mid-verify", and binds every green to the exact commit it certified — which is what makes an edit→commit→rerun cover-up detectable downstream.
@@ -104,11 +149,12 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 > mis-terminalized `:not_converged` (never `:route_failed`), while a
 > degenerate `request_changes` with zero findings summoned the fixer with
 > empty feedback and burned `rerun_cap` toward a false `:fix_failed`.
-> `{:inconclusive, _}` is typed + defensively folded into the infra lane but
-> producer-less until C1-2 (next-ten #5). Trace `:composer` events (bounded
-> reasons, `run_id`-indexed) + `jido_claw.composer.infra.total`. The crabbox
-> CB2-1 vocabulary now has its landing envelope. Rider C2-8 landed with it
-> (see below).
+> `{:inconclusive, _}` is typed + defensively folded into the infra lane;
+> since 2026-07-05 C1-2's deterministic verify (next-ten #5) is its live
+> producer (refusals + the uncertified-green reclassification). Trace
+> `:composer` events (bounded reasons, `run_id`-indexed) +
+> `jido_claw.composer.infra.total`. The crabbox CB2-1 vocabulary now has its
+> landing envelope. Rider C2-8 landed with it (see below).
 
 **Where in camus**: `packages/cli/skills/camus/scripts/adapter.py:46-111` (`normalize_codex` fails closed to `ran:false` on: nonzero exit, empty output, unparseable JSON, out-of-enum verdict, missing findings list, out-of-range priority — "refuse to silently demote a drifted priority to a nit" — and the self-contradiction guard: "patch is incorrect" with zero blocking findings is an *infra* error); `SKILL.md:106-109` (Hard Rule #2: infra failure is retried with backoff, **never fed to the fix loop as a rejection, never counted as clean** — "the #1 cause of runaway loops"); `camus-loop.workflow.js:328-345` (`asGate`/`asVerify` force unparseable output to infra/inconclusive, not to a verdict); `README.md:101-104` ("a broken environment never reads as broken code… enforced in the adapter, not in a prompt").
 
@@ -159,6 +205,27 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 ### C1-6. Git-evidence sealing: `done` carries a sha, receipts over relays
 
 **Recommendation**: BORROW-PATTERN (scoped: evidence for engine-visible claims now; receipts in full when the shipping tail lands).
+
+> **Status: ✅ ADOPTED 2026-07-05 — scoped to sketch items (a)+(b)** (next-ten
+> #5, alongside C1-2). (a) `Tools.GitCommit` now returns ENGINE facts:
+> `git rev-parse HEAD` before/after via the shared `Verify.Git` seam,
+> `committed` ⇔ the head moved, full shas (never `--short`), and a
+> staged-empty commit is an explicit `no_changes` SUCCESS naming the live
+> head (distinct `add_failed`/`commit_failed` errors kept). (b) The composer
+> observes HEAD itself at every wave commit on verify-bearing runs: a durable
+> `:head_observed` marker on the FIRST observation (the baseline — an
+> in-memory-only baseline is laundered by crash + external move) and on every
+> change; a change derives `sealed_head` (flipping later verifies to
+> C1-2's sealed mode), and a move while `clean:verify` is live welds the
+> retraction + re-verify into the same txn. A green verify's
+> `:verify_certified` marker (`{stage, head, tree_digest, mode}`) is what the
+> convergence-time re-check holds greens against. One correction vs the
+> sketch: the facts land in the child run's durable `result` via the tool
+> output (the `WorkflowEvent`-stamping phrasing overstated — no separate
+> event kind for tool commits; the composer-side `:head_observed` is the
+> engine-derived event). Deliberately NOT adopted here: (c) `files_changed`
+> reconciliation, (d) receipts + hookless gate-owned git (awaits AR-10), and
+> (e) ancestry-proof gate dispositions.
 
 **Where in camus**: `packages/cli/skills/camus/scripts/commit.sh:32-48` (gate-owned commit: `git -c core.hooksPath=/dev/null -c commit.gpgsign=false`; empty stage → `{committed:false, reason:"empty"}` → task reports `no_changes`, never silently done; every `done` requires a full `commit_sha`); `merge.sh:47-77` (the receipt: every merge verdict is written to `~/.camus/merges/<taskId>.json` *before* it is printed — "a verdict without a receipt is impossible by construction"); `camus-feat.workflow.js:1212-1347` (three-way cross-check: runner relay vs receipt vs live `git rev-parse` — divergence halts with the receipt's pre-merge sha as reset target; a relay that hand-resolved a refused conflict is exactly the run-6 class this caught), `:1442-1490` (postflight self-audit: every completed task's branch proven in feat history via `git rev-list --count`, missing evidence halts loud), `:1050-1092` ("no-op" with unmerged commits on its branch recognized as a prior run's proven work and rescued, never dropped); `reconcile.py:124-136` + `land.py:65-87` (operator attestations refused without git evidence: commit must exist *and* be an ancestor / branch must hold unmerged commits).
 
@@ -378,7 +445,7 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 - **OQ-1. Executor-seam residuals (direction decided 2026-07-02; see C1-1).** The old question here — Forge runner vs a second `Jido.AI` provider — is resolved (Forge runner, behind a template-level `executor:` binding). What remains open: (a) **workspace materialization** — how a repo-coupled runner stage gets the working tree (mount vs clone vs diff-only into the sandbox; interacts with S-9 and argus §3.1's Worktrees design); (b) **override precedence** — template `executor:` vs a later stage-level override vs run-level config, and whether a run can force `:in_process` fleet-wide (e.g. Forge disabled); (c) **result channel exclusivity** — is the MCP deposit tool the *only* channel, or do schema-capable CLIs also get a stdout path (two channels invite contract drift; leaning single-channel); (d) **`needs_input` → gate case** mapping (first wave treats it as `blocked`).
 - **OQ-2. `done_with_findings` — disposition or DB status?** Start as `result.disposition` on `:completed` (no migration, surfaces filter in memory); promote to a first-class `WorkflowRun` status only if dashboards/queries need to index on it. The projection layer makes the promotion cheap later.
 - **OQ-3. Budget unit.** Camus caps output tokens because that's what its harness meters; `AgentTracker` already tracks cost. Cap on tokens (portable, provider-neutral) with cost displayed alongside, or cap on estimated cost (what operators actually fear)? Needs a decision before C2-1's event schema is set.
-- **OQ-4. Verify command source of truth.** `.jido/config.yaml` `verify_cmd:` per project (camus's `CAMUS_VERIFY_CMD` shape) with per-stack auto-detect fallback — but do tenant-level defaults make sense in multi-tenant mode, and does the sketch path's F2 exec tier get its own verify? Small design note needed before C1-2.
+- **OQ-4. Verify command source of truth.** ✅ ANSWERED 2026-07-05 — the design note of record is `JidoClaw.Orchestration.Verify.Config`'s moduledoc: per-run override → `.jido/config.yaml` (`verify_cmd:` scalar/argv or a `verify:` block incl. the registry-lite `checks:` list) → minimal Elixir auto-detect (`mix.exs` + `precommit` alias ⇒ `mix precommit`, else `mix test`) → a loud INCONCLUSIVE envelope (never a pass, never a silent skip). No tenant-level defaults in v1, code-path routes only (the sketch/F2 exec tier gets no verify), argv lists only (no shell — scalars whitespace-split only when metacharacter-free and not env-assignment-led). Known residual (camus C2-7, parked): a fix loop editing `.jido/config.yaml` mid-run changes later resolutions.
 
 ## Cross-references and dependencies
 

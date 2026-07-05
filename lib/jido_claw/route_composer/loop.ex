@@ -73,6 +73,36 @@ defmodule JidoClaw.RouteComposer.Loop do
   end
 
   @doc """
+  Defer a verify stage out of a mixed dispatch cohort (item 5) — the INVERSE
+  of `split_solo_gate/2`: where the gate peel dispatches the gate FIRST, this
+  returns the NON-verify stages and defers verify to a later tick, so verify
+  runs **last** — after every reviewer in its Kahn level has emitted (Kahn
+  leveling alone puts verify in the reviewers' cohort; a green that ran
+  *beside* the reviewers would certify a tree the fix loop is about to touch).
+
+  Verify dispatches solo only when it is the sole remaining dispatchable
+  stage. A cohort with no verify passes through unchanged; a multi-verify
+  cohort also passes through and hits `WaveBuilder`'s
+  `{:verify_must_be_solo_wave, names}` backstop — defense-in-depth only, since
+  `CatalogValidator` invariant 10 rejects >1 verify stage per catalog at load.
+  """
+  @spec defer_solo_verify([String.t()], catalog()) :: [String.t()]
+  def defer_solo_verify(dispatch, catalog) do
+    case Enum.split_with(dispatch, &verify_stage?(catalog, &1)) do
+      # No verify, or verify is already the whole cohort (solo or the
+      # multi-verify backstop case) — unchanged.
+      {[], _dispatch} -> dispatch
+      {_verifies, []} -> dispatch
+      # Mixed cohort: dispatch the others this turn; verify re-offers next tick.
+      {_verifies, others} -> others
+    end
+  end
+
+  defp verify_stage?(catalog, name) do
+    match?(%Stage{unit: {:verify, _name}}, Map.get(catalog, name))
+  end
+
+  @doc """
   Classify a dispatch-empty turn. `state` carries `:catalog`, `:ran`, `:live`.
   """
   @spec terminal(Router.merged(), %{

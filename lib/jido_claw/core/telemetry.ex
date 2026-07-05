@@ -73,6 +73,11 @@ defmodule JidoClaw.Telemetry do
       # carry the per-run timeline; this is the rollup.
       counter("jido_claw.composer.infra.total", tags: [:lane, :stage]),
 
+      # Deterministic verify runs (next-ten item 5, camus C1-2) — one count
+      # per engine verify; `result` is :green/:red/:inconclusive/:tampered.
+      # The Trace `:composer` verify_result events carry the per-run detail.
+      counter("jido_claw.verify.total", tags: [:result]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -239,6 +244,11 @@ defmodule JidoClaw.Telemetry do
       %{total: 1},
       %{lane: lane, stage: stage}
     )
+  end
+
+  @spec emit_verify(atom()) :: :ok
+  def emit_verify(result) do
+    :telemetry.execute([:jido_claw, :verify], %{total: 1}, %{result: result})
   end
 
   @spec emit_lua_eval(atom(), atom(), map()) :: :ok

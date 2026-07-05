@@ -122,9 +122,10 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
 
   # A lens-carrying stage IS a reviewer, whatever its output looks like: route
   # the typed output through the normalizer. `{:infra, _}` (and the defensive
-  # `{:inconclusive, _}` — no producer yet) becomes the emission's outcome with
-  # a bounded, formatted reason; the old shape-dispatch let a drifted `overall`
-  # fall through as a silent empty emission that never went clean.
+  # `{:inconclusive, _}` — item 5's verify stage produces it, though never
+  # through this mapper) becomes the emission's outcome with a bounded,
+  # formatted reason; the old shape-dispatch let a drifted `overall` fall
+  # through as a silent empty emission that never went clean.
   defp verdict(typed, %{lens: lens}) when is_binary(lens) do
     case Verdict.normalize(:review, typed) do
       {:verdict, %Verdict{clean?: true}} ->

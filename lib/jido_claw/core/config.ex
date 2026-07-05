@@ -118,6 +118,25 @@ defmodule JidoClaw.Config do
   def timeout(config), do: Map.get(config, "timeout", @defaults["timeout"])
 
   @doc """
+  Returns the raw `verify_cmd:` value from config (a scalar string or argv
+  list), or nil. Shape validation and the no-shell scalar parse happen in
+  `JidoClaw.Orchestration.Verify.Config` — this accessor returns whatever is
+  in the YAML.
+  """
+  @spec verify_cmd(map()) :: term() | nil
+  def verify_cmd(config), do: Map.get(config, "verify_cmd")
+
+  @doc """
+  Returns the raw `verify:` value from config (a `cmd`/`env`/`timeout_ms` map
+  or the registry-lite `checks:` list carrier), or nil. The value is preserved
+  raw — shape validation happens in `JidoClaw.Orchestration.Verify.Config`, so
+  a non-map `verify:` refuses loudly there instead of silently falling through
+  to autodetect.
+  """
+  @spec verify(map()) :: term() | nil
+  def verify(config), do: Map.get(config, "verify")
+
+  @doc """
   Returns the raw `profiles:` map from config (name → env var map).
 
   Profile value coercion and validation happen in

@@ -116,6 +116,6 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
     end
   end
 
-  defp encode_outcome({kind, reason}) when kind in [:infra, :inconclusive],
+  defp encode_outcome({kind, reason}) when kind in [:infra, :inconclusive, :tampered],
     do: %{"kind" => Atom.to_string(kind), "reason" => reason}
 end

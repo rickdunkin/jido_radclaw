@@ -38,7 +38,7 @@ defmodule JidoClaw.RouteComposer.StageEmissionTest do
     end
 
     test "round-trips through the WaveCollect encoding shape" do
-      for kind <- ["infra", "inconclusive"] do
+      for kind <- ["infra", "inconclusive", "tampered"] do
         emission =
           StageEmission.from_map(%{
             "stage" => "reviewer",
@@ -83,6 +83,49 @@ defmodule JidoClaw.RouteComposer.StageEmissionTest do
                  StageEmission.from_map(%{"stage" => "x", "outcome" => bogus})
 
         assert reason =~ "unrecognized_outcome"
+      end
+    end
+  end
+
+  describe "certification (item 5, C1-6)" do
+    test "absent certification decodes to nil (worker emissions)" do
+      assert %StageEmission{certification: nil} = StageEmission.from_map(%{"stage" => "x"})
+    end
+
+    test "a working-tree certification round-trips through the string-keyed boundary" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "verify",
+          "signals" => ["clean:verify"],
+          "certification" => %{"head" => "h1", "tree_digest" => "d1", "mode" => "working_tree"}
+        })
+
+      assert emission.certification == %{head: "h1", tree_digest: "d1", mode: :working_tree}
+    end
+
+    test "a sealed certification tolerates a nil tree_digest" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "verify",
+          "certification" => %{"head" => "h1", "tree_digest" => nil, "mode" => "sealed"}
+        })
+
+      assert emission.certification == %{head: "h1", tree_digest: nil, mode: :sealed}
+    end
+
+    test "malformed certification decodes to nil, never a partial certificate" do
+      for bogus <- [
+            "certified",
+            42,
+            %{"head" => "h1"},
+            %{"head" => "h1", "mode" => "hostile", "tree_digest" => "d1"},
+            %{"head" => nil, "mode" => "working_tree", "tree_digest" => "d1"},
+            # working-tree REQUIRES a digest — a digest-less working-tree
+            # certificate could never back the tuple re-check.
+            %{"head" => "h1", "mode" => "working_tree", "tree_digest" => nil}
+          ] do
+        assert %StageEmission{certification: nil} =
+                 StageEmission.from_map(%{"stage" => "verify", "certification" => bogus})
       end
     end
   end
