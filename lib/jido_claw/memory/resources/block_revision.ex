@@ -4,10 +4,11 @@ defmodule JidoClaw.Memory.BlockRevision do
   `:invalidate` calls.
 
   Every block mutation that changes `value` (or invalidates) inserts
-  one row here recording the prior value, source, and reason. The
-  `Block.:revise` action's `after_action` hook writes the revision
-  inside the same Ash transaction that updates the live row, so a
-  partial failure rolls both back together.
+  one row here recording the prior value, source, and reason. Revise is
+  a plain function (`Block.revise/3` — invalidate-and-replace); the
+  `:invalidate` action's hook writes the revision inside the same Ash
+  transaction that updates the live row, so a partial failure rolls
+  both back together.
 
   No `:update`, no `:destroy`. The denormalized scope columns
   (`tenant_id`, `scope_kind`, `user_id`, `workspace_id`, `project_id`,

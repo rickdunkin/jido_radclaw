@@ -5,7 +5,7 @@ defmodule JidoClaw.Memory.Fact do
   Every `remember` / `memory.save` / `consolidator promote` /
   `migrate_from_legacy` write lands here. Facts are NOT rendered into
   the prompt; the model reaches them through the `recall` tool, which
-  delegates to `JidoClaw.Memory.Retrieval.search/2` →
+  delegates to `JidoClaw.Memory.Retrieval.search/1` →
   `JidoClaw.Memory.HybridSearchSql.run/1`.
 
   ## Bitemporal model

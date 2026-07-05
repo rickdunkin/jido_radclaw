@@ -11,9 +11,6 @@ defmodule JidoClaw.SignalBus do
 
     * `jido_claw.tool.complete`    — emitted after a tool call is recorded
     * `jido_claw.agent.spawned`    — emitted when a child agent is spawned
-    * `jido_claw.memory.saved`     — emitted when a memory entry is saved
-    * `jido_claw.skill.started`    — emitted when a skill begins execution
-    * `jido_claw.skill.completed`  — emitted when a skill finishes
 
   ## Usage
 

@@ -2,7 +2,16 @@ defmodule JidoClaw.JidoMd do
   @moduledoc """
   Generates and loads the JIDO.md self-knowledge file at .jido/JIDO.md,
   and the .jido/config.yaml with documented defaults.
+
+  The tool, agent-template, and skill sections are derived from the
+  registered truth (`JidoClaw.Agent.tool_modules/0`,
+  `JidoClaw.Agent.Templates.list/0`, `JidoClaw.Skills.default_skill_entries/0`)
+  rather than hardcoded, so generated output always matches what the platform
+  actually exposes. `JidoClaw.JidoMd.Check` validates a document against the
+  same truth (the `mix jidoclaw.jido_md.check` precommit guard).
   """
+
+  alias JidoClaw.Agent.Templates
 
   @spec ensure(String.t()) :: :ok | nil
   def ensure(project_dir) do
@@ -23,8 +32,7 @@ defmodule JidoClaw.JidoMd do
     framework_details = detect_framework_details(project_dir, project_type)
     entry_points = detect_entry_points(project_dir, project_type)
 
-    content =
-      jido_md_content(project_name, project_dir, project_type, framework_details, entry_points)
+    content = jido_md_content(project_name, project_type, framework_details, entry_points)
 
     path = Path.join(dir, "JIDO.md")
     File.write!(path, content)
@@ -48,7 +56,7 @@ defmodule JidoClaw.JidoMd do
   # Content builders
   # ---------------------------------------------------------------------------
 
-  defp jido_md_content(project_name, project_dir, project_type, framework_details, entry_points) do
+  defp jido_md_content(project_name, project_type, framework_details, entry_points) do
     """
     # JIDO.md — Self-Knowledge for #{project_name}
 
@@ -62,7 +70,7 @@ defmodule JidoClaw.JidoMd do
 
     - **Name**: #{project_name}
     - **Type**: #{project_type}
-    - **Root**: #{project_dir}
+    - **Version**: #{app_vsn()}
     #{framework_details}
     #{entry_points_section(entry_points)}
     ---
@@ -72,56 +80,15 @@ defmodule JidoClaw.JidoMd do
     Use `spawn_agent` with a template name to create a child agent. Each template
     has a fixed tool set and iteration limit optimized for its task.
 
-    ### `coder`
-    - **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info
-    - **Max iterations**: 25
-    - **Use for**: Writing new code, fixing bugs, implementing features, modifying existing files
-
-    ### `test_runner`
-    - **Tools**: read_file, run_command, search_code
-    - **Max iterations**: 15
-    - **Use for**: Running test suites, verifying changes, checking test coverage, reproducing failures
-
-    ### `reviewer`
-    - **Tools**: read_file, git_diff, git_status, search_code
-    - **Max iterations**: 15
-    - **Use for**: Code review, finding bugs, checking style, auditing recent changes
-
-    ### `docs_writer`
-    - **Tools**: read_file, write_file, search_code
-    - **Max iterations**: 15
-    - **Use for**: Writing documentation, README files, module docs, inline comments
-
-    ### `researcher`
-    - **Tools**: read_file, search_code, list_directory, project_info, browse_web, search_web
-    - **Max iterations**: 15
-    - **Use for**: Codebase exploration, architecture analysis, dependency mapping, understanding unfamiliar code, web research (discover with search_web, read with browse_web)
-
-    ### `refactorer`
-    - **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info
-    - **Max iterations**: 25
-    - **Use for**: Large-scale refactoring, code restructuring, renaming across files, extracting modules
-
-    ### `verifier`
-    - **Tools**: read_file, search_code, git_diff, git_status, run_command, list_directory
-    - **Max iterations**: 20
-    - **Use for**: Interactive verification — running tests, starting servers, hitting endpoints, checking build output. Returns a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning.
-
+    #{templates_detail_section()}
     ---
 
     ## Skills
 
-    Skills are multi-step workflows that orchestrate agents sequentially. Run a skill
+    Skills are multi-step workflows that orchestrate agents. Run a skill
     with the `run_skill` tool or the `/skill <name>` REPL command.
 
-    ### Built-in Skills
-
-    | Skill | Steps | Purpose |
-    |-------|-------|---------|
-    | `full_review` | test_runner → reviewer | Run tests and review recent changes, synthesize findings |
-    | `refactor_safe` | reviewer → refactorer → test_runner | Review, refactor, then verify nothing broke |
-    | `explore_codebase` | researcher → docs_writer | Deep exploration, then produce a project overview doc |
-
+    #{skills_section()}
     ### Custom Skills
 
     Create `.jido/skills/<name>.yaml` with this format:
@@ -139,12 +106,16 @@ defmodule JidoClaw.JidoMd do
     synthesis: "Summarize what was done and any remaining issues"
     ```
 
-    Each step runs sequentially. The output of previous steps is available as context
-    for subsequent steps. The `synthesis` field is the final prompt used to summarize
-    all step outputs into a single result.
+    The output of previous steps is available as context for subsequent steps.
+    The `synthesis` field is the final prompt used to summarize all step outputs
+    into a single result.
 
-    Available template names: `coder`, `test_runner`, `reviewer`, `docs_writer`,
-    `researcher`, `refactorer`
+    #{template_names_lines()}
+    ---
+
+    ## Tools (#{length(JidoClaw.Agent.tool_modules())} total)
+
+    #{tools_list()}
 
     ---
 
@@ -155,8 +126,8 @@ defmodule JidoClaw.JidoMd do
 
     ## Memory
 
-    The agent has persistent memory that survives across sessions. Memory is stored in
-    `.jido/memory.json` (git-ignored).
+    The agent has persistent memory that survives across sessions, stored
+    tenant-scoped in the platform's Postgres database.
 
     **Memory types**:
     - `fact` — General facts about the codebase (default)
@@ -228,12 +199,98 @@ defmodule JidoClaw.JidoMd do
     """
   end
 
+  # Runtime app version — NOT Mix.Project: `ensure/1` runs at app boot and in
+  # the escript, where Mix is absent (same precedent as MCP.EndpointConfig).
+  defp app_vsn do
+    to_string(Application.spec(:jido_claw, :vsn) || "0.0.0-dev")
+  end
+
+  # One `### \`name\`` block per registered template, sorted by name, derived
+  # from the same registry `spawn_agent` resolves against — the sections can
+  # no longer contradict the platform (audit §1.12).
+  defp templates_detail_section do
+    Templates.list()
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map_join("\n", fn {name, template} -> template_detail_block(name, template) end)
+  end
+
+  defp template_detail_block(name, template) do
+    """
+    ### `#{name}`
+    - **Description**: #{template.description}
+    - **Tools**: #{template_tools(template)}
+    - **Max iterations**: #{template.max_iterations}
+    #{composer_private_line(template)}\
+    """
+  end
+
+  defp template_tools(template) do
+    template.module.strategy_opts()
+    |> Keyword.fetch!(:tools)
+    |> Enum.map_join(", ", & &1.name())
+  end
+
+  defp composer_private_line(template) do
+    if Templates.composer_private_template?(template) do
+      "- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`\n"
+    else
+      ""
+    end
+  end
+
+  # Spawnable/composer-private split via `Templates.spawnable_names/0` — the
+  # canonical single source (itself classified by the domain predicate, never
+  # the raw `:composer_private` field: the sketch templates are private via
+  # `:sandbox`). This line sits in spawn/skill-YAML context, so it lists only
+  # what `spawn_agent` accepts.
+  defp template_names_lines do
+    spawnable = Templates.spawnable_names()
+    private = Enum.sort(Templates.names() -- spawnable)
+
+    """
+    Available template names: #{names_inline(spawnable)}
+    Composer-internal (not spawnable): #{names_inline(private)}
+    """
+  end
+
+  defp names_inline(names) do
+    Enum.map_join(names, ", ", &"`#{&1}`")
+  end
+
+  defp skills_section do
+    skills =
+      Enum.map_join(JidoClaw.Skills.default_skill_entries(), "\n", fn {name, description} ->
+        "- `#{name}` — #{description}"
+      end)
+
+    """
+    ### Built-in Skills
+
+    #{skills}
+
+    Steps run sequentially by default. When steps carry `name` and `depends_on`
+    fields, the skill executes as a DAG — independent steps run in parallel,
+    dependent steps wait for their prerequisites. When a skill declares
+    `mode: iterative`, its generator step and evaluator step loop until the
+    evaluator passes the result or `max_iterations` is reached.
+    """
+  end
+
+  # Line-anchored bullets so the drift guard can set-compare tool names,
+  # not just the section-heading count.
+  defp tools_list do
+    JidoClaw.Agent.tool_modules()
+    |> Enum.map(& &1.name())
+    |> Enum.sort()
+    |> Enum.map_join("\n", &"- `#{&1}`")
+  end
+
   defp config_yaml_content do
     """
     # JidoClaw Configuration
-    # Generated by `jido init`. Edit to customize agent behavior.
+    # Generated by the `mix jidoclaw` setup wizard. Edit to customize agent behavior.
     # This file is git-ignored — safe to put personal settings here.
-    # Run `jido --setup` or `/setup` in the REPL to reconfigure interactively.
+    # Run `/setup` in the REPL to reconfigure interactively.
 
     # Provider: ollama | anthropic | openai | google | groq | xai | openrouter
     provider: ollama

@@ -62,7 +62,11 @@ defmodule JidoClaw.MixProject do
 
   def cli do
     [
-      preferred_envs: [precommit: :test, "jidoclaw.system_prompt.check": :test]
+      preferred_envs: [
+        precommit: :test,
+        "jidoclaw.system_prompt.check": :test,
+        "jidoclaw.jido_md.check": :test
+      ]
     ]
   end
 
@@ -259,6 +263,7 @@ defmodule JidoClaw.MixProject do
       precommit: [
         "jidoclaw.compile_check",
         "jidoclaw.system_prompt.check",
+        "jidoclaw.jido_md.check",
         "deps.unlock --unused",
         "format --check-formatted",
         "reach.check --arch --smells --strict",

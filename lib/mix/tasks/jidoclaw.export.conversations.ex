@@ -34,7 +34,7 @@ defmodule Mix.Tasks.Jidoclaw.Export.Conversations do
 
     * `<file>.export-manifest.json` — lists rows dropped from the main
       output by `(sequence, role)`. Includes every `:tool_call`,
-      `:tool_result`, `:reasoning` row in the session.
+      `:tool_result`, `:reasoning`, and `:system` row in the session.
     * `<file>.redaction-manifest.json` (`--with-redaction-manifest`) —
       lists `:user`/`:assistant` rows whose content contains the
       literal string `"[REDACTED"`, with `(sequence, position,

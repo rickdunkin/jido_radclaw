@@ -1,6 +1,7 @@
 defmodule JidoClaw.Tools.SpawnAgentTest do
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.AgentTracker
   alias JidoClaw.Tools.SpawnAgent
 
@@ -164,6 +165,16 @@ defmodule JidoClaw.Tools.SpawnAgentTest do
       restore_env(:mcp_facade_capture_target, old_mcp_target)
       AgentTracker.reset()
     end)
+  end
+
+  test "description and :template doc enumerate exactly the spawnable template set" do
+    # Derived at compile time from Templates.spawnable_names/0 — the LLM-facing
+    # strings can no longer drift from the registry (post-review fix: the
+    # hand-maintained 7-name literals had dropped `fixer`).
+    inline = Enum.join(Templates.spawnable_names(), ", ")
+
+    assert SpawnAgent.description() =~ "Available templates: #{inline}."
+    assert SpawnAgent.schema()[:template][:doc] =~ "(#{inline})"
   end
 
   test "rejects spawning when the child cap is reached" do

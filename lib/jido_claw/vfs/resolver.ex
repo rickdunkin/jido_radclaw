@@ -5,7 +5,7 @@ defmodule JidoClaw.VFS.Resolver do
   Path routing:
     * `github://owner/repo/path` — `Jido.VFS.Adapter.GitHub`
     * `s3://bucket/key`          — `Jido.VFS.Adapter.S3`
-    * `git://repo-path/file`     — `Jido.VFS.Adapter.Git`
+    * `git://repo-path//file-path` — `Jido.VFS.Adapter.Git`
     * Absolute path under a workspace mount — `Jido.Shell.VFS.*` (requires
       `:workspace_id` opt)
     * All other paths            — local filesystem via `File.*`; when

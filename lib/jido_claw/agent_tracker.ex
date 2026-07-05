@@ -22,7 +22,7 @@ defmodule JidoClaw.AgentTracker do
   status, display summaries, history) until a periodic sweep expires
   them: once a terminal entry is older than the terminal TTL, the sweep
   first stops the idle child process (deduplicated across sweeps), and
-  only evicts the entry once its pid is dead. Two invariants hold:
+  only evicts the entry once its pid is dead. Three invariants hold:
 
     1. A live runtime agent always has a tracker entry — scoped tools
        prove tenant ownership through the entry before touching the

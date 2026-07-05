@@ -254,6 +254,29 @@ defmodule JidoClaw.Agent.Templates do
   @spec names() :: [String.t()]
   def names, do: Map.keys(@templates)
 
+  @doc """
+  Returns the sorted names of the spawnable (non-composer-private) templates —
+  the **single source** for every spawnable-list surface: the `spawn_agent` /
+  `handoff` tool metadata (compile-time interpolated), the JIDO.md generator
+  and drift check, and the system-prompt drift check.
+
+  Classifies the **raw** `@templates` entries: the privacy fields (`:sandbox`,
+  `:composer_private`) are static on the raw maps and
+  `composer_private_template?/1` reads them defensively, so classification is
+  identical to the hydrated path *without* hydration — hydration calls
+  `module.strategy_opts()`, which at compile time would drag all 16 worker
+  modules into the callers' compile deps. (Known nuance: a *malformed* sandbox
+  value would classify public here vs private hydrated — the static registry
+  is clean and pinned by tests.)
+  """
+  @spec spawnable_names() :: [String.t()]
+  def spawnable_names do
+    @templates
+    |> Enum.reject(fn {_name, template} -> composer_private_template?(template) end)
+    |> Enum.map(fn {name, _template} -> name end)
+    |> Enum.sort()
+  end
+
   @doc "Returns true if a template with the given name exists."
   @spec exists?(String.t()) :: boolean()
   def exists?(name), do: Map.has_key?(@templates, name)

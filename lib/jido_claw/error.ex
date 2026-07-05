@@ -26,7 +26,9 @@ defmodule JidoClaw.Error do
     `splode: nil`, and Splode may accept those as compatible with the current
     tree even when their owning tree is not in `merge_with`. Code that needs a
     guaranteed `%JidoClaw.Error.*{}` must call `Normalize.tool_error/2` (or
-    its peer) explicitly.
+    its peer) explicitly. (The live `Tools.Action` pipeline normalizes tool
+    results through `Tools.Error.normalize_result/1` instead — this boundary
+    is for callers that need a typed exception struct.)
   * **`merge_with: [Ash.Error]`** — 15+ consumer sites pattern-match on
     `%Ash.Error.*{}`. Merging guarantees typed Ash class containers
     (`%Ash.Error.Invalid{errors: [...]}`) flatten cleanly through

@@ -141,7 +141,7 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubAgentServer do
   @moduledoc """
   The `:step_agent_server` half of the Phase-1 worker stub — stubs
   `Jido.AgentServer.await_completion/2` by reading the `request_id` from the
-  runner's `result_path` opt (`[:requests, request_id]`, `agent_runner.ex:179`)
+  runner's `result_path` opt (`[:requests, request_id]`, `agent_runner.ex:342`)
   and returning **that** request's canned map from `StubStore`, so
   `Output.typed_request_output/1` yields the canned typed output.
   """

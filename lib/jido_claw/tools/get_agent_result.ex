@@ -13,9 +13,7 @@ defmodule JidoClaw.Tools.GetAgentResult do
       agent_id: [type: :string, required: true],
       status: [type: :string, required: true],
       result: [type: {:or, [:string, :map]}],
-      output_meta: [type: {:or, [:map, nil]}],
-      message: [type: :string],
-      error: [type: :string]
+      output_meta: [type: {:or, [:map, nil]}]
     ],
     schema: [
       agent_id: [type: :string, required: true, doc: "The agent ID returned by spawn_agent"],

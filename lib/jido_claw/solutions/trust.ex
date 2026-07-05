@@ -57,6 +57,7 @@ defmodule JidoClaw.Solutions.Trust do
   | `%{status: "passed"}` or `%{"status" => "passed"}` | 1.0 |
   | `%{status: "failed"}`  or `%{"status" => "failed"}` | 0.0 |
   | `%{status: "partial", passed: n, total: t}` | n / max(t, 1) |
+  | `%{status: "semi_formal", confidence: c}` (c in 0.0..1.0) | c * 0.85 |
   | Anything else                               | 0.3   |
   """
   @spec verification_score(map()) :: float()

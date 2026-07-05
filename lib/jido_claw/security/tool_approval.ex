@@ -236,7 +236,7 @@ defmodule JidoClaw.Security.ToolApproval do
   # which would wrongly map a global `false` to `:not_external`): exact policy
   # wins, then an unknown `mcp_`-prefixed name falls back to the global default
   # (never native — a lost/reset policy term fails CLOSED to the global
-  # posture), then truly native names route to `native_requirement/3`.
+  # posture), then truly native names route to `native_requirement/4`.
   defp mcp_requirement(tool, opts) do
     case Map.fetch(mcp_policy(opts), tool) do
       {:ok, true} -> :gated

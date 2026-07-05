@@ -10,7 +10,7 @@ defmodule JidoClaw.Solutions.SearchEscape do
       The SQL uses `LIKE '%' || $10 || '%' ESCAPE '\\'`.
 
     * `lower_only/1` — `String.downcase/1`, NO escape. Drives
-      `similarity(lexical_text, $12)`. The split exists because
+      `similarity(lexical_text, $11)`. The split exists because
       `similarity('100\\%', '100%')` ranks LOWER than
       `similarity('100\\%', '100ish')` thanks to the literal escape
       char in the query — the lexical-pool LIKE filter wants the

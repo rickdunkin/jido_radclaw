@@ -9,13 +9,12 @@ available tools, agent templates, skills, and conventions.
 
 - **Name**: JidoClaw
 - **Type**: Elixir/OTP
-- **Version**: 0.3.0
-- **Root**: /Users/rhl/Desktop/JidoClaw
+- **Version**: 0.6.4
 - **Frameworks**: Phoenix 1.7+ (with LiveView), Bandit HTTP adapter, Jido AI Agent Framework
 - **Entry points**:
   - `lib/jido_claw/application.ex` — OTP supervision tree
-  - `lib/jido_claw/main.ex` — Escript CLI entrypoint
-  - `lib/jido_claw/repl.ex` — Interactive REPL loop
+  - `lib/jido_claw/cli/main.ex` — Escript CLI entrypoint
+  - `lib/jido_claw/cli/repl.ex` — Interactive REPL loop
   - `lib/jido_claw/web/router.ex` — Phoenix HTTP/WS routes
   - `config/config.exs` — Application configuration
 
@@ -30,7 +29,7 @@ JidoClaw is an AI agent platform built on BEAM/OTP with the Jido framework.
 ```
 CLI (REPL) ──> Agent Engine ──> LLM Provider (Ollama/Anthropic/OpenAI/etc.)
    |                |
-   |                ├── Tools (33): file ops, git, search, shell, memory, swarm, browser, reasoning, scheduling
+   |                ├── Tools (35): file ops, git, search, shell, memory, swarm, browser, reasoning, scheduling, lua
    |                ├── Skills: multi-step orchestrated workflows
    |                └── Solutions: fingerprint-based solution caching
    |
@@ -43,23 +42,29 @@ Channels (Discord) ──> Per-channel agent sessions
 
 ```
 JidoClaw.Supervisor (one_for_one)
-├── Registry (SessionRegistry, TenantRegistry)
-├── Phoenix.PubSub
+├── JidoClaw.InfraSupervisor (one_for_one)
+│   ├── Registry (SessionRegistry, TenantRegistry, …)
+│   ├── JidoClaw.Repo (Postgres)
+│   ├── JidoClaw.Security.Vault
+│   ├── Phoenix.PubSub
+│   ├── Jido.Signal.Bus (event routing)
+│   └── Trace persistence + collector
+├── JidoClaw.Forge.Supervisor (sandboxed execution)
 ├── Finch (HTTP pools)
-├── Jido.Signal.Bus (event routing)
 ├── JidoClaw.Telemetry
 ├── JidoClaw.Stats
 ├── JidoClaw.BackgroundProcess.Registry
-├── JidoClaw.Tool.Approval
 ├── DynamicSupervisor (sessions)
 ├── JidoClaw.Jido (agent runtime)
-├── JidoClaw.Tenant.Supervisor
-│   └── Per-tenant: DynamicSupervisor, Cron.Scheduler
-├── JidoClaw.Tenant.Manager
-├── JidoClaw.Solutions.Store
-├── JidoClaw.Solutions.Reputation
+├── JidoClaw.TenantRuntimeSupervisor
+│   ├── JidoClaw.Tenant.Supervisor (per-tenant: DynamicSupervisor, Cron.Scheduler)
+│   └── JidoClaw.Tenant.Manager
+├── JidoClaw.Skills (cached registry)
 ├── JidoClaw.Network.Supervisor
-└── JidoClaw.Web.Endpoint (Phoenix)
+├── JidoClaw.AgentTracker
+├── JidoClaw.Display
+├── JidoClaw.Shell.Supervisor (VFS, profiles, shell sessions)
+└── JidoClaw.Web.Endpoint (Phoenix — gateway/both modes)
 ```
 
 ### Signal Namespace
@@ -67,7 +72,6 @@ JidoClaw.Supervisor (one_for_one)
 All internal events use `jido_claw.*`:
 - `jido_claw.tool.complete` — tool execution finished
 - `jido_claw.agent.spawned` — child agent created
-- `jido_claw.memory.saved` — memory entry persisted
 
 ### Multi-Tenancy
 
@@ -80,43 +84,96 @@ Each tenant gets isolated:
 
 ## Agent Templates
 
-Use `spawn_agent` with a template name to create a child agent.
+Use `spawn_agent` with a template name to create a child agent. Each template
+has a fixed tool set and iteration limit optimized for its task.
 
 ### `coder`
-- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info
+- **Description**: Full-capability coding agent with all tools
+- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, fetch_output, git_status, git_diff, git_commit, project_info
 - **Max iterations**: 25
-- **Use for**: Writing new code, fixing bugs, implementing features, modifying existing files
-- **Strength**: Full read/write/execute capability — the workhorse for any coding task
-
-### `test_runner`
-- **Tools**: read_file, run_command, search_code
-- **Max iterations**: 15
-- **Use for**: Running test suites, verifying changes, checking coverage, reproducing failures
-- **Strength**: Read-only file access prevents accidental modifications during testing
-
-### `reviewer`
-- **Tools**: read_file, git_diff, git_status, search_code
-- **Max iterations**: 15
-- **Use for**: Code review, finding bugs, checking style, auditing recent changes
-- **Strength**: Git-aware — can see exactly what changed and review in context
 
 ### `docs_writer`
+- **Description**: Writes documentation and comments
 - **Tools**: read_file, write_file, search_code
 - **Max iterations**: 15
-- **Use for**: Writing documentation, README files, module docs, inline comments
-- **Strength**: Can read existing code to understand it, then write accurate docs
 
-### `researcher`
+### `fixer`
+- **Description**: Resolves open review findings, then self-reports the domains it touched
+- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, fetch_output, git_status, git_diff, git_commit, project_info
+- **Max iterations**: 25
+
+### `plan_arbiter`
+- **Description**: Adjudicates the competing plans + critiques into a decision memo (read-only)
+- **Tools**: read_file, search_code
+- **Max iterations**: 15
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `plan_challenger`
+- **Description**: Critiques ONE competing plan — blockers/concerns/strengths for the arbiter (read-only)
+- **Tools**: read_file, search_code
+- **Max iterations**: 15
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `plan_drafter`
+- **Description**: Drafts ONE competing implementation plan under a stage-named bias (read-only)
 - **Tools**: read_file, search_code, list_directory, project_info, browse_web, search_web
 - **Max iterations**: 15
-- **Use for**: Codebase exploration, architecture analysis, dependency mapping, web research (discover with search_web, read with browse_web)
-- **Strength**: Read-only exploration of the codebase and public web research
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
 
 ### `refactorer`
-- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, git_status, git_diff, git_commit, project_info
+- **Description**: Refactors code with full tool access
+- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, fetch_output, git_status, git_diff, git_commit, project_info
 - **Max iterations**: 25
-- **Use for**: Large-scale refactoring, code restructuring, renaming across files
-- **Strength**: Full capability like coder, but prompted specifically for safe refactoring patterns
+
+### `researcher`
+- **Description**: Explores and analyzes codebase structure, and researches the web (read-only)
+- **Tools**: read_file, search_code, list_directory, project_info, browse_web, search_web
+- **Max iterations**: 15
+
+### `reviewer`
+- **Description**: Reviews code changes for bugs and style issues (read-only)
+- **Tools**: read_file, git_diff, fetch_output, git_status, search_code
+- **Max iterations**: 15
+
+### `sketch_build`
+- **Description**: Builds a throwaway prototype in an isolated sandbox (file tools only)
+- **Tools**: read_file, write_file, list_directory, search_code, read_real_file, search_real_code, list_real_directory
+- **Max iterations**: 15
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `sketch_build_exec`
+- **Description**: Builds AND runs a throwaway prototype in a Docker-isolated sandbox
+- **Tools**: read_file, write_file, list_directory, search_code, read_real_file, search_real_code, list_real_directory, run_command, fetch_output
+- **Max iterations**: 15
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `sketch_reviewer`
+- **Description**: Reviews a throwaway prototype in the sandbox (read-only, file tools)
+- **Tools**: read_file, list_directory, search_code, read_real_file, search_real_code, list_real_directory
+- **Max iterations**: 15
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `system_executor`
+- **Description**: Applies an approved change to the machine/environment (full mutating tools)
+- **Tools**: read_file, write_file, edit_file, list_directory, search_code, run_command, fetch_output, git_status, git_diff
+- **Max iterations**: 25
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `system_verifier`
+- **Description**: Verifies a system/environment change took on the real machine (read + run)
+- **Tools**: read_file, search_code, list_directory, run_command, fetch_output, git_status, git_diff
+- **Max iterations**: 20
+- **Composer-internal**: used by the route composer; not spawnable via `spawn_agent`
+
+### `test_runner`
+- **Description**: Runs tests and reports results (read-only)
+- **Tools**: read_file, run_command, fetch_output, search_code
+- **Max iterations**: 15
+
+### `verifier`
+- **Description**: Interactive verification — reads code, runs tests/commands. Returns a structured verdict (`pass`/`fail`), confidence (`low`/`medium`/`high`), and short reasoning.
+- **Tools**: read_file, search_code, git_diff, git_status, run_command, fetch_output, list_directory, verify_certificate
+- **Max iterations**: 20
 
 ---
 
@@ -146,20 +203,27 @@ See `.jido/agents/` for pre-built examples.
 
 ## Skills
 
-Skills are multi-step workflows that orchestrate agents sequentially.
-Run with `run_skill` tool or `/skill <name>` command.
+Skills are multi-step workflows that orchestrate agents. Run a skill
+with the `run_skill` tool or the `/skill <name>` REPL command.
 
 ### Built-in Skills
 
-| Skill | Steps | Purpose |
-|-------|-------|---------|
-| `full_review` | test_runner -> reviewer | Run tests and review changes, synthesize findings |
-| `refactor_safe` | reviewer -> refactorer -> test_runner | Review, refactor, verify nothing broke |
-| `explore_codebase` | researcher -> docs_writer | Deep exploration, produce project overview |
-| `security_audit` | researcher -> reviewer | Scan for vulnerabilities and security issues |
-| `implement_feature` | researcher -> coder -> test_runner -> reviewer | Full feature lifecycle |
-| `debug_issue` | researcher -> test_runner -> coder -> test_runner | Investigate, reproduce, fix, verify |
-| `onboard_dev` | researcher -> docs_writer | Generate onboarding documentation |
+- `debug_issue` — Systematic debugging — investigate, reproduce, fix, verify
+- `explore_codebase` — Deep codebase exploration and documentation
+- `full_review` — Run tests and code review in parallel, then synthesize findings
+- `implement_feature` — Full feature implementation lifecycle — research, code, then test and review in parallel
+- `iterative_feature` — Implement a feature with iterative refinement — generate, verify, repeat until passing
+- `onboard_dev` — Generate comprehensive onboarding documentation for new developers
+- `refactor_safe` — Review code, refactor, then verify with tests
+- `security_audit` — Comprehensive security audit — scan project structure, then deep-dive in parallel
+- `sfr_review` — Code review with semi-formal reasoning certificate
+- `verified_feature` — Implement a feature with semi-formal pre-verification
+
+Steps run sequentially by default. When steps carry `name` and `depends_on`
+fields, the skill executes as a DAG — independent steps run in parallel,
+dependent steps wait for their prerequisites. When a skill declares
+`mode: iterative`, its generator step and evaluator step loop until the
+evaluator passes the result or `max_iterations` is reached.
 
 ### Custom Skills
 
@@ -178,9 +242,16 @@ steps:
 synthesis: "Summarize what was done and any remaining issues"
 ```
 
+The output of previous steps is available as context for subsequent steps.
+The `synthesis` field is the final prompt used to summarize all step outputs
+into a single result.
+
+Available template names: `coder`, `docs_writer`, `fixer`, `refactorer`, `researcher`, `reviewer`, `test_runner`, `verifier`
+Composer-internal (not spawnable): `plan_arbiter`, `plan_challenger`, `plan_drafter`, `sketch_build`, `sketch_build_exec`, `sketch_reviewer`, `system_executor`, `system_verifier`
+
 ---
 
-## Tools (33 total)
+## Tools (35 total)
 
 ### File Operations
 | Tool | Description |
@@ -247,6 +318,12 @@ synthesis: "Summarize what was done and any remaining issues"
 | `unschedule_task` | Remove a scheduled task by ID |
 | `list_scheduled_tasks` | List all scheduled tasks with status |
 
+### Lua Code-Mode
+| Tool | Description |
+|------|-------------|
+| `lua_query` | Run a short read-only Lua script server-side over runs/events/cases/solutions/outputs |
+| `lua_docs` | Render the documentation for the Lua sandbox host bindings |
+
 ---
 
 ## Build & Test
@@ -265,7 +342,8 @@ synthesis: "Summarize what was done and any remaining issues"
 
 ## Memory
 
-Persistent memory survives across sessions. Stored in `.jido/memory.json` (git-ignored).
+Persistent memory survives across sessions, stored tenant-scoped in the
+platform's Postgres database.
 
 **Memory types**: `fact`, `pattern`, `decision`, `preference`
 
@@ -295,7 +373,7 @@ The REPL has a live display system powered by two GenServers in the supervision 
 
 - Module naming: `JidoClaw.<Subsystem>.<Module>` (e.g., `JidoClaw.Tools.ReadFile`)
 - Tools: one module per tool in `lib/jido_claw/tools/`
-- Agents: one module per worker in `lib/jido_claw/agents/`
+- Agents: one module per worker in `lib/jido_claw/agent/workers/`
 - Tests mirror lib: `test/jido_claw/tools/read_file_test.exs`
 - Signal strings: `jido_claw.<subsystem>.<event>` (never `jido_cli`)
 - Config: `.jido/config.yaml` for user settings, `config/config.exs` for app defaults

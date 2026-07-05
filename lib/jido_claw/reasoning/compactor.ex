@@ -45,9 +45,8 @@ defmodule JidoClaw.Reasoning.Compactor do
   Every agent compacts its own slice. The main agent (and both main-surface
   paths) keys on `"main"`; a handoff-routed worker keys on
   `"handoff:<uuid>:<template>"`; a spawned sub-agent keys on its spawn tag
-  (see `JidoClaw.Reasoning.Compactor.Identity`). All seven worker templates
-  (`Coder`, `Reviewer`, `Researcher`, `TestRunner`, `DocsWriter`,
-  `Refactorer`, `Verifier`) carry `compaction: [mode: :auto]`, and each
+  (see `JidoClaw.Reasoning.Compactor.Identity`). All 16 worker templates
+  carry `compaction: [mode: :auto]`, and each
   agent's snapshot lives under its own `Session.metadata["compactions"]` key.
 
   ## Public surface
@@ -764,7 +763,8 @@ defmodule JidoClaw.Reasoning.Compactor do
   Force a compaction for the given session, regardless of threshold.
 
   Returns `{:ok, %Snapshot{}}` on success or `{:error, exception}`. This is
-  the API for manual compaction (REPL command, scheduled job). It loads
+  the API for manual compaction (no live caller today — operator/IEx use;
+  the per-turn path is `maybe_compact/3`). It loads
   the unsummarized slice exactly the way `maybe_compact/3` does, runs the
   bounded summarizer, persists the snapshot, and returns it.
 

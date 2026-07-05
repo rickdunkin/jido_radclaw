@@ -5,10 +5,13 @@ defmodule JidoClaw.Agent.TemplatesTest do
 
   alias JidoClaw.Agent.Templates
 
-  @valid_names ~w[coder test_runner reviewer docs_writer researcher refactorer verifier]
+  # The literal spawnable (non-composer-private) set, sorted — pinned against
+  # `Templates.spawnable_names/0` below. Deliberate friction: adding/removing/
+  # renaming a template must touch this list consciously (like the JIDO.md refresh).
+  @spawnable_names ~w[coder docs_writer fixer refactorer researcher reviewer test_runner verifier]
 
   describe "get/1 with valid template names" do
-    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer verifier] do
+    for name <- @spawnable_names do
       test "should return {:ok, template} for '#{name}'" do
         assert {:ok, template} = Templates.get(unquote(name))
         assert is_map(template)
@@ -16,14 +19,14 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
 
     test "should return a template with :module key" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{module: module}} = Templates.get(name)
         assert is_atom(module)
       end
     end
 
     test "should return a template with :description key" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{description: desc}} = Templates.get(name)
         assert is_binary(desc)
         assert desc != ""
@@ -31,14 +34,14 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
 
     test "should return a template with :model key" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{model: model}} = Templates.get(name)
         assert is_atom(model)
       end
     end
 
     test "should return a template with :max_iterations key" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{max_iterations: iters}} = Templates.get(name)
         assert is_integer(iters)
         assert iters > 0
@@ -46,7 +49,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
 
     test "max_iterations is derived from the worker module strategy options" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{module: module, max_iterations: template_iters}} = Templates.get(name)
         assert Keyword.fetch!(module.strategy_opts(), :max_iterations) == template_iters
       end
@@ -113,7 +116,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     test "error message lists available template names" do
       assert {:error, message} = Templates.get("unknown")
 
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert message =~ name
       end
     end
@@ -145,7 +148,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     test "should have all expected template names as keys" do
       templates = Templates.list()
 
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert Map.has_key?(templates, name), "Expected key '#{name}' in list/0 result"
       end
     end
@@ -169,10 +172,10 @@ defmodule JidoClaw.Agent.TemplatesTest do
       assert Enum.count(Templates.names()) == 16
     end
 
-    test "should include all 7 expected template names" do
+    test "should include all spawnable template names" do
       names = Templates.names()
 
-      for expected <- @valid_names do
+      for expected <- @spawnable_names do
         assert expected in names, "Expected '#{expected}' in names/0 result"
       end
     end
@@ -184,8 +187,21 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
+  describe "spawnable_names/0" do
+    test "returns exactly the literal spawnable set (sorted)" do
+      assert Templates.spawnable_names() == @spawnable_names
+    end
+
+    test "never includes a composer-private template" do
+      for name <- Templates.spawnable_names() do
+        refute Templates.composer_private?(name),
+               "spawnable_names/0 must not include composer-private '#{name}'"
+      end
+    end
+  end
+
   describe "exists?/1" do
-    for name <- ~w[coder test_runner reviewer docs_writer researcher refactorer verifier] do
+    for name <- @spawnable_names do
       test "should return true for valid name '#{name}'" do
         assert Templates.exists?(unquote(name)) == true
       end
@@ -211,7 +227,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
 
   describe "forward_context hydration" do
     test "static templates default to :public" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{forward_context: :public}} = Templates.get(name)
       end
 
@@ -239,7 +255,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
 
   describe "require_approval hydration" do
     test "static templates default to []" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         assert {:ok, %{require_approval: []}} = Templates.get(name)
       end
     end
@@ -301,16 +317,16 @@ defmodule JidoClaw.Agent.TemplatesTest do
         assert Templates.composer_private_template?(template)
         # External MCP tools are withheld from every private template.
         refute Templates.external_tools?(name)
-        # Deliberately NOT in @valid_names (the public forward_context: :public loop).
-        refute name in @valid_names
+        # Deliberately NOT in @spawnable_names (the public forward_context: :public loop).
+        refute name in @spawnable_names
         assert Templates.exists?(name)
         assert name in Templates.names()
       end
     end
   end
 
-  # The composer-private sketch templates are deliberately NOT in @valid_names
-  # (the 7 public workers looped above asserting forward_context: :public): both
+  # The composer-private sketch templates are deliberately NOT in @spawnable_names
+  # (the public workers looped above asserting forward_context: :public): both
   # are forward_context: :none + sandbox: :prototype, so they are pinned here.
   describe "AR-8b / AR-8b-2 composer-private sketch templates" do
     test "sketch_build is forward_context: :none, sandbox: :prototype" do
@@ -349,7 +365,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
   # `sandbox: :none` (they run on the real machine — that is the point), so their
   # composer-privacy rides the explicit `:composer_private` flag, NOT the sandbox
   # tier. Also `forward_context: :none`, so (like the sketch templates) they are
-  # deliberately NOT in @valid_names (the public-forward-context set).
+  # deliberately NOT in @spawnable_names (the public-forward-context set).
   describe "AR-8c composer-private system templates" do
     test "system_executor is composer_private + forward_context: :none + sandbox: :none" do
       assert {:ok,
@@ -418,7 +434,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
     # The per-private-template positive cases live in the table-driven shared
     # invariants above; this describe keeps the negative/edge surface.
     test "is false for the public workers" do
-      for name <- @valid_names do
+      for name <- @spawnable_names do
         refute Templates.composer_private?(name)
       end
     end

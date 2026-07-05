@@ -10,7 +10,7 @@ defmodule JidoClaw.Agent.Workers.SketchReviewer do
   # without being able to mutate it.
   #
   # It reuses `Reviewer`'s output schema (`OutputSchema.reviewer_verdict/0`), so
-  # `RouteComposer.Emit.DefaultMapper.reviewer_verdict/3` maps its `overall`/
+  # `RouteComposer.Emit.DefaultMapper` (private `verdict/2`) maps its `overall`/
   # `findings` to `clean:correctness` / `findings:correctness` with no mapper
   # change — flipping the sketch path from trivially-clean to lens-gated.
   use JidoClaw.Agent.Defaults,

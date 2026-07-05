@@ -119,8 +119,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # `WorkflowRun.status`), so no migration. The projection
           # (`JidoClaw.RouteComposer.Projection`) folds every kind; the loop
           # produces the additive 5 + the 5 in-loop terminals (+ `signals_retracted`
-          # on a paired-verdict flip). The rest are defined + folded + unit-tested
-          # now; their producers are Phase 4 gates / AR-4 reruns.
+          # on a paired-verdict flip). The rest are defined + folded + unit-tested,
+          # and their producers (the Phase-4 gates and AR-4 reruns) have shipped.
           #
           # Additive — wave deltas (parent stays `:running`; NOT status-authority).
           :route_composed,

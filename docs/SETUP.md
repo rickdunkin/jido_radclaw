@@ -57,7 +57,7 @@ mix jidoclaw
 Or build the escript:
 ```bash
 mix escript.build
-./jido
+./jidoclaw
 ```
 
 ## First Run
@@ -164,7 +164,7 @@ JidoClaw creates a `.jido/` directory in your project root:
 ├── config.yaml          # Your config (gitignored)
 ├── JIDO.md              # Self-knowledge document (auto-generated)
 ├── system_prompt.md     # Agent system prompt
-├── memory.json          # Persistent memory (gitignored)
+├── memory.json          # Legacy v0.5 memory export (gitignored) — live memory is in Postgres
 ├── agents/              # Custom agent definitions (YAML)
 │   ├── security_auditor.yaml
 │   ├── architect.yaml
@@ -185,33 +185,33 @@ Files gitignored (per-user/runtime): `config.yaml`, `memory.json`, `sessions/`, 
 
 ## Running Modes
 
-### REPL Only (default)
+### REPL + HTTP Gateway (default)
 
 ```bash
 mix jidoclaw
 # or
-./jido
+./jidoclaw
 ```
 
-### REPL + HTTP Gateway
-
-```bash
-JIDOCLAW_MODE=both mix jidoclaw
-```
-
-Starts Phoenix on port 4000 with:
+Starts the interactive REPL, plus Phoenix on port 4000 with:
+- The app dashboard at `/dashboard` (LiveView)
 - REST API at `/v1/chat/completions` (OpenAI-compatible)
 - WebSocket RPC at `/ws`
-- LiveDashboard at `/dashboard`
+- Phoenix LiveDashboard at `/live-dashboard` (dev only)
 - Health check at `/health`
 
 The gateway binds `127.0.0.1` by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — this rebinds `0.0.0.0` and pins WebSocket origins to those hosts (append `:port` only when fronting with a proxy on a non-gateway port; bracket IPv6 addresses). To enable the `/admin` panel, allowlist emails with `JIDOCLAW_ADMIN_EMAILS=you@example.com` — signed-in users who aren't allowlisted get a 404 (signed-out users are redirected to `/sign-in`).
 
-### Gateway Only (headless)
+### MCP Server (stdio)
 
 ```bash
-JIDOCLAW_MODE=gateway mix jidoclaw
+mix jidoclaw --mcp
 ```
+
+Runs JidoClaw as an MCP server over stdio for Claude Code, Cursor, and other
+MCP clients — the gateway and Discord are skipped in this mode. To suppress
+the gateway in other contexts, set the app config `config :jido_claw, mode: :cli`
+(the test suite does this); there is no environment-variable mode switch.
 
 ## Verifying Installation
 

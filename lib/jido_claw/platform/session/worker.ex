@@ -7,7 +7,7 @@ defmodule JidoClaw.Session.Worker do
 
   Phase 2 retired the legacy `.jido/sessions/<tenant>/*.jsonl` writer.
   Messages now flow through `JidoClaw.Conversations.Message` rows in
-  Postgres, written via `Conversations.Message.append!/1`. The
+  Postgres, written via `Conversations.Message.append/2`. The
   worker's in-memory `state.messages` mirrors the persisted history
   for fast `get_messages/2` access; on cold start, it hydrates from
   Postgres via `Message.for_session/1`.

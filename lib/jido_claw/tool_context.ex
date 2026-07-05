@@ -105,7 +105,7 @@ defmodule JidoClaw.ToolContext do
   @doc """
   Build the canonical tool_context map from a scope map.
 
-  The seven canonical keys are always present in the result (as `nil`
+  The 14 canonical keys are always present in the result (as `nil`
   when not supplied). `:forge_session_key` is preserved when present in
   the scope, otherwise omitted.
   """

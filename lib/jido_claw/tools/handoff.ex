@@ -1,10 +1,18 @@
 defmodule JidoClaw.Tools.Handoff do
+  # Compile-time snapshots of the public template set: this module recompiles
+  # (and the moduledoc + LLM-facing doc re-render) whenever Templates changes.
+  @spawnable_inline Enum.join(JidoClaw.Agent.Templates.spawnable_names(), ", ")
+  @spawnable_backticked Enum.map_join(
+                          JidoClaw.Agent.Templates.spawnable_names(),
+                          ", ",
+                          &"`#{&1}`"
+                        )
+
   @moduledoc """
   Hand off conversation ownership to a specialized worker template.
 
   When invoked, the next user turn for the current session will be routed
-  to the named worker template (one of `coder`, `reviewer`, `researcher`,
-  `refactorer`, `verifier`, `test_runner`, `docs_writer`). The new owner
+  to the named worker template (one of #{@spawnable_backticked}). The new owner
   receives a bounded handoff preamble — message + summary + a slice of
   recent conversation history — on its first turn. Subsequent turns are
   plain. The user can return ownership to main with the `/reset` REPL
@@ -34,7 +42,7 @@ defmodule JidoClaw.Tools.Handoff do
         type: :string,
         required: true,
         doc:
-          "Target worker template (coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier). 'main' is not a valid target — use /reset to return ownership to main."
+          "Target worker template (#{@spawnable_inline}). 'main' is not a valid target — use /reset to return ownership to main."
       ],
       message: [
         type: :string,

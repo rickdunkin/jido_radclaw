@@ -130,7 +130,7 @@ defmodule JidoClaw.Doctrine do
   # be injected into it.
   #
   # AR-7: the standalone :confidence_tagging slice (inline per-claim
-  # `[likely]`/`[unsure]` tagging in prose + the source-URL rule) reaches the 10
+  # `[likely]`/`[unsure]` tagging in prose + the source-URL rule) reaches the 13
   # NON-reviewer templates. The reviewer family (`reviewer`, `sketch_reviewer`,
   # `system_verifier`) is EXCLUDED — `:reviewer_contract` already carries the
   # equivalent per-finding `confidence` tag, so adding it there would duplicate the

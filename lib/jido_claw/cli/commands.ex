@@ -900,7 +900,8 @@ defmodule JidoClaw.CLI.Commands do
   # Reads tenant_id + workspace_uuid from the REPL state struct (set
   # during `ensure_persisted_session/3` at REPL start). Returns
   # `:missing` when persistence wasn't reachable at boot (degraded
-  # mode — see repl.ex:506). Public (@doc false) so sibling command
+  # mode — see `ensure_persisted_session/3` in repl.ex). Public
+  # (@doc false) so sibling command
   # modules (`Commands.Sessions`) share the same scope check.
   @spec session_scope(map()) :: {:ok, String.t(), String.t()} | :missing
   def session_scope(%{tenant_id: tenant_id, workspace_uuid: workspace_uuid})

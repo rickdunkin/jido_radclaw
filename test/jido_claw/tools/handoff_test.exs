@@ -2,6 +2,7 @@ defmodule JidoClaw.Tools.HandoffTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
+  alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Session.Supervisor, as: SessionSupervisor
@@ -48,6 +49,17 @@ defmodule JidoClaw.Tools.HandoffTest do
     case shape do
       :nested -> %{tool_context: inner, request_id: request_id}
       :flat -> Map.put(inner, :request_id, request_id)
+    end
+  end
+
+  describe "tool metadata" do
+    test ":to_template doc enumerates exactly the spawnable template set" do
+      # Derived at compile time from Templates.spawnable_names/0 — the LLM-facing
+      # string can no longer drift from the registry (post-review fix: the
+      # hand-maintained 7-name literal had dropped `fixer`).
+      inline = Enum.join(Templates.spawnable_names(), ", ")
+
+      assert HandoffTool.schema()[:to_template][:doc] =~ "(#{inline})"
     end
   end
 

@@ -1,9 +1,14 @@
 defmodule JidoClaw.Tools.SpawnAgent do
   @moduledoc false
+
+  # Compile-time snapshot of the public template set: this module recompiles
+  # (and the LLM-facing strings re-render) whenever Templates changes.
+  @spawnable_inline Enum.join(JidoClaw.Agent.Templates.spawnable_names(), ", ")
+
   use JidoClaw.Tools.Action,
     name: "spawn_agent",
     description:
-      "Spawn a child agent from a template to work on a task. Available templates: coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier. The child agent works independently and results can be collected with get_agent_result.",
+      "Spawn a child agent from a template to work on a task. Available templates: #{@spawnable_inline}. The child agent works independently and results can be collected with get_agent_result.",
     category: "swarm",
     tags: ["swarm", "write"],
     output_schema: [
@@ -17,8 +22,7 @@ defmodule JidoClaw.Tools.SpawnAgent do
       template: [
         type: :string,
         required: true,
-        doc:
-          "Agent template name (coder, test_runner, reviewer, docs_writer, researcher, refactorer, verifier)"
+        doc: "Agent template name (#{@spawnable_inline})"
       ],
       task: [
         type: :string,

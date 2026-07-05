@@ -58,7 +58,7 @@ Extends file-tool and shell-command coverage across the non-local VFS adapters (
 
 **Source:** v0.3 deferrals (`docs/ROADMAP.md:77`).
 
-`SearchCode` walks local filesystem paths only. Searching across `/upstream` (git mount), `/artifacts` (S3), or in-memory mounts requires either streaming files through the adapter or pushing the search to the remote where supported (GitHub code search API).
+`SearchCode` now routes paths through `VFS.Resolver` like the other file tools, so `github://`/`s3://`/`git://` paths resolve. What remains deferred is remote-*native* search — pushing the query to the remote where supported (GitHub code search API) instead of walking/streaming files through the adapter.
 
 **Why deferred:** v0.3 prioritized file-tool coverage over search coverage, and per-adapter strategy is non-trivial — GitHub has search APIs, raw `git://` and S3 don't.
 

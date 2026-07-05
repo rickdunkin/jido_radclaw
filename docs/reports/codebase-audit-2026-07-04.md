@@ -40,8 +40,9 @@ registered on the main agent, **26** exposed over MCP, **16** worker templates,
 > Per-entry `✅ Fixed` markers, plus a `Resolved:` note wherever the implementation diverged
 > from the suggested fix, are inline below. **1.9** is **deferred** (needs a wire-vs-delete
 > product call + a DB migration) — findings preserved in
-> `docs/reports/forge-session-fields-1.9-followup.md`. **1.12** is folded into the §3 doc
-> sweep (JIDO.md is a regenerated doc); **1.14** is left as-is (dead code inside the §2.1
+> `docs/reports/forge-session-fields-1.9-followup.md`. **1.12** shipped with the
+> 2026-07-05 §3 doc-sweep PR (generator now derives from the registries);
+> **1.14** is left as-is (dead code inside the §2.1
 > GitHub pipeline — only matters if that pipeline is revived).
 
 ### 1.1 `[H]` AgentTracker double-counts tool calls — ✅ Fixed
@@ -174,11 +175,18 @@ Fix: render them like `@steps_error` (workflows_live.ex:301) — or drop the ass
 > above the empty-state row. Minor audit correction — `workflows_live` has **5** `runs_error`
 > assign sites, not 6.
 
-### 1.12 `[M]` JIDO.md generator emits self-contradictory template info — ⏸ Deferred → §3 doc sweep
+### 1.12 `[M]` JIDO.md generator emits self-contradictory template info — ✅ Fixed (2026-07-05 doc-sweep PR)
 `lib/jido_claw/platform/jido_md.ex:105-108` vs `:146-147` — the per-template detail
 section includes `verifier`, but the "Available template names:" summary lists only 6
 names without it. Every freshly-generated JIDO.md disagrees with itself. Fix: align the
 two lists (ideally derive both from `Agent.Templates`).
+**Resolved:** the generator now derives the template detail blocks, the spawnable/
+composer-internal name lines (split via `Templates.composer_private_template?/1`),
+the built-in skills list, and a new line-anchored `## Tools (N total)` section from
+`Agent.Templates` / `Skills.default_skill_entries/0` / `Agent.tool_modules/0` — with a
+red→green regression test (`test/jido_claw/platform/jido_md_test.exs`) plus a
+generate→check round-trip pinning that fresh output always passes the new
+`mix jidoclaw.jido_md.check` guard.
 
 ### 1.13 `[M]` `Inspection.skills_summary/0` mislabels a field — ✅ Fixed
 `lib/jido_claw/inspection.ex:363` — builds `version: Map.get(s, :max_iterations)`; the
@@ -368,11 +376,19 @@ reachable from nothing. Each is a product decision, not a mechanical cleanup.
 
 ## 3. Doc drift — in-repo documentation
 
+> **Status — updated 2026-07-05.** Everything below is fixed in the 2026-07-05
+> doc-truth-sweep PR (one PR: §3 + §3b + the JIDO.md cluster + §1.12 + the §4 drift-guard
+> deferral). Current-state claims corrected; versioned release notes / completed-milestone
+> text kept historical (annotated only where confusion was likely). `.jido/JIDO.md` stays
+> committed, refreshed, and is now guarded by `mix jidoclaw.jido_md.check` in precommit
+> (version + name-set comparisons for tools/templates/skills + machine-path and
+> entry-point checks). Per-entry ✅ markers inline.
+
 Top-level docs have rotted hard while AGENTS.md stayed current. Recurring axis: tool
 count (27 vs actual 35), template count (6/7 vs 16), retired v0.4/v0.5 designs still
 documented as current.
 
-**README.md** `[H]`: "27 tools" at 9+ sites → 35; tools table omits `fetch_output,
+**README.md** `[H]` ✅ Fixed: "27 tools" at 9+ sites → 35; tools table omits `fetch_output,
 forget, run_pipeline, verify_certificate, handoff, lua_query, lua_docs, search_web`;
 browser tool is `browse_web` not `browse`; `:827` documents a `tool_approval_mode:
 :on_miss` config that doesn't exist (real: `:tool_approval` with
@@ -382,7 +398,7 @@ behaviour "7 callbacks" → 8 required (omits `exec_argv/4`); `Core.MCP` → `MC
 "8 skills" → 10 (`sfr_review`, `verified_feature` undocumented); `JIDOCLAW_MODE` (also
 `.env.example:35`) is read by no code.
 
-**docs/ARCHITECTURE.md** `[H]`: root supervisor is `:one_for_one`, not `rest_for_one`
+**docs/ARCHITECTURE.md** `[H]` ✅ Fixed: root supervisor is `:one_for_one`, not `rest_for_one`
 (:36,721); "27 tools" → 35; Solutions.Store/Reputation described as ETS+JSON GenServers —
 retired v0.6.1, Postgres now (:71-72,457-474); Memory described as supervised ETS+JSON —
 now an Ash domain with no process (:73,690,732); `Orchestration.ApprovalGate` resource
@@ -391,30 +407,32 @@ default is `"auto"`, not `"react"` (:531); `JidoClaw.Repl/Commands` → `CLI.*`
 (:338,340,736); `Jido.MCP.Server` → `JidoClaw.MCPServer` (:88); lists dead `StepHandler`
 and mis-groups `ContextBuilder` (:191-192).
 
-**CONTRIBUTING.md** `[H]`: "27 tools" → 35; "6 built-in templates" → 16; the whole
+**CONTRIBUTING.md** `[H]` ✅ Fixed: "27 tools" → 35; "6 built-in templates" → 16; the whole
 Extension Points walkthrough (:145-227) cites pre-refactor paths (`lib/jido_claw/agent.ex`,
 `agents/`, `templates.ex`, `commands.ex`, `branding.ex`, `config.ex`, `setup.ex`,
 `skills.ex`, `jido_md.ex` — all moved into subsystem dirs); Key Modules table uses moved
 bare namespaces; channel behaviour path missing `platform/`.
 
-**docs/SETUP.md** `[H]`: `./jido` → the escript is `jidoclaw` (:60-61,193);
+**docs/SETUP.md** `[H]` ✅ Fixed: `./jido` → the escript is `jidoclaw` (:60-61,193);
 `JIDOCLAW_MODE=both|gateway` is a dead knob — nothing reads it (:199,213); LiveDashboard
 is at `/live-dashboard`, dev-only — `/dashboard` is the app's own dashboard (:206).
 
-**docs/ROADMAP.md** `[H]`: v0.6 memory/solutions DB migration marked "Planned" — Phases
+**docs/ROADMAP.md** `[H]` ✅ Fixed: v0.6 memory/solutions DB migration marked "Planned" — Phases
 1-3 shipped; "Current State: 27 tools / 6 domains" → 35 / 16; the
 file-to-database-migration table (:400-410) lists shipped work as future; the
 `persistence: backend: ecto|file` fallback (:359-368) never shipped (design went
-Postgres-required). **docs/BACKLOG.md** `[M]`: SearchCode "local filesystem only" — it
+Postgres-required). **docs/BACKLOG.md** `[M]` ✅ Fixed: SearchCode "local filesystem only" — it
 routes through `VFS.Resolver` (github/s3/git) already.
 
-**docs/PLAN-docker-sandbox-onecli.md** `[H]`: the `SpriteClient` design shipped as
+**docs/PLAN-docker-sandbox-onecli.md** `[H]` ✅ Fixed: the `SpriteClient` design shipped as
 `Forge.Sandbox.*` (renamed; 10 callbacks; Docker backend; OneCLI wired) — mark Parts 1-2
-done. **docs/PLAN-v0.6-memory.md** `[M]`: runbook commands use `mix jido_claw.export.*`
+done. **docs/PLAN-v0.6-memory.md** `[M]` ✅ Fixed: runbook commands use `mix jido_claw.export.*`
 / `migrate.*` — shipped tasks are `jidoclaw.*`; the documented commands fail.
 
 **.jido/JIDO.md** (committed; read by the agent at boot; regenerated only when absent)
-`[H]`: "33 tools" → 35 (omits `lua_query`/`lua_docs`); supervision tree lists retired
+`[H]` ✅ Fixed (refreshed; now guarded by `mix jidoclaw.jido_md.check` — note `Stats` turned
+out to exist and stay supervised, so it was kept): "33 tools" → 35 (omits
+`lua_query`/`lua_docs`); supervision tree lists retired
 `Solutions.Store`/`Reputation` and nonexistent `Stats`/`Tool.Approval` (:44-63); stale
 entry-point paths (:17-18,298); "Version: 0.3.0" vs 0.6.4, plus a foreign machine path
 (:12). Related improvement: unlike `system_prompt.md` (check task + sync marker +
@@ -422,76 +440,84 @@ precommit wiring), JIDO.md has **no drift guard** — `JidoMd.ensure/1` writes o
 absent, so the committed snapshot rots by design. Add a `jidoclaw.jido_md.check` or stop
 committing it.
 
-**AGENTS.md** `[M]`: only real nit — `:92` cites `ToolApproval.requirement/3`; it's a
+**AGENTS.md** `[M]` ✅ Fixed: only real nit — `:92` cites `ToolApproval.requirement/3`; it's a
 private `requirement/4`. ("All 32+ tool modules" in the dir table is a true-but-stale
 floor; 45 exist.) If §2 deletions happen, also update the BackgroundProcess table row and
 the PullRequestCoordinator compile_check narrative.
 
 ## 3b. Doc drift — moduledocs/comments citing things that don't exist
 
+> **Status — updated 2026-07-05.** All items below are fixed in the 2026-07-05
+> doc-truth-sweep PR (✅ per entry). Comment-only except `tools/get_agent_result.ex`
+> (the two phantom `output_schema` fields were deleted — no test changes needed) and
+> the vestigial `{:error, :no_recommendation}` spec arm in `classifier.ex` (nothing
+> matched it). `policy_resolver.ex` was reworded to the nuanced truth (the write path
+> gates on `resolve/1` but hardcodes its stored model) — `model_for_storage/1`
+> wire-or-delete remains a §2 decision.
+
 - `workers/output_schema.ex:107`, `sketch_reviewer.ex:13`, `system_verifier.ex:7` — cite
-  `DefaultMapper.reviewer_verdict/3`; the real function is private `verdict/2`. `[H]`
+  `DefaultMapper.reviewer_verdict/3`; the real function is private `verdict/2`. `[H]` ✅
 - `security/redaction/embedding.ex:9-10` — cites `Embeddings.Local.embed_for_*`; no
-  `Local` module exists. `[H]`
+  `Local` module exists. `[H]` ✅
 - `security/redaction/memory.ex:30` — cites `Conversations.Redaction.Transcript`; real
-  module is `Security.Redaction.Transcript`. `[H]`
-- `reasoning/yaml_store.ex:42` — cites `PipelineRegistry`; real module is `PipelineStore`. `[H]`
+  module is `Security.Redaction.Transcript`. `[H]` ✅
+- `reasoning/yaml_store.ex:42` — cites `PipelineRegistry`; real module is `PipelineStore`. `[H]` ✅
 - `error.ex:28` + `error/normalize.ex:38` — claim the tool path uses
-  `Normalize.tool_error/2`; it uses `Tools.Error.normalize_result/1`. `[H]`
-- `agent/defaults.ex:7-9` — "seven specialized workers" + stale list → 16. `[H]`
+  `Normalize.tool_error/2`; it uses `Tools.Error.normalize_result/1`. `[H]` ✅
+- `agent/defaults.ex:7-9` — "seven specialized workers" + stale list → 16. `[H]` ✅
 - `reasoning/compactor.ex:48-51` + `compactor/config.ex:7,97` — "all seven workers" →
-  15 + main. `[H]`
-- `doctrine.ex:133` — "10 NON-reviewer templates" → 13. `[H]`
-- `agent_tracker.ex:25` — "Two invariants" followed by three. `[H]`
-- `tool_context.ex:108` — "seven canonical keys" → 14. `[H]`
+  15 + main. `[H]` ✅
+- `doctrine.ex:133` — "10 NON-reviewer templates" → 13. `[H]` ✅
+- `agent_tracker.ex:25` — "Two invariants" followed by three. `[H]` ✅
+- `tool_context.ex:108` — "seven canonical keys" → 14. `[H]` ✅
 - `memory.ex:30` — `forget/2` "wraps invalidate_by_label" → uses `invalidate_by_id`;
   `memory.ex:23` + `fact.ex:8` — `Retrieval.search/2` → `search/1`; `memory.ex:143-154`
-  — `list_recent/2` "used by the legacy prompt builder" → only the `/memory` CLI. `[H]/[M]`
-- `memory/retrieval.ex:11-14` — describes an Episode search tier that doesn't exist. `[H]`
+  — `list_recent/2` "used by the legacy prompt builder" → only the `/memory` CLI. `[H]/[M]` ✅
+- `memory/retrieval.ex:11-14` — describes an Episode search tier that doesn't exist. `[H]` ✅
 - `memory/resources/block_revision.ex:8-10` — cites a `Block.:revise` action; it's a
-  plain function + `:invalidate` hook. `[M]`
+  plain function + `:invalidate` hook. `[M]` ✅
 - `embeddings/backfill_worker.ex:11` — "default 30 in dev, 300 in prod" — always 30s,
   no prod override exists; `rate_pacer.ex:39,386` — names a `:rate_limits` config key
   that doesn't exist (real: `:rpm`/`:tpm`); `policy_resolver.ex:7-11` — claims the write
-  path consults it (it hardcodes). `[H]/[M]`
+  path consults it (it hardcodes). `[H]/[M]` ✅
 - `reasoning/resources/outcome.ex:10-16` — "reserved … without a runtime producer" — all
   four execution kinds now have live producers; `classifier.ex:141` — spec lists
   `:no_recommendation`, never returned; `compactor.ex:785` — "REPL command, scheduled
-  job" callers don't exist. `[M]`
+  job" callers don't exist. `[M]` ✅
 - `orchestration/workflow_event.ex:121-123` — frames Phase-4/AR-4 producers as future;
-  all shipped. `[M]`
+  all shipped. `[M]` ✅
 - `conversations/request_correlation/cache.ex:14-20` — claims `lookup` goes through
-  `GenServer.call`; it's a direct client-side `:ets.lookup`. `[M]`
-- `platform/session/worker.ex:10-12` — cites `append!/1`; the write is `append/2`. `[M]`
-- `tools/recall.ex:33` — param doc describes the removed substring scanner. `[M]`
+  `GenServer.call`; it's a direct client-side `:ets.lookup`. `[M]` ✅
+- `platform/session/worker.ex:10-12` — cites `append!/1`; the write is `append/2`. `[M]` ✅
+- `tools/recall.ex:33` — param doc describes the removed substring scanner. `[M]` ✅
 - `tools/get_agent_result.ex:17-18` — output_schema `message`/`error` fields no success
-  path produces (superseded soft-fail design). `[H]`
-- `vfs/resolver.ex:8` — `git://repo-path/file` example needs the double-slash form. `[M]`
-- `security/tool_approval.ex:239` — `native_requirement/3` → `/4`. `[M]`
+  path produces (superseded soft-fail design). `[H]` ✅
+- `vfs/resolver.ex:8` — `git://repo-path/file` example needs the double-slash form. `[M]` ✅
+- `security/tool_approval.ex:239` — `native_requirement/3` → `/4`. `[M]` ✅
 - `solutions/search_escape.ex:16` — `$12` → `$11`; `solutions/trust.ex:54-60` — doc table
-  omits the live `semi_formal → confidence * 0.85` case. `[M]`
-- `mcp/consumer.ex:77-81` — cites a ProxyGenerator moduledoc note that isn't there. `[M]`
+  omits the live `semi_formal → confidence * 0.85` case. `[M]` ✅
+- `mcp/consumer.ex:77-81` — cites a ProxyGenerator moduledoc note that isn't there. `[M]` ✅
 - `mix/tasks/jidoclaw.export.conversations.ex:36-37` — manifest also includes `:system`
-  rows. `[M]`
+  rows. `[M]` ✅
 - `web/gateway_exposure.ex:22` — holds up the never-invoked Sidecar as the pattern
-  exemplar. `[M]`
-- `cli/commands.ex:903` — breadcrumb points at `repl.ex:506` (now unrelated code). `[M]`
+  exemplar. `[M]` ✅
+- `cli/commands.ex:903` — breadcrumb points at `repl.ex:506` (now unrelated code). `[M]` ✅
 - `test/support/jido_claw/route_composer/composer_stubs.ex:144` — cites
-  `agent_runner.ex:179`; the referenced code is at `:342`. `[H]`
+  `agent_runner.ex:179`; the referenced code is at `:342`. `[H]` ✅
 - `core/signal_bus.ex:14-16` — documents `memory.saved`/`skill.started`/`skill.completed`
-  signals that nothing emits. `[M]`
+  signals that nothing emits. `[M]` ✅
 
 ---
 
 ## 4. Easy improvements
 
-> **Status — updated 2026-07-05.** Everything below except four deliberate deferrals is
+> **Status — updated 2026-07-05.** Everything below except three deliberate deferrals is
 > implemented in a single migration-free batch PR (plan:
 > `.claude/plans/please-read-docs-reports-codebase-audit-serene-hoare.md`); per-entry
 > `✅ Done` / `⏭` markers inline. Deferred: the two test-suite dedups (`eventually` +
-> `kinds/2` — a 30+-file test-only churn, split into its own follow-up PR), the
-> `~w(talk sketch code system)` pair (port-fidelity skip), and the JIDO.md drift guard
-> (rides with the §3 doc sweep). Wherever removed code could be mistaken for load-bearing,
+> `kinds/2` — a 30+-file test-only churn, split into its own follow-up PR) and the
+> `~w(talk sketch code system)` pair (port-fidelity skip). The JIDO.md drift guard
+> shipped with the §3 doc-sweep PR. Wherever removed code could be mistaken for load-bearing,
 > a new test pins the contract (canonical encode determinism, redaction-key subsumption,
 > `primary_fk_or_nil/1` nil-totality, cold-snapshot cap/count, stdio scrub exit status,
 > help entries). Two shared modules were introduced: `JidoClaw.Tools.Projection` and
@@ -575,7 +601,10 @@ the PullRequestCoordinator compile_check narrative.
 
 **Process:**
 - Add a JIDO.md drift guard (see §3) — the only generated-doc surface without one.
-  ⏭ **Deferred** — rides with the §3 doc-sweep PR.
+  ✅ **Done** (2026-07-05 doc-sweep PR) — `mix jidoclaw.jido_md.check` wired into
+  `precommit` after `system_prompt.check`: validates version + tool/template/skill
+  **name sets** (not just counts), the spawnable summary line, no machine-absolute
+  paths, and live entry-point paths (`JidoClaw.JidoMd.Check.problems/2`).
 - CLI help: `/gates`, `/profile`, `/workspace` are routed but absent from
   `Branding.help_text/0` (missing rather than wrong — noted for completeness).
   ✅ **Done** — one entry each (`/gates` → Platform, `/profile` → Servers, `/workspace` →
@@ -593,15 +622,17 @@ the PullRequestCoordinator compile_check narrative.
    **1.9** deferred (product call + DB migration; see
    `docs/reports/forge-session-fields-1.9-followup.md`), **1.12** folded into the step-2 doc
    sweep, **1.14** left as dead code (§2.1).
-2. **Doc sweep** (§3): README/ARCHITECTURE/CONTRIBUTING/SETUP/ROADMAP + JIDO.md
-   regeneration + the moduledoc one-liners in §3b. Mostly mechanical; high payoff since
-   several (JIDO.md, system prompts) are LLM-facing.
+2. **Doc sweep** (§3): ✅ **done** — the 2026-07-05 doc-truth-sweep PR fixes §3 + §3b +
+   the JIDO.md cluster (incl. §1.12 and the §4 drift-guard deferral): README/
+   ARCHITECTURE/CONTRIBUTING/SETUP/ROADMAP/BACKLOG/PLAN docs corrected, the committed
+   `.jido/JIDO.md` refreshed and guarded by the new `mix jidoclaw.jido_md.check` in
+   precommit, and all §3b moduledoc one-liners fixed.
 3. **Subsystem decisions** (§2.1-2.11): wire-or-delete calls only the owner can make —
    GitHub pipeline, CodeServer, desktop, Messaging, BackgroundProcess.Registry, tenant
    lifecycle, SecretRef, network initiation, forge scaffolding, error toolkit.
 4. **Mechanical dead-code deletes** (§2 lists): safe once (3) is decided; delete
    test-only Ash actions with their tests.
 5. **Improvements** (§4): ✅ **done** — the 2026-07-05 §4 batch PR implements everything
-   except the deferred test-suite dedups (`eventually`/`kinds/2` — own follow-up PR), the
-   port-fidelity-skipped `~w(talk sketch code system)` pair, and the JIDO.md drift guard
-   (folded into step 2's doc sweep).
+   except the deferred test-suite dedups (`eventually`/`kinds/2` — own follow-up PR) and
+   the port-fidelity-skipped `~w(talk sketch code system)` pair; the JIDO.md drift guard
+   shipped with step 2's doc-sweep PR.

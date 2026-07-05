@@ -2,16 +2,16 @@ defmodule JidoClaw.Memory.Retrieval do
   @moduledoc """
   Public retrieval API for the Memory subsystem.
 
-  Three tiers, three rank shapes:
+  Two tiers, two rank shapes:
 
     * `Memory.Block` — no search; returns the active scope-chain
       blocks ordered by `(scope precedence, position, inserted_at desc)`.
     * `Memory.Fact`  — hybrid via `Memory.HybridSearchSql.run/1`
       (FTS + pgvector + GIN trigram, RRF-combined). Returns
       `[%{fact:, combined_score:}]`.
-    * `Memory.Episode` — FTS + lexical only (no embedding column).
-      Used by the consolidator and the `recall` tool's "show me the
-      source" follow-up.
+
+  (`Memory.Episode` rows are read by the consolidator directly — there
+  is no Episode search tier here.)
 
   ## Bitemporal predicate matrix
 

@@ -5,7 +5,12 @@ defmodule JidoClaw.Skills do
   Skills are multi-step workflows that orchestrate multiple agents. Steps run
   sequentially by default. When steps carry `name` and `depends_on` fields the
   skill is executed as a DAG: independent steps run in parallel, dependent steps
-  wait for their prerequisites.
+  wait for their prerequisites. A skill declaring `mode: iterative` runs a
+  generator/evaluator loop instead (see `execution_mode/1`): the `role:
+  generator` step produces work, the `role: evaluator` step verdicts it, and
+  the pair repeats until the evaluator passes or `max_iterations` is
+  exhausted (two built-in defaults — `iterative_feature`, `verified_feature`
+  — use it).
 
   Parsed once at boot and cached in GenServer state — no disk I/O on lookups.
   The one deliberate exception is `load_skill/2`, the cache-bypassing
@@ -315,6 +320,39 @@ defmodule JidoClaw.Skills do
     end)
 
     :ok
+  end
+
+  @doc """
+  Names of the built-in default skills, sorted. Static — parsed from the
+  bundled YAML strings at call time, no GenServer or disk I/O — so the
+  JIDO.md generator and the `mix jidoclaw.jido_md.check` drift guard can
+  read it without the app running.
+  """
+  @spec default_skill_names() :: [String.t()]
+  def default_skill_names do
+    Enum.map(default_skill_entries(), &elem(&1, 0))
+  end
+
+  @doc """
+  `{name, description}` pairs for the built-in default skills, sorted by
+  name and parsed from the bundled YAML strings (see `default_skill_names/0`
+  for why this stays static).
+  """
+  @spec default_skill_entries() :: [{String.t(), String.t()}]
+  def default_skill_entries do
+    @default_skills
+    |> Enum.map(fn {_filename, yaml} ->
+      {yaml_field!(yaml, "name"), yaml_field!(yaml, "description")}
+    end)
+    |> Enum.sort()
+  end
+
+  # Top-level YAML scalar field. Anchored at line start, so step-level keys
+  # (indented) never match. The bundled skills always carry both fields —
+  # raising on a miss keeps the drift guard loud instead of silently short.
+  defp yaml_field!(yaml, field) do
+    [value] = Regex.run(~r/^#{field}:\s*(.+)$/m, yaml, capture: :all_but_first)
+    String.trim(value)
   end
 
   @doc """

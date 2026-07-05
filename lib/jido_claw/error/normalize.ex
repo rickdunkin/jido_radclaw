@@ -35,7 +35,9 @@ defmodule JidoClaw.Error.Normalize do
   @type context :: Context.context()
 
   # ---------------------------------------------------------------------------
-  # tool_error/2 — bubbles from Tools.Action results, MCP tool invocations.
+  # tool_error/2 — typed-exception boundary for tool-shaped reasons. (The live
+  # Tools.Action pipeline normalizes via Tools.Error.normalize_result/1; this
+  # is for callers that need a %JidoClaw.Error.*{} struct.)
   # ---------------------------------------------------------------------------
 
   @spec tool_error(term(), context()) :: Exception.t()

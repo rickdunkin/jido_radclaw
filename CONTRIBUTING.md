@@ -67,16 +67,16 @@ JidoClaw follows an OTP supervision tree pattern. See the README for the full ar
 | Module | Responsibility |
 |--------|---------------|
 | `JidoClaw.Application` | OTP entry point, supervision tree, .env loading |
-| `JidoClaw.Agent` | Main AI agent — 27 tools, swarm orchestration |
-| `JidoClaw.Repl` | Interactive CLI loop — setup, boot, input/output |
-| `JidoClaw.Config` | Multi-provider config from `.jido/config.yaml` |
-| `JidoClaw.Setup` | First-time setup wizard (provider, model, API key) |
+| `JidoClaw.Agent` | Main AI agent — 35 tools, swarm orchestration |
+| `JidoClaw.CLI.Repl` | Interactive CLI loop — setup, boot, input/output |
+| `JidoClaw.Config` | Multi-provider config from `.jido/config.yaml` (`core/config.ex`) |
+| `JidoClaw.CLI.Setup` | First-time setup wizard (provider, model, API key) |
 | `JidoClaw.Session.Worker` | Per-session GenServer with JSONL persistence |
 | `JidoClaw.Tenant.Manager` | Multi-tenant lifecycle management |
 | `JidoClaw.Skills` | YAML-based multi-step skill orchestration |
-| `JidoClaw.Templates` | Agent template registry (6 built-in) |
-| `JidoClaw.Branding` | ASCII art, boot sequence, spinners, help text |
-| `JidoClaw.Formatter` | Output formatting, diff rendering, tool display |
+| `JidoClaw.Agent.Templates` | Agent template registry (16 built-in) |
+| `JidoClaw.CLI.Branding` | ASCII art, boot sequence, spinners, help text |
+| `JidoClaw.CLI.Formatter` | Output formatting, diff rendering, tool display |
 | `JidoClaw.JidoMd` | Auto-generates `.jido/JIDO.md` self-knowledge |
 | `JidoClaw.SignalBus` | Internal event routing (`jido_claw.*` namespace) |
 | `JidoClaw.AgentTracker` | Per-agent stat accumulation, process monitoring, SignalBus subscriber |
@@ -93,16 +93,14 @@ JidoClaw uses the full Jido ecosystem:
 |---------|---------------------|
 | `jido` | Agent lifecycle, OTP runtime, `cmd/2` pattern |
 | `jido_ai` | LLM orchestration, ReAct tool-calling loop, model aliases |
-| `jido_action` | All 27 tools are `Jido.Action` modules with schema validation |
+| `jido_action` | All 35 registered tools are `Jido.Action` modules with schema validation |
 | `jido_signal` | Signal bus for internal events (`jido_claw.tool.complete`, etc.) |
 | `jido_mcp` | MCP server protocol for external tool integration |
-| `jido_memory` | Cross-session persistent memory |
 | `jido_shell` | Sandboxed shell execution for `run_command` tool |
 | `jido_vfs` | Virtual filesystem abstraction |
 | `jido_skill` | Skill definition primitives |
 | `jido_composer` | Agent composition patterns |
 | `jido_messaging` | Inter-agent message routing |
-| `jido_cluster` | Multi-node BEAM clustering |
 | `req_llm` | Provider abstraction — Ollama, Anthropic, OpenAI, Google, Groq, xAI |
 
 ### `.jido/` Directory
@@ -111,14 +109,15 @@ The `.jido/` directory is the project-level configuration that ships with the re
 
 ```
 .jido/
-├── JIDO.md              # Auto-generated self-knowledge (agent reads at boot)
+├── JIDO.md              # Self-knowledge (committed; guarded by mix jidoclaw.jido_md.check)
 ├── config.yaml          # Provider, model, timeouts (git-ignored)
 ├── agents/              # Custom agent definitions (YAML, committed)
 ├── skills/              # Multi-step skill workflows (YAML, committed)
-├── memory.json          # Persistent memory (git-ignored)
-├── sessions/            # Session logs (git-ignored)
-└── solutions.json       # Solution fingerprint cache
+└── sessions/            # Session logs (git-ignored)
 ```
+
+Persistent memory and solutions live in Postgres (Ash domains), not in
+`.jido/` JSON files.
 
 ## Extension Points
 
@@ -142,16 +141,16 @@ defmodule JidoClaw.Tools.YourTool do
 end
 ```
 
-3. Add to the tools list in `lib/jido_claw/agent.ex`
+3. Add to the tools list in `lib/jido_claw/agent/agent.ex`
 4. Add a test in `test/jido_claw/tools/your_tool_test.exs`
 
 ### Adding an Agent Template
 
-1. Create `lib/jido_claw/agents/worker_your_role.ex`:
+1. Create `lib/jido_claw/agent/workers/your_role.ex`:
 
 ```elixir
-defmodule JidoClaw.Agents.WorkerYourRole do
-  use Jido.AI.Agent,
+defmodule JidoClaw.Agent.Workers.YourRole do
+  use JidoClaw.Agent.Defaults,
     name: "your_role",
     description: "What this agent specializes in",
     model: :fast,
@@ -163,12 +162,14 @@ defmodule JidoClaw.Agents.WorkerYourRole do
 end
 ```
 
-2. Register in `lib/jido_claw/templates.ex`
-3. Update `.jido/JIDO.md` template in `jido_md.ex`
+2. Register in `lib/jido_claw/agent/templates.ex`
+3. Regenerate or hand-update the committed `.jido/JIDO.md` — its template
+   sections are derived from the registry, and `mix jidoclaw.jido_md.check`
+   (part of `mix precommit`) fails until the committed file matches
 
 ### Adding a Slash Command
 
-1. Add a `handle/2` clause in `lib/jido_claw/commands.ex`:
+1. Add a `handle/2` clause in `lib/jido_claw/cli/commands.ex`:
 
 ```elixir
 def handle("/your_command", state) do
@@ -177,21 +178,21 @@ def handle("/your_command", state) do
 end
 ```
 
-2. Update the help text in `lib/jido_claw/branding.ex`
+2. Update the help text in `lib/jido_claw/cli/branding.ex`
 
 ### Adding an LLM Provider
 
-1. Add provider config to `@providers` map in `lib/jido_claw/config.ex`
+1. Add provider config to `@providers` map in `lib/jido_claw/core/config.ex`
 2. Add to `available_providers/0` and `default_models_for_provider/1`
 3. Add model descriptions to `@model_descriptions`
 4. Add connectivity check in `check_provider/1`
-5. Add API key mapping in `lib/jido_claw/setup.ex` (`api_key_env_for/1`)
+5. Add API key mapping in `lib/jido_claw/cli/setup.ex` (`api_key_env_for/1`)
 6. Register models in `config/config.exs` LLMDB catalog
 7. Update `.env.example`
 
 ### Adding a Channel Adapter
 
-1. Create `lib/jido_claw/channel/your_adapter.ex`
+1. Create `lib/jido_claw/platform/channel/your_adapter.ex`
 2. Implement `JidoClaw.Channel.Behaviour` — five callbacks:
 
 ```elixir
@@ -224,7 +225,7 @@ steps:
 synthesis: "Summarize what was done and any remaining issues"
 ```
 
-To include it as a built-in default, add the YAML content to `@default_skills` in `lib/jido_claw/skills.ex`.
+To include it as a built-in default, add the YAML content to `@default_skills` in `lib/jido_claw/platform/skills.ex` (and update the committed `.jido/JIDO.md` skills list — `mix jidoclaw.jido_md.check` guards it).
 
 ### Customizing the Display
 

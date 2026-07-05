@@ -36,9 +36,9 @@ defmodule JidoClaw.Embeddings.RatePacer do
   window; `:rpm: 30, :cluster_window_seconds: 60` stays at 60. The
   upgrade is logged at info on first boot.
 
-  When `VOYAGE_API_KEY` is set but `:rate_limits` is not configured,
-  the GenServer logs a one-time warning at boot pointing at the docs
-  URL and the config key.
+  When `VOYAGE_API_KEY` is set but neither `:rpm` nor `:tpm` is
+  configured, the GenServer logs a one-time warning at boot pointing
+  at the docs URL and the config keys.
   """
 
   use GenServer
@@ -377,7 +377,7 @@ defmodule JidoClaw.Embeddings.RatePacer do
 
     if api_key_present? and not rate_configured? do
       Logger.warning(
-        "[Embeddings.RatePacer] VOYAGE_API_KEY is set but :rate_limits are not configured. " <>
+        "[Embeddings.RatePacer] VOYAGE_API_KEY is set but neither :rpm nor :tpm is configured. " <>
           "Defaults are conservative paid-Tier-1 levels. Override via " <>
           "config :jido_claw, JidoClaw.Embeddings.RatePacer, rpm: ..., tpm: ... — " <>
           "see https://docs.voyageai.com/docs/rate-limits for tier specs."

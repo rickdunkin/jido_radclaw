@@ -1,10 +1,15 @@
 # JidoClaw Roadmap
 
-## Current State: v0.5.4
+> **Status — updated 2026-07-05.** Milestones through v0.6 have shipped (the
+> app is v0.6.4); v0.7 (Burrito packaging) remains planned. Completed-milestone
+> sections below are historical records — kept as written, with annotations
+> only where a claim could read as current.
 
-Single-agent and swarm runtime working. 27 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4), and `/servers` REPL command + workspace-scoped `jido status` SSH session count + bounded auto-reconnect on dropped SSH sessions (v0.5.3.1, post-v0.5.4 follow-up).
+## Current State: v0.6.4
 
-Ash Framework 3.0 + PostgreSQL data layer with 6 domains (Accounts, Forge, GitHub, Orchestration, Projects, Security). Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
+Single-agent and swarm runtime working. 35 tools, REPL with boot sequence, multi-provider LLM support, persistent sessions, DAG-based skills, solutions engine, agent-to-agent networking, multi-tenancy scaffolding, MCP server mode, unified VFS across file tools and shell (v0.3), user-defined reasoning strategies and sequential pipelines (v0.4.2), history-aware `strategy: "auto"` with LLM tie-breaker and strategy-outcome learning (v0.4.3), shared `StrategyTestHelper` (v0.4.4), custom prompt templates in user strategies (v0.4.5), YAML-defined pipeline compositions (v0.4.6), `max_context_bytes` cap for `accumulate`-mode pipelines (v0.4.7), custom command registry with `jido status|memory|solutions` sub-commands (v0.5.1), per-workspace environment profiles with `/profile` REPL command + status-bar indicator (v0.5.2), remote command execution against declared SSH targets with profile-aware env and structured connection errors (v0.5.3), real-time streaming of host/VFS/SSH command output to `Display` with `stream_to_display:` opt-in plus `force:` → `backend:` consolidation in `RunCommand` (v0.5.4), and `/servers` REPL command + workspace-scoped `jido status` SSH session count + bounded auto-reconnect on dropped SSH sessions (v0.5.3.1, post-v0.5.4 follow-up).
+
+Ash Framework 3.0 + PostgreSQL data layer with 16 domains (Accounts, Projects, Security, Forge, Orchestration, GitHub, Reasoning, Tenants, Workspaces, Conversations, Solutions, Embeddings, Memory, Audit, Cron, Trace) — memory and solutions moved from ETS + JSON into Postgres in v0.6. Phoenix LiveView web dashboard with authentication. Shell sessions use jido_shell with a custom `BackendHost` for real host command execution with CWD/env persistence.
 
 Deferred items not yet scheduled into a release are tracked in [`docs/BACKLOG.md`](BACKLOG.md).
 
@@ -57,7 +62,7 @@ Full-stack web application with:
 
 ### What Remained File-Based
 
-Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) intentionally kept on ETS + JSON for CLI simplicity.
+Memory (`JidoClaw.Memory`) and Solutions Store (`JidoClaw.Solutions.Store`) intentionally kept on ETS + JSON for CLI simplicity at the time. *(Both moved to Postgres in v0.6 — see the v0.6 milestone.)*
 
 ---
 
@@ -317,55 +322,42 @@ Items still deferred from v0.5.3 — flagged here for visibility, not picked up 
 
 ## v0.6 — Memory & Solutions Database Migration
 
-**Status: Planned**
+**Status: Shipped** (Solutions in v0.6.1, Memory in v0.6.3; the app is v0.6.4)
 
 ### Why
 
-Application metadata (users, sessions, forge, orchestration) is already in PostgreSQL via Ash. Two subsystems remain on ETS + JSON files:
+Application metadata (users, sessions, forge, orchestration) was already in PostgreSQL via Ash. Two subsystems remained on ETS + JSON files:
 
 - **Memory** (`JidoClaw.Memory`): ETS + `.jido/memory.json`
 - **Solutions Store** (`JidoClaw.Solutions.Store`): ETS + `.jido/solutions.json`
 
-This works for single-node CLI usage but doesn't scale for search, multi-tenancy, or audit requirements.
+That worked for single-node CLI usage but didn't scale for search, multi-tenancy, or audit requirements.
 
-### Phase 1: Memory Backend Swap
+### Phase 1: Memory Backend Swap — shipped
 
-Replace `JidoClaw.Memory` (ETS + `.jido/memory.json`) with Ash resource-backed storage.
+Replaced `JidoClaw.Memory` (ETS + `.jido/memory.json`) with Ash resource-backed storage (`JidoClaw.Memory.Domain` — no supervised process remains).
 
-```
-Before: Memory GenServer → ETS table → JSON file
-After:  Memory GenServer → Ash Resource → PostgreSQL
-```
+- [x] Memory schema on Ash resources
+- [x] Postgres-backed search (replaces naive string matching)
+- [x] Cross-session memory with timestamps and types
 
-- Migrate memory schema to Ash resources with Ecto changesets
-- Full-text search via PostgreSQL FTS (replaces naive string matching)
-- Cross-session memory with timestamps and types
+### Phase 2: Solutions Store Migration — shipped
 
-### Phase 2: Solutions Store Migration
+Replaced `JidoClaw.Solutions.Store` (ETS + `.jido/solutions.json`) with the Postgres-backed `JidoClaw.Solutions.Domain` (Solution + Reputation resources; the Store/Reputation GenServers were retired in v0.6.1).
 
-Replace `JidoClaw.Solutions.Store` (ETS + `.jido/solutions.json`) with Ash resource-backed store.
+- [x] Solution fingerprint indexing
+- [x] Search as SQL (hybrid lexical + embedding matching)
+- [x] Reputation ledger on an Ash resource
 
-- Solution fingerprint indexing via composite indexes
-- BM25-style search as a SQL query instead of in-memory scan
-- Reputation ledger with atomic increments
-- Trust score history (trending, not just current value)
+### Phase 3: Remaining Persistence Gaps — shipped
 
-### Phase 3: Remaining Persistence Gaps
+- [x] Conversation/message history in the database (`JidoClaw.Conversations`)
+- [x] Append-only audit log (`JidoClaw.Audit`)
+- [x] Multi-tenant data isolation (tenant-scoped resources)
 
-- Session message history in database (replace JSONL files — session metadata is already in `forge_sessions`)
-- Append-only audit log of all tool calls and decisions
-- Multi-tenant data isolation (per-tenant schemas or row-level security)
+### Fallback — dropped
 
-### Fallback
-
-Keep JSON file persistence as the default for CLI-only usage. Database persistence is opt-in for server deployments via config:
-
-```yaml
-# .jido/config.yaml
-persistence:
-  backend: ecto # or "file" (default)
-  database_url: 'postgres://...'
-```
+The planned `persistence: backend: ecto | file` config fallback was not shipped: the design went Postgres-required (PostgreSQL is a hard prerequisite), so there is no file-backend escape hatch.
 
 ---
 
@@ -397,19 +389,19 @@ releases: [
 
 ## Future Considerations
 
-### Remaining File-to-Database Migration Opportunities
+### File-to-Database Migration Opportunities — mostly shipped in v0.6
 
-| Capability              | Current                            | With Ash/PostgreSQL                |
-| ----------------------- | ---------------------------------- | ---------------------------------- |
-| Memory persistence      | JSON file, FTS via string matching | PostgreSQL FTS, indexed queries    |
-| Solution search         | In-memory Jaccard + BM25           | SQL-based BM25, composite indexes  |
-| Multi-tenant isolation  | Process-level (ETS per tenant)     | Database-level (schemas/RLS)       |
-| Audit trail             | None (telemetry is volatile)       | Append-only event log              |
-| Reputation tracking     | JSON file                          | Atomic DB operations, history      |
-| Cluster coordination    | `:pg` only                         | Shared DB state, distributed locks |
-| Session message history | JSONL files                        | Structured DB with search          |
+| Capability              | Pre-v0.6                           | Now                                          |
+| ----------------------- | ---------------------------------- | -------------------------------------------- |
+| Memory persistence      | JSON file, FTS via string matching | ✅ Postgres-backed Memory domain              |
+| Solution search         | In-memory Jaccard + BM25           | ✅ SQL-backed hybrid search                   |
+| Multi-tenant isolation  | Process-level (ETS per tenant)     | ✅ Tenant-scoped Postgres resources           |
+| Audit trail             | None (telemetry is volatile)       | ✅ Append-only Audit domain                   |
+| Reputation tracking     | JSON file                          | ✅ Reputation Ash resource                    |
+| Cluster coordination    | `:pg` only                         | Partially — DB-backed leases/claims shipped  |
+| Session message history | JSONL files                        | ✅ Conversations domain                       |
 
-Note: Agent state recovery and session metadata are already in PostgreSQL via Forge resources.
+Note: Agent state recovery and session metadata were already in PostgreSQL via Forge resources.
 
 ### Other Jido Ecosystem Libraries to Watch
 
@@ -423,7 +415,7 @@ Note: Agent state recovery and session metadata are already in PostgreSQL via Fo
 ## Build Order
 
 ```
-v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5.1..v0.5.4 (Shell, done) → v0.6 (Memory/Solutions DB) → v0.7 (Burrito)
+v0.2 (done) → v0.2.5 (done) → v0.3 (done) → v0.4.1..v0.4.7 (done) → v0.5.1..v0.5.4 (Shell, done) → v0.6 (Memory/Solutions DB, done) → v0.7 (Burrito, planned)
 ```
 
 The v0.4.x cadence was intentional: each point release shipped one focused change to the reasoning subsystem, keeping every PR independently reviewable and revertible.

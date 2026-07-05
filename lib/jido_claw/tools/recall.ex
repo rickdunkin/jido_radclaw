@@ -30,7 +30,7 @@ defmodule JidoClaw.Tools.Recall do
       query: [
         type: :string,
         required: true,
-        doc: "Search query to find relevant memories (substring match on key, content, and type)"
+        doc: "Search query to find relevant memories (hybrid full-text + semantic search)"
       ],
       limit: [
         type: :integer,

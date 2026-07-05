@@ -27,7 +27,7 @@ defmodule JidoClaw.Security.Redaction.Memory do
 
   Raises only on programmer error (a non-binary slipping past the
   resource's `:string` typing). The `!` suffix mirrors the
-  `Conversations.Redaction.Transcript.redact/2` shape.
+  `Security.Redaction.Transcript.redact/2` shape.
   """
   @spec redact_fact!(String.t()) :: String.t()
   def redact_fact!(content) when is_binary(content), do: Patterns.redact(content)

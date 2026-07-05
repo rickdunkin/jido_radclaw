@@ -1,5 +1,14 @@
 # Plan: v0.6 Memory & Persistence Migration
 
+> **Status — shipped (updated 2026-07-05).** This design landed across
+> v0.6.1–v0.6.3 (the app is v0.6.4). The shipped Mix-task namespace is
+> `jidoclaw.*` (`jidoclaw.export.{memory,solutions,conversations}`,
+> `jidoclaw.migrate.{memory,conversations,cron}`) — the task names below have
+> been updated to match. Note `jidoclaw.migrate.solutions` shipped, ran, and
+> was then deliberately removed once the one-time migration completed, so that
+> command no longer exists. Interior design prose is kept as the original
+> record.
+
 Replace the file- and ETS-based persistence behind `JidoClaw.Memory`,
 `JidoClaw.Solutions.Store`, and the chat-session JSONL writer with an
 Ash + PostgreSQL data layer, add pgvector + Postgres FTS retrieval,
@@ -92,11 +101,11 @@ between. The plan is *not* dual-write. To make a rollback recoverable
 each phase pairs its decommissioning step with an export task that
 serializes the new tables back into the old on-disk shape:
 
-- `mix jido_claw.export.solutions` — writes `Solutions.Solution` +
+- `mix jidoclaw.export.solutions` — writes `Solutions.Solution` +
   `Reputation` rows back to `.jido/solutions.json` /
   `.jido/reputation.json` per workspace, in the v0.5.x format the ETS
   store loaded from.
-- `mix jido_claw.export.conversations` — writes `Conversations.Message`
+- `mix jidoclaw.export.conversations` — writes `Conversations.Message`
   rows back to `.jido/sessions/<tenant>/<id>.jsonl` in `sequence`
   order. **Non-v0.5 roles are dropped on export with a warning**:
   v0.5.x JSONL only ever stored `{role: :user | :assistant, content,
@@ -110,7 +119,7 @@ serializes the new tables back into the old on-disk shape:
   the extra roles into the JSONL would either break the rolled-back
   reader or require schema sniffing on every read; dropping with a
   manifest is the simpler and more honest choice.
-- `mix jido_claw.export.memory` — writes active `Memory.Fact` rows back
+- `mix jidoclaw.export.memory` — writes active `Memory.Fact` rows back
   to `.jido/memory.json` in the v0.5.x entry shape (Block / Episode /
   Link tiers have no v0.5.x equivalent and are dropped on export with a
   warning).
@@ -1107,7 +1116,7 @@ Actions:
   the only thing that catches it at write time. Tests in §1.8
   pin a constructed-mismatch fixture against the action.
 - `create :import_legacy` — privileged migration-only action used
-  by `mix jido_claw.migrate.solutions`. Accepts the full live-action
+  by `mix jidoclaw.migrate.solutions`. Accepts the full live-action
   field set **plus** `id`, `inserted_at`, `updated_at`, and
   `deleted_at` so the migration can preserve the legacy row's
   primary key (today's `JidoClaw.Solutions.Store` keys ETS by `id`,
@@ -1281,7 +1290,7 @@ merge produced expected results before locking it in. A
 **Import-ledger for same-source idempotency.** The merge logic
 above is correct for *distinct* source files; it is wrong for the
 same source replayed twice. Without a fingerprint of "what we've
-already imported," running `mix jido_claw.migrate.solutions` a
+already imported," running `mix jidoclaw.migrate.solutions` a
 second time against an unchanged `.jido/reputation.json` would re-
 hit the same-tenant collision branch and sum the same counters into
 the same row again, inflating reputation by every replay. Solutions
@@ -2216,10 +2225,10 @@ carries the expected `tenant_id`, `workspace_id`, and
 ### 1.6 Migration script
 
 ```
-mix jido_claw.migrate.solutions
+mix jidoclaw.migrate.solutions
 ```
 
-(Implemented as a Mix task at `lib/mix/tasks/jido_claw.migrate.solutions.ex`.)
+(Implemented as a Mix task at `lib/mix/tasks/jidoclaw.migrate.solutions.ex`.)
 
 Steps:
 1. Read every `.jido/solutions.json` under known `project_dir`s
@@ -2389,7 +2398,7 @@ Steps:
   agent_id)` API change both tenants would resolve to the same
   ETS-style global row.
 - **Reputation import-ledger idempotency.** Run
-  `mix jido_claw.migrate.solutions` against a fixture
+  `mix jidoclaw.migrate.solutions` against a fixture
   `.jido/reputation.json` containing
   `agent_id: "bob"` with `solutions_verified: 5`. Assert the
   resulting row has `solutions_verified == 5`. Run the migration
@@ -2433,7 +2442,7 @@ Steps:
   gate a future refactor could silently re-enable egress on
   opted-out workspaces — the failure mode the §0.2 default exists
   to prevent.
-- `mix jido_claw.export.solutions` round-trip test, two
+- `mix jidoclaw.export.solutions` round-trip test, two
   fixtures (per the Phase summary "Rollback caveat" two-fixture
   contract):
   - **Sanitized fixture**: a v0.5.x `.jido/solutions.json` with
@@ -2567,7 +2576,7 @@ Actions:
   from the host tenant resolution while pulling `session_id`
   from the JSONL filename (which itself reflects the legacy
   per-`project_dir` directory layout). A misaligned migrator
-  command (`mix jido_claw.migrate.conversations --tenant=foo`
+  command (`mix jidoclaw.migrate.conversations --tenant=foo`
   pointed at sessions that resolve to tenant `bar`) would
   otherwise land a whole tenant's transcript history under the
   wrong tenant boundary; the validate-equality hook stops the
@@ -2982,7 +2991,7 @@ into Postgres outweighs the cost of losing an unredactable string.
 ### 2.5 Migration: JSONL → Postgres
 
 ```
-mix jido_claw.migrate.conversations
+mix jidoclaw.migrate.conversations
 ```
 
 1. Walk `.jido/sessions/<tenant>/*.jsonl`. The `<tenant>` path
@@ -3144,7 +3153,7 @@ that can be removed by hand after verification.
   written. The `:append` action's denormalized-from-session
   shape makes its own test trivially pass; the migrator path is
   the one that needs the gate.
-- `mix jido_claw.export.conversations` round-trip, three
+- `mix jidoclaw.export.conversations` round-trip, three
   fixtures (per the Phase summary "Rollback caveat" two-fixture
   contract, plus the existing dropped-roles case):
   - **Sanitized fixture** with only `:user`/`:assistant` rows
@@ -3465,7 +3474,7 @@ Block's `invalid_at`.
 | `tags` | {:array, text}, default [] | freeform |
 | `source` | atom (`:model_remember`, `:user_save`, `:consolidator_promoted`, `:imported_legacy`) | |
 | `trust_score` | float, default 0.5 | seeded by source; nudged by consolidator |
-| `import_hash` | text, nullable | content-derived dedup key for legacy `.jido/memory.json` imports; null on live traffic. Mirrors the Phase 2 `Conversations.Message.import_hash` pattern (§2.5). Hash shape: `SHA-256(workspace_id \|\| label \|\| content \|\| inserted_at_ms)`. Used by `mix jido_claw.migrate.memory` to make re-runs idempotent without relying on legacy UUIDs (legacy entries are keyed by user-supplied strings, not UUIDs — see `lib/jido_claw/platform/memory.ex` `record_to_entry/1`). |
+| `import_hash` | text, nullable | content-derived dedup key for legacy `.jido/memory.json` imports; null on live traffic. Mirrors the Phase 2 `Conversations.Message.import_hash` pattern (§2.5). Hash shape: `SHA-256(workspace_id \|\| label \|\| content \|\| inserted_at_ms)`. Used by `mix jidoclaw.migrate.memory` to make re-runs idempotent without relying on legacy UUIDs (legacy entries are keyed by user-supplied strings, not UUIDs — see `lib/jido_claw/platform/memory.ex` `record_to_entry/1`). |
 
 `inserted_at` and `valid_at` follow the same writable-attribute
 pattern as `Conversations.Message.inserted_at` (§2.1): plain
@@ -3626,7 +3635,7 @@ Actions:
   end
   ```
   No per-scope action dispatch is needed.
-- `create :import_legacy` — used by `mix jido_claw.migrate.memory`
+- `create :import_legacy` — used by `mix jidoclaw.migrate.memory`
   only. Accepts `inserted_at`, `valid_at`, **`label`**, and
   **`import_hash`** (the standard `:record` action doesn't take the
   last two as caller-set inputs); fixes `source: :imported_legacy`
@@ -3649,7 +3658,7 @@ Actions:
 
   The `before_action` cross-tenant FK validation from `:record`
   also runs here, against every populated scope FK. The
-  `mix jido_claw.migrate.memory` script (§3.17) reads
+  `mix jidoclaw.migrate.memory` script (§3.17) reads
   `tenant_id` from the resolved `Workspace.tenant_id` directly,
   so the legacy import path is structurally aligned, but the
   hook is mandatory belt-and-braces — a future migrator that
@@ -4470,7 +4479,7 @@ isn't consolidating.
    - `Memory.Fact`s with `source IN (:model_remember, :user_save,
      :imported_legacy)` and `(inserted_at, id) > facts_watermark`,
      similarly capped. Including `:imported_legacy` is what
-     actually lets `mix jido_claw.migrate.memory` output reach the
+     actually lets `mix jidoclaw.migrate.memory` output reach the
      consolidator (otherwise legacy facts written with that source
      are never picked up — see 3.17).
 
@@ -4713,7 +4722,7 @@ Async-on-write contract:
 ### 3.17 Migration: `.jido/memory.json` → Postgres
 
 ```
-mix jido_claw.migrate.memory
+mix jidoclaw.migrate.memory
 ```
 
 1. Walk known `.jido/memory.json` files (per workspace). The
@@ -5054,7 +5063,7 @@ at migration time and gives the consolidator full authority.
   scan tick (per §1.4) recovers the row and embeds it. Same
   shape as the Solutions backfill test in §1.8 but against
   `Memory.Fact`.
-- `mix jido_claw.export.memory` round-trip, two fixtures (per the
+- `mix jidoclaw.export.memory` round-trip, two fixtures (per the
   Phase summary "Rollback caveat" two-fixture contract):
   - **Sanitized fixture**: a v0.5.x `.jido/memory.json` with no
     strings matching §1.4 redaction patterns. load → migrate →
@@ -5069,7 +5078,7 @@ at migration time and gives the consolidator full authority.
     export contains `[REDACTED]` exactly where the import-time
     redaction observed a match, cross-checked against the
     export's redaction manifest.
-- `mix jido_claw.migrate.memory` idempotency: run the migration
+- `mix jidoclaw.migrate.memory` idempotency: run the migration
   twice against the same `.jido/memory.json` fixture and assert
   the second run inserts zero rows. Proves the
   `unique_import_hash` partial identity (§3.6, partial-identities

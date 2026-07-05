@@ -4,9 +4,8 @@ defmodule JidoClaw.Agent.Defaults do
   `use Jido.AI.Agent` that injects the `Recorder` plugin and (opt-in) the
   context-compaction `on_before_cmd/2` override.
 
-  Used by the main `JidoClaw.Agent` and the seven specialized agent
-  workers (Coder, Reviewer, Researcher, Refactorer, Verifier,
-  TestRunner, DocsWriter). The Recorder plugin bridges the agent's
+  Used by the main `JidoClaw.Agent` and all 16 specialized agent
+  workers in `lib/jido_claw/agent/workers/`. The Recorder plugin bridges the agent's
   `ai.*` mailbox signals onto `JidoClaw.SignalBus` so the
   `Conversations.Recorder` GenServer can persist tool activity into
   Postgres.

@@ -39,7 +39,7 @@ defmodule JidoClaw.Reasoning.YamlStore do
 
   Returns `{:ok, name}` for a non-empty string without a `/` separator
   (the latter would clash with the namespaced lookup in
-  `StrategyRegistry` / `PipelineRegistry`).
+  `StrategyRegistry` / `PipelineStore`).
   """
   @spec fetch_name(map()) :: {:ok, String.t()} | {:error, String.t()}
   def fetch_name(data) do

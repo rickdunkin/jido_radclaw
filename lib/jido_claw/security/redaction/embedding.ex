@@ -4,8 +4,7 @@ defmodule JidoClaw.Security.Redaction.Embedding do
   leaves the host.
 
   Wraps `JidoClaw.Security.Redaction.Patterns.redact_with_count/1` so
-  callers (`Voyage.embed_for_storage/1`, `Voyage.embed_for_query/1`,
-  `Local.embed_for_storage/1`, `Local.embed_for_query/1`) get back the
+  callers (`Voyage.embed_for_storage/1`, `Voyage.embed_for_query/1`) get back the
   redacted input plus the count of redactions applied — the telemetry
   emitter reports `redactions_applied` per request so operators can see
   if scrubbing fired before paying the embedding cost.

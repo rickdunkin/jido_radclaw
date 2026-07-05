@@ -104,7 +104,8 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
   @doc """
   Reviewer verdict object (`overall`/`summary`/`action_needed`/`findings`, each
   finding `severity`/`confidence`/`location`/`description`) — the shape
-  `JidoClaw.RouteComposer.Emit.DefaultMapper.reviewer_verdict/3` consumes, shared
+  `JidoClaw.RouteComposer.Emit.DefaultMapper` consumes (via its private
+  `verdict/2`), shared
   by the three `reviewer_contract`-carrying judges (`Reviewer`, `SketchReviewer`,
   `SystemVerifier`). The doctrine `reviewer_contract` slice is the prose half of
   this contract (and the source the LLM reads for field order/intent).

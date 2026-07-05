@@ -114,6 +114,9 @@ Agent templates and their exact tool access:
 | `coder`      | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Coding tasks, feature work,      |
 |              | run_command, fetch_output, git_status, git_diff, git_commit,          |                | bug fixes, multi-file changes    |
 |              | project_info                                                           |                |                                  |
+| `fixer`      | read_file, write_file, edit_file, list_directory, search_code,        | 25             | Resolves open review findings,   |
+|              | run_command, fetch_output, git_status, git_diff, git_commit,          |                | self-reports touched domains     |
+|              | project_info                                                           |                |                                  |
 | `test_runner`| read_file, run_command, fetch_output, search_code                     | 15             | Running tests, verifying builds  |
 | `reviewer`   | read_file, git_diff, fetch_output, git_status, search_code            | 15             | Code review, audit, read-only    |
 | `docs_writer`| read_file, write_file, search_code                                     | 15             | Writing docs, module docs, specs |
@@ -141,7 +144,7 @@ Agent templates and their exact tool access:
 ### Handoff (1 tool)
 
 **handoff** — Transfer conversation ownership to a specialized worker template.
-- Parameters: `to_template` (one of coder/reviewer/researcher/refactorer/verifier/test_runner/docs_writer), `message` (rationale visible to the next worker), `summary` (optional one-line summary), `reason` (optional explanation).
+- Parameters: `to_template` (one of coder/docs_writer/fixer/refactorer/researcher/reviewer/test_runner/verifier), `message` (rationale visible to the next worker), `summary` (optional one-line summary), `reason` (optional explanation).
 - Use when: the remaining work is squarely a specialist's job (e.g., the user wants a code review, not new code).
 - This MUST be the LAST tool call in your turn. After calling, respond with a brief one-line acknowledgement only.
 - The next user turn will be routed to the chosen worker, which receives a bounded handoff preamble (your message/summary + recent history). Run `/reset` to return ownership to main.
@@ -249,7 +252,7 @@ typed output). On `fail`, the generator receives the reasoning as feedback and t
 
 ### Memory (3 tools)
 
-**remember** — Save a persistent entry to `.jido/memory.json`. Survives across sessions.
+**remember** — Save a persistent memory entry (stored in the Postgres-backed memory store). Survives across sessions.
 - Parameters: `key`, `content`, `type` (fact | pattern | decision | preference).
 - Use to save anything useful for the next session.
 

@@ -138,7 +138,6 @@ defmodule JidoClaw.Reasoning.Classifier do
   @spec recommend(TaskProfile.t(), keyword()) ::
           {:ok, String.t(), float()}
           | {:ok, [{String.t(), float()}]}
-          | {:error, :no_recommendation}
   def recommend(%TaskProfile{} = profile, opts \\ []) do
     history = Keyword.get(opts, :history, [])
     exclude = Keyword.get(opts, :exclude, [])

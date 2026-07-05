@@ -4,7 +4,7 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
 
   Carried on the agent module (via `JidoClaw.Agent.Defaults`) and threaded
   through `JidoClaw.Reasoning.Compactor.maybe_compact/3` and the bounded
-  summarizer call. The main agent and all seven workers carry `mode: :auto`;
+  summarizer call. The main agent and all 16 workers carry `mode: :auto`;
   a site opts out with `mode: :off`.
 
   ## Fields
@@ -94,7 +94,7 @@ defmodule JidoClaw.Reasoning.Compactor.Config do
   Returns a `%Config{}` with the default `:auto` compaction settings.
 
   Note: `default/0` returns mode `:auto` — the same mode the main agent and
-  all seven workers carry. A site opts out with `mode: :off` via its own
+  all 16 workers carry. A site opts out with `mode: :off` via its own
   `use JidoClaw.Agent.Defaults, compaction: [mode: :off]`.
   """
   @spec default() :: t()

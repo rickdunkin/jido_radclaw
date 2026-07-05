@@ -1,8 +1,10 @@
 defmodule JidoClaw.Embeddings.PolicyResolver do
   @moduledoc """
   Single source of truth for "what should this workspace's embedding
-  call do?" — used by both the Matcher (read path) and the
-  BackfillWorker (write path).
+  call do?". The Matcher (read path) uses both `resolve/1` and
+  `model_for_query/1`; the BackfillWorker (write path) gates on
+  `resolve/1` only — it hardcodes its stored model
+  (`"voyage-4-large"`), so no model translation happens there.
 
   Two responsibilities:
 

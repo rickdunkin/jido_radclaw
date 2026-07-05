@@ -20,14 +20,15 @@ defmodule JidoClaw.Memory do
 
   ## Read entry point
 
-    * `recall/2` — wraps `JidoClaw.Memory.Retrieval.search/2`.
+    * `recall/2` — wraps `JidoClaw.Memory.Retrieval.search/1`.
       Returns the legacy `%{key, content, type, created_at, updated_at}`
       shape so existing `tools/recall.ex` and `cli/presenters.ex`
       formatters keep working without changes.
 
   ## Forget
 
-    * `forget/2` — wraps `Memory.Fact.invalidate_by_label`. The
+    * `forget/2` — resolves the active rows at the label, then
+      invalidates each via `Memory.Fact.invalidate_by_id`. The
       default `:source` is `:user_save`. Pass `:all` to invalidate
       every active row at the label regardless of source.
 
@@ -145,9 +146,8 @@ defmodule JidoClaw.Memory do
   resolved scope, projected to the legacy entry shape.
 
   Returns `[]` when `tool_context` is `nil` or scope-unresolvable.
-  Used by the legacy prompt builder while v0.6.3a ships;
-  v0.6.3b's `prompt.ex` rewrite replaces this with a Block-tier
-  render.
+  Only the `/memory` CLI command calls this today — the prompt
+  builder reads the Block tier instead.
 
   Implementation: `recall("")` delegates to `Retrieval.search/1` which
   short-circuits empty queries to a recency scan.

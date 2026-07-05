@@ -7,12 +7,13 @@ defmodule JidoClaw.Reasoning.Resources.Outcome do
   Aggregated by `JidoClaw.Reasoning.Statistics` to answer
   "which strategy performs best for task type X?".
 
-  ## 0.4.1 scope
+  ## Execution kinds
 
-  Only `execution_kind = :strategy_run` rows are produced in 0.4.1. The
-  `:certificate_verification` and `:react_stub` values are reserved so that
-  the DB column + codegen snapshot land now without a runtime producer; 0.4.2
-  wires `verify_certificate.ex` into the same telemetry wrap.
+  All execution kinds now have live producers: `:strategy_run` via
+  `Tools.Reason`, `:certificate_verification` via `verify_certificate.ex`,
+  and the remaining kinds via their respective telemetry wraps. (In 0.4.1
+  only `:strategy_run` was produced; the others were reserved column
+  values until their producers shipped.)
 
   ## Attribution columns (0.4.3)
 

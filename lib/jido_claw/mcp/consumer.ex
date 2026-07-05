@@ -77,8 +77,7 @@ defmodule JidoClaw.MCP.Consumer do
     * The per-pid reconcile keys on `module.name()`; a same-name redefinition is
       handled by comparing the live module atom to the target
       (unregister-then-register), but the orphaned old module atom lingers in the
-      code server (BEAM does not unload it) — harmless, noted in
-      `ProxyGenerator`'s moduledoc.
+      code server (BEAM does not unload it) — harmless.
     * Reconcile is eventually-consistent: tasks run async and attached pids stay
       marked throughout, so a turn landing between a `{:rediscovered}` apply and
       its reconcile tasks finishing uses the prior tool set for that one turn (a

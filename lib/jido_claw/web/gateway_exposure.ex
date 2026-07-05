@@ -18,9 +18,9 @@ defmodule JidoClaw.Web.GatewayExposure do
 
   `configure!/0` runs from `JidoClaw.Application.start/2` immediately
   after `load_dotenv/0` — `config/runtime.exs` evaluates before the
-  application starts, so it can never see `.env`-supplied values. This is
-  the same pattern `JidoClaw.Desktop.Sidecar.maybe_configure_endpoint/0`
-  uses.
+  application starts, so it can never see `.env`-supplied values.
+  (`JidoClaw.Desktop.Sidecar.maybe_configure_endpoint/0` was written to
+  the same shape, though nothing invokes it today.)
   """
 
   require Logger

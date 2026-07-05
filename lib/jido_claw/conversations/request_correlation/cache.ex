@@ -10,10 +10,9 @@ defmodule JidoClaw.Conversations.RequestCorrelation.Cache do
   ## Pattern
 
   Mirrors `JidoClaw.Tenant.Manager`: this GenServer is the owner of the
-  `:jido_claw_request_correlations` table; the Recorder calls into the
-  GenServer for `put`/`lookup`/`delete`/`clear` via `GenServer.call`,
-  and the GenServer translates each call into the appropriate
-  `:ets.{insert,lookup,delete,delete_all_objects}` operation.
+  `:jido_claw_request_correlations` table; writes (`put`/`delete`/`clear`)
+  go through `GenServer.call`, while `lookup/1` reads the ETS table
+  directly client-side (no GenServer round-trip on the hot read path).
 
   If the GenServer crashes the supervisor restarts it and the table is
   re-created. The Recorder's lookup path falls back to a Postgres read

@@ -8,9 +8,9 @@ defmodule JidoClaw.Embeddings.BackfillWorker do
 
   Two trigger paths:
 
-    * **Periodic scan** — every `:scan_interval_seconds` (default 30 in
-      dev, 300 in prod). Backstop for missed hints. Both resources are
-      scanned per tick.
+    * **Periodic scan** — every `:scan_interval_seconds` (default 30;
+      no per-env override). Backstop for missed hints. Both resources
+      are scanned per tick.
     * **Hint-by-id** — Solution.store / Solution.import_legacy emit
       `{:hint_pending, id}`. Memory.Fact.record emits
       `{:hint_pending_memory_fact, id}`. Each hint runs an atomic

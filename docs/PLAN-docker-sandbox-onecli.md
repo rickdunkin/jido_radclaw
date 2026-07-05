@@ -1,5 +1,12 @@
 # Plan: Docker Sandbox + OneCLI Integration
 
+> **Status — shipped (updated 2026-07-05).** This design landed as
+> `Forge.Sandbox.*` (the `SpriteClient` behaviour was renamed
+> `Forge.Sandbox.Behaviour`; the Docker backend is `Forge.Sandbox.Docker`).
+> Parts 1–2 below are done; the behaviour grew from the 7 callbacks designed
+> here to 10 (8 required + 2 optional, adding `exec_argv/4`). The interior
+> `SpriteClient`-era prose is kept as the original design record.
+
 Replace the Forge's `SpriteClient.Fake` backend with Docker Sandboxes for real
 OS-level isolation, and integrate OneCLI as a credential/policy proxy so Forge
 sessions never hold raw API keys.
@@ -41,7 +48,7 @@ config :jido_claw, :forge_sprite_client, JidoClaw.Forge.SpriteClient.Fake
 
 ---
 
-## Part 1: Docker Sandbox SpriteClient
+## Part 1: Docker Sandbox SpriteClient — ✅ done (shipped as `Forge.Sandbox.Docker`)
 
 ### 1.1 Prerequisites
 
@@ -199,7 +206,7 @@ long commands.
 
 ---
 
-## Part 2: OneCLI Integration
+## Part 2: OneCLI Integration — ✅ done
 
 ### 2.1 What OneCLI Does
 
@@ -430,7 +437,7 @@ injected. Sandboxes make direct outbound requests (same as today).
 
 ### Phase 1: Docker Sandbox SpriteClient
 
-1. Create `SpriteClient.DockerSandbox` with all 7 callbacks
+1. Create `SpriteClient.DockerSandbox` with all callbacks (shipped with 10 — 8 required + 2 optional)
 2. Add conditional child in `application.ex`
 3. Add orphan cleanup to Manager
 4. Add config to `runtime.exs`

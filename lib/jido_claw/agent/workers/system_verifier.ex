@@ -4,7 +4,7 @@ defmodule JidoClaw.Agent.Workers.SystemVerifier do
 
   # AR-8c: the verifier on the system path. Reviewer-SHAPED output
   # (`OutputSchema.reviewer_verdict/0`), so the `system-verifier` catalog stage's
-  # `lens: "system"` makes `RouteComposer.Emit.DefaultMapper.reviewer_verdict/3`
+  # `lens: "system"` makes `RouteComposer.Emit.DefaultMapper` (private `verdict/2`)
   # derive `clean:system` (approve, no findings) / `findings:system` (else) with
   # NO mapper change — convergence rides the existing `Loop.lenses_clean?/3`. But
   # its TOOLS are verifier-style: it inspects the REAL machine (`RunCommand` for
