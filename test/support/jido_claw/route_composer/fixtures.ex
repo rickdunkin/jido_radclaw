@@ -267,20 +267,27 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       "findings" => []
     }
 
-  @doc "Canned reviewer typed output — findings (request_changes)."
-  @spec phase1_findings_reviewer() :: %{String.t() => term()}
-  def phase1_findings_reviewer do
+  @doc """
+  Canned reviewer typed output — findings (request_changes). The finding
+  carries the camus C1-5 `title` (a keyable, STABLE identity — same title +
+  location every round), so a re-flagging reviewer is detected as STUCK at
+  round 2 by the stall predicates.
+  """
+  @spec phase1_findings_reviewer(map() | nil) :: %{String.t() => term()}
+  def phase1_findings_reviewer(finding \\ nil) do
     %{
       "overall" => "request_changes",
       "summary" => "found a defect",
       "action_needed" => "add the nil check before the deref",
       "findings" => [
-        %{
-          "severity" => "error",
-          "confidence" => "likely",
-          "location" => "lib/auth.ex:42",
-          "description" => "missing nil check"
-        }
+        finding ||
+          %{
+            "title" => "missing nil check before deref",
+            "severity" => "error",
+            "confidence" => "likely",
+            "location" => "lib/auth.ex:42",
+            "description" => "missing nil check"
+          }
       ]
     }
   end

@@ -43,12 +43,24 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     {:ok, state}
   end
 
-  @doc "Approve or reject a gate by id, with an optional comment."
+  @doc """
+  Approve or reject a gate by id, with an optional comment.
+
+  A review-stall approve records **waive-all**: one derived waive record per
+  key in the case's `details["finding_keys"]` (severity joined from the
+  displayed findings where present) — the REPL's coarse equivalent of the
+  web's per-finding controls; the per-finding records still land on the
+  case's `:approved` timeline event (the BO2-6 ledger rows).
+  """
   @spec decide(map(), :approve | :reject, String.t(), String.t() | nil) :: {:ok, map()}
   def decide(state, decision, id, comment) do
     id = String.trim(id)
     actor = Actor.system(state.tenant_id)
-    attrs = decision_attrs(comment)
+
+    attrs =
+      comment
+      |> decision_attrs()
+      |> maybe_waive_all(decision, id, state.tenant_id, actor)
 
     IO.puts("")
 
@@ -58,8 +70,17 @@ defmodule JidoClaw.CLI.Commands.Approvals do
           "  \e[32m✓\e[0m  Gate #{decision}d — run \e[1m#{run.name}\e[0m is now #{run.status}"
         )
 
+      {:ok, %AgentCase{kind: :review_stall}} ->
+        IO.puts("  \e[32m✓\e[0m  #{review_stall_decided_message(decision)}")
+
       {:ok, %AgentCase{}} ->
         IO.puts("  \e[32m✓\e[0m  #{tool_call_decided_message(decision)}")
+
+      {:error, :incomplete_waiver} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  Approve requires every surviving finding waived — " <>
+            "this should not happen from /gates (waive-all is derived); re-run /gates."
+        )
 
       {:error, :not_yet_resumable} ->
         IO.puts("  \e[33m⚠\e[0m  Gate not ready yet (checkpoint still being written). Try again.")
@@ -97,8 +118,13 @@ defmodule JidoClaw.CLI.Commands.Approvals do
     IO.puts("")
 
     case Cases.abandon(id, attrs, tenant: state.tenant_id, actor: actor) do
-      {:ok, run} ->
+      {:ok, %WorkflowRun{} = run} ->
         IO.puts("  \e[32m✓\e[0m  Run \e[1m#{run.name}\e[0m abandoned")
+
+      # Review-stall abandon returns the case — the run stays :running until
+      # the parked composer wakes and terminalizes it :abandoned itself.
+      {:ok, %AgentCase{}} ->
+        IO.puts("  \e[32m✓\e[0m  Review-stall gate abandoned — the composer will end the run")
 
       {:error, :not_found} ->
         IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
@@ -124,6 +150,40 @@ defmodule JidoClaw.CLI.Commands.Approvals do
   defp tool_call_decided_message(:reject),
     do: "Tool call rejected — the agent will not retry it automatically"
 
+  # Review-stall decisions land on the case; the RUN terminal is written by
+  # the parked composer when it wakes — never read off decide's return.
+  defp review_stall_decided_message(:approve),
+    do: "Waivers recorded — the run completes as done_with_findings when the composer resumes"
+
+  defp review_stall_decided_message(:reject),
+    do: "Findings rejected — the run fails as fix_failed when the composer resumes"
+
+  # /gates approve on a review-stall case is waive-all: derive one record per
+  # required key. Derived from `finding_keys` (the complete waive-required
+  # list), NOT the displayed `findings` (capped at raise time) — severity is
+  # joined from a displayed entry when present. Any load failure leaves attrs
+  # unchanged; `Cases.decide/4` then surfaces the real error.
+  defp maybe_waive_all(attrs, :approve, id, tenant_id, actor) do
+    case AgentCase.by_id(id, tenant: tenant_id, actor: actor) do
+      {:ok, %AgentCase{kind: :review_stall, details: details}} when is_map(details) ->
+        Map.put(attrs, :waive_records, waive_all_records(details))
+
+      _other ->
+        attrs
+    end
+  end
+
+  defp maybe_waive_all(attrs, _decision, _id, _tenant_id, _actor), do: attrs
+
+  defp waive_all_records(details) do
+    findings = List.wrap(details["findings"])
+
+    for key <- List.wrap(details["finding_keys"]), is_binary(key) do
+      shown = Enum.find(findings, &(is_map(&1) and &1["key"] == key))
+      %{key: key, severity: shown && shown["severity"], note: nil}
+    end
+  end
+
   defp abandon_attrs(nil), do: %{}
 
   defp abandon_attrs(reason) when is_binary(reason),
@@ -133,6 +193,32 @@ defmodule JidoClaw.CLI.Commands.Approvals do
 
   defp decision_attrs(comment) when is_binary(comment),
     do: %{decision_comment: String.trim(comment)}
+
+  # Review-stall cases get a legible finding-list render (the raw
+  # `inspect(details)` fallback below would bury the decision evidence).
+  defp print_case(%AgentCase{kind: :review_stall} = agent_case) do
+    IO.puts(
+      "  \e[33m▸\e[0m \e[1m#{agent_case.id}\e[0m  #{agent_case.step_name}  \e[2m#{agent_case.kind}\e[0m"
+    )
+
+    details = agent_case.details || %{}
+
+    Enum.each(List.wrap(details["findings"]), fn finding ->
+      IO.puts(
+        "    • [#{finding["severity"]}] #{finding["title"]}  \e[2m#{finding["location"]}\e[0m"
+      )
+    end)
+
+    overflow = details["findings_overflow_count"] || 0
+
+    if is_integer(overflow) and overflow > 0 do
+      IO.puts("    \e[2m… and #{overflow} more (still waived by key on approve)\e[0m")
+    end
+
+    if is_binary(details["resume_hint"]) do
+      IO.puts("    \e[2m#{details["resume_hint"]}\e[0m")
+    end
+  end
 
   defp print_case(agent_case) do
     IO.puts(

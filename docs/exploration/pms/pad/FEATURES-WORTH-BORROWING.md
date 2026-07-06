@@ -129,6 +129,25 @@ queued traycer TR1-2a golden test (next-ten #6 rider). Pad supplies the
 each is incomplete alone — and both trees prove it (see the rot evidence on both
 sides below).
 
+> **Status: ✅ ADOPTED 2026-07-06** (folded into next-ten #6 per the
+> superseded TR1-2a rider — the fused advertisement+enforcement PR, exactly
+> this entry's do-today slice). Sketch items (a)–(e) shipped whole:
+> `JidoClaw.MCPServer.SurfaceVersion` (`current/0` = `"1.0"`, bump rules +
+> in-file changelog in the moduledoc — the doctrine line (e); also the
+> single-sourced `app_version/0` accessor); `server_info/0` hand-defined
+> over `Application.spec(:jido_claw, :vsn)`, killing the stale `"0.2.0"`
+> (the `use`-opt version demoted to an inert non-nil `"0"` — anubis's
+> `maybe_define_server_info` force-generates a duplicate def on a nil); the
+> `jido://_meta/version` resource
+> (`{app_version, surface_version, tool_count}`); `app_version` on
+> `project_info`; and the golden — `served_surface_golden_test.exs` +
+> committed `test/fixtures/mcp_surface/served_surface.json`, set-comparing
+> tool names, static resource URIs, template URIs, and the version string
+> **per enumeration surface** (never counts), with the ready-to-commit regen
+> JSON printed on mismatch — so a surface change without a deliberate bump
+> fails precommit, closing the enforcement hole pad left open. The PD2-1
+> slim bootstrap rode the same plumbing (see PD2-1's Status).
+
 **Where in pad**: `internal/mcp/version.go:41,139` — two decoupled constants
 (`CmdhelpVersion = "0.1"` for the CLI help-tree contract, `ToolSurfaceVersion = "0.7"`
 for the MCP catalog contract; "two contracts, two version constants", `:35`), each
@@ -379,6 +398,23 @@ replaces, immutable versioning.
 **Recommendation**: BORROW-PATTERN — lands with the served-surface work or FLOW
 slice 6's sandbox MCP endpoint, whichever comes first.
 
+> **Status: ✅ ADOPTED 2026-07-06 — the slim cut, riding PD1-1's plumbing**
+> (next-ten #6; the served-surface work came first, as this entry predicted).
+> `jido://bootstrap` serves app+surface versions, sorted tool names + count,
+> and a tenant block: identity (tenant/workspace/session/project_dir),
+> pending-gates count, and `active_runs`/`recent_completions` **capped at 5
+> with `*_overflow_count` fields from a cap+1 read** (documented "≥1 means
+> more exist, not a total" — the overflow-honesty rule, bounded to one extra
+> row rather than a COUNT query). Two honesty postures beyond pad's shape:
+> an unresolvable MCP scope reads `available: false` with a reason (never a
+> fabricated empty snapshot), and a failed read inside a resolved tenant
+> flips that block's `*_available: false` flag — never a zero (the
+> deliberate inversion of the dashboard rollup's degrade-to-zero). Run rows
+> are `Visibility.run_view` projections, so completions carry the #6
+> `disposition` automatically. The slice-6 extension (per-token tool
+> allowlist view) stays queued, as does `needs_onboarding` (no onboarding
+> concept here yet).
+
 **Where in pad**: one payload (`GET /api/v1/workspaces/{ws}/agent/bootstrap` ≡ the
 `pad://workspace/{ws}/bootstrap` resource ≡ embedded in the `pad_set_workspace`
 response) returns workspace + user + collections + always-on conventions + roles +
@@ -553,6 +589,13 @@ closed-as-`superseded_by`/`implemented_by`, while `split_from` deliberately does
 **not** auto-close (`internal/server/item_lineage.go:121-194`) — a small, shipped
 vocabulary for "closed by relation, not by status" that the argus task layer's
 kind/disposition design should at least name.
+
+> **Status: ✅ FOLDED IN 2026-07-06 (named, as prescribed)** — next-ten #6
+> shipped the `review_stall` kind, and the `Gate.Kinds` moduledoc now carries
+> the disposition-vocabulary note naming this entry's lineage badges beside
+> traycer TR3-2's `superseded` and bosun BO2-6's retry vocabulary, so the
+> argus task-layer design inherits the reference. Machinery stays unbuilt by
+> design (display-only closure needs the argus task layer to exist).
 
 ## Skip / Already Covered
 

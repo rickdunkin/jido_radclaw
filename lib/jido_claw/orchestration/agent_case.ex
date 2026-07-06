@@ -105,6 +105,10 @@ defmodule JidoClaw.Orchestration.AgentCase do
     define(:by_fingerprint, args: [:fingerprint])
     define(:pending_for_session, args: [:session_id])
     define(:pending_for_run_tree, args: [:run_id])
+
+    # Review-stall (run-bound, parent stays :running) case API.
+    define(:open_review_stall)
+    define(:approved_review_stalls)
   end
 
   actions do
@@ -149,6 +153,33 @@ defmodule JidoClaw.Orchestration.AgentCase do
 
       change(set_attribute(:kind, :tool_call))
       change(set_attribute(:gate_module, JidoClaw.Gates.ToolCallGate))
+      change(set_attribute(:status, :pending))
+    end
+
+    # Open a run-bound review-stall case (camus C1-4): the composer parent
+    # stays `:running` — the pending case row IS the durable park
+    # representation, so this action is the only create that pairs a run with a
+    # fingerprint. Both presence validations are load-bearing: `fingerprint` is
+    # nullable at the column level, and a nil OR blank value would bypass the
+    # `agent_cases_pending_fingerprint_index` partial-unique fence that makes
+    # the composer's raise idempotent (the `match` refuses blank/whitespace,
+    # which `present` alone lets through).
+    create :open_review_stall do
+      description("Open a pending review-stall gate on a composer parent run.")
+
+      accept([
+        :workflow_run_id,
+        :step_name,
+        :details,
+        :fingerprint
+      ])
+
+      validate(present(:workflow_run_id))
+      validate(present(:fingerprint))
+      validate(match(:fingerprint, ~r/\S/))
+
+      change(set_attribute(:kind, :review_stall))
+      change(set_attribute(:gate_module, JidoClaw.Gates.ReviewStallGate))
       change(set_attribute(:status, :pending))
     end
 
@@ -261,6 +292,16 @@ defmodule JidoClaw.Orchestration.AgentCase do
       description("Pending tool-call cases for a session — the awaiting-approval status probe.")
       argument(:session_id, :uuid, allow_nil?: false)
       filter(expr(session_id == ^arg(:session_id) and status == :pending))
+    end
+
+    # The BO2-6 deferred-findings ledger source: decided (approved)
+    # review-stall cases, newest decision first. The waive records themselves
+    # ride each case's `:approved` `AgentCaseEvent.data` — this read is the
+    # case-level index `Cases.waived_findings_ledger/2` joins them from.
+    read :approved_review_stalls do
+      description("Approved review-stall cases, newest first — the debt-ledger index.")
+      prepare(build(sort: [decided_at: :desc]))
+      filter(expr(kind == :review_stall and status == :approved))
     end
 
     # The one-shot runner's composer gate probe: a composer PARENT stays

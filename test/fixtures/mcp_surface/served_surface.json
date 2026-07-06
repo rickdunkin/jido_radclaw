@@ -1,0 +1,39 @@
+{
+  "resource_templates": [
+    "jido://workflows/{name}"
+  ],
+  "static_resource_uris": [
+    "jido://_meta/version",
+    "jido://bootstrap",
+    "jido://workflows/catalog"
+  ],
+  "surface_version": "1.0",
+  "tool_names": [
+    "agent_status",
+    "edit_file",
+    "fetch_output",
+    "find_solution",
+    "forge_status",
+    "git_commit",
+    "git_diff",
+    "git_status",
+    "inspect_agent",
+    "inspect_workflow",
+    "list_directory",
+    "lua_docs",
+    "lua_query",
+    "network_share",
+    "network_status",
+    "project_info",
+    "read_file",
+    "replay_workflow",
+    "run_command",
+    "run_skill",
+    "search_code",
+    "store_solution",
+    "swarm_status",
+    "workflow_events",
+    "workflow_status",
+    "write_file"
+  ]
+}

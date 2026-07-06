@@ -8,6 +8,7 @@ defmodule JidoClaw.WorkflowView do
   alias Ash.Query
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Replay.EventReader
   alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
@@ -41,6 +42,7 @@ defmodule JidoClaw.WorkflowView do
           active_count: non_neg_integer(),
           active_runs: [map()],
           recent_completions: [map()],
+          findings_deferred: non_neg_integer(),
           generated_at: DateTime.t()
         }
 
@@ -48,12 +50,16 @@ defmodule JidoClaw.WorkflowView do
             active_count: 0,
             active_runs: [],
             recent_completions: [],
+            findings_deferred: 0,
             generated_at: nil
 
   # runs/2 status/pagination bounds: callers (the Lua `jido.runs` binding)
   # get a bounded read whatever they pass.
   @runs_default_limit 25
   @runs_max_limit 50
+
+  # runs/2 sort whitelist — the only orderings that reach Query.sort.
+  @runs_sorts [[started_at: :desc], [completed_at: :desc]]
 
   @spec list(map() | keyword()) :: {:ok, t()} | {:error, :tenant_required}
   def list(scope_or_opts) do
@@ -73,9 +79,12 @@ defmodule JidoClaw.WorkflowView do
     * `:statuses` — list of run-status atoms to include (callers validate
       raw input against the enum; default #{inspect(@active_statuses)}).
     * `:limit` — clamped to 1..#{@runs_max_limit}, default #{@runs_default_limit}.
+    * `:sort` — one of `#{inspect(@runs_sorts)}` (a whitelist, never raw
+      caller input into `Query.sort`); anything else falls back to the
+      default `[started_at: :desc]`. `[completed_at: :desc]` is the
+      completions ordering (the `list/1` rollup precedent).
 
-  Returns `{:ok, [map]}` of `Visibility.run_view(:operator)` projections,
-  sorted `started_at: :desc`.
+  Returns `{:ok, [map]}` of `Visibility.run_view(:operator)` projections.
   """
   @spec runs(map() | keyword(), map() | keyword()) ::
           {:ok, [map()]} | {:error, :tenant_required | :runs_unavailable}
@@ -89,7 +98,7 @@ defmodule JidoClaw.WorkflowView do
 
       WorkflowRun
       |> Query.filter(status in ^statuses)
-      |> Query.sort(started_at: :desc)
+      |> Query.sort(validate_runs_sort(Keyword.get(opts, :sort)))
       |> Query.limit(limit)
       |> Ash.read(tenant: tenant_id, actor: actor)
       |> case do
@@ -196,13 +205,29 @@ defmodule JidoClaw.WorkflowView do
     # every projected run, and it doubles as generated_at.
     now = DateTime.utc_now()
 
+    recent_completions = Enum.map(completions, &run_to_map(&1, now))
+
     %__MODULE__{
       tenant_id: tenant_id,
       active_count: length(active_runs),
       active_runs: Enum.map(active_runs, &run_to_map(&1, now)),
-      recent_completions: Enum.map(completions, &run_to_map(&1, now)),
+      recent_completions: recent_completions,
+      findings_deferred: findings_deferred(recent_completions),
       generated_at: now
     }
+  end
+
+  # Camus C1-4 rollup: deferred findings across the recent-completions window
+  # (done_with_findings runs' waived-finding counts) — derived from what the
+  # rollup already read, deliberately NOT a tenant-wide total (that is the
+  # `Cases.waived_findings_ledger/2` / `jido.debt` surface).
+  defp findings_deferred(recent_completions) do
+    Enum.sum_by(recent_completions, fn run_map ->
+      case run_map[:findings_deferred_count] do
+        count when is_integer(count) and count >= 0 -> count
+        _absent -> 0
+      end
+    end)
   end
 
   defp read_runs(tenant_id, actor, statuses, sort, limit) do
@@ -281,11 +306,20 @@ defmodule JidoClaw.WorkflowView do
 
   defp put_composer(view, _run, _tenant, _actor), do: view
 
-  # Authoritative blocked-on-gate signal: the parent stays `:running` across a
-  # child gate pause (§6), so the reliable signal is a child run at
-  # `:awaiting_approval`. `held` (lock-held stages, from the route snapshot) and
-  # `awaiting_approval` (gate park) are DISTINCT waiting states — both surfaced.
+  # Authoritative blocked-on-gate signal, TWO sources: a CHILD run parked
+  # `:awaiting_approval` (the plan/safety gates — the parent stays `:running`
+  # across a child gate pause, §6), and a parent-bound pending `:review_stall`
+  # case (camus C1-4 — the composer's child-less stall park, where nothing is
+  # `:awaiting_approval` by design; the case row is the only durable signal).
+  # `held` (lock-held stages) and `awaiting_approval` (gate park) stay
+  # DISTINCT waiting states.
   defp put_gate_block(summary, parent_id, tenant_id, actor) do
+    summary
+    |> put_child_gate_block(parent_id, tenant_id, actor)
+    |> put_stall_gate_block(parent_id, tenant_id, actor)
+  end
+
+  defp put_child_gate_block(summary, parent_id, tenant_id, actor) do
     WorkflowRun
     |> Query.filter(parent_run_id == ^parent_id and status == :awaiting_approval)
     |> Ash.read(tenant: tenant_id, actor: actor)
@@ -306,6 +340,39 @@ defmodule JidoClaw.WorkflowView do
         Map.put(summary, :awaiting_approval_available, false)
     end
   end
+
+  # A pending review-stall case flips `awaiting_approval` too (it IS an
+  # operator decision blocking the run — runs after the child block so its
+  # `true` wins the merge) and carries its own marker + case id + the C3-2
+  # resume hint. Same honesty posture: a failed case read marks the stall
+  # signal untrusted rather than reading as "no stall".
+  defp put_stall_gate_block(summary, parent_id, tenant_id, actor) do
+    case AgentCase.pending_for_run(parent_id, tenant: tenant_id, actor: actor) do
+      {:ok, cases} ->
+        case Enum.find(cases, &(&1.kind == :review_stall)) do
+          %AgentCase{} = stall ->
+            summary
+            |> Map.merge(%{
+              review_stall_pending: true,
+              review_stall_case_id: stall.id,
+              awaiting_approval: true
+            })
+            |> put_stall_hint(stall)
+
+          nil ->
+            Map.put(summary, :review_stall_pending, false)
+        end
+
+      {:error, _} ->
+        Map.put(summary, :review_stall_available, false)
+    end
+  end
+
+  defp put_stall_hint(summary, %AgentCase{details: %{"resume_hint" => hint}})
+       when is_binary(hint),
+       do: Map.put(summary, :resume_hint, hint)
+
+  defp put_stall_hint(summary, _stall), do: summary
 
   # The run row already exists here (by_id matched), so a read failure is a real
   # fault, NOT "no events" — surface :event_feed_unavailable rather than
@@ -365,6 +432,9 @@ defmodule JidoClaw.WorkflowView do
     do: min(max(limit, 1), @event_feed_max_limit)
 
   defp clamp_limit(_), do: @event_feed_default_limit
+
+  defp validate_runs_sort(sort) when sort in @runs_sorts, do: sort
+  defp validate_runs_sort(_sort), do: [started_at: :desc]
 
   defp clamp_runs_limit(limit) when is_integer(limit),
     do: min(max(limit, 1), @runs_max_limit)

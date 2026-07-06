@@ -53,16 +53,54 @@ defmodule JidoClaw.Orchestration.VisibilityTest do
     )
   end
 
+  describe "run_view/3 disposition (camus C1-4)" do
+    test "lifts result.disposition + findings_deferred_count, tolerant of atom/string keys" do
+      string_keyed =
+        run_fixture(
+          status: :completed,
+          result: %{"disposition" => "done_with_findings", "findings_deferred_count" => 3}
+        )
+
+      view = Visibility.run_view(string_keyed, :operator, @now)
+      assert view.disposition == "done_with_findings"
+      assert view.findings_deferred_count == 3
+
+      atom_keyed =
+        run_fixture(
+          status: :completed,
+          result: %{disposition: "done_with_findings", findings_deferred_count: 1}
+        )
+
+      atom_view = Visibility.run_view(atom_keyed, :operator, @now)
+      assert atom_view.disposition == "done_with_findings"
+      assert atom_view.findings_deferred_count == 1
+    end
+
+    test "rejects malformed disposition values (non-binary, negative counts) to nil" do
+      malformed =
+        run_fixture(result: %{"disposition" => 42, "findings_deferred_count" => -1})
+
+      view = Visibility.run_view(malformed, :operator, @now)
+      assert view.disposition == nil
+      assert view.findings_deferred_count == nil
+    end
+  end
+
   describe "run_view/3" do
     test "operator preserves the legacy run_to_map key set + deadline (MCP contract)" do
       view = Visibility.run_view(run_fixture(), :operator, @now)
 
+      # `disposition` + `findings_deferred_count` (camus C1-4) additively
+      # extend the legacy key set — the "never plain green" rule rides the
+      # base projection so every downstream surface inherits it.
       assert Enum.sort(Map.keys(view)) ==
                Enum.sort([
                  :run_id,
                  :name,
                  :workflow_type,
                  :status,
+                 :disposition,
+                 :findings_deferred_count,
                  :started_at,
                  :completed_at,
                  :duration_ms,
@@ -73,6 +111,9 @@ defmodule JidoClaw.Orchestration.VisibilityTest do
 
       assert view.run_id == "run-1"
       assert view.duration_ms == 300_000
+      # No disposition on an ordinary result — both C1-4 keys read nil.
+      assert view.disposition == nil
+      assert view.findings_deferred_count == nil
     end
 
     test "operator: no raw result, summary key-filtered AND scrubbed" do

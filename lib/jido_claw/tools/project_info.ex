@@ -12,10 +12,12 @@ defmodule JidoClaw.Tools.ProjectInfo do
       git_branch: [type: :string, required: true],
       git_dirty: [type: :boolean, required: true],
       top_level_files: [type: :string, required: true],
-      has_jido_md: [type: :boolean, required: true]
+      has_jido_md: [type: :boolean, required: true],
+      app_version: [type: :string, required: true]
     ],
     schema: []
 
+  alias JidoClaw.MCPServer.SurfaceVersion
   alias JidoClaw.ProjectType
   alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.MCPScope
@@ -37,7 +39,8 @@ defmodule JidoClaw.Tools.ProjectInfo do
        git_branch: detect_git_branch(cwd),
        git_dirty: detect_git_dirty(cwd),
        top_level_files: detect_top_level_files(cwd),
-       has_jido_md: File.exists?(Path.join([cwd, ".jido", "JIDO.md"]))
+       has_jido_md: File.exists?(Path.join([cwd, ".jido", "JIDO.md"])),
+       app_version: SurfaceVersion.app_version()
      }}
   end
 

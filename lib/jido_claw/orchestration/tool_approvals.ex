@@ -64,6 +64,7 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   alias JidoClaw.Conversations.Session
   alias JidoClaw.Conversations.ToolTranscript
   alias JidoClaw.Core.AshErrors
+  alias JidoClaw.Core.CanonicalHash
   alias JidoClaw.Gates.ToolCallGate
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
@@ -108,9 +109,7 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
       {:v2, scope[:tenant_id], session_key, agent_template(scope), to_string(tool_name),
        canonical_params(params)}
 
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
-    |> Base.encode16(case: :lower)
+    CanonicalHash.sha256_term(term)
   end
 
   # -- Internal --
@@ -292,9 +291,7 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   defp resolve_session_id(_uuid, _tenant_id, _actor), do: nil
 
   defp broadcast_opened(agent_case, tenant_id) do
-    RunPubSub.broadcast_gate(
-      {:gate_requested, nil, %{tenant_id: tenant_id, agent_case_id: agent_case.id}}
-    )
+    RunPubSub.broadcast_gate_requested(nil, tenant_id, agent_case.id)
   end
 
   # -- Fingerprint canonicalization (DefinitionFingerprint discipline) --

@@ -159,9 +159,11 @@ no `{file, line}` structure, no anchor validation
 the findings artifact (`route_composer/emit/default_mapper.ex:133-134`). The gate/case
 layer has **no severity or payload typing at all** (`AgentCase.details` is an untyped
 map; gate DSL fields are operator-input types only). And the argus `:review` gate kind
-does not exist yet (`orchestration/gate/kinds.ex:15` — three kinds, all with live
-producers); next-ten **item 6** plans `review_stall` joining the same list, with an
-explicit co-design note (`docs/plans/unadopted-next-ten/README.md:406-409`).
+does not exist yet (`orchestration/gate/kinds.ex` — four kinds since 2026-07-06, all
+with live producers: next-ten #6 shipped `review_stall` into that list as planned,
+with the OQ-1 decision + adjacent vocabulary recorded in the `Gate.Kinds` moduledoc's
+co-design note; findings also gained a required short `title` feeding the C1-5
+`FindingKey` identity).
 
 **Why it matters**: OVERVIEW §5.3's editor payloads, FLOW §10's landing review gate,
 and item 6's `review_stall` disposition vocabulary all need a review-payload shape;
@@ -675,6 +677,15 @@ preview-worktree story.
   descriptive and put the release decision on the gate (a per-finding waive/ack at
   decision time). The second preserves C1-3's findings-win conservatism; the first is
   what orca ships. Decide at item 6 / argus §5 design.
+  **✅ DECIDED 2026-07-05 (next-ten #6, the second option):** severity stays
+  descriptive; the release decision lives on the `:review_stall` gate as
+  **per-finding waive records, all-or-reject** — approve requires a waive record
+  covering every surviving finding key (`{:error, :incomplete_waiver}` short of
+  that, never an auto-reject), and the records land on the case's `:approved`
+  timeline event (the bosun BO2-6 debt ledger — `Cases.waived_findings_ledger/2` +
+  the `jido.debt` Lua binding). C1-3's findings-win conservatism holds; the argus
+  `:review` kind inherits this decision when it lands (named in the
+  `Gate.Kinds` moduledoc vocabulary note).
 - **OQ-2 — Acceptance criteria as first-class premises?** `criterion_mappings` only
   works because tasks carry structured ACs. Next-ten item 9 (structured premises with
   `acceptance_criteria`) is the producer; OR1-1's criterion-mapping is its natural

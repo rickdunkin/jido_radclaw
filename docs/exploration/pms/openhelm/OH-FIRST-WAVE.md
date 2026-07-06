@@ -48,7 +48,14 @@ resource.
 - **next-ten #6 (honest terminal statuses)** ← OH1-3: the `partially_succeeded` /
   `permanent_failure` split with an enforced transition table
   (`db/queries/runs.ts:48-57`) is the field shape; `succeeded` accepts no further
-  transitions.
+  transitions. — **✅ landed 2026-07-06 inside #6**: `done_with_findings` is the
+  `partially_succeeded` analogue (completed-family, disposition-first), and the
+  enforced-transition-table shape shipped as an **exhaustive
+  authority-kind × terminal-status test matrix** in
+  `workflow_event_projection_test.exs` (every status-authority event from every
+  terminal status ⇒ `:illegal`, with per-kind authority drift-guards) — the
+  projection's `next_status/2` was already the enforcement point, so the rider
+  cost a describe block, not machinery.
 - **next-ten #9 (structured premises / acceptance criteria)** ← OH1-3: reserve
   `outcome_spec`-shaped fields (`endState` / `check` / `stopBound`) for cron/automation
   producers — OpenHelm makes the contract **required at creation** for agent-created

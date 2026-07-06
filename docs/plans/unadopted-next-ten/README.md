@@ -59,8 +59,8 @@ re-verify at build time).
 | 2 | A | Doom-loop guard — ✅ DONE 2026-07-03 | osa OS1-2 | S | One session (pure module + pipeline hook) |
 | 3 | A | Lua code-mode pair (`lua_docs`/`lua_query`) — ✅ DONE 2026-07-03 | amber AM-1 (+ jidoka V2-7 hardening) | S–M | Single PR (two tools + policy envelope) |
 | 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) — ✅ DONE 2026-07-03 | camus C1-3 | M | Single PR |
-| 5 | B | Deterministic verify authority + sealed heads | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
-| 6 | B | Honest terminal statuses + stall detection | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
+| 5 | B | Deterministic verify authority + sealed heads — ✅ DONE 2026-07-05 | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
+| 6 | B | Honest terminal statuses + stall detection — ✅ DONE 2026-07-06 | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
 | 7 | B | Executor seam (cross-vendor review first config) | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
 | 8 | C | Ambiguity clarify loop | ouroboros OB1-1 | S–M | Single PR |
 | 9 | C | Structured premises: acceptance criteria + lint | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
@@ -413,7 +413,42 @@ gate name must fail loud, never silently skip.
 cap the judge and **force a committed verdict at the cap** (their
 `run-verifier.ts:42-64`) — never a silent failure.
 
-## 6. Honest terminal statuses + stall detection — M (camus C1-4 + C1-5)
+## 6. Honest terminal statuses + stall detection — M (camus C1-4 + C1-5) — ✅ DONE 2026-07-06
+
+> **Done 2026-07-06** (C1-5 + C1-4 + the C3-2/OQ-1/BO2-6/OH1-3/TR1-2a→PD1-1
+> riders), with corrections to this entry's claims (mirrored into the source
+> entries): (a) step 1's "`seen_keys`/`prior_keys` are derivable from wave
+> artifacts already in the event log" is **FALSE** — findings persist as
+> encrypted `ComposerArtifact` rows the projection never decrypts, so the
+> cross-wave identity rides a welded `:finding_keys` marker (hex keys + enum
+> marks only — redaction posture) that the projection folds; (b) step 2's
+> "rides the T2-5 Spark DSL" understates the novelty — the composer parent is
+> a GenServer (`workflow_type: "composer"`, no Reactor checkpoint) and an
+> `:awaiting_approval` composer row is recovery's dangling-gate arm, so C1-4
+> shipped as a **parent-stays-`:running`, child-less park** (`ReviewStallGate`
+> is presentation-only) + kind-dispatched `Cases.decide`/`abandon` branches —
+> never `GateStep`/`GateResume`. Decisions as ratified: finding identity =
+> required short `title` + `FindingKey` (`{:v1, file, title}` through
+> `CanonicalHash.sha256_term/1`; title downcased, file NOT; un-keyable
+> findings excluded from stall detection); orca OQ-1 — severity stays
+> descriptive and the release decision is **per-finding waive records,
+> all-or-reject** on the gate (`{:error, :incomplete_waiver}` short of
+> complete coverage, never auto-reject), recorded on the case's `:approved`
+> timeline event — the BO2-6 debt ledger (`Cases.waived_findings_ledger/2` +
+> the `jido.debt` Lua binding). The gate fires only on a **green AND
+> certified** #5 verify (`verify_green_certified?/1`); verify-less/red routes
+> keep today's terminals (a red-verify stall lands `fix_failed` via the
+> `finish_fixish` fall-through). Headless CLI exit for `done_with_findings`
+> stays **0** (OQ-4 pinned), disposition marked in text + JSON. Scope grew by
+> operator decision: rider 6 executed exactly as its superseded note says
+> (PD1-1's fused stability contract + the PD2-1 slim `jido://bootstrap`
+> shipped here — `SurfaceVersion`, app-version `server_info`,
+> `jido://_meta/version`, the served-surface golden), and #4's flagged
+> `rerun_cap` persistence gap is closed (persisted beside `infra_cap`,
+> restart-proven). Detection deviations recorded in the camus entry:
+> whole-Hook-R suppression on a stop (not just the fixer weld); no named
+> `review_stalled?/1` (composed `fix_stop_lenses/1`); marks decode asymmetry
+> (emission boundary fails the whole block closed, projection drops entries).
 
 Today every composer disposition projects into the `:failed` family — a run
 whose fix loop capped out with a *green verify* is indistinguishable in kind

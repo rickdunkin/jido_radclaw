@@ -259,6 +259,87 @@ defmodule JidoClaw.WorkflowViewTest do
       assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
       refute Map.has_key?(snapshot, :composer)
     end
+
+    # Camus C1-4: the stall park is CHILD-LESS — nothing is :awaiting_approval;
+    # the parent-bound pending review_stall case is the only durable signal,
+    # and the gate block must reflect it (awaiting_approval flips true too).
+    test "a parent-bound pending review_stall case flips review_stall_pending + awaiting_approval",
+         %{tenant_a: tenant} do
+      parent = composer_run!(tenant, "stall-parked")
+      append!(parent, :route_composed, composed_payload(), tenant)
+      append!(parent, :wave_started, %{wave_index: 0, stages: ["planner"]}, tenant)
+      append!(parent, :wave_completed, %{wave_index: 0, stages: ["planner"]}, tenant)
+
+      {:ok, gate} =
+        WorkflowLog.case_open_runbound(
+          parent,
+          %{
+            workflow_run_id: parent.id,
+            step_name: "review-stall",
+            fingerprint: "stall-fp-1",
+            details: %{"finding_keys" => ["k1"], "resume_hint" => "waive or reject"}
+          },
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(parent.id, %{tenant_id: tenant})
+
+      composer = snapshot.composer
+      assert composer.review_stall_pending == true
+      assert composer.review_stall_case_id == gate.id
+      assert composer.resume_hint == "waive or reject"
+      # No child is parked, yet the run IS blocked on an operator decision.
+      assert composer.awaiting_approval == true
+      assert composer.awaiting_child_run_ids == []
+      # The parent stays :running across the stall park.
+      assert snapshot.status == :running
+    end
+
+    test "no pending review_stall case reads review_stall_pending: false",
+         %{tenant_a: tenant} do
+      run = composer_run!(tenant, "no-stall")
+      append!(run, :route_composed, composed_payload(), tenant)
+      append!(run, :wave_started, %{wave_index: 0, stages: ["planner"]}, tenant)
+      append!(run, :wave_completed, %{wave_index: 0, stages: ["planner"]}, tenant)
+
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+      assert snapshot.composer.review_stall_pending == false
+      refute Map.has_key?(snapshot.composer, :resume_hint)
+    end
+  end
+
+  describe "camus C1-4 disposition surfaces" do
+    test "a done_with_findings completion carries disposition + count; the rollup sums findings_deferred",
+         %{tenant_a: tenant} do
+      run = composer_run!(tenant, "deferred")
+
+      append!(
+        run,
+        :route_done_with_findings,
+        %{
+          result: %{
+            "disposition" => "done_with_findings",
+            "finding_keys" => ["k1", "k2"],
+            "findings_deferred_count" => 2
+          }
+        },
+        tenant
+      )
+
+      assert {:ok, view} = WorkflowView.list(%{tenant_id: tenant})
+      completed = Enum.find(view.recent_completions, &(&1.run_id == run.id))
+
+      assert completed.status == :completed
+      assert completed.disposition == "done_with_findings"
+      assert completed.findings_deferred_count == 2
+      assert view.findings_deferred == 2
+
+      # A plain run map keeps the keys, nil-valued (never plain-missing).
+      assert {:ok, snapshot} = WorkflowView.snapshot(run.id, %{tenant_id: tenant})
+      assert snapshot.disposition == "done_with_findings"
+      assert snapshot.findings_deferred_count == 2
+    end
   end
 
   describe "event_feed/3" do

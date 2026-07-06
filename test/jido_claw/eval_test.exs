@@ -30,6 +30,7 @@ defmodule JidoClaw.EvalTest do
   defp verdict_with_finding do
     Map.put(clean_verdict(), "findings", [
       %{
+        "title" => "possible off-by-one",
         "severity" => "warning",
         "confidence" => "unsure",
         "location" => "lib/bar.ex:7",

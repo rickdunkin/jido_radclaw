@@ -21,7 +21,7 @@ rider — see its Done-when).
 
 | # | Item | Source | Effort | Shape |
 | --- | --- | --- | --- | --- |
-| 1 | Served-surface stability contract (version fix + golden + `_meta` resource) | [PD1-1](FEATURES-WORTH-BORROWING.md#pd1-1-the-served-surface-stability-contract--advertised-versions-bump-rules-and-the-rot-lesson) | S | One PR: constant + resource + golden test (+ bootstrap rider) |
+| 1 | Served-surface stability contract (version fix + golden + `_meta` resource) — ✅ DONE 2026-07-06 (inside next-ten #6, bootstrap rider included) | [PD1-1](FEATURES-WORTH-BORROWING.md#pd1-1-the-served-surface-stability-contract--advertised-versions-bump-rules-and-the-rot-lesson) | S | One PR: constant + resource + golden test (+ bootstrap rider) |
 | 2 | Closed-at-the-boundary error-code contract | [PD1-2](FEATURES-WORTH-BORROWING.md#pd1-2-closed-at-the-boundary-error-codes--typed-self-correction-hints) | S | One registry module + subset test + hint fields |
 | 3 | `/setup` as a state-derived doctor | [PD3-1](FEATURES-WORTH-BORROWING.md#pd3-1-init-as-a-state-derived-doctor-not-a-wizard) | S | One command rework + `--check` mode |
 
@@ -31,7 +31,16 @@ rider already queued elsewhere, so landing it early keeps two queues honest.
 
 ---
 
-## 1. PD1-1 — Served-surface stability contract (S)
+## 1. PD1-1 — Served-surface stability contract (S) — ✅ DONE 2026-07-06
+
+> **Done 2026-07-06, inside next-ten #6** (the cross-queue supersession
+> executed as written). Sketch items (a)–(e) shipped whole, the PD2-1 slim
+> rider included; every Done-when clause holds (real versions on handshake +
+> `jido://_meta/version`; the golden fails un-bumped surface changes; Status
+> lines landed on PD1-1, PD2-1, traycer TR1-2(a) = PARTIAL, and the next-ten
+> #6 entry). One shape note: `app_version/0` single-sources on the
+> `SurfaceVersion` module (four consumers — `server_info`, `_meta/version`,
+> `bootstrap`, `project_info`) rather than a private helper per module.
 
 **What**: the pad-advertisement half fused with the traycer-enforcement half,
 one PR (the inventory's sketch, verbatim scope): (a) derive `serverInfo.version`

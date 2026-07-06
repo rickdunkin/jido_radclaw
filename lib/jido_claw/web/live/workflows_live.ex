@@ -223,7 +223,9 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 <.toggle_cell run_id={run.id} style="cursor: pointer; color: var(--muted);">
                   {run.workflow_type || "—"}
                 </.toggle_cell>
-                <.toggle_cell run_id={run.id}><.status_badge status={run.status} /></.toggle_cell>
+                <.toggle_cell run_id={run.id}>
+                  <.status_badge status={run.status} disposition={run_view.disposition} />
+                </.toggle_cell>
                 <.toggle_cell
                   run_id={run.id}
                   style="cursor: pointer; color: var(--muted); font-size: 0.875rem;"

@@ -51,6 +51,21 @@ Tiers are scoped to the argus program this dig feeds (argus itself is unbuilt, s
 
 **Recommendation**: BORROW-PATTERN — has a do-today slice (MCP) independent of argus.
 
+> **Status: 🟡 PARTIAL — slice (a) ✅ ADOPTED 2026-07-06** (inside next-ten
+> #6 via the pad PD1-1 fused stability-contract PR, exactly as the
+> cross-corpus note below prescribed): the MCP served surface — sorted tool
+> names, static resource URIs (now incl. `jido://_meta/version` +
+> `jido://bootstrap`), template URIs, and the `SurfaceVersion` string — is
+> pinned to a committed golden
+> (`test/fixtures/mcp_surface/served_surface.json`), set-compared per
+> enumeration surface with the ready-to-commit regen JSON printed on
+> mismatch (the reviewable record of the decision). The catalog stage-name
+> set rides the existing catalog drift guards rather than this golden.
+> Slices (b) (Absinthe SDL) and (c) (Channels payload registry) stay
+> argus-bound; the naming rule (d) lives as doctrine in the
+> `SurfaceVersion` moduledoc's bump rules (a rename/retype is a MAJOR bump —
+> never a silent sibling name).
+
 **Where in traycer**: `protocol/src/host/__tests__/released-surface-compat.test.ts:31-34` — CI asserts `Object.keys(hostRpcRegistry).sort()` equals a committed golden (`__fixtures__/released-method-names.ts`, auto-generated, 115 names, "do not edit by hand"); regeneration is a deliberate act whose diff "is the reviewable record of that decision" (`:26-29`). It does **not** freeze schemas — those evolve under the registry-load additivity validators (TR1-1); it freezes the *name set*, because their handshake fails closed on set inequality. Born from two real incidents (`:12-18`; `versioned-stream-rpc.test.ts:300-349`): `1.0.1-rc.1` added a *new method name* (`worktree.readScriptsAtRef`), which made every RPC against shipped `host-v1.0.0` peers fail; and `chat.subscribe` was major-bumped, breaking all shipped hosts — fixed as an additive 1.1 minor. The distilled rule (`registry.ts:295-306`): **new capabilities ride a new `{major,minor}` of an existing method, never a new method name** — the worktree scripts-preview shipped as `listByWorkspacePaths@1.1` for exactly this reason.
 
 **What**: The deployed contract surface is pinned by a trivial golden test; changing it is possible but *loud* — the diff of an auto-generated fixture is the review artifact. Schema evolution and surface evolution are governed by different mechanisms, each matched to what actually breaks peers.
@@ -177,6 +192,13 @@ A binding is `{entries: [...]}` — multi-repo workspaces are first-class, one e
 ### TR3-2. Plan supersession vocabulary
 
 **Recommendation**: BORROW-RUBRIC (one enum's worth). `planStatus: drafting | ready | awaiting_approval | approved | rejected | superseded` with `supersededByPlanId` — a regenerated plan is a *new* plan pointing at its predecessor, never a mutation (`content-blocks.ts:339-346,393`). Matches our event-sourced instinct; the borrowable bit for argus §5 is treating **superseded** as a first-class terminal distinct from rejected — an edited-then-re-edited revision chain and a regenerated plan both want it. Gap: our gate dispositions have no supersession concept (`Gate.Kinds` + `AgentCase.status`, verified 2026-07-03). Fold into the `:review` kind's status modeling.
+
+> **Status: 🟡 NAMED 2026-07-06** — next-ten #6 shipped `review_stall` into
+> the `Gate.Kinds` list, and its moduledoc now carries the
+> disposition-vocabulary note naming this entry's `superseded` terminal
+> (beside pad PD3-3's lineage badges and bosun BO2-6's retry vocabulary) so
+> the argus `:review` kind's status modeling inherits the reference. The
+> enum itself stays unbuilt until that kind lands.
 
 ### TR3-3. Multi-host client cache discipline
 

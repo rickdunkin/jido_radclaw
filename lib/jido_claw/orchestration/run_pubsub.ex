@@ -45,6 +45,22 @@ defmodule JidoClaw.Orchestration.RunPubSub do
   end
 
   @doc """
+  Broadcast a gate-opened notification on the gates topic — the ONE
+  construction site for the `{:gate_requested, run_id, info}` payload (shared
+  by `ReactorRunner`'s post-checkpoint announce, `ToolApprovals`' run-less
+  open, and the composer's review-stall raise, so the shape can never drift).
+  `run_id` is nil for a run-less tool-call case; the review-stall raiser
+  passes the composer PARENT's id.
+  """
+  @spec broadcast_gate_requested(term() | nil, String.t(), Ecto.UUID.t()) ::
+          :ok | {:error, term()}
+  def broadcast_gate_requested(run_id, tenant_id, agent_case_id) do
+    broadcast_gate(
+      {:gate_requested, run_id, %{tenant_id: tenant_id, agent_case_id: agent_case_id}}
+    )
+  end
+
+  @doc """
   Broadcast a gate resolution on the gates topic — the ONE construction site for
   the `{:gate_resolved, run_id, info}` payload (shared by `Cases`' operator
   decisions and `GateDisposition`'s deadline abandon, so the shape can never

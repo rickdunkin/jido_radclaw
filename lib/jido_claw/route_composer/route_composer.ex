@@ -148,8 +148,13 @@ defmodule JidoClaw.RouteComposer do
 
   require Logger
 
+  alias JidoClaw.Core.CanonicalHash
+  alias JidoClaw.Gates.ReviewStallGate
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cancellation
+  alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.Gate
   alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
@@ -167,6 +172,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.RouteComposer.CatalogValidator
   alias JidoClaw.RouteComposer.Commit
+  alias JidoClaw.RouteComposer.FindingKey
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Loop
   alias JidoClaw.RouteComposer.PremisesContext
@@ -176,7 +182,9 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.Stage
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.RouteComposer.WaveBuilder
+  alias JidoClaw.Security.Redaction.Transcript
   alias JidoClaw.Security.SensitiveScrub
+  alias JidoClaw.Telemetry
 
   # The supervised lifecycle's named singletons (Phase 2c), started in
   # `JidoClaw.Application`'s always-on core group.
@@ -231,6 +239,21 @@ defmodule JidoClaw.RouteComposer do
   # LLM / tool timeouts), added on top of the run deadline + one wave timeout to
   # size the marker-row TTL (C5). A fixed constant, NOT T_wave. ~10 min.
   @orphan_drain_ms 600_000
+
+  # Review-stall gate details bounds (camus C1-4): at most this many decrypted
+  # finding entries land on `AgentCase.details["findings"]` (the rest are an
+  # explicit `findings_overflow_count`), and every string field in an entry is
+  # truncated to the field cap AFTER redaction (redact-before-truncate — a
+  # truncated secret could bisect out of pattern reach).
+  @stall_findings_cap 20
+  @stall_field_cap 400
+
+  # The C3-2 operator hint rendered on the review-stall gate surfaces.
+  @stall_resume_hint "The deterministic verify is green and certified — only review " <>
+                       "findings remain. Waive every listed finding (key + severity + " <>
+                       "optional note) and approve to complete this run as " <>
+                       "done_with_findings (recorded as deferred debt); reject to fail " <>
+                       "it as fix_failed."
 
   # Rebuild-on-restart retry budget (Phase 2c): a transient parent-reload /
   # event-load error (DB blip) is retried a capped number of times with capped
@@ -297,6 +320,7 @@ defmodule JidoClaw.RouteComposer do
 
   @type terminal ::
           :converged
+          | :done_with_findings
           | :not_converged
           | :deadlock
           | :budget_exhausted
@@ -487,9 +511,11 @@ defmodule JidoClaw.RouteComposer do
     |> maybe_put("max_waves", Keyword.get(opts, :max_waves))
     |> maybe_put("wave_timeout_ms", Keyword.get(opts, :wave_timeout_ms))
     # Conditional-put (the present-nil rule): a restarted composer must keep the
-    # caller's `infra_cap: 1`, not silently reset to the default. (`rerun_cap`
-    # has the same pre-existing gap — out of scope, not swept in.)
+    # caller's `infra_cap: 1` / `rerun_cap: 1`, not silently reset to the
+    # default — item 6's stall/exhaustion trigger reads `rerun_cap`, so that
+    # boundary must be restart-stable too (the former gap, now closed).
     |> maybe_put("infra_cap", Keyword.get(opts, :infra_cap))
+    |> maybe_put("rerun_cap", Keyword.get(opts, :rerun_cap))
     # Item 5: the per-run verify-command override (scalar/argv/map — JSON-safe
     # by shape, validated at resolve time inside the verify stage).
     # Conditional-put so a restart keeps the caller's override.
@@ -862,23 +888,30 @@ defmodule JidoClaw.RouteComposer do
     |> Keyword.put(:claim_token, parent.claim_token)
     |> Keyword.put(:deadline_at_ms, config["deadline_at_ms"])
     |> put_start_catalog(config["catalog"])
-    |> Keyword.put(:premises, config["premises"] || opts[:premises] || %{})
-    |> Keyword.put(:max_waves, config["max_waves"] || opts[:max_waves] || @default_max_waves)
+    |> Keyword.put(:premises, config_then_opts(config, opts, :premises, %{}))
+    |> Keyword.put(:max_waves, config_then_opts(config, opts, :max_waves, @default_max_waves))
     |> Keyword.put(
       :wave_timeout_ms,
-      config["wave_timeout_ms"] || opts[:wave_timeout_ms] || @default_wave_timeout_ms
+      config_then_opts(config, opts, :wave_timeout_ms, @default_wave_timeout_ms)
     )
     |> Keyword.put(
       :infra_cap,
-      config["infra_cap"] || opts[:infra_cap] || @default_infra_retry_cap
+      config_then_opts(config, opts, :infra_cap, @default_infra_retry_cap)
     )
+    |> Keyword.put(:rerun_cap, config_then_opts(config, opts, :rerun_cap, @default_rerun_cap))
     # Item 5: config-then-opts (nil when neither — the resolve chain then walks
     # config.yaml → auto-detect). A nil put is harmless here: init's own
     # default for the key is nil.
-    |> Keyword.put(:verify_override, config["verify_override"] || opts[:verify_override])
+    |> Keyword.put(:verify_override, config_then_opts(config, opts, :verify_override, nil))
     |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
     |> Keyword.put(:context, start_context(config["context"], opts[:context]))
   end
+
+  # Config-then-opts-then-default: the persisted config key is the json_safe
+  # string form of the launch opt key, so one resolver serves every restored
+  # bound/override.
+  defp config_then_opts(config, opts, key, default),
+    do: config[Atom.to_string(key)] || opts[key] || default
 
   # Re-atomize the persisted (string-keyed) context subset back to the atom keys
   # `AgentRunner.resolve_scope/2` reads. Maps ONLY the fixed whitelist (no
@@ -1112,14 +1145,24 @@ defmodule JidoClaw.RouteComposer do
       # restart/re-park doesn't double-subscribe.
       parked: nil,
       gates_subscribed: false,
+      # Review-stall park (camus C1-4, next-ten #6): a SIBLING park slot —
+      # never the child-based `parked` above (all child-park consumers stay
+      # untouched). Set while the composer is parked on its own run-bound
+      # `:review_stall` case: `%{case_id, fingerprint, lenses, result,
+      # details}` (else nil), with its own deadline-timer pair below.
+      stall_parked: nil,
       # Sensitive-park deadline (O-M2): a `:sanitize_sensitive_context` run with a
       # durable `deadline_at_ms` arms a park-time timer so it can't outlive its
       # secret-retention bound while gate-parked (normal runs wait indefinitely).
       # `deadline_ref` is a distinct `make_ref/0` identity the handler match-guards
       # against a stale fire; `timer_ref` is the `Process.send_after` handle to
-      # cancel. Both nil unless armed.
+      # cancel. Both nil unless armed. The `stall_*` pair is the review-stall
+      # park's parallel timer identity (the two parks never coexist, but shared
+      # fields would let a stale fire from one dispose the other).
       deadline_ref: nil,
       timer_ref: nil,
+      stall_deadline_ref: nil,
+      stall_timer_ref: nil,
       # Rerun primitive (Phase 4e): `rerun_counts` is the per-stage invalidation
       # tally the rerun cap reads (rebuilt from the log by `ComposerProjection`),
       # `rerun_cap` the ceiling before `route_budget_exhausted`.
@@ -1132,6 +1175,11 @@ defmodule JidoClaw.RouteComposer do
       # keeps a caller's override.
       infra_counts: %{},
       infra_cap: Keyword.get(opts, :infra_cap, @default_infra_retry_cap),
+      # Camus C1-5 (next-ten #6): per-lens finding-identity rounds — `%{lens =>
+      # %{round, prior_keys, current_keys, seen_prior, current_marks,
+      # prior_marks}}`, rebuilt from the welded `finding_keys` markers by
+      # `ComposerProjection`. The stuck/oscillation stall predicates read it.
+      finding_rounds: %{},
       # Item 5 (deterministic verify authority): `tampered_stages` is the
       # per-stage tamper record (rebuilt from `stage_tampered` markers — the
       # tick terminalizes `:verify_tampered` ahead of every other branch);
@@ -1185,7 +1233,7 @@ defmodule JidoClaw.RouteComposer do
         finish_terminal(Loop.terminal(display, state), state)
 
       over_budget?(state) ->
-        finish(budget_terminal(state), state)
+        finish_budget(state)
 
       true ->
         # Peel a solo gate out of a mixed Kahn cohort (Phase 4b), then DEFER a
@@ -1221,7 +1269,33 @@ defmodule JidoClaw.RouteComposer do
     end
   end
 
+  # Item 6 (camus C1-5): an all-ran route with open findings whose fix loop
+  # was STOPPED — Hook R suppressed the fixer re-fire on a stall or an
+  # exhausted re-review budget, so the route ran dry — is a fix-loop terminal,
+  # not a mislabeled `:not_converged`. This reclassification is ALSO where
+  # verify-less routes early-halt on a stall (the stall stop needs no verify
+  # stage; only C1-4's done-with-findings gate does). The fixer-less
+  # `sketch-review` path never suppresses (no fixer on the live route, round
+  # never exceeds 1), so its report-only `:not_converged` survives unchanged.
+  defp finish_terminal(:not_converged, state) do
+    case fix_stop_lenses(state) do
+      [] -> finish(:not_converged, state)
+      lenses -> finish_fixish({:fix_failed, lenses}, state)
+    end
+  end
+
   defp finish_terminal(terminal, state), do: finish(terminal, state)
+
+  # The budget stop, with the `{:fix_failed, lenses}` product re-routed through
+  # the C1-4 gate check (`finish_fixish/2`) — the second of the two fix-loop
+  # stop producers (the first is the `:not_converged` reclassification above).
+  # Every other budget terminal keeps the direct `finish/2`.
+  defp finish_budget(state) do
+    case budget_terminal(state) do
+      {:fix_failed, _lenses} = terminal -> finish_fixish(terminal, state)
+      terminal -> finish(terminal, state)
+    end
+  end
 
   # The live `clean:<lens>` signals of verify-unit stages whose certified
   # integrity no longer holds (or was never certified — the defensive
@@ -1308,10 +1382,19 @@ defmodule JidoClaw.RouteComposer do
   # land before `GateResume` finishes, so a non-terminal child is observed to
   # terminal before folding, and the fold always reads a `:completed` child.
   def handle_info({:gate_resolved, run_id, _info}, state) do
-    if match?(%{child_run_id: ^run_id}, state.parked) do
-      resolve_parked_gate(state)
-    else
-      {:noreply, state}
+    cond do
+      match?(%{child_run_id: ^run_id}, state.parked) ->
+        resolve_parked_gate(state)
+
+      # Review-stall wake (camus C1-4): the stall case is run-bound to the
+      # PARENT (no child), so `Cases.decide/4`'s kind-dispatched branch
+      # broadcasts the parent's own id. Branch on the reloaded case's durable
+      # STATUS — never on `info.decision` (the child-park posture above).
+      is_map(state.stall_parked) and run_id == state.parent_run_id ->
+        resolve_review_stall(state)
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -1342,6 +1425,19 @@ defmodule JidoClaw.RouteComposer do
   def handle_info({:park_deadline, deadline_ref, child_run_id, case_id}, state) do
     if park_deadline_match?(state, deadline_ref, child_run_id) and past_deadline?(state) do
       dispose_park_deadline(state, child_run_id, case_id)
+    else
+      {:noreply, state}
+    end
+  end
+
+  # Sensitive-run review-stall park deadline (camus C1-4, the O-M2 posture on
+  # the SIBLING park): same identity + durable-deadline double-guard as the
+  # child-park handler above — the timer is only the wake, the durable
+  # `deadline_at_ms` is authoritative, and a stale fire (case resolved, later
+  # re-park, re-arm) is ignored.
+  def handle_info({:stall_park_deadline, deadline_ref, case_id}, state) do
+    if stall_deadline_match?(state, deadline_ref, case_id) and past_deadline?(state) do
+      dispose_stall_park_deadline(state, case_id)
     else
       {:noreply, state}
     end
@@ -1911,12 +2007,21 @@ defmodule JidoClaw.RouteComposer do
     tampered_stages = Enum.map(tampered_emissions, & &1.stage)
     next_fold = Fold.fold(state, verdict_emissions)
     deltas = wave_deltas(state, next_fold, dispatch, infra_stages ++ tampered_stages)
-    {rerun_markers, _rerun_only_apply} = decide_rerun(next_fold, verdict_emissions)
+
+    # Camus C1-5: the finding-identity markers fold FIRST into a temporary
+    # state so `decide_rerun`'s stall/no-re-review suppression reads THIS
+    # round's keys (round N vs N-1 is decided at the wave that produced round
+    # N). Only `next_fold` — never `keyed_fold` — receives the full marker
+    # batch post-commit, so the round shift is applied exactly once.
+    finding_markers = finding_keys_markers(verdict_emissions)
+    keyed_fold = ComposerProjection.apply_markers(next_fold, finding_markers)
+    {rerun_markers, _rerun_only_apply} = decide_rerun(keyed_fold, verdict_emissions)
 
     markers =
       infra_markers(infra_stages) ++
         tampered_markers(tampered_emissions) ++
         report_markers ++
+        finding_markers ++
         certified_markers(verdict_emissions, state) ++
         head_observation_markers(next_fold, state) ++
         rerun_markers
@@ -2052,6 +2157,123 @@ defmodule JidoClaw.RouteComposer do
   # index).
   defp infra_markers([]), do: []
   defp infra_markers(stages), do: [stage_infra: %{stages: stages}]
+
+  # ---------------------------------------------------------------------------
+  # Camus C1-5 — finding identity + stall detection (next-ten #6)
+  # ---------------------------------------------------------------------------
+
+  # One durable `finding_keys` marker per reviewer round, WELDED into the wave
+  # commit (the `verify_certified` precedent): findings persist as encrypted
+  # `ComposerArtifact` refs the projection never decrypts, so the cross-wave
+  # identity must ride its own bounded marker for the rebuild to fold. Keys +
+  # enum marks only — never titles/bodies (redaction posture). A clean round
+  # carries `keys: []` (the round must still advance for oscillation).
+  defp finding_keys_markers(verdict_emissions) do
+    # Wire-shaped finding-marks contract (mapper → emission → marker → fold);
+    # a struct would ripple the emission decode boundary.
+    # reach:disable-next-line fixed_shape_map
+    for %StageEmission{stage: stage, finding_marks: %{lens: lens, keys: keys, marks: marks}} <-
+          verdict_emissions do
+      {:finding_keys, %{stage: stage, lens: lens, keys: keys, marks: marks}}
+    end
+  end
+
+  # The fix-loop stop reasons, combined into ONE shared lens list so BOTH
+  # consumers — Hook R (skip the fixer re-fire) and the tick's
+  # `finish_terminal(:not_converged, …)` reclassification — read the same
+  # decision and can never disagree:
+  #
+  #   (a) re-review budget exhausted (`rereview_exhausted_lenses/1`) — a
+  #       forward-lens reviewer with `findings:<lens>` live and a fixer on the
+  #       live route whose `rerun_counts` is already AT the cap (`>=
+  #       rerun_cap`: the NEXT Hook-F invalidation would trip `count > cap`,
+  #       so firing the fixer would land a fix its flagged lens can never
+  #       re-review — the no-fix-without-re-review-budget rule). Distinct
+  #       from `exhausted_fix_lenses/1`'s `> cap` post-trip classifier.
+  #   (b) stalled (`stall_evidence/1`) — a stuck or oscillating finding key.
+  defp fix_stop_lenses(state) do
+    (rereview_exhausted_lenses(state) ++ stalled_lenses(state))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp suppress_fix_dispatch?(state), do: fix_stop_lenses(state) != []
+
+  defp rereview_exhausted_lenses(state) do
+    if fixer_on_live_route?(state) do
+      for {name, %Stage{lens: lens} = stage} <- state.catalog,
+          is_binary(lens),
+          not verify_authority_stage?(stage),
+          on_live_route?(stage, state.live),
+          MapSet.member?(state.live, "findings:#{lens}"),
+          Map.get(state.rerun_counts, name, 0) >= state.rerun_cap,
+          do: lens
+    else
+      []
+    end
+  end
+
+  defp stalled_lenses(state), do: Enum.map(stall_evidence(state), & &1.lens)
+
+  # Stuck/oscillation evidence over the folded `finding_rounds`, restricted to
+  # FORWARD review lenses (verify-authority stages excluded — the engine
+  # verify / reverse-verify families have their own budgets and terminals).
+  # Per lens with `round >= 2`:
+  #
+  #   stuck       = current ∩ prior                    (same key, consecutive)
+  #   oscillating = current ∩ (seen_prior \ prior)     (vanished ≥1 round, back)
+  #
+  # Un-keyable findings never enter `finding_rounds` (FindingKey's nil — the
+  # camus fail-safe), so they can never stall-match. `trend` is ADVISORY only.
+  defp stall_evidence(state) do
+    forward = forward_review_lenses(state.catalog)
+
+    for {lens, entry} <- Map.get(state, :finding_rounds, %{}),
+        MapSet.member?(forward, lens),
+        entry.round >= 2,
+        stuck = MapSet.intersection(entry.current_keys, entry.prior_keys),
+        oscillating =
+          MapSet.intersection(
+            entry.current_keys,
+            MapSet.difference(entry.seen_prior, entry.prior_keys)
+          ),
+        MapSet.size(stuck) > 0 or MapSet.size(oscillating) > 0 do
+      %{
+        lens: lens,
+        round: entry.round,
+        stuck: Enum.sort(stuck),
+        oscillating: Enum.sort(oscillating),
+        trend: key_trends(MapSet.union(stuck, oscillating), entry)
+      }
+    end
+  end
+
+  defp forward_review_lenses(catalog) do
+    for {_name, %Stage{lens: lens} = stage} <- catalog,
+        is_binary(lens),
+        not verify_authority_stage?(stage),
+        into: MapSet.new(),
+        do: lens
+  end
+
+  # `%{key => :falling | :steady}`: falling when the reviewer's confidence in
+  # the key dropped likely → unsure across the stall ("lean ACCEPT — probably
+  # stale"); steady otherwise ("lean REFINE"). Advisory only — never routing.
+  defp key_trends(keys, entry) do
+    Map.new(keys, fn key ->
+      prior = mark_confidence(entry.prior_marks, key)
+      current = mark_confidence(entry.current_marks, key)
+      trend = if prior == "likely" and current == "unsure", do: :falling, else: :steady
+      {key, trend}
+    end)
+  end
+
+  defp mark_confidence(marks, key) do
+    Enum.find_value(marks, fn
+      %{key: ^key, confidence: confidence} -> confidence
+      _mark -> nil
+    end)
+  end
 
   # ---------------------------------------------------------------------------
   # Item 5 — deterministic verify: tamper markers, certification, sealed heads
@@ -2260,7 +2482,7 @@ defmodule JidoClaw.RouteComposer do
   # (`Trace.list({:tenant, …})`) and tenant-scopes the durable sink rows.
   defp emit_infra_observability(stage_reasons, lane, state) do
     Enum.each(stage_reasons, fn {stage, reason} ->
-      JidoClaw.Telemetry.emit_composer_infra(lane, stage)
+      Telemetry.emit_composer_infra(lane, stage)
 
       JidoClaw.Trace.emit(
         :composer,
@@ -2405,12 +2627,15 @@ defmodule JidoClaw.RouteComposer do
     })
   end
 
+  # Canonical sha256 hex over a deterministic term (`CanonicalHash` — never
+  # `:erlang.phash2`, `feedback_canonical_fingerprint_term`); in 2c these are
+  # correlation / catalog-drift-detection metadata only.
   defp wave_started_payload(dispatch, display, state) do
     %{
       wave_index: state.wave_index,
       stages: dispatch,
-      route_hash: canonical_hash(Enum.sort(display.route)),
-      catalog_hash: canonical_hash(Enum.sort_by(state.catalog, &elem(&1, 0)))
+      route_hash: CanonicalHash.sha256_term(Enum.sort(display.route)),
+      catalog_hash: CanonicalHash.sha256_term(Enum.sort_by(state.catalog, &elem(&1, 0)))
     }
   end
 
@@ -2456,15 +2681,6 @@ defmodule JidoClaw.RouteComposer do
 
   defp bare_ref({:ref, ref}), do: ref
   defp bare_ref(other), do: other
-
-  # Canonical sha256 hex over a deterministic term — robust if the hashes later
-  # gain semantic weight; NOT `:erlang.phash2` (`feedback_canonical_fingerprint_term`).
-  # In 2c they are correlation / catalog-drift-detection metadata only.
-  defp canonical_hash(term) do
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary(term, [:deterministic]))
-    |> Base.encode16(case: :lower)
-  end
 
   # JSON-safe-ify a composer event payload: MapSet → sorted list, atom keys/values
   # → strings (e.g. `dropped`'s `:off_path`/`:unsatisfiable_input`), recursively.
@@ -2903,6 +3119,420 @@ defmodule JidoClaw.RouteComposer do
   end
 
   # ---------------------------------------------------------------------------
+  # Camus C1-4 — review-stall park / done_with_findings (next-ten #6)
+  #
+  # A fix-loop stop (`{:fix_failed, lenses}` from either producer: the
+  # `:not_converged` reclassification or the budget path) on a route whose
+  # deterministic verify is GREEN AND CERTIFIED is a human release decision,
+  # not a terminal: the composer parks CHILD-LESS on a run-bound
+  # `:review_stall` case (the parent stays `:running` — an
+  # `:awaiting_approval` composer row is recovery's dangling-gate arm) and
+  # terminalizes from the case's durable status: approved ⇒
+  # `:done_with_findings` (`:completed` + disposition), rejected ⇒
+  # `fix_failed` as today, abandoned ⇒ `:abandoned`. Recovery needs ZERO new
+  # code: a rebuild ends in a tick, re-derives the stop from folded state,
+  # and `enter_or_resolve_review_stall/2` resolves the case by fingerprint —
+  # the same function the live wake uses.
+  # ---------------------------------------------------------------------------
+
+  @stall_park_deadline_reason "sensitive-context review-stall deadline exceeded"
+
+  # The C1-4 gate check on a fix-loop stop. The stall observability fires here
+  # for BOTH exits — the stop itself is the event; like
+  # `emit_tampered_observability/2`, a recovery rebuild re-derives the stop and
+  # re-fires (accepted double-count on a crash, monotonic counters).
+  defp finish_fixish({:fix_failed, lenses} = terminal, state) do
+    emit_stall_observability(lenses, state)
+
+    if verify_green_certified?(state) do
+      enter_or_resolve_review_stall(lenses, state)
+    else
+      finish(terminal, state)
+    end
+  end
+
+  # The gate trigger: a verify stage exists, its `clean:<verify-lens>` is
+  # live, and every live green's certified integrity still holds
+  # (`stale_verified_cleans/1` fails closed on a missing/unverifiable
+  # certificate). Verify-less routes and red/uncertified verifies keep
+  # today's `fix_failed` — the C1-5 stall already early-halted them.
+  defp verify_green_certified?(state) do
+    has_verify_stage?(state.catalog) and live_verify_cleans(state) != [] and
+      stale_verified_cleans(state) == []
+  end
+
+  # Raise-or-resolve, idempotent by fingerprint: a pending case (raised before
+  # a crash) re-parks without a duplicate open (the
+  # `agent_cases_pending_fingerprint_index` fence); a decided-while-down case
+  # terminalizes NOW through the same resolver the live wake uses; none opens
+  # one. Any read/build error is the fail-safe `fix_failed` — the evidence is
+  # durable, and a park we cannot represent must not strand the run.
+  defp enter_or_resolve_review_stall(lenses, state) do
+    with {:ok, park} <- build_stall_park(lenses, state),
+         {:ok, cases} <- AgentCase.by_fingerprint(park.fingerprint, auth_opts(state)) do
+      case cases do
+        [%AgentCase{status: :pending} = agent_case | _rest] ->
+          {:noreply, stall_park(state, %{park | case_id: agent_case.id})}
+
+        [%AgentCase{} = agent_case | _rest] ->
+          resolve_review_stall(stall_park(state, %{park | case_id: agent_case.id}))
+
+        [] ->
+          raise_stall_case(park, lenses, state)
+      end
+    else
+      {:error, reason} ->
+        Logger.warning(
+          "[RouteComposer] review-stall raise failed for parent #{state.parent_run_id} " <>
+            "(#{inspect(reason)}); fail-safe fix_failed"
+        )
+
+        finish({:fix_failed, lenses}, state)
+    end
+  end
+
+  # Open the run-bound case (case + `:opened` timeline event in one
+  # transaction, NO run event — the parent must stay `:running`), then
+  # broadcast the gate-requested notification AFTER the `:ok` commit
+  # (durable-then-notify; a skipped notify never skips the write — recovery
+  # resolves by fingerprint) and park.
+  defp raise_stall_case(park, lenses, state) do
+    attrs = %{
+      workflow_run_id: state.parent_run_id,
+      step_name: "review-stall",
+      fingerprint: park.fingerprint,
+      details: park.details
+    }
+
+    case WorkflowLog.case_open_runbound(state.parent, attrs, auth_opts(state)) do
+      {:ok, agent_case} ->
+        RunPubSub.broadcast_gate_requested(state.parent_run_id, state.tenant, agent_case.id)
+        {:noreply, stall_park(state, %{park | case_id: agent_case.id})}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[RouteComposer] review-stall case open failed for parent #{state.parent_run_id} " <>
+            "(#{inspect(reason)}); fail-safe fix_failed"
+        )
+
+        finish({:fix_failed, lenses}, state)
+    end
+  end
+
+  # Enter the stall park: subscribe-once to the gates topic and arm the
+  # sensitive-run deadline (a parked composer is idle and never reaches
+  # `past_deadline?/1` on its own).
+  defp stall_park(state, park) do
+    state = ensure_gates_subscribed(state)
+    arm_stall_park_deadline(%{state | stall_parked: park})
+  end
+
+  # The stall wake decision: reload the case and branch on its DURABLE status
+  # (never the broadcast payload — the child-park posture). The composer is
+  # the single status-authority writer for the parent: approved ⇒
+  # `:done_with_findings`, rejected ⇒ `fix_failed`, abandoned ⇒ `:abandoned`,
+  # cancelled ⇒ defensively `fix_failed` (findings-win), pending/reload blip ⇒
+  # stay parked (the decision is durable; recovery re-resolves).
+  defp resolve_review_stall(%{stall_parked: park} = state) when is_map(park) do
+    case AgentCase.by_id(park.case_id, auth_opts(state)) do
+      {:ok, %AgentCase{status: :approved}} ->
+        finish({:done_with_findings, park.result}, clear_stall_park(state))
+
+      {:ok, %AgentCase{status: :rejected}} ->
+        finish({:fix_failed, park.lenses}, clear_stall_park(state))
+
+      {:ok, %AgentCase{status: :abandoned}} ->
+        finish({:abandoned, {:review_stall_abandoned, park.case_id}}, clear_stall_park(state))
+
+      {:ok, %AgentCase{status: :cancelled}} ->
+        finish({:fix_failed, park.lenses}, clear_stall_park(state))
+
+      {:ok, %AgentCase{status: :pending}} ->
+        {:noreply, state}
+
+      other ->
+        Logger.warning(
+          "[RouteComposer] review-stall case reload failed for parent " <>
+            "#{state.parent_run_id} (#{inspect(other)}); staying parked"
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  # Sensitive-run stall-park deadline (the O-M2 pair on the sibling park):
+  # armed only for a marked run with a durable `deadline_at_ms`; a normal run
+  # waits on its stall gate indefinitely by design.
+  defp arm_stall_park_deadline(
+         %{
+           sanitize_sensitive_context: true,
+           deadline_at_ms: deadline_at_ms,
+           stall_parked: %{case_id: case_id}
+         } = state
+       )
+       when is_integer(deadline_at_ms) do
+    deadline_ref = make_ref()
+    delay = max(deadline_at_ms - System.os_time(:millisecond), 0)
+    timer_ref = Process.send_after(self(), {:stall_park_deadline, deadline_ref, case_id}, delay)
+
+    %{state | stall_deadline_ref: deadline_ref, stall_timer_ref: timer_ref}
+  end
+
+  defp arm_stall_park_deadline(state), do: state
+
+  # The single stall-park exit point (every `stall_parked → nil` site).
+  defp clear_stall_park(state) do
+    cancel_park_timer(state.stall_timer_ref)
+    %{state | stall_parked: nil, stall_deadline_ref: nil, stall_timer_ref: nil}
+  end
+
+  defp stall_deadline_match?(
+         %{stall_parked: park, stall_deadline_ref: armed_ref},
+         fired_ref,
+         case_id
+       ) do
+    is_map(park) and not is_nil(armed_ref) and armed_ref == fired_ref and
+      park.case_id == case_id
+  end
+
+  # Deadline reached while stall-parked: abandon the pending case through the
+  # kind-dispatched `Cases.abandon/3` (flip + timeline event + broadcast, no
+  # `run_abandoned` — the parent is `:running` and the composer writes its own
+  # terminal). An already-decided case (`:not_pending`) is the stale-fire
+  # analogue of `{:decided, _}` — route through the normal resolver. Any other
+  # failure: the sensitive-retention TTL wins — the parent still terminalizes
+  # `:abandoned` (the `finish_past_deadline_child/3` posture; the pending case
+  # is left for the operator surfaces, which refuse decisions on a terminal
+  # parent's stall by the composer simply being gone).
+  defp dispose_stall_park_deadline(%{stall_parked: %{case_id: case_id}} = state, case_id) do
+    abandon_attrs = %{cancellation_reason: @stall_park_deadline_reason}
+
+    case Cases.abandon(case_id, abandon_attrs, auth_opts(state)) do
+      {:ok, _abandoned} ->
+        finish({:abandoned, {:review_stall_deadline, case_id}}, clear_stall_park(state))
+
+      {:error, :not_pending} ->
+        resolve_review_stall(state)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[RouteComposer] review-stall deadline abandon failed for case #{case_id} " <>
+            "(#{inspect(reason)}); parent still terminalizes"
+        )
+
+        finish({:abandoned, {:review_stall_deadline, case_id}}, clear_stall_park(state))
+    end
+  end
+
+  # Build everything the park needs: the decrypted + redacted + bounded
+  # finding entries (the gate's operator display), the finding keys (waive
+  # completeness), the fingerprint, the terminal result payload (keys + counts
+  # only — never bodies), and the case details. The raise-time decrypt here is
+  # a DOCUMENTED second controlled decrypt site beside `ArtifactContext`
+  # (see that moduledoc): values flow only into the redacted-bounded case
+  # details, never back into live execution.
+  defp build_stall_park(lenses, state) do
+    with {:ok, tagged} <- stall_findings(lenses, state) do
+      entries = redacted_finding_entries(tagged)
+
+      # Pinned coupling: the top-level waive-required list IS the per-finding
+      # keys (un-keyable findings are excluded from stall detection and are
+      # not waive-required, but stay listed for the operator).
+      keys =
+        entries
+        |> Enum.map(& &1["key"])
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      fingerprint =
+        CanonicalHash.sha256_term({:review_stall_v1, state.parent_run_id, keys})
+
+      evidence = stall_evidence(state)
+      stall = Enum.map(evidence, &Map.take(&1, [:lens, :round, :stuck, :oscillating]))
+      trend = merged_trend(evidence)
+      total = length(entries)
+      {shown, overflow} = Enum.split(entries, @stall_findings_cap)
+      severity_counts = Enum.frequencies_by(entries, &(&1["severity"] || "unknown"))
+      head = certified_head(state)
+
+      result = %{
+        disposition: "done_with_findings",
+        finding_keys: keys,
+        findings_deferred_count: total,
+        severity_counts: severity_counts,
+        lenses: lenses,
+        certified_head: head,
+        stall: stall,
+        trend: trend
+      }
+
+      details =
+        ReviewStallGate
+        |> Gate.Presentation.details()
+        |> Map.merge(%{
+          "lenses" => lenses,
+          "finding_keys" => keys,
+          "findings" => shown,
+          "findings_overflow_count" => length(overflow),
+          "findings_deferred_count" => total,
+          "severity_counts" => severity_counts,
+          "stall" => json_safe(stall),
+          "trend" => json_safe(trend),
+          "certified_head" => head,
+          "resume_hint" => @stall_resume_hint
+        })
+
+      {:ok,
+       %{
+         case_id: nil,
+         fingerprint: fingerprint,
+         lenses: lenses,
+         result: result,
+         details: details
+       }}
+    end
+  end
+
+  # The surviving findings of every stopped forward lens, as
+  # `{stage, lens, finding}` triples — resolved from the provenance store's
+  # `findings` artifact per reviewer stage (sorted for determinism). A stage
+  # with no stored findings contributes none; a resolve failure fails the
+  # whole build (the caller's fail-safe `fix_failed`).
+  defp stall_findings(lenses, state) do
+    for(
+      {name, %Stage{lens: lens} = stage} <- state.catalog,
+      is_binary(lens),
+      lens in lenses,
+      not verify_authority_stage?(stage),
+      do: {name, lens}
+    )
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, []}, fn {stage, lens}, {:ok, acc} ->
+      case stage_findings(stage, lens, state) do
+        {:ok, tagged} -> {:cont, {:ok, [tagged | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> flatten_stall_findings()
+  end
+
+  # Per-stage lists collected newest-first (prepend); reverse + flatten
+  # restores the sorted stage order.
+  defp flatten_stall_findings({:ok, collected}), do: {:ok, List.flatten(Enum.reverse(collected))}
+  defp flatten_stall_findings({:error, _reason} = error), do: error
+
+  defp stage_findings(stage, lens, state) do
+    case get_in(state.artifacts, ["findings", stage]) do
+      nil ->
+        {:ok, []}
+
+      {:ref, ref} ->
+        case ComposerArtifact.resolve_value(ref, auth_opts(state)) do
+          {:ok, findings} when is_list(findings) ->
+            {:ok, Enum.map(findings, &{stage, lens, &1})}
+
+          {:ok, _other} ->
+            {:ok, []}
+
+          {:error, reason} ->
+            {:error, {:findings_resolve_failed, stage, reason}}
+        end
+
+      inline when is_list(inline) ->
+        {:ok, Enum.map(inline, &{stage, lens, &1})}
+
+      _other ->
+        {:ok, []}
+    end
+  end
+
+  # Key FIRST (identity comes from the raw finding, matching the marks
+  # computed at emission), then redact the whole entry list, then bound each
+  # string field — redact-before-truncate, so truncation can never bisect a
+  # secret into a survivable fragment.
+  defp redacted_finding_entries(tagged) do
+    tagged
+    |> Enum.map(fn {stage, lens, finding} ->
+      %{
+        "key" => FindingKey.key(finding),
+        "stage" => stage,
+        "lens" => lens,
+        "title" => finding_field(finding, :title),
+        "severity" => finding_field(finding, :severity),
+        "confidence" => finding_field(finding, :confidence),
+        "location" => finding_field(finding, :location),
+        "description" => finding_field(finding, :description)
+      }
+    end)
+    |> Transcript.redact()
+    |> Enum.map(&bound_entry/1)
+  end
+
+  defp bound_entry(entry) do
+    Map.new(entry, fn
+      {key, value} when is_binary(value) -> {key, String.slice(value, 0, @stall_field_cap)}
+      pair -> pair
+    end)
+  end
+
+  # Atom key wins (live Zoi output), else the string key (envelope round-trip)
+  # — the FindingKey.field/2 tolerance.
+  defp finding_field(finding, key) when is_map(finding) do
+    case Map.get(finding, key) do
+      nil -> Map.get(finding, Atom.to_string(key))
+      value -> value
+    end
+  end
+
+  defp finding_field(_finding, _key), do: nil
+
+  # The per-key trend maps of every stall-evidence entry, merged — advisory
+  # only (`:falling` = confidence dropped likely → unsure across the stall).
+  defp merged_trend(evidence) do
+    Enum.reduce(evidence, %{}, fn entry, acc -> Map.merge(acc, entry.trend) end)
+  end
+
+  defp certified_head(%{verified_integrity: %{head: head}}) when is_binary(head), do: head
+  defp certified_head(_state), do: nil
+
+  # One counter per stop reason per lens (stall evidence ⇒ `:stuck` /
+  # `:oscillating`; a budget-only lens ⇒ `:exhausted`) + one bounded
+  # `:composer` Trace event — hex keys only, tenant-stamped (the
+  # `emit_infra_observability` posture).
+  defp emit_stall_observability(lenses, state) do
+    evidence = stall_evidence(state)
+    evidence_lenses = MapSet.new(evidence, & &1.lens)
+
+    Enum.each(evidence, fn entry ->
+      if entry.stuck != [], do: Telemetry.emit_composer_stall(:stuck, entry.lens)
+
+      if entry.oscillating != [],
+        do: Telemetry.emit_composer_stall(:oscillating, entry.lens)
+    end)
+
+    Enum.each(lenses, fn lens ->
+      if not MapSet.member?(evidence_lenses, lens),
+        do: Telemetry.emit_composer_stall(:exhausted, lens)
+    end)
+
+    JidoClaw.Trace.emit(
+      :composer,
+      %{
+        event: :fix_stopped,
+        run_id: state.parent_run_id,
+        parent_run_id: state.parent_run_id,
+        lenses: lenses,
+        stalled:
+          json_safe(Enum.map(evidence, &Map.take(&1, [:lens, :round, :stuck, :oscillating]))),
+        wave_index: state.wave_index,
+        tenant_id: state.tenant
+      },
+      %{count: 1}
+    )
+  end
+
+  # ---------------------------------------------------------------------------
   # Recovery: wake-after-gate (Phase 4d)
   # ---------------------------------------------------------------------------
 
@@ -3225,10 +3855,24 @@ defmodule JidoClaw.RouteComposer do
   # Hook R markers, in canonical fold order: `artifacts_invalidated` (clear the
   # prior round's feedback) → `artifacts_produced` (this round's flagged feed) →
   # `stages_invalidated` (re-fire the fixer iff it already ran).
+  #
+  # Item 6 (camus C1-4/C1-5): when a fix-loop stop reason holds — the flagged
+  # lens's re-review budget can't cover a re-fired fix, or the finding is
+  # stalled — the ENTIRE hook is suppressed: the fixer re-invalidation is
+  # never even recorded (no rerun count burned, no wasted fixer wave) and no
+  # feedback is swapped for a fixer that will never fire. The route then runs
+  # dry and `finish_terminal(:not_converged, …)` reclassifies through the
+  # SAME `fix_stop_lenses/1`, so the two sides cannot disagree. `state` here
+  # is the keyed fold (this wave's `finding_keys` markers already applied),
+  # so round N vs N-1 is decided at the wave that produced round N.
   defp hook_r_markers(state, emissions) do
-    flagged = open_fix_finding_stages(state, emissions)
-    {feedback_markers, _put} = review_feedback(state, flagged)
-    feedback_markers ++ fixer_reinvalidation_markers(state)
+    if suppress_fix_dispatch?(state) do
+      []
+    else
+      flagged = open_fix_finding_stages(state, emissions)
+      {feedback_markers, _put} = review_feedback(state, flagged)
+      feedback_markers ++ fixer_reinvalidation_markers(state)
+    end
   end
 
   defp fixer_reinvalidation_markers(state) do
@@ -3840,6 +4484,15 @@ defmodule JidoClaw.RouteComposer do
   defp terminal_event(:converged, _reason, summary),
     do: {:route_converged, %{result: terminal_summary_subset(summary)}}
 
+  # Camus C1-4: the approved review-stall release — a COMPLETED-family
+  # terminal whose `result` is the park's disposition payload (keys + counts +
+  # severity histogram + stall evidence, NEVER finding bodies — those live
+  # only on the gate case + the ledger; the pinned redaction posture). Kept
+  # OUT of `@scrubbable_error_kinds` like `:route_converged` (no `:error` key
+  # at all).
+  defp terminal_event(:done_with_findings, result, _summary),
+    do: {:route_done_with_findings, %{result: json_safe(result)}}
+
   defp terminal_event(kind, _reason, _summary) when kind in [:rejected, :abandoned],
     do: {route_cancelled_kind(kind), %{result: %{disposition: Atom.to_string(kind)}}}
 
@@ -3913,7 +4566,10 @@ defmodule JidoClaw.RouteComposer do
 
   defp maybe_teardown_forge_session(_not_ok, _terminal, _state), do: :ok
 
-  defp do_forge_teardown(:converged, key),
+  # `:done_with_findings` joins `:converged`'s complete_session — the run DID
+  # complete (green, certified verify; findings waived as deferred debt), so
+  # its Forge session lands `:completed`, not the throwaway `:cancelled`.
+  defp do_forge_teardown(kind, key) when kind in [:converged, :done_with_findings],
     do: best_effort(fn -> forge().complete_session(key) end)
 
   defp do_forge_teardown(_other, key), do: best_effort(fn -> forge().stop_session(key) end)
@@ -3955,6 +4611,9 @@ defmodule JidoClaw.RouteComposer do
 
   defp classify_terminal({:budget_exhausted, reason}), do: {:budget_exhausted, reason}
   defp classify_terminal({:failed, reason}), do: {:failed, reason}
+  # Camus C1-4: done-with-findings carries the park's result payload as its
+  # reason (disposition + keys + counts — `terminal_event/3` lifts it whole).
+  defp classify_terminal({:done_with_findings, result}), do: {:done_with_findings, result}
   # AR-8c: verify-failed carries the exhausted lenses as its reason.
   defp classify_terminal({:verify_failed, reason}), do: {:verify_failed, reason}
   # Item 5: tampered carries `{stage, bounded_detail, report_ref}`.

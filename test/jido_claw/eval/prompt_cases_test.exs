@@ -15,7 +15,7 @@ defmodule JidoClaw.Eval.PromptCasesTest do
 
   # One-liner copy of the reviewer finding-contract field list (prose half);
   # the schema seed file owns the shared canonical statement of the contract.
-  @reviewer_finding_fields ~w(severity confidence location description)
+  @reviewer_finding_fields ~w(title severity confidence location description)
 
   @rung_tokens ~w(correctness grounding simpler-first validation-rollback cost)
   @verdict_tokens ~w(adopt hybrid revise_first)

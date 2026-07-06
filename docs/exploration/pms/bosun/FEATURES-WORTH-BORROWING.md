@@ -597,6 +597,20 @@ tool-approval envelopes already read.
 **Recommendation**: BORROW-RUBRIC, rider on next-ten #6 (honest terminal statuses /
 `review_stall` disposition vocabulary — recorded there this dig).
 
+> **Status: ✅ ADOPTED 2026-07-06 — folded into next-ten #6** exactly as the
+> sketch prescribed: `done_with_findings` shipped (camus C1-4), and the debt
+> ledger is a **filter over gate decisions, no new table** —
+> `Cases.waived_findings_ledger/2` reads the approved `:review_stall` cases'
+> `:approved` timeline events (each carrying the per-finding waive records
+> with severity) into `%{cases, severity_counts, total_waived}`, exposed as
+> the `jido.debt` Lua binding. The retry vocabulary
+> (`reprompt_same | reprompt_new_session | new_attempt`) stays
+> reference-only, named in the `Gate.Kinds` moduledoc vocabulary note beside
+> traycer TR3-2's `superseded` and pad PD3-3's lineage badges; the
+> attempt-cap escalation shape informed the stall/exhaustion triggers
+> (re-review-budget exhaustion now parks at the gate on a certified green
+> verify rather than terminalizing).
+
 **Where in bosun**: `task/task-assessment.mjs:24-36` — the post-attempt decision enum,
 verbatim: `merge, reprompt_same, reprompt_new_session, new_attempt, wait,
 manual_review, close_and_replan, accept_with_debt, split_task, escalate_to_replan,

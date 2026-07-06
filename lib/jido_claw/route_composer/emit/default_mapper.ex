@@ -28,7 +28,10 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
        on the infra budget instead of folding it (never silently clean, never
        a burned rerun). A lens-nil stage whose output is reviewer-shaped
        (`overall ∈ {approve, request_changes, comment}`) stays a coherence
-       error.
+       error. Verdict emissions additionally carry the camus C1-5
+       `finding_marks` identity block (`FindingKey` hex keys + severity/
+       confidence marks; clean = the explicit empty block, infra = nil) —
+       the engine-side input to cross-wave stall detection.
     3. **Explicit signals** — the producer's declared emitted-signal list under
        `typed_output[:signals]` / `typed_output["signals"]` (the Phase-1 `:default`
        convention for non-reviewer producers).
@@ -50,6 +53,7 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   # The orchestration normalizer — NOT JidoClaw.Triage.Verdict (different
   # subsystem; never alias both in one module).
   alias JidoClaw.Orchestration.Verdict
+  alias JidoClaw.RouteComposer.FindingKey
   alias JidoClaw.RouteComposer.StageEmission
   alias JidoClaw.Workflows.StepResult
 
@@ -73,24 +77,32 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
     typed = result.typed_output || %{}
 
     with :ok <- refuse_blocked_producer(typed, meta),
-         {:ok, {verdict_signals, verdict_artifacts, outcome}} <- verdict(typed, meta) do
-      build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, outcome)
+         {:ok, {verdict_signals, verdict_artifacts, outcome, marks}} <- verdict(typed, meta) do
+      build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, outcome, marks)
     end
   end
 
   # An infra outcome suppresses explicit signals AND output artifacts — the
   # judge produced no usable verdict, so nothing it "said" may enter the fold;
-  # the emission carries only the outcome for the composer's infra lane.
-  defp build_emission(_result, _typed, meta, _verdict, {:infra, _reason} = outcome) do
+  # the emission carries only the outcome for the composer's infra lane
+  # (finding_marks stays nil too — an infra'd judge advances no finding round).
+  defp build_emission(_result, _typed, meta, _verdict, {:infra, _reason} = outcome, _marks) do
     {:ok, %StageEmission{stage: meta.name, signals: [], artifacts: %{}, outcome: outcome}}
   end
 
-  defp build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, :ok) do
+  defp build_emission(result, typed, meta, {verdict_signals, verdict_artifacts}, :ok, marks) do
     signals = Enum.uniq(verdict_signals ++ explicit_signals(typed))
 
     with :ok <- validate_publishes(signals, meta) do
       artifacts = Map.merge(verdict_artifacts, output_artifacts(result, typed, meta))
-      {:ok, %StageEmission{stage: meta.name, signals: signals, artifacts: artifacts}}
+
+      {:ok,
+       %StageEmission{
+         stage: meta.name,
+         signals: signals,
+         artifacts: artifacts,
+         finding_marks: marks
+       }}
     end
   end
 
@@ -126,27 +138,77 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   # through this mapper) becomes the emission's outcome with a bounded,
   # formatted reason; the old shape-dispatch let a drifted `overall` fall
   # through as a silent empty emission that never went clean.
+  #
+  # Camus C1-5: this is the raw-values boundary, so the cross-wave finding
+  # identity block is computed HERE — a findings verdict carries its keyable
+  # findings' `{key, severity, confidence}` marks (deduped by key; un-keyable
+  # findings are excluded, the camus fail-safe), and a CLEAN verdict carries
+  # the explicit empty block (`keys: []`) so a clean round still advances the
+  # lens's round for oscillation detection. Only keys + enums ride out —
+  # never titles/descriptions (redaction posture).
   defp verdict(typed, %{lens: lens}) when is_binary(lens) do
     case Verdict.normalize(:review, typed) do
       {:verdict, %Verdict{clean?: true}} ->
-        {:ok, {["clean:#{lens}"], %{}, :ok}}
+        # reach:disable-next-line fixed_shape_map
+        {:ok, {["clean:#{lens}"], %{}, :ok, %{lens: lens, keys: [], marks: []}}}
 
       {:verdict, %Verdict{findings: findings}} ->
-        {:ok, {["findings:#{lens}"], %{"findings" => coerce(findings)}, :ok}}
+        {:ok,
+         {["findings:#{lens}"], %{"findings" => coerce(findings)}, :ok,
+          finding_marks(lens, findings)}}
 
       {infra_or_inconclusive, reason}
       when infra_or_inconclusive in [:infra, :inconclusive] ->
-        {:ok, {[], %{}, {:infra, Verdict.format_reason(reason)}}}
+        {:ok, {[], %{}, {:infra, Verdict.format_reason(reason)}, nil}}
     end
   end
 
   # A lens-nil stage with a reviewer-shaped output is a coherence error; any
-  # other producer output passes through untouched (never the normalizer).
+  # other producer output passes through untouched (never the normalizer,
+  # never a finding-marks block).
   defp verdict(typed, %{lens: nil, name: name}) do
     if known(typed, :overall, "overall") in @verdicts do
       {:error, {:reviewer_without_lens, name}}
     else
-      {:ok, {[], %{}, :ok}}
+      {:ok, {[], %{}, :ok, nil}}
+    end
+  end
+
+  defp finding_marks(lens, findings) do
+    marks =
+      findings
+      |> Enum.map(&finding_mark/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq_by(& &1.key)
+
+    # Wire-shaped finding-marks contract (mapper → emission → marker → fold);
+    # a struct would ripple the emission decode boundary.
+    # reach:disable-next-line fixed_shape_map
+    %{lens: lens, keys: Enum.map(marks, & &1.key), marks: marks}
+  end
+
+  defp finding_mark(finding) do
+    case FindingKey.key(finding) do
+      nil ->
+        nil
+
+      key ->
+        # reach:disable-next-line fixed_shape_map
+        %{
+          key: key,
+          severity: string_field(finding, :severity),
+          confidence: string_field(finding, :confidence)
+        }
+    end
+  end
+
+  # A finding's enum field as a binary, tolerating atom/string keys; anything
+  # non-binary (absent, drifted) rides as nil — marks are advisory metadata.
+  # Findings here are always maps (`Verdict.Review` validated map-ness).
+  defp string_field(finding, key) do
+    case known(finding, key, Atom.to_string(key)) do
+      value when is_binary(value) -> value
+      _other -> nil
     end
   end
 

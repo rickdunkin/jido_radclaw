@@ -9,8 +9,11 @@ addressed before the change is safe to keep. `comment` for non-blocking
 observations worth surfacing. An `approve` with an empty `findings` list signals a
 clean lens.
 
-**Findings.** Each finding carries four fields:
+**Findings.** Each finding carries five fields:
 
+- `title` — a short, stable headline naming the defect (e.g. "missing nil
+  check before deref"). Keep it identical when re-reporting the same finding
+  in a later round — it is the finding's identity across reviews.
 - `severity` — `info`, `warning`, or `error`.
 - `confidence` — `likely` when the finding is evidence-based (code you read,
   official docs, behavior you observed); `unsure` when it rests on judgment, a

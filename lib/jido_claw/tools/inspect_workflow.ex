@@ -45,6 +45,11 @@ defmodule JidoClaw.Tools.InspectWorkflow do
       # `:failed` status must stay `{:ok, _}` — inspecting a failed run is a
       # normal, successful read — so the run's status rides a non-colliding key.
       run_status: [type: :string, required: false],
+      # Camus C1-4: the terminal disposition marker + deferred-findings count
+      # (never a `status` key — same Tools.Error promotion hazard as above).
+      # Optional: absent for runs without a disposition.
+      disposition: [type: :string, required: false],
+      findings_deferred_count: [type: :integer, required: false],
       duration_ms: [type: :integer, required: false]
     ],
     schema: [
@@ -91,6 +96,8 @@ defmodule JidoClaw.Tools.InspectWorkflow do
     |> put_present(:name, s.name)
     |> put_present(:workflow_type, s.workflow_type)
     |> put_present(:run_status, Projection.stringify_nilable(s.status))
+    |> put_present(:disposition, Map.get(s, :disposition))
+    |> put_present(:findings_deferred_count, Map.get(s, :findings_deferred_count))
     |> put_present(:duration_ms, s.duration_ms)
     |> put_present(:started_at, JsonSafe.encode(s.started_at))
     |> put_present(:completed_at, JsonSafe.encode(s.completed_at))

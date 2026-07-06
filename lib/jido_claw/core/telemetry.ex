@@ -78,6 +78,11 @@ defmodule JidoClaw.Telemetry do
       # The Trace `:composer` verify_result events carry the per-run detail.
       counter("jido_claw.verify.total", tags: [:result]),
 
+      # Composer fix-loop stall stops (next-ten item 6, camus C1-5) — one
+      # count per stopped lens; `kind` is :stuck/:oscillating/:rereview_exhausted.
+      # The Trace `:composer` events carry the per-run detail (hex keys only).
+      counter("jido_claw.composer.stall.total", tags: [:kind, :lens]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -243,6 +248,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :composer, :infra],
       %{total: 1},
       %{lane: lane, stage: stage}
+    )
+  end
+
+  @spec emit_composer_stall(atom(), String.t()) :: :ok
+  def emit_composer_stall(kind, lens) do
+    :telemetry.execute(
+      [:jido_claw, :composer, :stall],
+      %{total: 1},
+      %{kind: kind, lens: lens}
     )
   end
 

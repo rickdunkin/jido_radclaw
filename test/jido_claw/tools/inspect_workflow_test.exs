@@ -55,6 +55,39 @@ defmodule JidoClaw.Tools.InspectWorkflowTest do
       assert output.composer["reason"] == "not_yet_composed"
     end
 
+    test "a done_with_findings run carries disposition + findings_deferred_count (camus C1-4)",
+         ctx do
+      run = composer_run!(ctx)
+
+      append!(
+        run,
+        :route_done_with_findings,
+        %{
+          result: %{
+            "disposition" => "done_with_findings",
+            "finding_keys" => ["k1"],
+            "findings_deferred_count" => 1
+          }
+        },
+        ctx
+      )
+
+      assert {:ok, output} = InspectWorkflow.run(%{run_id: run.id}, tool_ctx(ctx))
+      assert output.run_status == "completed"
+      assert output.disposition == "done_with_findings"
+      assert output.findings_deferred_count == 1
+      # Never a `status` key — the Tools.Error promotion hazard.
+      refute Map.has_key?(output, :status)
+    end
+
+    test "a run without a disposition OMITS both C1-4 keys (no present-with-nil)", ctx do
+      run = composer_run!(ctx)
+
+      assert {:ok, output} = InspectWorkflow.run(%{run_id: run.id}, tool_ctx(ctx))
+      refute Map.has_key?(output, :disposition)
+      refute Map.has_key?(output, :findings_deferred_count)
+    end
+
     test "a non-composer run's output OMITS the composer key (no present-with-nil)", ctx do
       {:ok, run} =
         WorkflowRun.create(%{name: "plain", workflow_type: "reactor"},

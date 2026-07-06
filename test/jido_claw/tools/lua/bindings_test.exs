@@ -150,7 +150,7 @@ defmodule JidoClaw.Tools.Lua.BindingsTest do
       assert Enum.all?(Bindings.docs(), & &1["read_only"])
     end
 
-    test "docs/0 renders all six bindings with complete doc fields" do
+    test "docs/0 renders all seven bindings with complete doc fields" do
       docs = Bindings.docs()
 
       assert Enum.map(docs, & &1["name"]) == [
@@ -158,6 +158,7 @@ defmodule JidoClaw.Tools.Lua.BindingsTest do
                "jido.run",
                "jido.events",
                "jido.cases",
+               "jido.debt",
                "jido.solutions",
                "jido.output"
              ]

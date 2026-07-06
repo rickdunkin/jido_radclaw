@@ -36,6 +36,7 @@ defmodule JidoClaw.Tools.Lua.Bindings do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Solutions.Matcher
   alias JidoClaw.Tools.Lua.CallTrace
@@ -179,8 +180,9 @@ defmodule JidoClaw.Tools.Lua.Bindings do
           }
         ],
         returns:
-          "array of run maps: run_id, name, workflow_type, status, started_at, " <>
-            "completed_at, duration_ms, error, result_summary, deadline",
+          "array of run maps: run_id, name, workflow_type, status, disposition " <>
+            "(e.g. done_with_findings; nil for most runs), findings_deferred_count, " <>
+            "started_at, completed_at, duration_ms, error, result_summary, deadline",
         example: ~s|return jido.runs({status = "failed", limit = 5})|
       },
       %Entry{
@@ -190,8 +192,10 @@ defmodule JidoClaw.Tools.Lua.Bindings do
         callback_builder: callback_builder("jido.run", &run_read/2),
         signature: "jido.run(id) -> run | nil",
         description:
-          "Full snapshot of one workflow run — the jido.runs projection plus, for a " <>
-            "composer run, the composer summary (route/waves/held/dropped) and gate-block state.",
+          "Full snapshot of one workflow run — the jido.runs projection (incl. " <>
+            "disposition/findings_deferred_count) plus, for a composer run, the composer " <>
+            "summary (route/waves/held/dropped) and gate-block state (incl. " <>
+            "review_stall_pending).",
         params: [%{"name" => "id", "type" => "string", "doc" => "workflow run UUID"}],
         returns: "run map, or nil when the run does not exist in this tenant",
         example: ~s|local run = jido.run(id)\nreturn run and run.status|
@@ -245,6 +249,23 @@ defmodule JidoClaw.Tools.Lua.Bindings do
             "session_id, workflow_run_id, decision, decided_by_id, decided_at, " <>
             "decision_comment, inserted_at",
         example: ~s|return jido.cases({session = true})|
+      },
+      %Entry{
+        name: "jido.debt",
+        path: ["jido", "debt"],
+        read_only?: true,
+        callback_builder: callback_builder("jido.debt", &debt_read/2),
+        signature: "jido.debt() -> ledger",
+        description:
+          "The tenant's deferred-findings debt ledger (BO2-6): every approved " <>
+            "review-stall case with its waive records, plus the severity rollup. " <>
+            "Read-only — waiving happens on the operator surfaces (/gates, /approvals).",
+        params: [],
+        returns:
+          "ledger map: cases (case_id, workflow_run_id, step_name, decided_at, " <>
+            "decided_by_id, decision_comment, waive_records [key/severity/note]), " <>
+            "severity_counts, total_waived",
+        example: ~s|return jido.debt().severity_counts|
       },
       %Entry{
         name: "jido.solutions",
@@ -545,6 +566,21 @@ defmodule JidoClaw.Tools.Lua.Bindings do
       "inserted_at" => case_record.inserted_at
     })
   end
+
+  # ── jido.debt ───────────────────────────────────────────────────────────
+
+  # The BO2-6 deferred-findings ledger, read through the single
+  # `Cases.waived_findings_ledger/2` seam (approved review-stall cases + the
+  # waive records on their :approved timeline events). Read-only like every
+  # binding; waiving itself stays on the operator surfaces.
+  defp debt_read([], scope) do
+    case Cases.waived_findings_ledger(scope.tenant_id, scope.actor) do
+      {:ok, ledger} -> {:ok, ledger}
+      {:error, _reason} -> {:error, "jido.debt: ledger read failed"}
+    end
+  end
+
+  defp debt_read(_args, _scope), do: {:error, "jido.debt takes no arguments"}
 
   # ── jido.solutions ──────────────────────────────────────────────────────
 

@@ -11,7 +11,11 @@ defmodule JidoClaw.MCPServer do
 
   use Jido.MCP.Server,
     name: "jido_claw",
-    version: "0.2.0",
+    # Inert (PD1-1): the hand-defined `server_info/0` below is the wire
+    # identity. Anubis skips its generated server_info when the module defines
+    # its own, but `maybe_define_server_info`'s `is_nil(version)` arm would
+    # force-generate a duplicate — so this literal must stay a non-nil binary.
+    version: "0",
     publish: %{
       tools: [
         JidoClaw.Tools.ReadFile,
@@ -67,7 +71,11 @@ defmodule JidoClaw.MCPServer do
       resources: [
         # The route-composer catalog at jido://workflows/catalog (AR-2 Phase 5,
         # §10.2): a client can discover the composable surface, not just trigger it.
-        JidoClaw.MCPServer.Resources.WorkflowCatalog
+        JidoClaw.MCPServer.Resources.WorkflowCatalog,
+        # Served-surface version facts at jido://_meta/version (PD1-1).
+        JidoClaw.MCPServer.Resources.MetaVersion,
+        # One-read client orientation at jido://bootstrap (PD2-1, slim).
+        JidoClaw.MCPServer.Resources.Bootstrap
       ]
     }
 
@@ -81,6 +89,17 @@ defmodule JidoClaw.MCPServer do
   # unaffected.
   component(JidoClaw.MCPServer.Resources.WorkflowStage)
 
+  alias JidoClaw.MCPServer.SurfaceVersion
+
+  # PD1-1: the wire identity carries the APP version via `Application.spec/2`
+  # — never a hand-rolled literal (the old "0.2.0" had drifted three minor
+  # versions stale). Anubis's `maybe_define_server_info` sees this definition
+  # (`Module.defines?`) and skips its generated one, and `__after_compile__`
+  # skips `validate_server_info!` too.
+  @impl Anubis.Server
+  @spec server_info() :: %{String.t() => String.t()}
+  def server_info, do: %{"name" => "jido_claw", "version" => SurfaceVersion.app_version()}
+
   @doc """
   The MCP-published tool modules, derived from the generated `__publish__/0`
   so the tool-wrapper marker sweeps cover every publication surface (not just
@@ -89,4 +108,16 @@ defmodule JidoClaw.MCPServer do
   """
   @spec published_tool_modules() :: [module()]
   def published_tool_modules, do: __publish__().tools
+
+  @doc """
+  The published tool names, sorted — the served-surface enumeration the
+  golden fixture pins (PD1-1) and the tool facts `jido://_meta/version` and
+  `jido://bootstrap` serve.
+  """
+  @spec served_tool_names() :: [String.t()]
+  def served_tool_names do
+    __publish__().tools
+    |> Enum.map(& &1.name())
+    |> Enum.sort()
+  end
 end

@@ -158,10 +158,50 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   end
 
   @doc """
+  Open a **run-bound, child-less** review-stall case for `run` in one
+  transaction (camus C1-4): create the `AgentCase` via `:open_review_stall`
+  (pending, fingerprinted) and append the case's `:opened` timeline event.
+
+  Deliberately the `gate_open/3` shape WITHOUT the `approval_requested`
+  append: the composer parent must stay `:running` during the stall park —
+  `WorkflowRecovery.classify/1` rebuilds only `:running` composers, and an
+  `:awaiting_approval` composer row falls through to the dangling-gate arm
+  and gets failed-with-audit on boot. The pending case row is the durable
+  park representation; no run event, no status flip, no checkpoint.
+
+  Like `gate_open/3`, this does **not** broadcast — the raiser announces the
+  gate (`RunPubSub.broadcast_gate_requested/3`) only after the `:ok` commit
+  (durable-then-notify; a skipped notify never skips the write — recovery
+  re-derives the stall and resolves the case by fingerprint).
+  """
+  @spec case_open_runbound(WorkflowRun.t(), map(), keyword()) ::
+          {:ok, AgentCase.t()} | {:error, term()}
+  def case_open_runbound(run, agent_case_attrs, opts \\ []) do
+    tenant = tenant(run, opts)
+    actor = actor(run, opts)
+
+    Ash.transact([AgentCase, AgentCaseEvent], fn ->
+      with {:ok, gate} <-
+             AgentCase.open_review_stall(agent_case_attrs, tenant: tenant, actor: actor),
+           {:ok, _case_event} <-
+             case_event(
+               gate,
+               :opened,
+               %{step_name: gate.step_name, kind: gate.kind, workflow_run_id: run.id},
+               tenant,
+               actor
+             ) do
+        gate
+      end
+    end)
+  end
+
+  @doc """
   Append one immutable `AgentCaseEvent` to `gate`'s timeline. Must be called
   inside the same transaction as the case-status flip it records — every
   caller is one of the single-transaction choke-points (`gate_open/3`,
-  `Cases` decision/abandon commits, `terminate_cancelling_cases/5`).
+  `case_open_runbound/3`, `Cases` decision/abandon commits,
+  `terminate_cancelling_cases/5`).
   """
   @spec case_event(AgentCase.t(), atom(), map(), String.t(), term()) ::
           {:ok, AgentCaseEvent.t()} | {:error, term()}

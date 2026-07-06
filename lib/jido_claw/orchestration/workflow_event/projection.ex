@@ -46,9 +46,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # `next_status`/`status_attrs`, and membership there would shadow the
   # explicit per-kind clauses (which lift BOTH `error` and the
   # `result.disposition`, a `:failed`-with-result combination neither family
-  # does).
+  # does). Camus C1-4's `:route_done_with_findings` is the COMPLETED twin of
+  # that note: the first completed-family kind with a disposition, kept out of
+  # both failure families for the same shadowing reason.
   @route_terminal_kinds [
                           :route_converged,
+                          :route_done_with_findings,
                           :route_verify_failed,
                           :route_fix_failed,
                           :route_review_infra_failed,
@@ -143,6 +146,12 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # `:cancelled`). A terminal → terminal append still falls to `:illegal`.
   def next_status(:running, :route_converged), do: {:ok, :completed}
 
+  # Camus C1-4: an approved review-stall release completes the run — from
+  # `:running` ONLY, like `route_converged` (the composer parent stays
+  # `:running` for the whole route INCLUDING the stall park; there is no
+  # `:awaiting_approval` leg on this axis).
+  def next_status(:running, :route_done_with_findings), do: {:ok, :completed}
+
   # AR-8c: a verify-failed machine change projects onto `:failed` (like the other
   # failure kinds), from any non-terminal. An explicit clause — `:route_verify_failed`
   # is intentionally absent from `@route_failed_kinds` (which would shadow the
@@ -230,6 +239,13 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # drops its payload) so the disposition the gate records (`result.disposition`)
   # survives onto the run column. All clear the checkpoint like every terminal.
   def status_attrs(:route_converged, payload, occurred_at),
+    do: terminal_lifting_result(:completed, payload, occurred_at)
+
+  # Camus C1-4 — the first COMPLETED-with-disposition combination: lift
+  # `result` (disposition `"done_with_findings"` + keys/counts) onto the run
+  # column, so the operator query is
+  # `status == :completed AND result.disposition == "done_with_findings"`.
+  def status_attrs(:route_done_with_findings, payload, occurred_at),
     do: terminal_lifting_result(:completed, payload, occurred_at)
 
   # AR-8c / AR-4 — the novel `:failed`-WITH-disposition combination: lift BOTH

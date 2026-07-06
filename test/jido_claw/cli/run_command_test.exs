@@ -258,20 +258,17 @@ defmodule JidoClaw.CLI.RunCommandTest do
   end
 
   describe "composer route" do
-    defp stamp_when_launched(status) do
+    defp stamp_when_launched(status, extra_attrs \\ %{}) do
       actor = Actor.system("default")
 
       Task.async(fn ->
         run = await_composer_parent(actor, 100)
 
+        attrs = Map.merge(%{status: status, completed_at: DateTime.utc_now()}, extra_attrs)
+
         {:ok, _} =
           run
-          |> Ash.Changeset.for_update(
-            :set_status,
-            %{status: status, completed_at: DateTime.utc_now()},
-            tenant: "default",
-            authorize?: false
-          )
+          |> Ash.Changeset.for_update(:set_status, attrs, tenant: "default", authorize?: false)
           |> Ash.update()
 
         run.id
@@ -305,6 +302,48 @@ defmodule JidoClaw.CLI.RunCommandTest do
       assert decoded["route"] == "composer"
       assert decoded["outcome"] == "launched_completed"
       assert decoded["run_id"] == stamped_run_id
+    end
+
+    test "a done_with_findings completion STILL exits 0 but the envelope is marked (camus C1-4)",
+         ctx do
+      Application.put_env(:jido_claw, :triage_canned_verdict, :code)
+
+      watcher =
+        stamp_when_launched(:completed, %{
+          result: %{
+            "disposition" => "done_with_findings",
+            "finding_keys" => ["k1", "k2"],
+            "findings_deferred_count" => 2
+          }
+        })
+
+      assert {0, output} = main(["refactor it", ctx.tmp, "--timeout", "30", "--format", "json"])
+
+      _ = Task.await(watcher, 10_000)
+      decoded = decode!(output)
+      # The pinned OQ-4 contract: done_with_findings stays exit 0 —
+      # never plain green in the OUTPUT, though.
+      assert decoded["exit_code"] == 0
+      assert decoded["outcome"] == "launched_completed"
+      assert decoded["disposition"] == "done_with_findings"
+      assert decoded["findings_deferred_count"] == 2
+    end
+
+    test "a done_with_findings completion marks the TEXT run line too", ctx do
+      Application.put_env(:jido_claw, :triage_canned_verdict, :code)
+
+      watcher =
+        stamp_when_launched(:completed, %{
+          result: %{
+            "disposition" => "done_with_findings",
+            "findings_deferred_count" => 1
+          }
+        })
+
+      assert {0, text} = main(["refactor it", ctx.tmp, "--timeout", "30"])
+
+      _ = Task.await(watcher, 10_000)
+      assert text =~ "done_with_findings (1 finding(s) deferred)"
     end
 
     test "a launched run that fails exits 1", ctx do

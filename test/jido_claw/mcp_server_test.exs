@@ -46,9 +46,9 @@ defmodule JidoClaw.MCPServerTest do
       assert info["name"] == "jido_claw"
     end
 
-    test "server_info includes a version string" do
+    test "server_info version IS the app version (PD1-1 — never a stale hand-rolled literal)" do
       info = MCPServer.server_info()
-      assert is_binary(info["version"])
+      assert info["version"] == to_string(Application.spec(:jido_claw, :vsn))
       assert info["version"] != ""
     end
 
@@ -138,6 +138,13 @@ defmodule JidoClaw.MCPServerTest do
 
     test "publishes the route-composer catalog resource" do
       assert JidoClaw.MCPServer.Resources.WorkflowCatalog in MCPServer.__publish__().resources
+    end
+
+    test "publishes the served-surface meta pair (PD1-1 + PD2-1)" do
+      resources = MCPServer.__publish__().resources
+
+      assert JidoClaw.MCPServer.Resources.MetaVersion in resources
+      assert JidoClaw.MCPServer.Resources.Bootstrap in resources
     end
   end
 end

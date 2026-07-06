@@ -274,6 +274,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "action_needed" => "none",
                  "findings" => [
                    %{
+                     "title" => "helper worth extracting",
                      "severity" => "info",
                      "confidence" => "likely",
                      "location" => "lib/foo.ex:12",
@@ -286,6 +287,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       assert parsed.action_needed == "none"
       [finding] = parsed.findings
       # severity/confidence are STRING enums (clean artifact round-trip), not atoms.
+      assert finding.title == "helper worth extracting"
       assert finding.severity == "info"
       assert finding.confidence == "likely"
       assert finding.location == "lib/foo.ex:12"
@@ -299,7 +301,28 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "action_needed" => "fix the nil case",
                  "findings" => [
                    %{
+                     "title" => "nil deref",
                      "severity" => "error",
+                     "location" => "lib/foo.ex:3",
+                     "description" => "nil deref"
+                   }
+                 ]
+               })
+    end
+
+    # Camus C1-5: `title` is the finding's cross-wave identity headline
+    # (FindingKey) — required at the schema layer like its four siblings;
+    # `on_validation_error: :repair` recovers a transient runtime omission.
+    test "rejects a finding missing the now-required title" do
+      assert {:error, _} =
+               Output.parse(output_for(Reviewer), %{
+                 "overall" => "request_changes",
+                 "summary" => "bug",
+                 "action_needed" => "fix the nil case",
+                 "findings" => [
+                   %{
+                     "severity" => "error",
+                     "confidence" => "likely",
                      "location" => "lib/foo.ex:3",
                      "description" => "nil deref"
                    }
@@ -334,6 +357,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "action_needed" => "Guard the window bound against the off-by-one",
                  "findings" => [
                    %{
+                     "title" => "window off-by-one",
                      "severity" => "error",
                      "confidence" => "likely",
                      "location" => "main.exs:8",
@@ -433,6 +457,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
                  "action_needed" => "Re-run the reload; the daemon is on the old config",
                  "findings" => [
                    %{
+                     "title" => "stale config still serving",
                      "severity" => "error",
                      "confidence" => "likely",
                      "location" => "/etc/nginx/nginx.conf",

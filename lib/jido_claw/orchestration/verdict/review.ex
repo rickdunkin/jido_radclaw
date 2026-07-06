@@ -10,8 +10,10 @@ defmodule JidoClaw.Orchestration.Verdict.Review do
   **Field coverage is routing-critical only** — `overall`, findings list-ness,
   finding map-ness, and `severity` — because those alone decide the
   clean/findings/infra lanes. Non-routing fields (`summary`, `action_needed`,
-  per-finding `confidence`/`location`/`description`) pass through unvalidated
-  as payload. This is camus-faithful (adapter.py validates the verdict enum,
+  per-finding `title`/`confidence`/`location`/`description`) pass through
+  unvalidated as payload — `title` (camus C1-5) included: a finding with a
+  missing/blank title is un-keyable for stall detection, never an infra exit.
+  This is camus-faithful (adapter.py validates the verdict enum,
   findings list-ness, finding object-ness, and priority; `title`/`body`/
   `confidence_score` pass through), avoids infra-retrying a verdict whose only
   flaw is a missing prose field (the item-7 deposit path would suffer most),

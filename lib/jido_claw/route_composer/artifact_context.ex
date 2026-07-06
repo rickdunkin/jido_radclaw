@@ -13,7 +13,12 @@ defmodule JidoClaw.RouteComposer.ArtifactContext do
   (`JidoClaw.RouteComposer.Fold` tags every emission artifact value, P2),
   **resolved + decrypted** via `ComposerArtifact.resolve_value/2` (tenant/actor
   threaded from the composer state) before formatting — the **only** place a
-  decrypted artifact value re-enters live execution. The tag (not an `art_<hex>`
+  decrypted artifact value re-enters live execution. (One documented sibling
+  decrypt site exists outside execution: the composer's review-stall raise
+  (camus C1-4, `RouteComposer.build_stall_park/2`) resolves the surviving
+  `findings` artifacts to build the gate case's redacted, bounded operator
+  details — those values flow only into `AgentCase.details`, never back into
+  a wave.) The tag (not an `art_<hex>`
   regex heuristic) is what distinguishes a ref from an inline value, so a seed
   that merely looks like a ref is never misread.
 

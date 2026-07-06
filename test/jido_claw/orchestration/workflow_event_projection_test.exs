@@ -89,6 +89,60 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
         assert Projection.next_status(status, :route_review_infra_failed) == :illegal
       end
     end
+
+    test "camus C1-4 route_done_with_findings: :running -> :completed ONLY (the route_converged shape)" do
+      assert Projection.status_authority?(:route_done_with_findings)
+      assert Projection.next_status(:running, :route_done_with_findings) == {:ok, :completed}
+
+      # The composer parent stays :running for the whole route INCLUDING the
+      # stall park — there is no :awaiting_approval leg on this axis, and
+      # :pending never composed anything worth releasing.
+      for status <- [:pending, :awaiting_approval, :completed, :failed, :cancelled, :abandoned] do
+        assert Projection.next_status(status, :route_done_with_findings) == :illegal
+      end
+    end
+  end
+
+  describe "OH1-3: terminals are absorbing (exhaustive transition table)" do
+    # Every status-authority kind, enumerated here as the test's own drift
+    # guard: each entry is asserted status-authority (an entry that stops
+    # being one fails loudly), and `Projection.status_authority?/1` over this
+    # grid is what the append path consults — so a NEW authority kind that
+    # forgets its next_status clause still can never revive a terminal run
+    # (the catch-all is :illegal), and this table documents that invariant.
+    @authority_kinds [
+      :run_started,
+      :run_resumed,
+      :run_completed,
+      :run_failed,
+      :run_cancelled,
+      :run_abandoned,
+      :approval_requested,
+      :approval_resolved,
+      :route_converged,
+      :route_done_with_findings,
+      :route_not_converged,
+      :route_deadlocked,
+      :route_budget_exhausted,
+      :route_failed,
+      :route_verify_failed,
+      :route_fix_failed,
+      :route_review_infra_failed,
+      :route_verify_tampered,
+      :route_rejected,
+      :route_abandoned
+    ]
+
+    test "every terminal status × every status-authority kind is :illegal" do
+      for kind <- @authority_kinds do
+        assert Projection.status_authority?(kind), "#{kind} must be status-authority"
+      end
+
+      for terminal <- Projection.terminal_statuses(), kind <- @authority_kinds do
+        assert Projection.next_status(terminal, kind) == :illegal,
+               "terminal #{terminal} must absorb #{kind}"
+      end
+    end
   end
 
   describe "status_attrs/3 (pure)" do
@@ -141,6 +195,24 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                Projection.status_attrs(:route_converged, %{"result" => %{"ok" => true}}, at)
 
       assert %{error: "boom"} = Projection.status_attrs(:route_failed, %{"error" => "boom"}, at)
+    end
+
+    test "camus C1-4 route_done_with_findings lifts result — the first completed-with-disposition",
+         %{occurred_at: at} do
+      result = %{
+        "disposition" => "done_with_findings",
+        "finding_keys" => ["abc"],
+        "findings_deferred_count" => 1
+      }
+
+      attrs = Projection.status_attrs(:route_done_with_findings, %{result: result}, at)
+
+      assert attrs == %{
+               status: :completed,
+               completed_at: at,
+               result: result,
+               clear_checkpoint: true
+             }
     end
 
     test "AR-8c route_verify_failed lifts BOTH error and result (atom-keyed)", %{occurred_at: at} do

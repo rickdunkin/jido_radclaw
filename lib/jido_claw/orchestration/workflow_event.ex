@@ -140,6 +140,17 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # `closed_wave_index` closes a failed (never-completed) wave so the
           # retry gets a fresh launch key. NOT status-authority.
           :stage_infra,
+          # Camus C1-5 (next-ten #6): one reviewer round's cross-wave finding
+          # identity — payload `%{stage, lens, keys, marks}` where `keys` are
+          # `FindingKey` hex digests and each mark is `%{key, severity,
+          # confidence}` (keys + enums only, NEVER finding bodies — findings
+          # persist as encrypted ComposerArtifact refs, so the identity must
+          # ride its own bounded durable marker, welded into the wave commit
+          # like `verify_certified`). Folds the per-lens `finding_rounds`
+          # stall state in the composer projection (a clean round welds
+          # `keys: []` — it must still advance the round). NOT
+          # status-authority.
+          :finding_keys,
           # Item 5 (camus C1-2): the deterministic verify stage detected
           # tampering (dirty sealed tree / tracked mutation / HEAD movement
           # during verify). Payload `%{stage, reason, report_ref}` — the
@@ -170,6 +181,14 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # (see `WorkflowEvent.Projection`): the four failure kinds + not-converged
           # → `:failed`, converged → `:completed`, reject/abandon → `:cancelled`.
           :route_converged,
+          # Camus C1-4 (next-ten #6): the approved review-stall release — the
+          # fix loop stopped (stall / exhausted re-review budget) with a green,
+          # certified verify, and the operator waived every surviving finding.
+          # Projects onto `:completed` carrying `result.disposition:
+          # "done_with_findings"` + finding keys/counts (never bodies — those
+          # live on the gate case + the ledger). App-level `one_of` (stored as
+          # text) — no migration.
+          :route_done_with_findings,
           :route_not_converged,
           :route_deadlocked,
           :route_budget_exhausted,

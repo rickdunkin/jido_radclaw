@@ -50,7 +50,12 @@ defmodule JidoClaw.RouteComposer.Projection do
   certified verify stage), `stage_infra` (camus C1-3 → a per-stage
   `infra_counts` increment + the same optional `closed_wave_index` advance;
   **never touches `ran`** — an infra'd stage was never folded, so its
-  publishes stay unsatisfied and the next tick re-offers it), and the item-5
+  publishes stay unsatisfied and the next tick re-offers it), `finding_keys`
+  (camus C1-5, next-ten #6 → the per-lens `finding_rounds` shift: the new
+  round's keys become `current_keys`, the old current becomes `prior_keys`,
+  and — BEFORE the shift — the old current joins `seen_prior`, the union of
+  every round before current, the oscillation set; a clean round's `keys: []`
+  still advances the round), and the item-5
   verify kinds: `stage_tampered` (→ `tampered_stages[stage] = {reason,
   report_ref}`), `head_observed` (→ `observed_head` baseline / `sealed_head`
   derivation), `verify_certified` (→ `verified_integrity`, latest wins), and
@@ -181,6 +186,25 @@ defmodule JidoClaw.RouteComposer.Projection do
     bump_counts(base, :infra_counts, EventPayload.list(payload, :stages))
   end
 
+  # Camus C1-5 (next-ten #6): one reviewer round's finding-identity fold. The
+  # per-lens `finding_rounds` entry shifts — new keys become `current_keys`,
+  # the old current becomes `prior_keys`, and (BEFORE the shift) the old
+  # current joins `seen_prior`, the union of every round before current — the
+  # oscillation set. Marks are canonicalized to atom-keyed `%{key, severity,
+  # confidence}` so a live atom-keyed mirror and a JSONB-reloaded fold agree
+  # (the equivalence invariant). A payload with no binary `lens` folds as a
+  # no-op (fail-safe — never a guessed round). Added tolerantly (a
+  # synthetic-log seed may omit `finding_rounds`).
+  defp apply_event(%{kind: :finding_keys, payload: payload}, state) do
+    case EventPayload.get(payload, :lens) do
+      lens when is_binary(lens) ->
+        fold_finding_round(state, lens, finding_round_keys(payload), decode_round_marks(payload))
+
+      _absent ->
+        state
+    end
+  end
+
   # Item 5: the evidence-preserving tamper record — `tampered_stages[stage] =
   # {reason, report_ref}` (added tolerantly: a synthetic-log seed may omit the
   # map). The tick terminalizes `:verify_tampered` off this ahead of every
@@ -272,6 +296,68 @@ defmodule JidoClaw.RouteComposer.Projection do
   defp bump_counts(state, key, stages) do
     Map.update(state, key, bump_stage_counts(%{}, stages), &bump_stage_counts(&1, stages))
   end
+
+  # The camus C1-5 round shift. `seen_prior` is computed BEFORE the shift —
+  # the union of every round strictly before the incoming one — so
+  # `current ∩ (seen_prior \ prior)` is exactly the oscillation set (a key
+  # that vanished for ≥1 round and came back). Keys live as MapSets in-memory
+  # (projection state only — the durable payload stays a sorted list).
+  defp fold_finding_round(state, lens, keys, marks) do
+    rounds = Map.get(state, :finding_rounds, %{})
+
+    entry =
+      case Map.get(rounds, lens) do
+        nil ->
+          %{
+            round: 1,
+            prior_keys: MapSet.new(),
+            current_keys: keys,
+            seen_prior: MapSet.new(),
+            current_marks: marks,
+            prior_marks: []
+          }
+
+        %{round: round, current_keys: current, seen_prior: seen, current_marks: current_marks} ->
+          %{
+            round: round + 1,
+            prior_keys: current,
+            current_keys: keys,
+            seen_prior: MapSet.union(seen, current),
+            current_marks: marks,
+            prior_marks: current_marks
+          }
+      end
+
+    Map.put(state, :finding_rounds, Map.put(rounds, lens, entry))
+  end
+
+  defp finding_round_keys(payload) do
+    payload
+    |> EventPayload.list(:keys)
+    |> Enum.filter(&is_binary/1)
+    |> MapSet.new()
+  end
+
+  # Canonicalize marks to atom-keyed `%{key, severity, confidence}` (a live
+  # atom-keyed mirror and a JSONB string-keyed reload must fold EQUAL states).
+  # A key-less/malformed mark entry is dropped — marks are advisory (trend
+  # only), so a partial list is safe here, unlike the emission-boundary decode.
+  defp decode_round_marks(payload) do
+    for mark <- EventPayload.list(payload, :marks),
+        is_map(mark),
+        key = EventPayload.get(mark, :key),
+        is_binary(key) do
+      # reach:disable-next-line fixed_shape_map
+      %{
+        key: key,
+        severity: binary_or_nil(EventPayload.get(mark, :severity)),
+        confidence: binary_or_nil(EventPayload.get(mark, :confidence))
+      }
+    end
+  end
+
+  defp binary_or_nil(value) when is_binary(value), do: value
+  defp binary_or_nil(_value), do: nil
 
   # First observation = baseline; a differing later sha = the seal (the run
   # committed work — later verifies certify the COMMITTED state). Tolerant

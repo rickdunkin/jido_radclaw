@@ -86,6 +86,38 @@ defmodule JidoClaw.Web.ApprovalsLive do
         <form phx-submit="decide" id={"gate-form-#{gate.id}"}>
           <input type="hidden" name="case_id" value={gate.id} />
 
+          <%!-- Review-stall waive controls (camus C1-4 / orca OQ-1): one row
+                per REQUIRED key (finding_keys — the complete list; the
+                findings display is capped), each with a native `required`
+                checkbox so the browser blocks Approve until every finding is
+                addressed. Reject carries formnovalidate below, so it is
+                never blocked. --%>
+          <div :if={gate.kind == :review_stall} style="margin-bottom: 0.75rem;">
+            <div style="font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem;">
+              Waive every surviving finding to approve
+            </div>
+            <div :for={row <- waive_rows(gate)} style="margin-bottom: 0.5rem;">
+              <label style="display: block; font-size: 0.8125rem;">
+                <input type="checkbox" name={"waive[#{row.key}]"} value="true" required />
+                [{row.severity}] {row.title}
+                <code :if={row.location != ""}>{row.location}</code>
+              </label>
+              <input type="hidden" name={"waive_severity[#{row.key}]"} value={row.severity} />
+              <input
+                type="text"
+                name={"waive_note[#{row.key}]"}
+                placeholder="waive note (optional)"
+                style="width: 100%; margin-top: 0.25rem;"
+              />
+            </div>
+            <div
+              :if={details_value(gate, "resume_hint")}
+              style="color: var(--muted); font-size: 0.8125rem; margin-top: 0.5rem;"
+            >
+              {details_value(gate, "resume_hint")}
+            </div>
+          </div>
+
           <div :for={field <- gate_fields(gate)} style="margin-bottom: 0.75rem;">
             <label style="display: block; font-size: 0.875rem; margin-bottom: 0.25rem;">
               {field["label"]}
@@ -98,7 +130,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
             <button type="submit" name="decision" value="approve" class="btn btn-primary">
               Approve
             </button>
-            <button type="submit" name="decision" value="reject" class="btn">
+            <button type="submit" name="decision" value="reject" class="btn" formnovalidate>
               Reject
             </button>
             <button
@@ -155,7 +187,14 @@ defmodule JidoClaw.Web.ApprovalsLive do
   @impl Phoenix.LiveView
   def handle_event("decide", %{"case_id" => id} = params, socket) do
     decision = if params["decision"] == "reject", do: :reject, else: :approve
-    decide(socket, decision, id, comment_from_fields(params["fields"]))
+
+    decide(
+      socket,
+      decision,
+      id,
+      comment_from_fields(params["fields"]),
+      waive_records_from_params(params)
+    )
   end
 
   def handle_event("approve", %{"id" => id}, socket), do: decide(socket, :approve, id)
@@ -168,10 +207,18 @@ defmodule JidoClaw.Web.ApprovalsLive do
     attrs = %{decided_by_id: actor && actor.user_id}
 
     case Cases.abandon(id, attrs, tenant: tenant_id(socket), actor: actor) do
-      {:ok, run} ->
+      {:ok, %WorkflowRun{} = run} ->
         {:noreply,
          socket
          |> put_flash(:info, "Run #{run.name} abandoned")
+         |> assign(gates: load_gates(socket))}
+
+      # Review-stall abandon returns the case — the run stays :running until
+      # the parked composer wakes and terminalizes it :abandoned itself.
+      {:ok, %AgentCase{}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Review-stall gate abandoned — the composer will end the run")
          |> assign(gates: load_gates(socket))}
 
       {:error, reason} ->
@@ -194,12 +241,9 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  defp decide(socket, decision, id, comment \\ nil) do
+  defp decide(socket, decision, id, comment \\ nil, waive_records \\ []) do
     actor = socket.assigns[:current_actor]
-    base_attrs = %{decided_by_id: actor && actor.user_id}
-
-    attrs =
-      if comment, do: Map.put(base_attrs, :decision_comment, comment), else: base_attrs
+    attrs = decide_attrs(actor, comment, waive_records)
 
     case Cases.decide(id, decision, attrs, tenant: tenant_id(socket), actor: actor) do
       {:ok, %WorkflowRun{} = run} ->
@@ -208,11 +252,26 @@ defmodule JidoClaw.Web.ApprovalsLive do
          |> put_flash(:info, "Gate #{decision}d — run #{run.name} is now #{run.status}")
          |> assign(gates: load_gates(socket))}
 
+      {:ok, %AgentCase{kind: :review_stall}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, review_stall_flash(decision))
+         |> assign(gates: load_gates(socket))}
+
       {:ok, %AgentCase{}} ->
         {:noreply,
          socket
          |> put_flash(:info, tool_call_flash(decision))
          |> assign(gates: load_gates(socket))}
+
+      {:error, :incomplete_waiver} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Approve requires every surviving finding waived — check each finding " <>
+             "(add a note if useful) and submit again, or reject."
+         )}
 
       {:error, :parent_terminal} ->
         {:noreply,
@@ -232,8 +291,28 @@ defmodule JidoClaw.Web.ApprovalsLive do
     end
   end
 
+  # Optional decide attrs ride only when provided: a nil comment / empty waive
+  # list never lands a key.
+  defp decide_attrs(actor, comment, waive_records) do
+    %{decided_by_id: actor && actor.user_id}
+    |> put_decide_attr(:decision_comment, comment)
+    |> put_decide_attr(:waive_records, waive_records)
+  end
+
+  defp put_decide_attr(attrs, _key, nil), do: attrs
+  defp put_decide_attr(attrs, _key, []), do: attrs
+  defp put_decide_attr(attrs, key, value), do: Map.put(attrs, key, value)
+
   defp tool_call_flash(:approve), do: "Tool call approved — the agent may retry it now"
   defp tool_call_flash(:reject), do: "Tool call rejected — the agent will not retry it"
+
+  # Review-stall decisions are recorded on the case; the RUN terminal lands
+  # asynchronously when the parked composer wakes (never read off decide).
+  defp review_stall_flash(:approve),
+    do: "Waivers recorded — the run completes as done_with_findings when the composer resumes"
+
+  defp review_stall_flash(:reject),
+    do: "Findings rejected — the run fails as fix_failed when the composer resumes"
 
   # -- Gate DSL presentation (seeded into details by GateStep) --
 
@@ -250,6 +329,55 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   defp details_value(%{details: details}, key) when is_map(details), do: Map.get(details, key)
   defp details_value(_gate, _key), do: nil
+
+  # One waive row per REQUIRED key: `finding_keys` is the complete
+  # waive-required list; `findings` is the (capped) display list, joined for
+  # severity/title/location where present — a beyond-cap key still gets a row
+  # (key-only), so Approve can always be completed from this surface.
+  defp waive_rows(gate) do
+    findings = List.wrap(details_value(gate, "findings"))
+    keys = List.wrap(details_value(gate, "finding_keys"))
+
+    for key <- keys, is_binary(key) do
+      shown = Enum.find(findings, &(is_map(&1) and &1["key"] == key))
+
+      %{
+        key: key,
+        severity: (is_map(shown) && shown["severity"]) || "unknown",
+        title:
+          (is_map(shown) && shown["title"]) ||
+            "(beyond display cap — key #{String.slice(key, 0, 12)}…)",
+        location: (is_map(shown) && shown["location"]) || ""
+      }
+    end
+  end
+
+  # `waive[<key>] = "true"` checkboxes + `waive_severity[<key>]` hidden fields
+  # + optional `waive_note[<key>]` collapse into the `Cases.decide/4`
+  # `:waive_records` attrs shape.
+  defp waive_records_from_params(%{"waive" => waived} = params) when is_map(waived) do
+    severities = Map.get(params, "waive_severity", %{})
+    notes = Map.get(params, "waive_note", %{})
+
+    for {key, "true"} <- waived do
+      %{
+        "key" => key,
+        "severity" => Map.get(severities, key),
+        "note" => blank_to_nil(Map.get(notes, key))
+      }
+    end
+  end
+
+  defp waive_records_from_params(_params), do: []
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(_value), do: nil
 
   # The typed field values, folded into the decision comment audit line
   # ("name: value", non-empty values only).

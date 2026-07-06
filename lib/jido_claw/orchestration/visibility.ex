@@ -58,6 +58,14 @@ defmodule JidoClaw.Orchestration.Visibility do
       name: run.name,
       workflow_type: run.workflow_type,
       status: run.status,
+      # Camus C1-4 (the "never plain green" rule): a completed-with-deferred-
+      # findings run must be distinguishable from a clean one on EVERY surface,
+      # so the disposition + count ride the base projection — everything
+      # downstream (workflow_status, jido.runs, the dashboard badges, the
+      # headless CLI) inherits them. Both non-sensitive by construction (the
+      # terminal result carries keys + counts, never finding bodies).
+      disposition: result_disposition(run.result),
+      findings_deferred_count: result_findings_deferred_count(run.result),
       started_at: run.started_at,
       completed_at: run.completed_at,
       duration_ms: duration_ms(run.started_at, run.completed_at, now),
@@ -114,6 +122,30 @@ defmodule JidoClaw.Orchestration.Visibility do
   end
 
   # -- Internal --
+
+  # The run's terminal disposition marker (`result.disposition`), tolerant of
+  # the raw-atom vs JSONB-string key split like every payload access here.
+  # Nil for runs without one (most runs) — surfaces render nothing.
+  defp result_disposition(%{} = result) do
+    case fetch_result(result, :disposition) do
+      disposition when is_binary(disposition) -> disposition
+      _other -> nil
+    end
+  end
+
+  defp result_disposition(_result), do: nil
+
+  defp result_findings_deferred_count(%{} = result) do
+    case fetch_result(result, :findings_deferred_count) do
+      count when is_integer(count) and count >= 0 -> count
+      _other -> nil
+    end
+  end
+
+  defp result_findings_deferred_count(_result), do: nil
+
+  defp fetch_result(result, key),
+    do: Map.get(result, key) || Map.get(result, Atom.to_string(key))
 
   defp duration_ms(%DateTime{} = started_at, %DateTime{} = completed_at, _now),
     do: DateTime.diff(completed_at, started_at, :millisecond)

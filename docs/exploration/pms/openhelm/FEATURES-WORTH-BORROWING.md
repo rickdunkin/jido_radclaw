@@ -292,8 +292,17 @@ queue item; this entry is the field reference those four consume.
 > engine-side, documented in the item-5 design rather than new machinery:
 > every cap exhaustion terminalizes a NAMED disposition
 > (`verify_failed`/`review_infra_failed`/`verify_tampered`/
-> `budget_exhausted`) — never a silent failure. The #6/#9/#10 riders remain
-> queued.
+> `budget_exhausted`) — never a silent failure.
+>
+> **The #6 rider ✅ FOLDED IN 2026-07-06** (next-ten #6 shipped):
+> `done_with_findings` is the `partially_succeeded` analogue
+> (completed-family, disposition-first, never plain green on any surface),
+> and the enforced-transition-table shape landed as an **exhaustive
+> authority-kind × terminal-status test matrix** in
+> `workflow_event_projection_test.exs` (every status-authority event kind ×
+> every terminal status ⇒ `:illegal`, per-kind authority drift-guards) —
+> `Projection.next_status/2` was already the enforcement point, so the rider
+> cost a describe block. The #9/#10 riders remain queued.
 
 **Where in OpenHelm**: `agent/src/planner/outcome-assessor.ts:74-252,298-421` (the
 judge), schema `agent/src/planner/schemas.ts:142-185`, evaluator

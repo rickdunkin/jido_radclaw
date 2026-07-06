@@ -389,6 +389,93 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
     end
   end
 
+  describe "finding_keys fold (camus C1-5, next-ten #6)" do
+    defp round_event(lens, keys, seq, marks \\ nil) do
+      payload = %{
+        "stage" => "#{lens}-reviewer",
+        "lens" => lens,
+        "keys" => keys,
+        "marks" =>
+          marks ||
+            Enum.map(keys, &%{"key" => &1, "severity" => "error", "confidence" => "likely"})
+      }
+
+      event(:finding_keys, payload, seq)
+    end
+
+    test "round 1 seeds the lens entry; round 2 shifts current → prior and unions seen_prior" do
+      result =
+        Projection.project(seed(), [
+          round_event("quality", ["k1", "k2"], 1),
+          round_event("quality", ["k2", "k3"], 2)
+        ])
+
+      entry = result.finding_rounds["quality"]
+      assert entry.round == 2
+      assert MapSet.equal?(entry.current_keys, MapSet.new(["k2", "k3"]))
+      assert MapSet.equal?(entry.prior_keys, MapSet.new(["k1", "k2"]))
+      # seen_prior = union of rounds BEFORE current (computed before the shift).
+      assert MapSet.equal?(entry.seen_prior, MapSet.new(["k1", "k2"]))
+    end
+
+    test "a clean round (keys: []) still advances the round — oscillation needs it" do
+      result =
+        Projection.project(seed(), [
+          round_event("quality", ["k1"], 1),
+          round_event("quality", [], 2, []),
+          round_event("quality", ["k1"], 3)
+        ])
+
+      entry = result.finding_rounds["quality"]
+      assert entry.round == 3
+      assert MapSet.equal?(entry.current_keys, MapSet.new(["k1"]))
+      # prior = the clean round; k1 lives only in seen_prior — the oscillation set.
+      assert MapSet.equal?(entry.prior_keys, MapSet.new())
+      assert MapSet.equal?(entry.seen_prior, MapSet.new(["k1"]))
+    end
+
+    test "marks canonicalize identically from atom-keyed (live) and string-keyed (JSONB) payloads" do
+      atom_payload = %{
+        stage: "q",
+        lens: "quality",
+        keys: ["k1"],
+        marks: [%{key: "k1", severity: "error", confidence: "unsure"}]
+      }
+
+      string_payload = %{
+        "stage" => "q",
+        "lens" => "quality",
+        "keys" => ["k1"],
+        "marks" => [%{"key" => "k1", "severity" => "error", "confidence" => "unsure"}]
+      }
+
+      live = Projection.apply_markers(seed(), [{:finding_keys, atom_payload}])
+      durable = Projection.project(seed(), [event(:finding_keys, string_payload, 1)])
+
+      assert live == durable
+
+      assert live.finding_rounds["quality"].current_marks ==
+               [%{key: "k1", severity: "error", confidence: "unsure"}]
+    end
+
+    test "lenses fold independently; a lens-less or key-less payload is a fail-safe no-op" do
+      result =
+        Projection.project(seed(), [
+          round_event("quality", ["k1"], 1),
+          round_event("security", ["k9"], 2),
+          # no lens → no-op (never a guessed round)
+          event(:finding_keys, %{"keys" => ["kX"]}, 3),
+          # non-binary key entries are dropped, the round still folds
+          event(:finding_keys, %{"lens" => "quality", "keys" => ["k2", 42], "marks" => []}, 4)
+        ])
+
+      assert result.finding_rounds["quality"].round == 2
+      assert MapSet.equal?(result.finding_rounds["quality"].current_keys, MapSet.new(["k2"]))
+      assert result.finding_rounds["security"].round == 1
+      refute Map.has_key?(result.finding_rounds, nil)
+    end
+  end
+
   describe "equivalence invariant — project(seed, log) == in-memory Fold" do
     test "a multi-wave run incl. a paired-verdict flip round-trips through signals_retracted" do
       s = seed()

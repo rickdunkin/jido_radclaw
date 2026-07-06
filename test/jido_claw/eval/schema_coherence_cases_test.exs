@@ -14,16 +14,16 @@ defmodule JidoClaw.Eval.SchemaCoherenceCasesTest do
   alias JidoClaw.Agent.Workers.Reviewer
   alias JidoClaw.Eval
 
-  # The prose half of the reviewer finding contract (reviewer_contract.md's four
+  # The prose half of the reviewer finding contract (reviewer_contract.md's five
   # field names); the prompt seed file carries its own one-liner copy.
-  @reviewer_finding_fields ~w(severity confidence location description)
+  @reviewer_finding_fields ~w(title severity confidence location description)
 
   defp assert_passed(run, label) do
     assert run.status == :passed,
            "#{label} failed: #{inspect(Enum.reject(run.assertions, &(&1.status == :passed)), pretty: true)}"
   end
 
-  test "S1: reviewer verdict schema — round-trip split + the 4-field finding contract" do
+  test "S1: reviewer verdict schema — round-trip split + the 5-field finding contract" do
     invalid_samples =
       Enum.map(@reviewer_finding_fields, fn field ->
         update_in(reviewer_sample(), ["findings", Access.at(0)], &Map.delete(&1, field))
@@ -155,6 +155,7 @@ defmodule JidoClaw.Eval.SchemaCoherenceCasesTest do
       "action_needed" => "none",
       "findings" => [
         %{
+          "title" => "moduledoc missing seed-file citation",
           "severity" => "info",
           "confidence" => "likely",
           "location" => "lib/jido_claw/eval.ex:1",

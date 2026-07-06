@@ -783,9 +783,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
              actor: Keyword.get(opts, :actor)
            ),
          {:ok, case_id} <- pending_case_id(updated, opts) do
-      RunPubSub.broadcast_gate(
-        {:gate_requested, updated.id, %{tenant_id: updated.tenant_id, agent_case_id: case_id}}
-      )
+      RunPubSub.broadcast_gate_requested(updated.id, updated.tenant_id, case_id)
 
       {:ok, {:paused, case_id}, updated}
     else

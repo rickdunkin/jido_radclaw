@@ -50,6 +50,8 @@ defmodule JidoClaw.Tools.GitProjectDirTest do
     assert info.git_dirty == true
     assert info.has_jido_md == true
     assert info.top_level_files =~ "dirty.txt"
+    # PD1-1: the running release version, never a hand-rolled literal.
+    assert info.app_version == to_string(Application.spec(:jido_claw, :vsn))
   end
 
   defp init_repo!(dir) do

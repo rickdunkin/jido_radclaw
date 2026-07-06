@@ -172,6 +172,44 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 **Recommendation**: BORROW-PATTERN (vocabulary near-verbatim; machinery is one new gate kind + one disposition family).
 
+> **Status: ✅ ADOPTED 2026-07-06** (next-ten #6, with C1-5 + the C3-2 rider).
+> Shipped as the `:review_stall` gate kind + the `done_with_findings`
+> completed-family disposition (`:route_done_with_findings` → `:completed`
+> from `:running` only; `result.disposition` disposition-first as sketched —
+> no DB status; the OQ-2 disposition-first answer implemented as specified).
+> Corrections/deviations vs this sketch: (a) "rides the squidie T2-5 Spark
+> DSL" understated the novelty — the composer parent is a GenServer with no
+> Reactor checkpoint, and an `:awaiting_approval` composer row is recovery's
+> dangling-gate arm, so the park is **parent-stays-`:running`, child-less**
+> (dedicated `stall_parked` + stall deadline-timer fields beside the child
+> park's — a stale fire from one park must never dispose the other) with
+> kind-dispatched `Cases.decide`/`abandon` branches, never
+> `GateStep`/`GateResume`; recovery re-derives the park and resolves by
+> fingerprint with ZERO recovery-code changes (restart-re-park and
+> decided-while-down proven). (b) The run result carries **keys + counts +
+> severity histogram + trend + certified_head** — verbatim finding bodies
+> ride only the gate case (raise-time decrypt of the encrypted artifacts,
+> redact-before-truncate) and the BO2-6 ledger, never the result (redaction
+> posture). (c) The release decision is per-finding waive records,
+> all-or-reject (`{:error, :incomplete_waiver}`, never auto-reject — orca
+> OQ-1 as decided), recorded on the case's `:approved` timeline event;
+> `Cases.waived_findings_ledger/2` + the `jido.debt` Lua binding are the
+> queryable debt view. Waive completeness validates PRE-transaction (case
+> details are immutable after open; `Ash.transact` wraps in-txn
+> `{:error, atom}`s opaque — the abandon-guard precedent); the in-txn fence
+> stays lock_run → lock_case → ensure_case_pending. (d) The gate fires only
+> on a **green AND certified** C1-2 verify; a red-verify stall lands
+> `fix_failed` via the fixish fall-through (never `verify_failed` at that
+> seam); headless CLI exit for `done_with_findings` stays 0 (the osa OQ-4
+> exit-code pin), disposition marked in text + JSON. (e) The surface rule
+> shipped at the base projection: `Visibility.run_view` carries
+> `disposition`/`findings_deferred_count` so every downstream surface
+> inherits it; the web badge is amber "completed · findings" (never plain
+> green); the `WorkflowView` rollup sums `findings_deferred` over its
+> recent-completions window (the tenant-wide total is the ledger's job).
+> `needs_decision` itself shipped under the `review_stall` name — the parked
+> case IS the needs-decision lane; no separate disposition was needed.
+
 **Where in camus**: `camus-loop.workflow.js:1122-1149` (`review_unresolved` carries `verifyClean`, `stuck`, `oscillating`, `parkedSha`), `:1197-1215` (oneshot `done_with_findings`: findings verbatim + the fix agent's `claimedResolution` — "claims, never verdicts, because nobody re-checked"); `camus-feat.workflow.js:988-1002` (`review_unresolved + verifyClean === true` → task `needs_decision`; a human `land: [taskId]` is authorized **only** by that prior proven state — an unproven land request downgrades loudly to the full loop); `VELOCITY-DIRECTION.md:62-72,126-139` ("**no posture may report plain `done` while deferring risk**"; a feat holding any ◈ task ends `done_with_findings` itself; the posture is loudly visible on every surface); `status.py:30-41` (the glyph vocabulary: `◆ needs_decision`, `◈ done_with_findings`, `◇ ready_to_merge`).
 
 **What**: Two honest outcomes between success and failure. `needs_decision`: the deterministic gate says shippable but the probabilistic one is stuck — that's a human's call, reachable by one flag that lands the already-proven work without re-implementing. `done_with_findings`: work shipped with named review debt carried verbatim, contaminating every aggregate above it — never laundered into plain `done`.
@@ -187,6 +225,32 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 ### C1-5. Finding identity: stuck-finding and oscillation early-halt
 
 **Recommendation**: BORROW-PATTERN.
+
+> **Status: ✅ ADOPTED 2026-07-06** (next-ten #6, the trigger feeder for
+> C1-4). Shipped as `RouteComposer.FindingKey` (`{:v1, file, title}` hashed
+> through `Core.CanonicalHash.sha256_term/1` — the T1-3 house rule, never a
+> rendered string) over a new required short `title` on the reviewer finding
+> schema. Corrections vs this sketch: (a) "`seen_keys`/`prior_keys` are
+> derivable from wave artifacts already in the event log" is **FALSE** —
+> findings persist as encrypted `ComposerArtifact` rows the projection never
+> decrypts, so cross-wave identity rides a welded per-round `:finding_keys`
+> marker (stage/lens/hex keys + enum marks only — redaction posture; a clean
+> round welds `keys: []` so the lens round still advances for oscillation
+> detection); (b) the fingerprint downcases the **title only** — file paths
+> are identity on case-sensitive filesystems (deliberate deviation from
+> camus, which downcases both halves). Detection is camus-verbatim (stuck =
+> current ∩ prior round; oscillating = reappear-after-absence via the
+> seen-keys memory; un-keyable findings excluded — never a fabricated
+> identity; confidence trend advisory only), with two shipped deviations: a
+> stop suppresses **all of Hook R** (not just the fixer weld), and there is
+> no named `review_stalled?/1` — the stop reasons compose in
+> `fix_stop_lenses/1` (re-review-budget exhaustion ++ stall evidence) so
+> Hook R and the tick's terminal reclassification read one decision and can
+> never disagree. Marks decode asymmetrically by design: the emission
+> boundary (`StageEmission`) fails the WHOLE block closed, the projection
+> fold drops malformed entries (marks are advisory trend data there).
+> Observability: `jido_claw.composer.stall.total` + one bounded `:composer`
+> `:fix_stopped` Trace event (hex keys only, tenant-stamped).
 
 **Where in camus**: `camus-loop.workflow.js:822-830` (`findingKey` = lowercased file (line stripped) + normalized title; un-keyable findings excluded), `:812-930` (a keyable finding present in round N and N-1, with N ≥ 2 → `stuckFindings`, break early — "a finding that survives its own fix deserves a human, not more rounds"), `:833-943` (`allSeenKeys` oscillation memory: appeared r1, vanished r2, returned r3 → `oscillating`, break — "reviewer can't make up its mind"), `:846-851` (confidence trend across rounds: falling → likely stale re-flag, "lean ACCEPT"; steady → "lean REFINE" — advisory only, never an auto-pass), `:953-960` (final round with blockers dispatches **no fix it can't re-review** — halt with findings instead).
 
@@ -389,6 +453,14 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 **Gap in jido_radclaw**: Gate cases surface kind + payload on `/gates` and `/approvals`, and resume is automatic on decision — but budget/posture/answer-shaped pauses (arriving with C1-4/C2-1) need the operator to supply *arguments*, and nothing today formats "what to provide" as a copyable payload.
 
 **Adoption sketch**: A `resume_hint` field on gate cases (populated by the raising stage), rendered verbatim in REPL/web/`inspect_workflow`. Trivial once the new gate kinds exist; do it with C1-4.
+
+> **Status: ✅ ADOPTED 2026-07-06** (rider on next-ten #6, exactly as this
+> entry prescribed — "do it with C1-4"). `resume_hint` ships in the
+> `:review_stall` case details (populated at raise time), rendered on the
+> REPL `/gates` case view, web `/approvals`, and the `WorkflowView`
+> composer gate-block (which `inspect_workflow` serves). Scoped to the new
+> kind: the pre-existing kinds gain hints as their argument-bearing pauses
+> arrive (C2-1 budget, answer-shaped asks).
 
 ### C3-3. Review postures (`full` / `oneshot`) with an honest price
 

@@ -129,4 +129,90 @@ defmodule JidoClaw.RouteComposer.StageEmissionTest do
       end
     end
   end
+
+  describe "finding_marks (camus C1-5, next-ten #6)" do
+    test "absent finding_marks decodes to nil (producer/legacy emissions)" do
+      assert %StageEmission{finding_marks: nil} = StageEmission.from_map(%{"stage" => "x"})
+    end
+
+    test "a findings round round-trips through the string-keyed boundary" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "quality-reviewer",
+          "signals" => ["findings:quality"],
+          "finding_marks" => %{
+            "lens" => "quality",
+            "keys" => ["aa11", "bb22"],
+            "marks" => [
+              %{"key" => "aa11", "severity" => "error", "confidence" => "likely"},
+              %{"key" => "bb22", "severity" => "warning", "confidence" => nil}
+            ]
+          }
+        })
+
+      assert emission.finding_marks == %{
+               lens: "quality",
+               keys: ["aa11", "bb22"],
+               marks: [
+                 %{key: "aa11", severity: "error", confidence: "likely"},
+                 %{key: "bb22", severity: "warning", confidence: nil}
+               ]
+             }
+    end
+
+    test "an atom-keyed live block decodes identically to its string-keyed twin" do
+      atom =
+        StageEmission.from_map(%{
+          stage: "q",
+          finding_marks: %{
+            lens: "quality",
+            keys: ["aa11"],
+            marks: [%{key: "aa11", severity: "error", confidence: "likely"}]
+          }
+        })
+
+      string =
+        StageEmission.from_map(%{
+          "stage" => "q",
+          "finding_marks" => %{
+            "lens" => "quality",
+            "keys" => ["aa11"],
+            "marks" => [%{"key" => "aa11", "severity" => "error", "confidence" => "likely"}]
+          }
+        })
+
+      assert atom == string
+    end
+
+    test "a clean round's explicit empty block decodes as-is (it advances the round)" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "q",
+          "signals" => ["clean:quality"],
+          "finding_marks" => %{"lens" => "quality", "keys" => [], "marks" => []}
+        })
+
+      assert emission.finding_marks == %{lens: "quality", keys: [], marks: []}
+    end
+
+    test "malformed finding_marks decode to nil — the WHOLE block, never partial marks" do
+      for bogus <- [
+            "marks",
+            42,
+            # lens missing / non-binary
+            %{"keys" => ["aa"], "marks" => []},
+            %{"lens" => 7, "keys" => ["aa"], "marks" => []},
+            # keys not a binary list
+            %{"lens" => "q", "keys" => "aa", "marks" => []},
+            %{"lens" => "q", "keys" => [42], "marks" => []},
+            # marks not a list / a key-less mark poisons the WHOLE block
+            %{"lens" => "q", "keys" => ["aa"], "marks" => "x"},
+            %{"lens" => "q", "keys" => ["aa"], "marks" => [%{"severity" => "error"}]},
+            %{"lens" => "q", "keys" => ["aa"], "marks" => ["not a map"]}
+          ] do
+        assert %StageEmission{finding_marks: nil} =
+                 StageEmission.from_map(%{"stage" => "q", "finding_marks" => bogus})
+      end
+    end
+  end
 end

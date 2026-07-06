@@ -78,6 +78,30 @@ defmodule JidoClaw.Orchestration.Cases do
   decided case, not a run — callers branch on the struct). `abandon/3` is
   workflow-only and refuses a tool-call case with
   `{:error, :not_workflow_case}` (there is no run to abandon).
+
+  ## Review-stall cases (run-bound, parent stays `:running` — camus C1-4)
+
+  A `:review_stall` case is run-bound to a composer PARENT that stays
+  `:running` (no checkpoint, no `approval_requested` — the pending case row is
+  the composer's durable stall park). `decide/4` dispatches on the kind BEFORE
+  `guard_resumable` (there is nothing to resume): approve additionally
+  requires **waive completeness** — `attrs[:waive_records]` (`[%{key,
+  severity, note}]`) must cover every key in the case's
+  `details["finding_keys"]`, else the decision is refused loudly with
+  `{:error, :incomplete_waiver}` (never auto-converted to reject). The commit
+  is `lock_run` (global run → case order) + `lock_case` +
+  `ensure_case_pending` + the case flip + the `:approved`/`:rejected` timeline
+  event carrying the waive records (the BO2-6 debt-ledger rows) — **no
+  `WorkflowEvent` in either arm** (`approval_resolved` is only legal from
+  `:awaiting_approval`); the COMPOSER is the single status-authority writer
+  (approve → `:route_done_with_findings`, reject → `:route_fix_failed`).
+  Post-commit the resolution broadcasts with the PARENT's id, which wakes the
+  parked composer. Returns `{:ok, %AgentCase{}}` — run-terminal assertions
+  are ASYNC (await the composer's wake/recovery), never read off this return.
+  `abandon/3` gains the same kind dispatch: flip + timeline event + broadcast,
+  **skipping** `run_abandoned` (illegal from `:running`) and
+  `broadcast_run_terminal`; it too returns `{:ok, %AgentCase{}}` — the
+  composer appends `:route_abandoned` itself.
   """
 
   require Ash.Query, as: Query
@@ -114,6 +138,13 @@ defmodule JidoClaw.Orchestration.Cases do
   the resumed child's output — reject/abandon stay allowed, they converge the
   pair), and `:parent_state_unknown` when the parent's state could not be read
   (approve fails closed — retry).
+
+  Tool-call and review-stall cases return `{:ok, %AgentCase{}}` (the decided
+  case, never a run) — callers branch on the struct. A review-stall approve
+  additionally requires `attrs[:waive_records]` to cover every key in the
+  case's `details["finding_keys"]`, else `{:error, :incomplete_waiver}`; the
+  run reaches its terminal ASYNCHRONOUSLY when the parked composer wakes, so
+  never read run state off this return.
   """
   @spec decide(Ecto.UUID.t(), decision(), map(), keyword()) ::
           {:ok, WorkflowRun.t() | AgentCase.t()} | {:error, term()}
@@ -133,6 +164,21 @@ defmodule JidoClaw.Orchestration.Cases do
     decide_tool_call(decision, agent_case, attrs, tenant, actor)
   end
 
+  # Review-stall case (camus C1-4): run present but the composer PARENT stays
+  # `:running` with no checkpoint — dispatched BEFORE `guard_resumable`, which
+  # would refuse it as `:not_yet_resumable` forever.
+  defp decide_loaded(
+         decision,
+         %AgentCase{kind: :review_stall} = agent_case,
+         run,
+         attrs,
+         tenant,
+         actor,
+         _resume?
+       ) do
+    decide_review_stall(decision, agent_case, run, attrs, tenant, actor)
+  end
+
   defp decide_loaded(decision, agent_case, run, attrs, tenant, actor, resume?) do
     with :ok <- guard_resumable(run) do
       dispatch(decision, agent_case, run, attrs, tenant, actor, resume?)
@@ -148,9 +194,16 @@ defmodule JidoClaw.Orchestration.Cases do
   whole transaction rolls back. Drops **every** pending case for the run.
   `attrs` may carry `:cancellation_reason` and `:decided_by_id`. Returns
   `{:ok, run}` (now `:abandoned`) or `{:error, reason}`.
+
+  A `:review_stall` case takes the kind-dispatched branch instead: flip THAT
+  case + its `:abandoned` timeline event + the resolution broadcast, with NO
+  `run_abandoned` append (illegal from `:running` — the parked composer
+  appends its own `:route_abandoned` on wake) and no run-terminal broadcast.
+  That branch returns `{:ok, %AgentCase{}}` (the abandoned case, not a run) —
+  callers branch on the struct, like `decide/4`'s run-less shape.
   """
   @spec abandon(Ecto.UUID.t(), map(), keyword()) ::
-          {:ok, WorkflowRun.t()} | {:error, term()}
+          {:ok, WorkflowRun.t() | AgentCase.t()} | {:error, term()}
   def abandon(case_id, attrs \\ %{}, opts \\ []) do
     tenant = Keyword.fetch!(opts, :tenant)
     actor = Keyword.fetch!(opts, :actor)
@@ -161,8 +214,23 @@ defmodule JidoClaw.Orchestration.Cases do
          # Pre-transaction guard for the deterministic refusal (clean atom —
          # Ash.transact wraps in-transaction errors); the in-transaction
          # pending fence below stays as the race guard.
-         :ok <- ensure_case_pending(agent_case),
-         {:ok, gate} <- commit_abandon(agent_case, run, attrs, tenant, actor),
+         :ok <- ensure_case_pending(agent_case) do
+      abandon_loaded(agent_case, run, attrs, tenant, actor)
+    end
+  end
+
+  # Review-stall abandon (camus C1-4): flip the case + timeline event +
+  # broadcast only — the run stays `:running` for the composer to terminalize
+  # (`run_abandoned` is only legal from `:awaiting_approval`).
+  defp abandon_loaded(%AgentCase{kind: :review_stall} = agent_case, run, attrs, tenant, actor) do
+    with {:ok, gate} <- commit_review_stall_abandon(agent_case, run, attrs, tenant, actor) do
+      broadcast_resolved(run, gate, :abandon)
+      {:ok, gate}
+    end
+  end
+
+  defp abandon_loaded(agent_case, run, attrs, tenant, actor) do
+    with {:ok, gate} <- commit_abandon(agent_case, run, attrs, tenant, actor),
          {:ok, abandoned_run} <- WorkflowRun.by_id(run.id, tenant: tenant, actor: actor) do
       broadcast_resolved(run, gate, :abandon)
 
@@ -174,6 +242,65 @@ defmodule JidoClaw.Orchestration.Cases do
 
       {:ok, abandoned_run}
     end
+  end
+
+  @doc """
+  The BO2-6 deferred-findings debt ledger: every approved `:review_stall`
+  case (newest decision first) joined with the waive records its `:approved`
+  timeline event carries, plus the per-tenant severity rollup.
+
+  Returns `{:ok, %{cases: [row], severity_counts: %{severity => count},
+  total_waived: n}}` — each row `%{case_id, workflow_run_id, step_name,
+  decided_at, decided_by_id, decision_comment, waive_records}`. A case whose
+  timeline read fails contributes `waive_records: []` with
+  `waive_records_available: false` (honest degradation, never a silent
+  empty). No new table — the records live on `AgentCaseEvent.data`.
+  """
+  @spec waived_findings_ledger(String.t(), term()) :: {:ok, map()} | {:error, term()}
+  def waived_findings_ledger(tenant, actor) do
+    with {:ok, cases} <- AgentCase.approved_review_stalls(tenant: tenant, actor: actor) do
+      rows = Enum.map(cases, &ledger_row(&1, tenant, actor))
+      waived = Enum.flat_map(rows, & &1.waive_records)
+
+      {:ok,
+       %{
+         cases: rows,
+         severity_counts: Enum.frequencies_by(waived, &(&1["severity"] || "unknown")),
+         total_waived: length(waived)
+       }}
+    end
+  end
+
+  defp ledger_row(agent_case, tenant, actor) do
+    base = %{
+      case_id: agent_case.id,
+      workflow_run_id: agent_case.workflow_run_id,
+      step_name: agent_case.step_name,
+      decided_at: agent_case.decided_at,
+      decided_by_id: agent_case.decided_by_id,
+      decision_comment: agent_case.decision_comment
+    }
+
+    case AgentCaseEvent.for_case(agent_case.id, tenant: tenant, actor: actor) do
+      {:ok, events} ->
+        Map.put(base, :waive_records, approved_waive_records(events))
+
+      {:error, _reason} ->
+        base
+        |> Map.put(:waive_records, [])
+        |> Map.put(:waive_records_available, false)
+    end
+  end
+
+  defp approved_waive_records(events) do
+    Enum.find_value(events, [], fn
+      %AgentCaseEvent{type: :approved, data: %{"waive_records" => records}}
+      when is_list(records) ->
+        Enum.filter(records, &is_map/1)
+
+      _event ->
+        nil
+    end)
   end
 
   # -- Internal --
@@ -312,6 +439,159 @@ defmodule JidoClaw.Orchestration.Cases do
 
   defp hook_for(:approve), do: :after_approved
   defp hook_for(:reject), do: :after_rejected
+
+  # -- Review-stall decisions (camus C1-4) --
+
+  # The kind-dispatched decision: waive completeness is validated
+  # PRE-transaction on the loaded case (`details` is immutable after open, so
+  # there is no stale-read hazard, and an in-transaction `{:error, atom}`
+  # would be wrapped opaque by `Ash.transact` — the `abandon/3` guard
+  # precedent). The in-transaction `lock_run` + `lock_case` +
+  # `ensure_case_pending` re-check stays the concurrency fence.
+  defp decide_review_stall(decision, agent_case, run, attrs, tenant, actor) do
+    waive_records = normalize_waive_records(waive_field(attrs, :waive_records))
+    case_attrs = Map.take(attrs, [:decision_comment, :decided_by_id])
+
+    with :ok <- ensure_case_pending(agent_case),
+         :ok <- ensure_complete_waiver(decision, agent_case, waive_records),
+         {:ok, gate} <-
+           commit_review_stall_decision(
+             decision,
+             agent_case,
+             run,
+             case_attrs,
+             waive_records,
+             tenant,
+             actor
+           ) do
+      dispatch_hook(gate, hook_for(decision), run, decision, tenant, actor)
+      # The PARENT's id — this is what wakes the stall-parked composer.
+      broadcast_resolved(run, gate, decision)
+      {:ok, gate}
+    end
+  end
+
+  # Waive records arrive atom-keyed (REPL) or string-keyed (web params);
+  # normalize to the string-keyed jsonb shape the timeline event stores and
+  # the ledger reads. Non-map entries collapse to `%{}` (no key ⇒ they can
+  # never satisfy completeness).
+  defp normalize_waive_records(records) when is_list(records) do
+    Enum.map(records, fn
+      record when is_map(record) ->
+        %{
+          "key" => waive_field(record, :key),
+          "severity" => waive_field(record, :severity),
+          "note" => waive_field(record, :note)
+        }
+
+      _other ->
+        %{}
+    end)
+  end
+
+  defp normalize_waive_records(_records), do: []
+
+  defp waive_field(record, key) do
+    case Map.get(record, key) do
+      nil -> Map.get(record, Atom.to_string(key))
+      value -> value
+    end
+  end
+
+  # Approve is all-or-reject (orca OQ-1 as decided): every key in the case's
+  # `details["finding_keys"]` must be covered by a waive record — anything
+  # less is refused loudly, never auto-converted to a reject. Reject needs no
+  # waives.
+  defp ensure_complete_waiver(:reject, _agent_case, _waive_records), do: :ok
+
+  defp ensure_complete_waiver(:approve, agent_case, waive_records) do
+    required = required_finding_keys(agent_case)
+
+    provided =
+      waive_records
+      |> Enum.map(& &1["key"])
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    if Enum.all?(required, &MapSet.member?(provided, &1)) do
+      :ok
+    else
+      {:error, :incomplete_waiver}
+    end
+  end
+
+  defp required_finding_keys(%AgentCase{details: %{"finding_keys" => keys}}) when is_list(keys),
+    do: Enum.filter(keys, &is_binary/1)
+
+  defp required_finding_keys(%AgentCase{}), do: []
+
+  # One transaction, the tool-call commit shape PLUS the run lock FIRST
+  # (global run → case → events order): case flip + the timeline event
+  # carrying the waive records (the BO2-6 debt-ledger rows). Deliberately NO
+  # `WorkflowEvent` — `approval_resolved` is only legal from
+  # `:awaiting_approval`, and the composer parent is `:running`; the composer
+  # is the single status-authority writer for the terminal.
+  defp commit_review_stall_decision(
+         decision,
+         agent_case,
+         run,
+         case_attrs,
+         waive_records,
+         tenant,
+         actor
+       ) do
+    Ash.transact([AgentCase, AgentCaseEvent], fn ->
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
+           {:ok, locked} <- lock_case(agent_case.id, tenant, actor),
+           :ok <- ensure_case_pending(locked),
+           {:ok, gate} <- review_stall_flip(decision, locked, case_attrs, tenant, actor),
+           {:ok, _case_event} <-
+             WorkflowLog.case_event(
+               gate,
+               case_event_type(decision),
+               review_stall_decision_data(decision, gate, waive_records),
+               tenant,
+               actor
+             ) do
+        gate
+      end
+    end)
+  end
+
+  defp review_stall_flip(:approve, locked, attrs, tenant, actor),
+    do: AgentCase.approve(locked, attrs, tenant: tenant, actor: actor)
+
+  defp review_stall_flip(:reject, locked, attrs, tenant, actor),
+    do: AgentCase.reject(locked, attrs, tenant: tenant, actor: actor)
+
+  defp case_event_type(:approve), do: :approved
+  defp case_event_type(:reject), do: :rejected
+
+  # Approve's timeline event carries the waive records (the debt ledger's
+  # source rows); reject's is the plain decision audit.
+  defp review_stall_decision_data(:approve, gate, waive_records),
+    do: Map.put(decision_data(gate), :waive_records, waive_records)
+
+  defp review_stall_decision_data(:reject, gate, _waive_records), do: decision_data(gate)
+
+  # Review-stall abandon commit: the tool-call shape + the run lock, flipping
+  # ONLY the named case (a review-stall parent can have exactly one pending
+  # stall case per fingerprint; the fingerprint fence collapses duplicates).
+  defp commit_review_stall_abandon(agent_case, run, attrs, tenant, actor) do
+    reason = Map.get(attrs, :cancellation_reason) || "abandoned by operator"
+    attrs = Map.put(attrs, :cancellation_reason, reason)
+
+    Ash.transact([AgentCase, AgentCaseEvent], fn ->
+      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
+           {:ok, locked} <- lock_case(agent_case.id, tenant, actor),
+           :ok <- ensure_case_pending(locked),
+           {:ok, gate} <- AgentCase.abandon(locked, attrs, tenant: tenant, actor: actor),
+           {:ok, _case_event} <-
+             WorkflowLog.case_event(gate, :abandoned, %{reason: reason}, tenant, actor) do
+        gate
+      end
+    end)
+  end
 
   defp broadcast_resolved_runless(gate, decision) do
     RunPubSub.broadcast_gate_resolved(nil, gate.tenant_id, gate.id, decision)

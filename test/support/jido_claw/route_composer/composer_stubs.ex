@@ -299,6 +299,7 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
         "action_needed" => "re-apply the change; the machine state is unchanged",
         "findings" => [
           %{
+            "title" => "change did not take",
             "severity" => "error",
             "confidence" => "likely",
             "location" => "host:/etc",
@@ -334,7 +335,7 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
         TestFixtures.phase1_infra_reviewer()
 
       driven_call?(:route_composer_review_flag_on, lens, n) ->
-        TestFixtures.phase1_findings_reviewer()
+        flagged_verdict(lens, n)
 
       true ->
         TestFixtures.phase1_clean_reviewer()
@@ -362,6 +363,21 @@ defmodule JidoClaw.RouteComposer.TestSupport.SystemLoopWorker do
     :jido_claw
     |> Application.fetch_env!(:route_composer_stub_outputs)
     |> Map.fetch!(template)
+  end
+
+  # Item 6 (camus C1-5): a flagged round's FINDING is overridable per
+  # `{lens, call_number}` via `:route_composer_review_finding_on`
+  # (`%{lens => %{n => finding_map}}`) so the stall tests can drive an
+  # oscillating title sequence (A, B, A) or an un-keyable (title-less)
+  # finding; an un-driven call keeps the default stable stuck finding.
+  defp flagged_verdict(lens, n) do
+    case get_in(Application.get_env(:jido_claw, :route_composer_review_finding_on, %{}), [
+           lens,
+           n
+         ]) do
+      nil -> TestFixtures.phase1_findings_reviewer()
+      finding -> TestFixtures.phase1_findings_reviewer(finding)
+    end
   end
 
   # The reviewer's task names its `clean:<lens>` emit target — a stable, per-stage

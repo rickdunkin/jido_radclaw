@@ -13,6 +13,9 @@ defmodule JidoClaw.Tools.WorkflowStatus do
       active_count: [type: :integer, required: true],
       active_runs: [type: {:list, :map}, required: true],
       recent_completions: [type: {:list, :map}, required: true],
+      # Camus C1-4: deferred findings across the recent-completions window
+      # (each run map also carries `disposition` + `findings_deferred_count`).
+      findings_deferred: [type: :integer, required: true],
       generated_at: [type: :string, required: true]
     ],
     schema: []

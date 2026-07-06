@@ -102,7 +102,12 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
 
   # `"outcome"` is emitted ONLY when not `:ok` (camus C1-3) — existing persisted
   # result maps stay byte-identical, and `StageEmission.from_map/1` reads the
-  # absent key back as `:ok`.
+  # absent key back as `:ok`. `"finding_marks"` (camus C1-5) likewise only when
+  # present — reviewer emissions cross the child-result boundary through THIS
+  # map and are rehydrated by `StageEmission.from_map/1`, so an unencoded field
+  # would silently vanish at the round-trip. (`certification` never needed this
+  # asymmetrically: verify emissions are built by `Reactors.VerifyStage`, which
+  # bypasses WaveCollect entirely.)
   defp to_map(%StageEmission{} = emission, ref_artifacts) do
     base = %{
       "stage" => emission.stage,
@@ -110,12 +115,30 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
       "artifacts" => ref_artifacts
     }
 
-    case emission.outcome do
-      :ok -> base
-      outcome -> Map.put(base, "outcome", encode_outcome(outcome))
-    end
+    base
+    |> put_outcome(emission.outcome)
+    |> put_finding_marks(emission.finding_marks)
   end
+
+  defp put_outcome(map, :ok), do: map
+  defp put_outcome(map, outcome), do: Map.put(map, "outcome", encode_outcome(outcome))
 
   defp encode_outcome({kind, reason}) when kind in [:infra, :inconclusive, :tampered],
     do: %{"kind" => Atom.to_string(kind), "reason" => reason}
+
+  defp put_finding_marks(map, nil), do: map
+
+  # Wire-shaped finding-marks contract (mapper → emission → marker → fold);
+  # a struct would ripple the emission decode boundary.
+  # reach:disable-next-line fixed_shape_map
+  defp put_finding_marks(map, %{lens: lens, keys: keys, marks: marks}) do
+    Map.put(map, "finding_marks", %{
+      "lens" => lens,
+      "keys" => keys,
+      "marks" =>
+        Enum.map(marks, fn mark ->
+          %{"key" => mark.key, "severity" => mark.severity, "confidence" => mark.confidence}
+        end)
+    })
+  end
 end

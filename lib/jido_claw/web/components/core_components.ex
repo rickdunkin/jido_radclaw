@@ -56,22 +56,37 @@ defmodule JidoClaw.Web.CoreComponents do
   end
 
   attr(:status, :atom, required: true)
+  # Camus C1-4 (the "never plain green" rule): a `:completed` run carrying the
+  # `"done_with_findings"` disposition renders a DISTINCT amber badge, never
+  # the plain green `completed`. Callers without a disposition (steps, graph
+  # nodes, cases) omit the attr.
+  attr(:disposition, :string, default: nil)
 
   @spec status_badge(map()) :: Phoenix.LiveView.Rendered.t()
   def status_badge(assigns) do
-    color =
-      case assigns.status do
-        s when s in [:completed, :ready, :active, :approved] -> "badge-green"
-        s when s in [:running, :pending, :awaiting_approval] -> "badge-yellow"
-        s when s in [:failed, :error, :rejected, :cancelled, :abandoned] -> "badge-red"
-        _ -> "badge-blue"
+    {color, label} =
+      case {assigns.status, assigns.disposition} do
+        {:completed, "done_with_findings"} ->
+          {"badge-amber", "completed · findings"}
+
+        {status, _disposition} ->
+          {status_color(status), status}
       end
 
-    assigns = assign(assigns, :color, color)
+    assigns = assign(assigns, color: color, label: label)
 
     ~H"""
-    <span class={"badge #{@color}"}>{@status}</span>
+    <span class={"badge #{@color}"}>{@label}</span>
     """
+  end
+
+  defp status_color(status) do
+    case status do
+      s when s in [:completed, :ready, :active, :approved] -> "badge-green"
+      s when s in [:running, :pending, :awaiting_approval] -> "badge-yellow"
+      s when s in [:failed, :error, :rejected, :cancelled, :abandoned] -> "badge-red"
+      _ -> "badge-blue"
+    end
   end
 
   # Deadline lateness badge (T2-1): renders `JidoClaw.Orchestration.Deadline`

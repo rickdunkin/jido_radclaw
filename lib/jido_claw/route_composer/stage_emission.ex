@@ -29,6 +29,19 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   `{:inconclusive, "uncertified_green"}` before the fold). Always nil on
   worker emissions.
 
+  `finding_marks` (camus C1-5, next-ten #6) is a reviewer emission's
+  cross-wave finding identity block — `%{lens, keys, marks}` where `keys` are
+  the deduped `JidoClaw.RouteComposer.FindingKey` hex digests and each mark is
+  `%{key, severity, confidence}` (keys + enums only, never finding bodies —
+  the redaction posture). Computed by `DefaultMapper.verdict/2`: a FINDINGS
+  verdict carries its keyable findings' marks, a CLEAN verdict carries the
+  explicit empty `%{lens, keys: [], marks: []}` (a clean round must still
+  advance the lens's round — oscillation detection needs it), an infra exit
+  and every non-reviewer emission carry nil. Whitelist-decoded fail-closed:
+  any malformed shape (non-binary lens/key, a key-less mark) decodes the
+  WHOLE block to nil — an un-keyable round is excluded from stall detection
+  (the camus fail-safe), never half-folded.
+
   `from_map/1` normalizes both shapes a wave return can arrive in — the
   atom-keyed live `{:ok, value, _run}` return and the string-keyed
   JSONB-round-tripped persisted map — into one struct, the same atom/string
@@ -44,15 +57,30 @@ defmodule JidoClaw.RouteComposer.StageEmission do
 
   @type certification :: %{head: String.t(), tree_digest: String.t() | nil, mode: atom()} | nil
 
+  @type finding_mark :: %{
+          key: String.t(),
+          severity: String.t() | nil,
+          confidence: String.t() | nil
+        }
+
+  @type finding_marks ::
+          %{lens: String.t(), keys: [String.t()], marks: [finding_mark()]} | nil
+
   @type t :: %__MODULE__{
           stage: String.t() | nil,
           signals: [String.t()],
           artifacts: %{optional(String.t()) => term()},
           outcome: outcome(),
-          certification: certification()
+          certification: certification(),
+          finding_marks: finding_marks()
         }
 
-  defstruct stage: nil, signals: [], artifacts: %{}, outcome: :ok, certification: nil
+  defstruct stage: nil,
+            signals: [],
+            artifacts: %{},
+            outcome: :ok,
+            certification: nil,
+            finding_marks: nil
 
   @certification_modes %{"working_tree" => :working_tree, "sealed" => :sealed}
 
@@ -77,7 +105,8 @@ defmodule JidoClaw.RouteComposer.StageEmission do
       signals: pick(map, :signals, "signals", []),
       artifacts: pick(map, :artifacts, "artifacts", %{}),
       outcome: decode_outcome(pick(map, :outcome, "outcome", nil)),
-      certification: decode_certification(pick(map, :certification, "certification", nil))
+      certification: decode_certification(pick(map, :certification, "certification", nil)),
+      finding_marks: decode_finding_marks(pick(map, :finding_marks, "finding_marks", nil))
     }
   end
 
@@ -137,4 +166,51 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   defp decode_mode(mode) when is_binary(mode), do: Map.get(@certification_modes, mode)
   defp decode_mode(mode) when mode in [:working_tree, :sealed], do: mode
   defp decode_mode(_mode), do: nil
+
+  # Whitelist decode of the camus C1-5 finding-identity block: absent/malformed
+  # → nil (the WHOLE block, never a partial marks list — an un-decodable round
+  # must be excluded from stall detection, not half-matched). A `keys: []` /
+  # `marks: []` clean round decodes as-is (it advances the lens round).
+  defp decode_finding_marks(%{} = block) do
+    lens = pick(block, :lens, "lens", nil)
+    keys = pick(block, :keys, "keys", nil)
+    marks = decode_marks(pick(block, :marks, "marks", nil))
+
+    if is_binary(lens) and is_list(keys) and Enum.all?(keys, &is_binary/1) and
+         is_list(marks) do
+      # Wire-shaped finding-marks contract (mapper → emission → marker → fold);
+      # a struct would ripple this decode boundary.
+      # reach:disable-next-line fixed_shape_map
+      %{lens: lens, keys: keys, marks: marks}
+    end
+  end
+
+  defp decode_finding_marks(_other), do: nil
+
+  defp decode_marks(marks) when is_list(marks) do
+    decoded = Enum.map(marks, &decode_mark/1)
+    if Enum.any?(decoded, &is_nil/1), do: nil, else: decoded
+  end
+
+  defp decode_marks(_other), do: nil
+
+  defp decode_mark(%{} = mark) do
+    case pick(mark, :key, "key", nil) do
+      key when is_binary(key) ->
+        # reach:disable-next-line fixed_shape_map
+        %{
+          key: key,
+          severity: binary_or_nil(pick(mark, :severity, "severity", nil)),
+          confidence: binary_or_nil(pick(mark, :confidence, "confidence", nil))
+        }
+
+      _malformed ->
+        nil
+    end
+  end
+
+  defp decode_mark(_other), do: nil
+
+  defp binary_or_nil(value) when is_binary(value), do: value
+  defp binary_or_nil(_value), do: nil
 end

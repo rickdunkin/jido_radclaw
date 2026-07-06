@@ -103,7 +103,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
 
   @doc """
   Reviewer verdict object (`overall`/`summary`/`action_needed`/`findings`, each
-  finding `severity`/`confidence`/`location`/`description`) — the shape
+  finding `title`/`severity`/`confidence`/`location`/`description`) — the shape
   `JidoClaw.RouteComposer.Emit.DefaultMapper` consumes (via its private
   `verdict/2`), shared
   by the three `reviewer_contract`-carrying judges (`Reviewer`, `SketchReviewer`,
@@ -119,6 +119,12 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
     *value* — an atom enum (`:error`) would persist as the string `":error"`,
     colon and all. String enums parse to clean `"error"`/`"likely"` that pass
     through `normalize/1` untouched.
+  - `title` (camus C1-5) is the finding's short stable identity headline: with
+    the normalized `location` file it feeds `JidoClaw.RouteComposer.FindingKey`,
+    the cross-wave fingerprint stall detection matches rounds on. A plain
+    required string — the workers' `on_validation_error: :repair` recovers a
+    transient omission, and an un-keyable finding (blank title) is simply
+    excluded from stall detection, never a validation dead-end at the engine.
 
   Uses the map `Zoi.object/2` form (matching `Zoi`'s `fields :: map()` spec —
   the keyword-list form trips Dialyzer); key order is therefore not significant.
@@ -135,6 +141,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
         Zoi.array(
           Zoi.object(
             %{
+              title: Zoi.string(),
               severity: Zoi.enum(["info", "warning", "error"]),
               confidence: Zoi.enum(["likely", "unsure"]),
               location: Zoi.string(),

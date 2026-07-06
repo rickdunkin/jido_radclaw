@@ -56,7 +56,10 @@ defmodule JidoClaw.Web.DashboardLive do
             style="padding: 0.5rem 0; border-bottom: 1px solid var(--border);"
           >
             <span>{Map.get(run, :name, "unnamed")}</span>
-            <.status_badge status={Map.get(run, :status, :completed)} />
+            <.status_badge
+              status={Map.get(run, :status, :completed)}
+              disposition={Map.get(run, :disposition)}
+            />
           </div>
         </div>
 

@@ -57,6 +57,8 @@ defmodule JidoClaw.CLI.RunCommand do
               message: nil,
               session_id: nil,
               pending_cases: [],
+              disposition: nil,
+              findings_deferred_count: nil,
               error: nil
 
     @type t :: %__MODULE__{
@@ -67,6 +69,8 @@ defmodule JidoClaw.CLI.RunCommand do
             message: String.t() | nil,
             session_id: String.t() | nil,
             pending_cases: [map()],
+            disposition: String.t() | nil,
+            findings_deferred_count: non_neg_integer() | nil,
             error: term()
           }
   end
@@ -418,8 +422,19 @@ defmodule JidoClaw.CLI.RunCommand do
     end
   end
 
-  defp await_outcome({:done, :completed, _run}, base) do
-    %{base | exit_code: 0, outcome: :launched_completed}
+  # Exit 0 for BOTH completed shapes (the pinned OQ-4 0/1/2/3 contract) — but
+  # a done-with-findings completion marks the text + JSON envelope with the
+  # disposition + deferred count (camus C1-4's "never plain green").
+  defp await_outcome({:done, :completed, run}, base) do
+    view = Visibility.run_view(run, :operator, DateTime.utc_now())
+
+    %{
+      base
+      | exit_code: 0,
+        outcome: :launched_completed,
+        disposition: view.disposition,
+        findings_deferred_count: view.findings_deferred_count
+    }
   end
 
   defp await_outcome({:done, status, run}, base)
@@ -466,6 +481,8 @@ defmodule JidoClaw.CLI.RunCommand do
       "session_id" => result.session_id,
       "run_id" => result.run_id,
       "message" => result.message,
+      "disposition" => result.disposition,
+      "findings_deferred_count" => result.findings_deferred_count,
       "pending_cases" =>
         Enum.map(result.pending_cases, fn c ->
           %{"id" => c.id, "tool" => c[:tool], "fresh" => c.fresh}
@@ -496,9 +513,9 @@ defmodule JidoClaw.CLI.RunCommand do
   defp encode_error(error) when is_binary(error), do: error
   defp encode_error(error), do: JsonSafe.encode(error)
 
-  defp run_line(%Result{run_id: run_id, outcome: outcome}) when is_binary(run_id) do
+  defp run_line(%Result{run_id: run_id, outcome: outcome} = result) when is_binary(run_id) do
     case outcome do
-      :launched_completed -> "✓ composer run #{run_id} completed"
+      :launched_completed -> "✓ composer run #{run_id} completed#{disposition_suffix(result)}"
       :gate_pending -> "composer run #{run_id} awaiting approval"
       :timeout -> nil
       other when other in [:failed, :cancelled, :abandoned] -> "✗ composer run #{run_id} #{other}"
@@ -507,6 +524,15 @@ defmodule JidoClaw.CLI.RunCommand do
   end
 
   defp run_line(_result), do: nil
+
+  # Camus C1-4: a done-with-findings completion is never plain green — exit 0
+  # holds, but the line carries the disposition + deferred-findings count.
+  defp disposition_suffix(%Result{disposition: "done_with_findings"} = result) do
+    count = result.findings_deferred_count || 0
+    " · done_with_findings (#{count} finding(s) deferred)"
+  end
+
+  defp disposition_suffix(_result), do: ""
 
   defp pending_block([]), do: nil
 

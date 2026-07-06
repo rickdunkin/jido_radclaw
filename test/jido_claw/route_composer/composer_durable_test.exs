@@ -1343,6 +1343,27 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert reload(parent.id, ctx).result["disposition"] == "review_infra_failed"
     end
 
+    test "rerun_cap: 1 survives restart via parent config (not reset to default)", ctx do
+      # Item 6 closed the rerun_cap persistence gap: the stall/exhaustion
+      # trigger reads it, so the boundary must be restart-stable — the exact
+      # infra_cap pattern. TWO durable stages_invalidated push the rebuilt
+      # count past the PERSISTED cap (2 > 1); under the DEFAULT cap (2 > 2 is
+      # false) the relaunched run would converge instead.
+      converging_outputs()
+      parent = recoverable_parent(ctx, rerun_cap: 1)
+
+      for _ <- 1..2 do
+        {:ok, _} =
+          append_event(parent, :stages_invalidated, %{stages: ["quality-reviewer"]}, ctx)
+      end
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+      assert :failed = await_status(parent.id, ctx, :failed, 30_000)
+
+      assert :route_budget_exhausted in kinds(parent.id, ctx)
+      assert reload(parent.id, ctx).error == "budget_exhausted: rerun_cap=1"
+    end
+
     test "lane B: closed_wave_index advances the rebuilt wave_index past the failed wave", ctx do
       arm_lens_first_worker()
       parent = lens_first_recoverable_parent(ctx)

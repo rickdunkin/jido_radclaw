@@ -44,6 +44,7 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
       Application.delete_env(:jido_claw, :route_composer_review_flag_on)
       Application.delete_env(:jido_claw, :route_composer_review_infra_on)
       Application.delete_env(:jido_claw, :route_composer_review_error_on)
+      Application.delete_env(:jido_claw, :route_composer_review_finding_on)
       Application.delete_env(:jido_claw, :route_composer_fixer_signals)
 
       case previous_server do
@@ -393,11 +394,12 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
   describe "exhaustion → :route_fix_failed (the reviewers keep rejecting the fix)" do
     test "a reviewer that always rejects past the rerun cap → :route_fix_failed (NOT budget_exhausted)",
          ctx do
-      # quality always rejects; a low rerun_cap so the self-heal loop exhausts. This
-      # directly guards the trip-after-exhaustion fix: at the trip tick the reviewer
-      # is no longer in `ran` (the cap-tripping invalidation removed it), so the
-      # terminal is keyed on rerun_counts + live, not ran — the disjoint forward twin
-      # of AR-8c's verify_failed.
+      # quality always rejects; a low rerun_cap so the self-heal loop stops. Item 6
+      # moved the stop EARLIER (the stall/no-re-review suppression at Hook R — the
+      # fixture finding is title-stable, so round 2 is STUCK and the re-review
+      # budget is at its cap), but the terminal contract is unchanged: fix_failed
+      # with the exhausted lens, never a generic budget stop — the disjoint forward
+      # twin of AR-8c's verify_failed.
       Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => :always})
 
       assert {:ok, summary} = run(ctx, rerun_cap: 1)
@@ -412,6 +414,132 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
       assert parent.status == :failed
       assert parent.result["disposition"] == "fix_failed"
       assert String.starts_with?(parent.error, "fix_failed: lenses=quality")
+    end
+  end
+
+  describe "camus C1-5 stall detection (next-ten #6)" do
+    test "a STUCK finding (same key round over round) stops after ONE fixer wave → :fix_failed",
+         ctx do
+      # quality re-flags the identical titled finding every round. rerun_cap is
+      # HIGH (5), so the old exhaustion path would burn ~6 fixer waves before the
+      # budget tripped — the round-2 STUCK key is what stops the loop now, and it
+      # stops it before a second (wasted, unreviewed-destined) fixer wave.
+      Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => :always})
+
+      assert {:ok, summary} = run(ctx, rerun_cap: 5, max_waves: 30)
+      assert summary.terminal == :fix_failed
+      assert summary.reason == ["quality"]
+
+      ks = kinds(summary.parent_run_id, ctx)
+      assert :route_fix_failed in ks
+      refute :route_budget_exhausted in ks
+      refute :route_not_converged in ks
+
+      # No wasted fixer wave: exactly ONE fixer dispatch (the suppressed Hook R
+      # never recorded a re-invalidation — no `stages_invalidated` names the
+      # fixer at all).
+      assert fixer_wave_count(summary.parent_run_id, ctx) == 1
+
+      fixer_invalidations =
+        summary.parent_run_id
+        |> events(ctx, :stages_invalidated)
+        |> Enum.filter(fn e -> "fixer" in (e.payload["stages"] || []) end)
+
+      assert fixer_invalidations == []
+
+      # The durable finding_keys evidence: two quality rounds, SAME key both
+      # times (the stuck identity), keys only — never titles/bodies.
+      quality_rounds = finding_key_events(summary.parent_run_id, ctx, "quality")
+      assert [round1, round2] = Enum.map(quality_rounds, & &1.payload["keys"])
+      assert round1 == round2
+      assert [key] = round1
+      assert key =~ ~r/^[0-9a-f]{64}$/
+
+      for e <- quality_rounds do
+        refute Map.has_key?(e.payload, "title")
+        assert [%{"key" => _, "severity" => _, "confidence" => _}] = e.payload["marks"]
+      end
+    end
+
+    test "an OSCILLATING finding (A → B → A) stops the loop → :fix_failed", ctx do
+      # Round 2 flags a DIFFERENT titled finding (B), so the loop legitimately
+      # continues; round 3 re-flags A — now in `seen_prior \ prior`, the
+      # oscillation set — and the loop stops with exactly TWO fixer waves.
+      Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => :always})
+
+      Application.put_env(:jido_claw, :route_composer_review_finding_on, %{
+        "quality" => %{
+          2 => %{
+            "title" => "unbounded recursion",
+            "severity" => "error",
+            "confidence" => "likely",
+            "location" => "lib/auth.ex:90",
+            "description" => "the retry loop never terminates"
+          }
+        }
+      })
+
+      assert {:ok, summary} = run(ctx, rerun_cap: 5, max_waves: 30)
+      assert summary.terminal == :fix_failed
+      assert summary.reason == ["quality"]
+      assert fixer_wave_count(summary.parent_run_id, ctx) == 2
+
+      # Three quality rounds durable: A, B, A — round 3's key equals round 1's.
+      assert [r1, r2, r3] =
+               summary.parent_run_id
+               |> finding_key_events(ctx, "quality")
+               |> Enum.map(& &1.payload["keys"])
+
+      assert r1 == r3
+      assert r2 != r1
+    end
+
+    test "an un-keyable (title-less) finding never stall-matches; the re-review budget stop catches it",
+         ctx do
+      # The camus fail-safe: no title → no key → excluded from stall detection.
+      # The stop still happens — the (a) no-fix-without-re-review-budget rule
+      # suppresses the re-fire once the reviewer's rerun count reaches the cap.
+      untitled = %{
+        "severity" => "error",
+        "confidence" => "likely",
+        "location" => "lib/auth.ex:42",
+        "description" => "missing nil check"
+      }
+
+      Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => :always})
+
+      Application.put_env(:jido_claw, :route_composer_review_finding_on, %{
+        "quality" => %{1 => untitled, 2 => untitled}
+      })
+
+      assert {:ok, summary} = run(ctx, rerun_cap: 1)
+      assert summary.terminal == :fix_failed
+      assert fixer_wave_count(summary.parent_run_id, ctx) == 1
+
+      # Both flagged rounds folded with EMPTY keys — no fabricated identity.
+      for e <- finding_key_events(summary.parent_run_id, ctx, "quality") do
+        assert e.payload["keys"] == []
+        assert e.payload["marks"] == []
+      end
+    end
+
+    test "clean rounds weld the explicit empty finding_keys marker (the round still advances)",
+         ctx do
+      # quality flags once then cleans: its round-2 CLEAN emission must still
+      # weld a finding_keys marker with keys: [] — oscillation detection needs
+      # the round to advance through clean rounds.
+      Application.put_env(:jido_claw, :route_composer_review_flag_on, %{"quality" => [1]})
+
+      assert {:ok, summary} = run(ctx)
+      assert summary.terminal == :converged
+
+      assert [flagged, clean] =
+               summary.parent_run_id
+               |> finding_key_events(ctx, "quality")
+               |> Enum.map(& &1.payload["keys"])
+
+      assert [_key] = flagged
+      assert clean == []
     end
   end
 
@@ -451,6 +579,22 @@ defmodule JidoClaw.RouteComposer.ComposerSelfHealLoopTest do
     |> Enum.filter(fn e -> stage in (e.payload["stages"] || []) end)
     |> Enum.map(& &1.payload["wave_index"])
     |> Enum.min(fn -> nil end)
+  end
+
+  # How many waves dispatched the fixer (item 6: the stall stop must not burn
+  # extra fixer waves).
+  defp fixer_wave_count(parent_id, ctx) do
+    parent_id
+    |> events(ctx, :wave_started)
+    |> Enum.count(fn e -> "fixer" in (e.payload["stages"] || []) end)
+  end
+
+  # The lens's durable finding_keys markers, in seq order.
+  defp finding_key_events(parent_id, ctx, lens) do
+    parent_id
+    |> events(ctx, :finding_keys)
+    |> Enum.filter(&(&1.payload["lens"] == lens))
+    |> Enum.sort_by(& &1.seq)
   end
 
   # Every {name, producer} pair any artifacts_invalidated event deleted.
