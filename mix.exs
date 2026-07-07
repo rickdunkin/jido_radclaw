@@ -65,7 +65,8 @@ defmodule JidoClaw.MixProject do
       preferred_envs: [
         precommit: :test,
         "jidoclaw.system_prompt.check": :test,
-        "jidoclaw.jido_md.check": :test
+        "jidoclaw.jido_md.check": :test,
+        "jidoclaw.system_docs.check": :test
       ]
     ]
   end
@@ -264,6 +265,7 @@ defmodule JidoClaw.MixProject do
         "jidoclaw.compile_check",
         "jidoclaw.system_prompt.check",
         "jidoclaw.jido_md.check",
+        "jidoclaw.system_docs.check",
         "deps.unlock --unused",
         "format --check-formatted",
         "reach.check --arch --smells --strict",

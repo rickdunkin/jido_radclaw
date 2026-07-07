@@ -35,7 +35,8 @@ the *workflow* — how to get from "here's a repo" to a doc that satisfies the R
    format, but tone and judgment density only calibrate by example.
 4. Collision sweep, so the doc lands in context instead of re-opening settled questions:
    current queue state (`docs/plans/unadopted-next-*/README.md`), a grep of
-   `docs/exploration/` for the subject's core topics, and the memory index (MEMORY.md)
+   `docs/exploration/` (and `docs/system/`, for subsystem truth already shipped) for the
+   subject's core topics, and the memory index (MEMORY.md)
    for standing decisions (threat model, engine choices, deferred work).
 
 ## Phase 1 — Scope the subject

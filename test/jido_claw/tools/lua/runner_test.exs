@@ -155,9 +155,14 @@ defmodule JidoClaw.Tools.Lua.RunnerTest do
     end
 
     test "heap cap kills a memory bomb (small strings stay on-heap)", %{context: context} do
-      # 300k 48-byte strings (< 64B ⇒ heap binaries, not refc) blow the
-      # 64MiB cap well before the instruction budget or the wall clock.
-      script = ~s|local t = {} for i = 1, 300000 do t[i] = string.rep("x", 48) end return #t|
+      # 2M 48-byte strings (< 64B ⇒ heap binaries, not refc). Live data
+      # alone (~260MB with table overhead) dwarfs the 64MiB cap, so the
+      # loop CANNOT complete under it and any GC past the ~64MiB crossing
+      # (~a quarter in) kills — GC-schedule-independent. A smaller bomb
+      # whose live set fits under the cap only dies when transient garbage
+      # happens to pile past 64MiB between collections; under full-suite
+      # load that let the loop finish and return {:ok, ...}.
+      script = ~s|local t = {} for i = 1, 2000000 do t[i] = string.rep("x", 48) end return #t|
 
       assert {:error, %{code: :lua_memory_exceeded, details: details}} =
                Runner.eval(script, context,
