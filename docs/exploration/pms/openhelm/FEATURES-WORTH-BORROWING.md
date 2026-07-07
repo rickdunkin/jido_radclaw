@@ -368,6 +368,11 @@ schema reserves `outcome_spec`-shaped acceptance fields for cron/automation prod
 
 **Recommendation**: BORROW-PATTERN for argus FLOW §8 automations (slice 3) and any future
 "platform watches itself" loop; the v1 anti-pattern is the half to internalize first.
+**Sibling (2026-07-07)**: `docs/exploration/cc-dynamic-workflows/` **DW-4** (per-run
+shared token budget pool over `WorkflowRun`) is the same budget family on the
+jido_radclaw side — its collision note points here; reconcile the two shapes
+(charge-before-call dailies here, hard per-run pool there) rather than designing either
+fresh.
 
 **Where in OpenHelm**: `shared/src/engine/tick.ts:16-26,58-177`, signals + facts-hash +
 cooldowns `shared/src/engine/signals.ts:110-141` (kinds `types.ts:138-153`), budget

@@ -26,6 +26,7 @@ below are abridged from each doc's Determination.
 | [amber](amber/) | inventory | Own code: nothing to adopt; the stack it demos: one high-value borrow (AM-1 code-mode pair — adopted 2026-07-03 as `lua_query`/`lua_docs`), one watch-with-trigger |
 | [argus](argus/) | OVERVIEW, FLOW, SYNTHESIS, DECISIONS | Greenfield codename: tailnet-wide multi-agent control plane — architecture decisions + current-state audit (OVERVIEW), the product-layer draft (FLOW, newest where they disagree), the ades+pms corpus roll-up by argus concern (SYNTHESIS), and the one-page decisions-of-record snapshot for build kickoff (DECISIONS, 2026-07-07) |
 | [camus](camus/) | inventory | Claude Code plan/loop/review product; engine no (ours supersets it), judgment layer nearly wholesale (deterministic verify, honest statuses, git evidence) |
+| [cc-dynamic-workflows](cc-dynamic-workflows/) | inventory | Claude Code's dynamic-workflows feature itself (blog + firsthand harness operation — the corpus's first non-repo subject; camus is a product built *on* it). Runtime/durability SKIP: their script double-duties as control flow + durability unit (deterministic-replay resume), and our Reactor + envelope split supersedes it — camus's engine verdict extends from its use of the feature to the feature. The haul is the three-layer dynamic-flows program: DW-1 Lua `reduce:`/`when:` computation glue between steps (builds on AM-1; standalone value for committed skills today — the operator-flagged headline), DW-2 inline skill definitions through the compiler that was already built for LLM-authored YAML (OQs decided 2026-07-07: gate-every-run at launch + gated-struct checkpoint/resume pulled into the slice; `run_pipeline` inline-stages precedent), DW-3 `fan_out:` over runtime lists (Reactor 1.0.2 already ships `map`/step-emission — expose, don't build); plus DW-4 per-run token budget pool (OH2-1's sibling; all our budgets are count-denominated today) and do-now DW-5 quarantine-as-precommit-invariant (researcher/sketch/system templates already practice reader/actor separation; nothing enforces it). Adversarial-verify / loop-until-done / laziness countermeasures / model routing all Already Covered by stronger mechanisms (Verdict, ReviewIndependence, Verify authority, IterativeStep caps, honest terminals, AR-9 tiering) |
 | [empirica](empirica/) | inventory | Deliberately short list: negative knowledge with decision-point re-surfacing + confidence-calibration ledger |
 | [gepa](gepa/) | inventory | Prompt-evolution algorithm; "best borrow-per-line so far" — we own the substrate, lack the four load-bearing pieces |
 | [gust](gust/) | inventory, unadopted rollup | Full workflow platform ("Airflow competitor, not a Reactor competitor"); one valuable pattern, MCP catalog resources shipped from it |
@@ -73,7 +74,10 @@ commits pinned** (subject @ sha, jido_radclaw @ sha) — the newer docs' phrasin
 model: *"Cites are firsthand reads of both trees, accurate to within a few lines"*; the
 subject's shape (language, LOC, structure) and maturity signals (commit count, releases,
 contributor tail, activity, license); and an explicit note when something was **read but
-not executed** (nono: "runtime claims are per-docs until the install spike"). Follow with
+not executed** (nono: "runtime claims are per-docs until the install spike"). Non-repo
+subjects (a feature or publication — cc-dynamic-workflows is the precedent) pin **URL +
+date + harness version** in place of a subject sha, and a re-review re-operates the
+surface instead of re-reading a tree. Follow with
 a **companion docs** paragraph cross-linking the sibling explorations this one interacts
 with, and — where relevant — the threat-model weighting note (personal, tailnet-only:
 LLM-misbehavior containment and leakage hygiene over external-attacker hardening).

@@ -15,6 +15,16 @@ metadata, not for this checkout:
 - `~/workspace/claws/squid_sonar` — **SquidSonar 0.1.7**, "Embeddable runtime dashboard for Squidie." ~4.5k LOC. An embeddable Phoenix LiveView **ops dashboard / control surface** you mount in a host app — *not* read-only: alongside inspect/graph/explain it exposes run controls (cancel/resume/approve/reject/replay via `SquidSonar.Runs`, `runs.ex:43-96`; since 2026-06 also `start_spec/3` for launching runtime-spec runs, `runs.ex:98-110`) wired to LiveView events (`run_live.ex:48-120`). Deps: `phoenix ~> 1.8.1`, `phoenix_live_view ~> 1.1`, `squidie ~> 0.1.2`. (11 commits past the 0.1.7 tag as of 2026-06-11 — live-claim/deferred-continuation/compensation-evidence/dynamic-work views — with no version bump.)
 - `~/workspace/claws/rift` — **Rift 0.1.0 (ARCHIVED)**, "Phoenix LiveView ops inbox for human workflow decisions." ~3.7k LOC. Example app: host declares *case types*, users open cases via forms, each case starts one Squidie run, operators review in an inbox. Raw Ecto (`Rift.Repo`).
 
+**Note (2026-07-07)**: the Reactor adoption this comparison produced is why
+`docs/exploration/cc-dynamic-workflows/` (Claude Code's script-shaped workflow feature,
+the corpus's first non-repo subject) verdicts that runtime's durability half Already
+Covered — their orchestration script double-duties as control flow + durability unit
+(deterministic-replay resume); ours splits them between Reactor and the envelope. Its
+DW-2/DW-3 entries are the first program to extend the adopted engine's *authoring*
+surface (gated inline LLM-authored definitions; runtime fan-out via Reactor's native
+`map`), and its OQ-3 decision pulls the gated-**struct** checkpoint/resume item forward
+with `definition_hash` as the struct-world checkpoint identity.
+
 ## Determination (TL;DR)
 
 **Do not adopt any of the three as a dependency. Borrow patterns selectively.**

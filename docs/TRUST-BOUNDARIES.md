@@ -13,6 +13,15 @@ passes between an LLM and the engine. A change that hands state across that
 line must answer all five questions; **a feature that can't answer all five
 isn't designed yet.**
 
+A companion taxonomy names the failure modes the laws exist to contain: **agentic
+laziness** (declaring done at partial coverage — law 4's territory: honest terminals,
+`FindingKey` coverage, all-or-reject waivers), **self-preferential bias** (an agent
+judging its own output — law 2 plus the cross-vendor `ReviewIndependence` fence), and
+**goal drift** (fidelity loss across turns and compaction — law 3's durable-state
+posture plus scoped per-agent compaction). Vocabulary from the Claude Code
+dynamic-workflows post, via
+`docs/exploration/cc-dynamic-workflows/FEATURES-WORTH-BORROWING.md` (DW-7).
+
 ## The laws
 
 1. **Every phase has allowed mutations.** State-changing effects live in

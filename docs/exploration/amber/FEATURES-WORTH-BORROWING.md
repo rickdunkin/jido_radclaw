@@ -94,6 +94,11 @@ map/list result; the Runner measures the final envelope's JSON bytes itself.
 **from-scratch pure-Elixir Lua VM, not Luerl** (Luerl backed only `lua ≤ 0.x` — the
 line ash_lua still pins); the new VM's deterministic budgets (`max_instructions`,
 `max_string_bytes`) don't exist in LuaEval and are wired as policy caps.
+**Descendant (2026-07-07)**: the pair's charter — computation in the sandbox,
+intermediate rows never in model context — extends to *orchestration glue* as
+`docs/exploration/cc-dynamic-workflows/` **DW-1** (`reduce:`/`when:` between compiled
+skill steps, deterministic-by-default bindings per its OQ-2 decision), with this
+entry's write-binding fence and gate-policy note inherited unchanged.
 Prior status — **Status (2026-07-02)**: NOT_ADOPTED — no
 scriptable query surface exists on any tool surface (REPL agent or served MCP).
 
