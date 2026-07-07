@@ -80,6 +80,29 @@ defmodule JidoClaw.Agent.Templates do
   provider actually returned, never re-resolving the name against this canonical
   registry, so an overridden provider can't slip a private template past a guard
   that checked a different source. `composer_private?/1` delegates to it.
+
+  ## `executor` binding (item 7, camus C1-1 PR-1)
+
+  Every resolved template carries an `:executor` key — WHERE this template's
+  step work runs: `:in_process` (the default; today's in-process `Jido.AI`
+  worker) or `{:forge, :fake | :shell | :codex | :claude_code | :custom}` (a
+  real Forge session driven by `JidoClaw.Skills.Steps.ForgeExecutor`; only
+  `:fake`/`:shell` are built in PR-1 — the other kinds hydrate but are refused
+  at dispatch until PR-2). `:executor_config` is the per-executor config map
+  (hydrates to `%{}`): PR-1 uses only `%{command: <binary>}` for
+  `{:forge, :shell}` — the operator-declared shell command (the `verify_cmd`
+  trust class; the stage *task* is never the command).
+
+  Unlike the other policies, a malformed value **raises** `ArgumentError` (the
+  `:max_iterations` loud posture, not the warn+fail-closed one): fc/ra/sandbox
+  fail closed to a *tighter runnable* value, but for the executor the tight
+  direction is *refuse to run* — silently mapping a typo to `:in_process`
+  would hand execution to the wrong executor. A `{:forge, _}` executor also
+  refuses a `:prototype`/`:docker` `:sandbox` policy (the in-process VFS-jail
+  axis is meaningless for a forge session — PR-2's session-sandbox knob lives
+  in `:executor_config`, a different axis), and `{:forge, :shell}` without a
+  non-empty `:executor_config` `command` refuses at hydration — the earliest,
+  loudest point, before any Forge slot is consumed.
   """
 
   require Logger
@@ -377,6 +400,7 @@ defmodule JidoClaw.Agent.Templates do
     |> ensure_require_approval()
     |> ensure_sandbox()
     |> ensure_composer_private()
+    |> ensure_executor()
   end
 
   # Two clauses, NO catch-all — preserves today's behavior: a template
@@ -472,6 +496,84 @@ defmodule JidoClaw.Agent.Templates do
     )
 
     :prototype
+  end
+
+  # Item 7 (camus C1-1) PR-1: the executor seam. Runs LAST in the hydration
+  # pipeline (after `ensure_sandbox`, so the combo check reads the validated
+  # `:sandbox` key). Malformed values RAISE — see the moduledoc for why this is
+  # the `:max_iterations` loud posture, not the fc/ra/sandbox fail-closed one.
+  defp ensure_executor(template) do
+    executor = Map.get(template, :executor, :in_process)
+    config = Map.get(template, :executor_config, %{})
+
+    validate_executor_config!(config, template)
+    validate_executor!(executor, config, template)
+
+    template
+    |> Map.put(:executor, executor)
+    |> Map.put(:executor_config, config)
+  end
+
+  # `:executor_config` must be a map for EVERY executor kind (PR-2 must not
+  # inherit ambiguous shapes), even `:in_process` (which ignores it).
+  defp validate_executor_config!(config, _template) when is_map(config), do: :ok
+
+  defp validate_executor_config!(config, t) do
+    raise ArgumentError,
+          "invalid :executor_config #{inspect(config)} for " <>
+            "#{inspect(Map.get(t, :module))}: must be a map"
+  end
+
+  defp validate_executor!(:in_process, _config, _template), do: :ok
+
+  # A command-less shell template fails closed at hydration — the stage task is
+  # never the command (AgentStep appends produces-instructions to tasks, and
+  # `Runners.Shell` would silently default to `echo 'no command'`: exactly the
+  # silent green this forecloses). A whitespace-only command is the same silent
+  # green (`sh -c "   "` exits 0, empty output), so blank is rejected too;
+  # `String.trim/1` is not guard-safe, hence the check lives in the body.
+  defp validate_executor!({:forge, :shell} = executor, config, t) do
+    refuse_forge_sandbox_combo!(executor, t)
+
+    command = Map.get(config, :command)
+
+    if is_binary(command) and String.trim(command) != "" do
+      :ok
+    else
+      raise ArgumentError,
+            "executor {:forge, :shell} for #{inspect(Map.get(t, :module))} requires " <>
+              ":executor_config %{command: <non-blank binary>}, got command: #{inspect(command)}"
+    end
+  end
+
+  # The full five-kind union hydrates; dispatch refuses the unbuilt kinds
+  # (`:codex`/`:claude_code`/`:custom`) with a "not implemented until PR-2"
+  # error — the camus review.sh unknown-backend fail-closed discipline.
+  defp validate_executor!({:forge, kind} = executor, _config, t)
+       when kind in [:fake, :codex, :claude_code, :custom] do
+    refuse_forge_sandbox_combo!(executor, t)
+  end
+
+  defp validate_executor!(other, _config, t) do
+    raise ArgumentError,
+          "invalid :executor #{inspect(other)} for #{inspect(Map.get(t, :module))}: expected " <>
+            ":in_process or {:forge, :fake | :shell | :codex | :claude_code | :custom}"
+  end
+
+  # A `{:forge, _}` executor with a `:prototype`/`:docker` sandbox policy would
+  # leave the in-process VFS-jail axis silently dead on a forge session — refuse
+  # the combo. PR-2's session-sandbox knob lives in `:executor_config`.
+  defp refuse_forge_sandbox_combo!(executor, t) do
+    case Map.get(t, :sandbox, :none) do
+      :none ->
+        :ok
+
+      tier ->
+        raise ArgumentError,
+              "executor #{inspect(executor)} for #{inspect(Map.get(t, :module))} cannot " <>
+                "combine with sandbox: #{inspect(tier)} — the in-process VFS-jail axis " <>
+                "does not apply to a forge session"
+    end
   end
 
   defp module_max_iterations(module) do

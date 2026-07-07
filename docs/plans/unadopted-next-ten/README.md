@@ -531,6 +531,55 @@ fingerprint.
 
 ## 7. Executor seam — M–L, must be broken down (camus C1-1)
 
+> **PR-1 (template binding + `:fake`/`:shell` executors) DONE 2026-07-06**, with
+> corrections to this entry's claims — the item-level Status and the camus C1-1
+> source reconciliation wait for PR-4: (a) "`AgentRunner` branches on it"
+> understated the envelope — both arms share one tool-context builder + the
+> extracted `run_recorded` never-crash envelope (correlation BEFORE any Forge
+> resource exists; task/terminal transcript rows uniform across executors), and
+> the forge arm must **publish the terminal signal itself**
+> (`ai.request.completed`/`failed` — `Conversations.Recorder`'s flush barrier
+> and the correlation finalizer wait on a signal only the in-process
+> AgentServer emitted; without it every forge step stalls a full flush timeout
+> at `record_terminal`; PR-2 inherits the fix via `run_forge`). (b) The binding
+> grew a second key — `executor_config:` (a map, so PR-2 adds keys without a
+> new top-level field; PR-1 uses only `%{command: _}` for `{:forge, :shell}` —
+> operator config in the `verify_cmd` trust class, never the stage task, and a
+> command-less shell template is refused at hydration); validation **raises**
+> (the `:max_iterations` loud posture, not fc/ra/sandbox's warn+fail-closed —
+> the tight direction here is refuse-to-run), the full five-kind union
+> hydrates with dispatch refusing the unbuilt kinds ("not implemented until
+> PR-2"), and a `{:forge, _}` executor refuses a `:prototype`/`:docker`
+> `:sandbox` policy (the VFS-jail axis is dead on a forge session; PR-2's
+> session-sandbox knob lives in `executor_config`). (c) "hands the eval
+> harness deterministic fake-backed stages" needed finer-than-template fixture
+> keys — real catalogs reuse one template across stages — so
+> `:executor_fake_outputs` resolves `{:stage, template, step_name}` →
+> `{:fragment, template, fragment}` (exactly-one contain-match, else fail
+> closed) → plain template, ANY tuple key disabling the plain fallback (the
+> composer StubWorker rule as lib code), all resolved before provisioning;
+> fake/stdout output is schema-validated against the template module's
+> declared `output` with live-faithful failure consequences (lens stage ⇒ #4's
+> infra lane, producer ⇒ result-text artifact fallback — never a fabricated
+> verdict). Payoff proven: a `:composer` eval case converges through the real
+> `DefaultMapper`/`Verdict` flow armed by `:agent_templates_override` +
+> `:executor_fake_outputs` alone — neither `:step_agent_server` nor
+> `:route_composer_stub_outputs`. (d) Sessions are real minimal Forge sessions
+> (`claim: false`, `sandbox: :local` ⇒ HostShell even under a prod
+> `FORGE_SANDBOX=docker`, `start_session_ready(expected_backend:)`, result
+> captured before the `try/after` `stop_session`); the spec carries
+> `workspace_uuid`, never the runtime `workspace_id` string (the front-door
+> `forge_exec_spec/3` precedent — `Persistence.scope_from_spec/1` casts it to
+> the Session's `:uuid`). (e) The cost note's residual is now concrete: Forge
+> `Manager` per-runner caps (`shell: 20`; module runners like the new generic
+> `Forge.Runners.StaticFake` fall to `max_sessions: 50` — the consolidator's
+> `Runners.Fake` untouched) can `:runner_at_capacity` a wide parallel wave —
+> a per-step error, not a crash. "Untouched templates stay byte-identical"
+> holds at the raw source and in-process behavior; hydrated maps gain
+> `executor: :in_process` + `executor_config: %{}` (test-pinned).
+> `:needs_input` maps to a step error until PR-4's gate case; telemetry
+> counter `jido_claw.executor.total`.
+
 **Direction agreed 2026-07-02** (recorded in the camus doc's revision note):
 build the seam, not the pairing. One hard binding stands between the shipped
 substrate and the whole family — `AgentRunner` always spawns an in-process
@@ -541,12 +590,13 @@ contract, both vendor CLIs, and a proven headless driver (the consolidator's
 
 **Suggested 4 PRs:**
 
-1. **PR-1 — template binding + in-process/fake (S–M):**
+1. **PR-1 — template binding + in-process/fake (S–M) — DONE 2026-07-06:**
    `executor: :in_process (default) | {:forge, :codex | :claude_code | :shell
    | :custom | :fake}` in the `Templates` registry; `AgentRunner` branches on
    it; land `:fake` (and `:shell`) first — proves the seam cheaply and hands
    the eval harness deterministic fake-backed stages. Untouched templates stay
-   byte-identical.
+   byte-identical. *(Shipped as sketched plus the deviations in the note
+   above; the seam lives in `Skills.Steps.ForgeExecutor`.)*
 2. **PR-2 — the Forge-backed path (M):** session provisioning per the
    consolidator pattern; a `workspace: :repo | :scratch | :none` template
    knob; a scoped per-run MCP endpoint whose single deposit tool

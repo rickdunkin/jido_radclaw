@@ -54,8 +54,14 @@ defmodule JidoClaw.Forge.Harness do
 
   @spec run_iteration(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def run_iteration(session_id, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 300_000)
-    call(session_id, {:run_iteration, opts}, timeout)
+    # Same C3 geometry as `exec/3`: the OUTER `GenServer.call` deadline is
+    # cushioned past the INNER backend timeout (`opts[:timeout]`, riding the
+    # runner task down to `Sandbox.exec`). The outer clock starts first, so
+    # equal deadlines always expire the outer one — the inner must win so a
+    # real command timeout surfaces as the runner's graceful reply (Shell maps
+    # HostShell's manufactured `{_, 124}`) instead of an uncaught caller
+    # `:exit, {:timeout, _}` (`call/3` only catches `:noproc`).
+    call(session_id, {:run_iteration, opts}, exec_call_timeout(opts))
   end
 
   @spec exec(String.t(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
@@ -70,11 +76,12 @@ defmodule JidoClaw.Forge.Harness do
     call(session_id, {:exec, command, opts}, exec_call_timeout(opts))
   end
 
-  # The outer `GenServer.call` timeout: the caller's inner timeout plus the
-  # single-sourced cushion. A unit-testable seam (the bridge's deadline-budget
-  # margin reads the SAME `Forge.exec_timeout_cushion_ms/0`, so the two can
-  # never drift). A non-integer/absent inner timeout falls back to the legacy
-  # 300_000 default before cushioning.
+  # The outer `GenServer.call` timeout for BOTH `exec/3` and `run_iteration/2`:
+  # the caller's inner timeout plus the single-sourced cushion. A unit-testable
+  # seam (the bridge's deadline-budget margin reads the SAME
+  # `Forge.exec_timeout_cushion_ms/0`, so the two can never drift). A
+  # non-integer/absent inner timeout falls back to the legacy 300_000 default
+  # before cushioning.
   @doc false
   @spec exec_call_timeout(keyword()) :: timeout()
   def exec_call_timeout(opts) do

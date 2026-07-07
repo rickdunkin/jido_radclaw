@@ -494,6 +494,119 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
+  # Item 7 (camus C1-1) PR-1: the executor seam binding. Unlike the fc/ra/
+  # sandbox policies, a malformed value RAISES at hydration (the tight
+  # direction is refuse-to-run — silently mapping a typo to :in_process would
+  # hand execution to the wrong executor).
+  describe "executor hydration (item 7, camus C1-1 PR-1)" do
+    test "every static template hydrates executor: :in_process + executor_config: %{} (byte-identity guard)" do
+      for {name, template} <- Templates.list() do
+        assert template.executor == :in_process, "expected :in_process executor for '#{name}'"
+        assert template.executor_config == %{}, "expected %{} executor_config for '#{name}'"
+      end
+
+      assert {:ok, %{executor: :in_process, executor_config: %{}}} = Templates.get("coder")
+    end
+
+    test "{:forge, :fake} hydrates unchanged" do
+      with_template_override("exec_fake", exec_template(executor: {:forge, :fake}), fn ->
+        assert {:ok, %{executor: {:forge, :fake}, executor_config: %{}}} =
+                 Templates.get("exec_fake")
+      end)
+    end
+
+    test "{:forge, :shell} with a command hydrates unchanged" do
+      template = exec_template(executor: {:forge, :shell}, executor_config: %{command: "true"})
+
+      with_template_override("exec_shell", template, fn ->
+        assert {:ok, %{executor: {:forge, :shell}, executor_config: %{command: "true"}}} =
+                 Templates.get("exec_shell")
+      end)
+    end
+
+    test "a command-less {:forge, :shell} raises at hydration (never a silent echo)" do
+      with_template_override("exec_shell", exec_template(executor: {:forge, :shell}), fn ->
+        assert_raise ArgumentError, ~r/requires :executor_config/, fn ->
+          Templates.get("exec_shell")
+        end
+      end)
+    end
+
+    test "an empty-string shell command raises too" do
+      template = exec_template(executor: {:forge, :shell}, executor_config: %{command: ""})
+
+      with_template_override("exec_shell", template, fn ->
+        assert_raise ArgumentError, ~r/requires :executor_config/, fn ->
+          Templates.get("exec_shell")
+        end
+      end)
+    end
+
+    # `sh -c "   "` exits 0 with empty output — the same silent green a
+    # command-less template forecloses.
+    test "a whitespace-only shell command raises too" do
+      template = exec_template(executor: {:forge, :shell}, executor_config: %{command: " \n\t "})
+
+      with_template_override("exec_shell", template, fn ->
+        assert_raise ArgumentError, ~r/requires :executor_config/, fn ->
+          Templates.get("exec_shell")
+        end
+      end)
+    end
+
+    test "a typo'd executor raises with the expected union" do
+      with_template_override("exec_typo", exec_template(executor: {:forge, :fkae}), fn ->
+        assert_raise ArgumentError, ~r/invalid :executor/, fn -> Templates.get("exec_typo") end
+      end)
+    end
+
+    test "the unbuilt kinds hydrate (full five-kind union) — dispatch refuses them, not hydration" do
+      for kind <- [:codex, :claude_code, :custom] do
+        with_template_override("exec_unbuilt", exec_template(executor: {:forge, kind}), fn ->
+          assert {:ok, %{executor: {:forge, ^kind}}} = Templates.get("exec_unbuilt")
+        end)
+      end
+    end
+
+    test "a {:forge, _} executor refuses a sandboxed template (combo rule)" do
+      template = exec_template(executor: {:forge, :fake}, sandbox: :prototype)
+
+      with_template_override("exec_sbx", template, fn ->
+        assert_raise ArgumentError, ~r/cannot combine with sandbox/, fn ->
+          Templates.get("exec_sbx")
+        end
+      end)
+    end
+
+    test "a non-map executor_config raises for every kind (even :in_process)" do
+      template = exec_template(executor_config: [command: "true"])
+
+      with_template_override("exec_cfg", template, fn ->
+        assert_raise ArgumentError, ~r/invalid :executor_config/, fn ->
+          Templates.get("exec_cfg")
+        end
+      end)
+    end
+  end
+
+  defp exec_template(overrides) do
+    Map.merge(%{module: JidoClaw.Agent.Workers.Coder, max_iterations: 1}, Map.new(overrides))
+  end
+
+  # Register a one-off named template map via the override hook, run `fun`,
+  # then restore the prior override (the executor-seam sibling of the
+  # field-shaped fc/ra helpers below — takes the WHOLE template).
+  defp with_template_override(name, template, fun) do
+    original = Application.get_env(:jido_claw, :agent_templates_override, %{})
+    Application.put_env(:jido_claw, :agent_templates_override, Map.put(original, name, template))
+
+    try do
+      fun.()
+    after
+      Application.put_env(:jido_claw, :agent_templates_override, original)
+    end
+  end
+
   # Register a one-off `"fc_test"` template carrying `forward_context: fc`
   # via the override hook, run `fun`, then restore the prior override.
   defp with_fc_override(fc, fun) do

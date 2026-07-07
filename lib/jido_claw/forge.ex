@@ -107,12 +107,16 @@ defmodule JidoClaw.Forge do
 
   # Single source of truth for the Forge exec timeout cushion (AR-8b-2 F2 C3).
   #
-  # Two independent consumers read this so they can never drift:
+  # Three independent consumers read this so they can never drift:
   #
   #   * `JidoClaw.Forge.Harness.exec_call_timeout/1` sizes the OUTER
-  #     `GenServer.call` deadline to `inner + cushion`, so a real in-container
-  #     timeout returns the backend's manufactured `{_, 124}` (which the bridge
-  #     taints on) instead of an uncaught caller `:exit, {:timeout, _}`; and
+  #     `GenServer.call` deadline to `inner + cushion` for `Harness.exec/3`, so
+  #     a real in-container timeout returns the backend's manufactured
+  #     `{_, 124}` (which the bridge taints on) instead of an uncaught caller
+  #     `:exit, {:timeout, _}`;
+  #   * `Harness.run_iteration/2` sizes its outer deadline through the same
+  #     `exec_call_timeout/1` — the iteration path had the identical
+  #     caller-exit geometry (executor-seam PR-1 review P1); and
   #   * `JidoClaw.Tools.RunCommand.ForgeBridge` folds it into the timeout-budget
   #     `margin` it derives from the outer `Jido.Exec` deadline, so the ordering
   #     `inner_OsCmd < harness_outer (inner + cushion) < jido_deadline` holds.

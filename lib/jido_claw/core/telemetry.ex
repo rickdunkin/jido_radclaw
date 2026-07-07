@@ -78,6 +78,12 @@ defmodule JidoClaw.Telemetry do
       # The Trace `:composer` verify_result events carry the per-run detail.
       counter("jido_claw.verify.total", tags: [:result]),
 
+      # Forge-executor steps (item 7, camus C1-1 PR-1) — one count per
+      # `{:forge, _}` step through the ForgeExecutor bridge; `kind` is
+      # :fake/:shell, `outcome` :ok/:error. The in-process arm emits nothing;
+      # the durable transcript envelope carries the per-step detail.
+      counter("jido_claw.executor.total", tags: [:kind, :outcome]),
+
       # Composer fix-loop stall stops (next-ten item 6, camus C1-5) — one
       # count per stopped lens; `kind` is :stuck/:oscillating/:rereview_exhausted.
       # The Trace `:composer` events carry the per-run detail (hex keys only).
@@ -263,6 +269,11 @@ defmodule JidoClaw.Telemetry do
   @spec emit_verify(atom()) :: :ok
   def emit_verify(result) do
     :telemetry.execute([:jido_claw, :verify], %{total: 1}, %{result: result})
+  end
+
+  @spec emit_executor(atom(), atom()) :: :ok
+  def emit_executor(kind, outcome) do
+    :telemetry.execute([:jido_claw, :executor], %{total: 1}, %{kind: kind, outcome: outcome})
   end
 
   @spec emit_lua_eval(atom(), atom(), map()) :: :ok

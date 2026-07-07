@@ -62,4 +62,29 @@ defmodule JidoClaw.Forge.HarnessIterationMonitorTest do
     assert {:ok, status} = Forge.status(sid)
     assert status.state == :ready
   end
+
+  # Executor-seam PR-1 review P1: `run_iteration/2`'s OUTER GenServer.call
+  # deadline must be cushioned past the INNER backend timeout (the `exec/3` C3
+  # geometry). The outer clock starts first, so an uncushioned outer always
+  # expires before HostShell's inner OsCmd manufactures its `{_, 124}` reply —
+  # exiting the caller instead of returning the runner's graceful error.
+  test "a real command timeout returns the runner's 124 error, never an outer call exit" do
+    session_id = "harness-cushion-#{System.unique_integer([:positive])}"
+    ForgePubSub.subscribe(session_id)
+
+    {:ok, _handle} =
+      Forge.start_session(session_id, %{
+        runner: :shell,
+        runner_config: %{command: "sleep 2"},
+        sandbox: :local
+      })
+
+    assert_receive {:ready, ^session_id}, @timeout
+    on_exit(fn -> _ = Forge.stop_session(session_id) end)
+
+    assert {:ok, %{status: :error, error: error}} =
+             Forge.run_iteration(session_id, timeout: 200)
+
+    assert error =~ "exit code 124"
+  end
 end

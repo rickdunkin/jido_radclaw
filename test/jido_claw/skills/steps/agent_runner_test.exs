@@ -13,9 +13,8 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
   """
   use ExUnit.Case, async: false
 
-  require Ash.Query
-
   alias Ecto.Adapters.SQL.Sandbox
+  alias JidoClaw.Conversations.Message
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
   alias JidoClaw.Forge
@@ -263,6 +262,109 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     test "an unknown template returns a clean {:error, _} (no crash)" do
       assert {:error, msg} = AgentRunner.run("does_not_exist_tmpl", "go", "s", %{})
       assert msg =~ "setup failed"
+    end
+  end
+
+  describe "run/4 — executor dispatch (item 7, camus C1-1 PR-1)" do
+    setup do
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "codex_stub" => %{
+          module: EchoStub,
+          description: "unbuilt forge kind",
+          model: :fast,
+          max_iterations: 1,
+          executor: {:forge, :codex}
+        }
+      })
+
+      on_exit(fn -> Application.delete_env(:jido_claw, :agent_templates_override) end)
+      :ok
+    end
+
+    test "an unbuilt forge kind is refused at dispatch — clean error, no worker" do
+      assert {:error, msg} = AgentRunner.run("codex_stub", "go", "s", %{})
+      assert msg =~ "not implemented until PR-2"
+      assert msg =~ "{:forge, :codex}"
+    end
+  end
+
+  # Item 7 PR-1: the shared run_recorded/correlation/transcript envelope on the
+  # FORGE arm — which the direct ForgeExecutor tests (no AgentRunner) can't
+  # prove. Real tenant/session UUIDs ⇒ shared sandbox; Forge persistence off
+  # (the hermetic ready_start pattern) so only the envelope rows hit the DB.
+  describe "run/4 — forge-fake envelope (correlation + transcript rows)" do
+    setup do
+      pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      prev_persist = Application.get_env(:jido_claw, JidoClaw.Forge.Persistence, [])
+      Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
+
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "forge_env" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          description: "forge-fake envelope template",
+          model: :fast,
+          max_iterations: 1,
+          executor: {:forge, :fake}
+        }
+      })
+
+      Application.put_env(:jido_claw, :executor_fake_outputs, %{
+        "forge_env" => %{
+          "summary" => "Implemented the envelope thing.",
+          "status" => "completed",
+          "files_changed" => [],
+          "notes" => "n/a",
+          "artifacts" => %{}
+        }
+      })
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, prev_persist)
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :executor_fake_outputs)
+        Sandbox.stop_owner(pid)
+      end)
+
+      :ok
+    end
+
+    test "a forge step lands the correlation row plus task + terminal transcript rows" do
+      %{context: context, session: session} = real_scope_context()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(
+            self(),
+            {:run_result, AgentRunner.run("forge_env", "do the envelope thing", "fstep", context)}
+          )
+        end)
+
+      assert_received {:run_result, result}
+      assert {:ok, %StepResult{result: "Implemented the envelope thing."}} = result
+
+      # The forge arm publishes the terminal signal itself (no AgentServer on
+      # this path), so the Recorder flush inside record_step_terminal releases
+      # on the SIGNAL — never the no-signal timeout degrade (50ms in test
+      # config, 30s in prod), which would log a Recorder.flush warning here.
+      refute log =~ "[Recorder.flush] timeout"
+
+      {:ok, rows} =
+        Message.for_session(session.id, tenant: context.tenant, actor: context.actor)
+
+      task = Enum.find(rows, &(&1.role == :user and &1.content == "do the envelope thing"))
+      terminal = Enum.find(rows, &(&1.role == :assistant))
+
+      assert task, "expected the task :user transcript row"
+      assert terminal, "expected the terminal :assistant transcript row"
+      assert terminal.content == "Implemented the envelope thing."
+      assert terminal.request_id == task.request_id
+      assert task.subagent == true
+      assert String.starts_with?(task.agent_id, "wf_forge_env_")
+
+      # The durable correlation row persists past terminal-signal finalization
+      # (only the cache entry clears; the row lives until TTL sweep).
+      assert {:ok, correlation} = RequestCorrelation.lookup(task.request_id)
+      assert correlation.session_id == session.id
     end
   end
 

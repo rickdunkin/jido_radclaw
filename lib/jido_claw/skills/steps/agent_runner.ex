@@ -23,12 +23,16 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   # Mirrors the retired StepAction's deliberate never-crash boundary.
   # reach:disable-for-this-file bare_rescue
 
+  require Logger
+
   alias Jido.AgentServer
+  alias Jido.Signal.Bus
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Forge
   alias JidoClaw.Reasoning.Compactor.RequestTransformer
   alias JidoClaw.Reasoning.Output
+  alias JidoClaw.Skills.Steps.ForgeExecutor
   alias JidoClaw.VFS.Sandbox
   alias JidoClaw.Workflows.StepResult
 
@@ -59,24 +63,81 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   `RequestTransformer.stage_tier_key/0` and applied per-turn by pre-setting the
   composed request transformer on the ask. Returns `{:ok, %StepResult{}}` or
   `{:error, binary()}`.
+
+  Item 7 (camus C1-1) PR-1: dispatches on the hydrated template's `:executor`
+  binding — `:in_process` (the verbatim spawn/ask/await body) or
+  `{:forge, :fake | :shell}` (`JidoClaw.Skills.Steps.ForgeExecutor`); the
+  unbuilt `{:forge, :codex | :claude_code | :custom}` kinds are refused with a
+  "not implemented until PR-2" error. A malformed `:executor` raises at
+  hydration (`Templates.get/1`), so the dispatch clauses are exhaustive over
+  the validated union.
   """
   @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil, keyword()) ::
           {:ok, StepResult.t()} | {:error, binary()}
   def run(template_name, task, step_name, context, catalog_stage_name \\ nil, tier \\ []) do
-    with {:ok, template} <- Templates.get(template_name),
-         :ok <- validate_sandbox_scope(template, context),
-         tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}",
-         scope = stamp_sandbox(resolve_scope(context, tag), template),
-         visibility = Map.get(template, :forward_context, :public),
-         scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility),
-         # resolve_scope/2 omits :agent_template (build/1 nils it); set it so the
-         # per-template approval policy applies to step workers too. AR-9: a
-         # declared stage tier rides the same map under the transformer's key.
-         tool_context =
-           maybe_put_tier(
-             Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
-             tier
-           ),
+    case Templates.get(template_name) do
+      {:ok, template} ->
+        dispatch_executor(
+          template,
+          template_name,
+          task,
+          step_name,
+          context,
+          catalog_stage_name,
+          tier
+        )
+
+      {:error, reason} ->
+        {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp dispatch_executor(
+         %{executor: :in_process} = template,
+         template_name,
+         task,
+         step_name,
+         context,
+         catalog_stage_name,
+         tier
+       ) do
+    run_in_process(template, template_name, task, step_name, context, catalog_stage_name, tier)
+  end
+
+  # `catalog_stage_name` and `tier` are dropped on the forge arm: they steer
+  # persona injection and the per-turn request transformer, neither of which
+  # exists on this path (no in-process worker, no LLM ask).
+  defp dispatch_executor(
+         %{executor: {:forge, kind}} = template,
+         template_name,
+         task,
+         step_name,
+         context,
+         _catalog_stage_name,
+         _tier
+       )
+       when kind in [:fake, :shell] do
+    run_forge(template, template_name, task, step_name, context)
+  end
+
+  defp dispatch_executor(
+         %{executor: {:forge, kind}},
+         template_name,
+         _task,
+         _step_name,
+         _context,
+         _catalog_stage_name,
+         _tier
+       )
+       when kind in [:codex, :claude_code, :custom] do
+    {:error,
+     "Step #{template_name} failed: executor {:forge, #{inspect(kind)}} " <>
+       "is not implemented until PR-2"}
+  end
+
+  defp run_in_process(template, template_name, task, step_name, context, catalog_stage_name, tier) do
+    with :ok <- validate_sandbox_scope(template, context),
+         {tag, tool_context} = build_tool_context(template, template_name, context, tier),
          {:ok, pid} <- JidoClaw.Jido.start_subagent(template.module, id: tag) do
       # Bounded: register this step template's allowlisted external MCP proxies
       # onto the freshly-spawned worker before its single-shot turn. Best-effort
@@ -118,6 +179,95 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     else
       {:error, reason} -> {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
     end
+  end
+
+  # The `{:forge, :fake | :shell}` arm. Same durable envelope as in-process —
+  # correlation BEFORE any Forge resource exists, task + terminal transcript
+  # rows via `run_recorded/6` — but no spawn/attach/inject, and the cleanup
+  # closure is a no-op: the bridge owns Forge session teardown.
+  defp run_forge(template, template_name, task, step_name, context) do
+    {_tag, tool_context} = build_tool_context(template, template_name, context, [])
+
+    case JidoClaw.register_child_correlation(tool_context) do
+      {:ok, request_id} ->
+        run_recorded(
+          tool_context,
+          request_id,
+          task,
+          template_name,
+          fn ->
+            result = ForgeExecutor.run(template_name, template, task, step_name, context)
+            publish_forge_terminal(request_id, result)
+            result
+          end,
+          fn -> :ok end
+        )
+
+      {:error, reason} ->
+        {:error, "Step #{template_name} correlation failed: #{inspect(reason)}"}
+    end
+  end
+
+  # The forge arm has no AgentServer runtime, so IT owns the terminal signal a
+  # finished in-process run's plugin bridge publishes (`ai.request.completed` /
+  # `ai.request.failed`): `Conversations.Recorder`'s flush barrier — which
+  # `record_step_terminal` blocks on — waits for it, and the correlation
+  # finalizer clears the cache entry on it. Published BEFORE the terminal
+  # transcript write (the in-process ordering); best-effort — a bus miss must
+  # never fail the step (the flush degrades to its bounded timeout). Total by
+  # construction (the `Recorder.Plugin` wrapping): the dep's `bus_call` absorbs
+  # a cleanly-dead bus (`:noproc`/`:timeout` → `{:error, _}`), but
+  # `Bus.whereis/1` itself raises `ArgumentError` when the jido_signal Registry
+  # is gone (app teardown), and a bus dying MID-call exits with reasons outside
+  # the dep's catch clauses (`:killed`/`{:shutdown, _}`/crash reasons) — the
+  # function-level rescue/catch closes both windows, so a successful forge step
+  # can never be converted into a step error by its own terminal announce. An
+  # ordinary `{:error, :not_found}` whereis miss stays a quiet skip (bus not
+  # running ⇒ no warning noise).
+  defp publish_forge_terminal(request_id, result) do
+    type =
+      case result do
+        {:ok, _} -> "ai.request.completed"
+        {:error, _} -> "ai.request.failed"
+      end
+
+    with {:ok, _pid} <- Bus.whereis(JidoClaw.SignalBus),
+         {:ok, signal} <-
+           Jido.Signal.new(type, %{request_id: request_id}, source: "/forge_executor") do
+      _ = Bus.publish(JidoClaw.SignalBus, [signal])
+    end
+
+    :ok
+  rescue
+    e ->
+      Logger.warning("[AgentRunner] forge terminal publish raised: #{Exception.message(e)}")
+      :ok
+  catch
+    kind, payload ->
+      Logger.warning("[AgentRunner] forge terminal publish #{kind}: #{inspect(payload)}")
+      :ok
+  end
+
+  # Shared across both executor arms: mint the per-step tag, resolve + stamp +
+  # visibility-scope the step scope, and set `:agent_template` — so transcript
+  # and correlation rows stay uniform across executors. resolve_scope/2 omits
+  # :agent_template (build/1 nils it); set it so the per-template approval
+  # policy applies to step workers too. AR-9: a declared stage tier rides the
+  # same map under the transformer's key (the forge arm passes `[]` — no ask
+  # to tier — and `maybe_put_tier/2` leaves the map unchanged).
+  defp build_tool_context(template, template_name, context, tier) do
+    tag = "wf_#{template_name}_#{:erlang.unique_integer([:positive])}"
+    scope = stamp_sandbox(resolve_scope(context, tag), template)
+    visibility = Map.get(template, :forward_context, :public)
+    scoped = JidoClaw.ToolContext.apply_visibility(scope, visibility)
+
+    tool_context =
+      maybe_put_tier(
+        Map.put(JidoClaw.ToolContext.build(scoped), :agent_template, template_name),
+        tier
+      )
+
+    {tag, tool_context}
   end
 
   # AR-8b: a `sandbox: :prototype` template MUST run against a real, validated
@@ -208,17 +358,32 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       else: Map.put(tool_context, RequestTransformer.stage_tier_key(), tier_map)
   end
 
-  # The post-correlation step lifecycle: record the task turn, run the step,
-  # record its terminal, and (in `after`) stop the worker. A real supervisor
-  # stop, not `Process.exit(pid, :normal)` — an exit signal with reason
-  # `:normal` sent to another (non-trapping) process is discarded, so that
-  # cleanup never actually stopped the worker. Skill-step workers aren't
-  # AgentTracker-registered; this is their only stopper.
+  # The post-correlation in-process step lifecycle: the shared record/never-
+  # crash envelope around the ask/await, with the worker stop as cleanup. A
+  # real supervisor stop, not `Process.exit(pid, :normal)` — an exit signal
+  # with reason `:normal` sent to another (non-trapping) process is discarded,
+  # so that cleanup never actually stopped the worker. Skill-step workers
+  # aren't AgentTracker-registered; this is their only stopper.
   defp run_registered_step(pid, request_id, task, tool_context, step_name, template_name, module) do
+    run_recorded(
+      tool_context,
+      request_id,
+      task,
+      template_name,
+      fn -> run_step(module, pid, request_id, task, tool_context, step_name, template_name) end,
+      fn -> if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid) end
+    )
+  end
+
+  # The record/never-crash step envelope shared by both executor arms: record
+  # the task turn, run `run_fun`, record its terminal, and (in `after`) run
+  # `cleanup_fun` — the worker stop in-process, a no-op on the forge arm (the
+  # bridge owns Forge teardown).
+  defp run_recorded(tool_context, request_id, task, template_name, run_fun, cleanup_fun) do
     SubagentTranscript.record_task(tool_context, request_id, task)
 
     try do
-      result = run_step(module, pid, request_id, task, tool_context, step_name, template_name)
+      result = run_fun.()
       record_step_terminal(tool_context, request_id, result)
       result
     rescue
@@ -235,7 +400,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
 
         {:error, "Step #{template_name} crashed: #{msg}"}
     after
-      if Process.alive?(pid), do: JidoClaw.Jido.stop_agent(pid)
+      cleanup_fun.()
     end
   end
 
@@ -346,14 +511,11 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
         typed = Output.typed_request_output(request)
         raw_text = Output.extract_result(Output.request_result(request))
 
-        {text, typed_artifacts} =
+        text =
           case typed do
-            %{} = m -> {Output.extract_result(m), typed_artifacts(m)}
-            _ -> {raw_text, %{}}
+            %{} = m -> Output.extract_result(m)
+            _ -> raw_text
           end
-
-        artifacts =
-          Map.merge(extract_artifacts(raw_text), normalize_artifacts(typed_artifacts))
 
         {:ok,
          %StepResult{
@@ -361,7 +523,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
            template: template_name,
            result: text,
            typed_output: typed,
-           artifacts: artifacts
+           artifacts: step_artifacts(raw_text, typed)
          }}
 
       {:ok, %{status: :failed, result: reason}} ->
@@ -403,6 +565,18 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
           port: <actual port>
           files: <comma-separated file paths>
       """
+  end
+
+  @doc """
+  The single step-artifacts merge shared by the in-process await path and the
+  `ForgeExecutor` bridge: the fenced `ARTIFACTS:` block from the raw step text
+  merged with the typed output's `artifacts` field (stringified; typed values
+  win on key collision). `typed` may be `nil` (no typed output — the merge
+  degrades to the fenced block alone).
+  """
+  @spec step_artifacts(String.t(), map() | nil) :: map()
+  def step_artifacts(raw_text, typed) do
+    Map.merge(extract_artifacts(raw_text), normalize_artifacts(typed_artifacts(typed)))
   end
 
   @doc """
