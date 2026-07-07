@@ -89,7 +89,7 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 - **Verdict Normalizer (infra ≠ verdict ≠ inconclusive)**: `JidoClaw.Orchestration.Verdict` is the single normalizer every probabilistic judge output passes through, with three exits: `{:verdict, %Verdict{}}` (`clean? = approve AND zero findings` — findings-win), `{:infra, reason}` (**schema drift fails CLOSED to infra**, never a verdict, never clean), and `{:inconclusive, reason}` (consumers fold it into the infra lane). `normalize/2` is total over arbitrary input. Infra retries on the SEPARATE per-stage `infra_cap` budget — it never consumes `rerun_cap`, never reads clean, never summons the fixer with empty feedback — and exhaustion terminalizes `:route_review_infra_failed`. `IterativeStep` re-runs a garbled evaluator only, without burning an iteration (the old `parse_verdict/1` → `:fail` conflation was camus's "#1 cause of runaway loops"). The five trust-boundary laws + the event-sourced durability checklist live in `docs/TRUST-BOUNDARIES.md` (camus C2-8) — the review rubric for orchestration/gate changes. Exit taxonomy, lane A/B mechanics, budgets, observability → [docs/system/verdict-normalizer.md](docs/system/verdict-normalizer.md)
 - **Deterministic Verify Authority (engine-run, head-bound, tamper-fenced)**: `JidoClaw.Orchestration.Verify` is the engine-side verifier — the composer runs the repo's verify command itself and reads the **exit code** (law 2 of `docs/TRUST-BOUNDARIES.md`: the verdict never rides an LLM relay), as the catalog's single `{:verify, "default"}` stage (`CatalogValidator` invariant 10 — at most one verify authority), deferred to run LAST in its Kahn level, solo. Command resolution never passes or skips silently (per-run override → `.jido/config.yaml` → mix auto-detect → a loud INCONCLUSIVE) and **no shell, ever** — argv lists via `Core.OsCmd`. Green holds the committed invariant: `clean:verify` and its integrity certificate land in the same commit or not at all — an uncertified green reclassifies `{:inconclusive, "uncertified_green"}`; tampered integrity terminalizes `:route_verify_tampered` and VERIFY_OATH holds (never retried, never fed to the fixer — remediation destroys the evidence). The three LLM verification judges diagnose reds; they never hold the verdict. Integrity modes, verdict mapping, convergence re-derivation, config, residuals → [docs/system/verify-authority.md](docs/system/verify-authority.md)
 - **Honest Terminal Statuses + Stall Detection**: reviewer findings carry a cross-wave identity (`JidoClaw.RouteComposer.FindingKey`, welded per round into the wave commit as a `:finding_keys` marker — the marker IS the durable identity; the findings themselves persist encrypted, and un-keyable findings are excluded rather than fabricated). The fold detects **stuck** and **oscillating** findings; stall evidence or re-review-budget exhaustion suppresses ALL of Hook R (never dispatch a fix its flagged lens has no budget to re-review), and on a **green AND certified** verify the composer parks at a `:review_stall` gate — a parent-stays-`:running`, child-less park raising a durable run-bound `AgentCase` — instead of terminalizing. Approve requires per-finding waive records covering EVERY surviving key (all-or-reject); reject ⇒ `fix_failed`; approval terminalizes `:route_done_with_findings`, the completed-family disposition every surface marks amber, never plain green (verbatim finding bodies never ride the result). Verify-less/red routes keep today's terminals. Key derivation, park/case mechanics, waiver rules, surface rollups, the debt ledger → [docs/system/terminal-statuses.md](docs/system/terminal-statuses.md)
-- **External MCP Tool Consumption**: the platform both *serves* MCP (`JidoClaw.MCPServer`) and *consumes* it (`JidoClaw.MCP`): operators declare external servers in `.jido/config.yaml` `mcp_servers:`, and `MCP.Consumer` compiles a proxy per remote tool that **`use`s `JidoClaw.Tools.Action`** — so the full safety pipeline (approval gate → normalize → redact → shape → cap) wraps every call, with outbound arg scrubbing and the dep's `:tool_error` promotion re-surfaced so a domain `isError` result stays shaped + ref-stored. A server's `templates:` allowlist scopes reach at *registration* (withheld tools the LLM never sees; include `"main"` once any allowlist is used). Approval is default-on: every `mcp_*` tool gates unless its server is trusted, and an unknown `mcp_`-prefixed name **fails CLOSED to gated, never to native**. Trust boundary: the stdio subprocess env is scrubbed default-deny, and tool names/descriptions are prompt-trusted before any call (the gate can't stop description-borne injection). Proxy/naming/attach mechanics, allowlist enforcement, the stdio patch → [docs/system/mcp-consumption.md](docs/system/mcp-consumption.md)
+- **External MCP Tool Consumption**: the platform both _serves_ MCP (`JidoClaw.MCPServer`) and _consumes_ it (`JidoClaw.MCP`): operators declare external servers in `.jido/config.yaml` `mcp_servers:`, and `MCP.Consumer` compiles a proxy per remote tool that **`use`s `JidoClaw.Tools.Action`** — so the full safety pipeline (approval gate → normalize → redact → shape → cap) wraps every call, with outbound arg scrubbing and the dep's `:tool_error` promotion re-surfaced so a domain `isError` result stays shaped + ref-stored. A server's `templates:` allowlist scopes reach at _registration_ (withheld tools the LLM never sees; include `"main"` once any allowlist is used). Approval is default-on: every `mcp_*` tool gates unless its server is trusted, and an unknown `mcp_`-prefixed name **fails CLOSED to gated, never to native**. Trust boundary: the stdio subprocess env is scrubbed default-deny, and tool names/descriptions are prompt-trusted before any call (the gate can't stop description-borne injection). Proxy/naming/attach mechanics, allowlist enforcement, the stdio patch → [docs/system/mcp-consumption.md](docs/system/mcp-consumption.md)
 - **Lua Code-Mode Queries**: `lua_query` + `lua_docs` (on BOTH tool surfaces) run a short **read-only** Lua script server-side so cross-run filter/join/aggregate happens in the sandbox — intermediate rows never enter model context. Seven host bindings live in `JidoClaw.Tools.Lua.Bindings` (the single source; `lua_docs` renders from it); every binding is read-only (`assert_read_only!/0` per eval — a future write binding must clear it deliberately and join the approval require-list; the pair itself is deliberately NOT require-listed). Two checks are deliberately **post-eval** because in-script `pcall` can swallow host raises: budget refusal and the aggregate `max_result_bytes` bound. All `:lua_*` envelopes are non-retryable at both retry layers (`:lua_timeout` deliberately so — same script + same caps re-times-out). Bindings, VM budgets/isolation, policy clamps, config, telemetry → [docs/system/lua-code-mode.md](docs/system/lua-code-mode.md)
 - **Deterministic Eval Harness**: `JidoClaw.Eval.{Case,Run}` package `{kind, request, assertions}` cases run via `JidoClaw.Eval.run_case/2` against **production functions only** (no new runtime path) — kinds `:prompt`, `:schema`, `:composer`, `:coherence`. The fake↔live seam is the caller's app-env arming + `run_case` opts, never a test module named in lib; unknown assertion keys fail loudly (a deliberate deviation from jidoka's silent skip). Kinds, failure records, seed-case layout → [docs/system/eval-harness.md](docs/system/eval-harness.md)
 - **Executor Seam (template `executor:` binding — PR-3 of 4 shipped)**: every hydrated template carries `executor:` (`:in_process` default — today's in-process `Jido.AI` worker, byte-identical — or `{:forge, :fake | :shell | :codex | :claude_code | :custom}`) + `executor_config:` — **operator-declared config in the `verify_cmd` trust class, never the stage task**. Hydration validation **raises** (the refuse-to-run posture) and `:custom` is refused at dispatch — the camus unknown-backend fail-closed discipline. Vendor CLI sessions are HARDWIRED read-only + isolated, and `typed_output` arrives ONLY through the single-channel schema-validated deposit — a deposit-less lens stage rides the Verdict infra lane, never a fabricated verdict. Cross-vendor review (PR-3, camus C1-1's "no agent grades its own work"): a `.jido/config.yaml` `review:` section binds ONLY the `reviewer` template and is consulted at BOTH seams by `Orchestration.ReviewIndependence` — the composer launch fence (a strict-mode provider collision refuses the run BEFORE any wave) and the dispatch overlay (an invalid/unreadable knob is a step error, never a silent in-process fall-through); the YAML boundary refuses loudly on unknown keys and present-nil. Dispatch mechanics, vendor hardwiring, deposit/fixture contracts, independence resolution, residuals → [docs/system/executor-seam.md](docs/system/executor-seam.md)
@@ -98,19 +98,19 @@ JidoClaw is an AI agent orchestration platform built on Elixir/OTP and the Jido 
 
 `JidoClaw.<Subsystem>.<Module>` - key subsystems:
 
-| Directory        | Purpose                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------- |
-| `agent/`         | Main agent, prompt builder, templates, workers                                              |
-| `cli/`           | REPL, commands, branding, setup, formatter                                                  |
-| `forge/`         | Sandboxed execution (runners, sandbox backends)                                             |
-| `tools/`         | All 45 Jido.Action tool modules (35 registered on the main agent)                           |
-| `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess                                           |
-| `reasoning/`     | Strategy + pipeline stores, classifier, telemetry, certificate templates, context compactor |
-| `security/`      | Encryption vault, secret redaction, browse_web destination-policy gate                      |
-| `web/`           | Phoenix endpoint, controllers, LiveView                                                     |
-| `orchestration/` | Persistent workflow state machine                                                           |
-| `solutions/`     | Solution fingerprinting, trust scoring, semi-formal verification                            |
-| `mcp/`           | External MCP tool **consumption** — Consumer, Client, EndpointConfig, ProxyGenerator (vs `MCPServer`, which *serves*) |
+| Directory        | Purpose                                                                                                               |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `agent/`         | Main agent, prompt builder, templates, workers                                                                        |
+| `cli/`           | REPL, commands, branding, setup, formatter                                                                            |
+| `forge/`         | Sandboxed execution (runners, sandbox backends)                                                                       |
+| `tools/`         | All 45 Jido.Action tool modules (35 registered on the main agent)                                                     |
+| `platform/`      | Session, Tenant, Channel, Cron, BackgroundProcess                                                                     |
+| `reasoning/`     | Strategy + pipeline stores, classifier, telemetry, certificate templates, context compactor                           |
+| `security/`      | Encryption vault, secret redaction, browse_web destination-policy gate                                                |
+| `web/`           | Phoenix endpoint, controllers, LiveView                                                                               |
+| `orchestration/` | Persistent workflow state machine                                                                                     |
+| `solutions/`     | Solution fingerprinting, trust scoring, semi-formal verification                                                      |
+| `mcp/`           | External MCP tool **consumption** — Consumer, Client, EndpointConfig, ProxyGenerator (vs `MCPServer`, which _serves_) |
 
 ### Data Layer
 
@@ -132,6 +132,13 @@ Project-level config directory. `config.yaml`, `memory.json`, `sessions/` are gi
 
 Deep per-subsystem truth lives in `docs/system/` — [docs/system/README.md](docs/system/README.md) is the hub (conventions + index). Each Key Patterns bullet above keeps its load-bearing contract inline and points at its page; mechanics, config, telemetry, and residuals live on the page. Rules: a change touching subsystem X updates `docs/system/<X>.md` in the same change, bumping `verified:`; an AGENTS.md bullet shrinks only in the commit that creates its page — machine-enforced in both directions by `mix jidoclaw.system_docs.check` (in the `precommit` alias); periodic freshness passes ride the doc-reconcile workflow.
 
+## Planning & Implementation Conventions
+
+- **Interview by blast radius**: when drafting a plan, surface its open questions as a short interview, one question at a time — only questions not answerable from the repo or tools (check those yourself first), ordered by how much the answer reshapes the design. The same rule holds mid-implementation: when the work surfaces a genuine open decision the plan didn't anticipate (multiple viable paths, scope or taste calls), present concrete options and ask rather than silently picking. Blocking for _alignment_ is welcome; blocking on something you could run, check, or verify yourself is not — never ask the operator to do what you can do.
+- **Deviations log**: when implementing a plan from `docs/plans/`, record every deviation from the plan **as it happens** under a `## Deviations` heading in that plan doc — what the plan assumed, what the code revealed, what was chosen and why, and anything to revisit. Open decisions get surfaced per the interview rule before they're taken; forced corrections (one sensible path) are taken and logged. Either way the entry marks which kind it was. The log commits with the change it explains and is where the next plan learns.
+- **Port semantics map**: before implementing a fidelity-critical adoption from the exploration corpus (or any external reference port), write the `PORT-<entry-id>.md` semantics map and get sign-off — anatomy and required-when rules in [docs/exploration/README.md](docs/exploration/README.md).
+- **Ephemeral HTML surfaces**: when richer formatting genuinely earns its keep — a throwaway editor for triage/reordering/constraint-aware config with a copy-back export, a one-shot diagram-heavy explainer or briefing, a design mockup to react to — build a self-contained HTML file rather than forcing the job into markdown. HTML is scaffolding, never source of truth: it lives in the session scratchpad (or a git-ignored tmp dir), is never committed, and anything it produces (an ordering, a decision, tuned values) exports back into the session as markdown for the durable record. Durable docs stay markdown in the repo — they are agent-ingested, grepped, diffed, and machine-checked, and HTML composes with none of that. Render from the local file (side panel); hosted artifact uploads are a leakage surface on this tailnet-only project and need an explicit operator ask.
+
 ## Code Style
 
 - `mix format` enforced, no exceptions
@@ -147,13 +154,15 @@ Deep per-subsystem truth lives in `docs/system/` — [docs/system/README.md](doc
 
 <!-- usage-rules-start -->
 <!-- usage_rules-start -->
+
 ## usage_rules usage
+
 _A config-driven dev tool for Elixir projects to manage AGENTS.md files and agent skills from dependencies_
 
 ## Using Usage Rules
 
-Many packages have usage rules, which you should *thoroughly* consult before taking any
-action. These usage rules contain guidelines and rules *directly from the package authors*.
+Many packages have usage rules, which you should _thoroughly_ consult before taking any
+action. These usage rules contain guidelines and rules _directly from the package authors_.
 They are your best source of knowledge for making decisions.
 
 ## Modules & functions in the current app and dependencies
@@ -172,10 +181,9 @@ mix usage_rules.docs Enum.zip
 mix usage_rules.docs Enum.zip/1
 ```
 
-
 ## Searching Documentation
 
-You should also consult the documentation of any tools you are using, early and often. The best 
+You should also consult the documentation of any tools you are using, early and often. The best
 way to accomplish this is to use the `usage_rules.search_docs` mix task. Once you have
 found what you are looking for, use the links in the search results to get more detail. For example:
 
@@ -193,23 +201,27 @@ mix usage_rules.search_docs "making requests" -p req
 mix usage_rules.search_docs "Enum.zip" --query-by title
 ```
 
-
 <!-- usage_rules-end -->
 <!-- usage_rules:elixir-start -->
+
 ## usage_rules:elixir usage
+
 # Elixir Core Usage Rules
 
 ## Pattern Matching
+
 - Use pattern matching over conditional logic when possible
 - Prefer to match on function heads instead of using `if`/`else` or `case` in function bodies
 - `%{}` matches ANY map, not just empty maps. Use `map_size(map) == 0` guard to check for truly empty maps
 
 ## Error Handling
+
 - Use `{:ok, result}` and `{:error, reason}` tuples for operations that can fail
 - Avoid raising exceptions for control flow
 - Use `with` for chaining operations that return `{:ok, _}` or `{:error, _}`
 
 ## Common Mistakes to Avoid
+
 - Elixir has no `return` statement, nor early returns. The last expression in a block is always returned.
 - Don't use `Enum` functions on large collections when `Stream` is more appropriate
 - Avoid nested `case` statements - refactor to a single `case`, `with` or separate functions
@@ -222,6 +234,7 @@ mix usage_rules.search_docs "Enum.zip" --query-by title
 - There are many useful standard library functions, prefer to use them where possible
 
 ## Function Design
+
 - Use guard clauses: `when is_binary(name) and byte_size(name) > 0`
 - Prefer multiple function clauses over complex conditional logic
 - Name functions descriptively: `calculate_total_price/2` not `calc/2`
@@ -229,6 +242,7 @@ mix usage_rules.search_docs "Enum.zip" --query-by title
 - Names like `is_thing` should be reserved for guards
 
 ## Data Structures
+
 - Use structs over maps when the shape is known: `defstruct [:name, :age]`
 - Prefer keyword lists for options: `[timeout: 5000, retries: 3]`
 - Use maps for dynamic key-value data
@@ -241,6 +255,7 @@ mix usage_rules.search_docs "Enum.zip" --query-by title
 - Read the docs and options fully before using tasks
 
 ## Testing
+
 - Run tests in a specific file with `mix test test/my_test.exs` and a specific test with the line number `mix test path/to/test.exs:123`
 - Limit the number of failed tests with `mix test --max-failures n`
 - Use `@tag` to tag specific tests, and `mix test --only tag` to run only those tests
@@ -253,26 +268,32 @@ mix usage_rules.search_docs "Enum.zip" --query-by title
 
 <!-- usage_rules:elixir-end -->
 <!-- usage_rules:otp-start -->
+
 ## usage_rules:otp usage
+
 # OTP Usage Rules
 
 ## GenServer Best Practices
+
 - Keep state simple and serializable
 - Handle all expected messages explicitly
 - Use `handle_continue/2` for post-init work
 - Implement proper cleanup in `terminate/2` when necessary
 
 ## Process Communication
+
 - Use `GenServer.call/3` for synchronous requests expecting replies
 - Use `GenServer.cast/2` for fire-and-forget messages.
 - When in doubt, use `call` over `cast`, to ensure back-pressure
 - Set appropriate timeouts for `call/3` operations
 
 ## Fault Tolerance
+
 - Set up processes such that they can handle crashing and being restarted by supervisors
 - Use `:max_restarts` and `:max_seconds` to prevent restart loops
 
 ## Task and Async
+
 - Use `Task.Supervisor` for better fault tolerance
 - Handle task failures with `Task.yield/2` or `Task.shutdown/2`
 - Set appropriate task timeouts

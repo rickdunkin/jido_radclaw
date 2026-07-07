@@ -57,6 +57,9 @@ below are abridged from each doc's Determination.
 - **`OVERVIEW.md`** — for greenfield/codename subjects (a design exploration, not a
   repo): vision, "where we landed" decisions, data-model/API implications, open
   questions, with the file:line audit of current state as an appendix (argus).
+- **`PORT-<entry-id>.md`** — a pre-implementation semantics map, required when an
+  adoption's correctness depends on matching the source's semantics. Lives in the
+  subject dir; anatomy below.
 - **Plan docs** — when an entry graduates to real work: named after the entry/program ID,
   living either in the subject dir (`alp-river/AR-2-COMPOSER-PLAN.md`,
   `squidie/T1-1-WORKFLOW-EVENT-LOG-PLAN.md`) or under `docs/plans/<program>/` when the
@@ -100,6 +103,32 @@ equivalent it's covered *by*. **Open questions** (OQ-n) — decisions deferred, 
 so a future session can answer it. **Cross-references and dependencies** — an ASCII
 dependency graph plus a suggested first wave, with collision notes against the current
 work queues. **Bottom line** — the two-to-four ideas that must not slip.
+
+## Anatomy of a PORT map
+
+When an entry graduates to implementation **and its correctness depends on matching the
+source's semantics** — the BORROW-PATTERN/BORROW-REFERENCE class where a real mechanism
+is being translated (the LoopGuard port is the motivating precedent) — write
+`PORT-<entry-id>.md` in the subject dir and get sign-off **before any code**. Rubric
+lifts, garnishes, and BUILD-ON items don't need one. The point is to catch silent
+divergence at the design layer, where a correction costs a sentence: the map must be
+complete enough that a semantic error is visible without reading the eventual
+implementation.
+
+- **Header** — the inventory entry it implements (ID + link), both shas pinned, date.
+- **What the source actually does** — plain-English mechanism summary, subsystem by
+  subsystem, in *their* terms.
+- **Side-by-side shapes** — the load-bearing pairs: source excerpt ↔ planned
+  jido_radclaw shape (module/seam level), each divergence annotated with why.
+- **Behaviors table** — every observable behavior sorted **preserved exactly /
+  deliberately changed / dropped**, each with its reason. The "deliberately changed"
+  and "dropped" columns are what keep a reviewer from reading divergence as oversight.
+- **Edge cases** — a table anchored to the source's own test names where they exist:
+  their test ↔ our planned equivalent ↔ expected behavior on both sides.
+- **Sign-off gate** — the open questions for the operator, presented as options;
+  implementation starts only after semantics are confirmed. After shipping, the
+  subsystem's `docs/system/` page cites the map as port provenance, and the inventory
+  entry reconciles per the lifecycle below.
 
 ## Vocabulary
 
@@ -160,11 +189,14 @@ queues, and cross-references cite them — so never renumber.
 2. **Re-review passes** — add the Status legend, per-entry dated Status lines, and a
    dated **re-review summary at the top** (newest first) recording movement on both
    sides since the prior pass (hermes is the exemplar).
-3. **Shipping reconciliation** — when an item ships, reconcile the **whole entry** (gap,
+3. **Porting** — when a fidelity-critical entry graduates to implementation, a
+   `PORT-<entry-id>.md` semantics map precedes code (anatomy above); sign-off on the
+   map is the gate.
+4. **Shipping reconciliation** — when an item ships, reconcile the **whole entry** (gap,
    sketch, cross-refs), not just the status line, and update the companion rollup/queue
    entries the same day (the rule the `unadopted-next-five` queue states from its side).
-4. **Rollup** — spin up `UNADOPTED-IDEAS.md` when the live tail warrants it.
-5. **Re-verification** — run `doc-reconcile` when either tree has moved enough that the
+5. **Rollup** — spin up `UNADOPTED-IDEAS.md` when the live tail warrants it.
+6. **Re-verification** — run `doc-reconcile` when either tree has moved enough that the
    refs are suspect.
 
 ## Creating a new exploration
