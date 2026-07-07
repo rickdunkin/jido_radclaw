@@ -14,6 +14,7 @@ defmodule JidoClaw.DoctrineTest do
             :base,
             :artifacts,
             :reviewer_min,
+            :reviewer_stance,
             :reviewer_contract,
             :system_verify,
             :fixer_contract,
@@ -44,6 +45,7 @@ defmodule JidoClaw.DoctrineTest do
                :fixer_contract,
                :reviewer_contract,
                :reviewer_min,
+               :reviewer_stance,
                :system_verify,
                :tie_break,
                :verify_oath
@@ -64,6 +66,8 @@ defmodule JidoClaw.DoctrineTest do
       # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
       assert doctrine =~ "Confidence tagging"
       refute doctrine =~ "Review discipline"
+      # Item 7 PR-3: a producing worker never carries the reviewer stance.
+      refute doctrine =~ "adversarial"
     end
 
     test "the AR-4 fixer is a producing worker WITH its own fixer-contract (base + artifacts + fixer-contract)" do
@@ -86,6 +90,9 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Review discipline"
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
+      # Item 7 PR-3: the adversarial stance + the completeness clause.
+      assert doctrine =~ "adversarial"
+      assert doctrine =~ "must NOT pass"
       # AR-7: the reviewer family is EXCLUDED from the standalone slice — its
       # `reviewer_contract` already carries the equivalent per-finding tag (the
       # `=~ "likely"` above), so the header anchor must NOT appear.
@@ -106,6 +113,10 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Verify oath"
       assert doctrine =~ "A RED result is a SUCCESSFUL run"
       refute doctrine =~ "Runtime artifacts"
+      # Item 7 PR-3: the stance is reviewer-contract-family only — the
+      # verifier judges with a different schema and never gets it.
+      refute doctrine =~ "adversarial"
+      refute doctrine =~ "must NOT pass"
     end
 
     test "the item-5 test_runner carries the verify oath (a verification judge)" do
@@ -124,6 +135,9 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Review discipline"
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
+      # Item 7 PR-3: the reviewer-contract family carries the stance.
+      assert doctrine =~ "adversarial"
+      assert doctrine =~ "must NOT pass"
       # AR-7: reviewer family — excluded from the standalone slice.
       refute doctrine =~ "Confidence tagging"
       refute doctrine =~ "Runtime artifacts"
@@ -156,6 +170,9 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "Review discipline"
       assert doctrine =~ "Reviewer Contract"
       assert doctrine =~ "likely"
+      # Item 7 PR-3: the reviewer-contract family carries the stance.
+      assert doctrine =~ "adversarial"
+      assert doctrine =~ "must NOT pass"
       assert doctrine =~ "System verification discipline"
       # Item 5: a verification judge carries the camus VERIFY_OATH.
       assert doctrine =~ "Verify oath"

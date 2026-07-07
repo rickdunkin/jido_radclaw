@@ -39,6 +39,10 @@ defmodule JidoClaw.Agent.SubagentPromptTest do
 
       assert prompt =~ "## DOCTRINE"
       assert prompt =~ "Review discipline"
+      # Item 7 PR-3: the adversarial stance + completeness clause ride the
+      # built prompt (also the vendor-CLI prompt prefix on a forge reviewer).
+      assert prompt =~ "Review stance"
+      assert prompt =~ "must NOT pass"
       refute prompt =~ "Runtime artifacts"
     end
 

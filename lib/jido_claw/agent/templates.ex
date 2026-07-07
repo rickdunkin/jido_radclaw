@@ -400,6 +400,39 @@ defmodule JidoClaw.Agent.Templates do
   @spec external_tools?(String.t()) :: boolean()
   def external_tools?(name), do: not composer_private?(name)
 
+  @doc """
+  Validate + normalize a `.jido/config.yaml` `review:` executor binding (item
+  7 PR-3 — the cross-vendor review knob) against a resolved base template.
+
+  `kind` must be a vendor kind (`:codex` | `:claude_code` — anything else is
+  an `{:error, _}`); `config` is the already-key-translated (atom-keyed)
+  `executor_config` map (`JidoClaw.Orchestration.ReviewIndependence` owns the
+  YAML string-key boundary); `base_template` is the ACTUAL hydrated template
+  the binding will overlay — passed so `refuse_forge_sandbox_combo!/2` reads
+  the real `:sandbox` value (a synthetic sandbox-less base would make that
+  refusal vacuous). Runs the same private validators template hydration runs
+  (`workspace: :repo` default written back, the vendor key whitelist), but
+  converts the hydration `ArgumentError` into an operator-facing
+  `{:error, message}` — a config error refuses the run/step, never crashes
+  the resolver. Returns `{:ok, {executor, normalized_config}}`.
+  """
+  @spec hydrate_review_binding(term(), map(), map()) ::
+          {:ok, {{:forge, :codex | :claude_code}, map()}} | {:error, String.t()}
+  def hydrate_review_binding(kind, config, base_template)
+      when kind in [:codex, :claude_code] and is_map(base_template) do
+    executor = {:forge, kind}
+    validate_executor_config!(config, base_template)
+    {:ok, {executor, normalize_executor_config!(executor, config, base_template)}}
+  rescue
+    e in ArgumentError ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      {:error, Exception.message(e)}
+  end
+
+  def hydrate_review_binding(kind, _config, _base_template) do
+    {:error, "invalid review executor kind #{inspect(kind)}: expected :codex or :claude_code"}
+  end
+
   defp hydrate_template(template) do
     template
     |> ensure_max_iterations()

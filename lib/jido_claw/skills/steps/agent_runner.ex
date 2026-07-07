@@ -30,6 +30,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   alias JidoClaw.Agent.Templates
   alias JidoClaw.Conversations.SubagentTranscript
   alias JidoClaw.Forge
+  alias JidoClaw.Orchestration.ReviewIndependence
   alias JidoClaw.Reasoning.Compactor.RequestTransformer
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.Skills.Steps.ForgeExecutor
@@ -74,22 +75,31 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   system prompt (`Startup.subagent_prompt/3`) threaded to the executor as the
   prompt prefix (PR-2 P1a — the same contract in-process workers get by
   injection).
+
+  PR-3: between resolution and dispatch,
+  `ReviewIndependence.apply_executor/3` overlays the `.jido/config.yaml`
+  `review: executor:` binding onto a `"reviewer"` step (template-name-keyed,
+  never per-stage — the pinned non-goal); an invalid/unreadable knob is a
+  step error (a lens cohort rides Lane-B infra), never a silent fall-through
+  to `:in_process`. Spawn/handoff surfaces don't pass through here —
+  unaffected.
   """
   @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil, keyword()) ::
           {:ok, StepResult.t()} | {:error, binary()}
   def run(template_name, task, step_name, context, catalog_stage_name \\ nil, tier \\ []) do
-    case Templates.get(template_name) do
-      {:ok, template} ->
-        dispatch_executor(
-          template,
-          template_name,
-          task,
-          step_name,
-          context,
-          catalog_stage_name,
-          tier
-        )
-
+    with {:ok, template} <- Templates.get(template_name),
+         {:ok, template} <-
+           ReviewIndependence.apply_executor(template, template_name, context) do
+      dispatch_executor(
+        template,
+        template_name,
+        task,
+        step_name,
+        context,
+        catalog_stage_name,
+        tier
+      )
+    else
       {:error, reason} ->
         {:error, "Step #{template_name} setup failed: #{inspect(reason)}"}
     end

@@ -45,9 +45,19 @@ defmodule JidoClaw.RouteComposer.Graph do
     drain(edges, indeg, name_set)
   end
 
-  # artifact name -> set of in-route stages that output it
-  defp producers(stages, name_set) do
-    Enum.reduce(name_set, %{}, fn name, acc ->
+  @doc """
+  Index each artifact name to the set of stages in `names` that output it
+  (every name must be a key of `stages`).
+
+  Shared by `kahn/2`'s edge construction and
+  `JidoClaw.Orchestration.ReviewIndependence.check_route/2` (which walks a
+  review stage's inputs back to their producing stages) — one producer-index
+  implementation, not a duplicated block.
+  """
+  @spec producers(%{optional(String.t()) => Stage.t()}, Enumerable.t()) ::
+          %{optional(String.t()) => MapSet.t(String.t())}
+  def producers(stages, names) do
+    Enum.reduce(names, %{}, fn name, acc ->
       outputs = Map.fetch!(stages, name).output
 
       Enum.reduce(outputs, acc, fn art, inner ->

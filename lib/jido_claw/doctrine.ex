@@ -20,6 +20,15 @@ defmodule JidoClaw.Doctrine do
                        "doctrine",
                        "reviewer_min.md"
                      ])
+  @reviewer_stance_priv Path.join([
+                          __DIR__,
+                          "..",
+                          "..",
+                          "priv",
+                          "defaults",
+                          "doctrine",
+                          "reviewer_stance.md"
+                        ])
   @reviewer_contract_priv Path.join([
                             __DIR__,
                             "..",
@@ -105,6 +114,7 @@ defmodule JidoClaw.Doctrine do
   @external_resource @base_priv
   @external_resource @artifacts_priv
   @external_resource @reviewer_min_priv
+  @external_resource @reviewer_stance_priv
   @external_resource @reviewer_contract_priv
   @external_resource @system_verify_priv
   @external_resource @fixer_contract_priv
@@ -119,6 +129,7 @@ defmodule JidoClaw.Doctrine do
     base: String.trim(File.read!(@base_priv)),
     artifacts: String.trim(File.read!(@artifacts_priv)),
     reviewer_min: String.trim(File.read!(@reviewer_min_priv)),
+    reviewer_stance: String.trim(File.read!(@reviewer_stance_priv)),
     reviewer_contract: String.trim(File.read!(@reviewer_contract_priv)),
     system_verify: String.trim(File.read!(@system_verify_priv)),
     fixer_contract: String.trim(File.read!(@fixer_contract_priv)),
@@ -158,6 +169,14 @@ defmodule JidoClaw.Doctrine do
   # `system_executor` (machine/config changes, not application code), and
   # `docs_writer`/`researcher`/`plan_drafter`/`plan_challenger`/`plan_arbiter`
   # (write no code).
+  # Item 7 PR-3 (camus review-prompt.md): the `:reviewer_stance` slice — the
+  # adversarial persona + the "correct but incomplete must NOT pass"
+  # completeness clause — reaches exactly the three reviewer-contract
+  # templates (`reviewer`, `sketch_reviewer`, `system_verifier`), right after
+  # `:reviewer_min`. Stance + completeness judgment only, no schema
+  # re-teaching (`:reviewer_contract` owns the field shape — the
+  # content-overlap smell). The camus "from a different vendor" claim is
+  # deliberately dropped so the slice stays honest on same-vendor paths.
   @template_slices %{
     # AR-4: `coder` (backs both `implementer` + `test-author`) and `researcher`
     # (the `planner`) now self-report via a `signals` field, so they ALSO get the
@@ -185,10 +204,10 @@ defmodule JidoClaw.Doctrine do
     "docs_writer" => [:base, :artifacts, :confidence_tagging],
     "researcher" => [:base, :artifacts, :emit_signals, :confidence_tagging],
     "test_runner" => [:base, :artifacts, :confidence_tagging, :verify_oath],
-    "reviewer" => [:base, :reviewer_min, :reviewer_contract],
+    "reviewer" => [:base, :reviewer_min, :reviewer_stance, :reviewer_contract],
     "verifier" => [:base, :reviewer_min, :confidence_tagging, :verify_oath],
     "sketch_build" => [:base, :artifacts, :confidence_tagging],
-    "sketch_reviewer" => [:base, :reviewer_min, :reviewer_contract],
+    "sketch_reviewer" => [:base, :reviewer_min, :reviewer_stance, :reviewer_contract],
     # AR-8b-2 F2: a producing worker like `sketch_build` — reuses the existing
     # `:artifacts` slice (no new priv file). Required: the drift guard
     # (`doctrine_test.exs`, `template_names() == names()`) fails without it.
@@ -200,7 +219,14 @@ defmodule JidoClaw.Doctrine do
     # machine (idempotent re-check / state assertion / exit code; cite the
     # evidence). Both required by the drift guard (`template_names() == names()`).
     "system_executor" => [:base, :artifacts, :confidence_tagging],
-    "system_verifier" => [:base, :reviewer_min, :reviewer_contract, :system_verify, :verify_oath],
+    "system_verifier" => [
+      :base,
+      :reviewer_min,
+      :reviewer_stance,
+      :reviewer_contract,
+      :system_verify,
+      :verify_oath
+    ],
     # AR-9: the plan-wave workers. The drafter is a producing worker — but with
     # NO `:emit_signals` (deviation c): that slice instructs emitting
     # `plan-ready` when a plan is drafted, and a lens stage declares only

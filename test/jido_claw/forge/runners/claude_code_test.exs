@@ -128,6 +128,21 @@ defmodule JidoClaw.Forge.Runners.ClaudeCodeTest do
       {:ok, client: client, state: state}
     end
 
+    test "every iteration is a FRESH -p session — never a resume/continue token (PR-3)",
+         %{client: client, state: state} do
+      # camus SKILL.md's fresh-session-per-round rule: each composer re-review
+      # wave must re-read the CURRENT tree, never resume a stale session
+      # (camus C3-1's intra-attempt resume probe is deliberately not ported).
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = ClaudeCode.run_iteration(client, state, [])
+
+      ["claude" | args] = StubSandbox.last_run_args(client)
+
+      assert List.first(args) == "-p"
+      refute Enum.any?(args, &(&1 =~ "resume"))
+      refute "--continue" in args
+    end
+
     test "timeout → harness_timeout", %{client: client, state: state} do
       StubSandbox.program_run(client, {"", :timeout})
 

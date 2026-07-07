@@ -79,8 +79,10 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   `{:error, :no_credentials}`) — the operator's own CLI auth, the same trust
   class as running the CLI by hand; a missing-creds session start surfaces as
   a clean step error (Lane B infra for lens cohorts). Prompt egress is
-  redacted in the runners (`PromptRedaction.redact` on the full argv prompt),
-  so the P1a subagent-contract sections pass the redaction root too.
+  redacted in the runners (`PromptRedaction.redact` on the full argv prompt +
+  `context.md`, ANSI-stripped first since PR-3 — the redaction root's
+  pre-pass), so the P1a subagent-contract sections pass the redaction root
+  before leaving for a second vendor.
   """
 
   alias JidoClaw.Forge

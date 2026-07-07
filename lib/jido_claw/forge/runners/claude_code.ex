@@ -42,8 +42,9 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @auth_file "credentials.json"
 
   # The built-in read-tool set `access: :read_only` pins (verified against the
-  # operator-installed CLI at the PR-2 build-time smoke; PR-3's cross-vendor
-  # lane is the first production declarer).
+  # operator-installed CLI at the PR-2 build-time smoke; PR-3's `.jido/config.yaml`
+  # `review: executor:` lane is the first production declarer — operator config,
+  # not a committed template).
   @read_only_tools ~w(Read Glob Grep)
 
   @impl Runner

@@ -158,6 +158,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
+  alias JidoClaw.Orchestration.ReviewIndependence
   alias JidoClaw.Orchestration.RunPubSub
   # The camus C1-3 normalizer — NOT JidoClaw.Triage.Verdict (different
   # subsystem; never alias both in one module).
@@ -1198,7 +1199,19 @@ defmodule JidoClaw.RouteComposer do
       summary: nil
     }
 
-    {:ok, state, {:continue, :rebuild}}
+    # Item 7 PR-3 (camus C1-1): the review-independence launch fence — refuse
+    # BEFORE any wave (never a verdict, the review.sh posture). Both the front
+    # door (`start_composer/2`) and boot recovery (`ensure_started/2`) pass
+    # through init, so a recovered run re-checks its rebuilt catalog too; the
+    # front door terminalizes on `{:error, _}` while boot recovery leaves the
+    # parent `:running` for a later retry (the invalid-catalog precedent).
+    # `state.context[:project_dir]` may be nil here (restored/fallback-empty
+    # context) — `check_route/2` is nil-total, so a project-dir-less launch
+    # reads no config and is byte-identical to today.
+    case ReviewIndependence.check_route(state.catalog, state.context[:project_dir]) do
+      :ok -> {:ok, state, {:continue, :rebuild}}
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   # ---------------------------------------------------------------------------

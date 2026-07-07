@@ -11,6 +11,13 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
   test-only keys ride prod `runner_config`:
 
     * `:deposits` — list of `output` payloads; one `tools/call` each, in order
+    * `:deposit_rounds` — a LIST of deposit lists consumed one per
+      `run_iteration` via `:round_counter` (an `:atomics.new(1, [])` ref the
+      test creates): session N gets `Enum.at(rounds, N - 1, [])` — the PR-3
+      fresh-session two-round pin (each composer re-review wave is a NEW
+      vendor session, so the rounds advance across sessions). Takes
+      precedence over `:deposits` when present; the flat form stays for
+      single-round tests.
     * `:notify` — pid receiving `{:scripted_deposit_runner, :init | :prompt |
       :config, term}` capture messages (PromptCapture, the consolidator
       precedent)
@@ -48,7 +55,7 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
     result =
       with {:ok, url} <- read_server_url(config),
            {:ok, client} <- LoopbackClient.initialize(url),
-           :ok <- send_deposits(client, Map.get(script, :deposits, [])) do
+           :ok <- send_deposits(client, round_deposits(script)) do
         Runner.done(Map.get(script, :output, "scripted-vendor-output"))
       else
         {:error, reason} ->
@@ -62,6 +69,21 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
   def apply_input(_client, _input, _state), do: :ok
 
   defp script, do: Application.get_env(:jido_claw, :scripted_deposit_runner, %{})
+
+  # `:deposit_rounds` advances one list per run_iteration (= per vendor
+  # session) via the test-owned `:round_counter` atomics ref; exhausted rounds
+  # serve `[]` (a deposit-less session — the loud infra-lane signal if a test
+  # over-consumes). Absent ⇒ the flat `:deposits` form.
+  defp round_deposits(script) do
+    case Map.get(script, :deposit_rounds) do
+      nil ->
+        Map.get(script, :deposits, [])
+
+      rounds when is_list(rounds) ->
+        index = :atomics.add_get(Map.fetch!(script, :round_counter), 1, 1) - 1
+        Enum.at(rounds, index, [])
+    end
+  end
 
   defp send_deposits(client, deposits) do
     Enum.reduce_while(deposits, :ok, fn output, _acc ->

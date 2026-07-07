@@ -50,8 +50,12 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
     }
   end
 
+  # The session registry deregisters ASYNC after a harness stop (loudest on
+  # the session-start-failure path under full-suite load), so drain briefly —
+  # the deposit-registry `wait_until` precedent — rather than racing the
+  # reaper with a single snapshot. A genuinely leaked session still fails.
   defp assert_no_leaked_sessions(%{pre_sessions: pre}) do
-    assert Forge.list_sessions() -- pre == [],
+    assert wait_until(fn -> Forge.list_sessions() -- pre == [] end),
            "expected every bridge session torn down, got: #{inspect(Forge.list_sessions() -- pre)}"
   end
 

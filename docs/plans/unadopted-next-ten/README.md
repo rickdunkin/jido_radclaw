@@ -644,6 +644,68 @@ fingerprint.
 > the Linux/prod sync story is unit-pinned. No production template declares a
 > vendor binding (PR-3's cross-vendor lane is the first declarer).
 
+> **PR-3 (cross-vendor review configuration) DONE 2026-07-07**, with
+> deviations recorded — the item-level Status and the camus C1-1 source
+> reconciliation still wait for PR-4: (a) the first production declarer is
+> **operator CONFIG, not a committed template** (refining PR-2's forecast): a
+> `.jido/config.yaml` `review:` section (`executor: codex | claude_code`,
+> optional `executor_config:` run through the PR-1 hydration validators
+> against the RESOLVED reviewer base template — so the forge/sandbox combo
+> refusal is real — and `independence: strict | degraded`, default strict),
+> scoped to the `reviewer` template only (template-name-keyed, never
+> per-stage) and consulted at BOTH seams by
+> `Orchestration.ReviewIndependence`: the composer launch fence
+> (`check_route/2` in `RouteComposer.init/1` — front door AND boot recovery
+> pass through it; a strict hold surfaces as
+> `{:error, {:start_failed, {:review_independence_held, details}}}` with the
+> parent terminalized by the front door, boot recovery leaving `:running`
+> for retry, the invalid-catalog precedent) and `AgentRunner` dispatch
+> (`apply_executor/3` between `Templates.get/1` and executor dispatch — an
+> invalid knob is a step error riding Lane-B infra, never a silent
+> in-process fall-through). (b) camus has **no same-vendor runtime detection
+> and no degraded mode** — both are jido-native: independence compares
+> EXPLICIT provider identities (`{:forge, :codex}` → openai,
+> `{:forge, :claude_code}` → anthropic, `:shell`/`:fake`/`:custom` → :none;
+> `:in_process` resolves the producer's OWN tier — `stage.model ||
+> template.model`, the AR-9 correction — through `Jido.AI.resolve_model/1`,
+> with unknown aliases and non-binary alias specs `:indeterminate` =
+> collision, fail closed), activates only on a vendor-CLI-bound review-lens
+> stage, and holds whole-catalog (`details.scope: :catalog`, the remedy
+> naming that a talk/sketch request can be refused by a code-route pairing).
+> The YAML boundary is Verify.Config-strict: closed executor parser +
+> literal key translation (never `String.to_atom/1`), non-map
+> section/unknown keys/`executor_config`-without-`executor` all refuse
+> loudly, and a malformed `independence:` is a LOUD error in both directions
+> (never silently strict, never silently degraded). Strict at the FILE level
+> too: reads go through the fail-closed `Config.read_user_config/1`, so an
+> unreadable/unparseable `.jido/config.yaml` refuses loudly (absent file
+> stays absent; `Config.load/1` keeps the tolerant collapse for boot/wizard
+> surfaces), and present-null keys (`review:` / `executor:` /
+> `executor_config:` / `independence:` left blank parse present-nil;
+> `Map.fetch` semantics at all four sites) refuse loudly as well
+> (present-nil ≠ absent). Test-seam precedence:
+> an `:agent_templates_override` template is authoritative at both seams —
+> the knob never overlays it (an operator's local `review:` section cannot
+> hijack test determinism). (c) the review-prompt persona landed as the
+> `:reviewer_stance` doctrine slice on the three reviewer-contract templates
+> (`reviewer`/`sketch_reviewer`/`system_verifier`, right after
+> `:reviewer_min`) with the "from a different vendor" claim deliberately
+> dropped — the slice must stay honest on same-vendor (degraded/in-process)
+> paths. (d) fresh-session-per-round was already structural (each wave =
+> one ephemeral Forge session) and is now PINNED: a findings → fix →
+> approve loop drives TWO vendor sessions (`ScriptedDepositRunner`
+> `:deposit_rounds`) and both runners carry no-resume argv pins; camus
+> C3-1's resume machinery stays unported. (e) "passes the redaction root"
+> became literally true: `PromptRedaction` gained the ANSI pre-pass
+> (`Ansi.strip` before `Patterns.redact`, both clauses), so an escape-split
+> secret is reassembled before vendor-CLI egress (argv + context.md).
+> Residuals: mid-run `.jido/config.yaml` edits are not re-checked (camus
+> C2-7 class, the `verify_cmd` precedent); a deterministic violation loops
+> boot recovery `:running` (existing invalid-catalog behavior); vendor
+> identity is provider-prefix-approximate (a proxy provider like openrouter
+> reads as its own vendor — operator owns the knob). Telemetry counter
+> `jido_claw.review_independence.total` (`:held` / `:degraded_pass`).
+
 **Direction agreed 2026-07-02** (recorded in the camus doc's revision note):
 build the seam, not the pairing. One hard binding stands between the shipped
 substrate and the whole family — `AgentRunner` always spawns an in-process
@@ -670,14 +732,17 @@ contract, both vendor CLIs, and a proven headless driver (the consolidator's
    the deviations in the note above; the vendor arm lives in
    `Skills.Steps.ForgeExecutor`, the shared scoped-MCP machinery in
    `JidoClaw.MCP.{ScopedEndpoint, ScopedForward, LoopbackClient}`.)*
-3. **PR-3 — cross-vendor review configuration (S–M):** the invariant enforced
-   at resolution — a review-lens stage whose resolved executor shares the
-   implementer's vendor is *held* (fail closed, mirroring `review.sh`'s
-   unknown-backend refusal) unless the operator opts into degraded
-   independence in `.jido/config.yaml`; fresh session per re-review wave; lift
-   `review-prompt.md`'s adversarial persona + "correct but incomplete must NOT
-   pass" completeness clause for the review templates; outbound prompt
-   assembly passes the redaction root before egress to a second vendor.
+3. **PR-3 — cross-vendor review configuration (S–M) — DONE 2026-07-07:** the
+   invariant enforced at resolution — a review-lens stage whose resolved
+   executor shares the implementer's vendor is *held* (fail closed, mirroring
+   `review.sh`'s unknown-backend refusal) unless the operator opts into
+   degraded independence in `.jido/config.yaml`; fresh session per re-review
+   wave; lift `review-prompt.md`'s adversarial persona + "correct but
+   incomplete must NOT pass" completeness clause for the review templates;
+   outbound prompt assembly passes the redaction root before egress to a
+   second vendor. *(Shipped as sketched plus the deviations in the note
+   above; the resolver + invariant live in
+   `JidoClaw.Orchestration.ReviewIndependence`.)*
 4. **PR-4 — hardening residuals (S):** `needs_input` → gate-case mapping
    (first wave treats it as `blocked` → infra-retry); the write-capable-stage
    sandbox requirement; the remaining OQ-1 questions (workspace

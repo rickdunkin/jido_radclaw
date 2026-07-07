@@ -2,6 +2,14 @@ defmodule JidoClaw.Config do
   @moduledoc """
   Loads project-level configuration from .jido/config.yaml with defaults.
   Supports multiple LLM providers: Ollama (local/cloud), Anthropic, OpenAI, Google, Groq, xAI.
+
+  Two read lanes: `load/1` is the TOLERANT merged view for boot/wizard
+  surfaces — any read/parse failure collapses to the defaults so a broken
+  config never crashes boot. `read_user_config/1` is the FAIL-CLOSED raw
+  lane for consumers that must not treat a broken file as absent (the
+  review-independence knob): only a missing file reads as "nothing
+  configured", and the map comes back unmerged so present-vs-absent keys
+  stay distinguishable.
   """
 
   # Reachability/metadata reads with a default fallback — any raise from
@@ -72,12 +80,10 @@ defmodule JidoClaw.Config do
 
   @spec load(String.t()) :: map()
   def load(project_dir \\ File.cwd!()) do
-    config_path = Path.join([project_dir, ".jido", "config.yaml"])
-
     user_config =
-      case YamlElixir.read_from_file(config_path) do
-        {:ok, config} when is_map(config) -> config
-        _ -> %{}
+      case read_user_config(project_dir) do
+        {:ok, config} -> config
+        {:error, _tolerated} -> %{}
       end
 
     config = deep_merge(@defaults, user_config)
@@ -101,6 +107,49 @@ defmodule JidoClaw.Config do
         config
     end
   end
+
+  @doc """
+  Reads the RAW user config map from `.jido/config.yaml` — the strict lane
+  (see the moduledoc). Fails CLOSED on a present-but-broken file: only a
+  missing file/dir (`:enoent`) is `{:ok, %{}}`; any other read error, a parse
+  error, or a non-map root is `{:error, message}`. No defaults merge — the
+  caller sees exactly the user's keys, so present-null stays distinguishable
+  from absent.
+  """
+  @spec read_user_config(String.t()) :: {:ok, map()} | {:error, String.t()}
+  def read_user_config(project_dir) do
+    config_path = Path.join([project_dir, ".jido", "config.yaml"])
+
+    case File.read(config_path) do
+      {:ok, content} -> parse_user_config(content)
+      {:error, :enoent} -> {:ok, %{}}
+      {:error, reason} -> {:error, "cannot read .jido/config.yaml: #{inspect(reason)}"}
+    end
+  end
+
+  defp parse_user_config(content) do
+    case YamlElixir.read_from_string(content) do
+      {:ok, config} when is_map(config) ->
+        {:ok, config}
+
+      # An empty/null document: the parse succeeded and provably has no keys.
+      {:ok, nil} ->
+        {:ok, %{}}
+
+      # Describe the TYPE only — inspecting the value would dump file content
+      # (potentially secrets) into durable error surfaces.
+      {:ok, other} ->
+        {:error, "root of .jido/config.yaml must be a map, got #{root_type(other)}"}
+
+      {:error, error} ->
+        {:error, "cannot parse .jido/config.yaml: #{Exception.message(error)}"}
+    end
+  end
+
+  defp root_type(value) when is_list(value), do: "a list"
+  defp root_type(value) when is_binary(value), do: "a string"
+  defp root_type(value) when is_number(value), do: "a number"
+  defp root_type(_value), do: "a scalar"
 
   # ---------------------------------------------------------------------------
   # Accessors

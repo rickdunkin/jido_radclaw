@@ -693,6 +693,61 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
+  # Item 7 PR-3: the `.jido/config.yaml` review-binding entry into the SAME
+  # private validators — raises converted to operator-facing {:error, message}.
+  describe "hydrate_review_binding/3 (item 7, camus C1-1 PR-3)" do
+    test "a vendor kind over the real reviewer base hydrates workspace: :repo" do
+      {:ok, base} = Templates.get("reviewer")
+
+      for kind <- [:codex, :claude_code] do
+        assert {:ok, {{:forge, ^kind}, %{workspace: :repo}}} =
+                 Templates.hydrate_review_binding(kind, %{}, base)
+      end
+    end
+
+    test "the optional key surface passes through the PR-1 validators" do
+      {:ok, base} = Templates.get("reviewer")
+      config = %{workspace: :scratch, model: "gpt-5-codex", max_turns: 10}
+
+      assert {:ok, {{:forge, :codex}, ^config}} =
+               Templates.hydrate_review_binding(:codex, config, base)
+    end
+
+    test "an unknown config key is an operator-facing error, not a raise" do
+      {:ok, base} = Templates.get("reviewer")
+
+      assert {:error, msg} = Templates.hydrate_review_binding(:codex, %{sandbox: :local}, base)
+      assert msg =~ "unknown :executor_config keys"
+    end
+
+    test "a bad workspace value is an operator-facing error" do
+      {:ok, base} = Templates.get("reviewer")
+
+      assert {:error, msg} =
+               Templates.hydrate_review_binding(:codex, %{workspace: "sideways"}, base)
+
+      assert msg =~ "expected :repo | :scratch | :none"
+    end
+
+    test "a non-vendor kind is refused" do
+      {:ok, base} = Templates.get("reviewer")
+
+      for kind <- [:shell, :fake, :custom, :in_process, "codex"] do
+        assert {:error, msg} = Templates.hydrate_review_binding(kind, %{}, base)
+        assert msg =~ "expected :codex or :claude_code"
+      end
+    end
+
+    test "a sandboxed base template refuses the combo — the REAL base is checked" do
+      # The combo check must see the actual resolved template's :sandbox — a
+      # synthetic sandbox-less base would make this refusal vacuous.
+      sandboxed = exec_template(sandbox: :prototype)
+
+      assert {:error, msg} = Templates.hydrate_review_binding(:codex, %{}, sandboxed)
+      assert msg =~ "cannot combine with sandbox"
+    end
+  end
+
   defp exec_template(overrides) do
     Map.merge(%{module: JidoClaw.Agent.Workers.Coder, max_iterations: 1}, Map.new(overrides))
   end

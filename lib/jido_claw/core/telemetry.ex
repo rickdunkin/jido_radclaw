@@ -84,6 +84,13 @@ defmodule JidoClaw.Telemetry do
       # the durable transcript envelope carries the per-step detail.
       counter("jido_claw.executor.total", tags: [:kind, :outcome]),
 
+      # Review-independence resolutions (item 7, camus C1-1 PR-3) — one count
+      # per launch-time `check_route/2` that found a same-vendor/indeterminate
+      # review pairing; `outcome` is :held (strict refusal) or :degraded_pass
+      # (the operator's `independence: degraded` opt-in). A clean check emits
+      # nothing; the durable parent terminal carries the per-run detail.
+      counter("jido_claw.review_independence.total", tags: [:outcome]),
+
       # Composer fix-loop stall stops (next-ten item 6, camus C1-5) — one
       # count per stopped lens; `kind` is :stuck/:oscillating/:rereview_exhausted.
       # The Trace `:composer` events carry the per-run detail (hex keys only).
@@ -274,6 +281,11 @@ defmodule JidoClaw.Telemetry do
   @spec emit_executor(atom(), atom()) :: :ok
   def emit_executor(kind, outcome) do
     :telemetry.execute([:jido_claw, :executor], %{total: 1}, %{kind: kind, outcome: outcome})
+  end
+
+  @spec emit_review_independence(atom()) :: :ok
+  def emit_review_independence(outcome) do
+    :telemetry.execute([:jido_claw, :review_independence], %{total: 1}, %{outcome: outcome})
   end
 
   @spec emit_lua_eval(atom(), atom(), map()) :: :ok

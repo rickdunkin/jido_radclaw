@@ -226,6 +226,47 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       refute Enum.any?(args, &String.starts_with?(&1, "mcp_servers."))
     end
 
+    test "an ANSI-split secret is redacted at BOTH egress sites — context.md and argv (PR-3)",
+         %{forge_home: forge_home} do
+      # The escape splits the key mid-prefix; the PromptRedaction ANSI
+      # pre-pass reassembles it so the pattern scan catches it at egress.
+      {:ok, client, _sid} = StubSandbox.create()
+      secret_prompt = "use sk-ant-\e[0maaaabbbbccccddddeeeeffff to auth"
+
+      {:ok, state} =
+        Codex.init(client, %{
+          forge_home: forge_home,
+          codex_home: Path.join(forge_home, ".codex"),
+          prompt: secret_prompt
+        })
+
+      context = StubSandbox.file(client, "#{forge_home}/session/context.md")
+      assert context =~ "[REDACTED:ANTHROPIC_KEY]"
+      refute context =~ "aaaabbbbccccddddeeeeffff"
+
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = Codex.run_iteration(client, state, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+      assert Enum.any?(args, &(&1 =~ "[REDACTED:ANTHROPIC_KEY]"))
+      refute Enum.any?(args, &(&1 =~ "aaaabbbbccccddddeeeeffff"))
+    end
+
+    test "every iteration is a FRESH session — --ephemeral, never a resume token (PR-3)",
+         %{client: client, state: state} do
+      # camus SKILL.md's fresh-session-per-round rule: each composer re-review
+      # wave must re-read the CURRENT tree, never resume a stale session
+      # (camus C3-1's intra-attempt resume probe is deliberately not ported).
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = Codex.run_iteration(client, state, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+
+      assert "--ephemeral" in args
+      refute Enum.any?(args, &(&1 =~ "resume"))
+      refute "--continue" in args
+    end
+
     test "exit-127 → runner_unavailable", %{client: client, state: state} do
       StubSandbox.program_run(client, {"codex: command not found", 127})
 
