@@ -1,8 +1,11 @@
 # Argus — Corpus Synthesis (ades + pms)
 
-**Status**: synthesis pass, 2026-07-05 — written after both research corpora closed.
-Sources: the [ades corpus](../ades/README.md) (agent control-plane cockpits — six
-subjects, all six dug 2026-07-03, plus a same-day connective pass) and the
+**Status**: synthesis pass, 2026-07-05 — written after both research corpora closed —
+**refreshed 2026-07-06** when the ades corpus re-opened for three late-addition digs
+(t3code, herdr, cmux), now folded in throughout.
+Sources: the [ades corpus](../ades/README.md) (agent control-plane cockpits — nine
+subjects: six dug 2026-07-03 plus a same-day connective pass, three late additions
+dug 2026-07-06) and the
 [pms corpus](../pms/README.md) (agent-era project management — nine subjects, eight
 digs, all 2026-07-04, plus its connective pass), stitched together by the 2026-07-05
 cross-corpus pass ([DIG-BRIEFS](../pms/DIG-BRIEFS.md) "After the digs", motion 1).
@@ -16,8 +19,9 @@ the build from.
 This is a read-model over the corpora, **not a third decision surface**. Decisions
 live in [OVERVIEW.md](OVERVIEW.md) (architecture) and [FLOW.md](FLOW.md) (product
 layer; newest where they disagree), and both already carry the corpus citations
-inline at each decision point. Come here to see the research whole; follow the IDs
-(`TR1-2`, `MC1-4`, …) into the fifteen per-repo `FEATURES-WORTH-BORROWING.md`
+inline at each decision point; [DECISIONS.md](DECISIONS.md) (2026-07-07) snapshots
+the settled decision set one line each, by build slice. Come here to see the research whole; follow the IDs
+(`TR1-2`, `MC1-4`, …) into the eighteen per-repo `FEATURES-WORTH-BORROWING.md`
 inventories — they resolve via the two corpus READMEs — for file:line evidence on
 both sides. Claims below are dig-verified unless explicitly flagged "per scan".
 
@@ -25,18 +29,21 @@ both sides. Claims below are dig-verified unless explicitly flagged "per scan".
 
 ## 1. The corpora in numbers
 
-Fifteen subjects, fourteen digs (symphony + OpenSymphony were one joint read), no
+Eighteen subjects, seventeen digs (symphony + OpenSymphony were one joint read), no
 planned reads left open — every "no dig" / "pattern notes only" verdict was
 eventually upgraded or reversed, three on operator request (Xantham, muxara,
-OpenHelm). The two theses are complementary: **ades** subjects are session cockpits
+OpenHelm), and the ades corpus re-opened once after close for three late-addition
+digs (t3code, herdr, cmux — all 2026-07-06, targeted reads fired ahead of argus
+slices 1 and 6). The two theses are complementary: **ades** subjects are session cockpits
 ("one surface for many parallel coding agents" — watching terminals), **pms**
 subjects are PM-forward (a board, tracker, or pipeline is the product's center of
 gravity, and agents attach to *it*). That split is why the composites in §5 layer
 instead of competing: the cockpits owned attention and status, the PM products owned
 assignment, gates, and delivery.
 
-Verification discipline paid: the six ades digs corrected **20** scan claims between
-them; the four pms digs that tallied count **26** more (multica 6, orca 6, pad 5,
+Verification discipline paid: the nine ades digs corrected **31** scan claims between
+them (the original six 20; the 2026-07-06 late additions 11 more — t3code 6, herdr 4,
+cmux 1); the four pms digs that tallied count **26** more (multica 6, orca 6, pad 5,
 bosun 9), with the untallied digs correcting further. Two pms subjects (symphony,
 OpenSymphony) are our own stack — Phoenix/LiveView/GenServer.
 
@@ -61,6 +68,24 @@ The cast, one line each (the READMEs' tables hold the detail):
   model-inside-the-approval-TCB anti-reference (XA1-1); the
   infra-alerts-never-ride-the-agent-path rule (XA1-2); three our-side gaps exposed
   by contrast (XA2-1/-2/-3).
+- [**t3code**](../ades/t3code/FEATURES-WORTH-BORROWING.md) *(late addition, dug
+  2026-07-06)* — the corpus's first whole-product architectural peer (event-sourced
+  server + decoupled web/desktop/mobile clients): the durable `afterSequence`
+  catch-up contract + client sync loop (TC1-1), the field's first positive auth
+  reference (TC1-2), five drivers over four vendor protocols with native codex
+  resume (TC1-3). MIT — the one subject whose *code* is liftable, and still nothing
+  to lift (pre-release vendor transport, wrong runtime).
+- [**herdr**](../ades/herdr/FEATURES-WORTH-BORROWING.md) *(late addition, dug
+  2026-07-06)* — the terminal-native state engine: authority-tiered arbitration +
+  stale-reporter fences (HD1-1), the damping numbers + re-verify-at-delivery
+  (HD1-2), seen-fold "done" + the safe-sorter existence proof (HD1-3), the
+  14-vendor resume argv table (HD2-2), the banked PTY broker (HD2-1). AGPL:
+  patterns only.
+- [**cmux**](../ades/cmux/FEATURES-WORTH-BORROWING.md) *(late addition, dug
+  2026-07-06)* — herdr's opposite state-engine pole (hook authority + mechanical
+  fences, CM1-2); the claude-teams tmux-impersonation cost sheet (CM1-1); the typed
+  feed classifier + soft-wait approval cards (CM1-3); two cross-device delivery
+  rules (CM1-4); the native-companion cost bill (CM2-1). GPL: patterns only.
 - [**multica**](../pms/multica/FEATURES-WORTH-BORROWING.md) — strongest
   whole-product comparable (server Postgres + multi-device clients +
   worktree-per-task + agents-as-assignees): the CLI session-resume stack (MC1-1),
@@ -99,8 +124,9 @@ The cast, one line each (the READMEs' tables hold the detail):
   BUSL: patterns only.
 
 **License discipline** for anything beyond ideas: patterns/rubrics/schemas only
-from termic, Chorus, myrlin-workbook (AGPL-3.0), OpenHelm (BUSL-1.1), and multica
-(modified Apache with a commercial clause); the rest are MIT/Apache-clean.
+from termic, Chorus, myrlin-workbook, herdr (AGPL-3.0), cmux (GPL-3.0), OpenHelm
+(BUSL-1.1), and multica (modified Apache with a commercial clause); the rest are
+MIT/Apache-clean.
 
 ---
 
@@ -108,10 +134,15 @@ from termic, Chorus, myrlin-workbook (AGPL-3.0), OpenHelm (BUSL-1.1), and multic
 
 The standing question asked of every subject — *does anyone already have
 edit-the-step-output-and-resume?* — is answered. **At the execution layer: no,
-nowhere.** All fifteen subjects across both corpora verified empty — pad in the
+nowhere.** All eighteen subjects across both corpora verified empty — pad in the
 strongest form (it contains no LLM integration at all), muxara trivially (no input
 channel to an agent exists) — closing the program-wide sweep at **subject 24** (the
-counter predates these corpora; earlier exploration subjects fill the gap).
+counter predates these corpora; earlier exploration subjects fill the gap), then
+re-closing it at **subject 27** when the ades late additions landed (2026-07-06):
+herdr 25 (every human→agent channel is a pass-through PTY write), cmux 26 (the
+field's most elaborate decision surface is decision-*only* — mode picks, option
+picks, a feedback string, keystrokes), t3code 27 (the architecturally closest peer:
+its plan card is read-only, *below* even the plan-layer precedents).
 
 What pms found that ades could not: the **plan-layer** variant exists — exactly
 three times, and all three **promote the operator's edit verbatim**, the model
@@ -131,7 +162,7 @@ never re-invoked:
 Consequences for argus §5:
 
 - The novelty claim narrows honestly: **execution-layer head-promotion** — the
-  edited output *is* what the next step consumes — remains unique in a 24-subject
+  edited output *is* what the next step consumes — remains unique in a 27-subject
   field.
 - The first editor is externally confirmed three times over: a **markdown/plan
   editor at a pre-execution gate** is the industry-validated entry point — exactly
@@ -144,8 +175,12 @@ Consequences for argus §5:
 During execution the field converges on **steering, not editing**: boundary
 delivery (Chorus's "instruction injection" is a durable pending turn serialized
 behind the in-flight subprocess — CH1-2; multica resumes sessions from comments;
-orca re-runs a phase with authoritative notes), with exactly one shipped mid-turn
-exception — bosun's Claude lane via the vendor-SDK streaming-input channel (BO2-4).
+orca re-runs a phase with authoritative notes), with one shipped mid-turn
+exception at the 2026-07-05 close — bosun's Claude lane via the vendor-SDK
+streaming-input channel (BO2-4). *(Corrected 2026-07-06: t3code folds concurrent
+sends into the live turn across all four of its non-codex adapters and codex ships
+a first-class `turn/steer` — TC2-2 — so mid-turn steering is mainstream in the
+field's newest peer. Steering ≠ editing; the sweep verdict above is untouched.)*
 Two teams looked at richer in-run intervention and backed off: symphony's
 comment-resume revert (#84→#85 — recorded as withdrawal, no technical why) and
 orca's read-only-review-by-design doctrine.
@@ -161,7 +196,10 @@ Each of these is already recorded in OVERVIEW/FLOW; this is the evidence roll-up
    device, two run real server Postgres — but confirms it: none has multi-node
    clustering with node-affine execution (every daemon is a spoke to one hub), a
    durable event-feed catch-up contract, an agent-unmintable decision object, or
-   execution-layer edit-and-resume (pms observation 5). See §6.
+   execution-layer edit-and-resume (pms observation 5). *(Re-tested 2026-07-06
+   against the late additions: t3code ships the durable event-feed catch-up
+   contract — TC1-1 — so that item re-grades from moat to convergence; the other
+   three survive all eighteen subjects.)* See §6.
 2. **Worktree-per-task** (OVERVIEW §3.1). Unanimous in ades (6/6, counting CCC's
    spawn-time creation); five of nine in pms, with the exceptions paying visibly —
    OpenHelm's shared project dir forced a **global concurrency cap of 1**, and
@@ -211,7 +249,10 @@ Each of these is already recorded in OVERVIEW/FLOW; this is the evidence roll-up
 11. **Badges, not reordering** (the agent-list UX). Settled with prejudice: emdash
     never sorted, CCC shipped float-to-top and retracted it as churn, termic is
     badges-only, and muxara — the only shipping sorter — demonstrates the
-    selection-drift defect in code (MX2-1).
+    selection-drift defect in code (MX2-1). *(herdr, 2026-07-06: the safe exception
+    now has an existence proof — an opt-in priority sort ships defect-free with
+    selection bound to identity, and still defaults to stable order, HD1-3. The
+    law stands as the default.)*
 
 ---
 
@@ -234,10 +275,25 @@ Each of these is already recorded in OVERVIEW/FLOW; this is the evidence roll-up
   half is MY1-2's two detector shapes, and for us the transcript-derived detector
   is a query over durable tool-call rows, not a scrape.
 - **Xantham/Chorus "boundary delivery, never mid-turn"** — softened to "with one
-  vendor-SDK-mediated exception" once the bosun dig found BO2-4.
+  vendor-SDK-mediated exception" once the bosun dig found BO2-4, then corrected
+  outright by the t3code dig (2026-07-06): fold-into-live-turn ships across its
+  four non-codex adapters plus codex's first-class `turn/steer` — mid-turn
+  steering is mainstream (TC2-2).
 - **`PullRequestCoordinator` as existing plumbing** (FLOW §4/§10) — the HMAC
   ingress is real; the coordinator is unwired scaffolding (nothing subscribes to
   its PubSub topic; `submit_pr` fabricates a URL). Slice 4 builds the path real.
+- **The moat's event-feed item** (§6) — "no subject exposes anything like
+  `workflowEvents(afterSeq:)`" held for fifteen subjects and fell 2026-07-06:
+  t3code ships a durable global-sequence `afterSequence` catch-up contract end to
+  end (TC1-1), and cmux's `events.stream` is a third, desktop-scale convergence
+  (CM3-2). Re-graded from differentiator to working field reference — their
+  defects (mount-pinned cursor, dead gap-recovery) become slice 1's acceptance
+  criteria.
+- **OVERVIEW §2.6's PWA choice** — re-graded from cost-led to evidence-based
+  (2026-07-06): the "thin" native companion the scan saw is ~75k LOC + four cloud
+  services + a second release pipeline (cmux CM2-1), and t3code ships native APNs
+  with no PWA at all (TC2-6); the two datapoints are the named revisit's reading
+  list (§8).
 
 ### 4.2 In our own tree (the wiring-mortality census, applied at home)
 
@@ -250,9 +306,14 @@ same lens turned on jido_radclaw found:
   implementation** (OR2-4a → `mix jidoclaw.reproject_steps`).
 - **`Forge.apply_input/2` has zero callers** — surfacing `:needs_input` without the
   reply half would show operators a park nobody can answer (CH-FIRST-WAVE item 1).
+  *(Refined 2026-07-06, herdr seams pass: `apply_input/2` has since shipped; the
+  live gap is now the other half — `:needs_input` still reaches no operator
+  surface.)*
 - **Cron failures are invisible**: in-memory failure counter, auto-disable hides
   the row from `:for_tenant` listings, status-blind telemetry, and the `:schedule`
-  Trace channel has no producer (OH1-1's our-side slice).
+  Trace channel has no producer (OH1-1's our-side slice). *(Refined 2026-07-06,
+  herdr seams pass: auto-disabled rows are now visible in `/cron`, pull-only — the
+  persisted-breaker, classification, and telemetry halves still stand.)*
 - **`Accounts.ApiKey` has zero minting paths** (MY1-4a → `mix jidoclaw.api_key`).
 - **Unconsumed approvals never expire** (XA2-1 — now a three-subject convergence:
   Xantham, OpenHelm, bosun; BO2-5 is the reference implementation) and **no
@@ -273,13 +334,28 @@ No subject has more than one layer; argus adopts the stack (FLOW §12):
 
 1. **Per-agent status contract** — MX1-1: small closed enum, sub-typed
    needs-input, modes as orthogonal modifiers, honest `unknown`,
-   raise-fast/clear-slow damping.
+   raise-fast/clear-slow damping. *(herdr dig, 2026-07-06)*: the layer's
+   engineered reference landed — authority-tiered multi-source arbitration +
+   stale-reporter fences, damping numbers (only the inferred clear is damped;
+   evidence bypasses), "done" as a seen-fold projection, boring-unknown ranking
+   ([ades/herdr HD1-1..HD1-3](../ades/herdr/FEATURES-WORTH-BORROWING.md)); the
+   list-UX law below gains its existence proof (an identity-bound opt-in sorter
+   ships defect-free, default still stable order). *(cmux dig, same day)*: the
+   arbitration contract's opposite pole — hook-*authority* state with mechanical
+   fences (per-surface session+turn generation gating, pid-generation exit
+   fencing, correct-only corroboration, misroute-refusal) and scrapers deleted;
+   the fences converge with herdr's, so slice 1 adopts the fence set as
+   invariants and treats source-authority as a per-adapter choice
+   ([ades/cmux CM1-2](../ades/cmux/FEATURES-WORTH-BORROWING.md)).
 2. **Cross-agent fold + seen-flag** — EM2-1.
 3. **Attention-feed read-model** — CC1-2: kinds, priority (doubling as the
    per-severity mute knob), suppression, git-stranded-work items, the
    produce/decide split — plus the layer no formal event system sees on any
    substrate, ours included: the prose soft-block rubric and `ended_blocked`
-   (CC1-1).
+   (CC1-1 — re-proven unique 2026-07-06: herdr's manifest engine, the field's
+   most engineered screen classifier, still cannot see a prose soft-block; an
+   agent ending its turn on a free-form question classifies idle/"done" —
+   herdr S-5).
 4. **Delivery policy** (the pms layer): aggregation — BO1-3 (immediate-vs-digest
    split, a live digest edited in place, the pinned status board); storm semantics
    — OH2-2 (caller-supplied semantic dedup keys, touch-in-place priority
@@ -288,7 +364,12 @@ No subject has more than one layer; argus adopts the stack (FLOW §12):
    (replay suppression on reconnect, focus-acknowledgement consumes pending state,
    minimum-signal re-arm, per-device batch-coalescing, prune-on-provider-
    rejection); recipient model — CH2-3 (per-kind mutes, wake ≠ read, notifications
-   as a projection over the activity stream).
+   as a projection over the activity stream); fire-time honesty — HD1-2 (herdr,
+   2026-07-06: a delayed notification re-proves its predicate at delivery or
+   drops; blocked-class pierces focus/DND, completion-class respects it);
+   cross-device rules — CM1-4 (cmux, same day: presence-gated forwarding — push
+   only while no operator surface is active — and ack-sync as an absolute
+   projection of the durable watermark, never per-device ±1 arithmetic).
 5. **Triggers** — answered six times over, convergently: agent-finished +
    blocked-on-you (EM1-3, TM2-5 — independently re-derived by MY2-4);
    `ended_blocked` (CC1-1 + XA1-2); run-failed *included* (settled: this control
@@ -320,12 +401,17 @@ Eight axes; each has a shipped failure or a corrected sketch behind it:
 2. **Revision history** — Chorus keeps one overwritten `reviewNote`; ours is the
    event log + ref-store, by design.
 3. **Restart durability** — bosun's approved gates re-open to pending after a
-   restart (requests durable, waiters in memory).
+   restart (requests durable, waiters in memory); t3code's pending approvals die
+   outright with their in-memory `Deferred` — "Restart the turn to continue"
+   (S-3, 2026-07-06, the ledger's fifth member).
 4. **Expiry** — three-subject convergence on XA2-1; BO2-5 (TTL + reconcilers) is
    the reference implementation.
 5. **Timeout direction** — bosun defaults `onTimeout:"proceed"` (timeout =
    auto-approve): the corpus's sharpest argument for the inverted house rule — a
-   gate timeout only ever fails closed.
+   gate timeout only ever fails closed. *(cmux, 2026-07-06: the one defensible
+   timeout-open — a ≤120s soft-wait that falls through to the vendor's own TUI
+   prompt, graceful only because a native fallback surface exists; which polarity
+   our slice-6 vendor bridges take is cmux OQ-1, §8.)*
 6. **Severed-consumer test** — MY2-1: prove the resumed step consumes the head
    revision's bytes at its input.
 7. **Concurrency mechanics** — TR2-3: `expectedSeq` compares under the existing
@@ -356,7 +442,11 @@ branch* — rejected work unrecoverable) and myrlin (record-delete strands both,
 paired opposite failure) up through CCC's delegate-to-agent anti-pattern, termic's
 bare-confirm force, bosun's middle, multica's GC taxonomy, muxara's dirty-check
 hard block, and traycer's phased busy-checked delete — with SY2-4 contributing the
-only PR-side sweep in either corpus. The composite law FLOW §5 adopts: **phased +
+only PR-side sweep in either corpus, and herdr (2026-07-06) naming the middle
+point the spectrum lacked: **the branch survives teardown** (recoverable by
+default without blocking removal — HD2-4, which also contributes a
+gitdir-provenance check before deleting a stray checkout dir, folded into the
+reconciliation sweep). The composite law FLOW §5 adopts: **phased +
 dirty-checked (TR2-1/MX2-2) + PR-aware (SY2-4) + a records↔worktrees reconciliation
 sweep** — and deletion is never delegated to an agent (CC2-3). Our-side
 prerequisite: EM2-3, shell-gating `git worktree` mutations.
@@ -379,9 +469,13 @@ they all classify into.
 
 ### 5.5 The wiring-mortality laws
 
-Every one of the fourteen digs found dead *code paths*, not just stale docs (ades
-observation 8 → pms observation 13; ≥46 corrections across the corpora). Two laws,
-now written into the argus plans:
+Every one of the fourteen digs at the 2026-07-05 close found dead *code paths*, not
+just stale docs (ades observation 8 → pms observation 13; ≥46 corrections across
+the corpora then, ≥57 with the late additions' eleven). The late digs kept the
+streak where it mattered most: t3code's gap-detection recovery coordinator and
+`replayEvents` RPC have **zero production callers** — the law live in the
+architectural peer — and cmux ships inert transport seams for an unshipped p2p
+design. Two laws, now written into the argus plans:
 
 - **(a) Advertisement without mechanical enforcement rots** — PD1-1 (pad's own
   handshake instructions lag its surface by three versions), re-proven the same day
@@ -409,9 +503,30 @@ fresh-spawn-per-phase as the honest no-resume alternative) + OpenHelm's detached
 process-group spawn + SY2-3 (single-source multi-CLI tool/config generation, strict
 mcp-config pinning) + Chorus's interrupt taxonomy (`user`/`crash` provenance gating
 resume) + OH2-3/OH2-5 (structural scheduler deny-list; MCP preflight with
-min-tool-count gates) + BO2-4 (the agent-SDK streaming-input mode, on the reading
-list as the one mid-turn precedent). Approval frames map to the `AgentCase` inbox —
-where symphony auto-answers and Chorus auto-denies, we gate.
+min-tool-count gates) + BO2-4 (the agent-SDK streaming-input mode — *no longer the one
+mid-turn precedent: the t3code dig (2026-07-06) found steer-fold-into-live-turn
+shipped across its four non-codex adapters plus codex's first-class `turn/steer`;
+[ades/t3code TC2-2](../ades/t3code/FEATURES-WORTH-BORROWING.md)*). t3code TC1-3 is
+the production-scale composite of this whole stack — five drivers over four vendor
+protocols (app-server JSON-RPC, the Claude agent SDK, ACP ×2, the opencode SDK)
+behind one adapter contract, with native codex `thread/resume` and approvals as
+open JSON-RPC requests. Approval frames map to the `AgentCase` inbox — where
+symphony auto-answers, Chorus auto-denies, and t3code blocks a restart-mortal
+`Deferred`, we gate durably. The resume half gains the field's widest per-vendor
+table (herdr dig, 2026-07-06): 14 CLIs' exact resume argv forms + the
+`session_start_source` change-reason vocabulary, riding MC1-1 as a FOLD-IN
+([ades/herdr HD2-2](../ades/herdr/FEATURES-WORTH-BORROWING.md)). The cmux dig
+(2026-07-06) adds the stack's two remaining pieces: the field's only
+**teammate-mode driving** reference — a tmux impersonation (fake `TMUX` env +
+PATH shim + a pinned command-translation table) resting on nine unguarded vendor
+assumptions, banked as the priced *alternative* to structured-surface driving
+and the argument for preferring it
+([ades/cmux CM1-1](../ades/cmux/FEATURES-WORTH-BORROWING.md)) — and the ask-rule
+bridge's pre-priced vendor-quirk table: a typed `(source, event)` hook
+classifier (never string-matched), side-effecting-only escalation, three
+actionable kinds, and the soft-wait timeout polarity our bridges must decide
+(cmux CM1-3, its OQ-1); the restore side gains cmux's argv sanitizer — prompts
+and trust bypasses never replay — as MC1-1 acceptance criteria (CM2-3).
 
 ### 5.7 Placement & node identity (OVERVIEW §2.5/§3.3, FLOW §2)
 
@@ -436,7 +551,10 @@ doc-comment and an in-file changelog, advertised in the MCP handshake and a
 `_meta/version` resource (PD1-1) — plus the paid-for lesson that advertisement
 without mechanical enforcement rots. The fused do-now PR
 ([PD-FIRST-WAVE](../pms/pad/PD-FIRST-WAVE.md)) supersedes TR1-2a and kills our
-hardcoded MCP `0.2.0`.
+hardcoded MCP `0.2.0`. *(Re-confirmed from the architectural peer, 2026-07-06:
+even t3code ships no negotiation and no goldens — a dismissible version-skew
+banner is its whole answer, TC2-5/S-6 — so traycer + pad remain the only field
+references here.)*
 
 ### 5.9 Review payloads, staleness, and approval fatigue (§5.3, FLOW §10/§12)
 
@@ -463,22 +581,43 @@ revocable list, and XA2-2's hard-block never-grantable tier — is the synthesis
 
 ## 6. Where argus is ahead — the moat, evidence-backed
 
-Four things **no subject in either corpus has** (pms observation 5):
+Four things **no subject in either corpus had at the 2026-07-05 close** (pms
+observation 5), re-tested 2026-07-06 against the late additions — which cost the
+list one member and hardened the rest:
 
 1. Multi-node clustering with a shared DB and node-affine execution — every daemon
-   scanned is a spoke to one hub, not a peer.
-2. A durable event-feed catch-up contract behind the UI — bosun and orca
-   event-source internally but expose nothing like `workflowEvents(afterSeq:)`.
-3. An agent-unmintable durable decision object — `AgentCase` + `Cases.decide/4`;
-   only bosun has comparable gate machinery at all, and its defects (approved gates
-   re-opening, timeout-means-proceed, Mini-App-only decisions) are on the §5.2
-   checklist.
-4. Execution-layer edit-and-resume (§2).
+   scanned is a spoke to one hub, not a peer (t3code, the closest architectural
+   peer, is one Node server with no leases and no multi-node story).
+2. ~~A durable event-feed catch-up contract behind the UI~~ — **fell 2026-07-06**:
+   bosun and orca event-source internally and expose nothing, but t3code ships
+   exactly `workflowEvents(afterSeq:)`'s shape end to end (durable global
+   sequence, `afterSequence` resubscribe, client sync loop — TC1-1), with cmux's
+   `events.stream` a third, desktop-scale convergence (CM3-2). Re-graded from moat
+   to working field reference; their defects (mount-pinned cursor, dead
+   gap-recovery) become slice 1's acceptance criteria.
+3. An agent-unmintable durable decision object — `AgentCase` + `Cases.decide/4`.
+   Comparable gate machinery elsewhere keeps failing the same way: bosun's
+   approved gates re-open on restart, timeout-means-proceed, Mini-App-only
+   decisions (the §5.2 checklist); t3code's approvals block an in-memory
+   `Deferred` that dies on restart ("Restart the turn to continue" — S-3, the
+   gate-defect ledger's fifth member); cmux's Feed cards are advisory ≤120s
+   semaphores that expire with the agent's PID (a deliberate soft-wait — see cmux
+   OQ-1 in §8 before calling it a defect).
+4. Execution-layer edit-and-resume (§2 — now verified empty across all 27 swept
+   subjects).
 
 Supporting evidence of position: **auth hygiene is the field's weak flank**
 (symphony none/localhost, myrlin shared password, CCC CSRF-only; Chorus's OIDC +
-API keys the lone exception) — the OVERVIEW §4.4 posture survives both corpora.
-**Everyone else scrapes or bolts on hooks** for agent state (ades observation 3);
+API keys the lone exception until t3code's scoped-credential stack — TC1-2,
+2026-07-06, the field's first *positive* reference, which argus adopts as §4.4's
+upgrade path rather than meets as a rival) — the OVERVIEW §4.4 posture survives
+both corpora.
+**Everyone else scrapes or bolts on hooks** for agent state (ades observation 3 —
+sealed 2026-07-06 from both directions: herdr, the field's best scraper, retreated
+from hook-borne state to session-identity-only for its seven biggest CLIs, while
+cmux deleted its scraping layer and fenced hook authority instead; same staleness
+disease, opposite cures, both converging on the mechanical fences slice 1 adopts
+as invariants — HD1-1/CM1-2);
 we read our own `WorkflowEvent` log and `AgentCase` rows — borrow the taxonomy and
 UX, never the detection machinery, with two earned carve-outs: TM1-1's *emit* side
 (speak the work-done protocol from our REPL) and CC1-1's prose soft-block rubric,
@@ -486,7 +625,9 @@ which no formal event system sees on any substrate, ours included. And the field
 keeps **re-deriving what we already shipped**: four subjects converge on
 classify-before-counting (our Verdict normalizer, camus C1-3), two independently
 ship watch-the-watcher (XA1-2), three converge on approval expiry (XA2-1 — which we
-still owe ourselves; §7).
+still owe ourselves; §7), and cmux re-derives LoopGuard's
+typed-classification-never-string-sniffing doctrine at the hook boundary, scar
+included (CM1-3).
 
 ---
 
@@ -509,9 +650,16 @@ done-when criteria):
   halts, cron failures, Forge `:needs_input`, plus muxara's two Forge sharpenings)
   *and* wire `Forge.apply_input/2` end-to-end — surfacing without the reply half
   shows a park nobody can answer ([CH-FIRST-WAVE](../pms/chorus/CH-FIRST-WAVE.md)).
+  *(2026-07-06, herdr seams pass: `apply_input/2` has since shipped — the
+  surfacing half is now the whole remaining item.)*
 - **TM1-1** emit the work-done protocol from our own CLI.
-- **CC1-1** the prose soft-block detector (with MX3-1's fixture-corpus method).
-- **CC2-2** ManagedDoc for `system_prompt.md` (XA3-1 as second reference).
+- **CC1-1** the prose soft-block detector (with MX3-1's fixture-corpus method;
+  ship the rules in herdr HD2-3's shape — bounded, versioned, fixture-tested data,
+  minus the remote update channel).
+- **CC2-2** ManagedDoc for `system_prompt.md` (XA3-1 as second reference; herdr
+  HD2-5 + cmux CM2-4 are the field references — marker-owned surgical edits,
+  refuse-not-clobber, per-invocation injection first where a CLI accepts config as
+  flags).
 
 **Gate hardening**
 - **XA2-1 + XA2-2** (one session) — `AgentCase` TTL/sweeper + the hard-block
@@ -525,8 +673,9 @@ done-when criteria):
   is the shipped probe, MY1-1's transients-never-mark-dead the health model
   ([SY-FIRST-WAVE](../pms/symphony/SY-FIRST-WAVE.md)).
 - **OH cron-health slice** (S) — persist the breaker, classify before counting
-  (reuses MC1-4), stop disabled rows vanishing, outcome-tagged telemetry + the
-  `:schedule` Trace channel's first producer
+  (reuses MC1-4), stop disabled rows vanishing *(partially landed by 2026-07-06 —
+  herdr seams pass: rows now visible in `/cron`, pull-only)*, outcome-tagged
+  telemetry + the `:schedule` Trace channel's first producer
   ([OH-FIRST-WAVE](../pms/openhelm/OH-FIRST-WAVE.md)).
 - **SY config boot** (S) — fail-closed `.jido/config.yaml` load + last-known-good
   re-read.
@@ -539,9 +688,11 @@ done-when criteria):
   native CLI session resume for the Forge runners (M — the corpus-wide composition
   target, with riders from orca (OR3-2 dual-timeout split + group-kill), Chorus
   (anchor-ownership + group teardown, CH2-6/CH3-2), symphony (SY3-3
-  continuation-turn discipline), and bosun (BO2-3's infra-vs-session split, the
-  Codex poisoned-resume inventory)), then exit-code tiering (XS — consume PD1-2's
-  registry rather than re-sniffing).
+  continuation-turn discipline), bosun (BO2-3's infra-vs-session split, the
+  Codex poisoned-resume inventory), herdr (HD2-2's 14-vendor resume argv table +
+  the `session_start_source` vocabulary), and cmux (CM2-3's restore-argv sanitizer
+  as acceptance criteria — prompts and trust bypasses never replay)), then
+  exit-code tiering (XS — consume PD1-2's registry rather than re-sniffing).
 - **OR2-4a** `mix jidoclaw.reproject_steps` (S) — build the step-projection rebuild
   our moduledoc already claims ([OR-FIRST-WAVE](../pms/orca/OR-FIRST-WAVE.md)).
 - **OR env floor** (XS) — the non-interactive subprocess env floor.
@@ -549,7 +700,11 @@ done-when criteria):
 **Enrollment**
 - **MY1-4a** `mix jidoclaw.api_key` mint/list/revoke (S) — `Accounts.ApiKey` has
   zero minting paths today; pairs with the MY1-4 QR-ladder reference when the
-  argus client lands.
+  argus client lands. t3code rides it (TC1-2 / its OQ-2): put `scopes` schema room
+  on the key at mint time, enforce with the first scoped surface; t3code's QR
+  pairing is the *working* enrollment reference (myrlin's was shipped-broken), and
+  cmux CM2-2 adds the enrollment-artifact rule — the QR carries addressing and an
+  account-binding check, never anything that authorizes.
 
 ---
 
@@ -568,7 +723,16 @@ Grouped by where the decision lands (slice numbering = FLOW §13):
 - Standing-grant UI (XA OQ-1 → FLOW §12's once / this-thread / this-project-N-days
   tiers; grants visible and revocable; hard-block list always asks).
 - muxara OQ-1 (needs-input vs our non-blocking approvals) and OQ-2 (unknown
-  semantics: boring-unknown vs termic's fail-toward-attention).
+  semantics: boring-unknown vs termic's fail-toward-attention — herdr's answer,
+  2026-07-06: unknown ranks below idle and renders muted, HD1-3); herdr OQ-1
+  ("done" as a projection over `(state, seen_at_seq)` vs a fifth enum value —
+  lean projection internally, folded five-value view at the API boundary).
+- t3code OQ-1 — channel payload posture: carry the redacted `WorkflowEvent` rows
+  on per-run/per-thread topics vs OVERVIEW §4.2's minimal-payload-plus-refetch
+  (lean carry-events there, minimal elsewhere), and per-run seq vs global cursor
+  (lean per-run); t3code OQ-3 — busy-thread sends: queue-as-next-turn (ours today)
+  vs fold-into-live-turn (the field's shipped steer, TC2-2) — probably both,
+  operator-chosen, decided with CH1-2's affordances work.
 - CCC OQ-1/OQ-2 — the attention/disposition vocabulary shared with camus C1-4/C1-5.
 - Task field mechanics (MC OQ-1/2/3, split across slices 1 and 3 per the multica
   dig).
@@ -589,6 +753,18 @@ Grouped by where the decision lands (slice numbering = FLOW §13):
 - **OH2-4** (TRACK) — run-scope snapshot / detection-before-pin; triggered by
   composer external-MCP reach or slice 4's long-lived review gates.
 
+**Slice 6 / executor PR-2 (CLI adapters)**
+- cmux OQ-1 — gate-timeout polarity for **vendor-intercepted** approvals:
+  soft-wait falling through to the vendor's own TUI prompt (cmux's polarity —
+  graceful only where a native fallback surface exists) vs durable-hold (our
+  native gates, correct where none does); bosun's timeout-means-proceed stays the
+  named defect. Lean: cmux polarity for interactive Forge sessions with a live
+  PTY, durable-hold for headless runs — decide at PR-2 with TC1-3(b).
+- cmux OQ-2 — teams-driving: default no (two orchestrators fight); sharpened
+  same-day into the subscription-durable interactive-lane question —
+  [CM-SUBSCRIPTION-LANE-PLAN](../ades/cmux/CM-SUBSCRIPTION-LANE-PLAN.md)
+  (PROPOSED, not queued; lanes, spike sequence, and kill criteria recorded there).
+
 **Per gate kind, when phone approvals land**
 - **OH OQ-2** — decided-after-death: who executes a grant decided after the run
   ended (OpenHelm executes the stored payload platform-side; our consume semantics
@@ -598,22 +774,44 @@ Grouped by where the decision lands (slice numbering = FLOW §13):
 - **ACP**: should JidoClaw *speak* ACP so third-party cockpits can drive it? Costed
   at EM1-4 (four methods + two callback families over `chat/4`, SignalBus, and the
   tool-approval gate); the one real design decision is the permission bridge
-  (EM OQ-1: single-use consume vs `allow_always`); multica attaching its newest
-  drivers via ACP is the strongest adoption datapoint yet. Trigger: the OVERVIEW §4
-  API design pass.
+  (EM OQ-1: single-use consume vs `allow_always`); the adoption datapoints keep
+  strengthening — multica attaches its newest drivers via ACP, and t3code runs
+  `effect-acp` as the *production client transport* for two of its five providers
+  (TC2-7). herdr HD3-2 + cmux CM3-1 add the near-free half: a published skill over
+  the existing MCP surface teaches non-MCP agents to drive us for the cost of a
+  markdown file. Trigger: the OVERVIEW §4 API design pass.
 - **BO1-1** — the reference (qualification fences, resume cap, unresumable-reason
   taxonomy) when a resume-past-the-gate / auto-resume-on-restart design ever
   starts.
+- **PWA-vs-native revisit** (OVERVIEW §2.6): trigger — argus's phone client
+  proving insufficient on exactly the two things native buys (terminal-grade
+  live-mirror rendering; APNs-class background delivery). Reading list: cmux CM2-1
+  (the ~75k-LOC + four-cloud-services cost bill) and t3code TC2-6 (native APNs via
+  a relay, no PWA at all).
+- **TC2-1** — paired turn rewind (workspace checkpoint + conversation rollback in
+  one gesture, via hidden-ref orphan commits): trigger — the argus thread-timeline
+  UX design (slice 2's diffs or slice 5's fan-out, whichever first grows a rewind
+  affordance).
+- **TC2-4** — provider-instance registry ergonomics (open driver slugs, graceful
+  "unavailable" shadow snapshots, per-instance server-held secrets): trigger —
+  executor PR-3's cross-vendor resolution meeting "two codex accounts".
 
 ---
 
 ## 9. Method notes
 
 - **Pin the commit, read the code, treat docs as hypotheses.** The discipline held
-  across all fourteen digs and is what produced the ≥46 corrections. Never cite a
+  across all seventeen digs and is what produced the ≥57 corrections. Never cite a
   scan-level claim without the "per scan" flag — both corpora demonstrate why
-  (every dig corrected its own scan, and two of OpenHelm's three recorded citations
-  were dead code at HEAD).
+  (every dig corrected its own scan, two of OpenHelm's three recorded citations
+  were dead code at HEAD, and the t3code scan's headline haul — the push-contract
+  stack — turned out to be someone else's pre-release plumbing).
+- **Late additions fold in; they don't re-open the synthesis.** The three
+  2026-07-06 digs landed as targeted reads that wrote their own cross-links at
+  landing time (each inventory names its argus consumers and its riders on queued
+  builds), so the §5 composites absorbed them without a second connective pass —
+  the exception that works only because the composites already existed to fold
+  into.
 - **The connective pass is load-bearing.** Every composite in §5 (ades observations
   6–8, pms observations 9–13) was invisible to the individual digs that supplied
   its parts; budget the pass whenever a corpus closes.

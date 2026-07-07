@@ -5,15 +5,22 @@ layer — the shape we currently believe in, not a finalized spec. It extends
 [OVERVIEW.md](OVERVIEW.md) (architecture: cluster topology, API surface, the
 §5 editor family); where the two disagree, this document is newer. The
 pms-corpus digs ([../pms/README.md](../pms/README.md)) have all landed
-(2026-07-04) and are folded in — §13 records what each hardened — and
-[SYNTHESIS.md](SYNTHESIS.md) (2026-07-05) rolls both corpora up by argus
+(2026-07-04) and are folded in — §13 records what each hardened — as are the
+three late-addition ades digs (t3code, herdr, cmux — 2026-07-06; §4, §5, §11,
+§12, and the §13 coda carry their folds) — and
+[SYNTHESIS.md](SYNTHESIS.md) (2026-07-05, refreshed 2026-07-06) rolls both
+corpora up by argus
 concern: the composite checklists, the merged do-now queue, and the
 open-question register this doc cites piecemeal. Corpus shorthand
-(`TR…`, `EM…`, `MX…`, `CC…`, `XA…` — ades; `MC…`, `CH…`, `SY…`, `OR…`,
-`BO…`, `PD…`, `MY…`, `OH…` — pms) resolves via the two corpus READMEs
+(`TR…`, `EM…`, `MX…`, `CC…`, `XA…`, `TC…`, `HD…`, `CM…` — ades; `MC…`, `CH…`,
+`SY…`, `OR…`, `BO…`, `PD…`, `MY…`, `OH…` — pms) resolves via the two corpus
+READMEs
 ([../ades/README.md](../ades/README.md),
 [../pms/README.md](../pms/README.md)); this doc answers pms observation 6
-(the task layer) in the affirmative.
+(the task layer) in the affirmative. [DECISIONS.md](DECISIONS.md)
+(2026-07-07) snapshots every settled decision across all three docs, one
+line each, grouped by build slice — start there; this doc holds the
+rationale.
 
 ## 1. The shape of the system
 
@@ -137,7 +144,10 @@ already exist). Automated branch and directory names come from **two
 templates** — branch and directory, each per-project over global defaults
 (branch default `{source}/{slug}`; directory default mirrors the sanitized
 branch; tokens `{source, slug, date, n, parent}`; a `-{n}` collision counter
-auto-appends to both; sub-worktrees default off the parent). Manual creation
+auto-appends to both; sub-worktrees default off the parent; herdr datapoint
+2026-07-06 — generated adjective-noun slugs + collapse-to-dash path
+sanitization with a non-empty fallback,
+[ades/herdr HD2-4](../ades/herdr/FEATURES-WORTH-BORROWING.md)). Manual creation
 takes input. Workflows are
 **native-engine-only for now**; a CLI-turn step kind has schema room (§9) but
 is explicitly later.
@@ -168,7 +178,10 @@ thread until ready.
 composite teardown law ([SYNTHESIS §5.3](SYNTHESIS.md)): phased +
 dirty-checked (the corpus spectrum's strong end: TR2-1, MX2-2), a
 teardown-time open-PR sweep (SY2-4), and a records↔worktrees
-reconciliation sweep (against myrlin's record-delete stranding, MY2-3) —
+reconciliation sweep (against myrlin's record-delete stranding, MY2-3;
+herdr's gitdir-provenance check before deleting a stray checkout dir joins
+it, and its branch-survives-teardown default is the named recoverability
+middle point — HD2-4, 2026-07-06) —
 and never delegated to an agent (CC2-3).
 
 ## 6. Sub-threads & fan-out
@@ -322,9 +335,21 @@ Both paths exist, chosen per project (and overridable per landing):
   disable. The merge webhook auto-advances **explicitly linked** tasks (via
   status semantic kind) and offers phased worktree cleanup.
 - **In-argus quick-merge**: local merge to primary plus push, no PR — for
-  work where a PR is ceremony. Executed as a bare-repo ref update; git itself
+  work where a PR is ceremony. Executed against the bare repo; git itself
   forces this shape, since primary is checked out in the reference checkout
-  and a branch cannot be checked out twice.
+  and a branch cannot be checked out twice. *(Corrected 2026-07-07: the
+  original "bare-repo ref update" phrasing was only true for
+  fast-forwards.)* Two mechanical cases, both landing through a fenced
+  compare-and-swap `update-ref` against the expected old primary head (the
+  lease-discipline posture): a fast-forward IS just that ref update; a true
+  merge has no working tree to merge in, so the merge commit is built with
+  plumbing — `git merge-tree --write-tree` (git ≥ 2.38, a per-node version
+  floor; the same plumbing OR1-2's staleness dry-runs ride) to compute the
+  merged tree, then `git commit-tree` with both parents. A conflicted
+  merge-tree never lands platform-side: quick-merge refuses loudly, and
+  resolution is agent work in the source worktree (merge primary into the
+  branch there — §6's doctrine — then re-attempt) or the operator falls
+  back to the PR path.
 
 Landing attribution is **explicit and rides the landing gate**: the
 PR-metadata review (and quick-merge's confirm) carries a task checklist,
@@ -354,7 +379,17 @@ the last two slices (visual editor, terminal) deliberately at the tail.
   `run_command`/Forge route — CC2-4 is the negative reference); auth via
   **per-session short-lived tokens minted through the UI**, not the standing
   API key, so a leaked key never equals a shell; treated as argus's
-  strictest-tier endpoint.
+  strictest-tier endpoint. Mechanics reference banked 2026-07-06: herdr's
+  server-side PTY broker
+  ([ades/herdr HD2-1](../ades/herdr/FEATURES-WORTH-BORROWING.md)) — reattach as
+  current-state redraw (never byte replay), bounded server-side scrollback,
+  single-slot latest-wins render lane per client, size follows the active
+  viewer; its two inversions for us: real auth (herdr is 0600+ssh) and
+  skew-tolerant versioning (herdr is exact-match-or-die). t3code TC2-3 is the
+  MIT sibling reference (server-owned `node-pty`, thread-scoped, PTYs survive
+  disconnect, every method gated by a `terminal:operate` scope — the short-lived
+  token above is its `wsTicket`, generalized), and cmux CM3-3 files three
+  remote-auth garnishes alongside.
 
 ## 12. Attention & approvals
 
@@ -380,7 +415,15 @@ Adopt the corpus-merged answer to OVERVIEW §6.2 wholesale:
   split, a per-window live digest edited in place, the pinned always-current
   status board (bosun BO1-3 — delivery mechanics only); infra-incident
   collapse, guaranteed escalation, email-on-attention additive at
-  approval-or-priority≥80 (OpenHelm OH2-2).
+  approval-or-priority≥80 (OpenHelm OH2-2); re-verify-at-delivery — a delayed
+  notification re-proves its predicate before firing, else drops — and
+  blocked-class pierces focus/DND suppression while completion-class respects
+  it (herdr HD1-2, 2026-07-06); **presence-gated cross-device forwarding** —
+  push to the phone only while no operator surface is active (presence-gated,
+  not device-gated) — and **ack-sync as an absolute projection**: badge/unread
+  derives from the durable ack watermark, dismissals are synced facts, never
+  per-device ±1 arithmetic (cmux CM1-4, 2026-07-06 —
+  [../ades/cmux/FEATURES-WORTH-BORROWING.md](../ades/cmux/FEATURES-WORTH-BORROWING.md)).
 - **Architecture rules**: the notifier is the gateway layer subscribed to
   PubSub — never agent behavior (XA1-2); the *ask* may ride any channel, the
   *grant* only ever enters through authenticated non-model surfaces (XA1-1).
@@ -413,7 +456,7 @@ slices, each usable on its own**, dogfooded as soon as the board exists
 5. **Fan-out** — sub-threads/sub-worktrees, `merge_child`, conflict
    attention.
 6. **CLI engine** — Forge-piped threads, the sandbox MCP endpoint, ask-rule
-   bridges.
+   bridges (reading list assembled in [SYNTHESIS §5.6](SYNTHESIS.md)).
 7. **Workflow visual editor** — react-flow over the by-then-stable schema.
 8. **Operator terminal.**
 
@@ -547,7 +590,11 @@ mid-turn injection is shipped in the field exactly once, on bosun's Claude lane
 via the agent-SDK streaming-input channel (BO2-4), so the Chorus dig's
 "boundary delivery, never mid-turn" softens to "boundary delivery, with one
 vendor-SDK-mediated exception"; slice 1's conclusions stand and the
-streaming-input mode joins slice 6's CLI-adapter reading list. §5
+streaming-input mode joins slice 6's CLI-adapter reading list. *(Corrected again
+2026-07-06, t3code dig: no longer one exception — t3code folds concurrent sends
+into the live turn across all four of its non-codex adapters and codex ships a
+first-class `turn/steer`; mid-turn steering is mainstream in the field's newest
+peer — [ades/t3code TC2-2](../ades/t3code/FEATURES-WORTH-BORROWING.md).)* §5
 edit-and-resume stays empty at subject 21. The **myrlin-workbook** dig
 (2026-07-04, upgraded from pattern notes to a full dig) closes the corpus's
 planned reads
@@ -597,6 +644,23 @@ detection-before-pin, triggered by composer external-MCP reach or slice 4's
 long-lived review gates). §5 edit-and-resume verified empty at **subject 24**,
 closing the corpus. Standing questions per repo, with the full-exploration
 rule they ride along with: [../pms/DIG-BRIEFS.md](../pms/DIG-BRIEFS.md).
+
+**Late-addition ades digs (2026-07-06)** — three targeted reads fired after
+both corpora closed, folded in above where they touch. **t3code** (TC-*) hands
+slice 1 its working sync-loop reference (the durable `afterSequence` catch-up
+contract + client sync loop, TC1-1 — the moat item it retires is re-graded in
+[SYNTHESIS §6](SYNTHESIS.md)), OVERVIEW §4.4 its first *positive* auth
+reference (TC1-2), and slice 6 / executor PR-2 their protocol spec (TC1-3),
+plus the steering correction noted above (TC2-2). **herdr** (HD-*, AGPL
+patterns-only) hands slice 1 the per-agent status rubric (HD1-1..HD1-3 —
+[SYNTHESIS §5.1](SYNTHESIS.md)), §12 two delivery rules, §11 the PTY-broker
+mechanics (HD2-1), §4 its naming datapoint (HD2-4), and the queued MC1-1 build
+the 14-vendor resume argv table (HD2-2). **cmux** (CM-*, GPL patterns-only)
+hands §12 two cross-device delivery rules (CM1-4), slice 6 the ask-rule
+classifier and the teams-driving cost sheet (CM1-3/CM1-1), OVERVIEW §2.6 its
+native-cost evidence (CM2-1), and MC1-1 the restore-argv sanitizer (CM2-3).
+The §5 edit-and-resume sweep extended and re-closed **empty at subject 27**
+(herdr 25, cmux 26, t3code 27).
 
 **Our-side caveat recorded by the same dig's seams pass (2026-07-04)**: §4
 and §10 cite `PullRequestCoordinator` as existing plumbing — the HMAC

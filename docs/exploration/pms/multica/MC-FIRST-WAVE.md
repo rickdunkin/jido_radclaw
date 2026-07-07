@@ -134,6 +134,22 @@ hazards — the `--continue` shared-cwd hazard and probe-and-own mechanics,
 myrlin's probe-from-disk variant on CH2-6's anchor-ownership axis. Reconcile
 both entries with MC1-1's.
 
+**Riders (2026-07-06, ades late-addition digs — herdr + cmux)**: two more
+declarations name this build as their landing site:
+[herdr HD2-2](../../ades/herdr/FEATURES-WORTH-BORROWING.md) — the corpus's
+widest per-vendor resume argv table (14 CLIs: flag vs `=` vs subcommand vs
+`--thread` vs path-kind refs vs the renamed `cursor-agent` binary) plus the
+`session_start_source` change-reason vocabulary
+(`startup | resume | clear | compact | new | fork`) that names *why* a session
+id changed and gates whether a same-owner replacement is honored; and
+[cmux CM2-3](../../ades/cmux/FEATURES-WORTH-BORROWING.md) — the restore-argv
+sanitizer as acceptance criteria: a resumed launch is a replayed argv with
+history, so prompts never replay, trust bypasses
+(`--dangerously-skip-permissions`-class) never persist into restore,
+resume/fork selectors are stripped before re-resume, and model/config flags are
+the explicit recovery allowlist. Both are riders, not second builds — reconcile
+with MC1-1's entry.
+
 **What**: `cli/run_command.ex` (osa OS1-5) exits 0/1 only, and it's explicitly
 built for scripting/agent callers. Adopt multica's tier table nearly verbatim
 (`server/internal/cli/errors.go` + CLI_AND_DAEMON.md §Error-Messages): 0 success ·

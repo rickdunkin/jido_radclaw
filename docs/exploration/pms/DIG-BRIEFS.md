@@ -38,8 +38,9 @@ here: answer the standing questions, *and* sweep the whole subject.
 ## Cross-cutting questions (every dig carries these)
 
 1. **The §5 sweep continues**: any execution-layer edit-the-step-output-and-
-   resume, anywhere? Fifteen subjects verified empty so far; keep the streak
-   honest.
+   resume, anywhere? Twenty-seven subjects verified empty so far (this corpus
+   closed at 24; the ades late additions closed 25–27, 2026-07-06); keep the
+   streak honest.
 2. **Provisioning lifecycles** (FLOW §5): anything shaped like
    create → setup → ready for workdirs — setup state tracking, idempotent
    steps, toolchain init, secrets materialization.

@@ -30,7 +30,9 @@ touches only the cron subsystem.
    re-arms expired pauses (OpenHelm's auto-recovery lesson: an un-recovered pause once
    cost them a 9-hour fleet outage; bounded re-trip churn is the accepted cost).
 5. **Visibility**: disabled/tripped jobs stay listable (`include_disabled?` read arg or
-   a `:for_tenant_all`); `/gates`-style REPL + dashboard read.
+   a `:for_tenant_all`); `/gates`-style REPL + dashboard read. *(2026-07-06, herdr
+   seams pass: partially landed — auto-disabled rows are now visible in `/cron`,
+   pull-only; the breaker/classification/telemetry items above still stand.)*
 
 **Open decision at pickup**: OQ-3 — columns on `Cron.Job` vs a separate per-job health
 resource.
