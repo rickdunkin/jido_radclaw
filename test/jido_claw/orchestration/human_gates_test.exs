@@ -351,8 +351,11 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       assert reactor.state == :halted
       assert decoded_inputs == inputs
       # CAVEAT: a same-VM round-trip does not prove cross-boot atom/module
-      # availability; the real guard is the versioned envelope +
-      # Code.ensure_loaded? in GateResume. A separate-BEAM resume is a follow-up.
+      # availability — and the separate-BEAM resume proof
+      # (`cluster/gated_resume_across_nodes_test.exs`, WS6 Phase 2 Proof C)
+      # caught exactly that: `Code.ensure_loaded?` of the envelope module does
+      # not intern the halted context's machinery atoms, so `GateResume` now
+      # sweep-loads the compiled closure and retries the `[:safe]` decode.
     end
 
     test "tenant B cannot read tenant A's pending case", ctx do

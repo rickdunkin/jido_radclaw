@@ -294,3 +294,64 @@ until Phase 1 starts; this workstream is the convention's first user.*
   under an inline `# reach:disable-next-line ecto_interpolated_repo_query`
   (identifiers cannot be parameterized; names come from `pg_tables` and are
   quoted).
+
+### Phase 2
+
+- **No new flag-row `BlockingStep` reactor** *(forced: one sensible path)*.
+  The phase sketch called for "a `BlockingStep` fixture that waits on a flag
+  row"; the existing `BlockingTestReactor` (sleep-infinity) + polling the
+  durable `step_started` event already gives the deterministic no-sleep
+  mid-execution window, and no Phase 2 proof ever releases the blocked step —
+  all three end via node death, fence-kill, or a gate park. The releasable
+  flag-row fixture is deferred until a proof needs staged release (Phase 3
+  composer choreography, likely).
+- **Proof A asserts fail-with-audit, not resume** *(operator-decided at plan
+  review)*. The sketch said "peer B reclaims … and resumes/re-runs it
+  correctly"; shipped WS3 never re-executes a plain reactor on reclaim — it
+  terminalizes `:failed` with the `run_recovered` + `run_failed` audit pair
+  (boot-parity Q1, `workflow_recovery.ex`). True resume is proven by Proof C
+  now and the composer proof in Phase 3.
+- **Proof C (gated resume across nodes) added** *(operator-decided at plan
+  review)* beyond the sketch's two proofs — closes the `human_gates_test.exs`
+  IOU ("a separate-BEAM resume is a follow-up").
+- **Proof B's "force-reclaim" is staged** *(forced)*: `rotate_token!` (the
+  documented reclaimer-steal seed) followed by a REAL `reclaim_once` on the
+  other peer. Racing a genuine cross-node claim against a healthy 1s renew
+  cadence is inherently flaky; the production sequence (rotate → fence-kill →
+  reclaim disposition) is preserved end-to-end — only the rotation is seeded.
+- **`kill_peer/1` rides `:peer.stop/1`** *(forced)*, not an `:rpc`
+  `:erlang.halt/0` (the sketch offered either): with
+  `connection: :standard_io` and no `:shutdown` option, `:peer.stop/1` closes
+  the stdio control port and the peer self-halts via `erlang:halt()` — abrupt
+  (no `Application.stop`, nothing releases the lease), a supported API, and it
+  already blocks until nodedown. Proof A asserts the stale lease survived the
+  death, so a graceful `:shutdown` option added to the harness later fails
+  loudly rather than silently rotting the premise.
+- **Proof C found a real WS3 recovery bug — `GateResume` gained a
+  module-sweep retry** *(forced by discovery; the plan's "no production
+  changes" premise did not survive contact with the proof)*. On a fresh BEAM
+  (a reclaiming peer — equally a fresh boot-recovery BEAM under mix), the
+  checkpoint's inner `binary_to_term(_, [:safe])` raised `ArgumentError`:
+  `[:safe]` refuses atoms the VM has not interned, and `resolve_module/1`'s
+  `Code.ensure_loaded?` covers the gate-reactor module but NOT the halted
+  struct's transitive machinery. A throwaway cross-node probe pinned exactly
+  one missing atom out of 157 — `:ash_notification_agent`,
+  `Ash.Reactor.Notifications`' agent key, which rides every halted context
+  (its `agent_stop/1` keeps the key as `[]`) and is interned only once that
+  module loads, i.e. only after a reactor has actually run on that BEAM. Fix:
+  on the first inner-decode `ArgumentError`, `GateResume` loads every loaded
+  application's compiled modules (best-effort, idempotent, embedded-mode
+  semantics) and retries the `[:safe]` decode once; a second refusal is
+  genuine corruption (`:corrupt_checkpoint_inner`). The `[:safe]` posture is
+  retained. The same-VM suite cannot regression-test this (atoms cannot be
+  un-interned), so Proof C is the regression test. The other `[:safe]` sites
+  were checked and keep their decode paths: `Replay`'s blob is data-shaped
+  with the definition resolved first, and the composer artifact envelope is
+  primitive-only by contract.
+- **Cluster-suite import mechanics, refined** *(forced)*: a proof module's
+  local `import Mod, only:` REPLACES the `using`-quote's import of the same
+  module (last directive wins), so each local list carries everything that
+  module uses — while imports injected by the `using` quote are exempt from
+  the per-`{name, arity}` unused-import warning (verified empirically with a
+  scratch probe), so the shared quote stays as-is even though no proof module
+  uses all of it.

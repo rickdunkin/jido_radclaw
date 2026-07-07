@@ -148,6 +148,31 @@ defmodule JidoClaw.Cluster.PeerHarness do
     end)
   end
 
+  @doc """
+  Abrupt kill of one peer — `:peer.stop/1` closes the stdio control channel,
+  upon which the peer self-halts via `erlang:halt/0` (OTP 29 peer.erl): no
+  `Application.stop`, so a held lease is left STALE for reclaim. Abrupt
+  BECAUSE `peer_start_options/2` sets no graceful `:shutdown` option — adding
+  one later would silently release leases and break the stale-lease premise
+  the Phase 2 proofs assert. Blocks until nodedown. Idempotent with
+  `stop_peers/1` (killing an already-dead peer is a no-op there).
+  """
+  @spec kill_peer(peer()) :: :ok
+  def kill_peer(%{server: server, node: node}) do
+    try do
+      :peer.stop(server)
+    catch
+      # An already-stopped peer exits here (mirrors stop_peers/1) — the
+      # nodedown await below is still the real postcondition.
+      _kind, _reason -> :ok
+    end
+
+    case await(fn -> node not in Node.list() end, 10_000) do
+      :ok -> :ok
+      {:error, :timeout} -> raise "peer #{node} still connected after kill"
+    end
+  end
+
   @doc "Stop each peer via its `:peer` server. Idempotent: already-dead peers are skipped."
   @spec stop_peers([peer()]) :: :ok
   def stop_peers(peers) do

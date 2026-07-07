@@ -210,7 +210,8 @@ defmodule JidoClaw.Orchestration.GateResume do
   end
 
   # Two-stage `[:safe]` decode. The outer tuple needs no custom atoms; the
-  # inner reactor's atoms exist only after its module is loaded.
+  # inner reactor's atoms need the gate-reactor module AND the execution
+  # machinery's modules loaded (see `safe_decode_inner/1`'s sweep-retry).
   # `decrypt_checkpoint/3` guarantees a binary by construction.
   defp decode_checkpoint(blob) when is_binary(blob) do
     with {:ok, {version, module_string, inner}} <- safe_decode_outer(blob),
@@ -239,12 +240,48 @@ defmodule JidoClaw.Orchestration.GateResume do
   end
 
   defp safe_decode_inner(inner) do
-    case :erlang.binary_to_term(inner, [:safe]) do
-      {%Reactor{} = reactor, inputs} when is_map(inputs) -> {:ok, {reactor, inputs}}
-      _ -> {:error, :malformed_checkpoint_inner}
-    end
+    match_inner(:erlang.binary_to_term(inner, [:safe]))
+  rescue
+    # EITHER corruption or lazy loading: `[:safe]` refuses atoms this VM has
+    # not interned, and a fresh BEAM (boot recovery, a cluster peer
+    # reclaiming) interns a dependency's atoms only when its modules load —
+    # `resolve_module/1`'s `Code.ensure_loaded?` covers the gate-reactor
+    # module, NOT the halted struct's transitive machinery (proven cross-BEAM
+    # by `Ash.Reactor.Notifications`' agent key, which rides every halted
+    # context). Load the compiled closure and retry once; a second refusal is
+    # genuine corruption.
+    ArgumentError -> decode_inner_after_module_sweep(inner)
+  end
+
+  defp decode_inner_after_module_sweep(inner) do
+    Logger.debug(
+      "[GateResume] inner checkpoint decode refused an atom — " <>
+        "loading the compiled module closure and retrying"
+    )
+
+    load_compiled_modules()
+    match_inner(:erlang.binary_to_term(inner, [:safe]))
   rescue
     ArgumentError -> {:error, :corrupt_checkpoint_inner}
+  end
+
+  defp match_inner({%Reactor{} = reactor, inputs}) when is_map(inputs),
+    do: {:ok, {reactor, inputs}}
+
+  defp match_inner(_decoded), do: {:error, :malformed_checkpoint_inner}
+
+  # Best-effort embedded-mode sweep: intern every compile-time atom by
+  # loading each loaded application's modules (parallel, idempotent, cheap
+  # when everything is already loaded). Per-module load failures are ignored
+  # — the retry decode is the arbiter of whether the needed atoms arrived.
+  defp load_compiled_modules do
+    modules =
+      for {app, _desc, _vsn} <- Application.loaded_applications(),
+          module <- Application.spec(app, :modules) || [],
+          do: module
+
+    _ = :code.ensure_modules_loaded(modules)
+    :ok
   end
 
   defp check_version(@checkpoint_version), do: :ok

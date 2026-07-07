@@ -23,7 +23,12 @@ defmodule JidoClaw.ClusterCase do
   alias JidoClaw.Repo
   alias JidoClaw.TenantCase
 
-  using do
+  using opts do
+    # Captured at expansion so the use-site's `peer_overrides:` reaches the
+    # module-lifetime peer boot; the CaseTemplate proxy forwards only
+    # `ExUnit.Case.__keys__` to ExUnit.Case, so the custom key is warning-free.
+    overrides = Keyword.get(opts, :peer_overrides, [])
+
     quote do
       import JidoClaw.Cluster.PeerHarness, only: [await: 2, call: 4, call: 5]
 
@@ -36,13 +41,26 @@ defmodule JidoClaw.ClusterCase do
 
       @moduletag :cluster
       @moduletag timeout: 120_000
+
+      setup_all do
+        JidoClaw.ClusterCase.boot_peers!(unquote(Macro.escape(overrides)))
+      end
     end
   end
 
-  setup_all do
+  @doc """
+  The module-lifetime peer boot behind every cluster module's `setup_all` —
+  in the `using` quote (not the template body) so use-site `peer_overrides:`
+  reach `PeerHarness.start_peers/2`. Overrides are per-peer `:jido_claw`
+  app-env replacements, WHOLE-KEY (e.g. a `workflow_lease:` override must set
+  all three lease keys). Returns the `%{peers:, nodes:, node_a:, node_b:}`
+  context; registers the peer teardown via `on_exit`.
+  """
+  @spec boot_peers!(keyword()) :: map()
+  def boot_peers!(overrides) do
     ensure_cluster_env!()
     PeerHarness.ensure_distribution!()
-    peers = PeerHarness.start_peers(2)
+    peers = PeerHarness.start_peers(2, overrides: overrides)
     on_exit(fn -> PeerHarness.stop_peers(peers) end)
 
     [node_a, node_b] = nodes = Enum.map(peers, & &1.node)
