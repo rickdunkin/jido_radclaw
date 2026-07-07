@@ -1,1 +1,1 @@
-ExUnit.start(exclude: [:docker_sandbox, :slow])
+ExUnit.start(exclude: [:docker_sandbox, :slow, :cluster])

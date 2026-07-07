@@ -139,9 +139,18 @@ defmodule JidoClaw.Forge.Manager do
 
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    # Deadness must not hinge on Registry cleanup ordering: the Registry clears
+    # a dead pid's entry off its OWN :DOWN, which races this one. When this one
+    # is processed first, the entry is still present — a lookup-empty test would
+    # skip the session and nothing re-sweeps it until some LATER session dies
+    # (self-heals under suite load, strands forever in isolated runs). So a
+    # still-listed entry whose pid is dead counts as dead too.
     dead =
       Enum.filter(MapSet.to_list(state.sessions), fn sid ->
-        Registry.lookup(@registry, sid) == []
+        case Registry.lookup(@registry, sid) do
+          [] -> true
+          [{pid, _value} | _] -> not Process.alive?(pid)
+        end
       end)
 
     new_state = Enum.reduce(dead, state, &decrement_session(&2, &1))

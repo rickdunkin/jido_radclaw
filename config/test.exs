@@ -156,6 +156,18 @@ config :jido_claw, JidoClaw.Repo,
   database: "jido_claw_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox
 
+# Cluster suite (JIDOCLAW_CLUSTER_TEST=1, via scripts/test-cluster.sh): swap
+# the SQL sandbox for the regular pool + a dedicated DB so a real :peer
+# cluster shares ONE Postgres across BEAMs — sandbox ownership cannot span
+# nodes. Gated so normal `mix test`/precommit keep the sandbox. Merges onto
+# the JidoClaw.Repo block above.
+if System.get_env("JIDOCLAW_CLUSTER_TEST") == "1" do
+  config :jido_claw, JidoClaw.Repo,
+    database: "jido_claw_cluster_test",
+    pool: DBConnection.ConnectionPool,
+    pool_size: 10
+end
+
 # Forge defaults to `/var/local/forge`, which is not writable on most
 # CI / dev machines. Per-run consolidator dirs land under this base in
 # 3c, so route tests at a tmp path the runner can mkdir into. Tests
