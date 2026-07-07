@@ -79,6 +79,20 @@ defmodule JidoClaw.Orchestration.Cases do
   workflow-only and refuses a tool-call case with
   `{:error, :not_workflow_case}` (there is no run to abandon).
 
+  ## Needs-input cases (item 7 PR-4 — kind-dispatched, run-bound OR run-less)
+
+  A `:needs_input` case (opened by `JidoClaw.Orchestration.NeedsInput`) is
+  dispatched on its KIND before the run-less shape branch — it may carry
+  `workflow_run_id: nil`, and the tool-call catch-all would otherwise eat it
+  and bypass the answer guard. Approve requires a non-blank
+  `decision_comment` (the comment IS the answer, claimed single-use by the
+  stage's next attempt) — a blank one is refused `{:error, :answer_required}`.
+  The commit reuses the run-less tool-call path (flip + timeline event, no
+  `WorkflowEvent`, no resume, no run terminal — a run-bound case is
+  provenance only; its run already errored the step). `abandon/3` refuses the
+  kind outright (`{:error, :not_abandonable}` — reject instead), checked
+  BEFORE the workflow-case guard.
+
   ## Review-stall cases (run-bound, parent stays `:running` — camus C1-4)
 
   A `:review_stall` case is run-bound to a composer PARENT that stays
@@ -159,6 +173,29 @@ defmodule JidoClaw.Orchestration.Cases do
     end
   end
 
+  # Needs-input case (item 7 PR-4): kind-dispatched FIRST — BEFORE the
+  # run-less shape-dispatch below, which would otherwise eat a run-LESS
+  # needs-input case (`workflow_run_id: nil`) and bypass the answer guard.
+  # The kind is the discriminator; run nil-ness is not. Approve requires a
+  # non-blank `decision_comment` (it IS the answer — approving blank would
+  # be approved-then-consumed-empty); the commit reuses the run-less
+  # tool-call path: flip + timeline event, no WorkflowEvent (run-bound cases
+  # are provenance-only — the run already errored its step), no resume, no
+  # run terminal.
+  defp decide_loaded(
+         decision,
+         %AgentCase{kind: :needs_input} = agent_case,
+         _run,
+         attrs,
+         tenant,
+         actor,
+         _resume?
+       ) do
+    with :ok <- ensure_answer(decision, attrs) do
+      decide_tool_call(decision, agent_case, attrs, tenant, actor)
+    end
+  end
+
   # Run-less tool-call case: no checkpoint to guard, no reactor to resume.
   defp decide_loaded(decision, agent_case, nil, attrs, tenant, actor, _resume?) do
     decide_tool_call(decision, agent_case, attrs, tenant, actor)
@@ -201,6 +238,11 @@ defmodule JidoClaw.Orchestration.Cases do
   appends its own `:route_abandoned` on wake) and no run-terminal broadcast.
   That branch returns `{:ok, %AgentCase{}}` (the abandoned case, not a run) —
   callers branch on the struct, like `decide/4`'s run-less shape.
+
+  A `:needs_input` case is refused outright with `{:error, :not_abandonable}`
+  — reject it instead: there is no parked run behind it (the step already
+  errored), and the kind is checked BEFORE the workflow-case guard because a
+  run-less needs-input case would otherwise read as `:not_workflow_case`.
   """
   @spec abandon(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, WorkflowRun.t() | AgentCase.t()} | {:error, term()}
@@ -209,6 +251,11 @@ defmodule JidoClaw.Orchestration.Cases do
     actor = Keyword.fetch!(opts, :actor)
 
     with {:ok, agent_case, run} <- load(case_id, tenant, actor),
+         # Needs-input cases are never abandonable — kind-dispatched BEFORE
+         # the workflow-case guard (a run-less needs-input case would
+         # otherwise be masked as :not_workflow_case, and a run-bound one
+         # would wrongly reach the run-abandon path).
+         :ok <- refuse_needs_input_abandon(agent_case),
          # Tool-call cases have no run to abandon — refuse deterministically.
          :ok <- ensure_workflow_case(run),
          # Pre-transaction guard for the deterministic refusal (clean atom —
@@ -216,6 +263,26 @@ defmodule JidoClaw.Orchestration.Cases do
          # pending fence below stays as the race guard.
          :ok <- ensure_case_pending(agent_case) do
       abandon_loaded(agent_case, run, attrs, tenant, actor)
+    end
+  end
+
+  defp refuse_needs_input_abandon(%AgentCase{kind: :needs_input}),
+    do: {:error, :not_abandonable}
+
+  defp refuse_needs_input_abandon(%AgentCase{}), do: :ok
+
+  # A needs-input approve's `decision_comment` IS the payload — a blank or
+  # missing answer must be refused (never approved-then-consumed-empty), the
+  # `{:error, :incomplete_waiver}` precedent. Reject needs no comment.
+  defp ensure_answer(:reject, _attrs), do: :ok
+
+  defp ensure_answer(:approve, attrs) do
+    comment = attrs[:decision_comment]
+
+    if is_binary(comment) and String.trim(comment) != "" do
+      :ok
+    else
+      {:error, :answer_required}
     end
   end
 

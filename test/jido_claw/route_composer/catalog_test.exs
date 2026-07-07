@@ -276,6 +276,13 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
         TestFixtures.stage(name: "mapper", emit: {:mapper, "m"}),
         TestFixtures.stage(name: "sticky", guard: :sticky),
         TestFixtures.stage(name: "tiered", model: :fast, effort: :high),
+        # PR-4: the per-stage executor override — every closed term.
+        TestFixtures.stage(name: "exec-ip", executor: :in_process),
+        TestFixtures.stage(name: "exec-fake", executor: {:forge, :fake}),
+        TestFixtures.stage(name: "exec-shell", executor: {:forge, :shell}),
+        TestFixtures.stage(name: "exec-codex", executor: {:forge, :codex}),
+        TestFixtures.stage(name: "exec-cc", executor: {:forge, :claude_code}),
+        TestFixtures.stage(name: "exec-custom", executor: {:forge, :custom}),
         TestFixtures.stage(
           name: "locked",
           lock: [%{while: "a", until: "b"}],
@@ -324,6 +331,21 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
       assert Stage.from_map(%{"emit" => %{"unknown" => "x"}}) == nil
       assert Stage.from_map(%{"model" => "turbo"}) == nil
       assert Stage.from_map(%{"effort" => "extreme"}) == nil
+    end
+
+    test "an unknown executor string fails the whole stage decode → nil (PR-4)" do
+      assert Stage.from_map(%{"executor" => "forge:bogus"}) == nil
+      assert Stage.from_map(%{"executor" => "codex"}) == nil
+      # Absent decodes to the struct default nil.
+      assert %Stage{executor: nil} = Stage.from_map(%{})
+    end
+
+    test "the shipped catalog declares NO per-stage executor overrides (byte-identity pin)" do
+      # Every production stage is executor-nil, so the wave-builder options
+      # stay byte-identical to the pre-PR-4 shape (the AR-9 guard's sibling).
+      for {name, stage} <- Catalog.all() do
+        assert stage.executor == nil, "expected executor: nil on shipped stage #{name}"
+      end
     end
 
     test "reverse_verify coerces atom-safely: only literal true is true, else false" do

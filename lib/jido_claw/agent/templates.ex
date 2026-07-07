@@ -92,13 +92,18 @@ defmodule JidoClaw.Agent.Templates do
   `:executor_config` is the per-executor config map (hydrates to `%{}`):
   `{:forge, :shell}` uses `%{command: <binary>}` — the operator-declared
   shell command (the `verify_cmd` trust class; the stage *task* is never the
-  command) — and the vendor kinds accept `workspace:` (`:repo` default,
-  written back into the hydrated config | `:scratch` | `:none`) plus optional
+  command) — and the vendor kinds accept `workspace:` (`:repo` default |
+  `:scratch` | `:none`), `access:` (`:read_only` default | `:write`) and
+  `session_sandbox:` (`:local` default | `:docker`) — all three defaults
+  written back into the hydrated config — plus optional
   `model`/`thinking_effort` (non-blank binaries) and `max_turns`/`timeout_ms`
-  (positive integers), with any OTHER key refused — deliberately no
-  `access`/`sandbox` keys this wave (read-only is hardwired; the
-  session-sandbox knob lands with PR-4's write-capable work). A `workspace:`
-  key on any non-vendor kind refuses too.
+  (positive integers), with any OTHER key refused. `access: :write` requires
+  `session_sandbox: :docker` (PR-4's write⇒sandbox invariant: a write-capable
+  vendor session must be docker-backed — write+local refuses at hydration),
+  and `session_sandbox: :docker` itself is refused at DISPATCH until the
+  docker write build lands (`JidoClaw.Skills.Steps.ForgeExecutor` — the
+  `{:forge, :custom}` hydrates-but-refuses pattern). A `workspace:` key on
+  any non-vendor kind refuses too.
 
   Unlike the other policies, a malformed value **raises** `ArgumentError` (the
   `:max_iterations` loud posture, not the warn+fail-closed one): fc/ra/sandbox
@@ -106,7 +111,7 @@ defmodule JidoClaw.Agent.Templates do
   direction is *refuse to run* — silently mapping a typo to `:in_process`
   would hand execution to the wrong executor. A `{:forge, _}` executor also
   refuses a `:prototype`/`:docker` `:sandbox` policy (the in-process VFS-jail
-  axis is meaningless for a forge session — PR-4's session-sandbox knob lives
+  axis is meaningless for a forge session — the `session_sandbox:` knob lives
   in `:executor_config`, a different axis), and `{:forge, :shell}` without a
   non-empty `:executor_config` `command` refuses at hydration — the earliest,
   loudest point, before any Forge slot is consumed.
@@ -401,26 +406,35 @@ defmodule JidoClaw.Agent.Templates do
   def external_tools?(name), do: not composer_private?(name)
 
   @doc """
-  Validate + normalize a `.jido/config.yaml` `review:` executor binding (item
-  7 PR-3 — the cross-vendor review knob) against a resolved base template.
+  Validate + normalize an executor binding — a full `:executor` term plus its
+  `executor_config` — against a resolved base template. The shared hydration
+  entry BOTH config-sourced binding overlays reach: the `.jido/config.yaml`
+  `review:` knob (item 7 PR-3, via `JidoClaw.Orchestration.ReviewIndependence`,
+  which owns the YAML string-key boundary and wraps its closed-parsed vendor
+  kind as `{:forge, kind}`) and the per-stage catalog `executor:` override
+  (PR-4, camus OQ-1(b)).
 
-  `kind` must be a vendor kind (`:codex` | `:claude_code` — anything else is
-  an `{:error, _}`); `config` is the already-key-translated (atom-keyed)
-  `executor_config` map (`JidoClaw.Orchestration.ReviewIndependence` owns the
-  YAML string-key boundary); `base_template` is the ACTUAL hydrated template
-  the binding will overlay — passed so `refuse_forge_sandbox_combo!/2` reads
-  the real `:sandbox` value (a synthetic sandbox-less base would make that
-  refusal vacuous). Runs the same private validators template hydration runs
-  (`workspace: :repo` default written back, the vendor key whitelist), but
+  `:in_process` returns `{:ok, {:in_process, %{}}}` — the config is dropped
+  (the in-process worker has no executor-config surface). A `{:forge, _}`
+  term runs the same private validators template hydration runs (vendor
+  defaults written back, the key whitelist, the write⇒docker invariant), but
   converts the hydration `ArgumentError` into an operator-facing
   `{:error, message}` — a config error refuses the run/step, never crashes
-  the resolver. Returns `{:ok, {executor, normalized_config}}`.
+  the resolver. Any other term is an `{:error, _}` — bare vendor kinds must
+  be wrapped by the caller. `base_template` is the ACTUAL hydrated template
+  the binding will overlay — passed so `refuse_forge_sandbox_combo!/2` reads
+  the real `:sandbox` value (a synthetic sandbox-less base would make that
+  refusal vacuous). Returns `{:ok, {executor, normalized_config}}`.
   """
-  @spec hydrate_review_binding(term(), map(), map()) ::
-          {:ok, {{:forge, :codex | :claude_code}, map()}} | {:error, String.t()}
-  def hydrate_review_binding(kind, config, base_template)
-      when kind in [:codex, :claude_code] and is_map(base_template) do
-    executor = {:forge, kind}
+  @spec hydrate_executor_binding(term(), map(), map()) ::
+          {:ok, {:in_process | {:forge, atom()}, map()}} | {:error, String.t()}
+  def hydrate_executor_binding(:in_process, _config, base_template)
+      when is_map(base_template) do
+    {:ok, {:in_process, %{}}}
+  end
+
+  def hydrate_executor_binding({:forge, _kind} = executor, config, base_template)
+      when is_map(base_template) do
     validate_executor_config!(config, base_template)
     {:ok, {executor, normalize_executor_config!(executor, config, base_template)}}
   rescue
@@ -429,8 +443,10 @@ defmodule JidoClaw.Agent.Templates do
       {:error, Exception.message(e)}
   end
 
-  def hydrate_review_binding(kind, _config, _base_template) do
-    {:error, "invalid review executor kind #{inspect(kind)}: expected :codex or :claude_code"}
+  def hydrate_executor_binding(executor, _config, _base_template) do
+    {:error,
+     "invalid executor #{inspect(executor)}: expected :in_process or " <>
+       "{:forge, :fake | :shell | :codex | :claude_code | :custom}"}
   end
 
   defp hydrate_template(template) do
@@ -594,13 +610,20 @@ defmodule JidoClaw.Agent.Templates do
     end
   end
 
-  # PR-2 vendor kinds: default `workspace: :repo` INTO the config (the
-  # self-describing hydrated map — PR-1's ensure-default pattern), then
-  # validate the full vendor key surface.
+  # PR-2/PR-4 vendor kinds: default `workspace: :repo` + `access: :read_only`
+  # + `session_sandbox: :local` INTO the config (the self-describing hydrated
+  # map — PR-1's ensure-default pattern, which also defeats present-nil reader
+  # defaults), then validate the full vendor key surface.
   defp normalize_executor_config!({:forge, kind} = executor, config, t)
        when kind in [:codex, :claude_code] do
     refuse_forge_sandbox_combo!(executor, t)
-    config = Map.put_new(config, :workspace, :repo)
+
+    config =
+      config
+      |> Map.put_new(:workspace, :repo)
+      |> Map.put_new(:access, :read_only)
+      |> Map.put_new(:session_sandbox, :local)
+
     validate_vendor_config!(executor, config, t)
     config
   end
@@ -620,11 +643,20 @@ defmodule JidoClaw.Agent.Templates do
             ":in_process or {:forge, :fake | :shell | :codex | :claude_code | :custom}"
   end
 
-  # The vendor `executor_config` surface: workspace enum + optional model /
-  # thinking_effort / max_turns / timeout_ms, and NOTHING else — deliberately
-  # no `access`/`sandbox` keys this wave (read-only is hardwired in the
-  # executor; the session-sandbox knob lands with PR-4's write-capable work).
-  @vendor_config_keys [:workspace, :model, :max_turns, :timeout_ms, :thinking_effort]
+  # The vendor `executor_config` surface: the workspace / access /
+  # session_sandbox enums (PR-4 named `:session_sandbox`, NOT `:sandbox` — the
+  # template-policy `:sandbox` key is the in-process VFS-jail axis, refused by
+  # `refuse_forge_sandbox_combo!/2`) + optional model / thinking_effort /
+  # max_turns / timeout_ms, and NOTHING else.
+  @vendor_config_keys [
+    :workspace,
+    :access,
+    :session_sandbox,
+    :model,
+    :max_turns,
+    :timeout_ms,
+    :thinking_effort
+  ]
 
   defp validate_vendor_config!(executor, config, t) do
     case Map.keys(config) -- @vendor_config_keys do
@@ -637,7 +669,12 @@ defmodule JidoClaw.Agent.Templates do
                 "#{inspect(Map.get(t, :module))}: allowed keys are #{inspect(@vendor_config_keys)}"
     end
 
+    # The three enum keys are always present here (`Map.fetch!` — the
+    # normalize clause writes the defaults in before validating).
     validate_vendor_workspace!(executor, Map.fetch!(config, :workspace), t)
+    validate_vendor_access!(executor, Map.fetch!(config, :access), t)
+    validate_vendor_session_sandbox!(executor, Map.fetch!(config, :session_sandbox), t)
+    validate_write_requires_sandbox!(executor, config, t)
     validate_vendor_binary!(executor, config, :model, t)
     validate_vendor_binary!(executor, config, :thinking_effort, t)
     validate_vendor_pos_int!(executor, config, :max_turns, t)
@@ -653,6 +690,40 @@ defmodule JidoClaw.Agent.Templates do
     raise ArgumentError,
           "invalid :executor_config workspace #{inspect(workspace)} for #{inspect(executor)} " <>
             "on #{inspect(Map.get(t, :module))}: expected :repo | :scratch | :none"
+  end
+
+  defp validate_vendor_access!(_executor, access, _t) when access in [:read_only, :write],
+    do: :ok
+
+  defp validate_vendor_access!(executor, access, t) do
+    raise ArgumentError,
+          "invalid :executor_config access #{inspect(access)} for #{inspect(executor)} " <>
+            "on #{inspect(Map.get(t, :module))}: expected :read_only | :write"
+  end
+
+  defp validate_vendor_session_sandbox!(_executor, sandbox, _t) when sandbox in [:local, :docker],
+    do: :ok
+
+  defp validate_vendor_session_sandbox!(executor, sandbox, t) do
+    raise ArgumentError,
+          "invalid :executor_config session_sandbox #{inspect(sandbox)} for #{inspect(executor)} " <>
+            "on #{inspect(Map.get(t, :module))}: expected :local | :docker"
+  end
+
+  # PR-4's write⇒sandbox invariant (camus C1-1 sketch (d)): a write-capable
+  # vendor session must be docker-backed — `{:write, :local}` refuses at
+  # hydration (both keys are always present; the defaults were written in).
+  defp validate_write_requires_sandbox!(executor, config, t) do
+    case {Map.fetch!(config, :access), Map.fetch!(config, :session_sandbox)} do
+      {:write, :local} ->
+        raise ArgumentError,
+              "access: :write requires session_sandbox: :docker for #{inspect(executor)} on " <>
+                "#{inspect(Map.get(t, :module))} — a write-capable vendor session must be " <>
+                "docker-backed"
+
+      _valid_combo ->
+        :ok
+    end
   end
 
   # Optional keys are strict when PRESENT: a present-nil / blank / wrong-typed
@@ -699,7 +770,7 @@ defmodule JidoClaw.Agent.Templates do
 
   # A `{:forge, _}` executor with a `:prototype`/`:docker` sandbox policy would
   # leave the in-process VFS-jail axis silently dead on a forge session — refuse
-  # the combo. PR-4's session-sandbox knob lives in `:executor_config`.
+  # the combo. The forge-session axis is `:executor_config` `session_sandbox:`.
   defp refuse_forge_sandbox_combo!(executor, t) do
     case Map.get(t, :sandbox, :none) do
       :none ->

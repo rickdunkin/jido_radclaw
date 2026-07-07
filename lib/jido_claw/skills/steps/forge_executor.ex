@@ -7,16 +7,26 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
 
   Plain ephemeral sessions only: `claim: false`, `sandbox: :local` (HostShell —
   a per-run tmp working dir; deliberately ignoring a prod `FORGE_SANDBOX=docker`
-  so executor steps never spin a microVM per stage — the session-sandbox knob
-  lands with PR-4's write-capable work, whose deposit loopback URL needs a
-  networking design a microVM doesn't have). Lifecycle per step: mint a session
+  so executor steps never spin a microVM per stage). PR-4's template
+  `executor_config` knobs `access:`/`session_sandbox:` are enforce-only here:
+  `access: :write` forces `session_sandbox: :docker` at hydration, and
+  `session_sandbox: :docker` is REFUSED at dispatch (`refuse_docker_session/2`,
+  fail-closed before any resource) until the docker write build lands — whose
+  deposit loopback URL needs a networking design a microVM doesn't have.
+  Lifecycle per step: mint a session
   id → `Forge.start_session_ready/3` asserting the HostShell backend (ReadyStart
   tears down its own partial session on failure) → one `Forge.run_iteration/2` →
   map to a `%StepResult{}` → always `Forge.stop_session/2` (`try/after` — the
   result is captured before teardown, and a genuine raise propagates to
   `AgentRunner`'s `run_recorded` boundary; the facade returns tagged tuples).
-  Single-shot: `:needs_input` (the PR-4 gate mapping), `:blocked` and
-  `:continue` map to step errors.
+  Single-shot: `:blocked` and `:continue` map to plain step errors;
+  `:needs_input` ALSO maps to a step error (the run rides its existing
+  failure lanes — no composer park) but first raises a durable
+  `:needs_input` `AgentCase` via `JidoClaw.Orchestration.NeedsInput`
+  (best-effort), whose operator-approved answer the stage's NEXT attempt
+  claims single-use — the vendor arm claims LAST in its spec build (after
+  every refusal, so a refused dispatch never burns the answer) and injects
+  it into the prompt; the session arms raise but never claim.
 
   ## PR-1 kinds
 
@@ -58,8 +68,10 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   down exactly what it acquired — the box never leaks), then a real HostShell
   session whose runner is invoked with the HARDWIRED read-only posture
   (`access: :read_only`, `config_sync: :auth_only` — codex `-s read-only` /
-  claude restricted `--tools` + isolated `CLAUDE_CONFIG_DIR`; no access knob
-  this wave, read-only stages are the target cohort).
+  claude restricted `--tools` + isolated `CLAUDE_CONFIG_DIR`). PR-4's
+  `access: :write` template declaration cannot weaken this: write forces
+  `session_sandbox: :docker` at hydration and docker refuses at dispatch, so
+  every live vendor session stays read-only until the write build.
 
   **Single-channel deposit** (camus OQ-1(c)): `typed_output` comes ONLY from a
   schema-valid `submit_structured_output` deposit (validated in the box,
@@ -72,8 +84,9 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   `:repo` points the CLI at the run's real `project_dir` (codex `-C`, claude
   `--add-dir` + the path named in the prompt) — required present-non-blank or
   the step fails loudly BEFORE any session; `:scratch`/`:none` expose no repo —
-  the CLI runs from its per-session throwaway dir, and this wave the two differ
-  only in the prompt note (meaningful writable `:scratch` arrives with PR-4).
+  the CLI runs from its per-session throwaway dir, and the two differ only in
+  the prompt note (meaningful writable workspaces arrive with the docker write
+  build — the pinned materialization is a direct rw repo mount).
 
   Vendor creds reuse the runners' host config sync (`~/.claude` / `~/.codex` +
   `{:error, :no_credentials}`) — the operator's own CLI auth, the same trust
@@ -89,6 +102,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   alias JidoClaw.Forge.Runner.HostShell
   alias JidoClaw.Forge.Runners.StaticFake
   alias JidoClaw.MCP.ScopedEndpoint
+  alias JidoClaw.Orchestration.NeedsInput
   alias JidoClaw.Reasoning.Output
   alias JidoClaw.Skills.Steps.AgentRunner
   alias JidoClaw.Skills.Steps.ForgeExecutor.Deposit
@@ -122,17 +136,42 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
           {:ok, StepResult.t()} | {:error, binary()}
   def run(template_name, template, task, step_name, context, opts \\ []) do
     {:forge, kind} = template.executor
+    ni = needs_input_scope(context, template_name, step_name, kind)
 
     result =
-      case build_spec(kind, template, template_name, task, step_name, context, opts) do
-        {:ok, {:session, spec}} -> run_session(spec, template, template_name, step_name)
-        {:ok, {:vendor, plan}} -> run_vendor(plan, template_name, step_name)
+      case build_spec(kind, template, template_name, task, step_name, context, opts, ni) do
+        {:ok, {:session, spec}} -> run_session(spec, template, template_name, step_name, ni)
+        {:ok, {:vendor, plan}} -> run_vendor(plan, template_name, step_name, ni)
         {:error, _} = err -> err
       end
 
     JidoClaw.Telemetry.emit_executor(kind, outcome(result))
     result
   end
+
+  # The NeedsInput producer scope, built ONCE per step (PR-4). Keys per the
+  # ReactorRunner context seeding: tenant (`:tenant` precedence), BOTH
+  # `session_uuid` (the Session-FK resolution input) and `session_id` (the
+  # composite fingerprint identity's fallback half — the ToolApprovals
+  # precedent), the run id EXTRACTED from the `%WorkflowRun{}` the Reactor
+  # context carries (provenance FK, never the struct), and the executor
+  # kind's vendor-ness (feeds the `injectable` surface promise: only a
+  # vendor arm can inject an answer).
+  defp needs_input_scope(context, template_name, step_name, kind) do
+    %{
+      tenant_id: context[:tenant] || context[:tenant_id],
+      actor: context[:actor],
+      session_uuid: context[:session_uuid],
+      session_id: context[:session_id],
+      workflow_run_id: run_id(context[:workflow_run]),
+      template_name: template_name,
+      step_name: step_name,
+      vendor?: kind in [:codex, :claude_code]
+    }
+  end
+
+  defp run_id(%{id: id}) when is_binary(id), do: id
+  defp run_id(_no_run), do: nil
 
   defp outcome({:ok, _}), do: :ok
   defp outcome({:error, _}), do: :error
@@ -141,11 +180,11 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   # Spec build — fail closed BEFORE any session/box/endpoint starts.
   # ---------------------------------------------------------------------------
 
-  defp build_spec(:shell, template, _template_name, _task, _step_name, context, _opts) do
+  defp build_spec(:shell, template, _template_name, _task, _step_name, context, _opts, _ni) do
     {:ok, {:session, session_spec(context, :shell, %{command: template.executor_config.command})}}
   end
 
-  defp build_spec(:fake, _template, template_name, task, step_name, context, _opts) do
+  defp build_spec(:fake, _template, template_name, task, step_name, context, _opts, _ni) do
     outputs = Application.get_env(:jido_claw, :executor_fake_outputs, %{})
 
     with {:ok, fixture} <- resolve_fixture(outputs, template_name, task, step_name) do
@@ -153,12 +192,18 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     end
   end
 
-  defp build_spec(kind, template, template_name, task, _step_name, context, opts)
+  defp build_spec(kind, template, template_name, task, _step_name, context, opts, ni)
        when kind in [:codex, :claude_code] do
     config = Map.get(template, :executor_config, %{})
     workspace = Map.get(config, :workspace, :repo)
 
-    with {:ok, project_dir} <- resolve_workspace_dir(workspace, context, template_name) do
+    with :ok <- refuse_docker_session(config, template_name),
+         {:ok, project_dir} <- resolve_workspace_dir(workspace, context, template_name) do
+      # Claim LAST — after every refusal above — so a refused dispatch never
+      # burns the single-use operator answer (the PR-4 answer-loop). The
+      # session arms (`:shell`/`:fake`) never claim, structurally: the claim
+      # call exists only in this vendor clause.
+      operator_answer = claim_operator_answer(ni)
       output = worker_output_schema(Map.get(template, :module))
 
       {:ok,
@@ -171,8 +216,41 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
           context: context,
           project_dir: project_dir,
           prompt:
-            vendor_prompt(Keyword.get(opts, :system_prompt), task, workspace, project_dir, output)
+            vendor_prompt(
+              Keyword.get(opts, :system_prompt),
+              task,
+              workspace,
+              project_dir,
+              output,
+              operator_answer
+            )
         }}}
+    end
+  end
+
+  defp claim_operator_answer(ni) do
+    case NeedsInput.claim_answer(ni) do
+      {:ok, answer} -> answer
+      :none -> nil
+    end
+  end
+
+  # PR-4 enforce-only posture: `session_sandbox: :docker` HYDRATES (the
+  # write⇒docker invariant requires declaring it for `access: :write`) but is
+  # not yet dispatchable — the docker-backed vendor session (sbx path
+  # translation, deposit-URL reachability from the microVM, stdin-EOF, sbx
+  # auth) is the named write-build follow-up. Refused here fail-closed BEFORE
+  # any session/box/endpoint — the `{:forge, :custom}` hydrates-but-refuses
+  # pattern. Only read_only+local vendor configs can proceed past this point.
+  defp refuse_docker_session(config, template_name) do
+    case Map.get(config, :session_sandbox, :local) do
+      :docker ->
+        {:error,
+         "Step #{template_name} failed: docker-backed vendor dispatch lands with the " <>
+           "write build (session_sandbox: :docker not yet dispatchable)"}
+
+      _local ->
+        :ok
     end
   end
 
@@ -193,10 +271,12 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   defp resolve_workspace_dir(_scratch_or_none, _context, _template_name), do: {:ok, nil}
 
   # Plain ephemeral session spec, every kind: `claim: false`, `sandbox: :local`
-  # (→ HostShell). Tenant per the `resolve_scope` precedence; the REAL
-  # `workspace_uuid` (never the runtime `workspace_id` string — the front-door
-  # `forge_exec_spec/3` precedent: `Persistence.scope_from_spec/1` casts it to
-  # the Session's `:uuid` attribute, so a synthetic id would fail the cast).
+  # (→ HostShell; the template `session_sandbox:` knob cannot change this —
+  # `:docker` is refused at dispatch until the write build). Tenant per the
+  # `resolve_scope` precedence; the REAL `workspace_uuid` (never the runtime
+  # `workspace_id` string — the front-door `forge_exec_spec/3` precedent:
+  # `Persistence.scope_from_spec/1` casts it to the Session's `:uuid`
+  # attribute, so a synthetic id would fail the cast).
   defp session_spec(context, runner, runner_config) do
     %{
       runner: runner,
@@ -211,14 +291,16 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   # ---------------------------------------------------------------------------
   # Vendor prompt assembly (P1a order): subagent system prompt (the same
   # contract in-process workers get — when the doctrine gate supplies one) →
-  # stage task → workspace note → deposit instruction LAST (nearest to action).
+  # stage task → workspace note → operator answer (PR-4, when claimed) →
+  # deposit instruction LAST (nearest to action).
   # ---------------------------------------------------------------------------
 
-  defp vendor_prompt(system_prompt, task, workspace, project_dir, output) do
+  defp vendor_prompt(system_prompt, task, workspace, project_dir, output, operator_answer) do
     [
       valid_system_prompt(system_prompt),
       task,
       workspace_note(workspace, project_dir),
+      operator_answer_block(operator_answer),
       deposit_instruction(output)
     ]
     |> Enum.reject(&is_nil/1)
@@ -227,6 +309,16 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
 
   defp valid_system_prompt(prompt) when is_binary(prompt) and prompt != "", do: prompt
   defp valid_system_prompt(_), do: nil
+
+  # PR-4 answer injection: nil ⇒ the prompt is byte-identical to the
+  # answer-less build. Argv/context redaction rides the runners'
+  # PromptRedaction root, like every other prompt section.
+  defp operator_answer_block(nil), do: nil
+
+  defp operator_answer_block(answer) do
+    "An operator answered an earlier request you made for input. Use this " <>
+      "answer to proceed; do not ask again:\n\n" <> answer
+  end
 
   defp workspace_note(:repo, project_dir) do
     "You are working in the repository at #{project_dir} (read-only this session)."
@@ -333,9 +425,12 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   # PR-1 session lifecycle + result mapping.
   # ---------------------------------------------------------------------------
 
-  defp run_session(spec, template, template_name, step_name) do
+  defp run_session(spec, template, template_name, step_name, ni) do
     session_id = Ecto.UUID.generate()
 
+    # HostShell asserted: executor sessions are `sandbox: :local` by
+    # construction (`session_spec/3`; `session_sandbox: :docker` never
+    # dispatches — `refuse_docker_session/2`).
     case Forge.start_session_ready(session_id, spec, expected_backend: HostShell) do
       {:ok, ^session_id} ->
         # The result is captured BEFORE teardown (the consolidator run_server
@@ -343,7 +438,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
         try do
           session_id
           |> Forge.run_iteration(timeout: @forge_step_timeout_ms)
-          |> map_result(template, template_name, step_name)
+          |> map_result(template, template_name, step_name, ni)
         after
           Forge.stop_session(session_id, :normal)
         end
@@ -353,33 +448,55 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     end
   end
 
-  defp map_result({:ok, %{status: :done, output: output}}, template, template_name, step_name) do
+  defp map_result(
+         {:ok, %{status: :done, output: output}},
+         template,
+         template_name,
+         step_name,
+         _ni
+       ) do
     build_step_result(output, template, template_name, step_name)
   end
 
-  defp map_result(other, _template, template_name, _step_name) do
-    map_error_result(other, template_name)
+  defp map_result(other, _template, template_name, _step_name, ni) do
+    map_error_result(other, template_name, ni)
   end
 
   # The shared non-done iteration mapping, both executor arms.
-  defp map_error_result({:ok, %{status: :error, error: error}}, template_name) do
+  defp map_error_result({:ok, %{status: :error, error: error}}, template_name, _ni) do
     {:error, "Step #{template_name} failed: #{inspect(error)}"}
   end
 
-  defp map_error_result({:ok, %{status: :needs_input, question: q}}, template_name) do
-    {:error, "Step #{template_name} failed: needs input (gate mapping lands in PR-4): #{q}"}
+  # PR-4: raise the durable needs-input case (best-effort), then STILL return
+  # the step error — the run rides its existing failure lanes; the case is
+  # the answer channel for the stage's next attempt. The step error is its
+  # own persisted sink (subagent terminal transcript, route-failure
+  # formatting), so it carries the same REDACTED question as
+  # `details["question"]`, never the raw text.
+  defp map_error_result({:ok, %{status: :needs_input, question: q}}, template_name, ni) do
+    question = NeedsInput.redact_question(q)
+
+    case NeedsInput.raise_case(ni, q) do
+      {:ok, agent_case} ->
+        {:error,
+         "Step #{template_name} failed: needs operator input " <>
+           "(gate #{agent_case.id}): #{question}"}
+
+      :error ->
+        {:error, "Step #{template_name} failed: needs operator input: #{question}"}
+    end
   end
 
-  defp map_error_result({:ok, %{status: status}}, template_name)
+  defp map_error_result({:ok, %{status: status}}, template_name, _ni)
        when status in [:blocked, :continue] do
     {:error, "Step #{template_name} failed: runner returned #{inspect(status)} (single-shot)"}
   end
 
-  defp map_error_result({:error, reason}, template_name) do
+  defp map_error_result({:error, reason}, template_name, _ni) do
     {:error, "Step #{template_name} failed: #{inspect(reason)}"}
   end
 
-  defp map_error_result(other, template_name) do
+  defp map_error_result(other, template_name, _ni) do
     {:error, "Step #{template_name} failed: unexpected iteration reply: #{inspect(other)}"}
   end
 
@@ -436,7 +553,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   # deposit → map, with teardown on EVERY path.
   # ---------------------------------------------------------------------------
 
-  defp run_vendor(plan, template_name, step_name) do
+  defp run_vendor(plan, template_name, step_name, ni) do
     ref = Ecto.UUID.generate()
     session_id = Ecto.UUID.generate()
 
@@ -449,12 +566,14 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
           runner_config = build_runner_config(plan, res)
           spec = session_spec(plan.context, vendor_runner(plan.kind), runner_config)
 
+          # HostShell asserted here too — a vendor plan is read_only+local by
+          # the time it reaches this point (see `refuse_docker_session/2`).
           case Forge.start_session_ready(session_id, spec, expected_backend: HostShell) do
             {:ok, ^session_id} ->
               try do
                 iter = Forge.run_iteration(session_id, timeout: runner_config.timeout_ms)
                 deposit = Deposit.take(ref)
-                map_vendor_result(iter, deposit, template_name, step_name)
+                map_vendor_result(iter, deposit, template_name, step_name, ni)
               after
                 Forge.stop_session(session_id, :normal)
               end
@@ -547,9 +666,12 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     :ok
   end
 
-  # Hardwired read-only vendor posture (operator decision 2): `access` /
-  # `config_sync` are NOT knobs this wave — a vendor executor session is
-  # always `-s read-only` / restricted-tools with auth-only config sync.
+  # Hardwired read-only vendor posture: `access: :read_only` stays pinned here
+  # even though PR-4 added the template `access:`/`session_sandbox:` knobs —
+  # only a read_only+local config can REACH this function (`access: :write`
+  # forces `session_sandbox: :docker` at hydration, and `:docker` refuses at
+  # dispatch via `refuse_docker_session/2`), so the write build flips this
+  # line only when docker dispatch exists. `config_sync` is not a knob at all.
   defp build_runner_config(plan, res) do
     config = plan.config
     repo? = plan.workspace == :repo
@@ -594,7 +716,8 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
          {:ok, %{status: :done, output: cli_out}},
          deposit,
          template_name,
-         step_name
+         step_name,
+         _ni
        ) do
     raw_text = Output.extract_result(cli_out)
 
@@ -614,7 +737,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
      }}
   end
 
-  defp map_vendor_result(other, _deposit, template_name, _step_name) do
-    map_error_result(other, template_name)
+  defp map_vendor_result(other, _deposit, template_name, _step_name, ni) do
+    map_error_result(other, template_name, ni)
   end
 end

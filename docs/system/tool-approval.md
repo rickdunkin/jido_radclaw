@@ -4,10 +4,11 @@ description: Per-tool-call human-approval checkpoint on the conversation axis �
 sources:
   - lib/jido_claw/security/tool_approval.ex
   - lib/jido_claw/orchestration/tool_approvals.ex
+  - lib/jido_claw/orchestration/case_producer.ex
   - lib/jido_claw/security/shell_command.ex
   - lib/jido_claw/orchestration/cases.ex
 verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified_sha: "2a0bb4c6"
 ---
 
 # Tool Approval Gate
@@ -51,6 +52,15 @@ on the same surfaces as workflow gates.
   `echo … | python`, `python -`, `scope: :interpreter`).
 - **Decision surfaces**: operators decide via the same surfaces as workflow gates
   (REPL `/gates`, web `/approvals`) through `Cases.decide/4`'s run-less branch.
+  Item 7 PR-4's `:needs_input` cases share the run-less commit path but are
+  kind-dispatched FIRST (a needs-input case can be run-less too, and the shape
+  branch would eat it): approve requires a non-blank `decision_comment` — the
+  comment IS the answer, refused blank with `{:error, :answer_required}` — and
+  `Cases.abandon/3` refuses the kind outright (`{:error, :not_abandonable}`),
+  checked before the workflow-case guard. Its `AgentCase.consume` claim reuses the
+  tool-call single-use action (the producer is
+  `JidoClaw.Orchestration.NeedsInput`; mechanics →
+  [executor-seam.md](executor-seam.md)).
 - **Context guarantee**: the `tool_context` nesting the gate relies on is guaranteed by
   `JidoClaw.ToolContext.ensure_nested/1` in the wrapper — the live ReAct path arrives
   flat.
@@ -77,7 +87,11 @@ provisioned microVM.
   `@require_patterns`, the `:docker` skip
 - `lib/jido_claw/orchestration/tool_approvals.ex` — the producer: fingerprinting,
   FOR-UPDATE fence, consume semantics
+- `lib/jido_claw/orchestration/case_producer.ex` — the shared producer primitives
+  (`lock_by_fingerprint/3`, `resolve_session_id/3`) this producer and
+  `NeedsInput` both transact through
 - `lib/jido_claw/security/shell_command.ex` — `analyze/1`, the `:opaque` floor,
   runner/interpreter scopes
-- `lib/jido_claw/orchestration/cases.ex` — `decide/4` run-less branch
+- `lib/jido_claw/orchestration/cases.ex` — `decide/4` run-less branch + the
+  `:needs_input` kind dispatch (answer guard, abandon refusal)
 - `lib/jido_claw/tool_context.ex` — `ensure_nested/1`

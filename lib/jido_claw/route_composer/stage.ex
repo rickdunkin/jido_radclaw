@@ -17,7 +17,7 @@ defmodule JidoClaw.RouteComposer.Stage do
   Strings stay strings (atom-safety): stage names, route paths, signal topics,
   and artifact names are all binaries, never `String.to_atom/1`-ed from
   catalog-or-YAML-sourced values. The only atoms are the `unit` tag, the `emit`
-  value, and the closed `guard` / `model` / `effort` enums.
+  value, and the closed `guard` / `model` / `effort` / `executor` enums.
 
   ## Fields
 
@@ -55,6 +55,18 @@ defmodule JidoClaw.RouteComposer.Stage do
       `JidoClaw.Reasoning.Compactor.RequestTransformer` (`model:` swaps the
       provider via `Jido.AI.resolve_model/1`; `effort:` rides the canonical
       ReqLLM `reasoning_effort` llm_opt). Never read by the router.
+    * `:executor` — the per-stage executor override (item 7 PR-4, camus
+      OQ-1(b)): `:in_process` or a `{:forge, kind}` term forcing WHERE this
+      stage's worker runs, overriding the template's own binding. Precedence
+      (both seams): test `:agent_templates_override` > `.jido/config.yaml`
+      `review:` knob > this override > template binding. `nil` (the default —
+      every shipped catalog stage) leaves the template binding untouched.
+      Carried into the stage step's options by
+      `JidoClaw.RouteComposer.WaveBuilder` (the AR-9 tier_opts shape) and
+      resolved at dispatch + launch fence by
+      `JidoClaw.Orchestration.ReviewIndependence`; valid only on a
+      `{:worker_template, _}` stage
+      (`JidoClaw.RouteComposer.CatalogValidator`). Never read by the router.
     * `:emit` — `:default` (map `output` + the worker verdict to artifacts +
       signals) or `{:mapper, name}` (a registered mapper); carried for §7.
     * `:routes` — the validated subset of `["talk", "sketch", "code",
@@ -85,6 +97,8 @@ defmodule JidoClaw.RouteComposer.Stage do
 
   @type effort :: :low | :medium | :high
 
+  @type executor :: :in_process | {:forge, :fake | :shell | :codex | :claude_code | :custom}
+
   @type lock_entry :: %{while: String.t(), until: String.t()}
 
   @type input :: %{required: [String.t()], optional: [String.t()]}
@@ -98,6 +112,7 @@ defmodule JidoClaw.RouteComposer.Stage do
           guard: guard(),
           model: model() | nil,
           effort: effort() | nil,
+          executor: executor() | nil,
           emit: emit(),
           routes: [String.t()],
           input: input(),
@@ -115,6 +130,7 @@ defmodule JidoClaw.RouteComposer.Stage do
     :guard,
     :model,
     :effort,
+    :executor,
     reverse_verify: false,
     emit: :default,
     routes: [],
@@ -132,10 +148,11 @@ defmodule JidoClaw.RouteComposer.Stage do
   # `to_map/1` / `from_map/1` round-trip a `%Stage{}` through a JSON-safe map so
   # the composer's launch catalog survives a full node reboot in
   # `WorkflowRun.config["catalog"]`. Only the **closed enums** are stringified
-  # (the `unit` tag, `emit`, `guard`/`model`/`effort`, and the structural
-  # `input`/`lock` keys); every free string/list (`name`, `task`, `lens`,
-  # `routes`, `output`, `subscribes`, `publishes`, lock `while`/`until` *values*)
-  # passes through verbatim, preserving the atom-safety invariant above.
+  # (the `unit` tag, `emit`, `guard`/`model`/`effort`/`executor`, and the
+  # structural `input`/`lock` keys); every free string/list (`name`, `task`,
+  # `lens`, `routes`, `output`, `subscribes`, `publishes`, lock `while`/`until`
+  # *values*) passes through verbatim, preserving the atom-safety invariant
+  # above.
   #
   # `from_map/1` is **total + nil-on-failure**: it rebuilds via `struct/2` (so
   # struct defaults fill absent keys) and coerces every closed enum back through
@@ -159,6 +176,18 @@ defmodule JidoClaw.RouteComposer.Stage do
   @models %{"fast" => :fast, "capable" => :capable}
   @efforts %{"low" => :low, "medium" => :medium, "high" => :high}
 
+  # The closed executor-override decode map (PR-4). `"forge:<kind>"` strings
+  # keep the wire form flat; an unknown string fails the whole stage decode
+  # (the `enum_from/2` contract — never `String.to_atom`).
+  @executors %{
+    "in_process" => :in_process,
+    "forge:fake" => {:forge, :fake},
+    "forge:shell" => {:forge, :shell},
+    "forge:codex" => {:forge, :codex},
+    "forge:claude_code" => {:forge, :claude_code},
+    "forge:custom" => {:forge, :custom}
+  }
+
   @doc """
   Serialize a `%Stage{}` to a JSON-safe, string-keyed map (closed enums
   stringified; free strings/lists verbatim). The inverse of `from_map/1`.
@@ -175,6 +204,7 @@ defmodule JidoClaw.RouteComposer.Stage do
       "guard" => atom_to_string(stage.guard),
       "model" => atom_to_string(stage.model),
       "effort" => atom_to_string(stage.effort),
+      "executor" => executor_to_map(stage.executor),
       "emit" => emit_to_map(stage.emit),
       "routes" => stage.routes,
       "input" => input_to_map(stage.input),
@@ -197,6 +227,7 @@ defmodule JidoClaw.RouteComposer.Stage do
          {:ok, guard} <- enum_from(Map.get(map, "guard"), @guards),
          {:ok, model} <- enum_from(Map.get(map, "model"), @models),
          {:ok, effort} <- enum_from(Map.get(map, "effort"), @efforts),
+         {:ok, executor} <- enum_from(Map.get(map, "executor"), @executors),
          {:ok, input} <- input_from_map(Map.get(map, "input")),
          {:ok, lock} <- lock_from_map(Map.get(map, "lock")) do
       struct(__MODULE__, %{
@@ -210,6 +241,7 @@ defmodule JidoClaw.RouteComposer.Stage do
         guard: guard,
         model: model,
         effort: effort,
+        executor: executor,
         emit: emit,
         routes: string_list(Map.get(map, "routes")),
         input: input,
@@ -240,6 +272,10 @@ defmodule JidoClaw.RouteComposer.Stage do
   end
 
   defp unit_from_map(_other), do: :error
+
+  defp executor_to_map(nil), do: nil
+  defp executor_to_map(:in_process), do: "in_process"
+  defp executor_to_map({:forge, kind}) when is_atom(kind), do: "forge:#{Atom.to_string(kind)}"
 
   defp emit_to_map(:default), do: "default"
   defp emit_to_map({:mapper, name}), do: %{"mapper" => name}

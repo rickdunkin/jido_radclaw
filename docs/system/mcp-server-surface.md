@@ -8,7 +8,7 @@ sources:
   - test/jido_claw/core/mcp_server/served_surface_golden_test.exs
   - test/fixtures/mcp_surface/served_surface.json
 verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified_sha: "2a0bb4c6"
 ---
 
 # MCP Server Surface
@@ -64,6 +64,10 @@ the tenant rollup.
   template resource (`jido://workflows/{name}`, listed under
   `resources/templates/list`, single-sourcing `Stage.to_map/1` so a stage read is
   byte-identical to the catalog's entry; unknown stage ⇒ resource not-found).
+- Both workflow payloads gained the additive stage `"executor"` field in **v1.1**
+  (`null | "in_process" | "forge:<kind>"` — the item 7 PR-4 per-stage executor
+  override; every shipped stage serves `null`). Additive served-output field ⇒ a
+  MINOR bump per the `SurfaceVersion` rules.
 - `jido://_meta/version` (pad PD1-1, next-ten #6) — the served-surface version facts:
   `app_version`, `surface_version`, and `tool_count`.
 - `jido://bootstrap` (PD2-1, slim) — one-read client orientation: versions + sorted

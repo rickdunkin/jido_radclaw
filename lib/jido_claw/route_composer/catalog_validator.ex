@@ -18,9 +18,12 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
 
   Group 0 also shape-checks the typed scalar fields — `task` / `lens` as
   nilable strings, `reverse_verify` as a boolean, `guard` / `model` / `effort`
-  as their closed enums, and `emit` as `:default | {:mapper, string}` — and
-  rejects a non-`%Stage{}` value or a non-string catalog key up front, so a clean
-  result implies every entry is a binary-keyed, well-formed `%Stage{}`.
+  as their closed enums, `executor` as nil or a closed executor term **valid
+  only on a `{:worker_template, _}` stage** (a gate/verify/seed stage carrying
+  one is rejected at load — nothing would read it), and `emit` as
+  `:default | {:mapper, string}` — and rejects a non-`%Stage{}` value or a
+  non-string catalog key up front, so a clean result implies every entry is a
+  binary-keyed, well-formed `%Stage{}`.
 
   Existence of the template / skill / gate a `unit` names is **not** resolved
   here — that is execution-time (Phase 1+). Group 0 validates shape only; the
@@ -69,6 +72,14 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   @seed_artifacts ~w(request)
   @template_exempt ~w(triage)
   @unit_tags [:seed, :worker_template, :skill, :gate, :verify]
+  @executor_terms [
+    :in_process,
+    {:forge, :fake},
+    {:forge, :shell},
+    {:forge, :codex},
+    {:forge, :claude_code},
+    {:forge, :custom}
+  ]
 
   @doc """
   Validates a catalog (`%{name => %Stage{}}`), returning a sorted list of
@@ -129,6 +140,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       check_enum(name, "guard", stage.guard, [:sticky, nil]),
       check_enum(name, "model", stage.model, [:fast, :capable, nil]),
       check_enum(name, "effort", stage.effort, [:low, :medium, :high, nil]),
+      check_executor(name, stage),
       check_emit(name, stage.emit)
     ])
   end
@@ -195,6 +207,22 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
       ["#{name}: `#{field}` must be one of #{inspect(allowed)}"]
     end
   end
+
+  # The PR-4 per-stage executor override: nil everywhere; a non-nil term is
+  # valid ONLY on a `{:worker_template, _}` stage (nothing else dispatches
+  # through AgentRunner) and must be a closed executor term.
+  defp check_executor(_name, %Stage{executor: nil}), do: []
+
+  defp check_executor(name, %Stage{unit: {:worker_template, _}, executor: executor}) do
+    if executor in @executor_terms do
+      []
+    else
+      ["#{name}: `executor` must be nil or one of #{inspect(@executor_terms)}"]
+    end
+  end
+
+  defp check_executor(name, %Stage{}),
+    do: ["#{name}: `executor` override is only valid on a {:worker_template, _} stage"]
 
   defp check_unit_shape(_name, {tag, value}) when tag in @unit_tags and is_binary(value), do: []
 

@@ -23,13 +23,18 @@ defmodule JidoClaw.MCPServer.SurfaceVersion do
 
   ## Changelog
 
+    * v1.1 (2026-07-07) — MINOR: the `jido://workflows/catalog` and
+      `jido://workflows/{name}` stage payloads gain the additive `"executor"`
+      field (`null | "in_process" | "forge:<kind>"` — the item 7 PR-4
+      per-stage executor override, rendered via `Stage.to_map/1`). Tools,
+      URIs, and templates unchanged.
     * v1.0 (2026-07-05) — 26 tools; `jido://workflows/catalog` +
       `jido://workflows/{name}` template + `jido://_meta/version` +
       `jido://bootstrap`; `server_info` version = app version; `project_info`
       gains `app_version`.
   """
 
-  @current "1.0"
+  @current "1.1"
 
   @doc "The current served-surface version."
   @spec current() :: String.t()

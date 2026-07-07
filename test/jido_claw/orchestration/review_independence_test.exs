@@ -1,13 +1,14 @@
 defmodule JidoClaw.Orchestration.ReviewIndependenceTest do
   @moduledoc """
   Resolver + invariant unit coverage for
-  `JidoClaw.Orchestration.ReviewIndependence` (item 7 PR-3): the strict YAML
-  boundary (closed executor parser, whitelisted keys, loud refusals), the
+  `JidoClaw.Orchestration.ReviewIndependence` (item 7 PR-3/PR-4): the strict
+  YAML boundary (closed executor parser, whitelisted keys, loud refusals), the
   provider-identity map (`vendor_of/2` incl. the alias-shape edge cases), the
-  dispatch overlay (`apply_executor/3` incl. test-seam precedence + the
-  present-nil context trap), and `check_route/2` over fixture catalogs
-  (same-vendor held, cross-vendor ok, producer-own tier, degraded pass,
-  indeterminate producer, optional-input producers, nil-safety).
+  dispatch overlay (`apply_executor/4` incl. the PR-4 precedence matrix —
+  test override > knob > stage override > template — and the present-nil
+  context trap), and `check_route/2` over fixture catalogs (same-vendor held,
+  cross-vendor ok, producer-own tier, degraded pass, indeterminate producer,
+  optional-input producers, stage-override identity, nil-safety).
 
   Non-async: mutates global app env (`:jido_ai, :model_aliases`,
   `:agent_templates_override`).
@@ -432,11 +433,11 @@ defmodule JidoClaw.Orchestration.ReviewIndependenceTest do
   end
 
   # ---------------------------------------------------------------------------
-  # apply_executor/3 (the dispatch overlay)
+  # apply_executor/4 (the dispatch overlay)
   # ---------------------------------------------------------------------------
 
-  describe "apply_executor/3" do
-    test "overlays the knob onto the reviewer template (workspace :repo defaulted)" do
+  describe "apply_executor/4" do
+    test "overlays the knob onto the reviewer template (vendor defaults written in)" do
       dir = project_with_config!("review:\n  executor: codex\n")
       {:ok, template} = Templates.get("reviewer")
 
@@ -444,9 +445,51 @@ defmodule JidoClaw.Orchestration.ReviewIndependenceTest do
                ReviewIndependence.apply_executor(template, "reviewer", %{project_dir: dir})
 
       assert bound.executor == {:forge, :codex}
-      assert bound.executor_config == %{workspace: :repo}
+
+      assert bound.executor_config == %{
+               workspace: :repo,
+               access: :read_only,
+               session_sandbox: :local
+             }
+
       # Everything else untouched.
       assert bound.module == template.module
+    end
+
+    test "the PR-4 access/session_sandbox knob keys translate + coerce through the YAML boundary" do
+      dir =
+        project_with_config!("""
+        review:
+          executor: codex
+          executor_config:
+            access: read_only
+            session_sandbox: local
+        """)
+
+      {:ok, template} = Templates.get("reviewer")
+
+      assert {:ok, bound} =
+               ReviewIndependence.apply_executor(template, "reviewer", %{project_dir: dir})
+
+      assert bound.executor_config.access == :read_only
+      assert bound.executor_config.session_sandbox == :local
+    end
+
+    test "a write+local knob surfaces the hydration invariant loudly at the dispatch seam" do
+      dir =
+        project_with_config!("""
+        review:
+          executor: codex
+          executor_config:
+            access: write
+        """)
+
+      {:ok, template} = Templates.get("reviewer")
+
+      assert {:error, msg} =
+               ReviewIndependence.apply_executor(template, "reviewer", %{project_dir: dir})
+
+      assert msg =~ "docker-backed"
     end
 
     test "every other template returns unchanged BEFORE any config read" do
@@ -517,6 +560,112 @@ defmodule JidoClaw.Orchestration.ReviewIndependenceTest do
 
         assert msg =~ "strict | degraded"
       end
+    end
+
+    # -------------------------------------------------------------------------
+    # PR-4: the per-stage executor override (precedence matrix)
+    # -------------------------------------------------------------------------
+
+    test "a stage override beats the template binding on a non-reviewer template" do
+      {:ok, template} = Templates.get("coder")
+      assert template.executor == :in_process
+
+      assert {:ok, bound} =
+               ReviewIndependence.apply_executor(template, "coder", %{}, {:forge, :fake})
+
+      assert bound.executor == {:forge, :fake}
+      assert bound.executor_config == %{}
+      assert bound.module == template.module
+    end
+
+    test "an :in_process stage override drops the executor config to %{}" do
+      template = %{
+        module: JidoClaw.Agent.Workers.Coder,
+        max_iterations: 1,
+        sandbox: :none,
+        executor: {:forge, :shell},
+        executor_config: %{command: "true"}
+      }
+
+      assert {:ok, bound} =
+               ReviewIndependence.apply_executor(template, "coder", %{}, :in_process)
+
+      assert bound.executor == :in_process
+      assert bound.executor_config == %{}
+    end
+
+    test "the knob beats a stage override on the reviewer template" do
+      dir = project_with_config!("review:\n  executor: codex\n")
+      {:ok, template} = Templates.get("reviewer")
+
+      assert {:ok, bound} =
+               ReviewIndependence.apply_executor(
+                 template,
+                 "reviewer",
+                 %{project_dir: dir},
+                 {:forge, :fake}
+               )
+
+      # The configured knob wins; the stage override never applies.
+      assert bound.executor == {:forge, :codex}
+    end
+
+    test "an UNCONFIGURED knob falls through to the stage override on the reviewer" do
+      {:ok, template} = Templates.get("reviewer")
+
+      assert {:ok, bound} =
+               ReviewIndependence.apply_executor(
+                 template,
+                 "reviewer",
+                 %{project_dir: empty_project!()},
+                 {:forge, :fake}
+               )
+
+      assert bound.executor == {:forge, :fake}
+    end
+
+    test "the test seam beats a stage override — name-gated suppression" do
+      put_override!(%{
+        "coder" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          description: "override coder",
+          model: :fast,
+          max_iterations: 1
+        }
+      })
+
+      {:ok, template} = Templates.get("coder")
+
+      assert {:ok, ^template} =
+               ReviewIndependence.apply_executor(template, "coder", %{}, {:forge, :fake})
+
+      assert template.executor == :in_process
+    end
+
+    test "a stage override that fails hydration is a step error, never a silent fall-through" do
+      # {:forge, :shell} over a command-less template config refuses; an
+      # invalid term refuses with the closed-union message.
+      {:ok, template} = Templates.get("coder")
+
+      assert {:error, msg} =
+               ReviewIndependence.apply_executor(template, "coder", %{}, {:forge, :shell})
+
+      assert msg =~ "requires :executor_config %{command:"
+
+      assert {:error, msg} =
+               ReviewIndependence.apply_executor(template, "coder", %{}, :bogus)
+
+      assert msg =~ "expected :in_process or"
+    end
+
+    test "a nil override on a non-reviewer template is byte-identical (zero config reads)" do
+      # A NON-MAP review section would refuse loudly if read — {:ok, template}
+      # proves the config is never consulted for a nil-override coder step.
+      dir = project_with_config!("review: broken\n")
+      {:ok, template} = Templates.get("coder")
+
+      assert {:ok, ^template} =
+               ReviewIndependence.apply_executor(template, "coder", %{project_dir: dir}, nil)
     end
   end
 
@@ -641,6 +790,43 @@ defmodule JidoClaw.Orchestration.ReviewIndependenceTest do
       # Override executor is :in_process → invariant inactive → :ok, despite
       # the knob naming codex over an openai producer.
       assert :ok = ReviewIndependence.check_route(review_catalog(), dir)
+    end
+
+    test "PR-4: a producer STAGE override feeds implementer-vendor identity at the fence" do
+      put_aliases!(%{fast: "ollama:nemotron-3-super:cloud"})
+      dir = project_with_config!("review:\n  executor: codex\n")
+
+      # Cross-vendor as templates (ollama producer vs codex reviewer)…
+      assert :ok = ReviewIndependence.check_route(review_catalog(), dir)
+
+      # …until the producer stage is overridden onto the reviewer's vendor.
+      overridden = review_catalog(producer: [executor: {:forge, :codex}])
+
+      assert {:error, {:review_independence_held, details}} =
+               ReviewIndependence.check_route(overridden, dir)
+
+      assert [%{producer: "implementer", producer_provider: "openai"}] = details.violations
+    end
+
+    test "PR-4: a reviewer STAGE override activates the invariant without any knob" do
+      put_aliases!(%{fast: "anthropic:claude-sonnet-5"})
+
+      overridden = review_catalog(reviewer: [executor: {:forge, :claude_code}])
+
+      assert {:error, {:review_independence_held, details}} =
+               ReviewIndependence.check_route(overridden, empty_project!())
+
+      assert [%{stage: "quality-reviewer", reviewer_provider: "anthropic"}] = details.violations
+    end
+
+    test "PR-4: the knob beats a reviewer stage override at the fence too" do
+      put_aliases!(%{fast: "openai:gpt-4.1"})
+      dir = project_with_config!("review:\n  executor: claude_code\n")
+
+      # The stage override (codex/openai) would collide with the openai
+      # producer — the configured knob (anthropic) winning is what passes.
+      overridden = review_catalog(reviewer: [executor: {:forge, :codex}])
+      assert :ok = ReviewIndependence.check_route(overridden, dir)
     end
 
     test "a malformed review section refuses the launch with the config error" do

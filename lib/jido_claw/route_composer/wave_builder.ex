@@ -202,7 +202,7 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
         context_format: :deps,
         upstream: [],
         consumes: []
-      ] ++ tier_opts(stage)
+      ] ++ tier_opts(stage) ++ executor_opts(stage)
 
     Builder.add_step(reactor, step_id!(idx), {AgentStep, options}, [input_arg()],
       async?: true,
@@ -217,6 +217,12 @@ defmodule JidoClaw.RouteComposer.WaveBuilder do
 
   defp tier_opts(%Stage{model: model, effort: effort}),
     do: Enum.reject([model: model, effort: effort], fn {_key, value} -> is_nil(value) end)
+
+  # PR-4 (camus OQ-1(b)): the per-stage executor override, in the tier_opts
+  # conditionally-put shape — a declared override rides the step options; an
+  # undeclared stage's options stay byte-identical (never a present-nil key).
+  defp executor_opts(%Stage{executor: nil}), do: []
+  defp executor_opts(%Stage{executor: executor}), do: [executor: executor]
 
   defp add_collect(reactor, indexed, wave_index) do
     args = Enum.map(indexed, fn {_stage, idx} -> result_arg(step_id!(idx)) end)

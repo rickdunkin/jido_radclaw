@@ -8,7 +8,7 @@ sources:
   - lib/jido_claw/orchestration/cases.ex
   - lib/jido_claw/orchestration/visibility.ex
 verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified_sha: "2a0bb4c6"
 ---
 
 # Honest Terminal Statuses + Stall Detection
@@ -69,7 +69,12 @@ plain green. Port provenance: camus C1-4 + C1-5, next-ten #6.
   with zero recovery-code changes.
 - The adjacent disposition vocabulary (traycer TR3-2 `superseded`, pad PD3-3 lineage
   badges, bosun BO2-6 retry verbs) is deliberately named-not-built in the `Gate.Kinds`
-  moduledoc.
+  moduledoc. All five SHIPPED kinds have live producers — item 7 PR-4 added
+  `:needs_input` (the executor answer-loop case: kind-dispatched in `Cases.decide/4`
+  BEFORE the run-less shape branch, blank-answer approve refused
+  `{:error, :answer_required}`, never abandonable; it flips no run status —
+  run-bound cases are provenance only, so the terminal taxonomy here is untouched;
+  mechanics → [executor-seam.md](executor-seam.md)).
 
 ## Config & telemetry
 

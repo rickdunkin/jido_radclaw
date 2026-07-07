@@ -17,8 +17,33 @@ defmodule JidoClaw.Forge.Runners.StaticFake do
   @impl JidoClaw.Forge.Runner
   def init(_client, _config), do: :ok
 
+  # A scripted iteration-result map (ATOM `:status` key) is rebuilt through
+  # the `Runner` constructors — the harness requires the FULL result shape
+  # (it reads `:metadata` etc.), so a partial script must not ride raw. The
+  # PR-4 needs_input/blocked scripting seam for the session arm; coder
+  # fixtures are string-keyed (`"status"`) and stay on the done-wrap path.
   @impl JidoClaw.Forge.Runner
-  def run_iteration(_client, state, _opts), do: {:ok, Runner.done(Map.get(state, :fake_output))}
+  def run_iteration(_client, state, _opts) do
+    case Map.get(state, :fake_output) do
+      %{status: _} = scripted -> {:ok, iteration_result(scripted)}
+      output -> {:ok, Runner.done(output)}
+    end
+  end
+
+  defp iteration_result(%{status: :needs_input} = scripted),
+    do: Runner.needs_input(Map.get(scripted, :question), Map.get(scripted, :output))
+
+  defp iteration_result(%{status: :blocked} = scripted),
+    do: Runner.blocked(Map.get(scripted, :output))
+
+  defp iteration_result(%{status: :continue} = scripted),
+    do: Runner.continue(Map.get(scripted, :output))
+
+  defp iteration_result(%{status: :error} = scripted),
+    do: Runner.error(Map.get(scripted, :error), Map.get(scripted, :output))
+
+  defp iteration_result(%{status: :done} = scripted),
+    do: Runner.done(Map.get(scripted, :output))
 
   @impl JidoClaw.Forge.Runner
   def apply_input(_client, _input, _state), do: :ok

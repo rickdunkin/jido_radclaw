@@ -16,18 +16,23 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
                                    # same-vendor review
 
   The `review:` section binds ONLY the `"reviewer"` template (the code-route
-  lens stages) to a vendor executor — template-name-keyed, never per-stage
-  (the pinned non-goal). Two consumers read it through this module:
+  lens stages) to a vendor executor — the KNOB stays template-name-keyed.
+  Per-stage steering is the SEPARATE catalog `Stage.executor` override
+  (item 7 PR-4, camus OQ-1(b)), resolved below the knob at both seams —
+  precedence: test `:agent_templates_override` > `review:` knob > stage
+  override > template binding. Two consumers read both through this module:
 
     * the composer at launch (`check_route/2` in `RouteComposer.init/1`) —
       the invariant: a review-lens stage whose effective executor is a vendor
       CLI sharing a producer's provider identity is HELD (fail closed, the
       camus `review.sh` unknown-backend posture) unless the operator opted
       into `independence: degraded`;
-    * `AgentRunner` at dispatch (`apply_executor/3`) — the overlay that
-      actually routes a `"reviewer"` step to the configured vendor.
+    * `AgentRunner` at dispatch (`apply_executor/4`) — the overlay that
+      actually routes a `"reviewer"` step to the configured vendor (or any
+      stage to its catalog-declared override).
 
-  Absent section ⇒ byte-identical to today at both seams.
+  Absent section + executor-nil stages ⇒ byte-identical to today at both
+  seams.
 
   ## Parsing posture (the `Verify.Config` precedent)
 
@@ -45,7 +50,7 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   (`validate_section/1` inside `load_review`): the binding read refuses a
   malformed `independence:` too, so the dispatch seam never honors a partial
   section. Full PR-1 hydration validation happens at the call sites via
-  `JidoClaw.Agent.Templates.hydrate_review_binding/3` (against the resolved
+  `JidoClaw.Agent.Templates.hydrate_executor_binding/3` (against the resolved
   base template, so the forge/sandbox combo check is real).
 
   Strictness is FILE-level too: config reads go through the fail-closed
@@ -100,12 +105,13 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   ## Test-seam precedence
 
   When `:agent_templates_override` (the documented test-only seam) contains
-  a template name, the knob does NOT overlay — the override map is
-  authoritative including its executor, in both `apply_executor/3` and
-  `check_route/2`'s effective-executor resolution. This keeps an operator's
-  local `.jido/config.yaml` `review:` section from hijacking test
-  determinism (`composer_vendor_case_test` arms its own reviewer binding
-  with `project_dir: File.cwd!()`).
+  a template name, neither the knob NOR a per-stage executor override
+  overlays — the override map is authoritative including its executor, in
+  both `apply_executor/4` and `check_route/2`'s effective-executor
+  resolution (test-override precedence is NAME-gated; see `overridden?/1`).
+  This keeps an operator's local `.jido/config.yaml` `review:` section from
+  hijacking test determinism (`composer_vendor_case_test` arms its own
+  reviewer binding with `project_dir: File.cwd!()`).
 
   Documented residuals: mid-run `.jido/config.yaml` edits are not re-checked
   (camus C2-7 class — the `verify_cmd` precedent); boot recovery of a
@@ -131,19 +137,26 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   @executor_kinds %{"codex" => :codex, "claude_code" => :claude_code}
 
   # The closed string→atom key translation for `executor_config` — mirrors the
-  # PR-1 validators' atom `@vendor_config_keys` surface exactly (they compare
-  # against ATOM keys, so untranslated YAML strings would reject valid config).
+  # PR-1/PR-4 validators' atom `@vendor_config_keys` surface exactly (they
+  # compare against ATOM keys, so untranslated YAML strings would reject valid
+  # config). `access`/`session_sandbox` JOIN in PR-4 so the `review:` section
+  # expresses the whole vendor surface uniformly — a write+local knob surfaces
+  # the hydration invariant error loudly at both seams.
   @config_key_map %{
     "workspace" => :workspace,
+    "access" => :access,
+    "session_sandbox" => :session_sandbox,
     "model" => :model,
     "max_turns" => :max_turns,
     "timeout_ms" => :timeout_ms,
     "thinking_effort" => :thinking_effort
   }
 
-  # The workspace VALUE coercion; unknown values pass through as-is so the
-  # PR-1 validator rejects them with its own enum message.
+  # The enum VALUE coercions; unknown values pass through as-is so the
+  # hydration validators reject them with their own enum messages.
   @workspace_values %{"repo" => :repo, "scratch" => :scratch, "none" => :none}
+  @access_values %{"read_only" => :read_only, "write" => :write}
+  @session_sandbox_values %{"local" => :local, "docker" => :docker}
 
   @remedy "catalog-level review-independence config refusal — every route on this " <>
             "project is held until `review: executor:` points at a different vendor " <>
@@ -178,7 +191,7 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
 
   Shape-validates the section ONLY (no template knowledge) — full PR-1
   hydration validation happens at the call sites via
-  `Templates.hydrate_review_binding/3`, where the resolved base template is
+  `Templates.hydrate_executor_binding/3`, where the resolved base template is
   known.
   """
   @spec configured_reviewer_binding(term()) ::
@@ -343,6 +356,12 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   defp coerce_value("workspace", value) when is_binary(value),
     do: Map.get(@workspace_values, value, value)
 
+  defp coerce_value("access", value) when is_binary(value),
+    do: Map.get(@access_values, value, value)
+
+  defp coerce_value("session_sandbox", value) when is_binary(value),
+    do: Map.get(@session_sandbox_values, value, value)
+
   defp coerce_value(_key, value), do: value
 
   # ---------------------------------------------------------------------------
@@ -350,42 +369,69 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Overlay the configured reviewer binding onto a resolved template at
-  dispatch: for `"#{@knob_template}"` with a configured knob, replace
-  `:executor`/`:executor_config` with the hydration-validated binding; every
-  other template returns unchanged BEFORE any config read. An invalid or
-  unreadable knob is an `{:error, _}` — the step fails closed (a lens cohort
-  rides Lane-B infra), never a silent fall-through to `:in_process`.
+  Overlay the effective executor binding onto a resolved template at
+  dispatch. Precedence (PR-4): the test `:agent_templates_override` seam >
+  the `.jido/config.yaml` `review:` knob (the `"#{@knob_template}"` template
+  only) > the per-stage catalog `executor:` override (`stage_executor`,
+  threaded from the wave-builder step options; nil for a skill step / saga
+  cleanup) > the template's own binding. An invalid or unreadable knob, or a
+  stage override that fails hydration (e.g. `{:forge, :shell}` over a
+  command-less config), is an `{:error, _}` — the step fails closed (a lens
+  cohort rides Lane-B infra), never a silent fall-through to the template
+  binding.
 
-  Honors the test-seam precedence (an `:agent_templates_override` entry for
-  the template is authoritative, knob skipped) and the nil-safety rule
-  (`context[:project_dir]` read guarded against the ToolContext present-nil
-  trap; nil/blank ⇒ no config read, template unchanged).
+  With `stage_executor` nil, non-reviewer templates return unchanged with
+  ZERO config reads — byte-identical to the pre-PR-4 behavior — and honors
+  the nil-safety rule (`context[:project_dir]` read guarded against the
+  ToolContext present-nil trap; nil/blank ⇒ no config read).
   """
-  @spec apply_executor(map(), String.t(), term()) :: {:ok, map()} | {:error, term()}
-  def apply_executor(template, @knob_template = template_name, context) do
+  @spec apply_executor(map(), String.t(), term(), term()) :: {:ok, map()} | {:error, term()}
+  def apply_executor(template, template_name, context, stage_executor \\ nil)
+
+  def apply_executor(template, @knob_template = template_name, context, stage_executor) do
     if overridden?(template_name) do
       {:ok, template}
     else
-      overlay_binding(template, context_project_dir(context))
+      overlay_binding(template, context_project_dir(context), stage_executor)
     end
   end
 
-  def apply_executor(template, _template_name, _context), do: {:ok, template}
+  def apply_executor(template, template_name, _context, stage_executor) do
+    if overridden?(template_name) do
+      {:ok, template}
+    else
+      stage_overlay(template, stage_executor)
+    end
+  end
 
-  defp overlay_binding(template, project_dir) do
+  defp overlay_binding(template, project_dir, stage_executor) do
     case configured_reviewer_binding(project_dir) do
+      # Knob beats stage: only an UNCONFIGURED knob (`:default`) falls
+      # through to the per-stage override.
       {:ok, :default} ->
-        {:ok, template}
+        stage_overlay(template, stage_executor)
 
       {:ok, {kind, raw_config}} ->
-        case Templates.hydrate_review_binding(kind, raw_config, template) do
-          {:ok, {executor, config}} ->
-            {:ok, Map.merge(template, %{executor: executor, executor_config: config})}
+        hydrate_overlay(template, {:forge, kind}, raw_config)
 
-          {:error, _reason} = error ->
-            error
-        end
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # The stage override picks the executor IDENTITY; its config is the
+  # template's own `executor_config` (operator-declared — the stage task is
+  # never config). A hydration failure is a step error, never a silent
+  # fall-through to the template binding.
+  defp stage_overlay(template, nil), do: {:ok, template}
+
+  defp stage_overlay(template, stage_executor),
+    do: hydrate_overlay(template, stage_executor, Map.get(template, :executor_config, %{}))
+
+  defp hydrate_overlay(template, executor_term, raw_config) do
+    case Templates.hydrate_executor_binding(executor_term, raw_config, template) do
+      {:ok, {executor, config}} ->
+        {:ok, Map.merge(template, %{executor: executor, executor_config: config})}
 
       {:error, _reason} = error ->
         error
@@ -403,6 +449,10 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
 
   defp context_project_dir(_context), do: nil
 
+  # Sharp edge (deliberate): test-override precedence is NAME-gated — a
+  # template present in `:agent_templates_override` suppresses per-stage
+  # executor overrides on it too, at BOTH seams. A stage-override test must
+  # therefore keep its target template OUT of the override map.
   defp overridden?(template_name) do
     :jido_claw
     |> Application.get_env(:agent_templates_override, %{})
@@ -532,7 +582,7 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
          binding
        )
        when is_binary(lens) do
-    case effective_executor(template_name, binding) do
+    case effective_executor(template_name, binding, stage) do
       {:ok, {{:forge, kind} = executor, _template}} when kind in @vendor_kinds ->
         producer_collisions(name, stage, catalog, producers, binding, vendor_of(executor, nil))
 
@@ -598,8 +648,10 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
 
   # The producer's OWN tier — `stage.model || template.model`, never the
   # reviewer's (the AR-9 stage tier can point one stage at a different alias).
+  # PR-4: the producer stage's own `executor:` override feeds implementer-
+  # vendor identity here too (via the stage arg).
   defp producer_vendor(producer_template, producer_stage, binding) do
-    case effective_executor(producer_template, binding) do
+    case effective_executor(producer_template, binding, producer_stage) do
       {:ok, {executor, template}} ->
         vendor_of(executor, producer_stage.model || Map.get(template, :model))
 
@@ -623,17 +675,18 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
   end
 
   # The single effective-executor resolution BOTH consumers' semantics reduce
-  # to: the test override is authoritative when present (including its
-  # executor); else the knob overlays the `"reviewer"` template; else the
-  # hydrated template's own binding.
-  defp effective_executor(template_name, binding) do
+  # to — the dispatch precedence, mirrored at launch: the test override is
+  # authoritative when present (including its executor); else the knob
+  # overlays the `"reviewer"` template; else a non-nil per-stage `executor:`
+  # override (PR-4); else the hydrated template's own binding.
+  defp effective_executor(template_name, binding, stage) do
     case Templates.get(template_name) do
-      {:ok, template} -> resolve_executor(template_name, template, binding)
+      {:ok, template} -> resolve_executor(template_name, template, binding, stage)
       {:error, _unknown_template} -> :unresolved
     end
   end
 
-  defp resolve_executor(template_name, template, binding) do
+  defp resolve_executor(template_name, template, binding, stage) do
     cond do
       overridden?(template_name) ->
         {:ok, {template.executor, template}}
@@ -641,13 +694,24 @@ defmodule JidoClaw.Orchestration.ReviewIndependence do
       template_name == @knob_template and binding != :default ->
         {kind, raw_config} = binding
 
-        case Templates.hydrate_review_binding(kind, raw_config, template) do
+        case Templates.hydrate_executor_binding({:forge, kind}, raw_config, template) do
           {:ok, {executor, _config}} -> {:ok, {executor, template}}
           {:error, _reason} = error -> error
         end
+
+      # GUARDED on a non-nil stage override: an unconditional
+      # `{stage.executor, template}` would mask the template binding for
+      # every normal production stage (all-nil catalogs), turning
+      # template-level vendors into nil/:indeterminate and manufacturing
+      # false holds. Identity only — config hydration stays a dispatch
+      # concern, matching how knob config errors surface today.
+      stage_override?(stage) ->
+        {:ok, {stage.executor, template}}
 
       true ->
         {:ok, {template.executor, template}}
     end
   end
+
+  defp stage_override?(%Stage{executor: executor}), do: not is_nil(executor)
 end

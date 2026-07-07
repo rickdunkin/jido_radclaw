@@ -61,7 +61,7 @@ re-verify at build time).
 | 4 | B | Verdict normalizer (infra ≠ verdict ≠ inconclusive) — ✅ DONE 2026-07-03 | camus C1-3 | M | Single PR |
 | 5 | B | Deterministic verify authority + sealed heads — ✅ DONE 2026-07-05 | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
 | 6 | B | Honest terminal statuses + stall detection — ✅ DONE 2026-07-06 | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
-| 7 | B | Executor seam (cross-vendor review first config) | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
+| 7 | B | Executor seam (cross-vendor review first config) — ✅ DONE 2026-07-07 | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
 | 8 | C | Ambiguity clarify loop | ouroboros OB1-1 | S–M | Single PR |
 | 9 | C | Structured premises: acceptance criteria + lint | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
 | 10 | C | Evidence floor (claims vs transcript) | ouroboros OB1-3 (+ camus C1-6c) | M | 2–3 commits |
@@ -529,7 +529,7 @@ fingerprint.
     closed-as-`superseded_by`/`implemented_by`, computed display-only, while
     `split_from` deliberately does not auto-close.
 
-## 7. Executor seam — M–L, must be broken down (camus C1-1)
+## 7. Executor seam — M–L, must be broken down (camus C1-1) — ✅ DONE 2026-07-07
 
 > **PR-1 (template binding + `:fake`/`:shell` executors) DONE 2026-07-06**, with
 > corrections to this entry's claims — the item-level Status and the camus C1-1
@@ -706,6 +706,50 @@ fingerprint.
 > reads as its own vendor — operator owns the knob). Telemetry counter
 > `jido_claw.review_independence.total` (`:held` / `:degraded_pass`).
 
+> **PR-4 (hardening residuals + item close-out) DONE 2026-07-07**, with the
+> operator-ratified scope decisions recorded: (a) **`needs_input` = gate
+> case + answer-feeds-next-attempt** (the ToolApprovals model), NOT the
+> composer park the sketch gestured at — the step still errors (existing
+> failure lanes), and `Orchestration.NeedsInput` maps a question-AGNOSTIC
+> stage-identity fingerprint (session key else run id; with neither it
+> refuses to open rather than share answers tenant-wide) to a durable
+> `:needs_input` `AgentCase`; the operator's answer rides
+> `decision_comment` (a blank-answer approve is refused
+> `{:error, :answer_required}`; the kind is decide-dispatched BEFORE the
+> run-less shape branch and never abandonable), and the stage's next attempt
+> claims it single-use (FOR UPDATE + `AgentCase.consume`) within a 24h TTL,
+> the vendor arm claiming LAST in its spec build (a refused dispatch never
+> burns the answer) and injecting it into the prompt before the deposit
+> instruction; `details["injectable"]` (vendor AND session-keyed) keys the
+> surface copy. The full park stays gated on an interactive-runner producer
+> — no production executor-path runner emits `:needs_input`; the scripted
+> test runners are its first emitters. (b) **write posture = enforce-only**:
+> vendor `executor_config` gained `access: :read_only | :write` and
+> `session_sandbox: :local | :docker` (defaults written back), with
+> write⇒docker RAISING at hydration and `session_sandbox: :docker` refused
+> at dispatch (`refuse_docker_session/2`, the `{:forge, :custom}` pattern) —
+> **the docker write build is the named follow-up plan** (sbx path
+> translation, deposit-URL reachability from the microVM, a stdin-EOF
+> equivalent, the sbx auth model, live-smoke-gated like PR-2), and the
+> pinned write-case materialization is a direct rw repo mount (OQ-1(a);
+> `--clone` rejected). (c) **the stage-level executor override was BUILT**
+> (OQ-1(b), reversing PR-3's "never per-stage" for the stage axis while the
+> knob stays template-keyed): `Stage.executor` in AR-9's tier_opts
+> conditionally-put shape, closed `"forge:<kind>"` serialization,
+> validator-enforced worker-stage-only, resolved at BOTH seams below the
+> knob — precedence test override > review knob > stage override > template
+> binding, with the test seam NAME-gated; run-level force-`:in_process`
+> stays design-pinned, unbuilt. `hydrate_review_binding/3` generalized to
+> `Templates.hydrate_executor_binding/3` (the shared config-sourced binding
+> hydration; `:in_process` drops config). Ripples: the `jido://workflows/*`
+> stage payloads gained the additive `"executor"` field ⇒ SurfaceVersion
+> MINOR bump to 1.1 (+ golden fixture); `review:` YAML now translates the
+> two new keys, so a write+local knob surfaces the hydration invariant at
+> both seams; telemetry counter `jido_claw.needs_input.total`
+> (`:raise`/`:claim` × outcome). Kept residuals: a stale approved answer is
+> left inert (visible, never consumed, not GC'd); the C2-7 mid-run-edit
+> class stands.
+
 **Direction agreed 2026-07-02** (recorded in the camus doc's revision note):
 build the seam, not the pairing. One hard binding stands between the shipped
 substrate and the whole family — `AgentRunner` always spawns an in-process
@@ -743,12 +787,15 @@ contract, both vendor CLIs, and a proven headless driver (the consolidator's
    second vendor. *(Shipped as sketched plus the deviations in the note
    above; the resolver + invariant live in
    `JidoClaw.Orchestration.ReviewIndependence`.)*
-4. **PR-4 — hardening residuals (S):** `needs_input` → gate-case mapping
-   (first wave treats it as `blocked` → infra-retry); the write-capable-stage
-   sandbox requirement; the remaining OQ-1 questions (workspace
-   materialization, override precedence — coordinate any *stage-level*
-   executor override with AR-9 PR-1's conditionally-put options shape so the
-   two override mechanisms stay one shape).
+4. **PR-4 — hardening residuals (S) — DONE 2026-07-07:** `needs_input` →
+   gate-case mapping; the write-capable-stage sandbox requirement
+   (enforce-only — write⇒docker at hydration, docker refused at dispatch
+   pending the write build); the remaining OQ-1 questions (workspace
+   materialization pinned direct-rw-mount for the write case; the
+   stage-level executor override BUILT in AR-9 PR-1's conditionally-put
+   options shape so the two override mechanisms stay one shape). *(Shipped
+   as sketched plus the deviations in the note above; the answer-loop
+   producer lives in `JidoClaw.Orchestration.NeedsInput`.)*
 
 **Cost note (from the source):** a Forge session per execution is heavyweight
 next to an in-process spawn — template-level opt-in keeps the choice deliberate

@@ -1,15 +1,17 @@
 defmodule JidoClaw.Skills.Steps.AgentRunnerReviewDispatchTest do
   @moduledoc """
-  Item 7 PR-3 — the dispatch seam: `AgentRunner.run/6` consults
-  `ReviewIndependence.apply_executor/3` between template resolution and
+  Item 7 PR-3/PR-4 — the dispatch seam: `AgentRunner.run/7` consults
+  `ReviewIndependence.apply_executor/4` between template resolution and
   executor dispatch, so a `.jido/config.yaml` `review: executor:` binding
   routes a `"reviewer"` step (whose STATIC template is `:in_process`) to the
-  scripted codex vendor; an `:agent_templates_override` reviewer beats the
-  knob at this live seam; an invalid knob config is a step error, never a
-  silent in-process fall-through. (The nil-context "no config read" proof
-  lives at the resolver seam — `review_independence_test.exs`'s
-  `apply_executor/3` describe — an in-process reviewer dispatch would spawn a
-  real LLM worker here.)
+  scripted codex vendor — as does a per-stage `executor:` override threaded
+  through the trailing `run/7` argument (PR-4); an
+  `:agent_templates_override` reviewer beats the knob at this live seam; an
+  invalid knob config is a step error, never a silent in-process
+  fall-through. (The nil-context "no config read" proof lives at the
+  resolver seam — `review_independence_test.exs`'s `apply_executor/4`
+  describe — an in-process reviewer dispatch would spawn a real LLM worker
+  here.)
 
   Non-async: mutates global app env; vendor steps run REAL in-memory Forge
   sessions (persistence disabled — the `forge_executor_test` hermetic
@@ -119,6 +121,31 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerReviewDispatchTest do
 
     assert msg =~ "Step reviewer setup failed"
     assert msg =~ "sandbox"
+  end
+
+  test "PR-4: a stage-level executor override dispatches through run/7 at the live seam", ctx do
+    # No knob at all; the REAL in-process coder template is routed to the
+    # scripted codex vendor by the trailing executor_override arg alone.
+    arm_codex_runner!(%{
+      deposits: [],
+      output: "stage-override-dispatched coder output",
+      notify: self()
+    })
+
+    assert {:ok, %StepResult{result: "stage-override-dispatched coder output"}} =
+             AgentRunner.run(
+               "coder",
+               "implement the thing",
+               "impl-step",
+               ctx.context,
+               nil,
+               [],
+               {:forge, :codex}
+             )
+
+    assert_received {:scripted_deposit_runner, :config, config}
+    assert config.access == :read_only
+    assert config.cwd == ctx.project_dir
   end
 
   test "a non-reviewer template never consults the knob", ctx do

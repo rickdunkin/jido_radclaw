@@ -109,6 +109,9 @@ defmodule JidoClaw.Orchestration.AgentCase do
     # Review-stall (run-bound, parent stays :running) case API.
     define(:open_review_stall)
     define(:approved_review_stalls)
+
+    # Needs-input (run-bound-or-run-less, answer-loop) case API.
+    define(:open_needs_input)
   end
 
   actions do
@@ -183,6 +186,33 @@ defmodule JidoClaw.Orchestration.AgentCase do
       change(set_attribute(:status, :pending))
     end
 
+    # Open a needs-input case (item 7 PR-4): an executor step's runner asked a
+    # question only an operator can answer. `workflow_run_id` is deliberately
+    # NOT required — run-bound it is PROVENANCE only (no run status flip, no
+    # checkpoint: the step itself errors and the run rides its existing
+    # lanes), and conversation-axis skill/direct paths raise run-less. The
+    # fingerprint presence + non-blank pair is load-bearing for the
+    # pending-fingerprint partial-unique fence (the `:open_review_stall`
+    # precedent).
+    create :open_needs_input do
+      description("Open a pending needs-input case (executor step question).")
+
+      accept([
+        :workflow_run_id,
+        :step_name,
+        :details,
+        :fingerprint,
+        :session_id
+      ])
+
+      validate(present(:fingerprint))
+      validate(match(:fingerprint, ~r/\S/))
+
+      change(set_attribute(:kind, :needs_input))
+      change(set_attribute(:gate_module, JidoClaw.Gates.NeedsInputGate))
+      change(set_attribute(:status, :pending))
+    end
+
     # Decision write — approve. The `filter` change is an in-memory precondition
     # (it does NOT compile to a DB-side `WHERE` for record updates in
     # ash_postgres 2.9), so it rejects a freshly-loaded non-pending struct (the
@@ -230,16 +260,18 @@ defmodule JidoClaw.Orchestration.AgentCase do
       change(set_attribute(:decided_at, &DateTime.utc_now/0))
     end
 
-    # Single-use claim on an approved tool-call case. The `filter` change is
-    # an in-memory precondition (it does NOT compile to a DB-side `WHERE` for
-    # record updates in ash_postgres 2.9; the captured UPDATE keys on
-    # `id`/`tenant_id` only). The real concurrency fence is the producer's
-    # `FOR UPDATE` re-read in `JidoClaw.Orchestration.ToolApprovals` — the same
-    # row-lock idiom `Cases.lock_run/3` uses — which serializes concurrent
-    # retries so exactly one consumes the approval and the next identical call
-    # re-pends. An approval thus grants ONE attempt, not one successful effect.
+    # Single-use claim on an approved case — kind-agnostic: tool-call retries
+    # (`JidoClaw.Orchestration.ToolApprovals`) and needs-input answer claims
+    # (`JidoClaw.Orchestration.NeedsInput`) both spend approvals through it.
+    # The `filter` change is an in-memory precondition (it does NOT compile to
+    # a DB-side `WHERE` for record updates in ash_postgres 2.9; the captured
+    # UPDATE keys on `id`/`tenant_id` only). The real concurrency fence is
+    # each producer's `FOR UPDATE` re-read — the same row-lock idiom
+    # `Cases.lock_run/3` uses — which serializes concurrent claims so exactly
+    # one consumes the approval and the next identical call re-pends. An
+    # approval thus grants ONE attempt, not one successful effect.
     update :consume do
-      description("Consume an approved tool-call case (single-use approval).")
+      description("Consume an approved case (single-use approval claim).")
       accept([])
       change(filter(expr(status == :approved and is_nil(consumed_at))))
       change(set_attribute(:consumed_at, &DateTime.utc_now/0))

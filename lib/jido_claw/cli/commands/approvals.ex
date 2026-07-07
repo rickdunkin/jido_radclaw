@@ -64,45 +64,66 @@ defmodule JidoClaw.CLI.Commands.Approvals do
 
     IO.puts("")
 
-    case Cases.decide(id, decision, attrs, tenant: state.tenant_id, actor: actor) do
-      {:ok, %WorkflowRun{} = run} ->
-        IO.puts(
-          "  \e[32m✓\e[0m  Gate #{decision}d — run \e[1m#{run.name}\e[0m is now #{run.status}"
-        )
-
-      {:ok, %AgentCase{kind: :review_stall}} ->
-        IO.puts("  \e[32m✓\e[0m  #{review_stall_decided_message(decision)}")
-
-      {:ok, %AgentCase{}} ->
-        IO.puts("  \e[32m✓\e[0m  #{tool_call_decided_message(decision)}")
-
-      {:error, :incomplete_waiver} ->
-        IO.puts(
-          "  \e[33m⚠\e[0m  Approve requires every surviving finding waived — " <>
-            "this should not happen from /gates (waive-all is derived); re-run /gates."
-        )
-
-      {:error, :not_yet_resumable} ->
-        IO.puts("  \e[33m⚠\e[0m  Gate not ready yet (checkpoint still being written). Try again.")
-
-      {:error, :parent_terminal} ->
-        IO.puts(
-          "  \e[33m⚠\e[0m  The parent route has already ended — this gate can no longer be " <>
-            "approved (reject or abandon to close it)."
-        )
-
-      {:error, :parent_state_unknown} ->
-        IO.puts("  \e[33m⚠\e[0m  Could not verify the parent route's state — try again.")
-
-      {:error, :not_found} ->
-        IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
-
-      {:error, reason} ->
-        IO.puts("  \e[31m✗\e[0m  Could not #{decision} gate: #{inspect(reason)}")
-    end
+    id
+    |> Cases.decide(decision, attrs, tenant: state.tenant_id, actor: actor)
+    |> print_decide_result(decision, id)
 
     IO.puts("")
     {:ok, state}
+  end
+
+  # One clause per outcome (pattern heads keep each body's complexity flat).
+  defp print_decide_result({:ok, %WorkflowRun{} = run}, decision, _id) do
+    IO.puts("  \e[32m✓\e[0m  Gate #{decision}d — run \e[1m#{run.name}\e[0m is now #{run.status}")
+  end
+
+  defp print_decide_result({:ok, %AgentCase{kind: :review_stall}}, decision, _id) do
+    IO.puts("  \e[32m✓\e[0m  #{review_stall_decided_message(decision)}")
+  end
+
+  defp print_decide_result({:ok, %AgentCase{kind: :needs_input} = decided}, decision, _id) do
+    IO.puts("  \e[32m✓\e[0m  #{needs_input_decided_message(decision, decided)}")
+  end
+
+  defp print_decide_result({:ok, %AgentCase{}}, decision, _id) do
+    IO.puts("  \e[32m✓\e[0m  #{tool_call_decided_message(decision)}")
+  end
+
+  defp print_decide_result({:error, :answer_required}, _decision, _id) do
+    IO.puts(
+      "  \e[33m⚠\e[0m  This gate needs an answer — the comment IS the answer: " <>
+        "/gates approve <id> <answer>"
+    )
+  end
+
+  defp print_decide_result({:error, :incomplete_waiver}, _decision, _id) do
+    IO.puts(
+      "  \e[33m⚠\e[0m  Approve requires every surviving finding waived — " <>
+        "this should not happen from /gates (waive-all is derived); re-run /gates."
+    )
+  end
+
+  defp print_decide_result({:error, :not_yet_resumable}, _decision, _id) do
+    IO.puts("  \e[33m⚠\e[0m  Gate not ready yet (checkpoint still being written). Try again.")
+  end
+
+  defp print_decide_result({:error, :parent_terminal}, _decision, _id) do
+    IO.puts(
+      "  \e[33m⚠\e[0m  The parent route has already ended — this gate can no longer be " <>
+        "approved (reject or abandon to close it)."
+    )
+  end
+
+  defp print_decide_result({:error, :parent_state_unknown}, _decision, _id) do
+    IO.puts("  \e[33m⚠\e[0m  Could not verify the parent route's state — try again.")
+  end
+
+  defp print_decide_result({:error, :not_found}, _decision, id) do
+    IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
+  end
+
+  defp print_decide_result({:error, reason}, decision, _id) do
+    IO.puts("  \e[31m✗\e[0m  Could not #{decision} gate: #{inspect(reason)}")
   end
 
   @doc """
@@ -129,6 +150,12 @@ defmodule JidoClaw.CLI.Commands.Approvals do
       {:error, :not_found} ->
         IO.puts("  \e[31m✗\e[0m  No gate found with id '\e[1m#{id}\e[0m'")
 
+      {:error, :not_abandonable} ->
+        IO.puts(
+          "  \e[33m⚠\e[0m  A needs-input gate cannot be abandoned — reject it instead " <>
+            "(there is no parked run behind it)."
+        )
+
       {:error, :not_workflow_case} ->
         IO.puts(
           "  \e[33m⚠\e[0m  This is a tool-call approval — approve or reject it; there is no run to abandon."
@@ -149,6 +176,18 @@ defmodule JidoClaw.CLI.Commands.Approvals do
 
   defp tool_call_decided_message(:reject),
     do: "Tool call rejected — the agent will not retry it automatically"
+
+  # Keyed on details["injectable"]: only a session-keyed VENDOR stage can
+  # receive an injected answer — the copy must not promise injection elsewhere.
+  defp needs_input_decided_message(:approve, %AgentCase{details: details}) do
+    if is_map(details) and details["injectable"] == true do
+      "Answer recorded — the next attempt of this stage injects it (single-use, expires in 24h)"
+    else
+      "Answer recorded for the operator record — this executor cannot receive injected answers"
+    end
+  end
+
+  defp needs_input_decided_message(:reject, _decided), do: "Declined — no answer injected"
 
   # Review-stall decisions land on the case; the RUN terminal is written by
   # the parked composer when it wakes — never read off decide's return.
@@ -213,6 +252,24 @@ defmodule JidoClaw.CLI.Commands.Approvals do
 
     if is_integer(overflow) and overflow > 0 do
       IO.puts("    \e[2m… and #{overflow} more (still waived by key on approve)\e[0m")
+    end
+
+    if is_binary(details["resume_hint"]) do
+      IO.puts("    \e[2m#{details["resume_hint"]}\e[0m")
+    end
+  end
+
+  # Needs-input cases get a legible question render (the answer rides the
+  # approve comment; the raw inspect fallback below would bury the question).
+  defp print_case(%AgentCase{kind: :needs_input} = agent_case) do
+    IO.puts(
+      "  \e[33m▸\e[0m \e[1m#{agent_case.id}\e[0m  #{agent_case.step_name}  \e[2m#{agent_case.kind}\e[0m"
+    )
+
+    details = agent_case.details || %{}
+
+    if is_binary(details["question"]) do
+      IO.puts("    \e[2mQ:\e[0m #{details["question"]}")
     end
 
     if is_binary(details["resume_hint"]) do

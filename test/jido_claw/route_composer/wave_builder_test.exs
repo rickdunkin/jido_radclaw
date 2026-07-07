@@ -103,6 +103,35 @@ defmodule JidoClaw.RouteComposer.WaveBuilderTest do
     refute Keyword.has_key?(effort_opts, :model)
   end
 
+  test "PR-4: an executor-nil stage's options carry NO :executor key (byte-identity guard)" do
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([worker("quality-reviewer")])
+
+    step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, options} = step.impl
+
+    # The tier_opts conditionally-put shape: an override-less catalog stage
+    # must produce byte-identical options to today's — never a present-nil
+    # :executor key downstream code would have to distinguish.
+    refute Keyword.has_key?(options, :executor)
+  end
+
+  test "PR-4: a declared executor override rides the step options" do
+    stage =
+      TestFixtures.stage(
+        name: "fake-implementer",
+        unit: {:worker_template, "coder"},
+        task: "t",
+        executor: {:forge, :fake}
+      )
+
+    assert {:ok, %Reactor{} = reactor} = WaveBuilder.build_wave([stage])
+
+    step = Enum.find(reactor.steps, &(&1.name == :step_1))
+    assert {AgentStep, options} = step.impl
+
+    assert Keyword.get(options, :executor) == {:forge, :fake}
+  end
+
   test "builds a solo gate stage as its named gate-producer module reactor (Phase 4a)" do
     stage = gate("plan-gate")
 

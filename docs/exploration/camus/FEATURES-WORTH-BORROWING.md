@@ -49,6 +49,41 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 **Recommendation**: BORROW-PATTERN, generalized — build the seam, not the pairing. **Direction (2026-07-02)**: agreed worth pursuing. Cross-vendor review ("no agent grades its own work") is the seam's first configuration, not a standalone feature; camus's hardcoded Claude→Codex topology is explicitly what we refuse to copy.
 
+> **Status: ✅ ADOPTED 2026-07-07** (next-ten #7, PRs 1–4). Shipped as the
+> template `executor:` binding (`:in_process` default |
+> `{:forge, :fake | :shell | :codex | :claude_code | :custom}`) +
+> `executor_config:` hydrated loudly in `JidoClaw.Agent.Templates`, dispatched
+> by `Skills.Steps.AgentRunner.run/7` through `Skills.Steps.ForgeExecutor` —
+> a real ephemeral Forge session per step with the engine owning both ends of
+> a per-step scoped MCP deposit endpoint (single-channel `typed_output`,
+> schema-validated in the box; a deposit-less lens stage rides the C1-3 infra
+> lane, never a fabricated verdict). Cross-vendor review is the
+> `.jido/config.yaml` `review:` knob, enforced at BOTH seams by
+> `Orchestration.ReviewIndependence` (launch fence + dispatch overlay;
+> `independence: degraded` is the explicit same-vendor opt-in); vendor
+> sessions are read-only in every live dispatch, with PR-4's
+> `access`/`session_sandbox` knobs enforce-only (write⇒docker at hydration,
+> docker refused at dispatch pending the named docker write build), the
+> `review-prompt.md` persona landed as the `:reviewer_stance` doctrine slice,
+> and a runner's `needs_input` landed as the `:needs_input` gate case with
+> single-use TTL-bounded answer injection into the next attempt.
+> Corrections to this entry: the seam lives in `Skills.Steps.ForgeExecutor`
+> plus the `AgentRunner` dispatch (not a bare `AgentRunner` branch), with
+> `executor_config:` as a second hydrated key the sketch didn't name; the
+> first production declarer is operator CONFIG (the `review:` section), not a
+> committed template; sketch (c)'s invariant gained jido-native runtime
+> vendor detection (provider identity via `Jido.AI.resolve_model/1`,
+> `:indeterminate` = collision) AND the degraded mode — camus had neither;
+> sketch (d)'s write-requires-sandbox requirement is enforced fail-closed at
+> hydration with docker dispatch refused until the write build; sketch (e)'s
+> `needs_input` mapping landed as the answer-loop gate case (raise +
+> single-use consume + next-attempt prompt injection), the full composer park
+> still gated on an interactive-runner producer; sketch (a)'s "a stage-level
+> `executor` override can follow later" landed NOW, in AR-9's tier_opts shape
+> (precedence: test override > review knob > stage override > template);
+> camus C3-1's session-resume machinery is unported — fresh-session-per-round
+> is structural and pinned.
+
 **Where in camus**: `CAMUS-SPEC.md:33,66,180-183` (cross-vendor audit reduces self-preference bias; "do not let Claude re-judge Codex's verdict"); `packages/cli/skills/camus/scripts/review.sh:8-16,38-57` (reviewer-backend dispatcher **fails closed on an unknown backend** — a silent fallback "could hand review to the implementer's own vendor and let the gate grade its own homework"; note it gestures at pluggable backends but never generalizes past the review lane); `codex_review.sh:432-433` (fresh `codex exec` per round, read-only sandbox); `SKILL.md:110-114` (fresh reviewer each round so old findings get re-raised; thin relay, no re-judgment); `review-prompt.md:1-19` (adversarial persona + "correct but incomplete must NOT pass" completeness clause, priority-1).
 
 **What**: The borrowable core is camus's *invariant* — the judge must not share the implementer's vendor, enforced fail-closed at dispatch — plus the fresh-session and no-re-judgment disciplines. The generalization camus never makes: any executable unit behind a workflow stage should be able to name its executor, so "a competing model reviews" becomes one configuration among many (planner on the `claude_code` CLI, verify on the `shell` runner, `fake`-backed stages for evals).
@@ -514,7 +549,7 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 ## Open questions
 
-- **OQ-1. Executor-seam residuals (direction decided 2026-07-02; see C1-1).** The old question here — Forge runner vs a second `Jido.AI` provider — is resolved (Forge runner, behind a template-level `executor:` binding). What remains open: (a) **workspace materialization** — how a repo-coupled runner stage gets the working tree (mount vs clone vs diff-only into the sandbox; interacts with S-9 and argus §3.1's Worktrees design); (b) **override precedence** — template `executor:` vs a later stage-level override vs run-level config, and whether a run can force `:in_process` fleet-wide (e.g. Forge disabled); (c) **result channel exclusivity** — is the MCP deposit tool the *only* channel, or do schema-capable CLIs also get a stdout path (two channels invite contract drift; leaning single-channel); (d) **`needs_input` → gate case** mapping (first wave treats it as `blocked`).
+- **OQ-1. Executor-seam residuals (direction decided 2026-07-02; see C1-1).** ✅ ANSWERED 2026-07-07 (with PR-4, the item close-out): (a) **workspace materialization** — the read-only half shipped as direct `project_dir` exposure (`workspace: :repo` points the CLI at the run's real tree — codex `-C`, claude `--add-dir`; `:scratch`/`:none` expose nothing); the write case is PINNED as a **direct rw repo mount** (sbx workspaces mount rw natively; `--clone` rejected), landing with the docker write build. (b) **override precedence** — BUILT: test `:agent_templates_override` > `.jido/config.yaml` `review:` knob > per-stage catalog `executor:` override (the AR-9 tier_opts shape) > template binding, at both the launch fence and dispatch; run-level force-`:in_process` stays design-pinned, unbuilt (no declarer). (c) **result channel exclusivity** — single-channel, answered by PR-2 and now stamped: the MCP deposit tool is the ONLY typed channel; CLI stdout feeds `ARTIFACTS:` extraction and fallback text, never `typed_output`. (d) **`needs_input` → gate case** — landed as the answer-loop case (`:needs_input` `AgentCase`: step still errors, operator's answer consumed single-use by the next attempt); the full composer park stays deferred to a live interactive-runner producer.
 - **OQ-2. `done_with_findings` — disposition or DB status?** Start as `result.disposition` on `:completed` (no migration, surfaces filter in memory); promote to a first-class `WorkflowRun` status only if dashboards/queries need to index on it. The projection layer makes the promotion cheap later.
 - **OQ-3. Budget unit.** Camus caps output tokens because that's what its harness meters; `AgentTracker` already tracks cost. Cap on tokens (portable, provider-neutral) with cost displayed alongside, or cap on estimated cost (what operators actually fear)? Needs a decision before C2-1's event schema is set.
 - **OQ-4. Verify command source of truth.** ✅ ANSWERED 2026-07-05 — the design note of record is `JidoClaw.Orchestration.Verify.Config`'s moduledoc: per-run override → `.jido/config.yaml` (`verify_cmd:` scalar/argv or a `verify:` block incl. the registry-lite `checks:` list) → minimal Elixir auto-detect (`mix.exs` + `precommit` alias ⇒ `mix precommit`, else `mix test`) → a loud INCONCLUSIVE envelope (never a pass, never a silent skip). No tenant-level defaults in v1, code-path routes only (the sketch/F2 exec tier gets no verify), argv lists only (no shell — scalars whitespace-split only when metacharacter-free and not env-assignment-led). Known residual (camus C2-7, parked): a fix loop editing `.jido/config.yaml` mid-run changes later resolutions.

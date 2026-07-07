@@ -299,6 +299,67 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     assert CatalogValidator.validate(cat) == []
   end
 
+  describe "per-stage executor override (item 7 PR-4)" do
+    defp executor_stage(opts) do
+      stage(
+        Keyword.merge(
+          [
+            name: "s",
+            unit: {:worker_template, "coder"},
+            routes: ["code"],
+            sub: ["request-received"],
+            pub: ["scope-shift"],
+            task: "t"
+          ],
+          opts
+        )
+      )
+    end
+
+    test "every closed executor term is accepted on a worker stage" do
+      for executor <- [
+            :in_process,
+            {:forge, :fake},
+            {:forge, :shell},
+            {:forge, :codex},
+            {:forge, :claude_code},
+            {:forge, :custom}
+          ] do
+        assert CatalogValidator.validate(%{"s" => executor_stage(executor: executor)}) == []
+      end
+    end
+
+    test "an invalid executor term is rejected" do
+      for executor <- [:codex, "in_process", {:forge, :bogus}, {:in_process}] do
+        problems = CatalogValidator.validate(%{"s" => executor_stage(executor: executor)})
+        assert Enum.any?(problems, &String.contains?(&1, "`executor` must be nil or one of"))
+      end
+    end
+
+    test "a non-worker stage carrying an executor override is rejected at load" do
+      non_worker = [
+        executor_stage(unit: {:seed, "s"}, executor: :in_process, task: nil),
+        executor_stage(unit: {:gate, "plan"}, executor: {:forge, :fake}, task: nil),
+        executor_stage(
+          unit: {:verify, "default"},
+          executor: {:forge, :fake},
+          task: nil,
+          lens: "verify",
+          pub: ["clean:verify", "findings:verify", "scope-shift"]
+        )
+      ]
+
+      for bad_stage <- non_worker do
+        problems = CatalogValidator.validate(%{"s" => bad_stage})
+
+        assert Enum.any?(
+                 problems,
+                 &String.contains?(&1, "only valid on a {:worker_template, _} stage")
+               )
+      end
+    end
+  end
+
   defp lens_stage(pubs) do
     %{
       "qr" =>

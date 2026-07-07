@@ -12,6 +12,7 @@ defmodule JidoClaw.CLI.Commands.ApprovalsTest do
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
+  alias JidoClaw.Orchestration.NeedsInput
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.WorkflowLog
@@ -118,5 +119,102 @@ defmodule JidoClaw.CLI.Commands.ApprovalsTest do
     uniq = System.unique_integer([:positive])
     inputs = %{workspace_name: "cli-ws-#{uniq}", workspace_path: "/tmp/cli-ws-#{uniq}"}
     ReactorRunner.run(GatedTestReactor, inputs, tenant: tenant, actor: actor)
+  end
+
+  # Item 7 PR-4: /gates renders a needs-input case (question + hint), the
+  # answer rides the approve comment (blank refused), the decided copy
+  # branches on injectability, and abandon is refused.
+  describe "needs-input gates (item 7 PR-4)" do
+    setup do
+      %{tenant_id: tenant, session: session} = seed_full(tenant_label: "gates-cli-ni")
+      {:ok, ni_tenant: tenant, ni_actor: actor_for(tenant), ni_session: session}
+    end
+
+    defp raise_needs_input(ctx, overrides) do
+      scope =
+        Map.merge(
+          %{
+            tenant_id: ctx.ni_tenant,
+            actor: ctx.ni_actor,
+            session_uuid: ctx.ni_session.id,
+            session_id: ctx.ni_session.external_id,
+            workflow_run_id: nil,
+            template_name: "coder",
+            step_name: "v-step",
+            vendor?: true
+          },
+          Map.new(overrides)
+        )
+
+      {:ok, agent_case} = NeedsInput.raise_case(scope, "Which database?")
+      agent_case
+    end
+
+    test "/gates renders the question + resume hint", ctx do
+      agent_case = raise_needs_input(ctx, [])
+      state = %{tenant_id: ctx.ni_tenant}
+
+      listing = capture_io(fn -> assert {:ok, ^state} = Approvals.list(state) end)
+      assert listing =~ agent_case.id
+      assert listing =~ "Which database?"
+      assert listing =~ "Approve with your answer"
+    end
+
+    test "a blank-answer approve is refused; the comment IS the answer", ctx do
+      agent_case = raise_needs_input(ctx, [])
+      state = %{tenant_id: ctx.ni_tenant}
+
+      refusal =
+        capture_io(fn ->
+          assert {:ok, ^state} = Approvals.decide(state, :approve, agent_case.id, nil)
+        end)
+
+      assert refusal =~ "needs an answer"
+
+      output =
+        capture_io(fn ->
+          assert {:ok, ^state} = Approvals.decide(state, :approve, agent_case.id, "Use postgres")
+        end)
+
+      # Injectable case (vendor + session-keyed) — the copy promises injection.
+      assert output =~ "Answer recorded"
+      assert output =~ "injects it"
+
+      {:ok, decided} = AgentCase.by_id(agent_case.id, tenant: ctx.ni_tenant, actor: ctx.ni_actor)
+      assert decided.status == :approved
+      assert decided.decision_comment == "Use postgres"
+    end
+
+    test "the decided copy never promises injection for a non-injectable case", ctx do
+      agent_case = raise_needs_input(ctx, vendor?: false)
+      state = %{tenant_id: ctx.ni_tenant}
+
+      output =
+        capture_io(fn ->
+          assert {:ok, ^state} = Approvals.decide(state, :approve, agent_case.id, "the answer")
+        end)
+
+      assert output =~ "operator record"
+      refute output =~ "injects it"
+    end
+
+    test "reject needs no comment; abandon is refused with the friendly message", ctx do
+      agent_case = raise_needs_input(ctx, [])
+      state = %{tenant_id: ctx.ni_tenant}
+
+      output =
+        capture_io(fn ->
+          assert {:ok, ^state} = Approvals.decide(state, :reject, agent_case.id, nil)
+        end)
+
+      assert output =~ "Declined"
+
+      fresh = raise_needs_input(ctx, [])
+
+      abandon_output =
+        capture_io(fn -> assert {:ok, ^state} = Approvals.abandon(state, fresh.id, nil) end)
+
+      assert abandon_output =~ "cannot be abandoned"
+    end
   end
 end

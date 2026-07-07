@@ -23,8 +23,9 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   Builds a `%Stage{}` from `S()`-style keyword opts. Unspecified fields take
   their struct defaults; `:req` / `:opt` populate `input.required` /
   `input.optional`, and `:sub` / `:pub` populate `subscribes` / `publishes`.
-  `:model` / `:effort` / `:emit` pass straight through to the same-named struct
-  fields (defaulting to `nil` / `nil` / `:default` — i.e. the struct defaults).
+  `:model` / `:effort` / `:executor` / `:emit` pass straight through to the
+  same-named struct fields (defaulting to `nil` / `nil` / `nil` / `:default`
+  — i.e. the struct defaults).
   """
   @spec stage(keyword()) :: Stage.t()
   def stage(opts) do
@@ -37,6 +38,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       guard: Keyword.get(opts, :guard),
       model: Keyword.get(opts, :model),
       effort: Keyword.get(opts, :effort),
+      executor: Keyword.get(opts, :executor),
       emit: Keyword.get(opts, :emit, :default),
       routes: Keyword.get(opts, :routes, []),
       input: %{required: Keyword.get(opts, :req, []), optional: Keyword.get(opts, :opt, [])},

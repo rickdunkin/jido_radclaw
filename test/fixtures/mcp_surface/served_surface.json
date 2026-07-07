@@ -7,7 +7,7 @@
     "jido://bootstrap",
     "jido://workflows/catalog"
   ],
-  "surface_version": "1.0",
+  "surface_version": "1.1",
   "tool_names": [
     "agent_status",
     "edit_file",

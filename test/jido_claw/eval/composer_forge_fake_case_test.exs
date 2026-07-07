@@ -85,7 +85,9 @@ defmodule JidoClaw.Eval.ComposerForgeFakeCaseTest do
 
   # A minimal validator-clean code-path catalog: one producer + two same-
   # template reviewer lenses (the concurrent-stage fixture-key scenario).
-  defp forge_fake_catalog do
+  # `implementer_executor` (PR-4) declares a per-stage executor override on
+  # the producer stage — nil is today's template-binding path.
+  defp forge_fake_catalog(implementer_executor \\ nil) do
     %{
       "implementer" =>
         TestFixtures.stage(
@@ -96,7 +98,8 @@ defmodule JidoClaw.Eval.ComposerForgeFakeCaseTest do
           sub: ["request-received"],
           req: ["request"],
           out: ["diff"],
-          pub: ["code-written", "scope-shift"]
+          pub: ["code-written", "scope-shift"],
+          executor: implementer_executor
         ),
       "quality-reviewer" =>
         TestFixtures.stage(
@@ -159,6 +162,48 @@ defmodule JidoClaw.Eval.ComposerForgeFakeCaseTest do
 
     assert run.observations.terminal == :converged
     assert "diff" in run.observations.artifact_names
+  end
+
+  test "PR-4: a stage-level executor override drives the fake arm through a real composer run",
+       ctx do
+    # The name-gating edge (test-override precedence): the stage override
+    # applies ONLY because "coder" is NOT in :agent_templates_override — drop
+    # it so the REAL in-process coder template resolves and the catalog
+    # stage's `executor: {:forge, :fake}` is what forces the fake arm.
+    override = Application.get_env(:jido_claw, :agent_templates_override, %{})
+    Application.put_env(:jido_claw, :agent_templates_override, Map.delete(override, "coder"))
+
+    eval_case = %{
+      id: "pr4-stage-override-composer",
+      kind: :composer,
+      request: %{
+        catalog: forge_fake_catalog({:forge, :fake}),
+        live: ["request-received", "code"],
+        artifacts: %{"request" => %{"seed" => "Build the feature"}},
+        max_waves: 6
+      },
+      assertions: %{
+        terminal: :converged,
+        ran: ["implementer", "quality-reviewer", "security-reviewer"],
+        artifact_contains: [{"diff", "implementer", "DIFF (forge-fake)"}]
+      }
+    }
+
+    assert {:ok, run} =
+             Eval.run_case(eval_case,
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               timeout: 30_000
+             )
+
+    settle_run_registry(2_000)
+
+    assert run.status == :passed,
+           "PR-4 stage-override composer case failed: error=#{inspect(run.error)} " <>
+             "assertions=#{inspect(Enum.reject(run.assertions, &(&1.status == :passed)), pretty: true)}"
+
+    assert run.observations.terminal == :converged
   end
 
   # Best-effort drain: give the orphaned wave executor time to deregister so a

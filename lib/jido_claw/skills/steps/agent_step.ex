@@ -14,9 +14,11 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
   YAML name or `nil`), `:context_format` (`:deps` | `:preceding`), `:upstream`
   (`[{step_id, yaml_name}]`, the `depends_on` set), `:consumes`
   (`[{step_id, yaml_name, produces_map}]`), the saga metadata `:retry` /
-  `:compensate` / `:irreversible`, and (wave-builder path only, AR-9) the
-  optional per-stage tier halves `:model` / `:effort` forwarded to
-  `AgentRunner.run/6`.
+  `:compensate` / `:irreversible`, and (wave-builder path only) the optional
+  per-stage tier halves `:model` / `:effort` (AR-9) plus the per-stage
+  `:executor` override (item 7 PR-4) forwarded to `AgentRunner.run/7`. A
+  skill-YAML step carries none of those keys, so it naturally passes nil —
+  as does the saga cleanup path (`run/4`).
 
   ## Saga callbacks (`retry:` / `compensate:` / `irreversible:`)
 
@@ -59,6 +61,9 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
     # skill step, so a YAML step named like a catalog stage gets the template persona, not
     # the stage one.
     catalog_stage_name = Keyword.get(options, :catalog_stage_name)
+    # PR-4: the per-stage executor override (wave-builder-only, the tier_opts
+    # conditionally-put shape) — nil for a skill step.
+    executor_override = Keyword.get(options, :executor)
     context_format = Keyword.get(options, :context_format, :deps)
     upstream = Keyword.get(options, :upstream, [])
     consumes = Keyword.get(options, :consumes, [])
@@ -78,7 +83,15 @@ defmodule JidoClaw.Skills.Steps.AgentStep do
 
     emit_stage_prompt_telemetry(catalog_stage_name, template, full_task)
 
-    AgentRunner.run(template, full_task, step_name, context, catalog_stage_name, tier)
+    AgentRunner.run(
+      template,
+      full_task,
+      step_name,
+      context,
+      catalog_stage_name,
+      tier,
+      executor_override
+    )
   end
 
   # AR-9 evidence rider (feeds AR-11): per-stage prompt-size telemetry for

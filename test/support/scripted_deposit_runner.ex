@@ -25,6 +25,10 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
       `{:runner_init_failed, _}` session-start failure path)
     * `:output` — the CLI-stdout stand-in returned as the iteration output
       (default `"scripted-vendor-output"`)
+    * `:needs_input` — a question string: `run_iteration` returns
+      `Runner.needs_input(question)` INSTEAD of depositing (the PR-4
+      answer-loop scripting seam; flip the app env between attempts to
+      script an ask-then-answer sequence)
   """
 
   @behaviour JidoClaw.Forge.Runner
@@ -52,17 +56,24 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
     config = state.config
     notify(script, {:scripted_deposit_runner, :prompt, Map.get(config, :prompt)})
 
-    result =
-      with {:ok, url} <- read_server_url(config),
-           {:ok, client} <- LoopbackClient.initialize(url),
-           :ok <- send_deposits(client, round_deposits(script)) do
-        Runner.done(Map.get(script, :output, "scripted-vendor-output"))
-      else
-        {:error, reason} ->
-          Runner.error("scripted_deposit_runner_failed: #{inspect(reason)}")
-      end
+    case Map.get(script, :needs_input) do
+      question when is_binary(question) ->
+        {:ok, Runner.needs_input(question)}
 
-    {:ok, result}
+      nil ->
+        {:ok, deposit_result(script, config)}
+    end
+  end
+
+  defp deposit_result(script, config) do
+    with {:ok, url} <- read_server_url(config),
+         {:ok, client} <- LoopbackClient.initialize(url),
+         :ok <- send_deposits(client, round_deposits(script)) do
+      Runner.done(Map.get(script, :output, "scripted-vendor-output"))
+    else
+      {:error, reason} ->
+        Runner.error("scripted_deposit_runner_failed: #{inspect(reason)}")
+    end
   end
 
   @impl JidoClaw.Forge.Runner

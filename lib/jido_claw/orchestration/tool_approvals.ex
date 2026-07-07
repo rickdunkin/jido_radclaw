@@ -58,16 +58,14 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
   `Allocate` change.
   """
 
-  require Ash.Query, as: Query
-
   alias JidoClaw.Authorization.Actor
-  alias JidoClaw.Conversations.Session
   alias JidoClaw.Conversations.ToolTranscript
   alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.CanonicalHash
   alias JidoClaw.Gates.ToolCallGate
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent
+  alias JidoClaw.Orchestration.CaseProducer
   alias JidoClaw.Orchestration.Gate.Presentation
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowLog
@@ -148,23 +146,16 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
     end
   end
 
-  # One transaction: lock the fingerprint's case rows FOR UPDATE, classify the
-  # locked snapshot, and consume/open accordingly. The lock is what makes the
-  # consume race-safe (see moduledoc).
+  # One transaction: lock the fingerprint's case rows FOR UPDATE
+  # (`CaseProducer.lock_by_fingerprint/3` — shared with the needs-input
+  # producer), classify the locked snapshot, and consume/open accordingly.
+  # The lock is what makes the consume race-safe (see moduledoc).
   defp transact(scope, tool, params, fingerprint, tenant_id, actor) do
     Ash.transact([AgentCase, AgentCaseEvent], fn ->
-      with {:ok, cases} <- lock_by_fingerprint(fingerprint, tenant_id, actor) do
+      with {:ok, cases} <- CaseProducer.lock_by_fingerprint(fingerprint, tenant_id, actor) do
         act(classify(cases), scope, tool, params, fingerprint, tenant_id, actor)
       end
     end)
-  end
-
-  defp lock_by_fingerprint(fingerprint, tenant_id, actor) do
-    AgentCase
-    |> Query.filter(fingerprint == ^fingerprint)
-    |> Query.sort(inserted_at: :desc)
-    |> Query.lock("FOR UPDATE")
-    |> Ash.read(tenant: tenant_id, actor: actor)
   end
 
   # Priority: a live approval beats a pending ticket beats a live rejection.
@@ -227,7 +218,7 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
       step_name: tool,
       tool_name: tool,
       fingerprint: fingerprint,
-      session_id: resolve_session_id(scope[:session_uuid], tenant_id, actor),
+      session_id: CaseProducer.resolve_session_id(scope[:session_uuid], tenant_id, actor),
       details: details(scope, tool, params)
     }
 
@@ -277,18 +268,6 @@ defmodule JidoClaw.Orchestration.ToolApprovals do
 
   defp put_present(map, _key, nil), do: map
   defp put_present(map, key, value), do: Map.put(map, key, value)
-
-  # The column stores the Conversations.Session UUID FK (never the runtime
-  # external id). Resolve it to a real row so a stray/half-written session id
-  # degrades to nil rather than failing the gate closed on an FK violation.
-  defp resolve_session_id(uuid, tenant_id, actor) when is_binary(uuid) and uuid != "" do
-    case Session.by_id(uuid, tenant: tenant_id, actor: actor) do
-      {:ok, %Session{id: id}} -> id
-      _ -> nil
-    end
-  end
-
-  defp resolve_session_id(_uuid, _tenant_id, _actor), do: nil
 
   defp broadcast_opened(agent_case, tenant_id) do
     RunPubSub.broadcast_gate_requested(nil, tenant_id, agent_case.id)

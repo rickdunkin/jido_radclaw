@@ -307,6 +307,26 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       assert_vendor_resources_released(ctx)
     end
 
+    test "session_sandbox: :docker refuses at dispatch BEFORE any resource (PR-4 enforce-only)",
+         ctx do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{notify: self()})
+
+      template = %{
+        module: @coder,
+        executor: {:forge, :codex},
+        executor_config: %{workspace: :repo, access: :write, session_sandbox: :docker}
+      }
+
+      assert {:error, msg} = ForgeExecutor.run("coder", template, "do it", "v-step", ctx.context)
+
+      assert msg =~ "session_sandbox: :docker not yet dispatchable"
+      assert msg =~ "write build"
+
+      # Pre-flight refusal: no session, no runner init, no box/endpoint/config.
+      refute_received {:scripted_deposit_runner, :config, _}
+      assert_vendor_resources_released(ctx)
+    end
+
     test "a session-start failure (no vendor credentials) leaks nothing", ctx do
       Application.put_env(:jido_claw, :scripted_deposit_runner, %{
         init_error: :no_credentials,

@@ -96,6 +96,12 @@ defmodule JidoClaw.Telemetry do
       # The Trace `:composer` events carry the per-run detail (hex keys only).
       counter("jido_claw.composer.stall.total", tags: [:kind, :lens]),
 
+      # Needs-input answer-loop (item 7 PR-4) — one count per producer action:
+      # `event` is :raise/:claim, `outcome` :opened/:reused/:consumed/:error.
+      # A claim that finds nothing emits nothing; the case row + its timeline
+      # carry the per-question detail.
+      counter("jido_claw.needs_input.total", tags: [:event, :outcome]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -281,6 +287,15 @@ defmodule JidoClaw.Telemetry do
   @spec emit_executor(atom(), atom()) :: :ok
   def emit_executor(kind, outcome) do
     :telemetry.execute([:jido_claw, :executor], %{total: 1}, %{kind: kind, outcome: outcome})
+  end
+
+  @spec emit_needs_input(atom(), atom()) :: :ok
+  def emit_needs_input(event, outcome) do
+    :telemetry.execute(
+      [:jido_claw, :needs_input],
+      %{total: 1},
+      %{event: event, outcome: outcome}
+    )
   end
 
   @spec emit_review_independence(atom()) :: :ok

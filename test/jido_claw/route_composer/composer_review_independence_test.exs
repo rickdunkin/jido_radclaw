@@ -173,6 +173,93 @@ defmodule JidoClaw.RouteComposer.ComposerReviewIndependenceTest do
     assert msg =~ "executer"
   end
 
+  test "PR-4: strict hold TRIGGERED by a producer stage override — no wave", ctx do
+    # The in-process producer resolves openai — INDEPENDENT of the anthropic
+    # reviewer knob; ONLY the producer stage's {:forge, :claude_code} override
+    # manufactures the collision. (The executor-nil variants of this catalog
+    # passing/holding exactly as before — the :139 strict test and the
+    # degraded run below — are the nil-override preservation pin.)
+    Application.put_env(:jido_ai, :model_aliases, %{fast: "openai:gpt-4.1"})
+    arm_review_config!(ctx.project_dir, "review:\n  executor: claude_code\n")
+
+    catalog =
+      Map.update!(knob_catalog(), "implementer", &%{&1 | executor: {:forge, :claude_code}})
+
+    opts = Keyword.put(base_run_opts(ctx), :catalog, catalog)
+
+    assert {:error, {:start_failed, {:review_independence_held, details}}} =
+             RouteComposer.run_sync(opts)
+
+    assert [
+             %{
+               stage: "quality-reviewer",
+               producer: "implementer",
+               reviewer_provider: "anthropic",
+               producer_provider: "anthropic"
+             }
+           ] = details.violations
+  end
+
+  test "PR-4: degraded pass with the vendor binding from a reviewer STAGE override", ctx do
+    StubStore.setup()
+    Application.put_env(:jido_ai, :model_aliases, %{fast: "openai:gpt-4.1"})
+
+    # NO executor knob — the vendor binding comes from the STAGE override;
+    # degraded accepts the openai/openai collision (in-process producer vs
+    # the codex-overridden reviewer stage).
+    arm_review_config!(ctx.project_dir, "review:\n  independence: degraded\n")
+
+    Application.put_env(:jido_claw, :agent_templates_override, %{
+      "coder" => %{
+        module: StubWorker,
+        description: "stage-override stub coder",
+        model: :fast,
+        max_iterations: 1
+      }
+    })
+
+    Application.put_env(:jido_claw, :step_agent_server, StubAgentServer)
+
+    Application.put_env(:jido_claw, :route_composer_stub_outputs, %{
+      "coder" => %{
+        "signals" => ["code-written"],
+        "diff" => "DIFF: +def feature(), do: :ok"
+      }
+    })
+
+    Application.put_env(:jido_claw, :executor_vendor_runners, %{
+      codex: JidoClaw.Test.ScriptedDepositRunner
+    })
+
+    Application.put_env(:jido_claw, :scripted_deposit_runner, %{
+      deposits: [TestFixtures.phase1_clean_reviewer()],
+      output: "stage-override vendor reviewer output",
+      notify: self()
+    })
+
+    catalog =
+      Map.update!(knob_catalog(), "quality-reviewer", &%{&1 | executor: {:forge, :codex}})
+
+    opts = Keyword.put(base_run_opts(ctx), :catalog, catalog)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, summary} = RouteComposer.run_sync(opts)
+        assert summary.terminal == :converged
+        assert MapSet.member?(summary.ran, "quality-reviewer")
+      end)
+
+    assert log =~ "degraded independence accepted"
+
+    # The reviewer wave really dispatched through the STAGE-override vendor
+    # executor — the full wave-options → AgentStep → AgentRunner →
+    # apply_executor/4 thread.
+    assert_received {:scripted_deposit_runner, :prompt, prompt}
+    assert prompt =~ "Review the diff for quality"
+
+    drain_run_registry(200)
+  end
+
   test "degraded independence starts, warns, and converges through the knob-bound vendor",
        ctx do
     StubStore.setup()

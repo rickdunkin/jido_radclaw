@@ -613,7 +613,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
       end
     end
 
-    test "the full optional key surface hydrates unchanged" do
+    test "the full optional key surface hydrates plus the access/session_sandbox defaults" do
       config = %{
         workspace: :scratch,
         model: "gpt-5-codex",
@@ -625,7 +625,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       template = exec_template(executor: {:forge, :codex}, executor_config: config)
 
       with_template_override("exec_vendor", template, fn ->
-        assert {:ok, %{executor_config: ^config}} = Templates.get("exec_vendor")
+        assert {:ok, %{executor_config: hydrated}} = Templates.get("exec_vendor")
+        assert hydrated == Map.merge(config, %{access: :read_only, session_sandbox: :local})
       end)
     end
 
@@ -660,8 +661,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
       end
     end
 
-    test "unknown keys raise — deliberately NO access/sandbox knobs this wave" do
-      for config <- [%{access: :read_only}, %{sandbox: :local}, %{workspce: :repo}] do
+    test "unknown keys raise — :sandbox stays refused (the knob is :session_sandbox)" do
+      for config <- [%{sandbox: :local}, %{sandbox: :docker}, %{workspce: :repo}] do
         template = exec_template(executor: {:forge, :codex}, executor_config: config)
 
         with_template_override("exec_vendor", template, fn ->
@@ -693,30 +694,100 @@ defmodule JidoClaw.Agent.TemplatesTest do
     end
   end
 
-  # Item 7 PR-3: the `.jido/config.yaml` review-binding entry into the SAME
-  # private validators — raises converted to operator-facing {:error, message}.
-  describe "hydrate_review_binding/3 (item 7, camus C1-1 PR-3)" do
-    test "a vendor kind over the real reviewer base hydrates workspace: :repo" do
+  # Executor-seam PR-4: the access/session_sandbox knobs + the write⇒docker
+  # invariant (enforce-only — dispatch refuses :docker until the write build).
+  describe "vendor access/session_sandbox hydration (item 7, camus C1-1 PR-4)" do
+    test "vendor kinds hydrate access: :read_only + session_sandbox: :local defaults" do
+      for kind <- [:codex, :claude_code] do
+        with_template_override("exec_vendor", exec_template(executor: {:forge, kind}), fn ->
+          assert {:ok, %{executor_config: %{access: :read_only, session_sandbox: :local}}} =
+                   Templates.get("exec_vendor")
+        end)
+      end
+    end
+
+    test "access: :write with session_sandbox: :docker hydrates (the write declaration)" do
+      template =
+        exec_template(
+          executor: {:forge, :codex},
+          executor_config: %{access: :write, session_sandbox: :docker}
+        )
+
+      with_template_override("exec_vendor", template, fn ->
+        assert {:ok, %{executor_config: %{access: :write, session_sandbox: :docker}}} =
+                 Templates.get("exec_vendor")
+      end)
+    end
+
+    test "the write⇒docker invariant: access: :write with a :local session raises" do
+      # Explicit write+local AND write-with-defaulted-local both refuse.
+      for config <- [%{access: :write}, %{access: :write, session_sandbox: :local}] do
+        template = exec_template(executor: {:forge, :claude_code}, executor_config: config)
+
+        with_template_override("exec_vendor", template, fn ->
+          assert_raise ArgumentError, ~r/docker-backed/, fn ->
+            Templates.get("exec_vendor")
+          end
+        end)
+      end
+    end
+
+    test "bad access/session_sandbox enum values raise — present keys are strict" do
+      bad = [
+        {%{access: :rw}, ~r/expected :read_only \| :write/},
+        {%{access: "write"}, ~r/expected :read_only \| :write/},
+        {%{session_sandbox: :dokcer}, ~r/expected :local \| :docker/},
+        {%{session_sandbox: "docker"}, ~r/expected :local \| :docker/}
+      ]
+
+      for {config, message} <- bad do
+        template = exec_template(executor: {:forge, :codex}, executor_config: config)
+
+        with_template_override("exec_vendor", template, fn ->
+          assert_raise ArgumentError, message, fn -> Templates.get("exec_vendor") end
+        end)
+      end
+    end
+  end
+
+  # Item 7 PR-3/PR-4: the shared binding-hydration entry — the `.jido/config.yaml`
+  # review knob and the per-stage catalog override both reach the SAME private
+  # validators here; raises converted to operator-facing {:error, message}.
+  describe "hydrate_executor_binding/3 (item 7, camus C1-1 PR-3/PR-4)" do
+    test "a vendor executor over the real reviewer base hydrates the vendor defaults" do
       {:ok, base} = Templates.get("reviewer")
 
       for kind <- [:codex, :claude_code] do
-        assert {:ok, {{:forge, ^kind}, %{workspace: :repo}}} =
-                 Templates.hydrate_review_binding(kind, %{}, base)
+        assert {:ok, {{:forge, ^kind}, config}} =
+                 Templates.hydrate_executor_binding({:forge, kind}, %{}, base)
+
+        assert config == %{workspace: :repo, access: :read_only, session_sandbox: :local}
       end
+    end
+
+    test ":in_process returns {:ok, {:in_process, %{}}} — config dropped" do
+      {:ok, base} = Templates.get("reviewer")
+
+      assert {:ok, {:in_process, %{}}} =
+               Templates.hydrate_executor_binding(:in_process, %{model: "x"}, base)
     end
 
     test "the optional key surface passes through the PR-1 validators" do
       {:ok, base} = Templates.get("reviewer")
       config = %{workspace: :scratch, model: "gpt-5-codex", max_turns: 10}
 
-      assert {:ok, {{:forge, :codex}, ^config}} =
-               Templates.hydrate_review_binding(:codex, config, base)
+      assert {:ok, {{:forge, :codex}, hydrated}} =
+               Templates.hydrate_executor_binding({:forge, :codex}, config, base)
+
+      assert hydrated == Map.merge(config, %{access: :read_only, session_sandbox: :local})
     end
 
     test "an unknown config key is an operator-facing error, not a raise" do
       {:ok, base} = Templates.get("reviewer")
 
-      assert {:error, msg} = Templates.hydrate_review_binding(:codex, %{sandbox: :local}, base)
+      assert {:error, msg} =
+               Templates.hydrate_executor_binding({:forge, :codex}, %{sandbox: :local}, base)
+
       assert msg =~ "unknown :executor_config keys"
     end
 
@@ -724,17 +795,37 @@ defmodule JidoClaw.Agent.TemplatesTest do
       {:ok, base} = Templates.get("reviewer")
 
       assert {:error, msg} =
-               Templates.hydrate_review_binding(:codex, %{workspace: "sideways"}, base)
+               Templates.hydrate_executor_binding(
+                 {:forge, :codex},
+                 %{workspace: "sideways"},
+                 base
+               )
 
       assert msg =~ "expected :repo | :scratch | :none"
     end
 
-    test "a non-vendor kind is refused" do
+    test "the write⇒docker invariant is an operator-facing error too" do
       {:ok, base} = Templates.get("reviewer")
 
-      for kind <- [:shell, :fake, :custom, :in_process, "codex"] do
-        assert {:error, msg} = Templates.hydrate_review_binding(kind, %{}, base)
-        assert msg =~ "expected :codex or :claude_code"
+      assert {:error, msg} =
+               Templates.hydrate_executor_binding({:forge, :codex}, %{access: :write}, base)
+
+      assert msg =~ "docker-backed"
+    end
+
+    test "a command-less {:forge, :shell} binding is an operator-facing error" do
+      {:ok, base} = Templates.get("reviewer")
+
+      assert {:error, msg} = Templates.hydrate_executor_binding({:forge, :shell}, %{}, base)
+      assert msg =~ "requires :executor_config %{command:"
+    end
+
+    test "an invalid executor term is refused — bare vendor kinds must be wrapped" do
+      {:ok, base} = Templates.get("reviewer")
+
+      for executor <- [:codex, "codex", {:forge, :bogus}, nil] do
+        assert {:error, msg} = Templates.hydrate_executor_binding(executor, %{}, base)
+        assert msg =~ "expected :in_process or"
       end
     end
 
@@ -743,7 +834,7 @@ defmodule JidoClaw.Agent.TemplatesTest do
       # synthetic sandbox-less base would make this refusal vacuous.
       sandboxed = exec_template(sandbox: :prototype)
 
-      assert {:error, msg} = Templates.hydrate_review_binding(:codex, %{}, sandboxed)
+      assert {:error, msg} = Templates.hydrate_executor_binding({:forge, :codex}, %{}, sandboxed)
       assert msg =~ "cannot combine with sandbox"
     end
   end

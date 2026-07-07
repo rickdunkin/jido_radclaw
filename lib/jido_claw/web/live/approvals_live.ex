@@ -118,6 +118,29 @@ defmodule JidoClaw.Web.ApprovalsLive do
             </div>
           </div>
 
+          <%!-- Needs-input answer (item 7 PR-4): the decision comment IS the
+                answer — a dedicated required textarea (the browser blocks a
+                blank Approve; the server's :answer_required guard stays
+                authoritative). Reject carries formnovalidate below. The
+                injection promise (resume_hint) renders ONLY when the case is
+                injectable (vendor executor + session-keyed identity). --%>
+          <div :if={gate.kind == :needs_input} style="margin-bottom: 0.75rem;">
+            <div style="font-size: 0.875rem; margin-bottom: 0.5rem;">
+              <span style="font-weight: 600;">Question:</span>
+              {details_value(gate, "question")}
+            </div>
+            <label style="display: block; font-size: 0.875rem; margin-bottom: 0.25rem;">
+              Your answer (required to approve)
+            </label>
+            <textarea name="answer" rows="2" style="width: 100%;" required></textarea>
+            <div
+              :if={details_value(gate, "injectable")}
+              style="color: var(--muted); font-size: 0.8125rem; margin-top: 0.5rem;"
+            >
+              {details_value(gate, "resume_hint")}
+            </div>
+          </div>
+
           <div :for={field <- gate_fields(gate)} style="margin-bottom: 0.75rem;">
             <label style="display: block; font-size: 0.875rem; margin-bottom: 0.25rem;">
               {field["label"]}
@@ -134,7 +157,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
               Reject
             </button>
             <button
-              :if={gate.workflow_run_id}
+              :if={gate.workflow_run_id && gate.kind != :needs_input}
               type="button"
               class="btn"
               style="margin-left: auto; color: var(--muted);"
@@ -192,7 +215,7 @@ defmodule JidoClaw.Web.ApprovalsLive do
       socket,
       decision,
       id,
-      comment_from_fields(params["fields"]),
+      answer_or_fields_comment(params),
       waive_records_from_params(params)
     )
   end
@@ -241,6 +264,15 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
+  # The needs-input answer box maps DIRECTLY to the decision comment (the
+  # answer IS the comment); every other gate keeps the typed-fields fold.
+  defp answer_or_fields_comment(params) do
+    case blank_to_nil(params["answer"]) do
+      nil -> comment_from_fields(params["fields"])
+      answer -> answer
+    end
+  end
+
   defp decide(socket, decision, id, comment \\ nil, waive_records \\ []) do
     actor = socket.assigns[:current_actor]
     attrs = decide_attrs(actor, comment, waive_records)
@@ -258,11 +290,25 @@ defmodule JidoClaw.Web.ApprovalsLive do
          |> put_flash(:info, review_stall_flash(decision))
          |> assign(gates: load_gates(socket))}
 
+      {:ok, %AgentCase{kind: :needs_input} = decided} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, needs_input_flash(decision, decided))
+         |> assign(gates: load_gates(socket))}
+
       {:ok, %AgentCase{}} ->
         {:noreply,
          socket
          |> put_flash(:info, tool_call_flash(decision))
          |> assign(gates: load_gates(socket))}
+
+      {:error, :answer_required} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "This gate needs an answer — type it in the answer box and approve again."
+         )}
 
       {:error, :incomplete_waiver} ->
         {:noreply,
@@ -305,6 +351,18 @@ defmodule JidoClaw.Web.ApprovalsLive do
 
   defp tool_call_flash(:approve), do: "Tool call approved — the agent may retry it now"
   defp tool_call_flash(:reject), do: "Tool call rejected — the agent will not retry it"
+
+  # Keyed on details["injectable"]: only a session-keyed VENDOR stage can
+  # receive an injected answer — the copy must not promise injection elsewhere.
+  defp needs_input_flash(:approve, %AgentCase{details: details}) do
+    if is_map(details) and details["injectable"] == true do
+      "Answer recorded — the next attempt of this stage injects it (single-use, expires in 24h)"
+    else
+      "Answer recorded for the operator record — this executor cannot receive injected answers"
+    end
+  end
+
+  defp needs_input_flash(:reject, _decided), do: "Declined — no answer injected"
 
   # Review-stall decisions are recorded on the case; the RUN terminal lands
   # asynchronously when the parked composer wakes (never read off decide).

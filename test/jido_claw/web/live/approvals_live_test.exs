@@ -8,6 +8,7 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.NeedsInput
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.ToolApprovals
@@ -130,5 +131,102 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
         flash: %{}
       }
     }
+  end
+
+  # Item 7 PR-4: the needs-input surface — question + required answer box,
+  # the injection promise ONLY when injectable, no Abandon; the decide event
+  # maps the answer box to the decision comment, and a blank answer flashes
+  # the server's :answer_required refusal.
+  describe "needs-input gates (item 7 PR-4)" do
+    setup do
+      %{tenant_id: tenant, session: session} = seed_full(tenant_label: "gates-live-ni")
+      {:ok, ni_tenant: tenant, ni_actor: actor_for(tenant), ni_session: session}
+    end
+
+    defp raise_needs_input_case(ctx, overrides) do
+      scope =
+        Map.merge(
+          %{
+            tenant_id: ctx.ni_tenant,
+            actor: ctx.ni_actor,
+            session_uuid: ctx.ni_session.id,
+            session_id: ctx.ni_session.external_id,
+            workflow_run_id: nil,
+            template_name: "coder",
+            step_name: "v-step",
+            vendor?: true
+          },
+          Map.new(overrides)
+        )
+
+      {:ok, agent_case} = NeedsInput.raise_case(scope, "Which database should I use?")
+      agent_case
+    end
+
+    defp render_gates(gates) do
+      %{__changed__: %{}, gates: gates, flash: %{}}
+      |> ApprovalsLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+    end
+
+    test "renders question + answer box + injection promise; no Abandon", ctx do
+      gate = raise_needs_input_case(ctx, [])
+      html = render_gates([gate])
+
+      assert html =~ "Which database should I use?"
+      assert html =~ ~s(<textarea name="answer")
+      # Injectable (vendor + session-keyed): the resume_hint's claim promise
+      # renders ("claims it once" is hint-only — the gate title/description
+      # render on EVERY needs-input case).
+      assert html =~ "claims it once"
+      refute html =~ "Abandon run"
+    end
+
+    test "a non-injectable case renders the answer box WITHOUT the injection promise", ctx do
+      gate = raise_needs_input_case(ctx, vendor?: false)
+      html = render_gates([gate])
+
+      assert html =~ ~s(<textarea name="answer")
+      refute html =~ "claims it once"
+    end
+
+    test "decide maps the answer box to the decision comment", ctx do
+      gate = raise_needs_input_case(ctx, [])
+      web_actor = %{user_id: Ecto.UUID.generate(), tenant_id: ctx.ni_tenant}
+      socket = build_socket(web_actor)
+
+      assert {:noreply, updated} =
+               ApprovalsLive.handle_event(
+                 "decide",
+                 %{"case_id" => gate.id, "decision" => "approve", "answer" => "Use postgres"},
+                 socket
+               )
+
+      assert updated.assigns.gates == []
+
+      {:ok, decided} = AgentCase.by_id(gate.id, tenant: ctx.ni_tenant, actor: ctx.ni_actor)
+      assert decided.status == :approved
+      assert decided.decision_comment == "Use postgres"
+    end
+
+    test "a blank-answer approve flashes the :answer_required refusal; case stays pending",
+         ctx do
+      gate = raise_needs_input_case(ctx, [])
+      web_actor = %{user_id: Ecto.UUID.generate(), tenant_id: ctx.ni_tenant}
+      socket = build_socket(web_actor)
+
+      assert {:noreply, updated} =
+               ApprovalsLive.handle_event(
+                 "decide",
+                 %{"case_id" => gate.id, "decision" => "approve", "answer" => "   "},
+                 socket
+               )
+
+      assert Phoenix.Flash.get(updated.assigns.flash, :error) =~ "needs an answer"
+
+      {:ok, reloaded} = AgentCase.by_id(gate.id, tenant: ctx.ni_tenant, actor: ctx.ni_actor)
+      assert reloaded.status == :pending
+    end
   end
 end
