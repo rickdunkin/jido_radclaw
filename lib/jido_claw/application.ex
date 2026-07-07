@@ -139,6 +139,9 @@ defmodule JidoClaw.Application do
       {Registry, keys: :unique, name: JidoClaw.SessionRegistry},
       {Registry, keys: :unique, name: JidoClaw.TenantRegistry},
       {Registry, keys: :unique, name: JidoClaw.Memory.Consolidator.RunRegistry},
+      # Executor-seam PR-2: deposit-ref → per-step Deposit box (the vendor
+      # executor's structured-output channel). Same shape as RunRegistry.
+      {Registry, keys: :unique, name: JidoClaw.Skills.Steps.ForgeExecutor.DepositRegistry},
       JidoClaw.Agent.Handoff.Registry,
       {Task.Supervisor, name: JidoClaw.TaskSupervisor},
       {Task.Supervisor, name: JidoClaw.Memory.Consolidator.TaskSupervisor},
@@ -266,6 +269,13 @@ defmodule JidoClaw.Application do
       # `start: true` is what Anubis's supervisor reads — a
       # top-level start option is silently ignored.
       {JidoClaw.Memory.Consolidator.MCPServer, transport: {:streamable_http, [start: true]}},
+
+      # Executor-seam PR-2 deposit MCP server (always-on, scoped per-step via
+      # the Bandit-fronted DepositPlug — the consolidator server's exact
+      # pattern, including the transport-internal `start: true`). Internal
+      # server: NOT part of the served-surface golden (JidoClaw.MCPServer only).
+      {JidoClaw.Skills.Steps.ForgeExecutor.DepositServer,
+       transport: {:streamable_http, [start: true]}},
 
       # Boot-time initializer: ensure the "system" tenant and
       # register platform cron jobs (memory consolidator tick).

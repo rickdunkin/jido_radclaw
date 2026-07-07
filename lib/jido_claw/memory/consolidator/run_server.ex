@@ -36,10 +36,11 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link, Scope}
 
+  alias JidoClaw.MCP.ScopedEndpoint
+
   alias JidoClaw.Memory.Consolidator.{
     Clusterer,
     LockOwner,
-    MCPEndpoint,
     PolicyResolver,
     Staging
   }
@@ -366,8 +367,19 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   defp spawn_harness_task(state, harness) do
     forge_session_id = Ecto.UUID.generate()
 
-    {:ok, endpoint} = MCPEndpoint.start_link(state.run_id)
-    temp_path = write_mcp_config(state.run_id, endpoint.url)
+    {:ok, endpoint} =
+      ScopedEndpoint.start_link(
+        plug: JidoClaw.Memory.Consolidator.Plug,
+        scope_id: state.run_id,
+        path_prefix: "/run"
+      )
+
+    {:ok, temp_path} =
+      ScopedEndpoint.write_client_config(
+        "consolidator",
+        endpoint.url,
+        "consolidator-#{state.run_id}.json"
+      )
 
     config = consolidator_config()
     harness_options = Keyword.get(config, :harness_options, [])
@@ -568,22 +580,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   # Harness `:scope_required` path.
   defp maybe_run_without_claim(spec, nil), do: Map.put(spec, :claim, false)
   defp maybe_run_without_claim(spec, _workspace_id), do: spec
-
-  defp write_mcp_config(run_id, url) do
-    path = Path.join(System.tmp_dir!(), "consolidator-#{run_id}.json")
-
-    body =
-      Jason.encode!(%{
-        "mcpServers" => %{
-          "consolidator" => %{
-            "url" => url
-          }
-        }
-      })
-
-    File.write!(path, body)
-    path
-  end
 
   defp load_inputs(state) do
     config = consolidator_config()
@@ -1179,7 +1175,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   defp cleanup(state) do
     if state.lock_owner_pid, do: LockOwner.release(state.lock_owner_pid)
-    if state.mcp_endpoint, do: MCPEndpoint.stop(state.mcp_endpoint)
+    if state.mcp_endpoint, do: ScopedEndpoint.stop(state.mcp_endpoint)
     if state.temp_file_path, do: File.rm(state.temp_file_path)
     :ok
   end

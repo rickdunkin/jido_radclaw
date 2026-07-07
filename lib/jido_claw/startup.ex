@@ -181,6 +181,31 @@ defmodule JidoClaw.Startup do
     :exit, _ -> :ok
   end
 
+  @doc """
+  The gated subagent system-prompt STRING for an executor surface that cannot
+  receive an injected prompt (the vendor-executor argv — executor-seam PR-2
+  P1a): the same `SubagentPrompt.build/3` contract in-process workers get,
+  behind the same `:doctrine` master gate as `inject_subagent_prompt/4`.
+  Returns `nil` when the gate is off (the vendor prompt then starts at the
+  task — byte-consistent with the in-process doctrine-off behavior) or when
+  the build fails (best-effort, never raises — the existing posture).
+  """
+  @spec subagent_prompt(String.t(), map(), String.t() | nil) :: String.t() | nil
+  def subagent_prompt(template_name, tool_context, catalog_stage_name \\ nil)
+      when is_binary(template_name) do
+    if doctrine_enabled?() do
+      SubagentPrompt.build(template_name, tool_context, catalog_stage_name)
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    e ->
+      Logger.warning(
+        "[Doctrine] subagent prompt build failed (#{template_name}): #{Exception.message(e)}"
+      )
+
+      nil
+  end
+
   defp doctrine_enabled? do
     :jido_claw
     |> Application.get_env(:doctrine, [])

@@ -159,7 +159,8 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       assert args == [
                "exec",
                "-c",
-               ~s(mcp_servers.consolidator={url="http://127.0.0.1:0/run/x"}),
+               ~s(mcp_servers.consolidator=) <>
+                 ~s({url="http://127.0.0.1:0/run/x", default_tools_approval_mode="approve"}),
                "-m",
                "gpt-5-codex",
                "--dangerously-bypass-approvals-and-sandbox",
@@ -185,7 +186,11 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       # entry — not a sub-key write — so a host config with a stdio
       # `command = "..."` sibling can't end up merged with our `url`.
       assert ["exec", "-c", override | _rest] = args
-      assert override == ~s(mcp_servers.consolidator={url="http://127.0.0.1:0/run/x"})
+      # The approve mode rides the same inline table — headless codex
+      # auto-cancels MCP tool calls without it (PR-2 live smoke).
+      assert override ==
+               ~s(mcp_servers.consolidator=) <>
+                 ~s({url="http://127.0.0.1:0/run/x", default_tools_approval_mode="approve"})
 
       events = StubSandbox.events(client)
 
@@ -364,6 +369,122 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       assert {:ok, result} = Codex.run_iteration(client, state, [])
       assert result.status == :done
       assert [_] = result.metadata.tool_events
+    end
+  end
+
+  # Executor-seam PR-2 knobs. Defaults (covered above) preserve the
+  # consolidator byte-for-byte; these pin the vendor-executor posture.
+  describe "executor knobs (PR-2)" do
+    setup do
+      host = make_tmpdir!("codex_host_knobs")
+      File.write!(Path.join(host, "auth.json"), ~s({"token":"sk-test"}\n))
+      File.write!(Path.join(host, "config.toml"), "# host config\n")
+      Application.put_env(:jido_claw, :codex_home_dir, host)
+
+      forge_home = make_tmpdir!("forge_home_knobs")
+
+      on_exit(fn ->
+        File.rm_rf(host)
+        File.rm_rf(forge_home)
+      end)
+
+      {:ok, host: host, forge_home: forge_home}
+    end
+
+    test "config_sync: :auth_only syncs auth.json alone — the host config.toml never crosses",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+
+      assert {:ok, _state} =
+               Codex.init(client, %{
+                 forge_home: forge_home,
+                 codex_home: Path.join(forge_home, ".codex"),
+                 config_sync: :auth_only
+               })
+
+      sync_cmds =
+        for {:exec, cmd} <- StubSandbox.events(client),
+            String.contains?(cmd, "base64 -d"),
+            do: cmd
+
+      assert Enum.any?(sync_cmds, &String.contains?(&1, "auth.json"))
+      refute Enum.any?(sync_cmds, &String.contains?(&1, "config.toml"))
+    end
+
+    test "config_sync: :auth_only fails closed when the env inject is refused",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+
+      # A refused CODEX_HOME inject means codex would read the operator's
+      # REAL ~/.codex (host config.toml, host MCP servers) — the unisolated
+      # session must not start.
+      StubSandbox.program_inject_env(client, {:error, :inject_env_refused})
+
+      assert {:error, {:config_isolation_failed, :inject_env_refused}} =
+               Codex.init(client, %{
+                 forge_home: forge_home,
+                 codex_home: Path.join(forge_home, ".codex"),
+                 config_sync: :auth_only
+               })
+    end
+
+    test "config_sync: :full keeps best-effort on a refused inject (consolidator byte-for-byte)",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+
+      # Deliberate asymmetry: under :full the synced auth.json/config.toml are
+      # host copies, so a refused inject degrades hygiene (mutable session/cache
+      # state lands in the host dir), not isolation — init stays best-effort.
+      StubSandbox.program_inject_env(client, {:error, :inject_env_refused})
+
+      assert {:ok, _state} =
+               Codex.init(client, %{
+                 forge_home: forge_home,
+                 codex_home: Path.join(forge_home, ".codex")
+               })
+    end
+
+    test "access: :read_only swaps the bypass flag for -s read-only; mcp_server_name + cwd land",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+      repo_dir = Path.join(forge_home, "repo")
+
+      {:ok, state} =
+        Codex.init(client, %{
+          forge_home: forge_home,
+          codex_home: Path.join(forge_home, ".codex"),
+          mcp_server_url: "http://127.0.0.1:0/deposit/ref-1",
+          mcp_server_name: "jido_deposit",
+          access: :read_only,
+          config_sync: :auth_only,
+          cwd: repo_dir,
+          prompt: "review it"
+        })
+
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = Codex.run_iteration(client, state, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+
+      assert args == [
+               "exec",
+               "-c",
+               ~s(mcp_servers.jido_deposit=) <>
+                 ~s({url="http://127.0.0.1:0/deposit/ref-1", default_tools_approval_mode="approve"}),
+               "-m",
+               "gpt-5-codex",
+               "-s",
+               "read-only",
+               "--json",
+               "--ephemeral",
+               "--skip-git-repo-check",
+               "--ignore-rules",
+               "-C",
+               repo_dir,
+               "review it"
+             ]
+
+      refute "--dangerously-bypass-approvals-and-sandbox" in args
     end
   end
 

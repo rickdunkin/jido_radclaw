@@ -81,17 +81,24 @@ defmodule JidoClaw.Agent.Templates do
   registry, so an overridden provider can't slip a private template past a guard
   that checked a different source. `composer_private?/1` delegates to it.
 
-  ## `executor` binding (item 7, camus C1-1 PR-1)
+  ## `executor` binding (item 7, camus C1-1)
 
   Every resolved template carries an `:executor` key — WHERE this template's
   step work runs: `:in_process` (the default; today's in-process `Jido.AI`
   worker) or `{:forge, :fake | :shell | :codex | :claude_code | :custom}` (a
-  real Forge session driven by `JidoClaw.Skills.Steps.ForgeExecutor`; only
-  `:fake`/`:shell` are built in PR-1 — the other kinds hydrate but are refused
-  at dispatch until PR-2). `:executor_config` is the per-executor config map
-  (hydrates to `%{}`): PR-1 uses only `%{command: <binary>}` for
-  `{:forge, :shell}` — the operator-declared shell command (the `verify_cmd`
-  trust class; the stage *task* is never the command).
+  real Forge session driven by `JidoClaw.Skills.Steps.ForgeExecutor`;
+  `:fake`/`:shell` are PR-1, the vendor kinds `:codex`/`:claude_code` are
+  PR-2, and `:custom` hydrates but stays refused at dispatch).
+  `:executor_config` is the per-executor config map (hydrates to `%{}`):
+  `{:forge, :shell}` uses `%{command: <binary>}` — the operator-declared
+  shell command (the `verify_cmd` trust class; the stage *task* is never the
+  command) — and the vendor kinds accept `workspace:` (`:repo` default,
+  written back into the hydrated config | `:scratch` | `:none`) plus optional
+  `model`/`thinking_effort` (non-blank binaries) and `max_turns`/`timeout_ms`
+  (positive integers), with any OTHER key refused — deliberately no
+  `access`/`sandbox` keys this wave (read-only is hardwired; the
+  session-sandbox knob lands with PR-4's write-capable work). A `workspace:`
+  key on any non-vendor kind refuses too.
 
   Unlike the other policies, a malformed value **raises** `ArgumentError` (the
   `:max_iterations` loud posture, not the warn+fail-closed one): fc/ra/sandbox
@@ -99,7 +106,7 @@ defmodule JidoClaw.Agent.Templates do
   direction is *refuse to run* — silently mapping a typo to `:in_process`
   would hand execution to the wrong executor. A `{:forge, _}` executor also
   refuses a `:prototype`/`:docker` `:sandbox` policy (the in-process VFS-jail
-  axis is meaningless for a forge session — PR-2's session-sandbox knob lives
+  axis is meaningless for a forge session — PR-4's session-sandbox knob lives
   in `:executor_config`, a different axis), and `{:forge, :shell}` without a
   non-empty `:executor_config` `command` refuses at hydration — the earliest,
   loudest point, before any Forge slot is consumed.
@@ -498,24 +505,28 @@ defmodule JidoClaw.Agent.Templates do
     :prototype
   end
 
-  # Item 7 (camus C1-1) PR-1: the executor seam. Runs LAST in the hydration
+  # Item 7 (camus C1-1): the executor seam. Runs LAST in the hydration
   # pipeline (after `ensure_sandbox`, so the combo check reads the validated
   # `:sandbox` key). Malformed values RAISE — see the moduledoc for why this is
   # the `:max_iterations` loud posture, not the fc/ra/sandbox fail-closed one.
+  # PR-2 (P2a): validators return the (possibly normalized) config and THAT is
+  # written back — how the vendor `workspace: :repo` default actually lands in
+  # the hydrated map; all other kinds return the config unchanged
+  # (byte-identity preserved).
   defp ensure_executor(template) do
     executor = Map.get(template, :executor, :in_process)
     config = Map.get(template, :executor_config, %{})
 
     validate_executor_config!(config, template)
-    validate_executor!(executor, config, template)
+    normalized = normalize_executor_config!(executor, config, template)
 
     template
     |> Map.put(:executor, executor)
-    |> Map.put(:executor_config, config)
+    |> Map.put(:executor_config, normalized)
   end
 
-  # `:executor_config` must be a map for EVERY executor kind (PR-2 must not
-  # inherit ambiguous shapes), even `:in_process` (which ignores it).
+  # `:executor_config` must be a map for EVERY executor kind (later PRs must
+  # not inherit ambiguous shapes), even `:in_process` (which ignores it).
   defp validate_executor_config!(config, _template) when is_map(config), do: :ok
 
   defp validate_executor_config!(config, t) do
@@ -524,7 +535,10 @@ defmodule JidoClaw.Agent.Templates do
             "#{inspect(Map.get(t, :module))}: must be a map"
   end
 
-  defp validate_executor!(:in_process, _config, _template), do: :ok
+  defp normalize_executor_config!(:in_process, config, t) do
+    refuse_workspace_key!(:in_process, config, t)
+    config
+  end
 
   # A command-less shell template fails closed at hydration — the stage task is
   # never the command (AgentStep appends produces-instructions to tasks, and
@@ -532,13 +546,14 @@ defmodule JidoClaw.Agent.Templates do
   # silent green this forecloses). A whitespace-only command is the same silent
   # green (`sh -c "   "` exits 0, empty output), so blank is rejected too;
   # `String.trim/1` is not guard-safe, hence the check lives in the body.
-  defp validate_executor!({:forge, :shell} = executor, config, t) do
+  defp normalize_executor_config!({:forge, :shell} = executor, config, t) do
     refuse_forge_sandbox_combo!(executor, t)
+    refuse_workspace_key!(executor, config, t)
 
     command = Map.get(config, :command)
 
     if is_binary(command) and String.trim(command) != "" do
-      :ok
+      config
     else
       raise ArgumentError,
             "executor {:forge, :shell} for #{inspect(Map.get(t, :module))} requires " <>
@@ -546,23 +561,112 @@ defmodule JidoClaw.Agent.Templates do
     end
   end
 
-  # The full five-kind union hydrates; dispatch refuses the unbuilt kinds
-  # (`:codex`/`:claude_code`/`:custom`) with a "not implemented until PR-2"
-  # error — the camus review.sh unknown-backend fail-closed discipline.
-  defp validate_executor!({:forge, kind} = executor, _config, t)
-       when kind in [:fake, :codex, :claude_code, :custom] do
+  # PR-2 vendor kinds: default `workspace: :repo` INTO the config (the
+  # self-describing hydrated map — PR-1's ensure-default pattern), then
+  # validate the full vendor key surface.
+  defp normalize_executor_config!({:forge, kind} = executor, config, t)
+       when kind in [:codex, :claude_code] do
     refuse_forge_sandbox_combo!(executor, t)
+    config = Map.put_new(config, :workspace, :repo)
+    validate_vendor_config!(executor, config, t)
+    config
   end
 
-  defp validate_executor!(other, _config, t) do
+  # `:fake` hydrates freely; `:custom` hydrates but stays refused at dispatch
+  # — the camus review.sh unknown-backend fail-closed discipline.
+  defp normalize_executor_config!({:forge, kind} = executor, config, t)
+       when kind in [:fake, :custom] do
+    refuse_forge_sandbox_combo!(executor, t)
+    refuse_workspace_key!(executor, config, t)
+    config
+  end
+
+  defp normalize_executor_config!(other, _config, t) do
     raise ArgumentError,
           "invalid :executor #{inspect(other)} for #{inspect(Map.get(t, :module))}: expected " <>
             ":in_process or {:forge, :fake | :shell | :codex | :claude_code | :custom}"
   end
 
+  # The vendor `executor_config` surface: workspace enum + optional model /
+  # thinking_effort / max_turns / timeout_ms, and NOTHING else — deliberately
+  # no `access`/`sandbox` keys this wave (read-only is hardwired in the
+  # executor; the session-sandbox knob lands with PR-4's write-capable work).
+  @vendor_config_keys [:workspace, :model, :max_turns, :timeout_ms, :thinking_effort]
+
+  defp validate_vendor_config!(executor, config, t) do
+    case Map.keys(config) -- @vendor_config_keys do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown :executor_config keys #{inspect(unknown)} for #{inspect(executor)} on " <>
+                "#{inspect(Map.get(t, :module))}: allowed keys are #{inspect(@vendor_config_keys)}"
+    end
+
+    validate_vendor_workspace!(executor, Map.fetch!(config, :workspace), t)
+    validate_vendor_binary!(executor, config, :model, t)
+    validate_vendor_binary!(executor, config, :thinking_effort, t)
+    validate_vendor_pos_int!(executor, config, :max_turns, t)
+    validate_vendor_pos_int!(executor, config, :timeout_ms, t)
+    :ok
+  end
+
+  defp validate_vendor_workspace!(_executor, workspace, _t)
+       when workspace in [:repo, :scratch, :none],
+       do: :ok
+
+  defp validate_vendor_workspace!(executor, workspace, t) do
+    raise ArgumentError,
+          "invalid :executor_config workspace #{inspect(workspace)} for #{inspect(executor)} " <>
+            "on #{inspect(Map.get(t, :module))}: expected :repo | :scratch | :none"
+  end
+
+  # Optional keys are strict when PRESENT: a present-nil / blank / wrong-typed
+  # value raises rather than silently riding into the runner config.
+  defp validate_vendor_binary!(executor, config, key, t) do
+    case Map.fetch(config, key) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_binary(value) and value != "" ->
+        :ok
+
+      {:ok, value} ->
+        raise ArgumentError,
+              "invalid :executor_config #{key} #{inspect(value)} for #{inspect(executor)} on " <>
+                "#{inspect(Map.get(t, :module))}: expected a non-blank binary"
+    end
+  end
+
+  defp validate_vendor_pos_int!(executor, config, key, t) do
+    case Map.fetch(config, key) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_integer(value) and value > 0 ->
+        :ok
+
+      {:ok, value} ->
+        raise ArgumentError,
+              "invalid :executor_config #{key} #{inspect(value)} for #{inspect(executor)} on " <>
+                "#{inspect(Map.get(t, :module))}: expected a positive integer"
+    end
+  end
+
+  defp refuse_workspace_key!(executor, config, t) do
+    if Map.has_key?(config, :workspace) do
+      raise ArgumentError,
+            ":executor_config workspace for #{inspect(Map.get(t, :module))} is only valid on " <>
+              "{:forge, :codex | :claude_code}, got it on #{inspect(executor)}"
+    end
+
+    :ok
+  end
+
   # A `{:forge, _}` executor with a `:prototype`/`:docker` sandbox policy would
   # leave the in-process VFS-jail axis silently dead on a forge session — refuse
-  # the combo. PR-2's session-sandbox knob lives in `:executor_config`.
+  # the combo. PR-4's session-sandbox knob lives in `:executor_config`.
   defp refuse_forge_sandbox_combo!(executor, t) do
     case Map.get(t, :sandbox, :none) do
       :none ->

@@ -265,15 +265,15 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
     end
   end
 
-  describe "run/4 — executor dispatch (item 7, camus C1-1 PR-1)" do
+  describe "run/4 — executor dispatch (item 7, camus C1-1)" do
     setup do
       Application.put_env(:jido_claw, :agent_templates_override, %{
-        "codex_stub" => %{
+        "custom_stub" => %{
           module: EchoStub,
           description: "unbuilt forge kind",
           model: :fast,
           max_iterations: 1,
-          executor: {:forge, :codex}
+          executor: {:forge, :custom}
         }
       })
 
@@ -281,10 +281,10 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       :ok
     end
 
-    test "an unbuilt forge kind is refused at dispatch — clean error, no worker" do
-      assert {:error, msg} = AgentRunner.run("codex_stub", "go", "s", %{})
-      assert msg =~ "not implemented until PR-2"
-      assert msg =~ "{:forge, :codex}"
+    test "the unbuilt {:forge, :custom} kind is refused at dispatch — clean error, no worker" do
+      assert {:error, msg} = AgentRunner.run("custom_stub", "go", "s", %{})
+      assert msg =~ "not implemented"
+      assert msg =~ "{:forge, :custom}"
     end
   end
 
@@ -365,6 +365,142 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       # (only the cache entry clears; the row lives until TTL sweep).
       assert {:ok, correlation} = RequestCorrelation.lookup(task.request_id)
       assert correlation.session_id == session.id
+    end
+  end
+
+  # Item 7 PR-2: the vendor arm through the FULL AgentRunner envelope
+  # (dispatch → correlation → transcript rows → flush-barrier signal) plus the
+  # P1a prompt-parity contract — the subagent system prompt survives the
+  # executor swap, threaded as the vendor prompt prefix rather than injected.
+  describe "run/4 — vendor envelope + prompt parity (item 7 PR-2)" do
+    setup do
+      pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+      prev_persist = Application.get_env(:jido_claw, JidoClaw.Forge.Persistence, [])
+      Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, enabled: false)
+
+      Application.put_env(:jido_claw, :agent_templates_override, %{
+        "vendor_env" => %{
+          module: JidoClaw.Agent.Workers.Coder,
+          description: "vendor envelope template",
+          model: :fast,
+          executor: {:forge, :codex}
+        }
+      })
+
+      Application.put_env(:jido_claw, :executor_vendor_runners, %{
+        codex: JidoClaw.Test.ScriptedDepositRunner
+      })
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, JidoClaw.Forge.Persistence, prev_persist)
+        Application.delete_env(:jido_claw, :agent_templates_override)
+        Application.delete_env(:jido_claw, :executor_vendor_runners)
+        Application.delete_env(:jido_claw, :scripted_deposit_runner)
+        Sandbox.stop_owner(pid)
+      end)
+
+      :ok
+    end
+
+    test "a vendor step lands the correlation row plus task + terminal transcript rows" do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{
+        deposits: [
+          %{
+            "summary" => "Vendor enveloped the thing.",
+            "status" => "completed",
+            "files_changed" => [],
+            "notes" => "n/a",
+            "artifacts" => %{}
+          }
+        ],
+        output: "raw-vendor-stream"
+      })
+
+      %{context: context, session: session} = real_scope_context()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(
+            self(),
+            {:run_result, AgentRunner.run("vendor_env", "do the vendor thing", "vstep", context)}
+          )
+        end)
+
+      assert_received {:run_result, result}
+      assert {:ok, %StepResult{result: "Vendor enveloped the thing."}} = result
+
+      # The forge arm publishes the terminal signal itself — the Recorder
+      # flush must release on the SIGNAL, never the timeout degrade.
+      refute log =~ "[Recorder.flush] timeout"
+
+      {:ok, rows} =
+        Message.for_session(session.id, tenant: context.tenant, actor: context.actor)
+
+      task = Enum.find(rows, &(&1.role == :user and &1.content == "do the vendor thing"))
+      terminal = Enum.find(rows, &(&1.role == :assistant))
+
+      assert task, "expected the task :user transcript row"
+      assert terminal, "expected the terminal :assistant transcript row"
+      # P3a: the durable terminal shows the typed projection, not raw stream.
+      assert terminal.content == "Vendor enveloped the thing."
+      assert terminal.request_id == task.request_id
+
+      assert {:ok, correlation} = RequestCorrelation.lookup(task.request_id)
+      assert correlation.session_id == session.id
+    end
+
+    test "doctrine ON: the vendor prompt carries the subagent contract, stage steers persona, deposit last" do
+      prev_doc = Application.get_env(:jido_claw, :doctrine, [])
+      prev_psy = Application.get_env(:jido_claw, :psychology, [])
+      Application.put_env(:jido_claw, :doctrine, enabled?: true)
+      Application.put_env(:jido_claw, :psychology, enabled?: true)
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, :doctrine, prev_doc)
+        Application.put_env(:jido_claw, :psychology, prev_psy)
+      end)
+
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{deposits: [], notify: self()})
+
+      %{context: context} = real_scope_context()
+
+      assert {:ok, _} =
+               AgentRunner.run(
+                 "vendor_env",
+                 "vendor parity task",
+                 "vstep",
+                 context,
+                 "security-reviewer"
+               )
+
+      assert_receive {:scripted_deposit_runner, :prompt, prompt}, 5_000
+
+      # The SubagentPrompt contract leads the prompt (role section first)...
+      assert prompt =~ "# Role"
+      [pre_task, _] = String.split(prompt, "vendor parity task", parts: 2)
+      assert pre_task =~ "# Role"
+
+      # ...the catalog stage steers the persona ("vendor_env" has NO template
+      # fallback persona, so the defender block can only arrive via the
+      # threaded stage name)...
+      assert prompt =~ "## PSYCHOLOGY:"
+      assert prompt =~ ~r/defender/i
+
+      # ...and the deposit instruction stays LAST (nearest to action).
+      [_, post_deposit] = String.split(prompt, "submit_structured_output", parts: 2)
+      refute post_deposit =~ "vendor parity task"
+    end
+
+    test "doctrine OFF: the vendor prompt starts at the task (byte-consistent with in-process off)" do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{deposits: [], notify: self()})
+
+      %{context: context} = real_scope_context()
+
+      assert {:ok, _} = AgentRunner.run("vendor_env", "bare vendor task", "vstep", context)
+
+      assert_receive {:scripted_deposit_runner, :prompt, prompt}, 5_000
+      assert String.starts_with?(prompt, "bare vendor task")
+      refute prompt =~ "# Role"
     end
   end
 

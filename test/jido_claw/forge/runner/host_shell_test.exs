@@ -99,9 +99,15 @@ defmodule JidoClaw.Forge.Runner.HostShellTest do
     end
   end
 
-  describe "ulimit (opt-in)" do
-    test "no ulimit config means byte-identical argv pass-through" do
-      assert HostShell.apply_ulimits("printf", ["%s", "x"]) == {"printf", ["%s", "x"]}
+  describe "ulimit (opt-in) + cli exec wrapper" do
+    test "no ulimit config still wraps with bare exec + stdin redirect (PR-2 stdin-EOF fix)" do
+      # The </dev/null is load-bearing: OsCmd's port never delivers stdin EOF
+      # and `codex exec` reads piped stdin to EOF — it would block forever.
+      # The argv rides positionally ("$0" "$@") — nothing is parsed.
+      sh = System.find_executable("sh") || System.find_executable("/bin/sh")
+
+      assert HostShell.cli_exec_argv("printf", ["%s", "x"]) ==
+               {sh, ["-c", ~S(exec "$0" "$@" </dev/null), "printf", "%s", "x"]}
     end
 
     test "forge_ulimit_cpu_seconds kills a CPU-bound loop with a nonzero status",

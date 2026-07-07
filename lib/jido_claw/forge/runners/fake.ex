@@ -3,9 +3,12 @@ defmodule JidoClaw.Forge.Runners.Fake do
   Test substrate for the consolidator.
 
   Speaks MCP JSON-RPC against the consolidator's per-run HTTP/SSE
-  endpoint, exercising the same path the real ClaudeCode CLI uses:
-  Anubis's plug, the run-id assign propagation, the registry lookup
-  in tool handlers, and the staging buffer end-to-end.
+  endpoint via `JidoClaw.MCP.LoopbackClient`, exercising the same path
+  the real ClaudeCode CLI uses: Anubis's plug, the run-id assign
+  propagation, the registry lookup in tool handlers, and the staging
+  buffer end-to-end. Session-aware since executor-seam PR-2: the
+  client echoes the `mcp-session-id` captured at initialize (still
+  best-effort — a server that doesn't enforce session ids works too).
 
   Driven by `runner_config.fake_proposals` — a list of `{tool_name,
   args}` tuples. The runner sends one `tools/call` per proposal in
@@ -21,6 +24,7 @@ defmodule JidoClaw.Forge.Runners.Fake do
   @behaviour JidoClaw.Forge.Runner
 
   alias JidoClaw.Forge.Runner
+  alias JidoClaw.MCP.LoopbackClient
 
   @impl JidoClaw.Forge.Runner
   def init(_client, config) do
@@ -41,9 +45,9 @@ defmodule JidoClaw.Forge.Runners.Fake do
   def run_iteration(_client, state, _opts) do
     base =
       with {:ok, server_url} <- read_server_url(state.mcp_config_path),
-           {:ok, _session_id} <- mcp_initialize(server_url),
-           :ok <- send_proposals(server_url, state.fake_proposals),
-           :ok <- commit(server_url) do
+           {:ok, mcp} <- LoopbackClient.initialize(server_url),
+           :ok <- send_proposals(mcp, state.fake_proposals),
+           {:ok, _} <- LoopbackClient.call_tool(mcp, "commit_proposals", %{}) do
         Runner.done("fake-completed")
       else
         {:error, reason} ->
@@ -70,90 +74,12 @@ defmodule JidoClaw.Forge.Runners.Fake do
     end
   end
 
-  # The MCP streamable-HTTP transport returns an `mcp-session-id`
-  # header on successful `initialize` that subsequent calls must
-  # echo back. We treat the response as best-effort: if the server
-  # doesn't enforce a session id we still proceed.
-  defp mcp_initialize(url) do
-    body =
-      Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "id" => 1,
-        "method" => "initialize",
-        "params" => %{
-          "protocolVersion" => "2024-11-05",
-          "capabilities" => %{},
-          "clientInfo" => %{"name" => "fake-runner", "version" => "0.6.0"}
-        }
-      })
-
-    case http_post(url, body, []) do
-      {:ok, _status, headers, _body} ->
-        session_id =
-          case Enum.find(headers, fn {k, _} -> String.downcase(k) == "mcp-session-id" end) do
-            {_, v} -> v
-            _ -> nil
-          end
-
-        {:ok, session_id}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp send_proposals(url, proposals) do
+  defp send_proposals(mcp, proposals) do
     Enum.reduce_while(proposals, :ok, fn {tool_name, args}, _acc ->
-      case call_tool(url, tool_name, args) do
-        :ok -> {:cont, :ok}
+      case LoopbackClient.call_tool(mcp, tool_name, args) do
+        {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, {:proposal_failed, tool_name, reason}}}
       end
     end)
-  end
-
-  defp commit(url), do: call_tool(url, "commit_proposals", %{})
-
-  defp call_tool(url, tool_name, args) do
-    body =
-      Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "id" => :erlang.unique_integer([:positive]),
-        "method" => "tools/call",
-        "params" => %{"name" => tool_name, "arguments" => args}
-      })
-
-    case http_post(url, body, []) do
-      {:ok, status, _headers, _resp_body} when status in 200..299 -> :ok
-      {:ok, status, _headers, resp_body} -> {:error, {:http_error, status, resp_body}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # Plain :httpc POST. Avoids dragging in a full MCP-client lib for
-  # what's effectively a 100-line test substrate.
-  defp http_post(url, body, extra_headers) do
-    :inets.start()
-    :ssl.start()
-
-    base_headers = [
-      {~c"content-type", ~c"application/json"},
-      {~c"accept", ~c"application/json"}
-    ]
-
-    headers =
-      Enum.map(extra_headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end) ++ base_headers
-
-    request = {String.to_charlist(url), headers, ~c"application/json", body}
-
-    case :httpc.request(:post, request, [{:timeout, 30_000}], []) do
-      {:ok, {{_, status, _}, response_headers, response_body}} ->
-        decoded_headers =
-          Enum.map(response_headers, fn {k, v} -> {to_string(k), to_string(v)} end)
-
-        {:ok, status, decoded_headers, to_string(response_body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 end

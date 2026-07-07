@@ -1,5 +1,35 @@
 defmodule JidoClaw.Forge.Runners.ClaudeCode do
-  @moduledoc false
+  @moduledoc """
+  Forge runner for the Claude Code CLI (`claude -p`).
+
+  ## Executor knobs (PR-2 — defaults preserve the consolidator byte-for-byte)
+
+    * `config_sync: :full (default) | :auth_only` — `:full` syncs the host
+      `~/.claude` whitelist into `forge_home/.claude` and pins an allow-all
+      `settings.json` (today's consolidator posture, unchanged). `:auth_only`
+      builds an ISOLATED per-run config dir instead: `credentials.json` alone
+      is synced (exec-based base64 write — the transport that actually lands
+      on HostShell), a minimal non-allow-all `settings.json` is written the
+      same way, and `CLAUDE_CONFIG_DIR` is injected so claude's whole config
+      universe is the per-run dir — host settings/skills/CLAUDE.md/plugins
+      cannot bleed in (review finding P1b: HostShell inherits the allowlisted
+      `HOME`, so without the env override claude reads the operator's REAL
+      `~/.claude`; the `forge_home/.claude` file writes alone are decorative
+      there). A failed env inject fails the init CLOSED — an unisolated
+      session must not start.
+    * `access: :full (default) | :read_only` — `:full` keeps
+      `--dangerously-skip-permissions`. `:read_only` (the vendor-executor
+      posture) replaces it with a restricted `--tools` read set,
+      `--allowedTools` (read set + `allowed_mcp_tools`),
+      `--permission-mode dontAsk` (auto-deny instead of prompt-hang in
+      headless `-p`), and `--strict-mcp-config`.
+    * `allowed_mcp_tools` — full `mcp__<server>__<tool>` names appended to
+      `--allowedTools` under `:read_only` (the executor passes its deposit
+      tool).
+    * `add_dirs` — repeated `--add-dir` entries (the executor's
+      `workspace: :repo` grant; claude's cwd is the HostShell sandbox dir and
+      is not ours to set).
+  """
   @behaviour JidoClaw.Forge.Runner
   alias JidoClaw.Forge.{Runner, Sandbox}
   alias JidoClaw.Forge.Runners.FileSync
@@ -11,6 +41,11 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @syncable_entries ~w(settings.json credentials.json skills CLAUDE.md)
   @auth_file "credentials.json"
 
+  # The built-in read-tool set `access: :read_only` pins (verified against the
+  # operator-installed CLI at the PR-2 build-time smoke; PR-3's cross-vendor
+  # lane is the first production declarer).
+  @read_only_tools ~w(Read Glob Grep)
+
   @impl Runner
   def init(client, config) do
     prompt = Map.get(config, :prompt, "")
@@ -21,14 +56,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     mcp_config_path = Map.get(config, :mcp_config_path)
     thinking_effort = Map.get(config, :thinking_effort)
     forge_home = Map.get(config, :forge_home, default_forge_home())
+    config_sync = Map.get(config, :config_sync, :full)
 
-    case sync_host_claude_config(client, forge_home) do
+    case sync_host_claude_config(client, forge_home, config_sync) do
       :ok ->
-        # Ensure dangerously-skip-permissions settings are in place after the
-        # sync (the sync would have overwritten any existing settings.json).
-        settings = Jason.encode!(%{permissions: %{allow: ["*"]}})
-        Sandbox.write_file(client, "#{forge_home}/.claude/settings.json", settings)
-
         if prompt != "" do
           redacted = PromptRedaction.redact(prompt)
           Sandbox.write_file(client, "#{forge_home}/session/context.md", redacted)
@@ -44,10 +75,13 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
            timeout_ms: timeout_ms,
            mcp_config_path: mcp_config_path,
            thinking_effort: thinking_effort,
-           forge_home: forge_home
+           forge_home: forge_home,
+           access: Map.get(config, :access, :full),
+           allowed_mcp_tools: Map.get(config, :allowed_mcp_tools, []),
+           add_dirs: Map.get(config, :add_dirs, [])
          }}
 
-      {:error, :no_credentials} = err ->
+      {:error, _reason} = err ->
         err
     end
   end
@@ -60,17 +94,10 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     max_turns = Map.get(state, :max_turns) || 200
 
     args =
-      [
-        "-p",
-        redacted_prompt,
-        "--model",
-        model,
-        "--dangerously-skip-permissions",
-        "--output-format",
-        "stream-json",
-        "--max-turns",
-        Integer.to_string(max_turns)
-      ]
+      (["-p", redacted_prompt, "--model", model] ++
+         permission_args(state) ++
+         ["--output-format", "stream-json", "--max-turns", Integer.to_string(max_turns)])
+      |> append_add_dirs(state)
       |> append_mcp_config(state)
       |> append_thinking_effort(state)
 
@@ -88,6 +115,33 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
       {output, _code} -> {:ok, Runner.error("claude cli failed", output)}
     end
   end
+
+  # `:read_only` — never `--dangerously-skip-permissions`: the restricted
+  # `--tools` set is the hard floor, `--allowedTools` pre-approves that floor
+  # plus the caller's MCP tools, `dontAsk` auto-denies anything else instead
+  # of prompt-hanging headless, and `--strict-mcp-config` pins the MCP surface
+  # to the passed `--mcp-config` file alone.
+  defp permission_args(%{access: :read_only} = state) do
+    read_set = Enum.join(@read_only_tools, ",")
+    allowed = Enum.join(@read_only_tools ++ state.allowed_mcp_tools, ",")
+
+    [
+      "--tools",
+      read_set,
+      "--allowedTools",
+      allowed,
+      "--permission-mode",
+      "dontAsk",
+      "--strict-mcp-config"
+    ]
+  end
+
+  defp permission_args(_state), do: ["--dangerously-skip-permissions"]
+
+  defp append_add_dirs(args, %{add_dirs: [_ | _] = dirs}),
+    do: args ++ Enum.flat_map(dirs, &["--add-dir", &1])
+
+  defp append_add_dirs(args, _), do: args
 
   defp append_mcp_config(args, %{mcp_config_path: path}) when is_binary(path) and path != "",
     do: args ++ ["--mcp-config", path]
@@ -149,7 +203,56 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     {:ok, %{base | metadata: Map.merge(base.metadata, metadata)}}
   end
 
-  defp sync_host_claude_config(client, forge_home) do
+  # `:full` — today's consolidator posture, byte-identical: sync the host
+  # whitelist into forge_home/.claude, then pin the allow-all settings.json
+  # (the sync would have overwritten any existing one).
+  defp sync_host_claude_config(client, forge_home, :full) do
+    with :ok <- sync_full_whitelist(client, forge_home) do
+      settings = Jason.encode!(%{permissions: %{allow: ["*"]}})
+      Sandbox.write_file(client, "#{forge_home}/.claude/settings.json", settings)
+      :ok
+    end
+  end
+
+  # `:auth_only` — the isolated per-run config universe (P1b). Everything
+  # lands through exec-based writes (`FileSync`), and `CLAUDE_CONFIG_DIR` is
+  # what makes it real on HostShell: without it claude reads the operator's
+  # host `~/.claude`, so a failed inject fails the init closed.
+  defp sync_host_claude_config(client, forge_home, :auth_only) do
+    host_claude = host_claude_dir()
+    auth_path = Path.join(host_claude, @auth_file)
+    config_dir = "#{forge_home}/.claude"
+
+    cond do
+      not File.dir?(host_claude) ->
+        {:error, :no_credentials}
+
+      not File.regular?(auth_path) ->
+        {:error, :no_credentials}
+
+      true ->
+        for dir <- ["#{forge_home}/session", "#{forge_home}/templates", config_dir] do
+          Sandbox.exec(client, "mkdir -p #{dir}", [])
+        end
+
+        FileSync.sync_file(
+          client,
+          auth_path,
+          "#{config_dir}/#{@auth_file}",
+          @auth_file,
+          "ClaudeCode"
+        )
+
+        FileSync.write_content(client, "#{config_dir}/settings.json", "{}")
+
+        case Sandbox.inject_env(client, %{"CLAUDE_CONFIG_DIR" => config_dir}) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:config_isolation_failed, reason}}
+        end
+    end
+  end
+
+  defp sync_full_whitelist(client, forge_home) do
     host_claude = host_claude_dir()
     auth_path = Path.join(host_claude, @auth_file)
 

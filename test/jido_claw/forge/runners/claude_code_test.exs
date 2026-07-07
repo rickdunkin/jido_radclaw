@@ -150,6 +150,121 @@ defmodule JidoClaw.Forge.Runners.ClaudeCodeTest do
     end
   end
 
+  # Executor-seam PR-2 knobs. Defaults (covered above) preserve the
+  # consolidator byte-for-byte; these pin the vendor-executor posture —
+  # env/argv assertions, not just copied files (review finding P1b).
+  describe "executor knobs (PR-2)" do
+    setup do
+      host = make_tmpdir!("claude_host_knobs")
+      File.write!(Path.join(host, "credentials.json"), ~s({"token":"sk-test"}\n))
+      File.write!(Path.join(host, "settings.json"), ~s({"host":"settings"}))
+      File.write!(Path.join(host, "CLAUDE.md"), "# host claude md\n")
+      File.mkdir_p!(Path.join(host, "skills"))
+      File.write!(Path.join(host, "skills/host_skill.md"), "host skill\n")
+      Application.put_env(:jido_claw, :claude_home_dir, host)
+
+      forge_home = make_tmpdir!("forge_home_claude_knobs")
+
+      on_exit(fn ->
+        File.rm_rf(host)
+        File.rm_rf(forge_home)
+      end)
+
+      {:ok, host: host, forge_home: forge_home}
+    end
+
+    test "config_sync: :auth_only builds an isolated CLAUDE_CONFIG_DIR — credentials only, minimal settings, env injected",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+
+      assert {:ok, _state} =
+               ClaudeCode.init(client, %{forge_home: forge_home, config_sync: :auth_only})
+
+      config_dir = "#{forge_home}/.claude"
+
+      # The isolation is the ENV, not the copied files (P1b): claude's whole
+      # config universe becomes the per-run dir.
+      assert StubSandbox.env(client) == %{"CLAUDE_CONFIG_DIR" => config_dir}
+
+      exec_cmds = for {:exec, cmd} <- StubSandbox.events(client), do: cmd
+      sync_cmds = Enum.filter(exec_cmds, &String.contains?(&1, "base64 -d"))
+
+      # credentials.json synced (and re-tightened) + the minimal settings.json
+      # written through the SAME exec-based transport — and nothing else from
+      # the host dir crosses (no settings/skills/CLAUDE.md sync).
+      assert Enum.any?(sync_cmds, &String.contains?(&1, "#{config_dir}/credentials.json"))
+      assert Enum.any?(sync_cmds, &String.contains?(&1, "#{config_dir}/settings.json"))
+      assert "chmod 600 #{config_dir}/credentials.json" in exec_cmds
+      refute Enum.any?(exec_cmds, &String.contains?(&1, "CLAUDE.md"))
+      refute Enum.any?(exec_cmds, &String.contains?(&1, "skills"))
+
+      # The minimal settings body is exactly the exec-written "{}" — never the
+      # allow-all pin, and never a jailed Sandbox.write_file (which records a
+      # {:write, path} event / file entry on the stub).
+      settings_cmd = Enum.find(sync_cmds, &String.contains?(&1, "#{config_dir}/settings.json"))
+      assert settings_cmd =~ Base.encode64("{}")
+      assert StubSandbox.file(client, "#{config_dir}/settings.json") == nil
+    end
+
+    test "config_sync: :auth_only fails closed when the env inject is refused",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+
+      # A refused CLAUDE_CONFIG_DIR inject means claude would read the
+      # operator's REAL ~/.claude — the unisolated session must not start.
+      StubSandbox.program_inject_env(client, {:error, :inject_env_refused})
+
+      assert {:error, {:config_isolation_failed, :inject_env_refused}} =
+               ClaudeCode.init(client, %{forge_home: forge_home, config_sync: :auth_only})
+    end
+
+    test "access: :read_only pins the restricted flag set (no bypass flag); add_dirs land",
+         %{forge_home: forge_home} do
+      {:ok, client, _sid} = StubSandbox.create()
+      repo_dir = Path.join(forge_home, "repo")
+
+      {:ok, state} =
+        ClaudeCode.init(client, %{
+          forge_home: forge_home,
+          config_sync: :auth_only,
+          access: :read_only,
+          allowed_mcp_tools: ["mcp__jido_deposit__submit_structured_output"],
+          add_dirs: [repo_dir],
+          mcp_config_path: "/tmp/deposit.json",
+          prompt: "review it"
+        })
+
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = ClaudeCode.run_iteration(client, state, [])
+
+      ["claude" | args] = StubSandbox.last_run_args(client)
+
+      assert args == [
+               "-p",
+               "review it",
+               "--model",
+               "claude-sonnet-4-20250514",
+               "--tools",
+               "Read,Glob,Grep",
+               "--allowedTools",
+               "Read,Glob,Grep,mcp__jido_deposit__submit_structured_output",
+               "--permission-mode",
+               "dontAsk",
+               "--strict-mcp-config",
+               "--output-format",
+               "stream-json",
+               "--max-turns",
+               "200",
+               "--add-dir",
+               repo_dir,
+               "--mcp-config",
+               "/tmp/deposit.json"
+             ]
+
+      refute "--dangerously-skip-permissions" in args
+    end
+  end
+
   defp make_tmpdir!(prefix) do
     dir = Path.join(System.tmp_dir!(), "#{prefix}_#{:erlang.unique_integer([:positive])}")
     File.mkdir_p!(dir)

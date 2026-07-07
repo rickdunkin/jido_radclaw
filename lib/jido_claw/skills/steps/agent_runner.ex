@@ -64,13 +64,16 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   composed request transformer on the ask. Returns `{:ok, %StepResult{}}` or
   `{:error, binary()}`.
 
-  Item 7 (camus C1-1) PR-1: dispatches on the hydrated template's `:executor`
+  Item 7 (camus C1-1): dispatches on the hydrated template's `:executor`
   binding — `:in_process` (the verbatim spawn/ask/await body) or
-  `{:forge, :fake | :shell}` (`JidoClaw.Skills.Steps.ForgeExecutor`); the
-  unbuilt `{:forge, :codex | :claude_code | :custom}` kinds are refused with a
-  "not implemented until PR-2" error. A malformed `:executor` raises at
-  hydration (`Templates.get/1`), so the dispatch clauses are exhaustive over
-  the validated union.
+  `{:forge, :fake | :shell | :codex | :claude_code}`
+  (`JidoClaw.Skills.Steps.ForgeExecutor`); the unbuilt `{:forge, :custom}`
+  kind is refused with a "not implemented" error. A malformed `:executor`
+  raises at hydration (`Templates.get/1`), so the dispatch clauses are
+  exhaustive over the validated union. Vendor kinds get the gated subagent
+  system prompt (`Startup.subagent_prompt/3`) threaded to the executor as the
+  prompt prefix (PR-2 P1a — the same contract in-process workers get by
+  injection).
   """
   @spec run(String.t(), String.t(), String.t() | nil, map(), String.t() | nil, keyword()) ::
           {:ok, StepResult.t()} | {:error, binary()}
@@ -104,35 +107,34 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     run_in_process(template, template_name, task, step_name, context, catalog_stage_name, tier)
   end
 
-  # `catalog_stage_name` and `tier` are dropped on the forge arm: they steer
-  # persona injection and the per-turn request transformer, neither of which
-  # exists on this path (no in-process worker, no LLM ask).
+  # `tier` is dropped on the whole forge arm: it steers the per-turn request
+  # transformer, which doesn't exist on this path (no in-process worker, no
+  # LLM ask — a vendor step's model/effort come from `executor_config`).
+  # `catalog_stage_name` threads through (PR-2 P1a): vendor kinds resolve
+  # their per-stage persona inside the subagent prompt.
   defp dispatch_executor(
          %{executor: {:forge, kind}} = template,
          template_name,
          task,
          step_name,
          context,
-         _catalog_stage_name,
+         catalog_stage_name,
          _tier
        )
-       when kind in [:fake, :shell] do
-    run_forge(template, template_name, task, step_name, context)
+       when kind in [:fake, :shell, :codex, :claude_code] do
+    run_forge(template, template_name, task, step_name, context, catalog_stage_name)
   end
 
   defp dispatch_executor(
-         %{executor: {:forge, kind}},
+         %{executor: {:forge, :custom}},
          template_name,
          _task,
          _step_name,
          _context,
          _catalog_stage_name,
          _tier
-       )
-       when kind in [:codex, :claude_code, :custom] do
-    {:error,
-     "Step #{template_name} failed: executor {:forge, #{inspect(kind)}} " <>
-       "is not implemented until PR-2"}
+       ) do
+    {:error, "Step #{template_name} failed: executor {:forge, :custom} is not implemented"}
   end
 
   defp run_in_process(template, template_name, task, step_name, context, catalog_stage_name, tier) do
@@ -181,22 +183,24 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     end
   end
 
-  # The `{:forge, :fake | :shell}` arm. Same durable envelope as in-process —
-  # correlation BEFORE any Forge resource exists, task + terminal transcript
-  # rows via `run_recorded/6` — but no spawn/attach/inject, and the cleanup
-  # closure is a no-op: the bridge owns Forge session teardown.
-  defp run_forge(template, template_name, task, step_name, context) do
+  # The `{:forge, _}` arm. Same durable envelope as in-process — correlation
+  # BEFORE any Forge resource exists, task + terminal transcript rows via
+  # `run_recorded/6` — but no spawn/attach/inject, and the cleanup closure is
+  # a no-op: the bridge owns Forge session teardown.
+  defp run_forge(template, template_name, task, step_name, context, catalog_stage_name) do
     {_tag, tool_context} = build_tool_context(template, template_name, context, [])
 
     case JidoClaw.register_child_correlation(tool_context) do
       {:ok, request_id} ->
+        opts = forge_step_opts(template, template_name, tool_context, catalog_stage_name)
+
         run_recorded(
           tool_context,
           request_id,
           task,
           template_name,
           fn ->
-            result = ForgeExecutor.run(template_name, template, task, step_name, context)
+            result = ForgeExecutor.run(template_name, template, task, step_name, context, opts)
             publish_forge_terminal(request_id, result)
             result
           end,
@@ -207,6 +211,27 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
         {:error, "Step #{template_name} correlation failed: #{inspect(reason)}"}
     end
   end
+
+  # PR-2 P1a: ONLY vendor kinds compute the gated subagent system prompt —
+  # they have a prompt surface (the CLI argv) the in-process injection can't
+  # reach. `:fake`/`:shell` never compute it (no prompt surface — avoids the
+  # Memory/DB reads inside SubagentPrompt.build on those steps). Gate off ⇒
+  # nil ⇒ the vendor prompt starts at the task, byte-consistent with the
+  # in-process doctrine-off behavior.
+  defp forge_step_opts(
+         %{executor: {:forge, kind}},
+         template_name,
+         tool_context,
+         catalog_stage_name
+       )
+       when kind in [:codex, :claude_code] do
+    [
+      system_prompt:
+        JidoClaw.Startup.subagent_prompt(template_name, tool_context, catalog_stage_name)
+    ]
+  end
+
+  defp forge_step_opts(_template, _template_name, _tool_context, _catalog_stage_name), do: []
 
   # The forge arm has no AgentServer runtime, so IT owns the terminal signal a
   # finished in-process run's plugin bridge publishes (`ai.request.completed` /

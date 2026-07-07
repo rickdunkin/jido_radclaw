@@ -580,6 +580,70 @@ fingerprint.
 > `:needs_input` maps to a step error until PR-4's gate case; telemetry
 > counter `jido_claw.executor.total`.
 
+> **PR-2 (the Forge-backed vendor path) DONE 2026-07-06**, with corrections to
+> this entry's claims — the item-level Status and the camus C1-1 source
+> reconciliation still wait for PR-4: (a) "validates against the template's
+> output schema" is really the compile-time-normalized `%Jido.AI.Output{}`
+> from `strategy_opts()[:output]` (`Output.parse/2` — maps AND binary JSON,
+> string keys coerced), validated **in the per-step `Deposit` box** at deposit
+> time (invalid ⇒ bounded MCP `isError`, the CLI fixes and retries in-session;
+> valid ⇒ last-valid-wins); "**through #4's normalizer**" holds at
+> `DefaultMapper`'s existing lens dispatch — normalize-at-deposit is not
+> well-defined (producers have no normalize kind), so a no/invalid-deposit
+> lens stage lands `typed: nil` ⇒ `normalize(:review, %{})` ⇒ the infra lane
+> (eval-pinned: a drifted `overall` exhausts `infra_cap` into
+> `review_infra_failed`, never a verdict). Single-channel per camus OQ-1(c):
+> CLI stdout is never parsed into typed — it feeds `ARTIFACTS:` extraction
+> and the no-deposit fallback text only, and a valid deposit is ALSO the
+> transcript projection (typed summary, not raw stream-json). (b) The scoped
+> machinery generalized OUT of the consolidator rather than beside it:
+> `JidoClaw.MCP.{ScopedEndpoint, ScopedForward, LoopbackClient}` with the
+> consolidator migrated and its `MCPEndpoint`/`Plug.RunForward` deleted —
+> superseding PR-1's "`Runners.Fake` untouched" (it now rides the
+> session-aware `LoopbackClient`, which sends the `notifications/initialized`
+> the real lifecycle requires once a client echoes `mcp-session-id`). The
+> deposit tool advertises via the JSON-Schema-map schema class (the MCP-proxy
+> pass-through): the keyword `type: :map` form validates atom-keyed maps only
+> and would reject every real string-keyed CLI deposit. (c) Hardwired
+> read-only + isolation (operator decision 2): codex `-s read-only`; claude
+> `--tools Read,Glob,Grep` + `--allowedTools`(+deposit tool) +
+> `--permission-mode dontAsk` + `--strict-mcp-config`, `config_sync:
+> :auth_only` (codex auth.json alone; claude credentials-only into an
+> isolated per-run `CLAUDE_CONFIG_DIR` via exec-based writes, failing init
+> CLOSED on a refused env inject). `workspace:` hydrates `:repo` default
+> WRITTEN INTO the config (normalizing validators, P2a) with `:repo`
+> requiring `project_dir` pre-flight; `:scratch`/`:none` differ only in the
+> prompt note this wave. Vendor `timeout_ms` defaults 240s (clamped
+> 30s–600s) — deliberately under the composer's 300s wave deadline (raising
+> one means raising the other). Vendor prompts carry the FULL subagent
+> contract (P1a): `Startup.subagent_prompt/3` (same `:doctrine` master gate)
+> prepends `SubagentPrompt.build/3`, `catalog_stage_name` now threads down
+> the forge arm (stage personas hold across the executor swap), deposit
+> instruction LAST; redaction rides the runners' existing argv
+> `PromptRedaction`. Resource acquisition is a total unwinding reducer (box →
+> endpoint → forge home → client config; a partial acquisition tears down
+> exactly what it acquired). `{:forge, :custom}` stays refused at dispatch
+> (reworded — no roadmap PR named). (d) The **live smoke shipped three real
+> fixes** (the build-time-verification gate earning its keep): (i) the shared
+> client config now writes `"type": "http"` — claude ≥2.x reads a bare `url`
+> entry as legacy SSE and never connects (the consolidator's old config had
+> the bare shape); (ii) `HostShell.cli_exec_argv/2` (née `apply_ulimits/2`)
+> always wraps the CLI-runner argv with `exec "$0" "$@" </dev/null` — OsCmd's
+> port never delivers stdin EOF and `codex exec` reads piped stdin TO EOF, so
+> every codex session (consolidator's too) hung until timeout; (iii) the
+> codex `-c` inline table gained `default_tools_approval_mode="approve"` —
+> codex ≥0.142 gates MCP tool calls behind a per-server approval whose
+> default prompt is auto-cancelled headless ("user cancelled MCP tool call").
+> `CLAUDE_CONFIG_DIR` isolation proved live and total: a fresh dir reports
+> "Not logged in" on a fully-authenticated host (no fallback needed); both
+> CLIs landed real deposits through the loopback endpoint under the read-only
+> posture. Residual notes: the codex runner's `gpt-5-codex` default model is
+> rejected on ChatGPT-plan accounts (operators declare `model` in
+> `executor_config` or codex config); macOS hosts without
+> `~/.claude/credentials.json` (Keychain auth) surface `:no_credentials` —
+> the Linux/prod sync story is unit-pinned. No production template declares a
+> vendor binding (PR-3's cross-vendor lane is the first declarer).
+
 **Direction agreed 2026-07-02** (recorded in the camus doc's revision note):
 build the seam, not the pairing. One hard binding stands between the shipped
 substrate and the whole family — `AgentRunner` always spawns an in-process
@@ -597,12 +661,15 @@ contract, both vendor CLIs, and a proven headless driver (the consolidator's
    the eval harness deterministic fake-backed stages. Untouched templates stay
    byte-identical. *(Shipped as sketched plus the deviations in the note
    above; the seam lives in `Skills.Steps.ForgeExecutor`.)*
-2. **PR-2 — the Forge-backed path (M):** session provisioning per the
-   consolidator pattern; a `workspace: :repo | :scratch | :none` template
-   knob; a scoped per-run MCP endpoint whose single deposit tool
-   (`submit_structured_output`) validates against the template's output schema
-   **through #4's normalizer** — schema drift is `{:infra, _}`, never a
-   verdict. Read-only stages only in this wave.
+2. **PR-2 — the Forge-backed path (M) — DONE 2026-07-06:** session
+   provisioning per the consolidator pattern; a `workspace: :repo | :scratch
+   | :none` template knob; a scoped per-run MCP endpoint whose single deposit
+   tool (`submit_structured_output`) validates against the template's output
+   schema **through #4's normalizer** — schema drift is `{:infra, _}`, never
+   a verdict. Read-only stages only in this wave. *(Shipped as sketched plus
+   the deviations in the note above; the vendor arm lives in
+   `Skills.Steps.ForgeExecutor`, the shared scoped-MCP machinery in
+   `JidoClaw.MCP.{ScopedEndpoint, ScopedForward, LoopbackClient}`.)*
 3. **PR-3 — cross-vendor review configuration (S–M):** the invariant enforced
    at resolution — a review-lens stage whose resolved executor shares the
    implementer's vendor is *held* (fail closed, mirroring `review.sh`'s

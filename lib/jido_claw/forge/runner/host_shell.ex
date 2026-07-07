@@ -150,7 +150,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     # (mapped to exit 153 here, partial output preserved for
     # debuggability) and accepts `:infinity`, so the previous raw
     # System.cmd no-timeout clause is gone.
-    {exec, exec_args} = apply_ulimits(executable, args)
+    {exec, exec_args} = cli_exec_argv(executable, args)
 
     case OsCmd.run(exec, exec_args, cd: cwd, env: env, timeout: timeout) do
       {_partial, :timeout} -> {"", :timeout}
@@ -191,21 +191,28 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     end
   end
 
-  # Wraps an argv in a shell that applies the ulimit prelude and then
-  # `exec`s the real command: `"$0" "$@"` keeps the argv out of the
-  # shell string entirely (no escaping), and `exec` replaces the shell
-  # so the rlimits land on the command's own process — OsCmd's kill_tree
-  # walks grandchildren either way. With no ulimits configured (or no
-  # shell to wrap with) this is byte-identical pass-through. Public for
-  # the default-off pin test.
+  # Wraps a CLI runner argv (`run/4` — the claude/codex surface, never
+  # `exec/3` shell strings or OsCmd gates) in a shell that applies the
+  # opt-in ulimit prelude and then `exec`s the real command WITH STDIN
+  # REDIRECTED FROM /dev/null. The redirect is load-bearing (executor-seam
+  # PR-2 live smoke): OsCmd's port hands the child a piped stdin that never
+  # reaches EOF, and `codex exec` appends piped stdin to its prompt by
+  # reading to EOF — it blocks forever without the redirect (claude merely
+  # waits out a short stdin grace). `"$0" "$@"` keeps the argv out of the
+  # shell string entirely (no escaping, nothing parsed), and `exec`
+  # replaces the shell so rlimits land on the command's own process —
+  # OsCmd's kill_tree walks grandchildren either way. With no shell to
+  # wrap with this degrades to plain pass-through (stdin stays open — the
+  # pre-fix behavior). Public for the pin test.
   @doc false
-  @spec apply_ulimits(String.t(), [String.t()]) :: {String.t(), [String.t()]}
-  def apply_ulimits(executable, args) do
-    with prelude when prelude != "" <- ulimit_prelude(),
-         sh when is_binary(sh) <- shell_path() do
-      {sh, ["-c", prelude <> ~S(exec "$0" "$@"), executable | args]}
-    else
-      _none_configured_or_no_shell -> {executable, args}
+  @spec cli_exec_argv(String.t(), [String.t()]) :: {String.t(), [String.t()]}
+  def cli_exec_argv(executable, args) do
+    case shell_path() do
+      sh when is_binary(sh) ->
+        {sh, ["-c", ulimit_prelude() <> ~S(exec "$0" "$@" </dev/null), executable | args]}
+
+      _no_shell ->
+        {executable, args}
     end
   end
 

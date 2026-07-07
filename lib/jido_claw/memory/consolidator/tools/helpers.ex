@@ -8,6 +8,8 @@ defmodule JidoClaw.Memory.Consolidator.Tools.Helpers do
   `GenServer.call`s it with the proposal envelope.
   """
 
+  alias JidoClaw.MCP.ScopedForward
+
   @registry JidoClaw.Memory.Consolidator.RunRegistry
 
   @doc """
@@ -40,10 +42,8 @@ defmodule JidoClaw.Memory.Consolidator.Tools.Helpers do
     end
   end
 
-  defp run_id_from(%{assigns: %{consolidator_run_id: id}}) when is_binary(id), do: id
-
-  defp run_id_from(%{assigns: assigns}) when is_map(assigns),
-    do: Map.get(assigns, "consolidator_run_id")
-
-  defp run_id_from(_), do: nil
+  # Partial application of the shared both-key-shapes assigns reader (the
+  # atom key ScopedForward stamps, or the string key jido_mcp's context
+  # marshalling can downgrade it to).
+  defp run_id_from(ctx), do: ScopedForward.scope_id(ctx, :consolidator_run_id)
 end

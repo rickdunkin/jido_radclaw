@@ -44,7 +44,14 @@ defmodule JidoClaw.Test.StubSandbox do
 
     {:ok, agent} =
       Agent.start_link(fn ->
-        %{events: [], run_response: {"", 0}, exec_response: exec_response, files: %{}, env: %{}}
+        %{
+          events: [],
+          run_response: {"", 0},
+          exec_response: exec_response,
+          files: %{},
+          env: %{},
+          inject_env_response: :ok
+        }
       end)
 
     {:ok, %__MODULE__{agent_pid: agent}, "stub-#{:erlang.unique_integer([:positive])}"}
@@ -85,6 +92,16 @@ defmodule JidoClaw.Test.StubSandbox do
   @spec program_exec(%__MODULE__{}, term()) :: :ok
   def program_exec(%__MODULE__{agent_pid: pid}, response),
     do: Agent.update(pid, fn s -> %{s | exec_response: response} end)
+
+  @doc """
+  Program the return value of `inject_env/2` (default `:ok`). A non-`:ok`
+  response is returned without recording — drives a runner's env-injection
+  fail-closed path when the runner (not the caller) owns the env map, where
+  the magic `fail_inject_env_key/0` can't reach.
+  """
+  @spec program_inject_env(%__MODULE__{}, term()) :: :ok
+  def program_inject_env(%__MODULE__{agent_pid: pid}, response),
+    do: Agent.update(pid, fn s -> %{s | inject_env_response: response} end)
 
   @doc "Return the most recent recorded `run/4` argv."
   @spec last_run_args(%__MODULE__{}) :: list() | nil
@@ -141,15 +158,21 @@ defmodule JidoClaw.Test.StubSandbox do
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def inject_env(%__MODULE__{agent_pid: pid}, env_map) do
     env = Map.new(env_map, fn {k, v} -> {to_string(k), to_string(v)} end)
+    programmed = Agent.get(pid, fn s -> s.inject_env_response end)
 
-    if Map.has_key?(env, @fail_inject_env_key) do
-      {:error, :inject_env_refused}
-    else
-      Agent.update(pid, fn s ->
-        %{s | env: Map.merge(s.env, env), events: [{:inject_env, env_map} | s.events]}
-      end)
+    cond do
+      Map.has_key?(env, @fail_inject_env_key) ->
+        {:error, :inject_env_refused}
 
-      :ok
+      programmed != :ok ->
+        programmed
+
+      true ->
+        Agent.update(pid, fn s ->
+          %{s | env: Map.merge(s.env, env), events: [{:inject_env, env_map} | s.events]}
+        end)
+
+        :ok
     end
   end
 

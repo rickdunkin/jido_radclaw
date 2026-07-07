@@ -560,12 +560,11 @@ defmodule JidoClaw.Agent.TemplatesTest do
       end)
     end
 
-    test "the unbuilt kinds hydrate (full five-kind union) — dispatch refuses them, not hydration" do
-      for kind <- [:codex, :claude_code, :custom] do
-        with_template_override("exec_unbuilt", exec_template(executor: {:forge, kind}), fn ->
-          assert {:ok, %{executor: {:forge, ^kind}}} = Templates.get("exec_unbuilt")
-        end)
-      end
+    test ":custom hydrates — dispatch refuses it, not hydration" do
+      with_template_override("exec_unbuilt", exec_template(executor: {:forge, :custom}), fn ->
+        assert {:ok, %{executor: {:forge, :custom}, executor_config: %{}}} =
+                 Templates.get("exec_unbuilt")
+      end)
     end
 
     test "a {:forge, _} executor refuses a sandboxed template (combo rule)" do
@@ -586,6 +585,111 @@ defmodule JidoClaw.Agent.TemplatesTest do
           Templates.get("exec_cfg")
         end
       end)
+    end
+  end
+
+  # Executor-seam PR-2: the vendor `executor_config` surface. P2a — the
+  # normalizing return path: the `workspace: :repo` default is WRITTEN INTO
+  # the hydrated config, not just implied by a reader-side fallback.
+  describe "vendor executor_config hydration (item 7, camus C1-1 PR-2)" do
+    test "vendor kinds with %{} hydrate workspace: :repo into the config (P2a)" do
+      for kind <- [:codex, :claude_code] do
+        with_template_override("exec_vendor", exec_template(executor: {:forge, kind}), fn ->
+          assert {:ok, %{executor: {:forge, ^kind}, executor_config: %{workspace: :repo}}} =
+                   Templates.get("exec_vendor")
+        end)
+      end
+    end
+
+    test "every workspace enum value is accepted and preserved" do
+      for workspace <- [:repo, :scratch, :none] do
+        template =
+          exec_template(executor: {:forge, :codex}, executor_config: %{workspace: workspace})
+
+        with_template_override("exec_vendor", template, fn ->
+          assert {:ok, %{executor_config: %{workspace: ^workspace}}} =
+                   Templates.get("exec_vendor")
+        end)
+      end
+    end
+
+    test "the full optional key surface hydrates unchanged" do
+      config = %{
+        workspace: :scratch,
+        model: "gpt-5-codex",
+        thinking_effort: "high",
+        max_turns: 10,
+        timeout_ms: 120_000
+      }
+
+      template = exec_template(executor: {:forge, :codex}, executor_config: config)
+
+      with_template_override("exec_vendor", template, fn ->
+        assert {:ok, %{executor_config: ^config}} = Templates.get("exec_vendor")
+      end)
+    end
+
+    test "a bad workspace raises with the expected enum" do
+      template = exec_template(executor: {:forge, :codex}, executor_config: %{workspace: :rpeo})
+
+      with_template_override("exec_vendor", template, fn ->
+        assert_raise ArgumentError, ~r/expected :repo \| :scratch \| :none/, fn ->
+          Templates.get("exec_vendor")
+        end
+      end)
+    end
+
+    test "bad optional values raise — present keys are strict" do
+      bad_configs = [
+        %{model: ""},
+        %{model: nil},
+        %{thinking_effort: :high},
+        %{max_turns: 0},
+        %{max_turns: "40"},
+        %{timeout_ms: -1}
+      ]
+
+      for config <- bad_configs do
+        template = exec_template(executor: {:forge, :claude_code}, executor_config: config)
+
+        with_template_override("exec_vendor", template, fn ->
+          assert_raise ArgumentError, ~r/invalid :executor_config/, fn ->
+            Templates.get("exec_vendor")
+          end
+        end)
+      end
+    end
+
+    test "unknown keys raise — deliberately NO access/sandbox knobs this wave" do
+      for config <- [%{access: :read_only}, %{sandbox: :local}, %{workspce: :repo}] do
+        template = exec_template(executor: {:forge, :codex}, executor_config: config)
+
+        with_template_override("exec_vendor", template, fn ->
+          assert_raise ArgumentError, ~r/unknown :executor_config keys/, fn ->
+            Templates.get("exec_vendor")
+          end
+        end)
+      end
+    end
+
+    test "a workspace key on any NON-vendor kind raises" do
+      non_vendor = [
+        exec_template(executor_config: %{workspace: :repo}),
+        exec_template(executor: {:forge, :fake}, executor_config: %{workspace: :repo}),
+        exec_template(
+          executor: {:forge, :shell},
+          executor_config: %{command: "true", workspace: :repo}
+        ),
+        exec_template(executor: {:forge, :custom}, executor_config: %{workspace: :repo})
+      ]
+
+      for template <- non_vendor do
+        with_template_override("exec_nonvendor", template, fn ->
+          assert_raise ArgumentError, ~r/only valid on \{:forge, :codex \| :claude_code\}/, fn ->
+            Templates.get("exec_nonvendor")
+          end
+        end)
+      end
     end
   end
 
