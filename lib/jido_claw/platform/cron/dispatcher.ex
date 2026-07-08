@@ -48,22 +48,29 @@ defmodule JidoClaw.Cron.Dispatcher do
   end
 
   # Lifted verbatim from the former Worker.execute_job/1 `:isolated` arm.
+  # `clarify: :one_shot` (queue item 8): a fresh per-tick session could never
+  # answer a parked question round.
   defp run_agent(%{mode: :isolated} = state) do
     session_id = "cron_#{state.id}_#{System.system_time(:second)}"
 
     JidoClaw.chat(state.tenant_id, session_id, state.task,
       kind: :cron,
       external_id: session_id,
-      actor: Actor.system(state.tenant_id)
+      actor: Actor.system(state.tenant_id),
+      clarify: :one_shot
     )
   end
 
-  # Lifted verbatim from the former `:main` arm.
+  # Lifted verbatim from the former `:main` arm. `clarify: :one_shot` here
+  # too, DESPITE the stable session (`state.agent_id` is reused every tick):
+  # nobody attends a cron session, and the next scheduled task must never be
+  # read as an answer to a parked question round.
   defp run_agent(state) do
     JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
       kind: :cron,
       external_id: state.agent_id,
-      actor: Actor.system(state.tenant_id)
+      actor: Actor.system(state.tenant_id),
+      clarify: :one_shot
     )
   end
 

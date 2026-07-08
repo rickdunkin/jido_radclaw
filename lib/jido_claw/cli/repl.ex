@@ -538,6 +538,8 @@ defmodule JidoClaw.CLI.Repl do
     # REPL agent path (`dispatch_inline/4`, byte-for-byte unchanged); `code`/`system`
     # divert to a durable composer run and NEVER reach the inline agent (P1). REPL
     # turns are unauthenticated, so `user_id` is nil and the actor is system-bound.
+    # The REPL is the canonical attended `:loop` surface (queue item 8): a
+    # parked clarify question round is answered by the next prompt.
     front_door_ctx = %{
       tenant_id: state.tenant_id,
       session_id: state.session_id,
@@ -548,7 +550,8 @@ defmodule JidoClaw.CLI.Repl do
       user_id: nil,
       actor: Actor.system(state.tenant_id),
       agent_id: routed_agent_id,
-      agent_template: routed_template
+      agent_template: routed_template,
+      clarify_surface: :loop
     }
 
     case FrontDoor.decide(message, front_door_ctx) do
@@ -564,27 +567,47 @@ defmodule JidoClaw.CLI.Repl do
         # Render the composer ack (launched or failed-to-start) and persist it as
         # the assistant turn; the inline mutation-capable agent is never invoked.
         # Mark any handoff preamble consumed so it doesn't replay next turn (P2).
-        Display.stop_thinking()
-        Formatter.print_answer(resp.message)
-
-        HandoffRouter.mark_preamble_consumed_on_success(
-          state.tenant_id,
-          state.session_id,
-          routed_template,
-          first_post_handoff?,
-          {:ok, resp.message}
-        )
-
-        Worker.add_message(
-          state.tenant_id,
-          state.session_id,
-          :assistant,
+        render_front_door_ack(
           resp.message,
-          request_id
+          request_id,
+          state,
+          {routed_template, first_post_handoff?}
         )
 
-        state
+      {:clarify, resp} ->
+        # A clarify round (questions/recap/hold): no run minted — render +
+        # persist the ack exactly like a composer ack.
+        render_front_door_ack(
+          resp.message,
+          request_id,
+          state,
+          {routed_template, first_post_handoff?}
+        )
     end
+  end
+
+  # Shared composer/clarify ack rendering for the REPL turn.
+  defp render_front_door_ack(message, request_id, state, {routed_template, first_post_handoff?}) do
+    Display.stop_thinking()
+    Formatter.print_answer(message)
+
+    HandoffRouter.mark_preamble_consumed_on_success(
+      state.tenant_id,
+      state.session_id,
+      routed_template,
+      first_post_handoff?,
+      {:ok, message}
+    )
+
+    Worker.add_message(
+      state.tenant_id,
+      state.session_id,
+      :assistant,
+      message,
+      request_id
+    )
+
+    state
   end
 
   # Today's inline REPL dispatch, gated behind the front door (only a `talk`/

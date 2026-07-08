@@ -60,6 +60,7 @@ defmodule JidoClaw.Conversations.Session do
     define(:set_path_transitions, action: :set_path_transitions, args: [:transitions])
     define(:set_oscillation_marker, action: :set_oscillation_marker, args: [:at])
     define(:set_pending_prototype, action: :set_pending_prototype, args: [:candidate])
+    define(:set_pending_clarify, action: :set_pending_clarify, args: [:pending])
     define(:active_for_workspace, action: :active_for_workspace, args: [:workspace_id])
     define(:list, action: :read)
     define(:list_open_for_workspaces_global, args: [:workspace_ids])
@@ -216,6 +217,20 @@ defmodule JidoClaw.Conversations.Session do
       argument(:candidate, :map, allow_nil?: true)
 
       change({__MODULE__.Changes.SetMetadataKey, key: "pending_prototype", argument: :candidate})
+    end
+
+    # Queue item 8 (OB1-1) durable clarify-loop state under
+    # `metadata["pending_clarify"]` (the `Clarify.State` wire map). Set on an
+    # open turn and re-set each continue round; CLEARED (nil → delete branch)
+    # on compose, override-with-no-open-items, new-ask pivot, lazy expiry, or
+    # a `:one_shot` surface. `allow_nil?: true` so the clear path is live.
+    # Unlike the observability keys, the front door checks THIS write's result
+    # (functional loop state — never routed through `safe_write/1`).
+    update :set_pending_clarify do
+      accept([])
+      argument(:pending, :map, allow_nil?: true)
+
+      change({__MODULE__.Changes.SetMetadataKey, key: "pending_clarify", argument: :pending})
     end
 
     read :active_for_workspace do

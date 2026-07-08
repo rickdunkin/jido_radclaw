@@ -90,6 +90,13 @@ defmodule JidoClaw do
     * `:composer_ack` — `:detailed` opts into the structural return shapes
       documented on `run_chat_turn` (route/status/run_id); default returns
       the historical plain `{:ok, binary}` for every route.
+    * `:clarify` — `:loop` or `:one_shot`: the surface's clarify capability
+      (queue item 8). `:loop` lets an ambiguous `code`/`system` turn park a
+      question round in the session and continue it next turn; `:one_shot`
+      never parks — an ambiguous build composes immediately with degraded
+      labeling. Absent, it derives from `:kind` (`:cron`/`:api` ⇒
+      `:one_shot`, else `:loop`) so bare programmatic callers never park
+      questions; a stable external client opts into `:loop` explicitly.
   """
   @spec chat(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, String.t() | map()} | {:error, term()}
@@ -376,19 +383,15 @@ defmodule JidoClaw do
       user_id: user_id,
       actor: actor,
       agent_id: routed_agent_id,
-      agent_template: routed_template
+      agent_template: routed_template,
+      clarify_surface: clarify_surface(opts)
     }
+
+    relay = {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
 
     case FrontDoor.decide(message, front_door_ctx) do
       {:inline, _verdict} ->
-        inline_ack =
-          dispatch_inline(
-            routed_pid,
-            preamble <> message,
-            tool_context,
-            {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
-          )
-
+        inline_ack = dispatch_inline(routed_pid, preamble <> message, tool_context, relay)
         shape_inline_ack(inline_ack, opts)
 
       {:composer, {status, resp}} ->
@@ -396,18 +399,40 @@ defmodule JidoClaw do
         # the assistant response and never touch the inline agent (P1). The divert
         # creates no tool/reasoning rows under this request_id, so the assistant row
         # has nothing to order against — no Recorder.flush barrier needed (P2).
-        ack = {:ok, resp.message}
-
-        HandoffRouter.mark_preamble_consumed_on_success(
-          tenant_id,
-          session_id,
-          routed_template,
-          first_post_handoff?,
-          ack
-        )
-
-        SessionWorker.add_message(tenant_id, session_id, :assistant, resp.message, request_id)
+        relay_front_door_ack(resp.message, relay)
         shape_composer_ack(status, resp, opts)
+
+      {:clarify, resp} ->
+        # A clarify round (questions / recap / hold / failure ack): no run
+        # minted, no tool rows — same relay mechanics as the composer acks.
+        relay_front_door_ack(resp.message, relay)
+        shape_clarify_ack(resp, opts)
+    end
+  end
+
+  # Shared composer/clarify ack relay: mark any handoff preamble consumed and
+  # persist the ack as the assistant turn.
+  defp relay_front_door_ack(message, relay) do
+    {tenant_id, session_id, request_id, routed_template, first_post_handoff?} = relay
+
+    HandoffRouter.mark_preamble_consumed_on_success(
+      tenant_id,
+      session_id,
+      routed_template,
+      first_post_handoff?,
+      {:ok, message}
+    )
+
+    SessionWorker.add_message(tenant_id, session_id, :assistant, message, request_id)
+  end
+
+  # The surface's clarify capability (queue item 8): explicit opt wins; absent
+  # derives from `:kind` — unattended kinds never park questions.
+  defp clarify_surface(opts) do
+    case Keyword.get(opts, :clarify) do
+      :loop -> :loop
+      :one_shot -> :one_shot
+      _absent -> if Keyword.get(opts, :kind) in [:cron, :api], do: :one_shot, else: :loop
     end
   end
 
@@ -420,6 +445,8 @@ defmodule JidoClaw do
   #                          run_id: parent_run_id, message: msg}}`
   #   * composer no-start → `{:ok, %{route: :composer, status: :failed_to_start,
   #                          run_id: nil, message: msg}}`
+  #   * clarify round    → `{:ok, %{route: :clarify, status: :pending,
+  #                          run_id: nil, message: msg}}` (queue item 8)
   #
   # The default (opt absent) stays byte-identical `{:ok, binary}` for every
   # route — cron's auto-disable-after-3-failures and the web/discord surfaces
@@ -437,15 +464,20 @@ defmodule JidoClaw do
   defp shape_inline_ack(other, _opts), do: other
 
   defp shape_composer_ack(:ok, resp, opts),
-    do: composer_ack(opts, resp.message, :launched, resp.parent_run_id)
+    do: shaped_ack(opts, :composer, :launched, resp.parent_run_id, resp.message)
 
   defp shape_composer_ack(:error, resp, opts),
-    do: composer_ack(opts, resp.message, :failed_to_start, nil)
+    do: shaped_ack(opts, :composer, :failed_to_start, nil, resp.message)
 
-  # The single construction site of the detailed composer-ack map.
-  defp composer_ack(opts, message, status, run_id) do
+  # Clarify rounds are `:pending` with no run — the one-shot CLI runner maps
+  # this to its exit-3 human-input family. Default stays `{:ok, binary}` so
+  # web/discord/cron shapes are untouched.
+  defp shape_clarify_ack(resp, opts), do: shaped_ack(opts, :clarify, :pending, nil, resp.message)
+
+  # The single construction site of the detailed ack map (composer + clarify).
+  defp shaped_ack(opts, route, status, run_id, message) do
     if detailed_ack?(opts) do
-      {:ok, %{route: :composer, status: status, run_id: run_id, message: message}}
+      {:ok, %{route: route, status: status, run_id: run_id, message: message}}
     else
       {:ok, message}
     end

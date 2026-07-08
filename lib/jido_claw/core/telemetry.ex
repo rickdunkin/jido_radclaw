@@ -102,6 +102,14 @@ defmodule JidoClaw.Telemetry do
       # carry the per-question detail.
       counter("jido_claw.needs_input.total", tags: [:event, :outcome]),
 
+      # Ambiguity clarify loop (item 8, OB1-1) — one count per lane event:
+      # `event` is :open/:round/:hold/:compose/:scorer_failed/:persist_failed/
+      # :new_ask/:expired/:one_shot_cleared; `outcome` qualifies it (:ok,
+      # :clean/:degraded/:override/:one_shot_degraded/:launch_failed on
+      # :compose, :scorer_failed/:persist_failed on :open, :clear_failed on
+      # the lazy clears). The Trace `:guardrail` events carry the same pairs.
+      counter("jido_claw.clarify.total", tags: [:event, :outcome]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose
@@ -304,6 +312,15 @@ defmodule JidoClaw.Telemetry do
   def emit_needs_input(event, outcome) do
     :telemetry.execute(
       [:jido_claw, :needs_input],
+      %{total: 1},
+      %{event: event, outcome: outcome}
+    )
+  end
+
+  @spec emit_clarify(atom(), atom()) :: :ok
+  def emit_clarify(event, outcome) do
+    :telemetry.execute(
+      [:jido_claw, :clarify],
       %{total: 1},
       %{event: event, outcome: outcome}
     )

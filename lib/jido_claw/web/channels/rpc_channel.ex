@@ -82,11 +82,14 @@ defmodule JidoClaw.Web.RpcChannel do
     user_id = socket.assigns.current_user.id
     actor = socket.assigns[:current_actor]
 
+    # `clarify: :loop` — a live human on a stable session can answer a parked
+    # question round next message (queue item 8).
     case JidoClaw.chat(tenant_id, session_id, content,
            kind: :web_rpc,
            external_id: session_id,
            user_id: user_id,
-           actor: actor
+           actor: actor,
+           clarify: :loop
          ) do
       {:ok, response} ->
         push(socket, "session.response", %{session_id: session_id, content: response})

@@ -62,7 +62,7 @@ re-verify at build time).
 | 5 | B | Deterministic verify authority + sealed heads — ✅ DONE 2026-07-05 | camus C1-2 + C1-6(a) | M | 2 commits (verify stage / commit facts) |
 | 6 | B | Honest terminal statuses + stall detection — ✅ DONE 2026-07-06 | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
 | 7 | B | Executor seam (cross-vendor review first config) — ✅ DONE 2026-07-07 | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
-| 8 | C | Ambiguity clarify loop | ouroboros OB1-1 | S–M | Single PR |
+| 8 | C | Ambiguity clarify loop — ✅ DONE 2026-07-07 | ouroboros OB1-1 | S–M | Single PR |
 | 9 | C | Structured premises: acceptance criteria + lint | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
 | 10 | C | Evidence floor (claims vs transcript) | ouroboros OB1-3 (+ camus C1-6c) | M | 2–3 commits |
 
@@ -804,7 +804,42 @@ next to an in-process spawn — template-level opt-in keeps the choice deliberat
 (right for a handful of review/plan stages per run, wrong for high-frequency
 stages).
 
-## 8. Ambiguity clarify loop — S–M (ouroboros OB1-1)
+## 8. Ambiguity clarify loop — S–M (ouroboros OB1-1) — ✅ DONE 2026-07-07
+
+> **Done 2026-07-07** (system page:
+> [ambiguity-clarify](../../system/ambiguity-clarify.md); port semantics map —
+> the repo's first — [PORT-OB1-1](../../exploration/ouroboros/PORT-OB1-1.md)),
+> with corrections/refinements to this entry's claims (mirrored into the source
+> entries — ouroboros OB1-1, orca OR2-5): (a) plan point 2's "greenfield
+> weights, brownfield adds context and rebalances" became **brownfield-4-dim
+> always** (operator decision: this platform always operates on an existing
+> repo; context clarity scores over the WHOLE conversation evidence, and
+> repo-discoverable gaps are marked assumable, never blocking questions) — the
+> greenfield trio is ported documented-but-unused for fidelity. (b) Point 4's
+> "on operator override or round cap, compose degraded" needed sharper cap
+> semantics: at the cap a **required** unknown HOLDS for the explicit
+> accept-assumptions ack (the OR2-5 gate — never auto-compose past it); only
+> all-assumable items auto-compose degraded, and an override after a
+> qualifying score with zero open items composes CLEAN. (c) The entry never
+> asked which surfaces can loop: `chat/4` grew an explicit
+> `clarify: :loop | :one_shot` capability opt (kind-derived fallback), and the
+> subtle case is **main cron** — its session is STABLE (reused every tick),
+> so a `:one_shot` turn must not just skip opening loops, it must CLEAR a live
+> pending one rather than read the next scheduled task as an answer. (d) Two
+> review findings hardened the build beyond the entry: `pending_clarify` is
+> functional state with **result-checked writes** (never the front door's
+> fail-open `safe_write/1` — open-turn persist failure falls back to the
+> standard composer), and clarify answers can introduce secrets AFTER triage's
+> `:secrets` signal was decided — every lane entry redacts
+> (`redact_with_count/1`) before scoring/persist and a sticky sensitive bit
+> ORs into `mark_sensitive`. (e) `Verdict` needed a real wire-form inverse
+> (`to_map/1` via inverse whitelists — `to_string/1` would silently drop
+> hyphenated signals on reload). (f) Plan point 1's "2–4 questions/round"
+> shipped instead as the source's own cadence — one question per round (cap
+> 12, the `auto` pipeline's): every answer re-folds the ledger and re-orders
+> what to ask next, which denser rounds would forfeit. Exit contract: the
+> one-shot CLI maps a parked round to exit 3 / `:clarify_pending` (the OQ-4
+> human-input family).
 
 The cheapest high-leverage start in the ouroboros doc: triage's `ambiguous`
 early signal is defined (`triage/prompt.ex:53`), mapped (`front_door.ex:95`),

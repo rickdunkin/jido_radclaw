@@ -65,6 +65,12 @@ defmodule JidoClaw.Triage.Verdict do
 
   @sizes %{"XS" => :xs, "S" => :s, "M" => :m, "L" => :l, "XL" => :xl, "XXL" => :xxl}
 
+  # Inverse whitelists for `to_map/1` — derived from the same tables so the two
+  # directions can never drift.
+  @paths_to_wire Map.new(@paths, fn {wire, atom} -> {atom, wire} end)
+  @signals_to_wire Map.new(@signals, fn {wire, atom} -> {atom, wire} end)
+  @sizes_to_wire Map.new(@sizes, fn {wire, atom} -> {atom, wire} end)
+
   @doc "The fail-safe verdict: `talk`, optionally carrying a distilled `intent`."
   @spec talk(String.t() | nil) :: t()
   def talk(intent \\ nil), do: %__MODULE__{path: :talk, intent: intent}
@@ -106,6 +112,28 @@ defmodule JidoClaw.Triage.Verdict do
   end
 
   def from_map(_other), do: {:error, :invalid_verdict}
+
+  @doc """
+  The exact inverse of `from_map/1`: a string-keyed, JSON-safe map in **wire**
+  vocabulary, so `from_map(to_map(v)) == {:ok, v}`.
+
+  Enum fields go through the inverse whitelists — never `to_string/1`, which
+  would emit `"significant_build"` for `:significant_build` and the hyphenated
+  wire whitelist would then silently DROP the signal on reload. Used to persist
+  a verdict inside `metadata["pending_clarify"]` across clarify turns.
+  """
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = verdict) do
+    %{
+      "path" => Map.fetch!(@paths_to_wire, verdict.path),
+      "signals" => Enum.map(verdict.signals, &Map.fetch!(@signals_to_wire, &1)),
+      "est_size" => verdict.est_size && Map.fetch!(@sizes_to_wire, verdict.est_size),
+      "intent" => verdict.intent,
+      "intent_confirmed" => verdict.intent_confirmed?,
+      "multi_plan" => verdict.multi_plan?,
+      "reasons" => verdict.reasons
+    }
+  end
 
   # Atom key wins, else string key (the projection.ex idiom) — tolerates both the
   # string-keyed JSON `generate_object` returns and atom-keyed synthetic test maps.

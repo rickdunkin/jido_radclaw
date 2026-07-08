@@ -152,6 +152,46 @@ defmodule JidoClaw.TriageTest do
   end
 
   # ===========================================================================
+  # Verdict.to_map/1 — the pending_clarify wire form (inverse of from_map/1)
+  # ===========================================================================
+
+  describe "Verdict.to_map/1" do
+    test "round-trips every field, including hyphenated wire signals" do
+      verdict = %Verdict{
+        path: :code,
+        signals: [:significant_build, :auth_surface, :must_execute, :bug],
+        est_size: :xl,
+        intent: "build the thing",
+        intent_confirmed?: true,
+        multi_plan?: true,
+        reasons: %{"path" => "explicit ask"}
+      }
+
+      map = Verdict.to_map(verdict)
+
+      # WIRE strings, never `to_string/1` of the atom — "significant_build"
+      # would be silently dropped by from_map's whitelist on reload.
+      assert "significant-build" in map["signals"]
+      assert "auth-surface" in map["signals"]
+      assert "must-execute" in map["signals"]
+      assert map["est_size"] == "XL"
+
+      assert {:ok, ^verdict} = Verdict.from_map(map)
+    end
+
+    test "round-trips the fail-safe talk verdict (nil est_size/intent)" do
+      verdict = Verdict.talk()
+      assert {:ok, ^verdict} = Verdict.from_map(Verdict.to_map(verdict))
+    end
+
+    test "is JSON-safe: string keys throughout, Jason-encodable" do
+      map = Verdict.to_map(%Verdict{path: :system, signals: [:secrets]})
+      assert Enum.all?(Map.keys(map), &is_binary/1)
+      assert {:ok, _} = Jason.encode(map)
+    end
+  end
+
+  # ===========================================================================
   # Triage.LLM — unwraps the response object, never self-coerces
   # ===========================================================================
 

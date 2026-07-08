@@ -257,6 +257,72 @@ defmodule JidoClaw.CLI.RunCommandTest do
     end
   end
 
+  describe "clarify route (queue item 8)" do
+    test "a parked question round exits 3 with :clarify_pending and no run", ctx do
+      saved = Application.fetch_env(:jido_claw, :clarify_generate)
+
+      on_exit(fn ->
+        case saved do
+          :error -> Application.delete_env(:jido_claw, :clarify_generate)
+          {:ok, value} -> Application.put_env(:jido_claw, :clarify_generate, value)
+        end
+      end)
+
+      Application.put_env(:jido_claw, :triage_canned_verdict, %JidoClaw.Triage.Verdict{
+        path: :code,
+        signals: [:ambiguous],
+        intent: "make it faster"
+      })
+
+      object = %{
+        "classification" => "answers",
+        "clarity" => %{
+          "goal" => 0.4,
+          "constraints" => 0.4,
+          "success_criteria" => 0.4,
+          "context" => 0.5
+        },
+        "ambiguity" => 0.6,
+        "updated_intent" => nil,
+        "ledger" => [
+          %{
+            "question" => "faster at what?",
+            "recommended_default_assumption" => "p95 latency",
+            "user_input_required" => true,
+            "status" => "open"
+          }
+        ]
+      }
+
+      Application.put_env(:jido_claw, :clarify_generate, fn _input, _schema, _opts ->
+        {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object}}
+      end)
+
+      assert {3, output} = main(["make it faster", ctx.tmp, "--format", "json"])
+
+      decoded = decode!(output)
+      assert decoded["exit_code"] == 3
+      assert decoded["route"] == "clarify"
+      assert decoded["outcome"] == "clarify_pending"
+      assert decoded["message"] =~ "faster at what?"
+      assert decoded["run_id"] == nil
+      assert decoded["pending_cases"] == []
+      # The printed session id is how `--session` answers the questions.
+      assert is_binary(decoded["session_id"])
+
+      # Text mode carries the questions + the session line.
+      Application.put_env(:jido_claw, :triage_canned_verdict, %JidoClaw.Triage.Verdict{
+        path: :code,
+        signals: [:ambiguous],
+        intent: "make it faster"
+      })
+
+      assert {3, text} = main(["make it faster too", ctx.tmp])
+      assert text =~ "faster at what?"
+      assert text =~ "session: "
+    end
+  end
+
   describe "composer route" do
     defp stamp_when_launched(status, extra_attrs \\ %{}) do
       actor = Actor.system("default")

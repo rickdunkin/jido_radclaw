@@ -35,7 +35,7 @@ defmodule JidoClaw.ChatComposerAckTest do
       Map.new(
         ~w(triage_impl triage_canned_verdict ask_runtime dispatch_capture_target
            dispatch_capture_response front_door_composer
-           front_door_create_mode front_door_ensure_mode)a,
+           front_door_create_mode front_door_ensure_mode clarify_generate)a,
         &{&1, Application.fetch_env(:jido_claw, &1)}
       )
 
@@ -117,6 +117,88 @@ defmodule JidoClaw.ChatComposerAckTest do
                chat(ctx, "refactor the parser", composer_ack: :detailed)
 
       assert is_binary(message)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Clarify route (queue item 8) — the {:clarify, resp} shapes + opt threading
+  # ---------------------------------------------------------------------------
+
+  defp arm_ambiguous_clarify do
+    Application.put_env(:jido_claw, :triage_canned_verdict, %JidoClaw.Triage.Verdict{
+      path: :code,
+      signals: [:ambiguous],
+      intent: "make it faster"
+    })
+
+    object = %{
+      "classification" => "answers",
+      "clarity" => %{
+        "goal" => 0.4,
+        "constraints" => 0.4,
+        "success_criteria" => 0.4,
+        "context" => 0.5
+      },
+      "ambiguity" => 0.6,
+      "updated_intent" => nil,
+      "ledger" => [
+        %{
+          "question" => "faster at what?",
+          "recommended_default_assumption" => "p95 latency",
+          "user_input_required" => true,
+          "status" => "open"
+        }
+      ]
+    }
+
+    Application.put_env(:jido_claw, :clarify_generate, fn _input, _schema, _opts ->
+      {:ok, %ReqLLM.Response{id: "t", model: "t", context: nil, object: object}}
+    end)
+  end
+
+  describe "clarify route (queue item 8)" do
+    test "default returns plain {:ok, binary} carrying the question round", ctx do
+      arm_ambiguous_clarify()
+
+      assert {:ok, message} = chat(ctx, "make it faster")
+      assert message =~ "faster at what?"
+      assert message =~ "proceed with defaults"
+      assert composer_runs(ctx) == []
+    end
+
+    test "detailed returns the :clarify pending shape with nil run_id", ctx do
+      arm_ambiguous_clarify()
+
+      assert {:ok, %{route: :clarify, status: :pending, run_id: nil, message: message}} =
+               chat(ctx, "make it faster", composer_ack: :detailed)
+
+      assert message =~ "faster at what?"
+    end
+
+    test "clarify: :one_shot forces the immediate degraded compose", ctx do
+      arm_ambiguous_clarify()
+
+      assert {:ok, %{route: :composer, status: :launched, run_id: run_id}} =
+               chat(ctx, "make it faster", composer_ack: :detailed, clarify: :one_shot)
+
+      assert Enum.any?(composer_runs(ctx), &(&1.id == run_id))
+    end
+
+    test "absent opt derives from :kind — :api never parks questions", ctx do
+      arm_ambiguous_clarify()
+
+      # A fresh session id: kind is part of the durable identity, and a live
+      # runtime worker refuses to re-point its session_uuid.
+      api_sid = "api-clarify-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %{route: :composer, status: :launched}} =
+               JidoClaw.chat(ctx.tenant_id, api_sid, "make it faster",
+                 kind: :api,
+                 workspace_id: ctx.tmp,
+                 external_id: api_sid,
+                 actor: ctx.actor,
+                 composer_ack: :detailed
+               )
     end
   end
 end

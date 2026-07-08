@@ -46,10 +46,13 @@ defmodule JidoClaw.Channel.Discord do
     # Route to agent session
     session_id = "discord_#{normalized.channel_id}"
 
+    # `clarify: :loop` — a Discord channel is a stable conversational session
+    # whose humans can answer a parked question round (queue item 8).
     case JidoClaw.chat("default", session_id, normalized.text,
            kind: :discord,
            external_id: session_id,
-           actor: Actor.system("default")
+           actor: Actor.system("default"),
+           clarify: :loop
          ) do
       {:ok, response} ->
         send_message(normalized.channel_id, response, state)

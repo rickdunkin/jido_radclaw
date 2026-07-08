@@ -20,6 +20,15 @@ defmodule JidoClaw.FrontDoor do
       agent, which would write the real tree. The AR-8b-2 C2 **oscillation
       debounce** (a `sketch ⇄ code` flip-flop) also returns this tag with a "re-send
       to confirm" ack — no run is minted, and the re-send proceeds.
+    * `{:clarify, resp}` — queue item 8 (OB1-1): an `ambiguous` `code`/`system`
+      verdict on a `:loop` surface entered the bounded clarify loop instead of
+      composing; `resp.message` is a question round / recap / hold / failure ack
+      and **no run is minted**. The loop's durable state lives under
+      `metadata["pending_clarify"]`; the next turn on a `:loop` surface continues
+      it (answers fold in, the ask re-scores) until compose, override, pivot, cap,
+      or TTL. `:one_shot` surfaces never see this tag — they compose immediately
+      with degraded labeling. Mechanics: `JidoClaw.FrontDoor.Clarify` +
+      `docs/system/ambiguity-clarify.md`.
 
   ## AR-8b-2 — cross-run sketch graduation (C1 + C2)
 
@@ -55,11 +64,15 @@ defmodule JidoClaw.FrontDoor do
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Error
   alias JidoClaw.Forge
+  alias JidoClaw.FrontDoor.Clarify
+  alias JidoClaw.FrontDoor.Clarify.State, as: ClarifyState
   alias JidoClaw.FrontDoor.PrototypeSummary
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
   alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Session.Worker, as: SessionWorker
+  alias JidoClaw.Telemetry
+  alias JidoClaw.Trace
   alias JidoClaw.Triage
   alias JidoClaw.Triage.Verdict
   alias JidoClaw.VFS.Sandbox
@@ -108,22 +121,50 @@ defmodule JidoClaw.FrontDoor do
 
   @type ack :: %{path: Verdict.path(), parent_run_id: String.t(), message: String.t()}
   @type error_ack :: %{path: Verdict.path(), message: String.t()}
+  @type clarify_ack :: %{path: Verdict.path(), message: String.t()}
 
   @doc """
-  Triage the turn and route it. See the module doc for the three return tags.
+  Triage the turn and route it. See the module doc for the four return tags.
   """
   @spec decide(String.t(), map()) ::
           {:inline, Verdict.t()}
           | {:composer, {:ok, ack()}}
           | {:composer, {:error, error_ack()}}
+          | {:clarify, clarify_ack()}
   def decide(message, ctx) when is_binary(message) and is_map(ctx) do
-    history = recent_history(ctx, message)
-    # classify/2 is the fail-safe boundary, so this hard-matches `{:ok, %Verdict{}}`.
-    {:ok, %Verdict{} = verdict} = Triage.classify(message, history: history)
     # Load the session ONCE (best-effort; nil ⇒ everything fails open) and thread
     # it to every reader/writer. All metadata writes are atomic `jsonb_set` on the
     # row, so snapshot staleness across sequential writes in one turn is irrelevant.
     session = load_session(ctx)
+
+    # A live clarify loop intercepts the turn BEFORE triage — but only on a
+    # `:loop` surface. A `:one_shot` surface NEVER continues a pending loop
+    # (main cron reuses its session, `dispatcher.ex` — the next scheduled task
+    # must not read as an answer): clear it loudly and run normal triage.
+    # Expired/junk state lazily clears into normal triage too.
+    case Clarify.load_pending(session, now()) do
+      {:live, state} ->
+        if clarify_surface(ctx) == :loop do
+          continue_clarify(message, state, ctx, session)
+        else
+          clear_pending_stale(session, ctx, :one_shot_cleared)
+          triage_and_route(message, ctx, session)
+        end
+
+      {:expired, _state} ->
+        clear_pending_stale(session, ctx, :expired)
+        triage_and_route(message, ctx, session)
+
+      :none ->
+        triage_and_route(message, ctx, session)
+    end
+  end
+
+  # Today's decide/2 body, verbatim behavior for every non-clarify turn.
+  defp triage_and_route(message, ctx, session) do
+    history = recent_history(ctx, message)
+    # classify/2 is the fail-safe boundary, so this hard-matches `{:ok, %Verdict{}}`.
+    {:ok, %Verdict{} = verdict} = Triage.classify(message, history: history)
 
     # Cheap candidate read (no LLM): a non-expired, RELEVANT pending prototype on a
     # graduating `code`/`system` turn. Read here, but only HYDRATED (summarized)
@@ -139,23 +180,276 @@ defmodule JidoClaw.FrontDoor do
       # context. (The new-candidate WRITE stays in start_composer's success branch.)
       clear_candidate_for_sensitive_sketch(verdict, session, ctx)
 
-      case oscillation_guard(session, verdict.path, ctx) do
-        :proceed ->
-          graduation = hydrate_graduation(candidate)
-          result = start_composer(message, verdict, ctx, graduation, session)
-          after_launch(result, verdict, ctx, session, graduation)
-          {:composer, result}
-
-        {:debounce, ack} ->
-          # No launch, NO summary ⇒ candidate + transition log untouched, so the
-          # confirming re-send still graduates.
-          {:composer, {:error, ack}}
+      if Clarify.trigger?(verdict) do
+        clarify_lane(message, verdict, history, ctx, session, candidate)
+      else
+        standard_composer(message, verdict, ctx, session, candidate)
       end
     else
       # A talk turn clears the C2 "ask once" speed-bump.
       maybe_clear_marker(session, ctx)
       {:inline, verdict}
     end
+  end
+
+  # The pre-clarify composer branch, moved verbatim.
+  defp standard_composer(message, verdict, ctx, session, candidate) do
+    case oscillation_guard(session, verdict.path, ctx) do
+      :proceed ->
+        graduation = hydrate_graduation(candidate)
+        result = start_composer(message, verdict, ctx, graduation, session)
+        after_launch(result, verdict, ctx, session, graduation)
+        {:composer, result}
+
+      {:debounce, ack} ->
+        # No launch, NO summary ⇒ candidate + transition log untouched, so the
+        # confirming re-send still graduates.
+        {:composer, {:error, ack}}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Clarify lane (queue item 8 — OB1-1 + OR2-5)
+  # ---------------------------------------------------------------------------
+
+  # An `ambiguous` code/system verdict. A nil session (unloadable row) has
+  # nowhere to persist the loop ⇒ fail open to today's composer; a `:one_shot`
+  # surface composes immediately with degraded labeling; a `:loop` surface
+  # opens the loop.
+  defp clarify_lane(message, verdict, history, ctx, session, candidate) do
+    cond do
+      is_nil(session) ->
+        standard_composer(message, verdict, ctx, session, candidate)
+
+      clarify_surface(ctx) == :one_shot ->
+        one_shot_clarify(message, verdict, history, ctx, session, candidate)
+
+      true ->
+        open_clarify(message, verdict, history, ctx, session, candidate)
+    end
+  end
+
+  # The open turn: score once, persist the loop state, and only then show the
+  # questions. The persist result is CHECKED (functional state — never
+  # `safe_write/1`, front_door.ex's observability-key wrapper): a failed write
+  # must not show questions the next turn can't correlate. Scorer or persist
+  # failure ⇒ fail open to the standard composer path.
+  defp open_clarify(message, verdict, history, ctx, session, candidate) do
+    case Clarify.open(message, verdict, history, now()) do
+      {:ok, state, ack} ->
+        case persist_pending(session, ctx, ClarifyState.to_metadata(state)) do
+          {:ok, _session} ->
+            emit_clarify(:open, :ok)
+            {:clarify, %{path: verdict.path, message: ack}}
+
+          {:error, reason} ->
+            Logger.warning(
+              "[FrontDoor] clarify open persist failed (fail-open to composer): " <>
+                Error.summarize_reason(reason)
+            )
+
+            emit_clarify(:open, :persist_failed)
+            standard_composer(message, verdict, ctx, session, candidate)
+        end
+
+      {:error, reason} ->
+        Logger.debug("[FrontDoor] clarify open scorer failed: #{Error.summarize_reason(reason)}")
+        emit_clarify(:open, clarify_scorer_outcome(reason))
+        standard_composer(message, verdict, ctx, session, candidate)
+    end
+  end
+
+  # `:no_open_questions` is the decision layer's "non-qualifying score with
+  # nothing left to ask" infra reason — a scorer contract violation,
+  # distinguished in telemetry from a transport/shape failure.
+  defp clarify_scorer_outcome(:no_open_questions), do: :empty_ledger
+  defp clarify_scorer_outcome(_reason), do: :scorer_failed
+
+  # Decision 5: unattended surfaces never park questions — one scorer call for
+  # slots/score, then an immediate degraded compose; scorer failure composes
+  # exactly as today.
+  defp one_shot_clarify(message, verdict, history, ctx, session, candidate) do
+    case Clarify.score_once_for_slots(message, verdict, history, now()) do
+      {:ok, spec} ->
+        compose_from_clarify(spec, ctx, session)
+
+      {:error, reason} ->
+        Logger.debug(
+          "[FrontDoor] one-shot clarify scorer failed: #{Error.summarize_reason(reason)}"
+        )
+
+        emit_clarify(:open, clarify_scorer_outcome(reason))
+        standard_composer(message, verdict, ctx, session, candidate)
+    end
+  end
+
+  # A continue turn against live pending state. Directives that show another
+  # ack persist first but SERVE THE ROUND even on a persist failure (stale
+  # state self-heals — the next fold sees this message in history), loudly.
+  defp continue_clarify(message, state, ctx, session) do
+    history = recent_history(ctx, message)
+
+    case Clarify.continue(state, message, history, now(), Clarify.round_cap()) do
+      {:questions, new_state, ack} ->
+        serve_round(:round, new_state, ack, ctx, session)
+
+      {:hold, new_state, ack} ->
+        serve_round(:hold, new_state, ack, ctx, session)
+
+      {:failure, new_state, ack} ->
+        serve_round(:scorer_failed, new_state, ack, ctx, session)
+
+      {:compose, spec} ->
+        compose_from_clarify(spec, ctx, session)
+
+      :new_ask ->
+        # The pivot escape: clear the loop and run the message through fresh
+        # triage (which may itself open a NEW loop for the new ask).
+        clear_pending_stale(session, ctx, :new_ask)
+        triage_and_route(message, ctx, session)
+    end
+  end
+
+  defp serve_round(event, %ClarifyState{} = new_state, ack, ctx, session) do
+    case persist_pending(session, ctx, ClarifyState.to_metadata(new_state)) do
+      {:ok, _session} ->
+        emit_clarify(event, :ok)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[FrontDoor] clarify round persist failed (serving on stale state): " <>
+            Error.summarize_reason(reason)
+        )
+
+        emit_clarify(event, :persist_failed)
+    end
+
+    {:clarify, %{path: new_state.verdict.path, message: ack}}
+  end
+
+  # Compose from a clarify spec: `start_composer` FIRST; the pending state is
+  # cleared ONLY on `{:ok, parent}` (the `consume_candidate` precedent) — a
+  # launch failure keeps the loop live so the error ack's re-send re-enters it
+  # and retries the compose. Cleanup failures never prevent `after_launch/4`.
+  defp compose_from_clarify(spec, ctx, session) do
+    verdict = spec.verdict
+
+    # Graduation is re-read + hydrated at COMPOSE time, relevance keyed off
+    # the CLARIFIED intent (`verdict.intent`), never the confirm-turn message
+    # — "yes, that's right" has no topic tokens and would false-negative a
+    # relevant prototype.
+    candidate = pending_graduation(spec.state.original_message, verdict, session)
+    graduation = hydrate_graduation(candidate)
+    clarify = %{premises: spec.premises, sensitive?: spec.sensitive?}
+
+    case start_composer(spec.seed, verdict, ctx, graduation, session, clarify) do
+      {:ok, _ack} = result ->
+        clear_pending_after_launch(session, ctx)
+        # A clarified compose bypasses the oscillation guard by design, but the
+        # guard's proceed path is where the "ask once" marker normally clears —
+        # clear it here (the same write) so a stale marker can't suppress a
+        # later REAL debounce.
+        maybe_clear_marker(session, ctx)
+        after_launch(result, verdict, ctx, session, graduation)
+        emit_clarify(:compose, compose_outcome(spec))
+        {:composer, result}
+
+      {:error, _error_ack} = result ->
+        emit_clarify(:compose, :launch_failed)
+        {:composer, result}
+    end
+  end
+
+  defp compose_outcome(%{origin: :override}), do: :override
+  defp compose_outcome(%{origin: :one_shot}), do: :one_shot_degraded
+  defp compose_outcome(%{degraded?: true}), do: :degraded
+  defp compose_outcome(_spec), do: :clean
+
+  defp clarify_surface(ctx) do
+    case Map.get(ctx, :clarify_surface) do
+      :one_shot -> :one_shot
+      _loop_or_absent -> :loop
+    end
+  end
+
+  # Functional clarify-state writes: the Ash result is RETURNED (never
+  # `safe_write/1`) — a swallowed failure here loses the loop, not an
+  # observability key. Raises/exits normalize to `{:error, _}`.
+  defp persist_pending(nil, _ctx, _payload), do: {:error, :no_session}
+
+  defp persist_pending(session, ctx, payload) do
+    ConversationsSession.set_pending_clarify(session, payload, write_opts(ctx))
+  rescue
+    # reach:disable-next-line bare_rescue
+    e -> {:error, e}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp clear_pending(session, ctx) do
+    case persist_pending(session, ctx, nil) do
+      {:ok, _session} -> :ok
+      {:error, :no_session} -> :ok
+      {:error, _reason} = err -> err
+    end
+  end
+
+  # Lazy clears (expired / one-shot / pivot): loud on failure, never blocking.
+  defp clear_pending_stale(session, ctx, event) do
+    outcome =
+      case clear_pending(session, ctx) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "[FrontDoor] pending_clarify clear (#{event}) failed: " <>
+              Error.summarize_reason(reason)
+          )
+
+          :clear_failed
+      end
+
+    emit_clarify(event, outcome)
+    :ok
+  end
+
+  # A failed clear AFTER a successful launch is a loud, Trace'd, TTL-bounded
+  # residual (the next turn would read the stale loop until it expires) —
+  # documented in docs/system/ambiguity-clarify.md.
+  defp clear_pending_after_launch(session, ctx) do
+    case clear_pending(session, ctx) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[FrontDoor] pending_clarify clear failed after launch (TTL-bounded residual): " <>
+            Error.summarize_reason(reason)
+        )
+
+        emit_clarify(:persist_failed, :clear_after_launch)
+        :ok
+    end
+  end
+
+  # One emission helper: the counter, the Trace guardrail event, and the
+  # SignalBus signal (the `emit_oscillation/2` precedent).
+  defp emit_clarify(event, outcome) do
+    Telemetry.emit_clarify(event, outcome)
+
+    Trace.emit(
+      :guardrail,
+      %{guardrail: "clarify", event: event, outcome: outcome},
+      %{system_time: System.system_time()}
+    )
+
+    JidoClaw.SignalBus.emit("jido_claw.triage.clarify", %{
+      event: to_string(event),
+      outcome: to_string(outcome)
+    })
+
+    :ok
   end
 
   # P2: a `:secrets` sketch clears any stale `pending_prototype` regardless of whether
@@ -176,7 +470,27 @@ defmodule JidoClaw.FrontDoor do
   # Composer launch (the Option-A seed)
   # ---------------------------------------------------------------------------
 
-  defp start_composer(message, %Verdict{} = verdict, ctx, graduation, session) do
+  # The trailing `clarify` map (queue item 8) defaults empty so every
+  # pre-clarify caller stays byte-identical: `:premises` merges LAST into
+  # `build_premises/5` and `:sensitive?` ORs into `mark_sensitive/2` (answers
+  # can introduce secrets AFTER triage's `:secrets` signal was decided).
+  defp start_composer(message, %Verdict{} = verdict, ctx, graduation, session, clarify \\ %{}) do
+    # The explicit launch decision (D7 Window 1): a `:sketch` turn resolves a
+    # hard-isolated `.prototypes/<id>/` sandbox up front (AR-8b) and, when the
+    # verdict carries `:must_execute`, ALSO mints a no-egress Forge Docker session
+    # (the exec tier). A `code`/`system` turn passes the launch scope through
+    # unchanged. A prototype-dir failure is `{:error, _}` → the bounded ack —
+    # NEVER a pass-through to the mutation-capable inline agent (P1c).
+    case sketch_scope(verdict, ctx) do
+      {:error, reason} ->
+        composer_launch_error(verdict.path, reason)
+
+      launch ->
+        finish_launch(launch, message, verdict, ctx, session, graduation, clarify)
+    end
+  end
+
+  defp finish_launch(launch, message, %Verdict{} = verdict, ctx, session, graduation, clarify) do
     # `intent` is load-bearing AND must be non-empty: `planner` requires the
     # `intent` artifact and the router's availability is key-presence based, so a
     # blank/nil intent would falsely satisfy the requirement and run `planner`
@@ -186,34 +500,7 @@ defmodule JidoClaw.FrontDoor do
     base_intent = present(verdict.intent) || message
     intent = graduated_intent(base_intent, graduation)
     path = verdict.path
-
-    # The explicit launch decision (D7 Window 1): a `:sketch` turn resolves a
-    # hard-isolated `.prototypes/<id>/` sandbox up front (AR-8b) and, when the
-    # verdict carries `:must_execute`, ALSO mints a no-egress Forge Docker session
-    # (the exec tier). A `code`/`system` turn passes the launch scope through
-    # unchanged. A prototype-dir failure is `{:error, _}` → the bounded ack —
-    # NEVER a pass-through to the mutation-capable inline agent (P1c).
-    case sketch_scope(verdict, ctx) do
-      {:error, reason} ->
-        composer_launch_error(path, reason)
-
-      launch ->
-        finish_launch(launch, message, verdict, intent, base_intent, ctx, session, graduation)
-    end
-  end
-
-  defp finish_launch(
-         launch,
-         message,
-         %Verdict{} = verdict,
-         intent,
-         base_intent,
-         ctx,
-         session,
-         graduation
-       ) do
-    path = verdict.path
-    sensitive? = :secrets in verdict.signals
+    sensitive? = :secrets in verdict.signals or Map.get(clarify, :sensitive?, false)
     {project_dir, workspace_id} = launch_scope(launch)
     premises_extra = launch_premises(launch)
     forge_key = launch_forge_key(launch)
@@ -240,7 +527,8 @@ defmodule JidoClaw.FrontDoor do
           terminalize_on_failure?: true,
           # prototype_id/dir ride premises for Phase C (AR-8b-2) provenance;
           # `graduated_from` (C1) is folded in even when the summary is nil.
-          premises: build_premises(path, verdict, premises_extra, graduation)
+          premises:
+            build_premises(path, verdict, premises_extra, graduation, clarify_premises(clarify))
         ],
         sensitive?
       )
@@ -686,11 +974,17 @@ defmodule JidoClaw.FrontDoor do
 
   defp graduated_intent(base_intent, _graduation), do: base_intent
 
-  defp build_premises(path, %Verdict{} = verdict, premises_extra, graduation) do
+  # Clarify premises merge LAST (`Map.merge(m, %{})` keeps every pre-clarify
+  # caller byte-identical).
+  defp build_premises(path, %Verdict{} = verdict, premises_extra, graduation, clarify_premises) do
     %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)}
     |> Map.merge(premises_extra)
     |> merge_graduated_from(graduation)
+    |> Map.merge(clarify_premises)
   end
+
+  defp clarify_premises(%{premises: %{} = premises}), do: premises
+  defp clarify_premises(_clarify), do: %{}
 
   defp merge_graduated_from(premises, %{prototype_id: id, prototype_dir: dir, run_id: run_id}) do
     Map.put(premises, "graduated_from", %{

@@ -10,7 +10,7 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 
 ## Determination (TL;DR)
 
-**Nothing to adopt as a dependency (Python, app-shaped, and a loop-owner — same structural reasons as gepa), but a real borrow list concentrated at the two ends where our composer is verifiably weakest: the front door (nothing sharpens an ambiguous ask before composing — triage's `ambiguous` signal is published and consumed by nothing) and the verification floor (verify stages trust worker self-reports; premises carry no acceptance criteria).** Ouroboros's genuinely-wired mechanisms land on exactly those slots: a quantified ambiguity gate with anti-gaming floors, a structured spec artifact whose acceptance criteria flow into both prompts and verification, a transcript-grounded anti-fabrication verifier with a shell-output-masking analyzer, and a validated project-gate-command detector. Its failures are as instructive as its features: the dead PAL router is a mirror warning for our own wired-but-undeclared tiering seam, and its degenerate drift measurement validates our self-reported `scope-shift` choice.
+**Nothing to adopt as a dependency (Python, app-shaped, and a loop-owner — same structural reasons as gepa), but a real borrow list concentrated at the two ends where our composer is verifiably weakest: the front door (nothing sharpens an ambiguous ask before composing — triage's `ambiguous` signal is published and consumed by nothing *(true as inventoried; closed 2026-07-07 by OB1-1's adoption — Status below)*) and the verification floor (verify stages trust worker self-reports; premises carry no acceptance criteria).** Ouroboros's genuinely-wired mechanisms land on exactly those slots: a quantified ambiguity gate with anti-gaming floors, a structured spec artifact whose acceptance criteria flow into both prompts and verification, a transcript-grounded anti-fabrication verifier with a shell-output-masking analyzer, and a validated project-gate-command detector. Its failures are as instructive as its features: the dead PAL router is a mirror warning for our own wired-but-undeclared tiering seam, and its degenerate drift measurement validates our self-reported `scope-shift` choice.
 
 | Part of ouroboros | As a dependency | What to take |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 ## How to read this document
 
 - **Recommendation** axis: `BORROW-PATTERN` (reimplement the idea in our idioms) / `ALREADY-COVERED` / `SKIP`. Nothing rates `ADOPT-AS-DEP`. No Lift axis (Python source — gepa precedent), though data tables/prompts port near-verbatim per §above.
-- **Tiers**: Tier 1 = verified gap (2026-07-02 gap audit), high leverage, buildable on existing substrate. Tier 2 = useful, gated on a trigger or design decision. Tier 3 = polish/garnish. IDs are `OB<tier>-<seq>`. First inventory — no Status lines yet (camus precedent).
+- **Tiers**: Tier 1 = verified gap (2026-07-02 gap audit), high leverage, buildable on existing substrate. Tier 2 = useful, gated on a trigger or design decision. Tier 3 = polish/garnish. IDs are `OB<tier>-<seq>`. Statuses arrived with the first adoption pass (2026-07-07, camus precedent): `✅ ADOPTED <date>` blockquotes under the Recommendation line, carrying what shipped + corrections to the entry's claims; entries without one remain unadopted as inventoried.
 - Per-entry fields: **Recommendation**, **Where in ouroboros** (with wired-in verdict), **What**, **Gap in jido_radclaw** (verified 2026-07-02), **Why it matters**, **Adoption sketch**.
 
 ---
@@ -43,6 +43,40 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 ### OB1-1. The ambiguity-gated clarification loop — sharpen the ask before composing
 
 **Recommendation**: BORROW-PATTERN.
+
+> **Status: ✅ ADOPTED 2026-07-07** (next-ten #8, with the orca OR2-5 rider).
+> Shipped as `JidoClaw.FrontDoor.Clarify` — the conversation-axis loop exactly
+> per OQ-1's own recommendation, entered when triage's `ambiguous` signal rides
+> a `code`/`system` verdict on a `:loop` surface: constants verbatim in
+> `Clarify.Score` (brownfield weights/floors, threshold 0.2, streak 2, temp
+> 0.1, the deterministic floor's 0.05/0.10/0.05 coefficients — all pinned by
+> tests against this entry's values), `max(llm, floor)` from day one (both LLM
+> channels max'd), the OR2-5 question ledger under
+> `metadata["pending_clarify"]`, and the degraded exit as honest
+> `degraded: true` + `unresolved_slots` premises instead of their
+> score-inflation-to-0.6. The interview cadence is kept: one question per
+> round (each answer re-folds the ledger and shapes the next question), round
+> cap 12 — the `auto` pipeline's. Deliberate divergences (a recap-confirm
+> round instead of a fabricated streak-2 question; our ledger statuses feeding
+> the floor; questions folded into the ledger; brownfield-always) are tabled in
+> [PORT-OB1-1](PORT-OB1-1.md) — the repo's **first PORT map**, written before
+> any code. Corrections/additions beyond this entry's sketch: the sketch's
+> "2–4 questions/round" shipped instead as the source's own one-question
+> cadence (above); the
+> greenfield/brownfield mode switch was dropped (operator decision:
+> brownfield-4-dim always; context clarity scores over the whole conversation
+> evidence, repo-discoverable gaps marked assumable); surfaces are an explicit
+> `chat/4` `clarify: :loop | :one_shot` capability (unattended surfaces never
+> park questions AND never continue a live loop — main cron's session is
+> stable but unattended); at the round cap a required unknown HOLDS for the
+> explicit accept-assumptions ack (the OR2-5 gate), never auto-composed past;
+> and two hardenings the sketch didn't anticipate — result-checked
+> `pending_clarify` writes (fail open to the standard composer, never orphan
+> questions) and lane-entry redaction with a sticky sensitivity OR into
+> `mark_sensitive` (answers can introduce secrets after triage). Sketch item
+> (d) — the armed-run refinement feeding AR-9's arming signal — did NOT ship;
+> it remains open. System page:
+> `docs/system/ambiguity-clarify.md`.
 
 **Where in ouroboros** (wired — the primary `ooo init` path and the `auto` pipeline): `bigbang/ambiguity.py` — `Ambiguity = 1 − Σ(clarity_i × weight_i)` computed for real at `:697-713` from LLM-scored dimensions (temp 0.1, JSON-only, bounded retries with adaptive token doubling `:366-478`); fixed weights `:45-54` (greenfield: goal 0.40 / constraints 0.30 / success-criteria 0.30; brownfield adds context 0.15 and rebalances); threshold ≤ 0.2 to permit seed generation. The two details that make it a *gate* rather than a vibe: **per-dimension clarity floors** (goal 0.75 / constraint 0.65 / success 0.70 / context 0.60, `:39-43`) so one strong dimension can't mask a weak one (`qualifies_for_seed_completion`, `:239`), and a **2-round stability streak** before auto-completion (`mcp/tools/authoring_handlers.py:326`; reopening a completed interview resets the streak, `bigbang/interview.py:565`). The scoring prompt explicitly tolerates deferral ("do NOT penalise intentionally deferred items", `:509`). The autonomous variant adds the sharpest piece: **`deterministic_floor(ledger)`** (`auto/grading.py:523`) computes a code-side ambiguity lower bound from open gaps / conflicting entries / assumption ratio, and the pipeline takes `max(llm_score, floor)` — the LLM cannot under-report ambiguity below what code can objectively count. Convergence in `auto` is dual-signal (`auto/interview_driver.py:725-728`): the backend's seed-ready claim **and** structural ledger completeness (no section MISSING/WEAK/CONFLICTING/BLOCKED, `auto/ledger.py:448`), with an enforced **premature-closure invariant** (`:751-797`) — backend says done but the ledger has gaps ⇒ refuse closure and steer the next question at the first gap. A timed-out interview degrades to a typed partial product (`partial_seed_from_evidence` floors ambiguity at 0.6 and surfaces `unresolved_slots` into metadata + constraints, `auto/ledger_seed.py:190`) instead of a dead end. Honesty: the interview's "Perspective Panel" is a single-model prompt trick, not multi-agent (`bigbang/interview.py:946`), and the answer-side machinery (`auto/answerer.py`) exists because auto has no human — we do.
 
@@ -148,10 +182,10 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 
 ## Open questions
 
-- **OQ-1 — Clarify-loop surface (gates OB1-1).** Conversation-axis loop in the front door (cheap, no catalog change, human present) vs. a composer `interview` stage + gate (durable, resumable, but heavier)? Recommendation embedded above: conversation-axis first; revisit if clarify transcripts need durability beyond the session row.
+- **OQ-1 — Clarify-loop surface (gates OB1-1).** Conversation-axis loop in the front door (cheap, no catalog change, human present) vs. a composer `interview` stage + gate (durable, resumable, but heavier)? Recommendation embedded above: conversation-axis first; revisit if clarify transcripts need durability beyond the session row. *(Resolved 2026-07-07: conversation-axis shipped — next-ten #8; the loop state lives on the session row, the Q/A transcript rides the run's request-seed artifact.)*
 - **OQ-2 — Premises schema shape (gates OB1-2).** Typed optional keys inside the existing premises map (JSONB shapes pinned, renderer total) vs. a dedicated Ash-embedded spec resource? The map extension is the cheap first step; a resource earns its keep when per-AC verdicts need durable rows (eval-harness convergence).
 - **OQ-3 — Evidence contract scope (gates OB1-3).** Which claims first (tests_passed alone is most of the value), which stages (coder/fixer only), and does the Envelope schema change ride a doctrine slice or a Zoi schema bump? Also: does `EVIDENCE_FORM_MISMATCH` (masking) warrant blocking, or findings-only in v1?
-- **OQ-4 — Ambiguity spend policy (OB1-1).** Score every composed turn (adds a call to the front door's hot path) vs. only when triage emits `ambiguous` (trusts the classifier's recall — measured today by nothing)? Start signal-gated; add a `significant-build ∧ no-criteria` trigger if misses show up.
+- **OQ-4 — Ambiguity spend policy (OB1-1).** Score every composed turn (adds a call to the front door's hot path) vs. only when triage emits `ambiguous` (trusts the classifier's recall — measured today by nothing)? Start signal-gated; add a `significant-build ∧ no-criteria` trigger if misses show up. *(Resolved 2026-07-07 as recommended: signal-gated, no size gate; the extra trigger stays evidence-gated.)*
 
 ## Cross-references and dependencies
 
@@ -166,7 +200,7 @@ AR-9 PR-3 (shipped 2026-07-03; OB3-2's refinements still open) ◄── OB3-2 (
 alp-river UNADOPTED #9 ◄── OB3-3 (material-progress clock)
 ```
 
-Build order that follows: **OB1-1** (the dead `ambiguous` signal makes it the cheapest high-leverage start) → **OB1-2** (persists what OB1-1 produces; premises pipe already shipped) → **OB1-3** (independent, but richer once ACs exist; pairs with queue item 5) → Tier 2 behind their triggers, with OB3-2 folded into AR-9 PR-3 whenever that lands. *(2026-07-03: PR-3 shipped without
+Build order that follows: **OB1-1** (the dead `ambiguous` signal makes it the cheapest high-leverage start — *adopted 2026-07-07, next-ten #8*) → **OB1-2** (persists what OB1-1 produces; premises pipe already shipped) → **OB1-3** (independent, but richer once ACs exist; pairs with queue item 5) → Tier 2 behind their triggers, with OB3-2 folded into AR-9 PR-3 whenever that lands. *(2026-07-03: PR-3 shipped without
 OB3-2 — its trigger-matrix / same-model-fallback / consume-the-confidence lessons remain
 open refinements on the now-real stages.)*
 
@@ -174,7 +208,7 @@ open refinements on the now-real stages.)*
 
 | Concern | ouroboros | jido_radclaw today |
 | --- | --- | --- |
-| Front door | Socratic interview, quantified ambiguity gate (≤0.2 + floors + streak), typed convergence contract | Single-shot triage; `ambiguous` signal published, consumed by nothing |
+| Front door | Socratic interview, quantified ambiguity gate (≤0.2 + floors + streak), typed convergence contract | Single-shot triage; `ambiguous` signal published, consumed by nothing *(as inventoried; since 2026-07-07 the OB1-1 clarify loop consumes it — gate + floors + streak + deterministic floor)* |
 | Spec artifact | Immutable Seed: ACs + weighted rubric + exit conditions + provenance, linted by a deterministic grade gate | Premises = launch-assumption string map (threaded to workers since AR-9 PR-2); criteria transient or hardcoded |
 | Execution | LLM-decomposed AC tree, LLM-inferred dependency edges, optimistic parallelism + LLM conflict reconciliation | Deterministic catalog/Kahn composer, locks, welded wave commits — stronger |
 | Verification | Advisory 3-stage pipeline; QA judge that never blocks; opt-in transcript-grounded evidence verifier (the real gem) | 4-lens review + AR-4 fix loop + certificates — wired and gating, but self-report-trusting |
@@ -187,4 +221,4 @@ open refinements on the now-real stages.)*
 
 ## Bottom line
 
-Ouroboros is the strongest *thesis* subject this series has seen and a mid-strength *donor*: its bet — clarity is the bottleneck, so quantify it, crystallize it into an immutable spec, and verify against evidence the agent can't forge — is exactly the axis where our composer, for all its durability and gating, is thinnest. The honest read cuts both ways: its flagship marketing (PAL router, Double Diamond, measured drift, 4-pattern stagnation, multi-model consensus) is dead, deleted, or degenerate on inspection, while its unglamorous wired parts (ambiguity floors, the grade-gate linter, the transcript-grounded verifier, the command detector) are precisely the mechanisms our gap audit says we lack. Take the front door (OB1-1 + OB1-2 — the dead-end `ambiguous` signal and the just-landed premises pipe mean both land on shipped substrate), put the evidence floor under the fix loop (OB1-3, riding ToolOutput refs and the house no-masked-gates rule), and let everything panel-, tier-, and watchdog-shaped flow into the alp-river program that already owns those slots. And keep the mirror warning: they shipped the tiering seam and never the policy — the arbiter declaration (AR-9 PR-3/PR-4) is what keeps us from being the same footnote in someone else's exploration doc. *(Declared 2026-07-03.)*
+Ouroboros is the strongest *thesis* subject this series has seen and a mid-strength *donor*: its bet — clarity is the bottleneck, so quantify it, crystallize it into an immutable spec, and verify against evidence the agent can't forge — is exactly the axis where our composer, for all its durability and gating, is thinnest. The honest read cuts both ways: its flagship marketing (PAL router, Double Diamond, measured drift, 4-pattern stagnation, multi-model consensus) is dead, deleted, or degenerate on inspection, while its unglamorous wired parts (ambiguity floors, the grade-gate linter, the transcript-grounded verifier, the command detector) are precisely the mechanisms our gap audit says we lack. Take the front door (OB1-1 + OB1-2 — the dead-end `ambiguous` signal and the just-landed premises pipe mean both land on shipped substrate — *OB1-1 taken 2026-07-07, next-ten #8*), put the evidence floor under the fix loop (OB1-3, riding ToolOutput refs and the house no-masked-gates rule), and let everything panel-, tier-, and watchdog-shaped flow into the alp-river program that already owns those slots. And keep the mirror warning: they shipped the tiering seam and never the policy — the arbiter declaration (AR-9 PR-3/PR-4) is what keeps us from being the same footnote in someone else's exploration doc. *(Declared 2026-07-03.)*

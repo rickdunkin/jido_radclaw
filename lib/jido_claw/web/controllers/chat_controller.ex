@@ -48,11 +48,14 @@ defmodule JidoClaw.Web.ChatController do
   defp sync_response(conn, tenant_id, user_id, actor, _model, content) do
     session_id = "api_#{:erlang.unique_integer([:positive])}"
 
+    # `clarify: :one_shot` — every call mints a fresh `api_*` session, so a
+    # parked question round could never be answered (queue item 8).
     case JidoClaw.chat(tenant_id, session_id, content,
            kind: :api,
            external_id: session_id,
            user_id: user_id,
-           actor: actor
+           actor: actor,
+           clarify: :one_shot
          ) do
       {:ok, response} ->
         json(conn, %{
@@ -85,11 +88,13 @@ defmodule JidoClaw.Web.ChatController do
       |> put_resp_header("connection", "keep-alive")
       |> send_chunked(200)
 
+    # `clarify: :one_shot` — same per-call session reasoning as the sync arm.
     case JidoClaw.chat(tenant_id, session_id, content,
            kind: :api,
            external_id: session_id,
            user_id: user_id,
-           actor: actor
+           actor: actor,
+           clarify: :one_shot
          ) do
       {:ok, response} ->
         chunk_id = "chatcmpl-#{:erlang.unique_integer([:positive])}"

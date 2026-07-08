@@ -106,8 +106,9 @@ fences and bosun's resumed-gates-reopen-approved.)*
 
 Recommendation vocabulary per the corpus conventions (`docs/exploration/README.md`):
 **BORROW-PATTERN**, **BORROW-REFERENCE**, **BORROW-RUBRIC**, **FOLD-IN**,
-**INDEPENDENT**, **ALREADY-COVERED**, **TRACK**, **SKIP**. Initial inventory — no
-Status lines. Tiers scoped to this codebase: **Tier 1** = clear gap, high leverage,
+**INDEPENDENT**, **ALREADY-COVERED**, **TRACK**, **SKIP**. Status lines arrive as
+adoption passes land (first: OR2-5 🟡 PARTIAL 2026-07-07); entries without one remain
+as inventoried. Tiers scoped to this codebase: **Tier 1** = clear gap, high leverage,
 buildable against a shipped seam or a decided argus slice. **Tier 2** = valuable, lands
 with a specific argus slice or an already-queued work item. **Tier 3** = garnish. IDs
 `OR<tier>-<seq>`; `S-n` skips; `OQ-n` open questions. Every Gap claim verified against
@@ -533,6 +534,20 @@ synthesize the terminal event.
 
 **Recommendation**: BORROW-RUBRIC (the ledger/readiness shapes, riding next-ten items
 8–9) + the corpus evidence entry for §5 plan-layer semantics.
+
+> **Status: 🟡 PARTIAL 2026-07-07** (the item-8 half). The ledger item shape
+> (`{question, why_it_matters, risk_if_unanswered,
+> recommended_default_assumption, user_input_required, status, user_answer}`,
+> statuses `open|answered|assumed|conflicting`), the readiness vocabulary
+> (`ready_for_tasks | ready_with_assumptions | blocked_needs_user_input` —
+> riding composed premises), and the **accept-assumptions gate** (unresolved
+> `user_input_required` items HOLD at the clarify round cap for an explicit
+> "proceed with defaults" ack; `user_input_required` coerces fail-closed —
+> only a literal `false` is assumable) all landed inside next-ten #8's clarify
+> loop (`JidoClaw.FrontDoor.Clarify.Ledger`,
+> `docs/system/ambiguity-clarify.md`). The quality-gate half — criteria
+> lint/acceptance-criteria premises — waits on next-ten #9 (OB1-2), and the
+> promote-on-accept evidence entry is untouched by this pass.
 
 **Where in orca**: instead of conversational questions, personas must encode
 uncertainty as **ambiguity-ledger items** `{question, why_it_matters,

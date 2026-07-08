@@ -221,6 +221,19 @@ config :jido_claw, :triage_model, :fast
 # together in JidoClaw.FrontDoor. Non-secrets runs stay unmarked and unbounded.
 config :jido_claw, :triage_sensitive_deadline_ms, 1_800_000
 
+# Ambiguity clarify loop (queue item 8, ouroboros OB1-1 — see
+# docs/system/ambiguity-clarify.md). Signal-gated: fires only when triage
+# emits `ambiguous` on a code/system turn, so the scorer spend is bounded.
+# `:clarify_model` follows the `:triage_model` DIRECT-spec semantics but
+# defaults `:capable` — ledger quality is the product and the trigger is rare.
+# `:clarify_round_cap` bounds question rounds (one question per round — the
+# source `auto` pipeline's cap; then hold-for-accept / degraded compose);
+# `:clarify_ttl_ms` expires abandoned pending state.
+# The `:clarify_generate` fn seam is test-only (mirrors `:triage_generate`).
+config :jido_claw, :clarify_model, :capable
+config :jido_claw, :clarify_round_cap, 12
+config :jido_claw, :clarify_ttl_ms, 3_600_000
+
 # External MCP servers to consume (JidoClaw.MCP). Declared in
 # `.jido/config.yaml` under `mcp_servers:`; discovered at boot, their tools
 # wrapped in the full host safety pipeline and exposed as `mcp_<server>_<tool>`.

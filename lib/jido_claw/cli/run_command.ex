@@ -10,11 +10,14 @@ defmodule JidoClaw.CLI.RunCommand do
     * `1` — error / failed run / await timeout
     * `2` — usage or config error (bad flags, setup needed, unknown session,
       session belonging to another workspace, boot failure)
-    * `3` — approval gate pending: an inline tool-call case (probed via
-      `AgentCase.pending_for_session/1` — the gate error is invisible in
-      chat/4's return, the LLM just relays it as text) or a composer
-      run-tree gate (`AgentCase.pending_for_run_tree/1`). Case ids are
-      printed for `/gates approve <id>`.
+    * `3` — human input needed: an approval gate pending — an inline
+      tool-call case (probed via `AgentCase.pending_for_session/1` — the
+      gate error is invisible in chat/4's return, the LLM just relays it as
+      text) or a composer run-tree gate (`AgentCase.pending_for_run_tree/1`);
+      case ids are printed for `/gates approve <id>`. OR a clarify question
+      round (`outcome: :clarify_pending`, queue item 8): the ambiguous ask
+      parked questions instead of composing — answer them on the same
+      session (`--session <id>`) or re-run with "proceed with defaults".
 
   ## Flags
 
@@ -64,7 +67,7 @@ defmodule JidoClaw.CLI.RunCommand do
     @type t :: %__MODULE__{
             exit_code: 0 | 1 | 2 | 3,
             outcome: atom(),
-            route: :inline | :composer | nil,
+            route: :inline | :composer | :clarify | nil,
             run_id: String.t() | nil,
             message: String.t() | nil,
             session_id: String.t() | nil,
@@ -330,6 +333,9 @@ defmodule JidoClaw.CLI.RunCommand do
     restore_mode = if resumed?, do: :strict, else: :best_effort
     turn_started_at = DateTime.utc_now()
 
+    # `clarify: :loop` (queue item 8): one-shot INVOCATION, resumable SESSION
+    # — a parked question round is answerable via `--session <id>` (printed
+    # with the exit-3 output), so parking beats a silent degraded compose.
     chat_result =
       JidoClaw.chat(@tenant_id, session.external_id, request.prompt,
         kind: session.kind,
@@ -337,7 +343,8 @@ defmodule JidoClaw.CLI.RunCommand do
         workspace_id: request.dir,
         actor: actor,
         composer_ack: :detailed,
-        context_restore: restore_mode
+        context_restore: restore_mode,
+        clarify: :loop
       )
 
     outcome_for(chat_result, %{
@@ -381,6 +388,19 @@ defmodule JidoClaw.CLI.RunCommand do
     run_id
     |> RunAwait.await(@tenant_id, env.actor, env.request.timeout_ms)
     |> await_outcome(base)
+  end
+
+  # A clarify question round (queue item 8): the OQ-4 "human input needed"
+  # exit family — no run exists yet; the questions ARE the output. The
+  # printed session id is what `--session` needs to answer them.
+  defp outcome_for({:ok, %{route: :clarify, message: message}}, env) do
+    %Result{
+      exit_code: 3,
+      outcome: :clarify_pending,
+      route: :clarify,
+      message: message,
+      session_id: env.session.id
+    }
   end
 
   defp outcome_for({:ok, %{route: :composer, status: :failed_to_start, message: message}}, env) do
