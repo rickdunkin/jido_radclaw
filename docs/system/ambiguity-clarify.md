@@ -145,14 +145,34 @@ clarify lane, else the byte-identical `standard_composer/5`.
   new ask.
 - **Override** composes clean only after a qualifying score (streak ≥ 1) with
   zero unresolved items; anything else carries the degraded labeling.
+- **The premises lint gate** (item 9 — OB1-2, `PORT-OB1-2.md`): every
+  `:loop` compose passes `Clarify.lint_gate/2` BEFORE launching —
+  `Premises.Lint.run(premises, mode: :clarify, ledger:)` over the accumulated
+  ledger. A **blocker** (exclusively the ledger-derived safety set:
+  `high_risk_assumptions` over `assumed` items' defaults, `ledger_open_gap`
+  for unresolved `user_input_required` items, the belt-and-braces
+  `high_ambiguity_score`) below the round cap re-opens a clarify round
+  instead of composing (`serve_round(:lint_block, …)`) — `high_risk` seeds an
+  idempotent `user_input_required` confirm question
+  (`Ledger.append_missing/2`, keyed on normalized question text). Degraded
+  premises demote ALL blockers to findings (the hold-for-ack ack IS the
+  human confirmation), at the cap #8's own hold/degraded semantics own the
+  exit, and `:one_shot` skips the clarify-side lint entirely — so the gate
+  can never loop forever or park an unattended surface. AC-quality findings
+  never block anywhere; they ride the plan-gate payload via the `:gate`-mode
+  re-lint. Full lint semantics → `docs/system/structured-premises.md`.
 - **Compose enrichment**: intent = scorer `updated_intent` (fallback: stored
   verdict intent, then the original ask); the request-seed artifact is the
   original message + the full redacted Q/A transcript; premises gain
   `"clarifications"` (a pre-rendered digest ≤ 560B — `PremisesContext`
   inspect-renders non-binaries), `"ambiguity_score"` (float), `"readiness"`
   (`ready_for_tasks | ready_with_assumptions | blocked_needs_user_input`),
-  plus `"degraded" => true` and non-empty `"unresolved_slots"` on the
-  degraded path. Clarify premises merge LAST in `build_premises/5`.
+  the typed keys the scorer distilled (`"acceptance_criteria"` /
+  `"evaluation_principles"` / `"exit_conditions"` — non-empty lists only,
+  item 9), plus `"degraded" => true` and non-empty `"unresolved_slots"` on
+  the degraded path. Clarify premises merge LAST in `build_premises/5`, and
+  the whole merged map exits through `Premises.normalize/1` (fail-open typed
+  key validation).
 - **Graduation composes**: `pending_prototype` relevance is re-derived at
   compose time from the CLARIFIED intent, never the confirm-turn message
   ("yes, that's right" has no topic tokens). A clarified compose bypasses the
@@ -171,11 +191,14 @@ hyphenated signals like `significant-build` on reload). Keys:
 `original_message`, `verdict`, `ledger` (OR2-5 items: question /
 why_it_matters / risk_if_unanswered / recommended_default_assumption /
 user_input_required / status ∈ `open|answered|assumed|conflicting` /
-user_answer), `clarity` (4 floats), `llm_ambiguity`, `updated_intent`,
-`rounds_shown`, `streak`, `scorer_failures`, `sensitive`,
-`created_at`/`updated_at` (ISO8601). TTL (default 1h) runs off last activity;
-expired or junk state lazily clears into normal triage. The real-JSONB round
-trip is pinned in `session_test.exs`.
+user_answer), `clarity` (4 floats), `llm_ambiguity`, `updated_intent`, the
+typed premises lists (`acceptance_criteria` / `evaluation_principles` /
+`exit_conditions` — item 9; the fold keeps the prior round's list when a
+later scorer result omits one, the `updated_intent` rule), `rounds_shown`,
+`streak`, `scorer_failures`, `sensitive`, `created_at`/`updated_at`
+(ISO8601). TTL (default 1h) runs off last activity; expired or junk state
+lazily clears into normal triage. The real-JSONB round trip is pinned in
+`session_test.exs`.
 
 ### The scorer
 
@@ -220,14 +243,17 @@ answer the questions.
   demand-gated.
 - Counter `jido_claw.clarify.total`, tags `[:event, :outcome]` — events
   `:open/:round/:hold/:compose/:scorer_failed/:persist_failed/:new_ask/
-  :expired/:one_shot_cleared`; compose outcomes
+  :expired/:one_shot_cleared/:lint_block` (item 9's blocker re-open rides
+  `serve_round`); compose outcomes
   `:clean/:degraded/:override/:one_shot_degraded/:launch_failed`. The
   `:open` event's failure outcomes distinguish `:empty_ledger` (the
   `:no_open_questions` contract violation, on both the loop-open and
   one-shot lanes) from `:scorer_failed` (every other scorer failure). Every
   emit also rides a `Trace` `:guardrail` event (`guardrail: "clarify"`) and
   a `jido_claw.triage.clarify` SignalBus signal (the `emit_oscillation/2`
-  precedent).
+  precedent). The lint itself counts on
+  `jido_claw.premises_lint.total` (tags `[:grade, :mode]` — see
+  `docs/system/structured-premises.md`).
 
 ## Residuals & accepted risks
 
@@ -272,9 +298,10 @@ answer the questions.
   transitions, TTL
 - `lib/jido_claw/front_door/clarify/formatter.ex` — acks, override phrase,
   digest/transcript
-- `lib/jido_claw/front_door/clarify/scorer.ex` — the LLM boundary
+- `lib/jido_claw/front_door/clarify/scorer.ex` — the LLM boundary (+ the
+  item-9 typed premises fields)
 - `lib/jido_claw/front_door.ex:119` — decide/2 routing, the clarify lane,
-  compose_from_clarify, result-checked persistence
+  compose_from_clarify (the item-9 lint gate), result-checked persistence
 - `lib/jido_claw/triage/verdict.ex` — `to_map/1`, the pending-state wire form
 - `lib/jido_claw/conversations/resources/session.ex` — `:set_pending_clarify`
 - `lib/jido_claw.ex` — `clarify:` opt threading + `{:clarify, resp}` shaping

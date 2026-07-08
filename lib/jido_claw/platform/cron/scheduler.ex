@@ -4,6 +4,7 @@ defmodule JidoClaw.Cron.Scheduler do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
+  alias JidoClaw.Cron.OutcomeSpec
   alias JidoClaw.Cron.Worker
   alias JidoClaw.Tenant.InstanceSupervisor
 
@@ -73,7 +74,12 @@ defmodule JidoClaw.Cron.Scheduler do
       target: job.target,
       workflow_name: job.workflow_name,
       workflow_input: job.workflow_input,
-      timezone: job.timezone
+      timezone: job.timezone,
+      # Item 9 (OH1-3): the outcome contract is live at fire time — hydrated
+      # through the single canonicalizer (junk/absent metadata ⇒ nil, no
+      # contract) and carried in the fingerprint so a contract edit
+      # reconciles the running worker.
+      outcome_spec: OutcomeSpec.normalize(job_metadata_spec(job))
     ]
 
     case build_mfa(job) do
@@ -82,6 +88,9 @@ defmodule JidoClaw.Cron.Scheduler do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp job_metadata_spec(%Job{metadata: %{} = metadata}), do: Map.get(metadata, "outcome_spec")
+  defp job_metadata_spec(%Job{}), do: nil
 
   # Rows that dispatch via MFA — mode: :system_job OR target: :mfa — REQUIRE
   # an MFA. Any other combination doesn't, so resolve none.
@@ -255,7 +264,8 @@ defmodule JidoClaw.Cron.Scheduler do
       workflow_name: Keyword.get(opts, :workflow_name),
       workflow_input: Keyword.get(opts, :workflow_input),
       mfa: Keyword.get(opts, :mfa),
-      timezone: Keyword.get(opts, :timezone)
+      timezone: Keyword.get(opts, :timezone),
+      outcome_spec: Keyword.get(opts, :outcome_spec)
     }
   end
 
@@ -268,7 +278,8 @@ defmodule JidoClaw.Cron.Scheduler do
       workflow_name: w.workflow_name,
       workflow_input: w.workflow_input,
       mfa: w.mfa,
-      timezone: w.timezone
+      timezone: w.timezone,
+      outcome_spec: w.outcome_spec
     }
   end
 

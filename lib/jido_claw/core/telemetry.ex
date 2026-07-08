@@ -104,11 +104,17 @@ defmodule JidoClaw.Telemetry do
 
       # Ambiguity clarify loop (item 8, OB1-1) — one count per lane event:
       # `event` is :open/:round/:hold/:compose/:scorer_failed/:persist_failed/
-      # :new_ask/:expired/:one_shot_cleared; `outcome` qualifies it (:ok,
+      # :new_ask/:expired/:one_shot_cleared/:lint_block (item 9's blocker
+      # re-open rides `serve_round`); `outcome` qualifies it (:ok,
       # :clean/:degraded/:override/:one_shot_degraded/:launch_failed on
       # :compose, :scorer_failed/:persist_failed on :open, :clear_failed on
       # the lazy clears). The Trace `:guardrail` events carry the same pairs.
       counter("jido_claw.clarify.total", tags: [:event, :outcome]),
+
+      # Premises lint (item 9, OB1-2) — one count per lint run; `grade` is
+      # :a/:b/:c, `mode` :clarify (compose-time, may block) or :gate (the
+      # plan-gate payload re-lint, structurally blocker-free).
+      counter("jido_claw.premises_lint.total", tags: [:grade, :mode]),
 
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
@@ -323,6 +329,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :clarify],
       %{total: 1},
       %{event: event, outcome: outcome}
+    )
+  end
+
+  @spec emit_premises_lint(atom(), atom()) :: :ok
+  def emit_premises_lint(grade, mode) do
+    :telemetry.execute(
+      [:jido_claw, :premises_lint],
+      %{total: 1},
+      %{grade: grade, mode: mode}
     )
   end
 

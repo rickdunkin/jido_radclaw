@@ -15,6 +15,7 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
 
   import ExUnit.CaptureLog
 
+  alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.RunPubSub
@@ -364,6 +365,58 @@ defmodule JidoClaw.RouteComposer.ComposerLoopTest do
     ks = event_kinds(parent_id, ctx)
     assert :wave_paused in ks
     assert :route_abandoned in ks
+    drain_run_registry(2_000)
+  end
+
+  test "item 9: premises-lint warnings ride the plan-gate AgentCase details, namespaced", ctx do
+    Application.put_env(
+      :jido_claw,
+      :route_composer_stub_outputs,
+      TestFixtures.gate_fixture_stub_outputs()
+    )
+
+    RunPubSub.subscribe_gates()
+
+    task =
+      Task.async(fn ->
+        RouteComposer.run_sync(
+          catalog: TestFixtures.gate_fixture_catalog(),
+          live: TestFixtures.gate_fixture_seed_live(),
+          artifacts: TestFixtures.gate_fixture_seed_artifacts(),
+          # One vague+untestable criterion: the gate-side re-lint (mode :gate,
+          # structurally blocker-free) grades :b and the payload rides the
+          # case details under "premises_lint".
+          premises: %{"path" => "code", "acceptance_criteria" => ["The CLI should be easy"]},
+          tenant: ctx.tenant,
+          actor: actor_for(ctx.tenant),
+          context: ctx.context,
+          max_waves: 10,
+          timeout: 30_000
+        )
+      end)
+
+    assert_receive {:gate_requested, child_id, %{agent_case_id: case_id}}, 15_000
+    parent_id = parent_of(child_id, ctx)
+    await_wave_paused(parent_id, ctx)
+
+    {:ok, agent_case} =
+      AgentCase.by_id(case_id, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+    assert %{"grade" => "b", "findings" => findings} = agent_case.details["premises_lint"]
+    codes = Enum.map(findings, & &1["code"])
+    assert "vague_acceptance_criteria" in codes
+    assert "untestable_acceptance_criteria" in codes
+
+    # Survival pin at the composer level: the DSL seed is intact beside the
+    # namespaced payload.
+    assert agent_case.details["summary"] == "Approve the implementation plan before execution"
+    assert agent_case.details["gate_title"] == "Approve plan"
+
+    assert {:ok, _} =
+             Cases.abandon(case_id, %{}, tenant: ctx.tenant, actor: actor_for(ctx.tenant))
+
+    assert {:ok, summary} = Task.await(task, 30_000)
+    assert summary.terminal == :abandoned
     drain_run_registry(2_000)
   end
 

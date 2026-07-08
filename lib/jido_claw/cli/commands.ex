@@ -1685,7 +1685,12 @@ defmodule JidoClaw.CLI.Commands do
       task: task,
       mode: :main,
       schedule_kind: kind,
-      schedule_value: value
+      schedule_value: value,
+      # Operator CLI jobs carry no outcome contract (the documented item-9
+      # exemption). Explicit so re-adding an agent-created job id
+      # deterministically drops the stored contract instead of riding upsert
+      # default-application subtleties (same posture as the migrate task).
+      metadata: %{}
     }
 
     case CronJob.upsert(persist_attrs, tenant: "default", actor: Actor.system("default")) do

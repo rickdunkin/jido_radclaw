@@ -23,6 +23,7 @@ defmodule JidoClaw.Cron.Dispatcher do
   """
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.OutcomeSpec
 
   @doc """
   The effective dispatch path for a worker state — the single source of truth
@@ -53,7 +54,7 @@ defmodule JidoClaw.Cron.Dispatcher do
   defp run_agent(%{mode: :isolated} = state) do
     session_id = "cron_#{state.id}_#{System.system_time(:second)}"
 
-    JidoClaw.chat(state.tenant_id, session_id, state.task,
+    JidoClaw.chat(state.tenant_id, session_id, task_with_contract(state),
       kind: :cron,
       external_id: session_id,
       actor: Actor.system(state.tenant_id),
@@ -66,12 +67,23 @@ defmodule JidoClaw.Cron.Dispatcher do
   # nobody attends a cron session, and the next scheduled task must never be
   # read as an answer to a parked question round.
   defp run_agent(state) do
-    JidoClaw.chat(state.tenant_id, state.agent_id, state.task,
+    JidoClaw.chat(state.tenant_id, state.agent_id, task_with_contract(state),
       kind: :cron,
       external_id: state.agent_id,
       actor: Actor.system(state.tenant_id),
       clarify: :one_shot
     )
+  end
+
+  # Item 9 (OH1-3): the outcome contract rides every fired agent turn — the
+  # run's success condition arrives with the task, not just at creation time.
+  # No contract ⇒ the task is byte-identical. MFA (system) jobs are exempt by
+  # construction (they never pass through here).
+  defp task_with_contract(state) do
+    case OutcomeSpec.render_block(Map.get(state, :outcome_spec)) do
+      "" -> state.task
+      block -> state.task <> "\n\n" <> block
+    end
   end
 
   # Lifted verbatim from the former `:system_job` arm.

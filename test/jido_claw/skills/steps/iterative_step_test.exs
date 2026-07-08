@@ -146,6 +146,72 @@ defmodule JidoClaw.Skills.Steps.IterativeStepTest do
       refute_received {:echo_stub, :tool_context, _}
     end
 
+    test "produces verification_criteria render into BOTH the generator and evaluator tasks (item 9)" do
+      produces = %{
+        "type" => "elixir_module",
+        "verification_criteria" => ["All tests pass", "No compiler warnings"]
+      }
+
+      options = [
+        generator: %{
+          name: "implement",
+          template: "gen",
+          task: "do implement",
+          role: "generator",
+          produces: produces,
+          consumes: []
+        },
+        # EchoStub evaluator (tokenless ⇒ infra) with a zero budget: the loop
+        # errors fast and BOTH sides' tasks were captured.
+        evaluator: role("verify", "eval_infra", "evaluator"),
+        max_iterations: 1,
+        infra_retries: 0
+      ]
+
+      assert {:error, _message} =
+               IterativeStep.run(%{extra_context: ""}, no_db_context(), options)
+
+      # Generator spawned first: the previously-inert skill knob now shapes
+      # its instruction…
+      assert_receive {:echo_stub, :task, generator_task}
+      assert generator_task =~ "Your output must satisfy these verification criteria"
+      assert generator_task =~ "- All tests pass"
+      assert generator_task =~ "- No compiler warnings"
+
+      # …and the evaluator judges against the SAME declared criteria.
+      assert_receive {:echo_stub, :task, evaluator_task}
+      assert evaluator_task =~ "Verify the output against these declared criteria"
+      assert evaluator_task =~ "- All tests pass"
+    end
+
+    test "a produces block WITHOUT criteria leaves both tasks criteria-free" do
+      options = [
+        generator: %{
+          name: "implement",
+          template: "gen",
+          task: "do implement",
+          role: "generator",
+          produces: %{"type" => "elixir_module"},
+          consumes: []
+        },
+        evaluator: role("verify", "eval_infra", "evaluator"),
+        max_iterations: 1,
+        infra_retries: 0
+      ]
+
+      assert {:error, _message} =
+               IterativeStep.run(%{extra_context: ""}, no_db_context(), options)
+
+      assert_receive {:echo_stub, :task, generator_task}
+      # The ARTIFACTS instruction still renders (produces is non-empty)…
+      assert generator_task =~ "ARTIFACTS:"
+      # …but no criteria section appears on either side.
+      refute generator_task =~ "verification criteria"
+
+      assert_receive {:echo_stub, :task, evaluator_task}
+      refute evaluator_task =~ "declared criteria"
+    end
+
     # Camus C1-3 — the named live bug: an evaluator that emits NO verdict token
     # used to parse as `:fail` and burn an iteration exactly like a real fail
     # (the "#1 cause of runaway loops"). Under the normalizer it is INFRA:

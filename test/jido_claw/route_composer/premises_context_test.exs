@@ -194,4 +194,125 @@ defmodule JidoClaw.RouteComposer.PremisesContextTest do
     assert text =~ "- **k1**: v"
     assert text =~ "- **k32**: v"
   end
+
+  # ── Typed sections (item 9 — OB1-2) ────────────────────────────────────────
+
+  describe "typed premises sections" do
+    test "absent typed keys render byte-identically to the generic-only form" do
+      premises = %{"path" => "code", "est_size" => "m", "ambiguity_score" => 0.1}
+
+      assert PremisesContext.render(premises) ==
+               "### Premises\n" <>
+                 "- **ambiguity_score**: 0.1\n" <>
+                 "- **est_size**: m\n" <>
+                 "- **path**: code\n\n" <>
+                 "If any of your findings or work contradicts a premise, include " <>
+                 "`scope-shift` in your `signals` output."
+    end
+
+    test "acceptance criteria render as a dedicated AC-id-numbered section, excluded from bullets" do
+      premises = %{
+        "path" => "code",
+        "acceptance_criteria" => ["`mix test` passes", "GET /health returns 200"]
+      }
+
+      text = PremisesContext.render(premises)
+
+      assert text ==
+               "### Premises\n" <>
+                 "- **path**: code\n\n" <>
+                 "### Acceptance criteria\n" <>
+                 "AC1. `mix test` passes\n" <>
+                 "AC2. GET /health returns 200\n\n" <>
+                 "If any of your findings or work contradicts a premise, include " <>
+                 "`scope-shift` in your `signals` output."
+    end
+
+    test "principles and exit conditions render legible sections after the criteria" do
+      premises = %{
+        "path" => "code",
+        "acceptance_criteria" => ["`mix test` passes"],
+        "evaluation_principles" => [
+          %{"name" => "correctness", "description" => "must be right", "weight" => 0.9}
+        ],
+        "exit_conditions" => ["stop after 3 failed attempts"]
+      }
+
+      text = PremisesContext.render(premises)
+
+      assert text =~ "### Acceptance criteria\nAC1. `mix test` passes"
+      assert text =~ "### Evaluation principles\n- correctness (weight 0.90): must be right"
+      assert text =~ "### Exit conditions\n- stop after 3 failed attempts"
+      # Typed keys never appear as generic bullets.
+      refute text =~ "- **acceptance_criteria**"
+      refute text =~ "- **evaluation_principles**"
+      refute text =~ "- **exit_conditions**"
+      # The instruction stays last.
+      assert String.ends_with?(text, "`scope-shift` in your `signals` output.")
+    end
+
+    test "a malformed typed value renders nowhere (neither section nor bullet)" do
+      text = PremisesContext.render(%{"path" => "code", "acceptance_criteria" => "junk"})
+
+      refute text =~ "Acceptance criteria"
+      refute text =~ "junk"
+      assert text =~ "- **path**: code"
+    end
+
+    test "criteria count is capped with a marker; AC ids stay stable for the kept prefix" do
+      criteria = Enum.map(1..20, fn i -> "criterion number #{i} `cmd#{i}` exits 0" end)
+      text = PremisesContext.render(%{"acceptance_criteria" => criteria})
+
+      assert text =~ "AC1. criterion number 1"
+      assert text =~ "AC12. criterion number 12"
+      refute text =~ "AC13."
+      assert text =~ "- …[8 acceptance criteria omitted]"
+    end
+
+    test "typed sections participate in the whole-block budget (hostile sizes stay bounded)" do
+      # Explicit copy of PremisesContext's private @block_byte_budget.
+      block_budget = 6_000
+
+      premises = %{
+        "path" => "code",
+        "acceptance_criteria" =>
+          Enum.map(1..40, fn i -> "AC body #{i} " <> String.duplicate("a", 2_000) end),
+        "evaluation_principles" =>
+          Enum.map(1..20, fn i ->
+            %{"name" => "p#{i}", "description" => String.duplicate("d", 2_000), "weight" => 0.5}
+          end),
+        "exit_conditions" =>
+          Enum.map(1..20, fn i -> "exit #{i} " <> String.duplicate("e", 2_000) end)
+      }
+
+      text = PremisesContext.render(premises)
+
+      assert String.valid?(text)
+      assert byte_size(text) <= block_budget
+      assert text =~ "### Premises"
+      assert text =~ "### Acceptance criteria"
+      # The instruction always survives, last.
+      assert String.ends_with?(text, "`scope-shift` in your `signals` output.")
+    end
+
+    test "generic entries still fold under the budget when typed sections are present" do
+      # Explicit copy of PremisesContext's private @block_byte_budget.
+      block_budget = 6_000
+
+      premises =
+        1..12
+        |> Map.new(fn i ->
+          {"p" <> String.pad_leading("#{i}", 2, "0"), String.duplicate("v", 600)}
+        end)
+        |> Map.put("acceptance_criteria", ["`mix test` passes", "GET /health returns 200"])
+
+      text = PremisesContext.render(premises)
+
+      assert byte_size(text) <= block_budget
+      assert text =~ "### Acceptance criteria"
+      assert text =~ "AC1. `mix test` passes"
+      assert text =~ ~r/- …\[\d+ premises omitted\]/
+      assert String.ends_with?(text, "`scope-shift` in your `signals` output.")
+    end
+  end
 end

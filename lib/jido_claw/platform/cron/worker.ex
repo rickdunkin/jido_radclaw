@@ -52,6 +52,9 @@ defmodule JidoClaw.Cron.Worker do
     :workflow_name,
     :workflow_input,
     :mfa,
+    # Item 9 (OH1-3): the normalized outcome contract (`Cron.OutcomeSpec.t`)
+    # or nil; the dispatcher appends its rendered block at fire time.
+    outcome_spec: nil,
     timezone: "Etc/UTC",
     status: :active,
     failure_count: 0,
@@ -78,6 +81,7 @@ defmodule JidoClaw.Cron.Worker do
           workflow_name: String.t() | nil,
           workflow_input: term(),
           mfa: mfa() | nil,
+          outcome_spec: JidoClaw.Cron.OutcomeSpec.t() | nil,
           timezone: String.t(),
           status: :active | :disabled,
           failure_count: non_neg_integer(),
@@ -127,6 +131,7 @@ defmodule JidoClaw.Cron.Worker do
         workflow_name: Keyword.get(opts, :workflow_name),
         workflow_input: Keyword.get(opts, :workflow_input),
         mfa: Keyword.get(opts, :mfa),
+        outcome_spec: Keyword.get(opts, :outcome_spec),
         timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
         created_at: DateTime.utc_now()
       })

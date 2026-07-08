@@ -27,6 +27,7 @@ defmodule JidoClaw.FrontDoor.Clarify.Scorer do
   alias JidoClaw.Error
   alias JidoClaw.FrontDoor.Clarify.Ledger
   alias JidoClaw.FrontDoor.Clarify.Score
+  alias JidoClaw.RouteComposer.Premises
   alias JidoClaw.Security.Redaction.Patterns
 
   @max_tokens 2_000
@@ -108,6 +109,22 @@ defmodule JidoClaw.FrontDoor.Clarify.Scorer do
 
   One crisp sentence restating WHAT to build, folding in everything answered
   so far. Refine it every round.
+
+  ## acceptance_criteria / evaluation_principles / exit_conditions (optional)
+
+  As answers accumulate, distill (re-emitting the FULL lists every round,
+  like the ledger; omit a list entirely while nothing qualifies):
+
+  - "acceptance_criteria": observable, testable statements the finished work
+    must satisfy, each grounded in what the user stated or confirmed — NEVER
+    invent requirements. Phrase each so it names an observable behavior or
+    artifact (command output, file, API response, test result — e.g.
+    "`mix test` passes", "GET /health returns 200"). Avoid vague words like
+    "easy", "robust", "user-friendly".
+  - "evaluation_principles": weighted judgment principles for reviewers
+    ({"name", "description", "weight" between 0 and 1}) when the user
+    expressed priorities or trade-offs.
+  - "exit_conditions": explicit stop/done conditions the user stated.
 
   ## ambiguity
 
@@ -201,7 +218,19 @@ defmodule JidoClaw.FrontDoor.Clarify.Scorer do
               ),
             "user_answer" => Zoi.optional(Zoi.string())
           })
-        )
+        ),
+      "acceptance_criteria" => Zoi.optional(Zoi.array(Zoi.string())),
+      "evaluation_principles" =>
+        Zoi.optional(
+          Zoi.array(
+            Zoi.object(%{
+              "name" => Zoi.string(),
+              "description" => Zoi.string(),
+              "weight" => Zoi.number()
+            })
+          )
+        ),
+      "exit_conditions" => Zoi.optional(Zoi.array(Zoi.string()))
     })
   end
 
@@ -319,7 +348,13 @@ defmodule JidoClaw.FrontDoor.Clarify.Scorer do
       # max-with-clamp.
       llm_ambiguity: Score.effective_ambiguity(Map.get(object, "ambiguity"), computed),
       updated_intent: intent(Map.get(object, "updated_intent")),
-      ledger: Ledger.normalize(Map.get(object, "ledger"))
+      ledger: Ledger.normalize(Map.get(object, "ledger")),
+      # Typed premises values (item 9) — normalized at this boundary with the
+      # same value rules `Premises.normalize/1` applies at launch.
+      acceptance_criteria: Premises.normalize_criteria(Map.get(object, "acceptance_criteria")),
+      evaluation_principles:
+        Premises.normalize_principles(Map.get(object, "evaluation_principles")),
+      exit_conditions: Premises.normalize_conditions(Map.get(object, "exit_conditions"))
     }
   end
 

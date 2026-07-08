@@ -139,6 +139,66 @@ defmodule JidoClaw.Cron.DispatcherTest do
     refute_received {:mfa_ran, _}
   end
 
+  describe "outcome contract at fire time (item 9 — OH1-3)" do
+    @spec_wire %{
+      "end_state" => "the digest email is sent",
+      "check" => "the send API returned 200",
+      "stop_bound" => "stop after 2 failed attempts"
+    }
+
+    test "both agent arms append the contract block to the dispatched task", %{tenant: tenant} do
+      base = %{
+        id: "oc-agent",
+        tenant_id: tenant,
+        agent_id: "cron-oc-#{System.unique_integer([:positive])}",
+        task: "send the digest",
+        mode: :main,
+        target: :agent,
+        outcome_spec: @spec_wire
+      }
+
+      Dispatcher.dispatch(base)
+      assert_receive {:dispatch_capture, _pid, query, _opts}
+      assert query =~ "send the digest"
+      assert query =~ "[Outcome contract — the run succeeds ONLY if this is met]"
+      assert query =~ "End state: the digest email is sent"
+      assert query =~ "Stop bound: stop after 2 failed attempts"
+
+      Dispatcher.dispatch(%{base | mode: :isolated, id: "oc-agent-iso"})
+      assert_receive {:dispatch_capture, _pid, isolated_query, _opts}
+      assert isolated_query =~ "Check: the send API returned 200"
+    end
+
+    test "an absent contract leaves the dispatched task byte-identical", %{tenant: tenant} do
+      state = %{
+        id: "oc-none",
+        tenant_id: tenant,
+        agent_id: "cron-ocn-#{System.unique_integer([:positive])}",
+        task: "send the digest",
+        mode: :main,
+        target: :agent
+      }
+
+      Dispatcher.dispatch(state)
+      assert_receive {:dispatch_capture, _pid, query, _opts}
+      assert query == "send the digest"
+    end
+
+    test "the MFA arm is untouched by a contract (system jobs exempt)", %{tenant: tenant} do
+      state = %{
+        id: "oc-mfa",
+        tenant_id: tenant,
+        mode: :system_job,
+        target: :agent,
+        outcome_spec: @spec_wire,
+        mfa: {RecordingMFA, :run, [self(), :oc_mfa]}
+      }
+
+      assert {:ok, :oc_mfa} = Dispatcher.dispatch(state)
+      assert_receive {:mfa_ran, :oc_mfa}
+    end
+  end
+
   describe "dispatch_target/1 (effective path; single source of truth for routing + telemetry)" do
     test "mode: :system_job => :mfa regardless of target (legacy precedence)" do
       assert Dispatcher.dispatch_target(%{mode: :system_job, target: :agent}) == :mfa

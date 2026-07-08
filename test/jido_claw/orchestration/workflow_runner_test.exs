@@ -84,6 +84,34 @@ defmodule JidoClaw.Orchestration.WorkflowRunnerTest do
     assert String.starts_with?(ws, "cron:#{unique_id}:")
   end
 
+  test "the outcome contract rides the workflow extra context (item 9 — OH1-3)",
+       %{tenant: tenant} do
+    put_templates(%{"researcher" => template(EchoStub), "docs_writer" => template(EchoStub)})
+    unique_id = "wfrun-oc-#{System.unique_integer([:positive])}"
+
+    state = %{
+      id: unique_id,
+      tenant_id: tenant,
+      workflow_name: "explore_codebase",
+      workflow_input: %{"context" => "go"},
+      outcome_spec: %{
+        "end_state" => "the exploration doc exists",
+        "check" => "the doc file is non-empty",
+        "stop_bound" => "stop after one pass"
+      }
+    }
+
+    assert :ok = WorkflowRunner.run(state)
+    assert_receive {:run_completed, _run_id, %{status: :completed}}, 5_000
+
+    # Every step's task carries the SAME rendered block the dispatcher's
+    # agent arms use, appended after the workflow_input context.
+    assert_receive {:echo_stub, :task, task}, 5_000
+    assert task =~ "go"
+    assert task =~ "[Outcome contract — the run succeeds ONLY if this is met]"
+    assert task =~ "End state: the exploration doc exists"
+  end
+
   test "a step error drives the run to :failed (and the step runs once)", %{tenant: tenant} do
     put_templates(%{"researcher" => template(ErrorStub), "docs_writer" => template(EchoStub)})
 

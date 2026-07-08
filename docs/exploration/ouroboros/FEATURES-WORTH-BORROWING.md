@@ -92,6 +92,31 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 
 **Recommendation**: BORROW-PATTERN.
 
+> **Status: ✅ ADOPTED 2026-07-08** (next-ten #9, with the orca OR2-5
+> quality-gate fold + the OpenHelm OH1-3 outcome-contract rider). Shipped as
+> `JidoClaw.RouteComposer.Premises` (the three typed keys, fail-open
+> `normalize/1` write boundary, stable `AC1…` index ids — orca OQ-2's
+> linkage answered) + `Premises.Lint` per the signed-off `PORT-OB1-2.md`:
+> vague bank / observable hints+patterns / >9 advisory verbatim, orca's
+> meaningless bank folded, with a **mode split** the source doesn't have
+> (`:clarify` may emit blockers — exclusively the ledger-derived safety set;
+> `:gate` and any unknown mode structurally never). Blockers re-open a
+> clarify round below the cap (`high_risk_assumptions` seeds an idempotent
+> confirm question); degraded demotes ALL of them (their
+> keep-BLOCKED-even-degraded deliberately not carried — #8's hold-for-ack
+> ack IS the human confirmation). Findings ride the plan/safety-gate payload
+> namespaced `"premises_lint"` via `GateStep`'s new runtime `extra_details`
+> merge. Consumers: renderer AC-id section, reviewer-lens citation clauses,
+> `verify_certificate` criteria engine-threaded via ToolContext, the inert
+> skill `verification_criteria` knob now live on both loop sides.
+> Corrections to this entry: `checklist_verify`-style per-AC verdict fan-out
+> stays deferred (item 5's durable verdict rows are the gate); the
+> goal/constraints/non-goals checks and scores were dropped (no
+> substrate/consumer — see the map); the sketch's "run before route
+> composition" landed as compose-time (clarify lane) + gate-time re-lint,
+> and grade `:c` is impossible on a triage-only launch by construction.
+> Truth: `docs/system/structured-premises.md`.
+
 **Where in ouroboros** (wired): the Seed is the platform's central artifact — `core/seed.py:183`, deeply frozen (`frozen=True` + recursive freezing of even plugin-extra fields via `_FrozenDict`, `:321-386`), with the fields that matter: `acceptance_criteria` (outcome-level, "an AC that is a sub-step of a sibling AC is a defect" — `bigbang/seed_generator.py:493`), `evaluation_principles` (**named, weighted** rubric entries — see the dogfood seed `.ouroboros/seeds/seed_73827177a2a3.yaml:88-108`), `exit_conditions`, `constraints`, `brownfield_context` (references with role + summary), and provenance metadata (`ambiguity_score`, `parent_seed_id`, `generation_mode`, `degraded`, `unresolved_slots`, `core/seed.py:138-180`). ACs flow forward into execution (each AC is the unit of decomposition/dispatch) and into verification (`ouroboros_checklist_verify` reads `seed.acceptance_criteria` and fans out per-AC verdicts with re-run feedback strings, `mcp/tools/evaluation_handlers.py:1222-1224` — though note that tool has drifted off the live server registry). Guarding the artifact: **`GradeGate`** (`auto/grading.py:109`) — a deterministic, LLM-free spec linter: hard blockers → C (empty goal, goal↔ledger token-overlap mismatch `:421`, ambiguity > 0.20, unresolved/blocked sections, high-risk assumptions `:560` — credential/production/payment/legal/medical); findings → B (missing constraints/ACs/non-goals; **vague-term ACs** via a 9-word regex bank — easy/intuitive/robust/scalable/… `:23`; **non-observable ACs** — must match one of ~11 observable patterns: command, exit code, HTTP 2xx, test-passes `:479-498`); >9 ACs → advisory only. `may_run = A`. A bounded (≤5) **template repairer** (`auto/seed_repairer.py:209`) rewrites vague ACs into observable ones deterministically, with finding-fingerprint stall detection (`:289`). Honesty: the numeric sub-scores are hand-tuned arithmetic; the *decision logic* (blocker/finding/clean) and the vague/observable/risk checks are the substance, and `_is_observable` is gameable by boilerplate.
 
 **What**: premises that carry testable acceptance criteria and a per-run weighted rubric, born from the clarify loop, linted deterministically before any agent runs, and consumed on both ends — rendered into worker prompts *and* driving per-criterion verification.

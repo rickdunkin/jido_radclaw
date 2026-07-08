@@ -161,6 +161,68 @@ defmodule JidoClaw.Eval.ComposerVendorCaseTest do
     assert run.observations.terminal == :converged
   end
 
+  test "item 9: seeded acceptance criteria render into the assembled reviewer prompt (AC ids + citation clause)",
+       ctx do
+    # The gepa "AC = labeled eval-task candidate" producer case: a run whose
+    # premises carry criteria hands every worker wave the `### Acceptance
+    # criteria` block, and the reviewer task carries the AC-citation clause.
+    # The vendor runner captures the REAL assembled prompt (task +
+    # extra_context) — the strongest available "criteria reached the
+    # subagent" observation.
+    Application.put_env(:jido_claw, :scripted_deposit_runner, %{
+      deposits: [TestFixtures.phase1_clean_reviewer()],
+      output: "vendor reviewer raw output",
+      notify: self()
+    })
+
+    citation_clause =
+      "When the run premises carry acceptance criteria, verify each against " <>
+        "the diff and cite the AC id (AC1, AC2, …) in any related finding."
+
+    catalog =
+      Map.update!(vendor_catalog(), "quality-reviewer", fn stage ->
+        %{stage | task: stage.task <> " " <> citation_clause}
+      end)
+
+    eval_case = %{
+      id: "item9-criteria-in-prompt",
+      kind: :composer,
+      request: %{
+        catalog: catalog,
+        live: ["request-received", "code"],
+        artifacts: %{"request" => %{"seed" => "Build the feature"}},
+        premises: %{
+          "path" => "code",
+          "acceptance_criteria" => ["`mix test` passes", "GET /health returns 200"]
+        },
+        max_waves: 8
+      },
+      assertions: %{terminal: :converged, ran: ["implementer", "quality-reviewer"]}
+    }
+
+    assert {:ok, run} =
+             Eval.run_case(eval_case,
+               tenant: ctx.tenant,
+               actor: actor_for(ctx.tenant),
+               context: ctx.context,
+               timeout: 60_000
+             )
+
+    settle_run_registry(2_000)
+
+    assert run.status == :passed,
+           "item-9 criteria case failed: error=#{inspect(run.error)} " <>
+             "assertions=#{inspect(Enum.reject(run.assertions, &(&1.status == :passed)), pretty: true)}"
+
+    # The reviewer wave's ACTUAL prompt carried the rendered criteria section
+    # with stable ids, and the task carried the citation clause.
+    assert_received {:scripted_deposit_runner, :prompt, prompt}
+    assert prompt =~ "### Acceptance criteria"
+    assert prompt =~ "AC1. `mix test` passes"
+    assert prompt =~ "AC2. GET /health returns 200"
+    assert prompt =~ "cite the AC id"
+  end
+
   test "infra lane: a drifted vendor deposit is box-rejected ⇒ infra exhaustion — never a verdict",
        ctx do
     # `overall: "maybe"` fails the Reviewer's Zoi enum AT THE BOX (isError to

@@ -74,6 +74,39 @@ defmodule JidoClaw.Cron.JobTest do
 
       assert inspect(err) =~ "NoSuchInput" or inspect(err) =~ "tenant_id"
     end
+
+    test "an explicit metadata clear replaces the stored value on conflict" do
+      tenant_id = seed_tenant("cron-meta-clear")
+
+      contract = %{
+        "outcome_spec" => %{
+          "end_state" => "the digest email is sent",
+          "check" => "the send API returned 200",
+          "stop_bound" => "stop after 2 failed attempts"
+        }
+      }
+
+      {:ok, first} =
+        Job.upsert(upsert_attrs(job_id: "meta-clear", metadata: contract),
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert first.metadata == contract
+
+      # Contract-less writers (/cron add, the migrate task) rely on passing
+      # `metadata: %{}` explicitly to drop a stored outcome contract on
+      # conflict — this pins that an explicitly-set empty map replaces the
+      # stored value rather than preserving it.
+      {:ok, second} =
+        Job.upsert(upsert_attrs(job_id: "meta-clear", metadata: %{}),
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      assert second.id == first.id
+      assert second.metadata == %{}
+    end
   end
 
   describe ":disable / :enable" do

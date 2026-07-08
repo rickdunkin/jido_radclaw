@@ -110,8 +110,11 @@ defmodule JidoClaw.Eval do
   defp do_execute(%EvalCase{kind: :composer, request: request}, opts) do
     # Optional seed keys are conditionally-put: an explicit `live: []` differs
     # from absence on the run_sync side, so absence must stay absence.
+    # `:premises` (item 9) seeds the run's launch premises — acceptance
+    # criteria included — through the same `create_parent_run/1` key the front
+    # door uses (no new runtime path).
     seed_opts =
-      Enum.flat_map([:live, :artifacts, :ran, :max_waves], fn key ->
+      Enum.flat_map([:live, :artifacts, :ran, :max_waves, :premises], fn key ->
         case Map.fetch(request, key) do
           {:ok, value} -> [{key, value}]
           :error -> []

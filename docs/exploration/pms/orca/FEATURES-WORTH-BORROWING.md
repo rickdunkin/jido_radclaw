@@ -548,6 +548,20 @@ synthesize the terminal event.
 > `docs/system/ambiguity-clarify.md`). The quality-gate half — criteria
 > lint/acceptance-criteria premises — waits on next-ten #9 (OB1-2), and the
 > promote-on-accept evidence entry is untouched by this pass.
+>
+> **Update 2026-07-08** (the item-9 half — now ✅ complete for the rubric
+> scope): the `validate_task_quality` fold landed inside
+> `JidoClaw.RouteComposer.Premises.Lint` (per `PORT-OB1-2.md`) — the
+> meaningfulness bank verbatim (`todo/tbd/na/none/acceptancecriteria` over
+> the lowercase-alphanumeric normalization, an empty normalization included)
+> as the `meaningless_acceptance_criteria` finding, plus the
+> ≥1-AC-when-key-present rule as `empty_acceptance_criteria`; both
+> findings-only (the repair-once-then-fail-loud FLOW mapped structurally —
+> the clarify loop's own rounds are the repair, the human plan gate the
+> fail-loud). The relevant-files check was dropped: no structured plan tasks
+> exist to carry file lists (camus C3-5's `acceptance` field never landed;
+> planner output is free text). OQ-2's reserved id linkage is answered — see
+> the OQ-2 update. Truth: `docs/system/structured-premises.md`.
 
 **Where in orca**: instead of conversational questions, personas must encode
 uncertainty as **ambiguity-ledger items** `{question, why_it_matters,
@@ -706,6 +720,12 @@ preview-worktree story.
   `acceptance_criteria`) is the producer; OR1-1's criterion-mapping is its natural
   review-side consumer. Decide whether item 9's schema reserves the AC-id linkage when
   it lands — one field now vs a migration later.
+  **ANSWERED 2026-07-08 (item 9 shipped)**: the linkage is **1-based index ids**
+  (`AC1`, `AC2`, … — `Premises.criteria_with_ids/1`, the one id mint), not a stored
+  field — premises compose once at launch, so indexes are stable for the run's
+  lifetime and no migration is ever needed. Reviewer lenses and `verify_certificate`
+  already cite the ids; a future OR1-1-shaped `criterion_mappings` payload keys on
+  them directly. Truth: `docs/system/structured-premises.md`.
 - **OQ-3 — Is `ready`-kind the arming bit, or is arming per-task?** orca separates
   `is_blocked` (computed) from `is_queued` (explicit human intent per task); FLOW §7
   has `ready`-kind = automation-eligible as a *status*. A status can be moved by

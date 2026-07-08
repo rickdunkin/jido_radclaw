@@ -42,8 +42,9 @@ defmodule JidoClaw.ToolContextShapeTest do
       assert ctx.project_dir == nil
       assert ctx.agent_id == nil
 
-      # forge_session_key absent from input → absent from output
+      # Optional-preserved keys absent from input → absent from output.
       refute Map.has_key?(ctx, :forge_session_key)
+      refute Map.has_key?(ctx, :acceptance_criteria)
     end
 
     test "preserves :forge_session_key when set on input" do
@@ -51,9 +52,16 @@ defmodule JidoClaw.ToolContextShapeTest do
       assert ctx.forge_session_key == "forge-abc"
     end
 
+    test "preserves :acceptance_criteria when set on input (item 9)" do
+      ctx = ToolContext.build(%{acceptance_criteria: ["`mix test` passes"]})
+      assert ctx.acceptance_criteria == ["`mix test` passes"]
+    end
+
     test "key set is a stable golden contract" do
-      ctx = ToolContext.build(%{forge_session_key: "k"})
-      assert MapSet.new(Map.keys(ctx)) == MapSet.new([:forge_session_key | @canonical_keys])
+      ctx = ToolContext.build(%{forge_session_key: "k", acceptance_criteria: ["a"]})
+
+      assert MapSet.new(Map.keys(ctx)) ==
+               MapSet.new([:forge_session_key, :acceptance_criteria | @canonical_keys])
     end
   end
 

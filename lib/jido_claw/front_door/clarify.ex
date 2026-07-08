@@ -43,6 +43,7 @@ defmodule JidoClaw.FrontDoor.Clarify do
   alias JidoClaw.FrontDoor.Clarify.Score
   alias JidoClaw.FrontDoor.Clarify.Scorer
   alias JidoClaw.FrontDoor.Clarify.State
+  alias JidoClaw.RouteComposer.Premises.Lint
   alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Triage.Verdict
 
@@ -171,6 +172,38 @@ defmodule JidoClaw.FrontDoor.Clarify do
     end
   end
 
+  @doc """
+  The compose-time premises lint gate (item 9 — `PORT-OB1-2.md`): lint the
+  compose spec's premises in `:clarify` mode over the accumulated ledger.
+  Blockers (exclusively the ledger-derived safety set) below the round cap
+  re-open a clarify round instead of composing — `{:reopen, state, ack,
+  report}`, with the `high_risk_assumptions` blocker seeding an idempotent
+  `user_input_required` confirm question (already-open gap questions ARE
+  their own re-opened round). At the cap the compose proceeds (#8's
+  hold/degraded semantics own that exit); `:one_shot` never parks and skips
+  the clarify-side lint entirely (`report` = nil) — the plan gate's `:gate`
+  re-lint still carries the premises-borne warnings.
+  """
+  @spec lint_gate(spec(), DateTime.t()) ::
+          {:compose, spec(), Lint.report() | nil}
+          | {:reopen, State.t(), String.t(), Lint.report()}
+  def lint_gate(%{origin: :one_shot} = spec, _now), do: {:compose, spec, nil}
+
+  def lint_gate(spec, %DateTime{} = now) do
+    report = Lint.run(spec.premises, mode: :clarify, ledger: spec.state.ledger)
+
+    if report.blockers != [] and spec.state.rounds_shown < round_cap() do
+      state =
+        spec.state
+        |> seed_blocker_questions(report.blockers)
+        |> State.record_round(now)
+
+      {:reopen, state, Formatter.questions(state, state.rounds_shown, round_cap()), report}
+    else
+      {:compose, spec, report}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Continue-turn routing
   # ---------------------------------------------------------------------------
@@ -199,6 +232,31 @@ defmodule JidoClaw.FrontDoor.Clarify do
   defp merge_ledger(state, result) do
     %{result | ledger: Ledger.merge_preserved(state.ledger, result.ledger)}
   end
+
+  # Blocker → question seeding (idempotent by normalized question text, so a
+  # re-blocked compose never duplicates its round). Only `high_risk_assumptions`
+  # synthesizes a question: `ledger_open_gap` blockers point at items already
+  # in the ledger, and `high_ambiguity_score` has nothing askable of its own
+  # (the re-opened round recaps — the formatter's no-open-item fallback).
+  defp seed_blocker_questions(state, blockers) do
+    %{state | ledger: Ledger.append_missing(state.ledger, Enum.flat_map(blockers, &seed_item/1))}
+  end
+
+  defp seed_item(%{code: "high_risk_assumptions"}) do
+    [
+      %{
+        "question" =>
+          "Some assumed defaults touch sensitive territory (credentials, production, " <>
+            "payment, legal, or medical). Confirm or correct those assumptions before I proceed.",
+        "why_it_matters" => "High-risk assumptions need your confirmation, never a default.",
+        "risk_if_unanswered" => "The build could act on a risky unreviewed assumption.",
+        "user_input_required" => true,
+        "status" => "open"
+      }
+    ]
+  end
+
+  defp seed_item(_blocker), do: []
 
   # The empty-open guard runs BEFORE the fold: folding first would zero the
   # consecutive-failure escalation and replace the accumulated ledger with
@@ -299,6 +357,9 @@ defmodule JidoClaw.FrontDoor.Clarify do
 
     %{"ambiguity_score" => effective, "readiness" => Score.readiness(state.ledger)}
     |> put_present("clarifications", Formatter.digest(state))
+    |> put_list("acceptance_criteria", state.acceptance_criteria)
+    |> put_list("evaluation_principles", state.evaluation_principles)
+    |> put_list("exit_conditions", state.exit_conditions)
     |> put_degraded(degraded?, Ledger.unresolved_slots(state.ledger))
   end
 
@@ -313,6 +374,12 @@ defmodule JidoClaw.FrontDoor.Clarify do
 
   defp put_present(premises, _key, ""), do: premises
   defp put_present(premises, key, value), do: Map.put(premises, key, value)
+
+  # Typed premises lists (item 9): only a non-empty list lands — a clarify
+  # run that distilled nothing must not stamp `[]` (the lint's
+  # present-but-empty finding is reserved for producers that CLAIM the key).
+  defp put_list(premises, _key, []), do: premises
+  defp put_list(premises, key, list), do: Map.put(premises, key, list)
 
   defp put_degraded(premises, false, _slots), do: premises
   defp put_degraded(premises, true, []), do: Map.put(premises, "degraded", true)

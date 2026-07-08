@@ -186,12 +186,16 @@ defmodule JidoClaw.Orchestration.Reactors.PlanGate do
   input(:stage_name)
   input(:artifact_name)
   input(:signal_name)
+  # Item 9: the namespaced premises-lint payload (`%{}` when clean) the loop
+  # re-derives in `run_gate_wave/5`; `GateStep` merges it into the case details.
+  input(:lint)
 
   step :approval_gate,
        {JidoClaw.Orchestration.GateStep,
         gate_module: JidoClaw.Gates.PlanGate,
         step_name: "plan-gate",
         details: %{summary: "Approve the implementation plan before execution"}} do
+    argument(:extra_details, input(:lint))
     max_retries(0)
   end
 

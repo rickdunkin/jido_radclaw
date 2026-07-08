@@ -54,12 +54,13 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Reasoning.{Certificates, Output, Telemetry}
+  alias JidoClaw.RouteComposer.Premises
   alias JidoClaw.Solutions.Solution
 
   @impl Jido.Action
   def run(params, context) do
     code = params.code
-    specification = params.specification
+    specification = append_acceptance_criteria(params.specification, context)
     evidence = Map.get(params, :evidence, "")
     cert_type_str = Map.get(params, :certificate_type, "patch_verification")
     solution_id = Map.get(params, :solution_id)
@@ -122,6 +123,25 @@ defmodule JidoClaw.Tools.VerifyCertificate do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  # Item 9: the run's acceptance criteria arrive ENGINE-threaded through
+  # ToolContext (`run_reactor/3` → `resolve_scope/2` → `ToolContext.build/1`),
+  # never as an LLM-relayed argument — so the certificate judges the code
+  # against the launch-established criteria, cited by their stable AC ids.
+  # Absent/junk criteria leave the specification byte-identical.
+  defp append_acceptance_criteria(specification, context) do
+    tool_context = Map.get(context, :tool_context) || %{}
+    criteria = %{"acceptance_criteria" => Map.get(tool_context, :acceptance_criteria)}
+
+    case Premises.criteria_with_ids(criteria) do
+      [] ->
+        specification
+
+      pairs ->
+        block = Enum.map_join(pairs, "\n", fn {id, text} -> "#{id}. #{text}" end)
+        specification <> "\n\nAcceptance criteria (from run premises):\n" <> block
+    end
+  end
 
   defp normalize_cert_type(type_str) do
     Certificates.normalize_type(type_str)

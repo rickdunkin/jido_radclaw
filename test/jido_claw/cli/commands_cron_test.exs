@@ -115,6 +115,64 @@ defmodule JidoClaw.CLI.CommandsCronTest do
       # CLI add omits timezone -> resource default applies.
       assert row.timezone == "Etc/UTC"
     end
+
+    test "re-adding an agent-created job id drops the stored outcome contract" do
+      id = "readd-cron-#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        _ = Scheduler.unschedule(@tenant, id)
+
+        case CronJob.by_job_id(id, tenant: @tenant, actor: Actor.system(@tenant)) do
+          {:ok, row} -> _ = CronJob.remove(row, tenant: @tenant, actor: Actor.system(@tenant))
+          _ -> :ok
+        end
+      end)
+
+      # Seed the row the way the schedule_task tool writes it: an agent-created
+      # job carries its outcome contract under metadata["outcome_spec"] (item 9,
+      # OH1-3), which the scheduler hydrates and the dispatcher appends at fire
+      # time.
+      {:ok, _} =
+        CronJob.upsert(
+          %{
+            job_id: id,
+            task: "agent task",
+            mode: :main,
+            schedule_kind: :every,
+            schedule_value: "86400000",
+            metadata: %{
+              "outcome_spec" => %{
+                "end_state" => "the digest email is sent",
+                "check" => "the send API returned 200",
+                "stop_bound" => "stop after 2 failed attempts"
+              }
+            }
+          },
+          tenant: @tenant,
+          actor: Actor.system(@tenant)
+        )
+
+      future = DateTime.add(DateTime.utc_now(), 2, :day)
+      cron = "#{future.minute} #{future.hour} #{future.day} #{future.month} *"
+
+      output =
+        capture_io(fn ->
+          {:ok, _state} =
+            Commands.handle(~s|/cron add #{id} "#{cron}" new task|, base_state())
+        end)
+
+      assert output =~ "Scheduled"
+
+      # The documented item-9 exemption: operator CLI jobs carry no outcome
+      # contract. Re-adding an agent-created job id must drop the stored
+      # contract — otherwise the scheduler keeps hydrating it and the
+      # dispatcher appends stale success criteria at fire time. Deliberately
+      # contract-specific (not `metadata == %{}`): the pin is "CLI jobs carry
+      # no contract", not "CLI clears all metadata".
+      assert {:ok, row} = CronJob.by_job_id(id, tenant: @tenant, actor: Actor.system(@tenant))
+      assert row.task == "new task"
+      refute Map.has_key?(row.metadata || %{}, "outcome_spec")
+    end
   end
 
   describe "/cron timezone display" do

@@ -71,6 +71,14 @@ defmodule JidoClaw.Cron.Job do
       upsert?(true)
       upsert_identity(:unique_job)
 
+      # On conflict the SET-list is this whitelist ∩ attributes actually set on
+      # the changeset (ash_postgres `upsert_set/4`) — and static attribute
+      # defaults ARE set on create changesets, so a whitelisted defaulted field
+      # (e.g. metadata, default %{}) resets to its default when a caller omits
+      # it. Only a whitelisted field with NO default that a caller never sets is
+      # preserved on conflict. Contract-less writers (/cron add, the migrate
+      # task) still pass `metadata: %{}` explicitly rather than riding that
+      # default-application subtlety.
       upsert_fields([
         :task,
         :mode,
@@ -86,9 +94,9 @@ defmodule JidoClaw.Cron.Job do
         :metadata,
         # Clearing disabled_at on conflict is what makes re-scheduling an existing
         # job_id re-enable a previously auto-disabled row (WS4a source-of-truth
-        # model). Omitted fields are preserved on conflict, so it must be in the
-        # whitelist; the `set_attribute(:disabled_at, nil)` change below writes
-        # the value.
+        # model). disabled_at has no default, so it needs BOTH this whitelist
+        # entry AND the `set_attribute(:disabled_at, nil)` change below to be
+        # written on conflict.
         :disabled_at,
         :updated_at
       ])

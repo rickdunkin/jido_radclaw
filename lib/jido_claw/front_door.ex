@@ -69,6 +69,7 @@ defmodule JidoClaw.FrontDoor do
   alias JidoClaw.FrontDoor.PrototypeSummary
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Catalog
+  alias JidoClaw.RouteComposer.Premises
   alias JidoClaw.Security.Redaction.Patterns
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Telemetry
@@ -327,11 +328,33 @@ defmodule JidoClaw.FrontDoor do
     {:clarify, %{path: new_state.verdict.path, message: ack}}
   end
 
-  # Compose from a clarify spec: `start_composer` FIRST; the pending state is
-  # cleared ONLY on `{:ok, parent}` (the `consume_candidate` precedent) — a
-  # launch failure keeps the loop live so the error ack's re-send re-enters it
-  # and retries the compose. Cleanup failures never prevent `after_launch/4`.
+  # Compose from a clarify spec. Item 9's lint gate runs FIRST: blockers (the
+  # ledger-derived safety set) re-open a clarify round below the round cap
+  # instead of composing; at cap / on one-shot the compose proceeds (#8's
+  # semantics own the exit) and the plan gate's re-lint carries the warnings.
   defp compose_from_clarify(spec, ctx, session) do
+    case Clarify.lint_gate(spec, now()) do
+      {:compose, gated_spec, report} ->
+        emit_premises_lint(report)
+        launch_from_clarify(gated_spec, ctx, session)
+
+      {:reopen, state, ack, report} ->
+        emit_premises_lint(report)
+        serve_round(:lint_block, state, ack, ctx, session)
+    end
+  end
+
+  # `nil` = the one-shot skip (no clarify-side lint ran; the gate re-lint
+  # still covers the premises-borne checks).
+  defp emit_premises_lint(nil), do: :ok
+  defp emit_premises_lint(%{grade: grade}), do: Telemetry.emit_premises_lint(grade, :clarify)
+
+  # Launch from a (lint-cleared) clarify spec: `start_composer` FIRST; the
+  # pending state is cleared ONLY on `{:ok, parent}` (the `consume_candidate`
+  # precedent) — a launch failure keeps the loop live so the error ack's
+  # re-send re-enters it and retries the compose. Cleanup failures never
+  # prevent `after_launch/4`.
+  defp launch_from_clarify(spec, ctx, session) do
     verdict = spec.verdict
 
     # Graduation is re-read + hydrated at COMPOSE time, relevance keyed off
@@ -975,13 +998,24 @@ defmodule JidoClaw.FrontDoor do
   defp graduated_intent(base_intent, _graduation), do: base_intent
 
   # Clarify premises merge LAST (`Map.merge(m, %{})` keeps every pre-clarify
-  # caller byte-identical).
+  # caller byte-identical). Triage-extracted criteria merge BEFORE the clarify
+  # keys — a clarify loop's richer criteria win — and the whole map exits
+  # through the typed-key write boundary (`Premises.normalize/1`, fail-open).
   defp build_premises(path, %Verdict{} = verdict, premises_extra, graduation, clarify_premises) do
     %{"path" => to_string(path), "est_size" => to_string(verdict.est_size)}
     |> Map.merge(premises_extra)
+    |> merge_triage_criteria(verdict)
     |> merge_graduated_from(graduation)
     |> Map.merge(clarify_premises)
+    |> Premises.normalize()
   end
+
+  defp merge_triage_criteria(premises, %Verdict{acceptance_criteria: criteria})
+       when is_list(criteria) and criteria != [] do
+    Map.put(premises, "acceptance_criteria", criteria)
+  end
+
+  defp merge_triage_criteria(premises, _verdict), do: premises
 
   defp clarify_premises(%{premises: %{} = premises}), do: premises
   defp clarify_premises(_clarify), do: %{}

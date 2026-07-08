@@ -87,6 +87,14 @@ defmodule JidoClaw.Triage.Prompt do
   When true, the pipeline drafts competing plans in parallel and adjudicates
   between them before implementing.
 
+  ## `acceptance_criteria` (optional)
+
+  On a `code`/`system` turn whose message EXPLICITLY states verifiable
+  success conditions ("it should return 200", "the test must pass", "exits 0
+  on success"), extract each as one observable criterion string. Extraction
+  only — NEVER invent, infer, or embellish criteria the user did not state.
+  Omit the field entirely when none are stated (the common case).
+
   ## `reasons` (optional)
 
   A small map of short string→string notes explaining the call (e.g.

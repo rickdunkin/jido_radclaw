@@ -102,21 +102,29 @@ defmodule JidoClaw.ToolContext do
   # cwd-fallbacks it).
   @policy_controlled_keys [:user_id, :workspace_id, :workspace_uuid, :actor, :forge_session_key]
 
+  # Optional-preserved keys: present in the scope ⇒ carried into the built
+  # context, absent ⇒ omitted (never a nil placeholder). Deliberately NOT
+  # policy-controlled — always forwarded. `:acceptance_criteria` (item 9) is
+  # the run's engine-threaded criteria list `verify_certificate` reads.
+  @optional_preserved_keys [:forge_session_key, :acceptance_criteria]
+
   @doc """
   Build the canonical tool_context map from a scope map.
 
   The 14 canonical keys are always present in the result (as `nil`
-  when not supplied). `:forge_session_key` is preserved when present in
-  the scope, otherwise omitted.
+  when not supplied). `:forge_session_key` and `:acceptance_criteria` are
+  preserved when present in the scope, otherwise omitted.
   """
   @spec build(map()) :: map()
   def build(scope) when is_map(scope) do
     base = Map.new(@canonical_keys, fn key -> {key, Map.get(scope, key)} end)
 
-    case Map.get(scope, :forge_session_key) do
-      nil -> base
-      key -> Map.put(base, :forge_session_key, key)
-    end
+    Enum.reduce(@optional_preserved_keys, base, fn key, acc ->
+      case Map.get(scope, key) do
+        nil -> acc
+        value -> Map.put(acc, key, value)
+      end
+    end)
   end
 
   @doc """

@@ -302,7 +302,9 @@ defmodule JidoClaw.RouteComposer.Catalog do
       lens: "security",
       task:
         "Review the diff for auth-surface, secrets, and permission changes; " <>
-          "flag findings, else emit clean:security.",
+          "flag findings, else emit clean:security. When the run premises carry " <>
+          "acceptance criteria, verify each against the diff and cite the AC id " <>
+          "(AC1, AC2, …) in any related finding.",
       routes: ["code"],
       subscribes: ["auth-surface"],
       input: %{required: ["diff"], optional: ["fix"]},
@@ -314,7 +316,10 @@ defmodule JidoClaw.RouteComposer.Catalog do
       unit: {:worker_template, "reviewer"},
       lens: "quality",
       task:
-        "Review the diff for style, clarity, and duplication; flag findings, else emit clean:quality.",
+        "Review the diff for style, clarity, and duplication; flag findings, " <>
+          "else emit clean:quality. When the run premises carry acceptance " <>
+          "criteria, verify each against the diff and cite the AC id " <>
+          "(AC1, AC2, …) in any related finding.",
       routes: ["code"],
       subscribes: ["code-written"],
       input: %{required: ["diff"], optional: ["fix"]},
@@ -326,7 +331,10 @@ defmodule JidoClaw.RouteComposer.Catalog do
       unit: {:worker_template, "reviewer"},
       lens: "correctness",
       task:
-        "Review the diff for logic and edge-case correctness; flag findings, else emit clean:correctness.",
+        "Review the diff for logic and edge-case correctness; flag findings, " <>
+          "else emit clean:correctness. When the run premises carry acceptance " <>
+          "criteria, verify each against the diff and cite the AC id " <>
+          "(AC1, AC2, …) in any related finding.",
       routes: ["code"],
       subscribes: ["code-written"],
       input: %{required: ["diff"], optional: ["fix"]},
@@ -338,7 +346,10 @@ defmodule JidoClaw.RouteComposer.Catalog do
       unit: {:worker_template, "reviewer"},
       lens: "architecture",
       task:
-        "Review the diff against the system's architecture; flag findings, else emit clean:architecture.",
+        "Review the diff against the system's architecture; flag findings, " <>
+          "else emit clean:architecture. When the run premises carry acceptance " <>
+          "criteria, verify each against the diff and cite the AC id " <>
+          "(AC1, AC2, …) in any related finding.",
       routes: ["code"],
       subscribes: ["significant-build"],
       input: %{required: ["diff"], optional: ["fix"]},

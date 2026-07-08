@@ -79,6 +79,37 @@ defmodule JidoClaw.FrontDoor.Clarify.ScorerTest do
     assert {:ok, %{llm_ambiguity: 0.9}} = Scorer.score(args())
   end
 
+  test "typed premises fields normalize at the boundary (item 9); absent reads as []" do
+    typed =
+      Map.merge(object(), %{
+        "acceptance_criteria" => ["  `mix test` passes ", "", 42],
+        "evaluation_principles" => [
+          %{"name" => "correctness", "description" => "must be right", "weight" => 1.7},
+          "junk"
+        ],
+        "exit_conditions" => ["stop after 3 attempts"]
+      })
+
+    stub(fn _input, _schema, _opts -> {:ok, resp(typed)} end)
+
+    assert {:ok, result} = Scorer.score(args())
+    assert result.acceptance_criteria == ["`mix test` passes"]
+
+    assert result.evaluation_principles == [
+             %{"name" => "correctness", "description" => "must be right", "weight" => 1.0}
+           ]
+
+    assert result.exit_conditions == ["stop after 3 attempts"]
+
+    # Absent fields normalize to [] (fold keeps the prior round's lists).
+    stub(fn _input, _schema, _opts -> {:ok, resp(object())} end)
+
+    assert {:ok, result} = Scorer.score(args())
+    assert result.acceptance_criteria == []
+    assert result.evaluation_principles == []
+    assert result.exit_conditions == []
+  end
+
   test "classification enum: atoms (Zoi-validated) and strings both normalize; unknown ⇒ :answers" do
     for {wire, expected} <- [
           {:override, :override},

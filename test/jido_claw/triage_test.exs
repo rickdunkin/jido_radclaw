@@ -164,6 +164,7 @@ defmodule JidoClaw.TriageTest do
         intent: "build the thing",
         intent_confirmed?: true,
         multi_plan?: true,
+        acceptance_criteria: ["`mix test` passes", "GET /health returns 200"],
         reasons: %{"path" => "explicit ask"}
       }
 
@@ -182,6 +183,16 @@ defmodule JidoClaw.TriageTest do
     test "round-trips the fail-safe talk verdict (nil est_size/intent)" do
       verdict = Verdict.talk()
       assert {:ok, ^verdict} = Verdict.from_map(Verdict.to_map(verdict))
+    end
+
+    test "from_map normalizes junk acceptance_criteria (item 9, extraction-only field)" do
+      assert {:ok, verdict} =
+               Verdict.from_map(%{"path" => "code", "acceptance_criteria" => ["ok", 42, "  "]})
+
+      assert verdict.acceptance_criteria == ["ok"]
+
+      assert {:ok, %Verdict{acceptance_criteria: []}} =
+               Verdict.from_map(%{"path" => "code", "acceptance_criteria" => "junk"})
     end
 
     test "is JSON-safe: string keys throughout, Jason-encodable" do

@@ -303,6 +303,18 @@ queue item; this entry is the field reference those four consume.
 > every terminal status ⇒ `:illegal`, per-kind authority drift-guards) —
 > `Projection.next_status/2` was already the enforcement point, so the rider
 > cost a describe block. The #9/#10 riders remain queued.
+>
+> **The #9 rider ✅ FOLDED IN 2026-07-08** (next-ten #9 shipped): the
+> `outcome_spec` SHAPE adopted (BUSL-1.1 — three field names + creation
+> validation rules as inspiration only, no code read into the port) as
+> `JidoClaw.Cron.OutcomeSpec` with the operator-decided **required-at-creation**
+> posture: the `schedule_task` tool requires `end_state`/`check`/`stop_bound`
+> (all non-empty, ≤ 500 chars, `check` ≠ `end_state` case-insensitive),
+> persisted under `Job.metadata["outcome_spec"]` and LIVE at fire time —
+> scheduler hydration + reconcile fingerprint, the same rendered contract
+> block on both dispatcher agent arms and workflow extra context. Operator
+> CLI and system/MFA jobs exempt (no contract, byte-identical dispatch).
+> Truth: `docs/system/structured-premises.md`. The #10 rider remains queued.
 
 **Where in OpenHelm**: `agent/src/planner/outcome-assessor.ts:74-252,298-421` (the
 judge), schema `agent/src/planner/schemas.ts:142-185`, evaluator

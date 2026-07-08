@@ -62,6 +62,18 @@ defmodule JidoClaw.FrontDoor.Clarify.Ledger do
     result ++ Enum.reject(prior, &(question_key(&1) in result_keys))
   end
 
+  @doc """
+  Append `items` (normalized here) whose question key — downcase +
+  whitespace-collapse, the `merge_preserved/2` key — is not already present.
+  The idempotent blocker-seeding write (item 9): re-seeding the same lint
+  blocker across composes never duplicates its question.
+  """
+  @spec append_missing([item()], [term()]) :: [item()]
+  def append_missing(ledger, items) when is_list(ledger) and is_list(items) do
+    keys = MapSet.new(ledger, &question_key/1)
+    ledger ++ Enum.reject(normalize(items), &(question_key(&1) in keys))
+  end
+
   @doc "Status tallies for the deterministic floor: open/conflicting/assumed/total."
   @spec counts([item()]) :: %{
           open: non_neg_integer(),

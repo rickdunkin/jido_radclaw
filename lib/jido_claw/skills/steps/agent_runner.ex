@@ -596,13 +596,20 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
   Append an ARTIFACTS output contract to the task prompt when the step has a
   `produces` block. Without this instruction, agents won't emit the fenced
   block that `extract_artifacts/1` looks for.
+
+  Item 9: a non-empty `produces` `verification_criteria` list (the previously
+  inert skill knob) now renders into the instruction too, so the generator
+  works toward the same criteria the evaluator checks
+  (`IterativeStep.run_evaluator/5` folds the same list into the evaluator
+  task).
   """
   @spec inject_produces_instruction(String.t(), map() | nil) :: String.t()
   def inject_produces_instruction(task, nil), do: task
   def inject_produces_instruction(task, produces) when map_size(produces) == 0, do: task
 
-  def inject_produces_instruction(task, _produces) do
+  def inject_produces_instruction(task, produces) do
     task <>
+      criteria_block(produces) <>
       "\n\n" <>
       """
       If you discover runtime details (URLs, ports, generated file paths) that
@@ -617,6 +624,40 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
           port: <actual port>
           files: <comma-separated file paths>
       """
+  end
+
+  @doc """
+  The step's declared `verification_criteria` as a list of strings — `[]`
+  unless `produces` carries a non-empty list. Tolerates the YAML string-keyed
+  shape and atom-keyed synthetic test maps (the Ledger `get` idiom — an
+  explicit string-key fetch first, never `||`); non-binary entries dropped.
+  """
+  @spec produces_criteria(term()) :: [String.t()]
+  def produces_criteria(%{} = produces) do
+    case fetch_criteria(produces) do
+      list when is_list(list) -> Enum.filter(list, &is_binary/1)
+      _absent -> []
+    end
+  end
+
+  def produces_criteria(_produces), do: []
+
+  defp fetch_criteria(produces) do
+    case Map.fetch(produces, "verification_criteria") do
+      {:ok, value} -> value
+      :error -> Map.get(produces, :verification_criteria)
+    end
+  end
+
+  defp criteria_block(produces) do
+    case produces_criteria(produces) do
+      [] ->
+        ""
+
+      criteria ->
+        "\n\nYour output must satisfy these verification criteria (the evaluator checks each):\n" <>
+          Enum.map_join(criteria, "\n", &("- " <> &1))
+    end
   end
 
   @doc """
@@ -689,7 +730,12 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       # AR-8b-2 F2 (D5): thread the Forge session key so a `:docker` worker's
       # `run_command` can route into its session. `ToolContext.build/1` preserves
       # it when non-nil, omits it when nil — so non-docker steps are unchanged.
-      forge_session_key: context[:forge_session_key]
+      forge_session_key: context[:forge_session_key],
+      # Item 9: the run's acceptance criteria (seeded by the composer's
+      # `run_reactor/3` only when premises carry them) — same
+      # optional-preserved contract: nil ⇒ omitted, criteria-less runs
+      # unchanged. `verify_certificate` reads it from ToolContext.
+      acceptance_criteria: context[:acceptance_criteria]
     }
   end
 

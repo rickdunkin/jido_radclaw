@@ -28,7 +28,8 @@ defmodule JidoClaw.Orchestration.GateStep do
   deliberately no `:kind` option, which could silently diverge from the DSL.
   The DSL's `title`/`description`/`fields` seed the operator-visible
   `details` (under `"gate_title"`/`"gate_description"`/`"fields"`), merged
-  over by any caller-supplied `:details`.
+  over by any caller-supplied `:details`, merged over by the **runtime**
+  `:extra_details` argument (below).
 
   ## Options
 
@@ -38,6 +39,15 @@ defmodule JidoClaw.Orchestration.GateStep do
     * `:details` (optional) — a **redactor-safe** operator-visible map
       (default `%{}`). Do not put raw Ash records here — `details` lands in the
       `AgentCase` row's jsonb column and the inbox surfaces it verbatim.
+
+  ## The `:extra_details` argument (runtime details — item 9)
+
+  Options are compile-time (baked into the reactor DSL); per-run values ride
+  the step's `argument(:extra_details, input(...))` instead. A map argument
+  merges LAST into `details` under the same redactor-safe/JSON-safe contract
+  (string-keyed, bounded — the producer namespaces its payload, e.g.
+  `"premises_lint"`, so it can never collide with `summary`/`gate_title`);
+  absent, nil, or `%{}` leaves `details` byte-identical.
   """
 
   use Reactor.Step
@@ -51,7 +61,7 @@ defmodule JidoClaw.Orchestration.GateStep do
   @impl Reactor.Step
   @spec run(Reactor.inputs(), Reactor.context(), keyword()) ::
           {:halt, Ecto.UUID.t()} | {:error, term()}
-  def run(_arguments, %{workflow_run: %WorkflowRun{} = run} = context, options) do
+  def run(arguments, %{workflow_run: %WorkflowRun{} = run} = context, options) do
     gate_module = Keyword.fetch!(options, :gate_module)
     step_name = Keyword.get(options, :step_name, "gate")
     details = Keyword.get(options, :details, %{})
@@ -61,7 +71,10 @@ defmodule JidoClaw.Orchestration.GateStep do
       step_name: step_name,
       kind: Gate.Info.gate_kind!(gate_module),
       gate_module: gate_module,
-      details: Map.merge(Presentation.details(gate_module), details)
+      details:
+        Presentation.details(gate_module)
+        |> Map.merge(details)
+        |> Map.merge(runtime_extra_details(arguments))
     }
 
     case WorkflowLog.gate_open(run, attrs,
@@ -82,4 +95,9 @@ defmodule JidoClaw.Orchestration.GateStep do
   def run(_arguments, _context, _options) do
     {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
   end
+
+  # Only a map argument merges; absent/nil/junk reads as `%{}` so a gate with
+  # no runtime details stays byte-identical.
+  defp runtime_extra_details(%{extra_details: %{} = extra}), do: extra
+  defp runtime_extra_details(_arguments), do: %{}
 end

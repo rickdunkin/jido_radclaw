@@ -63,7 +63,7 @@ re-verify at build time).
 | 6 | B | Honest terminal statuses + stall detection — ✅ DONE 2026-07-06 | camus C1-4 + C1-5 | M | 2 commits (fingerprints / gate + disposition) |
 | 7 | B | Executor seam (cross-vendor review first config) — ✅ DONE 2026-07-07 | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
 | 8 | C | Ambiguity clarify loop — ✅ DONE 2026-07-07 | ouroboros OB1-1 | S–M | Single PR |
-| 9 | C | Structured premises: acceptance criteria + lint | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
+| 9 | C | Structured premises: acceptance criteria + lint — ✅ DONE 2026-07-08 | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
 | 10 | C | Evidence floor (claims vs transcript) | ouroboros OB1-3 (+ camus C1-6c) | M | 2–3 commits |
 
 **Sequencing.** Wave A (#1–3) is filler-grade and independent of everything —
@@ -879,9 +879,65 @@ ready_for_tasks | ready_with_assumptions | blocked_needs_user_input`, and the
 explicit accept-assumptions gate (unresolved `user_input_required` items block
 accept unless the operator opts into the recommended defaults).
 
-## 9. Structured premises: acceptance criteria + lint — M (ouroboros OB1-2)
+## 9. Structured premises: acceptance criteria + lint — M (ouroboros OB1-2) — ✅ DONE 2026-07-08
 
-The keystone entry — it upgrades three shipped mechanisms at once. The AR-9
+> **Done 2026-07-08** (system page:
+> [structured-premises](../../system/structured-premises.md); signed-off port
+> map [PORT-OB1-2](../../exploration/ouroboros/PORT-OB1-2.md)), with
+> corrections/deviations recorded as they happened (mirrored into the source
+> entries — ouroboros OB1-2, orca OR2-5/OQ-2, gepa OQ-2, OpenHelm OH1-3):
+> (a) The plan's "run before route composition; blockers loop back" landed
+> with a **mode split** the source doesn't have: `Lint.run(premises, mode:
+> :clarify, ledger:)` at compose time may emit blockers (exclusively the
+> ledger-derived safety set — camus C3-5's `acceptance` field never landed,
+> so plan-task lint has no substrate, and **grade `:c` is impossible on a
+> triage-only launch by construction**); `mode: :gate` (and any unknown mode,
+> fail-closed) structurally never returns blockers — the gate-side re-lint
+> feeds the plan/safety-gate payload namespaced under `"premises_lint"`.
+> (b) `GateStep` grew the **runtime `extra_details` argument merge** (options
+> are compile-time DSL; per-run lint payloads ride
+> `argument(:extra_details, input(:lint))`) — clean report ⇒ `%{}` ⇒
+> byte-identical `AgentCase.details`, pinned with a survival test.
+> (c) The missing-AC finding needed a gate-side detection mechanism the map
+> row only implied: "a clarify loop ran" reads as the `:ledger` opt at
+> compose time OR the `"ambiguity_score"` premises fingerprint at gate time
+> (amended into the map). (d) The plan's "eval `:prompt` seed case" was
+> structurally impossible — `SubagentPrompt.build/3` (the `:prompt` kind's
+> production function) never sees premises; the case landed as a `:composer`
+> eval case (`composer_vendor_case_test.exs`) with `:premises` added to the
+> eval seed keys (run_sync already accepted it — no new runtime path),
+> asserting the REAL assembled vendor prompt carries `### Acceptance
+> criteria` + AC ids + the citation clause (a stronger pin). (e) The
+> `schedule_task` outcome validation runs AFTER schedule parsing so
+> pre-existing error expectations held; the live-worker hydration proof
+> lives in `scheduler_idempotency_test.exs` (the tool test env has no cron
+> leader). (f) Two small files the plan's modify-list missed:
+> `clarify/ledger.ex` grew the `append_missing/2` primitive (the idempotent
+> blocker-seeding write, keyed on the same normalized question text as
+> `merge_preserved/2`), and `eval.ex` grew the `:premises` composer seed key
+> (see (d)). (g) Residuals accepted + documented: ledger-derived findings
+> don't reach the gate payload (no ledger at gate time — the degraded
+> labeling + clarifications digest carry them), and the high-risk re-open
+> relies on the scorer folding the user's confirmation (bounded by the round
+> cap either way). (h) Review P2 (post-done, 2026-07-08): operator
+> `/cron add` over an agent-created job id was flagged as *preserving* the
+> stored `metadata["outcome_spec"]` (its upsert omitted `metadata`),
+> contradicting the documented CLI exemption. Verdict: mechanics invalid —
+> the claim rode a misreading of the `job.ex` upsert_fields comment; per
+> pinned dep source (ash 3.29.2 / ash_postgres 2.10.0) the conflict SET-list
+> is `upsert_fields ∩ changeset-set attributes` and static defaults count as
+> set, so the re-add already clobbered metadata to `%{}` — confirmed
+> empirically (the new CLI re-add test passed green BEFORE the fix). But
+> nothing pinned that, and the guarantee rode a three-way Ash subtlety
+> (whitelist ∩ default-application ∩ EXCLUDED semantics) a dep bump could
+> flip silently. Resolution: `/cron add` now passes `metadata: %{}`
+> explicitly (migrate-task posture), the misleading comment now states the
+> real SET-list semantics, and two pins land — a CLI re-add drops the
+> contract (`commands_cron_test.exs`, deliberately contract-specific, not
+> `metadata == %{}`) and an explicit clear replaces the stored value on
+> conflict (`job_test.exs`). Deliberately NOT pinned: the
+> omitted-metadata-on-conflict semantics themselves (not load-bearing once
+> the CLI is explicit; such a pin would break spuriously on Ash bumps).
 PR-2 premises pipe carries launch *assumptions*, not criteria; certificate
 `specification` is transient free text filled at call time; skill
 `verification_criteria` is a hardcoded generic list.

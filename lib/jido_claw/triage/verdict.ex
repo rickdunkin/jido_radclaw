@@ -21,6 +21,8 @@ defmodule JidoClaw.Triage.Verdict do
   `{:ok, talk-verdict}` (correctly **not** a fallback).
   """
 
+  alias JidoClaw.RouteComposer.Premises
+
   @type path :: :talk | :sketch | :code | :system
 
   @type t :: %__MODULE__{
@@ -30,6 +32,7 @@ defmodule JidoClaw.Triage.Verdict do
           intent: String.t() | nil,
           intent_confirmed?: boolean(),
           multi_plan?: boolean(),
+          acceptance_criteria: [String.t()],
           reasons: %{optional(String.t()) => String.t()}
         }
 
@@ -39,6 +42,7 @@ defmodule JidoClaw.Triage.Verdict do
             intent: nil,
             intent_confirmed?: false,
             multi_plan?: false,
+            acceptance_criteria: [],
             reasons: %{}
 
   # Fixed whitelists — the only place a model-generated string becomes an atom.
@@ -106,6 +110,9 @@ defmodule JidoClaw.Triage.Verdict do
            # requires :significant_build in signals (the conjunction lives in
            # `FrontDoor.armed?/1`, never here).
            multi_plan?: get(out, :multi_plan) == true,
+           # Item 9: extraction-only criteria — the same value normalization
+           # the premises write boundary applies, so `to_map/1` round-trips.
+           acceptance_criteria: Premises.normalize_criteria(get(out, :acceptance_criteria)),
            reasons: norm_reasons(get(out, :reasons))
          }}
     end
@@ -131,6 +138,7 @@ defmodule JidoClaw.Triage.Verdict do
       "intent" => verdict.intent,
       "intent_confirmed" => verdict.intent_confirmed?,
       "multi_plan" => verdict.multi_plan?,
+      "acceptance_criteria" => verdict.acceptance_criteria,
       "reasons" => verdict.reasons
     }
   end

@@ -100,7 +100,10 @@ defmodule JidoClaw.Orchestration.Reactors.PlanGateTest do
         wave_index: 0,
         stage_name: "plan-gate",
         artifact_name: "approved-plan",
-        signal_name: "plan-approved"
+        signal_name: "plan-approved",
+        # Item 9: the loop merges the premises-lint payload here (`%{}` when
+        # clean — the byte-identical-details case this test now also pins).
+        lint: %{}
       },
       tenant: ctx.tenant,
       actor: ctx.actor,

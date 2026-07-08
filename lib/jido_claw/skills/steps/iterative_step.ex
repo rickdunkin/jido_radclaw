@@ -201,7 +201,9 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
   # The evaluator context builds ONCE per iteration; the inner attempt loop
   # (`attempt_evaluator/5`) re-runs the evaluator on the same context/generator
-  # output when its verdict is infra.
+  # output when its verdict is infra. Item 9: the generator's declared
+  # `verification_criteria` (the skill knob) fold into the evaluator task, so
+  # both sides of the loop work against the same criteria.
   defp run_evaluator(generator, evaluator, config, iteration, gen_result) do
     eval_dep_context = ContextBuilder.format_all([gen_result])
 
@@ -210,7 +212,7 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
     eval_context =
       ContextBuilder.build_task(
-        evaluator.task,
+        augment_evaluator_task(evaluator.task, generator.produces),
         config.extra_context,
         eval_dep_context,
         artifact_context
@@ -218,6 +220,19 @@ defmodule JidoClaw.Skills.Steps.IterativeStep do
 
     round = %{iteration: iteration, gen_result: gen_result, eval_context: eval_context}
     attempt_evaluator(generator, evaluator, config, round, 0)
+  end
+
+  # Absent criteria leave the task byte-identical.
+  defp augment_evaluator_task(task, produces) do
+    case AgentRunner.produces_criteria(produces) do
+      [] ->
+        task
+
+      criteria ->
+        task <>
+          "\n\nVerify the output against these declared criteria (each must hold to pass):\n" <>
+          Enum.map_join(criteria, "\n", &("- " <> &1))
+    end
   end
 
   # One evaluator attempt under the three-exit normalizer contract (camus C1-3):

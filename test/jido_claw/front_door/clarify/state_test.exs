@@ -93,6 +93,46 @@ defmodule JidoClaw.FrontDoor.Clarify.StateTest do
       assert :error = State.from_metadata("junk")
       assert :error = State.from_metadata(nil)
     end
+
+    test "typed premises lists round-trip and follow the keep-if-empty fold rule (item 9)" do
+      folded =
+        State.fold_score(
+          State.new("ask", verdict(), @now),
+          %{
+            acceptance_criteria: ["`mix test` passes"],
+            evaluation_principles: [
+              %{"name" => "correctness", "description" => "must be right", "weight" => 0.9}
+            ],
+            exit_conditions: ["stop after 3 attempts"]
+          },
+          true,
+          @now
+        )
+
+      assert folded.acceptance_criteria == ["`mix test` passes"]
+
+      # A later round whose scorer omitted the lists (normalized to []) keeps
+      # the prior round's — an LLM lapse can't erase them.
+      refolded =
+        State.fold_score(
+          folded,
+          %{acceptance_criteria: [], evaluation_principles: [], exit_conditions: []},
+          true,
+          @now
+        )
+
+      assert refolded.acceptance_criteria == ["`mix test` passes"]
+      assert refolded.evaluation_principles == folded.evaluation_principles
+      assert refolded.exit_conditions == ["stop after 3 attempts"]
+
+      # And the whole state — typed lists included — survives the JSONB trip.
+      assert {:ok, ^refolded} =
+               refolded
+               |> State.to_metadata()
+               |> Jason.encode!()
+               |> Jason.decode!()
+               |> State.from_metadata()
+    end
   end
 
   describe "expired?/2 (default 1h TTL off last activity)" do

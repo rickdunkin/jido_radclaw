@@ -153,6 +153,12 @@ defmodule JidoClaw.FrontDoorClarifyTest do
     |> Map.merge(%{"status" => "answered", "user_answer" => answer})
   end
 
+  defp assumed_item(question, default) do
+    question
+    |> open_item(required: false)
+    |> Map.merge(%{"status" => "assumed", "recommended_default_assumption" => default})
+  end
+
   defp low_object(ledger) do
     %{
       "classification" => "answers",
@@ -517,6 +523,122 @@ defmodule JidoClaw.FrontDoorClarifyTest do
       assert premises["degraded"] == true
       assert premises["unresolved_slots"] == ["assumable?"]
       assert premises["readiness"] == "ready_with_assumptions"
+    end
+  end
+
+  # ===========================================================================
+  # Premises lint gate (item 9 — OB1-2)
+  # ===========================================================================
+
+  describe "premises lint gate" do
+    # The exact seed text `Clarify.lint_gate/2` mints for a high_risk blocker
+    # (idempotency + fold both key on it).
+    @confirm_question "Some assumed defaults touch sensitive territory (credentials, " <>
+                        "production, payment, legal, or medical). Confirm or correct those " <>
+                        "assumptions before I proceed."
+
+    test "typed keys distilled by the loop land in the launch premises", %{ctx: ctx} do
+      canned(ambiguous_verdict(:code))
+
+      pass_typed =
+        [answered_item("q1?", "a1")]
+        |> pass_object("crisp intent")
+        |> Map.merge(%{
+          "acceptance_criteria" => ["`mix test` passes", "GET /health returns 200"],
+          "evaluation_principles" => [
+            %{"name" => "correctness", "description" => "must be right", "weight" => 0.9}
+          ],
+          "exit_conditions" => ["stop after 3 failed attempts"]
+        })
+
+      arm_scorer([low_object([open_item("q1?")]), pass_typed, pass_typed])
+
+      assert {:clarify, _} = FrontDoor.decide("vague ask", ctx)
+      assert {:clarify, _} = FrontDoor.decide("a1", ctx)
+
+      assert {:composer, {:ok, %{parent_run_id: id}}} = FrontDoor.decide("yes, exactly", ctx)
+
+      premises = reload_run(id, ctx).config["premises"]
+      assert premises["acceptance_criteria"] == ["`mix test` passes", "GET /health returns 200"]
+
+      assert premises["evaluation_principles"] == [
+               %{"name" => "correctness", "description" => "must be right", "weight" => 0.9}
+             ]
+
+      assert premises["exit_conditions"] == ["stop after 3 failed attempts"]
+    end
+
+    test "a high-risk assumed default blocks the compose below the cap and re-opens a round",
+         %{ctx: ctx} do
+      canned(ambiguous_verdict(:code))
+      attach_clarify_telemetry()
+
+      auth_q = "how should deployment authenticate?"
+      risky = [assumed_item(auth_q, "Use the production credential for deploys")]
+
+      confirmed = [
+        answered_item(auth_q, "yes, the production credential — confirmed"),
+        answered_item(@confirm_question, "confirmed, proceed")
+      ]
+
+      arm_scorer([
+        low_object([open_item(auth_q)]),
+        pass_object(risky, "deploy the service"),
+        pass_object(risky, "deploy the service"),
+        pass_object(confirmed, "deploy the service")
+      ])
+
+      assert {:clarify, _} = FrontDoor.decide("vague deploy ask", ctx)
+      assert {:clarify, %{message: recap}} = FrontDoor.decide("assume what's sensible", ctx)
+      assert recap =~ "confirm"
+
+      # Streak 2 would compose — the lint blocker re-opens a round instead,
+      # asking the seeded confirm question. No run minted.
+      assert {:clarify, %{message: blocked}} = FrontDoor.decide("yes, exactly", ctx)
+      assert blocked =~ "sensitive territory"
+      assert composer_runs(ctx) == []
+      assert_receive {:clarify_tele, %{event: :lint_block, outcome: :ok}}
+
+      state = pending_state(ctx)
+
+      seeded =
+        Enum.filter(state.ledger, fn item -> item["question"] == @confirm_question end)
+
+      assert [%{"status" => "open", "user_input_required" => true}] = seeded
+
+      # The confirmation answers both items ⇒ nothing assumed ⇒ clean compose.
+      assert {:composer, {:ok, %{parent_run_id: id}}} =
+               FrontDoor.decide("confirmed, use it", ctx)
+
+      premises = reload_run(id, ctx).config["premises"]
+      refute Map.has_key?(premises, "degraded")
+      assert premises["clarifications"] =~ "confirmed"
+      refute Map.has_key?(reload_session(ctx).metadata, "pending_clarify")
+    end
+
+    test "at the cap the degraded compose demotes lint blockers — no re-open loop", %{ctx: ctx} do
+      Application.put_env(:jido_claw, :clarify_round_cap, 1)
+      canned(ambiguous_verdict(:code))
+      attach_clarify_telemetry()
+
+      # A risky assumed item + only-assumable open items: at the cap this
+      # auto-composes degraded, and `"degraded" => true` demotes the
+      # high_risk blocker (map decision (B)) instead of looping the cap.
+      ledger = [
+        assumed_item("auth?", "Use the production credential"),
+        open_item("assumable?", required: false)
+      ]
+
+      arm_scorer([low_object(ledger), low_object(ledger)])
+
+      assert {:clarify, _} = FrontDoor.decide("vague ask", ctx)
+
+      assert {:composer, {:ok, %{parent_run_id: id}}} = FrontDoor.decide("an answer", ctx)
+
+      premises = reload_run(id, ctx).config["premises"]
+      assert premises["degraded"] == true
+      assert_receive {:clarify_tele, %{event: :compose, outcome: :degraded}}
+      refute_received {:clarify_tele, %{event: :lint_block}}
     end
   end
 

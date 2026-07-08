@@ -50,6 +50,7 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
   require Logger
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Cron.OutcomeSpec
   alias JidoClaw.Orchestration.DefinitionFingerprint
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.WorkflowRun
@@ -140,9 +141,16 @@ defmodule JidoClaw.Orchestration.WorkflowRunner do
 
   # The workflow input's "context" key is the extra instructions string appended
   # to every step's task; default to "" so ContextBuilder.build_task drops it.
+  # Item 9 (OH1-3): a cron worker's outcome contract appends here through the
+  # SAME renderer the dispatcher's agent arms use — absent ⇒ byte-identical.
   defp extra_context(state) do
-    Map.get(Map.get(state, :workflow_input) || %{}, "context", "")
+    base = Map.get(Map.get(state, :workflow_input) || %{}, "context", "")
+    join_context(base, OutcomeSpec.render_block(Map.get(state, :outcome_spec)))
   end
+
+  defp join_context(base, ""), do: base
+  defp join_context("", block), do: block
+  defp join_context(base, block), do: base <> "\n\n" <> block
 
   defp format_reason(%{__exception__: true} = e), do: Exception.message(e)
   defp format_reason(reason) when is_binary(reason), do: reason

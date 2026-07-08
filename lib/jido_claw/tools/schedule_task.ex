@@ -16,6 +16,9 @@ defmodule JidoClaw.Tools.ScheduleTask do
     Use cron expressions ('0 9 * * *' for daily at 9am, '*/30 * * * *' for every 30min)
     or interval strings ('every 1h', 'every 30m', 'every 1d').
     Ask the user for the task description and schedule before calling this tool.
+    Every job REQUIRES an outcome contract at creation — end_state (what success
+    is), check (how each run verifies it), stop_bound (when to stop trying) —
+    which is injected into every fired run.
     """,
     category: "scheduling",
     tags: ["scheduling", "write"],
@@ -62,12 +65,35 @@ defmodule JidoClaw.Tools.ScheduleTask do
           "IANA timezone for interpreting a cron expression (e.g. 'America/New_York'). " <>
             "ONLY affects cron-expression schedules — it is inert for 'every <interval>' " <>
             "and absolute schedules. Defaults to 'Etc/UTC'."
+      ],
+      end_state: [
+        type: :string,
+        required: true,
+        doc:
+          "Outcome contract: the state a successful run leaves behind (e.g. 'the daily " <>
+            "digest email is sent'). Must differ from 'check'. Max 500 chars."
+      ],
+      check: [
+        type: :string,
+        required: true,
+        doc:
+          "Outcome contract: HOW a run verifies the end state was reached (e.g. 'the " <>
+            "send API returned 200 and the message id was logged'). Must differ from " <>
+            "'end_state'. Max 500 chars."
+      ],
+      stop_bound: [
+        type: :string,
+        required: true,
+        doc:
+          "Outcome contract: when a run must stop trying (e.g. 'after 2 failed send " <>
+            "attempts or 5 minutes, report the failure and stop'). Max 500 chars."
       ]
     ]
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.NextRun
+  alias JidoClaw.Cron.OutcomeSpec
   alias JidoClaw.Cron.Owner, as: CronOwner
   alias JidoClaw.Skills
 
@@ -81,7 +107,12 @@ defmodule JidoClaw.Tools.ScheduleTask do
     with {:ok, target} <- parse_target(params[:target]),
          {:ok, target_attrs} <- build_target_attrs(target, params, project_dir),
          {:ok, timezone} <- parse_timezone(params[:timezone]),
-         {:ok, schedule_tuple} <- parse_schedule_for(schedule_str) do
+         {:ok, schedule_tuple} <- parse_schedule_for(schedule_str),
+         # Item 9 (OH1-3): the outcome contract is REQUIRED at creation for
+         # agent-created jobs — validated + normalized here, persisted on the
+         # row, and picked up live at fire time through owner reconcile.
+         {:ok, outcome_spec} <-
+           OutcomeSpec.validate(Map.take(params, [:end_state, :check, :stop_bound])) do
       schedule_and_persist(%{
         tenant_id: tenant_id,
         actor: actor,
@@ -91,7 +122,8 @@ defmodule JidoClaw.Tools.ScheduleTask do
         schedule_str: schedule_str,
         schedule_tuple: schedule_tuple,
         target_attrs: target_attrs,
-        timezone: timezone
+        timezone: timezone,
+        outcome_spec: outcome_spec
       })
     end
   end
@@ -113,7 +145,10 @@ defmodule JidoClaw.Tools.ScheduleTask do
           mode: req.mode,
           schedule_kind: kind,
           schedule_value: value,
-          timezone: req.timezone
+          timezone: req.timezone,
+          # String-keyed wire form — the scheduler hydrates it back through
+          # `OutcomeSpec.normalize/1` on reload/reconcile.
+          metadata: %{"outcome_spec" => req.outcome_spec}
         },
         req.target_attrs
       )
@@ -134,6 +169,7 @@ defmodule JidoClaw.Tools.ScheduleTask do
       "Mode: #{req.mode}\n" <>
       target_line(req.target_attrs) <>
       timezone_line(req) <>
+      "Outcome contract recorded (injected into every fired run).\n" <>
       "Persisted — will reload on restart."
   end
 

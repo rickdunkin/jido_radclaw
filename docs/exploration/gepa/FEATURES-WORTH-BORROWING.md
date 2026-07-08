@@ -174,6 +174,11 @@ Companion docs: the propose→eval→promote loop sketched here rides machinery 
 
 - **OQ-1 — Deploy gate.** An optimizer that rewrites `.jido/strategies/*.yaml` is a config-writing agent; the write must route through the gate family (an `AgentCase`, like tool approvals / workflow gates), or through an `/upgrade-prompt`-style sidecar diff review (`agent/prompt.ex:94-218` is the precedent). Which surface — gate case with diff payload, or sidecar file + REPL command?
 - **OQ-2 — Eval-task provenance.** Hand-curated golden set (stable, labor) vs mined from `WorkflowEvent` terminal runs (free, but noisy expected-outputs). Start hand-curated-small (~10 tasks/surface); add a "promote this run to an eval task" affordance later.
+  *Provenance note (2026-07-08, next-ten #9 shipped)*: runs can now carry structured
+  `acceptance_criteria` premises (stable `AC1…` ids, `docs/system/structured-premises.md`) —
+  an AC that shipped with a run is a **labeled eval-task candidate**, so the mined path
+  has real expected-outputs to mine when this question is picked up; the first eval
+  seed case pinning ACs-in-prompt lives in `test/jido_claw/eval/composer_vendor_case_test.exs`.
 - **OQ-3 — First surface.** Strategy `prompts:` blocks (isolated, hot-reloadable, shaped right) vs skill `task:` strings (gskill says the leverage is here). Recommendation embedded in GP2-2: strategies first to prove the loop, skills second.
 - **OQ-4 — Reflection spend policy.** Reflection calls use `:capable`; evals use whatever the surface uses. Is the budget denominated only in metric calls (gepa's default) or also in reflection tokens (`MaxReflectionCost` analog via AgentTracker)?
 

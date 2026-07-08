@@ -176,6 +176,8 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.RouteComposer.FindingKey
   alias JidoClaw.RouteComposer.Fold
   alias JidoClaw.RouteComposer.Loop
+  alias JidoClaw.RouteComposer.Premises
+  alias JidoClaw.RouteComposer.Premises.Lint
   alias JidoClaw.RouteComposer.PremisesContext
   alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
   alias JidoClaw.RouteComposer.Router
@@ -1748,8 +1750,13 @@ defmodule JidoClaw.RouteComposer do
     with {:ok, plan_ref} <- resolve_gate_input_ref(gate_stage, state),
          :ok <- record_wave_start(dispatch, display, state),
          :ok <- ensure_parent_live(state) do
+      inputs =
+        gate_inputs
+        |> Map.put(:plan_ref, plan_ref)
+        |> Map.put(:lint, gate_lint(state.premises))
+
       module
-      |> run_gate_reactor(Map.put(gate_inputs, :plan_ref, plan_ref), state)
+      |> run_gate_reactor(inputs, state)
       |> handle_wave_result(dispatch, display, state)
     else
       {:error, :parent_terminal} -> {:stop, :normal, state}
@@ -1758,6 +1765,16 @@ defmodule JidoClaw.RouteComposer do
       {:error, :parent_fenced} -> {:stop, :normal, state}
       {:error, reason} -> finish_failed(reason, nil, dispatch, display, state)
     end
+  end
+
+  # Item 9: re-derive the premises lint for the gate payload (pure, no new
+  # persistence; `:gate` mode is structurally blocker-free). `%{}` when clean,
+  # so a lint-less gate's `AgentCase.details` stays byte-identical; non-empty
+  # reports ride namespaced under `"premises_lint"` (`Lint.to_details/1`).
+  defp gate_lint(premises) do
+    report = Lint.run(premises, mode: :gate)
+    Telemetry.emit_premises_lint(report.grade, :gate)
+    Lint.to_details(report)
   end
 
   # Resolve the bare store ref of the gate's single required input (the `plan`
@@ -2527,7 +2544,7 @@ defmodule JidoClaw.RouteComposer do
       actor: state.actor,
       async?: true,
       name: "route_composer:wave_#{state.wave_index}",
-      context: state.context,
+      context: seed_criteria_context(state),
       parent_run_id: state.parent_run_id,
       idempotency_key: "composer:#{state.parent_run_id}:#{state.wave_index}",
       # A composer wave carries no definition_hash and isn't standalone-
@@ -2542,6 +2559,18 @@ defmodule JidoClaw.RouteComposer do
       sanitize_sensitive_context: state.sanitize_sensitive_context,
       execution_timeout: state.wave_timeout_ms
     )
+  end
+
+  # Item 9: thread the run's acceptance criteria into the worker-wave context
+  # ONLY when premises carry them — `AgentRunner.resolve_scope/2` picks the
+  # key into `ToolContext`, where `verify_certificate` appends the criteria
+  # block engine-side (never LLM-relayed). Absent criteria leave the context
+  # byte-identical; gate/verify waves keep the bare context (no tool scope).
+  defp seed_criteria_context(state) do
+    case Premises.criteria(state.premises) do
+      [] -> state.context
+      criteria -> Map.put(state.context, :acceptance_criteria, criteria)
+    end
   end
 
   # `WaveCollect` always returns a string-keyed json-safe map, so the live

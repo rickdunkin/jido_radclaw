@@ -17,6 +17,7 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
 
   alias JidoClaw.FrontDoor.Clarify.Ledger
   alias JidoClaw.FrontDoor.Clarify.Score
+  alias JidoClaw.RouteComposer.Premises
   alias JidoClaw.Triage.Verdict
 
   @default_ttl_ms :timer.hours(1)
@@ -28,6 +29,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
           clarity: %{String.t() => float()},
           llm_ambiguity: float(),
           updated_intent: String.t() | nil,
+          acceptance_criteria: [String.t()],
+          evaluation_principles: [Premises.principle()],
+          exit_conditions: [String.t()],
           rounds_shown: non_neg_integer(),
           streak: non_neg_integer(),
           scorer_failures: non_neg_integer(),
@@ -42,6 +46,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
             clarity: %{},
             llm_ambiguity: 1.0,
             updated_intent: nil,
+            acceptance_criteria: [],
+            evaluation_principles: [],
+            exit_conditions: [],
             rounds_shown: 0,
             streak: 0,
             scorer_failures: 0,
@@ -73,7 +80,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
   reset by `qualifying?`, and the consecutive-failure counter cleared (a
   successful score IS the recovery signal). Callers folding over a NON-empty
   prior ledger pass a pre-merged result (`Ledger.merge_preserved/2`) so a
-  scorer-dropped item is preserved, never lost.
+  scorer-dropped item is preserved, never lost. The typed premises lists
+  (item 9) follow the `updated_intent` rule: a non-empty result replaces,
+  an empty one keeps the prior round's — an LLM lapse can't erase them.
   """
   @spec fold_score(t(), map(), boolean(), DateTime.t()) :: t()
   def fold_score(%__MODULE__{} = state, result, qualifying?, %DateTime{} = now)
@@ -84,6 +93,11 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
         clarity: Map.get(result, :clarity, state.clarity),
         llm_ambiguity: Map.get(result, :llm_ambiguity, state.llm_ambiguity),
         updated_intent: present(Map.get(result, :updated_intent)) || state.updated_intent,
+        acceptance_criteria:
+          keep_if_empty(Map.get(result, :acceptance_criteria), state.acceptance_criteria),
+        evaluation_principles:
+          keep_if_empty(Map.get(result, :evaluation_principles), state.evaluation_principles),
+        exit_conditions: keep_if_empty(Map.get(result, :exit_conditions), state.exit_conditions),
         streak: if(qualifying?, do: state.streak + 1, else: 0),
         scorer_failures: 0,
         updated_at: DateTime.to_iso8601(now)
@@ -140,6 +154,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
       "clarity" => state.clarity,
       "llm_ambiguity" => state.llm_ambiguity,
       "updated_intent" => state.updated_intent,
+      "acceptance_criteria" => state.acceptance_criteria,
+      "evaluation_principles" => state.evaluation_principles,
+      "exit_conditions" => state.exit_conditions,
       "rounds_shown" => state.rounds_shown,
       "streak" => state.streak,
       "scorer_failures" => state.scorer_failures,
@@ -166,6 +183,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
          clarity: Score.normalize_clarity(raw["clarity"]),
          llm_ambiguity: number_or(raw["llm_ambiguity"], 1.0),
          updated_intent: binary_or_nil(raw["updated_intent"]),
+         acceptance_criteria: Premises.normalize_criteria(raw["acceptance_criteria"]),
+         evaluation_principles: Premises.normalize_principles(raw["evaluation_principles"]),
+         exit_conditions: Premises.normalize_conditions(raw["exit_conditions"]),
          rounds_shown: int_or(raw["rounds_shown"], 0),
          streak: int_or(raw["streak"], 0),
          scorer_failures: int_or(raw["scorer_failures"], 0),
@@ -190,6 +210,9 @@ defmodule JidoClaw.FrontDoor.Clarify.State do
   end
 
   defp present(_value), do: nil
+
+  defp keep_if_empty(new, _prior) when is_list(new) and new != [], do: new
+  defp keep_if_empty(_new, prior), do: prior
 
   defp number_or(value, _default) when is_number(value), do: value * 1.0
   defp number_or(_value, default), do: default

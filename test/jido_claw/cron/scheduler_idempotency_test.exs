@@ -130,6 +130,65 @@ defmodule JidoClaw.Cron.SchedulerIdempotencyTest do
     end
   end
 
+  describe "outcome contract hydration + reconcile (item 9 — OH1-3)" do
+    @spec_wire %{
+      "end_state" => "the digest email is sent",
+      "check" => "the send API returned 200",
+      "stop_bound" => "stop after 2 failed attempts"
+    }
+
+    test "schedule_persisted hydrates the normalized contract into worker state",
+         %{tenant: tenant} do
+      row =
+        upsert(tenant, %{
+          job_id: "oc",
+          schedule_kind: :every,
+          schedule_value: "86400000",
+          metadata: %{"outcome_spec" => @spec_wire}
+        })
+
+      :ok = Scheduler.schedule_persisted(tenant, row)
+      on_exit(fn -> Scheduler.unschedule(tenant, "oc") end)
+
+      assert Worker.get_state(tenant, "oc").outcome_spec == @spec_wire
+    end
+
+    test "a contract-less row hydrates nil (byte-identical dispatch)", %{tenant: tenant} do
+      row = upsert(tenant, %{job_id: "ocn", schedule_kind: :every, schedule_value: "86400000"})
+      :ok = Scheduler.schedule_persisted(tenant, row)
+      on_exit(fn -> Scheduler.unschedule(tenant, "ocn") end)
+
+      assert is_nil(Worker.get_state(tenant, "ocn").outcome_spec)
+    end
+
+    test "changed?/2: a contract edit restarts; an unchanged contract doesn't",
+         %{tenant: tenant} do
+      row =
+        upsert(tenant, %{
+          job_id: "occ",
+          schedule_kind: :every,
+          schedule_value: "86400000",
+          metadata: %{"outcome_spec" => @spec_wire}
+        })
+
+      :ok = Scheduler.schedule_persisted(tenant, row)
+      on_exit(fn -> Scheduler.unschedule(tenant, "occ") end)
+      worker = Worker.get_state(tenant, "occ")
+
+      assert {:ok, false} = Scheduler.changed?(row, worker)
+
+      edited =
+        upsert(tenant, %{
+          job_id: "occ",
+          schedule_kind: :every,
+          schedule_value: "86400000",
+          metadata: %{"outcome_spec" => %{@spec_wire | "check" => "the message id was logged"}}
+        })
+
+      assert {:ok, true} = Scheduler.changed?(edited, worker)
+    end
+  end
+
   describe "re-enable on upsert" do
     test "re-upserting a disabled job_id clears disabled_at and re-surfaces it", %{tenant: tenant} do
       row = upsert(tenant, %{job_id: "re", schedule_kind: :every, schedule_value: "86400000"})
