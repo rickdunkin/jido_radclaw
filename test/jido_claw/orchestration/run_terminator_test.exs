@@ -8,10 +8,11 @@ defmodule JidoClaw.Orchestration.RunTerminatorTest do
   Single-BEAM: the cast targets the already-running app singleton via
   `{RunTerminator, Node.self()}` — a single-node stand-in (the resolver returns
   `:local` for self, and a disconnected node atom cannot receive a cast on one
-  BEAM). Real cross-BEAM cast *delivery* to a genuinely remote node is WS6's
-  `:peer` multi-node harness — out of scope here. The terminator touches no DB,
-  so a plain `ExUnit.Case` with no sandbox; unique run-id/tenant strings per
-  test (the shared, global `RunRegistry`).
+  BEAM). Real cross-BEAM cast *delivery* to a genuinely remote node is proven
+  by WS6's `:peer` multi-node `JidoClaw.Cluster.CrossNodeCancelTest` — out of
+  scope here. The terminator touches no DB, so a plain `ExUnit.Case` with no
+  sandbox; unique run-id/tenant strings per test (the shared, global
+  `RunRegistry`).
   """
   use ExUnit.Case, async: false
 

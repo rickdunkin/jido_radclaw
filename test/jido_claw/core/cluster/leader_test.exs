@@ -1,11 +1,13 @@
 defmodule JidoClaw.Cluster.LeaderTest do
   @moduledoc """
-  WS4 — `:pg` leader election (single-BEAM). Cross-BEAM `:peer` election is
-  WS6's deliverable; here we test the pure selection/reducer core with
-  synthetic node-name lists (a single BEAM cannot make `node(pid)` return a
-  remote name), the `leader?/0`/`leader/0` fast-path + fail-closed behavior,
-  real `:pg` join/leave wiring via the `:members_fun` DI seam, and the
-  `:rest_for_one` restart coupling of `:pg` + Leader.
+  WS4 — `:pg` leader election (single-BEAM). Cross-BEAM `:peer` election —
+  agreement and re-election on a real leader-node death — is proven by WS6's
+  `JidoClaw.Cluster.LeaderElectionTest`; here we test the pure
+  selection/reducer core with synthetic node-name lists (a single BEAM cannot
+  make `node(pid)` return a remote name), the `leader?/0`/`leader/0`
+  fast-path + fail-closed behavior, real `:pg` join/leave wiring via the
+  `:members_fun` DI seam, and the `:rest_for_one` restart coupling of `:pg` +
+  Leader.
 
   `async: false`: toggles the global `:cluster_enabled` app-env and owns the
   shared `:jido_claw` `:pg` scope. `[[project_suite_flaky_tests]]`: verify in

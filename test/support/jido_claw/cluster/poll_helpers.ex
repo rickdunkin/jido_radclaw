@@ -18,6 +18,7 @@ defmodule JidoClaw.Cluster.PollHelpers do
   alias JidoClaw.Orchestration.ReclaimPooler
   alias JidoClaw.Orchestration.RunExecution
   alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Repo
 
   @doc """
   Poll the run row (global reload) until `pred` holds. Flunks with the final
@@ -71,6 +72,34 @@ defmodule JidoClaw.Cluster.PollHelpers do
         flunk("""
         executor for run #{run_id} still registered on #{node} after #{timeout}ms:
         #{inspect(PeerHarness.call(node, RunExecution, :lookup, [run_id]))}
+        """)
+    end
+  end
+
+  @doc """
+  Poll the shared DB's clock until it passes `instant` (`SELECT now() > $1`) —
+  the wall-clock-free way to prove "a full lease window elapsed" (Proof 3's
+  healthy-lease window): every lease comparison in production is against the
+  DB's `now()`, so the proof's clock must be the same one, never the test
+  BEAM's. Flunks with both clocks on timeout.
+  """
+  @spec await_db_clock_past!(DateTime.t(), non_neg_integer()) :: :ok
+  def await_db_clock_past!(%DateTime{} = instant, timeout \\ 30_000) do
+    probe = fn ->
+      %{rows: [[past?]]} = Repo.query!("SELECT now() > $1", [instant])
+      past?
+    end
+
+    case PeerHarness.await(probe, timeout) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        %{rows: [[db_now]]} = Repo.query!("SELECT now()", [])
+
+        flunk("""
+        the DB clock never passed #{inspect(instant)} within #{timeout}ms;
+        DB now(): #{inspect(db_now)}
         """)
     end
   end

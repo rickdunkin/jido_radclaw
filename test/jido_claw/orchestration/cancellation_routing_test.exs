@@ -6,7 +6,8 @@ defmodule JidoClaw.Orchestration.CancellationRoutingTest do
   so the resolver is tested in isolation, exactly like `Cluster.Leader.elect/1`).
 
   The actual `GenServer.cast({RunTerminator, remote_node}, …)` *delivery* to a
-  genuinely remote node is WS6's `:peer` multi-node harness — out of scope here.
+  genuinely remote node is proven by WS6's `:peer` multi-node
+  `JidoClaw.Cluster.CrossNodeCancelTest` — out of scope here.
   """
   use ExUnit.Case, async: true
 

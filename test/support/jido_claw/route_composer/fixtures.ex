@@ -18,6 +18,8 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
   alias JidoClaw.RouteComposer.Commit
   alias JidoClaw.RouteComposer.Router
   alias JidoClaw.RouteComposer.Stage
+  alias JidoClaw.RouteComposer.TestSupport.StubStore
+  alias JidoClaw.RouteComposer.TestSupport.StubWorker
 
   @doc """
   Builds a `%Stage{}` from `S()`-style keyword opts. Unspecified fields take
@@ -714,6 +716,82 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
       },
       "coder" => %{"signals" => ["code-written"], "diff" => "DIFF: +def authenticate(user)"}
     }
+  end
+
+  # ---------------------------------------------------------------------------
+  # WS6 cluster-proof fixtures (peer-side — invoked ON a peer via :erpc)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  A minimal validator-clean, gate-free LINEAR catalog for the WS6 mid-wave
+  composer-reclaim proof: `planner → implementer`, exactly one stage per wave
+  (no parallel cohorts, so a kill mid-wave-1 has exactly one in-flight child).
+  A projection of `self_heal_fixture_catalog/0` — the reviewers/fixer are
+  dropped, so `code-written` has no subscriber and the route converges right
+  after the implementer. Seeds are the self-heal seeds.
+  """
+  @spec linear_worker_fixture_catalog() :: %{String.t() => Stage.t()}
+  def linear_worker_fixture_catalog do
+    Map.take(self_heal_fixture_catalog(), ["planner", "implementer"])
+  end
+
+  @doc """
+  Install the composer stub environment ON A PEER (WS6 Proofs 5/6) — the
+  `Application.put_env` calls the single-BEAM composer suites make in `setup`,
+  packaged as a named MFA because a per-test `put_env` on the origin never
+  reaches a peer and `peer_overrides` are boot-time only. `agent_server:` is
+  per-peer (Proof 6 blocks on A and completes on B); `blocked_template:`
+  (optional) arms `TemplateBlockingAgentServer`'s selector. The stub outputs
+  are the shared researcher/coder map (`gate_fixture_stub_outputs/0`) — it
+  serves both cluster catalogs (gate fixture and linear), outputs being keyed
+  by template, not stage.
+
+  Also owns the `StubStore` ETS table's lifetime: `StubWorker.ask/3` writes
+  through `StubStore.put/2` (which does NOT create the table), and a table
+  created by the transient `:erpc` server process would die with it — so a
+  long-lived unlinked holder process runs `StubStore.setup/0` and sleeps,
+  returning only after a readiness handshake. Re-installs (later tests, same
+  module-lifetime peer) find the table alive and just clear it.
+  """
+  @spec install_cluster_stub_env(keyword()) :: :ok | {:error, :stub_store_never_ready}
+  def install_cluster_stub_env(opts) do
+    agent_server = Keyword.fetch!(opts, :agent_server)
+
+    Application.put_env(
+      :jido_claw,
+      :agent_templates_override,
+      phase1_template_override(StubWorker)
+    )
+
+    Application.put_env(:jido_claw, :step_agent_server, agent_server)
+    Application.put_env(:jido_claw, :route_composer_stub_outputs, gate_fixture_stub_outputs())
+
+    case Keyword.get(opts, :blocked_template) do
+      nil -> Application.delete_env(:jido_claw, :route_composer_blocked_template)
+      template -> Application.put_env(:jido_claw, :route_composer_blocked_template, template)
+    end
+
+    ensure_stub_store_holder()
+  end
+
+  # Spawn (unlinked — the RunFixtures launcher pattern) the peer-lifetime
+  # StubStore owner and block on its readiness handshake, so a caller returning
+  # `:ok` is guaranteed a live table.
+  defp ensure_stub_store_holder do
+    caller = self()
+    ref = make_ref()
+
+    spawn(fn ->
+      StubStore.setup()
+      send(caller, {:stub_store_ready, ref})
+      Process.sleep(:infinity)
+    end)
+
+    receive do
+      {:stub_store_ready, ^ref} -> :ok
+    after
+      5_000 -> {:error, :stub_store_never_ready}
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -84,10 +84,16 @@ defmodule JidoClaw.RouteComposer.TestSupport.StubWorker do
     outputs = Application.fetch_env!(:jido_claw, :route_composer_stub_outputs)
     typed = lookup_output!(outputs, template, task)
 
+    # The matched template rides the stored entry (WS6 Proof 6's decision
+    # input): `TemplateBlockingAgentServer` selects which request to block by
+    # store lookup — `await_completion/2`'s opts carry no template. An extra
+    # key is invisible to the existing readers (`Output.typed_request_output/1`
+    # touches only `:result`/`:meta`).
     StubStore.put(request_id, %{
       status: :completed,
       result: typed,
-      meta: %{output: %{status: :validated, schema_kind: :map}}
+      meta: %{output: %{status: :validated, schema_kind: :map}},
+      template: template
     })
 
     {:ok, %{id: request_id}}
@@ -187,6 +193,51 @@ defmodule JidoClaw.RouteComposer.TestSupport.BlockingAgentServer do
     # finishes (failed), so its transcript flush deserves the terminal signal.
     TerminalSignal.emit_from_await(opts, "ai.request.failed")
     {:ok, %{status: :failed, result: :blocked}}
+  end
+end
+
+defmodule JidoClaw.RouteComposer.TestSupport.TemplateBlockingAgentServer do
+  @moduledoc """
+  A template-SELECTIVE blocking `:step_agent_server` stub (WS6 Proof 6 — the
+  mid-worker-wave composer-reclaim window): requests whose `StubStore` entry
+  was stamped by the template named in `:route_composer_blocked_template`
+  block forever; every other request delegates to `StubAgentServer`.
+
+  Neither existing blocker fits that shape: `GatedAgentServer` blocks the
+  FIRST call (wave 0's planner — before the "wave 0 completed" checkpoint the
+  proof needs durable) and `BlockingAgentServer` blocks every call. This one
+  lets wave 0 complete and holds ONLY the configured template's wave in
+  flight, so the proof kills the node mid-wave-1 with wave 0's fold already
+  committed. Installed on the doomed peer only; the blocked process dies with
+  its BEAM (no release path, by design).
+
+  Decides by store lookup — `await_completion/2`'s opts carry no template, so
+  `StubWorker.ask/3` stamps the matched template into the stored entry.
+  """
+  alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
+  alias JidoClaw.RouteComposer.TestSupport.StubStore
+
+  @spec await_completion(pid(), keyword()) :: {:ok, map()}
+  def await_completion(pid, opts) do
+    if blocked?(request_id_from(opts)) do
+      Process.sleep(:infinity)
+    end
+
+    StubAgentServer.await_completion(pid, opts)
+  end
+
+  defp blocked?(request_id) do
+    blocked_template = Application.get_env(:jido_claw, :route_composer_blocked_template)
+
+    case StubStore.fetch(request_id) do
+      {:ok, %{template: template}} -> is_binary(blocked_template) and template == blocked_template
+      _missing_or_unstamped -> false
+    end
+  end
+
+  defp request_id_from(opts) do
+    [:requests, request_id | _rest] = Keyword.fetch!(opts, :result_path)
+    request_id
   end
 end
 

@@ -27,6 +27,12 @@ defmodule JidoClaw.ClusterCase do
     # Captured at expansion so the use-site's `peer_overrides:` reaches the
     # module-lifetime peer boot; the CaseTemplate proxy forwards only
     # `ExUnit.Case.__keys__` to ExUnit.Case, so the custom key is warning-free.
+    # Spliced back UNESCAPED: the extracted value is the use-site's own AST, so
+    # a module-alias value (e.g. a `:cron_workflow_runner` module) expands in
+    # the test module's context — `Macro.escape` would freeze the
+    # `{:__aliases__, …}` node into a literal tuple and push THAT to the peers
+    # (surfaced by the Phase 3 cron-failover proof; pure-literal override
+    # lists, all of Phase 2, behave identically either way).
     overrides = Keyword.get(opts, :peer_overrides, [])
 
     quote do
@@ -43,7 +49,7 @@ defmodule JidoClaw.ClusterCase do
       @moduletag timeout: 120_000
 
       setup_all do
-        JidoClaw.ClusterCase.boot_peers!(unquote(Macro.escape(overrides)))
+        JidoClaw.ClusterCase.boot_peers!(unquote(overrides))
       end
     end
   end

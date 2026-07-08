@@ -82,7 +82,8 @@ defmodule JidoClaw.Cron.Owner do
   The three reads are dependency-injection seams (`:tenants_fun`,
   `:tenant_fun`, `:jobs_fun` opts), so read-failure and leader/follower behavior
   are exercised single-BEAM through the `:cluster_leader_module` stub. The
-  cross-BEAM `:peer` failover proof is WS6.
+  cross-BEAM `:peer` failover proof is WS6's
+  `JidoClaw.Cluster.CronFailoverTest`.
   """
 
   use GenServer

@@ -13,6 +13,8 @@ defmodule JidoClaw.Cluster.RunFixtures do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.BlockingTestReactor
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
+  alias JidoClaw.RouteComposer
+  alias JidoClaw.RouteComposer.TestFixtures
 
   @doc """
   Launch a forever-blocking leased run via the full runner path (lease
@@ -40,6 +42,53 @@ defmodule JidoClaw.Cluster.RunFixtures do
     after
       30_000 -> {:error, :timeout}
     end
+  end
+
+  @doc """
+  Launch a SUPERVISED route composer on one of the WS6 cluster catalogs
+  (Proofs 5/6). Synchronous DB genesis (`create_parent_run/1` — leased at
+  genesis, catalog persisted in config so a reclaiming peer can rebuild it)
+  then `ensure_started/2`, whose `:transient` child outlives this transient
+  `:erpc` server process by construction — no spawn needed. The caller must
+  have installed the stub env first (`TestFixtures.install_cluster_stub_env/1`
+  on this peer). Returns `{:ok, parent_run_id}` once the composer is live;
+  everything after (waves, park, kill) is awaited durably by the test node.
+
+  Ctx-shape caveat: the cluster `ctx.ctx` is `%{tenant:, actor:}` only —
+  opts are built here rather than through `TestFixtures.base_opts/1`, which
+  expects a `ctx.context` key. An empty `context` is deliberate: the wave
+  scope takes its documented `wf_<tag>` / `File.cwd!()` fallbacks, and
+  nothing in these proofs asserts workspace/session threading.
+  """
+  @spec launch_composer(%{tenant: String.t(), actor: map()}, :gate_fixture | :linear_worker) ::
+          {:ok, String.t()} | {:error, term()}
+  def launch_composer(%{tenant: tenant, actor: actor}, catalog_key) do
+    {catalog, live, artifacts} = launch_ingredients(catalog_key)
+
+    opts = [
+      catalog: catalog,
+      live: live,
+      artifacts: artifacts,
+      tenant: tenant,
+      actor: actor,
+      context: %{},
+      max_waves: 10
+    ]
+
+    with {:ok, parent} <- RouteComposer.create_parent_run(opts),
+         {:ok, _pid} <- RouteComposer.ensure_started(opts, parent) do
+      {:ok, parent.id}
+    end
+  end
+
+  defp launch_ingredients(:gate_fixture) do
+    {TestFixtures.gate_fixture_catalog(), TestFixtures.gate_fixture_seed_live(),
+     TestFixtures.gate_fixture_seed_artifacts()}
+  end
+
+  defp launch_ingredients(:linear_worker) do
+    {TestFixtures.linear_worker_fixture_catalog(), TestFixtures.self_heal_seed_live(),
+     TestFixtures.self_heal_seed_artifacts()}
   end
 
   @doc """

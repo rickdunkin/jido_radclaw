@@ -355,3 +355,75 @@ until Phase 1 starts; this workstream is the convention's first user.*
   the per-`{name, arity}` unused-import warning (verified empirically with a
   scratch probe), so the shared quote stays as-is even though no proof module
   uses all of it.
+
+### Phase 3
+
+- **All four subsystem proofs in one implementation plan** *(operator-decided
+  at plan review)*. The phase sketch said the composer proof should split into
+  its own unit "if it fights back"; sizing found near-drop-in single-BEAM
+  templates (`reclaim_pooler_test.exs`, `composer_durable_test.exs`), so all
+  four ship together.
+- **The composer proof is doubled** *(operator-decided at plan review)*: BOTH
+  kill points — durably gate-parked AND mid-worker-wave — as two separate
+  one-kill modules (`composer_reclaim_gate_park_test.exs`,
+  `composer_reclaim_midwave_test.exs`), where the sketch drew one proof. The
+  two resume paths are different machinery (re-park + live decision on the
+  reclaimer vs corpse-child fencing + fresh-wave-index re-dispatch) and each
+  module kills exactly once.
+- **The WS3 rolling-deploy-overlap rider folded in as a fifth proof**
+  *(operator-decided at plan review)*:
+  `healthy_lease_not_reclaimed_test.exs` — the reclaim pooler LOOP armed live
+  on the peers (500ms poll, the rejoining-node shape) and a healthy
+  1s-renewing lease outliving a full original lease window untouched, proven
+  on the DB clock via the new `PollHelpers.await_db_clock_past!/2`.
+- **No flag-row/DB blocking fixture after all** *(forced: one sensible
+  path)*. Phase 2's deviation log predicted "the releasable flag-row fixture
+  is deferred until a proof needs staged release (Phase 3 composer
+  choreography, likely)". Neither composer proof needed it: the gate park IS
+  a durable no-timing-window checkpoint (no blocker at all), and the mid-wave
+  window rides a new template-SELECTIVE blocking agent server
+  (`TemplateBlockingAgentServer`) on doomed peer A — neither existing stub
+  fit (`GatedAgentServer` blocks wave 0's planner, before the
+  wave-0-completed checkpoint the proof needs durable; `BlockingAgentServer`
+  blocks everything). Its decision input is a one-line fixture change:
+  `StubWorker.ask/3` now stamps the matched template into the stored
+  `StubStore` entry (invisible to existing readers, which touch only
+  `:result`/`:meta`).
+- **`peer_overrides` could not carry a module value — `ClusterCase` fixed**
+  *(forced by discovery)*. The cron proof's
+  `cron_workflow_runner: JidoClaw.Cluster.CronProbeRunner` override reached
+  the peers as a literal `{:__aliases__, …}` AST tuple: the `using` quote
+  spliced the extracted opts through `Macro.escape`, which freezes an
+  unexpanded alias node (every Phase 1–2 override was a pure literal, where
+  escape is a no-op — the bug was unobservable until a module-valued
+  override existed). Fix: splice the use-site AST back UNESCAPED, so alias
+  values expand in the test module's context; literal lists behave
+  identically. Surfaced as three cron fires failing with "Modules (the first
+  argument of apply) must always be an atom" and the job auto-disabling.
+- **Cron proof: the leader-era snapshot is taken AFTER `kill_peer/1`
+  returns, and the no-double-fire cutoff is the survivor's first row**
+  *(forced)*. The plan's step 6 said snapshot-then-kill; a read racing the
+  halt can miss the last fire's in-flight commit (and a read before the halt
+  can precede one more 1s-cadence fire). `kill_peer/1` blocks until nodedown
+  and a halted BEAM can never commit again, so the post-nodedown read is the
+  complete leader-era population for assertion (a). For assertion (b), the
+  frozen-leader-set form: by the time the survivor's FIRST row is visible
+  (election + reconcile + a full 1s fire later), every dead-node commit is
+  long visible — the leader-attributed id-set is snapshotted there and must
+  not grow across one more full survivor fire, with no third attribution
+  anywhere. Same node-partition intent as the plan's id-set difference, with
+  the cutoff moved off the racy read.
+- **Mid-wave proof: reclaim driving is pre-gated on BOTH leases having
+  expired on the DB clock** *(forced by discovery)*. The parent's and the
+  wave child's sidecars renew on independent 1s phases, so after the kill
+  there is a sub-second window where only the parent has expired; a
+  `reclaim_once` landing there takes the correct-but-slow production DEFER
+  path (live-lease child ⇒ `release_on_defer` parks the parent on a
+  `poll_interval` cooldown for a later poll) — and the test's poll, keyed on
+  `claimed_by == B`, stopped driving at the defer's claim-stamp and hung
+  (first red run's flunk dump showed the 15s-cooldown signature). Fixes:
+  `await_db_clock_past!` over the LATER of the two expiries before driving;
+  a short `poll_interval_ms: 500` override (loop still disabled) so any
+  residual defer's cooldown stays inside the awaits; and the convergence
+  await keeps driving `reclaim_once` (a no-op against a healthy restarted
+  composer, the retry if a residual stop released the parent).

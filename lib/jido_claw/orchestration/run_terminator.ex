@@ -22,8 +22,8 @@ defmodule JidoClaw.Orchestration.RunTerminator do
   refused) lives in `RunExecution.kill_local/2`, the single source of truth.
 
   Real cross-BEAM cast *delivery* to a genuinely remote node is exercised by
-  WS6's `:peer` multi-node harness; single-node it is only ever reached as
-  `{__MODULE__, Node.self()}`.
+  WS6's `:peer` multi-node `JidoClaw.Cluster.CrossNodeCancelTest`; single-node
+  it is only ever reached as `{__MODULE__, Node.self()}`.
   """
 
   use GenServer

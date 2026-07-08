@@ -4,7 +4,8 @@ defmodule JidoClaw.Cron.OwnerTest do
 
   Single-BEAM coverage of the reconcile/notify/trigger contract, driving
   leadership through the `:cluster_leader_module` stub (no live `:pg`). The
-  cross-BEAM `:peer` failover proof is WS6's deliverable.
+  cross-BEAM `:peer` failover proof is WS6's
+  `JidoClaw.Cluster.CronFailoverTest`.
 
   Pins:
 
