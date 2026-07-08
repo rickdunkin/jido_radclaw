@@ -156,6 +156,18 @@ defmodule JidoClaw.Forge.Harness do
 
   @impl GenServer
   def init({session_id, spec}) do
+    # Load-bearing for teardown (docker write build): `Manager.stop_session`
+    # terminates this child with a `:shutdown` exit, and `terminate/2` — whose
+    # body was always written for that delivery (`maybe_finalize_phase`
+    # reasons about Manager-driven `:shutdown` explicitly) — only RUNS on an
+    # external exit when trapping. Without this flag `Sandbox.destroy/2`
+    # never fired on the stop path: invisible for HostShell (its sandbox
+    # Agents are linked and die with the harness), a leaked microVM + secret-
+    # bearing workspace per session on docker (found live by the write-build
+    # smoke). Stray `{:EXIT, _, _}` messages from linked ports/Agents land in
+    # the `handle_info` catch-all — a crashed linked client now surfaces on
+    # its next use instead of killing the session mid-flight.
+    Process.flag(:trap_exit, true)
     resources = Map.get(spec, :resources, [])
 
     case ResourceProvisioner.validate_resources(resources) do
@@ -763,31 +775,53 @@ defmodule JidoClaw.Forge.Harness do
       state.runner.terminate(default_client(state), reason)
     end
 
-    Enum.each(state.clients, fn {_name, entry} ->
-      try do
-        Sandbox.destroy(entry.client, entry.sandbox_id)
-      catch
-        kind, reason ->
-          Logger.warning("[Forge.Harness] Sandbox destroy failed: #{kind} #{inspect(reason)}")
-      end
+    # Destroys run DETACHED under the app TaskSupervisor: a docker destroy is
+    # a real multi-second `sbx rm --force`, and running it inline here would
+    # hold the supervisor's shutdown budget AND block `Manager.stop_session`'s
+    # synchronous `terminate_child` past its callers' 5s GenServer.call
+    # deadlines (serialized through the singleton Manager for a whole wave).
+    # The client entries are plain data by now — a linked stub Agent is
+    # already dead (destroy tolerates it), and a failed/interrupted rm is the
+    # boot reaper's job (`SandboxInit`).
+    clients = state.clients
+
+    Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
+      Enum.each(clients, fn {_name, entry} ->
+        try do
+          Sandbox.destroy(entry.client, entry.sandbox_id)
+        catch
+          kind, reason ->
+            Logger.warning("[Forge.Harness] Sandbox destroy failed: #{kind} #{inspect(reason)}")
+        end
+      end)
     end)
 
     :ok
   end
 
+  # Gated like every other Persistence entry point: with persistence
+  # disabled there is no phase row to finalize, and the bare `find_session`
+  # read was the one UNGATED terminate-time DB call — now that `terminate/2`
+  # actually runs on the Manager stop path (trap_exit), an ungated read
+  # would stall teardown on DB latency for sessions that never persisted
+  # anything.
   defp maybe_finalize_phase(state, reason) do
-    case Persistence.find_session(state.session_id) do
-      %{phase: phase} when phase in [:cancelled, :completed, :failed] ->
-        :ok
+    if Persistence.enabled?() do
+      case Persistence.find_session(state.session_id) do
+        %{phase: phase} when phase in [:cancelled, :completed, :failed] ->
+          :ok
 
-      _ ->
-        # Only :normal means the session genuinely finished its work.
-        # :shutdown and {:shutdown, _} may be external kills (e.g.
-        # Process.exit(pid, :shutdown)) that should remain recoverable,
-        # so mark them :failed. Manager.stop_session already sets
-        # :cancelled before terminating — that's handled above.
-        terminal_phase = if reason == :normal, do: :completed, else: :failed
-        update_phase(state, terminal_phase)
+        _ ->
+          # Only :normal means the session genuinely finished its work.
+          # :shutdown and {:shutdown, _} may be external kills (e.g.
+          # Process.exit(pid, :shutdown)) that should remain recoverable,
+          # so mark them :failed. Manager.stop_session already sets
+          # :cancelled before terminating — that's handled above.
+          terminal_phase = if reason == :normal, do: :completed, else: :failed
+          update_phase(state, terminal_phase)
+      end
+    else
+      :ok
     end
   end
 
@@ -1274,6 +1308,13 @@ defmodule JidoClaw.Forge.Harness do
     fun.()
   rescue
     e -> Logger.warning("[Forge.Harness] Persistence error: #{inspect(e)}")
+  catch
+    # DB faults can arrive as EXITS, not raises (e.g. a DBConnection
+    # checkout whose pool/owner died mid-call). Best-effort means neither
+    # may crash the harness — inside `terminate/2` an uncaught exit would
+    # REPLACE the session's real exit reason (`:normal` → a DB error),
+    # miscoloring the stop for every monitor.
+    :exit, reason -> Logger.warning("[Forge.Harness] Persistence exit: #{inspect(reason)}")
   end
 
   # Named test seam for the `:complete` handler ONLY (the app-env-seam idiom, cf.
@@ -1356,17 +1397,19 @@ defmodule JidoClaw.Forge.Harness do
 
   # AR-8b-2 F2 (1.5): normalize every `:extra_mounts` entry to a
   # `{host, container, mode}` tuple at this single harness boundary, so the
-  # backend's `add_spec_mounts/2` stays tuple-only AND the PERSISTED spec stays
+  # backend's mount handling stays tuple-only AND the PERSISTED spec stays
   # JSON-safe (a tuple cannot be jsonb-encoded — `redact_map/1` would raise — so
   # F2 persists map mounts `%{"host"=>,"container"=>,"mode"=>}` and they convert
-  # here). Runs UNCONDITIONALLY (including the no-resource-mounts path), and is
+  # here). SHAPE-only: the same-path + absolute requirement (sbx 0.34.0
+  # workspace positionals) is the backend's own validation. Runs
+  # UNCONDITIONALLY (including the no-resource-mounts path), and is
   # IDEMPOTENT: an already-`{h,c,m}` tuple (resource mounts, or a later
   # create/recovery/sync re-run on an in-memory spec already converted) passes
   # through. A malformed entry is an impossible-by-construction invariant on the
   # F2 create/recovery paths (the front door builds well-formed maps; `wake/2`
   # fail-closes a malformed recovered mount), so it raises a DESCRIPTIVE
   # `ArgumentError` naming the bad entry — a clear boundary failure, not a
-  # `FunctionClauseError` buried in `add_spec_mounts/2`'s tuple destructure. With
+  # `FunctionClauseError` buried in the backend's tuple destructure. With
   # `restart: :temporary` that raise is a clean session death (front door
   # degrades / recovery fails closed). Non-F2 sessions with no `:extra_mounts`
   # pass through untouched.
@@ -1386,8 +1429,8 @@ defmodule JidoClaw.Forge.Harness do
 
   # An already-`{host, container, mode}` tuple passes through. `mode` is NOT
   # constrained to a binary: `ResourceProvisioner.file_mount_specs/1` yields an
-  # ATOM mode (`:ro`/`:rw`), which `add_spec_mounts/2` interpolates as-is — only
-  # `host`/`container` must be the binary paths the backend joins.
+  # ATOM mode (`:ro`/`:rw`), which the backend's mount positional accepts — only
+  # `host`/`container` must be the binary paths the backend emits.
   defp normalize_mount({host, container, _mode} = tuple)
        when is_binary(host) and is_binary(container),
        do: tuple

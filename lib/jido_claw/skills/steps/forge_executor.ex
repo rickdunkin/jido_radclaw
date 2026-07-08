@@ -5,20 +5,25 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   through a REAL minimal Forge session instead of an in-process `Jido.AI`
   worker.
 
-  Plain ephemeral sessions only: `claim: false`, `sandbox: :local` (HostShell —
-  a per-run tmp working dir; deliberately ignoring a prod `FORGE_SANDBOX=docker`
-  so executor steps never spin a microVM per stage). PR-4's template
-  `executor_config` knobs `access:`/`session_sandbox:` are enforce-only here:
-  `access: :write` forces `session_sandbox: :docker` at hydration, and
-  `session_sandbox: :docker` is REFUSED at dispatch (`refuse_docker_session/2`,
-  fail-closed before any resource) until the docker write build lands — whose
-  deposit loopback URL needs a networking design a microVM doesn't have.
-  Lifecycle per step: mint a session
-  id → `Forge.start_session_ready/3` asserting the HostShell backend (ReadyStart
-  tears down its own partial session on failure) → one `Forge.run_iteration/2` →
-  map to a `%StepResult{}` → always `Forge.stop_session/2` (`try/after` — the
-  result is captured before teardown, and a genuine raise propagates to
-  `AgentRunner`'s `run_recorded` boundary; the facade returns tagged tuples).
+  Plain ephemeral sessions, every kind: `claim: false`. The `:shell`/`:fake`
+  arms and LOCAL vendor plans run `sandbox: :local` (HostShell — a per-run tmp
+  working dir; deliberately ignoring a prod `FORGE_SANDBOX=docker` so executor
+  steps never spin a microVM per stage). The template `executor_config` knobs
+  `access:`/`session_sandbox:` are LIVE (the docker write build):
+  `session_sandbox: :docker` dispatches a vendor session into an sbx microVM
+  via the `:executor_docker_backend` seam, and `access: :write` (which forces
+  `:docker` at hydration) mounts the run's repo same-path **rw** so the CLI's
+  edits land directly in the real working tree — the runner gets its vendors'
+  `:full` arms; the microVM + workspace mount mode is the boundary (camus
+  sketch (d)). `:read_only`+docker keeps the read-only CLI flags AND a `:ro`
+  mount (defense in depth). Lifecycle per step: mint a session
+  id → `Forge.start_session_ready/3` asserting the plan's backend (HostShell
+  for local; the seam-resolved docker MODULE — `expected_backend/1` — for
+  docker; ReadyStart tears down its own partial session on failure) → one
+  `Forge.run_iteration/2` → map to a `%StepResult{}` → always
+  `Forge.stop_session/2` (`try/after` — the result is captured before
+  teardown, and a genuine raise propagates to `AgentRunner`'s `run_recorded`
+  boundary; the facade returns tagged tuples).
   Single-shot: `:blocked` and `:continue` map to plain step errors;
   `:needs_input` ALSO maps to a step error (the run rides its existing
   failure lanes — no composer park) but first raises a durable
@@ -63,15 +68,20 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   endpoint — the engine owns both ends of the result channel (camus C1-1's
   thesis vs. the hallucination-prone stdout relay). Per step: a linked
   `Deposit` box + `ScopedEndpoint` (Bandit on loopback, fronting
-  `DepositServer` through `DepositPlug`) + host-side MCP client config,
-  acquired through a total unwinding reducer (a partial acquisition tears
-  down exactly what it acquired — the box never leaks), then a real HostShell
-  session whose runner is invoked with the HARDWIRED read-only posture
-  (`access: :read_only`, `config_sync: :auth_only` — codex `-s read-only` /
-  claude restricted `--tools` + isolated `CLAUDE_CONFIG_DIR`). PR-4's
-  `access: :write` template declaration cannot weaken this: write forces
-  `session_sandbox: :docker` at hydration and docker refuses at dispatch, so
-  every live vendor session stays read-only until the write build.
+  `DepositServer` through `DepositPlug`) + MCP client config — a host-tmp
+  file for local plans, an in-VM write (`mcp_config_json`, checked at runner
+  init) for docker plans — acquired through a total unwinding reducer (a
+  partial acquisition tears down exactly what it acquired — the box never
+  leaks), then a real session whose runner posture derives from the plan's
+  single resolved `access`: `:read_only` ⇒ codex `-s read-only` / claude
+  restricted `--tools` (+ isolated `CLAUDE_CONFIG_DIR` via
+  `config_sync: :auth_only`, both postures); `:write` (docker-only by
+  hydration) ⇒ the runners' `:full` arms, with the microVM + rw same-path
+  repo mount as the boundary. A docker session reaches the deposit endpoint
+  through `host.docker.internal` under a per-sandbox `allow_network` policy
+  rule (both `host.docker.internal:<port>` and `localhost:<port>` forms);
+  claude additionally pins `--strict-mcp-config` in write mode so a mounted
+  repo's `.mcp.json` cannot shadow/expand the deposit surface.
 
   **Single-channel deposit** (camus OQ-1(c)): `typed_output` comes ONLY from a
   schema-valid `submit_structured_output` deposit (validated in the box,
@@ -82,13 +92,15 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
 
   `executor_config.workspace` (vendor kinds only, hydration-defaulted `:repo`):
   `:repo` points the CLI at the run's real `project_dir` (codex `-C`, claude
-  `--add-dir` + the path named in the prompt) — required present-non-blank or
-  the step fails loudly BEFORE any session; `:scratch`/`:none` expose no repo —
-  the CLI runs from its per-session throwaway dir, and the two differ only in
-  the prompt note (meaningful writable workspaces arrive with the docker write
-  build — the pinned materialization is a direct rw repo mount).
+  `--add-dir` + the path named in the prompt; on docker additionally a
+  same-path workspace mount + `--workdir`, rw only under `access: :write`) —
+  required present-non-blank or the step fails loudly BEFORE any session;
+  `:scratch`/`:none` expose no repo — the CLI runs from its per-session
+  throwaway dir (no mount, no workdir on docker), and the two differ only in
+  the prompt note.
 
-  Vendor creds reuse the runners' host config sync (`~/.claude` / `~/.codex` +
+  Vendor creds reuse the runners' host config sync (`~/.claude` — the shared
+  dotted-file → legacy-file → macOS-Keychain source — / `~/.codex` +
   `{:error, :no_credentials}`) — the operator's own CLI auth, the same trust
   class as running the CLI by hand; a missing-creds session start surfaces as
   a clean step error (Lane B infra for lens cohorts). Prompt egress is
@@ -196,13 +208,21 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
        when kind in [:codex, :claude_code] do
     config = Map.get(template, :executor_config, %{})
     workspace = Map.get(config, :workspace, :repo)
+    # Resolved ONCE, threaded through the plan: the workspace mount mode AND
+    # the runner posture both derive from this single `access` (divergence =
+    # opaque in-VM write failures). Hydration guarantees write ⇒ docker; the
+    # defaults here mirror hydration's for direct-call (test) templates.
+    access = Map.get(config, :access, :read_only)
+    session_sandbox = Map.get(config, :session_sandbox, :local)
 
-    with :ok <- refuse_docker_session(config, template_name),
-         {:ok, project_dir} <- resolve_workspace_dir(workspace, context, template_name) do
+    with {:ok, project_dir} <- resolve_workspace_dir(workspace, context, template_name) do
       # Claim LAST — after every refusal above — so a refused dispatch never
       # burns the single-use operator answer (the PR-4 answer-loop). The
       # session arms (`:shell`/`:fake`) never claim, structurally: the claim
-      # call exists only in this vendor clause.
+      # call exists only in this vendor clause. A docker infra failure AFTER
+      # this point (backend create, policy rule, runner init) can still burn
+      # the answer — the same pre-existing class as a local :no_credentials
+      # at init; accepted, not new machinery.
       operator_answer = claim_operator_answer(ni)
       output = worker_output_schema(Map.get(template, :module))
 
@@ -212,6 +232,8 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
           kind: kind,
           output: output,
           workspace: workspace,
+          access: access,
+          session_sandbox: session_sandbox,
           config: config,
           context: context,
           project_dir: project_dir,
@@ -222,7 +244,8 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
               workspace,
               project_dir,
               output,
-              operator_answer
+              operator_answer,
+              access == :write and session_sandbox == :docker
             )
         }}}
     end
@@ -232,25 +255,6 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     case NeedsInput.claim_answer(ni) do
       {:ok, answer} -> answer
       :none -> nil
-    end
-  end
-
-  # PR-4 enforce-only posture: `session_sandbox: :docker` HYDRATES (the
-  # write⇒docker invariant requires declaring it for `access: :write`) but is
-  # not yet dispatchable — the docker-backed vendor session (sbx path
-  # translation, deposit-URL reachability from the microVM, stdin-EOF, sbx
-  # auth) is the named write-build follow-up. Refused here fail-closed BEFORE
-  # any session/box/endpoint — the `{:forge, :custom}` hydrates-but-refuses
-  # pattern. Only read_only+local vendor configs can proceed past this point.
-  defp refuse_docker_session(config, template_name) do
-    case Map.get(config, :session_sandbox, :local) do
-      :docker ->
-        {:error,
-         "Step #{template_name} failed: docker-backed vendor dispatch lands with the " <>
-           "write build (session_sandbox: :docker not yet dispatchable)"}
-
-      _local ->
-        :ok
     end
   end
 
@@ -271,10 +275,11 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   defp resolve_workspace_dir(_scratch_or_none, _context, _template_name), do: {:ok, nil}
 
   # Plain ephemeral session spec, every kind: `claim: false`, `sandbox: :local`
-  # (→ HostShell; the template `session_sandbox:` knob cannot change this —
-  # `:docker` is refused at dispatch until the write build). Tenant per the
-  # `resolve_scope` precedence; the REAL `workspace_uuid` (never the runtime
-  # `workspace_id` string — the front-door `forge_exec_spec/3` precedent:
+  # (→ HostShell) — the `:shell`/`:fake` arms and LOCAL vendor plans, byte-
+  # identical to PR-2 (no `sandbox_spec` key, ever — a present-nil would
+  # defeat downstream `Map.get` defaults). Tenant per the `resolve_scope`
+  # precedence; the REAL `workspace_uuid` (never the runtime `workspace_id`
+  # string — the front-door `forge_exec_spec/3` precedent:
   # `Persistence.scope_from_spec/1` casts it to the Session's `:uuid`
   # attribute, so a synthetic id would fail the cast).
   defp session_spec(context, runner, runner_config) do
@@ -288,6 +293,61 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     }
   end
 
+  # The docker vendor session spec (the write build): same base, backend from
+  # the `:executor_docker_backend` seam, `sandbox_spec` knobs conditionally-
+  # put — a workspace-less plan carries neither `workdir` nor `extra_mounts`;
+  # `allow_network` is always present (the deposit endpoint must be reachable
+  # from the microVM via host.docker.internal AND localhost — both forms
+  # required by the sbx proxy).
+  defp docker_session_spec(plan, runner, runner_config, res) do
+    plan.context
+    |> session_spec(runner, runner_config)
+    |> Map.put(:sandbox, executor_docker_backend())
+    |> Map.put(:sandbox_spec, docker_sandbox_spec(plan, res))
+  end
+
+  defp docker_sandbox_spec(plan, res) do
+    port = res.endpoint.port
+    base = %{allow_network: ["host.docker.internal:#{port}", "localhost:#{port}"]}
+
+    if plan.workspace == :repo do
+      # The pinned OQ-1(a) materialization: a direct same-path repo mount,
+      # rw ONLY for the write posture — read_only keeps a :ro mount besides
+      # the runner's read-only CLI flags (defense in depth).
+      mode = if plan.access == :write, do: "rw", else: "ro"
+
+      base
+      |> Map.put(:workdir, plan.project_dir)
+      |> Map.put(:extra_mounts, [{plan.project_dir, plan.project_dir, mode}])
+    else
+      base
+    end
+  end
+
+  defp executor_docker_backend do
+    Application.get_env(:jido_claw, :executor_docker_backend, :docker_sandbox)
+  end
+
+  @doc """
+  The `expected_backend:` module for a vendor session's `session_sandbox`.
+  Public so precommit pins the `:docker_sandbox → Docker` MODULE mapping:
+  `Harness.resolve_client/1` stores the resolved MODULE in `sandbox_module`
+  and `ReadyStart.usable_status/2` compares it to `expected_backend`, so
+  passing the wire ATOM through would tear down every real docker session as
+  `{:wrong_backend, Docker}` — a hole stub-armed tests alone cannot see. An
+  armed stub Behaviour module (the `:executor_docker_backend` seam) passes
+  through as itself.
+  """
+  @spec expected_backend(:local | :docker) :: module()
+  def expected_backend(:docker) do
+    case executor_docker_backend() do
+      :docker_sandbox -> JidoClaw.Forge.Sandbox.Docker
+      module when is_atom(module) -> module
+    end
+  end
+
+  def expected_backend(_local), do: HostShell
+
   # ---------------------------------------------------------------------------
   # Vendor prompt assembly (P1a order): subagent system prompt (the same
   # contract in-process workers get — when the doctrine gate supplies one) →
@@ -295,11 +355,19 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   # deposit instruction LAST (nearest to action).
   # ---------------------------------------------------------------------------
 
-  defp vendor_prompt(system_prompt, task, workspace, project_dir, output, operator_answer) do
+  defp vendor_prompt(
+         system_prompt,
+         task,
+         workspace,
+         project_dir,
+         output,
+         operator_answer,
+         writable?
+       ) do
     [
       valid_system_prompt(system_prompt),
       task,
-      workspace_note(workspace, project_dir),
+      workspace_note(workspace, project_dir, writable?),
       operator_answer_block(operator_answer),
       deposit_instruction(output)
     ]
@@ -320,15 +388,24 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
       "answer to proceed; do not ask again:\n\n" <> answer
   end
 
-  defp workspace_note(:repo, project_dir) do
+  # Writability rides the note (the write build): a write+docker session's
+  # edits land directly in the real working tree — the CLI must know it, or
+  # it hedges into patch-emitting behavior; every other combination keeps the
+  # read-only wording.
+  defp workspace_note(:repo, project_dir, true = _writable?) do
+    "You are working in the repository at #{project_dir} (writable this session — " <>
+      "your changes land directly in the working tree)."
+  end
+
+  defp workspace_note(:repo, project_dir, _read_only) do
     "You are working in the repository at #{project_dir} (read-only this session)."
   end
 
-  defp workspace_note(:scratch, _project_dir) do
+  defp workspace_note(:scratch, _project_dir, _writable?) do
     "You have no repository access; your working directory is a throwaway session scratch dir."
   end
 
-  defp workspace_note(:none, _project_dir) do
+  defp workspace_note(:none, _project_dir, _writable?) do
     "You have no repository access."
   end
 
@@ -428,9 +505,9 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   defp run_session(spec, template, template_name, step_name, ni) do
     session_id = Ecto.UUID.generate()
 
-    # HostShell asserted: executor sessions are `sandbox: :local` by
-    # construction (`session_spec/3`; `session_sandbox: :docker` never
-    # dispatches — `refuse_docker_session/2`).
+    # HostShell asserted: the `:shell`/`:fake` session arms are
+    # `sandbox: :local` by construction (`session_spec/3`); only vendor plans
+    # can carry `session_sandbox: :docker` (see `run_vendor/4`).
     case Forge.start_session_ready(session_id, spec, expected_backend: HostShell) do
       {:ok, ^session_id} ->
         # The result is captured BEFORE teardown (the consolidator run_server
@@ -556,19 +633,26 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
   defp run_vendor(plan, template_name, step_name, ni) do
     ref = Ecto.UUID.generate()
     session_id = Ecto.UUID.generate()
-
-    base = Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
-    forge_home = Path.join(base, session_id)
+    forge_home = vendor_forge_home(plan, session_id)
 
     case acquire_vendor_resources(ref, plan, forge_home) do
       {:ok, res} ->
         try do
           runner_config = build_runner_config(plan, res)
-          spec = session_spec(plan.context, vendor_runner(plan.kind), runner_config)
+          runner = vendor_runner(plan.kind)
 
-          # HostShell asserted here too — a vendor plan is read_only+local by
-          # the time it reaches this point (see `refuse_docker_session/2`).
-          case Forge.start_session_ready(session_id, spec, expected_backend: HostShell) do
+          spec =
+            case plan.session_sandbox do
+              :docker -> docker_session_spec(plan, runner, runner_config, res)
+              _local -> session_spec(plan.context, runner, runner_config)
+            end
+
+          # Backend asserted per the plan's session_sandbox: HostShell for
+          # local, the seam-resolved docker MODULE for docker (see
+          # `expected_backend/1`).
+          case Forge.start_session_ready(session_id, spec,
+                 expected_backend: expected_backend(plan.session_sandbox)
+               ) do
             {:ok, ^session_id} ->
               try do
                 iter = Forge.run_iteration(session_id, timeout: runner_config.timeout_ms)
@@ -590,18 +674,30 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     end
   end
 
+  # Docker plans pin the forge home under an in-VM user-writable base — the
+  # configured `/var/local/forge` may not be creatable in-VM (the runner
+  # `mkdir -p`s it as the sandbox user); local plans keep the configured base
+  # byte-identical.
+  defp vendor_forge_home(%{session_sandbox: :docker}, session_id),
+    do: Path.join("/tmp/jidoclaw_forge_exec", session_id)
+
+  defp vendor_forge_home(_local_plan, session_id) do
+    base = Application.get_env(:jido_claw, :forge_home, "/var/local/forge")
+    Path.join(base, session_id)
+  end
+
   # Explicit accumulator/reducer, not `try`-scope rebindings (a rebound var
   # inside `try` is not reliably visible to `rescue`): each step is a non-bang
   # tuple step by construction (`safe_step` converts any raise/exit), the acc
   # IS the teardown manifest, and the first failure tears down exactly what
   # was acquired — the box never leaks past a partial acquisition (P2b).
   defp acquire_vendor_resources(ref, plan, forge_home) do
-    steps = [
-      &acquire_box(&1, ref, plan.output),
-      &acquire_endpoint(&1, ref),
-      &acquire_forge_home(&1, forge_home),
-      &acquire_client_config(&1, ref)
-    ]
+    steps =
+      [
+        &acquire_box(&1, ref, plan.output),
+        &acquire_endpoint(&1, ref),
+        &acquire_forge_home(&1, forge_home)
+      ] ++ client_config_steps(plan, ref)
 
     Enum.reduce_while(steps, {:ok, %{}}, fn step, {:ok, acc} ->
       case safe_step(fn -> step.(acc) end) do
@@ -614,6 +710,13 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
       end
     end)
   end
+
+  # The host-tmp client config is LOCAL-only (review P3): a docker session
+  # reads its config from the in-VM write (`mcp_config_json` at runner init)
+  # — it must not carry a host /tmp write failure surface for a file it
+  # never reads.
+  defp client_config_steps(%{session_sandbox: :docker}, _ref), do: []
+  defp client_config_steps(_local_plan, ref), do: [&acquire_client_config(&1, ref)]
 
   defp safe_step(fun) do
     fun.()
@@ -666,12 +769,12 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
     :ok
   end
 
-  # Hardwired read-only vendor posture: `access: :read_only` stays pinned here
-  # even though PR-4 added the template `access:`/`session_sandbox:` knobs —
-  # only a read_only+local config can REACH this function (`access: :write`
-  # forces `session_sandbox: :docker` at hydration, and `:docker` refuses at
-  # dispatch via `refuse_docker_session/2`), so the write build flips this
-  # line only when docker dispatch exists. `config_sync` is not a knob at all.
+  # The runner posture derives from the plan's single resolved `access`
+  # (the write build): `:write` ⇒ the runners' existing `:full` arms — the
+  # microVM + workspace mount mode is the boundary (camus sketch (d)) —
+  # `:read_only` keeps the restricted CLI flag sets. Invariant-preserving for
+  # local plans: hydration refuses write+local, so a local plan is always
+  # `:read_only` here. `config_sync` is not a knob at all.
   defp build_runner_config(plan, res) do
     config = plan.config
     repo? = plan.workspace == :repo
@@ -680,19 +783,41 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
       prompt: plan.prompt,
       forge_home: res.forge_home,
       codex_home: Path.join(res.forge_home, ".codex"),
-      mcp_config_path: res.cfg_path,
-      mcp_server_url: res.endpoint.url,
       mcp_server_name: @deposit_server_name,
       allowed_mcp_tools: ["mcp__#{@deposit_server_name}__#{@deposit_tool}"],
-      access: :read_only,
+      access: if(plan.access == :write, do: :full, else: :read_only),
       config_sync: :auth_only,
       cwd: if(repo?, do: plan.project_dir, else: res.forge_home),
       add_dirs: if(repo?, do: [plan.project_dir], else: []),
       max_turns: Map.get(config, :max_turns, @vendor_max_turns_default),
       timeout_ms: clamp_vendor_timeout(Map.get(config, :timeout_ms, @vendor_timeout_default_ms))
     }
+    |> Map.merge(mcp_client_keys(plan, res))
     |> maybe_put(:model, Map.get(config, :model))
     |> maybe_put(:thinking_effort, Map.get(config, :thinking_effort))
+  end
+
+  # Local: the host-tmp cfg written at acquisition + the loopback URL —
+  # byte-identical to PR-2. Docker: the URL host is rewritten to
+  # host.docker.internal (the in-VM name for host loopback; codex consumes it
+  # via the `-c` inline override — URL translation is all codex needs), the
+  # config path points INTO the VM (claude writes `mcp_config_json` there at
+  # runner init — the host-tmp file doesn't exist in-VM), and `strict_mcp`
+  # pins claude's MCP surface to that file alone (a mounted repo's
+  # `.mcp.json` must not shadow/expand the deposit surface).
+  defp mcp_client_keys(%{session_sandbox: :docker}, res) do
+    url = String.replace(res.endpoint.url, "127.0.0.1", "host.docker.internal")
+
+    %{
+      mcp_config_path: Path.join(res.forge_home, "mcp-config.json"),
+      mcp_server_url: url,
+      mcp_config_json: ScopedEndpoint.client_config_json(@deposit_server_name, url),
+      strict_mcp: true
+    }
+  end
+
+  defp mcp_client_keys(_local_plan, res) do
+    %{mcp_config_path: res.cfg_path, mcp_server_url: res.endpoint.url}
   end
 
   defp clamp_vendor_timeout(ms),

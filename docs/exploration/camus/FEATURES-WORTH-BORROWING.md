@@ -62,10 +62,12 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 > lane, never a fabricated verdict). Cross-vendor review is the
 > `.jido/config.yaml` `review:` knob, enforced at BOTH seams by
 > `Orchestration.ReviewIndependence` (launch fence + dispatch overlay;
-> `independence: degraded` is the explicit same-vendor opt-in); vendor
-> sessions are read-only in every live dispatch, with PR-4's
-> `access`/`session_sandbox` knobs enforce-only (write⇒docker at hydration,
-> docker refused at dispatch pending the named docker write build), the
+> `independence: degraded` is the explicit same-vendor opt-in); PR-4's
+> `access`/`session_sandbox` knobs are LIVE since the docker write build
+> shipped (2026-07-07): write⇒docker at hydration, and a docker plan
+> dispatches the vendor session into an sbx microVM with a same-path repo
+> mount (rw only under `access: :write` — the runner's `:full` arm; the
+> microVM + mount mode is the boundary), the
 > `review-prompt.md` persona landed as the `:reviewer_stance` doctrine slice,
 > and a runner's `needs_input` landed as the `:needs_input` gate case with
 > single-use TTL-bounded answer injection into the next attempt.
@@ -77,7 +79,7 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 > vendor detection (provider identity via `Jido.AI.resolve_model/1`,
 > `:indeterminate` = collision) AND the degraded mode — camus had neither;
 > sketch (d)'s write-requires-sandbox requirement is enforced fail-closed at
-> hydration with docker dispatch refused until the write build; sketch (e)'s
+> hydration, and docker dispatch shipped with the write build; sketch (e)'s
 > `needs_input` mapping landed as the answer-loop gate case (raise +
 > single-use consume + next-attempt prompt injection), the full composer park
 > still gated on an interactive-runner producer; sketch (a)'s "a stage-level
@@ -551,7 +553,7 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 
 ## Open questions
 
-- **OQ-1. Executor-seam residuals (direction decided 2026-07-02; see C1-1).** ✅ ANSWERED 2026-07-07 (with PR-4, the item close-out): (a) **workspace materialization** — the read-only half shipped as direct `project_dir` exposure (`workspace: :repo` points the CLI at the run's real tree — codex `-C`, claude `--add-dir`; `:scratch`/`:none` expose nothing); the write case is PINNED as a **direct rw repo mount** (sbx workspaces mount rw natively; `--clone` rejected), landing with the docker write build. (b) **override precedence** — BUILT: test `:agent_templates_override` > `.jido/config.yaml` `review:` knob > per-stage catalog `executor:` override (the AR-9 tier_opts shape) > template binding, at both the launch fence and dispatch; run-level force-`:in_process` stays design-pinned, unbuilt (no declarer). (c) **result channel exclusivity** — single-channel, answered by PR-2 and now stamped: the MCP deposit tool is the ONLY typed channel; CLI stdout feeds `ARTIFACTS:` extraction and fallback text, never `typed_output`. (d) **`needs_input` → gate case** — landed as the answer-loop case (`:needs_input` `AgentCase`: step still errors, operator's answer consumed single-use by the next attempt); the full composer park stays deferred to a live interactive-runner producer.
+- **OQ-1. Executor-seam residuals (direction decided 2026-07-02; see C1-1).** ✅ ANSWERED 2026-07-07 (with PR-4, the item close-out): (a) **workspace materialization** — the read-only half shipped as direct `project_dir` exposure (`workspace: :repo` points the CLI at the run's real tree — codex `-C`, claude `--add-dir`; `:scratch`/`:none` expose nothing); the write case SHIPPED with the docker write build (2026-07-07) as the pinned **direct rw repo mount** — an sbx 0.34.0 same-path workspace positional, the CLI's edits landing in the real working tree (`--clone` rejected). (b) **override precedence** — BUILT: test `:agent_templates_override` > `.jido/config.yaml` `review:` knob > per-stage catalog `executor:` override (the AR-9 tier_opts shape) > template binding, at both the launch fence and dispatch; run-level force-`:in_process` stays design-pinned, unbuilt (no declarer). (c) **result channel exclusivity** — single-channel, answered by PR-2 and now stamped: the MCP deposit tool is the ONLY typed channel; CLI stdout feeds `ARTIFACTS:` extraction and fallback text, never `typed_output`. (d) **`needs_input` → gate case** — landed as the answer-loop case (`:needs_input` `AgentCase`: step still errors, operator's answer consumed single-use by the next attempt); the full composer park stays deferred to a live interactive-runner producer.
 - **OQ-2. `done_with_findings` — disposition or DB status?** Start as `result.disposition` on `:completed` (no migration, surfaces filter in memory); promote to a first-class `WorkflowRun` status only if dashboards/queries need to index on it. The projection layer makes the promotion cheap later.
 - **OQ-3. Budget unit.** Camus caps output tokens because that's what its harness meters; `AgentTracker` already tracks cost. Cap on tokens (portable, provider-neutral) with cost displayed alongside, or cap on estimated cost (what operators actually fear)? Needs a decision before C2-1's event schema is set.
 - **OQ-4. Verify command source of truth.** ✅ ANSWERED 2026-07-05 — the design note of record is `JidoClaw.Orchestration.Verify.Config`'s moduledoc: per-run override → `.jido/config.yaml` (`verify_cmd:` scalar/argv or a `verify:` block incl. the registry-lite `checks:` list) → minimal Elixir auto-detect (`mix.exs` + `precommit` alias ⇒ `mix precommit`, else `mix test`) → a loud INCONCLUSIVE envelope (never a pass, never a silent skip). No tenant-level defaults in v1, code-path routes only (the sketch/F2 exec tier gets no verify), argv lists only (no shell — scalars whitespace-split only when metacharacter-free and not env-assignment-led). Known residual (camus C2-7, parked): a fix loop editing `.jido/config.yaml` mid-run changes later resolutions.

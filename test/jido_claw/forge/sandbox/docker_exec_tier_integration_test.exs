@@ -2,10 +2,11 @@ defmodule JidoClaw.Forge.Sandbox.DockerExecTierIntegrationTest do
   @moduledoc """
   AR-8b-2 F2 (§2.5): the TRUE production-isolation gate for the exec sketch tier.
   Requires Docker/`sbx` (`@moduletag :docker_sandbox`, excluded from precommit) —
-  precommit only proves the no-egress flag is EMITTED; THIS test proves it is
-  ENFORCED. A `sbx` that *rejects* the flag degrades to a file-only sketch (safe);
-  a `sbx` that *silently ignores* `--network none` would fail OPEN — caught only by
-  the egress assertion here. Must pass before trusting the tier with real `sbx`.
+  precommit only proves the deny-all policy args are EMITTED; THIS test proves the
+  rule is ENFORCED. A `sbx` that *rejects* the policy call fails the create closed
+  (safe); a `sbx` that *silently ignores* the deny rule would fail OPEN — caught
+  only by the egress assertion here. Must pass before trusting the tier with real
+  `sbx`.
 
   Run with `mix test --include docker_sandbox`.
   """
@@ -30,10 +31,11 @@ defmodule JidoClaw.Forge.Sandbox.DockerExecTierIntegrationTest do
 
     # The flattened create-spec the Harness builds from `sandbox_spec` (1.5/1.6):
     # tuple mounts (post-`build_sandbox_spec`), no-egress, workdir, global opt-out.
+    # Same-path (sbx 0.34.0): the proto dir mounts in-VM at its host path.
     spec = %{
       runner: :shell,
-      extra_mounts: [{proto, "/proto", "rw"}],
-      workdir: "/proto",
+      extra_mounts: [{proto, proto, "rw"}],
+      workdir: proto,
       network: :none,
       isolate_global_config: true
     }
@@ -53,27 +55,27 @@ defmodule JidoClaw.Forge.Sandbox.DockerExecTierIntegrationTest do
   end
 
   test "network egress is DENIED (the fail-open gate)", %{client: client} do
-    # Structural proof: `--network none` leaves only loopback — no external iface.
-    {ifaces, _code} = Docker.exec(client, "ls /sys/class/net", timeout: 10_000)
-    assert ifaces =~ "lo"
-    refute ifaces =~ "eth0"
-
-    # Behavioral proof: a raw outbound TCP/HTTP connection cannot be established.
-    # http:// (not https) + no -f so TLS/CA or HTTP-status failures don't masquerade
-    # as a network denial (the exec tier skips the CA-cert mount, 1.6). curl's own
-    # timeouts drop the external `timeout` dep. Tri-state: a missing probe tool fails
+    # Behavioral proof only: the 0.34.0 deny-all is a per-sandbox POLICY rule
+    # enforced by a transparent proxy, not an iface removal — `eth0` exists,
+    # the TCP connect SUCCEEDS (to the proxy), and the denial arrives IN-BAND
+    # as an HTTP 403 whose body names "Blocked by network policy" (smoke-
+    # verified; `sbx policy log` records the deny). So the probe is
+    # body-aware: the block marker ⇒ BLOCKED; a transport failure ⇒ BLOCKED;
+    # a real upstream response ⇒ REACHED (fail-open). curl's own timeouts
+    # drop the external `timeout` dep. Tri-state: a missing probe tool fails
     # loudly (inconclusive ≠ pass) — only a genuine BLOCKED passes the gate.
     probe =
       "if command -v curl >/dev/null 2>&1; then " <>
-        "curl -s --connect-timeout 5 --max-time 5 http://1.1.1.1 -o /dev/null " <>
-        "&& echo REACHED || echo BLOCKED; " <>
+        "out=$(curl -s --connect-timeout 5 --max-time 5 http://1.1.1.1 2>&1); rc=$?; " <>
+        "if printf %s \"$out\" | grep -q 'Blocked by network policy'; then echo BLOCKED; " <>
+        "elif [ $rc -ne 0 ]; then echo BLOCKED; else echo REACHED; fi; " <>
         "else echo PROBE_UNAVAILABLE; fi"
 
     {out, _code} = Docker.exec(client, probe, timeout: 15_000)
 
     cond do
       out =~ "REACHED" ->
-        flunk("egress REACHED the internet — `--network none` is NOT enforced (fail-OPEN)")
+        flunk("egress REACHED the internet — the deny-all policy is NOT enforced (fail-OPEN)")
 
       out =~ "PROBE_UNAVAILABLE" ->
         flunk(
@@ -89,7 +91,7 @@ defmodule JidoClaw.Forge.Sandbox.DockerExecTierIntegrationTest do
     end
   end
 
-  test "--workdir /proto lands exec in the mount (a relative path sees host-written files)", %{
+  test "--workdir lands exec in the same-path mount (a relative path sees host-written files)", %{
     client: client,
     proto: proto
   } do

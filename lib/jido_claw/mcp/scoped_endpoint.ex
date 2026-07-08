@@ -64,16 +64,28 @@ defmodule JidoClaw.MCP.ScopedEndpoint do
   def stop(_), do: :ok
 
   @doc """
-  Write the host-side MCP client-config JSON a CLI harness reads
-  (`{"mcpServers": {<server_name>: {"type": "http", "url": <url>}}}`) to
-  `System.tmp_dir!()/<basename>`. The explicit `"type": "http"` is
-  load-bearing: claude ≥2.x reads a bare `url` entry as the legacy SSE
-  transport and never forms the streamable-HTTP connection our endpoints
-  speak (found by the PR-2 live smoke; the old consolidator config carried
-  the bare shape). Host-side deliberately: HostShell's `Sandbox.write_file`
-  jails absolute paths, so client-config files can never ride that
-  transport. Non-bang `File.write/2` — the caller chooses whether a write
-  failure crashes (`{:ok, path} =`) or unwinds.
+  Render the MCP client-config JSON body a CLI harness reads
+  (`{"mcpServers": {<server_name>: {"type": "http", "url": <url>}}}`). The
+  explicit `"type": "http"` is load-bearing: claude ≥2.x reads a bare `url`
+  entry as the legacy SSE transport and never forms the streamable-HTTP
+  connection our endpoints speak (found by the PR-2 live smoke; the old
+  consolidator config carried the bare shape). Shared by
+  `write_client_config/3` (the host-tmp file the local executor path and the
+  consolidator write) and the executor's docker path (which carries this body
+  as `mcp_config_json` for an in-VM write at runner init).
+  """
+  @spec client_config_json(String.t(), String.t()) :: String.t()
+  def client_config_json(server_name, url)
+      when is_binary(server_name) and is_binary(url) do
+    Jason.encode!(%{"mcpServers" => %{server_name => %{"type" => "http", "url" => url}}})
+  end
+
+  @doc """
+  Write the host-side MCP client-config JSON (`client_config_json/2`) to
+  `System.tmp_dir!()/<basename>`. Host-side deliberately: HostShell's
+  `Sandbox.write_file` jails absolute paths, so client-config files can never
+  ride that transport. Non-bang `File.write/2` — the caller chooses whether a
+  write failure crashes (`{:ok, path} =`) or unwinds.
   """
   @spec write_client_config(String.t(), String.t(), String.t()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -81,10 +93,7 @@ defmodule JidoClaw.MCP.ScopedEndpoint do
       when is_binary(server_name) and is_binary(url) and is_binary(basename) do
     path = Path.join(System.tmp_dir!(), basename)
 
-    body =
-      Jason.encode!(%{"mcpServers" => %{server_name => %{"type" => "http", "url" => url}}})
-
-    case File.write(path, body) do
+    case File.write(path, client_config_json(server_name, url)) do
       :ok -> {:ok, path}
       {:error, reason} -> {:error, reason}
     end

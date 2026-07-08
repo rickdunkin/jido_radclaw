@@ -327,7 +327,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
         runner: :shell,
         sandbox: :fake,
         resources: [
-          %{type: :file_mount, source: mount_source, mount_path: "/mnt/data", mode: :ro}
+          %{type: :file_mount, source: mount_source, mount_path: mount_source, mode: :ro}
         ]
       }
 
@@ -622,7 +622,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
         tenant_id: forge_multi_scope().tenant_id,
         workspace_id: forge_multi_scope().workspace_id,
         resources: [
-          %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
+          %{type: :file_mount, source: "/host/data", mount_path: "/host/data", mode: :ro}
         ]
       })
 
@@ -632,7 +632,7 @@ defmodule JidoClaw.Forge.MultiSandboxTest do
 
       Persistence.save_checkpoint(session_id, 1, %{}, %{
         resources: [
-          %{type: :file_mount, source: "/host/data", mount_path: "/mnt/data", mode: :ro}
+          %{type: :file_mount, source: "/host/data", mount_path: "/host/data", mode: :ro}
         ],
         bootstrap_steps: [],
         output_sequence: 1,

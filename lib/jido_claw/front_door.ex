@@ -411,14 +411,16 @@ defmodule JidoClaw.FrontDoor do
   # atom (`:docker_sandbox` — distinct from the `:docker` POLICY atom), the knobs
   # live in the NESTED `:sandbox_spec` (1.5/1.6: a JSON-safe map mount, the
   # `--workdir`, the no-egress request, and the global-config opt-out).
+  # Same-path (sbx 0.34.0): the proto dir mounts in-VM at its own host path —
+  # container remapping is inexpressible — so workdir and the mount agree.
   # `workspace_uuid` is the REAL UUID (never the synthetic id — `scope_from_spec/1`
   # would fail to cast it); the synthetic id stays in `composer_context` only.
   defp forge_exec_spec(proto_dir, ctx, workspace_uuid) do
     %{
       sandbox: :docker_sandbox,
       sandbox_spec: %{
-        extra_mounts: [%{"host" => proto_dir, "container" => "/proto", "mode" => "rw"}],
-        workdir: "/proto",
+        extra_mounts: [%{"host" => proto_dir, "container" => proto_dir, "mode" => "rw"}],
+        workdir: proto_dir,
         network: :none,
         isolate_global_config: true
       },

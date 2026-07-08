@@ -18,6 +18,15 @@ migration/back-compat. **Done = `mix precommit` green.***
 > `:docker_sandbox`-tagged run, excluded from CI by design (the "sole caveat" the
 > FEATURES-WORTH-BORROWING AR-8 entry records). The Non-goals stand (no per-tool approval
 > overlay; no auto-merge; file tools stay host-mounted).
+>
+> **sbx 0.34.0 remediation (docker write build, 2026-07-07):** the emission mechanics this
+> page designed against have since moved — the installed sbx rejects `--mount`/`--network`;
+> workspaces are now same-path `create` positionals (host == container, the front door's
+> `/proto` remap became a same-path `proto_dir` mount + workdir) and the no-egress request
+> applies post-create as a per-sandbox `sbx policy deny network "**"` rule, enforced by a
+> transparent proxy answering in-band HTTP 403 (the `:docker_sandbox` egress probe is
+> body-aware accordingly). The tier's guarantees (no-egress, rw round-trip, workdir) hold
+> under the new mechanics — re-proven by the same tagged run.
 
 ---
 

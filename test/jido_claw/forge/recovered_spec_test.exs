@@ -10,12 +10,14 @@ defmodule JidoClaw.Forge.RecoveredSpecTest do
   alias JidoClaw.Forge.RecoveredSpec
 
   # The shape jsonb hands back: atom keys AND atom values stringified.
+  # Same-path mounts (sbx 0.34.0) — normalize is shape-only; a recovered
+  # host≠container mismatch raises at the backend create, not here.
   defp recovered_docker_spec do
     %{
       "sandbox" => "docker_sandbox",
       "sandbox_spec" => %{
-        "extra_mounts" => [%{"host" => "/p", "container" => "/proto", "mode" => "rw"}],
-        "workdir" => "/proto",
+        "extra_mounts" => [%{"host" => "/p", "container" => "/p", "mode" => "rw"}],
+        "workdir" => "/p",
         "network" => "none",
         "isolate_global_config" => true
       },
@@ -37,10 +39,10 @@ defmodule JidoClaw.Forge.RecoveredSpecTest do
       # The nested F2 markers are restored: mount + no-egress + global-config opt-out.
       assert n.sandbox_spec.network == :none
       assert n.sandbox_spec.isolate_global_config == true
-      assert n.sandbox_spec.workdir == "/proto"
+      assert n.sandbox_spec.workdir == "/p"
       # The mount entry keeps its JSON-safe map shape (1.5 converts map→tuple later).
       assert n.sandbox_spec.extra_mounts ==
-               [%{"host" => "/p", "container" => "/proto", "mode" => "rw"}]
+               [%{"host" => "/p", "container" => "/p", "mode" => "rw"}]
     end
 
     test "an already-atom-keyed launch spec passes its known fields through" do
@@ -93,6 +95,36 @@ defmodule JidoClaw.Forge.RecoveredSpecTest do
     test "an existing non-sandbox atom string is rejected (validates a real sandbox module)" do
       assert {:error, {:unrecognized_sandbox, _}} =
                RecoveredSpec.normalize(%{"sandbox" => "Elixir.Enum"})
+    end
+  end
+
+  describe "normalize/1 — allow_network (docker write build)" do
+    test "a recovered allow_network list round-trips (string key → atom key)" do
+      spec = %{
+        "sandbox" => "docker_sandbox",
+        "sandbox_spec" => %{
+          "allow_network" => ["host.docker.internal:4567", "localhost:4567"]
+        }
+      }
+
+      assert {:ok, n} = RecoveredSpec.normalize(spec)
+      assert n.sandbox_spec.allow_network == ["host.docker.internal:4567", "localhost:4567"]
+    end
+
+    test "an already-atom-keyed allow_network passes through" do
+      spec = %{sandbox: :docker_sandbox, sandbox_spec: %{allow_network: ["localhost:80"]}}
+
+      assert {:ok, n} = RecoveredSpec.normalize(spec)
+      assert n.sandbox_spec.allow_network == ["localhost:80"]
+    end
+
+    test "an invalid entry shape fails closed (the values become a policy CSV)" do
+      for bad <- [["**"], ["a,b"], [""], ["host x"], [123], "not-a-list"] do
+        spec = %{"sandbox" => "docker_sandbox", "sandbox_spec" => %{"allow_network" => bad}}
+
+        assert match?({:error, {:invalid_allow_network, _}}, RecoveredSpec.normalize(spec)),
+               "expected #{inspect(bad)} to fail closed"
+      end
     end
   end
 

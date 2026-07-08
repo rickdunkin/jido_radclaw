@@ -7,18 +7,18 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
   alias JidoClaw.Forge.ResourceProvisioner
 
   describe "file_mount_specs/1" do
-    test "extracts file_mount entries as mount tuples for Docker" do
+    test "extracts file_mount entries as mount tuples for Docker (same-path)" do
       resources = [
-        %{type: :file_mount, source: "/data/models", mount_path: "/workspace/models", mode: :ro},
-        %{type: :file_mount, source: "/config", mount_path: "/etc/app"},
+        %{type: :file_mount, source: "/data/models", mount_path: "/data/models", mode: :ro},
+        %{type: :file_mount, source: "/config", mount_path: "/config"},
         %{type: :env_vars, values: %{"KEY" => "val"}}
       ]
 
       mounts = ResourceProvisioner.file_mount_specs(resources)
 
       assert [_, _] = mounts
-      assert {"/data/models", "/workspace/models", :ro} in mounts
-      assert {"/config", "/etc/app", :ro} in mounts
+      assert {"/data/models", "/data/models", :ro} in mounts
+      assert {"/config", "/config", :ro} in mounts
     end
   end
 
@@ -47,10 +47,10 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
       assert :ok = ResourceProvisioner.validate_resources(resources)
     end
 
-    test "accepts git_repo and file_mount" do
+    test "accepts git_repo and same-path file_mount" do
       resources = [
         %{type: :git_repo, source: "https://github.com/org/repo", mount_path: "/ws"},
-        %{type: :file_mount, source: "/host", mount_path: "/container"}
+        %{type: :file_mount, source: "/host/data", mount_path: "/host/data"}
       ]
 
       assert :ok = ResourceProvisioner.validate_resources(resources)
@@ -193,11 +193,32 @@ defmodule JidoClaw.Forge.HarnessResourcesTest do
                ])
     end
 
-    test "accepts :file_mount with :source and :mount_path" do
+    test "accepts :file_mount with same-path :source and :mount_path" do
       assert :ok =
+               ResourceProvisioner.validate_resources([
+                 %{type: :file_mount, source: "/a", mount_path: "/a"}
+               ])
+    end
+
+    # sbx 0.34.0 mounts workspaces in-VM at the SAME absolute host path —
+    # container-path remapping is inexpressible, so a mismatch fails at
+    # validation, not deep in the backend create.
+    test "rejects :file_mount with source ≠ mount_path (same-path only)" do
+      assert {:error, [reason]} =
                ResourceProvisioner.validate_resources([
                  %{type: :file_mount, source: "/a", mount_path: "/b"}
                ])
+
+      assert reason =~ "same-path"
+    end
+
+    test "rejects :file_mount with a relative source path" do
+      assert {:error, [reason]} =
+               ResourceProvisioner.validate_resources([
+                 %{type: :file_mount, source: "rel/a", mount_path: "rel/a"}
+               ])
+
+      assert reason =~ "absolute"
     end
   end
 end

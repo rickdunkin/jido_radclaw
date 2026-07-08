@@ -49,6 +49,33 @@ defmodule JidoClaw.Forge.SandboxInit do
               "[Forge.SandboxInit] Could not determine sbx version: #{String.trim(error)}"
             )
         end
+
+        check_global_policy()
+    end
+  end
+
+  # Detect-and-instruct ONLY — deliberately never auto-init: initializing the
+  # global network policy is a host-global security choice that stays
+  # operator-owned (the `verify_cmd` trust class). Create/policy calls
+  # already fail closed with sbx's own self-describing error; this probe just
+  # makes the fix visible at boot instead of at the first failed create.
+  defp check_global_policy do
+    case System.cmd("sbx", ["policy", "ls"], stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
+      {_output, 0} ->
+        :ok
+
+      {output, _code} ->
+        if output =~ "policy has not been initialized" do
+          Logger.error(
+            "[Forge.SandboxInit] sbx global network policy is NOT initialized — " <>
+              "sandbox creation and per-sandbox network rules will fail. " <>
+              "Initialize it once on this host: sbx policy init balanced"
+          )
+        else
+          Logger.warning(
+            "[Forge.SandboxInit] Could not check sbx policy state: #{String.trim(output)}"
+          )
+        end
     end
   end
 

@@ -102,7 +102,10 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
       |> Enum.reject(&Map.has_key?(r, &1))
       |> Enum.map(&":file_mount resource missing required #{inspect(&1)} key")
 
-    missing
+    case missing do
+      [] -> validate_file_mount_paths(r)
+      missing -> missing
+    end
   end
 
   defp validate_resource(%{type: :secrets} = r) do
@@ -121,6 +124,26 @@ defmodule JidoClaw.Forge.ResourceProvisioner do
 
   defp validate_resource(other),
     do: ["resource missing :type key: #{inspect(other)}"]
+
+  # sbx 0.34.0 workspaces mount in-VM at the SAME absolute path as the host —
+  # container-path remapping is inexpressible, and a relative positional would
+  # resolve against sbx's cwd — so a mismatch fails here at validation, not
+  # deep in the backend create.
+  defp validate_file_mount_paths(%{source: source, mount_path: mount_path}) do
+    cond do
+      source != mount_path ->
+        [
+          ":file_mount requires source == mount_path (same-path only: sbx 0.34.0 " <>
+            "mounts workspaces at the host path), got #{inspect(source)} → #{inspect(mount_path)}"
+        ]
+
+      not (is_binary(source) and Path.type(source) == :absolute) ->
+        [":file_mount source must be an absolute path, got #{inspect(source)}"]
+
+      true ->
+        []
+    end
+  end
 
   # ── Provisioning ────────────────────────────────────────────────────
 

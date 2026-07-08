@@ -44,11 +44,34 @@ defmodule JidoClaw.Forge.Runners.FileSync do
   LANDS on HostShell — `Sandbox.write_file/3` jails absolute paths there,
   so a runner-generated file (e.g. the executor's minimal `settings.json`)
   must go through exec, never `write_file` (PR-2 review finding P1b).
+  Best-effort (always `:ok`) — load-bearing files use `write_checked/3`.
   """
   @spec write_content(term(), String.t(), binary()) :: :ok
   def write_content(client, dest, content) when is_binary(content) do
     encoded = Base.encode64(content)
     Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest}", [])
     :ok
+  end
+
+  @doc """
+  Exit-status-CHECKED write + `chmod 600` in one exec, for LOAD-BEARING
+  files (the claude credential, the executor's in-VM deposit client config):
+  unlike `write_content/3` (best-effort — fine for its existing callers), a
+  non-zero exit returns `{:error, {:checked_write_failed, dest, code}}` so
+  the runner init fails CLOSED — a session without its credential/deposit
+  config must not start and drift into an opaque CLI failure. The failure
+  output is deliberately DROPPED from the error (the exec argv carries the
+  base64-encoded content; a shell error echoing the command line must never
+  ride an inspected error into logs/transcripts).
+  """
+  @spec write_checked(term(), String.t(), binary()) ::
+          :ok | {:error, {:checked_write_failed, String.t(), term()}}
+  def write_checked(client, dest, content) when is_binary(content) do
+    encoded = Base.encode64(content)
+
+    case Sandbox.exec(client, "echo '#{encoded}' | base64 -d > #{dest} && chmod 600 #{dest}", []) do
+      {_output, 0} -> :ok
+      {_output, code} -> {:error, {:checked_write_failed, dest, code}}
+    end
   end
 end

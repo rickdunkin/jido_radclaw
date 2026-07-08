@@ -234,7 +234,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       assert prompt =~ "submit_structured_output"
       assert prompt =~ ~s("summary")
 
-      # Hardwired read-only vendor posture + repo workspace on the runner config.
+      # Read-only local vendor posture + repo workspace on the runner config.
       assert_receive {:scripted_deposit_runner, :config, config}
       assert config.access == :read_only
       assert config.config_sync == :auth_only
@@ -244,6 +244,13 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       assert config.add_dirs == [ctx.project_dir]
       assert config.max_turns == 40
       assert config.timeout_ms == 240_000
+
+      # Local-plan byte-identical regression (docker write build): the docker
+      # keys never ride a local runner config, and the loopback URL is
+      # untranslated.
+      refute Map.has_key?(config, :mcp_config_json)
+      refute Map.has_key?(config, :strict_mcp)
+      assert config.mcp_server_url =~ "127.0.0.1"
 
       assert_vendor_resources_released(ctx)
     end
@@ -307,26 +314,6 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       assert_vendor_resources_released(ctx)
     end
 
-    test "session_sandbox: :docker refuses at dispatch BEFORE any resource (PR-4 enforce-only)",
-         ctx do
-      Application.put_env(:jido_claw, :scripted_deposit_runner, %{notify: self()})
-
-      template = %{
-        module: @coder,
-        executor: {:forge, :codex},
-        executor_config: %{workspace: :repo, access: :write, session_sandbox: :docker}
-      }
-
-      assert {:error, msg} = ForgeExecutor.run("coder", template, "do it", "v-step", ctx.context)
-
-      assert msg =~ "session_sandbox: :docker not yet dispatchable"
-      assert msg =~ "write build"
-
-      # Pre-flight refusal: no session, no runner init, no box/endpoint/config.
-      refute_received {:scripted_deposit_runner, :config, _}
-      assert_vendor_resources_released(ctx)
-    end
-
     test "a session-start failure (no vendor credentials) leaks nothing", ctx do
       Application.put_env(:jido_claw, :scripted_deposit_runner, %{
         init_error: :no_credentials,
@@ -364,6 +351,188 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
 
       refute_received {:scripted_deposit_runner, :config, _}
       assert_vendor_resources_released(ctx)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Docker write build — vendor dispatch through the :executor_docker_backend
+  # seam (RecordingDockerBackend → StubSandbox), still hermetic: the scripted
+  # runner dials the REAL scoped endpoint host-side, mapping the docker plan's
+  # host.docker.internal URL back to loopback.
+  # ---------------------------------------------------------------------------
+
+  describe "{:forge, :codex} docker dispatch (the write build)" do
+    setup do
+      Application.put_env(:jido_claw, :executor_vendor_runners, %{
+        codex: JidoClaw.Test.ScriptedDepositRunner
+      })
+
+      Application.put_env(
+        :jido_claw,
+        :executor_docker_backend,
+        JidoClaw.Test.RecordingDockerBackend
+      )
+
+      Application.put_env(:jido_claw, :recording_docker_backend_notify, self())
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :executor_vendor_runners)
+        Application.delete_env(:jido_claw, :executor_docker_backend)
+        Application.delete_env(:jido_claw, :recording_docker_backend_notify)
+        Application.delete_env(:jido_claw, :scripted_deposit_runner)
+      end)
+
+      project_dir = make_tmpdir!("docker_vendor_repo")
+      on_exit(fn -> File.rm_rf(project_dir) end)
+
+      {:links, links} = Process.info(self(), :links)
+
+      %{
+        project_dir: project_dir,
+        context: %{project_dir: project_dir},
+        pre_links: links,
+        pre_cfg_count: deposit_cfg_count()
+      }
+    end
+
+    defp docker_template(access) do
+      %{
+        module: @coder,
+        executor: {:forge, :codex},
+        executor_config: %{workspace: :repo, access: access, session_sandbox: :docker}
+      }
+    end
+
+    test "write+repo dispatches: rw mount, workdir, allow_network, :full runner, translated URL, deposit lands",
+         ctx do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{
+        deposits: [coder_fixture("Docker vendor wrote the thing.")],
+        output: "raw-cli-stream-json",
+        notify: self()
+      })
+
+      assert {:ok, %StepResult{} = result} =
+               ForgeExecutor.run("coder", docker_template(:write), "do it", "d-step", ctx.context)
+
+      # The deposit landed through the real endpoint → box loop.
+      assert result.typed_output.summary == "Docker vendor wrote the thing."
+      assert result.typed_output.status == :completed
+
+      # The flattened create spec that reached the backend: same-path rw repo
+      # mount, workdir = project_dir, allow_network in BOTH forms with the
+      # endpoint's real port.
+      assert_receive {:docker_backend_create, spec}
+      pd = ctx.project_dir
+      assert spec.extra_mounts == [{pd, pd, "rw"}]
+      assert spec.workdir == pd
+
+      assert [<<"host.docker.internal:", port_s::binary>>, <<"localhost:", port_s::binary>>] =
+               spec.allow_network
+
+      port = String.to_integer(port_s)
+      assert port > 0
+
+      # Runner posture: write ⇒ the runners' :full arms (the microVM + mount
+      # mode is the boundary, not the CLI flags), strict_mcp pins claude's MCP
+      # surface, and the deposit URL names host.docker.internal on that same
+      # endpoint port.
+      assert_receive {:scripted_deposit_runner, :config, config}
+      assert config.access == :full
+      assert config.config_sync == :auth_only
+      assert config.strict_mcp == true
+
+      assert String.starts_with?(
+               config.mcp_server_url,
+               "http://host.docker.internal:#{port}/deposit/"
+             )
+
+      # The in-VM client-config body carries the SAME translated URL; the
+      # path points into the VM's forge_home (pinned under the in-VM
+      # user-writable base — /var/local/forge may not be creatable in-VM).
+      assert config.mcp_config_json =~ config.mcp_server_url
+      assert config.mcp_config_path == Path.join(config.forge_home, "mcp-config.json")
+      assert String.starts_with?(config.forge_home, "/tmp/jidoclaw_forge_exec/")
+      assert config.cwd == pd
+
+      # Writable prompt wording (write+docker only).
+      assert_receive {:scripted_deposit_runner, :prompt, prompt}
+      assert prompt =~ "changes land directly in the working tree"
+
+      # No host-tmp client config was written for a docker plan.
+      assert deposit_cfg_count() == ctx.pre_cfg_count
+
+      assert_vendor_resources_released(ctx)
+    end
+
+    test "read_only+docker keeps the read floor: :ro mount AND :read_only runner (defense in depth)",
+         ctx do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{deposits: [], notify: self()})
+
+      assert {:ok, %StepResult{typed_output: nil}} =
+               ForgeExecutor.run(
+                 "coder",
+                 docker_template(:read_only),
+                 "do it",
+                 "d-step",
+                 ctx.context
+               )
+
+      assert_receive {:docker_backend_create, spec}
+      pd = ctx.project_dir
+      assert spec.extra_mounts == [{pd, pd, "ro"}]
+
+      assert_receive {:scripted_deposit_runner, :config, config}
+      assert config.access == :read_only
+
+      # Read-only prompt wording, never the writable note.
+      assert_receive {:scripted_deposit_runner, :prompt, prompt}
+      assert prompt =~ "read-only this session"
+      refute prompt =~ "land directly"
+
+      assert_vendor_resources_released(ctx)
+    end
+
+    test "workspace: :scratch on docker exposes no repo — no mount, no workdir, cwd = forge_home",
+         ctx do
+      Application.put_env(:jido_claw, :scripted_deposit_runner, %{deposits: [], notify: self()})
+
+      template = %{
+        module: @coder,
+        executor: {:forge, :codex},
+        executor_config: %{workspace: :scratch, access: :read_only, session_sandbox: :docker}
+      }
+
+      assert {:ok, _} = ForgeExecutor.run("coder", template, "do it", "d-step", ctx.context)
+
+      # Conditionally-put: a workspace-less plan carries NEITHER key (a
+      # present-nil would defeat the backend's Map.get defaults).
+      assert_receive {:docker_backend_create, spec}
+      refute Map.has_key?(spec, :extra_mounts)
+      refute Map.has_key?(spec, :workdir)
+      assert [_, _] = spec.allow_network
+
+      assert_receive {:scripted_deposit_runner, :config, config}
+      assert config.cwd == config.forge_home
+
+      assert_vendor_resources_released(ctx)
+    end
+
+    test "expected_backend maps the :docker_sandbox wire atom to the Docker MODULE (never the raw atom)" do
+      # Stub tests alone would pass while prod tears down every session as
+      # {:wrong_backend, Docker}: ReadyStart compares harness `sandbox_module`
+      # (a MODULE via resolve_client) to `expected_backend`.
+      prev = Application.get_env(:jido_claw, :executor_docker_backend)
+      Application.put_env(:jido_claw, :executor_docker_backend, :docker_sandbox)
+      on_exit(fn -> Application.put_env(:jido_claw, :executor_docker_backend, prev) end)
+
+      assert ForgeExecutor.expected_backend(:docker) == JidoClaw.Forge.Sandbox.Docker
+
+      # An armed stub MODULE passes through as itself.
+      Application.put_env(:jido_claw, :executor_docker_backend, JidoClaw.Test.StubSandbox)
+      assert ForgeExecutor.expected_backend(:docker) == JidoClaw.Test.StubSandbox
+
+      # Local vendor sessions keep the HostShell assertion.
+      assert ForgeExecutor.expected_backend(:local) == JidoClaw.Forge.Runner.HostShell
     end
   end
 

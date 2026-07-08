@@ -695,7 +695,8 @@ defmodule JidoClaw.Agent.TemplatesTest do
   end
 
   # Executor-seam PR-4: the access/session_sandbox knobs + the write⇒docker
-  # invariant (enforce-only — dispatch refuses :docker until the write build).
+  # invariant (docker dispatch is live — the write build; hydration still
+  # refuses write+local).
   describe "vendor access/session_sandbox hydration (item 7, camus C1-1 PR-4)" do
     test "vendor kinds hydrate access: :read_only + session_sandbox: :local defaults" do
       for kind <- [:codex, :claude_code] do

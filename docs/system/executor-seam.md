@@ -8,11 +8,12 @@ sources:
   - lib/jido_claw/orchestration/review_independence.ex
   - lib/jido_claw/orchestration/needs_input.ex
   - lib/jido_claw/agent/templates.ex
+  - lib/jido_claw/forge/sandbox/docker.ex
   - lib/jido_claw/route_composer/stage.ex
   - lib/jido_claw/route_composer/wave_builder.ex
   - lib/jido_claw/route_composer/catalog_validator.ex
 verified: 2026-07-07
-verified_sha: "2a0bb4c6"
+verified_sha: "91157b13"
 ---
 
 # Executor Seam (template `executor:` binding)
@@ -23,10 +24,12 @@ Next-ten item 7 (camus C1-1, "build the seam, not the pairing"): every worker te
 declares *what executes it* — the in-process `Jido.AI` worker or a Forge-backed
 session (fake fixture, shell command, or a vendor CLI: codex / claude_code) — so
 orchestration can mix executors per stage without the composer knowing vendor
-mechanics. **Item complete** (PRs 1–4); the first production declarer is the
-cross-vendor review configuration, and PR-4 added the per-stage catalog override, the
-`access`/`session_sandbox` knobs (enforce-only), and the `needs_input` answer-loop
-gate case.
+mechanics. **Item complete** (PRs 1–4 + the docker write build); the first production
+declarer is the cross-vendor review configuration; PR-4 added the per-stage catalog
+override, the `access`/`session_sandbox` knobs, and the `needs_input` answer-loop
+gate case; the write build made `session_sandbox: :docker` dispatch real — a
+write-capable vendor session runs inside an sbx microVM with a direct rw same-path
+repo mount, and its edits land in the real working tree.
 
 ## Invariants & contracts
 
@@ -40,14 +43,17 @@ gate case.
   fc/ra/sandbox's warn+fail-closed — the tight direction here is *refuse to run*).
   `:custom` stays refused at dispatch (the camus unknown-backend fail-closed
   discipline).
-- Vendor sessions stay **read-only + isolated in every live dispatch**. PR-4's
-  `access:` (`:read_only` default | `:write`) and `session_sandbox:` (`:local`
-  default | `:docker`) knobs are ENFORCE-ONLY: `access: :write` requires
-  `session_sandbox: :docker` at hydration (write+local raises — a write-capable
-  vendor session must be docker-backed), and `session_sandbox: :docker` is refused
-  at dispatch (`refuse_docker_session/2`, fail-closed before any resource — the
-  `{:forge, :custom}` pattern) until the docker write build lands. Net: write can't
-  reach a live session this wave.
+- **Write is docker-bound, and the microVM is the boundary** (the docker write
+  build, camus sketch (d)). `access: :write` requires `session_sandbox: :docker` at
+  hydration (write+local raises — a write-capable vendor session must be
+  docker-backed); a docker plan dispatches the vendor CLI into an sbx microVM via
+  the `:executor_docker_backend` seam with the run's repo mounted **same-path**
+  (`{project_dir, project_dir, "rw"|"ro"}` — mode from the plan's single resolved
+  `access`), and the runner posture derives from that SAME access: `:write` ⇒ the
+  runners' `:full` arms (codex `--dangerously-bypass-approvals-and-sandbox`, claude
+  `--dangerously-skip-permissions` + `--strict-mcp-config`); `:read_only` keeps the
+  restricted CLI flag sets AND a `:ro` mount (defense in depth). Local vendor plans
+  are always `:read_only` by the hydration invariant.
 - **Executor precedence (PR-4, both seams)**: test `:agent_templates_override` >
   `.jido/config.yaml` `review:` knob > per-stage catalog `executor:` override >
   template binding. The test seam is NAME-gated — an overridden template suppresses
@@ -93,11 +99,16 @@ gate case.
 
 `AgentRunner.run/7` dispatches on the binding: `:fake`/`:shell`/`:codex`/`:claude_code`
 route through `JidoClaw.Skills.Steps.ForgeExecutor` — a REAL minimal Forge session per
-step (`Ecto.UUID` session id, `claim: false`, `sandbox: :local` ⇒ HostShell per-run tmp
-dir even under a prod `FORGE_SANDBOX=docker`,
-`start_session_ready(expected_backend: HostShell)`, one `run_iteration`, result
-captured before the `try/after` `stop_session`; `:blocked`/`:continue` are single-shot
-errors; `:needs_input` is the PR-4 gate case below — still a step error). Both arms
+step (`Ecto.UUID` session id, `claim: false`; the `:shell`/`:fake` arms and LOCAL
+vendor plans run `sandbox: :local` ⇒ HostShell per-run tmp dir even under a prod
+`FORGE_SANDBOX=docker`, `start_session_ready(expected_backend: HostShell)`; a DOCKER
+vendor plan sets `sandbox:` from the `:executor_docker_backend` seam and asserts the
+seam-resolved MODULE — `ForgeExecutor.expected_backend/1` maps the `:docker_sandbox`
+wire atom to `Forge.Sandbox.Docker` itself, because `ReadyStart.usable_status` compares
+harness `sandbox_module` MODULES, so a raw atom would tear down every real docker
+session as `{:wrong_backend, _}`. One `run_iteration`, result captured before the
+`try/after` `stop_session`; `:blocked`/`:continue` are single-shot errors;
+`:needs_input` is the PR-4 gate case below — still a step error). Both arms
 share one tool-context builder + the `run_recorded` never-crash envelope
 (task/terminal transcript rows + child correlation, uniform across executors); the
 forge arm additionally **publishes the terminal signal itself**
@@ -144,19 +155,56 @@ runners are its first emitters):
 
 - Per step: a linked `ForgeExecutor.Deposit` box (registered in `DepositRegistry`) + a
   `JidoClaw.MCP.ScopedEndpoint` (Bandit loopback fronting the always-on `DepositServer`
-  through `DepositPlug`) + a host-side client config — acquired through a total
+  through `DepositPlug`) + the MCP client config — acquired through a total
   unwinding reducer (box → endpoint → forge home → client config; a partial acquisition
-  tears down exactly what it acquired), torn down on every path.
+  tears down exactly what it acquired), torn down on every path. The client config is a
+  host-tmp FILE for local plans only; a docker plan carries the SAME JSON body
+  (`ScopedEndpoint.client_config_json/2`) as runner-config `mcp_config_json`, written
+  in-VM at claude's runner init through the CHECKED `FileSync.write_checked/3` (a
+  failed write fails init closed — no deposit server, no session); codex needs only the
+  URL (its `-c` inline override).
+- **Docker deposit reachability**: `ScopedEndpoint` keeps its `127.0.0.1` bind; a
+  docker plan rewrites the URL host to `host.docker.internal` and the session spec
+  carries `allow_network: ["host.docker.internal:<port>", "localhost:<port>"]` — the
+  backend applies it post-create as a per-sandbox `sbx policy allow network` rule
+  (both forms REQUIRED: the sbx proxy normalizes `host.docker.internal` to
+  `localhost:<port>` in its allow matching — smoke-verified). Enforcement is a
+  transparent proxy answering in-band HTTP 403 ("Blocked by network policy") rather
+  than a transport denial; `sbx rm` removes per-sandbox rules (leak-check pinned in
+  the `:docker_sandbox` tier).
+- **Docker session mechanics** (sbx 0.34.0): workspaces are `sbx create` POSITIONALS
+  mounted in-VM at the SAME absolute host path (`path` rw / `path:ro`; no `--mount`,
+  no path remapping — same-path + absolute validated up front, and
+  `network:`/`allow_network` moved to post-create `sbx policy`). A vendor run is
+  `sbx exec` into the harness sandbox wrapped in-VM as
+  `sh -c 'exec "$0" "$@" </dev/null'` — the stdin redirect is load-bearing (the sbx
+  client forwards its never-EOF piped stdin), and the same wrapper applies the
+  workspace `.forge_env` with assignment-only exports (`sbx exec --env-file` is inert
+  on 0.34.0; `-e` would put vault secrets on the host argv). Docker plans pin
+  `forge_home` under `/tmp/jidoclaw_forge_exec/<session_id>` (in-VM user-writable;
+  `/var/local/forge` may not be creatable in-VM).
 - Deposits are validated in the box against the template's `strategy_opts()[:output]`
   (`%Jido.AI.Output{}`; invalid ⇒ bounded `isError`, the CLI retries in-session;
   valid ⇒ last-valid-wins).
-- **codex hardwiring**: `-s read-only` + auth.json-only sync (a refused `CODEX_HOME`
-  inject fails init CLOSED).
-- **claude hardwiring**: `--tools Read,Glob,Grep` + `--allowedTools`(+deposit tool) +
-  `--permission-mode dontAsk` + `--strict-mcp-config` + credentials-only sync into an
-  isolated per-run `CLAUDE_CONFIG_DIR` (exec-based writes; a refused env inject fails
-  init CLOSED; isolation proven live — a fresh dir reads "Not logged in" on an
-  authenticated host).
+- **codex hardwiring**: `access: :read_only` ⇒ `-s read-only`, `:full` (the write
+  posture) ⇒ `--dangerously-bypass-approvals-and-sandbox`; auth.json-only sync (a
+  refused `CODEX_HOME` inject fails init CLOSED).
+- **claude hardwiring**: `access: :read_only` ⇒ `--tools Read,Glob,Grep` +
+  `--allowedTools`(+deposit tool) + `--permission-mode dontAsk` +
+  `--strict-mcp-config`; `:full` (the write posture) ⇒
+  `--dangerously-skip-permissions`, plus `--strict-mcp-config` when the executor
+  sets `strict_mcp: true` (docker plans — orthogonal to permissions). Credential-only
+  sync into an isolated per-run `CLAUDE_CONFIG_DIR` (a refused env inject fails init
+  CLOSED; isolation proven live — a fresh dir reads "Not logged in" on an
+  authenticated host): the credential resolves content-based through the SHARED
+  source — host `.credentials.json` → legacy `credentials.json` → macOS Keychain
+  (`security find-generic-password -s "Claude Code-credentials" -w` behind the
+  injectable `:claude_keychain_reader` seam; the blob never lands on host disk) —
+  and is written in-sandbox to the DOTTED `.credentials.json` (what claude reads
+  under `CLAUDE_CONFIG_DIR`) via the CHECKED `FileSync.write_checked/3` (write +
+  `chmod 600` in one exit-status-verified exec; failure fails init CLOSED). This
+  also fixed the latent macOS LOCAL vendor path: a Keychain-only host (no
+  credential file) no longer fails `:no_credentials`.
 - Vendor prompts carry the FULL subagent contract (`Startup.subagent_prompt/3`, same
   `:doctrine` master gate; `catalog_stage_name` threads down the forge arm so stage
   personas hold) + task + workspace note + deposit instruction LAST, redacted by the
@@ -167,13 +215,25 @@ runners are its first emitters):
   `--add-dir`); `:scratch`/`:none` differ only in the prompt note this wave.
 - Vendor `timeout_ms` defaults **240s** (clamped 30s–600s) — deliberately under the
   composer's 300s wave deadline; raising one means raising the other.
-- Three load-bearing live-smoke fixes ride this wave: the shared client config writes
-  `"type": "http"` (claude ≥2.x reads a bare `url` as legacy SSE);
+- Three load-bearing live-smoke fixes rode the PR-2 wave: the shared client config
+  writes `"type": "http"` (claude ≥2.x reads a bare `url` as legacy SSE);
   `HostShell.cli_exec_argv/2` always redirects CLI-runner stdin from `/dev/null`
   (OsCmd ports never deliver EOF and `codex exec` reads piped stdin TO EOF — every
   codex session hung); the codex `-c` override carries
   `default_tools_approval_mode="approve"` (codex ≥0.142 auto-cancels un-approved MCP
   tool calls headless).
+- Two more rode the write-build smoke, both in the Forge harness: `Harness.init`
+  now TRAPS EXITS so `terminate/2` — and with it `Sandbox.destroy` — actually runs
+  on `Manager.stop_session`'s `:shutdown` delivery (latent forever: invisible for
+  HostShell whose linked sandbox Agents die with the harness, a leaked microVM +
+  secret-bearing workspace per session on docker; pinned by
+  `harness_teardown_test.exs`), with the destroys themselves DETACHED under the
+  app TaskSupervisor (a real `sbx rm` is multi-second — inline it would block
+  `stop_session` callers past their 5s deadlines and serialize wave teardowns
+  through the singleton Manager; a killed/failed rm is the boot reaper's job);
+  and the harness `persist/1` guard catches EXITS too, not just raises — a
+  DBConnection checkout fault inside `terminate/2` must not replace the
+  session's real exit reason.
 - Fresh-session-per-re-review-round is pinned (two vendor sessions across a findings →
   fix → approve loop; no-resume argv pins on both runners — camus C3-1's resume
   machinery unported).
@@ -282,23 +342,40 @@ runner_config). Telemetry counters `jido_claw.executor.total` (`kind`/`outcome`)
 - Forge `Manager` per-runner caps (`shell: 20`, `codex`/`claude_code`: 10; module
   runners like `StaticFake` fall to `max_sessions: 50`) can `:runner_at_capacity` a
   wide parallel wave ⇒ a per-step error, not a crash.
-- The codex runner's `gpt-5-codex` default model is rejected on ChatGPT-plan accounts
-  (declare `model` in `executor_config`).
+- Both vendors' runner-default models can be account/era-stale — codex's
+  `gpt-5-codex` is rejected on ChatGPT-plan accounts, and claude's
+  `claude-sonnet-4-20250514` is retired (`model_not_found`, write-build smoke).
+  Declare `model` in `executor_config`; the defaults are deliberately left
+  (consolidator byte-identical discipline — any default goes stale again).
 - Mid-run `.jido/config.yaml` edits are not re-checked (camus C2-7 class, the
   `verify_cmd` precedent); a deterministic violation loops boot recovery `:running`.
 - Vendor identity is provider-prefix-approximate — a proxy provider like openrouter
   reads as its own vendor; the operator owns the knob.
-- **The docker write build is the named follow-up plan**: docker-backed vendor
-  dispatch (sbx path translation, deposit-URL reachability from the microVM, a
-  stdin-EOF equivalent, the sbx auth/secret model, a live smoke like PR-2's) with the
-  pinned write-case materialization a **direct rw repo mount** (sbx workspaces mount
-  rw natively; `--clone` rejected). Until it lands, `session_sandbox: :docker`
-  hydrates but refuses at dispatch.
 - The full `needs_input` composer park stays gated on an interactive-runner producer
   (today every executor-path runner is single-shot; the answer-loop gate case covers
   the seam).
 - A stale approved needs-input answer (past the 24h TTL) is left inert — visible in
   case history, never consumed, never garbage-collected.
+- **Answer-burn on docker infra failure**: the vendor `build_spec` claims the
+  operator answer LAST (after every refusal), but a docker infra failure AFTER the
+  claim (backend create, policy rule, runner init) still burns the single-use answer
+  — the same pre-existing class as a local `:no_credentials` at init; accepted, not
+  new machinery.
+- **Claude credential source residuals**: an in-VM token refresh can rotate the
+  refresh token while the host Keychain copy goes stale (same class as the existing
+  Linux file sync), and the first Keychain extraction may pop a one-time macOS
+  approval prompt (attended runs OK; unattended runs need pre-authorization). The
+  `FileSync` base64-argv exposure class (the credential rides an exec argv
+  base64-encoded — `Patterns`' `sk-ant-` rule covers plaintext, not the base64 form)
+  is pre-existing and shared with the `:full` auth sync; the checked write drops the
+  shell's error output from its error tuple so a failure can't echo the argv into
+  logs/transcripts.
+- The repo-`.mcp.json` concern in write mode is **CLOSED by `strict_mcp`** (claude's
+  write arm appends `--strict-mcp-config`; the flag+bypass combination is
+  smoke-verified against the installed CLI), not an accepted residual.
+- sbx `secret`/`serviceAuth` proxy-injected credentials remain the documented
+  alternative to file-sync auth; a vendor-image pinning knob (`sbx create -t`) stays
+  unbuilt — the smoke didn't force either.
 
 ## Source map
 
@@ -307,8 +384,11 @@ runner_config). Telemetry counters `jido_claw.executor.total` (`kind`/`outcome`)
 - `lib/jido_claw/skills/steps/agent_runner.ex` — `run/7` dispatch on the binding, the
   independence/override overlay seam
 - `lib/jido_claw/skills/steps/forge_executor.ex` — the forge arm: session lifecycle,
-  unwinding reducer, terminal signal, docker dispatch refusal, needs-input
-  raise/claim/injection
+  unwinding reducer, terminal signal, docker dispatch (session spec, backend seam,
+  URL translation, access mapping), needs-input raise/claim/injection
+- `lib/jido_claw/forge/sandbox/docker.ex` — the sbx 0.34.0 backend: same-path
+  workspace positionals, post-create policy rules, the in-VM exec wrapper
+  (stdin `</dev/null` + `.forge_env` export loop), `allow_network` validation
 - `lib/jido_claw/skills/steps/forge_executor/deposit.ex` — the deposit box,
   schema validation, last-valid-wins
 - `lib/jido_claw/orchestration/review_independence.ex` — `check_route/2`,

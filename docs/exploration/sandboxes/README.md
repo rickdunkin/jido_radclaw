@@ -288,18 +288,23 @@ mode. This one was included deliberately: **`Sandbox.Docker` is already sbx** �
 every Forge sandbox is one of these microVMs. The kit documents precisely the two
 capabilities our backend hasn't wired up yet (neither appears anywhere in `forge/`):
 
-- **Granular network policy**: sbx's host-side proxy enforces `allowedDomains` —
-  everything else is blocked. Our spec surface today is binary: `%{network: :none}`
-  emits `--network none` (AR-8b-2 no-egress), otherwise the sandbox rides whatever
-  default policy the sbx login chose. The `allowedDomains` allowlist is the missing
-  middle ground — per-sandbox egress scoping from the isolation layer we already
-  ship, analogous to the browse_web destination-policy gate but kernel/proxy-enforced.
+- **Granular network policy**: sbx's host-side proxy enforces network rules —
+  everything else is blocked. (Since the docker write build, sbx 0.34.0: network
+  control is `sbx policy` — our `%{network: :none}` applies a post-create
+  per-sandbox `deny network "**"` rule (the old `--network none` flag no longer
+  exists), and the middle ground now partially exists as the `allow_network`
+  sandbox-spec key — per-sandbox `allow network` rules, used by the executor's
+  deposit lane. An operator-config allowlist surface on the kit's `allowedDomains`
+  model remains unbuilt.)
 - **Host-local inference from inside the microVM**: inside the VM, `localhost` is
   the VM; the host is reached as `host.docker.internal` _through_ the sbx proxy,
-  subject to `allowedDomains`. That is exactly the path a Forge-sandboxed agent
+  subject to the allow rules. That is exactly the path a Forge-sandboxed agent
   needs to use host Ollama (our recommended local-dev inference) or a
-  `llama-server` in router mode (dynamic model loading on the host GPU), and we
-  currently have no story for it.
+  `llama-server` in router mode (dynamic model loading on the host GPU). (The
+  MECHANISM shipped with the docker write build — the executor's docker vendor
+  sessions reach the host-loopback deposit endpoint via `host.docker.internal`
+  under a per-sandbox allow rule, smoke-verified — but a host-inference story
+  still doesn't exist.)
 
 So rather than "candidate backend to evaluate", read this kit as the worked example
 for our existing backend's next two features.
@@ -316,9 +321,12 @@ composed kits (a ready-made mechanism for nono N2-4's metadata floor), and
 `serviceDomains`/`serviceAuth`/`proxyManaged` give proxy-injected credentials that
 never enter the VM (the phantom-token tier, parked as PS2-1 against our OneCLI). The
 **host-reach routing claim is kit-only**: vendor docs are silent on
-`host.docker.internal`-through-the-proxy, so it — plus the odd
-both-`host.docker.internal:port`-and-`localhost:port` allowlist requirement — stays
-spike-verified, not doc-verified. And the kit's own `spec.yaml` uses the
+`host.docker.internal`-through-the-proxy, so at dig time it — plus the odd
+both-`host.docker.internal:port`-and-`localhost:port` allowlist requirement — was
+spike-verified, not doc-verified. (Both are now SMOKE-verified in this repo by the
+docker write build: the executor's per-sandbox allow rule carries both forms, and
+`sbx policy log` shows the proxy normalizing `host.docker.internal` to
+`localhost:<port>` in its allow matching — the both-forms requirement is real.) And the kit's own `spec.yaml` uses the
 **pre-v0.32.0 deprecated schema** (`kind: agent`); a synthesized kit of ours would be a
 `kind: mixin`. Bonus finding from the seams pass, unrelated to sbx: our
 `.jido/config.yaml` `providers.*.base_url` is decorative for generation (it feeds only
@@ -456,8 +464,9 @@ matching dated note.
       now motivates PS1-1. Tier 2 (OSH2-1/2-2/2-3) folds into the PS1-x program
       rather than standing alone.
 - [] Walk the pi-sbx kit against our existing sbx backend: add `allowedDomains` to
-  `sandbox_spec` (between today's binary default/`--network none`), and prove
-  host-Ollama reach from inside a Forge sandbox via `host.docker.internal`.
+  `sandbox_spec` (beyond today's sbx-policy default/deny-all modes and the
+  executor-only `allow_network` deposit lane), and prove host-Ollama reach from
+  inside a Forge sandbox via `host.docker.internal`.
   _Deep-dive done 2026-07-03 —
   [pi-sbx-llamacpp/FEATURES-WORTH-BORROWING.md](pi-sbx-llamacpp/FEATURES-WORTH-BORROWING.md)
   (read-only; nothing executed). The spike itself remains, now specced: PS1-1

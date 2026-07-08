@@ -32,6 +32,8 @@ defmodule JidoClaw.Forge.RecoveredSpec do
   # rejected, not passed through — a blind existing-atom fallback would admit it
   # and crash later at `resolve_client`/`resolve_runner`'s `is_atom` catch-all
   # (`:ok.create/1` / `runner_module.init/2`).
+  alias JidoClaw.Forge.Sandbox
+
   @sandbox_atoms %{
     "default" => :default,
     "host_shell" => :host_shell,
@@ -159,21 +161,25 @@ defmodule JidoClaw.Forge.RecoveredSpec do
   defp normalize_sandbox_spec(nil), do: {:ok, nil}
 
   defp normalize_sandbox_spec(ss) when is_map(ss) do
-    with {:ok, mounts} <- normalize_extra_mounts(get(ss, :extra_mounts)) do
+    with {:ok, mounts} <- normalize_extra_mounts(get(ss, :extra_mounts)),
+         {:ok, allow_network} <- normalize_allow_network(get(ss, :allow_network)) do
       normalized =
         ss
         |> drop_keys([
           "extra_mounts",
           "network",
+          "allow_network",
           "isolate_global_config",
           "workdir",
           :extra_mounts,
           :network,
+          :allow_network,
           :isolate_global_config,
           :workdir
         ])
         |> put_present(:extra_mounts, mounts)
         |> put_present(:network, normalize_network(get(ss, :network)))
+        |> put_present(:allow_network, allow_network)
         |> put_present(:isolate_global_config, normalize_bool(get(ss, :isolate_global_config)))
         |> put_present(:workdir, normalize_workdir(get(ss, :workdir)))
 
@@ -182,6 +188,20 @@ defmodule JidoClaw.Forge.RecoveredSpec do
   end
 
   defp normalize_sandbox_spec(_other), do: {:error, :invalid_sandbox_spec}
+
+  # `allow_network` entries become a `sbx policy` CSV at the backend — the
+  # same strict `host[:port]` shape rule (`Docker.valid_network_host?/1`)
+  # applies to a jsonb-recovered list, fail closed otherwise. Never atomized:
+  # the values stay the strings they were persisted as.
+  defp normalize_allow_network(nil), do: {:ok, nil}
+
+  defp normalize_allow_network(hosts) when is_list(hosts) do
+    if Enum.all?(hosts, &Sandbox.Docker.valid_network_host?/1),
+      do: {:ok, hosts},
+      else: {:error, {:invalid_allow_network, hosts}}
+  end
+
+  defp normalize_allow_network(other), do: {:error, {:invalid_allow_network, other}}
 
   # Validate each mount entry but KEEP its shape (string-keyed map or tuple) — the
   # single map→tuple conversion lives at the harness boundary

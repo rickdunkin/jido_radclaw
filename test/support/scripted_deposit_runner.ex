@@ -1,9 +1,10 @@
 defmodule JidoClaw.Test.ScriptedDepositRunner do
   @moduledoc """
   Vendor-double Forge runner for the executor-seam PR-2 tests: a real
-  `@behaviour JidoClaw.Forge.Runner` that reads the MCP client config file the
-  executor wrote (`runner_config.mcp_config_path`), initializes a
-  `JidoClaw.MCP.LoopbackClient` session, and drives the scripted
+  `@behaviour JidoClaw.Forge.Runner` that resolves the deposit endpoint from
+  the executor's client config (`runner_config.mcp_config_json` body for a
+  docker plan, else the host-tmp `runner_config.mcp_config_path` file),
+  initializes a `JidoClaw.MCP.LoopbackClient` session, and drives the scripted
   `submit_structured_output` calls — proving endpoint → plug → anubis → tool →
   registry → box end-to-end with zero vendor CLIs.
 
@@ -105,18 +106,35 @@ defmodule JidoClaw.Test.ScriptedDepositRunner do
     end)
   end
 
+  # Docker write build: a docker plan's `mcp_config_path` points INTO the VM
+  # (no host file exists), so the runner prefers the in-VM config BODY
+  # (`:mcp_config_json`) and parses it directly; a local plan still reads the
+  # host-tmp file the executor wrote (the stronger local proof). The URL a
+  # docker plan carries names `host.docker.internal` — mapped back to
+  # `127.0.0.1` for this runner's HOST-side hermetic connection.
   defp read_server_url(config) do
-    path = Map.get(config, :mcp_config_path)
     server = Map.get(config, :mcp_server_name, "jido_deposit")
 
-    with true <- is_binary(path),
-         {:ok, body} <- File.read(path),
+    with {:ok, body} <- config_body(config),
          {:ok, %{"mcpServers" => servers}} <- Jason.decode(body),
          %{"url" => url} <- Map.get(servers, server, :missing) do
-      {:ok, url}
+      {:ok, String.replace(url, "host.docker.internal", "127.0.0.1")}
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :invalid_mcp_config}
+    end
+  end
+
+  defp config_body(config) do
+    case Map.get(config, :mcp_config_json) do
+      json when is_binary(json) ->
+        {:ok, json}
+
+      nil ->
+        case Map.get(config, :mcp_config_path) do
+          path when is_binary(path) -> File.read(path)
+          _missing -> {:error, :invalid_mcp_config}
+        end
     end
   end
 

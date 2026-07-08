@@ -100,10 +100,11 @@ defmodule JidoClaw.Agent.Templates do
   (positive integers), with any OTHER key refused. `access: :write` requires
   `session_sandbox: :docker` (PR-4's write⇒sandbox invariant: a write-capable
   vendor session must be docker-backed — write+local refuses at hydration),
-  and `session_sandbox: :docker` itself is refused at DISPATCH until the
-  docker write build lands (`JidoClaw.Skills.Steps.ForgeExecutor` — the
-  `{:forge, :custom}` hydrates-but-refuses pattern). A `workspace:` key on
-  any non-vendor kind refuses too.
+  and `session_sandbox: :docker` dispatches the vendor session into an sbx
+  microVM (the docker write build: `JidoClaw.Skills.Steps.ForgeExecutor` —
+  `access: :write` there means an rw same-path repo mount and the runner's
+  `:full` arm; the microVM is the boundary). A `workspace:` key on any
+  non-vendor kind refuses too.
 
   Unlike the other policies, a malformed value **raises** `ArgumentError` (the
   `:max_iterations` loud posture, not the warn+fail-closed one): fc/ra/sandbox

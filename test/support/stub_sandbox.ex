@@ -186,7 +186,16 @@ defmodule JidoClaw.Test.StubSandbox do
   def spawn(_, _, _, _), do: {:error, :not_supported}
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
-  def destroy(%__MODULE__{agent_pid: pid}, _sandbox_id) do
+  def destroy(%__MODULE__{agent_pid: pid}, sandbox_id) do
+    # Optional teardown pin (docker write build): the harness holds the
+    # client, so "did stop_session actually reach Sandbox.destroy?" is
+    # otherwise unobservable from a test — the linked Agent dies with the
+    # harness either way. Armed via `:stub_sandbox_destroy_notify`.
+    case Application.get_env(:jido_claw, :stub_sandbox_destroy_notify) do
+      test_pid when is_pid(test_pid) -> send(test_pid, {:stub_sandbox_destroy, sandbox_id})
+      _not_armed -> :ok
+    end
+
     if Process.alive?(pid), do: Agent.stop(pid)
     :ok
   end

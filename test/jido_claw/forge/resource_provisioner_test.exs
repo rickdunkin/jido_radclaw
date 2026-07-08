@@ -55,7 +55,7 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
 
     test "skips file_mount resources", %{client: client} do
       resources = [
-        %{type: :file_mount, source: "/host/path", mount_path: "/container/path"},
+        %{type: :file_mount, source: "/host/path", mount_path: "/host/path"},
         %{type: :env_vars, values: %{"AFTER_MOUNT" => "yes"}}
       ]
 
@@ -82,8 +82,8 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
       assert {:skip, :handled_at_create} =
                ResourceProvisioner.provision(client, %{
                  type: :file_mount,
-                 source: "/host",
-                 mount_path: "/container"
+                 source: "/host/data",
+                 mount_path: "/host/data"
                })
     end
   end
@@ -208,17 +208,17 @@ defmodule JidoClaw.Forge.ResourceProvisionerTest do
   end
 
   describe "file_mount_specs/1" do
-    test "extracts file_mount entries as tuples" do
+    test "extracts file_mount entries as tuples (same-path)" do
       resources = [
         %{type: :env_vars, values: %{}},
-        %{type: :file_mount, source: "/a", mount_path: "/b", mode: :rw},
+        %{type: :file_mount, source: "/a", mount_path: "/a", mode: :rw},
         %{type: :git_repo, source: "url", mount_path: "/c"},
-        %{type: :file_mount, source: "/d", mount_path: "/e"}
+        %{type: :file_mount, source: "/d", mount_path: "/d"}
       ]
 
       assert ResourceProvisioner.file_mount_specs(resources) == [
-               {"/a", "/b", :rw},
-               {"/d", "/e", :ro}
+               {"/a", "/a", :rw},
+               {"/d", "/d", :ro}
              ]
     end
 

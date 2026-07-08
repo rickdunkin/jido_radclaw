@@ -32,15 +32,59 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
           {:error,
            :sbx_not_found
            | {:sbx_create_failed, pos_integer(), any()}
-           | {:workspace_dir_failed, term()}}
+           | {:sbx_policy_failed, String.t(), pos_integer(), any()}
+           | {:workspace_dir_failed, term()}
+           | {:invalid_mount, term()}
+           | {:invalid_allow_network, term()}
+           | {:contradictory_network_policy, term()}}
           | {:ok, t(), binary()}
   def create(spec) do
-    case System.find_executable("sbx") do
-      nil ->
-        {:error, :sbx_not_found}
+    # Spec validation runs FIRST — before the sbx lookup and before any
+    # resource (workspace dir) exists, so an invalid mount/policy spec fails
+    # as a deterministic error tuple with nothing to clean up.
+    with :ok <- validate_create_spec(spec) do
+      case System.find_executable("sbx") do
+        nil ->
+          {:error, :sbx_not_found}
 
-      _path ->
-        do_create(spec)
+        _path ->
+          do_create(spec)
+      end
+    end
+  end
+
+  # Pure pre-create validation: every mount source the create will emit
+  # (spec mounts + the global layer, honoring the opt-out) must be a valid
+  # same-path workspace positional, and the network intent must be coherent
+  # (`network: :none` contradicts a non-empty `allow_network`; no producer
+  # needs both). `allow_network` entries are shape-checked here because they
+  # become a `sbx policy` CSV — a stray comma/blank/wildcard would silently
+  # broaden egress.
+  defp validate_create_spec(spec) do
+    with :ok <- validate_network_intent(spec) do
+      spec
+      |> collect_mounts()
+      |> Enum.find(&(not valid_mount_entry?(&1)))
+      |> case do
+        nil -> :ok
+        entry -> {:error, {:invalid_mount, entry}}
+      end
+    end
+  end
+
+  defp validate_network_intent(spec) do
+    # ToolContext present-nil coercion: a present-nil key must read as absent.
+    hosts = Map.get(spec, :allow_network) || []
+
+    cond do
+      not (is_list(hosts) and Enum.all?(hosts, &valid_network_host?/1)) ->
+        {:error, {:invalid_allow_network, Map.get(spec, :allow_network)}}
+
+      Map.get(spec, :network) == :none and hosts != [] ->
+        {:error, {:contradictory_network_policy, hosts}}
+
+      true ->
+        :ok
     end
   end
 
@@ -70,13 +114,49 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
           workdir: Map.get(spec, :workdir)
         }
 
-        maybe_inject_onecli_env(spec, client, sandbox_id, sandbox_name)
-
-        {:ok, client, sandbox_id}
+        finalize_created_sandbox(spec, client, sandbox_id, sandbox_name)
 
       {error_output, code} ->
         File.rm_rf(workspace_dir)
         {:error, {:sbx_create_failed, code, error_output}}
+    end
+  end
+
+  # Network policy lands POST-create (sbx 0.34.0 moved network control off
+  # `create` onto `sbx policy`). A policy call that fails means the isolation
+  # (or reachability) the spec requested cannot be honored — the sandbox is
+  # destroyed and the create fails CLOSED, never a silent fail-open run.
+  defp finalize_created_sandbox(spec, client, sandbox_id, sandbox_name) do
+    case apply_network_policy(spec, sandbox_name) do
+      :ok ->
+        maybe_inject_onecli_env(spec, client, sandbox_id, sandbox_name)
+        {:ok, client, sandbox_id}
+
+      {:error, reason} ->
+        destroy(client, sandbox_id)
+        {:error, reason}
+    end
+  end
+
+  # `network: :none` ⇒ a per-sandbox deny-all rule; `allow_network` ⇒ a
+  # per-sandbox allow rule (the deposit-endpoint reachability grant). The two
+  # are mutually exclusive by `validate_create_spec/1`; deny wins here as
+  # defense in depth. Per-sandbox rules are removed by `sbx rm` (verified),
+  # so destroy needs no policy cleanup.
+  defp apply_network_policy(spec, sandbox_name) do
+    case {Map.get(spec, :network), Map.get(spec, :allow_network) || []} do
+      {:none, _hosts} -> run_policy_rule("deny", sandbox_name, "**")
+      {_network, [_ | _] = hosts} -> run_policy_rule("allow", sandbox_name, Enum.join(hosts, ","))
+      _no_policy -> :ok
+    end
+  end
+
+  defp run_policy_rule(decision, sandbox_name, resources) do
+    args = build_policy_args(decision, sandbox_name, resources)
+
+    case System.cmd("sbx", args, stderr_to_stdout: true, env: Env.scrubbed_cmd_env()) do
+      {_output, 0} -> :ok
+      {error_output, code} -> {:error, {:sbx_policy_failed, decision, code, error_output}}
     end
   end
 
@@ -172,21 +252,27 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
         args,
         opts
       ) do
-    sbx_args = build_exec_argv_args(sandbox_name, workspace_dir, command, args)
+    sbx_args = build_exec_argv(sandbox_name, workspace_dir, nil, [command | args])
     timeout = Keyword.get(opts, :timeout)
 
     exec_with_timeout(sbx_args, timeout || :infinity)
   end
 
+  # sbx 0.34.0: a vendor CLI run is `sbx exec` into the harness-created
+  # sandbox — arg#2 is the in-sandbox EXECUTABLE (`HostShell.run` semantics;
+  # the old `sbx run <agent>` dispatch is gone), and `opts[:name]` no longer
+  # re-targets another sandbox (exec targets THIS client's sandbox). The
+  # in-VM `</dev/null` wrap in `build_exec_argv/4` is load-bearing here: the
+  # sbx client forwards its piped stdin, so a stdin-reading CLI would hang to
+  # timeout without it.
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def run(
-        %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir},
-        agent_type,
+        %__MODULE__{sandbox_name: sandbox_name, workspace_dir: workspace_dir, workdir: workdir},
+        executable,
         args,
         opts
       ) do
-    name = Keyword.get(opts, :name, sandbox_name)
-    sbx_args = build_run_args(name, agent_type, workspace_dir, args)
+    sbx_args = build_exec_argv(sandbox_name, workspace_dir, workdir, [executable | args])
     timeout = Keyword.get(opts, :timeout)
 
     exec_with_timeout(sbx_args, timeout || :infinity)
@@ -274,42 +360,94 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   # --- Private ---
 
   @doc """
-  Build the `sbx create` args (AR-8b-2 F2 1.6). Public so a test can assert the
-  emitted flags — global mounts skipped + `--network none` present under
-  `isolate_global_config: true` — without a live `sbx`.
+  Build the `sbx create` args (sbx 0.34.0): `create --name NAME AGENT WORKSPACE
+  [MOUNT...]` — every mount is a trailing workspace POSITIONAL (`path` rw /
+  `path:ro`; the CLI has no `--mount`), mounted in-VM at the SAME absolute path
+  as the host, so every entry must be same-path + absolute. Order matters: sbx
+  treats the first PATH as the primary workspace, so mounts come AFTER
+  `[agent_type, workspace_dir]`. Network control moved to post-create
+  `sbx policy` — no `--network` flag exists here.
+
+  Public so a test can assert the emitted positionals — global mounts skipped
+  under `isolate_global_config: true` (AR-8b-2 F2 D2-a: a host-path mount
+  survives the deny-all policy, so the no-egress bypass cannot rest on egress
+  alone) — without a live `sbx`. Raises on an invalid mount entry as defense
+  in depth; `create/1` validates the same entries up front and returns
+  `{:error, {:invalid_mount, entry}}` instead.
   """
   @spec build_create_args(String.t(), String.t(), String.t(), map()) :: [String.t()]
   def build_create_args(sandbox_name, agent_type, workspace_dir, spec) do
-    args =
-      ["create", "--name", sandbox_name]
-      # OneCLI CA-cert mount + operator global `:extra_mounts` — skipped wholesale
-      # when the spec opts out of global host config (AR-8b-2 F2 D2-a): a host-path
-      # mount survives `--network none`, so the no-egress bypass cannot rest on
-      # egress alone.
-      |> add_global_mounts(spec)
-      # Resource-/spec-declared mounts (the prototype `extra_mount`) — always.
-      |> add_spec_mounts(spec)
-      # Best-guess no-egress flag when the spec requests it. Precommit asserts the
-      # flag is EMITTED; the manual `:docker_sandbox` test asserts egress is
-      # actually DENIED (a `sbx` that silently ignores it fails open — caught only
-      # there).
-      |> add_network_flag(spec)
+    mounts =
+      spec
+      |> collect_mounts()
+      |> Enum.map(&mount_positional!/1)
 
-    args ++ [agent_type, workspace_dir]
+    ["create", "--name", sandbox_name, agent_type, workspace_dir] ++ mounts
   end
 
-  defp add_global_mounts(args, spec) do
-    if isolate_global_config?(spec) do
-      args
+  # Every mount source the create emits, in layer order: the OneCLI CA-cert
+  # dir + operator-global `:extra_mounts` (skipped wholesale under the global
+  # opt-out), then the spec-declared mounts (the prototype / executor repo
+  # mount) — always.
+  defp collect_mounts(spec) do
+    global =
+      if isolate_global_config?(spec) do
+        []
+      else
+        ca_cert_mounts() ++ Keyword.get(config(), :extra_mounts, [])
+      end
+
+    global ++ Map.get(spec, :extra_mounts, [])
+  end
+
+  defp mount_positional!(entry) do
+    if valid_mount_entry?(entry) do
+      {path, _same_path, mode} = entry
+      if normalize_mount_mode(mode) == "ro", do: "#{path}:ro", else: path
     else
-      args
-      |> maybe_add_ca_cert_mount()
-      |> add_extra_mounts()
+      raise ArgumentError,
+            "[Forge.DockerSandbox] invalid mount #{inspect(entry)} — sbx 0.34.0 " <>
+              "workspaces mount in-VM at the host path, so an entry must be a " <>
+              "{path, path, ro|rw} same-path tuple with an absolute path"
     end
   end
 
-  defp add_network_flag(args, %{network: :none}), do: args ++ ["--network", "none"]
-  defp add_network_flag(args, _spec), do: args
+  defp valid_mount_entry?({host, container, mode})
+       when is_binary(host) and is_binary(container),
+       do:
+         host == container and Path.type(host) == :absolute and
+           normalize_mount_mode(mode) in ["ro", "rw"]
+
+  defp valid_mount_entry?(_entry), do: false
+
+  defp normalize_mount_mode(mode) when is_atom(mode), do: Atom.to_string(mode)
+  defp normalize_mount_mode(mode) when is_binary(mode), do: mode
+  defp normalize_mount_mode(mode), do: inspect(mode)
+
+  @doc """
+  Build the `sbx policy <decision> network --sandbox NAME RESOURCES` args —
+  the post-create half of 0.34.0 network control (`network: :none` ⇒ a
+  per-sandbox `deny … "**"`, `allow_network` ⇒ a per-sandbox allow CSV).
+  Public so precommit can assert the emitted shape without a live `sbx`.
+  """
+  @spec build_policy_args(String.t(), String.t(), String.t()) :: [String.t()]
+  def build_policy_args(decision, sandbox_name, resources)
+      when decision in ["allow", "deny"] do
+    ["policy", decision, "network", "--sandbox", sandbox_name, resources]
+  end
+
+  @doc """
+  Whether `value` is a strict `host[:port]` entry safe to join into a
+  `sbx policy` RESOURCES CSV: non-blank, no commas/whitespace/wildcards
+  (a stray comma or `**` would silently broaden egress; nothing in this
+  build needs a wildcard). Shared with `Forge.RecoveredSpec`, which applies
+  the same rule to a jsonb-recovered `allow_network`.
+  """
+  @spec valid_network_host?(term()) :: boolean()
+  def valid_network_host?(value) when is_binary(value),
+    do: Regex.match?(~r/^[A-Za-z0-9._-]+(:\d{1,5})?$/, value)
+
+  def valid_network_host?(_other), do: false
 
   @doc """
   Whether the spec opts out of all global host config (AR-8b-2 F2 D2-a). Reads
@@ -321,57 +459,59 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   def isolate_global_config?(%{isolate_global_config: true}), do: true
   def isolate_global_config?(_spec), do: false
 
-  defp build_run_args(sandbox_name, agent_type, workspace_dir, args) do
-    base_args = ["run", agent_type, "--name", sandbox_name]
-
-    # Add --env-file if .forge_env exists
-    env_file = env_file_path(workspace_dir)
-
-    sbx_args =
-      if File.exists?(env_file) do
-        base_args ++ ["--env-file", env_file]
-      else
-        base_args
-      end
-
-    Enum.concat([sbx_args, ["--"], args])
-  end
-
   @doc """
-  Build the `sbx exec` args (AR-8b-2 F2 1.6). Public so a test can assert the
-  `--workdir <dir>` flag is emitted for an exec session. A `nil`/blank workdir
-  (every non-exec session) emits no flag — byte-identical to the pre-F2 args.
+  Build the `sbx exec` args for a `sh -c` command (AR-8b-2 F2 1.6). Public so
+  a test can assert the `--workdir <dir>` flag is emitted for an exec session.
+  A `nil`/blank workdir (every non-exec session) emits no flag — byte-identical
+  to the pre-F2 args.
   """
   @spec build_exec_args(String.t(), String.t(), String.t(), String.t() | nil) :: [String.t()]
   def build_exec_args(sandbox_name, workspace_dir, command, workdir \\ nil) do
-    # Add --env-file if .forge_env exists
+    build_exec_argv(sandbox_name, workspace_dir, workdir, ["sh", "-c", command])
+  end
+
+  @doc """
+  The shared `sbx exec` argv assembly every in-sandbox invocation rides
+  (`exec/3`, `exec_argv/4`, `run/4` — 0.34.0 has no separate agent-dispatch
+  path here; a vendor CLI is just an in-sandbox executable): `--workdir` when
+  a workdir is stamped, then `[SANDBOX, sh, -c, <wrapper> | argv]`, where the
+  in-VM wrapper applies the workspace `.forge_env` (when it exists) and
+  `exec`s the real argv with STDIN FROM /dev/null.
+
+  Both wrapper halves are live-smoke findings, not style:
+
+    * `sbx exec --env-file` is INERT on 0.34.0 (probed: the file's vars never
+      reach the exec'd process, while `-e` does) — and `-e K=V` would put
+      resolved vault secrets on the HOST argv (ps-visible). The env file is
+      applied IN-VM instead: the workspace dir is the sandbox's primary
+      same-path mount, so the file is readable at its host path inside the
+      VM, and the reader assigns each `K=V` line WITHOUT shell evaluation
+      (`export "$line"` expands once and never re-scans the value — a value
+      containing `$(...)` stays literal; sourcing would execute it).
+    * stdin-EOF does NOT come free: the `sbx` client forwards its own piped
+      stdin (OsCmd's port — never EOF) into the exec, so a stdin-reading
+      command hangs to timeout without the redirect (`codex exec` reads
+      stdin to EOF — the HostShell `cli_exec_argv/2` finding, replayed
+      in-VM). `"$0" "$@"` keeps the argv out of the shell string entirely.
+
+  Public so precommit can assert the emitted shape without a live `sbx`.
+  """
+  @spec build_exec_argv(String.t(), String.t(), String.t() | nil, [String.t()]) :: [String.t()]
+  def build_exec_argv(sandbox_name, workspace_dir, workdir, argv) do
     env_file = env_file_path(workspace_dir)
+    prelude = if File.exists?(env_file), do: env_prelude(env_file), else: ""
+    wrapper = prelude <> ~S(exec "$0" "$@" </dev/null)
 
-    args =
-      if File.exists?(env_file) do
-        ["exec", "--env-file", env_file]
-      else
-        ["exec"]
-      end
+    ["exec"] ++ workdir_args(workdir) ++ [sandbox_name, "sh", "-c", wrapper | argv]
+  end
 
-    (args ++ workdir_args(workdir)) ++ [sandbox_name, "sh", "-c", command]
+  defp env_prelude(env_file) do
+    ~s{while IFS= read -r __fl; do case "$__fl" in *=*) export "$__fl";; esac; done } <>
+      "< '#{env_file}'; "
   end
 
   defp workdir_args(workdir) when is_binary(workdir) and workdir != "", do: ["--workdir", workdir]
   defp workdir_args(_workdir), do: []
-
-  defp build_exec_argv_args(sandbox_name, workspace_dir, command, command_args) do
-    env_file = env_file_path(workspace_dir)
-
-    args =
-      if File.exists?(env_file) do
-        ["exec", "--env-file", env_file]
-      else
-        ["exec"]
-      end
-
-    args ++ [sandbox_name, command | command_args]
-  end
 
   defp exec_with_timeout(args, timeout) do
     case sbx_finder().("sbx") do
@@ -555,17 +695,19 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
           env
         end
 
-      # Add CA cert env vars if cert path is configured
+      # CA cert env vars, when configured — pointing at the HOST path, which
+      # is in-VM identical (same-path workspace mount of the cert's parent
+      # dir). Trust flows through these env consumers only: sbx 0.34.0 cannot
+      # remap the cert under /usr/local/share/ca-certificates, so
+      # `update-ca-certificates` never sees it.
       case Keyword.get(config, :ca_cert_path) do
         nil ->
           env
 
-        _ca_path ->
-          container_cert = "/usr/local/share/ca-certificates/onecli.crt"
-
+        ca_path ->
           env
-          |> Map.put("NODE_EXTRA_CA_CERTS", container_cert)
-          |> Map.put("SSL_CERT_FILE", container_cert)
+          |> Map.put("NODE_EXTRA_CA_CERTS", ca_path)
+          |> Map.put("SSL_CERT_FILE", ca_path)
       end
     else
       %{}
@@ -579,43 +721,30 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     end
   end
 
-  defp maybe_add_ca_cert_mount(args) do
+  # The OneCLI CA cert as a mount source: sbx 0.34.0 rejects FILE workspace
+  # positionals (probe-verified: "workspace path exists but is not a
+  # directory"), so the cert's parent DIRECTORY mounts same-path read-only
+  # and the env consumers (`NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE` in
+  # `onecli_env/0`) point at the original cert path.
+  defp ca_cert_mounts do
     config = onecli_config()
 
     if Keyword.get(config, :enabled, false) do
       case Keyword.get(config, :ca_cert_path) do
         nil ->
-          args
+          []
 
         ca_path when is_binary(ca_path) ->
           if File.exists?(ca_path) do
-            # Mount CA cert as read-only extra path
-            args ++ ["--mount", "#{ca_path}:/usr/local/share/ca-certificates/onecli.crt:ro"]
+            dir = Path.dirname(ca_path)
+            [{dir, dir, "ro"}]
           else
             Logger.warning("[Forge.DockerSandbox] OneCLI CA cert not found at #{ca_path}")
-            args
+            []
           end
       end
     else
-      args
+      []
     end
-  end
-
-  defp add_extra_mounts(args) do
-    mounts = Keyword.get(config(), :extra_mounts, [])
-
-    args ++
-      Enum.flat_map(mounts, fn {host_path, container_path, mode} ->
-        ["--mount", "#{host_path}:#{container_path}:#{mode}"]
-      end)
-  end
-
-  defp add_spec_mounts(args, spec) do
-    mounts = Map.get(spec, :extra_mounts, [])
-
-    args ++
-      Enum.flat_map(mounts, fn {host_path, container_path, mode} ->
-        ["--mount", "#{host_path}:#{container_path}:#{mode}"]
-      end)
   end
 end

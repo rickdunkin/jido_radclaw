@@ -194,7 +194,14 @@ defmodule JidoClaw.FrontDoorTest do
       assert spec.sandbox == :docker_sandbox
       assert spec.sandbox_spec.network == :none
       assert spec.sandbox_spec.isolate_global_config == true
-      assert spec.sandbox_spec.workdir == "/proto"
+      # Same-path workspace (sbx 0.34.0): the proto dir mounts at its own host
+      # path in-VM, and exec's workdir is that same path.
+      proto = reload(id, ctx).config["context"]["project_dir"]
+      assert spec.sandbox_spec.workdir == proto
+
+      assert spec.sandbox_spec.extra_mounts ==
+               [%{"host" => proto, "container" => proto, "mode" => "rw"}]
+
       assert spec.workspace_uuid == ctx.workspace_uuid
     end
 

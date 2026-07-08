@@ -723,15 +723,17 @@ fingerprint.
 > instruction; `details["injectable"]` (vendor AND session-keyed) keys the
 > surface copy. The full park stays gated on an interactive-runner producer
 > — no production executor-path runner emits `:needs_input`; the scripted
-> test runners are its first emitters. (b) **write posture = enforce-only**:
-> vendor `executor_config` gained `access: :read_only | :write` and
+> test runners are its first emitters. (b) **write posture**: vendor
+> `executor_config` gained `access: :read_only | :write` and
 > `session_sandbox: :local | :docker` (defaults written back), with
-> write⇒docker RAISING at hydration and `session_sandbox: :docker` refused
-> at dispatch (`refuse_docker_session/2`, the `{:forge, :custom}` pattern) —
-> **the docker write build is the named follow-up plan** (sbx path
-> translation, deposit-URL reachability from the microVM, a stdin-EOF
-> equivalent, the sbx auth model, live-smoke-gated like PR-2), and the
-> pinned write-case materialization is a direct rw repo mount (OQ-1(a);
+> write⇒docker RAISING at hydration; PR-4 shipped it enforce-only (docker
+> refused at dispatch), and **the docker write build (2026-07-07) made
+> dispatch real** — same-path sbx 0.34.0 workspace positionals (no path
+> translation needed), deposit reachability via `host.docker.internal`
+> under a per-sandbox `allow_network` policy rule, an in-VM
+> `</dev/null` exec wrapper for stdin-EOF, the shared claude credential
+> source (file → Keychain), live-smoke-gated like PR-2 — landing the
+> pinned write-case materialization, a direct rw repo mount (OQ-1(a);
 > `--clone` rejected). (c) **the stage-level executor override was BUILT**
 > (OQ-1(b), reversing PR-3's "never per-stage" for the stage axis while the
 > knob stays template-keyed): `Stage.executor` in AR-9's tier_opts
