@@ -4,8 +4,10 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
   Cancel button: the "cancel" `handle_event` routes through
   `Cancellation.cancel/2` and flashes the run's actual resulting status, and
   the button (with its `data-confirm`) renders only for cancellable rows. Also
-  pins the `toggle_cell/1` refactor: the steps toggle rides on the 5 data cells
-  (never the Actions cell), so each run row emits exactly 5 toggle bindings.
+  pins the `toggle_cell/1` refactor: the steps toggle rides on the 7 data cells
+  (never the Actions cell), so each run row emits exactly 7 toggle bindings —
+  and the WS6 ownership columns (Owner / Lease expires, expiry blanked on
+  terminal rows).
   """
   use JidoClaw.TenantCase, async: false
 
@@ -61,15 +63,53 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
     refute html =~ ~s(id="replay-#{running.id}")
   end
 
-  test "each run row puts the steps toggle on exactly its 5 data cells", ctx do
+  test "each run row puts the steps toggle on exactly its 7 data cells", ctx do
     run = seed_running(ctx, "wf-toggle")
 
     html = render_runs([run])
 
-    # The toggle binding rides on the 5 data cells (Name/Type/Status/Started/
-    # Deadline), each carrying this run's id; the 6th (Actions) cell holds the
-    # reveal/cancel/replay buttons and must NOT toggle. Count == 5 proves both.
-    assert count_substring(html, ~s(phx-click="toggle_steps" phx-value-id="#{run.id}")) == 5
+    # The toggle binding rides on the 7 data cells (Name/Type/Status/Started/
+    # Deadline/Owner/Lease expires), each carrying this run's id; the 8th
+    # (Actions) cell holds the reveal/cancel/replay buttons and must NOT
+    # toggle. Count == 7 proves both.
+    assert count_substring(html, ~s(phx-click="toggle_steps" phx-value-id="#{run.id}")) == 7
+  end
+
+  test "renders ownership columns; the lease expiry is blanked on terminal rows", ctx do
+    live = %{
+      seed_running(ctx, "wf-owned")
+      | claimed_by: "peer@host",
+        claim_expires_at: ~U[2026-07-07 10:30:00Z]
+    }
+
+    finished = seed_running(ctx, "wf-owned-done")
+    {:ok, _} = WorkflowLog.append(finished, :run_completed, %{result: %{"ok" => true}})
+    {:ok, reloaded} = WorkflowRun.by_id(finished.id, tenant: ctx.tenant, actor: ctx.actor)
+    # Terminal runs keep their claim columns frozen (lease frozen at terminal):
+    # the owner still renders, but the frozen expiry must be blanked or it
+    # would imply a live lease on a completed row.
+    done = %{reloaded | claimed_by: "gone@host", claim_expires_at: ~U[2026-07-07 09:00:00Z]}
+
+    html = render_runs([live, done])
+
+    assert html =~ "<th>Owner</th>"
+    assert html =~ "<th>Lease expires</th>"
+    assert html =~ "peer@host"
+    assert html =~ "2026-07-07 10:30"
+    assert html =~ "gone@host"
+    refute html =~ "2026-07-07 09:00"
+  end
+
+  test "nil-claim rows render em-dash placeholders in both ownership cells", ctx do
+    run = seed_running(ctx, "wf-unclaimed")
+    claimed = %{run | claimed_by: "peer@host", claim_expires_at: ~U[2026-07-07 10:30:00Z]}
+
+    # Same run rendered bare vs claimed: exactly the two ownership cells
+    # (owner + expiry) fall back to the em dash.
+    bare_html = render_runs([run])
+    claimed_html = render_runs([claimed])
+
+    assert count_substring(bare_html, "—") == count_substring(claimed_html, "—") + 2
   end
 
   test "renders the runs_error row (not the empty state) when the load failed" do

@@ -206,6 +206,8 @@ defmodule JidoClaw.Web.WorkflowsLive do
               <th>Status</th>
               <th>Started</th>
               <th>Deadline</th>
+              <th>Owner</th>
+              <th>Lease expires</th>
               <th style="text-align: right;">Actions</th>
             </tr>
           </thead>
@@ -234,6 +236,18 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 </.toggle_cell>
                 <.toggle_cell run_id={run.id}>
                   <.deadline_badge evidence={run_view.deadline} />
+                </.toggle_cell>
+                <.toggle_cell
+                  run_id={run.id}
+                  style="cursor: pointer; color: var(--muted); font-size: 0.875rem;"
+                >
+                  {run.claimed_by || "—"}
+                </.toggle_cell>
+                <.toggle_cell
+                  run_id={run.id}
+                  style="cursor: pointer; color: var(--muted); font-size: 0.875rem;"
+                >
+                  {format_time(lease_expiry(run))}
                 </.toggle_cell>
                 <td style="text-align: right; white-space: nowrap;">
                   <button
@@ -298,7 +312,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
                 </td>
               </tr>
               <tr :if={@expanded_run_id == run.id} id={"steps-#{run.id}"}>
-                <td colspan="6" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
+                <td colspan="8" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
                   <% step_views = Enum.map(@steps, &Visibility.step_view(&1, scope, @now)) %>
                   <p :if={@steps_error} style="color: var(--muted);">{@steps_error}</p>
                   <p
@@ -379,18 +393,18 @@ defmodule JidoClaw.Web.WorkflowsLive do
                     blocked click (never the 30s refresh), shown until a
                     successful replay clears the run's entry. --%>
               <tr :if={diag = @replay_diagnostics[run.id]} id={"replay-diagnostics-#{run.id}"}>
-                <td colspan="6" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
+                <td colspan="8" style="padding: 0.5rem 1rem 1rem 2rem; background: var(--surface);">
                   <.replay_diagnostics_detail diagnostics={diag} />
                 </td>
               </tr>
             <% end %>
             <tr :if={@runs_error}>
-              <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
+              <td colspan="8" style="text-align: center; color: var(--muted); padding: 2rem;">
                 {@runs_error}
               </td>
             </tr>
             <tr :if={is_nil(@runs_error) and @runs == []}>
-              <td colspan="6" style="text-align: center; color: var(--muted); padding: 2rem;">
+              <td colspan="8" style="text-align: center; color: var(--muted); padding: 2rem;">
                 No workflow runs yet
               </td>
             </tr>
@@ -401,7 +415,7 @@ defmodule JidoClaw.Web.WorkflowsLive do
     """
   end
 
-  # One toggle binding for all five data cells: each is a distinct DOM node, but
+  # One toggle binding for all seven data cells: each is a distinct DOM node, but
   # routing the `phx-click` through a single component keeps the toggle on the
   # cells (not the row), so the Actions cell never double-fires a step toggle.
   attr(:run_id, :string, required: true)
@@ -473,6 +487,14 @@ defmodule JidoClaw.Web.WorkflowsLive do
 
   defp format_time(nil), do: "—"
   defp format_time(dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
+
+  # Terminal runs keep their claim columns frozen (the lease is frozen at
+  # terminal), so rendering the raw expiry would imply a live lease on a
+  # completed/failed/cancelled row — blank it. `claimed_by` stays: "which node
+  # ran it" is meaningful on terminal rows too.
+  defp lease_expiry(run) do
+    if Projection.terminal_status?(run.status), do: nil, else: run.claim_expires_at
+  end
 
   defp replayable?(status), do: Projection.terminal_status?(status)
 

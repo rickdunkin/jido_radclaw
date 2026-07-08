@@ -1,6 +1,7 @@
 defmodule JidoClaw.WorkflowViewTest do
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Test.ReplayFixtures
@@ -43,6 +44,24 @@ defmodule JidoClaw.WorkflowViewTest do
   test "tenant scope is required" do
     assert {:error, :tenant_required} = WorkflowView.list(%{})
     assert {:error, %{code: :tenant_required}} = WorkflowStatus.run(%{}, %{tool_context: %{}})
+  end
+
+  test "ownership fields ride workflow_status's string-keyed run maps (v1.2)", %{
+    tenant_a: tenant
+  } do
+    {:ok, run} =
+      WorkflowRun.create(%{name: "owned", workflow_type: "reactor"},
+        tenant: tenant,
+        actor: actor_for(tenant)
+      )
+
+    assert {:ok, :claimed} = WorkflowLease.stamp(run.id, Ash.UUID.generate(), nil)
+
+    assert {:ok, status} = WorkflowStatus.run(%{}, %{tool_context: %{tenant_id: tenant}})
+    assert [row] = status["active_runs"]
+    assert row["claimed_by"] == WorkflowLease.node_identity()
+    # JsonSafe encodes the raw/frozen claim column to an ISO-8601 string.
+    assert {:ok, _dt, _offset} = DateTime.from_iso8601(row["claim_expires_at"])
   end
 
   test "secrets seeded into result/error never reach MCP output (T2-2 security pin)",

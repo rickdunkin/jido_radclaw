@@ -39,7 +39,9 @@ defmodule JidoClaw.Orchestration.ReclaimPooler do
   `[:jido_claw, :orchestration, :reclaimed]` fires once per claim (the Pooler's own
   event); the per-run **disposition** rides the existing
   `[:jido_claw, :orchestration, :recovered]` branch event emitted inside
-  `WorkflowRecovery`.
+  `WorkflowRecovery`. Both belong to the five-event lease lifecycle family
+  (claimed/renewed/reclaimed/fenced_out/recovered) — see
+  docs/system/clustering.md for the full metadata shapes.
   """
 
   use GenServer

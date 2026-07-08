@@ -50,7 +50,14 @@ defmodule JidoClaw.Tools.InspectWorkflow do
       # Optional: absent for runs without a disposition.
       disposition: [type: :string, required: false],
       findings_deferred_count: [type: :integer, required: false],
-      duration_ms: [type: :integer, required: false]
+      duration_ms: [type: :integer, required: false],
+      # WS6 lease ownership (surface v1.2) — deliberately DECLARED (type-stable
+      # top-level strings), unlike `started_at`/`completed_at`, which remain
+      # undeclared pass-through extras. `claim_expires_at` is the raw/frozen
+      # column (ISO-8601 via JsonSafe): on a terminal run it is the last-claim
+      # value, never live lease state — pair it with `run_status`.
+      claimed_by: [type: :string, required: false],
+      claim_expires_at: [type: :string, required: false]
     ],
     schema: [
       run_id: [
@@ -99,6 +106,8 @@ defmodule JidoClaw.Tools.InspectWorkflow do
     |> put_present(:disposition, Map.get(s, :disposition))
     |> put_present(:findings_deferred_count, Map.get(s, :findings_deferred_count))
     |> put_present(:duration_ms, s.duration_ms)
+    |> put_present(:claimed_by, s.claimed_by)
+    |> put_present(:claim_expires_at, JsonSafe.encode(s.claim_expires_at))
     |> put_present(:started_at, JsonSafe.encode(s.started_at))
     |> put_present(:completed_at, JsonSafe.encode(s.completed_at))
     |> put_present(:error, s.error)

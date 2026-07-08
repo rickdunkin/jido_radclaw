@@ -169,8 +169,8 @@ owns it.
 | Work-stealing / graceful-drain between live nodes | gust (`:145`) | **WS4** (recorded as non-goal/future) |
 | Cron firing not idempotent against leader flapping | gust (`:147-149`) | ✅ **WS4 shipped** — `:system_job` ticks leader-gated; idempotency-key backstop |
 | Clustered **user**-cron ownership (CLI-loaded → multi-fire / gateway → no-fire) | codebase (`repl.ex:315`, `cron/scheduler.ex`) | **WS4a** (spun out of WS4) |
-| Embedding cross-node counter ignores `:cluster_enabled` (doc-vs-code gap) | doc said gated (`PLAN-v0.6-memory.md:1731-1734`), code unconditional | **WS6** (trivial) |
-| Multi-node test harness (only single-node mock exists) | codebase (`test/jido_claw/forge/clustering_test.exs`) | **WS6** |
+| Embedding cross-node counter ignores `:cluster_enabled` (doc-vs-code gap) | doc said gated (`PLAN-v0.6-memory.md:1731-1734`), code unconditional | ✅ **WS6** — decision recorded (unconditional kept; see the `PLAN-v0.6-memory.md` banner) |
+| Multi-node test harness (only single-node mock exists) | codebase (`test/jido_claw/forge/clustering_test.exs`) | ✅ **WS6 shipped** (Phases 1–3) |
 | **Composer** hung-wave watchdog — a wave with `execution_timeout: :infinity` that never returns blocks the composer GenServer while its sidecar keeps renewing the lease (no stuck-wave detection) | codebase (`route_composer.ex`; C-M3) | **WS6** (deferred) |
 | **Cron-worker** stuck-detection — cron dispatch is synchronous, so a hung target blocks the worker; a watchdog needs async dispatch | codebase (`cron/worker.ex` "dispatch is synchronous … deferred") | **WS6** (deferred) |
 

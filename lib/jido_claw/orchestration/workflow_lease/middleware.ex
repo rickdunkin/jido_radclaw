@@ -50,6 +50,14 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Middleware do
   A `{:ok, :lost}` aborts in **either** mode (someone else, or a terminal, owns
   the row). A context with no `:claim_token` (a degraded/legacy caller) is a no-op
   `{:ok, ctx}` — byte-identical.
+
+  ## Telemetry
+
+  A won CAS emits `[:jido_claw, :orchestration, :claimed]`; a `{:ok, :lost}`
+  emits `[:jido_claw, :orchestration, :fenced_out]` with `reason: :claim_lost` —
+  which means "claim refused", not "another node fenced us": `stamp/4` returns
+  `{:ok, :lost}` both for a lost cross-node CAS *and* for a terminal/parked
+  row's status-guard miss. No lease token rides any metadata.
   """
 
   use Reactor.Middleware
@@ -66,6 +74,9 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Middleware do
     # CAS on the prior token: only the execution winner (cross-node) claims.
     case lease_module().stamp(id, token, run.claim_token, tenant: tid) do
       {:ok, :claimed} ->
+        # Emitted before the sidecar arms: claimed = the CAS stamp won.
+        emit_claimed(id, tid, run.workflow_type)
+
         # Readiness is part of the claim — a dead sidecar means an unmonitored
         # executor, which fence-from-the-outside cannot stop.
         case WorkflowLease.start_sidecar(self(), id, tid, token) do
@@ -76,6 +87,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Middleware do
       # Another owner — OR a terminal/parked row — landed first. Abort regardless
       # of mode; fence A turns `{:lease_lost, _}` into a no-terminal stop.
       {:ok, :lost} ->
+        emit_fenced_out(id, tid, :claim_lost)
         {:error, {:lease_lost, id}}
 
       {:error, reason} ->
@@ -143,6 +155,36 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Middleware do
           {:error, reason}
       end
     end
+  end
+
+  # Metadata carries identities only — never the lease token (fence
+  # credentials stay out of telemetry).
+  defp emit_claimed(run_id, tenant_id, workflow_type) do
+    :telemetry.execute(
+      [:jido_claw, :orchestration, :claimed],
+      %{count: 1},
+      %{
+        run_id: run_id,
+        tenant_id: tenant_id,
+        workflow_type: workflow_type,
+        node: WorkflowLease.node_identity()
+      }
+    )
+  end
+
+  # `:claim_lost` = "claim refused" (lost cross-node CAS OR a terminal/parked
+  # row's status-guard miss) — see the moduledoc; never a pure fence count.
+  defp emit_fenced_out(run_id, tenant_id, reason) do
+    :telemetry.execute(
+      [:jido_claw, :orchestration, :fenced_out],
+      %{count: 1},
+      %{
+        run_id: run_id,
+        tenant_id: tenant_id,
+        node: WorkflowLease.node_identity(),
+        reason: reason
+      }
+    )
   end
 
   defp cluster_enabled?, do: Application.get_env(:jido_claw, :cluster_enabled, false)

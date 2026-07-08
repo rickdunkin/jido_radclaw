@@ -48,8 +48,13 @@ defmodule JidoClaw.Orchestration.Visibility do
   @doc """
   Project a run for `scope`. The `:operator` shape preserves the exact
   pre-T2-2 `WorkflowView.run_to_map` key set (the `workflow_status` MCP
-  contract) additively extended with `deadline`; `:auditor` adds the full
-  (re-scrubbed) `result`.
+  contract) additively extended with `deadline` and the WS6 ownership fields
+  (`claimed_by` / `claim_expires_at`); `:auditor` adds the full (re-scrubbed)
+  `result`.
+
+  The ownership fields are raw column reads: a terminal run's
+  `claim_expires_at` is the frozen last-claim value, never live lease state —
+  consumers pair it with `status` (the dashboard blanks it on terminal rows).
   """
   @spec run_view(WorkflowRun.t(), scope(), DateTime.t()) :: map()
   def run_view(%WorkflowRun{} = run, scope, %DateTime{} = now) do
@@ -69,6 +74,9 @@ defmodule JidoClaw.Orchestration.Visibility do
       started_at: run.started_at,
       completed_at: run.completed_at,
       duration_ms: duration_ms(run.started_at, run.completed_at, now),
+      # WS6 lease ownership evidence — raw/frozen column reads (see @doc).
+      claimed_by: run.claimed_by,
+      claim_expires_at: run.claim_expires_at,
       error: redact_error(run.error, scope),
       result_summary: result_summary(run.result),
       deadline:

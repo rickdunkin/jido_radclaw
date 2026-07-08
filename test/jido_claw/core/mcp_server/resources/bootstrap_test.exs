@@ -15,6 +15,7 @@ defmodule JidoClaw.MCPServer.Resources.BootstrapTest do
   alias JidoClaw.MCPServer
   alias JidoClaw.MCPServer.Resources.Bootstrap
   alias JidoClaw.MCPServer.SurfaceVersion
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -122,7 +123,10 @@ defmodule JidoClaw.MCPServer.Resources.BootstrapTest do
          %{tenant: tenant} do
       inject_scope(tenant)
 
-      _active = active_run!(tenant, "active-1")
+      active_run = active_run!(tenant, "active-1")
+      # WS6 v1.2: lease the active run so the bootstrap rows prove the
+      # ownership fields ride the run_view projection.
+      assert {:ok, :claimed} = WorkflowLease.stamp(active_run.id, Ash.UUID.generate(), nil)
 
       _completed =
         completed_run!(tenant, "done-1", %{
@@ -144,6 +148,9 @@ defmodule JidoClaw.MCPServer.Resources.BootstrapTest do
 
       assert [active] = block["active_runs"]
       assert active["name"] == "active-1"
+      # WS6 v1.2 ownership fields (string-keyed, ISO-8601 via JsonSafe).
+      assert active["claimed_by"] == WorkflowLease.node_identity()
+      assert {:ok, _dt, _offset} = DateTime.from_iso8601(active["claim_expires_at"])
       assert block["active_runs_overflow_count"] == 0
 
       # Rows are run_view projections, so completions carry the C1-4

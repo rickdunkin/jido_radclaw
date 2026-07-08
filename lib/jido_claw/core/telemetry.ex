@@ -115,6 +115,17 @@ defmodule JidoClaw.Telemetry do
       ),
       counter("jido_claw.cron.job.exception.total", tags: [:mode, :target, :dispatch_target]),
 
+      # Workflow lease/reclaim lifecycle (WS6 Phase 4) — all five events emit
+      # measurement `%{count: 1}`, so `measurement: :count` is explicit on each
+      # (counter/2 would otherwise infer `:total` from the name's last segment
+      # and the tiles would never fire). Node-local, like all telemetry — the
+      # cluster proofs poll the DB instead. See docs/system/clustering.md.
+      counter("jido_claw.orchestration.claimed.total", measurement: :count),
+      counter("jido_claw.orchestration.renewed.total", measurement: :count),
+      counter("jido_claw.orchestration.reclaimed.total", measurement: :count),
+      counter("jido_claw.orchestration.fenced_out.total", measurement: :count, tags: [:reason]),
+      counter("jido_claw.orchestration.recovered.total", measurement: :count, tags: [:branch]),
+
       # Memory consolidator metrics
       counter("jido_claw.memory.consolidator.run.total",
         tags: [:tenant_id, :scope_kind, :status, :harness]

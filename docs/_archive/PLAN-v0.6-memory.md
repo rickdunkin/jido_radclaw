@@ -8,6 +8,11 @@
 > was then deliberately removed once the one-time migration completed, so that
 > command no longer exists. Interior design prose is kept as the original
 > record.
+>
+> One shipped-vs-designed delta (recorded WS6 Phase 4, 2026-07-07): the
+> cross-node embedding dispatch counter shipped **unconditional**, not
+> `:cluster_enabled`-gated as designed below — deliberately kept (correct and
+> simpler single-node; a harmless one-row UPSERT per dispatch).
 
 Replace the file- and ETS-based persistence behind `JidoClaw.Memory`,
 `JidoClaw.Solutions.Store`, and the chat-session JSONL writer with an

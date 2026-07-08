@@ -23,6 +23,12 @@ defmodule JidoClaw.MCPServer.SurfaceVersion do
 
   ## Changelog
 
+    * v1.2 (2026-07-07) — MINOR: run views served by `workflow_status`,
+      `jido.runs`, `jido://bootstrap`, and `inspect_workflow` gain the additive
+      `claimed_by` + `claim_expires_at` ownership fields (WS6 lease
+      observability, via `Visibility.run_view/3`). Both are raw/frozen claim
+      columns — on a terminal run, the last-claim value, never live lease
+      state; pair with `status`. Tools, URIs, and templates unchanged.
     * v1.1 (2026-07-07) — MINOR: the `jido://workflows/catalog` and
       `jido://workflows/{name}` stage payloads gain the additive `"executor"`
       field (`null | "in_process" | "forge:<kind>"` — the item 7 PR-4
@@ -34,7 +40,7 @@ defmodule JidoClaw.MCPServer.SurfaceVersion do
       gains `app_version`.
   """
 
-  @current "1.1"
+  @current "1.2"
 
   @doc "The current served-surface version."
   @spec current() :: String.t()

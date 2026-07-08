@@ -21,7 +21,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
   (resetting the last-ok clock); `:kill` `Process.exit(executor, :kill)`s and
   stops; `{:retry, ms}` loops on a shorter timer **without** resetting last-ok,
   so a streak of transient DB errors still fails closed once the lease window
-  elapses.
+  elapses. `:renewed` emits `[:jido_claw, :orchestration, :renewed]` and
+  `:kill` emits `[:jido_claw, :orchestration, :fenced_out]` (reason `:stolen` |
+  `:lapsed` via `WorkflowLease.fenced_reason/1`); a `{:retry, _}` emits
+  nothing — a transient DB error inside the window is not a fence.
 
   ## Residual (accepted, WS1)
 
@@ -143,9 +146,11 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
 
     case WorkflowLease.fence_decision(result, monotonic_now() - state.last_ok, lease_ms) do
       :renewed ->
+        emit_renewed(state)
         loop(%{state | last_ok: monotonic_now()}, renew_interval())
 
       :kill ->
+        emit_fenced_out(state, WorkflowLease.fenced_reason(result))
         Process.exit(state.executor, :kill)
         :ok
 
@@ -154,6 +159,30 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
         # streak still fails closed once the lease window elapses.
         loop(state, ms)
     end
+  end
+
+  # Metadata carries identities only — never the lease token (fence
+  # credentials stay out of telemetry). ~One emit per renew interval per live
+  # run: accepted volume.
+  defp emit_renewed(state) do
+    :telemetry.execute(
+      [:jido_claw, :orchestration, :renewed],
+      %{count: 1},
+      %{run_id: state.run_id, tenant_id: state.tenant_id, node: WorkflowLease.node_identity()}
+    )
+  end
+
+  defp emit_fenced_out(state, reason) do
+    :telemetry.execute(
+      [:jido_claw, :orchestration, :fenced_out],
+      %{count: 1},
+      %{
+        run_id: state.run_id,
+        tenant_id: state.tenant_id,
+        node: WorkflowLease.node_identity(),
+        reason: reason
+      }
+    )
   end
 
   defp renew(%{run_id: run_id, token: token}), do: WorkflowLease.renew(run_id, token)

@@ -45,4 +45,22 @@ defmodule JidoClaw.TelemetryTest do
       assert m.measurement == :count
     end
   end
+
+  describe "metrics/0 — orchestration lease counters (WS6 Phase 4)" do
+    # All five lease-lifecycle events emit `%{count: 1}`, so each counter must
+    # carry `measurement: :count` — the name-inferred `:total` would never fire.
+    test "the five lease counters read :count off their orchestration events" do
+      for event <- [:claimed, :renewed, :reclaimed, :fenced_out, :recovered] do
+        metric = metric_by_name([:jido_claw, :orchestration, event, :total])
+        assert metric, "missing counter for #{inspect(event)}"
+        assert metric.event_name == [:jido_claw, :orchestration, event]
+        assert metric.measurement == :count
+      end
+    end
+
+    test "fenced_out tags :reason; recovered tags :branch" do
+      assert metric_by_name([:jido_claw, :orchestration, :fenced_out, :total]).tags == [:reason]
+      assert metric_by_name([:jido_claw, :orchestration, :recovered, :total]).tags == [:branch]
+    end
+  end
 end

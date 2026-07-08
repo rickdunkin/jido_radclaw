@@ -427,3 +427,39 @@ until Phase 1 starts; this workstream is the convention's first user.*
   residual defer's cooldown stays inside the awaits; and the convergence
   await keeps driving `reclaim_once` (a no-op against a healthy restarted
   composer, the retry if a residual stop released the parent).
+
+### Phase 4
+
+- **Docs home = a new governed `docs/system/clustering.md`** *(operator-decided
+  at plan review)*: the full triad (page + `docs/system/README.md` index row +
+  AGENTS.md Key Patterns bullet), not the ungoverned README prose the sketch
+  implied — making the same-PR rule machine-enforceable for future clustering
+  changes. The root README's Clustering section keeps one pointer line.
+- **Ownership fields ride BOTH the dashboard and the observe surface**
+  *(operator-decided at plan review)*: `claimed_by`/`claim_expires_at` joined
+  `Visibility.run_view/3`'s base map (inherited by `workflow_status`,
+  `jido.runs`, `jido://bootstrap`, the CLI) plus the two non-inheriting
+  consumers (`inspect_workflow`'s explicit projection allowlist + declared
+  output-schema fields; the `jido.runs` Lua `returns:` doc), with the
+  house-convention MINOR `SurfaceVersion` bump 1.1 → 1.2. Observe surfaces
+  expose the raw/frozen columns (documented, not transformed); the dashboard
+  blanks the expiry on terminal rows.
+- **Embedding counter recorded doc-side** *(operator-decided at plan review)*:
+  the code stays unconditional (correct + simpler single-node; harmless one-row
+  UPSERT per dispatch) — the decision is recorded in the `PLAN-v0.6-memory.md`
+  status banner and the README coverage matrix, not silently re-discoverable.
+- **`reclaimed` already shipped — three events to add, not four** *(forced by
+  discovery)*: this doc's telemetry item listed four events to add, but
+  `[:jido_claw, :orchestration, :reclaimed]` ships since WS3
+  (`ReclaimPooler.emit_reclaimed/1`). Phase 4 added only
+  claimed/renewed/fenced_out; all five (incl. `:recovered`) gained `metrics/0`
+  registration (`measurement: :count` — the emits carry `%{count: 1}`, so the
+  name-inferred `:total` would never fire) and docs coverage.
+- **The flip-checklist item 5 premise was wrong** *(operator-surfaced at plan
+  review)*: the sketch claimed MCP mode "skips Gateway + run execution".
+  `serve_mode: :mcp` skips Gateway/Discord and *boot recovery*
+  (`owns_recovery?`), NOT run execution — `run_skill` launches workflows and
+  the always-on claim-gated `ReclaimPooler` covers every serve mode.
+  clustering.md carries the corrected item (an MCP node is an execution node
+  and needs the same shared Postgres, secret/topology, and lease/reclaim
+  coverage as any node).

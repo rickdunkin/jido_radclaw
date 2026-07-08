@@ -90,9 +90,10 @@ defmodule JidoClaw.Orchestration.VisibilityTest do
     test "operator preserves the legacy run_to_map key set + deadline (MCP contract)" do
       view = Visibility.run_view(run_fixture(), :operator, @now)
 
-      # `disposition` + `findings_deferred_count` (camus C1-4) additively
-      # extend the legacy key set — the "never plain green" rule rides the
-      # base projection so every downstream surface inherits it.
+      # `disposition` + `findings_deferred_count` (camus C1-4) and the WS6
+      # ownership fields (`claimed_by`/`claim_expires_at`) additively extend
+      # the legacy key set — riding the base projection so every downstream
+      # surface inherits them.
       assert Enum.sort(Map.keys(view)) ==
                Enum.sort([
                  :run_id,
@@ -104,6 +105,8 @@ defmodule JidoClaw.Orchestration.VisibilityTest do
                  :started_at,
                  :completed_at,
                  :duration_ms,
+                 :claimed_by,
+                 :claim_expires_at,
                  :error,
                  :result_summary,
                  :deadline
@@ -114,6 +117,20 @@ defmodule JidoClaw.Orchestration.VisibilityTest do
       # No disposition on an ordinary result — both C1-4 keys read nil.
       assert view.disposition == nil
       assert view.findings_deferred_count == nil
+    end
+
+    test "ownership fields pass through raw (frozen on terminal runs)" do
+      expiry = ~U[2026-06-10 11:04:00.000000Z]
+
+      view =
+        [claimed_by: "node@host", claim_expires_at: expiry]
+        |> run_fixture()
+        |> Visibility.run_view(:operator, @now)
+
+      # Raw column reads, even on this :failed (terminal) fixture — the frozen
+      # last-claim value, never live lease state; consumers pair with :status.
+      assert view.claimed_by == "node@host"
+      assert view.claim_expires_at == expiry
     end
 
     test "operator: no raw result, summary key-filtered AND scrubbed" do

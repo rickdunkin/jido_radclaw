@@ -400,6 +400,20 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   def fence_decision({:error, _}, _ms_since_ok, _lease_ms), do: {:retry, @retry_ms}
 
   @doc """
+  Classify a `fence_decision/3` `:kill` by its raw `renew/2` result — the
+  `fenced_out` telemetry reason. `:stolen` = the token was rotated away
+  (`{:ok, 0}`); `:lapsed` = a renew error past the lease window.
+
+  In the sidecar's `:kill` branch the raw result is only ever `{:ok, 0}` or
+  `{:error, _}` (`{:ok, n >= 1}` is `:renewed`) — the clauses match exactly
+  that precondition, deliberately with no catch-all, so an impossible input
+  fails loud rather than being silently classified.
+  """
+  @spec fenced_reason({:ok, 0} | {:error, term()}) :: :stolen | :lapsed
+  def fenced_reason({:ok, 0}), do: :stolen
+  def fenced_reason({:error, _}), do: :lapsed
+
+  @doc """
   Start the heartbeat `Sidecar` for `executor_pid` and **block until it is
   armed** (a synchronous readiness handshake), so a claim is only "held" once
   the renew loop is monitoring the executor.

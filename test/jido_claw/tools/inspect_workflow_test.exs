@@ -10,6 +10,7 @@ defmodule JidoClaw.Tools.InspectWorkflowTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Tools.InspectWorkflow
@@ -86,6 +87,30 @@ defmodule JidoClaw.Tools.InspectWorkflowTest do
       assert {:ok, output} = InspectWorkflow.run(%{run_id: run.id}, tool_ctx(ctx))
       refute Map.has_key?(output, :disposition)
       refute Map.has_key?(output, :findings_deferred_count)
+    end
+
+    test "a claimed run carries claimed_by + ISO claim_expires_at; unclaimed omits both (v1.2)",
+         ctx do
+      run = composer_run!(ctx)
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, Ash.UUID.generate(), nil)
+
+      # Full exec path so the two DECLARED optional strings validate present.
+      assert {:ok, output} =
+               Jido.Exec.run(InspectWorkflow, %{run_id: run.id}, tool_ctx(ctx), log_level: :error)
+
+      assert output.claimed_by == WorkflowLease.node_identity()
+      # The raw/frozen claim column rides as an ISO-8601 string (JsonSafe).
+      assert {:ok, _dt, _offset} = DateTime.from_iso8601(output.claim_expires_at)
+
+      {:ok, bare} =
+        WorkflowRun.create(%{name: "unclaimed", workflow_type: "reactor"},
+          tenant: ctx.tenant,
+          actor: ctx.actor
+        )
+
+      assert {:ok, bare_output} = InspectWorkflow.run(%{run_id: bare.id}, tool_ctx(ctx))
+      refute Map.has_key?(bare_output, :claimed_by)
+      refute Map.has_key?(bare_output, :claim_expires_at)
     end
 
     test "a non-composer run's output OMITS the composer key (no present-with-nil)", ctx do

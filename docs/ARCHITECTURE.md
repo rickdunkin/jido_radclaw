@@ -635,6 +635,11 @@ Standard Erlang telemetry for metrics, dashboards, and observability. Consumed b
 | `[:jido_claw, :cron, :job, :start]` | Cron job started |
 | `[:jido_claw, :cron, :job, :stop]` | Cron job completed (with duration) |
 | `[:jido_claw, :cron, :job, :error]` | Cron job failed |
+| `[:jido_claw, :orchestration, :claimed]` | Workflow lease claimed (the CAS stamp won at execution start) |
+| `[:jido_claw, :orchestration, :renewed]` | Workflow lease heartbeat renewed (~every 15s per live run) |
+| `[:jido_claw, :orchestration, :reclaimed]` | Expired lease reclaimed by the ReclaimPooler |
+| `[:jido_claw, :orchestration, :fenced_out]` | Executor fenced (reason `:stolen`/`:lapsed`/`:claim_lost` — `:claim_lost` means "claim refused": a lost cross-node CAS OR a terminal/parked row's status-guard miss, never a pure cross-node fence count) |
+| `[:jido_claw, :orchestration, :recovered]` | Run disposition decided by recovery/reclaim (with branch) |
 | `[:jido_claw, :tenant, :create]` | Tenant created |
 | `[:jido_claw, :tenant, :destroy]` | Tenant destroyed |
 | `[:jido_claw, :tenant, :count]` | Tenant count gauge |

@@ -182,7 +182,9 @@ defmodule JidoClaw.Tools.Lua.Bindings do
         returns:
           "array of run maps: run_id, name, workflow_type, status, disposition " <>
             "(e.g. done_with_findings; nil for most runs), findings_deferred_count, " <>
-            "started_at, completed_at, duration_ms, error, result_summary, deadline",
+            "started_at, completed_at, duration_ms, error, result_summary, deadline, " <>
+            "claimed_by, claim_expires_at (raw/frozen claim columns — on a terminal " <>
+            "run the last-claim value, not live lease state)",
         example: ~s|return jido.runs({status = "failed", limit = 5})|
       },
       %Entry{

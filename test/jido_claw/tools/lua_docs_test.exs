@@ -42,6 +42,15 @@ defmodule JidoClaw.Tools.LuaDocsTest do
       assert result.policy["mode"] == "read_only"
     end
 
+    test "jido.runs returns doc names the WS6 ownership fields (v1.2)" do
+      # The data path inherits claimed_by/claim_expires_at via run_view; the
+      # entry's returns string enumerates fields, so pin it against staleness.
+      assert {:ok, result} = LuaDocs.run(%{binding: "jido.runs"}, %{})
+
+      assert result.binding["returns"] =~ "claimed_by"
+      assert result.binding["returns"] =~ "claim_expires_at"
+    end
+
     test "unknown binding fails loudly with the available names" do
       assert {:error, %{code: :unknown_binding, message: message, details: details}} =
                LuaDocs.run(%{binding: "jido.nope"}, %{})

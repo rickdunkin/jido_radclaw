@@ -74,6 +74,11 @@ the tenant rollup.
   tool names + a bounded tenant snapshot (identity, pending-gates count,
   `active_runs`/`recent_completions` as `Visibility.run_view` rows capped at 5 with
   `*_overflow_count` from a cap+1 read — ≥1 means "more exist", never a total).
+- Run views served by `workflow_status`, `jido.runs`, `jido://bootstrap`, and
+  `inspect_workflow` gained the additive `claimed_by` + `claim_expires_at` ownership
+  fields in **v1.2** (WS6 lease observability, via `Visibility.run_view/3`). Both are
+  raw/frozen claim columns — on a terminal run, the last-claim value, never live
+  lease state; pair with `status`. Additive served-output fields ⇒ MINOR.
 
 ## Config & telemetry
 

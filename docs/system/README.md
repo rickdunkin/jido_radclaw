@@ -77,3 +77,4 @@ set-compares these against the directory (names, not counts).
 - [Eval Harness](eval-harness.md) — deterministic cases against production functions only
 - [Executor Seam](executor-seam.md) — template executor binding, vendor CLI hardwiring, cross-vendor review
 - [MCP Server Surface](mcp-server-surface.md) — the served tools/resources and the surface-version stability contract
+- [Clustering](clustering.md) — multi-node topologies, the DB-lease ownership model, and the cluster_enabled flip checklist

@@ -890,6 +890,10 @@ and per-peer Ed25519 signatures (`JIDOCLAW_NETWORK_PEERS`) authenticate
 network *messages*. Secret and cookie must both be set and non-default
 before exposing a node to a shared network segment.
 
+For the run-ownership model, deploy topologies, and the
+`cluster_enabled` flip checklist, see
+[docs/system/clustering.md](docs/system/clustering.md).
+
 ## Canopy Workspace Integration
 
 JidoClaw works as an **agent runtime** inside [Canopy](https://github.com/Miosa-osa/canopy) workspaces — the open-source workspace agent harness protocol for AI agent systems. If JidoClaw is the agent, Canopy is the office.
