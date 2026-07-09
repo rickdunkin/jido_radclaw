@@ -329,6 +329,16 @@ One recurring translation note: camus splits *probabilistic* judgment (Codex rev
 > engine-derived event). Deliberately NOT adopted here: (c) `files_changed`
 > reconciliation, (d) receipts + hookless gate-owned git (awaits AR-10), and
 > (e) ancestry-proof gate dispositions.
+>
+> **(c) shipped 2026-07-08** inside the OB1-3 evidence floor (next-ten #10,
+> `docs/system/evidence-floor.md`): `files_changed` claims reconcile against
+> the dispatch-vs-fold **untracked-inclusive** porcelain snapshot diff
+> (`Verify.Git.porcelain_all/1`; status-CHANGE is support, bare existence
+> never is), with the flip direction bound by the conservative override rule
+> — only a positive discrepancy becomes an engine finding on Hook R. The
+> sketch's "held stage later" half stays post-v1: containment
+> (changed-but-unclaimed paths, the S-9 absorption) is a count-only Trace
+> warning. (d)+(e) still await AR-10.
 
 **Where in camus**: `packages/cli/skills/camus/scripts/commit.sh:32-48` (gate-owned commit: `git -c core.hooksPath=/dev/null -c commit.gpgsign=false`; empty stage → `{committed:false, reason:"empty"}` → task reports `no_changes`, never silently done; every `done` requires a full `commit_sha`); `merge.sh:47-77` (the receipt: every merge verdict is written to `~/.camus/merges/<taskId>.json` *before* it is printed — "a verdict without a receipt is impossible by construction"); `camus-feat.workflow.js:1212-1347` (three-way cross-check: runner relay vs receipt vs live `git rev-parse` — divergence halts with the receipt's pre-merge sha as reset target; a relay that hand-resolved a refused conflict is exactly the run-6 class this caught), `:1442-1490` (postflight self-audit: every completed task's branch proven in feat history via `git rev-list --count`, missing evidence halts loud), `:1050-1092` ("no-op" with unmerged commits on its branch recognized as a prior run's proven work and rescued, never dropped); `reconcile.py:124-136` + `land.py:65-87` (operator attestations refused without git evidence: commit must exist *and* be an ancestor / branch must hold unmerged commits).
 

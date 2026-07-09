@@ -140,6 +140,32 @@ defmodule JidoClaw.RouteComposer.LoopTest do
     test "lenses_clean?/3 is false when a ran lens has no clean signal", %{catalog: catalog} do
       refute Loop.lenses_clean?(catalog, MapSet.new(["security-reviewer"]), MapSet.new())
     end
+
+    # Item 10 (OB1-3): the reserved engine lens has no catalog stage, so
+    # `lenses_clean?/3` cannot see it — the explicit live-signal check is what
+    # closes the fixer-less-route hole (a live evidence breach never converges
+    # plain green).
+    test "not_converged: a live findings:evidence outranks all-clean catalog lenses", %{
+      catalog: catalog
+    } do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["quality-reviewer", "security-reviewer"]),
+        live: MapSet.new(["clean:quality", "clean:security", "findings:evidence"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :not_converged
+    end
+
+    test "a retracted (cleared) evidence lens converges normally", %{catalog: catalog} do
+      state = %{
+        catalog: catalog,
+        ran: MapSet.new(["quality-reviewer"]),
+        live: MapSet.new(["clean:quality", "clean:evidence"])
+      }
+
+      assert Loop.terminal(%{held: %{}}, state) == :converged
+    end
   end
 
   describe "AR-8b-2 F1 sketch-review lens gating (Catalog.all)" do

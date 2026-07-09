@@ -205,6 +205,32 @@ defmodule JidoClaw.RouteComposer.Projection do
     end
   end
 
+  # Item 10 (OB1-3): one wave's evidence classification — bump the per-stage
+  # `evidence_breaches` counter for every breaching classification (the
+  # OpenHelm "counted, breach-visible" rider; the `bump_counts` pattern,
+  # added tolerantly), plus the payload's slice-2 `ac` section: violated
+  # AC ids count once per breaching wave under the validator-reserved
+  # `"evidence:ac"` key. The routing consequences (signals, finding keys,
+  # feedback, invalidation) ride their own welded markers — this fold is the
+  # durable breach ledger only.
+  defp apply_event(%{kind: :evidence_classified, payload: payload}, state) do
+    breached =
+      for classification <- EventPayload.list(payload, :classifications),
+          is_map(classification),
+          EventPayload.get(classification, :breach) == true,
+          stage = EventPayload.get(classification, :stage),
+          is_binary(stage),
+          do: stage
+
+    # A breach-less (or malformed) classification folds as a TRUE no-op —
+    # never even the tolerant empty-map key add, so clean/garbled ledger
+    # entries leave the state byte-identical.
+    case breached ++ ac_breach_bump(payload) do
+      [] -> state
+      stages -> bump_counts(state, :evidence_breaches, stages)
+    end
+  end
+
   # Item 5: the evidence-preserving tamper record — `tampered_stages[stage] =
   # {reason, report_ref}` (added tolerantly: a synthetic-log seed may omit the
   # map). The tick terminalizes `:verify_tampered` off this ahead of every
@@ -295,6 +321,21 @@ defmodule JidoClaw.RouteComposer.Projection do
   # may omit the counts map entirely.
   defp bump_counts(state, key, stages) do
     Map.update(state, key, bump_stage_counts(%{}, stages), &bump_stage_counts(&1, stages))
+  end
+
+  # The AC half of the evidence breach ledger (item 10 remediation, review
+  # P2): the payload's `ac.violated` ids — filtered to binaries, since
+  # `EventPayload.list/2` is total but returns junk lists as-is — bump the
+  # reserved `"evidence:ac"` key once per breaching wave. Absent, empty,
+  # non-map, or junk-only `ac` values contribute nothing, preserving the
+  # TRUE-no-op property for AC-less events.
+  defp ac_breach_bump(payload) do
+    with ac when is_map(ac) <- EventPayload.get(payload, :ac),
+         [_ | _] <- Enum.filter(EventPayload.list(ac, :violated), &is_binary/1) do
+      ["evidence:ac"]
+    else
+      _absent_or_junk -> []
+    end
   end
 
   # The camus C1-5 round shift. `seen_prior` is computed BEFORE the shift —

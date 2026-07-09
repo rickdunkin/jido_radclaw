@@ -76,6 +76,36 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
         assert Enum.all?(parsed.signals, &is_binary/1)
       end
     end
+
+    # Item 10 (OB1-3): the optional `evidence` block is schema-PERMISSIVE —
+    # absent, valid, and MALFORMED shapes all parse (shape enforcement is
+    # `DefaultMapper`'s job; a doctrine-prompted advisory field must never
+    # manufacture a validation failure → repair/infra churn).
+    test "parses with the evidence block absent, valid, or malformed" do
+      base = %{
+        "status" => "completed",
+        "summary" => "Implemented foo",
+        "files_changed" => ["lib/foo.ex"],
+        "notes" => "n/a",
+        "artifacts" => %{}
+      }
+
+      # Absent: Zoi drops the key — parsed map identical to today.
+      assert {:ok, parsed} = Output.parse(output_for(Coder), base)
+      refute Map.has_key?(parsed, :evidence)
+
+      # Valid advisory shape survives verbatim.
+      valid = %{"commands_run" => ["mix test"], "tests_passed" => ["mix test"]}
+      assert {:ok, parsed} = Output.parse(output_for(Coder), Map.put(base, "evidence", valid))
+      assert parsed.evidence == valid
+
+      # Malformed shapes still PARSE (never a validation failure).
+      for malformed <- ["not a map", 42, %{"commands_run" => "not-a-list"}, [1, 2]] do
+        assert {:ok, _parsed} =
+                 Output.parse(output_for(Coder), Map.put(base, "evidence", malformed)),
+               "expected malformed evidence #{inspect(malformed)} to parse"
+      end
+    end
   end
 
   # AR-4: Fixer is builder-shaped (status/summary/files_changed/notes + artifacts)
@@ -98,6 +128,30 @@ defmodule JidoClaw.Agent.Workers.OutputSchemasTest do
       # The signals stay STRINGS (DefaultMapper matches them against publishes strings).
       assert parsed.signals == ["code-written", "auth-surface"]
       assert Enum.all?(parsed.signals, &is_binary/1)
+    end
+
+    # Item 10 (OB1-3): same permissive evidence contract as the Coder.
+    test "parses with the evidence block absent, valid, or malformed" do
+      base = %{
+        "status" => "completed",
+        "summary" => "Fixed the finding",
+        "files_changed" => ["lib/auth.ex"],
+        "notes" => "n/a",
+        "signals" => ["code-written"],
+        "artifacts" => %{}
+      }
+
+      assert {:ok, parsed} = Output.parse(output_for(Fixer), base)
+      refute Map.has_key?(parsed, :evidence)
+
+      valid = %{"commands_run" => ["mix test"], "tests_passed" => ["mix test"]}
+      assert {:ok, parsed} = Output.parse(output_for(Fixer), Map.put(base, "evidence", valid))
+      assert parsed.evidence == valid
+
+      for malformed <- ["prose", %{"tests_passed" => [1, 2]}] do
+        assert {:ok, _parsed} =
+                 Output.parse(output_for(Fixer), Map.put(base, "evidence", malformed))
+      end
     end
   end
 

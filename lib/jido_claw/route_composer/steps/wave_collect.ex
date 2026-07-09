@@ -105,9 +105,10 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
   # absent key back as `:ok`. `"finding_marks"` (camus C1-5) likewise only when
   # present — reviewer emissions cross the child-result boundary through THIS
   # map and are rehydrated by `StageEmission.from_map/1`, so an unencoded field
-  # would silently vanish at the round-trip. (`certification` never needed this
-  # asymmetrically: verify emissions are built by `Reactors.VerifyStage`, which
-  # bypasses WaveCollect entirely.)
+  # would silently vanish at the round-trip. `"request_id"`/`"evidence"`
+  # (OB1-3) follow the same only-when-present asymmetry. (`certification`
+  # never needed this asymmetrically: verify emissions are built by
+  # `Reactors.VerifyStage`, which bypasses WaveCollect entirely.)
   defp to_map(%StageEmission{} = emission, ref_artifacts) do
     base = %{
       "stage" => emission.stage,
@@ -118,6 +119,8 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
     base
     |> put_outcome(emission.outcome)
     |> put_finding_marks(emission.finding_marks)
+    |> put_present("request_id", emission.request_id)
+    |> put_evidence(emission.evidence)
   end
 
   defp put_outcome(map, :ok), do: map
@@ -140,5 +143,20 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollect do
           %{"key" => mark.key, "severity" => mark.severity, "confidence" => mark.confidence}
         end)
     })
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  # The OB1-3 evidence block crosses the child-result boundary string-keyed;
+  # `StageEmission.from_map/1` whitelist-decodes it back.
+  defp put_evidence(map, nil), do: map
+
+  defp put_evidence(map, %{} = evidence) do
+    Map.put(
+      map,
+      "evidence",
+      Map.new(evidence, fn {kind, values} -> {Atom.to_string(kind), values} end)
+    )
   end
 end

@@ -64,7 +64,7 @@ re-verify at build time).
 | 7 | B | Executor seam (cross-vendor review first config) — ✅ DONE 2026-07-07 | camus C1-1 | M–L | **Must be broken down — 4 PRs** |
 | 8 | C | Ambiguity clarify loop — ✅ DONE 2026-07-07 | ouroboros OB1-1 | S–M | Single PR |
 | 9 | C | Structured premises: acceptance criteria + lint — ✅ DONE 2026-07-08 | ouroboros OB1-2 | M | 2 commits (keys + lint / consumers) |
-| 10 | C | Evidence floor (claims vs transcript) | ouroboros OB1-3 (+ camus C1-6c) | M | 2–3 commits |
+| 10 | C | Evidence floor (claims vs transcript) — ✅ DONE 2026-07-08 | ouroboros OB1-3 (+ camus C1-6c) | M | 2–3 commits |
 
 **Sequencing.** Wave A (#1–3) is filler-grade and independent of everything —
 including the still-running next-five items, so these can interleave now. Wave
@@ -981,7 +981,73 @@ the cron/automation producers — OpenHelm makes the contract **required at
 creation** for agent-created jobs; creation, not review time, is the
 enforcement point.
 
-## 10. Evidence floor — M (ouroboros OB1-3, absorbing camus C1-6c)
+## 10. Evidence floor — M (ouroboros OB1-3, absorbing camus C1-6c) — ✅ DONE 2026-07-08
+
+> **Done 2026-07-08** — the queue's last item; the ouroboros Tier-1 sweep is
+> complete (system page: [evidence-floor](../../system/evidence-floor.md);
+> signed-off port map
+> [PORT-OB1-3](../../exploration/ouroboros/PORT-OB1-3.md); both slices
+> shipped, statuses mirrored into ouroboros OB1-3/OQ-3, camus C1-6(c), and
+> the OpenHelm OH1-3 #10 rider + OH-FIRST-WAVE). Corrections to this entry's
+> claims: the module is `JidoClaw.Orchestration.Verify.Evidence` (ratified
+> decision 4), not the sketch's `JidoClaw.Verify.Evidence`; the evidence
+> base is durable `Conversations.Message` tool rows via a stubbable
+> `reader:` seam — not "`ToolOutput` refs; Trace events" as written above;
+> and the C1-6c files reconcile reads the EXISTING required `files_changed`
+> envelope field against dispatch-vs-fold untracked-inclusive porcelain
+> snapshots (the advisory `evidence` block carries only
+> `commands_run`/`tests_passed`; OQ-3's "tests_passed first" widened to all
+> three kinds at sign-off since files rode an existing field).
+> Deviations, recorded as they happened:
+> (a) The plan's `evidence: Zoi.optional(Zoi.any())` ("or Zoi's
+> permissive-map equivalent") hit a stack fact: zoi 0.18.4 has NO
+> `Zoi.JSONSchema.Encoder` impl for `Zoi.Types.Any` (its `for: Any` fallback
+> raises), and `ReqLLM.Schema.zoi_to_json_with_metadata/1` encodes worker
+> output schemas for EVERY structured-output request — in-process and vendor
+> deposit alike — so `Zoi.any()` broke schema encoding outright.
+> `Zoi.json()` is not a substitute (its recursive `Zoi.lazy` self-reference
+> loops the lazy encoder forever), and no non-recursive union is total over
+> maps. Chosen: keep `Zoi.any()` (the permissive-parse requirement is the
+> operator-ratified point) and add the lightest house dependency-extension —
+> a protocol impl `Zoi.JSONSchema.Encoder for Zoi.Types.Any` returning `%{}`
+> (the canonical accept-anything schema) in
+> `lib/jido_claw/core/zoi_any_json_schema.ex`; a future zoi bump that ships
+> its own impl surfaces as a duplicate-defimpl compile warning. Shape
+> guidance stays in the doctrine slice, not the JSON schema.
+> (b) The test-support `VerifyStub.porcelain_all/1` unscripted default
+> shipped first as `""` (clean tree) and broke five legacy composer e2es:
+> with a valid empty changed-set, every fixture already carrying
+> `files_changed` classified `:unsupported` ⇒ a spurious breach ⇒ a fixer
+> the fixtures never scripted. Corrected to `nil` — unscripted means NO
+> snapshot ⇒ the files kind skips (trust), keeping every legacy fixture
+> byte-identical; a clean tree is now an explicit script. The lesson is the
+> floor's own conservative rule applied to test seams: an unscripted seam
+> must default to can't-verify, never to a verifiable answer.
+> (c) Slice-2 finding identity: the plan wrote "location = file_hint (else
+> stage name)", but the else-branch stage name flips coder→fixer across
+> waves and would churn the FindingKey (breaking the stall detection the
+> plan's own decision 3 protects). Landed: file_hint (a violation always
+> has one — contradiction requires scanned files) with a stable synthetic
+> `evidence:ac:<id>` token as the defensive fallback; never a stage name.
+> (d) Slice-2 residuals accepted + documented on the page: an over-sized
+> (>50KB) matched file still counts as scanned (source-faithful — a pattern
+> living only there reads `:contradicted`); hint-less assertions trust
+> rather than scanning a default whole-tree glob (deliberate divergence
+> from the source's `**/*.py`, bounded fold cost); symlinked intermediate
+> dirs are not chased (file-entry symlinks ARE dropped unread).
+> (e) Post-review remediation (2026-07-09): AC assertion violations joined
+> the durable breach ledger under the validator-reserved `"evidence:ac"`
+> key — the `evidence_classified` payload gained a top-level
+> `ac: %{total, violated}` section (uniq'd ids only, breach AND clear
+> welds), the projection bumps `evidence_breaches["evidence:ac"]` +1 per
+> breaching wave, the breach telemetry tags the same synthetic stage, the
+> encrypted evidence-report gained an AC section, and CatalogValidator
+> invariant 12 now reserves the `"evidence"`/`"evidence:ac"` stage names +
+> the `"evidence"` lens (nothing else bans colons in stage names, so the
+> reservation is enforced, never assumed) [review P2]; the assertions
+> moduledoc drift corrected to the pinned scanned-counts residual — a
+> matched-but-unreadable/oversized file still counts scanned, widened into
+> the page residual and amended onto the PORT map bounds row [review P3].
 
 Worker stages self-report through typed envelopes and prose, and nothing
 cross-checks the claims against the transcript we already store durably

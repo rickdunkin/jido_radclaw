@@ -514,6 +514,74 @@ defmodule JidoClaw.RouteComposer.CatalogValidatorTest do
     end
   end
 
+  # Item 10 remediation (review P2): the evidence floor rides synthetic
+  # identity tokens with no catalog stage behind them — artifact producer
+  # "evidence", the `finding_rounds["evidence"]` round, the "evidence:ac"
+  # breach-ledger key. A real stage named after one (or claiming the
+  # "evidence" lens) would silently conflate with the engine's records, and
+  # nothing else bans colons in stage names — so the reservation is enforced
+  # at load, never assumed.
+  describe "reserved evidence identity (invariant 12)" do
+    defp reserved_name_catalog(name) do
+      %{
+        name =>
+          stage(
+            name: name,
+            unit: {:worker_template, "coder"},
+            routes: ["code"],
+            sub: ["request-received"],
+            pub: ["scope-shift"],
+            task: "t"
+          )
+      }
+    end
+
+    test "a stage named \"evidence\" is rejected at load" do
+      assert ["evidence: stage name `evidence` is reserved" <> _rest] =
+               CatalogValidator.validate(reserved_name_catalog("evidence"))
+    end
+
+    test "a stage named \"evidence:ac\" (the breach-ledger key) is rejected at load" do
+      assert ["evidence:ac: stage name `evidence:ac` is reserved" <> _rest] =
+               CatalogValidator.validate(reserved_name_catalog("evidence:ac"))
+    end
+
+    test "a stage carrying lens \"evidence\" is rejected at load" do
+      cat = %{
+        "review-e" =>
+          stage(
+            name: "review-e",
+            unit: {:worker_template, "reviewer"},
+            routes: ["code"],
+            sub: ["request-received"],
+            pub: ["clean:evidence", "findings:evidence", "scope-shift"],
+            lens: "evidence",
+            task: "t"
+          )
+      }
+
+      assert ["review-e: `lens` \"evidence\" is reserved" <> _rest] =
+               CatalogValidator.validate(cat)
+    end
+
+    test "a non-reserved lens on the same shape passes" do
+      cat = %{
+        "review-s" =>
+          stage(
+            name: "review-s",
+            unit: {:worker_template, "reviewer"},
+            routes: ["code"],
+            sub: ["request-received"],
+            pub: ["clean:security", "findings:security", "scope-shift"],
+            lens: "security",
+            task: "t"
+          )
+      }
+
+      assert CatalogValidator.validate(cat) == []
+    end
+  end
+
   # AR-4: pins WHY the fixer's findings feed must be out-of-band. If the fixer
   # declared `findings` as a real data input, `graph.ex` would add reviewer→fixer
   # edges; with the existing `fixer→reviewer` edge (the reviewers optional-input

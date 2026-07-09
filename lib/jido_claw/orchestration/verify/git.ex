@@ -43,6 +43,22 @@ defmodule JidoClaw.Orchestration.Verify.Git do
   end
 
   @doc """
+  Untracked-INCLUSIVE porcelain snapshot (`--untracked-files=all`), or nil
+  when git cannot answer — the evidence floor's wave-boundary capture (OB1-3
+  decision 5): a worker's claimed file change must show as a status
+  TRANSITION between the dispatch-time and fold-time snapshots, and new
+  files first exist as `??` rows, so the tracked-only `porcelain/1` (which
+  stays byte-untouched — it is verify-integrity load-bearing) cannot serve.
+  """
+  @spec porcelain_all(String.t()) :: String.t() | nil
+  def porcelain_all(repo) do
+    case git(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"], repo) do
+      {output, 0} -> output
+      _other -> nil
+    end
+  end
+
+  @doc """
   Content-addressed tracked-tree digest: sha256 over `git diff --no-ext-diff
   --no-textconv --binary HEAD`, or nil when git cannot answer. Config-
   insensitive (`--no-ext-diff` alone doesn't cover textconv diff drivers) and

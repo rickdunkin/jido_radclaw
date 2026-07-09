@@ -151,6 +151,17 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
           # `keys: []` — it must still advance the round). NOT
           # status-authority.
           :finding_keys,
+          # Item 10 (OB1-3): one wave's evidence classification — the engine
+          # cross-checked producer claims against the durable tool transcript
+          # + the wave git diff. AGGREGATE payload (one event per classified
+          # wave): `%{classifications: [%{stage, request_id, counts, statuses,
+          # breach}], keys}` — per-kind status atoms and counts ONLY, never
+          # command strings/paths/log tails (those live in the encrypted
+          # `evidence-report` ComposerArtifact; the redaction posture). Folds
+          # per-stage `evidence_breaches` counters in the composer projection
+          # (the OpenHelm OH1-3 "counted, breach-visible" rider). NOT
+          # status-authority.
+          :evidence_classified,
           # Item 5 (camus C1-2): the deterministic verify stage detected
           # tampering (dirty sealed tree / tracked mutation / HEAD movement
           # during verify). Payload `%{stage, reason, report_ref}` — the

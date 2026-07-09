@@ -61,11 +61,20 @@ resource.
 - **next-ten #9 (structured premises / acceptance criteria)** ← OH1-3: reserve
   `outcome_spec`-shaped fields (`endState` / `check` / `stopBound`) for cron/automation
   producers — OpenHelm makes the contract **required at creation** for agent-created
-  jobs; that's the enforcement point, not review time.
+  jobs; that's the enforcement point, not review time. — **✅ landed 2026-07-08
+  inside #9**: `JidoClaw.Cron.OutcomeSpec`, required at `schedule_task` creation
+  (shape-only under BUSL-1.1), live at fire time via scheduler hydration +
+  fingerprint; operator CLI and system jobs exempt.
 - **next-ten #10 (evidence floor)** ← OH1-3: claimed-vs-observed (`verifiedDelta`
   in `planner/schemas.ts:142-185`) as the sharpest single check; count fabrication
   breaches, don't just demote the run. Compaction guard: suppress log-count-based
-  demotion on compacted transcripts.
+  demotion on compacted transcripts. — **✅ landed 2026-07-08 inside #10** (the
+  OB1-3 evidence floor): claimed-vs-observed is the floor's verdict partition
+  (`fabrication_suspected`); breach counting is the `:evidence_classified`
+  ledger + per-stage `evidence_breaches` projection counters; the compaction
+  guard folds in as the absent-transcript skip (our tool rows are
+  compaction-immune, so the guard's trigger cannot occur). Truth:
+  `docs/system/evidence-floor.md`.
 - **Slice-6 CLI adapter reading list** ← OH2-3 + OH2-5: the `--disallowed-tools`
   platform-competing deny-list (scheduling/skills/slash-commands); MCP preflight with
   min-tool-count gates; `ENABLE_TOOL_SEARCH=false` when injecting `--mcp-config`

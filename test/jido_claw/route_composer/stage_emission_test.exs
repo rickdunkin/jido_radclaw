@@ -215,4 +215,67 @@ defmodule JidoClaw.RouteComposer.StageEmissionTest do
       end
     end
   end
+
+  # Item 10 (OB1-3): the evidence rails decode tolerantly and FAIL CLOSED to
+  # nil — an advisory block must never corrupt an emission.
+  describe "request_id + evidence (OB1-3)" do
+    test "absent fields decode to nil (legacy persisted maps unchanged)" do
+      emission = StageEmission.from_map(%{"stage" => "implementer"})
+      assert emission.request_id == nil
+      assert emission.evidence == nil
+    end
+
+    test "string-keyed persisted form round-trips to the atom-keyed block" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "implementer",
+          "request_id" => "req-1",
+          "evidence" => %{
+            "commands_run" => ["mix compile"],
+            "tests_passed" => ["mix test"],
+            "files_touched" => ["lib/foo.ex"]
+          }
+        })
+
+      assert emission.request_id == "req-1"
+
+      assert emission.evidence == %{
+               commands_run: ["mix compile"],
+               tests_passed: ["mix test"],
+               files_touched: ["lib/foo.ex"]
+             }
+    end
+
+    test "atom-keyed live form decodes identically" do
+      emission =
+        StageEmission.from_map(%{
+          stage: "implementer",
+          request_id: "req-1",
+          evidence: %{tests_passed: ["mix test"]}
+        })
+
+      assert emission.request_id == "req-1"
+      assert emission.evidence == %{tests_passed: ["mix test"]}
+    end
+
+    test "per-key fail-closed: a malformed kind drops alone; all-malformed decodes nil" do
+      emission =
+        StageEmission.from_map(%{
+          "stage" => "s",
+          "evidence" => %{"commands_run" => "prose", "tests_passed" => ["mix test"]}
+        })
+
+      assert emission.evidence == %{tests_passed: ["mix test"]}
+
+      for bogus <- ["prose", 42, [1], %{"commands_run" => [1]}, %{"unknown" => ["x"]}] do
+        assert %StageEmission{evidence: nil} =
+                 StageEmission.from_map(%{"stage" => "s", "evidence" => bogus})
+      end
+    end
+
+    test "a non-binary request_id decodes to nil" do
+      assert %StageEmission{request_id: nil} =
+               StageEmission.from_map(%{"stage" => "s", "request_id" => 42})
+    end
+  end
 end

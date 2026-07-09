@@ -379,7 +379,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
           routes: ["code"],
           sub: ["code-written"],
           req: ["diff"],
-          opt: ["fix"],
+          opt: ["fix", "evidence-report"],
           out: ["findings", "action_needed"],
           pub: ["clean:quality", "findings:quality", "scope-shift"]
         ),
@@ -391,7 +391,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
           routes: ["code"],
           sub: ["code-written"],
           req: ["diff"],
-          opt: ["fix"],
+          opt: ["fix", "evidence-report"],
           out: ["findings", "action_needed"],
           pub: ["clean:correctness", "findings:correctness", "scope-shift"]
         ),
@@ -403,7 +403,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
           routes: ["code"],
           sub: ["auth-surface"],
           req: ["diff"],
-          opt: ["fix"],
+          opt: ["fix", "evidence-report"],
           out: ["findings", "action_needed"],
           pub: ["clean:security", "findings:security", "scope-shift"]
         ),
@@ -416,7 +416,7 @@ defmodule JidoClaw.RouteComposer.TestFixtures do
           routes: ["code"],
           sub: ["findings"],
           req: ["diff"],
-          opt: ["review-feedback", "review-action"],
+          opt: ["review-feedback", "review-action", "evidence-report"],
           out: ["fix"],
           pub: ["code-written", "scope-shift", "auth-surface", "significant-build"]
         )

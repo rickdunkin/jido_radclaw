@@ -116,6 +116,15 @@ defmodule JidoClaw.Telemetry do
       # plan-gate payload re-lint, structurally blocker-free).
       counter("jido_claw.premises_lint.total", tags: [:grade, :mode]),
 
+      # Evidence floor (item 10, OB1-3) — one count per classified producer
+      # emission; `verdict` is :clean/:form_mismatch/:fabrication_suspected/
+      # :skipped. Breaches (any :unsupported claim) additionally count per
+      # stage. The Trace `:composer` events carry the per-run detail; the
+      # durable `evidence_classified` ledger + projection counters are the
+      # authority.
+      counter("jido_claw.evidence.total", tags: [:verdict]),
+      counter("jido_claw.evidence.breach.total", tags: [:stage]),
+
       # Cron metrics — tags resolve from the shared event metadata
       # Cron.Worker stamps on every tick (see emit_cron_* below).
       # `dispatch_target` is the *effective* path, so a :system_job whose

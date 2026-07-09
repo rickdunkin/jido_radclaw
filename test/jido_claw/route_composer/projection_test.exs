@@ -389,6 +389,107 @@ defmodule JidoClaw.RouteComposer.ProjectionTest do
     end
   end
 
+  # Item 10 (OB1-3): the evidence breach ledger fold — per-stage counts from
+  # the aggregate `evidence_classified` payload, breach entries only, added
+  # tolerantly (the bump_counts pattern; a synthetic-log seed may omit the map).
+  describe "evidence_classified fold (OB1-3, next-ten #10)" do
+    test "breaching classifications bump per-stage evidence_breaches; clean ones don't" do
+      payload = %{
+        "classifications" => [
+          %{"stage" => "implementer", "breach" => true, "counts" => %{"unsupported" => 1}},
+          %{"stage" => "test-author", "breach" => false, "counts" => %{"supported" => 1}}
+        ]
+      }
+
+      result =
+        Projection.project(seed(), [
+          event(:evidence_classified, payload, 1),
+          event(:evidence_classified, payload, 2)
+        ])
+
+      assert result.evidence_breaches == %{"implementer" => 2}
+    end
+
+    test "malformed payloads fold as a no-op (never a guessed breach)" do
+      s = seed()
+
+      for payload <- [
+            %{},
+            %{"classifications" => "junk"},
+            %{"classifications" => [%{"breach" => true}, "junk", %{"stage" => 42}]}
+          ] do
+        assert Projection.project(s, [event(:evidence_classified, payload, 1)]) == s
+      end
+    end
+
+    test "atom-keyed live markers fold identically (apply_markers mirror)" do
+      folded =
+        Projection.apply_markers(seed(), [
+          {:evidence_classified,
+           %{classifications: [%{stage: "implementer", breach: true, counts: %{}}]}}
+        ])
+
+      assert folded.evidence_breaches == %{"implementer" => 1}
+    end
+
+    # Review P2: the payload's slice-2 `ac` section joins the same ledger
+    # under the validator-reserved "evidence:ac" key — +1 per breaching wave
+    # (not per id), beside (never instead of) the per-stage bumps.
+    test "a violated ac section bumps evidence:ac alongside stage breaches" do
+      payload = %{
+        "classifications" => [
+          %{"stage" => "implementer", "breach" => true, "counts" => %{"unsupported" => 1}}
+        ],
+        "ac" => %{"total" => 3, "violated" => ["AC1", "AC2"]}
+      }
+
+      result = Projection.project(seed(), [event(:evidence_classified, payload, 1)])
+
+      assert result.evidence_breaches == %{"implementer" => 1, "evidence:ac" => 1}
+    end
+
+    test "an AC-only breach bumps evidence:ac while per-stage entries stay clean" do
+      payload = %{
+        "classifications" => [%{"stage" => "implementer", "breach" => false, "counts" => %{}}],
+        "ac" => %{"total" => 1, "violated" => ["AC1"]}
+      }
+
+      result =
+        Projection.project(seed(), [
+          event(:evidence_classified, payload, 1),
+          event(:evidence_classified, payload, 2)
+        ])
+
+      assert result.evidence_breaches == %{"evidence:ac" => 2}
+    end
+
+    test "empty, absent, junk-id, or non-map ac sections fold as a TRUE no-op" do
+      s = seed()
+
+      for ac <- [%{"violated" => []}, %{"violated" => "junk"}, %{"violated" => [1]}, "junk"] do
+        payload = %{
+          "classifications" => [%{"stage" => "implementer", "breach" => false}],
+          "ac" => ac
+        }
+
+        assert Projection.project(s, [event(:evidence_classified, payload, 1)]) == s
+      end
+    end
+
+    test "atom-keyed ac markers fold identically (apply_markers mirror)" do
+      folded =
+        Projection.apply_markers(seed(), [
+          {:evidence_classified,
+           %{
+             classifications: [%{stage: "implementer", breach: false, counts: %{}}],
+             ac: %{total: 1, violated: ["AC1"]}
+           }}
+        ])
+
+      assert folded.evidence_breaches == %{"evidence:ac" => 1}
+    end
+  end
+
   describe "finding_keys fold (camus C1-5, next-ten #6)" do
     defp round_event(lens, keys, seq, marks \\ nil) do
       payload = %{

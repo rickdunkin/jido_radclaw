@@ -435,7 +435,7 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
     SubagentTranscript.record_task(tool_context, request_id, task)
 
     try do
-      result = run_fun.()
+      result = stamp_request_id(run_fun.(), request_id)
       record_step_terminal(tool_context, request_id, result)
       result
     rescue
@@ -455,6 +455,15 @@ defmodule JidoClaw.Skills.Steps.AgentRunner do
       cleanup_fun.()
     end
   end
+
+  # OB1-3: attach the engine-minted correlation id to the success result on
+  # BOTH executor arms, so the evidence floor can read the step's durable tool
+  # rows back. Engine data (from `register_child_correlation`), never anything
+  # the agent relayed. Non-StepResult successes and errors pass through.
+  defp stamp_request_id({:ok, %StepResult{} = step_result}, request_id),
+    do: {:ok, %{step_result | request_id: request_id}}
+
+  defp stamp_request_id(other, _request_id), do: other
 
   # Persist the step's terminal turn (`:assistant` with the extracted step text
   # on success, `:system` on failure) — completing the sub-agent's durable slice

@@ -37,10 +37,27 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
   against the stage's `publishes` **strings**, so they MUST be strings; like
   `builder_result/0`, `signals` is never persisted as an artifact, so no
   `Envelope.normalize` atom concern applies.
+
+  `evidence` (OB1-3, `docs/exploration/ouroboros/PORT-OB1-3.md`) is the optional
+  advisory self-report block the evidence floor cross-checks against the tool
+  transcript: `%{"commands_run" => [string], "tests_passed" => [string]}` (no
+  `files_touched` — the engine reads the required `files_changed` field instead).
+  Deliberately schema-PERMISSIVE (`Zoi.any()`): `Zoi.optional/1` only tolerates
+  ABSENCE, and a present-but-malformed typed object would fail child parsing and
+  turn an otherwise-valid result into repair/infra churn — exactly what a
+  doctrine-prompted advisory field must never do. Shape enforcement is owned by
+  `DefaultMapper`'s per-key normalization (malformed ⇒ dropped + Trace note,
+  never an error). All-string surviving values are inert under
+  `ComposerArtifact.Envelope.normalize/1` (the round-trip rule).
   """
   @spec coder_result() :: Zoi.schema()
-  def coder_result,
-    do: Zoi.object(Map.put(builder_fields(), :signals, Zoi.optional(Zoi.array(Zoi.string()))))
+  def coder_result do
+    Zoi.object(
+      builder_fields()
+      |> Map.put(:signals, Zoi.optional(Zoi.array(Zoi.string())))
+      |> Map.put(:evidence, Zoi.optional(Zoi.any()))
+    )
+  end
 
   # The builder fields shared by `builder_result/0` (SystemExecutor) and
   # `coder_result/0` (Coder). Factored to one source so `coder_result/0` is not a
@@ -75,6 +92,10 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
   Uses the map `Zoi.object/1` form (the keyword-list form trips Dialyzer); key
   order is not significant. The worker's `on_validation_error: :repair` recovers
   a transient field omission.
+
+  `evidence` is the same optional schema-permissive advisory block as
+  `coder_result/0` (OB1-3) — see that doc for the shape and the
+  mapper-owned normalization rationale.
   """
   @spec fixer_result() :: Zoi.schema()
   def fixer_result do
@@ -84,6 +105,7 @@ defmodule JidoClaw.Agent.Workers.OutputSchema do
       files_changed: Zoi.array(Zoi.string()),
       notes: Zoi.string(),
       signals: Zoi.array(Zoi.string()),
+      evidence: Zoi.optional(Zoi.any()),
       artifacts: artifacts()
     })
   end

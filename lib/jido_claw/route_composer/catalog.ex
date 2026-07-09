@@ -304,10 +304,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff for auth-surface, secrets, and permission changes; " <>
           "flag findings, else emit clean:security. When the run premises carry " <>
           "acceptance criteria, verify each against the diff and cite the AC id " <>
-          "(AC1, AC2, …) in any related finding.",
+          "(AC1, AC2, …) in any related finding. An evidence-report input, when " <>
+          "present, is engine-verified (claims cross-checked against the tool " <>
+          "transcript) — treat it as ground truth and diagnose the cause.",
       routes: ["code"],
       subscribes: ["auth-surface"],
-      input: %{required: ["diff"], optional: ["fix"]},
+      input: %{required: ["diff"], optional: ["fix", "evidence-report"]},
       output: ["findings", "action_needed"],
       publishes: ["findings:security", "clean:security", "scope-shift"]
     },
@@ -319,10 +321,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff for style, clarity, and duplication; flag findings, " <>
           "else emit clean:quality. When the run premises carry acceptance " <>
           "criteria, verify each against the diff and cite the AC id " <>
-          "(AC1, AC2, …) in any related finding.",
+          "(AC1, AC2, …) in any related finding. An evidence-report input, when " <>
+          "present, is engine-verified (claims cross-checked against the tool " <>
+          "transcript) — treat it as ground truth and diagnose the cause.",
       routes: ["code"],
       subscribes: ["code-written"],
-      input: %{required: ["diff"], optional: ["fix"]},
+      input: %{required: ["diff"], optional: ["fix", "evidence-report"]},
       output: ["findings", "action_needed"],
       publishes: ["findings:quality", "clean:quality", "scope-shift"]
     },
@@ -334,10 +338,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff for logic and edge-case correctness; flag findings, " <>
           "else emit clean:correctness. When the run premises carry acceptance " <>
           "criteria, verify each against the diff and cite the AC id " <>
-          "(AC1, AC2, …) in any related finding.",
+          "(AC1, AC2, …) in any related finding. An evidence-report input, when " <>
+          "present, is engine-verified (claims cross-checked against the tool " <>
+          "transcript) — treat it as ground truth and diagnose the cause.",
       routes: ["code"],
       subscribes: ["code-written"],
-      input: %{required: ["diff"], optional: ["fix"]},
+      input: %{required: ["diff"], optional: ["fix", "evidence-report"]},
       output: ["findings", "action_needed"],
       publishes: ["findings:correctness", "clean:correctness", "scope-shift"]
     },
@@ -349,10 +355,12 @@ defmodule JidoClaw.RouteComposer.Catalog do
         "Review the diff against the system's architecture; flag findings, " <>
           "else emit clean:architecture. When the run premises carry acceptance " <>
           "criteria, verify each against the diff and cite the AC id " <>
-          "(AC1, AC2, …) in any related finding.",
+          "(AC1, AC2, …) in any related finding. An evidence-report input, when " <>
+          "present, is engine-verified (claims cross-checked against the tool " <>
+          "transcript) — treat it as ground truth and diagnose the cause.",
       routes: ["code"],
       subscribes: ["significant-build"],
-      input: %{required: ["diff"], optional: ["fix"]},
+      input: %{required: ["diff"], optional: ["fix", "evidence-report"]},
       output: ["findings", "action_needed"],
       publishes: ["findings:architecture", "clean:architecture", "scope-shift"]
     },
@@ -373,10 +381,16 @@ defmodule JidoClaw.RouteComposer.Catalog do
       task:
         "Resolve the open review findings against the diff; always emit code-written, and ALSO " <>
           "emit the domain signal for any domain you touched (auth-surface for auth/permissions/" <>
-          "secrets, significant-build for architectural changes) so the right lenses re-review.",
+          "secrets, significant-build for architectural changes) so the right lenses re-review. " <>
+          "Feedback from the evidence lens means the engine contradicted a worker's claims " <>
+          "against the tool transcript — redo that work honestly (run tests cleanly, no " <>
+          "exit-masking plumbing); the engine re-checks every round.",
       routes: ["code"],
       subscribes: ["findings"],
-      input: %{required: ["diff"], optional: ["review-feedback", "review-action"]},
+      input: %{
+        required: ["diff"],
+        optional: ["review-feedback", "review-action", "evidence-report"]
+      },
       output: ["fix"],
       publishes: ["code-written", "scope-shift", "auth-surface", "significant-build"]
     },

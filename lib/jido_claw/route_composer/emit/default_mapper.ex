@@ -44,6 +44,13 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
        dropped `findings:<lens>` would let the loop converge as clean when it is
        not). The verdict-family declarations are *also* enforced at catalog-load
        (`JidoClaw.RouteComposer.CatalogValidator`), so this is defense-in-depth.
+    6. **Evidence rails** (OB1-3) — `request_id` copied from the StepResult
+       (engine-minted, never agent data) and the normalized `evidence` claim
+       block (advisory `commands_run`/`tests_passed` + `files_changed`-derived
+       `files_touched`). Normalization here is the fail-open boundary: per-key,
+       malformed ⇒ dropped with a Trace note, never an error. The mapper does
+       NOT filter by template — the composer's evidence consumer decides
+       eligibility from the catalog.
 
   Typed output is atom-keyed when live and string-keyed once it round-trips JSON
   (the `projection.ex:19` precedent), so every lookup tries both.
@@ -55,6 +62,7 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
   alias JidoClaw.Orchestration.Verdict
   alias JidoClaw.RouteComposer.FindingKey
   alias JidoClaw.RouteComposer.StageEmission
+  alias JidoClaw.Trace
   alias JidoClaw.Workflows.StepResult
 
   @verdicts [:approve, :request_changes, :comment, "approve", "request_changes", "comment"]
@@ -101,7 +109,9 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
          stage: meta.name,
          signals: signals,
          artifacts: artifacts,
-         finding_marks: marks
+         finding_marks: marks,
+         request_id: result.request_id,
+         evidence: evidence(typed, meta)
        }}
     end
   end
@@ -222,6 +232,79 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapper do
       _ -> []
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # 2b. Evidence claims (OB1-3) — the fail-open normalization boundary
+  # ---------------------------------------------------------------------------
+
+  # Normalize the worker's evidence claims into the emission's 3-kind block:
+  # `commands_run`/`tests_passed` from the optional advisory `evidence` map
+  # (schema-permissive by design — THIS is where shape is enforced),
+  # `files_touched` from the REQUIRED `files_changed` field. Per-key fail-open:
+  # a malformed advisory block (or a malformed value under one key) drops only
+  # its own kinds (one Trace note, never an error) — `files_touched` comes from
+  # `files_changed` and stays populated regardless. The mapper stays dumb: it
+  # copies fields for every stage; the composer's consumer filters by catalog
+  # template. Zero surviving kinds ⇒ nil ⇒ posture unchanged.
+  defp evidence(typed, meta) do
+    advisory = known(typed, :evidence, "evidence")
+    advisory_map = if is_map(advisory), do: advisory, else: %{}
+
+    evidence =
+      %{
+        commands_run: string_list_or_nil(known(advisory_map, :commands_run, "commands_run")),
+        tests_passed: string_list_or_nil(known(advisory_map, :tests_passed, "tests_passed")),
+        files_touched: string_list_or_nil(known(typed, :files_changed, "files_changed"))
+      }
+      |> Enum.reject(fn {_kind, value} -> is_nil(value) end)
+      |> Map.new()
+
+    note_dropped_evidence(advisory, evidence, meta)
+    if map_size(evidence) == 0, do: nil, else: evidence
+  end
+
+  # One bounded Trace note when advisory content was dropped — the block is
+  # not a map at all, or a known key is present but its value is not a string
+  # list. An absent block (the normal case) and a well-formed block stay
+  # silent; unknown extra keys are ignored without a note.
+  defp note_dropped_evidence(nil, _evidence, _meta), do: :ok
+
+  defp note_dropped_evidence(advisory, evidence, meta) do
+    dropped =
+      if is_map(advisory) do
+        for {atom_key, string_key} <- [
+              {:commands_run, "commands_run"},
+              {:tests_passed, "tests_passed"}
+            ],
+            not is_nil(known(advisory, atom_key, string_key)),
+            not Map.has_key?(evidence, atom_key),
+            do: string_key
+      else
+        ["evidence"]
+      end
+
+    if dropped != [] do
+      shape =
+        advisory
+        |> inspect()
+        |> String.slice(0, 120)
+
+      Trace.emit(:composer, %{
+        event: :evidence_block_malformed,
+        stage: meta.name,
+        dropped: dropped,
+        shape: shape
+      })
+    end
+
+    :ok
+  end
+
+  defp string_list_or_nil(list) when is_list(list) do
+    if Enum.all?(list, &is_binary/1), do: list
+  end
+
+  defp string_list_or_nil(_other), do: nil
 
   # ---------------------------------------------------------------------------
   # 3. Artifacts — stage.output names pulled from typed / artifacts / result

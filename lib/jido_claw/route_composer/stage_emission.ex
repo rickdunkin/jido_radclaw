@@ -42,6 +42,16 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   WHOLE block to nil — an un-keyable round is excluded from stall detection
   (the camus fail-safe), never half-folded.
 
+  `request_id` + `evidence` (OB1-3) are the evidence floor's rails:
+  `request_id` is the engine-minted correlation id threaded from
+  `%StepResult{}` (the durable tool-row lookup handle), and `evidence` is the
+  mapper-normalized claim block — up to three known kinds
+  (`:commands_run`/`:tests_passed` from the worker's advisory `evidence`
+  block, `:files_touched` from the required `files_changed` field), each a
+  string list. Both decode tolerantly and FAIL CLOSED to nil (malformed ⇒
+  absent ⇒ posture unchanged — an advisory block must never corrupt an
+  emission). Always nil on verify/gate emissions.
+
   `from_map/1` normalizes both shapes a wave return can arrive in — the
   atom-keyed live `{:ok, value, _run}` return and the string-keyed
   JSONB-round-tripped persisted map — into one struct, the same atom/string
@@ -66,13 +76,23 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   @type finding_marks ::
           %{lens: String.t(), keys: [String.t()], marks: [finding_mark()]} | nil
 
+  @type evidence ::
+          %{
+            optional(:commands_run) => [String.t()],
+            optional(:tests_passed) => [String.t()],
+            optional(:files_touched) => [String.t()]
+          }
+          | nil
+
   @type t :: %__MODULE__{
           stage: String.t() | nil,
           signals: [String.t()],
           artifacts: %{optional(String.t()) => term()},
           outcome: outcome(),
           certification: certification(),
-          finding_marks: finding_marks()
+          finding_marks: finding_marks(),
+          request_id: String.t() | nil,
+          evidence: evidence()
         }
 
   defstruct stage: nil,
@@ -80,7 +100,9 @@ defmodule JidoClaw.RouteComposer.StageEmission do
             artifacts: %{},
             outcome: :ok,
             certification: nil,
-            finding_marks: nil
+            finding_marks: nil,
+            request_id: nil,
+            evidence: nil
 
   @certification_modes %{"working_tree" => :working_tree, "sealed" => :sealed}
 
@@ -106,7 +128,9 @@ defmodule JidoClaw.RouteComposer.StageEmission do
       artifacts: pick(map, :artifacts, "artifacts", %{}),
       outcome: decode_outcome(pick(map, :outcome, "outcome", nil)),
       certification: decode_certification(pick(map, :certification, "certification", nil)),
-      finding_marks: decode_finding_marks(pick(map, :finding_marks, "finding_marks", nil))
+      finding_marks: decode_finding_marks(pick(map, :finding_marks, "finding_marks", nil)),
+      request_id: binary_or_nil(pick(map, :request_id, "request_id", nil)),
+      evidence: decode_evidence(pick(map, :evidence, "evidence", nil))
     }
   end
 
@@ -210,6 +234,35 @@ defmodule JidoClaw.RouteComposer.StageEmission do
   end
 
   defp decode_mark(_other), do: nil
+
+  # Per-key whitelist decode of the OB1-3 evidence block: each known kind
+  # survives only as a list of binaries (fail-closed per key — a malformed
+  # kind drops alone, never the block); zero surviving kinds ⇒ nil. Never
+  # `String.to_atom/1` — the three kinds are a fixed whitelist.
+  defp decode_evidence(%{} = block) do
+    evidence =
+      Enum.reduce(
+        [
+          {:commands_run, "commands_run"},
+          {:tests_passed, "tests_passed"},
+          {:files_touched, "files_touched"}
+        ],
+        %{},
+        fn {atom_key, string_key}, acc ->
+          case pick(block, atom_key, string_key, nil) do
+            list when is_list(list) ->
+              if Enum.all?(list, &is_binary/1), do: Map.put(acc, atom_key, list), else: acc
+
+            _other ->
+              acc
+          end
+        end
+      )
+
+    if map_size(evidence) == 0, do: nil, else: evidence
+  end
+
+  defp decode_evidence(_other), do: nil
 
   defp binary_or_nil(value) when is_binary(value), do: value
   defp binary_or_nil(_value), do: nil

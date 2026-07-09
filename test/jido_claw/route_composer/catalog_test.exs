@@ -85,8 +85,15 @@ defmodule JidoClaw.RouteComposer.CatalogTest do
     assert stage.routes == ["code"]
     # Findings ride the SIGNAL; the open findings reach it via producerless
     # optional inputs (loop-injected) — declaring `findings` as data would cycle.
+    # Item 10 (OB1-3): `evidence-report` is the third producerless optional —
+    # the engine's per-stage evidence diagnosis (no catalog producer, no edge).
     assert stage.subscribes == ["findings"]
-    assert stage.input == %{required: ["diff"], optional: ["review-feedback", "review-action"]}
+
+    assert stage.input == %{
+             required: ["diff"],
+             optional: ["review-feedback", "review-action", "evidence-report"]
+           }
+
     assert stage.output == ["fix"]
     # The domain signals it self-reports drive the loop's re-review set.
     assert "code-written" in stage.publishes

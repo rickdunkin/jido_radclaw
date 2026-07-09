@@ -30,7 +30,7 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   `JidoClaw.RouteComposer.Catalog` compile-time guard checks worker-template
   existence separately.
 
-  ## Invariants (groups 1–10 + cycle = 11)
+  ## Invariants (groups 1–10 + cycle = 11 + reserved identity = 12)
 
     1. `routes` present, non-empty, and ⊆ `["talk", "sketch", "code",
        "system"]`.
@@ -58,6 +58,12 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
         retract/re-verify at convergence; multi-check needs belong in one
         stage's named `checks:` registry.
     11. the producer → consumer data graph is acyclic.
+    12. reserved evidence identity (item 10, OB1-3): no stage is named
+        `"evidence"` or `"evidence:ac"`, and no stage carries
+        `lens: "evidence"` — the evidence floor's synthetic producer/lens
+        tokens (artifact producer `"evidence"`, the
+        `finding_rounds["evidence"]` round, the `"evidence:ac"`
+        breach-ledger key) would silently conflate with a real stage.
 
   `family_match?/2` is **bidirectional** (an exact topic, a qualified member of
   the family, **or** the family base) and is deliberately distinct from the
@@ -92,8 +98,14 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
   def validate(catalog) do
     problems =
       case structural(catalog) do
-        [] -> coherence(catalog) ++ single_verify(catalog) ++ cycle(catalog)
-        structural_problems -> structural_problems
+        [] ->
+          coherence(catalog) ++
+            single_verify(catalog) ++
+            reserved_evidence(catalog) ++
+            cycle(catalog)
+
+        structural_problems ->
+          structural_problems
       end
 
     Enum.sort(problems)
@@ -398,6 +410,36 @@ defmodule JidoClaw.RouteComposer.CatalogValidator do
         []
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Invariant 12 — reserved evidence identity
+  # ---------------------------------------------------------------------------
+
+  # The evidence floor (item 10, OB1-3) rides synthetic identity tokens with
+  # no catalog stage behind them: artifacts under producer "evidence", the
+  # `finding_rounds["evidence"]` round, and the `"evidence:ac"` breach-ledger
+  # key. A stage NAMED after one — or a reviewer claiming the "evidence"
+  # lens — would silently conflate with the engine's own records
+  # (double-shifted finding rounds, merged breach counters). Rejected at load.
+  @reserved_evidence_names ~w(evidence evidence:ac)
+
+  defp reserved_evidence(catalog) do
+    catalog
+    |> sorted_stages()
+    |> Enum.flat_map(fn {name, stage} ->
+      check_reserved_name(name) ++ check_reserved_lens(name, stage)
+    end)
+  end
+
+  defp check_reserved_name(name) when name in @reserved_evidence_names,
+    do: ["#{name}: stage name `#{name}` is reserved for the evidence floor's synthetic identity"]
+
+  defp check_reserved_name(_name), do: []
+
+  defp check_reserved_lens(name, %Stage{lens: "evidence"}),
+    do: ["#{name}: `lens` \"evidence\" is reserved for the evidence floor's synthetic identity"]
+
+  defp check_reserved_lens(_name, _stage), do: []
 
   # ---------------------------------------------------------------------------
   # Cycle — the producer → consumer data graph must be acyclic

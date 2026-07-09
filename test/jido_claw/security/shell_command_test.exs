@@ -732,4 +732,210 @@ defmodule JidoClaw.Security.ShellCommandTest do
       assert %Analysis{} = SC.analyze(deep)
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Exit-code provenance (OB1-3 — PORT-OB1-3.md; source tests cited per row)
+  # ---------------------------------------------------------------------------
+
+  defp prov(cmd), do: SC.exit_code_provenance(cmd)
+
+  describe "exit_code_provenance/1: preserved" do
+    # {command, expected_runner_tool_or_nil}
+    @preserved [
+      {"mix test", "mix test"},
+      {"cd /app && FOO=1 mix test", "mix test"},
+      {"sudo mix test", "mix test"},
+      {"mix test > out.log 2>&1", "mix test"},
+      {"pytest tests/unit -x", "pytest"},
+      {"py.test tests/", "py.test"},
+      {"tox", "tox"},
+      {"npm test", "npm test"},
+      {"pnpm test", "pnpm test"},
+      {"yarn test", "yarn test"},
+      {"uv run pytest", "uv run pytest"},
+      {"python -m pytest tests/", "python -m pytest"},
+      {"python -m unittest discover", "python -m unittest"},
+      {"mix compile --warnings-as-errors", nil},
+      {"ls -la", nil},
+      # `npm run test` is deliberately NOT the runner table's `npm test`.
+      {"npm run test", nil},
+      # General `;`-chain shadowing is out of scope — a documented miss,
+      # conservatively :preserved (decision 6).
+      {"mix test ; echo done", "mix test"},
+      # `&&`-chained `true` does not swallow (a failure short-circuits it).
+      {"mix test && true", "mix test"}
+    ]
+
+    test "clean invocations preserve their exit code" do
+      for {cmd, tool} <- @preserved do
+        provenance = prov(cmd)
+
+        assert provenance.exit_code == :preserved,
+               "expected #{inspect(cmd)} :preserved, got #{inspect(provenance)}"
+
+        case tool do
+          nil ->
+            assert provenance.test_runner == nil,
+                   "expected #{inspect(cmd)} to carry no runner, got #{inspect(provenance)}"
+
+          tool ->
+            assert %{tool: ^tool, skipped?: false} = provenance.test_runner
+        end
+      end
+    end
+
+    # Source: test_test_invocation_supports_shell_preamble_with_pipefail_output_plumbing
+    # (test_parallel_executor.py:1598 @ e905a41c).
+    test "pipefail before the filter pipeline protects it" do
+      assert prov("set -o pipefail && mix test | tail -5").exit_code == :preserved
+      assert prov("set -o pipefail; mix test 2>&1 | tail -20").exit_code == :preserved
+    end
+  end
+
+  describe "exit_code_provenance/1: masked" do
+    # Source: test_unprotected_tail_pipe_is_form_mismatch_not_command_proof (:1276).
+    test "an unprotected presentation-filter pipe masks the exit code" do
+      for cmd <- [
+            "mix test 2>&1 | tail -20",
+            "mix test | head -5",
+            "mix test | cat",
+            ~s(./gradlew test --tests "com.example.SomeTest" -i 2>&1 | tail -100)
+          ] do
+        assert prov(cmd).exit_code == :masked, "expected #{inspect(cmd)} :masked"
+      end
+    end
+
+    # Source: test_command_claim_rejects_grep_filtered_run_as_tests_passed_claim
+    # (:1707) + the wc/tee siblings — transforming filters are never peelable,
+    # pipefail or not (residual pipe ⇒ not provable-clean).
+    test "a transforming filter pipe is never provable-clean" do
+      for cmd <- [
+            "mix test | grep -i pass",
+            "pytest tests/unit | wc -l",
+            "mix test | tee out.log",
+            "set -o pipefail && mix test | grep -i pass"
+          ] do
+        assert prov(cmd).exit_code == :masked, "expected #{inspect(cmd)} :masked"
+      end
+    end
+
+    # Source: test_test_invocation_rejects_pipefail_text_without_shell_option
+    # (:1634) — prose "pipefail" is not the option.
+    test "pipefail prose does not protect" do
+      assert prov("echo pipefail && mix test | tail -5").exit_code == :masked
+    end
+
+    # Source: test_test_invocation_rejects_pipefail_set_after_output_pipe (:1654).
+    test "pipefail set after the pipeline does not protect" do
+      assert prov("mix test | tail -5; set -o pipefail").exit_code == :masked
+    end
+
+    test "the explicit exit-swallow idioms mask regardless of pipefail" do
+      for cmd <- [
+            "mix test || true",
+            "mix test || :",
+            "mix test; true",
+            "mix test; :",
+            "set -o pipefail && mix test || true"
+          ] do
+        assert prov(cmd).exit_code == :masked, "expected #{inspect(cmd)} :masked"
+      end
+    end
+
+    test "an upstream pipe feed is conservatively masked (residual pipe)" do
+      assert prov("cat fixtures.txt | mix test").exit_code == :masked
+    end
+  end
+
+  describe "exit_code_provenance/1: unknown (total, never a raise)" do
+    test "unparseable / unresolvable input degrades to :unknown" do
+      # A parameter-expansion command word and an unrecognized wrapper flag are
+      # the strip → :unknown paths; the huge chain trips the subcommand cap.
+      assert %SC.Provenance{exit_code: :unknown, test_runner: nil} = prov("$CMD test")
+      assert %SC.Provenance{exit_code: :unknown, test_runner: nil} = prov("sudo --frob mix test")
+      assert %SC.Provenance{exit_code: :unknown} = prov(String.duplicate("a;", 100_000))
+    end
+
+    test "a non-string input is :unknown" do
+      assert %SC.Provenance{exit_code: :unknown} = SC.exit_code_provenance(nil)
+      assert %SC.Provenance{exit_code: :unknown} = SC.exit_code_provenance(42)
+    end
+  end
+
+  describe "exit_code_provenance/1: test-runner recognition + skip flags" do
+    # Source: test_gradle_maven_tests_passed_rejects_skip_test_invocations
+    # (:1420). Divergence (PORT-OB1-3): recognized WITH skipped?: true rather
+    # than refused, so the evidence classifier can flag the claim.
+    test "gradle/maven skip flags surface skipped?: true" do
+      for cmd <- [
+            "gradle build -x test",
+            "gradle build --exclude-task test",
+            "gradle test --exclude-task=test",
+            "gradle check -xtest",
+            "mvn verify -DskipTests",
+            "mvn verify -DskipTests=true",
+            "mvn verify -Dmaven.test.skip",
+            "mvn verify --define skipTests",
+            "mvn verify --define=skipTests",
+            "./gradlew test -x :app:test"
+          ] do
+        provenance = prov(cmd)
+
+        assert %{skipped?: true} = provenance.test_runner,
+               "expected #{inspect(cmd)} skipped?: true, got #{inspect(provenance)}"
+      end
+    end
+
+    # Source: test_maven_tests_passed_supports_explicit_false_skip_properties (:1453).
+    test "=false|0|no|off skip values do NOT skip" do
+      for cmd <- [
+            "mvn verify -DskipTests=false",
+            "mvn verify -DskipTests=0",
+            "mvn verify -Dmaven.test.skip=no",
+            "mvn verify -DskipTests=off"
+          ] do
+        assert %{tool: "mvn", skipped?: false} = prov(cmd).test_runner,
+               "expected #{inspect(cmd)} skipped?: false"
+      end
+    end
+
+    test "gradle/maven need a test-family task word to register as a runner" do
+      assert prov("mvn install -DskipTests").test_runner == nil
+      assert prov("gradle assemble").test_runner == nil
+      assert %{tool: "gradle", skipped?: false} = prov("gradle check").test_runner
+      assert %{tool: "gradlew", skipped?: false} = prov("./gradlew :app:test").test_runner
+    end
+
+    test "mix precommit is deliberately NOT a test runner (Verify authority owns it)" do
+      assert prov("mix precommit").test_runner == nil
+    end
+
+    test "a runner is still recognized on a masked line (the claim verdict is Evidence's)" do
+      assert %{tool: "mix test"} = prov("mix test | tail -20").test_runner
+    end
+  end
+
+  describe "exit_code_provenance/1: analyze/1 regression pins" do
+    # The provenance path must not perturb the gate analyzer: same inputs,
+    # byte-identical Analysis before/after deriving provenance.
+    test "analyze/1 output is unchanged for provenance-exercised inputs" do
+      for cmd <- [
+            "mix test 2>&1 | tail -20",
+            "set -o pipefail && mix test | tail -5",
+            "mix test || true",
+            "gradle build -x test",
+            "git commit -m x && mix test | grep ok"
+          ] do
+        baseline = SC.analyze(cmd)
+        _provenance = prov(cmd)
+        assert SC.analyze(cmd) == baseline
+      end
+    end
+
+    test "provenance kinds never leak into effect_kinds/0" do
+      refute :preserved in SC.effect_kinds()
+      refute :masked in SC.effect_kinds()
+      assert Enum.count(SC.effect_kinds()) == 9
+    end
+  end
 end

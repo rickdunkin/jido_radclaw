@@ -302,7 +302,7 @@ queue item; this entry is the field reference those four consume.
 > `workflow_event_projection_test.exs` (every status-authority event kind ×
 > every terminal status ⇒ `:illegal`, per-kind authority drift-guards) —
 > `Projection.next_status/2` was already the enforcement point, so the rider
-> cost a describe block. The #9/#10 riders remain queued.
+> cost a describe block.
 >
 > **The #9 rider ✅ FOLDED IN 2026-07-08** (next-ten #9 shipped): the
 > `outcome_spec` SHAPE adopted (BUSL-1.1 — three field names + creation
@@ -314,7 +314,21 @@ queue item; this entry is the field reference those four consume.
 > scheduler hydration + reconcile fingerprint, the same rendered contract
 > block on both dispatcher agent arms and workflow extra context. Operator
 > CLI and system/MFA jobs exempt (no contract, byte-identical dispatch).
-> Truth: `docs/system/structured-premises.md`. The #10 rider remains queued.
+> Truth: `docs/system/structured-premises.md`.
+>
+> **The #10 rider ✅ FOLDED IN 2026-07-08** (next-ten #10 shipped — the
+> OB1-3 evidence floor; the entry is fully consumed). The FABRICATION
+> detection shape landed as the floor's `claimed` vs engine-observed
+> cross-check (`fabrication_suspected` verdict); **breach counting** is the
+> durable `:evidence_classified` ledger event + the projection's per-stage
+> `evidence_breaches` counters (surfaced in the terminal summary only when
+> nonzero); the **compaction guard** translates to the absent-transcript
+> skip — our `Conversations.Message` rows are compaction-immune (the
+> Recorder writes from `ai.tool.*` signals), so a compacted context can
+> never demote a claim. Their **fail-closed never-null** posture is the one
+> piece deliberately NOT carried: the floor is findings-only and fails
+> toward *trust* (can't-verify ⇒ skip), per the ouroboros conservative
+> override rule. Truth: `docs/system/evidence-floor.md`.
 
 **Where in OpenHelm**: `agent/src/planner/outcome-assessor.ts:74-252,298-421` (the
 judge), schema `agent/src/planner/schemas.ts:142-185`, evaluator

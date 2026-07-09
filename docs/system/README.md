@@ -80,3 +80,4 @@ set-compares these against the directory (names, not counts).
 - [Clustering](clustering.md) — multi-node topologies, the DB-lease ownership model, and the cluster_enabled flip checklist
 - [Ambiguity Clarify Loop](ambiguity-clarify.md) — score → ask → fold → re-score before composing an ambiguous build; honest degraded labeling
 - [Structured Premises](structured-premises.md) — typed acceptance-criteria keys, the deterministic premises lint, criteria consumers, the cron outcome contract
+- [Evidence Floor](evidence-floor.md) — claims vs transcript: engine-verified worker self-reports, exit-code provenance, findings-only

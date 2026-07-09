@@ -131,6 +131,34 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 
 **Recommendation**: BORROW-PATTERN.
 
+> **Status: ✅ ADOPTED 2026-07-08** (next-ten #10 — the queue's last item —
+> absorbing camus C1-6c and the OpenHelm OH1-3 breach-counting rider; signed
+> map `PORT-OB1-3.md`). Shipped as `JidoClaw.Orchestration.Verify.Evidence`
+> (NOT the sketch's `JidoClaw.Verify.Evidence`): the pure
+> gather/classify/discrepancies/findings classifier behind a `reader:` seam,
+> `ShellCommand.exit_code_provenance/1` (the masking table + runner
+> recognition ported with attribution — read-side only, never a gate
+> matcher), the schema-PERMISSIVE `evidence` envelope block + doctrine slice
+> on coder/fixer, and the composer fold consumer: engine-synthesized
+> findings on stable `evidence:<stage>:<kind>` keys riding Hook R **by
+> shape** (a direct-weld consumer + the reserved `"evidence"` lens — never
+> through `decide_rerun`), record-vs-re-fire split under the same
+> suppression fold, ONE aggregate artifact set per wave, the
+> `:evidence_classified` breach ledger + projection counters. Slice 2
+> shipped in the same item: `Evidence.ACExtractor` (once-at-launch,
+> persisted in parent config — their LRU cache made durable) +
+> `Evidence.Assertions` (ported bounds 50KB/100 files/200-char, per-assertion
+> Task timeout; the ONLY false branch is pattern-absent-across-existing-
+> files). Corrections to this entry: `files_touched` reads the EXISTING
+> required `files_changed` envelope field reconciled against dispatch-vs-fold
+> untracked-inclusive porcelain snapshots (existence is never support) — the
+> advisory block carries only `commands_run`/`tests_passed`; the evidence
+> base is `Conversations.Message.by_request` tool rows, not ToolOutput refs;
+> the vendor arm has NO rows so the transcript kinds skip toward trust
+> (files still reconcile); no-transcript is a SKIP, never their gate-mode
+> fail; and grep-filtered runs land `form_mismatch`, deliberately kinder
+> than their fabrication lane.
+
 **Where in ouroboros** (real, tested — 89 test files — but **opt-in off by default** after #1202): default AC success upstream is trivial (`success = not message.is_error` + a `[TASK_COMPLETE]` prose marker, `orchestrator/parallel_executor.py:5749`). `fat_harness` mode replaces it: the agent must emit a **typed evidence record** (`commands_run`, `files_touched`, `tests_passed`) validated against a per-task-type profile schema (`:5972`), and `_verify_atomic_evidence_against_runtime_messages` (`:6098-6200`) cross-checks every claim against the actual tool-call transcript — **deliberately excluding the agent's final self-report message** so evidence can't support itself (`:6108-6110`). Unsupported claim ⇒ `FABRICATION_SUSPECTED`; supported-but-malformed ⇒ `EVIDENCE_FORM_MISMATCH` (`:6184-6191`) — the latter backed by a serious shell-analysis library (`:994-1412`): test-command detection, **pipefail/output-plumbing detection** (a test command piped through a filter that would mask a failing exit code), gradle/maven skip-flag detection, env-prefix stripping, alias normalization. The separate `verification/` package (612 LOC, wired in the evolution evaluator) applies the same philosophy more cheaply: LLM-extract tiered assertions from ACs once (cached by seed), grep-verify the constant/structural tiers, and **only ever flip a claimed pass to fail on a positive discrepancy** — "can't verify ⇒ trust the agent" (`verification/verifier.py:122-126`).
 
 **What**: a deterministic floor under agent self-reports — claims must be backed by transcript facts the agent cannot forge, with output-masking treated as a first-class evidence defect.
@@ -209,7 +237,7 @@ Companion docs: **alp-river** is the primary cross-reference — the AR-9 progra
 
 - **OQ-1 — Clarify-loop surface (gates OB1-1).** Conversation-axis loop in the front door (cheap, no catalog change, human present) vs. a composer `interview` stage + gate (durable, resumable, but heavier)? Recommendation embedded above: conversation-axis first; revisit if clarify transcripts need durability beyond the session row. *(Resolved 2026-07-07: conversation-axis shipped — next-ten #8; the loop state lives on the session row, the Q/A transcript rides the run's request-seed artifact.)*
 - **OQ-2 — Premises schema shape (gates OB1-2).** Typed optional keys inside the existing premises map (JSONB shapes pinned, renderer total) vs. a dedicated Ash-embedded spec resource? The map extension is the cheap first step; a resource earns its keep when per-AC verdicts need durable rows (eval-harness convergence).
-- **OQ-3 — Evidence contract scope (gates OB1-3).** Which claims first (tests_passed alone is most of the value), which stages (coder/fixer only), and does the Envelope schema change ride a doctrine slice or a Zoi schema bump? Also: does `EVIDENCE_FORM_MISMATCH` (masking) warrant blocking, or findings-only in v1?
+- **OQ-3 — Evidence contract scope (gates OB1-3).** Which claims first (tests_passed alone is most of the value), which stages (coder/fixer only), and does the Envelope schema change ride a doctrine slice or a Zoi schema bump? Also: does `EVIDENCE_FORM_MISMATCH` (masking) warrant blocking, or findings-only in v1? *(Resolved 2026-07-08 with the adoption: ALL THREE claim kinds in v1 (files_touched rode the existing `files_changed` field, so it was nearly free); coder/fixer templates only, catalog-decided; BOTH — a schema-permissive `Zoi.optional(Zoi.any())` field with mapper-side normalization plus the `:evidence_reporting` doctrine slice (prose and type each doing the half they're good at); masking is findings-only-context in v1, per the conservative override rule.)*
 - **OQ-4 — Ambiguity spend policy (OB1-1).** Score every composed turn (adds a call to the front door's hot path) vs. only when triage emits `ambiguous` (trusts the classifier's recall — measured today by nothing)? Start signal-gated; add a `significant-build ∧ no-criteria` trigger if misses show up. *(Resolved 2026-07-07 as recommended: signal-gated, no size gate; the extra trigger stays evidence-gated.)*
 
 ## Cross-references and dependencies
@@ -225,7 +253,7 @@ AR-9 PR-3 (shipped 2026-07-03; OB3-2's refinements still open) ◄── OB3-2 (
 alp-river UNADOPTED #9 ◄── OB3-3 (material-progress clock)
 ```
 
-Build order that follows: **OB1-1** (the dead `ambiguous` signal makes it the cheapest high-leverage start — *adopted 2026-07-07, next-ten #8*) → **OB1-2** (persists what OB1-1 produces; premises pipe already shipped) → **OB1-3** (independent, but richer once ACs exist; pairs with queue item 5) → Tier 2 behind their triggers, with OB3-2 folded into AR-9 PR-3 whenever that lands. *(2026-07-03: PR-3 shipped without
+Build order that follows: **OB1-1** (the dead `ambiguous` signal makes it the cheapest high-leverage start — *adopted 2026-07-07, next-ten #8*) → **OB1-2** (persists what OB1-1 produces; premises pipe already shipped — *adopted 2026-07-08, next-ten #9*) → **OB1-3** (independent, but richer once ACs exist; pairs with queue item 5 — *adopted 2026-07-08, next-ten #10, both slices; the Tier-1 sweep is complete*) → Tier 2 behind their triggers, with OB3-2 folded into AR-9 PR-3 whenever that lands. *(2026-07-03: PR-3 shipped without
 OB3-2 — its trigger-matrix / same-model-fallback / consume-the-confidence lessons remain
 open refinements on the now-real stages.)*
 
@@ -236,7 +264,7 @@ open refinements on the now-real stages.)*
 | Front door | Socratic interview, quantified ambiguity gate (≤0.2 + floors + streak), typed convergence contract | Single-shot triage; `ambiguous` signal published, consumed by nothing *(as inventoried; since 2026-07-07 the OB1-1 clarify loop consumes it — gate + floors + streak + deterministic floor)* |
 | Spec artifact | Immutable Seed: ACs + weighted rubric + exit conditions + provenance, linted by a deterministic grade gate | Premises = launch-assumption string map (threaded to workers since AR-9 PR-2); criteria transient or hardcoded |
 | Execution | LLM-decomposed AC tree, LLM-inferred dependency edges, optimistic parallelism + LLM conflict reconciliation | Deterministic catalog/Kahn composer, locks, welded wave commits — stronger |
-| Verification | Advisory 3-stage pipeline; QA judge that never blocks; opt-in transcript-grounded evidence verifier (the real gem) | 4-lens review + AR-4 fix loop + certificates — wired and gating, but self-report-trusting |
+| Verification | Advisory 3-stage pipeline; QA judge that never blocks; opt-in transcript-grounded evidence verifier (the real gem) | 4-lens review + AR-4 fix loop + certificates — wired and gating, but self-report-trusting *(as inventoried; since 2026-07-08 the OB1-3 evidence floor cross-checks claims against the durable transcript + wave diff, both slices)* |
 | Model routing | Dead tier schema; dormant static effort rule; unread per-profile tier hint | Wired per-stage seam; declared 2026-07-03 (the AR-9 arbiter stage) — the stall broke on our side |
 | Loop safety | Findings-hash oscillation + grade-regression stops; convergence withholding gates (wired) | Count caps + budget + deadlock detection; no progress comparison |
 | Stuck recovery | 5 lateral personas, bounded, three live paths | Nothing (personas are stage voice only) |

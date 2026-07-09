@@ -244,6 +244,127 @@ defmodule JidoClaw.RouteComposer.Emit.DefaultMapperTest do
     end
   end
 
+  # Item 10 (OB1-3): the mapper is the evidence block's fail-open normalization
+  # boundary — per-key, malformed ⇒ dropped (Trace note, never an error);
+  # `files_touched` derives from the REQUIRED `files_changed` field regardless.
+  describe "OB1-3 evidence rails" do
+    defp coder_typed(extra) do
+      Map.merge(
+        %{
+          "status" => "completed",
+          "summary" => "s",
+          "files_changed" => ["lib/foo.ex"],
+          "notes" => "n",
+          "signals" => ["code-written"]
+        },
+        extra
+      )
+    end
+
+    defp implementer_meta do
+      producer_meta(%{name: "implementer", output: ["diff"], publishes: ["code-written"]})
+    end
+
+    test "request_id is copied from the StepResult (engine data)" do
+      result = %StepResult{
+        name: "implementer",
+        request_id: "req-1",
+        typed_output: coder_typed(%{})
+      }
+
+      assert {:ok, %StageEmission{request_id: "req-1"}} =
+               DefaultMapper.map(result, implementer_meta())
+    end
+
+    test "a valid advisory block + files_changed normalize into the 3-kind shape" do
+      typed =
+        coder_typed(%{
+          "evidence" => %{"commands_run" => ["mix compile"], "tests_passed" => ["mix test"]}
+        })
+
+      result = %StepResult{name: "implementer", typed_output: typed}
+
+      assert {:ok, %StageEmission{evidence: evidence}} =
+               DefaultMapper.map(result, implementer_meta())
+
+      assert evidence == %{
+               commands_run: ["mix compile"],
+               tests_passed: ["mix test"],
+               files_touched: ["lib/foo.ex"]
+             }
+    end
+
+    test "an absent advisory block still yields files_touched from files_changed" do
+      result = %StepResult{name: "implementer", typed_output: coder_typed(%{})}
+
+      assert {:ok, %StageEmission{evidence: %{files_touched: ["lib/foo.ex"]} = evidence}} =
+               DefaultMapper.map(result, implementer_meta())
+
+      refute Map.has_key?(evidence, :commands_run)
+      refute Map.has_key?(evidence, :tests_passed)
+    end
+
+    test "per-key drop: a malformed advisory kind drops alone" do
+      typed =
+        coder_typed(%{
+          "evidence" => %{"commands_run" => "not-a-list", "tests_passed" => ["mix test"]}
+        })
+
+      result = %StepResult{name: "implementer", typed_output: typed}
+
+      assert {:ok, %StageEmission{evidence: evidence}} =
+               DefaultMapper.map(result, implementer_meta())
+
+      assert evidence == %{tests_passed: ["mix test"], files_touched: ["lib/foo.ex"]}
+    end
+
+    test "a fully malformed advisory block drops both kinds; files_touched stays" do
+      for malformed <- ["prose", 42, [1], %{"commands_run" => [1, 2]}] do
+        typed = coder_typed(%{"evidence" => malformed})
+        result = %StepResult{name: "implementer", typed_output: typed}
+
+        assert {:ok, %StageEmission{evidence: %{files_touched: ["lib/foo.ex"]} = evidence}} =
+                 DefaultMapper.map(result, implementer_meta()),
+               "expected malformed evidence #{inspect(malformed)} to map cleanly"
+
+        refute Map.has_key?(evidence, :commands_run)
+        refute Map.has_key?(evidence, :tests_passed)
+      end
+    end
+
+    test "no evidence keys at all yields a nil evidence block (posture unchanged)" do
+      result = %StepResult{name: "planner", typed_output: %{"signals" => ["plan-ready"]}}
+
+      assert {:ok, %StageEmission{evidence: nil, request_id: nil}} =
+               DefaultMapper.map(result, producer_meta())
+    end
+
+    test "atom-keyed live output normalizes identically" do
+      typed = %{
+        status: :completed,
+        summary: "s",
+        files_changed: ["lib/foo.ex"],
+        notes: "n",
+        signals: ["code-written"],
+        evidence: %{tests_passed: ["mix test"]}
+      }
+
+      result = %StepResult{name: "implementer", typed_output: typed}
+
+      assert {:ok, %StageEmission{evidence: evidence}} =
+               DefaultMapper.map(result, implementer_meta())
+
+      assert evidence == %{tests_passed: ["mix test"], files_touched: ["lib/foo.ex"]}
+    end
+
+    test "an infra reviewer emission carries no evidence rails" do
+      result = %StepResult{name: "quality-reviewer", request_id: "req-9", typed_output: %{}}
+
+      assert {:ok, %StageEmission{outcome: {:infra, _}, evidence: nil, request_id: nil}} =
+               DefaultMapper.map(result, reviewer_meta())
+    end
+  end
+
   # AR-4 P1: a no-lens producer that reports `status: :blocked` produced no usable
   # output — its named artifact is never a schema field, so `output_value/3` would
   # fabricate it from the blocked `summary` (`result.result`). The mapper refuses it

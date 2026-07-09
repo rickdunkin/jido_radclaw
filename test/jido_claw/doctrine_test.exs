@@ -23,7 +23,8 @@ defmodule JidoClaw.DoctrineTest do
             :tie_break,
             :challenger_contract,
             :code_doctrine,
-            :verify_oath
+            :verify_oath,
+            :evidence_reporting
           ] do
         assert is_binary(Doctrine.slice(key))
         assert Doctrine.slice(key) != ""
@@ -42,6 +43,7 @@ defmodule JidoClaw.DoctrineTest do
                :code_doctrine,
                :confidence_tagging,
                :emit_signals,
+               :evidence_reporting,
                :fixer_contract,
                :reviewer_contract,
                :reviewer_min,
@@ -65,6 +67,9 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "tests-ready"
       # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
       assert doctrine =~ "Confidence tagging"
+      # Item 10 (OB1-3): the coder self-reports evidence claims the engine
+      # cross-checks.
+      assert doctrine =~ "Evidence reporting"
       refute doctrine =~ "Review discipline"
       # Item 7 PR-3: a producing worker never carries the reviewer stance.
       refute doctrine =~ "adversarial"
@@ -79,8 +84,32 @@ defmodule JidoClaw.DoctrineTest do
       assert doctrine =~ "self-report"
       # AR-7: a non-reviewer worker carries the `:confidence_tagging` slice.
       assert doctrine =~ "Confidence tagging"
+      # Item 10 (OB1-3): the fixer self-reports evidence claims too.
+      assert doctrine =~ "Evidence reporting"
       # It is a producer, not a judge — never the reviewer discipline.
       refute doctrine =~ "Review discipline"
+    end
+
+    test "item 10: the evidence-reporting slice reaches exactly coder + fixer" do
+      for template <- [
+            "refactorer",
+            "docs_writer",
+            "researcher",
+            "test_runner",
+            "reviewer",
+            "verifier",
+            "sketch_build",
+            "sketch_reviewer",
+            "sketch_build_exec",
+            "system_executor",
+            "system_verifier",
+            "plan_drafter",
+            "plan_challenger",
+            "plan_arbiter"
+          ] do
+        refute Doctrine.for_template(template) =~ "Evidence reporting",
+               "expected #{template} NOT to carry the evidence-reporting slice"
+      end
     end
 
     test "a reviewer_verdict judge gets base + reviewer-min + reviewer-contract, never artifacts" do

@@ -108,6 +108,24 @@ defmodule JidoClaw.Security.ShellCommand do
   an arbitrary package is statically unknowable) and an interpreter *script-file*
   invocation (`python foo.py`, `… | python foo.py`) stay residuals — same class
   as `bash deploy.sh`.
+
+  ## Exit-code provenance (OB1-3 — read-side, never a gate input)
+
+  `exit_code_provenance/1` is a separate READ-side fact for the evidence floor
+  (`JidoClaw.Orchestration.Verify.Evidence`): would this line's recorded exit
+  code faithfully reflect the payload command's own exit, or is it swallowed by
+  plumbing? Masking table ported from `Q00/ouroboros @ e905a41c` (MIT, © 2025
+  Q00; semantics map `docs/exploration/ouroboros/PORT-OB1-3.md`): trailing
+  presentation-filter pipes (`tail`/`head`/`cat`/`less`/`more`) mask unless
+  `set -o pipefail` (exactly that argv) was set earlier on the line; any other
+  residual pipe is never provable-clean; the explicit exit-swallow idioms
+  (`|| true`/`|| :`/`; true`/`; :`) mask regardless. Test-runner recognition
+  (the ported runner table + the `mix test` house extension, Gradle/Maven
+  skip-flag detection) also lives here as a mechanical shell fact — the claim
+  verdict belongs to `Evidence`. Deliberately NOT an effect kind (it must not
+  become a valid gate matcher via `effect_kinds/0`), not an `%Analysis` field,
+  and it derives from the internal resolved sub-command list, so `analyze/1`
+  and the `:opaque` floor are byte-untouched.
   """
   import NimbleParsec
 
@@ -137,7 +155,27 @@ defmodule JidoClaw.Security.ShellCommand do
           }
   end
 
-  alias __MODULE__.{Analysis, Command, Git}
+  defmodule Provenance do
+    @moduledoc """
+    Exit-code provenance for one command line (OB1-3): `exit_code` says whether
+    the line's recorded exit code faithfully carries the payload command's own
+    exit (`:preserved`), is swallowed by plumbing (`:masked` — an unprotected
+    pipe or an explicit `|| true`-class idiom), or cannot be derived
+    (`:unknown` — parse failure or an unresolvable command word; consumers
+    treat it as not-provable-clean, never as masking evidence). `test_runner`
+    is the mechanical runner fact when the line invokes one — `%{tool,
+    skipped?}`, where `skipped?` marks a Gradle/Maven invocation whose flags
+    disable tests. Read-side only: never consulted by the approval gate.
+    """
+    defstruct exit_code: :unknown, test_runner: nil
+
+    @type t :: %__MODULE__{
+            exit_code: :preserved | :masked | :unknown,
+            test_runner: %{tool: String.t(), skipped?: boolean()} | nil
+          }
+  end
+
+  alias __MODULE__.{Analysis, Command, Git, Provenance}
 
   @type t :: Analysis.t()
 
@@ -249,6 +287,26 @@ defmodule JidoClaw.Security.ShellCommand do
     "builtin" => %{bool: [], val: [], assignments: false, positional: 0},
     "time" => %{bool: ~w(-p -v), val: [], assignments: false, positional: 0}
   }
+
+  # ---- Exit-code provenance tables (OB1-3; Q00/ouroboros @ e905a41c, MIT) ----
+  #
+  # Presentation-only output filters: a trailing pipe into one passes the
+  # stream through (or truncates it positionally). `grep`/`egrep`/`fgrep`/
+  # `tee`/`wc` are DELIBERATELY excluded — they transform, divert, or collapse
+  # the stream, so a pipe into them is never peelable plumbing.
+  @presentation_filters ~w(tail head cat less more)
+  # The explicit exit-swallow idioms (house extension over the port): a
+  # `true`/`:` command reached via `||` or `;` forces the line green.
+  @exit_swallow_commands ~w(true :)
+  # The ported test-runner table + the `mix test` house extension. Deliberately
+  # NOT `mix precommit` — that is the Verify authority's command; recognizing
+  # it here would double-cover one invocation with two authorities.
+  @test_runners_direct ~w(pytest py.test tox nox)
+  @npm_test_family ~w(npm pnpm yarn)
+  @gradle_maven ~w(gradle gradlew mvn mvnw)
+  # Gradle/Maven property names whose presence (unless =false|0|no|off) means
+  # tests were explicitly skipped.
+  @maven_skip_properties ~w(skiptests maven.test.skip)
 
   @assignment_re ~r/^[A-Za-z_][A-Za-z0-9_]*=/
   @redirect_re ~r/^\d*(<<<|<<-|<<|&>>|&>|>>|>&|<&|>|<)(.*)$/
@@ -437,6 +495,28 @@ defmodule JidoClaw.Security.ShellCommand do
   def effect_kinds, do: @effect_kinds
 
   @doc """
+  Derive the exit-code provenance of one command line (OB1-3) — see the
+  moduledoc's "Exit-code provenance" section for the masking table and the
+  port provenance. Total: parse failure, bounds breach, or an unresolvable
+  command word yields `exit_code: :unknown` (with `test_runner: nil`), never
+  a raise.
+  """
+  @spec exit_code_provenance(String.t()) :: Provenance.t()
+  def exit_code_provenance(command) when is_binary(command) do
+    case resolve_for_provenance(command) do
+      {:ok, resolved} -> provenance(resolved)
+      :error -> %Provenance{}
+    end
+  rescue
+    # Total like analyze/1 — a read-side fact must never raise into the
+    # evidence fold.
+    # reach:disable-next-line bare_rescue
+    _ -> %Provenance{}
+  end
+
+  def exit_code_provenance(_command), do: %Provenance{}
+
+  @doc """
   Whether a sub-command runs `name` (optionally with `:subcommand` among its
   non-flag args). `opaque?: true` always matches (fail closed).
 
@@ -507,6 +587,184 @@ defmodule JidoClaw.Security.ShellCommand do
 
   # A literal `-`-leading token is a flag; an empty text (a pure `$x`) is not.
   defp flag_arg?(text), do: String.starts_with?(text, "-")
+
+  # ---- Exit-code provenance (OB1-3) ----
+
+  # The provenance twin of `do_analyze`'s front half: tokenize → coalesce →
+  # split → strip, but with NO effects machinery, erroring (→ `:unknown`)
+  # instead of emitting `:opaque`. Deliberately reads the INTERNAL resolved
+  # `{connector, %Command{}}` list — the public `%Analysis{}` loses the
+  # pipe/`&&`/`;` connector context this walk needs.
+  defp resolve_for_provenance(command) when byte_size(command) > @max_input_bytes, do: :error
+
+  defp resolve_for_provenance(command) do
+    spliced = String.replace(command, "\\\n", "")
+
+    case tokenize(spliced) do
+      {:ok, tokens, "", _context, _line, _column} ->
+        subcommands =
+          tokens
+          |> coalesce()
+          |> split()
+
+        resolved = Enum.map(subcommands, fn {conn, els} -> {conn, strip(els)} end)
+
+        cond do
+          length(subcommands) > @max_subcommands -> :error
+          Enum.any?(resolved, &match?({_, :unknown}, &1)) -> :error
+          true -> {:ok, resolved}
+        end
+
+      _incomplete ->
+        :error
+    end
+  end
+
+  defp provenance(resolved) do
+    %Provenance{
+      exit_code: exit_code_fact(resolved),
+      test_runner: detect_test_runner(resolved)
+    }
+  end
+
+  defp exit_code_fact(resolved) do
+    if exit_swallow?(resolved) or pipe_masked?(resolved), do: :masked, else: :preserved
+  end
+
+  # The explicit exit-swallow idioms: a `true`/`:` command reached via `||` or
+  # `;` anywhere on the line forces the observed exit green. `&&`-chained
+  # `true` does NOT mask (a failure short-circuits before it), and any OTHER
+  # trailing command after `;`/`&` (`mix test; echo done`) is deliberately out
+  # of scope — conservatively `:preserved`, a documented miss (never a false
+  # finding).
+  defp exit_swallow?(resolved) do
+    Enum.any?(resolved, fn
+      {conn, %Command{cmd: cmd}} when conn in [:or, :semi] -> cmd in @exit_swallow_commands
+      _entry -> false
+    end)
+  end
+
+  # Pipe masking, the ported rule: peel trailing presentation-filter pipe
+  # members (`… | tail -20`); a peeled pipe is protected only when
+  # `set -o pipefail` (exactly that argv) was set EARLIER on the line; any
+  # residual pipe after the peel — a transforming filter (`| grep`/`| wc`/
+  # `| tee`) or an upstream feed (`cat x | mix test`) — is never
+  # provable-clean, pipefail or not.
+  defp pipe_masked?(resolved) do
+    {payload, peeled} =
+      resolved
+      |> annotate_pipefail()
+      |> Enum.reverse()
+      |> peel_presentation([])
+
+    Enum.any?(payload, &match?({:pipe, _cmd, _pf}, &1)) or
+      Enum.any?(peeled, &match?({:pipe, _cmd, false}, &1))
+  end
+
+  # Annotate each sub-command with whether pipefail was active BEFORE it.
+  defp annotate_pipefail(resolved) do
+    {annotated, _active} =
+      Enum.map_reduce(resolved, false, fn {conn, cmd}, active ->
+        {{conn, cmd, active}, active or pipefail_set?(cmd)}
+      end)
+
+    annotated
+  end
+
+  # Exactly `set -o pipefail` (the port's rule — prose mentions and other
+  # spellings never count).
+  defp pipefail_set?(%Command{cmd: "set", args: ["-o", "pipefail"]}), do: true
+  defp pipefail_set?(_command), do: false
+
+  defp peel_presentation([{:pipe, %Command{cmd: cmd}, _pf} = entry | rest], peeled)
+       when cmd in @presentation_filters,
+       do: peel_presentation(rest, [entry | peeled])
+
+  defp peel_presentation(remaining, peeled), do: {remaining, peeled}
+
+  # ---- Test-runner recognition (mechanical shell fact; Evidence owns the verdict) ----
+
+  defp detect_test_runner(resolved) do
+    Enum.find_value(resolved, fn
+      {_conn, %Command{} = command} -> runner_fact(command)
+      _entry -> nil
+    end)
+  end
+
+  # The ported runner table (case-insensitive, matching the source's lowercased
+  # scan) + the `mix test` house extension. Gradle/Maven divergence from the
+  # source: a skip-flagged invocation is RECOGNIZED with `skipped?: true`
+  # (the source refuses to recognize it at all) so the evidence classifier can
+  # flag a tests_passed claim riding a skip-flagged run.
+  defp runner_fact(%Command{cmd: cmd, args: args}) when is_binary(cmd) do
+    runner_table(String.downcase(cmd), Enum.map(args, &String.downcase/1))
+  end
+
+  defp runner_fact(_command), do: nil
+
+  defp runner_table(cmd, _args) when cmd in @test_runners_direct, do: runner(cmd, false)
+
+  defp runner_table(cmd, ["test" | _rest]) when cmd in @npm_test_family,
+    do: runner("#{cmd} test", false)
+
+  defp runner_table("uv", ["run", "pytest" | _rest]), do: runner("uv run pytest", false)
+
+  defp runner_table("python", ["-m", target | _rest]) when target in ["pytest", "unittest"],
+    do: runner("python -m #{target}", false)
+
+  defp runner_table("mix", ["test" | _rest]), do: runner("mix test", false)
+
+  defp runner_table(cmd, args) when cmd in @gradle_maven do
+    if test_task?(args), do: runner(cmd, gradle_maven_skip?(args))
+  end
+
+  defp runner_table(_cmd, _args), do: nil
+
+  defp runner(tool, skipped?) do
+    # Wire-shaped runner fact (Provenance → Evidence classify); a struct would
+    # ripple the consumer boundary.
+    # reach:disable-next-line fixed_shape_map
+    %{tool: tool, skipped?: skipped?}
+  end
+
+  defp test_task?(args) do
+    Enum.any?(args, &(&1 in ["test", "check", "verify"] or String.ends_with?(&1, ":test")))
+  end
+
+  # Ported Gradle/Maven skip-flag detection: `-DskipTests`/`-Dmaven.test.skip`
+  # (with `=false|0|no|off` NOT skipping), `--define` forms, `-x test`,
+  # `--exclude-task test` (incl. `=` and bundled spellings, `:test`-suffixed
+  # task paths). Args arrive pre-downcased from `runner_fact/1`.
+  defp gradle_maven_skip?(args) do
+    args
+    |> Enum.chunk_every(2, 1, [nil])
+    |> Enum.any?(fn
+      [arg, next] -> skip_flag?(arg, next)
+      [arg] -> skip_flag?(arg, nil)
+    end)
+  end
+
+  defp skip_flag?("-d", next) when is_binary(next), do: maven_skip_property?(next)
+  defp skip_flag?("--define", next) when is_binary(next), do: maven_skip_property?(next)
+  defp skip_flag?("--define=" <> value, _next), do: maven_skip_property?(value)
+  defp skip_flag?("-x", next) when is_binary(next), do: excluded_test_task?(next)
+  defp skip_flag?("--exclude-task", next) when is_binary(next), do: excluded_test_task?(next)
+  defp skip_flag?("--exclude-task=" <> task, _next), do: excluded_test_task?(task)
+  defp skip_flag?("-d" <> property, _next) when property != "", do: maven_skip_property?(property)
+  defp skip_flag?("-x" <> task, _next) when task != "", do: excluded_test_task?(task)
+  defp skip_flag?(_arg, _next), do: false
+
+  defp maven_skip_property?(value) do
+    case String.split(value, "=", parts: 2) do
+      [name] -> name in @maven_skip_properties
+      [name, val] -> name in @maven_skip_properties and val not in ["false", "0", "no", "off"]
+    end
+  end
+
+  defp excluded_test_task?(task) do
+    task = String.trim_leading(task, ":")
+    task == "test" or String.ends_with?(task, ":test")
+  end
 
   # ---- Analysis pipeline ----
 

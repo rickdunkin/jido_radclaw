@@ -41,6 +41,15 @@ defmodule JidoClaw.Test.VerifyStub do
   @spec porcelain(String.t()) :: String.t() | nil
   def porcelain(_repo), do: scripted(:porcelain, "", :verify_stub_porcelain_calls)
 
+  # Item 10 (OB1-3): the untracked-inclusive wave-boundary snapshot the
+  # evidence floor diffs. Scripted via `:porcelain_all` (static or a
+  # list consumed per call — dispatch-time then fold-time); unscripted
+  # default is nil = NO snapshot, so the files kind skips (can't verify ⇒
+  # trust) and legacy fixtures carrying `files_changed` never manufacture
+  # a spurious evidence breach. Script `""` explicitly for a clean tree.
+  @spec porcelain_all(String.t()) :: String.t() | nil
+  def porcelain_all(_repo), do: scripted(:porcelain_all, nil, :verify_stub_porcelain_all_calls)
+
   @spec diff_digest(String.t()) :: String.t() | nil
   def diff_digest(_repo),
     do: scripted(:diff_digest, "verifystubdigest", :verify_stub_digest_calls)

@@ -110,6 +110,15 @@ defmodule JidoClaw.Doctrine do
                       "doctrine",
                       "verify_oath.md"
                     ])
+  @evidence_reporting_priv Path.join([
+                             __DIR__,
+                             "..",
+                             "..",
+                             "priv",
+                             "defaults",
+                             "doctrine",
+                             "evidence_reporting.md"
+                           ])
 
   @external_resource @base_priv
   @external_resource @artifacts_priv
@@ -124,6 +133,7 @@ defmodule JidoClaw.Doctrine do
   @external_resource @challenger_contract_priv
   @external_resource @code_doctrine_priv
   @external_resource @verify_oath_priv
+  @external_resource @evidence_reporting_priv
 
   @slices %{
     base: String.trim(File.read!(@base_priv)),
@@ -138,7 +148,8 @@ defmodule JidoClaw.Doctrine do
     tie_break: String.trim(File.read!(@tie_break_priv)),
     challenger_contract: String.trim(File.read!(@challenger_contract_priv)),
     code_doctrine: String.trim(File.read!(@code_doctrine_priv)),
-    verify_oath: String.trim(File.read!(@verify_oath_priv))
+    verify_oath: String.trim(File.read!(@verify_oath_priv)),
+    evidence_reporting: String.trim(File.read!(@evidence_reporting_priv))
   }
 
   # Single-sourced in code (no config-driven slice list — a config typo can never
@@ -193,13 +204,33 @@ defmodule JidoClaw.Doctrine do
     # engine's tree snapshot reports any tracked change as tampering). The
     # ENGINE envelope is the verdict authority on the code path; these LLM
     # judges diagnose reds.
-    "coder" => [:base, :artifacts, :code_doctrine, :emit_signals, :confidence_tagging],
+    # Item 10 (OB1-3): `coder` and `fixer` — the two templates whose result
+    # schemas carry the optional `evidence` block — ALSO get the
+    # `:evidence_reporting` slice (the prose half of that typed field: exact
+    # invocations run / green test commands / honest `files_changed`). Scope-
+    # pinned to exactly these two; the engine-side classifier only reads
+    # coder/fixer-templated producer emissions.
+    "coder" => [
+      :base,
+      :artifacts,
+      :code_doctrine,
+      :emit_signals,
+      :confidence_tagging,
+      :evidence_reporting
+    ],
     # AR-4: the self-heal fixer is a producing worker (`:artifacts`, like `coder`)
     # PLUS the new `:fixer_contract` slice — the prose half of `fixer_result/0`:
     # resolve the open findings, then self-report the touched domains (the
     # `signals` the loop derives the re-review set from). Required by the drift
     # guard (`doctrine_test.exs`, `template_names() == Templates.names()`).
-    "fixer" => [:base, :artifacts, :code_doctrine, :fixer_contract, :confidence_tagging],
+    "fixer" => [
+      :base,
+      :artifacts,
+      :code_doctrine,
+      :fixer_contract,
+      :confidence_tagging,
+      :evidence_reporting
+    ],
     "refactorer" => [:base, :artifacts, :code_doctrine, :confidence_tagging],
     "docs_writer" => [:base, :artifacts, :confidence_tagging],
     "researcher" => [:base, :artifacts, :emit_signals, :confidence_tagging],

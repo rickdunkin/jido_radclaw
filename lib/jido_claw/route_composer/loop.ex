@@ -114,6 +114,11 @@ defmodule JidoClaw.RouteComposer.Loop do
   def terminal(display, state) do
     cond do
       map_size(display.held) > 0 -> :deadlock
+      # Item 10 (OB1-3): the reserved engine lens. `lenses_clean?/3` scans
+      # catalog lens STAGES, and "evidence" has none — so a fixer-less route
+      # with a live evidence breach would otherwise converge plain green over
+      # a fabricated claim. A live `findings:evidence` is never converged.
+      MapSet.member?(state.live, "findings:evidence") -> :not_converged
       lenses_clean?(state.catalog, state.ran, state.live) -> :converged
       true -> :not_converged
     end

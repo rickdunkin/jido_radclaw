@@ -164,6 +164,9 @@ defmodule JidoClaw.RouteComposer do
   # subsystem; never alias both in one module).
   alias JidoClaw.Orchestration.Verdict
   alias JidoClaw.Orchestration.Verify
+  alias JidoClaw.Orchestration.Verify.Evidence
+  alias JidoClaw.Orchestration.Verify.Evidence.ACExtractor
+  alias JidoClaw.Orchestration.Verify.Evidence.Assertions
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
   alias JidoClaw.Orchestration.WorkflowLease
@@ -420,6 +423,12 @@ defmodule JidoClaw.RouteComposer do
     deadline_ms = Keyword.get(opts, :deadline_ms)
 
     with :ok <- validate_sensitive_deadline(marked, deadline_ms) do
+      # Slice 2 (OB1-3): the once-at-launch AC-assertion extraction — BEFORE
+      # the transact (an LLM call never rides a DB transaction), persisted in
+      # the parent config below so the LLM stays out of the per-wave fold and
+      # a restart restores the same assertions.
+      opts = maybe_extract_ac_assertions(opts)
+
       # The SOLE wall-clock read for this run (C1, P2-1): a durable
       # `config["deadline_at_ms"]` (unix-ms integer, JSONB-safe) the loop's
       # `past_deadline?` and 2d recovery both read — never a monotonic recompute.
@@ -523,9 +532,45 @@ defmodule JidoClaw.RouteComposer do
     # by shape, validated at resolve time inside the verify stage).
     # Conditional-put so a restart keeps the caller's override.
     |> maybe_put("verify_override", Keyword.get(opts, :verify_override))
+    # Slice 2 (OB1-3): the launch-extracted AC assertions (string-keyed maps,
+    # JSON-safe by construction) — the `verify_override` precedent.
+    |> maybe_put("ac_assertions", Keyword.get(opts, :ac_assertions))
     |> maybe_put_premises(Keyword.get(opts, :premises))
     |> maybe_put_context(Keyword.get(opts, :context))
   end
+
+  # Extraction runs only when the launch premises carry acceptance criteria
+  # and the caller did not inject `:ac_assertions` directly (tests / the
+  # restart path, where config already holds them). Failure or an empty
+  # extraction ⇒ Trace + no key — the run proceeds without slice 2
+  # (fail-open, the scorer-failure precedent).
+  defp maybe_extract_ac_assertions(opts) do
+    with false <- Keyword.has_key?(opts, :ac_assertions),
+         [_ | _] = pairs <- Premises.criteria_with_ids(Keyword.get(opts, :premises)) do
+      case ACExtractor.extract(pairs) do
+        {:ok, assertions} ->
+          trace_ac_extraction(%{
+            event: :ac_assertions_extracted,
+            criteria: length(pairs),
+            assertions: length(assertions)
+          })
+
+          if assertions == [], do: opts, else: Keyword.put(opts, :ac_assertions, assertions)
+
+        {:error, reason} ->
+          trace_ac_extraction(%{
+            event: :ac_extract_failed,
+            reason: String.slice(inspect(reason), 0, 200)
+          })
+
+          opts
+      end
+    else
+      _present_or_no_criteria -> opts
+    end
+  end
+
+  defp trace_ac_extraction(payload), do: JidoClaw.Trace.emit(:composer, payload)
 
   defp deadline_config(ms) when is_integer(ms) and ms > 0,
     do: %{"deadline_at_ms" => System.os_time(:millisecond) + ms}
@@ -906,6 +951,9 @@ defmodule JidoClaw.RouteComposer do
     # config.yaml → auto-detect). A nil put is harmless here: init's own
     # default for the key is nil.
     |> Keyword.put(:verify_override, config_then_opts(config, opts, :verify_override, nil))
+    # Slice 2 (OB1-3): the persisted AC assertions (string-keyed maps — the
+    # JSONB round-trip preserves them byte-identically). nil ⇒ slice 2 off.
+    |> Keyword.put(:ac_assertions, config_then_opts(config, opts, :ac_assertions, nil))
     |> Keyword.put(:sanitize_sensitive_context, config["sanitize_sensitive_context"] == true)
     |> Keyword.put(:context, start_context(config["context"], opts[:context]))
   end
@@ -1196,6 +1244,20 @@ defmodule JidoClaw.RouteComposer do
       sealed_head: nil,
       verified_integrity: nil,
       verify_override: Keyword.get(opts, :verify_override),
+      # Item 10 (OB1-3): `evidence_breaches` is the per-stage fabrication
+      # breach ledger (rebuilt from `evidence_classified` events by
+      # `ComposerProjection` — the OpenHelm "counted, breach-visible" rider);
+      # `wave_porcelain` is the dispatch-time untracked-inclusive porcelain
+      # snapshot the files-reconcile diffs against at fold — in-memory ONLY
+      # (a mid-wave crash/recovery loses it, and the files kind then skips
+      # that wave: can't verify ⇒ trust, never the permissive fallback).
+      evidence_breaches: %{},
+      wave_porcelain: nil,
+      # Slice 2 (OB1-3): the launch-extracted, config-persisted AC assertions
+      # (nil ⇒ slice 2 off for the run) — verified deterministically against
+      # the tree at every producer-wave fold, violations riding the same
+      # evidence findings path.
+      ac_assertions: Keyword.get(opts, :ac_assertions),
       terminal: nil,
       reason: nil,
       summary: nil
@@ -1840,6 +1902,12 @@ defmodule JidoClaw.RouteComposer do
            ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor),
          :ok <- record_wave_start(dispatch, display, state),
          :ok <- ensure_parent_live(state) do
+      # Item 10 (OB1-3, decision 5): the dispatch-time porcelain snapshot the
+      # evidence files-reconcile diffs against at fold — captured AFTER the
+      # wave-start markers commit, right before the workers run, and ONLY on
+      # waves dispatching an evidence-eligible producer.
+      state = maybe_capture_wave_porcelain(state, dispatch)
+
       reactor
       |> run_reactor(compose_extra_context(state.premises, artifact_context), state)
       |> handle_wave_result(dispatch, display, state)
@@ -2043,8 +2111,28 @@ defmodule JidoClaw.RouteComposer do
     # round's keys (round N vs N-1 is decided at the wave that produced round
     # N). Only `next_fold` — never `keyed_fold` — receives the full marker
     # batch post-commit, so the round shift is applied exactly once.
+    #
+    # Item 10 (OB1-3): the evidence RECORD markers (artifacts, signal pair,
+    # the evidence `finding_keys` round, the `evidence_classified` ledger)
+    # join the temp fold too — `rereview_exhausted_lenses` reads `state.live`
+    # for `findings:evidence` and the stall predicates read the evidence
+    # round, so a FIRST breach with the fixer already rerun-capped must be
+    # visible to suppression THIS wave (the camus C1-5 fold-first
+    # discipline). The RE-FIRE markers (feedback production + the fixer
+    # `stages_invalidated`) are then gated on the SAME fully-keyed fold
+    # `decide_rerun` reads — #6's whole-Hook-R-suppression-on-a-stop rule:
+    # the honest breach facts always weld; only the doomed fix dispatch is
+    # suppressed.
     finding_markers = finding_keys_markers(verdict_emissions)
-    keyed_fold = ComposerProjection.apply_markers(next_fold, finding_markers)
+    evidence_record = evidence_record_markers(verdict_emissions, run, state)
+
+    keyed_fold =
+      ComposerProjection.apply_markers(
+        next_fold,
+        finding_markers ++ evidence_record.markers
+      )
+
+    evidence_refire = evidence_refire_markers(evidence_record, keyed_fold)
     {rerun_markers, _rerun_only_apply} = decide_rerun(keyed_fold, verdict_emissions)
 
     markers =
@@ -2052,6 +2140,7 @@ defmodule JidoClaw.RouteComposer do
         tampered_markers(tampered_emissions) ++
         report_markers ++
         finding_markers ++
+        evidence_weld_markers(evidence_record, evidence_refire) ++
         certified_markers(verdict_emissions, state) ++
         head_observation_markers(next_fold, state) ++
         rerun_markers
@@ -2066,6 +2155,7 @@ defmodule JidoClaw.RouteComposer do
       :ok ->
         emit_infra_observability(infra_outcomes(infra_emissions), :output, state)
         emit_tampered_observability(tampered_emissions, state)
+        emit_evidence_observability(evidence_record, state)
 
         next =
           record_wave(
@@ -2204,8 +2294,521 @@ defmodule JidoClaw.RouteComposer do
     # reach:disable-next-line fixed_shape_map
     for %StageEmission{stage: stage, finding_marks: %{lens: lens, keys: keys, marks: marks}} <-
           verdict_emissions do
-      {:finding_keys, %{stage: stage, lens: lens, keys: keys, marks: marks}}
+      {:finding_keys, finding_keys_payload(stage, lens, keys, marks)}
     end
+  end
+
+  # The wire-shaped `finding_keys` marker payload (marker → fold →
+  # projection) — ONE construction site so the reviewer and evidence rounds
+  # can't drift apart.
+  defp finding_keys_payload(stage, lens, keys, marks) do
+    # reach:disable-next-line fixed_shape_map
+    %{stage: stage, lens: lens, keys: keys, marks: marks}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Item 10 (OB1-3) — the evidence floor consumer
+  # ---------------------------------------------------------------------------
+
+  # The templates whose producer emissions the evidence floor classifies —
+  # eligibility is decided HERE from the catalog (stage name → unit/template),
+  # never by the mapper (which stays dumb and copies fields).
+  @evidence_producer_templates ["coder", "fixer"]
+
+  # The RECORD half: classify every eligible producer emission of this wave
+  # against the durable transcript + the wave git diff, and derive the always-
+  # welded markers — the aggregated artifacts, the signal pair, the evidence
+  # `finding_keys` round, and the `evidence_classified` breach ledger. The
+  # whole wave aggregates into ONE artifact set under producer `"evidence"`
+  # (active-artifact uniqueness is `{parent_run_id, name, producer}`, and two
+  # `finding_keys` markers for one lens in one wave would double-shift the
+  # projection's finding round) — per-stage attribution rides each finding's
+  # location/description and the ledger's per-stage entries. Fail-open end to
+  # end: any gather/classify/store fault degrades to a no-marker result with a
+  # Trace note, never a wave failure. A never-flagged clean run returns no
+  # markers at all — its fold stays byte-identical.
+  defp evidence_record_markers(verdict_emissions, run, state) do
+    case evidence_eligible(verdict_emissions, state.catalog) do
+      [] -> evidence_no_record()
+      eligible -> classify_evidence(eligible, run, state)
+    end
+  rescue
+    # The floor is advisory (findings-only, never a gate): a consumer fault
+    # must never convert a completed wave into a failure.
+    # reach:disable-next-line bare_rescue
+    error ->
+      JidoClaw.Trace.emit(:composer, %{
+        event: :evidence_skipped,
+        reason: :consumer_fault,
+        detail: String.slice(Exception.message(error), 0, 200),
+        parent_run_id: state.parent_run_id
+      })
+
+      evidence_no_record()
+  end
+
+  # The evidence consumer's per-wave record — ONE construction site so the
+  # no-record/breach/clear arms can't drift (`markers` is always
+  # `produced ++ routing`, the pinned weld halves; `ac` is the slice-2
+  # verification result, nil when the run carries no assertions).
+  defp evidence_record(produced, routing, breach?, classifications, ac) do
+    %{
+      produced: produced,
+      routing: routing,
+      markers: produced ++ routing,
+      breach?: breach?,
+      classifications: classifications,
+      ac: ac
+    }
+  end
+
+  defp evidence_no_record, do: evidence_record([], [], false, [], nil)
+
+  defp evidence_eligible(verdict_emissions, catalog) do
+    Enum.filter(verdict_emissions, &evidence_producer_stage?(catalog, &1.stage))
+  end
+
+  defp evidence_producer_stage?(catalog, name) do
+    case Map.get(catalog, name) do
+      %Stage{lens: nil, unit: {:worker_template, template}} ->
+        template in @evidence_producer_templates
+
+      _other ->
+        false
+    end
+  end
+
+  defp classify_evidence(eligible, run, state) do
+    ctx = evidence_ctx(state)
+
+    classifications =
+      for emission <- eligible do
+        observations = Evidence.gather(emission.request_id, ctx)
+        {emission, observations, Evidence.classify(emission.evidence, observations)}
+      end
+
+    trace_containment(ctx, classifications, state)
+
+    ac = ac_verification(state)
+
+    discrepancies =
+      Enum.flat_map(classifications, fn {emission, _observations, classification} ->
+        Evidence.discrepancies(emission.stage, classification)
+      end) ++ Enum.map(ac_violated(ac), &ac_discrepancy/1)
+
+    cond do
+      discrepancies != [] ->
+        evidence_breach_record(classifications, discrepancies, ac, run, state)
+
+      MapSet.member?(state.live, "findings:evidence") ->
+        evidence_clear_record(classifications, ac)
+
+      true ->
+        %{evidence_no_record() | classifications: classifications, ac: ac}
+    end
+  end
+
+  # Slice 2 (OB1-3): verify the launch-extracted AC assertions against the
+  # tree at the same producer-wave fold point, feeding violations into the
+  # SAME discrepancy → findings → Hook R path as the claim kinds. Identity:
+  # the title carries the (launch-cached, so stable) assertion sentence; the
+  # location is the extractor's file_hint — a violation always has one
+  # (contradiction requires scanned files, which require a hint) — with the
+  # stable synthetic `evidence:ac:<id>` token as the defensive fallback.
+  # NEVER the emitting stage name, which flips coder→fixer across waves and
+  # would churn the FindingKey (decision 3's no-churn rule; deviation from
+  # the plan's "else stage name", logged in the queue README). Runs inside
+  # `evidence_record_markers`'s rescue — any fault degrades to no
+  # discrepancies, never a wave failure. Returns nil (no assertions on the
+  # run) or `%{total, violated}` — full result maps in `violated`, so the
+  # discrepancy/report consumers keep the assertion text while the ledger
+  # payload projects ids only.
+  defp ac_verification(%{ac_assertions: [_ | _] = assertions} = state) do
+    results = Assertions.verify(assertions, verify_project_dir(state))
+    violated = Enum.reject(results, & &1.verified)
+
+    JidoClaw.Trace.emit(:composer, %{
+      event: :ac_assertion_result,
+      total: length(results),
+      violated: length(violated),
+      parent_run_id: state.parent_run_id
+    })
+
+    %{total: length(results), violated: violated}
+  end
+
+  defp ac_verification(_state), do: nil
+
+  defp ac_violated(nil), do: []
+  defp ac_violated(%{violated: violated}), do: violated
+
+  defp ac_discrepancy(result) do
+    # The same wire-shaped discrepancy triple `Evidence.discrepancies/2`
+    # emits (findings/1 is the shared synthesis path).
+    # reach:disable-next-line fixed_shape_map
+    %{
+      title: "#{result.ac_id} assertion failed: #{result.assertion}",
+      location: result.file_hint || "evidence:ac:#{result.ac_id}",
+      description:
+        String.slice(
+          "#{result.reason} (tier #{result.tier}; acceptance criterion #{result.ac_id})",
+          0,
+          900
+        )
+    }
+  end
+
+  # A breach: store the THREE encrypted artifacts (the `VerifyStage`
+  # precedent — `findings` is the union across breaching stages,
+  # `action_needed` the fixer directive, `evidence-report` the per-stage
+  # diagnosis the next review wave reads), then derive the routing markers.
+  # Every flip welds BOTH signal deltas (the clean↔findings pairing is
+  # `Fold.add_signal/2` behavior for normal emissions — welded markers only
+  # union, so the retraction must be explicit).
+  defp evidence_breach_record(classifications, discrepancies, ac, run, state) do
+    findings = Evidence.findings(discrepancies)
+
+    with {:ok, findings_ref} <- store_evidence_artifact("findings", findings, run, state),
+         {:ok, action_ref} <-
+           store_evidence_artifact(
+             "action_needed",
+             Evidence.action_needed(discrepancies),
+             run,
+             state
+           ),
+         {:ok, report_ref} <-
+           store_evidence_artifact(
+             "evidence-report",
+             evidence_report(classifications, ac),
+             run,
+             state
+           ) do
+      produced =
+        [
+          artifacts_produced: %{
+            artifacts: [
+              artifact_triple("findings", "evidence", findings_ref),
+              artifact_triple("action_needed", "evidence", action_ref),
+              artifact_triple("evidence-report", "evidence", report_ref)
+            ]
+          }
+        ]
+
+      keys =
+        findings
+        |> Enum.map(&FindingKey.key/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      routing = evidence_breach_routing(keys, classifications, ac, state)
+
+      evidence_record(produced, routing, true, classifications, ac)
+    else
+      {:error, reason} ->
+        JidoClaw.Trace.emit(:composer, %{
+          event: :evidence_skipped,
+          reason: :artifact_store_failed,
+          detail: String.slice(inspect(reason), 0, 200),
+          parent_run_id: state.parent_run_id
+        })
+
+        %{evidence_no_record() | classifications: classifications, ac: ac}
+    end
+  end
+
+  defp evidence_breach_routing(keys, classifications, ac, state) do
+    marks =
+      Enum.map(keys, fn key ->
+        # Wire-shaped finding-mark (the reviewer marker shape) — engine
+        # findings are certain, so confidence pins "likely" (a steady trend).
+        # reach:disable-next-line fixed_shape_map
+        %{key: key, severity: "error", confidence: "likely"}
+      end)
+
+    [signals_published: %{signals: ["findings:evidence"]}] ++
+      evidence_clean_retraction(state) ++
+      [
+        finding_keys: finding_keys_payload("evidence", "evidence", keys, marks),
+        evidence_classified: evidence_classified_payload(classifications, ac)
+      ]
+  end
+
+  defp evidence_clean_retraction(state) do
+    if MapSet.member?(state.live, "clean:evidence"),
+      do: [signals_retracted: %{signals: ["clean:evidence"]}],
+      else: []
+  end
+
+  # The clearing re-check: a classified wave with NO breach while
+  # `findings:evidence` is live — the deterministic re-check came back
+  # unflagged (clean, skipped, or masked-only: can't-verify ⇒ trust), so the
+  # flip retracts. `keys: []` still welds the `finding_keys` round (a clean
+  # round must advance — oscillation detection needs it).
+  defp evidence_clear_record(classifications, ac) do
+    routing = [
+      signals_published: %{signals: ["clean:evidence"]},
+      signals_retracted: %{signals: ["findings:evidence"]},
+      finding_keys: finding_keys_payload("evidence", "evidence", [], []),
+      evidence_classified: evidence_classified_payload(classifications, ac)
+    ]
+
+    evidence_record([], routing, false, classifications, ac)
+  end
+
+  # The RE-FIRE half, gated on the SAME fully-keyed fold `decide_rerun` reads
+  # (this wave's evidence round + live signals already applied): on a stop —
+  # a stalled evidence key, or a fixer whose re-review budget can't cover the
+  # dispatch — suppress the fix dispatch entirely (#6's discipline); the
+  # record markers still stand and the run terminalizes via
+  # `fix_stop_lenses/1`. `keyed_fold` also carries the freshly stored
+  # evidence artifacts, which `review_feedback/2` (`build_feedback` reads
+  # `state.artifacts`) resolves into the fixer's
+  # `review-feedback[evidence]`/`review-action[evidence]` feed.
+  defp evidence_refire_markers(%{breach?: false}, _keyed_fold) do
+    %{feedback: [], invalidation: []}
+  end
+
+  defp evidence_refire_markers(_record, keyed_fold) do
+    if suppress_fix_dispatch?(keyed_fold) do
+      %{feedback: [], invalidation: []}
+    else
+      {feedback_markers, _put} = review_feedback(keyed_fold, ["evidence"])
+
+      %{
+        feedback: feedback_markers,
+        invalidation: fixer_reinvalidation_markers(keyed_fold)
+      }
+    end
+  end
+
+  # The pinned weld order: evidence `artifacts_produced` → feedback
+  # invalidation/production → signals + `finding_keys` + the ledger →
+  # `stages_invalidated`.
+  defp evidence_weld_markers(record, refire) do
+    record.produced ++ refire.feedback ++ record.routing ++ refire.invalidation
+  end
+
+  defp store_evidence_artifact(name, value, run, state) do
+    ComposerArtifact.store_wave_artifact(name, "evidence", value, run, state.wave_index,
+      tenant: state.tenant,
+      actor: state.actor
+    )
+  end
+
+  defp evidence_ctx(state) do
+    repo = verify_project_dir(state)
+
+    %{
+      session_id: state.context[:session_uuid],
+      tenant: state.tenant,
+      actor: state.actor,
+      before_porcelain: state.wave_porcelain,
+      after_porcelain: capture_wave_porcelain(state),
+      repo: repo
+    }
+  end
+
+  # The dispatch-time / fold-time untracked-inclusive snapshot (decision 5).
+  # Nil-total and rescue-guarded: a missing project_dir, a git failure, or a
+  # seam stub without `porcelain_all/1` all degrade to nil — the files kind
+  # then skips (can't verify ⇒ trust), never a wave failure.
+  defp capture_wave_porcelain(state) do
+    case verify_project_dir(state) do
+      nil -> nil
+      dir -> Verify.git().porcelain_all(dir)
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> nil
+  end
+
+  # Only producer waves capture a before-snapshot; a non-producer wave clears
+  # it so a stale snapshot from an earlier wave can never feed a later fold.
+  defp maybe_capture_wave_porcelain(state, dispatch) do
+    if Enum.any?(dispatch, &evidence_producer_stage?(state.catalog, &1)),
+      do: %{state | wave_porcelain: capture_wave_porcelain(state)},
+      else: %{state | wave_porcelain: nil}
+  end
+
+  # Containment (camus C1-6c, Trace-warning-only in v1): paths that changed
+  # this wave but were claimed by no stage — `(after ∖ before) ∖ claimed`.
+  # Count only (redaction posture — paths live nowhere outside the encrypted
+  # report).
+  defp trace_containment(ctx, classifications, state) do
+    with before_snapshot when is_binary(before_snapshot) <- ctx.before_porcelain,
+         after_snapshot when is_binary(after_snapshot) <- ctx.after_porcelain do
+      changed = Evidence.changed_paths(before_snapshot, after_snapshot)
+
+      claimed =
+        for {emission, _observations, _classification} <- classifications,
+            is_map(emission.evidence),
+            path <- Map.get(emission.evidence, :files_touched, []),
+            into: MapSet.new(),
+            do: String.trim_leading(String.trim(path), "./")
+
+      unclaimed = MapSet.difference(changed, claimed)
+
+      if MapSet.size(unclaimed) > 0 do
+        JidoClaw.Trace.emit(:composer, %{
+          event: :evidence_containment,
+          unclaimed_count: MapSet.size(unclaimed),
+          stages: Enum.map(classifications, fn {emission, _o, _c} -> emission.stage end),
+          parent_run_id: state.parent_run_id
+        })
+      end
+
+      :ok
+    else
+      _no_snapshot -> :ok
+    end
+  end
+
+  # The bounded redaction-posture ledger payload (one AGGREGATE event per
+  # classified wave): per-stage status counts and the breach flag — never
+  # command strings, paths, or log tails (those live only in the encrypted
+  # artifacts). The `ac` section rides whenever AC assertions were verified
+  # on a welded record — breach AND clear paths, the honest record — as
+  # uniq'd violated ids only ("AC1"; the extractor may emit several
+  # assertions per AC), never assertion text; an AC-less run omits the key
+  # so existing events stay byte-identical.
+  defp evidence_classified_payload(classifications, ac) do
+    payload = %{
+      classifications:
+        Enum.map(classifications, fn {emission, _observations, classification} ->
+          %{
+            stage: emission.stage,
+            request_id: emission.request_id,
+            counts: classification.counts,
+            statuses: evidence_kind_statuses(classification),
+            breach: Enum.any?(classification.claims, &(&1.status == :unsupported))
+          }
+        end)
+    }
+
+    case ac do
+      %{total: total, violated: violated} ->
+        ids =
+          violated
+          |> Enum.map(& &1.ac_id)
+          |> Enum.uniq()
+
+        # Wire-shaped ledger section (marker → fold → projection).
+        # reach:disable-next-line fixed_shape_map
+        Map.put(payload, :ac, %{total: total, violated: ids})
+
+      nil ->
+        payload
+    end
+  end
+
+  defp evidence_kind_statuses(classification) do
+    classification.claims
+    |> Enum.group_by(& &1.kind)
+    |> Map.new(fn {kind, claims} -> {kind, Enum.frequencies_by(claims, & &1.status)} end)
+  end
+
+  # The per-stage diagnosis the next review wave reads (`evidence-report`,
+  # encrypted): verdicts, per-claim statuses, and skip reasons — plus the AC
+  # section when assertions violated (the artifact is encrypted, so full
+  # assertion text + reason are fine here; only ids ride the ledger payload).
+  defp evidence_report(classifications, ac) do
+    sections =
+      Enum.map(classifications, fn {emission, observations, classification} ->
+        header =
+          "## evidence: #{emission.stage} — #{classification.verdict} " <>
+            "(engine-verified against the tool transcript and the wave git diff)"
+
+        skips = evidence_skip_lines(observations)
+
+        claims =
+          Enum.map(classification.claims, fn claim ->
+            "- [#{claim.status}] #{claim.kind}: #{claim.value} — #{claim.detail}"
+          end)
+
+        Enum.join([header] ++ skips ++ claims, "\n")
+      end)
+
+    Enum.join(sections ++ ac_report_section(ac), "\n\n")
+  end
+
+  defp ac_report_section(%{total: total, violated: [_ | _] = violated}) do
+    header =
+      "## evidence: acceptance criteria — #{length(violated)} of #{total} assertions " <>
+        "violated (engine-verified against the project tree)"
+
+    lines =
+      Enum.map(violated, fn result ->
+        "- [violated] #{result.ac_id}: #{result.assertion} — #{result.reason}"
+      end)
+
+    [Enum.join([header | lines], "\n")]
+  end
+
+  defp ac_report_section(_none_violated), do: []
+
+  defp evidence_skip_lines(observations) do
+    for {half, {:skip, reason}} <- [
+          {"transcript", observations.tool_rows},
+          {"wave diff", observations.changed_paths}
+        ] do
+      "- (#{half} unavailable: #{reason})"
+    end
+  end
+
+  # Durable-then-notify (the infra-observability shape): one Trace + one
+  # telemetry count per classified emission, plus skip notes for the degraded
+  # halves. Emitted only after `commit_wave` succeeded.
+  defp emit_evidence_observability(%{classifications: []}, _state), do: :ok
+
+  defp emit_evidence_observability(record, state) do
+    Enum.each(record.classifications, fn {emission, observations, classification} ->
+      JidoClaw.Trace.emit(:composer, %{
+        event: :evidence_classified,
+        stage: emission.stage,
+        verdict: classification.verdict,
+        counts: classification.counts,
+        parent_run_id: state.parent_run_id
+      })
+
+      :telemetry.execute([:jido_claw, :evidence], %{count: 1}, %{
+        verdict: classification.verdict
+      })
+
+      if Enum.any?(classification.claims, &(&1.status == :unsupported)) do
+        :telemetry.execute([:jido_claw, :evidence, :breach], %{count: 1}, %{
+          stage: emission.stage
+        })
+      end
+
+      Enum.each(evidence_skip_reasons(observations), fn {half, reason} ->
+        JidoClaw.Trace.emit(:composer, %{
+          event: :evidence_skipped,
+          stage: emission.stage,
+          half: half,
+          reason: reason,
+          parent_run_id: state.parent_run_id
+        })
+      end)
+    end)
+
+    ac_breach_telemetry(record.ac)
+  end
+
+  # The AC arm of the breach counter: once per wave with violations, tagged
+  # with the validator-reserved synthetic stage (`"evidence:ac"` — invariant
+  # 12 keeps a real stage from ever aliasing it).
+  defp ac_breach_telemetry(%{violated: [_ | _]}) do
+    :telemetry.execute([:jido_claw, :evidence, :breach], %{count: 1}, %{stage: "evidence:ac"})
+  end
+
+  defp ac_breach_telemetry(_none_violated), do: :ok
+
+  defp evidence_skip_reasons(observations) do
+    for {half, {:skip, reason}} <- [
+          {:transcript, observations.tool_rows},
+          {:files, observations.changed_paths}
+        ],
+        do: {half, reason}
   end
 
   # The fix-loop stop reasons, combined into ONE shared lens list so BOTH
@@ -2231,15 +2834,38 @@ defmodule JidoClaw.RouteComposer do
 
   defp rereview_exhausted_lenses(state) do
     if fixer_on_live_route?(state) do
-      for {name, %Stage{lens: lens} = stage} <- state.catalog,
-          is_binary(lens),
-          not verify_authority_stage?(stage),
-          on_live_route?(stage, state.live),
-          MapSet.member?(state.live, "findings:#{lens}"),
-          Map.get(state.rerun_counts, name, 0) >= state.rerun_cap,
-          do: lens
+      catalog_exhausted =
+        for {name, %Stage{lens: lens} = stage} <- state.catalog,
+            is_binary(lens),
+            not verify_authority_stage?(stage),
+            on_live_route?(stage, state.live),
+            MapSet.member?(state.live, "findings:#{lens}"),
+            Map.get(state.rerun_counts, name, 0) >= state.rerun_cap,
+            do: lens
+
+      catalog_exhausted ++ evidence_rereview_exhausted(state)
     else
       []
+    end
+  end
+
+  # Item 10 (OB1-3): the reserved engine lens has no catalog stage and no
+  # rerun counter of its own — its re-check is deterministic and free (every
+  # producer wave), so its re-review budget IS the fixer's rerun count (each
+  # evidence re-fire invalidates the fixer). `>=` mirrors the catalog
+  # pre-trip condition above; `>` in `evidence_exhausted_fix/1` mirrors
+  # `exhausted_fix_lenses/1`'s post-trip classifier.
+  defp evidence_rereview_exhausted(state) do
+    if MapSet.member?(state.live, "findings:evidence") and
+         fixer_rerun_count(state) >= state.rerun_cap,
+       do: ["evidence"],
+       else: []
+  end
+
+  defp fixer_rerun_count(state) do
+    case fixer_name(state) do
+      name when is_binary(name) -> Map.get(state.rerun_counts, name, 0)
+      nil -> 0
     end
   end
 
@@ -2256,7 +2882,7 @@ defmodule JidoClaw.RouteComposer do
   # Un-keyable findings never enter `finding_rounds` (FindingKey's nil — the
   # camus fail-safe), so they can never stall-match. `trend` is ADVISORY only.
   defp stall_evidence(state) do
-    forward = forward_review_lenses(state.catalog)
+    forward = review_lenses(state)
 
     for {lens, entry} <- Map.get(state, :finding_rounds, %{}),
         MapSet.member?(forward, lens),
@@ -2284,6 +2910,19 @@ defmodule JidoClaw.RouteComposer do
         not verify_authority_stage?(stage),
         into: MapSet.new(),
         do: lens
+  end
+
+  # Item 10 (OB1-3): the review-lens universe = catalog forward lenses ∪ the
+  # reserved `"evidence"` lens iff it has ever been active on this run (an
+  # `evidence` finding round exists) — so stuck/oscillating fabrication keys
+  # stall exactly like reviewer findings, and a run that never breached scans
+  # byte-identically.
+  defp review_lenses(state) do
+    base = forward_review_lenses(state.catalog)
+
+    if Map.has_key?(Map.get(state, :finding_rounds, %{}), "evidence"),
+      do: MapSet.put(base, "evidence"),
+      else: base
   end
 
   # `%{key => :falling | :steady}`: falling when the reviewer's confidence in
@@ -4670,7 +5309,7 @@ defmodule JidoClaw.RouteComposer do
   defp classify_terminal(kind) when is_atom(kind), do: {kind, nil}
 
   defp summary(kind, reason, state) do
-    %{
+    base = %{
       terminal: kind,
       reason: reason,
       parent_run_id: state.parent_run_id,
@@ -4681,6 +5320,14 @@ defmodule JidoClaw.RouteComposer do
       wave_index: state.wave_index,
       history: Enum.reverse(state.history)
     }
+
+    # Item 10 (OB1-3): breach-visible rollup (the OpenHelm rider) — added
+    # only when a breach was ever counted, so clean-run summaries stay
+    # byte-identical.
+    case Map.get(state, :evidence_breaches, %{}) do
+      breaches when map_size(breaches) > 0 -> Map.put(base, :evidence_breaches, breaches)
+      _none -> base
+    end
   end
 
   # The summary's `artifacts` is display/notify-only (never re-resolved), so it
@@ -4794,11 +5441,18 @@ defmodule JidoClaw.RouteComposer do
   # opaque refs, and only `terminal`/`wave_index`/`final_route` are projected
   # here anyway).
   defp terminal_summary_subset(summary) do
-    %{
+    base = %{
       "terminal" => Atom.to_string(summary.terminal),
       "wave_index" => summary.wave_index,
       "final_route" => summary.final_route
     }
+
+    # Item 10 (OB1-3): the durable breach count rollup — present only when a
+    # breach was counted (clean-run results stay byte-identical).
+    case Map.get(summary, :evidence_breaches) do
+      breaches when is_map(breaches) -> Map.put(base, "evidence_breaches", breaches)
+      _none -> base
+    end
   end
 
   # The `run_failed` error string is formatted from the {terminal, reason} PAIR,
@@ -4956,11 +5610,25 @@ defmodule JidoClaw.RouteComposer do
   # `code` run) never re-ran, so its `rerun_counts` is 0 and it is never
   # reported. Disjoint from the verify set.
   defp exhausted_fix_lenses(state) do
-    for {name, %Stage{lens: lens} = stage} <- state.catalog,
-        not verify_authority_stage?(stage),
-        is_binary(lens),
-        Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
-        MapSet.member?(state.live, "findings:#{lens}"),
-        do: lens
+    catalog_exhausted =
+      for {name, %Stage{lens: lens} = stage} <- state.catalog,
+          not verify_authority_stage?(stage),
+          is_binary(lens),
+          Map.get(state.rerun_counts, name, 0) > state.rerun_cap,
+          MapSet.member?(state.live, "findings:#{lens}"),
+          do: lens
+
+    catalog_exhausted ++ evidence_exhausted_fix(state)
+  end
+
+  # Item 10 (OB1-3): the evidence twin — a live `findings:evidence` with the
+  # fixer's own rerun count PAST the cap rides the `{:fix_failed, lenses}`
+  # terminal by name (see `evidence_rereview_exhausted/1` for the budget
+  # rationale).
+  defp evidence_exhausted_fix(state) do
+    if MapSet.member?(state.live, "findings:evidence") and
+         fixer_rerun_count(state) > state.rerun_cap,
+       do: ["evidence"],
+       else: []
   end
 end
