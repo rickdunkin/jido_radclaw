@@ -2,6 +2,8 @@
 
 Exploration notes — not a plan, not a commitment. Source: `~/workspace/claws/hermes-agent` (Nous Research, Python 3.11+ self-improving agent platform). Initial inventory 2026-04-28; **re-reviewed 2026-05-18**, then **re-reviewed again 2026-06-04** against current state of both projects.
 
+**Targeted correction (2026-07-09)**: our-side channel-adapter claims below were stale — the Telegram channel adapter was removed 2026-06-10 (`10465d30`, alongside the Folio GTD subsystem), and `platform/channel/` is Discord-only today (`behaviour.ex`, `discord.ex`, `discord_consumer.ex`; the old `worker.ex`/`supervisor.ex` pair is also gone). Fixed in place at each affected entry; statuses otherwise still as-of 2026-06-04.
+
 ## Re-review summary (2026-06-04)
 
 Second re-review pass. The numbered inventory now stands at 46 items (11 Tier-1, 17 Tier-2, 18 Tier-3) plus 7 Open Questions and five appendices. Since the 2026-05-18 pass:
@@ -434,7 +436,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T2-10. Cron with delivery targets + scripted preprocessor
 
-**Status (2026-06-04)**: NOT_ADOPTED. `cron/resources/job.ex` defines a persistent `Cron.Job` resource scheduled via `platform/cron/scheduler.ex` and routed by `platform/cron/dispatcher.ex`. The schedule layer was hardened since the doc was last touched — `schedule_kind ∈ [:cron, :every, :at]` + `schedule_value`, an orthogonal `target ∈ [:agent, :workflow, :mfa]` dimension (with `workflow_name`/`workflow_input` for Orchestration workflows), per-job IANA `timezone` for `:cron` rows, and `run_count`/`last_run_at` durability counters — but the borrowed feature is still missing. `platform/channel/` has discord + telegram adapters. **Missing**: `pre_script` field, `delivery_targets` list, `silent_when_match`, `[SILENT]` sentinel, `no_agent` mode, cron-to-channel dispatch glue.
+**Status (2026-06-04)**: NOT_ADOPTED. `cron/resources/job.ex` defines a persistent `Cron.Job` resource scheduled via `platform/cron/scheduler.ex` and routed by `platform/cron/dispatcher.ex`. The schedule layer was hardened since the doc was last touched — `schedule_kind ∈ [:cron, :every, :at]` + `schedule_value`, an orthogonal `target ∈ [:agent, :workflow, :mfa]` dimension (with `workflow_name`/`workflow_input` for Orchestration workflows), per-job IANA `timezone` for `:cron` rows, and `run_count`/`last_run_at` durability counters — but the borrowed feature is still missing. `platform/channel/` has a discord adapter (telegram removed 2026-06-10, `10465d30`). **Missing**: `pre_script` field, `delivery_targets` list, `silent_when_match`, `[SILENT]` sentinel, `no_agent` mode, cron-to-channel dispatch glue.
 
 **Hermes (2026-06-04)**: STABLE. The May design (`no_agent` mode, `[SILENT]` sentinel, multi-target `deliver`, name-based lookup, fan-out intent) is intact in `cron/jobs.py` + `cron/scheduler.py`. Recent commits are hardening only — non-blocking sequential dispatch (`9fbfeb31b`), tick/completion decoupling (`eb9cde734`), stale cron-output re-validation before deletion (`30412a977`) — plus a new **ntfy delivery target** as a platform plugin (`b10f17bf1`/`6a8e131a0`) and a `TELEGRAM_CRON_THREAD_ID` topic-routing option (`a4fb0a3ac`). Adoption sketch still stands; consider adding `ntfy` to the delivery-target list.
 
@@ -446,7 +448,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 **Why it matters**: "Wake me up if X" workflows. Script handles mechanical work cheaply; agent handles reasoning expensively; `no_agent` mode skips the LLM entirely for pure watchdog use cases. `[SILENT]` prevents notification spam when the answer is "all clear."
 
-**Adoption sketch**: Extend the scheduled-task model with `pre_script` (path or inline), `delivery_targets` (list of channels), `silent_when_match` (regex), `no_agent` (bool — when true, skip LLM and deliver script stdout directly). Discord + Telegram delivery already work via `platform/channel/`; add webhook + email next. Scheduler uses the existing `platform/cron/scheduler.ex`.
+**Adoption sketch**: Extend the scheduled-task model with `pre_script` (path or inline), `delivery_targets` (list of channels), `silent_when_match` (regex), `no_agent` (bool — when true, skip LLM and deliver script stdout directly). Discord delivery already works via `platform/channel/` (the Telegram adapter was removed 2026-06-10); add webhook + email next. Scheduler uses the existing `platform/cron/scheduler.ex`.
 
 ---
 
@@ -464,7 +466,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 **Why it matters**: Pattern generalizes "agent produced a chart/PDF/report" into a delivery primitive that doesn't require the agent to know which platform it's on. Plays well with the new auto-decomposition + worker-template pattern (T1-11) — a Researcher worker can produce a PDF and the Discord adapter handles the actual upload.
 
-**Adoption sketch**: `JidoClaw.Platform.Channel.Behaviour` gains an `upload_artifact/3` callback. Response post-processor walks the assistant message looking for absolute paths matching `extract_local_files`-style filters, calls the adapter's `upload_artifact` for each. Discord adapter wraps Nostrum's file-attachment API. Telegram adapter wraps its document-upload primitive. Adapters can opt out (CLI just inlines the path text).
+**Adoption sketch**: `JidoClaw.Platform.Channel.Behaviour` gains an `upload_artifact/3` callback. Response post-processor walks the assistant message looking for absolute paths matching `extract_local_files`-style filters, calls the adapter's `upload_artifact` for each. Discord adapter wraps Nostrum's file-attachment API (a future Telegram adapter would wrap its document-upload primitive — ours was removed 2026-06-10). Adapters can opt out (CLI just inlines the path text).
 
 ---
 
@@ -590,7 +592,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 **Why**: Eliminates drift between `/foo` in CLI and `/foo` in Discord. Adding a slash command edits one list.
 
-**Adoption sketch**: `JidoClaw.Commands.Registry` with a list of `%CommandDef{}` structs. CLI REPL and Discord (and Telegram) bot adapters all consume the same list.
+**Adoption sketch**: `JidoClaw.Commands.Registry` with a list of `%CommandDef{}` structs. CLI REPL and the Discord bot adapter (and any future channel adapters) all consume the same list.
 
 ---
 
@@ -726,17 +728,17 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 ### T3-11. Multi-platform gateway abstraction
 
-**Status (2026-06-04)**: NOT_ADOPTED for the abstraction. **Adjacent**: `platform/channel/` has behaviour.ex + discord.ex + discord_consumer.ex + telegram.ex + worker.ex + supervisor.ex — a per-channel adapter pattern but no unified gateway, no plugin registry, and no busy-input modes.
+**Status (2026-06-04)**: NOT_ADOPTED for the abstraction. **Adjacent**: `platform/channel/` has behaviour.ex + discord.ex + discord_consumer.ex (2026-07-09: telegram.ex is gone — removed 2026-06-10, `10465d30` — and the worker.ex/supervisor.ex pair no longer exists either) — a per-channel adapter pattern but no unified gateway, no plugin registry, and no busy-input modes.
 
-**Hermes (2026-06-04)**: STILL REFACTORING — the plugin-registry pattern (`plugins/platforms/<name>/`) has absorbed Discord, Mattermost, and ntfy in addition to the original IRC/Teams/LINE/Google Chat/SimpleX set; current bundled set has since grown to ~20 platform plugins (`dingtalk, discord, email, feishu, google_chat, homeassistant, irc, line, matrix, mattermost, ntfy, photon, raft, simplex, slack, sms, teams, telegram, wecom, whatsapp`) (`cc8e5ec2a`, `af973e407`, `6a8e131a0`). New: Feishu meeting invites (`f3bbfda6d`), BlueBubbles group-mention gating (`05022066e`), Matrix bang-command aliases (`0022e94d7`), a structured stream-event protocol with Telegram draft-formatting parity (`787936d13`), observer-grade telemetry hooks + NeMo-Relay plugin (`0d9b7132f`), cross-platform `/undo [N]` parity (`0622a70eb`). The plugin-as-platform pattern is now hermes's dominant integration surface, strengthening the adoption case if jido_radclaw expands beyond Discord+Telegram.
+**Hermes (2026-06-04)**: STILL REFACTORING — the plugin-registry pattern (`plugins/platforms/<name>/`) has absorbed Discord, Mattermost, and ntfy in addition to the original IRC/Teams/LINE/Google Chat/SimpleX set; current bundled set has since grown to ~20 platform plugins (`dingtalk, discord, email, feishu, google_chat, homeassistant, irc, line, matrix, mattermost, ntfy, photon, raft, simplex, slack, sms, teams, telegram, wecom, whatsapp`) (`cc8e5ec2a`, `af973e407`, `6a8e131a0`). New: Feishu meeting invites (`f3bbfda6d`), BlueBubbles group-mention gating (`05022066e`), Matrix bang-command aliases (`0022e94d7`), a structured stream-event protocol with Telegram draft-formatting parity (`787936d13`), observer-grade telemetry hooks + NeMo-Relay plugin (`0d9b7132f`), cross-platform `/undo [N]` parity (`0622a70eb`). The plugin-as-platform pattern is now hermes's dominant integration surface, strengthening the adoption case if jido_radclaw expands beyond Discord.
 
 **Where**: `gateway/` + `plugins/platforms/`
 
 **What**: One process serves Telegram, Discord, Slack, WhatsApp, Signal, Email, SMS, Matrix, Mattermost, Home Assistant, Microsoft Teams, SimpleX, IRC, etc. Per-platform display config. "Busy input mode": `interrupt | queue | steer` (steer injects new message after next tool call without interrupting). Plugins register via the generic plugin hook system; cron delivery routes through whichever platform's home channel matches.
 
-**Why**: jido_radclaw has Discord + Telegram. Unified abstraction would help if we add SMS/email/etc.
+**Why**: jido_radclaw has Discord (Telegram removed 2026-06-10). Unified abstraction would help if we add SMS/email/etc.
 
-**Adoption sketch**: Lift the **plugin registry pattern** (see T2-14 for the general shape) — each platform is a `JidoClaw.Platform.Channel` plugin that registers env-driven enablement + per-target delivery. Existing Discord and Telegram adapters become plugins. Steer/queue/interrupt is a separate, smaller change (see OQ-4).
+**Adoption sketch**: Lift the **plugin registry pattern** (see T2-14 for the general shape) — each platform is a `JidoClaw.Platform.Channel` plugin that registers env-driven enablement + per-target delivery. The existing Discord adapter becomes a plugin. Steer/queue/interrupt is a separate, smaller change (see OQ-4).
 
 ---
 
@@ -828,7 +830,7 @@ agent-created: allow     allow      ask        (gated by skills.guard_agent_crea
 
 **What**: A user can transfer a live session from CLI to Discord (or any platform with a home channel) in real time. CLI flips the session row to `'pending'`; gateway's background watcher claims pending rows every 2s, resolves the target platform's home channel, asks the adapter for a fresh thread, and starts processing the destination chat immediately. CLI poll-blocks (60s) on terminal state — on `'completed'` prints `/resume` hint and exits like `/quit`.
 
-**Gap**: jido_radclaw has Discord + Telegram adapters but no cross-surface live-handoff. Sessions are per-channel today.
+**Gap**: jido_radclaw has a Discord adapter (Telegram removed 2026-06-10) and no cross-surface live-handoff. Sessions are per-channel today.
 
 **Why it matters**: Non-obvious good UX once you have multiple delivery surfaces. The state-machine + atomic-claim shape is the well-designed half — translates well to an Ash attribute + a watcher GenServer.
 

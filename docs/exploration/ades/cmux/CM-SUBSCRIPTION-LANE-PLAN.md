@@ -1,7 +1,9 @@
 # CM subscription lane — interactive-TUI driving + the teams-mailbox question
 
-Design note + proposed spike sequence — **PROPOSED, not queued; nothing here is
-committed work.** Sibling to [FEATURES-WORTH-BORROWING.md](FEATURES-WORTH-BORROWING.md),
+Design note + proposed spike sequence — **QUEUED 2026-07-09**: the §5 soft
+trigger (operator go-ahead) fired; Spike 1 + Lane A ride
+[docs/plans/pre-argus-do-now item 22](../../../plans/pre-argus-do-now/README.md).
+Lane B stays spike-1-gated, Lane C stays SKIP. Sibling to [FEATURES-WORTH-BORROWING.md](FEATURES-WORTH-BORROWING.md),
 spun out of its OQ-2 during the 2026-07-06 operator conversation that followed the dig.
 Same pins as the inventory: cmux @ `48e69cbb05`, jido_radclaw @ `85cbe9f2` (working
 tree). Epistemic labels are load-bearing in this doc: **[dig-verified]** = firsthand
@@ -159,9 +161,9 @@ Xantham file-convention class the corpus already filed as a negative reference.
    identity/enrollment, lifecycle, lead-liveness requirements) that converts the
    [hypothesis] into pinned fact or kills it. **Kill criteria for lane B**: mailbox is
    in-process-only / not file-or-socket-observable / enrollment hard-bound to live
-   lead internals. *Trigger to fire: operator go-ahead (it's cheap); hard trigger
-   regardless: any renewed Anthropic announcement about subscription headless
-   removal.*
+   lead internals. *Trigger to fire: operator go-ahead (it's cheap) — **fired 2026-07-09**; hard
+   trigger regardless: any renewed Anthropic announcement about subscription
+   headless removal.*
 2. **Spike 2 — the interactive-lane floor (lane A end-to-end).** PTY-pacifier in both
    sandbox backends; per-invocation hook injection to a loopback endpoint;
    transcript-JSONL reader; turn-boundary mailbox delivery; wired as an executor-seam

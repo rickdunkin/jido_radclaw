@@ -638,6 +638,14 @@ cross-corpus pass (2026-07-05) re-statused the ades set against the pms one. Mer
 and grouped (sizes where the queues recorded them; the per-queue files hold
 done-when criteria):
 
+*(2026-07-09: **queued** — this merged set, re-statused against HEAD and
+extended with three recovered items (termic TM1-2, emdash EM3-3, the cmux
+subscription-lane Lane A — operator-approved 2026-07-09) plus the crabbox
+CB1-1/CB1-2 pair the ades digs re-flagged, now lives as the sequenced work
+queue at [docs/plans/pre-argus-do-now](../../plans/pre-argus-do-now/README.md).
+One merge miss recovered there: chorus CH2-5 is in CH-FIRST-WAVE but was
+dropped from this section's roll-up.)*
+
 **Contract & surface**
 - **PD1-1** served-surface stability PR (S) — fuses traycer's golden pin with pad's
   advertisement half; **supersedes TR1-2a**; kills the hardcoded MCP `0.2.0`

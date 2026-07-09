@@ -965,9 +965,12 @@ asking") — nothing server-enforced.
       empty at subject 24, closing the corpus with argus's differentiators intact.
 
 **Combined first wave** (2026-07-04 connective pass — the argus-independent do-now
-set rolled up across the six first-wave queues plus the two inline items; the
-individual queues each recorded their own riders, but this is the one place the
-whole set and its cross-queue sequencing are visible):
+set rolled up across the six first-wave queues plus the one inline item (corrected
+2026-07-09: this said "two inline items" — an overcount; the two queue-less
+inventories each held a slot, but only myrlin's is filled (MY1-4a) and bosun's is
+deliberately empty, as the last bullet records); the individual queues each
+recorded their own riders, but this is the one place the whole set and its
+cross-queue sequencing are visible):
 
 - **MC1-4 → MC1-1 → MC3-4** ([MC-FIRST-WAVE](multica/MC-FIRST-WAVE.md)): the failure
   taxonomy first (S — its `resume_unsafe?/1` is what resume consumes), then native
@@ -1000,3 +1003,9 @@ whole set and its cross-queue sequencing are visible):
   `mix jidoclaw.api_key` mint/list/revoke task — `Accounts.ApiKey` has zero minting
   paths today (S). bosun deliberately queued nothing standalone (its adoptables
   landed as next-ten riders).
+
+*(2026-07-09: this merged set — re-statused against HEAD, minus items since
+shipped — is queued as
+[docs/plans/pre-argus-do-now](../../plans/pre-argus-do-now/README.md), together
+with three recovered items the rollups missed and the crabbox CB1-1/CB1-2
+pair.)*

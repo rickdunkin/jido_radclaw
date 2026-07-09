@@ -104,7 +104,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   @typedoc "Outcome of a CAS row-claim."
   @type stamp_result :: {:ok, :claimed} | {:ok, :lost} | {:error, term()}
 
-  @doc "This node's claim identity (`to_string(Node.self())`)."
+  @doc "This node's claim identity (`to_string(Cluster.local_node())`)."
   @spec node_identity() :: String.t()
   def node_identity, do: to_string(Cluster.local_node())
 

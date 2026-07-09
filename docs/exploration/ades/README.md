@@ -991,3 +991,10 @@ three-subject convergence** — bosun
 implementation (expiry + reconcilers) and OpenHelm ships the same never-expire
 gap, both pointing at our missing `AgentCase` TTL/sweeper. EM2-3, TM1-1, CC1-1,
 and CC2-2 stand unchanged.
+
+*(2026-07-09: the combined set is queued at
+[docs/plans/pre-argus-do-now](../../plans/pre-argus-do-now/README.md) —
+including two items this corpus deliberately parked in Forge/security territory
+(termic TM1-2, joined by crabbox CB1-1/CB1-2) and one garnish it never rolled up
+(emdash EM3-3); the cmux subscription-lane plan's Lane A got its operator
+go-ahead the same day.)*
