@@ -19,9 +19,10 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
       with a nonzero exit is `:unsupported` — the false-green catch. A
       matched-but-masked (or unanalyzable) row is `:form_mismatch`.
     * `:files_touched` — supported iff the claimed path's git status CHANGED
-      during this wave (the dispatch-time vs fold-time untracked-inclusive
-      porcelain snapshot diff; union across same-wave stages). Bare existence
-      is never support; a path outside the repo skips (can't verify ⇒ trust).
+      during this wave, or an already-dirty path has two bounded fingerprints
+      whose content/type/mode identity changed (dispatch-time vs fold-time;
+      union across same-wave stages). Bare existence is never support; a path
+      outside the repo skips (can't verify ⇒ trust).
 
   The conservative override rule governs everything: only a *positive
   discrepancy* (`:unsupported`) ever becomes a finding; can't-verify skips
@@ -74,6 +75,7 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
   @type observations :: %{
           tool_rows: {:ok, [observation()]} | {:skip, atom()},
           changed_paths: {:ok, MapSet.t(String.t())} | {:skip, atom()},
+          fingerprint_changed_paths: MapSet.t(String.t()),
           repo: String.t() | nil
         }
 
@@ -100,18 +102,19 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
 
   @doc """
   Gather the evidence base for one stage emission: the request's decoded
-  `run_command` tool rows plus the wave-scoped changed-path set from the
-  `ctx` porcelain snapshots (`:before_porcelain`/`:after_porcelain`, captured
-  by the composer). Each half skips independently — nil request_id, a read
-  error, or an all-redacted transcript skip the tool-row half (toward trust,
-  never toward suspicion); a missing snapshot skips the files half. Never
-  raises.
+  `run_command` tool rows plus the wave-scoped changed-path sets from the
+  `ctx` porcelain snapshots and bounded before/after fingerprints captured by
+  the composer. Each half skips independently — nil request_id, a read error,
+  or an all-redacted transcript skip the tool-row half (toward trust, never
+  toward suspicion); a missing porcelain snapshot skips the files half even
+  when fingerprints exist. Missing fingerprints add no proof. Never raises.
   """
   @spec gather(String.t() | nil, map()) :: observations()
   def gather(request_id, ctx) when is_map(ctx) do
     %{
       tool_rows: gather_tool_rows(request_id, ctx),
       changed_paths: gather_changed_paths(ctx),
+      fingerprint_changed_paths: gather_fingerprint_changed_paths(ctx),
       repo: ctx[:repo]
     }
   end
@@ -150,6 +153,13 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
       _missing ->
         {:skip, :no_snapshot}
     end
+  end
+
+  defp gather_fingerprint_changed_paths(ctx) do
+    fingerprint_changed_paths(
+      ctx[:before_file_fingerprints],
+      ctx[:after_file_fingerprints]
+    )
   end
 
   # ---------------------------------------------------------------------------
@@ -276,6 +286,36 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
     |> MapSet.new()
   end
 
+  @doc "Every path represented by one porcelain snapshot, including both rename sides."
+  @spec snapshot_paths(String.t()) :: MapSet.t(String.t())
+  def snapshot_paths(snapshot) when is_binary(snapshot) do
+    snapshot
+    |> porcelain_status_map()
+    |> Map.keys()
+    |> MapSet.new()
+  end
+
+  def snapshot_paths(_snapshot), do: MapSet.new()
+
+  @doc "Paths with two present bounded fingerprints whose values differ."
+  @spec fingerprint_changed_paths(map() | nil, map() | nil) :: MapSet.t(String.t())
+  def fingerprint_changed_paths(before_fingerprints, after_fingerprints)
+      when is_map(before_fingerprints) and is_map(after_fingerprints) do
+    Enum.reduce(before_fingerprints, MapSet.new(), fn {path, before_fp}, changed ->
+      case Map.fetch(after_fingerprints, path) do
+        {:ok, after_fp}
+        when is_binary(before_fp) and is_binary(after_fp) and before_fp != after_fp ->
+          MapSet.put(changed, path)
+
+        _missing_or_unreadable ->
+          changed
+      end
+    end)
+  end
+
+  def fingerprint_changed_paths(_before_fingerprints, _after_fingerprints),
+    do: MapSet.new()
+
   defp porcelain_status_map(text) do
     text
     |> String.split("\n", trim: true)
@@ -285,36 +325,116 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
   defp porcelain_line(<<x, y, ?\s, rest::binary>>, acc) do
     status = <<x, y>>
 
-    case String.split(rest, " -> ", parts: 2) do
-      [from, to] ->
+    case rename_parts(x, y, rest) do
+      {:rename, from, to} ->
         acc
         |> Map.put(unquote_path(from), status <> ":renamed-from")
         |> Map.put(unquote_path(to), status)
 
-      [path] ->
+      {:path, path} ->
         Map.put(acc, unquote_path(path), status)
     end
   end
 
   defp porcelain_line(_line, acc), do: acc
 
-  # git c-quotes paths containing specials; strip the quotes and the common
-  # escapes. Exotic octal escapes stay as-is (a non-matching path is a miss,
-  # never a false finding).
-  defp unquote_path(path) do
-    case path do
-      <<?", inner::binary>> ->
-        inner
-        |> String.trim_trailing("\"")
-        |> String.replace("\\\"", "\"")
-        |> String.replace("\\\\", "\\")
-        |> String.replace("\\t", "\t")
-        |> String.replace("\\n", "\n")
+  # Only R/C statuses carry the porcelain v1 `old -> new` grammar. Find the
+  # separator outside Git's C-quoted strings so an ordinary path literally
+  # named `foo -> bar` is never split into fabricated rename sides.
+  defp rename_parts(x, y, rest) when x in [?R, ?C] or y in [?R, ?C] do
+    case rename_separator_index(rest, 0, false) do
+      nil ->
+        {:path, rest}
 
-      plain ->
-        plain
+      index ->
+        from = binary_part(rest, 0, index)
+        to = binary_part(rest, index + 4, byte_size(rest) - index - 4)
+        {:rename, from, to}
     end
   end
+
+  defp rename_parts(_x, _y, rest), do: {:path, rest}
+
+  defp rename_separator_index(<<>>, _index, _quoted?), do: nil
+
+  defp rename_separator_index(<<?\\, _escaped, rest::binary>>, index, true),
+    do: rename_separator_index(rest, index + 2, true)
+
+  defp rename_separator_index(<<?", rest::binary>>, index, quoted?),
+    do: rename_separator_index(rest, index + 1, not quoted?)
+
+  defp rename_separator_index(<<" -> ", _rest::binary>>, index, false), do: index
+
+  defp rename_separator_index(<<_byte, rest::binary>>, index, quoted?),
+    do: rename_separator_index(rest, index + 1, quoted?)
+
+  # Git C-quotes paths containing whitespace/nonprintable bytes. Decode its
+  # fixed escape set and one-to-three-digit octal byte escapes in one pass;
+  # chained String.replace calls are incorrect for a literal `\\n` filename
+  # because decoding `\\\\` first manufactures a newline escape.
+  defp unquote_path(<<?", rest::binary>> = original) do
+    with size when size > 0 <- byte_size(rest),
+         ?" <- :binary.last(rest) do
+      inner = binary_part(rest, 0, size - 1)
+
+      case decode_git_quoted(inner, []) do
+        {:ok, decoded} -> decoded
+        :error -> original
+      end
+    else
+      _missing_close_quote ->
+        original
+    end
+  end
+
+  defp unquote_path(plain), do: plain
+
+  defp decode_git_quoted(<<>>, acc) do
+    decoded =
+      acc
+      |> Enum.reverse()
+      |> IO.iodata_to_binary()
+
+    {:ok, decoded}
+  end
+
+  defp decode_git_quoted(<<?", _rest::binary>>, _acc), do: :error
+  defp decode_git_quoted(<<?\\>>, _acc), do: :error
+
+  defp decode_git_quoted(<<?\\, escaped, rest::binary>>, acc)
+       when escaped in [?a, ?b, ?t, ?n, ?v, ?f, ?r, ?", ?\\] do
+    byte =
+      case escaped do
+        ?a -> 7
+        ?b -> 8
+        ?t -> 9
+        ?n -> 10
+        ?v -> 11
+        ?f -> 12
+        ?r -> 13
+        other -> other
+      end
+
+    decode_git_quoted(rest, [<<byte>> | acc])
+  end
+
+  defp decode_git_quoted(<<?\\, octal, rest::binary>>, acc) when octal in ?0..?7 do
+    {digits, rest} = take_octal(rest, [octal], 1)
+    reversed = Enum.reverse(digits)
+    value = List.to_integer(reversed, 8)
+    decode_git_quoted(rest, [<<value>> | acc])
+  end
+
+  defp decode_git_quoted(<<?\\, _unknown, _rest::binary>>, _acc), do: :error
+
+  defp decode_git_quoted(<<byte, rest::binary>>, acc),
+    do: decode_git_quoted(rest, [<<byte>> | acc])
+
+  defp take_octal(<<digit, rest::binary>>, digits, count)
+       when digit in ?0..?7 and count < 3,
+       do: take_octal(rest, [digit | digits], count + 1)
+
+  defp take_octal(rest, digits, _count), do: {digits, rest}
 
   # ---------------------------------------------------------------------------
   # Classify (pure)
@@ -387,7 +507,12 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
         claim_result(:files_touched, value, :skipped, "wave snapshot unavailable (#{reason})")
 
       {:ok, changed} ->
-        classify_file_claim(value, changed, observations.repo)
+        classify_file_claim(
+          value,
+          changed,
+          Map.get(observations, :fingerprint_changed_paths, MapSet.new()),
+          observations.repo
+        )
     end
   end
 
@@ -509,27 +634,41 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
 
   defp provenance(row), do: ShellCommand.exit_code_provenance(row.command)
 
-  # ---- files_touched (decision 5: the wave status diff IS support) ----
+  # ---- files_touched (decision 5 + signed 2026-07-09 fingerprint amendment) ----
 
-  defp classify_file_claim(value, changed, repo) do
+  defp classify_file_claim(value, changed, fingerprint_changed, repo) do
     case normalize_claim_path(value, repo) do
       {:ok, path} ->
-        if MapSet.member?(changed, path) do
-          claim_result(:files_touched, value, :supported, "path changed this wave")
-        else
-          claim_result(
-            :files_touched,
-            value,
-            :unsupported,
-            "path did not change this wave (existence alone is not support)"
-          )
-        end
+        classify_file_change(value, path, changed, fingerprint_changed)
 
       :outside ->
         claim_result(:files_touched, value, :skipped, "path outside the repo (cannot verify)")
 
       :invalid ->
         claim_result(:files_touched, value, :skipped, "unresolvable path (cannot verify)")
+    end
+  end
+
+  defp classify_file_change(value, path, changed, fingerprint_changed) do
+    cond do
+      MapSet.member?(changed, path) ->
+        claim_result(:files_touched, value, :supported, "path status changed this wave")
+
+      MapSet.member?(fingerprint_changed, path) ->
+        claim_result(
+          :files_touched,
+          value,
+          :supported,
+          "path content fingerprint changed this wave"
+        )
+
+      true ->
+        claim_result(
+          :files_touched,
+          value,
+          :unsupported,
+          "path did not change this wave (existence alone is not support)"
+        )
     end
   end
 
@@ -658,6 +797,6 @@ defmodule JidoClaw.Orchestration.Verify.Evidence do
     "evidence claims were contradicted by the engine (#{locations}): redo the " <>
       "claimed work honestly — run tests cleanly (no exit-masking plumbing), " <>
       "report only commands that actually ran and files that actually changed. " <>
-      "The engine re-checks every claim against the transcript and the wave diff."
+      "The engine re-checks every claim against the transcript and bounded wave evidence."
   end
 end

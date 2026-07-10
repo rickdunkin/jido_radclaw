@@ -69,6 +69,42 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
     test "read_file returns error for missing file", %{client: client} do
       assert {:error, :enoent} = Docker.read_file(client, "nonexistent.txt")
     end
+
+    test "rejects a symlinked parent for reads and writes", %{client: client, dir: dir} do
+      outside =
+        Path.join(
+          System.tmp_dir!(),
+          "docker_sandbox_victim_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "victim.txt"), "untouched")
+      File.ln_s!(outside, Path.join(dir, "linked"))
+      on_exit(fn -> File.rm_rf(outside) end)
+
+      assert {:error, _unsafe} = Docker.write_file(client, "linked/victim.txt", "changed")
+      assert {:error, _unsafe} = Docker.read_file(client, "linked/victim.txt")
+
+      assert File.read!(Path.join(outside, "victim.txt")) == "untouched"
+    end
+
+    test "rejects a symlink at the final file", %{client: client, dir: dir} do
+      victim = Path.join(dir, "victim.txt")
+      link = Path.join(dir, "link.txt")
+      File.write!(victim, "untouched")
+      File.ln_s!(victim, link)
+
+      assert {:error, _unsafe} = Docker.write_file(client, "link.txt", "changed")
+      assert {:error, _unsafe} = Docker.read_file(client, "link.txt")
+      assert File.read!(victim) == "untouched"
+    end
+
+    test "atomic writes leave no temporary file behind", %{client: client, dir: dir} do
+      assert :ok = Docker.write_file(client, "file.txt", "one")
+      assert :ok = Docker.write_file(client, "file.txt", "two")
+      assert File.read!(Path.join(dir, "file.txt")) == "two"
+      assert Enum.sort(File.ls!(dir)) == ["file.txt"]
+    end
   end
 
   describe "inject_env/2" do

@@ -12,8 +12,11 @@ sources:
   - lib/jido_claw/route_composer/stage.ex
   - lib/jido_claw/route_composer/wave_builder.ex
   - lib/jido_claw/route_composer/catalog_validator.ex
-verified: 2026-07-07
-verified_sha: "91157b13"
+  - lib/jido_claw/tools/search_code.ex
+  - lib/jido_claw/tools/search_real_code.ex
+  - lib/jido_claw/tools/file_payload_limit.ex
+verified: 2026-07-10
+verified_sha: "b2cae5cd"
 ---
 
 # Executor Seam (template `executor:` binding)
@@ -54,6 +57,13 @@ repo mount, and its edits land in the real working tree.
   `--dangerously-skip-permissions` + `--strict-mcp-config`); `:read_only` keeps the
   restricted CLI flag sets AND a `:ro` mount (defense in depth). Local vendor plans
   are always `:read_only` by the hydration invariant.
+- **Vendor Docker sessions are globally isolated**: every executor-created sbx
+  spec sets `isolate_global_config: true`, so operator-global mounts, the OneCLI
+  CA mount, and proxy credentials never enter a repository-controlled vendor VM.
+  The only mounts and network destinations are the explicit repo/deposit
+  capabilities in that run's spec. Host-side `read_file`/`write_file` helpers
+  additionally reject symlink components observed during validation and perform
+  atomic same-directory writes, closing planted/static link redirection.
 - **Executor precedence (PR-4, both seams)**: test `:agent_templates_override` >
   `.jido/config.yaml` `review:` knob > per-stage catalog `executor:` override >
   template binding. The test seam is NAME-gated — an overridden template suppresses
@@ -71,6 +81,17 @@ repo mount, and its edits land in the real working tree.
   fall-through). The YAML boundary is Verify.Config-strict: unknown keys, non-map
   sections, and present-nil values refuse LOUDLY — a typo can neither silently strict
   nor silently enable same-vendor review.
+- **Prototype read search is bounded but useful under partial work**:
+  `search_real_code` reuses `SearchCode.search/2` behind the prototype/docker
+  real-tree jail. Per-file reads above 5 MiB are skipped and counted in an explicit
+  partial-result note instead of discarding earlier matches; local non-regular
+  entries (including FIFOs) are likewise skipped before a potentially blocking
+  read and counted separately. A traversal deadline returns examined matches with
+  an explicit incomplete note and states that `total_matches` covers examined
+  content only. The local timeout defaults to 5 seconds and may be set with
+  `config :jido_claw, :search_code, timeout_ms: ...`; Jido's absolute action
+  deadline remains authoritative whenever it is tighter. Structural traversal,
+  aggregate-byte, regex-work, and match-count limits still fail loudly.
 
 ## Mechanics
 
@@ -356,6 +377,12 @@ runner_config). Telemetry counters `jido_claw.executor.total` (`kind`/`outcome`)
   the seam).
 - A stale approved needs-input answer (past the 24h TTL) is left inert — visible in
   case history, never consumed, never garbage-collected.
+- **Concurrent host-helper path swap**: the Docker host `read_file`/`write_file`
+  helpers lstat every observed component and reject links, but pathname-based
+  `File.read`/`File.rename` cannot make that check atomic against a guest mutating the
+  same mounted directory between validation and use. These helpers currently have no
+  production caller; making a future live caller race-free requires descriptor-relative
+  `openat2`/`O_NOFOLLOW` (or pausing/unmounting the guest around host I/O).
 - **Answer-burn on docker infra failure**: the vendor `build_spec` claims the
   operator answer LAST (after every refusal), but a docker infra failure AFTER the
   claim (backend create, policy rule, runner init) still burns the single-use answer
@@ -388,7 +415,8 @@ runner_config). Telemetry counters `jido_claw.executor.total` (`kind`/`outcome`)
   URL translation, access mapping), needs-input raise/claim/injection
 - `lib/jido_claw/forge/sandbox/docker.ex` — the sbx 0.34.0 backend: same-path
   workspace positionals, post-create policy rules, the in-VM exec wrapper
-  (stdin `</dev/null` + `.forge_env` export loop), `allow_network` validation
+  (stdin `</dev/null` + `.forge_env` export loop), `allow_network` validation,
+  symlink-rejecting host file helpers (with the documented concurrent-swap residual)
 - `lib/jido_claw/skills/steps/forge_executor/deposit.ex` — the deposit box,
   schema validation, last-valid-wins
 - `lib/jido_claw/orchestration/review_independence.ex` — `check_route/2`,
@@ -402,3 +430,6 @@ runner_config). Telemetry counters `jido_claw.executor.total` (`kind`/`outcome`)
 - `lib/jido_claw/route_composer/catalog_validator.ex` — the worker-stage-only
   structural check
 - `lib/jido_claw/route_composer/route_composer.ex` — the launch fence call in `init/1`
+- `lib/jido_claw/tools/search_code.ex` / `search_real_code.ex` — shared bounded
+  local/prototype search and honest partial-result notes
+- `lib/jido_claw/tools/file_payload_limit.ex` — the 5 MiB per-file/type guard

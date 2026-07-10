@@ -7,6 +7,7 @@ defmodule JidoClaw.Tenant.Manager do
   require Logger
 
   alias JidoClaw.Tenant.InstanceSupervisor
+  alias JidoClaw.Tenants.Tenant, as: TenantRow
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -40,14 +41,20 @@ defmodule JidoClaw.Tenant.Manager do
     GenServer.call(__MODULE__, {:ensure, id, attrs})
   end
 
-  @spec suspend_tenant(String.t()) :: {:ok, JidoClaw.Tenant.t()} | {:error, :not_found}
+  @spec suspend_tenant(String.t()) :: {:ok, TenantRow.t()} | {:error, term()}
   def suspend_tenant(id) do
-    GenServer.call(__MODULE__, {:update_status, id, :suspended})
+    with {:ok, row} <- TenantRow.by_id(id), do: TenantRow.suspend(row)
   end
 
-  @spec resume_tenant(String.t()) :: {:ok, JidoClaw.Tenant.t()} | {:error, :not_found}
+  @spec resume_tenant(String.t()) :: {:ok, TenantRow.t()} | {:error, term()}
   def resume_tenant(id) do
-    GenServer.call(__MODULE__, {:update_status, id, :active})
+    with {:ok, row} <- TenantRow.by_id(id), do: TenantRow.resume(row)
+  end
+
+  @doc false
+  @spec sync_from_resource(String.t(), JidoClaw.Tenant.status()) :: :ok
+  def sync_from_resource(id, status) do
+    GenServer.call(__MODULE__, {:sync_from_resource, id, status})
   end
 
   @spec destroy_tenant(String.t()) :: :ok | {:error, :not_found}
@@ -74,17 +81,15 @@ defmodule JidoClaw.Tenant.Manager do
   def handle_info(:create_default_tenant, state) do
     case :ets.lookup(state.table, "default") do
       [] ->
-        tenant = JidoClaw.Tenant.new(id: "default", name: "Default")
-        ensure_postgres_row(tenant)
-
-        case InstanceSupervisor.start_instance(tenant.id) do
-          {:ok, _pid} ->
+        case register_durable(id: "default", name: "Default") do
+          {:ok, tenant} ->
+            :ok = reconcile_runtime(tenant)
             :ets.insert(state.table, {tenant.id, tenant})
             JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
-            Logger.info("[Tenant] Default tenant created")
+            Logger.info("[Tenant] Default tenant loaded (#{tenant.status})")
 
           {:error, reason} ->
-            Logger.warning("[Tenant] Failed to create default tenant: #{inspect(reason)}")
+            Logger.warning("[Tenant] Failed to load default tenant: #{inspect(reason)}")
         end
 
       _ ->
@@ -98,25 +103,32 @@ defmodule JidoClaw.Tenant.Manager do
   def handle_call({:ensure, id, attrs}, _from, state) do
     case :ets.lookup(state.table, id) do
       [{^id, existing}] ->
-        # Best-effort sync the Postgres row in case the cache survived
-        # a DB reset.
-        ensure_postgres_row(existing)
-        {:reply, {:ok, existing}, state}
+        # PostgreSQL remains authoritative even if a DB reset or a lifecycle
+        # change happened after this ETS entry was created.
+        case register_durable(
+               id: existing.id,
+               name: existing.name,
+               status: existing.status,
+               config: existing.config
+             ) do
+          {:ok, tenant} ->
+            :ok = reconcile_runtime(tenant)
+            :ets.insert(state.table, {id, tenant})
+            {:reply, {:ok, tenant}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
 
       [] ->
         attrs = Keyword.merge([id: id, name: id], attrs)
-        tenant = JidoClaw.Tenant.new(attrs)
-        ensure_postgres_row(tenant)
 
-        case InstanceSupervisor.start_instance(tenant.id) do
-          {:ok, _pid} ->
+        case register_durable(attrs) do
+          {:ok, tenant} ->
+            :ok = reconcile_runtime(tenant)
             :ets.insert(state.table, {tenant.id, tenant})
             JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
-            Logger.info("[Tenant] Ensured tenant #{tenant.id}")
-            {:reply, {:ok, tenant}, state}
-
-          {:error, {:already_started, _}} ->
-            :ets.insert(state.table, {tenant.id, tenant})
+            Logger.info("[Tenant] Ensured tenant #{tenant.id} (#{tenant.status})")
             {:reply, {:ok, tenant}, state}
 
           {:error, reason} ->
@@ -126,11 +138,11 @@ defmodule JidoClaw.Tenant.Manager do
   end
 
   def handle_call({:create, attrs}, _from, state) do
-    tenant = JidoClaw.Tenant.new(attrs)
-    ensure_postgres_row(tenant)
+    attrs = Keyword.put_new_lazy(attrs, :id, &JidoClaw.Tenant.generate_id/0)
 
-    case InstanceSupervisor.start_instance(tenant.id) do
-      {:ok, _pid} ->
+    case register_durable(attrs) do
+      {:ok, tenant} ->
+        :ok = reconcile_runtime(tenant)
         :ets.insert(state.table, {tenant.id, tenant})
         JidoClaw.Telemetry.emit_tenant_create(%{tenant_id: tenant.id})
         Logger.info("[Tenant] Created tenant #{tenant.id} (#{tenant.name})")
@@ -153,16 +165,16 @@ defmodule JidoClaw.Tenant.Manager do
     {:reply, tenants, state}
   end
 
-  def handle_call({:update_status, id, new_status}, _from, state) do
-    case :ets.lookup(state.table, id) do
-      [{^id, tenant}] ->
-        updated = %{tenant | status: new_status}
-        :ets.insert(state.table, {id, updated})
-        {:reply, {:ok, updated}, state}
+  def handle_call({:sync_from_resource, id, status}, _from, state) do
+    cached? = match?([{^id, _}], :ets.lookup(state.table, id))
 
-      [] ->
-        {:reply, {:error, :not_found}, state}
+    case :ets.lookup(state.table, id) do
+      [{^id, tenant}] -> :ets.insert(state.table, {id, %{tenant | status: status}})
+      [] -> :ok
     end
+
+    sync_runtime_supervisor(id, status, cached?)
+    {:reply, :ok, state}
   end
 
   def handle_call({:destroy, id}, _from, state) do
@@ -183,15 +195,61 @@ defmodule JidoClaw.Tenant.Manager do
     {:reply, :ets.info(state.table, :size), state}
   end
 
-  defp ensure_postgres_row(%{id: id} = _tenant) when is_binary(id) do
-    case JidoClaw.Tenants.Tenant.ensure(id) do
-      {:ok, _row} -> :ok
-      {:error, reason} -> Logger.warning("[Tenant] Postgres row sync failed: #{inspect(reason)}")
+  defp register_durable(attrs) when is_list(attrs) do
+    attrs = Map.new(attrs)
+
+    case TenantRow.register(%{
+           id: Map.fetch!(attrs, :id),
+           name: Map.get(attrs, :name, Map.fetch!(attrs, :id)),
+           status: Map.get(attrs, :status, :active),
+           config: Map.get(attrs, :config, %{})
+         }) do
+      {:ok, row} -> {:ok, legacy_from_row(row)}
+      {:error, _} = error -> error
     end
   rescue
-    e ->
-      Logger.warning("[Tenant] Postgres row sync raised: #{Exception.message(e)}")
+    error -> {:error, error}
   end
 
-  defp ensure_postgres_row(_), do: :ok
+  defp legacy_from_row(row) do
+    %JidoClaw.Tenant{
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      config: row.config,
+      created_at: row.inserted_at
+    }
+  end
+
+  defp reconcile_runtime(%{id: id, status: :active}) do
+    start_runtime(id, "start")
+  end
+
+  defp reconcile_runtime(%{id: id, status: status}) when status in [:suspended, :terminating] do
+    InstanceSupervisor.stop_instance(id)
+  end
+
+  defp start_runtime(id, operation) do
+    case InstanceSupervisor.start_instance(id) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("[Tenant] Failed to #{operation} runtime #{id}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp sync_runtime_supervisor(id, status, _cached?) when status in [:suspended, :terminating] do
+    InstanceSupervisor.stop_instance(id)
+  end
+
+  defp sync_runtime_supervisor(id, :active, true) do
+    start_runtime(id, "resume")
+  end
+
+  defp sync_runtime_supervisor(_id, :active, false), do: :ok
 end

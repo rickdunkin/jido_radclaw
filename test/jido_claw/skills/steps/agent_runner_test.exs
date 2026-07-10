@@ -363,7 +363,9 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
 
       # The durable correlation row persists past terminal-signal finalization
       # (only the cache entry clears; the row lives until TTL sweep).
-      assert {:ok, correlation} = RequestCorrelation.lookup(task.request_id)
+      assert {:ok, correlation} =
+               RequestCorrelation.lookup(task.request_id, authorize?: false)
+
       assert correlation.session_id == session.id
     end
   end
@@ -445,7 +447,9 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       assert terminal.content == "Vendor enveloped the thing."
       assert terminal.request_id == task.request_id
 
-      assert {:ok, correlation} = RequestCorrelation.lookup(task.request_id)
+      assert {:ok, correlation} =
+               RequestCorrelation.lookup(task.request_id, authorize?: false)
+
       assert correlation.session_id == session.id
     end
 
@@ -771,12 +775,12 @@ defmodule JidoClaw.Skills.Steps.AgentRunnerTest do
       assert cached != []
       {request_id, _scope} = hd(cached)
 
-      case RequestCorrelation.lookup(request_id) do
+      case RequestCorrelation.lookup(request_id, authorize?: false) do
         {:ok, row} -> assert row.user_id == user_id
         _ -> :ok
       end
 
-      _ = RequestCorrelation.complete(request_id)
+      _ = RequestCorrelation.complete(request_id, authorize?: false)
       Cache.delete(request_id)
     end
   end

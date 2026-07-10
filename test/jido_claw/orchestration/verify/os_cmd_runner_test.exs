@@ -102,7 +102,7 @@ defmodule JidoClaw.Orchestration.Verify.OsCmdRunnerTest do
   end
 
   describe "tamper-during-verify against a real repo (end-to-end build_result)" do
-    test "a check that edits a tracked file trips tracked_mutation (working-tree digest)",
+    test "a check that edits a tracked file trips working_tree_mutation",
          %{dir: dir} do
       File.write!(Path.join(dir, "tracked.txt"), "v1\n")
       commit_all!(dir, "seed")
@@ -120,7 +120,29 @@ defmodule JidoClaw.Orchestration.Verify.OsCmdRunnerTest do
         )
 
       assert envelope.tampered
-      assert Enum.any?(envelope.failures, &(&1.kind == "tracked_mutation"))
+      assert Enum.any?(envelope.failures, &(&1.kind == "working_tree_mutation"))
+    end
+
+    test "a check that creates an untracked artifact trips working_tree_mutation",
+         %{dir: dir} do
+      artifact =
+        script!(dir, "scripts/artifact.sh", "echo generated > verify-output.tmp\nexit 0\n")
+
+      commit_all!(dir, "add artifact-producing check")
+
+      envelope =
+        Verify.build_result(
+          [check([Path.join(".", artifact)])],
+          repo: dir,
+          runner: &OsCmdRunner.run/2,
+          porcelain: &Verify.Git.porcelain/1,
+          head: &Verify.Git.head/1,
+          diff_digest: &Verify.Git.diff_digest/1
+        )
+
+      assert envelope.tampered
+      refute envelope.inconclusive
+      assert Enum.any?(envelope.failures, &(&1.kind == "working_tree_mutation"))
     end
 
     test "a check that commits mid-verify trips head_moved", %{dir: dir} do
@@ -150,6 +172,26 @@ defmodule JidoClaw.Orchestration.Verify.OsCmdRunnerTest do
       assert envelope.tampered
       assert Enum.any?(envelope.failures, &(&1.kind == "head_moved"))
     end
+
+    test "a check that edits an already-untracked file trips working-tree tamper", %{dir: dir} do
+      File.write!(Path.join(dir, "tracked.txt"), "v1\n")
+      tamper = script!(dir, "scripts/tamper-untracked.sh", "echo after > input.txt\nexit 0\n")
+      commit_all!(dir, "seed")
+      File.write!(Path.join(dir, "input.txt"), "before\n")
+
+      envelope =
+        Verify.build_result(
+          [check([Path.join(".", tamper)])],
+          repo: dir,
+          runner: &OsCmdRunner.run/2,
+          porcelain: &Verify.Git.porcelain/1,
+          head: &Verify.Git.head/1,
+          diff_digest: &Verify.Git.diff_digest/1
+        )
+
+      assert envelope.tampered
+      assert Enum.any?(envelope.failures, &(&1.kind == "working_tree_mutation"))
+    end
   end
 
   describe "Verify.Git captures" do
@@ -166,6 +208,12 @@ defmodule JidoClaw.Orchestration.Verify.OsCmdRunnerTest do
       File.write!(Path.join(dir, "tracked.txt"), "v2\n")
       assert Verify.Git.porcelain(dir) =~ "tracked.txt"
       assert Verify.Git.diff_digest(dir) != clean_digest
+
+      # Nonignored untracked content is part of both captures too.
+      tracked_edit_digest = Verify.Git.diff_digest(dir)
+      File.write!(Path.join(dir, "untracked.txt"), "one\n")
+      assert Verify.Git.porcelain(dir) =~ "untracked.txt"
+      assert Verify.Git.diff_digest(dir) != tracked_edit_digest
 
       non_repo =
         Path.join(System.tmp_dir!(), "jido_not_a_repo_#{System.unique_integer([:positive])}")

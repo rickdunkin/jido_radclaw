@@ -2,8 +2,9 @@ defmodule JidoClaw.Cron.JobTargetTest do
   @moduledoc """
   Coverage for the T2-5 execution-target dimension on `Cron.Job`: the
   `target` enum + workflow fields, the `run_count`/`last_run_at`
-  durability counters stamped by `:record_run`, and the `:upsert`
-  invariants that stop a bad row from silently always-failing at dispatch.
+  durability counters stamped inside the fenced `record_success` /
+  `record_failure` outcome writes, and the `:upsert` invariants that stop
+  a bad row from silently always-failing at dispatch.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -64,18 +65,31 @@ defmodule JidoClaw.Cron.JobTargetTest do
     end
   end
 
-  describe ":record_run" do
-    test "increments run_count and stamps last_run_at" do
+  describe "durability counters (fenced outcome writes)" do
+    test "record_success and record_failure increment run_count and stamp last_run_at" do
       tenant = seed_tenant("record-run")
       {:ok, row} = Job.upsert(base_attrs(), tenant: tenant, actor: actor_for(tenant))
       assert row.run_count == 0
+      assert is_nil(row.last_run_at)
 
-      {:ok, after1} = Job.record_run(row, %{}, tenant: tenant, actor: actor_for(tenant))
+      {:ok, after1} =
+        Job.record_success(row, row.definition_token, tenant: tenant, actor: actor_for(tenant))
+
       assert after1.run_count == 1
-      assert %DateTime{} = after1.last_run_at
 
-      {:ok, after2} = Job.record_run(after1, %{}, tenant: tenant, actor: actor_for(tenant))
+      # Assert the DURABLE stamp on a reload (the manual action's raw
+      # RETURNING carries an uncast NaiveDateTime in the in-memory struct).
+      {:ok, reloaded} = Job.by_job_id(row.job_id, tenant: tenant, actor: actor_for(tenant))
+      assert %DateTime{} = reloaded.last_run_at
+
+      {:ok, after2} =
+        Job.record_failure(after1, row.definition_token,
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
       assert after2.run_count == 2
+      assert after2.failure_count == 1
     end
   end
 

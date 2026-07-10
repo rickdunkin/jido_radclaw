@@ -5,7 +5,7 @@ defmodule JidoClaw.Reasoning.Compactor.Identity do
   runtime/trace `agent_id`.
 
   The runtime `agent_id` (`tool_context.agent_id`) is `"main"` for the REPL
-  main, the `session_id` for the chat main, `"handoff:<uuid>:<tpl>"` for a
+  main, `"session:<uuid>"` for the chat main, `"handoff:<uuid>:<tpl>"` for a
   routed worker, and an opaque tag for a spawned sub-agent. Traces, the
   `AgentTracker`, and the Jido registry key on it unchanged.
 
@@ -16,7 +16,6 @@ defmodule JidoClaw.Reasoning.Compactor.Identity do
       resolve(agent_template, agent_id, session_id) =
         cond do
           agent_template == "main" -> "main"   # REPL main
-          agent_id == session_id   -> "main"   # chat main (agent_id IS the session id)
           true                     -> agent_id  # handoff worker / sub-agent
         end
 
@@ -25,9 +24,9 @@ defmodule JidoClaw.Reasoning.Compactor.Identity do
   the `RequestCorrelation` row, and `JidoClaw.Reasoning.Compactor` derives
   the same id from `tool_context` — so *stored == derived*.
 
-  Keying on `agent_id == session_id` (not `template in [nil, "main"]`)
-  avoids mis-mapping spawned children, whose template is `nil`, onto
-  `"main"`.
+  Main chat turns carry the explicit `"main"` template, so their opaque
+  runtime id does not affect the durable compaction key. The equality clause
+  remains for rows written by pre-v0.6.4 runtimes.
   """
 
   @main "main"

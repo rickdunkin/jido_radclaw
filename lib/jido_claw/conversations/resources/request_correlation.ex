@@ -71,15 +71,30 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
 
   @sweep_batch 1_000
 
-  # RequestCorrelation has internal callers with no actor in scope
-  # (Recorder telemetry callbacks, Session.Worker durable lookups,
-  # JidoClaw.chat's correlation registration, and the 60s sweeper in
-  # `sweep_expired/0`). All of them rely on this deliberately permissive
-  # action-type-scoped policy. Closing the broader gap requires the
-  # v0.7+ agent-identity work.
+  # Operator-facing calls share the standard active-tenant policy. Internal
+  # correlation plumbing has no actor at several signal boundaries and uses an
+  # explicit `authorize?: false` at each callsite; keeping that bypass visible
+  # at the caller prevents this resource from becoming a general no-actor hole.
   policies do
-    policy action_type([:read, :create, :update, :destroy]) do
-      authorize_if(always())
+    bypass actor_attribute_equals(:kind, :system) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type([:create, :update, :destroy]) do
+      forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
+    policy action_type(:read) do
+      authorize_if(
+        expr(
+          tenant_id == ^actor(:tenant_id) and
+            exists(
+              JidoClaw.Tenants.Tenant,
+              id == parent(tenant_id) and status == :active
+            )
+        )
+      )
     end
   end
 
@@ -292,7 +307,9 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   def sweep_expired do
     query = Query.limit(__MODULE__.query_to_expired(), @sweep_batch)
 
-    case Ash.read(query) do
+    # The global TTL worker intentionally spans every tenant.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case Ash.read(query, authorize?: false) do
       {:ok, []} ->
         {:ok, 0}
 
@@ -306,7 +323,12 @@ defmodule JidoClaw.Conversations.RequestCorrelation do
   end
 
   defp do_bulk_destroy(expired) do
-    case Ash.bulk_destroy(expired, :complete, %{}, return_errors?: true) do
+    # A sweep batch can contain rows from several tenants.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case Ash.bulk_destroy(expired, :complete, %{},
+           return_errors?: true,
+           authorize?: false
+         ) do
       %Ash.BulkResult{status: :success, records: records} ->
         {:ok, length(records || expired)}
 

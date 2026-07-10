@@ -32,6 +32,27 @@ defmodule JidoClaw.ConfigTest do
     assert Config.mcp_servers(%{"mcp_servers" => servers}) == servers
   end
 
+  describe "vfs_mounts/1" do
+    test "normalizes absent, list, and single-map mount collections" do
+      assert {:ok, []} = Config.vfs_mounts(%{})
+      assert {:ok, []} = Config.vfs_mounts(%{"vfs" => %{}})
+
+      mounts = [%{"path" => "/publish", "adapter" => "github"}]
+      assert {:ok, ^mounts} = Config.vfs_mounts(%{"vfs" => %{"mounts" => mounts}})
+
+      [mount] = mounts
+      assert {:ok, [^mount]} = Config.vfs_mounts(%{vfs: %{mounts: mount}})
+    end
+
+    test "contains malformed vfs and mounts containers as typed errors" do
+      assert {:error, :invalid_vfs_config} = Config.vfs_mounts(%{"vfs" => "not-a-map"})
+      assert {:error, :invalid_vfs_config} = Config.vfs_mounts(%{"vfs" => nil})
+
+      assert {:error, :invalid_vfs_mounts} =
+               Config.vfs_mounts(%{"vfs" => %{"mounts" => "not-a-collection"}})
+    end
+  end
+
   describe "read_user_config/1 (the strict lane)" do
     test "an absent file (or .jido dir) is {:ok, %{}} — nothing configured" do
       assert {:ok, %{}} == Config.read_user_config(project!(nil))

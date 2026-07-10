@@ -7,7 +7,8 @@ defmodule JidoClaw.Cron.JobTest do
     * `:upsert` on `(tenant_id, job_id)` identity — second call with
       same id updates rather than inserts.
     * `:upsert` accept list excludes `tenant_id` (threaded via opt).
-    * `:disable` sets `disabled_at`; `:enable` clears it.
+    * `:disable` sets `disabled_at`; `:enable` clears it and rotates
+      `definition_token`.
     * `:remove` (destroy) removes the row.
     * `:by_id_global` bypasses tenancy; `:by_id` requires it.
     * `:by_job_id` and `:for_tenant` return correct subsets;
@@ -120,6 +121,20 @@ defmodule JidoClaw.Cron.JobTest do
 
       {:ok, enabled} = Job.enable(disabled, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
       assert is_nil(enabled.disabled_at)
+    end
+
+    test ":enable rotates definition_token" do
+      tenant_id = seed_tenant("cron-enable-token")
+      {:ok, row} = Job.upsert(upsert_attrs(), tenant: tenant_id, actor: actor_for(tenant_id))
+
+      {:ok, disabled} = Job.disable(row, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      # Enable is a definition write: the rotated generation is what makes the
+      # reconcile fingerprint differ, so a still-alive auto-disabled worker is
+      # replaced rather than retained (pinned end-to-end in Cron.OwnerTest).
+      {:ok, enabled} = Job.enable(disabled, %{}, tenant: tenant_id, actor: actor_for(tenant_id))
+      assert is_nil(enabled.disabled_at)
+      refute enabled.definition_token == disabled.definition_token
     end
   end
 

@@ -606,11 +606,14 @@ defmodule JidoClaw.TraceTest do
       :ok = RequestCorrelation.Cache.clear()
 
       {:ok, _} =
-        RequestCorrelation.register(%{
-          request_id: request_id,
-          session_id: session.id,
-          tenant_id: tenant_id
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: request_id,
+            session_id: session.id,
+            tenant_id: tenant_id
+          },
+          authorize?: false
+        )
 
       :ok = RequestCorrelation.Cache.delete(request_id)
 

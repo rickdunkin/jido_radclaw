@@ -5,10 +5,13 @@ sources:
   - lib/jido_claw/core/mcp_server.ex
   - lib/jido_claw/core/mcp_server/surface_version.ex
   - lib/jido_claw/core/mcp_server/resources
+  - lib/jido_claw/tools/search_code.ex
+  - lib/jido_claw/tools/search_real_code.ex
+  - lib/jido_claw/tools/file_payload_limit.ex
   - test/jido_claw/core/mcp_server/served_surface_golden_test.exs
   - test/fixtures/mcp_surface/served_surface.json
-verified: 2026-07-07
-verified_sha: "2a0bb4c6"
+verified: 2026-07-09
+verified_sha: "b2cae5cd"
 ---
 
 # MCP Server Surface
@@ -54,6 +57,19 @@ contract clients pin against. The *consuming* direction is
 route / waves / held / dropped / live signals + gate-block state; `workflow_status` is
 the tenant rollup.
 
+`search_code`/`search_real_code` share a bounded VFS traversal core: per-file
+pre/post read caps plus hard directory-depth, entry, file, aggregate-byte, match,
+and retained-output ceilings. Each regex match has explicit PCRE work/recursion
+limits; regex/glob sources are capped at 8 KiB/4 KiB, and both compilers run in
+supervised unlinked tasks that are killed and drained at the scan deadline (covering
+GlobEx range expansion as well as PCRE compilation). The whole scan uses the tighter
+of Jido's absolute action deadline or a five-second direct-call default.
+`max_results` can narrow output but cannot raise the hard 1,000-line retention
+ceiling; a scan that exceeds a safety budget fails loudly instead of materializing
+an unbounded tree or match list. Locally resolved reads additionally require a
+regular file before `File.read/1`, rejecting FIFOs/sockets/devices so a special file
+cannot consume an unbounded blocking read.
+
 **Exposed resources** (AR-2 Phase 5, §10.2):
 
 - `jido://workflows/catalog` — the deterministic route-composer catalog (every
@@ -93,6 +109,11 @@ remains documented in AGENTS.md's Known limitations — it is a dependency worka
 not a surface property; remove once `jido_mcp` emits Peri-compatible schemas or stops
 routing those descriptors through Anubis's pre-dispatch validation.
 
+The scan deadline directly bounds traversal, compilation, and local regular-file
+processing. Remote and mount-backed `Resolver` reads still rely on each backend's own
+I/O timeout/cancellation contract; they are post-read byte-capped but are not made
+interruptible by the traversal loop itself.
+
 ## Source map
 
 - `lib/jido_claw/core/mcp_server.ex` — the served tool set, `server_info/0`
@@ -100,5 +121,7 @@ routing those descriptors through Anubis's pre-dispatch validation.
   `app_version/0`, bump rules
 - `lib/jido_claw/core/mcp_server/resources/` — catalog, per-stage template,
   meta-version, bootstrap resources
+- `lib/jido_claw/tools/search_code.ex` — bounded traversal, compile tasks, match limits
+- `lib/jido_claw/tools/file_payload_limit.ex` — regular-file + byte preflight
 - `test/jido_claw/core/mcp_server/served_surface_golden_test.exs` — the golden guard
 - `test/fixtures/mcp_surface/served_surface.json` — the committed surface

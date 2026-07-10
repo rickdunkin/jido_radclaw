@@ -224,7 +224,8 @@ defmodule JidoClaw.RouteComposer.ComposerLeaseTest do
       assert {:ok, pid1} = RouteComposer.ensure_started(base_opts(ctx), parent)
       assert_receive {:wave_gate, exec_pid}, 10_000
 
-      token_before = reload_global(parent.id).claim_token
+      claim_before = reload_global(parent.id)
+      assert is_binary(claim_before.claim_token)
 
       # Kill WITHOUT rotating the token — an ordinary crash.
       cref = Process.monitor(pid1)
@@ -238,8 +239,13 @@ defmodule JidoClaw.RouteComposer.ComposerLeaseTest do
       assert :completed = await_status(parent.id, ctx, :completed, 30_000)
       assert :route_converged in kinds(parent.id, ctx)
 
-      # The frozen token was reused, never rotated (single-node renew leaves it).
-      assert reload_global(parent.id).claim_token == token_before
+      # Convergence proves the frozen token passed restart preflight without a
+      # rotation. The terminal projection now revokes that credential while
+      # retaining owner provenance, so a stale sidecar cannot renew green.
+      terminal = reload_global(parent.id)
+      assert is_nil(terminal.claim_token)
+      assert is_nil(terminal.claim_expires_at)
+      assert terminal.claimed_by == claim_before.claimed_by
     end
   end
 

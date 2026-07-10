@@ -36,6 +36,7 @@ defmodule JidoClaw.Network.Node do
     :workspace_id,
     status: :disconnected,
     peers: MapSet.new(),
+    seen_messages: %{},
     relay_url: nil
   ]
 
@@ -305,22 +306,53 @@ defmodule JidoClaw.Network.Node do
   # could never produce. Otherwise log and drop — no store, no response
   # broadcast, no add_peer, no Reputation.record_share.
   #
-  # Residual risk, accepted: the signature covers only "payload" — not
-  # "from"/"type"/"id"/"timestamp". The key is looked up *by* "from",
-  # so a cross-"from" spoof fails verification. Verbatim replay of a
-  # peer's old signed message remains possible (no nonce/timestamp
-  # window) — acceptable because PubSub injection requires BEAM cluster
-  # membership (gossip secret + distribution cookie), and a cluster
-  # member already has full RCE.
   defp verified_dispatch(message, expected_type, state, handler) do
     case Protocol.verify_and_normalize(message, expected_type, &fetch_peer_key/1) do
       {:ok, canonical} ->
-        handler.(canonical, state)
+        replay_key = {canonical["from"], canonical["id"]}
+
+        if seen_message?(state, replay_key) do
+          state
+        else
+          canonical
+          |> handler.(state)
+          |> remember_message(replay_key)
+        end
 
       {:error, reason} ->
         log_drop(reason, expected_type, message)
         state
     end
+  end
+
+  @seen_message_limit 10_000
+  @seen_message_ttl_ms 5 * 60 * 1_000
+
+  defp seen_message?(state, {from, id}) when is_binary(from) and is_binary(id),
+    do: Map.has_key?(state.seen_messages, {from, id})
+
+  defp seen_message?(_state, _key), do: true
+
+  defp remember_message(state, replay_key) do
+    now = System.monotonic_time(:millisecond)
+
+    seen =
+      state.seen_messages
+      |> Enum.reject(fn {_message_id, received_at} ->
+        now - received_at > @seen_message_ttl_ms
+      end)
+      |> Map.new()
+      |> Map.put(replay_key, now)
+      |> trim_seen_messages()
+
+    %{state | seen_messages: seen}
+  end
+
+  defp trim_seen_messages(seen) when map_size(seen) <= @seen_message_limit, do: seen
+
+  defp trim_seen_messages(seen) do
+    {oldest_id, _received_at} = Enum.min_by(seen, &elem(&1, 1))
+    Map.delete(seen, oldest_id)
   end
 
   defp log_drop(:bad_signature, expected_type, message) do
@@ -369,9 +401,8 @@ defmodule JidoClaw.Network.Node do
 
   defp handle_solution_requested(message, state) do
     case message do
-      # `request_id` is the envelope "id", which is NOT covered by the
-      # signature — guard its type here or a re-wrapped envelope could
-      # crash Protocol.response_message/3.
+      # `request_id` is signed as the envelope "id", but its sender-selected
+      # shape still needs a binary guard before Protocol.response_message/3.
       %{"payload" => %{"description" => description}, "id" => request_id, "from" => from}
       when is_binary(description) and is_binary(request_id) ->
         opts = sanitize_request_opts(get_in(message, ["payload", "opts"]))

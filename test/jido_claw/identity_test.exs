@@ -183,6 +183,20 @@ defmodule JidoClaw.Agent.IdentityTest do
       assert Bitwise.band(mode, 0o777) == 0o600
     end
 
+    test "tightens legacy-readable identity and directory modes on load", %{tmp_dir: tmp_dir} do
+      assert {:ok, original} = Identity.init(tmp_dir)
+      dir = Path.join(tmp_dir, ".jido")
+      path = Path.join(dir, "identity.json")
+
+      :ok = File.chmod(dir, 0o755)
+      :ok = File.chmod(path, 0o644)
+
+      assert {:ok, loaded} = Identity.load(tmp_dir)
+      assert loaded.agent_id == original.agent_id
+      assert Bitwise.band(File.stat!(dir).mode, 0o777) == 0o700
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+
     test "returned identity has a non-nil agent_id, public_key, private_key, and created_at", %{
       tmp_dir: tmp_dir
     } do
@@ -208,11 +222,54 @@ defmodule JidoClaw.Agent.IdentityTest do
       assert {:error, :not_found} = Identity.load(tmp_dir)
     end
 
-    test "returns {:error, :not_found} when the identity file is corrupt", %{tmp_dir: tmp_dir} do
+    test "distinguishes a corrupt identity from an absent identity", %{tmp_dir: tmp_dir} do
       jido_dir = Path.join(tmp_dir, ".jido")
       File.mkdir_p!(jido_dir)
       File.write!(Path.join(jido_dir, "identity.json"), "not valid json }{")
-      assert {:error, :not_found} = Identity.load(tmp_dir)
+      assert {:error, {:corrupt_identity, {:invalid_json, _reason}}} = Identity.load(tmp_dir)
+      assert {:error, {:corrupt_identity, {:invalid_json, _reason}}} = Identity.init(tmp_dir)
+    end
+
+    test "rejects inconsistent key material instead of rotating it", %{tmp_dir: tmp_dir} do
+      {pub, _priv} = Identity.generate_keypair()
+      {_other_pub, other_priv} = Identity.generate_keypair()
+      jido_dir = Path.join(tmp_dir, ".jido")
+      File.mkdir_p!(jido_dir)
+
+      File.write!(
+        Path.join(jido_dir, "identity.json"),
+        Jason.encode!(%{
+          "agent_id" => Identity.derive_agent_id(pub),
+          "public_key" => Base.encode64(pub),
+          "private_key" => Base.encode64(other_priv),
+          "created_at" => DateTime.to_iso8601(DateTime.utc_now())
+        })
+      )
+
+      assert {:error, {:corrupt_identity, :inconsistent_identity}} = Identity.load(tmp_dir)
+    end
+
+    test "rejects a symlink identity file without following it", %{tmp_dir: tmp_dir} do
+      victim = Path.join(tmp_dir, "victim.json")
+      File.write!(victim, "secret")
+      jido_dir = Path.join(tmp_dir, ".jido")
+      File.mkdir_p!(jido_dir)
+      File.ln_s!(victim, Path.join(jido_dir, "identity.json"))
+
+      assert {:error, {:invalid_identity_file, :symlink}} = Identity.load(tmp_dir)
+      assert {:error, {:invalid_identity_file, :symlink}} = Identity.init(tmp_dir)
+      assert File.read!(victim) == "secret"
+    end
+
+    test "rejects a symlinked identity directory", %{tmp_dir: tmp_dir} do
+      outside = Path.join(tmp_dir, "outside")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "identity.json"), "secret")
+      File.ln_s!(outside, Path.join(tmp_dir, ".jido"))
+
+      assert {:error, {:invalid_identity_dir, :symlink}} = Identity.load(tmp_dir)
+      assert {:error, {:invalid_identity_dir, :symlink}} = Identity.init(tmp_dir)
+      assert File.read!(Path.join(outside, "identity.json")) == "secret"
     end
 
     test "loaded identity has the same agent_id as the one that was saved", %{tmp_dir: tmp_dir} do
@@ -297,6 +354,25 @@ defmodule JidoClaw.Agent.IdentityTest do
       }
 
       assert :ok = Identity.save(identity, tmp_dir)
+    end
+
+    test "atomically replaces a regular file and leaves no temporary file", %{tmp_dir: tmp_dir} do
+      {pub, priv} = Identity.generate_keypair()
+
+      identity = %Identity{
+        agent_id: Identity.derive_agent_id(pub),
+        public_key: pub,
+        private_key: priv,
+        created_at: DateTime.to_iso8601(DateTime.utc_now())
+      }
+
+      assert :ok = Identity.save(identity, tmp_dir)
+      assert :ok = Identity.save(identity, tmp_dir)
+
+      jido_dir = Path.join(tmp_dir, ".jido")
+      assert File.ls!(jido_dir) == ["identity.json"]
+      assert Bitwise.band(File.stat!(Path.join(jido_dir, "identity.json")).mode, 0o777) == 0o600
+      assert Bitwise.band(File.stat!(jido_dir).mode, 0o777) == 0o700
     end
   end
 

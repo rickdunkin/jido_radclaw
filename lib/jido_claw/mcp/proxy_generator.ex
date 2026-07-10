@@ -20,9 +20,11 @@ defmodule JidoClaw.MCP.ProxyGenerator do
   operator-configurable) and asserted so — this is what keeps the approval
   fail-closed fallback safe: an unknown `mcp_`-prefixed name falls back to the
   gated global default, where a custom prefix would look native. Names are
-  deduplicated (distinct remotes that sanitize alike get distinct `.name`s)
-  and capped at the 64-char provider limit, reserving the hash-suffix room
-  *before* capping so a collision-broken name still fits.
+  deduplicated both within a server and across the Consumer's accepted server
+  aggregate, then capped at the 64-char provider limit. Aggregate collisions
+  give every member an order-independent identity suffix, so a server/tool
+  boundary ambiguity cannot bind one backend to another server's approval or
+  reach policy; non-colliding historical names remain unchanged.
 
   ## Schema (JSON-Schema pass-through, NOT `Zoi.map()`/`to_zoi`)
 
@@ -41,6 +43,8 @@ defmodule JidoClaw.MCP.ProxyGenerator do
 
   require Logger
 
+  alias JidoClaw.Core.CanonicalHash
+
   # The dep's bound (`sync_tools_to_agent.ex`). The dep *fails the whole sync*
   # past it; we keep a deterministic first-N-by-sorted-name so a chatty server
   # still contributes tools, and warn the dropped count + names (each tool
@@ -53,22 +57,55 @@ defmodule JidoClaw.MCP.ProxyGenerator do
   @control_chars ~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/u
 
   @provider_name_limit 64
+  @plain_server_segment_limit 32
+  @hashed_server_segment_chars 20
+  @server_digest_chars 24
   @empty_object_schema %{"type" => "object", "properties" => %{}}
+  @registry_key {__MODULE__, :registry}
+  # Cumulative per-VM ceiling. A hostile endpoint may churn remote tool names,
+  # but it can no longer grow the atom table/code server without bound.
+  @max_proxy_identities 1_024
 
   @doc """
   Build proxy modules for `tools` discovered from `endpoint_id`/`server_name`.
 
   Returns the list of compiled (or pre-existing, idempotently reused) modules.
+
+  This direct API retains its historical immediate-publication semantics. The
+  Consumer's off-process discovery path uses `stage_modules/3` and publishes a
+  complete aggregate only through `commit_stages/1` after the result has been
+  correlated and accepted in the Consumer process.
   """
   @spec build_modules(String.t(), atom(), [map()]) :: [module()]
   def build_modules(server_name, endpoint_id, tools)
       when is_binary(server_name) and is_atom(endpoint_id) and is_list(tools) do
-    prefix = "mcp_" <> server_name <> "_"
+    [modules] =
+      server_name
+      |> stage_modules(endpoint_id, tools)
+      |> List.wrap()
+      |> commit_stages()
 
-    {modules, _used} =
+    modules
+  end
+
+  @doc """
+  Build an inert proxy-definition stage without allocating module atoms or
+  changing the live definition registry.
+
+  The returned descriptor contains binaries/maps plus the already-configured
+  endpoint atom only. It is safe to construct in a killable discovery process:
+  abandoning it cannot change live routing/schema or consume proxy-identity
+  capacity. Call `commit_stages/1` only after accepting the whole aggregate.
+  """
+  @spec stage_modules(String.t(), atom(), [map()]) :: map()
+  def stage_modules(server_name, endpoint_id, tools)
+      when is_binary(server_name) and is_atom(endpoint_id) and is_list(tools) do
+    prefix = server_prefix(server_name)
+
+    {definitions, _used} =
       tools
       |> cap_tools(server_name)
-      |> Enum.reduce({[], MapSet.new()}, fn tool, {modules, used} ->
+      |> Enum.reduce({[], MapSet.new()}, fn tool, {definitions, used} ->
         remote_name = Map.get(tool, "name")
         description = sanitize_description(Map.get(tool, "description"), remote_name)
         schema = normalize_schema(Map.get(tool, "inputSchema"))
@@ -77,15 +114,152 @@ defmodule JidoClaw.MCP.ProxyGenerator do
         local = local_tool_name(prefix, remote_name, used)
         assert_mcp_root!(local)
 
-        module =
-          server_name
-          |> module_name(endpoint_id, remote_name, local, description, schema)
-          |> ensure_proxy_module(endpoint_id, remote_name, local, description, schema)
+        definition = proxy_definition(endpoint_id, remote_name, local, description, schema)
 
-        {[module | modules], MapSet.put(used, local)}
+        {[definition | definitions], MapSet.put(used, local)}
       end)
 
-    Enum.reverse(modules)
+    %{server_name: server_name, definitions: Enum.reverse(definitions)}
+  end
+
+  @doc """
+  Atomically publish one or more accepted proxy-definition stages.
+
+  Results are lists of modules in the same order as the supplied stages. New
+  identities are capacity-checked and allocated only here. All accepted
+  definitions are installed with one `:persistent_term.put/2`, so readers see
+  either the prior aggregate or the complete accepted aggregate.
+  """
+  @spec commit_stages([map()]) :: [[module()]]
+  def commit_stages(stages) when is_list(stages) do
+    stages = disambiguate_aggregate_names(stages)
+    lock = {{__MODULE__, :registry, node()}, self()}
+
+    :global.trans(
+      lock,
+      fn ->
+        original = registry()
+
+        {module_lists, updated} =
+          Enum.map_reduce(stages, original, fn stage, acc -> commit_stage(stage, acc) end)
+
+        if updated != original, do: :persistent_term.put(@registry_key, updated)
+        module_lists
+      end,
+      [node()]
+    )
+  end
+
+  # A provider-visible name is the concatenation `mcp_<server>_<tool>`, so the
+  # boundary itself can be ambiguous across servers: server `a` / remote
+  # `b_ping` and server `a_b` / remote `ping` both stage `mcp_a_b_ping`.
+  # Per-server dedupe cannot see that. Resolve only actual aggregate collisions
+  # here, before module allocation/publication, and suffix *every* member. This
+  # is symmetric (no config-order winner), while reserving all non-colliding
+  # names first keeps historical names stable and prevents a suffixed candidate
+  # from stealing an existing name.
+  defp disambiguate_aggregate_names(stages) do
+    entries = aggregate_entries(stages)
+    frequencies = Enum.frequencies_by(entries, & &1.definition.local_name)
+
+    reserved =
+      entries
+      |> Enum.reject(&(Map.fetch!(frequencies, &1.definition.local_name) > 1))
+      |> MapSet.new(& &1.definition.local_name)
+
+    {renames, _used} =
+      entries
+      |> Enum.filter(&(Map.fetch!(frequencies, &1.definition.local_name) > 1))
+      |> Enum.sort_by(&aggregate_identity/1)
+      |> Enum.reduce({%{}, reserved}, fn entry, {renames, used} ->
+        local_name = aggregate_unique_name(entry, used, 1)
+
+        {
+          Map.put(renames, {entry.stage_index, entry.definition_index}, local_name),
+          MapSet.put(used, local_name)
+        }
+      end)
+
+    stages
+    |> Enum.with_index()
+    |> Enum.map(fn {%{definitions: definitions} = stage, stage_index} ->
+      renamed =
+        definitions
+        |> Enum.with_index()
+        |> Enum.map(fn {definition, definition_index} ->
+          case Map.fetch(renames, {stage_index, definition_index}) do
+            {:ok, local_name} -> rename_definition(definition, local_name)
+            :error -> definition
+          end
+        end)
+
+      %{stage | definitions: renamed}
+    end)
+    |> assert_unique_aggregate_names!()
+  end
+
+  defp aggregate_entries(stages) do
+    stages
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {%{server_name: server_name, definitions: definitions}, stage_index} ->
+      definitions
+      |> Enum.with_index()
+      |> Enum.map(fn {definition, definition_index} ->
+        %{
+          server_name: server_name,
+          stage_index: stage_index,
+          definition_index: definition_index,
+          definition: definition
+        }
+      end)
+    end)
+  end
+
+  defp aggregate_identity(entry) do
+    definition = entry.definition
+
+    # Endpoint atoms are bounded routing slots, not provider-visible identity:
+    # on a fresh VM the same servers may receive opposite slots when config
+    # order changes. Keep the suffix stable across that cold-boot permutation;
+    # `commit_stage/2` still includes endpoint_id in the backend/module identity.
+    {entry.server_name, definition.remote_name, definition.local_name}
+  end
+
+  defp aggregate_unique_name(entry, used, attempt) do
+    base = entry.definition.local_name
+    suffix = aggregate_collision_suffix(aggregate_identity(entry), attempt)
+    candidate = cap(base, @provider_name_limit - byte_size(suffix)) <> suffix
+
+    if MapSet.member?(used, candidate) do
+      aggregate_unique_name(entry, used, attempt + 1)
+    else
+      candidate
+    end
+  end
+
+  defp aggregate_collision_suffix(identity, attempt) do
+    digest = compute_digest({:aggregate_name, identity, attempt})
+    "_" <> binary_part(digest, 0, 12)
+  end
+
+  defp rename_definition(definition, local_name) do
+    proxy_definition(
+      definition.endpoint_id,
+      definition.remote_name,
+      local_name,
+      definition.description,
+      definition.schema
+    )
+  end
+
+  defp assert_unique_aggregate_names!(stages) do
+    names = for stage <- stages, definition <- stage.definitions, do: definition.local_name
+
+    if length(names) != MapSet.size(MapSet.new(names)) do
+      raise "JidoClaw.MCP.ProxyGenerator failed to produce unique aggregate tool names"
+    end
+
+    stages
   end
 
   # -- Tool-count cap (deterministic, first-N by sorted name) --
@@ -117,20 +291,52 @@ defmodule JidoClaw.MCP.ProxyGenerator do
 
   # -- Collision-proof, mcp_-rooted, ≤64-char local names --
 
+  # Preserve the historical `mcp_<server>_` prefix for short configured names.
+  # Long or normalized names get a 96-bit identity suffix *before* the final
+  # 64-byte cap. Therefore two servers sharing a long leading segment cannot
+  # collapse to the same provider-visible namespace and overwrite approval or
+  # reach policy in the Consumer aggregate.
+  defp server_prefix(server_name) do
+    segment = sanitize_segment(server_name)
+
+    if segment == server_name and byte_size(segment) <= @plain_server_segment_limit do
+      "mcp_" <> segment <> "_"
+    else
+      "mcp_" <>
+        cap(segment, @hashed_server_segment_chars) <>
+        "_" <> short_digest(server_name, @server_digest_chars) <> "_"
+    end
+  end
+
   defp local_tool_name(prefix, remote_name, used) do
     base = prefix <> sanitize_segment(remote_name)
-    candidate = cap(base, @provider_name_limit)
+    unique_local_tool_name(base, remote_name, used, 0)
+  end
+
+  defp unique_local_tool_name(base, remote_name, used, attempt) do
+    candidate =
+      case attempt do
+        0 ->
+          cap(base, @provider_name_limit)
+
+        positive ->
+          suffix = collision_suffix(remote_name, positive)
+          cap(base, @provider_name_limit - byte_size(suffix)) <> suffix
+      end
 
     if MapSet.member?(used, candidate) do
-      suffix = collision_suffix(remote_name)
-      cap(base, @provider_name_limit - byte_size(suffix)) <> suffix
+      unique_local_tool_name(base, remote_name, used, attempt + 1)
     else
       candidate
     end
   end
 
-  defp collision_suffix(remote_name) do
-    "_" <> String.downcase(Integer.to_string(:erlang.phash2(remote_name), 36))
+  defp collision_suffix(remote_name, 1) do
+    "_" <> short_digest(remote_name, 12)
+  end
+
+  defp collision_suffix(remote_name, attempt) do
+    "_" <> short_digest(remote_name <> "#" <> Integer.to_string(attempt), 12)
   end
 
   # Sanitized names are ASCII ([a-z0-9_]), so byte slicing is char-safe.
@@ -195,57 +401,133 @@ defmodule JidoClaw.MCP.ProxyGenerator do
   defp open_object?(list) when is_list(list), do: Enum.any?(list, &open_object?/1)
   defp open_object?(_other), do: false
 
-  # -- Module identity (definition-complete hash) --
+  # -- Stable module identity + bounded runtime definition registry --
 
-  defp module_name(server_name, endpoint_id, remote_name, local_name, description, schema) do
-    server = Macro.camelize(sanitize_segment(server_name))
-    tool = Macro.camelize(sanitize_segment(local_name))
-    hash = definition_hash(endpoint_id, remote_name, local_name, description, schema)
+  defp proxy_definition(endpoint_id, remote_name, local_name, description, schema) do
+    digest = compute_digest({endpoint_id, remote_name, local_name, description, schema})
 
-    # Module.concat (not safe_concat) is required — these proxy module atoms are
-    # newly minted, so they cannot already exist.
+    %{
+      endpoint_id: endpoint_id,
+      remote_name: remote_name,
+      local_name: local_name,
+      description: description,
+      schema: schema,
+      digest: digest
+    }
+  end
+
+  defp commit_stage(%{server_name: server_name, definitions: definitions}, registry)
+       when is_binary(server_name) and is_list(definitions) do
+    {modules, updated} =
+      Enum.reduce(definitions, {[], registry}, fn definition, {modules, acc} ->
+        identity =
+          {server_name, definition.endpoint_id, definition.remote_name, definition.local_name}
+
+        case Map.fetch(acc.identities, identity) do
+          {:ok, module} ->
+            {[module | modules], put_registry_definition(acc, module, definition)}
+
+          :error when map_size(acc.identities) >= @max_proxy_identities ->
+            Logger.warning(
+              "[MCP] proxy identity capacity #{@max_proxy_identities} exhausted; dropping #{server_name}/#{definition.remote_name} until the VM restarts"
+            )
+
+            {modules, acc}
+
+          :error ->
+            module = module_name(server_name, definition)
+            ensure_proxy_module(module, definition.local_name)
+
+            next =
+              acc
+              |> Map.update!(:identities, &Map.put(&1, identity, module))
+              |> put_registry_definition(module, definition)
+
+            {[module | modules], next}
+        end
+      end)
+
+    {Enum.reverse(modules), updated}
+  end
+
+  defp registry do
+    :persistent_term.get(@registry_key, %{identities: %{}, definitions: %{}})
+  end
+
+  @doc "Returns the currently published proxy definitions keyed by stable module."
+  @spec snapshot_definitions() :: map()
+  def snapshot_definitions, do: registry().definitions
+
+  @doc "Returns the cumulative number of proxy identities allocated by this VM."
+  @spec identity_count() :: non_neg_integer()
+  def identity_count, do: map_size(registry().identities)
+
+  defp put_registry_definition(registry, module, definition) do
+    Map.update!(registry, :definitions, &Map.put(&1, module, definition))
+  end
+
+  defp module_name(server_name, definition) do
+    server = Macro.camelize(cap(sanitize_segment(server_name), 40))
+    tool = Macro.camelize(cap(sanitize_segment(definition.local_name), 40))
+
+    hash =
+      {server_name, definition.endpoint_id, definition.remote_name, definition.local_name}
+      |> compute_digest()
+      |> binary_part(0, 24)
+
+    # Minted only after the cumulative capacity check above. Definition drift
+    # does not create a new atom: metadata lives in the bounded runtime registry.
     # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
     Module.concat([JidoClaw, MCP, Proxy, server, "#{tool}#{hash}"])
   end
 
-  # The hash covers endpoint, remote name, local name, description, AND schema,
-  # so any of those changing yields a new module instead of `Code.ensure_loaded?`
-  # keeping a stale proxy.
-  defp definition_hash(endpoint_id, remote_name, local_name, description, schema) do
-    {endpoint_id, remote_name, local_name, description, schema}
-    |> :erlang.phash2()
-    |> Integer.to_string(36)
-    |> String.upcase()
+  defp ensure_proxy_module(module, local_name) do
+    if Code.ensure_loaded?(module), do: module, else: create_proxy_module(module, local_name)
   end
 
-  # -- Module generation --
-
-  defp ensure_proxy_module(module, endpoint_id, remote_name, local_name, description, schema) do
-    if Code.ensure_loaded?(module) do
-      module
-    else
-      create_proxy_module(module, endpoint_id, remote_name, local_name, description, schema)
-    end
-  end
-
-  defp create_proxy_module(module, endpoint_id, remote_name, local_name, description, schema) do
+  defp create_proxy_module(module, local_name) do
     quoted =
       quote location: :keep do
+        alias JidoClaw.MCP.ProxyGenerator
+        alias JidoClaw.Tools.OutputRedaction
+
         use JidoClaw.Tools.Action,
           name: unquote(local_name),
-          description: unquote(description),
-          schema: unquote(Macro.escape(schema))
+          description: "Runtime-bound external MCP proxy",
+          schema: %{"type" => "object", "properties" => %{}},
+          runtime_name: true
 
-        @endpoint_id unquote(endpoint_id)
-        @remote_tool_name unquote(remote_name)
+        defoverridable name: 0,
+                       description: 0,
+                       schema: 0,
+                       to_json: 0,
+                       __action_metadata__: 0
+
+        def name, do: ProxyGenerator.definition!(__MODULE__).local_name
+        def description, do: ProxyGenerator.definition!(__MODULE__).description
+        def schema, do: ProxyGenerator.definition!(__MODULE__).schema
+
+        def to_json do
+          super()
+          |> Map.put(:name, name())
+          |> Map.put(:description, description())
+          |> Map.put(:schema, schema())
+        end
+
+        def __action_metadata__, do: to_json()
 
         # NO @impl — the JidoClaw.Tools.Action before_compile wrapper IS the
         # @impl Jido.Action run/2; this run/2 is its `super` target.
         def run(params, _context) do
-          # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-          scrubbed = JidoClaw.Tools.OutputRedaction.redact(params)
+          definition = ProxyGenerator.definition!(__MODULE__)
 
-          case JidoClaw.MCP.client().call_tool(@endpoint_id, @remote_tool_name, scrubbed) do
+          scrubbed = OutputRedaction.redact(params)
+
+          case JidoClaw.MCP.client().call_tool(
+                 definition.endpoint_id,
+                 definition.remote_name,
+                 scrubbed
+               ) do
             {:ok, data} ->
               {:ok, data}
 
@@ -276,5 +558,24 @@ defmodule JidoClaw.MCP.ProxyGenerator do
       Module.create(module, quoted, Macro.Env.location(__ENV__))
 
     created
+  end
+
+  @doc "Returns the committed runtime definition for a stable proxy module."
+  @spec definition!(module()) :: map()
+  def definition!(module) when is_atom(module) do
+    Map.fetch!(registry().definitions, module)
+  end
+
+  @doc "Returns the SHA-256 definition digest for a stable proxy module."
+  @spec definition_digest(module()) :: String.t()
+  def definition_digest(module) when is_atom(module), do: definition!(module).digest
+
+  defp compute_digest(term), do: CanonicalHash.sha256_term(term)
+
+  defp short_digest(value, chars) do
+    value
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, chars)
   end
 end

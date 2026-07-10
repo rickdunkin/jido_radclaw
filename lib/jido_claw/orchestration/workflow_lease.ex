@@ -11,11 +11,16 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   ## What WS1 ships (mechanism only)
 
     * `stamp/4` — a **compare-and-swap** row claim on the prior token, status-
-      guarded to `('pending','running')`. Reached only by the execution winner
+      guarded to pending/running or a checkpoint-less awaiting gate. Reached by the execution winner
       via `Middleware.init/1` (a same-node duplicate never registers; a cross-
       node duplicate loses the CAS and aborts).
-    * `renew/2` — a **fenced** heartbeat (`WHERE claim_token = $token`): a
-      rotated token renews 0 rows, so a superseded owner learns it lost.
+    * `renew/2` — a **fenced** heartbeat (`WHERE claim_token = $token AND
+      status IN (nonterminal...)`), additionally refusing an established gate
+      park (awaiting + checkpoint): a rotated/terminal-cleared token or parked
+      executor renews 0 rows, so a superseded/cancelled owner cannot stay live
+      or restore the park's released expiry.
+    * `claim_resume/3` — the approved-gate preclaim: only a parked/expired lease
+      can become live, and a second contender cannot rotate that fresh lease.
     * `claim_next/1` — the oldest-first reclaim primitive (`FOR UPDATE SKIP
       LOCKED` over the `:claimable` set); `claim_run/1` — the by-id variant that
       re-checks the full `:claimable` predicate under a `FOR UPDATE` lock before
@@ -32,6 +37,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
     * `start_sidecar/4` — a **synchronous readiness handshake** that arms the
       heartbeat process before the executor proceeds (readiness is part of the
       claim — a dead sidecar fails the claim under clustering).
+    * `stop_sidecar/2` — a token-checked graceful handshake used immediately
+      before an owner writes its own terminal event. External terminals do not
+      call it, so cancellation/reclaim still make a live sidecar kill its
+      executor when renewal is refused.
 
   ## Clocks & encoding
 
@@ -44,8 +53,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   ## Projection-ownership invariant (must not break)
 
   `WorkflowRun.status` is written **only** by the projection's `:set_status`
-  in the append transaction. `stamp`/`renew` are raw `UPDATE`s touching only
-  `claimed_by` / `claim_expires_at` / `claim_token` — never `status`.
+  in the append transaction. `stamp`/`renew`/`claim_resume` are raw `UPDATE`s
+  touching only `claimed_by` / `claim_expires_at` / `claim_token` — never
+  `status`. The terminal projection clears token+expiry in its status
+  transaction while retaining `claimed_by` provenance.
   """
 
   require Ash.Query
@@ -58,6 +69,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   alias JidoClaw.Repo
 
   @task_supervisor JidoClaw.Orchestration.LeaseTaskSupervisor
+  @registry JidoClaw.Orchestration.LeaseRegistry
 
   # Bounded transient-retry interval (ms) when `renew/2` hits a DB error but the
   # lease has NOT yet expired — short enough to retry several times inside one
@@ -70,7 +82,7 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   # The CAS row-claim. Compare-and-swap on the prior token (`IS NOT DISTINCT
   # FROM` is nil-safe for the genesis case) AND a status guard so a cancel/
-  # recovery terminal — or a park — landing before `Middleware.init/1` makes the
+  # recovery terminal — or an established park — landing before `Middleware.init/1` makes the
   # late executor's stamp a no-op (`:lost`) rather than re-stamping a terminal
   # row. `now() + interval` stamps expiry on the DB clock.
   @stamp_sql """
@@ -78,15 +90,41 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
      SET claimed_by = $1, claim_token = $2,
          claim_expires_at = now() + ($3 || ' seconds')::interval
    WHERE id = $4 AND claim_token IS NOT DISTINCT FROM $5
-     AND status IN ('pending', 'running')
+     AND (
+       status IN ('pending', 'running') OR
+       (status = 'awaiting_approval' AND encrypted_resume_checkpoint IS NULL)
+     )
   """
 
-  # The fenced heartbeat. Only the current token-holder renews; a rotated token
-  # renews 0 rows (the caller fails closed). Touches expiry only — never status.
+  # Gate-resume preclaim. A parked gate releases its expiry to NULL when the
+  # checkpoint is persisted. After `approval_resolved` flips it back to
+  # `running`, exactly one resumer can turn that parked token into a live lease.
+  # The expiry predicate is the second fence: a contender that reloads after the
+  # winner's token rotation still cannot rotate the winner again while its lease
+  # is live. Expired supports recovery of legacy/previous-version checkpoints.
+  @resume_claim_sql """
+  UPDATE workflow_runs
+     SET claimed_by = $1, claim_token = $2,
+         claim_expires_at = now() + ($3 || ' seconds')::interval
+   WHERE id = $4 AND claim_token IS NOT DISTINCT FROM $5
+     AND status = 'running'
+     AND (claim_expires_at IS NULL OR claim_expires_at < now())
+  """
+
+  # The fenced heartbeat. Only the current token-holder of a NON-TERMINAL run
+  # renews; a rotated/cleared token OR terminal status renews 0 rows (the caller
+  # fails closed). `:awaiting_approval` is included because there is a small,
+  # legitimate gate-flip→executor-halt window in which the sidecar may tick before
+  # the checkpoint is durably written. Once that encrypted checkpoint exists,
+  # renewal is refused: a tick already waiting on the checkpoint transaction's
+  # row lock cannot restore a future expiry after the park released it to NULL.
+  # Touches expiry only — never status.
   @renew_sql """
   UPDATE workflow_runs
      SET claim_expires_at = now() + ($1 || ' seconds')::interval
    WHERE id = $2 AND claim_token = $3
+     AND status IN ('pending', 'running', 'awaiting_approval')
+     AND (status <> 'awaiting_approval' OR encrypted_resume_checkpoint IS NULL)
   """
 
   # Suspend a held claim's expiry: NULL `claim_expires_at` on the held token,
@@ -133,7 +171,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   @doc """
   Compare-and-swap row-claim of `run_id` for this node with `new_token`,
   succeeding only when the row's current token equals `expected_token` (nil for
-  the genesis case) **and** the run is still `:pending`/`:running`.
+  the genesis case) **and** the run is still pending/running or is an
+  `:awaiting_approval` gate whose checkpoint was never established. The latter
+  is the clustered crash window reclaimed after its lease expires; a real park
+  (checkpoint present) remains unclaimable.
 
   Returns `{:ok, :claimed}` (1 row), `{:ok, :lost}` (0 rows — fenced, CAS-lost,
   or terminal/parked), or `{:error, term()}` on a DB error. `opts` is reserved
@@ -141,15 +182,34 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
   """
   @spec stamp(String.t(), String.t(), String.t() | nil, keyword()) :: stamp_result()
   def stamp(run_id, new_token, expected_token, _opts \\ []) do
-    params = [
+    execute_claim(@stamp_sql, claim_params(run_id, new_token, expected_token))
+  end
+
+  @doc """
+  Claim an approved parked gate for resume.
+
+  Unlike the ordinary execution `stamp/4`, this requires the row's prior lease
+  to be parked (`claim_expires_at IS NULL`) or expired. It prevents a second
+  resumer that observes the first resumer's fresh token from rotating it again.
+  Returns the same `stamp_result/0` contract as `stamp/4`.
+  """
+  @spec claim_resume(String.t(), String.t(), String.t() | nil) :: stamp_result()
+  def claim_resume(run_id, new_token, expected_token) do
+    execute_claim(@resume_claim_sql, claim_params(run_id, new_token, expected_token))
+  end
+
+  defp claim_params(run_id, new_token, expected_token) do
+    [
       node_identity(),
       Ecto.UUID.dump!(new_token),
       to_string(lease_seconds()),
       Ecto.UUID.dump!(run_id),
       dump_or_nil(expected_token)
     ]
+  end
 
-    case Repo.query(@stamp_sql, params) do
+  defp execute_claim(sql, params) do
+    case Repo.query(sql, params) do
       {:ok, %{num_rows: 1}} -> {:ok, :claimed}
       {:ok, %{num_rows: 0}} -> {:ok, :lost}
       {:error, reason} -> {:error, reason}
@@ -158,8 +218,9 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   @doc """
   Fenced lease renewal: extend `run_id`'s expiry iff its current token is
-  `token`. Returns `{:ok, rows_affected}` (`1` = renewed, `0` = fenced/rotated)
-  or `{:error, term()}` on a DB error.
+  `token`, its status remains non-terminal, and it is not a fully-established
+  gate park. Returns `{:ok, rows_affected}` (`1` = renewed, `0` =
+  fenced/rotated/terminal/parked) or `{:error, term()}` on a DB error.
   """
   @spec renew(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def renew(run_id, token), do: renew_for(run_id, token, lease_seconds())
@@ -277,7 +338,8 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
 
   The by-id sibling of `claim_next/1` for the composer reclaim child-step: lock the
   row `FOR UPDATE`, re-check the **full** `:claimable` predicate under the lock
-  (expired lease **or** aged never-claimed `:pending`), and only on a match
+  (expired lease, expired checkpoint-less gate, **or** aged never-claimed
+  `:pending`), and only on a match
   CAS-rotate + reload. Returns `{:ok, run, prior_owner}` (rotated — a zombie owner
   is now fenced; `prior_owner` is the pre-rotation `claimed_by` for the C-H1
   kill-cast), `:lost` (not claimable — live lease, fresh-pending within grace,
@@ -451,6 +513,108 @@ defmodule JidoClaw.Orchestration.WorkflowLease do
         {:error, {:sidecar_start, reason}}
     end
   end
+
+  @doc """
+  Gracefully stop the local heartbeat owned by `token` before that owner writes
+  its own terminal event.
+
+  A missing sidecar is a valid single-node degraded/already-stopped shape. A
+  different/foreign registry owner is deliberately left untouched and treated
+  as a no-op; the authoritative DB terminal-append token fence then decides
+  ownership. The acknowledgement is correlated and sent only by the matching
+  sidecar, so once that branch returns `:ok` no later heartbeat can mistake the
+  owner's terminal token revocation for an external fence and kill the finishing
+  executor.
+  """
+  @spec stop_sidecar(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def stop_sidecar(_run_id, nil), do: :ok
+
+  def stop_sidecar(run_id, token) when is_binary(run_id) and is_binary(token) do
+    case Registry.lookup(@registry, run_id) do
+      [] ->
+        :ok
+
+      [{pid, %{token: ^token}}] ->
+        ref = Process.monitor(pid)
+        correlation = make_ref()
+        send(pid, {:lease_stop, self(), correlation, token})
+
+        receive do
+          {:lease_stopped, ^correlation, ^run_id, ^token} ->
+            Process.demonitor(ref, [:flush])
+            :ok
+
+          {:DOWN, ^ref, :process, ^pid, reason} ->
+            {:error, {:sidecar_down, reason}}
+        after
+          @ready_timeout_ms ->
+            # A sidecar can be stuck inside its DB renew query and unable to
+            # consume the stop message. This owner is already in terminal
+            # middleware (no more steps can launch), so retire that exact,
+            # token-matched sidecar untrappably and let the terminal append's
+            # DB token fence arbitrate any concurrent cancellation/reclaim.
+            Logger.warning("[WorkflowLease] forcing stuck sidecar stop for #{run_id}")
+            Process.exit(pid, :kill)
+
+            receive do
+              {:DOWN, ^ref, :process, ^pid, _reason} ->
+                :ok
+            after
+              1_000 ->
+                Process.demonitor(ref, [:flush])
+                {:error, :sidecar_force_stop_timeout}
+            end
+        end
+
+      [{_pid, _metadata}] ->
+        :ok
+    end
+  end
+
+  @doc """
+  Retire the matching local sidecar before a terminal append, without letting
+  teardown failure suppress the terminal authority.
+
+  Both strict `stop_sidecar/2` error returns mean the matching sidecar is
+  already dead or has been untrappably killed. The terminal append's durable
+  claim-token fence remains the ownership authority, so callers must continue
+  to that append while this helper records the teardown anomaly.
+  """
+  @spec stop_sidecar_best_effort(String.t(), String.t() | nil) :: :ok
+  def stop_sidecar_best_effort(run_id, token) do
+    case stop_sidecar(run_id, token) do
+      :ok -> :ok
+      {:error, reason} -> report_sidecar_stop_failure(run_id, reason)
+    end
+  rescue
+    # Terminal durability outranks a cleanup exception. Keep the open failure
+    # set observable, but never let it suppress the token-fenced append.
+    # reach:disable-next-line bare_rescue
+    error -> report_sidecar_stop_failure(run_id, {:exception, Exception.message(error)})
+  catch
+    kind, reason -> report_sidecar_stop_failure(run_id, {kind, reason})
+  end
+
+  defp report_sidecar_stop_failure(run_id, reason) do
+    Logger.warning(
+      "[WorkflowLease] sidecar stop failed for #{run_id}; continuing to terminal append: " <>
+        inspect(reason)
+    )
+
+    :telemetry.execute(
+      [:jido_claw, :orchestration, :sidecar_stop_failed],
+      %{count: 1},
+      %{run_id: run_id, reason: sidecar_stop_reason(reason)}
+    )
+
+    :ok
+  end
+
+  defp sidecar_stop_reason({:sidecar_down, _reason}), do: :sidecar_down
+  defp sidecar_stop_reason(:sidecar_force_stop_timeout), do: :force_stop_timeout
+  defp sidecar_stop_reason({:exception, _message}), do: :exception
+  defp sidecar_stop_reason({kind, _reason}) when is_atom(kind), do: kind
+  defp sidecar_stop_reason(_reason), do: :error
 
   defp dump_or_nil(nil), do: nil
   defp dump_or_nil(token), do: Ecto.UUID.dump!(token)

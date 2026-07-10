@@ -153,7 +153,8 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       request_id = Ecto.UUID.generate()
-      emit_request!(:start, %{agent_id: rsid, request_id: request_id, tenant_id: tid})
+      agent_id = JidoClaw.runtime_agent_id(session.id)
+      emit_request!(:start, %{agent_id: agent_id, request_id: request_id, tenant_id: tid})
 
       assert {:ok, view} = AgentView.snapshot(session)
       assert view.status == :running
@@ -169,10 +170,11 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       request_id = Ecto.UUID.generate()
-      emit_request!(:start, %{agent_id: rsid, request_id: request_id, tenant_id: tid})
+      agent_id = JidoClaw.runtime_agent_id(session.id)
+      emit_request!(:start, %{agent_id: agent_id, request_id: request_id, tenant_id: tid})
 
       emit_request!(:failed, %{
-        agent_id: rsid,
+        agent_id: agent_id,
         request_id: request_id,
         tenant_id: tid,
         error: "boom"
@@ -241,10 +243,20 @@ defmodule JidoClaw.AgentViewTest do
       assert view.agent_id == "handoff:#{session.id}:reviewer"
     end
 
-    test "without a worker pid and without handoff, agent_id is the runtime session_id (not 'main')",
+    test "without a worker pid and without handoff, agent_id uses the durable session UUID",
          %{session: session} do
       assert {:ok, view} = AgentView.snapshot(session)
-      assert view.agent_id == session.external_id
+      assert view.agent_id == JidoClaw.runtime_agent_id(session.id)
+    end
+
+    test "a legacy worker without a durable UUID falls back to its raw runtime session id", %{
+      tenant_id: tid,
+      runtime_session_id: rsid
+    } do
+      worker = %SessionWorker{id: rsid, tenant_id: tid, session_uuid: nil}
+
+      assert {:ok, view} = AgentView.snapshot(worker)
+      assert view.agent_id == rsid
     end
 
     test "handoff fallback uses owner.handoff.session_uuid when input lacks session_uuid", %{
@@ -262,7 +274,7 @@ defmodule JidoClaw.AgentViewTest do
       assert view.agent_id == "handoff:#{session.id}:reviewer"
     end
 
-    test "a worker reporting a dead agent_pid falls through to the runtime session_id (not nil)",
+    test "a worker reporting a dead agent_pid falls through to the durable runtime id (not nil)",
          %{tenant_id: tid, session: session, runtime_session_id: rsid, actor: actor} do
       :ok = start_worker(tid, rsid, actor)
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
@@ -291,9 +303,9 @@ defmodule JidoClaw.AgentViewTest do
       :sys.replace_state(worker_pid, fn state -> %{state | agent_pid: dead} end)
 
       assert {:ok, view} = AgentView.snapshot(session)
-      # The dead pid must NOT collapse agent_id to nil; the runtime session_id
-      # is still a valid trace key.
-      assert view.agent_id == session.external_id
+      # The dead pid must NOT collapse agent_id to nil; the durable runtime id
+      # is still a valid trace key and does not collide across sessions.
+      assert view.agent_id == JidoClaw.runtime_agent_id(session.id)
     end
   end
 
@@ -308,7 +320,12 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       request_id = Ecto.UUID.generate()
-      common = %{request_id: request_id, agent_id: rsid, tenant_id: tid}
+
+      common = %{
+        request_id: request_id,
+        agent_id: JidoClaw.runtime_agent_id(session.id),
+        tenant_id: tid
+      }
 
       # 4 model events
       for i <- 1..4 do
@@ -340,7 +357,12 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       request_id = Ecto.UUID.generate()
-      common = %{request_id: request_id, agent_id: rsid, tenant_id: tid}
+
+      common = %{
+        request_id: request_id,
+        agent_id: JidoClaw.runtime_agent_id(session.id),
+        tenant_id: tid
+      }
 
       for i <- 1..3 do
         emit_model_start!(Map.put(common, :tool_call_id, "model-#{i}"))
@@ -465,7 +487,7 @@ defmodule JidoClaw.AgentViewTest do
 
       emit_model_start!(%{
         request_id: request_id,
-        agent_id: rsid,
+        agent_id: JidoClaw.runtime_agent_id(session.id),
         tenant_id: tid,
         tool_call_id: "model-1"
       })
@@ -474,6 +496,7 @@ defmodule JidoClaw.AgentViewTest do
       mapped = AgentView.to_mcp_map(view)
 
       assert is_list(mapped["events"])
+      assert [_event] = mapped["events"]
 
       Enum.each(mapped["events"], fn ev ->
         # `category` was an atom, must now be a string
@@ -519,7 +542,13 @@ defmodule JidoClaw.AgentViewTest do
       :ok = SessionWorker.set_session_uuid(tid, rsid, session.id)
 
       request_id = Ecto.UUID.generate()
-      common = %{agent_id: rsid, request_id: request_id, tenant_id: tid}
+
+      common = %{
+        agent_id: JidoClaw.runtime_agent_id(session.id),
+        request_id: request_id,
+        tenant_id: tid
+      }
+
       emit_request!(:start, common)
       emit_request!(:complete, common)
 

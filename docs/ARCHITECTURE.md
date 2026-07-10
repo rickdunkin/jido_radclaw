@@ -392,7 +392,8 @@ Phoenix.Router
   ├── POST /v1/chat/completions ──▶ ChatController (API key auth)
   │     ├── Find/create session
   │     ├── Route to JidoClaw.Agent
-  │     ├── Stream or wait for response
+  │     ├── Preserve the complete ordered client transcript
+  │     ├── Tear down the UUID-scoped temporary runtime after the response
   │     └── Return OpenAI-compatible JSON
   │
   ├── POST /webhooks/github ──▶ WebhookController (HMAC verified)
@@ -409,10 +410,10 @@ Phoenix.Router
   │   └── /settings      — SettingsLive
   │
   ├── LiveView (public)
-  │   ├── /sign-in       — SignInLive
-  │   └── /setup         — SetupLive
+  │   └── /sign-in       — SignInLive
   │
-  ├── /admin ──▶ AshAdmin (requires auth)
+  ├── /setup ──▶ SetupLive (requires allowlisted admin; cached/throttled probes)
+  ├── /admin ──▶ AshAdmin (requires allowlisted admin)
   │
   └── /live-dashboard ──▶ Phoenix LiveDashboard (dev only)
 ```
@@ -683,7 +684,7 @@ JidoClaw.Tenant.Supervisor
   └── Tenant "bigcorp" → isolated subtree
 ```
 
-Each tenant has its own isolated supervision subtree. A crash in one tenant does not affect others.
+Each tenant has its own isolated supervision subtree. A crash in one tenant does not affect others. The durable `tenants.status` row is authoritative for activity; ordinary tenant-scoped Ash policies fail closed unless it is `:active`. Suspend/archive transitions synchronize the legacy ETS entry and stop the tenant subtree, while resume recreates it.
 
 ## `.jido/` Directory
 

@@ -373,9 +373,16 @@ defmodule JidoClaw.Agent.Prompt do
     dir = Path.dirname(path)
     File.mkdir_p!(dir)
     temp = path <> ".tmp.#{System.unique_integer([:positive])}"
-    File.write!(temp, content)
-    File.rename!(temp, path)
-    :ok
+
+    try do
+      File.write!(temp, content)
+      File.rename!(temp, path)
+      :ok
+    after
+      # A raise between write and rename must not orphan the temp file; after
+      # a successful rename the path no longer exists and rm is a no-op.
+      File.rm(temp)
+    end
   end
 
   defp maybe_rename(src, dest) do

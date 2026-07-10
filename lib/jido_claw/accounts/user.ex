@@ -1,5 +1,7 @@
 defmodule JidoClaw.Accounts.User do
   @moduledoc false
+  @bcrypt_max_password_bytes JidoClaw.Accounts.PasswordPolicy.bcrypt_max_bytes()
+
   use Ash.Resource,
     otp_app: :jido_claw,
     domain: JidoClaw.Accounts,
@@ -83,7 +85,14 @@ defmodule JidoClaw.Accounts.User do
       description("Sign in a user with their email and password.")
       get?(true)
       argument(:email, :ci_string, allow_nil?: false)
-      argument(:password, :string, allow_nil?: false, sensitive?: true)
+
+      argument(:password, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [max_length: @bcrypt_max_password_bytes]
+      )
+
+      validate(byte_size(:password, max: @bcrypt_max_password_bytes))
       prepare(AshAuthentication.Strategy.Password.SignInPreparation)
     end
 
@@ -118,8 +127,21 @@ defmodule JidoClaw.Accounts.User do
     create :register_with_password do
       description("Register a new user with email and password.")
       accept([:email])
-      argument(:password, :string, allow_nil?: false, sensitive?: true)
-      argument(:password_confirmation, :string, allow_nil?: false, sensitive?: true)
+
+      argument(:password, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [min_length: 12, max_length: @bcrypt_max_password_bytes]
+      )
+
+      argument(:password_confirmation, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [max_length: @bcrypt_max_password_bytes]
+      )
+
+      validate(byte_size(:password, max: @bcrypt_max_password_bytes))
+      validate(byte_size(:password_confirmation, max: @bcrypt_max_password_bytes))
       validate(AshAuthentication.Strategy.Password.PasswordConfirmationValidation)
       change(AshAuthentication.Strategy.Password.HashPasswordChange)
       change(AshAuthentication.GenerateTokenChange)
@@ -129,9 +151,28 @@ defmodule JidoClaw.Accounts.User do
       description("Change a user's password.")
       primary?(true)
       require_atomic?(false)
-      argument(:current_password, :string, allow_nil?: false, sensitive?: true)
-      argument(:password, :string, allow_nil?: false, sensitive?: true)
-      argument(:password_confirmation, :string, allow_nil?: false, sensitive?: true)
+
+      argument(:current_password, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [max_length: @bcrypt_max_password_bytes]
+      )
+
+      argument(:password, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [min_length: 12, max_length: @bcrypt_max_password_bytes]
+      )
+
+      argument(:password_confirmation, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [max_length: @bcrypt_max_password_bytes]
+      )
+
+      validate(byte_size(:current_password, max: @bcrypt_max_password_bytes))
+      validate(byte_size(:password, max: @bcrypt_max_password_bytes))
+      validate(byte_size(:password_confirmation, max: @bcrypt_max_password_bytes))
       validate(AshAuthentication.Strategy.Password.PasswordConfirmationValidation)
       validate(AshAuthentication.Strategy.Password.CurrentPasswordValidation)
       change(AshAuthentication.Strategy.Password.HashPasswordChange)
@@ -147,8 +188,21 @@ defmodule JidoClaw.Accounts.User do
       description("Reset a user's password with a token.")
       require_atomic?(false)
       argument(:reset_token, :string, allow_nil?: false, sensitive?: true)
-      argument(:password, :string, allow_nil?: false, sensitive?: true)
-      argument(:password_confirmation, :string, allow_nil?: false, sensitive?: true)
+
+      argument(:password, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [min_length: 12, max_length: @bcrypt_max_password_bytes]
+      )
+
+      argument(:password_confirmation, :string,
+        allow_nil?: false,
+        sensitive?: true,
+        constraints: [max_length: @bcrypt_max_password_bytes]
+      )
+
+      validate(byte_size(:password, max: @bcrypt_max_password_bytes))
+      validate(byte_size(:password_confirmation, max: @bcrypt_max_password_bytes))
       validate(AshAuthentication.Strategy.Password.ResetTokenValidation)
       validate(AshAuthentication.Strategy.Password.PasswordConfirmationValidation)
       change(AshAuthentication.Strategy.Password.HashPasswordChange)

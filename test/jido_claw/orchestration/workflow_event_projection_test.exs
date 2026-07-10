@@ -158,7 +158,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                status: :completed,
                completed_at: at,
                result: %{"terminal" => "converged"},
-               clear_checkpoint: true
+               clear_checkpoint: true,
+               revoke_claim: true
              }
     end
 
@@ -170,7 +171,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                  status: :failed,
                  completed_at: at,
                  error: "boom",
-                 clear_checkpoint: true
+                 clear_checkpoint: true,
+                 revoke_claim: true
                }
       end
     end
@@ -185,7 +187,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                  status: :cancelled,
                  completed_at: at,
                  result: %{disposition: "operator_cancel"},
-                 clear_checkpoint: true
+                 clear_checkpoint: true,
+                 revoke_claim: true
                }
       end
     end
@@ -211,7 +214,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                status: :completed,
                completed_at: at,
                result: result,
-               clear_checkpoint: true
+               clear_checkpoint: true,
+               revoke_claim: true
              }
     end
 
@@ -228,7 +232,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                completed_at: at,
                error: "verify_failed: lenses=system",
                result: %{disposition: "verify_failed"},
-               clear_checkpoint: true
+               clear_checkpoint: true,
+               revoke_claim: true
              }
     end
 
@@ -260,7 +265,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                completed_at: at,
                error: "fix_failed: lenses=quality",
                result: %{disposition: "fix_failed"},
-               clear_checkpoint: true
+               clear_checkpoint: true,
+               revoke_claim: true
              }
     end
 
@@ -301,7 +307,8 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
                completed_at: at,
                error: "review_infra_failed: stages=quality-reviewer",
                result: %{disposition: "review_infra_failed"},
-               clear_checkpoint: true
+               clear_checkpoint: true,
+               revoke_claim: true
              }
     end
 

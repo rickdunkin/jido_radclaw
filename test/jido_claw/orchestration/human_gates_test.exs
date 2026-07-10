@@ -18,6 +18,7 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reactors.GatedTestReactor
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRecovery
   alias JidoClaw.Orchestration.WorkflowRun
@@ -192,15 +193,20 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       %{tenant: tenant, actor: actor} = ctx
       {result, inputs} = run_gated(tenant, actor)
       assert {:ok, {:paused, case_id}, run} = result
+      parked = reload(run, ctx)
 
       # Drive approve to the approval_resolved commit, but skip the resume —
-      # the commit-only seam (resume: false).
+      # the commit-only seam (resume: false). The same transaction must rotate
+      # a live resume claim, so a clustered crash immediately after commit is
+      # recoverable once this lease expires (never :running + NULL forever).
       assert {:ok, _run} =
                Cases.decide(case_id, :approve, %{}, Keyword.put(scope(ctx), :resume, false))
 
       running = reload(run, ctx)
       assert running.status == :running
       assert is_binary(running.encrypted_resume_checkpoint)
+      refute running.claim_token == parked.claim_token
+      assert %DateTime{} = running.claim_expires_at
 
       assert :ok = WorkflowRecovery.reconcile_all()
 
@@ -208,6 +214,45 @@ defmodule JidoClaw.Orchestration.HumanGatesTest do
       assert completed.status == :completed
       assert is_nil(completed.encrypted_resume_checkpoint)
       assert :run_resumed in kinds(completed, ctx)
+      assert workspace_exists?(inputs.workspace_path, ctx)
+    end
+
+    test "live reclaim reuses its already-rotated token instead of reclaiming the resume", ctx do
+      {result, inputs} = run_gated(ctx.tenant, ctx.actor)
+      assert {:ok, {:paused, case_id}, run} = result
+
+      assert {:ok, _} =
+               Cases.decide(case_id, :approve, %{}, Keyword.put(scope(ctx), :resume, false))
+
+      running = reload(run, ctx)
+      reclaimer_token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, reclaimer_token, running.claim_token)
+      claimed = reload(run, ctx)
+      assert %DateTime{} = claimed.claim_expires_at
+
+      assert :ok = WorkflowRecovery.reconcile_one(claimed)
+
+      completed = reload(run, ctx)
+      assert completed.status == :completed
+      assert workspace_exists?(inputs.workspace_path, ctx)
+    end
+
+    test "boot recovery can replace a future resume claim left by the dead prior BEAM", ctx do
+      {result, inputs} = run_gated(ctx.tenant, ctx.actor)
+      assert {:ok, {:paused, case_id}, run} = result
+
+      assert {:ok, _} =
+               Cases.decide(case_id, :approve, %{}, Keyword.put(scope(ctx), :resume, false))
+
+      running = reload(run, ctx)
+      # The decision commit itself now owns a fresh, future resume claim. Boot's
+      # sole-owner barrier may replace it immediately after the prior BEAM died.
+      assert %DateTime{} = running.claim_expires_at
+
+      assert :ok = WorkflowRecovery.reconcile_all()
+
+      completed = reload(run, ctx)
+      assert completed.status == :completed
       assert workspace_exists?(inputs.workspace_path, ctx)
     end
 

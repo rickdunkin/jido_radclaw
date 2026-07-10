@@ -7,12 +7,13 @@ defmodule JidoClaw.Core.CanonicalHash do
   `JidoClaw.Orchestration.ToolApprovals.fingerprint/3` (the per-tool-call
   consent fingerprint), `JidoClaw.RouteComposer`'s wave `route_hash`/
   `catalog_hash` correlation metadata, and `JidoClaw.RouteComposer.FindingKey`
-  (the camus C1-5 cross-wave finding identity) — so the recipe can never fork
-  per subsystem. Domain **canonicalization** (key stringification, pair
-  sorting, normalization rules) deliberately stays with each domain; this
-  module owns only the hash of an already-canonical term. Never hash a
-  rendered string (`feedback_canonical_fingerprint_term`) and never
-  `:erlang.phash2` (not stable across releases).
+  (the camus C1-5 cross-wave finding identity), plus external-MCP proxy and
+  transport identities — so the recipe can never fork per subsystem. Domain
+  **canonicalization** (key stringification, pair sorting, normalization
+  rules) deliberately stays with each domain; this module owns only the hash
+  of an already-canonical term. Never hash a rendered string
+  (`feedback_canonical_fingerprint_term`) and never `:erlang.phash2` (not
+  stable across releases).
 
   Sibling with a different contract: `JidoClaw.Agent.LoopGuard`'s
   `args_digest/1` returns a **raw binary** digest for in-memory run-length

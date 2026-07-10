@@ -114,6 +114,26 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
     assert kinds(run, ctx) == [:run_started, :step_started, :step_completed, :run_completed]
   end
 
+  test "a sidecar stop failure cannot turn a successful completion into failure", ctx do
+    run = create_run("mw-sidecar-stop-failure", ctx)
+    token = Ash.UUID.generate()
+    middleware_context = Map.put(context(run, ctx), :claim_token, token)
+
+    assert {:ok, initialized} = ReactorMiddleware.init(middleware_context)
+    sidecar = start_crashing_sidecar(run.id, token)
+    ref = Process.monitor(sidecar)
+
+    assert {:ok, :done} = ReactorMiddleware.complete(:done, initialized)
+    assert_receive {:DOWN, ^ref, :process, ^sidecar, :simulated_sidecar_crash}, 1_000
+
+    assert kinds(run, ctx) == [:run_started, :run_completed]
+
+    assert {:ok, reloaded} =
+             WorkflowRun.by_id(run.id, tenant: ctx.tenant, actor: ctx.actor)
+
+    assert reloaded.status == :completed
+  end
+
   test "failed step yields a terminal run_failed with a formatted error", ctx do
     run = create_run("mw-err", ctx)
 
@@ -521,6 +541,29 @@ defmodule JidoClaw.Orchestration.ReactorMiddlewareTest do
 
   defp context(run, %{tenant: tenant, actor: actor}) do
     %{tenant: tenant, actor: actor, workflow_run: run, reactor: "TestReactor"}
+  end
+
+  defp start_crashing_sidecar(run_id, token) do
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        {:ok, _} =
+          Registry.register(
+            JidoClaw.Orchestration.LeaseRegistry,
+            run_id,
+            %{token: token}
+          )
+
+        send(parent, {:sidecar_registered, self()})
+
+        receive do
+          {:lease_stop, _caller, _correlation, ^token} -> exit(:simulated_sidecar_crash)
+        end
+      end)
+
+    assert_receive {:sidecar_registered, ^pid}, 1_000
+    pid
   end
 
   defp events_for(run, %{tenant: tenant, actor: actor}) do

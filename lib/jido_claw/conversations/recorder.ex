@@ -284,7 +284,11 @@ defmodule JidoClaw.Conversations.Recorder do
 
     if is_binary(request_id) and is_integer(duration) and duration > 0 do
       try do
-        case RequestCorrelation.record_telemetry(request_id, %{latency_ms: duration}) do
+        # Telemetry callbacks carry request identity, not an actor.
+        # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+        case RequestCorrelation.record_telemetry(request_id, %{latency_ms: duration},
+               authorize?: false
+             ) do
           {:ok, _} -> :ok
           {:error, _} -> :ok
         end
@@ -440,7 +444,9 @@ defmodule JidoClaw.Conversations.Recorder do
   defp merge_telemetry(_request_id, telemetry) when telemetry == %{}, do: :ok
 
   defp merge_telemetry(request_id, telemetry) when is_binary(request_id) do
-    case RequestCorrelation.record_telemetry(request_id, telemetry) do
+    # Signal telemetry carries request identity, not an actor.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.record_telemetry(request_id, telemetry, authorize?: false) do
       {:ok, _} -> :ok
       {:error, _} -> :ok
     end
@@ -818,7 +824,9 @@ defmodule JidoClaw.Conversations.Recorder do
         {:ok, scope}
 
       :error ->
-        case RequestCorrelation.lookup(request_id) do
+        # Durable cache recovery begins with only the globally unique request id.
+        # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+        case RequestCorrelation.lookup(request_id, authorize?: false) do
           {:ok, row} ->
             scope = %{
               session_id: row.session_id,

@@ -259,13 +259,16 @@ defmodule JidoClaw.InspectionTest do
       request_id = Ecto.UUID.generate()
 
       {:ok, _} =
-        RequestCorrelation.register(%{
-          request_id: request_id,
-          session_id: session.id,
-          tenant_id: tid,
-          workspace_id: workspace.id,
-          user_id: nil
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: request_id,
+            session_id: session.id,
+            tenant_id: tid,
+            workspace_id: workspace.id,
+            user_id: nil
+          },
+          authorize?: false
+        )
 
       # Seed a user-role message so user_message (the role: :user sibling of
       # context_preview) has something to preview.
@@ -335,13 +338,16 @@ defmodule JidoClaw.InspectionTest do
       other = seed_full(tenant_label: "wrong_corr")
 
       {:ok, _} =
-        RequestCorrelation.register(%{
-          request_id: request_id,
-          session_id: other.session.id,
-          tenant_id: other.tenant_id,
-          workspace_id: other.workspace.id,
-          user_id: nil
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: request_id,
+            session_id: other.session.id,
+            tenant_id: other.tenant_id,
+            workspace_id: other.workspace.id,
+            user_id: nil
+          },
+          authorize?: false
+        )
 
       # ...but the Trace itself IS visible to the requesting tenant, so
       # `Trace.for_request` succeeds and only the correlation tenant

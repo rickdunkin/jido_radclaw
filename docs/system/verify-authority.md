@@ -3,12 +3,16 @@ type: subsystem
 description: Engine-run deterministic verify — exit-code verdicts, head-bound integrity certificates, tamper fencing, the VERIFY_OATH.
 sources:
   - lib/jido_claw/orchestration/verify.ex
+  - lib/jido_claw/orchestration/verify/git.ex
   - lib/jido_claw/orchestration/verify/config.ex
   - lib/jido_claw/route_composer/verify_reactors.ex
   - lib/jido_claw/route_composer/loop.ex
   - lib/jido_claw/tools/git_commit.ex
-verified: 2026-07-07
-verified_sha: "a1fa5215"
+  - lib/jido_claw/agent/templates.ex
+  - lib/jido_claw/agent/workers/system_verifier.ex
+  - lib/jido_claw/application.ex
+verified: 2026-07-10
+verified_sha: "b2cae5cd"
 ---
 
 # Deterministic Verify Authority (engine-run, head-bound, tamper-fenced)
@@ -39,9 +43,12 @@ camus C1-2 + C1-6a @ `53da91b3` (MIT), next-ten #5.
 - **VERIFY_OATH**: a tampered verify is never retried and never fed to the fixer —
   remediation destroys the evidence. The tick checks `tampered_stages` AHEAD of every
   other terminal branch.
-- The three LLM verification judges (`verifier`/`system_verifier`/`test_runner`) carry
-  the verbatim `verify_oath` doctrine slice + read-only `lua_query`/`lua_docs` evidence
-  (OpenHelm OH1-3) — they diagnose reds, never hold the verdict.
+- The code-route LLM verification workers (`verifier`/`test_runner`) carry the
+  verbatim `verify_oath` doctrine slice + read-only `lua_query`/`lua_docs` evidence
+  (OpenHelm OH1-3) — they diagnose reds, never hold the deterministic code verdict.
+  `system_verifier` belongs to the separate reverse-verify system route, where its
+  verdict is authoritative; every real-host `run_command` there is therefore bound
+  to an exact, single-use operator approval by the template overlay.
 
 ## Mechanics
 
@@ -58,12 +65,43 @@ camus C1-2 + C1-6a @ `53da91b3` (MIT), next-ten #5.
   baseline, a change = seal — and `Tools.GitCommit` returns engine facts: rev-parse
   before/after, `committed` ⇔ head moved, staged-empty ⇒ explicit `no_changes`
   success):
-  - **sealed** is camus-verbatim: dirty tracked tree before checks ⇒ RED
-    `uncommitted_state`, checks never run; HEAD≠seal ⇒ `head_moved`.
+  - **sealed** keeps the camus committed-state posture with the signed
+    [C1-2 audit hardening](../exploration/camus/PORT-C1-2-AUDIT.md): tracked dirt
+    **or any nonignored untracked path** before checks ⇒ RED
+    `uncommitted_state`, checks never run; HEAD≠seal ⇒ `head_moved`. Gitignored
+    paths remain outside the authority.
   - **working_tree** (today's non-committing default) records dirty-before as an
     envelope FACT and fences mid-verify integrity via HEAD stability + a
-    content-addressed `git diff --no-ext-diff --no-textconv --binary` sha256 digest
-    (porcelain can't see content edits to already-dirty files).
+    domain-separated sha256 over the tracked
+    `git diff --no-ext-diff --no-textconv --binary HEAD` plus a sorted manifest
+    from `git ls-files --others --exclude-standard -z`. The manifest binds each
+    exact path, lstat type/mode, and regular-file content or symlink target text;
+    symlink targets are never read through. Regular reads are streamed under an
+    open-descriptor + pre/post-lstat race fence (device/inode/type/size/mode/
+    mtime/ctime; atime deliberately excluded), and two full-length bounded
+    reads must produce the same hash.
+  - Any positive digest/porcelain change during checks is RED tampering kind
+    `working_tree_mutation` (the digest is opaque over tracked diff plus untracked
+    manifest, so it does not claim which component moved). This includes a verify
+    command creating a nonignored output artifact; capture failure remains the
+    separate INCONCLUSIVE `integrity_unavailable` branch.
+- **Untracked capture bounds** are 1,000 paths, 10 MiB aggregate regular content
+  plus link-target bytes, and 4,096 bytes per path. A crossed bound, unsafe path,
+  unsupported type, read failure, or detected race returns no digest, which maps
+  toward `integrity_unavailable`/INCONCLUSIVE rather than green. The public
+  `Verify.Git.path_fingerprint/3`, `path_fingerprints/3`, and
+  `fingerprint_limits/0` keep other engine evidence on the same policy. Git
+  manifest output is capped before collection; NUL parsing and arbitrary path
+  enumeration stop at max+1 and sort only an accepted bounded set.
+- **Capture liveness is VM-bounded**: `path_fingerprint/3`,
+  `path_fingerprints/3`, and `diff_digest/2` run under the dedicated
+  `VerifyCaptureTaskSupervisor` (default two children, hard-clamped to four) with
+  a 10-second caller deadline. A FIFO swapped into the lstat→open gap can leave
+  the dirty-I/O syscall alive even after its BEAM owner is killed, so timeout
+  deliberately `Task.ignore`s the still-supervised task instead. It continues to
+  occupy one bounded child slot until the syscall unwinds; the caller gets `nil`
+  immediately and capacity exhaustion makes later captures fail closed rather
+  than accumulating blocked I/O workers across verifies.
 - **Verdict mapping**: green ⇒ `clean:verify` + a welded `:verify_certified` marker
   (`{head, tree_digest, mode}`; the report is preserved via the non-routing
   `:verify_report_recorded` marker on reclassification). Red ⇒ `findings:verify` +
@@ -84,21 +122,37 @@ camus C1-2 + C1-6a @ `53da91b3` (MIT), next-ten #5.
 
 Config under `:verify` (`timeout_ms`/`max_output_bytes`/`tail_lines`; NO `enabled?` —
 registration is the switch; test.exs points `runner:`/`git:` at the hermetic stub).
-Runner output is redacted-in-full (ANSI-strip → patterns) BEFORE tailing. Telemetry
-counter `jido_claw.verify.total` + `:composer` Trace events (bounded — log tails live
-only inside the encrypted `verify-report`).
+Filesystem capture containment uses `config :jido_claw, :verify_capture`:
+`timeout_ms` (10,000) and `max_concurrency` (2, clamped to 4). Runner output is
+redacted-in-full (ANSI-strip → patterns) BEFORE tailing. Telemetry counter
+`jido_claw.verify.total` + `:composer` Trace events (bounded — log tails live only
+inside the encrypted `verify-report`); capture timeouts emit
+`[:jido_claw, :orchestration, :verify_capture_timeout]` with count 1 and the
+configured timeout, never a path.
 
 ## Residuals & accepted risks
 
 - `verify_cmd` is operator-owned config a mid-run fix loop could edit (camus C2-7,
   parked).
-- Untracked-file mutation is invisible to tracked-only integrity (camus-consistent).
+- The repeated-read + lstat/open-descriptor/lstat fence detects ordinary path
+  replacement and mutation races but is not an atomic filesystem snapshot. A
+  deliberately timed same-content ABA write can evade finite sampling; closing
+  that requires a filesystem snapshot, mandatory writer cooperation, or a
+  change journal rather than finer timestamps alone.
 - Engine verify runs outside the tool pipeline (no approval gate / loop guard — it is
   engine code, law 1).
+- Verify commands must not create nonignored repository artifacts. Such an artifact
+  is a positively observed working-tree mutation and therefore terminal tampering,
+  not an inconclusive result: retrying could otherwise launder the artifact into the
+  next run's before-state and certify unreviewed bytes. Put expected outputs outside
+  the repository or add their paths to the repository's ignore policy.
 
 ## Source map
 
 - `lib/jido_claw/orchestration/verify.ex` — runner, integrity modes, verdict mapping
+- `lib/jido_claw/orchestration/verify/git.ex` — untracked-inclusive porcelain,
+  bounded/supervised path fingerprints, and the domain-separated working-tree digest
+- `lib/jido_claw/application.ex` — the capture supervisor and VM-wide child ceiling
 - `lib/jido_claw/orchestration/verify/config.ex` — the resolution chain, named
   `checks:`, argv discipline
 - `lib/jido_claw/route_composer/verify_reactors.ex` — `VerifyStage`, the closed
@@ -107,3 +161,7 @@ only inside the encrypted `verify-report`).
 - `lib/jido_claw/route_composer/catalog_validator.ex` — invariant 10
 - `lib/jido_claw/tools/git_commit.ex` — engine facts: rev-parse before/after,
   `no_changes`
+- `lib/jido_claw/agent/templates.ex` — the system reverse-verifier's additive
+  `run_command` approval policy
+- `lib/jido_claw/agent/workers/system_verifier.ex` — authoritative system-route
+  verifier contract and operator-approved command posture

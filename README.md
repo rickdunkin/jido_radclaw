@@ -149,7 +149,7 @@ mix ash.setup
 mix jidoclaw
 ```
 
-The web dashboard is available at `http://localhost:4000`. On first launch, the setup wizard checks prerequisites and guides you through provider/model configuration.
+The web dashboard is available at `http://localhost:4000`. The CLI setup wizard handles first-run provider/model configuration. The browser `/setup` diagnostics page is restricted to an allowlisted admin.
 
 The gateway binds `127.0.0.1:4000` in **all** environments by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — see [Web Dashboard](#web-dashboard).
 
@@ -179,7 +179,7 @@ Solutions, Embeddings, Audit, Cron, and Trace.
 
 Built on AshAuthentication with two strategies:
 
-- **Password**: Email/password with hashed credentials, token-based sign-in
+- **Password**: Email/password with hashed credentials, a 12-character minimum for new passwords, and per-node IP/account sign-in throttling
 - **Magic Link**: Passwordless email authentication
 
 API endpoints are protected via Bearer token or `x-api-key` header, validated against the ApiKey resource.
@@ -399,6 +399,9 @@ Session-based auth with `on_mount` hooks:
 - `:live_user_optional` — allows anonymous access
 - `:live_no_user` — sign-in/setup pages only
 - `:live_admin_required` — `/admin` only; requires a `JIDOCLAW_ADMIN_EMAILS` allowlisted user
+
+The current route wiring narrows `:live_no_user` to sign-in and applies
+`:live_admin_required` to both `/admin` and `/setup`.
 
 ## Desktop App
 
@@ -620,6 +623,13 @@ jidoclaw> /help        # full command list
 
 ### REST API (OpenAI-compatible)
 
+The endpoint validates and preserves the complete ordered role/content transcript.
+`model` must be `"default"` or the server's configured model; arbitrary per-request
+model switching is rejected. Each request uses a UUID-scoped temporary runtime that
+is torn down when the response completes. `stream: true` uses OpenAI SSE framing but
+currently emits one buffered delta, advertised by
+`x-jidoclaw-stream-mode: buffered`.
+
 ```bash
 # Health check
 curl http://localhost:4000/health
@@ -803,7 +813,7 @@ jidoclaw> list files in our S3 deployment bucket
 
 ### Multi-Tenancy
 
-Each tenant gets an isolated supervision subtree with its own session, channel, cron, and tool supervisors. A failure in one tenant's subtree does not affect others.
+Each tenant gets an isolated supervision subtree with its own session, channel, cron, and tool supervisors. A failure in one tenant's subtree does not affect others. The PostgreSQL tenant row is the activity authority: suspending or terminating a tenant denies ordinary Ash reads/writes and new chat turns, and tears down its legacy runtime subtree.
 
 ```elixir
 {:ok, tenant} = JidoClaw.create_tenant(name: "acme")

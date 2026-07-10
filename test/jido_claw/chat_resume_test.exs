@@ -93,6 +93,7 @@ defmodule JidoClaw.ChatResumeTest do
       seed_full(tenant_label: "chat-resume", workspace: [path: tmp], session: [kind: :cli_run])
 
     rsid = session.external_id
+    runtime_id = JidoClaw.runtime_agent_id(session.id)
     actor = actor_for(tenant_id)
 
     {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, rsid, actor: actor)
@@ -119,11 +120,17 @@ defmodule JidoClaw.ChatResumeTest do
       end)
 
       HandoffRegistry.clear(tenant_id, rsid)
-      stop_agent(rsid)
+      stop_agent(runtime_id)
       File.rm_rf!(tmp)
     end)
 
-    {:ok, tenant_id: tenant_id, rsid: rsid, session: session, actor: actor, tmp: tmp}
+    {:ok,
+     tenant_id: tenant_id,
+     rsid: rsid,
+     runtime_id: runtime_id,
+     session: session,
+     actor: actor,
+     tmp: tmp}
   end
 
   defp chat(ctx, message, extra_opts \\ []) do
@@ -138,8 +145,8 @@ defmodule JidoClaw.ChatResumeTest do
     )
   end
 
-  defp agent_context(rsid) do
-    pid = Jido.whereis(JidoClaw.Jido, rsid)
+  defp agent_context(runtime_id) do
+    pid = Jido.whereis(JidoClaw.Jido, runtime_id)
     assert is_pid(pid)
     {:ok, server_state} = Jido.AgentServer.state(pid)
 
@@ -152,11 +159,11 @@ defmodule JidoClaw.ChatResumeTest do
   # (`Jido.start_agent/2`), so a plain GenServer.stop is resurrected by the
   # supervisor as a new live pid — the opposite of the fresh-boot scenario
   # resume targets. `Jido.stop_agent/2` terminate_childs it for real.
-  defp stop_agent(rsid) do
-    case Jido.whereis(JidoClaw.Jido, rsid) do
+  defp stop_agent(runtime_id) do
+    case Jido.whereis(JidoClaw.Jido, runtime_id) do
       pid when is_pid(pid) ->
         _ = Jido.stop_agent(JidoClaw.Jido, pid)
-        await_deregistered(rsid, 50)
+        await_deregistered(runtime_id, 50)
 
       nil ->
         :ok
@@ -165,16 +172,16 @@ defmodule JidoClaw.ChatResumeTest do
     :exit, _ -> :ok
   end
 
-  defp await_deregistered(_rsid, 0), do: :ok
+  defp await_deregistered(_runtime_id, 0), do: :ok
 
-  defp await_deregistered(rsid, attempts) do
-    case Jido.whereis(JidoClaw.Jido, rsid) do
+  defp await_deregistered(runtime_id, attempts) do
+    case Jido.whereis(JidoClaw.Jido, runtime_id) do
       nil ->
         :ok
 
       _pid ->
         Process.sleep(20)
-        await_deregistered(rsid, attempts - 1)
+        await_deregistered(runtime_id, attempts - 1)
     end
   end
 
@@ -186,12 +193,12 @@ defmodule JidoClaw.ChatResumeTest do
 
     # Turn 1's user+assistant rows are durable (add_message is synchronous).
     # Kill the agent so turn 2 resolves a FRESH process.
-    stop_agent(ctx.rsid)
+    stop_agent(ctx.runtime_id)
 
     assert {:ok, "stub answer"} = chat(ctx, "second question")
     assert_receive {:dispatch_capture, _pid, _query, _opts}, 5_000
 
-    context = agent_context(ctx.rsid)
+    context = agent_context(ctx.runtime_id)
     assert %AIContext{} = context
 
     entries = Enum.reverse(context.entries)
@@ -213,7 +220,7 @@ defmodule JidoClaw.ChatResumeTest do
     assert {:ok, "stub answer"} = chat(ctx, "third question")
     assert_receive {:dispatch_capture, _pid, _query, _opts}, 5_000
 
-    live_entries = Enum.reverse(agent_context(ctx.rsid).entries)
+    live_entries = Enum.reverse(agent_context(ctx.runtime_id).entries)
 
     assert Enum.map(live_entries, &{&1.role, &1.content}) == [
              {:user, "first question"},
@@ -229,7 +236,7 @@ defmodule JidoClaw.ChatResumeTest do
              chat(ctx, "resume me", context_restore: :strict)
 
     # Best-effort (the default) logs and proceeds with an amnesic turn.
-    stop_agent(ctx.rsid)
+    stop_agent(ctx.runtime_id)
     assert {:ok, "stub answer"} = chat(ctx, "resume me anyway")
     assert_receive {:dispatch_capture, _pid, _query, _opts}, 5_000
   end
@@ -265,7 +272,7 @@ defmodule JidoClaw.ChatResumeTest do
     assert {:ok, "stub answer"} = chat(ctx, "first question")
     assert_receive {:dispatch_capture, _pid, _query, _opts}, 5_000
 
-    stop_agent(ctx.rsid)
+    stop_agent(ctx.runtime_id)
     seed_rehydratable_ownership(ctx)
 
     worker_pid = start_sink_worker()
@@ -281,7 +288,7 @@ defmodule JidoClaw.ChatResumeTest do
 
     # ...and the restore hit BOTH the fresh main pid (unchanged behavior)
     # AND the freshly-started worker (the review fix).
-    main_pid = Jido.whereis(JidoClaw.Jido, ctx.rsid)
+    main_pid = Jido.whereis(JidoClaw.Jido, ctx.runtime_id)
     assert is_pid(main_pid)
     assert_receive {:restore_called, ^main_pid}
     assert_receive {:restore_called, ^worker_pid}

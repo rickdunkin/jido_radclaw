@@ -44,8 +44,7 @@ defmodule JidoClaw.Orchestration.GateResume do
   `ReactorRunner.execute`), so a resumed run is killable by
   `JidoClaw.Orchestration.Cancellation` too. An executor death maps through
   `ReactorRunner.finalize_exit/3` (cancelled vs crash); a registration
-  conflict — the realistic duplicate case, an operator approve racing boot
-  recovery on the *same* run id — returns
+  conflict — a defense-in-depth same-node duplicate after the DB resume claim — returns
   `{:error, {:already_running, pid}, run}` and must leave the winner's
   `:running` run untouched (never `ensure_failed`).
 
@@ -64,6 +63,15 @@ defmodule JidoClaw.Orchestration.GateResume do
   resolvable. Any undecryptable / corrupt / undecodable / disallowed /
   unknown-version / unloaded-module blob fails-with-audit (appends
   `run_failed`, logs) — it never resumes.
+
+  Decode happens only after a mode-specific ownership check. Ordinary approval
+  receives the live token atomically rotated by the decision transaction and
+  reuses it; live reclaim likewise reuses the token `claim_next/1` already
+  rotated. The `:parked` mode remains for lower-level/manual callers that must
+  promote a parked NULL/expired lease, while the synchronous boot barrier may
+  CAS-force a future claim left by the dead prior BEAM. A loser returns
+  `:resume_claim_lost` before decrypting, and every preflight failure append
+  carries the winning token.
   """
 
   require Logger
@@ -72,6 +80,7 @@ defmodule JidoClaw.Orchestration.GateResume do
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.RunExecution
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -84,15 +93,19 @@ defmodule JidoClaw.Orchestration.GateResume do
   @allowed_module_prefix "Elixir.JidoClaw.Orchestration.Reactors."
 
   @doc """
-  Reload `run`, decode its checkpoint, and resume the persisted reactor through
+  Reload `run`, claim its parked lease, decode its checkpoint, and resume the persisted reactor through
   the shared `ReactorRunner.finalize`. Returns the same envelope as
   `ReactorRunner.run/3` (`{:ok, value, run}` / `{:ok, {:paused, id}, run}` /
   `{:error, reason, run}`). Resumes only a `:running` run that still carries a
   checkpoint; any other state is a clean `{:error, :not_resumable, run}`
   (no mutation).
 
-  Opts: `:tenant`, `:actor`, and `:recovered` (informational; the hook-skip on
-  the recovery path is enforced by the caller, not here).
+  Opts: `:tenant`, `:actor`, `:recovered` (informational; the hook-skip on the
+  recovery path is enforced by the caller), and the internal `:claim_mode`:
+  `:parked` (default low-level fallback), `:boot_force` (the synchronous
+  sole-owner boot barrier may CAS-rotate regardless of a future expiry), or
+  `{:reuse, token}` (the decision transaction or live reclaim already rotated
+  the token and must reuse it).
   """
   @spec resume(WorkflowRun.t(), keyword()) :: ReactorRunner.run_result()
   def resume(run, opts \\ []) do
@@ -111,19 +124,77 @@ defmodule JidoClaw.Orchestration.GateResume do
         {:error, :not_resumable_no_checkpoint, reloaded}
 
       true ->
-        do_resume(reloaded, tenant, actor)
+        claim_and_resume(
+          reloaded,
+          Keyword.get(opts, :claim_mode, :parked),
+          tenant,
+          actor
+        )
     end
   end
 
   # -- Internal --
 
-  defp do_resume(run, tenant, actor) do
+  # Low-level fallback for a caller that did not atomically preclaim in its
+  # decision transaction. Claim BEFORE decrypt/read preflight. The parked-expiry
+  # predicate means a second contender cannot rotate a live winner even when it
+  # reloads after the first rotation. Every failure terminal below carries this
+  # token into fence B, so only the preflight owner can fail the run.
+  defp claim_and_resume(run, :parked, tenant, actor) do
+    token = Ash.UUID.generate()
+
+    case WorkflowLease.claim_resume(run.id, token, run.claim_token) do
+      {:ok, :claimed} ->
+        claimed = reload(run, tenant, actor)
+        do_resume(claimed, token, tenant, actor)
+
+      {:ok, :lost} ->
+        {:error, :resume_claim_lost, reload(run, tenant, actor)}
+
+      {:error, reason} ->
+        {:error, {:resume_claim_failed, reason}, reload(run, tenant, actor)}
+    end
+  end
+
+  # Boot recovery is a synchronous startup barrier: no executor from the prior
+  # BEAM survives, and external decision/launch surfaces have not started yet.
+  # It may therefore CAS-force a fresh token even when the crashed resumer left
+  # a future expiry. The expected-token CAS still catches data races/corruption.
+  defp claim_and_resume(run, :boot_force, tenant, actor) do
+    token = Ash.UUID.generate()
+
+    case WorkflowLease.stamp(run.id, token, run.claim_token, tenant: tenant) do
+      {:ok, :claimed} -> do_resume(reload(run, tenant, actor), token, tenant, actor)
+      {:ok, :lost} -> {:error, :resume_claim_lost, reload(run, tenant, actor)}
+      {:error, reason} -> {:error, {:resume_claim_failed, reason}, reload(run, tenant, actor)}
+    end
+  end
+
+  # `ReclaimPooler.claim_next/1` already rotated this run to `token` and gave it
+  # a live expiry. Taking the ordinary parked claim again would reject forever;
+  # verify/refresh the held token once, then carry it through middleware/fence B.
+  defp claim_and_resume(run, {:reuse, token}, tenant, actor) when is_binary(token) do
+    if run.claim_token == token do
+      case WorkflowLease.renew(run.id, token) do
+        {:ok, 1} -> do_resume(reload(run, tenant, actor), token, tenant, actor)
+        {:ok, 0} -> {:error, :resume_claim_lost, reload(run, tenant, actor)}
+        {:error, reason} -> {:error, {:resume_claim_failed, reason}, reload(run, tenant, actor)}
+      end
+    else
+      {:error, :resume_claim_lost, reload(run, tenant, actor)}
+    end
+  end
+
+  defp claim_and_resume(run, _invalid_mode, tenant, actor),
+    do: {:error, :invalid_resume_claim_mode, reload(run, tenant, actor)}
+
+  defp do_resume(run, claim_token, tenant, actor) do
     with {:ok, blob} <- decrypt_checkpoint(run, tenant, actor),
          {:ok, module, reactor, inputs} <- decode_checkpoint(blob),
          {:ok, decision} <- approved_decision(run, tenant, actor) do
-      run_reactor(run, module, reactor, inputs, decision, tenant, actor)
+      run_reactor(run, module, reactor, inputs, decision, claim_token, tenant, actor)
     else
-      {:error, reason} -> fail_with_audit(run, reason, tenant, actor)
+      {:error, reason} -> fail_with_audit(run, reason, claim_token, tenant, actor)
     end
   end
 
@@ -148,15 +219,7 @@ defmodule JidoClaw.Orchestration.GateResume do
 
   # The killable-execution seam (mirrors ReactorRunner.execute): `tenant_id:`
   # is RunExecution-local registry metadata and never reaches Reactor.run.
-  defp run_reactor(run, module, reactor, inputs, decision, tenant, actor) do
-    # WS1 lease: generate a fresh fencing token here (decoupled from the row
-    # stamp, which `Lease.init` performs as a CAS on the run's CURRENT token — so
-    # only one resumer wins, closing the approve-vs-recovery race). Threaded into
-    # the context (sidecar + fence B) and finalize_opts (fence A). The fresh
-    # context token wins over any baked-in one: Reactor deep-merges runtime
-    # context over `reactor.context`, RHS wins.
-    claim_token = Ash.UUID.generate()
-
+  defp run_reactor(run, module, reactor, inputs, decision, claim_token, tenant, actor) do
     context = %{
       tenant: tenant,
       actor: actor,
@@ -184,7 +247,7 @@ defmodule JidoClaw.Orchestration.GateResume do
         run_normalized(run, normalized, inputs, context, finalize_opts, tenant, actor)
 
       {:error, reason} ->
-        fail_with_audit(run, {:lease_middleware, reason}, tenant, actor)
+        fail_with_audit(run, {:lease_middleware, reason}, claim_token, tenant, actor)
     end
   end
 
@@ -323,11 +386,15 @@ defmodule JidoClaw.Orchestration.GateResume do
   # A run that reached `:running` + checkpoint but cannot be resumed (corrupt
   # blob, missing approved case) is failed with an audit trail — it can never
   # make progress, and the terminal clears the checkpoint (Decision 7).
-  defp fail_with_audit(run, reason, tenant, actor) do
+  defp fail_with_audit(run, reason, claim_token, tenant, actor) do
     formatted = "gate resume failed: #{inspect(reason)}"
     Logger.warning("[GateResume] #{formatted} (run #{run.id})")
 
-    case WorkflowLog.append(run, :run_failed, %{error: formatted}, tenant: tenant, actor: actor) do
+    case WorkflowLog.append(run, :run_failed, %{error: formatted},
+           tenant: tenant,
+           actor: actor,
+           claim_fence_token: claim_token
+         ) do
       {:ok, _event} ->
         :ok
 

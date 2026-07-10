@@ -10,8 +10,13 @@ defmodule JidoClaw.Audit.AsyncWriter do
     write latency doesn't gate the request. Failures are logged,
     never raised — losing an audit row is preferable to dropping
     a request.
+  * `enqueue/1,2` is the result-bearing variant of `cast/1`: same
+    spawn, but the caller learns whether the writer task was
+    accepted (`{:ok, pid}` means SPAWNED, not persisted). Used by
+    the AshTracer double-emit fence, which marks a denial audited
+    only on a successful handoff.
 
-  Both call shapes accept attrs containing `tenant_id`; the writer
+  All call shapes accept attrs containing `tenant_id`; the writer
   strips it from attrs and threads it via `tenant:` opt to match
   the `:attribute` multitenancy contract.
   """
@@ -24,16 +29,44 @@ defmodule JidoClaw.Audit.AsyncWriter do
 
   @spec cast(map()) :: :ok
   def cast(attrs) when is_map(attrs) do
-    case Task.Supervisor.start_child(@sup, fn ->
+    _accepted_or_not = enqueue(attrs)
+    :ok
+  end
+
+  @doc """
+  Spawn an async audit write, reporting whether the task was accepted.
+
+  A total, non-raising boundary: `Task.Supervisor.start_child/3` can EXIT
+  with `:noproc` (supervisor down — shutdown races), not just return
+  `{:error, _}`, so both are normalized to `{:error, term}`. `{:ok, pid}`
+  means the writer task was **spawned** — never that the row persisted.
+  The `supervisor` override exists so tests can pin the
+  unavailable-supervisor case against an isolated supervisor.
+  """
+  @spec enqueue(map(), Supervisor.supervisor()) :: {:ok, pid()} | {:error, term()}
+  def enqueue(attrs, supervisor \\ @sup) when is_map(attrs) do
+    case Task.Supervisor.start_child(supervisor, fn ->
            safe_record(attrs, :async)
          end) do
-      {:ok, _pid} ->
-        :ok
+      {:ok, pid} ->
+        {:ok, pid}
 
       {:error, reason} ->
-        Logger.warning("[Audit.AsyncWriter] cast failed to spawn: #{inspect(reason)}")
-        :ok
+        Logger.warning("[Audit.AsyncWriter] enqueue failed to spawn: #{inspect(reason)}")
+        {:error, reason}
     end
+
+    # a dead/unregistered supervisor EXITs the call; a bad supervisor ref
+    # raises — an audit handoff must never take the producer down with it
+  rescue
+    # reach:disable-next-line bare_rescue
+    error ->
+      Logger.warning("[Audit.AsyncWriter] enqueue failed to spawn: #{inspect(error)}")
+      {:error, error}
+  catch
+    :exit, reason ->
+      Logger.warning("[Audit.AsyncWriter] enqueue failed to spawn: exit #{inspect(reason)}")
+      {:error, {:exit, reason}}
   end
 
   @spec sync(map()) :: :ok

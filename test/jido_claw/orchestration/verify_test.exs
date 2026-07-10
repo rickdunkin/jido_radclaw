@@ -158,7 +158,7 @@ defmodule JidoClaw.Orchestration.VerifyTest do
       assert envelope.checks != []
     end
 
-    test "a tracked content edit mid-verify (digest change on an already-dirty tree) is tampered tracked_mutation" do
+    test "a tracked content edit mid-verify is tampered working_tree_mutation" do
       envelope =
         build([check("unit", ["mix", "test"])], %{"unit" => {0, ""}},
           porcelain: seq([" M lib/app.ex\n"]),
@@ -166,7 +166,7 @@ defmodule JidoClaw.Orchestration.VerifyTest do
         )
 
       assert %Envelope{pass: false, inconclusive: false, tampered: true} = envelope
-      assert Enum.any?(envelope.failures, &(&1.kind == "tracked_mutation"))
+      assert Enum.any?(envelope.failures, &(&1.kind == "working_tree_mutation"))
     end
 
     test "a HEAD move mid-verify is tampered head_moved" do
@@ -249,7 +249,7 @@ defmodule JidoClaw.Orchestration.VerifyTest do
       assert Enum.any?(envelope.failures, &(&1.kind == "head_moved"))
     end
 
-    test "a tracked mutation during the checks is tampered tracked_mutation" do
+    test "a working-tree mutation during the checks is tampered working_tree_mutation" do
       envelope =
         build([check("unit", ["mix", "test"])], %{"unit" => {0, ""}},
           sealed_head: "h1",
@@ -257,7 +257,7 @@ defmodule JidoClaw.Orchestration.VerifyTest do
         )
 
       assert envelope.tampered
-      assert Enum.any?(envelope.failures, &(&1.kind == "tracked_mutation"))
+      assert Enum.any?(envelope.failures, &(&1.kind == "working_tree_mutation"))
     end
 
     test "a would-be green with a failed porcelain capture is inconclusive, never clean" do

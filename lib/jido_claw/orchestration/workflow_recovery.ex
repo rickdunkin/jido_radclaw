@@ -110,9 +110,9 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
       fails them all.
 
   Boot and reclaim are **complementary**: the Pooler is expiry-gated and touches only
-  provably-dead runs (safe in every mode), the `FOR UPDATE` (`lock_run`) + `:illegal`
-  terminal-on-terminal guard makes any single-node overlap idempotent, and the
-  Pooler's `initial_delay_ms` lets the boot one-shot win the first sweep.
+  provably-dead runs (safe in every mode), while application startup makes boot
+  recovery a synchronous barrier and starts the Pooler only after it completes.
+  `initial_delay_ms` remains restart/warm-up pacing, never the correctness fence.
   """
 
   use Task
@@ -121,6 +121,8 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Cluster
+  alias JidoClaw.Core.AshErrors
+  alias JidoClaw.Core.ConfigValue
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.GateDisposition
@@ -135,10 +137,18 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   @dangling_gate_reason "recovered: dangling gate"
   @parked_orphan_reason "recovered: parked gate, pending case missing"
   @parked_terminal_parent_reason "recovered: parked gate orphaned by terminal composer parent"
+  @default_retry_initial_ms 250
+  @default_retry_max_ms 5_000
 
   @spec start_link(keyword()) :: {:ok, pid()}
   def start_link(opts) do
-    Task.start_link(__MODULE__, :run, [opts])
+    # This is a STARTUP BARRIER, not merely a background task. The application
+    # starts the live reclaim pool and external surfaces only after this call
+    # returns, so the boot scan cannot race a newly-approved gate or a fresh
+    # executor. Keep a normal one-shot Task child shape after the synchronous
+    # work so supervision semantics remain unchanged.
+    :ok = run(opts)
+    Task.start_link(fn -> :ok end)
   end
 
   @doc """
@@ -146,9 +156,9 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   otherwise. The boot entrypoint.
   """
   @spec run(keyword()) :: :ok
-  def run(_opts) do
+  def run(opts) do
     if owns_recovery?() do
-      reconcile_all()
+      retry_boot_recovery(opts, 0)
     else
       :ok
     end
@@ -158,17 +168,103 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   Scan every non-terminal run across all tenants and reconcile each. Driven
   directly by tests inside the sandbox (boot recovery is disabled in test).
   """
-  @spec reconcile_all() :: :ok
+  @spec reconcile_all() :: :ok | {:error, term()}
   def reconcile_all do
     case WorkflowRun.list_non_terminal_global() do
       {:ok, runs} ->
         reconcile_partitioned(runs)
+        :ok
 
       {:error, reason} ->
         Logger.warning("[WorkflowRecovery] non-terminal scan failed: #{inspect(reason)}")
+        {:error, reason}
     end
+  end
 
-    :ok
+  # A single-node boot scan covers rows that live reclaim intentionally cannot:
+  # a prior-runtime `:running` row with no claim expiry (including nil-token
+  # legacy/genesis shapes). Therefore there is no safe "degraded boot" after a
+  # retry budget. Recognized database-infrastructure failures back off under the
+  # still-closed application startup barrier until the scan succeeds. Anything
+  # else remains loud so a programming/schema defect cannot masquerade as a
+  # transient outage.
+  defp retry_boot_recovery(opts, attempt) do
+    reconcile = Keyword.get(opts, :reconcile, &reconcile_all/0)
+
+    try do
+      case reconcile.() do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          if retryable_infra?(reason) do
+            retry_after_backoff(opts, attempt, reason)
+          else
+            raise "non-retryable boot recovery failure: #{inspect(reason)}"
+          end
+
+        other ->
+          raise "invalid boot recovery result: #{inspect(other)}"
+      end
+    rescue
+      error in [DBConnection.ConnectionError, Postgrex.Error] ->
+        if retryable_infra?(error) do
+          retry_after_backoff(opts, attempt, error)
+        else
+          reraise(error, __STACKTRACE__)
+        end
+    end
+  end
+
+  defp retry_after_backoff(opts, attempt, reason) do
+    delay = retry_delay(opts, attempt)
+
+    Logger.warning(
+      "[WorkflowRecovery] boot scan unavailable (attempt #{attempt + 1}): " <>
+        "#{inspect(reason)}; retrying in #{delay}ms while startup remains closed"
+    )
+
+    sleep = Keyword.get(opts, :sleep, &Process.sleep/1)
+    sleep.(delay)
+    retry_boot_recovery(opts, attempt + 1)
+  end
+
+  defp retry_delay(opts, attempt) do
+    configured_initial =
+      Keyword.get(
+        opts,
+        :retry_initial_ms,
+        recovery_config(:retry_initial_ms, @default_retry_initial_ms)
+      )
+
+    configured_maximum =
+      Keyword.get(
+        opts,
+        :retry_max_ms,
+        recovery_config(:retry_max_ms, @default_retry_max_ms)
+      )
+
+    initial = ConfigValue.positive_integer(configured_initial, @default_retry_initial_ms)
+    maximum = ConfigValue.positive_integer(configured_maximum, @default_retry_max_ms)
+    min(initial * Integer.pow(2, min(attempt, 20)), max(initial, maximum))
+  end
+
+  # Only the scan-result shapes this loop itself produces live here
+  # (`{:error, reason}` unwrap, bare reason lists); everything else —
+  # including Ash-wrapped connection errors, whose splode leaf may carry the
+  # rescued exception as a formatted banner STRING rather than a struct —
+  # delegates to the canonical `AshErrors.connection_error?/1`.
+  defp retryable_infra?({:error, reason}), do: retryable_infra?(reason)
+
+  defp retryable_infra?(reasons) when is_list(reasons),
+    do: Enum.any?(reasons, &retryable_infra?/1)
+
+  defp retryable_infra?(reason), do: AshErrors.connection_error?(reason)
+
+  defp recovery_config(key, default) do
+    :jido_claw
+    |> Application.get_env(:workflow_recovery, [])
+    |> Keyword.get(key, default)
   end
 
   @doc "Reclaim with no known prior lease owner (boot / compat) — never kill-casts. See `reclaim/2`."
@@ -218,7 +314,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   outcome via `emit/2` telemetry; the value is incidental (callers are side-effecting).
   """
   @spec reconcile_one(WorkflowRun.t()) :: term()
-  def reconcile_one(run), do: reconcile_run(run)
+  def reconcile_one(run), do: reconcile_run(run, :reclaim)
 
   # Composer parents are reconciled FIRST (Phase 2d): a parent's children must be
   # reconciled (and the composer restarted) before the `others` loop touches them,
@@ -231,12 +327,47 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
     handled =
       Enum.reduce(composers, MapSet.new(), fn run, acc ->
-        MapSet.union(acc, reconcile_branch(:composer, run))
+        MapSet.union(acc, reconcile_composer_snapshot(run))
       end)
 
     others
     |> Enum.reject(&MapSet.member?(handled, &1.id))
-    |> Enum.each(&reconcile_run/1)
+    |> Enum.each(&reconcile_current/1)
+  end
+
+  # The initial global list is only a candidate set. Re-read each row before
+  # classification so a decision/status change that committed while the scan was
+  # walking never gets interpreted from a stale struct. The terminal append and
+  # gate-disposition paths retain their own under-lock guards for the subsequent
+  # reload→write gap.
+  defp reconcile_current(run) do
+    case WorkflowRun.by_id_global(run.id) do
+      {:ok, %WorkflowRun{status: status} = current} ->
+        unless Projection.terminal_status?(status), do: reconcile_run(current, :boot)
+
+      _unreadable ->
+        :ok
+    end
+  end
+
+  defp reconcile_composer_snapshot(run) do
+    case WorkflowRun.by_id_global(run.id) do
+      {:ok, %WorkflowRun{status: status} = current} ->
+        cond do
+          Projection.terminal_status?(status) ->
+            MapSet.new()
+
+          classify(current) == :composer ->
+            reconcile_branch(:composer, current, :boot)
+
+          true ->
+            reconcile_run(current, :boot)
+            MapSet.new()
+        end
+
+      _unreadable ->
+        MapSet.new()
+    end
   end
 
   # The exact condition `classify/1` maps to `:composer` — a `:running` composer
@@ -251,7 +382,12 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # Presence is the ENCRYPTED column (a real attribute, always selected) — the
   # `resume_checkpoint` calculation is `%Ash.NotLoaded{}` on a plain read,
   # which `not is_nil/1` would misclassify as "present" on every run.
-  defp reconcile_run(run), do: reconcile_branch(classify(run), run)
+  defp reconcile_run(run, mode) do
+    case classify(run) do
+      :decision_recorded -> reconcile_decision_recorded(run, mode)
+      branch -> reconcile_branch(branch, run, mode)
+    end
+  end
 
   # AR-2 composer parents (`workflow_type: "composer"`) sit `:running` for the
   # whole route with no checkpoint, so the status heads below would mis-classify
@@ -287,21 +423,22 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # missing case means the park can never be decided (no inbox row), so it is
   # cancelled to reach a terminal — the projection clears the checkpoint
   # (Decision 7). A transient lookup error is left for the next boot.
-  defp reconcile_branch(:parked, run) do
+  defp reconcile_branch(:parked, run, mode) do
     tenant = run.tenant_id
     actor = Actor.system(tenant)
+    disposition_opts = [tenant: tenant, actor: actor] ++ recovery_fence_opts(run, mode)
 
     case AgentCase.pending_for_run(run.id, tenant: tenant, actor: actor) do
       {:ok, [_ | _]} ->
-        reconcile_parked_with_case(run, tenant, actor)
+        reconcile_parked_with_case(run, tenant, actor, mode)
 
       {:ok, []} ->
-        run
-        |> WorkflowLog.append(:run_cancelled, %{reason: @parked_orphan_reason},
-          tenant: tenant,
-          actor: actor
+        run.id
+        |> GateDisposition.cancel_caseless_parked_child(
+          @parked_orphan_reason,
+          disposition_opts
         )
-        |> finish(run, :parked_orphaned)
+        |> finish_caseless_park(run)
 
       {:error, reason} ->
         Logger.warning(
@@ -318,57 +455,28 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # `:awaiting_approval -> :failed` and clears the checkpoint. A crash-reaped
   # gate is a *failure*, not an operator cancel — `run_cancelled` is reserved
   # for deliberate decisions.
-  defp reconcile_branch(:dangling_gate, run) do
+  defp reconcile_branch(:dangling_gate, run, mode) do
     run.id
-    |> GateDisposition.cancel_dangling_gate(@dangling_gate_reason,
-      tenant: run.tenant_id,
-      actor: Actor.system(run.tenant_id)
+    |> GateDisposition.cancel_dangling_gate(
+      @dangling_gate_reason,
+      [tenant: run.tenant_id, actor: Actor.system(run.tenant_id)] ++
+        recovery_fence_opts(run, mode)
     )
-    |> finish_disposition(run, :dangling_gate)
-  end
-
-  # `:running` + checkpoint: resume ONLY on the recorded `approval_resolved`
-  # event — the explicit decision key, not the (status, checkpoint) pair alone.
-  # No recorded decision -> forbidden pair -> fail-with-audit, never
-  # blind-resume past the gate. A recorded decision resumes only under a
-  # foldable parent (`resume_unless_orphaned/3` — a terminal composer parent
-  # means re-resuming would re-execute the orphan). A transient log-read error
-  # is left for the next boot (like the parked-case lookup).
-  defp reconcile_branch(:decision_recorded, run) do
-    tenant = run.tenant_id
-    actor = Actor.system(tenant)
-
-    case decision_recorded?(run, tenant, actor) do
-      {:ok, true} ->
-        resume_unless_orphaned(run, tenant, actor)
-
-      {:ok, false} ->
-        Logger.warning(
-          "[WorkflowRecovery] forbidden state: :running run #{run.id} carries a checkpoint " <>
-            "but no approval_resolved event — failing, not resuming"
-        )
-
-        fail_stranded(run, :running_checkpoint_no_decision)
-
-      {:error, reason} ->
-        Logger.warning(
-          "[WorkflowRecovery] decision lookup failed for run #{run.id}: #{inspect(reason)}"
-        )
-    end
+    |> finish_disposition(run, :dangling_gate, mode)
   end
 
   # Impossible/corrupt pair — never resume; fail with an audit trail and a loud
   # warning. The terminal clears the bogus checkpoint (Decision 7).
-  defp reconcile_branch(:corrupt_pending, run) do
+  defp reconcile_branch(:corrupt_pending, run, mode) do
     Logger.warning(
       "[WorkflowRecovery] impossible state: :pending run #{run.id} carries a checkpoint — failing, not resuming"
     )
 
-    fail_stranded(run, :corrupt_pending)
+    fail_stranded(run, :corrupt_pending, mode)
   end
 
   # Genuinely stranded (the original bug fix): run_recovered + run_failed.
-  defp reconcile_branch(:stranded, run), do: fail_stranded(run, :stranded)
+  defp reconcile_branch(:stranded, run, mode), do: fail_stranded(run, :stranded, mode)
 
   # Composer parent (Phase 2d — the real rebuild+resume branch): reconcile the
   # parent's non-terminal children through the reactor branches above, then —
@@ -379,7 +487,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # resume is mid-route, not a terminal, and an un-recoverable/parked/transient
   # case leaves it `:running` to retry next boot (never failing a recoverable
   # route).
-  defp reconcile_branch(:composer, run) do
+  defp reconcile_branch(:composer, run, _mode) do
     if recoverable_catalog?(run) do
       resume_composer(run)
     else
@@ -400,6 +508,36 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     end
   end
 
+  # `:running` + checkpoint: resume ONLY on the recorded `approval_resolved`
+  # event — the explicit decision key, not the (status, checkpoint) pair alone.
+  # No recorded decision -> forbidden pair -> fail-with-audit, never
+  # blind-resume past the gate. A recorded decision resumes only under a
+  # foldable parent (`resume_unless_orphaned/4` — a terminal composer parent
+  # means re-resuming would re-execute the orphan). A transient log-read error
+  # is left for the next boot (like the parked-case lookup).
+  defp reconcile_decision_recorded(run, mode) do
+    tenant = run.tenant_id
+    actor = Actor.system(tenant)
+
+    case decision_recorded?(run, tenant, actor) do
+      {:ok, true} ->
+        resume_unless_orphaned(run, tenant, actor, mode)
+
+      {:ok, false} ->
+        Logger.warning(
+          "[WorkflowRecovery] forbidden state: :running run #{run.id} carries a checkpoint " <>
+            "but no approval_resolved event — failing, not resuming"
+        )
+
+        fail_stranded(run, :running_checkpoint_no_decision, mode)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[WorkflowRecovery] decision lookup failed for run #{run.id}: #{inspect(reason)}"
+        )
+    end
+  end
+
   # An approved child under a TERMINAL composer parent must never be
   # re-resumed: the route already ended, so `GateResume` would re-execute the
   # gate's side-effectful downstream steps with no live composer to fold the
@@ -410,13 +548,13 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # none; the reclaim path already kill-casts the prior owner), and the
   # non-raced sibling path (`fail_orphaned_parked_child`) lands the same
   # `:failed` terminal.
-  defp resume_unless_orphaned(run, tenant, actor) do
+  defp resume_unless_orphaned(run, tenant, actor, mode) do
     case GateDisposition.terminal_composer_parent(run, tenant, actor) do
       :terminal ->
-        fail_stranded(run, :orphaned_terminal_parent)
+        fail_stranded(run, :orphaned_terminal_parent, mode)
 
       :not_terminal ->
-        resume_recorded_decision(run)
+        resume_recorded_decision(run, mode)
 
       {:error, reason} ->
         # Uncertain parent state: neither fail nor resume — leave for the next
@@ -444,15 +582,15 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # survives a partial failure, and this branch is the janitor that eventually
   # closes that pair. Uncertain parent state (`{:error, _}`) never closes
   # anything — keep the no-op park and retry next boot.
-  defp reconcile_parked_with_case(run, tenant, actor) do
+  defp reconcile_parked_with_case(run, tenant, actor, mode) do
     case GateDisposition.terminal_composer_parent(run, tenant, actor) do
       :terminal ->
         run.id
-        |> GateDisposition.fail_orphaned_parked_child(@parked_terminal_parent_reason,
-          tenant: tenant,
-          actor: actor
+        |> GateDisposition.fail_orphaned_parked_child(
+          @parked_terminal_parent_reason,
+          [tenant: tenant, actor: actor] ++ recovery_fence_opts(run, mode)
         )
-        |> finish_disposition(run, :parked_terminal_parent)
+        |> finish_disposition(run, :parked_terminal_parent, mode)
 
       _not_terminal_or_error ->
         emit(run, :parked)
@@ -463,7 +601,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # `{:decided, status}` means a fenced live decision won the race and closed
   # the pair itself — recovery wrote nothing, which is the correct no-op,
   # tagged distinctly so the scan's outcome stays observable.
-  defp finish_disposition({:ok, :disposed}, run, branch), do: emit(run, branch)
+  defp finish_disposition({:ok, :disposed}, run, branch, _mode), do: emit(run, branch)
 
   # A raced operator APPROVE won the disposition fence mid-scan and is resuming
   # the child under its terminal parent — reachable only from the `:parked`
@@ -477,15 +615,29 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
   # classify and lock — no race-injection seam exists); its reaction is the
   # identical `fail_stranded(:orphaned_terminal_parent)` the
   # `:decision_recorded` guard exercises (composer_durable test 7g).
-  defp finish_disposition({:error, {:decided, :running}}, run, _branch),
-    do: fail_stranded(run, :orphaned_terminal_parent)
+  defp finish_disposition({:error, {:decided, :running}}, run, _branch, mode),
+    do: fail_stranded(run, :orphaned_terminal_parent, mode)
 
-  defp finish_disposition({:error, {:decided, _status}}, run, _branch),
+  defp finish_disposition({:error, {:decided, _status}}, run, _branch, _mode),
     do: emit(run, :decided_elsewhere)
 
-  defp finish_disposition({:error, reason}, run, branch) do
+  defp finish_disposition({:error, reason}, run, branch, _mode) do
     Logger.warning(
       "[WorkflowRecovery] failed to reconcile run #{run.id} (#{branch}): #{inspect(reason)}"
+    )
+  end
+
+  defp finish_caseless_park({:ok, :disposed}, run), do: emit(run, :parked_orphaned)
+
+  # A live decision won after the scan's missing-case observation. It owns the
+  # run; recovery writes nothing and, unlike terminal-parent cleanup, must not
+  # fail a legitimately resuming child.
+  defp finish_caseless_park({:error, {:decided, _status}}, run),
+    do: emit(run, :decided_elsewhere)
+
+  defp finish_caseless_park({:error, reason}, run) do
+    Logger.warning(
+      "[WorkflowRecovery] failed to reconcile caseless park #{run.id}: #{inspect(reason)}"
     )
   end
 
@@ -668,7 +820,7 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
         children
         |> Enum.filter(&non_terminal?/1)
         |> Enum.reduce(MapSet.new(), fn child, acc ->
-          reconcile_run(child)
+          reconcile_run(child, :boot)
           MapSet.put(acc, child.id)
         end)
 
@@ -738,8 +890,10 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
 
   # The after_approved hook is NOT run (Decision 8) — recovery never routes
   # through Cases.decide, so the hook is skipped by construction.
-  defp resume_recorded_decision(run) do
-    case GateResume.resume(run, recovered: true) do
+  defp resume_recorded_decision(run, mode) do
+    claim_mode = if mode == :boot, do: :boot_force, else: {:reuse, run.claim_token}
+
+    case GateResume.resume(run, recovered: true, claim_mode: claim_mode) do
       {:ok, _value, _resumed} ->
         emit(run, :decision_recorded)
 
@@ -756,9 +910,25 @@ defmodule JidoClaw.Orchestration.WorkflowRecovery do
     end
   end
 
-  defp fail_stranded(run, branch) do
-    finish(WorkflowLog.append_recovery(run, run.status), run, branch)
+  defp fail_stranded(run, branch, mode) do
+    finish(
+      WorkflowLog.append_recovery(run, run.status, recovery_fence_opts(run, mode)),
+      run,
+      branch
+    )
   end
+
+  # Boot recovery is serialized by the application startup barrier and is the
+  # sole owner of prior-runtime work, so it deliberately remains unfenced. A
+  # live reclaimer, however, may itself stall until its freshly-rotated lease
+  # expires and a successor rotates the token again. Thread that claimed token
+  # into the terminal append so the stale reconciler cannot fail its successor's
+  # run; `append_recovery/3` rolls the provenance event back with the rejected
+  # terminal event.
+  defp recovery_fence_opts(%WorkflowRun{claim_token: token}, :reclaim) when is_binary(token),
+    do: [claim_fence_token: token]
+
+  defp recovery_fence_opts(_run, _mode), do: []
 
   # Ash.transact / append_recovery both return `{:ok, _}` | `{:error, _}`.
   defp finish({:ok, _}, run, branch), do: emit(run, branch)

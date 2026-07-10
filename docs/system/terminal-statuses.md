@@ -6,9 +6,11 @@ sources:
   - lib/jido_claw/route_composer/fold.ex
   - lib/jido_claw/route_composer/route_composer.ex
   - lib/jido_claw/orchestration/cases.ex
+  - lib/jido_claw/orchestration/workflow_event/projection.ex
+  - lib/jido_claw/orchestration/workflow_run.ex
   - lib/jido_claw/orchestration/visibility.ex
-verified: 2026-07-07
-verified_sha: "2a0bb4c6"
+verified: 2026-07-09
+verified_sha: "b2cae5cd"
 ---
 
 # Honest Terminal Statuses + Stall Detection
@@ -22,6 +24,11 @@ decision — and the resulting completion is marked as "completed · findings", 
 plain green. Port provenance: camus C1-4 + C1-5, next-ten #6.
 
 ## Invariants & contracts
+
+- Every completed/failed/cancelled/abandoned terminal clears the encrypted
+  resume checkpoint and revokes `claim_token` + `claim_expires_at` in the same
+  projection transaction. `claimed_by` remains as historical owner provenance;
+  no terminal row retains a renewable executor credential.
 
 - Reviewer findings carry a cross-wave identity: a required short `title` +
   `JidoClaw.RouteComposer.FindingKey`, welded per reviewer round into the wave commit

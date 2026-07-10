@@ -40,6 +40,11 @@ defmodule JidoClaw.Shell.SessionManager do
   alias JidoClaw.VFS.Workspace, as: VFSWorkspace
 
   @default_timeout 30_000
+  # Return before Jido.Exec kills the calling action task. This gives the
+  # collector enough time to cancel the backend, drain terminal events, and
+  # deliver a non-retryable timeout result.
+  @action_deadline_margin_ms 750
+  @min_action_command_ms 100
   @max_output_chars 10_000
   # Streaming captures echo a 50 KB preview to the agent (vs. 10 KB
   # for non-streaming) — large enough to be useful, small enough that
@@ -109,6 +114,10 @@ defmodule JidoClaw.Shell.SessionManager do
       streaming preview) when absent — byte-identical legacy behavior.
       `JidoClaw.Tools.RunCommand` passes a larger capture when output
       shaping is on so the shaper sees the full output.
+    * `:action_deadline_ms` - absolute monotonic deadline stamped by
+      `Jido.Exec`. When present, the manager re-budgets immediately before
+      execution, refuses stale queued calls, and returns early enough to cancel
+      an in-flight command before the outer task is killed.
 
   Returns `{:ok, %{output: String.t(), exit_code: integer()}}` or `{:error, reason}`.
 
@@ -475,6 +484,19 @@ defmodule JidoClaw.Shell.SessionManager do
   # -- run/4 dispatch --------------------------------------------------------
 
   defp handle_local_run(workspace_id, command, timeout, opts, project_dir, state) do
+    case command_budget(timeout, opts) do
+      {:error, message} ->
+        {:reply, {:error, {:action_deadline_exceeded, message}}, state}
+
+      {:ok, _initial_budget} ->
+        do_handle_local_run(workspace_id, command, timeout, opts, project_dir, state)
+    end
+  end
+
+  # The initial deadline check prevents a caller that expired while queued in
+  # the serialized manager from even allocating a shell/VFS session. The
+  # execution path recomputes the budget after setup, immediately before launch.
+  defp do_handle_local_run(workspace_id, command, timeout, opts, project_dir, state) do
     case ensure_session(workspace_id, project_dir, state) do
       {:ok, entry, new_state} ->
         target = resolve_target(command, workspace_id, opts)
@@ -495,12 +517,18 @@ defmodule JidoClaw.Shell.SessionManager do
   end
 
   defp handle_ssh_run(workspace_id, command, timeout, opts, project_dir, state) do
-    server = Keyword.get(opts, :server)
+    case command_budget(timeout, opts) do
+      {:error, message} ->
+        {:reply, {:error, {:action_deadline_exceeded, message}}, state}
 
-    if is_binary(server) and server != "" do
-      run_ssh_with_retry(workspace_id, server, command, timeout, opts, project_dir, state, 1)
-    else
-      {:reply, {:error, "SSH requires :server option"}, state}
+      {:ok, _initial_budget} ->
+        server = Keyword.get(opts, :server)
+
+        if is_binary(server) and server != "" do
+          run_ssh_with_retry(workspace_id, server, command, timeout, opts, project_dir, state, 1)
+        else
+          {:reply, {:error, "SSH requires :server option"}, state}
+        end
     end
   end
 
@@ -1194,6 +1222,20 @@ defmodule JidoClaw.Shell.SessionManager do
   # -- Command execution ------------------------------------------------------
 
   defp execute_command(session_id, command, timeout, streaming?, opts) do
+    case command_budget(timeout, opts) do
+      {:error, message} ->
+        {:error, {:action_deadline_exceeded, message}}
+
+      {:ok, inner_timeout} ->
+        execute_local_with_budget(session_id, command, inner_timeout, streaming?, opts)
+    end
+  catch
+    {:subscribe_failed, reason} ->
+      if streaming?, do: Display.abort_stream(session_id)
+      {:error, "Could not subscribe to session: #{inspect(reason)}"}
+  end
+
+  defp execute_local_with_budget(session_id, command, timeout, streaming?, opts) do
     case ShellSessionServer.subscribe(session_id, self()) do
       {:ok, :subscribed} -> :ok
       {:error, reason} -> throw({:subscribe_failed, reason})
@@ -1209,10 +1251,12 @@ defmodule JidoClaw.Shell.SessionManager do
         {:ok, :accepted} ->
           case collect_output(session_id, timeout, streaming?, capture) do
             {:timeout, _partial} ->
-              # Cancel so the session isn't left busy
+              # Cancel so the session isn't left busy. Deadline-aware callers
+              # get a tagged result that RunCommand makes non-retryable.
               _ = ShellSessionServer.cancel(session_id)
               drain_events(session_id)
-              {:error, "Command timed out after #{timeout}ms"}
+
+              command_timeout_result("Command timed out after #{timeout}ms", opts)
 
             other ->
               other
@@ -1228,10 +1272,6 @@ defmodule JidoClaw.Shell.SessionManager do
 
     _ = ShellSessionServer.unsubscribe(session_id, self())
     result
-  catch
-    {:subscribe_failed, reason} ->
-      if streaming?, do: Display.abort_stream(session_id)
-      {:error, "Could not subscribe to session: #{inspect(reason)}"}
   end
 
   # Local/VFS limit threading: `Backend.Local` drops `:output_limit`,
@@ -1330,6 +1370,16 @@ defmodule JidoClaw.Shell.SessionManager do
   # `{:command, :exit_code}` is treated as opaque error) and routes
   # timeouts/output-limit-exceeded through `SSHError.format/2`.
   defp execute_ssh_command(session_id, command, timeout, entry, streaming?, opts) do
+    case command_budget(timeout, opts) do
+      {:error, message} ->
+        {:error, {:action_deadline_exceeded, message}}
+
+      {:ok, inner_timeout} ->
+        execute_ssh_with_budget(session_id, command, inner_timeout, entry, streaming?, opts)
+    end
+  end
+
+  defp execute_ssh_with_budget(session_id, command, timeout, entry, streaming?, opts) do
     case ShellSessionServer.subscribe(session_id, self()) do
       {:ok, :subscribed} -> :ok
       {:error, reason} -> throw({:subscribe_failed, reason})
@@ -1348,7 +1398,11 @@ defmodule JidoClaw.Shell.SessionManager do
             {:timeout, _partial} ->
               _ = ShellSessionServer.cancel(session_id)
               drain_events(session_id)
-              {:error, "SSH to #{entry.name} command timed out after #{timeout}ms"}
+
+              command_timeout_result(
+                "SSH to #{entry.name} command timed out after #{timeout}ms",
+                opts
+              )
 
             other ->
               other
@@ -1377,6 +1431,33 @@ defmodule JidoClaw.Shell.SessionManager do
     {:subscribe_failed, reason} ->
       if streaming?, do: Display.abort_stream(session_id)
       {:error, "Could not subscribe to SSH session: #{inspect(reason)}"}
+  end
+
+  defp command_budget(requested, opts) do
+    case Keyword.get(opts, :action_deadline_ms) do
+      deadline when is_integer(deadline) ->
+        remaining = deadline - System.monotonic_time(:millisecond)
+        budget = remaining - @action_deadline_margin_ms
+
+        if budget < @min_action_command_ms do
+          {:error,
+           "The run_command action deadline elapsed before this shell command could be " <>
+             "started, so it was not executed."}
+        else
+          {:ok, min(requested, budget)}
+        end
+
+      _ ->
+        {:ok, requested}
+    end
+  end
+
+  defp command_timeout_result(message, opts) do
+    if is_integer(Keyword.get(opts, :action_deadline_ms)) do
+      {:error, {:command_timeout, message}}
+    else
+      {:error, message}
+    end
   end
 
   # The non-streaming valve never drops below the legacy 1 MB; a capture

@@ -23,6 +23,7 @@ defmodule JidoClaw do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations
   alias JidoClaw.Conversations.ContextRestore
+  alias JidoClaw.Conversations.EphemeralCleanup
   alias JidoClaw.Conversations.Message, as: ConversationsMessage
   alias JidoClaw.Conversations.Recorder
   alias JidoClaw.Conversations.RequestCorrelation
@@ -30,8 +31,13 @@ defmodule JidoClaw do
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.FrontDoor
   alias JidoClaw.Reasoning.Compactor.Identity, as: CompactionIdentity
+  alias JidoClaw.Reasoning.Compactor.RequestTransformer
+  alias JidoClaw.Session.Supervisor, as: SessionSupervisor
   alias JidoClaw.Session.Worker, as: SessionWorker
+  alias JidoClaw.Shell.SessionManager, as: ShellSessionManager
   alias JidoClaw.Tenant.Manager, as: TenantManager
+  alias JidoClaw.Tenants.Access, as: TenantAccess
+  alias JidoClaw.VFS.Workspace, as: VFSWorkspace
   alias JidoClaw.Workspaces
 
   @version "0.6.4"
@@ -97,6 +103,19 @@ defmodule JidoClaw do
       labeling. Absent, it derives from `:kind` (`:cron`/`:api` ⇒
       `:one_shot`, else `:loop`) so bare programmatic callers never park
       questions; a stable external client opts into `:loop` explicitly.
+    * `:ephemeral_runtime` — when `true`, the live main/handoff agent and
+      Session worker are torn down after the turn (success or failure). This
+      is intended for stateless request/response surfaces whose caller sends
+      the complete conversation on every request.
+    * `:stateless_completion` — requires `:ephemeral_runtime` and an
+      `api_stateless` Session. Runs the turn on a dedicated zero-tool agent,
+      without handoff, external MCP attachment, triage, or durable composer
+      launch. The OpenAI-compatible API uses this so code/system-shaped prompts
+      receive a synchronous completion instead of an acknowledgement for work
+      that the ephemeral teardown would immediately orphan.
+    * `:stateless_completion_model` — concrete per-turn model used by the
+      stateless completion request transformer. The OpenAI-compatible
+      controller supplies the same validated model it returns in the response.
   """
   @spec chat(String.t(), String.t(), String.t(), keyword()) ::
           {:ok, String.t() | map()} | {:error, term()}
@@ -124,25 +143,20 @@ defmodule JidoClaw do
         # Conversations.Message row keyed by session.id (UUID); without
         # the resolver running first the worker has no UUID to write
         # against and add_message returns :session_uuid_unset.
-        with {:ok, _} <- JidoClaw.Startup.ensure_project_state(project_dir),
-             {:ok, _pid} <-
-               JidoClaw.Session.Supervisor.ensure_session(tenant_id, session_id, actor: actor),
-             {:ok, agent_pid, fresh_agent?} <- resolve_agent_pid(session_id),
+        with :ok <- validate_chat_options(opts),
+             :ok <- TenantAccess.ensure_active(tenant_id),
+             {:ok, _} <- maybe_ensure_project_state(project_dir, opts),
              {:ok, workspace, session} <-
                resolve_persistence(tenant_id, project_dir, session_id, kind, opts),
-             :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session.id),
-             :ok <-
-               JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session),
-             :ok <-
-               maybe_restore_context(fresh_agent?, agent_pid, session, project_dir, actor, opts) do
-          run_chat_turn(
-            agent_pid,
+             :ok <- validate_ephemeral_session(session, opts) do
+          run_chat_session(
             tenant_id,
             session_id,
             message,
             project_dir,
             workspace,
             session,
+            actor,
             opts
           )
         end
@@ -175,7 +189,41 @@ defmodule JidoClaw do
     end
   end
 
-  defp ask_runtime, do: Application.get_env(:jido_claw, :ask_runtime, JidoClaw.Agent)
+  defp validate_chat_options(opts) do
+    stateless_completion? = stateless_completion?(opts)
+    ephemeral? = Keyword.get(opts, :ephemeral_runtime, false)
+
+    cond do
+      stateless_completion? and not ephemeral? ->
+        {:error, :stateless_completion_requires_ephemeral_runtime}
+
+      stateless_completion? and not valid_stateless_model?(opts) ->
+        {:error, :stateless_completion_model_required}
+
+      ephemeral? and not match?(%{"api_stateless" => true}, Keyword.get(opts, :metadata)) ->
+        # Validate the caller-declared marker before resolve_persistence/5 can
+        # create either a workspace or a session row. The resolved-row check
+        # below remains as defense against reusing an existing unmarked row.
+        {:error, :ephemeral_runtime_requires_stateless_session}
+
+      true ->
+        :ok
+    end
+  end
+
+  # The authenticated completion endpoint is filesystem read-only. Prompt
+  # assembly already falls back to bundled defaults when `.jido/` is absent;
+  # do not run the ordinary bootstrap, which creates/syncs project files, for
+  # a short-lived zero-tool request.
+  defp maybe_ensure_project_state(project_dir, opts) do
+    if stateless_completion?(opts) do
+      {:ok, prompt_sync: :skipped_stateless}
+    else
+      JidoClaw.Startup.ensure_project_state(project_dir)
+    end
+  end
+
+  defp ask_runtime(default), do: Application.get_env(:jido_claw, :ask_runtime, default)
 
   # The MCP facade, behind a seam so call-site tests can assert the pid/template
   # passed to `ensure_attached/3` (the Consumer is off in the default test env,
@@ -190,17 +238,251 @@ defmodule JidoClaw do
   defp context_restore_impl,
     do: Application.get_env(:jido_claw, :context_restore_impl, ContextRestore)
 
+  @doc "The collision-resistant Jido registry id for a durable conversation session."
+  @spec runtime_agent_id(Ecto.UUID.t()) :: String.t()
+  def runtime_agent_id(session_uuid) when is_binary(session_uuid), do: "session:#{session_uuid}"
+
+  defp run_chat_session(
+         tenant_id,
+         session_id,
+         message,
+         project_dir,
+         workspace,
+         session,
+         actor,
+         opts
+       ) do
+    if Keyword.get(opts, :ephemeral_runtime, false) do
+      run_ephemeral_session(
+        tenant_id,
+        session_id,
+        message,
+        project_dir,
+        workspace,
+        session,
+        actor,
+        opts
+      )
+    else
+      with {:ok, _pid} <- acquire_session_runtime(tenant_id, session_id, actor, session.id) do
+        run_with_agent_runtime(
+          tenant_id,
+          session_id,
+          message,
+          project_dir,
+          workspace,
+          session,
+          actor,
+          opts
+        )
+      end
+    end
+  end
+
+  # The ephemeral bracket begins immediately after the stateless Session row has
+  # been validated. Session-worker acquisition, UUID binding, agent acquisition,
+  # prompt/context setup, and the turn all live inside the same rescue/catch
+  # boundary. Every catchable exit/throw/error therefore reaches both process
+  # teardown and the durable ephemeral-row deletion.
+  defp run_ephemeral_session(
+         tenant_id,
+         session_id,
+         message,
+         project_dir,
+         workspace,
+         session,
+         actor,
+         opts
+       ) do
+    runtime_id = runtime_agent_id(session.id)
+
+    context =
+      agent_runtime_context(
+        tenant_id,
+        session_id,
+        message,
+        project_dir,
+        workspace,
+        session,
+        actor
+      )
+
+    turn_result =
+      try do
+        with {:ok, _pid} <- acquire_session_runtime(tenant_id, session_id, actor, session.id),
+             {:ok, agent_pid, fresh_agent?} <- resolve_agent_pid(runtime_id, true, opts) do
+          run_resolved_agent(
+            agent_pid,
+            fresh_agent?,
+            context,
+            opts,
+            runtime_id
+          )
+        end
+
+        # Full ephemeral bracket: normalize the open exception set from session,
+        # prompt, agent, and provider layers so teardown always runs.
+      rescue
+        # reach:disable-next-line bare_rescue
+        error -> {:error, Exception.message(error)}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    process_result = cleanup_ephemeral_processes(tenant_id, session_id, session.id, runtime_id)
+    finalize_ephemeral_result(turn_result, process_result, tenant_id, session.id)
+  end
+
+  defp acquire_session_runtime(tenant_id, session_id, actor, session_uuid) do
+    case Application.get_env(:jido_claw, :chat_session_runtime_acquire) do
+      fun when is_function(fun, 4) ->
+        fun.(tenant_id, session_id, actor, session_uuid)
+
+      _ ->
+        with {:ok, pid} <-
+               SessionSupervisor.ensure_session(tenant_id, session_id, actor: actor),
+             :ok <- SessionWorker.set_session_uuid(tenant_id, session_id, session_uuid) do
+          {:ok, pid}
+        end
+    end
+  end
+
+  defp run_with_agent_runtime(
+         tenant_id,
+         session_id,
+         message,
+         project_dir,
+         workspace,
+         session,
+         actor,
+         opts
+       ) do
+    runtime_id = runtime_agent_id(session.id)
+
+    context =
+      agent_runtime_context(
+        tenant_id,
+        session_id,
+        message,
+        project_dir,
+        workspace,
+        session,
+        actor
+      )
+
+    case resolve_agent_pid(runtime_id, false, opts) do
+      {:ok, agent_pid, fresh_agent?} ->
+        run_resolved_agent(agent_pid, fresh_agent?, context, opts, runtime_id)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp run_resolved_agent(
+         agent_pid,
+         fresh_agent?,
+         context,
+         opts,
+         runtime_id
+       ) do
+    %{
+      tenant_id: tenant_id,
+      session_id: session_id,
+      message: message,
+      project_dir: project_dir,
+      workspace: workspace,
+      session: session,
+      actor: actor
+    } = context
+
+    with :ok <- inject_runtime_prompt(agent_pid, project_dir, session, opts),
+         :ok <-
+           maybe_restore_context(fresh_agent?, agent_pid, session, project_dir, actor, opts) do
+      run_chat_turn(
+        agent_pid,
+        tenant_id,
+        session_id,
+        message,
+        project_dir,
+        workspace,
+        session,
+        Keyword.put(opts, :runtime_agent_id, runtime_id)
+      )
+    end
+
+    # This façade normalizes faults from every pluggable prompt/restore/agent
+    # implementation into the public error contract.
+  rescue
+    # reach:disable-next-line bare_rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp agent_runtime_context(
+         tenant_id,
+         session_id,
+         message,
+         project_dir,
+         workspace,
+         session,
+         actor
+       ) do
+    %{
+      tenant_id: tenant_id,
+      session_id: session_id,
+      message: message,
+      project_dir: project_dir,
+      workspace: workspace,
+      session: session,
+      actor: actor
+    }
+  end
+
+  defp inject_runtime_prompt(agent_pid, project_dir, session, opts) do
+    if stateless_completion?(opts) do
+      JidoClaw.Startup.inject_stateless_completion_prompt(agent_pid, project_dir, session)
+    else
+      JidoClaw.Startup.inject_system_prompt(agent_pid, project_dir, session)
+    end
+  end
+
+  defp validate_ephemeral_session(session, opts) do
+    ephemeral? = Keyword.get(opts, :ephemeral_runtime, false)
+
+    if ephemeral? and not match?(%{"api_stateless" => true}, session.metadata),
+      do: {:error, :ephemeral_runtime_requires_stateless_session},
+      else: :ok
+  end
+
+  defp valid_stateless_model?(opts) do
+    case Keyword.get(opts, :stateless_completion_model) do
+      model when is_binary(model) -> String.trim(model) != ""
+      _ -> false
+    end
+  end
+
   # Resolves the session's agent pid and reports freshness: `true` only when
   # this call actually started the process. A live pid (whereis hit or a lost
   # already_started/already_registered race) is NOT fresh — it already carries
   # its LLM context, so the restore path must skip it.
-  defp resolve_agent_pid(session_id) do
-    case Jido.whereis(JidoClaw.Jido, session_id) do
+  defp resolve_agent_pid(runtime_id, ephemeral?, opts) do
+    case Jido.whereis(JidoClaw.Jido, runtime_id) do
       pid when is_pid(pid) ->
         {:ok, pid, false}
 
       nil ->
-        case JidoClaw.Jido.start_agent(JidoClaw.Agent, id: session_id) do
+        agent_module = runtime_agent_module(opts)
+
+        start_result =
+          if ephemeral? do
+            JidoClaw.Jido.start_subagent(agent_module, id: runtime_id)
+          else
+            JidoClaw.Jido.start_agent(agent_module, id: runtime_id)
+          end
+
+        case start_result do
           {:ok, pid} -> {:ok, pid, true}
           {:error, {:already_started, pid}} -> {:ok, pid, false}
           {:error, {:already_registered, pid}} -> {:ok, pid, false}
@@ -208,6 +490,101 @@ defmodule JidoClaw do
         end
     end
   end
+
+  defp runtime_agent_module(opts) do
+    if stateless_completion?(opts) do
+      JidoClaw.Agent.StatelessCompletion
+    else
+      JidoClaw.Agent
+    end
+  end
+
+  defp cleanup_ephemeral_processes(tenant_id, session_id, session_uuid, runtime_id) do
+    steps = [
+      handoff_worker: fn -> stop_handoff_worker(tenant_id, session_id, session_uuid) end,
+      main_agent: fn -> stop_runtime_agent(runtime_id) end,
+      shell_sessions: fn -> ShellSessionManager.stop_session(session_id) end,
+      vfs_workspace: fn -> VFSWorkspace.teardown(session_id) end,
+      session_worker: fn -> SessionSupervisor.stop_session(tenant_id, session_id) end,
+      handoff_registry: fn -> HandoffRegistry.clear(tenant_id, session_id) end
+    ]
+
+    errors =
+      Enum.reduce(steps, [], fn {name, step}, errors ->
+        case safe_cleanup_step(step) do
+          :ok -> errors
+          {:error, reason} -> [{name, reason} | errors]
+        end
+      end)
+
+    case Enum.reverse(errors) do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  defp stop_handoff_worker(tenant_id, session_id, session_uuid) do
+    case HandoffRegistry.owner(tenant_id, session_id) do
+      %{template: template} when is_binary(template) ->
+        worker_id = HandoffRouter.worker_agent_id(session_uuid, template)
+        stop_agent_if_present(Jido.whereis(JidoClaw.Jido, worker_id))
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp stop_agent_if_present(nil), do: :ok
+
+  defp stop_agent_if_present(pid) when is_pid(pid) do
+    case JidoClaw.Jido.stop_agent(pid) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+  end
+
+  defp stop_runtime_agent(runtime_id) do
+    runtime_id
+    |> then(&Jido.whereis(JidoClaw.Jido, &1))
+    |> stop_agent_if_present()
+  end
+
+  defp safe_cleanup_step(step) do
+    case step.() do
+      :ok -> :ok
+      {:error, _} = error -> error
+      other -> {:error, {:unexpected_result, other}}
+    end
+
+    # Each cleanup closure may call a different subsystem with an open exception
+    # set; normalize all of them so later teardown steps still run.
+  rescue
+    # reach:disable-next-line bare_rescue
+    error -> {:error, {:exception, error}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp finalize_ephemeral_result(turn_result, process_result, tenant_id, session_uuid) do
+    database_result =
+      safe_cleanup_step(fn -> ephemeral_cleanup_impl().delete(tenant_id, session_uuid) end)
+
+    case {process_result, database_result} do
+      {:ok, :ok} ->
+        turn_result
+
+      {process, database} ->
+        Logger.error(
+          "[chat] ephemeral cleanup failed for #{session_uuid}: " <>
+            "process=#{inspect(process)} database=#{inspect(database)}"
+        )
+
+        {:error, {:ephemeral_cleanup_failed, %{process: process, database: database}}}
+    end
+  end
+
+  defp ephemeral_cleanup_impl,
+    do: Application.get_env(:jido_claw, :ephemeral_cleanup_impl, EphemeralCleanup)
 
   # Restore the persisted chat transcript into a FRESH agent process's LLM
   # context (live pid ⇒ skip; ContextRestore's rows-empty no-op is defense in
@@ -255,16 +632,21 @@ defmodule JidoClaw do
           else: Actor.system(tenant_id)
 
     {routed_pid, routed_template, routed_agent_id, first_post_handoff?, worker_fresh?, owner} =
-      HandoffRouter.resolve_session_owner(
-        tenant_id,
-        session_id,
-        session.id,
-        agent_pid,
-        actor,
-        project_dir: project_dir,
-        session_record: session,
-        default_agent_id: session_id
-      )
+      if stateless_completion?(opts) do
+        {agent_pid, "stateless_completion", Keyword.fetch!(opts, :runtime_agent_id), false, false,
+         nil}
+      else
+        HandoffRouter.resolve_session_owner(
+          tenant_id,
+          session_id,
+          session.id,
+          agent_pid,
+          actor,
+          project_dir: project_dir,
+          session_record: session,
+          default_agent_id: Keyword.fetch!(opts, :runtime_agent_id)
+        )
+      end
 
     # A cold resume of a handoff-owned session routes to a worker the router
     # just started. A rehydrated owner gets the BASE prompt only (no live
@@ -335,7 +717,9 @@ defmodule JidoClaw do
     # Tool-less on `:timeout` (prep still running — a later turn retries) or
     # `:mcp_unavailable` (prep crashed — bounded re-prep recovers it on a later
     # turn; only after retries exhaust does it persist until a restart).
-    _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
+    unless stateless_completion?(opts) do
+      _ = mcp().ensure_attached(routed_pid, routed_template, 8_000)
+    end
 
     # Register correlation AFTER routing so the stamped compaction identity
     # reflects the resolved owner (main vs handoff worker). Still precedes
@@ -356,7 +740,7 @@ defmodule JidoClaw do
     SessionWorker.add_message(tenant_id, session_id, :user, message, request_id)
 
     tool_context =
-      JidoClaw.ToolContext.build(%{
+      %{
         project_dir: project_dir,
         tenant_id: tenant_id,
         session_id: session_id,
@@ -368,7 +752,9 @@ defmodule JidoClaw do
         agent_template: routed_template,
         subagent: false,
         actor: actor
-      })
+      }
+      |> JidoClaw.ToolContext.build()
+      |> maybe_put_stateless_model(opts)
 
     # AR-8 front door: triage this turn once and route it. `talk`/`sketch` stay on
     # the inline agent path (below, byte-for-byte unchanged); `code`/`system` divert
@@ -388,25 +774,48 @@ defmodule JidoClaw do
     }
 
     relay = {tenant_id, session_id, request_id, routed_template, first_post_handoff?}
+    inline_runtime = runtime_agent_module(opts)
 
-    case FrontDoor.decide(message, front_door_ctx) do
-      {:inline, _verdict} ->
-        inline_ack = dispatch_inline(routed_pid, preamble <> message, tool_context, relay)
-        shape_inline_ack(inline_ack, opts)
+    if stateless_completion?(opts) do
+      inline_ack =
+        dispatch_inline(routed_pid, preamble <> message, tool_context, relay, inline_runtime)
 
-      {:composer, {status, resp}} ->
-        # Both composer tags (launched / failed-to-start) render `resp.message` as
-        # the assistant response and never touch the inline agent (P1). The divert
-        # creates no tool/reasoning rows under this request_id, so the assistant row
-        # has nothing to order against — no Recorder.flush barrier needed (P2).
-        relay_front_door_ack(resp.message, relay)
-        shape_composer_ack(status, resp, opts)
+      shape_inline_ack(inline_ack, opts)
+    else
+      case FrontDoor.decide(message, front_door_ctx) do
+        {:inline, _verdict} ->
+          inline_ack =
+            dispatch_inline(routed_pid, preamble <> message, tool_context, relay, inline_runtime)
 
-      {:clarify, resp} ->
-        # A clarify round (questions / recap / hold / failure ack): no run
-        # minted, no tool rows — same relay mechanics as the composer acks.
-        relay_front_door_ack(resp.message, relay)
-        shape_clarify_ack(resp, opts)
+          shape_inline_ack(inline_ack, opts)
+
+        {:composer, {status, resp}} ->
+          # Both composer tags (launched / failed-to-start) render `resp.message` as
+          # the assistant response and never touch the inline agent (P1). The divert
+          # creates no tool/reasoning rows under this request_id, so the assistant row
+          # has nothing to order against — no Recorder.flush barrier needed (P2).
+          relay_front_door_ack(resp.message, relay)
+          shape_composer_ack(status, resp, opts)
+
+        {:clarify, resp} ->
+          # A clarify round (questions / recap / hold / failure ack): no run
+          # minted, no tool rows — same relay mechanics as the composer acks.
+          relay_front_door_ack(resp.message, relay)
+          shape_clarify_ack(resp, opts)
+      end
+    end
+  end
+
+  defp stateless_completion?(opts),
+    do: Keyword.get(opts, :stateless_completion, false) == true
+
+  defp maybe_put_stateless_model(tool_context, opts) do
+    case Keyword.get(opts, :stateless_completion_model) do
+      model when is_binary(model) and model != "" ->
+        Map.put(tool_context, RequestTransformer.stage_tier_key(), %{model: model})
+
+      _ ->
+        tool_context
     end
   end
 
@@ -487,7 +896,7 @@ defmodule JidoClaw do
   # verdict reaches it). Moved verbatim from the chat turn body: ask the routed
   # agent, hold the Recorder flush barrier (assistant row must sequence after all
   # tool/reasoning rows), mark any handoff preamble consumed, and handle the reply.
-  defp dispatch_inline(routed_pid, query, tool_context, turn) do
+  defp dispatch_inline(routed_pid, query, tool_context, turn, default_runtime) do
     {tenant_id, session_id, request_id, routed_template, first_post_handoff?} = turn
 
     # Handoff routing is an ownership *transfer*, not a freshly-built child
@@ -495,12 +904,7 @@ defmodule JidoClaw do
     # worker as-is. Full-context continuity is the defining purpose of handoff,
     # so the `forward_context` visibility policy (spawn / follow-up /
     # workflow-step) deliberately does NOT apply here.
-    response =
-      ask_runtime().ask_sync(routed_pid, query,
-        timeout: 120_000,
-        request_id: request_id,
-        tool_context: tool_context
-      )
+    response = dispatch_runtime_ask(default_runtime, routed_pid, query, request_id, tool_context)
 
     # Barrier: ensure all tool/reasoning rows for this request are
     # committed BEFORE the assistant row is written, so the assistant
@@ -520,6 +924,31 @@ defmodule JidoClaw do
     )
 
     handle_response(response, tenant_id, session_id, request_id)
+  end
+
+  # Pre-set the app's composed transformer whenever a per-turn model tier is
+  # present. This mirrors AgentRunner's tiered ask seam and guarantees the
+  # concrete model echoed by the OpenAI-compatible response is the model the
+  # ReAct runner actually resolves for this request.
+  defp dispatch_runtime_ask(default_runtime, routed_pid, query, request_id, tool_context) do
+    runtime = ask_runtime(default_runtime)
+
+    ask_opts =
+      maybe_put_request_transformer(
+        [
+          timeout: 120_000,
+          request_id: request_id
+        ],
+        tool_context
+      )
+
+    runtime.ask_sync(routed_pid, query, [tool_context: tool_context] ++ ask_opts)
+  end
+
+  defp maybe_put_request_transformer(ask_opts, tool_context) do
+    if Map.has_key?(tool_context, RequestTransformer.stage_tier_key()),
+      do: Keyword.put(ask_opts, :request_transformer, RequestTransformer),
+      else: ask_opts
   end
 
   @doc """
@@ -653,7 +1082,9 @@ defmodule JidoClaw do
         expires_at
       )
 
-    case RequestCorrelation.register(attrs) do
+    # This internal registration boundary has scope data but no user actor.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.register(attrs, authorize?: false) do
       {:ok, _} ->
         CorrelationCache.put(request_id, scope)
         :ok

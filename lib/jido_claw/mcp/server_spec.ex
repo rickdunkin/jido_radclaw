@@ -4,8 +4,9 @@ defmodule JidoClaw.MCP.ServerSpec do
 
   The product of `JidoClaw.MCP.EndpointConfig.parse/1` for one config entry:
 
-    * `name` — the operator-chosen server name (`^[a-z][a-z0-9_]*$`); also the
-      atomized endpoint id and the `mcp_<name>_` local-tool-name prefix root.
+    * `name` — the operator-chosen server name (`^[a-z][a-z0-9_]*$`); the
+      `mcp_<name>_` local-tool-name prefix root. Endpoint ids come from
+      `EndpointConfig`'s fixed VM-stable atom pool, never from this binary.
     * `endpoint` — the translated `%Jido.MCP.Endpoint{}` ready for registration.
     * `require_approval` — per-server approval posture: `true` (gated),
       `false` (trusted), or `nil` (defer to the global `mcp_require_approval`).

@@ -45,6 +45,9 @@ defmodule JidoClaw.Agent.Identity do
           :ok -> {:ok, identity}
           {:error, reason} -> {:error, reason}
         end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -126,26 +129,29 @@ defmodule JidoClaw.Agent.Identity do
   @doc """
   Load identity from `.jido/identity.json` under `project_dir`.
 
-  Returns `{:ok, %JidoClaw.Agent.Identity{}}` or `{:error, :not_found}`.
+  Returns `{:ok, %JidoClaw.Agent.Identity{}}`, `{:error, :not_found}` only when
+  the file is absent, or a distinct corruption/filesystem error. A corrupt
+  identity is never silently replaced with a newly generated principal.
   """
-  @spec load(String.t()) :: {:ok, t()} | {:error, :not_found}
+  @spec load(String.t()) :: {:ok, t()} | {:error, term()}
   def load(project_dir) do
+    dir = jido_dir(project_dir)
     path = identity_path(project_dir)
 
-    with {:ok, raw} <- File.read(path),
-         {:ok, data} <- Jason.decode(raw),
-         {:ok, pub} <- Base.decode64(data["public_key"] || ""),
-         {:ok, priv} <- Base.decode64(data["private_key"] || "") do
-      identity = %__MODULE__{
-        agent_id: data["agent_id"],
-        public_key: pub,
-        private_key: priv,
-        created_at: data["created_at"]
-      }
+    with :ok <- validate_identity_dir_for_load(dir) do
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :regular}} ->
+          with :ok <- chmod_identity_file(path), do: decode_identity_file(path)
 
-      {:ok, identity}
-    else
-      _ -> {:error, :not_found}
+        {:ok, %File.Stat{type: type}} ->
+          {:error, {:invalid_identity_file, type}}
+
+        {:error, :enoent} ->
+          {:error, :not_found}
+
+        {:error, reason} ->
+          {:error, {:identity_read_failed, reason}}
+      end
     end
   end
 
@@ -170,11 +176,10 @@ defmodule JidoClaw.Agent.Identity do
         "created_at" => identity.created_at
       })
 
-    with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(path, json) do
-      File.chmod(dir, 0o700)
-      File.chmod(path, 0o600)
-      :ok
+    with :ok <- validate_identity(identity),
+         :ok <- ensure_secure_identity_dir(dir),
+         :ok <- validate_identity_target(path) do
+      atomic_secure_write(path, json)
     end
   end
 
@@ -196,4 +201,162 @@ defmodule JidoClaw.Agent.Identity do
   defp jido_dir(project_dir), do: Path.join(project_dir, ".jido")
 
   defp identity_path(project_dir), do: Path.join(project_dir, @identity_filename)
+
+  defp decode_identity_file(path) do
+    with {:ok, raw} <- read_identity(path),
+         {:ok, data} <- decode_identity_json(raw),
+         {:ok, identity} <- identity_from_data(data),
+         :ok <- validate_identity(identity) do
+      {:ok, identity}
+    end
+  end
+
+  defp read_identity(path) do
+    case File.read(path) do
+      {:ok, raw} -> {:ok, raw}
+      {:error, reason} -> {:error, {:identity_read_failed, reason}}
+    end
+  end
+
+  defp decode_identity_json(raw) do
+    case Jason.decode(raw) do
+      {:ok, data} when is_map(data) -> {:ok, data}
+      {:ok, _other} -> {:error, {:corrupt_identity, :not_an_object}}
+      {:error, reason} -> {:error, {:corrupt_identity, {:invalid_json, reason}}}
+    end
+  end
+
+  defp identity_from_data(data) do
+    with {:ok, agent_id} <- required_string(data, "agent_id"),
+         {:ok, created_at} <- required_string(data, "created_at"),
+         {:ok, public_key} <- decode_key(data, "public_key"),
+         {:ok, private_key} <- decode_key(data, "private_key") do
+      {:ok,
+       %__MODULE__{
+         agent_id: agent_id,
+         public_key: public_key,
+         private_key: private_key,
+         created_at: created_at
+       }}
+    end
+  end
+
+  defp required_string(data, key) do
+    case Map.get(data, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:corrupt_identity, {:invalid_field, key}}}
+    end
+  end
+
+  defp decode_key(data, key) do
+    with {:ok, encoded} <- required_string(data, key),
+         {:ok, decoded} <- Base.decode64(encoded),
+         true <- byte_size(decoded) == 32 do
+      {:ok, decoded}
+    else
+      _ -> {:error, {:corrupt_identity, {:invalid_key, key}}}
+    end
+  end
+
+  defp validate_identity(%__MODULE__{} = identity) do
+    with true <- is_binary(identity.agent_id) and identity.agent_id != "",
+         true <- is_binary(identity.public_key) and byte_size(identity.public_key) == 32,
+         true <- is_binary(identity.private_key) and byte_size(identity.private_key) == 32,
+         true <- identity.agent_id == derive_agent_id(identity.public_key),
+         {derived_public, derived_private} <-
+           :crypto.generate_key(:eddsa, :ed25519, identity.private_key),
+         true <- derived_private == identity.private_key,
+         true <- derived_public == identity.public_key,
+         true <- valid_created_at?(identity.created_at) do
+      :ok
+    else
+      _ -> {:error, {:corrupt_identity, :inconsistent_identity}}
+    end
+  rescue
+    _exception in [ArgumentError, ErlangError] ->
+      {:error, {:corrupt_identity, :inconsistent_identity}}
+  end
+
+  defp valid_created_at?(value) when is_binary(value),
+    do: match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value))
+
+  defp valid_created_at?(_value), do: false
+
+  defp ensure_secure_identity_dir(dir) do
+    case File.lstat(dir) do
+      {:ok, %File.Stat{type: :directory}} -> chmod_identity_dir(dir)
+      {:ok, %File.Stat{type: type}} -> {:error, {:invalid_identity_dir, type}}
+      {:error, :enoent} -> create_identity_dir(dir)
+      {:error, reason} -> {:error, {:identity_dir_failed, reason}}
+    end
+  end
+
+  defp validate_identity_dir_for_load(dir) do
+    case File.lstat(dir) do
+      {:ok, %File.Stat{type: :directory}} -> chmod_identity_dir(dir)
+      {:ok, %File.Stat{type: type}} -> {:error, {:invalid_identity_dir, type}}
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:identity_dir_failed, reason}}
+    end
+  end
+
+  defp create_identity_dir(dir) do
+    with :ok <- File.mkdir_p(Path.dirname(dir)),
+         :ok <- File.mkdir(dir) do
+      chmod_identity_dir(dir)
+    else
+      {:error, :eexist} -> ensure_secure_identity_dir(dir)
+      {:error, reason} -> {:error, {:identity_dir_failed, reason}}
+    end
+  end
+
+  defp chmod_identity_dir(dir) do
+    case File.chmod(dir, 0o700) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:identity_chmod_failed, :directory, reason}}
+    end
+  end
+
+  defp validate_identity_target(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      {:ok, %File.Stat{type: type}} -> {:error, {:invalid_identity_file, type}}
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:identity_read_failed, reason}}
+    end
+  end
+
+  # The temporary file is chmodded before secret bytes are written, fsynced,
+  # then atomically renamed over the destination. A symlink at the destination
+  # is rejected above rather than followed.
+  defp atomic_secure_write(path, content) do
+    tmp = path <> ".tmp.#{System.unique_integer([:positive, :monotonic])}"
+
+    result =
+      with {:ok, io} <- File.open(tmp, [:write, :binary, :exclusive]),
+           :ok <- write_identity_io(io, tmp, content) do
+        File.rename(tmp, path)
+      end
+
+    if result != :ok, do: File.rm(tmp)
+    result
+  end
+
+  defp write_identity_io(io, tmp, content) do
+    result =
+      with :ok <- chmod_identity_file(tmp),
+           :ok <- IO.binwrite(io, content) do
+        :file.sync(io)
+      end
+
+    close_result = File.close(io)
+    if result == :ok, do: close_result, else: result
+  end
+
+  defp chmod_identity_file(path) do
+    case File.chmod(path, 0o600) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:identity_chmod_failed, :file, reason}}
+    end
+  end
 end

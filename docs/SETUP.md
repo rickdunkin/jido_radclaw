@@ -200,7 +200,12 @@ Starts the interactive REPL, plus Phoenix on port 4000 with:
 - Phoenix LiveDashboard at `/live-dashboard` (dev only)
 - Health check at `/health`
 
-The gateway binds `127.0.0.1` by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — this rebinds `0.0.0.0` and pins WebSocket origins to those hosts (append `:port` only when fronting with a proxy on a non-gateway port; bracket IPv6 addresses). To enable the `/admin` panel, allowlist emails with `JIDOCLAW_ADMIN_EMAILS=you@example.com` — signed-in users who aren't allowlisted get a 404 (signed-out users are redirected to `/sign-in`).
+The browser `/setup` diagnostic page runs local binary, database, and provider
+checks, so it is available only to a signed-in user listed in
+`JIDOCLAW_ADMIN_EMAILS`. Results are cached for 60 seconds and manual rechecks are
+limited to once per 10 seconds.
+
+The gateway binds `127.0.0.1` by default. To reach it from another machine (e.g. over Tailscale), set `PHX_HOST=<host>[,<host2>]` in `.env` or the environment — this rebinds `0.0.0.0` and pins WebSocket origins to those hosts (append `:port` only when fronting with a proxy on a non-gateway port; bracket IPv6 addresses). To enable the `/admin` panel and browser `/setup` diagnostics, allowlist emails with `JIDOCLAW_ADMIN_EMAILS=you@example.com` — signed-in users who aren't allowlisted get a 404 (signed-out users are redirected to `/sign-in`).
 
 ### MCP Server (stdio)
 

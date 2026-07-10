@@ -84,6 +84,11 @@ defmodule JidoClaw.Network.NodeTest do
     }
   end
 
+  defp resign(message, identity) do
+    {:ok, bytes} = Protocol.signing_bytes(message)
+    Map.put(message, "signature", Identity.sign(bytes, identity.private_key))
+  end
+
   defp solution_count(tenant_id) do
     {:ok, %{rows: [[count]]}} =
       Repo.query("SELECT COUNT(*) FROM solutions WHERE tenant_id = $1", [tenant_id])
@@ -107,6 +112,48 @@ defmodule JidoClaw.Network.NodeTest do
       # H6 tie-in: the peer-asserted trust_score/verification were stripped.
       assert solution.trust_score == 0.0
       assert solution.verification == %{}
+    end
+
+    test "drops an exact replay after the first verified dispatch", ctx do
+      trust_peer(ctx.peer)
+      message = Protocol.share_message(hostile_share_payload(), ctx.peer)
+
+      deliver(ctx.node, {:solution_shared, message})
+      deliver(ctx.node, {:solution_shared, message})
+
+      assert solution_count(ctx.tenant_id) == 1
+
+      assert Map.keys(:sys.get_state(ctx.node).seen_messages) == [
+               {ctx.peer.agent_id, message["id"]}
+             ]
+    end
+
+    test "the same signed id from two trusted peers does not collide", ctx do
+      other_peer = peer_identity()
+
+      set_peer_keys([
+        Base.encode64(ctx.peer.public_key),
+        Base.encode64(other_peer.public_key)
+      ])
+
+      first = Protocol.share_message(hostile_share_payload(), ctx.peer)
+
+      second =
+        hostile_share_payload()
+        |> Protocol.share_message(other_peer)
+        |> Map.put("id", first["id"])
+        |> resign(other_peer)
+
+      deliver(ctx.node, {:solution_shared, first})
+      deliver(ctx.node, {:solution_shared, second})
+
+      assert solution_count(ctx.tenant_id) == 2
+
+      assert MapSet.new(Map.keys(:sys.get_state(ctx.node).seen_messages)) ==
+               MapSet.new([
+                 {ctx.peer.agent_id, first["id"]},
+                 {other_peer.agent_id, first["id"]}
+               ])
     end
 
     test "drops a validly signed share from an unknown peer", ctx do

@@ -120,7 +120,7 @@ defmodule JidoClaw.RouteComposer.ComposerTtlContractTest do
                  expires_at: expires
                )
 
-      assert {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.sanitize_sensitive_context == true
       assert DateTime.compare(row.expires_at, expires) == :eq
     end
@@ -141,7 +141,7 @@ defmodule JidoClaw.RouteComposer.ComposerTtlContractTest do
       assert ctx.sanitize_sensitive_context == nil
 
       assert {:ok, request_id} = JidoClaw.register_child_correlation(ctx)
-      assert {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.sanitize_sensitive_context == false
     end
 
@@ -157,7 +157,7 @@ defmodule JidoClaw.RouteComposer.ComposerTtlContractTest do
                  sanitize_sensitive_context: nil
                )
 
-      assert {:ok, row} = RequestCorrelation.lookup(request_id)
+      assert {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.sanitize_sensitive_context == false
     end
   end

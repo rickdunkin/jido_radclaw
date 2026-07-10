@@ -115,9 +115,19 @@ defmodule JidoClaw.Security.ToolApproval do
 
   require Logger
 
+  alias Jido.Shell.VFS.MountTable
   alias JidoClaw.Agent.Templates
+  alias JidoClaw.Core.FileStat
+  alias JidoClaw.Core.MapKeys
+  alias JidoClaw.Core.OsCmd
   alias JidoClaw.Orchestration.ToolApprovals
   alias JidoClaw.Security.ShellCommand
+  alias JidoClaw.Security.ToolApproval.MountConfigCache
+  alias JidoClaw.VFS.AdapterPolicy
+  alias JidoClaw.VFS.Resolver
+
+  @mount_config_max_bytes 256_000
+  @mount_config_read_timeout_ms 1_000
 
   # The conservative default require list, single-sourced here so the config
   # sanity sweep validates the SAME list every environment ships (test config
@@ -287,7 +297,7 @@ defmodule JidoClaw.Security.ToolApproval do
         template_requirement(tool, context)
 
       true ->
-        pattern_match(tool, params, opts) || template_requirement(tool, context)
+        pattern_match(tool, params, context, opts) || template_requirement(tool, context)
     end
   end
 
@@ -321,26 +331,219 @@ defmodule JidoClaw.Security.ToolApproval do
   defp gated_by_template?(_tool, :all), do: true
   defp gated_by_template?(tool, list) when is_list(list), do: tool in list
 
-  defp pattern_match(tool, params, opts) do
+  defp pattern_match(tool, params, context, opts) do
+    configured_pattern_match(tool, params, opts) ||
+      mounted_remote_write_match(tool, params, context)
+  end
+
+  defp configured_pattern_match(tool, params, opts) do
     case Map.get(require_patterns(opts), tool) do
       {param_key, matchers} when is_list(matchers) ->
         value = param_value(params, param_key)
 
-        if is_binary(value) and matchers_match?(matchers, value, opts) do
-          {:pattern, param_key}
-        end
+        if is_binary(value) and matchers_match?(matchers, value, opts),
+          do: {:pattern, param_key}
 
       _ ->
         nil
     end
   end
 
-  # Analyze the command once, then test each matcher against the shared analysis
-  # (opts threaded — only the :structure matcher consults config). Any hit gates.
+  # URI matchers alone are insufficient: a workspace may mount a GitHub, S3,
+  # or Git filesystem at an arbitrary absolute path (for example `/publish`). Resolve
+  # an already-live mount table when available; otherwise inspect config as
+  # plain data. Never bootstrap a workspace from the approval gate: configuring
+  # a Git mount can itself create/init/commit a repository, which would make the
+  # supposedly pre-execution decision path side-effectful.
+  defp mounted_remote_write_match(tool, params, context)
+       when tool in ["write_file", "edit_file"] do
+    path = param_value(params, :path)
+
+    # Deliberate Enum.find shape (NOT `or`): the direct boolean form trips a
+    # Dialyzer `pattern_match` failure ("the pattern can never match the type
+    # true") — do not "simplify" this back.
+    case Enum.find([:uri, :mount], fn
+           :uri -> Resolver.remote?(path)
+           :mount -> absolute_remote_workspace_mount?(path, context)
+         end) do
+      nil -> nil
+      _remote_kind -> {:pattern, :path}
+    end
+  end
+
+  defp mounted_remote_write_match(_tool, _params, _context), do: nil
+
+  defp absolute_remote_workspace_mount?(path, context) when is_binary(path) do
+    case Path.type(path) do
+      :absolute -> remote_workspace_mount?(path, context)
+      _relative -> false
+    end
+  end
+
+  defp absolute_remote_workspace_mount?(_path, _context), do: false
+
+  defp remote_workspace_mount?(path, context) do
+    # Classify the path execution will resolve, not the raw param: ShellVFS
+    # canonicalizes (Path.expand + duplicate-slash collapse) BEFORE consulting
+    # the mount table, so a raw prefix match here would classify
+    # `/project/../publish/file` under the local /project mount while the write
+    # publishes through the remote /publish mount ungated. First expression so
+    # any canonicalization raise stays inside this function's fail-closed
+    # rescue/catch, and both the live and config classifications below see the
+    # canonical form.
+    path = canonicalize_absolute_path(path)
+    scope = scope_from(context)
+    workspace_id = scope[:workspace_id]
+    project_dir = scope[:project_dir]
+
+    if is_binary(workspace_id) and workspace_id != "" do
+      live_remote? =
+        case MountTable.resolve(workspace_id, path) do
+          {:ok, %{adapter: adapter}, _relative_path} -> AdapterPolicy.module_remote?(adapter)
+          {:error, :no_mount} -> false
+        end
+
+      # OR, not fallback: a mount-table row can outlive its Workspace process.
+      # Resolver clears/rebuilds stale rows immediately before the write, so a
+      # stale local row must not mask a remote declaration in current config.
+      # Deliberate lazy Enum.any? shape (NOT `or`): the direct boolean form
+      # trips a Dialyzer `pattern_match` failure — do not "simplify" it back.
+      Enum.any?(
+        [
+          fn -> live_remote? end,
+          fn -> configured_remote_mount?(path, project_dir) end
+        ],
+        fn check -> check.() end
+      )
+    else
+      false
+    end
+
+    # Fail closed across the open set of VFS/config faults at this pre-execution
+    # security boundary.
+  rescue
+    # reach:disable-next-line bare_rescue
+    _error -> true
+  catch
+    :exit, _reason -> true
+  end
+
+  # Byte-for-byte mirror of `Jido.Shell.VFS.normalize_path/1` (private in the
+  # agentjido/jido_shell dep — replicated, not called; upstreaming a public
+  # helper is a possible follow-up). The base is the literal "/": ShellVFS uses
+  # no cwd, so the gate reproduces its resolution deterministically with no
+  # workspace state.
+  defp canonicalize_absolute_path(path) do
+    path
+    |> Path.expand("/")
+    |> String.replace(~r{/+}, "/")
+  end
+
+  defp configured_remote_mount?(path, project_dir)
+       when is_binary(project_dir) and project_dir != "" do
+    with {:ok, bytes} <- read_mount_config(project_dir),
+         digest <- Base.encode16(:crypto.hash(:sha256, bytes), case: :lower),
+         {:ok, mounts} <- MountConfigCache.fetch(project_dir, digest, bytes) do
+      mounts
+      |> Enum.filter(&configured_remote_entry?/1)
+      |> Enum.flat_map(&configured_mount_path/1)
+      |> Enum.any?(&path_under_mount?(path, &1))
+    else
+      :missing -> false
+      # Parse/read/cache uncertainty at this security boundary asks for
+      # approval; it never treats a possibly-remote mount as local.
+      {:error, _reason} -> true
+    end
+  end
+
+  # A workspace id without a project directory cannot be bootstrapped or
+  # statically audited here. Fail closed for its absolute path; a false positive
+  # asks an operator, while a false negative could publish externally.
+  defp configured_remote_mount?(_path, _project_dir), do: true
+
+  # Read fresh bytes on EVERY decision; only the parse is cached. `head` runs
+  # through the bounded process-tree runner so a FIFO swap cannot wedge the
+  # approval gate, and reading max+1 bytes distinguishes an oversized file
+  # without buffering it. Pre/post lstat rejects non-regular and changed files.
+  defp read_mount_config(project_dir) do
+    config_path = Path.join([project_dir, ".jido", "config.yaml"])
+
+    case File.lstat(config_path, time: :posix) do
+      {:error, :enoent} ->
+        :missing
+
+      {:ok, %File.Stat{type: :regular} = before} ->
+        with executable when is_binary(executable) <- System.find_executable("head"),
+             {bytes, 0} <-
+               OsCmd.run(
+                 executable,
+                 ["-c", Integer.to_string(@mount_config_max_bytes + 1), config_path],
+                 cd: project_dir,
+                 timeout: @mount_config_read_timeout_ms,
+                 max_output_bytes: @mount_config_max_bytes + 1
+               ),
+             true <- byte_size(bytes) <= @mount_config_max_bytes,
+             {:ok, %File.Stat{type: :regular} = after_stat} <-
+               File.lstat(config_path, time: :posix),
+             true <- stable_config_stat?(before, after_stat) do
+          {:ok, bytes}
+        else
+          _failure -> {:error, :mount_config_unreadable}
+        end
+
+      {:ok, _non_regular} ->
+        {:error, :mount_config_not_regular}
+
+      {:error, _reason} ->
+        {:error, :mount_config_unreadable}
+    end
+  end
+
+  defp stable_config_stat?(left, right), do: FileStat.stable?(left, right)
+
+  defp configured_remote_entry?(entry) when is_map(entry) do
+    entry
+    |> MapKeys.coalesce_field("adapter")
+    |> AdapterPolicy.config_remote?()
+  end
+
+  defp configured_remote_entry?(_entry), do: false
+
+  defp configured_mount_path(entry) when is_map(entry) do
+    path = MapKeys.coalesce_field(entry, "path")
+
+    if is_binary(path) and String.starts_with?(path, "/") do
+      [normalize_mount_path(path)]
+    else
+      []
+    end
+  end
+
+  defp configured_mount_path(_entry), do: []
+
+  defp normalize_mount_path("/"), do: "/"
+  defp normalize_mount_path(path), do: String.trim_trailing(path, "/")
+
+  defp path_under_mount?(_path, "/"), do: true
+
+  defp path_under_mount?(path, mount_path),
+    do: path == mount_path or String.starts_with?(path, mount_path <> "/")
+
+  # Analyze shell commands once, then test each matcher against the shared
+  # analysis. Non-command patterns (for example remote VFS URI regexes) do not
+  # need or deserve shell parsing.
   defp matchers_match?(matchers, value, opts) do
-    analysis = ShellCommand.analyze(value)
+    analysis =
+      if Enum.any?(matchers, &shell_matcher?/1), do: ShellCommand.analyze(value), else: nil
+
     Enum.any?(matchers, &matcher_matches?(&1, value, analysis, opts))
   end
+
+  defp shell_matcher?({:effect, _kind}), do: true
+  defp shell_matcher?({:cmd, _name}), do: true
+  defp shell_matcher?({:cmd, _name, _opts}), do: true
+  defp shell_matcher?(:structure), do: true
+  defp shell_matcher?(_matcher), do: false
 
   defp matcher_matches?(%Regex{} = regex, raw, _analysis, _opts), do: Regex.match?(regex, raw)
 

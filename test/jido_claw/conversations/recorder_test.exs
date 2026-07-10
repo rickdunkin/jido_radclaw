@@ -251,7 +251,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
 
       finalize_and_flush(request_id)
 
-      {:ok, row} = RequestCorrelation.lookup(request_id)
+      {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.model == "openai/gpt-test"
       assert row.input_tokens == 50
       assert row.output_tokens == 25
@@ -272,13 +272,17 @@ defmodule JidoClaw.Conversations.RecorderTest do
       # merge), then overwrite the cache to a scope-only entry to force
       # the durable lookup path.
       {:ok, _} =
-        RequestCorrelation.record_telemetry(request_id, %{
-          model: "model-from-durable",
-          input_tokens: 7,
-          output_tokens: 3,
-          run_id: "durable-run",
-          latency_ms: 9
-        })
+        RequestCorrelation.record_telemetry(
+          request_id,
+          %{
+            model: "model-from-durable",
+            input_tokens: 7,
+            output_tokens: 3,
+            run_id: "durable-run",
+            latency_ms: 9
+          },
+          authorize?: false
+        )
 
       Cache.put(request_id, %{
         session_id: session.id,
@@ -335,7 +339,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
 
       finalize_and_flush(request_id)
 
-      {:ok, row} = RequestCorrelation.lookup(request_id)
+      {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.model == "buffered-model"
       assert row.input_tokens == 11
       assert row.output_tokens == 22
@@ -354,7 +358,7 @@ defmodule JidoClaw.Conversations.RecorderTest do
         %{request_id: request_id}
       )
 
-      {:ok, row} = RequestCorrelation.lookup(request_id)
+      {:ok, row} = RequestCorrelation.lookup(request_id, authorize?: false)
       assert row.latency_ms == 250
     end
   end

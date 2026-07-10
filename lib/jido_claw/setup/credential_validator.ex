@@ -59,7 +59,17 @@ defmodule JidoClaw.Setup.CredentialValidator do
   end
 
   defp validate_ollama do
-    case System.cmd("curl", ["-s", "http://localhost:11434/api/version"],
+    case System.cmd(
+           "curl",
+           [
+             "--silent",
+             "--show-error",
+             "--connect-timeout",
+             "1",
+             "--max-time",
+             "2",
+             "http://localhost:11434/api/version"
+           ],
            stderr_to_stdout: true,
            env: Env.scrubbed_cmd_env()
          ) do

@@ -9,12 +9,14 @@ defmodule JidoClaw.Tools.Action do
   """
 
   defmacro __using__(opts) do
-    tool_name = Keyword.fetch!(opts, :name)
+    {runtime_name?, action_opts} = Keyword.pop(opts, :runtime_name, false)
+    tool_name = Keyword.fetch!(action_opts, :name)
 
     quote location: :keep do
-      use Jido.Action, unquote(opts)
+      use Jido.Action, unquote(action_opts)
 
       @jidoclaw_tool_name unquote(tool_name)
+      @jidoclaw_runtime_tool_name unquote(runtime_name?)
       @before_compile JidoClaw.Tools.Action
 
       @doc "Returns true when this action uses the shared JidoClaw tool output wrapper."
@@ -59,11 +61,12 @@ defmodule JidoClaw.Tools.Action do
       @impl Jido.Action
       def run(params, context) do
         enriched = JidoClaw.ToolContext.ensure_nested(context || %{})
+        tool_name = if @jidoclaw_runtime_tool_name, do: name(), else: @jidoclaw_tool_name
 
-        MCPScope.wrap(@jidoclaw_tool_name, params, enriched, fn enriched_context ->
+        MCPScope.wrap(tool_name, params, enriched, fn enriched_context ->
           gated =
-            with :ok <- ToolApproval.gate(@jidoclaw_tool_name, params, enriched_context),
-                 :ok <- LoopGuard.check(@jidoclaw_tool_name, params, enriched_context) do
+            with :ok <- ToolApproval.gate(tool_name, params, enriched_context),
+                 :ok <- LoopGuard.check(tool_name, params, enriched_context) do
               super(params, enriched_context)
             else
               {:error, _approval} = gate_error -> gate_error
@@ -72,9 +75,9 @@ defmodule JidoClaw.Tools.Action do
 
           gated
           |> Error.normalize_result()
-          |> LoopGuard.observe_result(@jidoclaw_tool_name, params, enriched_context)
+          |> LoopGuard.observe_result(tool_name, params, enriched_context)
           |> OutputRedaction.redact_result()
-          |> OutputShaper.shape_result(@jidoclaw_tool_name, params, enriched_context)
+          |> OutputShaper.shape_result(tool_name, params, enriched_context)
           |> OutputLimit.truncate_result()
         end)
       end

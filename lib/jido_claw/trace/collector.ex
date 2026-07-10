@@ -58,6 +58,7 @@ defmodule JidoClaw.Trace.Collector do
 
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Conversations.RequestCorrelation.Cache
+  alias JidoClaw.Core.ConfigValue
   alias JidoClaw.Security.SensitiveScrub
   alias JidoClaw.Trace.Event
   alias JidoClaw.Trace.Limit, as: TraceLimit
@@ -277,12 +278,12 @@ defmodule JidoClaw.Trace.Collector do
     %{
       enabled?: config_value(config, :enabled?, true),
       max_traces:
-        normalize_positive_integer(
+        ConfigValue.positive_integer(
           config_value(config, :max_traces, @default_max_traces),
           @default_max_traces
         ),
       max_events_per_trace:
-        normalize_positive_integer(
+        ConfigValue.positive_integer(
           config_value(config, :max_events_per_trace, @default_max_events_per_trace),
           @default_max_events_per_trace
         )
@@ -296,9 +297,6 @@ defmodule JidoClaw.Trace.Collector do
     do: Map.get(config, key, default)
 
   defp config_value(_config, _key, default), do: default
-
-  defp normalize_positive_integer(value, _default) when is_integer(value) and value > 0, do: value
-  defp normalize_positive_integer(_value, default), do: default
 
   defp record_event(state, event_name, measurements, metadata) do
     seq = state.seq + 1
@@ -578,7 +576,9 @@ defmodule JidoClaw.Trace.Collector do
   defp lookup_tenant(_request_id), do: nil
 
   defp durable_tenant(request_id) do
-    case RequestCorrelation.lookup(request_id) do
+    # Tenant attribution begins with only the globally unique request id.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.lookup(request_id, authorize?: false) do
       {:ok, %{tenant_id: tid}} when is_binary(tid) and tid != "" -> tid
       _ -> nil
     end
@@ -657,7 +657,9 @@ defmodule JidoClaw.Trace.Collector do
   end
 
   defp durable_marker_status(request_id) do
-    case RequestCorrelation.lookup(request_id) do
+    # Late marker recovery begins with only the globally unique request id.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.lookup(request_id, authorize?: false) do
       {:ok, %{sanitize_sensitive_context: true}} -> :marked
       {:ok, %{sanitize_sensitive_context: false}} -> :unmarked
       _absent -> :unknown

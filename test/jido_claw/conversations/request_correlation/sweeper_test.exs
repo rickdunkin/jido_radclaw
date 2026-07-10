@@ -59,13 +59,16 @@ defmodule JidoClaw.Conversations.RequestCorrelation.SweeperTest do
     request_id = "req-#{System.unique_integer([:positive])}"
 
     {:ok, _} =
-      RequestCorrelation.register(%{
-        request_id: request_id,
-        session_id: session.id,
-        tenant_id: tenant,
-        # Already expired ⇒ eligible for the very next sweep.
-        expires_at: DateTime.add(DateTime.utc_now(), -3600, :second)
-      })
+      RequestCorrelation.register(
+        %{
+          request_id: request_id,
+          session_id: session.id,
+          tenant_id: tenant,
+          # Already expired ⇒ eligible for the very next sweep.
+          expires_at: DateTime.add(DateTime.utc_now(), -3600, :second)
+        },
+        authorize?: false
+      )
 
     request_id
   end

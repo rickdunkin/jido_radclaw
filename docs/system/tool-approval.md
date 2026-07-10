@@ -3,12 +3,16 @@ type: subsystem
 description: Per-tool-call human-approval checkpoint on the conversation axis — durable run-less AgentCases, single-use approvals, the fail-closed shell floor.
 sources:
   - lib/jido_claw/security/tool_approval.ex
+  - lib/jido_claw/security/tool_approval/mount_config_cache.ex
+  - lib/jido_claw/vfs/adapter_policy.ex
+  - lib/jido_claw/core/config.ex
   - lib/jido_claw/orchestration/tool_approvals.ex
   - lib/jido_claw/orchestration/case_producer.ex
   - lib/jido_claw/security/shell_command.ex
   - lib/jido_claw/orchestration/cases.ex
-verified: 2026-07-07
-verified_sha: "2a0bb4c6"
+  - lib/jido_claw/agent/templates.ex
+verified: 2026-07-10
+verified_sha: "b2cae5cd"
 ---
 
 # Tool Approval Gate
@@ -44,8 +48,32 @@ on the same surfaces as workflow gates.
 - **Require-list**: `config :jido_claw, :tool_approval, require:` — default
   `network_share, kill_agent, schedule_task, unschedule_task, git_commit, forget,
   replay_workflow`, single-sourced in `ToolApproval.default_require/0`.
-- **Param patterns**: in-module `@require_patterns`, e.g. `run_command` commands
-  matching `git commit`/`git push`/`crontab`.
+- **Param patterns and VFS writes**: in-module `@require_patterns` covers
+  `run_command` commands matching `git commit`/`git push`/`crontab`.
+  `write_file`/`edit_file` use `JidoClaw.VFS.AdapterPolicy`, the VFS-owned adapter
+  registry shared with workspace config parsing and URI routing: registered remote
+  schemes, remote live modules, and configured remote adapters consume the same
+  durable approval. Only explicitly registered local modules bypass it; unknown
+  live modules or config adapter keys fail closed to approval. Absolute paths are
+  first canonicalized with the execution path's exact rules — `Path.expand("/")`
+  plus duplicate-slash collapse, mirroring `Jido.Shell.VFS.normalize_path/1` —
+  before **both** the live mount-table resolution and the config classification,
+  so traversal (`/project/../publish/…`) and dup-slash forms classify under the
+  mount the write actually lands on, and only then resolved against the live
+  workspace mount table. Relative paths classify non-remote by design: execution
+  cannot route them to a remote mount (the Resolver project jail rejects escaping
+  relatives before any mount), and `edit_file`'s write leg independently fails
+  closed on traversal (`Jido.VFS.RelativePath` → `{:error, :traversal}`). The
+  config fallback re-reads `.jido/config.yaml` on
+  every decision through a one-second, process-tree-killed `head` capture capped at
+  256,000 bytes and requiring a stable regular-file lstat. Only the parsed
+  `vfs.mounts` list is cached, under `{project_dir, sha256(content)}` in a bounded
+  64-entry ETS cache. Workspace bootstrap and the cache share
+  `JidoClaw.Config.vfs_mounts/1`, so a scalar/malformed `vfs` container is contained
+  as a typed error (fail-soft at bootstrap, fail-closed at the gate) and the cached
+  error cannot repeatedly reach `get_in` traversal. Thus same-mtime edits take
+  effect on the next gate without reparsing unchanged YAML; read/parse/cache
+  uncertainty fails closed to approval. Ordinary local project edits remain ungated.
 - **Shell-floor scopes**: the `:opaque` floor covers command-runners wrapping a gated
   root/shell (`xargs`/`parallel`/`ssh`/`su -c`/`flock`/`find -exec`, `scope: :runner`)
   and interpreter one-liners / stdin programs (`python -c`, `node -e/-p`, `perl -e`,
@@ -64,11 +92,21 @@ on the same surfaces as workflow gates.
 - **Context guarantee**: the `tool_context` nesting the gate relies on is guaranteed by
   `JidoClaw.ToolContext.ensure_nested/1` in the wrapper — the live ReAct path arrives
   flat.
+- **Authoritative system verification**: the shipped `system_verifier` template adds
+  `run_command` to its per-template `require_approval` overlay. Its reverse-verify
+  verdict can drive a system route, so every exact host command is surfaced to an
+  operator and consumes a durable single-use approval before execution. The ordinary
+  code-route test runner remains able to run test commands without this blanket gate;
+  those LLM results diagnose failures while deterministic engine verification owns the
+  code-route verdict.
 
 ## Config & telemetry
 
 `enabled?: true` by default; `enabled?: false` in test (tests drive `gate/4` with
-explicit opts).
+explicit opts). `:tool_approval_mount_cache_max_entries` defaults to 64 and clamps
+at 1,024. Cache lookups emit
+`[:jido_claw, :security, :tool_approval_mount_cache]` with count 1 and result
+`:hit | :miss`; no path, digest, YAML, or credentials ride telemetry.
 
 ## Residuals & accepted risks
 
@@ -84,7 +122,12 @@ provisioned microVM.
 ## Source map
 
 - `lib/jido_claw/security/tool_approval.ex` — `gate/4`, `default_require/0`,
-  `@require_patterns`, the `:docker` skip
+  `@require_patterns`, bounded fresh mount-config reads, the `:docker` skip
+- `lib/jido_claw/security/tool_approval/mount_config_cache.ex` — bounded
+  content-digest mount parsing cache
+- `lib/jido_claw/vfs/adapter_policy.ex` — adapter key/module/scheme locality;
+  unknown or non-local classifications fail closed to remote
+- `lib/jido_claw/core/config.ex` — shared typed `vfs_mounts/1` accessor
 - `lib/jido_claw/orchestration/tool_approvals.ex` — the producer: fingerprinting,
   FOR-UPDATE fence, consume semantics
 - `lib/jido_claw/orchestration/case_producer.ex` — the shared producer primitives

@@ -85,6 +85,8 @@ defmodule JidoClaw.Tools.RunCommand do
   alias JidoClaw.Tools.OutputShaper
   alias JidoClaw.Tools.RunCommand.ForgeBridge
 
+  @jido_deadline_key :__jido_deadline_ms__
+
   @impl Jido.Action
   def run(%{command: command} = params, context) do
     MCPScope.wrap(:run_command, params, context, fn enriched ->
@@ -125,6 +127,7 @@ defmodule JidoClaw.Tools.RunCommand do
     server = Map.get(params, :server)
     agent_id = get_in(enriched, [:tool_context, :agent_id]) || "main"
     stream_to_display? = OutputShaper.effective_streaming?(params, enriched)
+    action_deadline_ms = Map.get(enriched, @jido_deadline_key)
 
     # The FULL shapeable? predicate, not just enabled?+non-streaming:
     # capturing 512KB for a call the shaper will pass through (e.g. no
@@ -142,7 +145,8 @@ defmodule JidoClaw.Tools.RunCommand do
         params: params,
         stream?: stream_to_display?,
         agent_id: agent_id,
-        capture?: capture?
+        capture?: capture?,
+        action_deadline_ms: action_deadline_ms
       })
     end
   end
@@ -165,7 +169,8 @@ defmodule JidoClaw.Tools.RunCommand do
       server: server,
       stream?: stream?,
       agent_id: agent_id,
-      capture?: capture?
+      capture?: capture?,
+      action_deadline_ms: action_deadline_ms
     } = dispatch_opts
 
     if session_manager_available?() do
@@ -173,8 +178,11 @@ defmodule JidoClaw.Tools.RunCommand do
         [project_dir: project_dir, backend: :ssh, server: server]
         |> maybe_put_streaming(stream?, agent_id)
         |> maybe_put_capture(capture?)
+        |> maybe_put_action_deadline(action_deadline_ms)
 
-      SessionManager.run(workspace_id, command, timeout, opts)
+      workspace_id
+      |> SessionManager.run(command, timeout, opts)
+      |> normalize_deadline_result()
     else
       {:error, "SSH requires SessionManager; SessionManager is not running"}
     end
@@ -187,7 +195,8 @@ defmodule JidoClaw.Tools.RunCommand do
       project_dir: project_dir,
       stream?: stream?,
       agent_id: agent_id,
-      capture?: capture?
+      capture?: capture?,
+      action_deadline_ms: action_deadline_ms
     } = dispatch_opts
 
     opts =
@@ -195,9 +204,12 @@ defmodule JidoClaw.Tools.RunCommand do
       |> maybe_put(:backend, backend)
       |> maybe_put_streaming(stream?, agent_id)
       |> maybe_put_capture(capture?)
+      |> maybe_put_action_deadline(action_deadline_ms)
 
     if session_manager_available?() do
-      SessionManager.run(workspace_id, command, timeout, opts)
+      workspace_id
+      |> SessionManager.run(command, timeout, opts)
+      |> normalize_deadline_result()
     else
       {:error, "SessionManager is not running; cannot execute command"}
     end
@@ -224,6 +236,35 @@ defmodule JidoClaw.Tools.RunCommand do
 
   defp maybe_put_capture(opts, true),
     do: Keyword.put(opts, :capture_bytes, OutputShaper.capture_bytes())
+
+  # `Jido.Exec` kills the action task at this absolute monotonic deadline. Pass
+  # it into SessionManager rather than deriving a relative timeout here: the
+  # manager is serialized, so a call can sit in its mailbox after its caller has
+  # already timed out. The manager re-checks immediately before launching the
+  # command and refuses a stale call instead of executing it as an orphan.
+  defp maybe_put_action_deadline(opts, deadline) when is_integer(deadline),
+    do: Keyword.put(opts, :action_deadline_ms, deadline)
+
+  defp maybe_put_action_deadline(opts, _deadline), do: opts
+
+  # These tagged errors are emitted only for action-deadline-aware calls. Keep
+  # the codes outside Jido's retryable timeout vocabulary and pin `retry: false`
+  # for both retry layers: a timed-out mutating shell command must never be
+  # launched a second time automatically.
+  defp normalize_deadline_result({:error, {kind, message}})
+       when kind in [:action_deadline_exceeded, :command_timeout] do
+    {:error,
+     %{
+       code: deadline_error_code(kind),
+       message: message,
+       details: %{operation: "run_command", retry: false}
+     }}
+  end
+
+  defp normalize_deadline_result(result), do: result
+
+  defp deadline_error_code(:action_deadline_exceeded), do: :host_deadline_exceeded
+  defp deadline_error_code(:command_timeout), do: :host_command_timeout
 
   # Legacy-atom coercion for NimbleOptions. Turns `:host`/`:vfs`/`:ssh`
   # into their string equivalents so the `{:in, [...]}` schema

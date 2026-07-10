@@ -14,7 +14,7 @@ defmodule JidoClaw.PolicyAuthzTest do
     5. `authorize?: false` bypass works (system path)
     6. Missing actor on writes → `Ash.Error.Forbidden`
     7. Missing actor on reads → empty result (filter)
-    8. `RequestCorrelation` permissive — lookup with no actor works
+    8. `RequestCorrelation` requires an active matching actor on its public API
     9. `Tenants.Tenant` permissive read — no actor works
     10. `Audit.Event` tightened — cross-actor read empty, cross-actor
         write Forbidden
@@ -25,9 +25,17 @@ defmodule JidoClaw.PolicyAuthzTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations
   alias JidoClaw.Cron
   alias JidoClaw.Memory
+  alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.AgentCaseEvent
+  alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLog
+  alias JidoClaw.Orchestration.WorkflowRun
+  alias JidoClaw.Orchestration.WorkflowStep
   alias JidoClaw.Solutions
   alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Workspace
@@ -318,8 +326,12 @@ defmodule JidoClaw.PolicyAuthzTest do
     end
   end
 
-  describe "RequestCorrelation permissive" do
-    test "lookup with no actor still works", %{tenant_a: tenant, session_a: session} do
+  describe "RequestCorrelation authorization" do
+    test "matching active actor works and a missing actor cannot resolve the row", %{
+      tenant_a: tenant,
+      actor_a: actor,
+      session_a: session
+    } do
       request_id = "perm-#{System.unique_integer([:positive])}"
 
       {:ok, _} =
@@ -331,11 +343,97 @@ defmodule JidoClaw.PolicyAuthzTest do
             workspace_id: session.workspace_id,
             user_id: nil
           },
-          tenant: tenant
+          tenant: tenant,
+          actor: actor
         )
 
       assert {:ok, %{request_id: ^request_id}} =
+               Conversations.RequestCorrelation.lookup(request_id, tenant: tenant, actor: actor)
+
+      assert {:error, %Ash.Error.Invalid{}} =
                Conversations.RequestCorrelation.lookup(request_id, tenant: tenant)
+    end
+  end
+
+  describe "active-tenant coverage outside the plain macro read path" do
+    # Four hand-written exceptions (WorkflowRun/AshCloak, ComposerArtifact's
+    # extra :action policy, create-only audit Event, RequestCorrelation's
+    # actor-less plumbing) PLUS three macro-backed resources whose only reads
+    # are scoped (WorkflowEvent, WorkflowStep, AgentCaseEvent — converted to
+    # `use JidoClaw.Resource`; behavior unchanged, still pinned here).
+    test "all seven resources hide reads and deny writes after suspension", ctx do
+      fixtures = seed_policy_exception_rows(ctx)
+      {:ok, tenant_row} = Tenant.by_id(ctx.tenant_a)
+      {:ok, _suspended} = Tenant.suspend(tenant_row)
+
+      assert {:ok, []} = WorkflowRun.list(tenant: ctx.tenant_a, actor: ctx.actor_a)
+
+      assert {:ok, []} =
+               WorkflowEvent.for_run(fixtures.child.id,
+                 tenant: ctx.tenant_a,
+                 actor: ctx.actor_a
+               )
+
+      assert {:ok, []} =
+               WorkflowStep.for_run(fixtures.child.id,
+                 tenant: ctx.tenant_a,
+                 actor: ctx.actor_a
+               )
+
+      assert {:ok, []} =
+               AgentCaseEvent.for_case(fixtures.agent_case.id,
+                 tenant: ctx.tenant_a,
+                 actor: ctx.actor_a
+               )
+
+      assert {:ok, []} = ComposerArtifact.list(tenant: ctx.tenant_a, actor: ctx.actor_a)
+      assert {:ok, []} = Audit.Event.read(tenant: ctx.tenant_a, actor: ctx.actor_a)
+
+      assert {:error, %Ash.Error.Invalid{}} =
+               Conversations.RequestCorrelation.lookup(fixtures.request_id,
+                 tenant: ctx.tenant_a,
+                 actor: ctx.actor_a
+               )
+
+      assert_inactive_write_denials(ctx, fixtures)
+
+      # Terminalization is the narrow lifecycle exception: a matching system
+      # actor may close the already-running child, while the suspended user's
+      # ordinary reads and writes remain denied.
+      assert {:ok, _event} =
+               WorkflowLog.append(fixtures.child, :run_failed, %{error: "tenant suspended"},
+                 tenant: ctx.tenant_a,
+                 actor: Actor.system(ctx.tenant_a)
+               )
+
+      assert {:ok, %{status: :failed}} = WorkflowRun.by_id_global(fixtures.child.id)
+    end
+
+    test "an authorized active read emits one SQL query with the tenant-status EXISTS", ctx do
+      {:ok, run} =
+        WorkflowRun.create(%{name: "one-query"}, tenant: ctx.tenant_a, actor: ctx.actor_a)
+
+      handler_id = "policy-one-query-#{System.unique_integer([:positive])}"
+      owner = self()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:jido_claw, :repo, :query],
+          fn _event, _measurements, metadata, _config ->
+            send(owner, {:policy_sql, metadata.query})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, runs} = WorkflowRun.list(tenant: ctx.tenant_a, actor: ctx.actor_a)
+      assert Enum.any?(runs, &(&1.id == run.id))
+
+      assert [query] = collect_policy_queries([])
+      assert String.downcase(query) =~ "exists"
+      assert query =~ ~s("tenants")
     end
   end
 
@@ -445,6 +543,173 @@ defmodule JidoClaw.PolicyAuthzTest do
                  tenant: tenant,
                  actor: actor_b
                )
+    end
+  end
+
+  defp seed_policy_exception_rows(ctx) do
+    {:ok, parent} =
+      WorkflowRun.create(%{name: "policy-parent", workflow_type: "composer"},
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, child} =
+      WorkflowRun.create(
+        %{name: "policy-child", workflow_type: "reactor", parent_run_id: parent.id},
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, _} =
+      WorkflowLog.append(child, :run_started, %{},
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, _step} =
+      WorkflowStep.create(
+        %{
+          name: "policy-step",
+          step_type: "agent",
+          config: %{},
+          sequence: 1,
+          workflow_run_id: child.id
+        },
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, agent_case} =
+      AgentCase.create(
+        %{workflow_run_id: child.id, step_name: "policy-gate", kind: :irreversible_write},
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, _case_event} =
+      AgentCaseEvent.append(
+        %{agent_case_id: agent_case.id, type: :opened, data: %{}},
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    artifact_attrs = %{
+      ref: JidoClaw.Refs.mint("art_"),
+      name: "policy-artifact",
+      producer: "policy",
+      term: "value",
+      child_run_id: child.id,
+      wave_index: 0,
+      parent_run_id: parent.id
+    }
+
+    {:ok, _artifact} =
+      ComposerArtifact.store_pending(artifact_attrs,
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    {:ok, _audit} =
+      Audit.Event.record(
+        %{
+          event_kind: :tool_call,
+          actor_kind: :agent,
+          target_kind: :tool,
+          target_id: "policy-target",
+          payload: %{}
+        },
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    request_id = "policy-request-#{System.unique_integer([:positive])}"
+
+    {:ok, _correlation} =
+      Conversations.RequestCorrelation.register(
+        %{
+          request_id: request_id,
+          session_id: ctx.session_a.id,
+          tenant_id: ctx.tenant_a,
+          workspace_id: ctx.ws_a.id
+        },
+        tenant: ctx.tenant_a,
+        actor: ctx.actor_a
+      )
+
+    %{
+      parent: parent,
+      child: child,
+      agent_case: agent_case,
+      artifact_attrs: artifact_attrs,
+      request_id: request_id
+    }
+  end
+
+  defp assert_inactive_write_denials(ctx, fixtures) do
+    scope = [tenant: ctx.tenant_a, actor: ctx.actor_a]
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             WorkflowRun.create(%{name: "blocked-run"}, scope)
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             WorkflowEvent.append(
+               %{workflow_run_id: fixtures.child.id, kind: :step_started, payload: %{}},
+               scope
+             )
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             WorkflowStep.create(
+               %{
+                 name: "blocked-step",
+                 step_type: "agent",
+                 config: %{},
+                 sequence: 2,
+                 workflow_run_id: fixtures.child.id
+               },
+               scope
+             )
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             AgentCaseEvent.append(
+               %{agent_case_id: fixtures.agent_case.id, type: :cancelled, data: %{}},
+               scope
+             )
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             ComposerArtifact.store_pending(
+               %{fixtures.artifact_attrs | ref: JidoClaw.Refs.mint("art_"), name: "blocked"},
+               scope
+             )
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             Audit.Event.record(
+               %{
+                 event_kind: :tool_call,
+                 actor_kind: :agent,
+                 target_kind: :tool,
+                 target_id: "blocked-audit",
+                 payload: %{}
+               },
+               scope
+             )
+
+    assert {:error, %Ash.Error.Forbidden{}} =
+             Conversations.RequestCorrelation.register(
+               %{
+                 request_id: "blocked-request-#{System.unique_integer([:positive])}",
+                 session_id: ctx.session_a.id,
+                 tenant_id: ctx.tenant_a,
+                 workspace_id: ctx.ws_a.id
+               },
+               scope
+             )
+  end
+
+  defp collect_policy_queries(acc) do
+    receive do
+      {:policy_sql, query} -> collect_policy_queries([query | acc])
+    after
+      50 -> Enum.reverse(acc)
     end
   end
 end

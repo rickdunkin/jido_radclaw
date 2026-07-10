@@ -34,6 +34,8 @@ defmodule JidoClaw.Orchestration.GateDisposition do
       teardown, recovery's janitor) must CONVERGE it (cancel/fail —
       `run_abandoned` is illegal from `:running`), never no-op, or the child
       executes with no live composer to fold its output.
+    * `{:error, :claim_fenced}` — an optional live-recovery claim token no
+      longer owns the locked row. Nothing was written.
     * `{:error, :not_found}` — the child row could not be read.
     * `{:error, reason}` — a transient failure; the transaction rolled back and
       nothing persisted.
@@ -88,6 +90,27 @@ defmodule JidoClaw.Orchestration.GateDisposition do
   @spec cancel_dangling_gate(Ecto.UUID.t(), String.t(), keyword()) :: outcome()
   def cancel_dangling_gate(child_run_id, reason, opts) do
     normalize(dispose(child_run_id, orphan_events(reason), reason, opts))
+  end
+
+  @doc """
+  Cancel an `:awaiting_approval` park whose pending case disappeared.
+
+  This is the recovery janitor's caseless-park terminal, but it deliberately
+  uses the same run-lock/status-recheck fence as every other disposition. A
+  raced approval that already moved the run to `:running` therefore returns
+  `{:error, {:decided, :running}}` and is never overwritten by a stale recovery
+  snapshot.
+  """
+  @spec cancel_caseless_parked_child(Ecto.UUID.t(), String.t(), keyword()) :: outcome()
+  def cancel_caseless_parked_child(child_run_id, reason, opts) do
+    normalize(
+      dispose(
+        child_run_id,
+        fn _locked -> [{:run_cancelled, %{reason: reason}}] end,
+        reason,
+        opts
+      )
+    )
   end
 
   @doc """
@@ -155,17 +178,39 @@ defmodule JidoClaw.Orchestration.GateDisposition do
   defp dispose(child_run_id, events_fun, case_reason, opts) do
     tenant = Keyword.fetch!(opts, :tenant)
     actor = Keyword.fetch!(opts, :actor)
+    expected_token = Keyword.get(opts, :claim_fence_token)
 
     result =
       Ash.transact([WorkflowRun, AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-        dispose_in_txn(child_run_id, events_fun, case_reason, tenant, actor)
+        dispose_in_txn(
+          child_run_id,
+          events_fun,
+          case_reason,
+          expected_token,
+          tenant,
+          actor
+        )
       end)
 
     classify(result)
   end
 
-  defp dispose_in_txn(child_run_id, events_fun, case_reason, tenant, actor) do
+  defp dispose_in_txn(
+         child_run_id,
+         events_fun,
+         case_reason,
+         expected_token,
+         tenant,
+         actor
+       ) do
     case lock_child(child_run_id, tenant, actor) do
+      # A live recovery caller may have stalled past its lease. The row lock
+      # serializes this check against the successor's token rotation; a stale
+      # reclaimer must not dispose the successor's still-parked aggregate.
+      {:ok, %WorkflowRun{} = locked}
+      when is_binary(expected_token) and locked.claim_token != expected_token ->
+        {:refused, :claim_fenced}
+
       # The status re-check runs on the fresh, LOCKED struct — never a
       # pre-transaction read. Still parked → dispose.
       {:ok, %WorkflowRun{status: :awaiting_approval} = locked} ->

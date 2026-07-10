@@ -144,7 +144,9 @@ defmodule JidoClaw.Audit.SignalListener do
         {:ok, scope}
 
       :error ->
-        case RequestCorrelation.lookup(request_id) do
+        # Tool signals carry request identity, not an actor or tenant.
+        # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+        case RequestCorrelation.lookup(request_id, authorize?: false) do
           {:ok, row} ->
             scope = %{
               session_id: row.session_id,

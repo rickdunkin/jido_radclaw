@@ -5,10 +5,17 @@ defmodule JidoClaw.MCP.EndpointConfigTest do
   warnings while good siblings survive, and the stdio `command`/`args`/`env`
   shapes translate as documented.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias JidoClaw.MCP.EndpointConfig
   alias JidoClaw.MCP.ServerSpec
+
+  setup do
+    snapshot = EndpointConfig.snapshot_endpoint_registry()
+    :ok = EndpointConfig.restore_endpoint_registry(%{})
+    on_exit(fn -> EndpointConfig.restore_endpoint_registry(snapshot) end)
+    :ok
+  end
 
   test "one valid entry per transport yields a ServerSpec with default client_info" do
     raw = [
@@ -114,6 +121,148 @@ defmodule JidoClaw.MCP.EndpointConfigTest do
     assert [spec] = specs
     assert spec.name == "ok"
     assert Enum.count(warnings) == 5
+  end
+
+  test "duplicate server names reject every conflicting declaration" do
+    {specs, warnings} =
+      EndpointConfig.parse([
+        %{"name" => "dup", "transport" => "stdio", "command" => "first"},
+        %{
+          "name" => "unique",
+          "transport" => "streamable_http",
+          "url" => "http://localhost/mcp"
+        },
+        %{"name" => "dup", "transport" => "stdio", "command" => "second"}
+      ])
+
+    assert Enum.map(specs, & &1.name) == ["unique"]
+    assert [warning] = warnings
+    assert warning =~ ~s(duplicate server name "dup")
+  end
+
+  test "endpoint ids come from a fixed pool and excess config is rejected" do
+    raw =
+      for index <- 1..1_000 do
+        %{"name" => "server_#{index}", "transport" => "stdio", "command" => "x"}
+      end
+
+    {specs, warnings} = EndpointConfig.parse(raw)
+
+    assert Enum.count(specs) == 64
+    assert Enum.count(Enum.uniq_by(specs, & &1.endpoint.id)) == 64
+    assert Enum.any?(warnings, &(&1 =~ "beyond the hard 64-server limit"))
+  end
+
+  test "random server-name binaries never become endpoint atoms" do
+    name = "atom_probe_#{System.unique_integer([:positive, :monotonic])}"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+
+    {[spec], []} =
+      EndpointConfig.parse([%{"name" => name, "transport" => "stdio", "command" => "x"}])
+
+    assert String.starts_with?(Atom.to_string(spec.endpoint.id), "jido_claw_mcp_endpoint_")
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+  end
+
+  test "name-to-endpoint ids survive reorder plus valid and invalid insertion" do
+    alpha = %{"name" => "alpha", "transport" => "stdio", "command" => "alpha"}
+    beta = %{"name" => "beta", "transport" => "stdio", "command" => "beta"}
+    gamma = %{"name" => "gamma", "transport" => "stdio", "command" => "gamma"}
+    invalid = %{"name" => "invalid", "transport" => "stdio"}
+
+    {first, []} = EndpointConfig.parse([alpha, beta])
+    first_ids = Map.new(first, &{&1.name, &1.endpoint.id})
+
+    {reordered, []} = EndpointConfig.parse([beta, alpha])
+    reordered_ids = Map.new(reordered, &{&1.name, &1.endpoint.id})
+
+    {with_new, []} = EndpointConfig.parse([gamma, beta, alpha])
+    inserted_new_ids = Map.new(with_new, &{&1.name, &1.endpoint.id})
+
+    {with_invalid, [warning]} = EndpointConfig.parse([invalid, beta, alpha])
+    inserted_ids = Map.new(with_invalid, &{&1.name, &1.endpoint.id})
+
+    assert reordered_ids == first_ids
+    assert Map.take(inserted_new_ids, ["alpha", "beta"]) == first_ids
+    assert inserted_new_ids["gamma"] not in Map.values(first_ids)
+    assert inserted_ids == first_ids
+    assert warning =~ "invalid"
+    refute Map.has_key?(EndpointConfig.snapshot_endpoint_registry(), "invalid")
+  end
+
+  test "concurrent parses converge on one stable id per name" do
+    alpha = %{"name" => "alpha", "transport" => "stdio", "command" => "alpha"}
+    beta = %{"name" => "beta", "transport" => "stdio", "command" => "beta"}
+
+    id_maps =
+      1..20
+      |> Task.async_stream(
+        fn index ->
+          config = if rem(index, 2) == 0, do: [alpha, beta], else: [beta, alpha]
+          {specs, []} = EndpointConfig.parse(config)
+          Map.new(specs, &{&1.name, &1.endpoint.id})
+        end,
+        max_concurrency: 20,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, ids} -> ids end)
+
+    alpha_ids =
+      id_maps
+      |> Enum.map(& &1["alpha"])
+      |> Enum.uniq()
+
+    beta_ids =
+      id_maps
+      |> Enum.map(& &1["beta"])
+      |> Enum.uniq()
+
+    assert [_alpha_id] = alpha_ids
+    assert [_beta_id] = beta_ids
+    refute hd(id_maps)["alpha"] == hd(id_maps)["beta"]
+  end
+
+  test "a duplicate beyond the raw entry cap rejects the admitted declaration too" do
+    duplicate = %{"name" => "dup", "transport" => "stdio", "command" => "x"}
+
+    middle =
+      for index <- 1..63 do
+        %{"name" => "unique_#{index}", "transport" => "stdio", "command" => "x"}
+      end
+
+    {specs, warnings} = EndpointConfig.parse([duplicate | middle] ++ [duplicate])
+
+    refute Enum.any?(specs, &(&1.name == "dup"))
+    assert Enum.count(specs) == 63
+    assert Enum.any?(warnings, &(&1 =~ ~s(duplicate server name "dup")))
+    assert Enum.any?(warnings, &(&1 =~ "beyond the hard 64-server limit"))
+  end
+
+  test "same-name transport changes require restart while policy/reach changes stay live" do
+    original = %{
+      "name" => "stable",
+      "transport" => "streamable_http",
+      "url" => "http://one.test/mcp"
+    }
+
+    {[first], []} = EndpointConfig.parse([original])
+
+    {[], [warning]} =
+      EndpointConfig.parse([
+        Map.merge(original, %{"url" => "http://two.test/mcp", "require_approval" => false})
+      ])
+
+    assert warning =~ "endpoint_transport_changed"
+    assert warning =~ "restart_required"
+
+    {[updated_policy], []} =
+      EndpointConfig.parse([
+        Map.merge(original, %{"require_approval" => false, "templates" => ["coder"]})
+      ])
+
+    assert updated_policy.endpoint.id == first.endpoint.id
+    assert updated_policy.require_approval == false
+    assert updated_policy.templates == ["coder"]
   end
 
   test "non-list input is inert" do

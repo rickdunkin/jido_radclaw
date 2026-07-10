@@ -377,14 +377,17 @@ defmodule JidoClaw.Agent.TemplatesTest do
               }} = Templates.get("system_executor")
     end
 
-    test "system_verifier is composer_private + forward_context: :none + sandbox: :none" do
+    test "system_verifier is private and gates every real-host command" do
       assert {:ok,
               %{
                 module: JidoClaw.Agent.Workers.SystemVerifier,
                 forward_context: :none,
                 sandbox: :none,
-                composer_private: true
+                composer_private: true,
+                require_approval: ["run_command"]
               }} = Templates.get("system_verifier")
+
+      assert Templates.require_approval("system_verifier") == ["run_command"]
     end
   end
 

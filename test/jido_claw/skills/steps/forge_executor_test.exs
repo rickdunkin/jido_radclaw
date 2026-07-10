@@ -423,6 +423,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       # endpoint's real port.
       assert_receive {:docker_backend_create, spec}
       pd = ctx.project_dir
+      assert spec.isolate_global_config == true
       assert spec.extra_mounts == [{pd, pd, "rw"}]
       assert spec.workdir == pd
 
@@ -479,6 +480,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
 
       assert_receive {:docker_backend_create, spec}
       pd = ctx.project_dir
+      assert spec.isolate_global_config == true
       assert spec.extra_mounts == [{pd, pd, "ro"}]
 
       assert_receive {:scripted_deposit_runner, :config, config}
@@ -507,6 +509,7 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutorTest do
       # Conditionally-put: a workspace-less plan carries NEITHER key (a
       # present-nil would defeat the backend's Map.get defaults).
       assert_receive {:docker_backend_create, spec}
+      assert spec.isolate_global_config == true
       refute Map.has_key?(spec, :extra_mounts)
       refute Map.has_key?(spec, :workdir)
       assert [_, _] = spec.allow_network

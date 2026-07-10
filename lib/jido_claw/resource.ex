@@ -22,7 +22,13 @@ defmodule JidoClaw.Resource do
 
     * `:by_id_global` (plus any `:global_actions`) bypasses authorization
       (cross-tenant lookups/scans)
-    * write actions (`:create`, `:update`, `:destroy`) require the actor's
+    * tenant-bound system actors bypass the activity requirement, but still
+      have to match the action tenant; this is the explicit lifecycle path
+      used to finish already-running work while suspension tears down the
+      ordinary tenant runtime
+    * ordinary reads and writes require the actor's durable tenant row to be
+      active
+    * write actions (`:create`, `:update`, `:destroy`) also require the actor's
       tenant to match the row's tenant via
       `JidoClaw.Authorization.Checks.ActorTenantMatches`
     * read actions require `tenant_id == ^actor(:tenant_id)`
@@ -32,9 +38,26 @@ defmodule JidoClaw.Resource do
   that come after it, so a bypass declared in a second `policies` block
   (appended after these) would be ineffective.
 
-  Resources with non-standard policy shapes, currently
-  `request_correlation.ex`, keep their hand-written `use Ash.Resource`
-  + `policies do` block.
+  Note the `:by_id_global` bypass is inert on a resource that defines no
+  action of that name (`bypass action(...)` simply matches nothing), so
+  resources without a global read may still adopt the macro
+  (`WorkflowEvent`, `WorkflowStep`, `AgentCaseEvent` do).
+
+  Resources that genuinely can't take the macro keep a hand-written
+  `use Ash.Resource`, each for a structural reason:
+
+    * `audit/resources/event.ex` — append-only audit log: create-only policy
+      surface (no update/destroy path at all).
+    * `orchestration/composer_artifact.ex` — carries an extra generic
+      `:action` policy the macro block doesn't emit.
+    * `orchestration/workflow_run.ex` — declares the `AshCloak` extension;
+      the macro doesn't forward `extensions:`.
+    * `conversations/resources/request_correlation.ex` — non-standard policy
+      shape (actor-less internal plumbing, explicit `authorize?: false`
+      callsites).
+    * `trace/resources/trace_run.ex` / `trace_event.ex` — deliberately
+      `global?(true)` with nullable tenant attribution and NO policy
+      authorizer; structurally outside the tenant macro.
   """
 
   defmacro __using__(opts) do
@@ -55,6 +78,8 @@ defmodule JidoClaw.Resource do
     bypass_actions = Enum.uniq([:by_id_global | global_actions])
 
     tenant_id_field = Macro.var(:tenant_id, nil)
+    tenant_row_id = Macro.var(:id, nil)
+    tenant_status = Macro.var(:status, nil)
 
     quote do
       use Ash.Resource,
@@ -69,12 +94,26 @@ defmodule JidoClaw.Resource do
           authorize_if(always())
         end
 
+        bypass actor_attribute_equals(:kind, :system) do
+          authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+        end
+
         policy action_type([:create, :update, :destroy]) do
+          forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
           authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
         end
 
         policy action_type(:read) do
-          authorize_if(expr(unquote(tenant_id_field) == ^actor(:tenant_id)))
+          authorize_if(
+            expr(
+              unquote(tenant_id_field) == ^actor(:tenant_id) and
+                exists(
+                  JidoClaw.Tenants.Tenant,
+                  unquote(tenant_row_id) == parent(unquote(tenant_id_field)) and
+                    unquote(tenant_status) == :active
+                )
+            )
+          )
         end
       end
     end

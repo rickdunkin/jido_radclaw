@@ -1,3 +1,7 @@
+# WorkflowRun is the orchestration aggregate's single declarative schema: splitting
+# its tightly-coupled policies, actions, encrypted attributes, and relationships into
+# fragments would make the projection and lease invariants harder to audit.
+# credo:disable-for-this-file AshCredo.Check.Refactor.LargeResource
 defmodule JidoClaw.Orchestration.WorkflowRun do
   @moduledoc """
   The durable envelope of one reactor execution: status (a projection of the
@@ -30,12 +34,25 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       authorize_if(always())
     end
 
+    bypass actor_attribute_equals(:kind, :system) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
     policy action_type([:create, :update, :destroy]) do
+      forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
       authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
     end
 
     policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+      authorize_if(
+        expr(
+          tenant_id == ^actor(:tenant_id) and
+            exists(
+              JidoClaw.Tenants.Tenant,
+              id == parent(tenant_id) and status == :active
+            )
+        )
+      )
     end
   end
 
@@ -140,7 +157,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     update :set_status do
       description("Internal projection write of status + stamps from the event log.")
       public?(false)
-      # The clear_checkpoint function change below cannot be expressed
+      # The terminal cleanup function change below cannot be expressed
       # atomically; this action only ever runs inside the append transaction
       # under the per-run FOR UPDATE lock, so atomicity comes from the caller.
       require_atomic?(false)
@@ -154,6 +171,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       # attribute only exists after AshCloak's transformer runs — accept-list
       # validation happens earlier in the compile pipeline.
       argument(:clear_checkpoint, :boolean, default: false)
+      argument(:revoke_claim, :boolean, default: false)
 
       change(fn changeset, _context ->
         if Ash.Changeset.get_argument(changeset, :clear_checkpoint) do
@@ -162,18 +180,41 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
           changeset
         end
       end)
+
+      # Every terminal revokes the executor's lease credential in the SAME
+      # projection transaction as the status flip. Preserve `claimed_by` for
+      # post-commit cancellation routing/audit, but clear the token and expiry so
+      # a partitioned sidecar cannot renew a terminal run indefinitely.
+      change(fn changeset, _context ->
+        if Ash.Changeset.get_argument(changeset, :revoke_claim) do
+          changeset
+          |> Ash.Changeset.force_change_attribute(:claim_token, nil)
+          |> Ash.Changeset.force_change_attribute(:claim_expires_at, nil)
+        else
+          changeset
+        end
+      end)
     end
 
-    # Private write of the durable resume checkpoint blob. Called by
-    # `ReactorRunner.finalize` on a legitimate gate halt, *after* the gate
-    # step's in-txn `approval_requested` has flipped the run to
-    # `:awaiting_approval`. No status precondition: the column is a plain
-    # `:binary` blob (the encoded checkpoint envelope), cleared centrally by
-    # the projection on every terminal (Decision 7).
+    # Private write of the durable resume checkpoint blob. Production callers
+    # route through `WorkflowLog.persist_gate_checkpoint/4`, which holds the run
+    # row lock and re-checks `:awaiting_approval` + the lease token before invoking
+    # this low-level action. The column is cleared centrally by the projection on
+    # every terminal (Decision 7).
     update :set_checkpoint do
       description("Internal write of the durable resume checkpoint blob on gate pause.")
       public?(false)
+      # The function change that releases `claim_expires_at` is protected by
+      # `WorkflowLog.persist_gate_checkpoint/3`'s transaction + FOR UPDATE lock.
+      require_atomic?(false)
       accept([:resume_checkpoint])
+
+      # A fully-established park owns no live executor. Release the lease expiry
+      # in the same locked transaction as the checkpoint write; GateResume's
+      # `claim_resume/3` changes NULL/expired back to a fresh lease exactly once.
+      change(fn changeset, _context ->
+        Ash.Changeset.force_change_attribute(changeset, :claim_expires_at, nil)
+      end)
     end
 
     read :list_active do
@@ -238,7 +279,8 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     end
 
     # §4.11 lease reclaim scan (WS1; WS3 production caller): a `:pending`/`:running`
-    # run whose lease lapsed, or an aged never-claimed `:pending` run; oldest-first.
+    # run whose lease lapsed, an awaiting gate whose lease lapsed before its
+    # checkpoint was persisted, or an aged never-claimed `:pending` run; oldest-first.
     # Cross-tenant system scan by `WorkflowLease.claim_next/1` + `claim_run/1`
     # (policy-bypassed + `multitenancy(:bypass)`, like `list_non_terminal_global`).
     # WS3 Component 2: the genesis clause (never-claimed `:pending`+nil-token) gains an
@@ -247,7 +289,10 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     # rides the `:pending_cutoff` `argument` (a runtime grace a static filter can't
     # carry; `read_claimable/0` computes `now() - pending_grace_seconds`).
     read :claimable do
-      description("Cross-tenant lease-expired or aged-pending-unclaimed runs (WS3 reclaim scan).")
+      description(
+        "Cross-tenant lease-expired, dangling-gate, or aged-pending-unclaimed runs (WS3 reclaim scan)."
+      )
+
       public?(false)
       multitenancy(:bypass)
       argument(:pending_cutoff, :utc_datetime_usec, allow_nil?: false)
@@ -261,6 +306,8 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
         expr(
           (status in [:pending, :running] and not is_nil(claim_expires_at) and
              fragment("? < now()", claim_expires_at)) or
+            (status == :awaiting_approval and is_nil(encrypted_resume_checkpoint) and
+               not is_nil(claim_expires_at) and fragment("? < now()", claim_expires_at)) or
             (status == :pending and is_nil(claim_token) and
                inserted_at < ^arg(:pending_cutoff))
         )

@@ -1,7 +1,65 @@
 import Config
 
+# A test BEAM must not inherit credentials or proxy knobs capable of reaching
+# real external adapters/providers from the developer shell. This runs while
+# config/test.exs is evaluated — before runtime.exs and Application.start/2 —
+# and the application repeats the scrub at its first boot line. Individual
+# integration tests opt in afterward by setting/restoring the exact variable.
+external_test_env_vars = ~w(
+      ANTHROPIC_API_KEY
+      BRAVE_SEARCH_API_KEY
+      DISCORD_BOT_TOKEN
+      GITHUB_TOKEN
+      GOOGLE_API_KEY
+      GROQ_API_KEY
+      JIDOCLAW_EXTRA_ALLOWED_ENV_VARS
+      OLLAMA_API_KEY
+      OPENAI_API_KEY
+      OPENROUTER_API_KEY
+      VOYAGE_API_KEY
+      XAI_API_KEY
+    )
+
+System.get_env()
+|> Map.keys()
+|> Enum.filter(fn name ->
+  name in external_test_env_vars or
+    String.starts_with?(name, [
+      "AWS_",
+      "ONECLI_",
+      "FORGE_ONECLI_",
+      "FORGE_SANDBOX",
+      "FORGE_WORKSPACE_"
+    ])
+end)
+|> Enum.each(&System.delete_env/1)
+
 config :jido_claw, mode: :cli
 config :jido_claw, token_signing_secret: String.duplicate("test_token_signing_secret_", 4)
+
+config :jido_claw,
+  load_dotenv: false,
+  skip_discord: true,
+  sanitize_external_env: true
+
+# Defense in depth with runtime.exs's explicit `config_env() != :test` guard:
+# even a precompiled/inherited OneCLI config cannot proxy test sandbox traffic.
+config :jido_claw, :onecli,
+  enabled: false,
+  gateway_url: nil,
+  ca_cert_path: nil,
+  agent_tokens: []
+
+config :jido_claw, :forge_sandbox, JidoClaw.Forge.Runner.HostShell
+
+# Static inert credentials prevent ExAws from falling through to pod/instance
+# metadata. The test HTTP adapter is the final no-network fence even if an S3
+# VFS path is accidentally exercised.
+config :ex_aws,
+  access_key_id: "test-disabled-access-key",
+  secret_access_key: "test-disabled-secret-key",
+  security_token: "test-disabled-session-token",
+  http_client: JidoClaw.Test.NoExternalExAwsHttpClient
 
 # server: false lets route tests start_supervised the endpoint without
 # binding a port (mode: :cli already keeps it out of the app tree).

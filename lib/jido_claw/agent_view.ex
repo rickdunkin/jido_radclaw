@@ -400,7 +400,8 @@ defmodule JidoClaw.AgentView do
   #   1. Handoff owner: "handoff:<session_uuid>:<template>"; falls back to
   #      owner.handoff.session_uuid when the input lacks the resolved UUID.
   #   2. Live worker pid → use the pid directly (Trace.target_ref handles it).
-  #   3. Otherwise: the runtime session_id (default routed_agent_id).
+  #   3. Otherwise: the collision-resistant durable-session runtime id. Legacy
+  #      raw session ids are used only when no durable UUID is available.
   defp pick_agent_id(base, _worker_info, owner) when not is_nil(owner) do
     uuid =
       base.session_uuid ||
@@ -410,14 +411,19 @@ defmodule JidoClaw.AgentView do
   end
 
   defp pick_agent_id(base, {:ok, %{agent_pid: pid}}, _owner) when is_pid(pid) do
-    # A dead pid falls through to the runtime session_id (still a valid trace
-    # key per clause 3) rather than nil, so the snapshot doesn't drop
+    # A dead pid falls through to the durable-session runtime id (still a valid
+    # trace key per clause 3) rather than nil, so the snapshot doesn't drop
     # trace/events in the small race before Session.Worker processes the
     # agent's :DOWN.
-    if Process.alive?(pid), do: pid, else: base.session_id
+    if Process.alive?(pid), do: pid, else: fallback_agent_id(base)
   end
 
-  defp pick_agent_id(base, _worker_info, _owner), do: base.session_id
+  defp pick_agent_id(base, _worker_info, _owner), do: fallback_agent_id(base)
+
+  defp fallback_agent_id(%{session_uuid: uuid}) when is_binary(uuid),
+    do: JidoClaw.runtime_agent_id(uuid)
+
+  defp fallback_agent_id(base), do: base.session_id
 
   defp inspect_or(nil), do: "nil"
   defp inspect_or(value) when is_binary(value), do: value

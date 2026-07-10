@@ -266,6 +266,189 @@ defmodule JidoClaw.Audit.AshTracerTest do
       # Action attribution preserved — the calc metadata was filtered.
       assert pick.(:action) == "read"
     end
+
+    test "a nested action span restores its parent's metadata" do
+      tenant_id = seed_tenant("tracer-nested-action")
+      {:ok, _ws} = seed_workspace(tenant_id)
+
+      Ash.Tracer.span :action, "outer", [AshTracer] do
+        AshTracer.set_metadata(:action, %{
+          resource: Block,
+          action: :write,
+          actor: actor_for(tenant_id),
+          tenant: tenant_id,
+          authorize?: true
+        })
+
+        Ash.Tracer.span :action, "inner", [AshTracer] do
+          AshTracer.set_metadata(:action, %{
+            resource: JidoClaw.Tenants.Tenant,
+            action: :by_id,
+            actor: nil,
+            tenant: nil,
+            authorize?: false
+          })
+        end
+
+        AshTracer.set_handled_error(%Ash.Error.Forbidden{errors: []}, [])
+      end
+
+      :ok =
+        eventually(fn ->
+          {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+
+          Enum.any?(rows, fn row ->
+            row.event_kind == :policy_denied and
+              row.target_kind == :memory_block and
+              Map.get(row.payload, "action", Map.get(row.payload, :action)) == "write"
+          end)
+        end)
+    end
+  end
+
+  describe "propagation fence (no double-emit)" do
+    # These drive REAL denied actions (each opening its own real action span
+    # through the globally configured tracer) inside a real enclosing action
+    # span — the file's established idiom. Ash re-dispatches the same handled
+    # denial at every enclosing boundary as it unwinds, re-wrapped with fresh
+    # bread_crumbs/stacktraces, which is why the fence keys on span
+    # generations rather than term equality (an identical-struct replay
+    # would false-green).
+
+    test "a denial propagating through an enclosing action span emits exactly ONE row" do
+      tenant_a = seed_tenant("tracer-fence-a")
+      tenant_b = seed_tenant("tracer-fence-b")
+      {:ok, ws_b} = seed_workspace(tenant_b)
+
+      Ash.Tracer.span :action, "parent", [AshTracer] do
+        AshTracer.set_metadata(:action, %{
+          resource: JidoClaw.Workspaces.Workspace,
+          action: :parent_flow,
+          actor: actor_for(tenant_a),
+          tenant: tenant_a,
+          authorize?: true
+        })
+
+        assert {:error, %Ash.Error.Forbidden{} = error} =
+                 Block.write(
+                   %{
+                     scope_kind: :workspace,
+                     workspace_id: ws_b.id,
+                     label: "fence-child",
+                     value: "v",
+                     source: :user
+                   },
+                   tenant: tenant_b,
+                   actor: actor_for(tenant_a)
+                 )
+
+        # Ash re-dispatches the handled denial at the enclosing action
+        # boundary as it unwinds — the double-emit this fence suppresses.
+        AshTracer.set_handled_error(error, [])
+      end
+
+      :ok = eventually(fn -> denial_count(tenant_a) == 1 end)
+
+      # Settle: a buggy second write would land asynchronously right behind
+      # the first — re-assert after the writer has had time to drain.
+      Process.sleep(150)
+      assert denial_count(tenant_a) == 1
+    end
+
+    test "a second caught sibling denial still emits — exactly TWO rows" do
+      tenant_a = seed_tenant("tracer-fence-siblings-a")
+      tenant_b = seed_tenant("tracer-fence-siblings-b")
+      {:ok, ws_b} = seed_workspace(tenant_b)
+
+      denied_write = fn label ->
+        Block.write(
+          %{
+            scope_kind: :workspace,
+            workspace_id: ws_b.id,
+            label: label,
+            value: "v",
+            source: :user
+          },
+          tenant: tenant_b,
+          actor: actor_for(tenant_a)
+        )
+      end
+
+      Ash.Tracer.span :action, "parent", [AshTracer] do
+        AshTracer.set_metadata(:action, %{
+          resource: JidoClaw.Workspaces.Workspace,
+          action: :parent_flow,
+          actor: actor_for(tenant_a),
+          tenant: tenant_a,
+          authorize?: true
+        })
+
+        # Parent catches the first denial and tries again with a sibling —
+        # a genuinely NEW denial at a newer generation, which must emit.
+        assert {:error, %Ash.Error.Forbidden{}} = denied_write.("fence-sibling-1")
+        assert {:error, %Ash.Error.Forbidden{} = second} = denied_write.("fence-sibling-2")
+
+        # Only the second propagates out of the parent.
+        AshTracer.set_handled_error(second, [])
+      end
+
+      :ok = eventually(fn -> denial_count(tenant_a) == 2 end)
+      Process.sleep(150)
+      assert denial_count(tenant_a) == 2
+    end
+
+    test "a successful cleanup action does not un-suppress the original denial" do
+      tenant_a = seed_tenant("tracer-fence-cleanup-a")
+      tenant_b = seed_tenant("tracer-fence-cleanup-b")
+      {:ok, ws_a} = seed_workspace(tenant_a)
+      {:ok, ws_b} = seed_workspace(tenant_b)
+
+      Ash.Tracer.span :action, "parent", [AshTracer] do
+        AshTracer.set_metadata(:action, %{
+          resource: JidoClaw.Workspaces.Workspace,
+          action: :parent_flow,
+          actor: actor_for(tenant_a),
+          tenant: tenant_a,
+          authorize?: true
+        })
+
+        assert {:error, %Ash.Error.Forbidden{} = error} =
+                 Block.write(
+                   %{
+                     scope_kind: :workspace,
+                     workspace_id: ws_b.id,
+                     label: "fence-cleanup-denied",
+                     value: "v",
+                     source: :user
+                   },
+                   tenant: tenant_b,
+                   actor: actor_for(tenant_a)
+                 )
+
+        # A successful cleanup/rollback Ash action runs a NEWER generation —
+        # it must not reset the fence (the rejected reset-on-action-start
+        # design would re-emit the original denial below).
+        assert {:ok, _} =
+                 Block.write(
+                   %{
+                     scope_kind: :workspace,
+                     workspace_id: ws_a.id,
+                     label: "fence-cleanup-ok",
+                     value: "v",
+                     source: :user
+                   },
+                   tenant: tenant_a,
+                   actor: actor_for(tenant_a)
+                 )
+
+        # Parent finally observes the ORIGINAL denial.
+        AshTracer.set_handled_error(error, [])
+      end
+
+      :ok = eventually(fn -> denial_count(tenant_a) == 1 end)
+      Process.sleep(150)
+      assert denial_count(tenant_a) == 1
+    end
   end
 
   describe "system actor classification" do
@@ -367,6 +550,11 @@ defmodule JidoClaw.Audit.AshTracerTest do
       refute Enum.any?(target_rows, &(&1.event_kind == :policy_denied)),
              "bare %User{} actor denial should not file under the target tenant's audit log"
     end
+  end
+
+  defp denial_count(tenant) do
+    {:ok, rows} = Event.read(tenant: tenant, actor: actor_for(tenant))
+    Enum.count(rows, &(&1.event_kind == :policy_denied))
   end
 
   defp eventually(fun, deadline_ms \\ 1_500) do

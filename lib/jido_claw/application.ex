@@ -21,13 +21,30 @@ defmodule JidoClaw.Application do
   alias JidoClaw.Cron.Owner, as: CronOwner
   alias JidoClaw.Embeddings.BootGuard
   alias JidoClaw.MCP.Consumer, as: MCPConsumer
+  alias JidoClaw.Orchestration.Verify.Git, as: VerifyGit
   alias JidoClaw.Security.Redaction.LogRedactor
   alias JidoClaw.Security.RuntimeSecrets
   alias JidoClaw.Security.VaultConfig
   alias JidoClaw.Web.GatewayExposure
 
+  @external_test_secrets ~w(
+    ANTHROPIC_API_KEY
+    BRAVE_SEARCH_API_KEY
+    DISCORD_BOT_TOKEN
+    GITHUB_TOKEN
+    GOOGLE_API_KEY
+    GROQ_API_KEY
+    JIDOCLAW_EXTRA_ALLOWED_ENV_VARS
+    OLLAMA_API_KEY
+    OPENAI_API_KEY
+    OPENROUTER_API_KEY
+    VOYAGE_API_KEY
+    XAI_API_KEY
+  )
+
   @impl Application
   def start(_type, _args) do
+    sanitize_external_test_environment()
     DependencyPatches.ensure_loaded!()
 
     # In MCP mode, stdout is reserved for JSON-RPC — redirect all logging to stderr.
@@ -37,8 +54,10 @@ defmodule JidoClaw.Application do
 
     LogRedactor.install!()
 
-    # Load .env file if present (project root or cwd)
-    load_dotenv()
+    # Test boots disable dotenv ingestion so a developer's real credentials
+    # can never arm external adapters during the suite. Explicit parser tests
+    # still call load_dotenv/0 directly.
+    if Application.get_env(:jido_claw, :load_dotenv, true), do: load_dotenv()
 
     # PHX_HOST exposure must apply here, after load_dotenv/0 —
     # config/runtime.exs evaluates before Application.start/2 runs, so it
@@ -99,6 +118,54 @@ defmodule JidoClaw.Application do
           start_nostrum()
       end
     end
+  end
+
+  @doc false
+  @spec sanitize_external_test_environment() :: :ok
+  def sanitize_external_test_environment do
+    if Application.get_env(:jido_claw, :sanitize_external_env, false) do
+      Enum.each(System.get_env(), fn {name, _value} ->
+        if external_test_env?(name), do: System.delete_env(name)
+      end)
+
+      Application.delete_env(:nostrum, :token)
+      Application.delete_env(:jido_browser, :brave_api_key)
+
+      # runtime.exs also refuses to arm OneCLI in :test. Clear the resolved
+      # application config here as a second boundary in case a precompiled or
+      # test-host override populated it before this boot callback.
+      Application.put_env(:jido_claw, :onecli,
+        enabled: false,
+        gateway_url: nil,
+        ca_cert_path: nil,
+        agent_tokens: []
+      )
+
+      Application.put_env(:jido_claw, :forge_sandbox, JidoClaw.Forge.Runner.HostShell)
+      Application.delete_env(:jido_claw, :forge_docker_sandbox)
+      Application.put_env(:ex_aws, :access_key_id, "test-disabled-access-key")
+      Application.put_env(:ex_aws, :secret_access_key, "test-disabled-secret-key")
+      Application.put_env(:ex_aws, :security_token, "test-disabled-session-token")
+
+      Application.put_env(
+        :ex_aws,
+        :http_client,
+        JidoClaw.Test.NoExternalExAwsHttpClient
+      )
+    end
+
+    :ok
+  end
+
+  defp external_test_env?(name) do
+    name in @external_test_secrets or
+      String.starts_with?(name, [
+        "AWS_",
+        "ONECLI_",
+        "FORGE_ONECLI_",
+        "FORGE_SANDBOX",
+        "FORGE_WORKSPACE_"
+      ])
   end
 
   defp start_nostrum do
@@ -172,15 +239,13 @@ defmodule JidoClaw.Application do
       # after Repo/Vault/PubSub, so DB-heavy sidecars tear down before them.
       {Registry, keys: :unique, name: JidoClaw.Orchestration.LeaseRegistry},
       {Task.Supervisor, name: JidoClaw.Orchestration.LeaseTaskSupervisor},
-      # WS3 reclaim Pooler: the always-on per-node claim→dispatch loop that drains
-      # the lease-expiry reclaim selector and routes each claimed orphan through
-      # `WorkflowRecovery.reclaim/1`. `:permanent` (a long-lived poll loop); placed
-      # after Repo (above) which it queries. Self-gates to `:ignore` when disabled
-      # (test). Always-on in EVERY serve mode (incl. `:mcp`, which launches workflows)
-      # and both single-/multi-node — safe because every claim is claim-gated
-      # (`FOR UPDATE SKIP LOCKED` + token-CAS), where the boot `WorkflowRecovery`
-      # sweep is unguarded (hence cluster/MCP-excluded).
-      JidoClaw.Orchestration.ReclaimPooler,
+      # Verify authority filesystem captures run behind a VM-wide ceiling.
+      # A timed-out FIFO open stays supervised (killing its BEAM owner does not
+      # cancel the dirty-I/O syscall), so max_children is the cross-run resource
+      # exhaustion fence rather than a throughput-only setting.
+      {Task.Supervisor,
+       name: JidoClaw.Orchestration.VerifyCaptureTaskSupervisor,
+       max_children: VerifyGit.capture_concurrency()},
       # AR-2 composer supervised lifecycle (Phase 2c): the parent-run-id → composer
       # GenServer registry + the DynamicSupervisor its `:transient` children run
       # under. `max_restarts: 10`/`max_seconds: 30` matches the root supervisor's
@@ -246,6 +311,12 @@ defmodule JidoClaw.Application do
       # Stats
       JidoClaw.Stats,
 
+      # Password sign-in throttling lives outside the controller process so
+      # concurrent requests share one per-node sliding window.
+      JidoClaw.Web.AuthRateLimiter,
+      JidoClaw.Web.SetupStatusCache,
+      JidoClaw.Security.ToolApproval.MountConfigCache,
+
       # Supervised heartbeat writer for .jido/heartbeat.md.
       heartbeat_child(),
 
@@ -298,6 +369,13 @@ defmodule JidoClaw.Application do
         type: :worker,
         restart: :transient
       },
+
+      # WS3 reclaim Pooler starts only AFTER the synchronous boot-recovery
+      # barrier above. Its claims are fenced, but recovery's single-node sweep
+      # intentionally is not; ordering removes the old heuristic overlap based
+      # on `initial_delay_ms`. In MCP/cluster mode recovery is a synchronous
+      # no-op, so the pool still starts normally in every mode.
+      JidoClaw.Orchestration.ReclaimPooler,
 
       # WS4a cluster-wide user-cron owner: the leader loads/schedules every
       # non-disabled cron_jobs row for every active tenant; followers run none.

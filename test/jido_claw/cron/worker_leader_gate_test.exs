@@ -6,13 +6,12 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
   are the only jobs the always-on supervision tree replicates on every node, so
   under clustering they must fire on the leader only. This pins:
 
-    * a `:system_job` scheduled tick is **swallowed + re-armed** off-leader
-      (no fire, not disabled), and **fires** on-leader;
+    * a non-persisted `:system_job` scheduled boundary is consumed off-leader,
+      so it cannot replay after that follower becomes leader;
     * a manual `trigger/2` of a `:system_job` is **never** gated (operator
       override);
-    * a user job (`target: :workflow`) **fires regardless** of leadership —
-      the gate is scoped to `:system_job`, so single-node behavior and user
-      cron stay byte-identical.
+    * a non-persisted user job also advances off-leader, while a persisted job
+      may retain the exact window because its DB claim is the split-brain fence.
 
   Leadership is stubbed through the `:cluster_leader_module` seam, so no `:pg`
   scope is needed. `async: false`: toggles global app-env (the stub module +
@@ -22,6 +21,7 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
 
   alias JidoClaw.ClusterLeaderStub
   alias JidoClaw.Cron
+  alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Scheduler
   alias JidoClaw.Tenant.Manager
 
@@ -88,7 +88,8 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
     {job_id, pid}
   end
 
-  test "off-leader: a :system_job scheduled tick is swallowed and re-armed (not fired)", ctx do
+  test "a follower consumes a non-persisted system window instead of replaying it as leader",
+       ctx do
     set_leader(false)
     {job_id, pid} = schedule_system_job(ctx.tenant)
 
@@ -97,10 +98,19 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
 
     refute_receive :ping, 300
 
-    # Re-armed, not disabled: still active with an advanced next_run (the gate's
-    # schedule_next/1 branch, NOT the stale-tick swallow which leaves next_run).
-    %{status: :active, next_run: %DateTime{} = next} = Cron.Worker.get_state(ctx.tenant, job_id)
-    assert DateTime.compare(next, window) == :gt
+    assert %{status: :active, next_run: %DateTime{} = next_window} =
+             Cron.Worker.get_state(ctx.tenant, job_id)
+
+    assert DateTime.compare(next_window, window) == :gt
+
+    # Sequential handoff: the old follower is now leader, but the stale
+    # boundary no longer matches its state and must not execute.
+    set_leader(true)
+    send(pid, {:tick, window})
+    refute_receive :ping, 300
+
+    send(pid, {:tick, next_window})
+    assert_receive :ping, 5_000
   end
 
   test "on-leader: a :system_job scheduled tick fires", ctx do
@@ -122,7 +132,7 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
     assert_receive :ping, 5_000
   end
 
-  test "off-leader: a user :workflow job fires (not gated)", ctx do
+  test "off-leader: a non-persisted user job advances without firing", ctx do
     set_leader(false)
     job_id = "userjob-#{System.unique_integer([:positive])}"
 
@@ -139,6 +149,42 @@ defmodule JidoClaw.Cron.WorkerLeaderGateTest do
     %{next_run: %DateTime{} = window} = Cron.Worker.get_state(ctx.tenant, job_id)
     send(pid, {:tick, window})
 
-    assert_receive {:runner_ran, _state}, 5_000
+    refute_receive {:runner_ran, _state}, 300
+
+    assert %{next_run: next_window} = Cron.Worker.get_state(ctx.tenant, job_id)
+    assert DateTime.compare(next_window, window) == :gt
+  end
+
+  test "off-leader: a persisted job retains its DB-claimable window", ctx do
+    set_leader(false)
+    job_id = "persisted-userjob-#{System.unique_integer([:positive])}"
+    actor = actor_for(ctx.tenant)
+
+    assert {:ok, job} =
+             Job.upsert(
+               %{
+                 job_id: job_id,
+                 task: "audit",
+                 target: :workflow,
+                 workflow_name: "explore_codebase",
+                 schedule_kind: :every,
+                 schedule_value: "86400000",
+                 mode: :main
+               },
+               tenant: ctx.tenant,
+               actor: actor
+             )
+
+    assert :ok = Scheduler.schedule_persisted(ctx.tenant, job)
+    on_exit(fn -> _ = Scheduler.unschedule(ctx.tenant, job_id) end)
+
+    pid =
+      GenServer.whereis({:via, Registry, {JidoClaw.TenantRegistry, {:cron, ctx.tenant, job_id}}})
+
+    %{next_run: %DateTime{} = window} = Cron.Worker.get_state(ctx.tenant, job_id)
+    send(pid, {:tick, window})
+
+    refute_receive {:runner_ran, _state}, 300
+    assert %{status: :active, next_run: ^window} = Cron.Worker.get_state(ctx.tenant, job_id)
   end
 end

@@ -22,6 +22,7 @@ defmodule JidoClaw.VFS.Resolver do
   alias Jido.Shell.VFS, as: ShellVFS
   alias Jido.Shell.VFS.MountTable
   alias Jido.VFS, as: JidoVFS
+  alias JidoClaw.VFS.AdapterPolicy
   alias JidoClaw.VFS.Workspace
 
   @max_symlink_depth 40
@@ -203,9 +204,7 @@ defmodule JidoClaw.VFS.Resolver do
   Returns true when `path` uses a remote scheme (github://, s3://, git://).
   """
   @spec remote?(String.t()) :: boolean()
-  def remote?(path) do
-    String.starts_with?(path, ["github://", "s3://", "git://"])
-  end
+  def remote?(path), do: AdapterPolicy.remote_uri?(path)
 
   @doc """
   Bootstrap the workspace for `path` when `:workspace_id` + `:project_dir`

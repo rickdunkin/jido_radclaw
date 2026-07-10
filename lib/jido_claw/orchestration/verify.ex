@@ -18,26 +18,27 @@ defmodule JidoClaw.Orchestration.Verify do
 
   ## Two integrity modes
 
-    * `:sealed` — camus-verbatim, selected when the run holds an
+    * `:sealed` — the camus committed-state shape plus the signed C1-2 audit
+      hardening, selected when the run holds an
       engine-observed `sealed_head` (the run committed work): the tracked tree
-      must be clean against HEAD before the checks run (dirt ⇒ RED
-      `uncommitted_state`, checks never run), tracked mutation and HEAD
-      movement during the checks are RED, and HEAD must equal the sealed sha
-      (a committed cover-up is `head_moved` — porcelain is blind to
-      edit→commit→rerun).
+      and every nonignored untracked path must be clean against HEAD before the
+      checks run (dirt ⇒ RED `uncommitted_state`, checks never run), mutation
+      and HEAD movement during the checks are RED, and HEAD must equal the
+      sealed sha (a committed cover-up is `head_moved` — porcelain is blind to
+      edit→commit→rerun). Gitignored paths remain outside the authority.
     * `:working_tree` — the default for today's non-committing routes: a dirty
       tree before the checks is recorded as an envelope **fact**
       (`integrity_note`), mid-verify integrity rides HEAD stability plus a
-      content-addressed tracked-tree digest (`git diff --no-ext-diff
-      --no-textconv --binary HEAD`, sha256 — porcelain cannot see content
-      edits to already-dirty files), and a green binds `{head, tree_digest}`.
+      content-addressed working-tree digest: a tracked binary diff plus a
+      sorted, bounded manifest of nonignored untracked path/type/mode/content
+      fingerprints. A green binds `{head, tree_digest}`.
 
   ## Misclassification policy (camus cardinal rule)
 
   Err toward **inconclusive** (a withheld verdict) — never a false red, never
   a pass. `missing_tool` / `no_tests` / `timeout` / `output_limit` /
   `integrity_unavailable` are inconclusive kinds; the integrity RED kinds
-  (`uncommitted_state` / `tracked_mutation` / `head_moved`) never are — a
+  (`uncommitted_state` / `working_tree_mutation` / `head_moved`) never are — a
   tampered tree is red, the remedy is a human look, never an auto-retry.
 
   ## Capture failure (law-4 override of camus's degrade-open)
@@ -60,8 +61,6 @@ defmodule JidoClaw.Orchestration.Verify do
   # (pass:false, never red). The integrity RED kinds are deliberately NOT here.
   @inconclusive_kinds ~w(missing_tool no_tests timeout output_limit integrity_unavailable)
 
-  # Porcelain flags: tracked files only (test-artifact untracked junk stays
-  # irrelevant) + no submodule noise — camus-verbatim.
   @remedy_no_verifier "no recognized verify config found; set `verify_cmd:` (or a `verify:` " <>
                         "block) in .jido/config.yaml to specify the command explicitly"
 
@@ -163,7 +162,7 @@ defmodule JidoClaw.Orchestration.Verify do
   defp mode_for(_sealed_head), do: :working_tree
 
   # ---------------------------------------------------------------------------
-  # Sealed mode (camus-verbatim + the sealed-head identity compare)
+  # Sealed mode (camus shape + signed untracked hardening + sealed-head compare)
   # ---------------------------------------------------------------------------
 
   defp sealed_result(checks, runner, repo, sealed_head, seams) do
@@ -182,9 +181,10 @@ defmodule JidoClaw.Orchestration.Verify do
           sealed_head
         )
 
-      # HEAD-integrity invariant (camus run-6): a gating verify certifies the
-      # COMMITTED state — dirt before the checks is RED `uncommitted_state`,
-      # never inconclusive, and the checks never run (nothing was verified).
+      # HEAD-integrity invariant (camus run-6 + C1-2 audit hardening): a gating
+      # verify certifies the COMMITTED state — tracked dirt or a nonignored
+      # untracked path before the checks is RED `uncommitted_state`, never
+      # inconclusive, and the checks never run (nothing was verified).
       is_binary(before_porcelain) and String.trim(before_porcelain) != "" ->
         tampered_refusal(
           "uncommitted_state",
@@ -227,7 +227,7 @@ defmodule JidoClaw.Orchestration.Verify do
 
     integrity_failures =
       List.flatten([
-        tracked_mutation_failure(before_porcelain, after_porcelain, &bounded_porcelain/1),
+        working_tree_mutation_failure(before_porcelain, after_porcelain, &bounded_porcelain/1),
         head_moved_failure(head_before, head_after),
         sealed_mismatch_failure(sealed_head, head_after)
       ])
@@ -322,7 +322,7 @@ defmodule JidoClaw.Orchestration.Verify do
 
       dirt ->
         "working tree dirty against HEAD before verify (#{length(String.split(dirt, "\n"))} " <>
-          "tracked paths); the verdict certifies the working tree, not the commit"
+          "paths); the verdict certifies the working tree, not the commit"
     end
   end
 
@@ -358,8 +358,8 @@ defmodule JidoClaw.Orchestration.Verify do
     [
       failure(
         "integrity",
-        "tracked_mutation",
-        "tracked content changed during verify (tree digest #{digest_before} -> #{digest_after})",
+        "working_tree_mutation",
+        "working-tree content changed during verify (tree digest #{digest_before} -> #{digest_after})",
         nil,
         nil
       )
@@ -394,13 +394,13 @@ defmodule JidoClaw.Orchestration.Verify do
   defp exit_value(exit) when is_integer(exit), do: exit
   defp exit_value(_sentinel), do: nil
 
-  defp tracked_mutation_failure(before_porcelain, after_porcelain, bound)
+  defp working_tree_mutation_failure(before_porcelain, after_porcelain, bound)
        when is_binary(before_porcelain) and is_binary(after_porcelain) and
               before_porcelain != after_porcelain do
-    [failure("integrity", "tracked_mutation", bound.(after_porcelain), nil, nil)]
+    [failure("integrity", "working_tree_mutation", bound.(after_porcelain), nil, nil)]
   end
 
-  defp tracked_mutation_failure(_before, _after, _bound), do: []
+  defp working_tree_mutation_failure(_before, _after, _bound), do: []
 
   defp head_moved_failure(head_before, head_after)
        when is_binary(head_before) and is_binary(head_after) and head_before != head_after do
@@ -446,7 +446,7 @@ defmodule JidoClaw.Orchestration.Verify do
     # even when every check was itself inconclusive).
     {tampered, all_inconclusive} =
       Enum.reduce(failures, {false, true}, fn %{kind: kind}, {tampered, all_inconclusive} ->
-        {tampered or kind in ["uncommitted_state", "tracked_mutation", "head_moved"],
+        {tampered or kind in ["uncommitted_state", "working_tree_mutation", "head_moved"],
          all_inconclusive and kind in @inconclusive_kinds}
       end)
 

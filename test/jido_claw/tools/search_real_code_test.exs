@@ -2,7 +2,7 @@ defmodule JidoClaw.Tools.SearchRealCodeTest do
   # AR-8b-2 F3: read-only grep over the REAL project tree from a sketch worker.
   # Mirrors search_code_test's "AR-8b sketch jail" block; the jail target is the
   # real base (two levels up from the `.prototypes/<uuid>/` sandbox). No size-cap
-  # assertion — `search_real_code` reuses `search_code`'s uncapped read core.
+  # assertion — `search_real_code` reuses `search_code`'s bounded read core.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Tools.SearchRealCode

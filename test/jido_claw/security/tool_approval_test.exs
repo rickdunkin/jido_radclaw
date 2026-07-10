@@ -7,10 +7,15 @@ defmodule JidoClaw.Security.ToolApprovalTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias Jido.Action.Schema, as: ActionSchema
+  alias Jido.Shell.VFS
   alias JidoClaw.Agent.Templates
+  alias JidoClaw.Core.MapKeys
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Security.ShellCommand
   alias JidoClaw.Security.ToolApproval
+  alias JidoClaw.Security.ToolApproval.MountConfigCache
+  alias JidoClaw.VFS.Workspace
 
   # Inline victim actions exercise the real wrapper pipeline.
   defmodule Victim do
@@ -31,6 +36,17 @@ defmodule JidoClaw.Security.ToolApprovalTest do
 
     @impl Jido.Action
     def run(_params, _context), do: {:error, "boom"}
+  end
+
+  # The approval gate only needs the mounted adapter identity. Keeping this
+  # intentionally outside AdapterPolicy proves an unknown live module fails
+  # closed without requiring a real external service.
+  defmodule UnknownLiveAdapter do
+    @spec configure(keyword()) :: {module(), keyword()}
+    def configure(opts), do: {__MODULE__, opts}
+
+    @spec starts_processes() :: false
+    def starts_processes, do: false
   end
 
   setup do
@@ -70,6 +86,405 @@ defmodule JidoClaw.Security.ToolApprovalTest do
                ToolApproval.gate("read_file", %{path: "x"}, ctx(scope),
                  enabled?: true,
                  require: ["git_commit"]
+               )
+    end
+
+    test "remote GitHub, S3, and git writes pend while local project writes pass", %{
+      scope: scope
+    } do
+      for tool <- ["write_file", "edit_file"],
+          path <- [
+            "github://owner/repo/file",
+            "s3://bucket/key",
+            "git:///tmp/repo//file"
+          ] do
+        assert {:error, %{code: :approval_pending}} =
+                 ToolApproval.gate(tool, %{path: path}, ctx(scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+
+      for tool <- ["write_file", "edit_file"] do
+        assert :ok =
+                 ToolApproval.gate(tool, %{path: "lib/local.ex"}, ctx(scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+    end
+
+    test "absolute paths backed by a GitHub mount also pend", %{scope: scope} do
+      workspace_id = "approval-mount-#{System.unique_integer([:positive])}"
+
+      project_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "approval-project-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(project_dir)
+      {:ok, _pid} = Workspace.ensure_started(workspace_id, project_dir)
+
+      :ok =
+        Workspace.mount(workspace_id, "/publish", :github, %{
+          "owner" => "example",
+          "repo" => "example"
+        })
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      mounted_scope =
+        Map.merge(scope, %{workspace_id: workspace_id, project_dir: project_dir})
+
+      for tool <- ["write_file", "edit_file"] do
+        assert {:error, %{code: :approval_pending}} =
+                 ToolApproval.gate(tool, %{path: "/publish/file.txt"}, ctx(mounted_scope),
+                   enabled?: true,
+                   require: []
+                 )
+
+        assert :ok =
+                 ToolApproval.gate(tool, %{path: "/project/local.txt"}, ctx(mounted_scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+    end
+
+    test "traversal cannot reclassify a remote-mount write as local (live mount)", %{
+      scope: scope
+    } do
+      workspace_id = "approval-traversal-#{System.unique_integer([:positive])}"
+
+      project_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "approval-traversal-project-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(project_dir)
+      {:ok, _pid} = Workspace.ensure_started(workspace_id, project_dir)
+
+      :ok =
+        Workspace.mount(workspace_id, "/publish", :github, %{
+          "owner" => "example",
+          "repo" => "example"
+        })
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      mounted_scope =
+        Map.merge(scope, %{workspace_id: workspace_id, project_dir: project_dir})
+
+      for tool <- ["write_file", "edit_file"] do
+        # Execution (ShellVFS.resolve_path) canonicalizes before consulting the
+        # mount table, so this write lands on the remote /publish mount — the
+        # gate must classify the canonical path, never the raw /project prefix.
+        assert {:error, %{code: :approval_pending}} =
+                 ToolApproval.gate(
+                   tool,
+                   %{path: "/project/../publish/file.txt"},
+                   ctx(mounted_scope),
+                   enabled?: true,
+                   require: []
+                 )
+
+        # The mirror image: a /publish-prefixed raw path that resolves back
+        # into the local /project mount stays ungated — the gate matches
+        # execution in both directions.
+        assert :ok =
+                 ToolApproval.gate(
+                   tool,
+                   %{path: "/publish/../project/local.txt"},
+                   ctx(mounted_scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+    end
+
+    test "an unknown live adapter module fails closed to remote-write approval", %{scope: scope} do
+      workspace_id = "approval-unknown-live-#{System.unique_integer([:positive])}"
+
+      project_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "approval-unknown-live-project-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(project_dir)
+
+      assert :ok = VFS.mount(workspace_id, "/external", UnknownLiveAdapter, [])
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      mounted_scope =
+        Map.merge(scope, %{workspace_id: workspace_id, project_dir: project_dir})
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/external/file.txt"},
+                 ctx(mounted_scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "configured remote mounts pend without bootstrapping the workspace", %{scope: scope} do
+      workspace_id = "approval-config-#{System.unique_integer([:positive])}"
+
+      project_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "approval-config-project-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(Path.join(project_dir, ".jido"))
+
+      File.write!(
+        Path.join(project_dir, ".jido/config.yaml"),
+        """
+        vfs:
+          mounts:
+            - path: /publish
+              adapter: github
+              owner: example
+              repo: example
+            - path: /publish/private
+              adapter: typo_that_runtime_skips
+        """
+      )
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      configured_scope =
+        Map.merge(scope, %{workspace_id: workspace_id, project_dir: project_dir})
+
+      assert Registry.lookup(JidoClaw.VFS.WorkspaceRegistry, workspace_id) == []
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/private/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+
+      assert Registry.lookup(JidoClaw.VFS.WorkspaceRegistry, workspace_id) == []
+    end
+
+    test "traversal and duplicate-slash forms pend against configured remote mounts", %{
+      scope: scope
+    } do
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "traversal-config")
+
+      File.write!(config_path, mount_yaml("github"))
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      # Every form canonicalizes to /publish/private/file.txt — the config
+      # fallback must see that, not a raw /project (or dup-slash) prefix.
+      for path <- [
+            "/project/../publish/private/file.txt",
+            "/project/..//publish/private/file.txt",
+            "//publish/private/file.txt"
+          ] do
+        assert {:error, %{code: :approval_pending}} =
+                 ToolApproval.gate("write_file", %{path: path}, ctx(configured_scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+
+      # Relative paths classify non-remote by design: execution's Resolver jail
+      # (ensure_under_project) rejects any relative path escaping the project
+      # before it can reach a mount, so the gate never absolutizes them —
+      # expanding against "/" here would wrongly gate ordinary relative writes.
+      assert :ok =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "../publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "an unknown configured adapter fails closed to remote-write approval", %{scope: scope} do
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "unknown-adapter")
+
+      File.write!(config_path, mount_yaml("future_remote"))
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "mount YAML parsing is cached by content while every gate re-reads the file", %{
+      scope: scope
+    } do
+      :ok = MountConfigCache.reset()
+
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "cache")
+
+      File.write!(config_path, mount_yaml("github"))
+      handler_id = "mount-cache-#{System.unique_integer([:positive])}"
+      owner = self()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:jido_claw, :security, :tool_approval_mount_cache],
+          fn _event, _measurements, metadata, _config ->
+            send(owner, {:mount_cache, metadata.result})
+          end,
+          nil
+        )
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      for _ <- 1..2 do
+        assert {:error, %{code: :approval_pending}} =
+                 ToolApproval.gate(
+                   "write_file",
+                   %{path: "/publish/file.txt"},
+                   ctx(configured_scope),
+                   enabled?: true,
+                   require: []
+                 )
+      end
+
+      assert_receive {:mount_cache, :miss}
+      assert_receive {:mount_cache, :hit}
+      refute_receive {:mount_cache, _other}
+    end
+
+    test "a same-mtime config edit invalidates by content digest", %{scope: scope} do
+      :ok = MountConfigCache.reset()
+
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "digest")
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      File.write!(config_path, mount_yaml("local"))
+      {:ok, stat} = File.stat(config_path, time: :posix)
+
+      assert :ok =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+
+      File.write!(config_path, mount_yaml("github"))
+      File.touch!(config_path, stat.mtime)
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+    end
+
+    test "an oversized mount config fails closed instead of being parsed", %{scope: scope} do
+      :ok = MountConfigCache.reset()
+
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "oversized")
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      File.write!(config_path, String.duplicate("#", 256_001))
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
+               )
+
+      assert MountConfigCache.size() == 0
+    end
+
+    test "a scalar vfs container is cached as a typed failure and gates closed", %{scope: scope} do
+      :ok = MountConfigCache.reset()
+
+      {workspace_id, project_dir, config_path, configured_scope} =
+        mount_config_fixture(scope, "scalar-vfs")
+
+      bytes = "vfs: not-a-map\n"
+      File.write!(config_path, bytes)
+      digest = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+      on_exit(fn ->
+        Workspace.teardown(workspace_id)
+        File.rm_rf(project_dir)
+      end)
+
+      assert {:error, :invalid_mount_config} =
+               MountConfigCache.fetch(project_dir, digest, bytes)
+
+      assert {:error, :invalid_mount_config} =
+               MountConfigCache.fetch(project_dir, digest, bytes)
+
+      assert MountConfigCache.size() == 1
+
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate(
+                 "write_file",
+                 %{path: "/publish/file.txt"},
+                 ctx(configured_scope),
+                 enabled?: true,
+                 require: []
                )
     end
 
@@ -452,6 +867,22 @@ defmodule JidoClaw.Security.ToolApprovalTest do
                )
     end
 
+    test "the shipped system_verifier gates even a benign run_command", %{scope: scope} do
+      assert "run_command" in Templates.require_approval("system_verifier")
+
+      assert {:error, %{code: :approval_pending, message: message}} =
+               ToolApproval.gate(
+                 "run_command",
+                 %{command: "git status"},
+                 ctx(with_template(scope, "system_verifier")),
+                 enabled?: true,
+                 require: []
+               )
+
+      assert message =~ "system_verifier"
+      assert message =~ "agent template"
+    end
+
     test ":all gates every native tool for the template", %{scope: scope} do
       assert {:error, %{code: :approval_pending}} =
                ToolApproval.gate("read_file", %{path: "x"}, ctx(with_template(scope, "ra_all")),
@@ -621,11 +1052,20 @@ defmodule JidoClaw.Security.ToolApprovalTest do
         module = Map.get(by_name, tool)
         assert module, "require_patterns key #{inspect(tool)} resolves to no wrapped tool"
 
-        field = module.schema()[param]
+        json_schema =
+          module.schema()
+          |> ActionSchema.to_json_schema()
+          |> MapKeys.normalize_keys(:string, deep: true)
+
+        properties = Map.get(json_schema, "properties", %{})
+        field = Map.get(properties, to_string(param))
+
         assert field, "#{inspect(tool)} schema has no #{inspect(param)} field"
 
-        assert field[:type] == :string,
-               "#{inspect(tool)} param #{inspect(param)} must be a :string field, got #{inspect(field[:type])}"
+        type = Map.get(field, "type")
+
+        assert type in ["string", :string],
+               "#{inspect(tool)} param #{inspect(param)} must be a string field, got #{inspect(type)}"
       end
     end
 
@@ -692,6 +1132,17 @@ defmodule JidoClaw.Security.ToolApprovalTest do
                  enabled?: true,
                  mcp_require_approval: false,
                  mcp_policy: %{"mcp_x_y" => nil}
+               )
+    end
+
+    test "an explicit gated MCP policy wins over global mcp_require_approval: false", %{
+      scope: scope
+    } do
+      assert {:error, %{code: :approval_pending}} =
+               ToolApproval.gate("mcp_x_y", %{}, ctx(scope),
+                 enabled?: true,
+                 mcp_require_approval: false,
+                 mcp_policy: %{"mcp_x_y" => true}
                )
     end
 
@@ -808,5 +1259,29 @@ defmodule JidoClaw.Security.ToolApprovalTest do
                  require: []
                )
     end
+  end
+
+  defp mount_config_fixture(scope, label) do
+    workspace_id = "approval-#{label}-#{System.unique_integer([:positive])}"
+
+    project_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "approval-#{label}-project-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(Path.join(project_dir, ".jido"))
+    config_path = Path.join(project_dir, ".jido/config.yaml")
+    configured_scope = Map.merge(scope, %{workspace_id: workspace_id, project_dir: project_dir})
+    {workspace_id, project_dir, config_path, configured_scope}
+  end
+
+  defp mount_yaml(adapter) do
+    """
+    vfs:
+      mounts:
+        - path: /publish
+          adapter: #{adapter}
+    """
   end
 end

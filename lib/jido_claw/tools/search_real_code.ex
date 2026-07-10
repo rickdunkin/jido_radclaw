@@ -9,15 +9,15 @@ defmodule JidoClaw.Tools.SearchRealCode do
   carries a `sandbox: :prototype` or `:docker` context. Local paths only —
   remote schemes are forbidden.
 
-  Reuses `JidoClaw.Tools.SearchCode.search/2`, so it matches `search_code`'s
-  current behavior exactly (including reading files without a `FilePayloadLimit`
-  cap — adding one would change existing `search_code` behavior, out of scope).
+  Reuses `JidoClaw.Tools.SearchCode.search/2`, including its per-file,
+  traversal, aggregate-byte, regex-work, output-retention, and deadline budgets,
+  including explicit partial-result notes for oversized files and deadlines.
   """
 
   use JidoClaw.Tools.Action,
     name: "search_real_code",
     description:
-      "Search the REAL project tree for a pattern using grep (read-only). Use to find existing APIs/patterns in the real project to model a sandbox prototype on — you cannot write to the real tree. Returns matching lines with file paths and line numbers. Local paths only.",
+      "Search the REAL project tree recursively with bounded regex/traversal budgets (read-only). Oversized files are skipped and deadline-limited results are explicitly marked partial. Use to find existing APIs/patterns to model a sandbox prototype on — you cannot write to the real tree. Returns matching lines with file paths and line numbers. Local paths only.",
     category: "filesystem",
     tags: ["io", "read"],
     output_schema: [
@@ -39,7 +39,7 @@ defmodule JidoClaw.Tools.SearchRealCode do
   def run(%{pattern: _pattern} = params, context) do
     MCPScope.wrap(:search_real_code, params, context, fn enriched ->
       with {:ok, opts} <- RealTree.resolver_opts(get_in(enriched, [:tool_context])) do
-        SearchCode.search(params, opts)
+        SearchCode.search(params, SearchCode.with_deadline(opts, enriched))
       end
     end)
   end

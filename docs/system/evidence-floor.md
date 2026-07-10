@@ -1,8 +1,9 @@
 ---
 type: subsystem
-description: Claims vs transcript — the engine cross-checks worker self-reports against durable tool rows and the wave git diff; findings-only, never a gate.
+description: Claims vs transcript — the engine cross-checks worker self-reports against durable tool rows and bounded wave filesystem evidence; findings-only, never a gate.
 sources:
   - lib/jido_claw/orchestration/verify/evidence.ex
+  - lib/jido_claw/orchestration/verify/git.ex
   - lib/jido_claw/orchestration/verify/evidence/reader.ex
   - lib/jido_claw/orchestration/verify/evidence/ac_extractor.ex
   - lib/jido_claw/orchestration/verify/evidence/assertions.ex
@@ -14,8 +15,8 @@ sources:
   - lib/jido_claw/route_composer/catalog_validator.ex
   - lib/jido_claw/agent/workers/output_schema.ex
   - lib/jido_claw/doctrine.ex
-verified: 2026-07-09
-verified_sha: "39f1cb41"
+verified: 2026-07-10
+verified_sha: "b2cae5cd"
 ---
 
 # Evidence Floor (claims vs transcript)
@@ -27,7 +28,8 @@ Worker stages (coder/fixer) self-report through typed envelopes — `status:
 evidence floor is the deterministic cross-check: every claim is classified
 against the transcript the engine already stores durably
 (`Conversations.Message` tool rows carry every in-process command + exit code)
-and against the wave's git status diff. A fixer that says "tests green" with
+and against bounded wave filesystem evidence (git status transitions plus
+content fingerprints for paths that were already dirty). A fixer that says "tests green" with
 no test invocation in its tool rows, or with the invocation piped through a
 filter that masks the exit code, is precisely the false-green the review loop
 exists to catch — and catching it is a pure fold over data we already
@@ -65,11 +67,12 @@ this broke layered scaffolds; as verify-stage input it's all upside):
   `commands_run` (recorded-command containment + provenance), and
   `files_touched` — read from the REQUIRED `files_changed` envelope field
   (the advisory block carries only the first two) and supported iff the
-  path's git status CHANGED this wave (dispatch-time vs fold-time
-  `Verify.Git.porcelain_all/1` snapshots, untracked-inclusive; union across
-  same-wave stages). **Bare existence is never support**; a missing
-  before-snapshot (mid-wave crash/recovery) skips the kind, never the
-  permissive fallback.
+  path's git status CHANGED this wave, or an already-dirty path has two
+  bounded fingerprints whose content/type/mode identity differs
+  (dispatch-time vs fold-time; union across same-wave stages). **Bare
+  existence is never support**; missing/unreadable fingerprints add no proof,
+  and a missing before-porcelain snapshot (mid-wave crash/recovery) skips the
+  kind, never the permissive fallback.
 - **Fail-open end to end**: the envelope `evidence` field is
   schema-PERMISSIVE (`Zoi.optional(Zoi.any())` — present-but-malformed must
   never cause repair/infra churn; shape enforcement is `DefaultMapper`'s
@@ -126,8 +129,19 @@ only-when-present by `WaveCollect`, whitelist-decoded fail-closed by
 `StageEmission.from_map/1`).
 
 Consumer side (`route_composer.ex`): `run_built_wave` captures the
-dispatch-time `porcelain_all` snapshot on producer waves (in-memory only —
-recovery loses it and the files kind skips). At the fold,
+dispatch-time `porcelain_all` snapshot plus bounded, symlink-safe fingerprints
+for the paths already dirty/untracked on producer waves (in-memory only —
+recovery loses them and the files kind skips). A rebuild that finds
+`wave_started(N)` without `wave_completed(N)` records that open wave index and
+deliberately suppresses a replacement baseline during idempotent child rebind;
+otherwise a completed child could be compared post-edit→post-edit and falsely
+accused. The marker naturally expires when the wave index advances. At the fold, it fingerprints
+the union of before/after snapshot paths. `Verify.Git.path_fingerprints/3`
+single-sources the verify-authority bounds (1,000 paths, 10 MiB aggregate,
+4,096-byte paths), hashes regular content and type/mode, hashes symlink target
+text without following it, and omits individually unavailable paths for this
+findings-only consumer; a global bound failure yields no added content proof.
+Then
 `evidence_record_markers/3` classifies each eligible emission (catalog-decided:
 `lens: nil` + `unit: {:worker_template, "coder" | "fixer"}`) via
 `Evidence.gather/2` (the `reader/0` seam: `config :jido_claw, :evidence,
@@ -274,6 +288,11 @@ the Verify authority's command (double-coverage).
   — a miss, never a false finding (PORT-OB1-3 changed (E)/(F)).
 - **Containment is Trace-only** (v1): changed-but-unclaimed paths warn,
   never hold a stage ("held stage later" is explicitly post-v1).
+- **Fingerprint proof observes net state, not write history**: an edit restored
+  to exactly the same content/type/mode before fold is intentionally
+  unprovable. A filesystem change racing between the fold's porcelain and
+  fingerprint captures is best-effort fenced per path, not an atomic tree
+  snapshot; missing proof leaves the pre-amendment status result unchanged.
 - **A clearing re-check trusts skips**: a fixer whose re-do claims are
   unverifiable (vendor arm) clears a live `findings:evidence` — the
   conservative rule; the reviewers and the Verify authority still guard
@@ -326,7 +345,8 @@ the Verify authority's command (double-coverage).
   fold (`evidence_breaches`, incl. the `"evidence:ac"` bump)
 - `lib/jido_claw/route_composer/catalog_validator.ex` — invariant 12 (the
   reserved `"evidence"`/`"evidence:ac"` identity tokens)
-- `lib/jido_claw/orchestration/verify/git.ex` — `porcelain_all/1`
+- `lib/jido_claw/orchestration/verify/git.ex` — `porcelain_all/1` plus the
+  shared bounded, race-checked path fingerprint primitive
 - `lib/jido_claw/agent/workers/output_schema.ex` — the permissive envelope
   field
 - `lib/jido_claw/doctrine.ex` — the `:evidence_reporting` slice scoping

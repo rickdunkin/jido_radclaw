@@ -11,31 +11,17 @@ defmodule JidoClaw.Orchestration.AgentCaseEvent do
   `commit_reject/5` / abandon, and the cancel paths) — the case row
   and its timeline can never disagree.
 
-  Mirrors `WorkflowEvent`'s shape: deliberately a plain `use Ash.Resource`
-  (the `JidoClaw.Resource` macro injects a `bypass action(:by_id_global)`
-  that fails to compile without that action) plus the two hand-written
-  tenant policies. `seq` is monotonic and gap-free **per case**, allocated
-  solely by `Changes.Allocate` under a per-case `FOR UPDATE` lock; the unique
+  Mirrors `WorkflowEvent`'s shape: events are only ever read case-scoped, so
+  the macro-injected `bypass action(:by_id_global)` matches no action here
+  and is inert — the effective policy is the standard tenant pair. `seq` is
+  monotonic and gap-free **per case**, allocated solely by
+  `Changes.Allocate` under a per-case `FOR UPDATE` lock; the unique
   `(agent_case_id, seq)` index is the DB-enforced fence.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Orchestration,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+  use JidoClaw.Resource, domain: JidoClaw.Orchestration
 
   alias JidoClaw.Orchestration.AgentCaseEvent.Changes.Allocate
-
-  policies do
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
 
   postgres do
     table("agent_case_events")

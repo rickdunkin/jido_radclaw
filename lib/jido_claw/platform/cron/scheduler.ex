@@ -75,6 +75,9 @@ defmodule JidoClaw.Cron.Scheduler do
       workflow_name: job.workflow_name,
       workflow_input: job.workflow_input,
       timezone: job.timezone,
+      persisted?: true,
+      definition_token: job.definition_token,
+      failure_count: job.failure_count,
       # Item 9 (OH1-3): the outcome contract is live at fire time — hydrated
       # through the single canonicalizer (junk/absent metadata ⇒ nil, no
       # contract) and carried in the fingerprint so a contract edit
@@ -265,7 +268,8 @@ defmodule JidoClaw.Cron.Scheduler do
       workflow_input: Keyword.get(opts, :workflow_input),
       mfa: Keyword.get(opts, :mfa),
       timezone: Keyword.get(opts, :timezone),
-      outcome_spec: Keyword.get(opts, :outcome_spec)
+      outcome_spec: Keyword.get(opts, :outcome_spec),
+      definition_token: Keyword.get(opts, :definition_token)
     }
   end
 
@@ -279,7 +283,8 @@ defmodule JidoClaw.Cron.Scheduler do
       workflow_input: w.workflow_input,
       mfa: w.mfa,
       timezone: w.timezone,
-      outcome_spec: w.outcome_spec
+      outcome_spec: w.outcome_spec,
+      definition_token: w.definition_token
     }
   end
 
@@ -370,6 +375,8 @@ defmodule JidoClaw.Cron.Scheduler do
   independently of the gate.** The memory consolidator's `pg_try_advisory_lock`
   (`JidoClaw.Memory.Consolidator.LockOwner`) is the model; a `:workflow`-target
   system job would additionally carry the `cron:<job>:<window>` idempotency key.
+  Off-leader, these non-persisted workers consume a missed boundary rather than
+  retaining it for a sequential replay after a leadership handoff.
   """
   @spec start_system_jobs() :: :ok
   def start_system_jobs do

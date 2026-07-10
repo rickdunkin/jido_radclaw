@@ -22,8 +22,9 @@ defmodule JidoClaw.Jido do
   stops. `:temporary` makes a sub-agent death final — its lifecycle belongs
   to the tracker/caller, not the supervisor.
 
-  Main/session agents (`JidoClaw.resolve_agent_pid/1`, the REPL) stay on
-  `start_agent/2` (`:permanent`).
+  Durable main/session agents stay on `start_agent/2` (`:permanent`).
+  Stateless API turns use this temporary path and explicitly tear the child
+  down when the request ends.
   """
   @spec start_subagent(module() | struct(), keyword()) :: DynamicSupervisor.on_start_child()
   def start_subagent(agent, opts \\ []) do

@@ -3,7 +3,7 @@ import Config
 # --- Forge Docker Sandbox ---
 # Set FORGE_SANDBOX=docker to use Docker Sandboxes instead of
 # the default host-shell backend. The host-shell backend is not a sandbox.
-if System.get_env("FORGE_SANDBOX") == "docker" do
+if config_env() != :test and System.get_env("FORGE_SANDBOX") == "docker" do
   config :jido_claw, :forge_sandbox, JidoClaw.Forge.Sandbox.Docker
 
   config :jido_claw, :forge_docker_sandbox,
@@ -14,8 +14,10 @@ end
 
 # --- OneCLI Credential Proxy ---
 # Set FORGE_ONECLI_ENABLED=true to route sandbox outbound HTTP through OneCLI.
-# OneCLI must be running as a sidecar (Docker container or binary).
-if System.get_env("FORGE_ONECLI_ENABLED") == "true" do
+# OneCLI must be running as a sidecar (Docker container or binary). Test is an
+# explicit hard stop: runtime.exs is evaluated after config/test.exs, and an
+# inherited shell flag must never re-arm the proxy in a test BEAM.
+if config_env() != :test and System.get_env("FORGE_ONECLI_ENABLED") == "true" do
   config :jido_claw, :onecli,
     enabled: true,
     gateway_url: System.get_env("ONECLI_GATEWAY_URL", "http://host.docker.internal:10255"),

@@ -11,7 +11,8 @@ defmodule JidoClaw.Network.Protocol do
       type:      "share" | "request" | "response" | "ping" | "pong",
       from:      agent_id string,
       payload:   map,
-      signature: base64 string (Ed25519 over JSON-encoded payload),
+      signature_version: 2,
+      signature: base64 string (Ed25519 over canonical envelope bytes),
       timestamp: ISO-8601 UTC string
     }
 
@@ -28,6 +29,9 @@ defmodule JidoClaw.Network.Protocol do
   alias JidoClaw.Core.MapKeys
 
   @valid_types ~w(share request response ping pong)
+  @signature_version 2
+  @max_message_age_seconds 300
+  @max_future_skew_seconds 30
 
   # ---------------------------------------------------------------------------
   # Core encode / decode
@@ -36,24 +40,26 @@ defmodule JidoClaw.Network.Protocol do
   @doc """
   Build a signed message map.
 
-  Encodes `payload` to JSON, signs the JSON bytes with `identity`'s private
-  key, then wraps everything with a UUID id and ISO-8601 timestamp.
+  Builds the full envelope (UUID id, type, sender, payload, signature version,
+  and ISO-8601 timestamp), canonicalizes it, and signs those bytes with
+  `identity`'s private key.
 
   Returns a plain map with string keys suitable for JSON serialisation.
   """
   @spec encode(atom() | String.t(), map(), Identity.t()) :: map()
   def encode(type, payload, %{__struct__: Identity} = identity) do
-    payload_json = Jason.encode!(payload)
-    signature = Identity.sign(payload_json, identity.private_key)
+    type = normalize_type!(type)
 
-    %{
+    unsigned = %{
       "id" => generate_id(),
-      "type" => to_string(type),
+      "type" => type,
       "from" => identity.agent_id,
       "payload" => payload,
-      "signature" => signature,
+      "signature_version" => @signature_version,
       "timestamp" => utc_now_iso()
     }
+
+    Map.put(unsigned, "signature", Identity.sign(signing_bytes!(unsigned), identity.private_key))
   end
 
   @doc """
@@ -70,6 +76,7 @@ defmodule JidoClaw.Network.Protocol do
     with {:ok, type} <- fetch_valid_type(normalised),
          {:ok, from} <- fetch_string(normalised, "from"),
          {:ok, payload} <- fetch_map(normalised, "payload"),
+         {:ok, signature_version} <- fetch_signature_version(normalised),
          {:ok, signature} <- fetch_string(normalised, "signature"),
          {:ok, timestamp} <- fetch_string(normalised, "timestamp"),
          {:ok, id} <- fetch_string(normalised, "id") do
@@ -78,6 +85,7 @@ defmodule JidoClaw.Network.Protocol do
         "type" => type,
         "from" => from,
         "payload" => payload,
+        "signature_version" => signature_version,
         "signature" => signature,
         "timestamp" => timestamp
       }
@@ -91,15 +99,16 @@ defmodule JidoClaw.Network.Protocol do
   @doc """
   Verify the signature of a decoded message against a known public key.
 
-  Re-encodes the payload to JSON and checks the Ed25519 signature.
+  Canonicalizes the complete signed envelope and checks the Ed25519 signature.
   Returns `true` when valid, `false` otherwise (including on encode errors).
   """
   @spec verify_message(map(), binary()) :: boolean()
-  def verify_message(%{"payload" => payload, "signature" => sig}, public_key)
-      when is_map(payload) and is_binary(sig) and is_binary(public_key) do
-    case Jason.encode(payload) do
-      {:ok, payload_json} -> Identity.verify(payload_json, sig, public_key)
-      {:error, _} -> false
+  def verify_message(message, public_key) when is_map(message) and is_binary(public_key) do
+    with {:ok, decoded} <- decode(message),
+         {:ok, bytes} <- signing_bytes(decoded) do
+      Identity.verify(bytes, decoded["signature"], public_key)
+    else
+      _error -> false
     end
   end
 
@@ -110,9 +119,9 @@ defmodule JidoClaw.Network.Protocol do
   the boundary every receiver must pass raw transport terms through
   before handling them.
 
-  The signature only proves "this payload encodes to the signed JSON
-  bytes"; it says nothing about the term's BEAM shape, and clustered
-  PubSub delivers terms verbatim. Steps:
+  The signature authenticates the canonical envelope, but a validly signed
+  payload can still arrive as a BEAM shape that a real JSON transport could
+  never produce; clustered PubSub delivers terms verbatim. Steps:
 
     1. `decode/1` validates and string-normalizes the envelope,
     2. the envelope `type` must equal `expected_type` — receivers
@@ -120,10 +129,10 @@ defmodule JidoClaw.Network.Protocol do
        validly signed "share" could be replayed as a "response",
     3. `fetch_key.(from)` resolves the sender's trusted public key
        (`{:ok, pubkey}` or a passed-through `{:error, reason}`),
-    4. the Ed25519 signature is verified over the payload's JSON
-       encoding (a payload that cannot encode was never signed —
-       `:malformed`),
-    5. the payload is replaced by its JSON round-trip: atom keys and
+    4. the Ed25519 signature is verified over canonical bytes covering
+       signature version, id, type, from, timestamp, and payload,
+    5. the signed timestamp must fall within the freshness/skew window,
+    6. the payload is replaced by its JSON round-trip: atom keys and
        structs collapse into the plain string-keyed data a real wire
        transport would have produced. A payload whose JSON form is not
        an object (e.g. a struct that encodes to a scalar) is rejected
@@ -143,7 +152,9 @@ defmodule JidoClaw.Network.Protocol do
          :ok <- check_expected_type(decoded, expected_type),
          {:ok, pubkey} <- fetch_key.(decoded["from"]),
          {:ok, payload_json} <- encode_payload(decoded["payload"]),
-         :ok <- check_payload_signature(payload_json, decoded["signature"], pubkey) do
+         {:ok, bytes} <- signing_bytes(decoded),
+         :ok <- check_envelope_signature(bytes, decoded["signature"], pubkey),
+         :ok <- check_timestamp(decoded["timestamp"]) do
       canonicalize_payload(decoded, payload_json)
     end
   end
@@ -158,11 +169,27 @@ defmodule JidoClaw.Network.Protocol do
     end
   end
 
-  defp check_payload_signature(payload_json, signature, pubkey) do
-    if Identity.verify(payload_json, signature, pubkey) do
+  defp check_envelope_signature(bytes, signature, pubkey) do
+    if Identity.verify(bytes, signature, pubkey) do
       :ok
     else
       {:error, :bad_signature}
+    end
+  end
+
+  defp check_timestamp(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, datetime, _offset} ->
+        age = DateTime.diff(DateTime.utc_now(), datetime, :second)
+
+        cond do
+          age > @max_message_age_seconds -> {:error, :stale_message}
+          age < -@max_future_skew_seconds -> {:error, :future_message}
+          true -> :ok
+        end
+
+      _invalid ->
+        {:error, :malformed_timestamp}
     end
   end
 
@@ -170,6 +197,36 @@ defmodule JidoClaw.Network.Protocol do
     case Jason.decode(payload_json) do
       {:ok, payload} when is_map(payload) -> {:ok, %{decoded | "payload" => payload}}
       _ -> {:error, :malformed}
+    end
+  end
+
+  @doc false
+  @spec signing_bytes(map()) :: {:ok, binary()} | {:error, :malformed}
+  def signing_bytes(message) when is_map(message) do
+    unsigned =
+      Map.take(message, [
+        "signature_version",
+        "id",
+        "type",
+        "from",
+        "timestamp",
+        "payload"
+      ])
+
+    with {:ok, json} <- Jason.encode(unsigned),
+         {:ok, canonical} <- Jason.decode(json) do
+      {:ok, :erlang.term_to_binary(canonical, [:deterministic])}
+    else
+      _error -> {:error, :malformed}
+    end
+  end
+
+  def signing_bytes(_message), do: {:error, :malformed}
+
+  defp signing_bytes!(message) do
+    case signing_bytes(message) do
+      {:ok, bytes} -> bytes
+      {:error, :malformed} -> raise ArgumentError, "network message is not JSON-encodable"
     end
   end
 
@@ -244,6 +301,16 @@ defmodule JidoClaw.Network.Protocol do
 
   defp utc_now_iso, do: DateTime.to_iso8601(DateTime.utc_now())
 
+  defp normalize_type!(type) when is_atom(type) or is_binary(type) do
+    normalized = String.downcase(to_string(type))
+
+    if normalized in @valid_types do
+      normalized
+    else
+      raise ArgumentError, "invalid network message type: #{inspect(type)}"
+    end
+  end
+
   defp fetch_valid_type(map) do
     case Map.fetch(map, "type") do
       {:ok, t} when is_binary(t) ->
@@ -282,6 +349,14 @@ defmodule JidoClaw.Network.Protocol do
       {:ok, v} when is_map(v) -> {:ok, v}
       :error -> {:ok, %{}}
       _ -> {:error, {:invalid, key}}
+    end
+  end
+
+  defp fetch_signature_version(map) do
+    case Map.fetch(map, "signature_version") do
+      {:ok, @signature_version} -> {:ok, @signature_version}
+      {:ok, _other} -> {:error, :unsupported_signature_version}
+      :error -> {:error, {:missing, "signature_version"}}
     end
   end
 end

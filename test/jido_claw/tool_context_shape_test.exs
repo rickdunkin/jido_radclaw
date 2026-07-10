@@ -163,5 +163,8 @@ defmodule JidoClaw.ToolContextShapeTest do
     end)
   end
 
+  defp has_tool_context_keyword?({:++, _meta, [left, right]}),
+    do: has_tool_context_keyword?(left) or has_tool_context_keyword?(right)
+
   defp has_tool_context_keyword?(_), do: false
 end

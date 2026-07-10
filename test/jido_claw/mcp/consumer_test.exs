@@ -10,9 +10,12 @@ defmodule JidoClaw.MCP.ConsumerTest do
   """
   use ExUnit.Case, async: false
 
+  alias Jido.Agent.Strategy.State, as: StrategyState
   alias JidoClaw.AgentTracker
   alias JidoClaw.MCP
+  alias JidoClaw.MCP.AgentAPIStub
   alias JidoClaw.MCP.Consumer
+  alias JidoClaw.MCP.EndpointConfig
   alias JidoClaw.MCP.ProxyGenerator
 
   @server %{"name" => "stub", "transport" => "streamable_http", "url" => "http://localhost:1/mcp"}
@@ -21,6 +24,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
   setup do
     prior_stub = Application.get_env(:jido_claw, :mcp_stub)
+    prior_agent_api_stub = Application.get_env(:jido_claw, :mcp_agent_api_stub)
     # `:persistent_term` is global + unsandboxed, and the success-path tests
     # publish the policy key. Snapshot it and restore-or-erase it in `on_exit`
     # so every Consumer-starting test is hygienic and order-independent.
@@ -29,6 +33,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
     on_exit(fn ->
       restore(:mcp_stub, prior_stub)
+      restore(:mcp_agent_api_stub, prior_agent_api_stub)
       restore_policy(policy_key, prior_policy)
     end)
 
@@ -65,18 +70,25 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
   defp tool_name(server_name), do: "mcp_#{server_name}_ping"
 
+  defp endpoint_ids(servers) do
+    {specs, []} = EndpointConfig.parse(servers)
+    Map.new(specs, &{&1.name, &1.endpoint.id})
+  end
+
   defp ping_tool(schema \\ %{"type" => "object", "properties" => %{}}),
     do: %{"name" => "ping", "inputSchema" => schema}
 
   defp pong_tool,
     do: %{"name" => "pong", "inputSchema" => %{"type" => "object", "properties" => %{}}}
 
-  # A second `ping` schema → a different content-addressed module atom for the
-  # SAME local name `mcp_stub_ping` (the atom mismatch the reconcile prunes).
+  # A second `ping` schema → the same stable module with a new definition digest;
+  # re-discovery must refresh the agent's cached ReqLLM metadata.
   defp ping_schema_b,
     do: %{"type" => "object", "properties" => %{"x" => %{"type" => "string"}}}
 
-  defp start_consumer!(servers), do: start_supervised!({Consumer, servers: servers})
+  defp start_consumer!(servers, opts \\ []) do
+    start_supervised!({Consumer, Keyword.put(opts, :servers, servers)})
+  end
 
   defp start_agent! do
     id = "mcp-consumer-test-#{System.unique_integer([:positive])}"
@@ -163,22 +175,6 @@ defmodule JidoClaw.MCP.ConsumerTest do
     end
   end
 
-  # Pin prep in `:preparing` via a blocking `list_tools`, hard-kill the prep
-  # process, and barrier until the Consumer registered the scheduled retry. One
-  # crash now lands in `:preparing` (a retry), not `:failed`; the monotonic
-  # `reprep_attempts >= 1` proves the retry happened (default 0 so a missing
-  # field fails the barrier rather than false-passing). Returns the Consumer.
-  defp crash_prep! do
-    stub(%{list_tools: blocking_list_tools(self(), [ping_tool()])})
-    consumer = start_consumer!([@server])
-
-    assert_receive {:listing, _child}, 2_000
-    Process.exit(:sys.get_state(consumer).prep_pid, :kill)
-    assert_eventually(fn -> Map.get(:sys.get_state(consumer), :reprep_attempts, 0) >= 1 end)
-
-    consumer
-  end
-
   # Drive the bounded re-prep to exhaustion: with `reprep_max_attempts: 2`, the
   # 1st/2nd kills retry and the 3rd exhausts to a terminal `:failed`.
   defp exhaust_prep! do
@@ -199,7 +195,8 @@ defmodule JidoClaw.MCP.ConsumerTest do
   defp has_tool?(pid, name), do: match?({:ok, true}, Jido.AI.has_tool?(pid, name))
 
   defp ping_module(schema \\ %{"type" => "object", "properties" => %{}}) do
-    [module] = ProxyGenerator.build_modules("stub", :stub, [ping_tool(schema)])
+    %{"stub" => endpoint_id} = endpoint_ids([@server])
+    [module] = ProxyGenerator.build_modules("stub", endpoint_id, [ping_tool(schema)])
     module
   end
 
@@ -228,6 +225,173 @@ defmodule JidoClaw.MCP.ConsumerTest do
 
       {:ok, tools} = Jido.AI.list_tools(agent)
       assert Enum.count(tools, &(&1.name() == @tool_name)) == 1
+    end
+
+    test "long cross-server prefixes cannot collide or overwrite approval policy" do
+      shared = "server_" <> String.duplicate("x", 80)
+      server_a = server(shared <> "a", require_approval: false)
+      server_b = server(shared <> "b", require_approval: true)
+
+      stub(%{list_tools: fn _id, _timeout -> {:ok, [ping_tool()]} end})
+      consumer = start_consumer!([server_a, server_b])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      [module_a, module_b] = :sys.get_state(consumer).modules
+      refute module_a.name() == module_b.name()
+
+      policy = MCP.approval_policy()
+      assert policy[module_a.name()] == false
+      assert policy[module_b.name()] == true
+      assert map_size(Map.take(policy, [module_a.name(), module_b.name()])) == 2
+    end
+
+    test "short boundary collisions keep backend, approval, and reach bindings under reorder" do
+      server_a =
+        server("collisioncase",
+          require_approval: false,
+          templates: ["main"]
+        )
+
+      server_a_b =
+        server("collisioncase_part",
+          require_approval: true,
+          templates: ["coder"]
+        )
+
+      ids = endpoint_ids([server_a, server_a_b])
+      id_a = ids["collisioncase"]
+      id_a_b = ids["collisioncase_part"]
+
+      stub(%{
+        list_tools: fn endpoint_id, _timeout ->
+          tools =
+            case endpoint_id do
+              ^id_a ->
+                [%{"name" => "part_ping", "inputSchema" => %{}}]
+
+              ^id_a_b ->
+                [ping_tool()]
+            end
+
+          {:ok, tools}
+        end
+      })
+
+      snapshot = fn consumer ->
+        state = :sys.get_state(consumer)
+        policy = MCP.approval_policy()
+
+        Map.new(state.modules, fn module ->
+          definition = ProxyGenerator.definition!(module)
+
+          {definition.endpoint_id,
+           %{
+             module: module,
+             name: module.name(),
+             remote: definition.remote_name,
+             approval: policy[module.name()],
+             templates: state.module_templates[module]
+           }}
+        end)
+      end
+
+      first_consumer = start_consumer!([server_a, server_a_b])
+      assert_eventually(fn -> :sys.get_state(first_consumer).status == :ready end)
+      first = snapshot.(first_consumer)
+
+      a = first[ids["collisioncase"]]
+      a_b = first[ids["collisioncase_part"]]
+
+      refute a.name == a_b.name
+      assert a.remote == "part_ping"
+      assert a.approval == false
+      assert a.templates == ["main"]
+      assert a_b.remote == "ping"
+      assert a_b.approval == true
+      assert a_b.templates == ["coder"]
+
+      :ok = stop_supervised(Consumer)
+
+      reordered_consumer = start_consumer!([server_a_b, server_a])
+      assert_eventually(fn -> :sys.get_state(reordered_consumer).status == :ready end)
+
+      assert snapshot.(reordered_consumer) == first
+    end
+
+    test "collision removal tombstones the disambiguated names; re-add reuses identity AND policy" do
+      # Identity reuse alone (proxy_generator_test) doesn't prove policy
+      # publication — this drives the full Consumer lifecycle:
+      # collision → partner removed → collision restored.
+      server_a = server("lifecase", require_approval: false)
+      server_a_b = server("lifecase_part", require_approval: true)
+
+      ids = endpoint_ids([server_a, server_a_b])
+      id_a = ids["lifecase"]
+      id_a_b = ids["lifecase_part"]
+
+      stub(%{
+        list_tools: fn endpoint_id, _timeout ->
+          tools =
+            case endpoint_id do
+              ^id_a -> [%{"name" => "part_ping", "inputSchema" => %{}}]
+              ^id_a_b -> [ping_tool()]
+            end
+
+          {:ok, tools}
+        end
+      })
+
+      snapshot = fn consumer ->
+        state = :sys.get_state(consumer)
+
+        Map.new(state.modules, fn module ->
+          {ProxyGenerator.definition!(module).endpoint_id, %{module: module, name: module.name()}}
+        end)
+      end
+
+      # Round 1: collision — both members disambiguated, each with its
+      # configured policy.
+      collided = start_consumer!([server_a, server_a_b])
+      assert_eventually(fn -> :sys.get_state(collided).status == :ready end)
+      first = snapshot.(collided)
+      a1 = first[id_a]
+      a_b1 = first[id_a_b]
+
+      refute a1.name == a_b1.name
+      assert MCP.approval_policy()[a1.name] == false
+      assert MCP.approval_policy()[a_b1.name] == true
+
+      :ok = stop_supervised(Consumer)
+
+      # Round 2: the collision partner is removed. The survivor moves to its
+      # previously-unseen PLAIN name (carrying its configured policy) while
+      # BOTH obsolete disambiguated names become force-gated tombstones.
+      solo = start_consumer!([server_a])
+      assert_eventually(fn -> :sys.get_state(solo).status == :ready end)
+
+      [solo_module] = :sys.get_state(solo).modules
+      solo_name = solo_module.name()
+
+      refute solo_name == a1.name
+      policy = MCP.approval_policy()
+      assert policy[solo_name] == false
+      assert policy[a1.name] == true
+      assert policy[a_b1.name] == true
+
+      :ok = stop_supervised(Consumer)
+
+      # Round 3: restoring the collision re-activates the ORIGINAL
+      # disambiguated identities with their configured policies (the plain
+      # name is tombstoned in turn).
+      restored = start_consumer!([server_a, server_a_b])
+      assert_eventually(fn -> :sys.get_state(restored).status == :ready end)
+      third = snapshot.(restored)
+
+      assert third[id_a].module == a1.module
+      assert third[id_a_b].module == a_b1.module
+      assert MCP.approval_policy()[a1.name] == false
+      assert MCP.approval_policy()[a_b1.name] == true
+      assert MCP.approval_policy()[solo_name] == true
     end
 
     test "an attach during :preparing lands once prep completes (deferred)" do
@@ -341,12 +505,72 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert :sys.get_state(consumer).status == :failed
     end
 
-    test "every prep crash republishes an empty (fail-closed) approval policy" do
-      :persistent_term.put(MCP.policy_key(), %{"mcp_stale_tool" => false})
+    test "hard crash preserves gated LKG policy and empty re-prep prunes a tracked stale tool" do
+      AgentTracker.reset()
+      on_exit(fn -> AgentTracker.reset() end)
 
-      crash_prep!()
+      agent = start_agent!()
 
-      assert MCP.approval_policy() == %{}
+      [stale_module] =
+        ProxyGenerator.build_modules("crash_stale", :crash_stale_endpoint, [ping_tool()])
+
+      stale_name = stale_module.name()
+      assert :ok = Consumer.register_modules(agent, [stale_module])
+      assert has_tool?(agent, stale_name)
+
+      tracker_id = "crash-stale-#{System.unique_integer([:positive])}"
+      :ok = AgentTracker.register(tracker_id, agent, "coder", "t")
+      :persistent_term.put(MCP.policy_key(), %{stale_name => true})
+
+      # Initial prep hard-crashes; its refresh re-prep fails gracefully and
+      # accepts the empty fallback target. Exact tracked fan-out must prune the
+      # old proxy, while its explicit gated policy survives as a tombstone.
+      stub(counter_stub(self(), %{1 => :block}, {:error, :offline}))
+      consumer = start_consumer!([server("crash_empty")])
+
+      assert_receive {:listing, _child}, 2_000
+      Process.exit(:sys.get_state(consumer).prep_pid, :kill)
+      assert_eventually(fn -> :sys.get_state(consumer).reprep_attempts >= 1 end)
+      assert MCP.approval_policy()[stale_name] == true
+
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+      assert_eventually(fn -> not has_tool?(agent, stale_name) end)
+      assert MCP.approval_policy()[stale_name] == true
+    end
+
+    test "hard crash preserves an explicitly TRUSTED (=> false) LKG policy too" do
+      # POLICY CHOICE canonized by the 2026-07-10 review (finding 6): an
+      # explicitly trusted (require_approval: false) server's tools keep
+      # last-known-good trust through a prep-death outage window — the inverse
+      # of the gated-survives rule above. Wiping to %{} would void explicit
+      # GATES under a trusted global posture, the worse trade.
+      AgentTracker.reset()
+      on_exit(fn -> AgentTracker.reset() end)
+
+      agent = start_agent!()
+
+      [trusted_module] =
+        ProxyGenerator.build_modules("crash_trusted", :crash_trusted_endpoint, [ping_tool()])
+
+      trusted_name = trusted_module.name()
+      assert :ok = Consumer.register_modules(agent, [trusted_module])
+      assert has_tool?(agent, trusted_name)
+
+      tracker_id = "crash-trusted-#{System.unique_integer([:positive])}"
+      :ok = AgentTracker.register(tracker_id, agent, "coder", "t")
+      :persistent_term.put(MCP.policy_key(), %{trusted_name => false})
+
+      stub(counter_stub(self(), %{1 => :block}, {:error, :offline}))
+      consumer = start_consumer!([server("crash_trusted_empty")])
+
+      assert_receive {:listing, _child}, 2_000
+      Process.exit(:sys.get_state(consumer).prep_pid, :kill)
+      assert_eventually(fn -> :sys.get_state(consumer).reprep_attempts >= 1 end)
+      assert MCP.approval_policy()[trusted_name] == false
+
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+      assert_eventually(fn -> not has_tool?(agent, trusted_name) end)
+      assert MCP.approval_policy()[trusted_name] == false
     end
 
     test "attach_to_agent replies :ok on a terminal :failed Consumer without crashing it" do
@@ -411,21 +635,18 @@ defmodule JidoClaw.MCP.ConsumerTest do
   end
 
   describe "mark_attached generation fence" do
-    test "a generation-mismatched mark is dropped while :ready (self-healing)" do
+    test "a generation-mismatched mark exact-reconciles current reach while ready" do
       stub(%{list_tools: fn _id, _t -> {:ok, [ping_tool()]} end})
       consumer = start_consumer!([@server])
       assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
       agent = start_agent!()
 
-      # A registration task from a prior (crashed) incarnation carries a stale
-      # token that never matches this one, so its mark is dropped — the pid
-      # stays free rather than being falsely marked against a stale module set.
+      # A registration task from a prior incarnation carries a stale token. It
+      # must not mark directly; the Consumer first exact-reconciles current reach
+      # and only the current-generation task may mark the pid attached.
       GenServer.cast(consumer, {:mark_attached, agent, make_ref(), "main"})
-      refute Map.has_key?(:sys.get_state(consumer).attached, agent)
-
-      # Self-heal: a current-generation ensure_attached still attaches normally.
-      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
-      assert Map.has_key?(:sys.get_state(consumer).attached, agent)
+      assert_eventually(fn -> Map.has_key?(:sys.get_state(consumer).attached, agent) end)
+      assert has_tool?(agent, @tool_name)
     end
   end
 
@@ -551,7 +772,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       refute has_tool?(researcher, tool_name("beta"))
     end
 
-    test "tracked fan-out registers each tracked pid's allowed subset and skips already-attached pids" do
+    test "tracked fan-out exact-reconciles pre-attached pids and each allowed subset" do
       stub(%{list_tools: blocking_list_tools(self(), [ping_tool()])})
       consumer = start_consumer!([server("stub", templates: ["coder"])])
 
@@ -566,21 +787,21 @@ defmodule JidoClaw.MCP.ConsumerTest do
       :ok = AgentTracker.register("reach-researcher-#{n}", researcher, "researcher", "t")
       :ok = AgentTracker.register("reach-already-#{n}", already, "coder", "t")
 
-      # Seed `already` into the attached map so the fan-out's pid-membership
-      # reject (the tracked-tuple fix) skips it — proving the reject keys on the
-      # pid, not the {pid, template} tuple tracked_live_pids now returns.
+      # Seed `already` into the attached map. A successful preparation must
+      # exact-reconcile both previously attached and newly tracked agents.
       :sys.replace_state(consumer, fn s ->
         %{s | attached: Map.put(s.attached, already, "coder")}
       end)
 
       send(task_pid, :release)
 
-      # coder (allowlisted, not yet attached) gets the tool via fan-out.
+      # Both coder agents are allowlisted, including the one marked attached
+      # before the generation became ready.
       assert_eventually(fn -> has_tool?(coder, @tool_name) end)
-      # researcher (not allowlisted) is filtered out; `already` (pre-attached)
-      # is skipped entirely — neither ever gains the tool.
+      assert_eventually(fn -> has_tool?(already, @tool_name) end)
+
+      # researcher is outside the server's template allowlist.
       refute has_tool?(researcher, @tool_name)
-      refute has_tool?(already, @tool_name)
     end
 
     test "a second ensure_attached under the same template fast-returns :already, tool set unchanged" do
@@ -631,10 +852,57 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert has_tool?(agent, @tool_name)
     end
 
+    test "a removed gated name stays force-gated while async prune is retrying" do
+      stub(counter_stub(self(), %{1 => {:ok, [ping_tool(), pong_tool()]}}, {:ok, [ping_tool()]}))
+
+      {:ok, failed_once} = Agent.start_link(fn -> false end)
+      on_exit(fn -> if Process.alive?(failed_once), do: Agent.stop(failed_once) end)
+      test_pid = self()
+
+      Application.put_env(:jido_claw, :mcp_agent_api_stub, %{
+        unregister_tool: fn pid, name, opts ->
+          first_pong? =
+            name == @pong_name and
+              Agent.get_and_update(failed_once, fn seen? -> {not seen?, true} end)
+
+          if first_pong? do
+            send(test_pid, :pong_prune_blocked)
+            {:error, :transient_unregister_failure}
+          else
+            Jido.AI.unregister_tool(pid, name, opts)
+          end
+        end
+      })
+
+      consumer =
+        start_consumer!([server("stub", require_approval: true)], agent_api: AgentAPIStub)
+
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      agent = start_agent!()
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
+      assert has_tool?(agent, @pong_name)
+
+      send(consumer, :rediscover)
+      assert_receive :pong_prune_blocked, 3_000
+
+      # The stale proxy is still callable by name, so its tombstone must remain
+      # explicitly gated even if the global MCP posture is trusted.
+      assert has_tool?(agent, @pong_name)
+      assert MCP.approval_policy()[@pong_name] == true
+
+      send(consumer, :rediscover)
+      assert_eventually(fn -> not has_tool?(agent, @pong_name) end)
+      assert MCP.approval_policy()[@pong_name] == true
+    end
+
     test "a changed tool (same local name, new schema) is unregistered then re-registered" do
       mod_a = ping_module()
+      digest_a = ProxyGenerator.definition_digest(mod_a)
       mod_b = ping_module(ping_schema_b())
-      refute mod_a == mod_b
+      digest_b = ProxyGenerator.definition_digest(mod_b)
+      assert mod_a == mod_b
+      refute digest_a == digest_b
 
       stub(
         counter_stub(self(), %{1 => {:ok, [ping_tool()]}}, {:ok, [ping_tool(ping_schema_b())]})
@@ -646,11 +914,194 @@ defmodule JidoClaw.MCP.ConsumerTest do
       agent = start_agent!()
       assert :ok = MCP.ensure_attached(agent, "main", 3_000)
       assert current_ping_module(agent) == mod_a
+      before_digest = :sys.get_state(consumer).definition_digests[mod_a]
 
       send(consumer, :rediscover)
-      # The agent ends with the NEW proxy module — proving the atom-mismatch
-      # unregister-then-register, not the add-only `register_modules` skip.
-      assert_eventually(fn -> current_ping_module(agent) == mod_b end)
+
+      assert_eventually(fn ->
+        :sys.get_state(consumer).definition_digests[mod_a] != before_digest
+      end)
+
+      # Identity is stable (no atom/code churn); the digest change forces a
+      # name-level unregister/register so the agent refreshes cached metadata.
+      assert current_ping_module(agent) == mod_b
+    end
+
+    test "a transient changed-definition unregister failure retries on the next no-op tick" do
+      stub(
+        counter_stub(self(), %{1 => {:ok, [ping_tool()]}}, {:ok, [ping_tool(ping_schema_b())]})
+      )
+
+      {:ok, unregister_calls} = Agent.start_link(fn -> 0 end)
+      on_exit(fn -> if Process.alive?(unregister_calls), do: Agent.stop(unregister_calls) end)
+
+      test_pid = self()
+
+      Application.put_env(:jido_claw, :mcp_agent_api_stub, %{
+        unregister_tool: fn pid, name, opts ->
+          call = Agent.get_and_update(unregister_calls, fn count -> {count + 1, count + 1} end)
+
+          if call == 1 do
+            send(test_pid, :unregister_failed_once)
+            {:error, :transient_unregister_failure}
+          else
+            Jido.AI.unregister_tool(pid, name, opts)
+          end
+        end
+      })
+
+      consumer = start_consumer!([@server], agent_api: AgentAPIStub)
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      agent = start_agent!()
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
+      refute Map.has_key?(cached_ping_schema(agent)["properties"], "x")
+
+      send(consumer, :rediscover)
+      assert_receive :unregister_failed_once, 3_000
+
+      # The stable module now exposes the accepted definition, but the agent's
+      # ReqLLM metadata cache is still old because unregister failed. The name
+      # remains pending even after the digest diff has been committed.
+      refute Map.has_key?(cached_ping_schema(agent)["properties"], "x")
+
+      assert_eventually(fn ->
+        consumer
+        |> :sys.get_state()
+        |> Map.get(:definition_refreshes)
+        |> Map.get(agent, MapSet.new())
+        |> MapSet.member?(@tool_name)
+      end)
+
+      # Discovery is now a no-op (same new digest). The retained name forces a
+      # second unregister/register and clears only after the task confirms :ok.
+      send(consumer, :rediscover)
+
+      assert_eventually(fn ->
+        Map.has_key?(cached_ping_schema(agent)["properties"], "x") and
+          not Map.has_key?(:sys.get_state(consumer).definition_refreshes, agent)
+      end)
+
+      assert Agent.get(unregister_calls, & &1) >= 2
+    end
+
+    test "an ordinary discovery failure preserves last-known-good tools" do
+      stub(counter_stub(self(), %{1 => {:ok, [ping_tool()]}}, {:error, :offline}))
+      consumer = start_consumer!([@server])
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      agent = start_agent!()
+      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
+      assert has_tool?(agent, @tool_name)
+      before = :sys.get_state(consumer).modules
+
+      send(consumer, :rediscover)
+      assert_eventually(fn -> :sys.get_state(consumer).rediscover_ref == nil end)
+
+      assert :sys.get_state(consumer).modules == before
+      assert has_tool?(agent, @tool_name)
+    end
+
+    test "a partial multi-server failure rolls back a successful server's staged definition" do
+      {:ok, calls} = Agent.start_link(fn -> %{} end)
+      on_exit(fn -> if Process.alive?(calls), do: Agent.stop(calls) end)
+      servers = [server("alpha"), server("beta")]
+      %{"alpha" => alpha_id, "beta" => beta_id} = endpoint_ids(servers)
+
+      list_tools = fn endpoint_id, _timeout ->
+        attempt =
+          Agent.get_and_update(calls, fn counts ->
+            next = Map.get(counts, endpoint_id, 0) + 1
+            {next, Map.put(counts, endpoint_id, next)}
+          end)
+
+        case {endpoint_id, attempt} do
+          {^alpha_id, 1} -> {:ok, [ping_tool()]}
+          {^beta_id, 1} -> {:ok, [ping_tool()]}
+          {^alpha_id, _later} -> {:ok, [ping_tool(ping_schema_b())]}
+          {^beta_id, _later} -> {:error, :offline}
+        end
+      end
+
+      stub(%{list_tools: list_tools, refresh_endpoint: fn _id -> :ok end})
+      consumer = start_consumer!(servers)
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      before_state = :sys.get_state(consumer)
+      alpha = Enum.find(before_state.modules, &(&1.name() == tool_name("alpha")))
+      before_digest = ProxyGenerator.definition_digest(alpha)
+      before_schema = alpha.schema()
+
+      send(consumer, :rediscover)
+      assert_eventually(fn -> :sys.get_state(consumer).rediscover_ref == nil end)
+
+      assert :sys.get_state(consumer).modules == before_state.modules
+      assert ProxyGenerator.definition_digest(alpha) == before_digest
+      assert alpha.schema() == before_schema
+      refute Map.has_key?(alpha.schema()["properties"], "x")
+    end
+
+    test "a hard-killed partial aggregate cannot publish definitions or consume identities" do
+      {:ok, calls} = Agent.start_link(fn -> %{} end)
+      on_exit(fn -> if Process.alive?(calls), do: Agent.stop(calls) end)
+      test_pid = self()
+      servers = [server("alpha"), server("beta")]
+      %{"alpha" => alpha_id, "beta" => beta_id} = endpoint_ids(servers)
+
+      list_tools = fn endpoint_id, _timeout ->
+        attempt =
+          Agent.get_and_update(calls, fn counts ->
+            next = Map.get(counts, endpoint_id, 0) + 1
+            {next, Map.put(counts, endpoint_id, next)}
+          end)
+
+        case {endpoint_id, attempt} do
+          {id, 1} when id in [alpha_id, beta_id] ->
+            {:ok, [ping_tool()]}
+
+          {^alpha_id, _later} ->
+            send(test_pid, {:alpha_staging_task, self()})
+            {:ok, [ping_tool(ping_schema_b()), %{"name" => "fresh_after_boot"}]}
+
+          {^beta_id, _later} ->
+            send(test_pid, {:beta_blocked, self()})
+
+            receive do
+              :release -> {:ok, [ping_tool()]}
+            after
+              10_000 -> {:ok, [ping_tool()]}
+            end
+        end
+      end
+
+      stub(%{list_tools: list_tools})
+      consumer = start_consumer!(servers)
+      assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
+
+      before_state = :sys.get_state(consumer)
+      alpha = Enum.find(before_state.modules, &(&1.name() == tool_name("alpha")))
+      before_digest = ProxyGenerator.definition_digest(alpha)
+      before_identities = ProxyGenerator.identity_count()
+
+      send(consumer, :rediscover)
+      assert_receive {:alpha_staging_task, alpha_task}, 2_000
+      assert_receive {:beta_blocked, _beta_task}, 2_000
+
+      # The alpha task exits only after it has built its complete inert stage.
+      alpha_ref = Process.monitor(alpha_task)
+      assert_receive {:DOWN, ^alpha_ref, :process, ^alpha_task, _reason}, 2_000
+
+      assert ProxyGenerator.definition_digest(alpha) == before_digest
+      assert alpha.schema()["properties"] == %{}
+      assert ProxyGenerator.identity_count() == before_identities
+
+      rediscover_pid = :sys.get_state(consumer).rediscover_pid
+      Process.exit(rediscover_pid, :kill)
+      assert_eventually(fn -> :sys.get_state(consumer).rediscover_ref == nil end)
+
+      assert ProxyGenerator.definition_digest(alpha) == before_digest
+      assert alpha.schema()["properties"] == %{}
+      assert ProxyGenerator.identity_count() == before_identities
     end
 
     test "a server unreachable at boot attaches only after refresh_endpoint runs" do
@@ -693,7 +1144,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       assert_eventually(fn -> not has_tool?(coder, @tool_name) end)
     end
 
-    test "an in-flight attach's stale mark is dropped by the generation bump; the pid self-heals" do
+    test "a stale attach mark immediately exact-reconciles against the new generation" do
       stub(counter_stub(self(), %{1 => {:ok, [ping_tool()]}}, {:ok, [ping_tool(), pong_tool()]}))
       consumer = start_consumer!([@server])
       assert_eventually(fn -> :sys.get_state(consumer).status == :ready end)
@@ -706,15 +1157,19 @@ defmodule JidoClaw.MCP.ConsumerTest do
       # A tool-set change mints a fresh generation.
       assert_eventually(fn -> :sys.get_state(consumer).generation != old_gen end)
 
-      # The in-flight task's late mark (old generation) is dropped — the pid is
-      # NOT falsely marked attached against the superseded module set.
-      GenServer.cast(consumer, {:mark_attached, agent, old_gen, "main"})
-      refute Map.has_key?(:sys.get_state(consumer).attached, agent)
+      [late_stale] =
+        ProxyGenerator.build_modules("late_stale", :late_stale_endpoint, [ping_tool()])
 
-      # Self-heal: a current ensure_attached re-registers the current reach and
-      # marks the pid (the added tool is now present too).
-      assert :ok = MCP.ensure_attached(agent, "main", 3_000)
-      assert Map.has_key?(:sys.get_state(consumer).attached, agent)
+      assert :ok = Consumer.register_modules(agent, [late_stale])
+      assert has_tool?(agent, late_stale.name())
+
+      # A pre-rediscovery attach can finish after the changed tick and re-add an
+      # old tool. Its stale success mark must queue an immediate exact reconcile,
+      # not wait for the next turn or five-minute rediscovery cadence.
+      GenServer.cast(consumer, {:mark_attached, agent, old_gen, "main"})
+
+      assert_eventually(fn -> Map.has_key?(:sys.get_state(consumer).attached, agent) end)
+      assert_eventually(fn -> not has_tool?(agent, late_stale.name()) end)
       assert has_tool?(agent, @tool_name)
       assert has_tool?(agent, @pong_name)
     end
@@ -778,7 +1233,7 @@ defmodule JidoClaw.MCP.ConsumerTest do
       modules_before = :sys.get_state(consumer).modules
 
       # Idle ⇒ rediscover_pid is nil; a result tagged with a foreign pid drops.
-      send(consumer, {:rediscovered, self(), [], %{}, %{}})
+      send(consumer, {:rediscovered, self(), [], %{}, %{}, %{}})
 
       after_state = :sys.get_state(consumer)
       assert after_state.status == :ready
@@ -853,5 +1308,15 @@ defmodule JidoClaw.MCP.ConsumerTest do
       {:ok, modules} -> Enum.find(modules, &(&1.name() == @tool_name))
       _other -> nil
     end
+  end
+
+  defp cached_ping_schema(pid) do
+    {:ok, state} = Jido.AgentServer.state(pid)
+    strategy = StrategyState.get(state.agent, %{})
+
+    strategy
+    |> get_in([:config, :reqllm_tools])
+    |> Enum.find(&(&1.name == @tool_name))
+    |> Map.fetch!(:parameter_schema)
   end
 end

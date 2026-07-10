@@ -308,7 +308,14 @@ defmodule JidoClaw.Skills.Steps.ForgeExecutor do
 
   defp docker_sandbox_spec(plan, res) do
     port = res.endpoint.port
-    base = %{allow_network: ["host.docker.internal:#{port}", "localhost:#{port}"]}
+    # Vendor executors consume repository-controlled prompts and code. They must
+    # never inherit operator-global mounts or OneCLI proxy credentials from the
+    # Docker backend; only the explicit repository/deposit capabilities below
+    # belong in this sandbox.
+    base = %{
+      allow_network: ["host.docker.internal:#{port}", "localhost:#{port}"],
+      isolate_global_config: true
+    }
 
     if plan.workspace == :repo do
       # The pinned OQ-1(a) materialization: a direct same-path repo mount,

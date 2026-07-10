@@ -380,7 +380,9 @@ defmodule JidoClaw.Session.Worker do
   end
 
   defp durable_attrs(request_id) do
-    case RequestCorrelation.lookup(request_id) do
+    # The legacy add-message envelope exposes request identity, not an actor.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.lookup(request_id, authorize?: false) do
       {:ok, row} -> request_attrs_subset(row)
       _ -> %{}
     end

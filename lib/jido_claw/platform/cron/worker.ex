@@ -22,6 +22,12 @@ defmodule JidoClaw.Cron.Worker do
   workflow idempotency key derived from its provenance) to the armed window,
   so a double-delivered tick can never launch a second run early.
 
+  A follower retries that exact window only for a persisted worker whose
+  eventual dispatch is protected by the durable row claim. Non-persisted jobs
+  consume the missed boundary (recurring jobs advance; one-shots are
+  discarded), preventing a stale follower window from replaying after a later
+  leadership handoff.
+
   Dispatch is synchronous — a tick blocks this GenServer until the target
   returns — so there is intentionally no stuck-detection watchdog; a real one
   would require async dispatch and is deferred.
@@ -41,6 +47,13 @@ defmodule JidoClaw.Cron.Worker do
 
   @max_failures 3
 
+  # Durable-claim retry backoff (claim failures ONLY — follower leadership
+  # polling keeps its own flat cadence so a handoff is noticed within
+  # @leader_recheck_ms, never up to the claim cap).
+  @claim_retry_initial_ms 1_000
+  @claim_retry_max_ms 30_000
+  @leader_recheck_ms 1_000
+
   defstruct [
     :id,
     :tenant_id,
@@ -52,6 +65,7 @@ defmodule JidoClaw.Cron.Worker do
     :workflow_name,
     :workflow_input,
     :mfa,
+    :definition_token,
     # Item 9 (OH1-3): the normalized outcome contract (`Cron.OutcomeSpec.t`)
     # or nil; the dispatcher appends its rendered block at fire time.
     outcome_spec: nil,
@@ -67,7 +81,14 @@ defmodule JidoClaw.Cron.Worker do
     # armed window the timer message carried — never mutable state). Always
     # nil in stored GenServer state — a manual trigger must never inherit
     # (and consume) a scheduled window's workflow idempotency key.
-    fire: nil
+    fire: nil,
+    # Persisted user jobs participate in the DB-backed fire claim and durable
+    # outcome streak. In-memory system jobs retain their own idempotency fence.
+    persisted?: false,
+    # Consecutive durable-claim failures for the CURRENT window — drives the
+    # capped exponential claim-retry backoff; reset by every non-error tick
+    # outcome (claimed/duplicate/stale/completed window).
+    fire_claim_attempts: 0
   ]
 
   @type t :: %__MODULE__{
@@ -81,6 +102,7 @@ defmodule JidoClaw.Cron.Worker do
           workflow_name: String.t() | nil,
           workflow_input: term(),
           mfa: mfa() | nil,
+          definition_token: Ecto.UUID.t() | nil,
           outcome_spec: JidoClaw.Cron.OutcomeSpec.t() | nil,
           timezone: String.t(),
           status: :active | :disabled,
@@ -88,7 +110,9 @@ defmodule JidoClaw.Cron.Worker do
           last_run: DateTime.t() | nil,
           last_result: term(),
           next_run: DateTime.t() | nil,
-          created_at: DateTime.t() | nil
+          created_at: DateTime.t() | nil,
+          persisted?: boolean(),
+          fire_claim_attempts: non_neg_integer()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -119,25 +143,53 @@ defmodule JidoClaw.Cron.Worker do
 
   @impl GenServer
   def init(opts) do
+    base = %__MODULE__{
+      id: Keyword.fetch!(opts, :id),
+      tenant_id: Keyword.fetch!(opts, :tenant_id),
+      agent_id: Keyword.get(opts, :agent_id, "main"),
+      schedule: Keyword.fetch!(opts, :schedule),
+      task: Keyword.get(opts, :task),
+      mode: Keyword.get(opts, :mode, :main),
+      target: Keyword.get(opts, :target, :agent),
+      workflow_name: Keyword.get(opts, :workflow_name),
+      workflow_input: Keyword.get(opts, :workflow_input),
+      mfa: Keyword.get(opts, :mfa),
+      definition_token: Keyword.get(opts, :definition_token),
+      outcome_spec: Keyword.get(opts, :outcome_spec),
+      timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
+      persisted?: Keyword.get(opts, :persisted?, false),
+      failure_count: Keyword.get(opts, :failure_count, 0),
+      created_at: DateTime.utc_now()
+    }
+
     state =
-      schedule_next(%__MODULE__{
-        id: Keyword.fetch!(opts, :id),
-        tenant_id: Keyword.fetch!(opts, :tenant_id),
-        agent_id: Keyword.get(opts, :agent_id, "main"),
-        schedule: Keyword.fetch!(opts, :schedule),
-        task: Keyword.get(opts, :task),
-        mode: Keyword.get(opts, :mode, :main),
-        target: Keyword.get(opts, :target, :agent),
-        workflow_name: Keyword.get(opts, :workflow_name),
-        workflow_input: Keyword.get(opts, :workflow_input),
-        mfa: Keyword.get(opts, :mfa),
-        outcome_spec: Keyword.get(opts, :outcome_spec),
-        timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
-        created_at: DateTime.utc_now()
-      })
+      if unclaimable_under_clustering?(base) do
+        # Permanent configuration error, knowable right here: a non-persisted
+        # user job can never win a durable fire claim under clustering
+        # (claim_scheduled_fire fails closed on every tick). Refuse to arm —
+        # the job is nonpersisted, so there is no durable row to disable;
+        # in-memory disable is the whole remedy (config-error shape).
+        Logger.error(
+          "[Cron] Refusing to arm job #{base.id}: a non-persisted user job " <>
+            "cannot claim a durable fire under clustering"
+        )
+
+        %{base | status: :disabled, next_run: nil}
+      else
+        schedule_next(base)
+      end
 
     {:ok, state}
   end
+
+  # Mirrors claim_scheduled_fire/2's fail-closed clause for non-persisted
+  # user jobs; `:system_job` keeps its own idempotency fence and is exempt.
+  defp unclaimable_under_clustering?(%{persisted?: false, mode: mode})
+       when mode != :system_job do
+    Application.get_env(:jido_claw, :cluster_enabled, false) == true
+  end
+
+  defp unclaimable_under_clustering?(_state), do: false
 
   @impl GenServer
   def handle_cast(:trigger, state) do
@@ -146,7 +198,7 @@ defmodule JidoClaw.Cron.Worker do
 
   def handle_cast(:disable, state) do
     Logger.info("[Cron] Disabled job #{state.id}")
-    persist_disabled(state)
+    persist_disabled(state, :operator)
     {:noreply, %{state | status: :disabled}}
   end
 
@@ -162,21 +214,53 @@ defmodule JidoClaw.Cron.Worker do
   # to the window the timer was armed for, never to a freshly advanced one.
   @impl GenServer
   def handle_info({:tick, window}, %{status: :active, next_run: window} = state) do
-    if leader_gated?(state) and not JidoClaw.Cluster.leader?() do
-      # Off-leader replicated :system_job tick: re-arm WITHOUT firing. The
-      # leader fires this tick; this follower just keeps its timer alive. When
-      # leadership moves, the new leader's worker fires on the next cron
-      # boundary — failover is automatic, no leadership listener needed.
-      #
-      # Recurring-only: schedule_next/1 here is correct for :cron/:every (every
-      # :system_job today is recurring). A future one-shot {:at, _} system job
-      # would hit schedule_next/1's elapsed-:at disable path on a follower
-      # (wrong — a follower must not disable a one-shot it never ran); that
-      # would require a bounded re-check instead. No such job exists today.
-      {:noreply, schedule_next(state)}
+    if JidoClaw.Cluster.leader?() do
+      case claim_scheduled_fire(state, window) do
+        :claimed ->
+          state = execute_job(state, {:scheduled, window})
+          {:noreply, after_fire(state)}
+
+        :duplicate ->
+          Logger.debug("[Cron] Suppressed duplicate scheduled fire #{state.id} at #{window}")
+          {:noreply, after_fire(state)}
+
+        :stale_definition ->
+          # The durable row was disabled or upserted after this worker was
+          # hydrated. Stop locally without dispatch/retry; Owner reconciliation
+          # removes it or replaces it with the new generation.
+          Logger.info("[Cron] Retired stale worker #{state.id} before scheduled dispatch")
+          {:noreply, %{state | status: :disabled, next_run: nil, fire_claim_attempts: 0}}
+
+        {:error, :durable_fire_claim_required} ->
+          # Permanent configuration error, not a transient claim failure —
+          # normally refused at init (unclaimable_under_clustering?/1); this
+          # defensive branch covers a cluster flag flipped after hydration.
+          # No durable row exists to disable, so disable in memory: no
+          # dispatch, no re-arm.
+          Logger.error(
+            "[Cron] Disabling job #{state.id}: a non-persisted user job " <>
+              "cannot claim a durable fire under clustering"
+          )
+
+          {:noreply, %{state | status: :disabled, next_run: nil, fire_claim_attempts: 0}}
+
+        {:error, reason} ->
+          # Fail closed on an unavailable durable claim: do not dispatch a
+          # possibly-duplicate side effect, and retain this window for a
+          # capped-exponential retry.
+          Logger.warning(
+            "[Cron] Fire claim failed for #{state.id} at #{window}: #{inspect(reason)}"
+          )
+
+          {:noreply, retry_claim_tick(state, window)}
+      end
     else
-      state = execute_job(state, {:scheduled, window})
-      {:noreply, after_fire(state)}
+      # Only a persisted row may retain this exact boundary: its eventual
+      # dispatch still has a durable single-winner claim. A replicated/in-memory
+      # worker has no such fence, so retaining the window would let a follower
+      # replay it sequentially after becoming leader. Consume that missed
+      # boundary and arm the next recurring one (or discard a one-shot).
+      {:noreply, after_follower_window(state, window)}
     end
   end
 
@@ -191,21 +275,132 @@ defmodule JidoClaw.Cron.Worker do
 
   # -- Private --
 
-  # Only platform `:system_job` ticks gate on the cluster leader — they are the
-  # always-on jobs the supervision tree replicates on every node (the memory
-  # consolidator tick). User `:agent`/`:workflow`/`:mfa` jobs short-circuit and
-  # fire on every node as today (no leader call, no regression). A manual
-  # `trigger/2` is never gated (it bypasses this clause entirely — operator
-  # override). The gate is FIRST-LINE only: the brief two-leaders window during
-  # `:pg` convergence can still fire a `:system_job` on two nodes, so every
-  # system job must stay idempotent / row-claimed / DB-leased independently
-  # (see `JidoClaw.Cluster.Leader`). C-M1 INVARIANT for future system jobs: a
-  # FUNCTION-target (`:mfa`) system job MUST carry its OWN cross-node guard (the
-  # memory consolidator's advisory lock is the precedent) — the leader gate is
-  # first-line, not a fence. A WORKFLOW-target tick is already safe by construction:
-  # it rides the `cron:<job>:<window>` launch-idempotency key (T2-3).
-  defp leader_gated?(%{mode: :system_job}), do: true
-  defp leader_gated?(_state), do: false
+  # Every SCHEDULED tick is leader-gated; manual trigger/2 bypasses this clause
+  # and remains an explicit operator override. The gate is first-line only: a
+  # brief two-leaders window is fenced for persisted user jobs by
+  # `claim_scheduled_fire/2`; in-memory system jobs must retain their own
+  # idempotency/DB-lock guard (the consolidator advisory lock precedent).
+  defp after_follower_window(%{persisted?: true} = state, window),
+    do: retry_leader_tick(state, window)
+
+  defp after_follower_window(%{schedule: {:at, _dt}} = state, _window) do
+    Logger.info("[Cron] Discarded non-durable one-shot #{state.id} on follower")
+    %{state | status: :disabled, next_run: nil}
+  end
+
+  defp after_follower_window(state, _window), do: schedule_next(state)
+
+  # Follower leadership polling: deliberately FLAT — a capped claim backoff
+  # here would add up to @claim_retry_max_ms of dispatch latency after every
+  # leadership handoff.
+  defp retry_leader_tick(state, window) do
+    Process.send_after(self(), {:tick, window}, @leader_recheck_ms)
+    state
+  end
+
+  # Failed durable claims back off exponentially (a dead DB polled at a flat
+  # 1s hammers the pool); the counter is per-window work, reset by any
+  # non-error tick outcome.
+  defp retry_claim_tick(state, window) do
+    Process.send_after(self(), {:tick, window}, claim_retry_delay(state.fire_claim_attempts))
+    %{state | fire_claim_attempts: state.fire_claim_attempts + 1}
+  end
+
+  @doc false
+  # Public for direct unit coverage of growth + cap; not an API.
+  @spec claim_retry_delay(non_neg_integer()) :: pos_integer()
+  def claim_retry_delay(attempt) do
+    min(
+      @claim_retry_initial_ms * Integer.pow(2, min(attempt, 20)),
+      max(@claim_retry_initial_ms, @claim_retry_max_ms)
+    )
+  end
+
+  # Persisted scheduled jobs claim their logical window by atomically advancing
+  # `Cron.Job.last_fire_at`. Manual triggers never call this function. Directly
+  # scheduled ephemeral jobs remain allowed single-node; clustered user jobs
+  # fail closed unless they have a durable row.
+  defp claim_scheduled_fire(%{mode: :system_job, persisted?: false}, _window), do: :claimed
+
+  defp claim_scheduled_fire(%{persisted?: false} = _state, _window) do
+    if Application.get_env(:jido_claw, :cluster_enabled, false) do
+      {:error, :durable_fire_claim_required}
+    else
+      :claimed
+    end
+  end
+
+  # `:every` is a cadence, not a caller-authored wall-clock boundary. The
+  # durable action accepts only its interval and uses PostgreSQL's statement
+  # clock for both the cutoff and `last_fire_at`; `window` remains local
+  # dispatch provenance only.
+  defp claim_scheduled_fire(%{schedule: {:every, ms}} = state, _window)
+       when is_integer(ms) and ms > 0 do
+    actor = Actor.system(state.tenant_id)
+
+    with {:ok, job} <- Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+      case Job.claim_interval_fire(job, ms, state.definition_token,
+             tenant: state.tenant_id,
+             actor: actor
+           ) do
+        {:ok, _claimed} ->
+          :claimed
+
+        {:error, reason} ->
+          case Job.ClaimIntervalFire.classify_failure(
+                 job.id,
+                 state.tenant_id,
+                 state.definition_token,
+                 ms
+               ) do
+            :stale_definition -> :stale_definition
+            :duplicate -> :duplicate
+            :retry -> {:error, reason}
+          end
+      end
+    end
+  rescue
+    error -> {:error, {:claim_raised, Exception.message(error)}}
+  end
+
+  defp claim_scheduled_fire(state, window) do
+    actor = Actor.system(state.tenant_id)
+    cutoff = prior_fire_cutoff(state.schedule, window)
+
+    with {:ok, job} <- Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor),
+         {:ok, _claimed} <-
+           Job.claim_scheduled_fire(job, window, cutoff, state.definition_token,
+             tenant: state.tenant_id,
+             actor: actor
+           ) do
+      :claimed
+    else
+      {:error, reason} -> classify_fire_claim_failure(state, cutoff, reason)
+    end
+  rescue
+    error -> {:error, {:claim_raised, Exception.message(error)}}
+  end
+
+  defp prior_fire_cutoff(_schedule, window),
+    do: DateTime.add(window, -1, :microsecond)
+
+  defp classify_fire_claim_failure(state, cutoff, original) do
+    actor = Actor.system(state.tenant_id)
+
+    case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+      {:ok, %{disabled_at: disabled_at}} when not is_nil(disabled_at) ->
+        :stale_definition
+
+      {:ok, %{definition_token: token}} when token != state.definition_token ->
+        :stale_definition
+
+      {:ok, %{last_fire_at: %DateTime{} = last}} ->
+        if DateTime.compare(last, cutoff) == :gt, do: :duplicate, else: {:error, original}
+
+      _ ->
+        {:error, original}
+    end
+  end
 
   # `fire` is the firing provenance ({:scheduled, window} from a timer tick,
   # :manual from trigger/2). It rides a LOCAL dispatch copy only — every state
@@ -228,41 +423,137 @@ defmodule JidoClaw.Cron.Worker do
 
     duration = System.monotonic_time() - start_time
     Telemetry.emit_cron_stop(meta, duration)
-    record_run(state)
 
     case result do
       :ok ->
-        %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
+        record_success(state)
 
       {:ok, _} ->
-        %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
+        record_success(state)
 
       {:error, reason} ->
-        new_count = state.failure_count + 1
+        record_failure(state, reason)
 
-        Logger.warning(
-          "[Cron] Job #{state.id} failed (#{new_count}/#{@max_failures}): #{inspect(reason)}"
-        )
+      _other ->
+        # System jobs may return arbitrary terms; treat anything
+        # non-{:error, _} as success for telemetry/back-off.
+        record_success(state)
+    end
+  end
 
-        new_status = if new_count >= @max_failures, do: :disabled, else: state.status
+  defp record_success(%{persisted?: false} = state) do
+    %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
+  end
 
-        if new_status == :disabled do
-          Logger.error("[Cron] Job #{state.id} auto-disabled after #{@max_failures} failures")
-          persist_disabled(state)
-        end
+  defp record_success(state) do
+    case update_persisted_outcome(state, :success) do
+      {:ok, row} ->
+        %{
+          state
+          | last_run: DateTime.utc_now(),
+            last_result: :ok,
+            failure_count: row.failure_count
+        }
+
+      {:error, reason} ->
+        # Do not invent a durable reset. The next outcome retries against the
+        # row. A definition-token mismatch retires this stale worker now;
+        # ordinary storage errors keep the current generation active.
+        Logger.warning("[Cron] success persistence failed for #{state.id}: #{inspect(reason)}")
+
+        state
+        |> then(&%{&1 | last_run: DateTime.utc_now(), last_result: :ok})
+        |> retire_if_stale_definition()
+    end
+  end
+
+  defp record_failure(%{persisted?: false} = state, reason) do
+    new_count = state.failure_count + 1
+    status = if new_count >= @max_failures, do: :disabled, else: state.status
+    log_failure(state.id, reason, new_count, status)
+    if status == :disabled, do: persist_disabled(state)
+
+    %{
+      state
+      | last_run: DateTime.utc_now(),
+        last_result: {:error, reason},
+        failure_count: new_count,
+        status: status
+    }
+  end
+
+  defp record_failure(state, reason) do
+    case update_persisted_outcome(state, :failure) do
+      {:ok, row} ->
+        status = if row.disabled_at, do: :disabled, else: :active
+        log_failure(state.id, reason, row.failure_count, status)
 
         %{
           state
           | last_run: DateTime.utc_now(),
             last_result: {:error, reason},
-            failure_count: new_count,
-            status: new_status
+            failure_count: row.failure_count,
+            status: status
         }
 
-      _other ->
-        # System jobs may return arbitrary terms; treat anything
-        # non-{:error, _} as success for telemetry/back-off.
-        %{state | last_run: DateTime.utc_now(), last_result: :ok, failure_count: 0}
+      {:error, persistence_error} ->
+        # Crucially stay active: a failed disable write cannot strand an enabled
+        # DB row behind an idle local worker. The next failure retries from the
+        # durable count (and a restart reloads that same count).
+        Logger.warning(
+          "[Cron] failure persistence failed for #{state.id}: #{inspect(persistence_error)}"
+        )
+
+        state
+        |> then(&%{&1 | last_run: DateTime.utc_now(), last_result: {:error, reason}})
+        |> retire_if_stale_definition()
+    end
+  end
+
+  defp update_persisted_outcome(state, outcome) do
+    actor = Actor.system(state.tenant_id)
+
+    with {:ok, job} <- Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+      case outcome do
+        :success ->
+          Job.record_success(job, state.definition_token,
+            tenant: state.tenant_id,
+            actor: actor
+          )
+
+        :failure ->
+          Job.record_failure(job, state.definition_token,
+            tenant: state.tenant_id,
+            actor: actor
+          )
+      end
+    end
+  rescue
+    error -> {:error, {:outcome_raised, Exception.message(error)}}
+  end
+
+  defp retire_if_stale_definition(state) do
+    actor = Actor.system(state.tenant_id)
+
+    case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
+      {:ok, %{definition_token: token}} when token != state.definition_token ->
+        %{state | status: :disabled, next_run: nil}
+
+      {:ok, %{disabled_at: disabled_at}} when not is_nil(disabled_at) ->
+        %{state | status: :disabled, next_run: nil}
+
+      _current_or_unreadable ->
+        state
+    end
+  rescue
+    _error -> state
+  end
+
+  defp log_failure(job_id, reason, count, status) do
+    Logger.warning("[Cron] Job #{job_id} failed (#{count}/#{@max_failures}): #{inspect(reason)}")
+
+    if status == :disabled do
+      Logger.error("[Cron] Job #{job_id} auto-disabled after #{@max_failures} failures")
     end
   end
 
@@ -281,22 +572,25 @@ defmodule JidoClaw.Cron.Worker do
 
   # Post-dispatch re-arm policy for the matching-tick clause. Scheduled ticks
   # stop once disabled; manual trigger/2 deliberately bypasses this (operator
-  # intent always runs, see handle_cast(:trigger, ...)).
+  # intent always runs, see handle_cast(:trigger, ...)). A completed window
+  # (dispatched or suppressed-duplicate) ends any claim-retry streak — the
+  # backoff counter tracks only consecutive claim failures.
+  defp after_fire(state), do: rearm_after_fire(%{state | fire_claim_attempts: 0})
 
   # Already disabled by execute_job (3-failure auto-disable): don't re-arm,
   # and clear the consumed window — execute_job sets status without touching
   # next_run, and a dangling next_run would advertise a tick that never comes.
-  defp after_fire(%{status: :disabled} = state), do: %{state | next_run: nil}
+  defp rearm_after_fire(%{status: :disabled} = state), do: %{state | next_run: nil}
 
   # A one-shot :at fires exactly once, then disables (in-memory + persisted)
   # and never re-arms. Recurring :cron/:every re-arm as before.
-  defp after_fire(%{schedule: {:at, _dt}} = state) do
+  defp rearm_after_fire(%{schedule: {:at, _dt}} = state) do
     Logger.info("[Cron] One-shot :at job #{state.id} fired; disabling")
     persist_disabled(state)
     %{state | status: :disabled, next_run: nil}
   end
 
-  defp after_fire(state), do: schedule_next(state)
+  defp rearm_after_fire(state), do: schedule_next(state)
 
   # Every arm sends {:tick, window} carrying the SAME DateTime struct stored
   # in next_run, so handle_info can equality-match message against state and
@@ -357,12 +651,26 @@ defmodule JidoClaw.Cron.Worker do
   # Best-effort persistence — a transient DB error shouldn't crash
   # the worker. Eventual consistency is acceptable: if persist fails
   # this run, the next failure will retry. Crashing is strictly worse.
-  defp persist_disabled(state) do
+  defp persist_disabled(state, mode \\ :worker)
+
+  defp persist_disabled(state, mode) do
     actor = Actor.system(state.tenant_id)
 
     case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
       {:ok, job} ->
-        case Job.disable(job, tenant: state.tenant_id, actor: actor) do
+        result =
+          case mode do
+            :operator ->
+              Job.disable(job, tenant: state.tenant_id, actor: actor)
+
+            :worker ->
+              Job.disable_generation(job, state.definition_token,
+                tenant: state.tenant_id,
+                actor: actor
+              )
+          end
+
+        case result do
           {:ok, _} -> :ok
           err -> Logger.warning("[Cron] disable persistence failed: #{inspect(err)}")
         end
@@ -373,27 +681,5 @@ defmodule JidoClaw.Cron.Worker do
     end
   rescue
     e -> Logger.warning("[Cron] disable persistence raised: #{Exception.message(e)}")
-  end
-
-  # Best-effort durability counters. Increments run_count / stamps
-  # last_run_at on the persisted row after every tick — for any persisted
-  # job (agent/workflow/mfa, including persisted :system_job rows). Jobs
-  # with no DB row (the in-memory memory-consolidator) are skipped via the
-  # {:error, _} branch. A transient DB error must never crash the worker.
-  defp record_run(state) do
-    actor = Actor.system(state.tenant_id)
-
-    case Job.by_job_id(state.id, tenant: state.tenant_id, actor: actor) do
-      {:ok, job} ->
-        case Job.record_run(job, tenant: state.tenant_id, actor: actor) do
-          {:ok, _} -> :ok
-          err -> Logger.debug("[Cron] record_run persistence failed: #{inspect(err)}")
-        end
-
-      {:error, _} ->
-        :ok
-    end
-  rescue
-    e -> Logger.debug("[Cron] record_run raised: #{Exception.message(e)}")
   end
 end

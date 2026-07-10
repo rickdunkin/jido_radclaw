@@ -15,6 +15,7 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.ComposerArtifact
+  alias JidoClaw.Orchestration.Verify.Git
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
@@ -24,8 +25,24 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
   alias JidoClaw.RouteComposer.TestSupport.StubAgentServer
   alias JidoClaw.RouteComposer.TestSupport.StubStore
   alias JidoClaw.RouteComposer.TestSupport.SystemLoopWorker
+  alias JidoClaw.Security.Redaction.Env
 
   @supervisor JidoClaw.RouteComposer.Supervisor
+
+  # The convergence test below needs the production integrity tuple while
+  # keeping unrelated evidence-floor classification hermetic. A nil wave
+  # snapshot preserves that subsystem's conservative can't-verify posture.
+  defmodule RealIntegrityGit do
+    defdelegate head(repo), to: JidoClaw.Orchestration.Verify.Git
+    defdelegate porcelain(repo), to: JidoClaw.Orchestration.Verify.Git
+    defdelegate diff_digest(repo), to: JidoClaw.Orchestration.Verify.Git
+
+    @spec porcelain_all(String.t()) :: nil
+    def porcelain_all(_repo), do: nil
+
+    @spec path_fingerprints(String.t(), [String.t()], keyword()) :: nil
+    def path_fingerprints(_repo, _paths, _opts), do: nil
+  end
 
   setup do
     StubStore.setup()
@@ -242,7 +259,7 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
       # The durable tamper record names the stage + bounded reason + the ref.
       assert [tampered] = events(summary.parent_run_id, ctx, :stage_tampered)
       assert tampered.payload["stage"] == "verify"
-      assert tampered.payload["reason"] =~ "tracked_mutation"
+      assert tampered.payload["reason"] =~ "working_tree_mutation"
       assert tampered.payload["report_ref"] == report_ref
 
       # Evidence intact: the report row is ACTIVE and decrypts to the tampered
@@ -289,7 +306,7 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
         :stage_tampered,
         %{
           stage: "verify",
-          reason: "tampered: kinds=tracked_mutation checks=mix:precommit",
+          reason: "tampered: kinds=working_tree_mutation checks=mix:precommit",
           report_ref: report_ref
         },
         ctx
@@ -467,6 +484,70 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
       assert cert.payload["tree_digest"] == "editeddigest"
     end
 
+    test "a later untracked edit retracts the certificate before convergence and re-verifies",
+         ctx do
+      repo = scratch_repo!()
+      untracked = Path.join(repo, "runtime-input.txt")
+      File.write!(untracked, "before\n")
+
+      previous_verify = Application.fetch_env!(:jido_claw, :verify)
+
+      Application.put_env(
+        :jido_claw,
+        :verify,
+        Keyword.put(previous_verify, :git, RealIntegrityGit)
+      )
+
+      on_exit(fn ->
+        Application.put_env(:jido_claw, :verify, previous_verify)
+        File.rm_rf!(Path.dirname(repo))
+      end)
+
+      real_ctx = %{ctx | context: Map.put(ctx.context, :project_dir, repo)}
+      head = Git.head(repo)
+      certified_digest = Git.diff_digest(repo)
+
+      parent =
+        create_verified_shape_parent(real_ctx,
+          ran: ["planner", "implementer", "quality-reviewer"],
+          verify_override: ["true"]
+        )
+
+      append!(parent, :wave_completed, %{wave_index: 0, stages: ["verify"]}, real_ctx)
+      append!(parent, :signals_published, %{signals: ["clean:verify"]}, real_ctx)
+      append!(parent, :head_observed, %{head: head}, real_ctx)
+
+      append!(
+        parent,
+        :verify_certified,
+        %{stage: "verify", head: head, tree_digest: certified_digest, mode: "working_tree"},
+        real_ctx
+      )
+
+      # Porcelain remains `?? runtime-input.txt`; only the content fingerprint
+      # exposes this post-certificate mutation to the convergence re-check.
+      before_porcelain = Git.porcelain(repo)
+      File.write!(untracked, "after\n")
+      assert Git.porcelain(repo) == before_porcelain
+      refute Git.diff_digest(repo) == certified_digest
+
+      {:ok, _pid} = RouteComposer.ensure_started(recovery_opts(real_ctx), parent)
+      assert :completed = await_status(parent.id, real_ctx, :completed, 15_000)
+
+      assert Enum.any?(
+               events(parent.id, real_ctx, :signals_retracted),
+               &("clean:verify" in (&1.payload["signals"] || []))
+             )
+
+      assert is_integer(first_wave_with(parent.id, real_ctx, "verify"))
+
+      assert final_cert =
+               Enum.max_by(events(parent.id, real_ctx, :verify_certified), & &1.seq)
+
+      assert final_cert.payload["tree_digest"] == Git.diff_digest(repo)
+      refute final_cert.payload["tree_digest"] == certified_digest
+    end
+
     test "an UNREADABLE capture at the re-check refuses convergence and rides the infra lane",
          ctx do
       parent = create_certified_parent(ctx, infra_cap: 1)
@@ -552,7 +633,8 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
         actor: ctx.actor,
         context: ctx.context,
         max_waves: 10,
-        infra_cap: Keyword.get(opts, :infra_cap)
+        infra_cap: Keyword.get(opts, :infra_cap),
+        verify_override: Keyword.get(opts, :verify_override)
       )
 
     parent
@@ -608,6 +690,48 @@ defmodule JidoClaw.RouteComposer.VerifyStageTest do
   end
 
   defp recovery_opts(ctx), do: [tenant: ctx.tenant, actor: ctx.actor]
+
+  defp scratch_repo! do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "jido_verify_convergence_#{System.unique_integer([:positive])}"
+      )
+
+    repo = Path.join(root, "repo")
+    File.mkdir_p!(repo)
+
+    assert {_output, 0} =
+             System.cmd("git", ["init"],
+               cd: repo,
+               stderr_to_stdout: true,
+               env: Env.scrubbed_cmd_env()
+             )
+
+    File.write!(Path.join(repo, "tracked.txt"), "tracked\n")
+
+    for args <- [
+          ["add", "tracked.txt"],
+          [
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "-qm",
+            "seed"
+          ]
+        ] do
+      assert {_output, 0} =
+               System.cmd("git", args,
+                 cd: repo,
+                 stderr_to_stdout: true,
+                 env: Env.scrubbed_cmd_env()
+               )
+    end
+
+    repo
+  end
 
   # The minimal projection seed (the composer init fields the fold touches).
   defp seed_state do

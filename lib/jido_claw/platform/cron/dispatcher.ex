@@ -17,9 +17,11 @@ defmodule JidoClaw.Cron.Dispatcher do
   `when not is_nil(mfa)` clause would silently change that. MFA fires
   only for `:system_job` / `:mfa`.
 
-  Pure routing — telemetry, failure-counting, and `record_run` stay in
-  the worker. The return value is passed through verbatim to the
-  worker's `case result` handling (`:ok | {:ok, _} | {:error, _} | other`).
+  Pure routing — telemetry and fenced outcome persistence
+  (`record_success`/`record_failure`, which also stamp the
+  `run_count`/`last_run_at` durability counters) stay in the worker. The
+  return value is passed through verbatim to the worker's `case result`
+  handling (`:ok | {:ok, _} | {:error, _} | other`).
   """
 
   alias JidoClaw.Authorization.Actor

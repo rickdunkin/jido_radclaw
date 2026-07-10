@@ -13,7 +13,9 @@ defmodule JidoClaw.RouteComposer.EvidenceFloorTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer
   alias JidoClaw.RouteComposer.Projection, as: ComposerProjection
@@ -150,6 +152,22 @@ defmodule JidoClaw.RouteComposer.EvidenceFloorTest do
     RouteComposer.run_sync(
       Keyword.merge(base, Keyword.take(opts, [:rerun_cap, :infra_cap, :catalog]))
     )
+  end
+
+  defp recovery_evidence_catalog do
+    %{
+      "implementer" =>
+        TestFixtures.stage(
+          name: "implementer",
+          unit: {:worker_template, "coder"},
+          task: "Implement the request; emit code-written.",
+          routes: ["code"],
+          sub: ["request-received"],
+          req: ["request"],
+          out: ["diff"],
+          pub: ["code-written", "scope-shift"]
+        )
+    }
   end
 
   # ---------------------------------------------------------------------------
@@ -333,6 +351,36 @@ defmodule JidoClaw.RouteComposer.EvidenceFloorTest do
   # ---------------------------------------------------------------------------
 
   describe "skip taxonomy" do
+    test "a second edit to an already-dirty path is proved by changed fingerprints", ctx do
+      outputs =
+        put_in(claiming_outputs(), ["coder"], %{
+          "signals" => ["code-written"],
+          "diff" => "DIFF: repeat edit",
+          "files_changed" => ["lib/dirty.ex"]
+        })
+
+      Application.put_env(:jido_claw, :route_composer_stub_outputs, outputs)
+      Application.put_env(:jido_claw, :evidence_stub_rows_sequence, [[]])
+
+      # Porcelain's XY row stays byte-identical across a real second edit.
+      # The signed amendment adds bounded content proof without changing the
+      # status-diff or containment semantics.
+      Application.put_env(:jido_claw, :route_composer_verify_stub, %{
+        porcelain_all: [" M lib/dirty.ex\n", " M lib/dirty.ex\n"],
+        path_fingerprints: [
+          %{"lib/dirty.ex" => "before-fingerprint"},
+          %{"lib/dirty.ex" => "after-fingerprint"}
+        ]
+      })
+
+      assert {:ok, summary} = run(ctx)
+      assert summary.terminal == :converged
+      refute MapSet.member?(summary.final_live, "findings:evidence")
+      refute :evidence_classified in kinds(summary.parent_run_id, ctx)
+
+      assert {:ok, 2} = StubStore.fetch(:verify_stub_path_fingerprints_calls)
+    end
+
     test "zero tool rows: transcript kinds skip; files still reconcile (and can breach)", ctx do
       outputs =
         put_in(claiming_outputs(), ["coder"], %{
@@ -449,6 +497,87 @@ defmodule JidoClaw.RouteComposer.EvidenceFloorTest do
   # ---------------------------------------------------------------------------
 
   describe "projection recovery" do
+    test "a recovered open wave keeps its lost baseline nil on a completed-child rebind",
+         ctx do
+      actor = actor_for(ctx.tenant)
+
+      Application.put_env(:jido_claw, :evidence_stub_rows_sequence, [[]])
+
+      Application.put_env(:jido_claw, :route_composer_verify_stub, %{
+        porcelain_all: [" M lib/dirty.ex\n"],
+        path_fingerprints: [%{"lib/dirty.ex" => "post-edit-fingerprint"}]
+      })
+
+      {:ok, parent} =
+        RouteComposer.create_parent_run(
+          catalog: recovery_evidence_catalog(),
+          live: ["request-received", "code"],
+          artifacts: %{"request" => %{"seed" => "finish the edit"}},
+          tenant: ctx.tenant,
+          actor: actor,
+          context: ctx.context,
+          max_waves: 5
+        )
+
+      {:ok, _started} =
+        WorkflowLog.append(parent, :wave_started, %{wave_index: 0, stages: ["implementer"]},
+          tenant: ctx.tenant,
+          actor: actor
+        )
+
+      durable_ctx = %{tenant: ctx.tenant, actor: actor}
+      child = TestFixtures.craft_child(parent, durable_ctx, 0, :running)
+
+      {:ok, diff_ref} =
+        ComposerArtifact.store_wave_artifact(
+          "diff",
+          "implementer",
+          "DIFF: recovered real edit",
+          child,
+          0,
+          tenant: ctx.tenant,
+          actor: actor
+        )
+
+      envelope = %{
+        "wave_index" => 0,
+        "emissions" => [
+          %{
+            "stage" => "implementer",
+            "signals" => ["code-written"],
+            "artifacts" => %{"diff" => diff_ref},
+            "request_id" => "recovered-request",
+            "evidence" => %{"files_touched" => ["lib/dirty.ex"]}
+          }
+        ]
+      }
+
+      {:ok, _completed} =
+        WorkflowLog.append(child, :run_completed, %{result: envelope},
+          tenant: ctx.tenant,
+          actor: actor
+        )
+
+      recovered_parent = reload(parent.id, ctx)
+
+      {:ok, pid} =
+        RouteComposer.ensure_started([tenant: ctx.tenant, actor: actor], recovered_parent)
+
+      ref = Process.monitor(pid)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 15_000
+      assert reload(parent.id, ctx).status == :completed
+
+      # The original dispatch-time baseline was process-local and is gone.
+      # Recovery must skip the files kind instead of capturing post-edit state
+      # as a fake "before" and accusing the completed child of fabrication.
+      refute :evidence_classified in kinds(parent.id, ctx)
+      refute Enum.any?(published_signal_sets(parent.id, ctx), &(&1 == ["findings:evidence"]))
+
+      assert {:ok, 1} = StubStore.fetch(:verify_stub_porcelain_all_calls)
+      assert {:ok, 1} = StubStore.fetch(:verify_stub_path_fingerprints_calls)
+    end
+
     test "projecting the durable log rebuilds the breach ledger and the evidence signals",
          ctx do
       Application.put_env(:jido_claw, :route_composer_stub_outputs, claiming_outputs())

@@ -92,12 +92,25 @@ defmodule JidoClaw.Audit.Event do
     # (Audit.Producers, SignalListener) writes as a tenant-bound system
     # actor (`Authorization.Actor.system/1`) built from the same tenant_id
     # it threads via the `tenant:` opt, so the create policy passes.
+    bypass actor_attribute_equals(:kind, :system) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
     policy action_type(:create) do
+      forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
       authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
     end
 
     policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+      authorize_if(
+        expr(
+          tenant_id == ^actor(:tenant_id) and
+            exists(
+              JidoClaw.Tenants.Tenant,
+              id == parent(tenant_id) and status == :active
+            )
+        )
+      )
     end
   end
 

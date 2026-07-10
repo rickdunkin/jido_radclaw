@@ -303,14 +303,17 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def write_file(%__MODULE__{workspace_dir: workspace_dir}, path, content) do
     with {:ok, full_path} <- resolve_path(workspace_dir, path),
-         :ok <- File.mkdir_p(Path.dirname(full_path)) do
-      File.write(full_path, content)
+         :ok <- ensure_safe_parent(workspace_dir, Path.dirname(full_path)),
+         :ok <- validate_regular_or_missing(full_path) do
+      atomic_workspace_write(workspace_dir, full_path, content)
     end
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def read_file(%__MODULE__{workspace_dir: workspace_dir}, path) do
-    with {:ok, full_path} <- resolve_path(workspace_dir, path) do
+    with {:ok, full_path} <- resolve_path(workspace_dir, path),
+         :ok <- validate_path_components(workspace_dir, full_path),
+         :ok <- validate_regular_file(full_path) do
       File.read(full_path)
     end
   end
@@ -564,6 +567,124 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     case Path.safe_relative(path, workspace_dir) do
       {:ok, relative_path} -> {:ok, Path.join(workspace_dir, relative_path)}
       :error -> {:error, {:unsafe_path, path}}
+    end
+  end
+
+  # Host-side file helpers operate on a directory the guest can mutate. A
+  # lexical `safe_relative` check is not enough: walk every observed component
+  # with lstat and refuse links; create missing parent directories one component
+  # at a time under the same rule. This closes planted/static symlinks. The final
+  # read/rename remains pathname-based, so a concurrently-running guest can race
+  # the check; docs/system/executor-seam.md records that currently-dormant
+  # openat2/O_NOFOLLOW residual explicitly.
+  defp ensure_safe_parent(workspace_dir, parent) do
+    with :ok <- validate_workspace_root(workspace_dir),
+         {:ok, relative} <- relative_within(parent, workspace_dir) do
+      relative
+      |> Path.split()
+      |> Enum.reduce_while({:ok, workspace_dir}, fn component, {:ok, current} ->
+        next = Path.join(current, component)
+
+        case File.lstat(next) do
+          {:ok, %File.Stat{type: :directory}} -> {:cont, {:ok, next}}
+          {:ok, %File.Stat{type: type}} -> {:halt, {:error, {:unsafe_path_type, next, type}}}
+          {:error, :enoent} -> create_safe_directory(next)
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, _parent} -> :ok
+        error -> error
+      end
+    end
+  end
+
+  defp create_safe_directory(path) do
+    case File.mkdir(path) do
+      :ok -> {:cont, {:ok, path}}
+      {:error, :eexist} -> {:halt, {:error, {:unsafe_path_race, path}}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp validate_path_components(workspace_dir, full_path) do
+    with :ok <- validate_workspace_root(workspace_dir),
+         {:ok, relative} <- relative_within(full_path, workspace_dir) do
+      relative
+      |> Path.split()
+      |> Enum.reduce_while({:ok, workspace_dir}, fn component, {:ok, current} ->
+        next = Path.join(current, component)
+
+        case File.lstat(next) do
+          {:ok, %File.Stat{type: :symlink}} ->
+            {:halt, {:error, {:unsafe_symlink, next}}}
+
+          {:ok, _stat} ->
+            {:cont, {:ok, next}}
+
+          {:error, :enoent} ->
+            {:halt, {:ok, next}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, _path} -> :ok
+        error -> error
+      end
+    end
+  end
+
+  defp relative_within(path, workspace_dir) do
+    relative = Path.relative_to(path, workspace_dir)
+
+    if relative == ".." or String.starts_with?(relative, "../") do
+      {:error, {:unsafe_path, path}}
+    else
+      {:ok, relative}
+    end
+  end
+
+  defp validate_workspace_root(workspace_dir) do
+    case File.lstat(workspace_dir) do
+      {:ok, %File.Stat{type: :directory}} -> :ok
+      {:ok, %File.Stat{type: type}} -> {:error, {:unsafe_workspace, type}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Two semantic wrappers over one lstat check (never a boolean-blind
+  # argument at the call sites): write targets may be absent, read targets
+  # must exist.
+  defp validate_regular_or_missing(path), do: validate_regular(path, :allow_missing)
+
+  defp validate_regular_file(path), do: validate_regular(path, :required)
+
+  defp validate_regular(path, missing_mode) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      {:ok, %File.Stat{type: :symlink}} -> {:error, {:unsafe_symlink, path}}
+      {:ok, %File.Stat{type: type}} -> {:error, {:unsafe_path_type, path, type}}
+      {:error, :enoent} -> missing_result(missing_mode)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp missing_result(:allow_missing), do: :ok
+  defp missing_result(:required), do: {:error, :enoent}
+
+  defp atomic_workspace_write(workspace_dir, path, content) do
+    tmp = "#{path}.#{System.unique_integer([:positive, :monotonic])}.tmp"
+
+    try do
+      with :ok <- File.write(tmp, content, [:exclusive]),
+           :ok <- validate_path_components(workspace_dir, Path.dirname(path)),
+           :ok <- validate_regular_or_missing(path) do
+        File.rename(tmp, path)
+      end
+    after
+      File.rm(tmp)
     end
   end
 

@@ -63,12 +63,28 @@ defmodule JidoClaw.Web.Router do
     post("/github", WebhookController, :github)
   end
 
-  # Auth controller routes
+  # Auth controller routes. /account-unavailable is the forced-sign-out
+  # landing page (inactive tenant / invalid actor): a public page whose
+  # CSRF-protected DELETE form posts to /auth/sign-out on an explicit click —
+  # never a GET-clears-session route (top-level cross-site GET navigation can
+  # carry the cookie even under SameSite=Lax, and deployments may be
+  # internet-facing).
   scope "/auth", JidoClaw.Web do
     pipe_through(:browser)
 
     post("/sign-in", AuthController, :sign_in)
     delete("/sign-out", AuthController, :sign_out)
+    get("/account-unavailable", AuthController, :account_unavailable)
+  end
+
+  # Session-preserving 503 landing page: LiveView mounts and RequireAuth
+  # redirect here when auth state cannot be determined (DB outage). Outside
+  # every live_session and auth pipeline — the session must stay untouched so
+  # signed-in browsers recover when the database returns.
+  scope "/", JidoClaw.Web do
+    pipe_through(:browser)
+
+    get("/service-unavailable", AuthController, :service_unavailable)
   end
 
   # Public LiveView routes (no auth)
@@ -78,8 +94,16 @@ defmodule JidoClaw.Web.Router do
     live_session :no_auth, on_mount: [{JidoClaw.Web.LiveUserAuth, :live_no_user}] do
       live("/sign-in", SignInLive)
     end
+  end
 
-    live_session :optional_auth, on_mount: [{JidoClaw.Web.LiveUserAuth, :live_user_optional}] do
+  # Setup probes local binaries, the database, and configured providers. Keep
+  # the diagnostic surface behind the same two-layer admin boundary as
+  # AshAdmin (HTTP plug + LiveView reconnect hook).
+  scope "/", JidoClaw.Web do
+    pipe_through([:browser, :require_browser_auth, :require_admin])
+
+    live_session :setup_admin,
+      on_mount: [{JidoClaw.Web.LiveUserAuth, :live_admin_required}] do
       live("/setup", SetupLive)
     end
   end

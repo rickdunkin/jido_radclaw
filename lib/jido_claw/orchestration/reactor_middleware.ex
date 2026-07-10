@@ -106,6 +106,7 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.Security.SensitiveScrub
@@ -208,19 +209,30 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   @spec complete(Reactor.Middleware.result(), Reactor.context()) ::
           {:ok, Reactor.Middleware.result()} | {:error, term()}
   def complete(result, context) do
-    with {:ok, run} <- run_from(context),
-         {:ok, event} <- append(run, :run_completed, result_payload(result), context) do
-      broadcast(
-        run,
-        {:run_completed, run.id,
-         lifecycle_info(run, status: :completed, completed_at: event.occurred_at)}
-      )
+    case run_from(context) do
+      {:ok, run} ->
+        # Cleanup is diagnostic, not terminal authority. On its two strict error
+        # exits the sidecar is already dead/dying, so continuing cannot recreate
+        # the terminal-token-revocation race the graceful stop prevents.
+        :ok = WorkflowLease.stop_sidecar_best_effort(run.id, context[:claim_token])
 
-      trace(run, :run_completed, :completed, duration_measurements(run, event.occurred_at))
-      {:ok, result}
-    else
-      :error -> {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
-      {:error, reason} -> {:error, reason}
+        case append(run, :run_completed, result_payload(result), context) do
+          {:ok, event} ->
+            broadcast(
+              run,
+              {:run_completed, run.id,
+               lifecycle_info(run, status: :completed, completed_at: event.occurred_at)}
+            )
+
+            trace(run, :run_completed, :completed, duration_measurements(run, event.occurred_at))
+            {:ok, result}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      :error ->
+        {:error, {:invalid_reactor_context, "missing %WorkflowRun{} under :workflow_run"}}
     end
   end
 
@@ -237,22 +249,31 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   def error(errors, context) do
     formatted = Reason.format(errors)
 
-    with {:ok, run} <- run_from(context),
-         {:ok, event} <- append(run, :run_failed, %{error: formatted}, context) do
-      broadcast(
-        run,
-        {:run_failed, run.id,
-         lifecycle_info(run, status: :failed, error: formatted, completed_at: event.occurred_at)}
-      )
+    case run_from(context) do
+      {:ok, run} ->
+        :ok = WorkflowLease.stop_sidecar_best_effort(run.id, context[:claim_token])
 
-      trace(run, :run_failed, :failed, duration_measurements(run, event.occurred_at))
-      :ok
-    else
+        case append(run, :run_failed, %{error: formatted}, context) do
+          {:ok, event} ->
+            broadcast(
+              run,
+              {:run_failed, run.id,
+               lifecycle_info(run,
+                 status: :failed,
+                 error: formatted,
+                 completed_at: event.occurred_at
+               )}
+            )
+
+            trace(run, :run_failed, :failed, duration_measurements(run, event.occurred_at))
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("[ReactorMiddleware] run_failed append failed: #{inspect(reason)}")
+            :ok
+        end
+
       :error ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("[ReactorMiddleware] run_failed append failed: #{inspect(reason)}")
         :ok
     end
   end
@@ -411,7 +432,11 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
   defp append(run, kind, payload, context) do
     WorkflowLog.append(run, kind, sanitize_payload(kind, payload, context),
       tenant: run.tenant_id,
-      actor: context_actor(context, run),
+      # A suspension may race an already-running reactor. Ordinary step work
+      # keeps the caller actor and is denied once the tenant becomes inactive;
+      # the two terminal writes use the explicit tenant-bound lifecycle actor
+      # so the durable run cannot be stranded in :running by that denial.
+      actor: lifecycle_actor(kind, context, run),
       # WS1 fence B: thread the run's held lease token (seeded into the reactor
       # context by `ReactorRunner.run/3` / `GateResume`) so `complete/2`'s
       # `run_completed` and `error/2`'s `run_failed` are rejected in-transaction
@@ -420,6 +445,11 @@ defmodule JidoClaw.Orchestration.ReactorMiddleware do
       claim_fence_token: Map.get(context, :claim_token)
     )
   end
+
+  defp lifecycle_actor(kind, _context, run) when kind in [:run_completed, :run_failed],
+    do: Actor.system(run.tenant_id)
+
+  defp lifecycle_actor(_kind, context, run), do: context_actor(context, run)
 
   # AR-2 Phase 2b (P1 — the single chokepoint: `emit/3`, `complete/2`, and
   # `error/2` all funnel through `append/4`). When the wave is marked, replace

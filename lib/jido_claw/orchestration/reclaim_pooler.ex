@@ -23,9 +23,9 @@ defmodule JidoClaw.Orchestration.ReclaimPooler do
   (`WorkflowLease.claim_next/1`). MCP launches workflows too (`run_skill` →
   `ReactorRunner.run`), so it MUST be covered. Single-node is safe for the same
   reason — the selector touches only provably-dead (expired-lease or aged
-  never-claimed `:pending`) runs, and the `FOR UPDATE` + `:illegal`
-  terminal-on-terminal guard makes any overlap with the boot one-shot idempotent;
-  `initial_delay_ms` lets the boot one-shot win the first sweep.
+  never-claimed `:pending`) runs. Application startup places the synchronous
+  boot-recovery barrier before this child, so there is no boot/Pooler overlap;
+  `initial_delay_ms` is restart/warm-up pacing only.
 
   ## Testability
 

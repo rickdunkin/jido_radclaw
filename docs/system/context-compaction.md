@@ -7,8 +7,8 @@ sources:
   - lib/jido_claw/reasoning/compactor/identity.ex
   - lib/jido_claw/conversations/subagent_transcript.ex
   - lib/jido_claw/route_composer/premises_context.ex
-verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified: 2026-07-09
+verified_sha: "b2cae5cd"
 ---
 
 # Context Compaction
@@ -42,6 +42,10 @@ tiering seam (AR-9) — one composed transformer, no collisions.
   routed worker, the spawn tag for a sub-agent. Snapshot
   `key = "<identity>::<context_ref|default>"`. Spawned/handoff sub-agents get coherent
   durable transcripts via `JidoClaw.Conversations.SubagentTranscript`.
+- **Runtime isolation**: chat-main Jido registry ids are
+  `"session:<conversation_uuid>"`, never the client-controlled external session id.
+  Tenant/workspace/kind are part of the durable session identity, so callers that
+  reuse `"main"` cannot share live model context.
 - **The trim**: `RequestTransformer` (a `Jido.AI.Reasoning.ReAct.RequestTransformer`
   implementation) filters projected messages by
   `refs.request_id ∈ snapshot.summarized_request_ids` and injects the summary as a

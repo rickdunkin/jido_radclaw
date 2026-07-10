@@ -15,6 +15,8 @@ defmodule JidoClaw.Test.VerifyStub do
     * `head:` / `porcelain:` / `diff_digest:` — a static value, an explicit
       `nil` (a capture failure — present-nil is deliberate here), or a LIST
       consumed per call (mid-verify tamper scripts).
+    * `path_fingerprints:` — a static map/nil or a LIST consumed per producer
+      wave (dispatch capture then fold capture).
 
   Counters live in `JidoClaw.RouteComposer.TestSupport.StubStore` — call
   `StubStore.setup()` in the test setup so the table is test-owned and every
@@ -53,6 +55,16 @@ defmodule JidoClaw.Test.VerifyStub do
   @spec diff_digest(String.t()) :: String.t() | nil
   def diff_digest(_repo),
     do: scripted(:diff_digest, "verifystubdigest", :verify_stub_digest_calls)
+
+  @spec path_fingerprints(String.t(), [String.t()], keyword()) ::
+          %{optional(String.t()) => String.t()} | nil
+  def path_fingerprints(_repo, _paths, _opts),
+    do:
+      scripted(
+        :path_fingerprints,
+        nil,
+        :verify_stub_path_fingerprints_calls
+      )
 
   # `Map.fetch` (not `Map.get`) so a PRESENT nil scripts a capture failure —
   # the one place present-nil is the point, not the trap.

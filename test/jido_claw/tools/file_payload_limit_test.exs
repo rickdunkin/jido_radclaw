@@ -1,6 +1,7 @@
 defmodule JidoClaw.Tools.FilePayloadLimitTest do
   use ExUnit.Case, async: true
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.FilePayloadLimit
 
   @cap FilePayloadLimit.max_bytes()
@@ -47,6 +48,20 @@ defmodule JidoClaw.Tools.FilePayloadLimitTest do
       File.write!(path, "tiny")
 
       assert :ok = FilePayloadLimit.validate_read(path, project_dir: dir)
+    end
+
+    test "rejects a FIFO as a non-regular local file", %{dir: dir} do
+      path = Path.join(dir, "blocking.pipe")
+
+      {_output, 0} =
+        System.cmd("mkfifo", [path], stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
+
+      assert {:error, %{message: message, details: details}} =
+               FilePayloadLimit.validate_read(path, project_dir: dir)
+
+      assert message =~ "non-regular local file"
+      assert details.path == path
+      assert details.type != :regular
     end
 
     test "falls through to :ok when the path does not resolve locally", %{dir: dir} do

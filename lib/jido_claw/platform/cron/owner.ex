@@ -13,7 +13,10 @@ defmodule JidoClaw.Cron.Owner do
   nodes each booted a worker for the same row (multi-fire), and a gateway-only
   node ran none (no-fire). The `cron_jobs` row is now the **source of truth for
   scheduling**, and exactly one node — the leader — owns every non-disabled row
-  for every active tenant. Followers run no user workers.
+  for every active tenant. Followers run no user workers. Because `:pg`
+  convergence still permits a brief two-leaders window, every persisted worker
+  also takes the atomic `cron_jobs.last_fire_at` claim before a scheduled
+  dispatch; leadership is the first-line owner and the row claim is the fence.
 
   ## Hybrid reconcile (boot + leader_changed + periodic)
 

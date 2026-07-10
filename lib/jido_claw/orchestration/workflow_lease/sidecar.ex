@@ -15,6 +15,9 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
     * `{:DOWN, ref, …}` for the executor → stop (normal teardown).
     * `{:lease_tick, from}` (a test seam) → `renew/2`, reply `{:lease_ticked,
       result}`, then act on it.
+    * `{:lease_stop, from, token}` with the held token → acknowledge and stop
+      normally. Owners use this immediately before their own terminal append;
+      external cancellation never does.
     * `after renew_seconds` → `renew/2`, then act.
 
   `act/2` runs the pure `WorkflowLease.fence_decision/3`: `:renewed` loops
@@ -135,6 +138,14 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Sidecar do
         result = renew(state)
         send(from, {:lease_ticked, result})
         act(state, result)
+
+      {:lease_stop, from, correlation, token} when token == state.token ->
+        send(from, {:lease_stopped, correlation, state.run_id, state.token})
+        :ok
+
+      {:lease_stop, from, correlation, _wrong_token} ->
+        send(from, {:lease_stop_refused, correlation, state.run_id})
+        loop(state, timeout)
     after
       timeout ->
         act(state, renew(state))

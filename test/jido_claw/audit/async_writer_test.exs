@@ -123,6 +123,61 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
     end
   end
 
+  describe "enqueue/1,2" do
+    test "a successful handoff returns {:ok, pid} and the row lands" do
+      tenant_id = seed_tenant("async-enqueue")
+
+      attrs = %{
+        tenant_id: tenant_id,
+        event_kind: :tool_call,
+        actor_kind: :agent,
+        actor_id: "main",
+        target_kind: :tool,
+        target_id: "enqueue_tool",
+        payload: %{}
+      }
+
+      assert {:ok, pid} = AsyncWriter.enqueue(attrs)
+      assert is_pid(pid)
+
+      :ok =
+        eventually(fn ->
+          {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))
+          Enum.any?(rows, &(&1.target_id == "enqueue_tool"))
+        end)
+    end
+
+    test "a returned start_child error is normalized to {:error, _}" do
+      # max_children: 0 makes start_child RETURN {:error, :max_children}
+      # (the non-exit failure shape).
+      {:ok, sup} = Task.Supervisor.start_link(max_children: 0)
+
+      attrs = %{tenant_id: "t", event_kind: :tool_call, target_kind: :tool, payload: %{}}
+
+      assert {:error, :max_children} = AsyncWriter.enqueue(attrs, sup)
+      :ok = Supervisor.stop(sup)
+    end
+
+    test "an unavailable supervisor EXIT (:noproc) is normalized to {:error, _}" do
+      # A DEAD supervisor makes start_child EXIT rather than return —
+      # the boundary must catch it, or every producer (AshTracer, auth
+      # events) would crash during shutdown races.
+      {:ok, sup} = Task.Supervisor.start_link()
+      :ok = Supervisor.stop(sup)
+      refute Process.alive?(sup)
+
+      attrs = %{tenant_id: "t", event_kind: :tool_call, target_kind: :tool, payload: %{}}
+
+      assert {:error, {:exit, _reason}} = AsyncWriter.enqueue(attrs, sup)
+    end
+
+    test "cast/1 stays :ok over the same failure paths" do
+      # The compatibility wrapper never surfaces the enqueue result.
+      attrs = %{tenant_id: "t", event_kind: :tool_call, target_kind: :tool, payload: %{}}
+      assert :ok = AsyncWriter.cast(attrs)
+    end
+  end
+
   defp eventually(fun, deadline_ms \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
     do_eventually(fun, deadline)

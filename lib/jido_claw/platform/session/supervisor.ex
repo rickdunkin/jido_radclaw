@@ -41,6 +41,63 @@ defmodule JidoClaw.Session.Supervisor do
     end
   end
 
+  @doc """
+  Stop and remove a live session worker. Idempotent when absent.
+
+  A worker can start under the global fallback before its tenant runtime exists.
+  If the tenant supervisor appears later, registry presence alone cannot identify
+  which DynamicSupervisor owns that pid. Teardown therefore tries both possible
+  owners and reports an error while the registered pid is still alive.
+  """
+  @spec stop_session(String.t(), String.t()) :: :ok | {:error, term()}
+  def stop_session(tenant_id, session_id) do
+    name = {:via, Registry, {JidoClaw.SessionRegistry, {tenant_id, session_id}}}
+
+    case GenServer.whereis(name) do
+      nil ->
+        :ok
+
+      pid ->
+        tenant_sup = InstanceSupervisor.session_sup(tenant_id)
+
+        [tenant_sup, JidoClaw.SessionSupervisor]
+        |> Enum.uniq()
+        |> terminate_from_owner(pid)
+    end
+  end
+
+  defp terminate_from_owner(supervisors, pid) do
+    errors =
+      Enum.reduce_while(supervisors, [], fn supervisor, errors ->
+        case terminate_child(supervisor, pid) do
+          :ok -> {:halt, :stopped}
+          {:error, :not_found} -> {:cont, errors}
+          {:error, reason} -> {:cont, [{supervisor, reason} | errors]}
+        end
+      end)
+
+    case errors do
+      :stopped ->
+        :ok
+
+      errors ->
+        if Process.alive?(pid) do
+          {:error, {:session_owner_not_found, Enum.reverse(errors)}}
+        else
+          :ok
+        end
+    end
+  end
+
+  defp terminate_child(supervisor, pid) do
+    case GenServer.whereis(supervisor) do
+      nil -> {:error, :not_found}
+      _pid -> DynamicSupervisor.terminate_child(supervisor, pid)
+    end
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
   defp set_actor_on_existing(tenant_id, session_id, actor, pid) do
     _ = Worker.set_actor(tenant_id, session_id, actor)
     {:ok, pid}

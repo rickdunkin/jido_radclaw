@@ -189,7 +189,7 @@ defmodule JidoClaw.Tools.ReadFileTest do
     test "should return error when path is a directory", %{dir: dir} do
       assert {:error, %{message: message}} = ReadFile.run(%{path: dir}, context(dir))
 
-      assert message =~ "Cannot read"
+      assert message =~ "non-regular local file (directory)"
     end
 
     test "rejects absolute paths outside the default project directory" do

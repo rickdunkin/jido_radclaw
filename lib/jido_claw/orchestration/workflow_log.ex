@@ -27,8 +27,9 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   not be persisted), where `Allocate`'s in-txn fence B compares it to the run's
   current `claim_token` and rejects a stale-owner status-authority write — a
   terminal (`run_completed`/`run_failed`) OR the gate flip `approval_requested`
-  (forwarded by `gate_open/3`). Only the leased-executor producers pass it; the
-  other helpers (operator cancel/decide, recovery) never fence their writes.
+  (forwarded by `gate_open/3`). Leased executors and live recovery pass it;
+  operator decisions and boot recovery are intentionally unfenced by their
+  stronger ownership/locking premises.
   """
   @spec append(WorkflowRun.t(), atom(), map() | nil, keyword()) ::
           {:ok, WorkflowEvent.t()} | {:error, term()}
@@ -52,6 +53,65 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   # fence is a no-op (the catch-all in `Allocate.claim_fenced?`).
   defp fence_context(token) when is_binary(token), do: [context: %{claim_fence_token: token}]
   defp fence_context(_token), do: []
+
+  @doc """
+  Persist a gate checkpoint under the run row's `FOR UPDATE` lock.
+
+  The locked row must still be `:awaiting_approval`; when
+  `:claim_fence_token` is present it must also still equal the row's current
+  token. The status/token check and encrypted checkpoint update therefore share
+  one transaction with cancellation/abandon's serialization point: a terminal
+  decision that wins first is never followed by a stale checkpoint rewrite.
+
+  Returns `{:ok, updated_run}`, `{:error, {:checkpoint_state_changed, status}}`,
+  `{:error, :checkpoint_fenced}`, or the underlying read/write error.
+  """
+  @spec persist_gate_checkpoint(WorkflowRun.t(), binary(), keyword()) ::
+          {:ok, WorkflowRun.t()} | {:error, term()}
+  def persist_gate_checkpoint(run, checkpoint, opts \\ []) when is_binary(checkpoint) do
+    tenant = tenant(run, opts)
+    actor = actor(run, opts)
+    expected_token = Keyword.get(opts, :claim_fence_token)
+
+    result =
+      Ash.transact(WorkflowRun, fn ->
+        case lock_run_row(run.id, tenant, actor) do
+          {:ok, %WorkflowRun{status: :awaiting_approval} = locked} ->
+            persist_checkpoint_if_owned(locked, checkpoint, expected_token, tenant, actor)
+
+          {:ok, %WorkflowRun{status: status}} ->
+            {:refused, {:checkpoint_state_changed, status}}
+
+          {:error, reason} ->
+            {:refused, reason}
+        end
+      end)
+
+    case result do
+      {:ok, {:written, updated}} -> {:ok, updated}
+      {:ok, {:refused, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_checkpoint_if_owned(locked, checkpoint, expected, tenant, actor) do
+    if checkpoint_owner?(locked, expected) do
+      case WorkflowRun.set_checkpoint(locked, %{resume_checkpoint: checkpoint},
+             tenant: tenant,
+             actor: actor
+           ) do
+        {:ok, updated} -> {:written, updated}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:refused, :checkpoint_fenced}
+    end
+  end
+
+  defp checkpoint_owner?(%WorkflowRun{claim_token: current}, expected) when is_binary(expected),
+    do: current == expected
+
+  defp checkpoint_owner?(%WorkflowRun{}, _expected), do: true
 
   @doc """
   Append a batch of `{kind, payload}` events for `run` in one transaction —
@@ -84,18 +144,21 @@ defmodule JidoClaw.Orchestration.WorkflowLog do
   Append the recovery pair for a stranded `run`: `run_recovered`
   (provenance, carrying `prior_status`) + the terminal `run_failed`, in one
   transaction so neither persists without the other. The projection folds
-  `run_failed` to `:failed`. Used only by `WorkflowRecovery`.
+  `run_failed` to `:failed`. Used only by `WorkflowRecovery`; live reclaim
+  passes `:claim_fence_token` so a reclaimer that outlives its rotated lease
+  cannot terminalize the successor owner's run, while boot recovery remains
+  unfenced behind its sole-owner startup barrier.
   """
-  @spec append_recovery(WorkflowRun.t(), atom()) :: {:ok, WorkflowEvent.t()} | {:error, term()}
-  def append_recovery(run, prior_status) do
+  @spec append_recovery(WorkflowRun.t(), atom(), keyword()) ::
+          {:ok, WorkflowEvent.t()} | {:error, term()}
+  def append_recovery(run, prior_status, opts \\ []) do
     append_all(
       run,
       [
         {:run_recovered, %{reason: @recovery_reason, prior_status: prior_status}},
         {:run_failed, %{error: @recovery_reason}}
       ],
-      tenant: run.tenant_id,
-      actor: Actor.system(run.tenant_id)
+      [tenant: run.tenant_id, actor: Actor.system(run.tenant_id)] ++ opts
     )
   end
 

@@ -121,6 +121,95 @@ defmodule JidoClaw.Tools.RunCommandTest do
 
       assert String.trim(result.output) == "aftermath"
     end
+
+    test "a stale outer action deadline refuses the queued command before launch" do
+      marker =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_stale_command_#{System.unique_integer([:positive])}"
+        )
+
+      on_exit(fn -> File.rm(marker) end)
+
+      context = %{
+        __jido_deadline_ms__: System.monotonic_time(:millisecond) - 1,
+        tool_context: %{
+          workspace_id: "stale-#{System.unique_integer([:positive])}",
+          project_dir: System.tmp_dir!()
+        }
+      }
+
+      assert {:error, %{code: :host_deadline_exceeded, details: %{retry: false}}} =
+               RunCommand.run(%{command: "printf stale > #{marker}"}, context)
+
+      refute File.exists?(marker)
+    end
+
+    test "Jido.Exec deadline is converted to an inner cancel, not an outer timeout" do
+      workspace_id = "outer-deadline-#{System.unique_integer([:positive])}"
+
+      context = %{
+        tool_context: %{workspace_id: workspace_id, project_dir: System.tmp_dir!()}
+      }
+
+      on_exit(fn -> SessionManager.stop_session(workspace_id) end)
+
+      assert {:error, err} =
+               Jido.Exec.run(
+                 RunCommand,
+                 %{command: "sleep 5"},
+                 context,
+                 timeout: 1_800,
+                 max_retries: 0
+               )
+
+      assert err.details.code == :host_command_timeout
+      assert get_in(err.details, [:details, :retry]) == false
+      refute match?(%Jido.Action.Error.TimeoutError{}, err)
+
+      # The manager cancelled and drained the first command before returning;
+      # the persistent session is immediately usable rather than left busy.
+      assert {:ok, %{output: output, exit_code: 0}} =
+               RunCommand.run(
+                 %{command: "echo recovered", workspace_id: workspace_id},
+                 context
+               )
+
+      assert String.trim(output) == "recovered"
+    end
+
+    test "a command timeout is non-retryable at Jido.Exec's action layer" do
+      marker =
+        Path.join(
+          System.tmp_dir!(),
+          "jido_claw_timeout_once_#{System.unique_integer([:positive])}"
+        )
+
+      workspace_id = "timeout-once-#{System.unique_integer([:positive])}"
+
+      context = %{
+        tool_context: %{workspace_id: workspace_id, project_dir: System.tmp_dir!()}
+      }
+
+      on_exit(fn ->
+        SessionManager.stop_session(workspace_id)
+        File.rm(marker)
+      end)
+
+      # Default max_retries is intentionally left enabled. Without the
+      # `retry: false` result this mutating prefix executes twice.
+      assert {:error, err} =
+               Jido.Exec.run(
+                 RunCommand,
+                 %{command: "printf x >> #{marker}; sleep 5", timeout: 100},
+                 context,
+                 timeout: 5_000
+               )
+
+      assert err.details.code == :host_command_timeout
+      assert get_in(err.details, [:details, :retry]) == false
+      assert File.read!(marker) == "x"
+    end
   end
 
   describe "run/2 backend routing" do

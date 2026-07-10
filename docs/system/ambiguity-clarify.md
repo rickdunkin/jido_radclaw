@@ -14,7 +14,7 @@ sources:
   - lib/jido_claw.ex
   - lib/jido_claw/cli/run_command.ex
   - docs/exploration/ouroboros/PORT-OB1-1.md
-verified: 2026-07-08
+verified: 2026-07-10
 ---
 
 # Ambiguity Clarify Loop
@@ -219,11 +219,14 @@ ledger ride explicitly, so the 6-turn history window can never clip the ask.
 
 ### Surfaces & exit contract
 
-In-repo call sites set `clarify:` explicitly: OpenAI-compat
-`chat_controller` and cron `dispatcher` (both arms — main cron's session is
-stable but unattended) ⇒ `:one_shot`; `rpc_channel`, `discord`,
-`run_command`, and the REPL ⇒ `:loop`. `chat/4` returns clarify acks as
-plain `{:ok, binary}` by default; `composer_ack: :detailed` yields
+In-repo routed call sites set `clarify:` explicitly: cron `dispatcher` (both
+arms — main cron's session is stable but unattended) ⇒ `:one_shot`;
+`rpc_channel`, `discord`, `run_command`, and the REPL ⇒ `:loop`. Bare
+`chat/4` calls with `kind: :api` also derive `:one_shot`. The OpenAI-compatible
+`chat_controller` now selects the separate zero-tool stateless-completion path,
+which bypasses triage/clarify/composer entirely so a request cannot launch work
+whose ephemeral scope it immediately tears down. Routed `chat/4` returns clarify
+acks as plain `{:ok, binary}` by default; `composer_ack: :detailed` yields
 `%{route: :clarify, status: :pending, run_id: nil, message: msg}`. The
 one-shot CLI runner maps that to **exit 3, outcome `:clarify_pending`** (the
 OQ-4 human-input family); the printed session id is what `--session` needs to

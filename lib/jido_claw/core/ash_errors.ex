@@ -1,10 +1,11 @@
 defmodule JidoClaw.Core.AshErrors do
   @moduledoc """
   Structural handling of Ash/DB errors that callers would otherwise have to
-  string-match out of `inspect/1` output. Two concerns live here:
+  string-match out of `inspect/1` output. Three concerns live here:
 
-    * **Classification** (`unique_violation?/2`) — detect a DB-level unique
-      violation structurally instead of by inspecting error strings.
+    * **Classification** (`unique_violation?/2`, `connection_error?/1`) —
+      detect a DB-level unique violation or a database-connectivity failure
+      structurally instead of by inspecting error strings.
     * **The canonical rescue list** (`db_errors/0`) — the single source of
       truth for the Ash/Postgrex exception structs the best-effort read/persist
       paths narrow their rescues on (`rescue _ in @db_errors`), so a real bug
@@ -33,6 +34,36 @@ defmodule JidoClaw.Core.AshErrors do
       DBConnection.OwnershipError,
       Postgrex.Error
     ]
+
+  @doc """
+  True when `error` is a database-connectivity failure — a raw
+  `DBConnection.ConnectionError`, a connection-phase `Postgrex.Error`
+  (`postgres: nil`), or any Ash error class/leaf wrapping one.
+
+  Splode wraps a rescued exception into `Ash.Error.Unknown.UnknownError`
+  either as the exception struct itself or as the **formatted banner string**
+  (`Exception.format/2` output), so the string leaf is matched on the exact
+  `"** (DBConnection.ConnectionError)"` banner prefix — never a loose
+  substring. A formatted `Postgrex.Error` string is deliberately NOT
+  recognized: a schema/programming Postgrex error stringifies through the
+  same path and must not classify as retryable infrastructure.
+  """
+  @spec connection_error?(term()) :: boolean()
+  def connection_error?(%DBConnection.ConnectionError{}), do: true
+  def connection_error?(%Postgrex.Error{postgres: nil}), do: true
+
+  def connection_error?(%Ash.Error.Unknown.UnknownError{error: inner}) do
+    cond do
+      is_exception(inner) -> connection_error?(inner)
+      is_binary(inner) -> String.starts_with?(inner, "** (DBConnection.ConnectionError)")
+      true -> false
+    end
+  end
+
+  def connection_error?(%{errors: errors}) when is_list(errors),
+    do: Enum.any?(errors, &connection_error?/1)
+
+  def connection_error?(_other), do: false
 
   @doc """
   True when `error` is an `Ash.Error.Invalid` carrying at least one

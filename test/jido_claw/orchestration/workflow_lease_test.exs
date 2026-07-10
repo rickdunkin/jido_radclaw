@@ -14,6 +14,14 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest.OkReactor do
   return(:only)
 end
 
+defmodule JidoClaw.Orchestration.WorkflowLeaseTest.FailComplete do
+  @moduledoc false
+  use Reactor.Middleware
+
+  @impl Reactor.Middleware
+  def complete(_result, _context), do: {:error, :late_complete_failure}
+end
+
 defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
   @moduledoc """
   WS1 lease core: the stamp/renew/claim_next primitives, the `Lease.Middleware`
@@ -110,6 +118,34 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       assert is_nil(reload_global(future.id).claim_token) == false
       assert reload_global(terminal.id).status == :failed
     end
+
+    test "an expired checkpoint-less awaiting gate is reclaimable and token-rotated", ctx do
+      run = seed_run(ctx, "dangling-gate")
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+
+      assert {:ok, _} =
+               WorkflowLog.append(
+                 reload_global(run.id),
+                 :approval_requested,
+                 %{agent_case_id: Ash.UUID.generate()},
+                 Keyword.put(scope(ctx), :claim_fence_token, token)
+               )
+
+      dangling = reload_global(run.id)
+      assert dangling.status == :awaiting_approval
+      assert is_nil(dangling.encrypted_resume_checkpoint)
+
+      set_claim!(run.id, token, -1)
+
+      assert {:ok, claimed, _prior_owner} = WorkflowLease.claim_next()
+      assert claimed.id == run.id
+      assert claimed.status == :awaiting_approval
+      refute claimed.claim_token == token
+      assert %DateTime{} = claimed.claim_expires_at
+    end
   end
 
   # ── 2. fence: renew/2 ───────────────────────────────────────────────────────
@@ -127,6 +163,59 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
 
       assert {:ok, 0} = WorkflowLease.renew(run.id, token)
       assert {:ok, 1} = WorkflowLease.renew(run.id, rotated)
+    end
+
+    test "a terminal projection revokes the token and a stale sidecar renews zero rows", ctx do
+      run = seed_run(ctx, "terminal-renew")
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      claimed = reload_global(run.id)
+
+      assert {:ok, _} = WorkflowLog.append(run, :run_cancelled, %{}, scope(ctx))
+
+      terminal = reload_global(run.id)
+      assert terminal.status == :cancelled
+      assert terminal.claimed_by == claimed.claimed_by
+      assert is_nil(terminal.claim_token)
+      assert is_nil(terminal.claim_expires_at)
+      assert {:ok, 0} = WorkflowLease.renew(run.id, token)
+    end
+  end
+
+  describe "claim_resume/3" do
+    test "only one resumer can promote a parked expiry into a live lease", ctx do
+      run = seed_run(ctx, "resume-claim")
+      assert {:ok, _} = WorkflowLog.append(run, :run_started, %{}, scope(ctx))
+      prior = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, prior, nil)
+      assert {:ok, _} = WorkflowLog.append(run, :approval_requested, %{}, scope(ctx))
+
+      parked = reload_global(run.id)
+
+      assert {:ok, _} =
+               WorkflowLog.persist_gate_checkpoint(parked, :erlang.term_to_binary(:checkpoint),
+                 tenant: ctx.tenant,
+                 actor: ctx.actor,
+                 claim_fence_token: prior
+               )
+
+      checkpointed = reload_global(run.id)
+      assert is_nil(checkpointed.claim_expires_at)
+
+      # A sidecar tick that was already queued behind the checkpoint row lock
+      # must not restore a future expiry and block the one-winner resume claim.
+      assert {:ok, 0} = WorkflowLease.renew(run.id, prior)
+      assert is_nil(reload_global(run.id).claim_expires_at)
+
+      assert {:ok, _} = WorkflowLog.append(checkpointed, :approval_resolved, %{}, scope(ctx))
+
+      first = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.claim_resume(run.id, first, prior)
+
+      # Even a contender that observes the freshly-rotated token cannot steal
+      # the live resume claim: the non-expired lease predicate refuses it.
+      assert {:ok, :lost} = WorkflowLease.claim_resume(run.id, Ash.UUID.generate(), first)
+      assert reload_global(run.id).claim_token == first
     end
   end
 
@@ -280,10 +369,11 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       assert {:ok, :done, run} = ReactorRunner.run(OkReactor, %{}, scope(ctx))
       assert run.status == :completed
 
-      # Self-claimed: the execution winner stamped its identity + token, and the
-      # terminal leaves the claim columns intact (only the checkpoint is cleared).
+      # Self-claimed provenance is retained, but the terminal revokes the lease
+      # credential so a partitioned sidecar cannot keep renewing.
       reloaded = reload_global(run.id)
-      assert is_binary(reloaded.claim_token)
+      assert is_nil(reloaded.claim_token)
+      assert is_nil(reloaded.claim_expires_at)
       assert reloaded.claimed_by == to_string(Node.self())
 
       # The lease middleware emits no events — the timeline is byte-identical.
@@ -376,14 +466,17 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
   # ── 10 & 16. middleware ordering / resume normalization ─────────────────────
 
   describe "normalize_middleware/1" do
-    test "prepends [WorkflowLease.Middleware, ReactorMiddleware] when ReactorMiddleware is declared" do
+    test "puts the lease first and durable recorder last around custom middleware" do
+      {:ok, with_custom} = Builder.add_middleware(Builder.new(), __MODULE__.FailComplete)
+
       {:ok, base} =
-        Builder.add_middleware(Builder.new(), JidoClaw.Orchestration.ReactorMiddleware)
+        Builder.add_middleware(with_custom, JidoClaw.Orchestration.ReactorMiddleware)
 
       assert {:ok, normalized} = ReactorRunner.normalize_middleware(base)
 
       assert [
                JidoClaw.Orchestration.WorkflowLease.Middleware,
+               __MODULE__.FailComplete,
                JidoClaw.Orchestration.ReactorMiddleware
              ] = normalized.middleware
     end
@@ -398,6 +491,21 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
                JidoClaw.Orchestration.WorkflowLease.Middleware,
                JidoClaw.Orchestration.ReactorMiddleware
              ] = normalized.middleware
+    end
+
+    test "a later custom completion failure cannot follow a durable run_completed", ctx do
+      reactor =
+        Builder.new()
+        |> Builder.add_step!(:only, JidoClaw.Orchestration.WorkflowLeaseTest.OkStep)
+        |> Builder.return!(:only)
+        |> Builder.add_middleware!(__MODULE__.FailComplete)
+
+      assert {:error, :late_complete_failure, run} =
+               ReactorRunner.run(reactor, %{}, Keyword.put(scope(ctx), :name, "late-complete"))
+
+      assert run.status == :failed
+      assert :run_failed in kinds(run.id, ctx)
+      refute :run_completed in kinds(run.id, ctx)
     end
   end
 
@@ -492,6 +600,24 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
       assert is_pid(sidecar)
       assert sidecar != blocker
       assert_receive :blocker_unregistered, 1_000
+    end
+
+    test "the held owner stops its sidecar while a stale token leaves it untouched", ctx do
+      run = seed_run(ctx, "graceful-stop")
+      token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, token, nil)
+      assert :ok = WorkflowLease.start_sidecar(self(), run.id, ctx.tenant, token)
+      assert [{sidecar, %{token: ^token}}] = Registry.lookup(@lease_registry, run.id)
+
+      assert :ok = WorkflowLease.stop_sidecar(run.id, Ash.UUID.generate())
+
+      assert Process.alive?(sidecar)
+      ref = Process.monitor(sidecar)
+
+      assert :ok = WorkflowLease.stop_sidecar(run.id, token)
+      assert_receive {:DOWN, ^ref, :process, ^sidecar, :normal}, 1_000
+      assert Process.alive?(self())
+      assert eventually(fn -> Registry.lookup(@lease_registry, run.id) == [] end)
     end
   end
 
@@ -827,4 +953,20 @@ defmodule JidoClaw.Orchestration.WorkflowLeaseTest do
   # ── helpers ─────────────────────────────────────────────────────────────────
 
   defp scope(%{tenant: tenant, actor: actor}), do: [tenant: tenant, actor: actor]
+
+  defp eventually(fun, attempts \\ 100)
+
+  defp eventually(fun, attempts) do
+    cond do
+      fun.() ->
+        true
+
+      attempts == 0 ->
+        false
+
+      true ->
+        Process.sleep(10)
+        eventually(fun, attempts - 1)
+    end
+  end
 end

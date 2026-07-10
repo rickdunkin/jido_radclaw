@@ -81,15 +81,29 @@ defmodule JidoClaw.Orchestration.ComposerArtifact do
       authorize_if(always())
     end
 
+    bypass actor_attribute_equals(:kind, :system) do
+      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
+    end
+
     policy action_type([:create, :update, :destroy]) do
+      forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
       authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
     end
 
     policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
+      authorize_if(
+        expr(
+          tenant_id == ^actor(:tenant_id) and
+            exists(
+              JidoClaw.Tenants.Tenant,
+              id == parent(tenant_id) and status == :active
+            )
+        )
+      )
     end
 
     policy action_type(:action) do
+      forbid_unless(JidoClaw.Authorization.Checks.ActorTenantActive)
       authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
     end
   end

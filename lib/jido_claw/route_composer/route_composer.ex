@@ -148,6 +148,7 @@ defmodule JidoClaw.RouteComposer do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.CanonicalHash
   alias JidoClaw.Gates.ReviewStallGate
   alias JidoClaw.Orchestration.AgentCase
@@ -1247,12 +1248,20 @@ defmodule JidoClaw.RouteComposer do
       # Item 10 (OB1-3): `evidence_breaches` is the per-stage fabrication
       # breach ledger (rebuilt from `evidence_classified` events by
       # `ComposerProjection` — the OpenHelm "counted, breach-visible" rider);
-      # `wave_porcelain` is the dispatch-time untracked-inclusive porcelain
-      # snapshot the files-reconcile diffs against at fold — in-memory ONLY
-      # (a mid-wave crash/recovery loses it, and the files kind then skips
-      # that wave: can't verify ⇒ trust, never the permissive fallback).
+      # `wave_porcelain` and `wave_file_fingerprints` are the dispatch-time
+      # untracked-inclusive status/content evidence the files-reconcile checks
+      # at fold — in-memory ONLY (a mid-wave crash/recovery loses them, and the
+      # files kind then skips that wave: can't verify ⇒ trust, never the
+      # permissive fallback).
       evidence_breaches: %{},
       wave_porcelain: nil,
+      wave_file_fingerprints: nil,
+      # A rebuilt `wave_started(N)` with no matching completion means any
+      # dispatch-time evidence from the original execution was lost. Keep the
+      # durable open-wave identity so re-dispatch may bind its existing child
+      # without manufacturing a post-edit "before" snapshot. Once the wave
+      # index advances, the marker no longer applies and fresh capture resumes.
+      recovered_open_wave_index: nil,
       # Slice 2 (OB1-3): the launch-extracted, config-persisted AC assertions
       # (nil ⇒ slice 2 off for the run) — verified deterministically against
       # the tree at every producer-wave fold, violations riding the same
@@ -1535,7 +1544,9 @@ defmodule JidoClaw.RouteComposer do
 
       {:ok, parent, events} ->
         rebuilt =
-          ComposerProjection.project(%{state | parent: parent, rebuild_attempts: 0}, events)
+          %{state | parent: parent, rebuild_attempts: 0}
+          |> ComposerProjection.project(events)
+          |> mark_recovered_open_wave(events)
 
         # WS2: preflight the held lease BEFORE resuming. `state` (pre-projection) is
         # threaded so a transient-error retry preserves `rebuild_attempts` (the
@@ -1655,6 +1666,17 @@ defmodule JidoClaw.RouteComposer do
       else
         load_events(state, parent)
       end
+    end
+  end
+
+  defp mark_recovered_open_wave(state, events) do
+    wave_index = state.wave_index
+
+    if wave_event?(events, :wave_started, wave_index) and
+         not wave_event?(events, :wave_completed, wave_index) do
+      %{state | recovered_open_wave_index: wave_index}
+    else
+      %{state | recovered_open_wave_index: nil}
     end
   end
 
@@ -1902,10 +1924,10 @@ defmodule JidoClaw.RouteComposer do
            ArtifactContext.build(stages, state.artifacts, state.tenant, state.actor),
          :ok <- record_wave_start(dispatch, display, state),
          :ok <- ensure_parent_live(state) do
-      # Item 10 (OB1-3, decision 5): the dispatch-time porcelain snapshot the
-      # evidence files-reconcile diffs against at fold — captured AFTER the
-      # wave-start markers commit, right before the workers run, and ONLY on
-      # waves dispatching an evidence-eligible producer.
+      # Item 10 (OB1-3 decision 5 + signed fingerprint amendment): capture the
+      # dispatch-time porcelain snapshot and bounded fingerprints for its
+      # already-dirty paths AFTER the wave-start markers commit, right before
+      # the workers run, and ONLY on evidence-eligible producer waves.
       state = maybe_capture_wave_porcelain(state, dispatch)
 
       reactor
@@ -2597,13 +2619,21 @@ defmodule JidoClaw.RouteComposer do
 
   defp evidence_ctx(state) do
     repo = verify_project_dir(state)
+    after_porcelain = capture_wave_porcelain(state)
+
+    fingerprint_paths =
+      state.wave_porcelain
+      |> Evidence.snapshot_paths()
+      |> MapSet.union(Evidence.snapshot_paths(after_porcelain))
 
     %{
       session_id: state.context[:session_uuid],
       tenant: state.tenant,
       actor: state.actor,
       before_porcelain: state.wave_porcelain,
-      after_porcelain: capture_wave_porcelain(state),
+      after_porcelain: after_porcelain,
+      before_file_fingerprints: state.wave_file_fingerprints,
+      after_file_fingerprints: capture_wave_file_fingerprints(repo, fingerprint_paths),
       repo: repo
     }
   end
@@ -2622,12 +2652,56 @@ defmodule JidoClaw.RouteComposer do
     _ -> nil
   end
 
+  # Signed 2026-07-09 OB1-3 amendment: a status line cannot prove a second
+  # edit to an already-dirty path, so producer waves also capture bounded,
+  # symlink-safe content/type/mode fingerprints. This is additive proof only:
+  # an old custom git seam, a crossed bound, or an unreadable path returns nil
+  # and the existing status result stands unchanged.
+  defp capture_wave_file_fingerprints(repo, paths)
+       when is_binary(repo) and is_struct(paths, MapSet) do
+    git = Verify.git()
+
+    if function_exported?(git, :path_fingerprints, 3) do
+      git.path_fingerprints(repo, MapSet.to_list(paths), on_error: :omit)
+    end
+  rescue
+    # reach:disable-next-line bare_rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp capture_wave_file_fingerprints(_repo, _paths), do: nil
+
   # Only producer waves capture a before-snapshot; a non-producer wave clears
   # it so a stale snapshot from an earlier wave can never feed a later fold.
   defp maybe_capture_wave_porcelain(state, dispatch) do
-    if Enum.any?(dispatch, &evidence_producer_stage?(state.catalog, &1)),
-      do: %{state | wave_porcelain: capture_wave_porcelain(state)},
-      else: %{state | wave_porcelain: nil}
+    producer_wave? = Enum.any?(dispatch, &evidence_producer_stage?(state.catalog, &1))
+
+    cond do
+      producer_wave? and state.recovered_open_wave_index == state.wave_index ->
+        # The original baseline was process-local. Re-capturing now would
+        # compare post-child state to itself on a completed-child dedupe hit
+        # and falsely accuse a real edit. Missing before evidence deliberately
+        # drives the files kind to its conservative skip posture.
+        %{state | wave_porcelain: nil, wave_file_fingerprints: nil}
+
+      producer_wave? ->
+        porcelain = capture_wave_porcelain(state)
+
+        %{
+          state
+          | wave_porcelain: porcelain,
+            wave_file_fingerprints:
+              capture_wave_file_fingerprints(
+                verify_project_dir(state),
+                Evidence.snapshot_paths(porcelain)
+              )
+        }
+
+      true ->
+        %{state | wave_porcelain: nil, wave_file_fingerprints: nil}
+    end
   end
 
   # Containment (camus C1-6c, Trace-warning-only in v1): paths that changed
@@ -5357,30 +5431,48 @@ defmodule JidoClaw.RouteComposer do
   # `:illegal` transition rolls it back), so a raw append is NOT a harmless
   # no-op. Returns `:ok` or `{:error, reason}`; never raises (the Ash code
   # interface returns tagged tuples, not exceptions).
-  defp append_parent_terminal(parent_run_id, kind, payload, tenant, actor, claim_token) do
-    case WorkflowRun.by_id(parent_run_id, tenant: tenant, actor: actor) do
-      {:ok, %WorkflowRun{} = parent} ->
-        if Projection.terminal_status?(parent.status) do
-          :ok
-        else
-          scrubbed = scrub_terminal_payload(kind, payload, parent)
+  defp append_parent_terminal(parent_run_id, kind, payload, tenant, _actor, claim_token) do
+    lifecycle_actor = Actor.system(tenant)
 
-          # WS2: the `route_*` terminals (and the abnormal-path `run_failed`) are
-          # status-authority, so threading the held token engages `Allocate.claim_fenced?`
-          # (fence B) — a stale owner's terminal rolls back rather than clobbering the
-          # reclaimed parent. nil token ⇒ no fence context ⇒ byte-identical.
-          case WorkflowLog.append(parent, kind, scrubbed,
-                 tenant: tenant,
-                 actor: actor,
-                 claim_fence_token: claim_token
-               ) do
-            {:ok, _event} -> :ok
-            {:error, reason} -> {:error, reason}
-          end
-        end
+    case WorkflowRun.by_id(parent_run_id, tenant: tenant, actor: lifecycle_actor) do
+      {:ok, %WorkflowRun{} = parent} ->
+        append_loaded_parent_terminal(
+          parent,
+          kind,
+          payload,
+          tenant,
+          lifecycle_actor,
+          claim_token
+        )
 
       other ->
         {:error, {:reload_failed, other}}
+    end
+  end
+
+  defp append_loaded_parent_terminal(parent, kind, payload, tenant, actor, claim_token) do
+    if Projection.terminal_status?(parent.status) do
+      :ok
+    else
+      scrubbed = scrub_terminal_payload(kind, payload, parent)
+
+      # WS2: the `route_*` terminals (and the abnormal-path `run_failed`) are
+      # status-authority, so threading the held token engages `Allocate.claim_fenced?`
+      # (fence B) — a stale owner's terminal rolls back rather than clobbering the
+      # reclaimed parent. nil token ⇒ no fence context ⇒ byte-identical.
+      # Sidecar teardown is best-effort; the durable token-fenced append below
+      # is the terminal authority. A strict stop error means the sidecar is
+      # already dead/dying, so skipping this append would only strand the run.
+      :ok = WorkflowLease.stop_sidecar_best_effort(parent.id, claim_token)
+
+      case WorkflowLog.append(parent, kind, scrubbed,
+             tenant: tenant,
+             actor: actor,
+             claim_fence_token: claim_token
+           ) do
+        {:ok, _event} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 

@@ -90,6 +90,100 @@ defmodule JidoClaw.MCP.ProxyGeneratorTest do
       assert Enum.count(tools) == 2
     end
 
+    test "a remote cannot preoccupy another tool's first collision suffix" do
+      suffix =
+        "foo~"
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+        |> binary_part(0, 12)
+
+      modules = build_many([tool("foo"), tool("foo_#{suffix}"), tool("foo~")])
+      names = Enum.map(modules, & &1.name())
+
+      assert Enum.count(names) == 3
+      assert Enum.count(Enum.uniq(names)) == 3
+      assert "mcp_svc_foo" in names
+      assert "mcp_svc_foo_#{suffix}" in names
+
+      # ToolAdapter is the provider-facing duplicate-name failure boundary.
+      assert Enum.count(ToolAdapter.from_actions(modules)) == 3
+    end
+
+    test "long server names with the same capped prefix keep distinct tool namespaces" do
+      shared = "server_" <> String.duplicate("x", 80)
+      server_a = shared <> "a"
+      server_b = shared <> "b"
+
+      [module_a] = ProxyGenerator.build_modules(server_a, :long_server_a, [tool("ping")])
+      [module_b] = ProxyGenerator.build_modules(server_b, :long_server_b, [tool("ping")])
+
+      refute module_a.name() == module_b.name()
+      assert byte_size(module_a.name()) <= 64
+      assert byte_size(module_b.name()) <= 64
+      assert String.starts_with?(module_a.name(), "mcp_")
+      assert String.starts_with?(module_b.name(), "mcp_")
+    end
+
+    test "aggregate boundary names survive cold-boot config and endpoint-slot reorder" do
+      stage_a = ProxyGenerator.stage_modules("a", :cold_slot_one, [tool("b_ping")])
+      stage_a_b = ProxyGenerator.stage_modules("a_b", :cold_slot_two, [tool("ping")])
+      stage_safe = ProxyGenerator.stage_modules("safe", :cold_slot_three, [tool("ping")])
+
+      # Simulate a fresh endpoint registry assigning the same two servers the
+      # opposite bounded atoms because their configuration order changed.
+      cold_a_b = ProxyGenerator.stage_modules("a_b", :cold_slot_one, [tool("ping")])
+      cold_a = ProxyGenerator.stage_modules("a", :cold_slot_two, [tool("b_ping")])
+      cold_safe = ProxyGenerator.stage_modules("safe", :cold_slot_three, [tool("ping")])
+
+      staged_digests =
+        Map.new([stage_a, stage_a_b], fn stage ->
+          [definition] = stage.definitions
+          {stage.server_name, definition.digest}
+        end)
+
+      snapshot = fn stages ->
+        module_lists = ProxyGenerator.commit_stages(stages)
+
+        stages
+        |> Enum.zip(module_lists)
+        |> Map.new(fn {stage, [module]} ->
+          definition = ProxyGenerator.definition!(module)
+
+          {stage.server_name,
+           %{
+             module: module,
+             endpoint: definition.endpoint_id,
+             name: module.name(),
+             digest: ProxyGenerator.definition_digest(module)
+           }}
+        end)
+      end
+
+      first = snapshot.([stage_a, stage_a_b, stage_safe])
+      cold_reordered = snapshot.([cold_safe, cold_a_b, cold_a])
+
+      provider_names = fn snapshot ->
+        Map.new(snapshot, fn {server_name, entry} -> {server_name, entry.name} end)
+      end
+
+      assert provider_names.(cold_reordered) == provider_names.(first)
+      assert first["safe"].name == "mcp_safe_ping"
+      refute first["a"].endpoint == cold_reordered["a"].endpoint
+      refute first["a_b"].endpoint == cold_reordered["a_b"].endpoint
+      refute first["a"].module == cold_reordered["a"].module
+      refute first["a_b"].module == cold_reordered["a_b"].module
+
+      names = [first["a"].name, first["a_b"].name]
+      assert Enum.count(Enum.uniq(names)) == 2
+      refute "mcp_a_b_ping" in names
+      assert Enum.all?(names, &(byte_size(&1) <= 64 and String.starts_with?(&1, "mcp_")))
+
+      # Renaming rebuilds the complete definition, including its digest; the
+      # runtime registry never advertises a digest for the ambiguous staged name.
+      refute first["a"].digest == staged_digests["a"]
+      refute first["a_b"].digest == staged_digests["a_b"]
+    end
+
     test "every generated name is mcp_-rooted" do
       modules = build_many([tool("a"), tool("weird name!!"), tool("UPPER")])
       assert Enum.all?(modules, &String.starts_with?(&1.name(), "mcp_"))
@@ -173,9 +267,10 @@ defmodule JidoClaw.MCP.ProxyGeneratorTest do
     end
   end
 
-  describe "regeneration on definition change" do
-    test "changing a remote tool's schema yields a new module" do
+  describe "stable runtime definition updates" do
+    test "changing a remote tool's schema reuses the module and changes its strong digest" do
       m1 = build_one(tool("rev", %{"inputSchema" => %{"type" => "object", "properties" => %{}}}))
+      digest1 = ProxyGenerator.definition_digest(m1)
 
       m2 =
         build_one(
@@ -187,7 +282,85 @@ defmodule JidoClaw.MCP.ProxyGeneratorTest do
           })
         )
 
-      assert m1 != m2
+      digest2 = ProxyGenerator.definition_digest(m2)
+      assert m1 == m2
+      assert digest1 != digest2
+      assert m2.schema()["properties"]["x"] == %{"type" => "string"}
+    end
+
+    test "staging is inert until the accepted aggregate is committed" do
+      original =
+        build_one(tool("staged", %{"inputSchema" => %{"type" => "object", "properties" => %{}}}))
+
+      original_digest = ProxyGenerator.definition_digest(original)
+      identity_count = ProxyGenerator.identity_count()
+
+      staged =
+        ProxyGenerator.stage_modules("svc", :svc, [
+          tool("staged", %{
+            "inputSchema" => %{
+              "type" => "object",
+              "properties" => %{"fresh" => %{"type" => "boolean"}}
+            }
+          }),
+          tool("not_committed_yet")
+        ])
+
+      # Discovery may be abandoned or hard-killed here: neither live metadata
+      # nor the bounded identity registry has changed.
+      assert ProxyGenerator.definition_digest(original) == original_digest
+      assert original.schema()["properties"] == %{}
+      assert ProxyGenerator.identity_count() == identity_count
+
+      [committed] = ProxyGenerator.commit_stages([staged])
+      same_original = Enum.find(committed, &(&1.name() == "mcp_svc_staged"))
+      newly_committed = Enum.find(committed, &(&1.name() == "mcp_svc_not_committed_yet"))
+
+      assert same_original == original
+      assert same_original.schema()["properties"]["fresh"] == %{"type" => "boolean"}
+      assert newly_committed.name() == "mcp_svc_not_committed_yet"
+      assert ProxyGenerator.identity_count() == identity_count + 1
+    end
+
+    test "a collision flip allocates once for the unseen plain name; reverts reuse identities" do
+      # Round 1: aggregate boundary collision (`flipa`+`b_ping` vs
+      # `flipa_b`+`ping` both stage `mcp_flipa_b_ping`) — every member gets a
+      # suffixed identity.
+      stage_a = ProxyGenerator.stage_modules("flipa", :flip_slot_a, [tool("b_ping")])
+      stage_a_b = ProxyGenerator.stage_modules("flipa_b", :flip_slot_b, [tool("ping")])
+      [[collided_a], [collided_a_b]] = ProxyGenerator.commit_stages([stage_a, stage_a_b])
+
+      assert collided_a.name() =~ ~r/^mcp_flipa_b_ping_/
+      assert collided_a_b.name() =~ ~r/^mcp_flipa_b_ping_/
+      refute collided_a.name() == collided_a_b.name()
+      count_after_collision = ProxyGenerator.identity_count()
+
+      # Round 2 (the flip): the collision partner disappears, so the survivor
+      # takes the PLAIN name — a previously-unseen local name, allocating
+      # exactly one identity. The suffixed identity is retained (inactive),
+      # never reclaimed.
+      solo = ProxyGenerator.stage_modules("flipa", :flip_slot_a, [tool("b_ping")])
+      [[plain]] = ProxyGenerator.commit_stages([solo])
+
+      assert plain.name() == "mcp_flipa_b_ping"
+      refute plain == collided_a
+      assert ProxyGenerator.identity_count() == count_after_collision + 1
+
+      # Repeating the flip hits an already-seen name: no further growth.
+      solo_again = ProxyGenerator.stage_modules("flipa", :flip_slot_a, [tool("b_ping")])
+      [[plain_again]] = ProxyGenerator.commit_stages([solo_again])
+      assert plain_again == plain
+      assert ProxyGenerator.identity_count() == count_after_collision + 1
+
+      # Round 3 (the revert): restoring the collision re-activates the ORIGINAL
+      # disambiguated identities — reuse, not allocation.
+      stage_a2 = ProxyGenerator.stage_modules("flipa", :flip_slot_a, [tool("b_ping")])
+      stage_a_b2 = ProxyGenerator.stage_modules("flipa_b", :flip_slot_b, [tool("ping")])
+      [[reverted_a], [reverted_a_b]] = ProxyGenerator.commit_stages([stage_a2, stage_a_b2])
+
+      assert reverted_a == collided_a
+      assert reverted_a_b == collided_a_b
+      assert ProxyGenerator.identity_count() == count_after_collision + 1
     end
   end
 

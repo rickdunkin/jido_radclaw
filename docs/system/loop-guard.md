@@ -5,8 +5,10 @@ sources:
   - lib/jido_claw/agent/loop_guard.ex
   - lib/jido_claw/agent/loop_guard/store.ex
   - lib/jido_claw/tools/action.ex
-verified: 2026-07-07
-verified_sha: "a1fa5215"
+  - lib/jido_claw/tools/run_command.ex
+  - lib/jido_claw/shell/session_manager.ex
+verified: 2026-07-09
+verified_sha: "b2cae5cd"
 ---
 
 # Loop Guard (doom-loop detection)
@@ -72,6 +74,15 @@ records a **false success** — neutralized cross-tool by per-tool clearing, wit
 same-tool identical-args repeats still caught pre-execution; the residual is
 varied-args output-validation loops only.
 
+`run_command` specifically closes the dangerous execution side of that timeout
+residual: its absolute `Jido.Exec` deadline is propagated into the serialized
+`SessionManager`, re-checked immediately before launch, and converted to an inner
+deadline with cancellation slack. A queued stale call never launches; an in-flight
+host/VFS/SSH command is cancelled before the outer task dies; both deadline refusal
+and command timeout return non-retryable codes (`retry: false`). Other tools' outer
+timeouts can still bypass LoopGuard observation, but they do not inherit an orphaned
+shell command from this path.
+
 ## Source map
 
 - `lib/jido_claw/agent/loop_guard.ex` — facade: `check/4`, `observe_result/5`, halt
@@ -79,5 +90,9 @@ varied-args output-validation loops only.
 - `lib/jido_claw/agent/loop_guard/store.ex` — per-key in-memory state, halt/idle TTLs
 - `lib/jido_claw/tools/action.ex` — pipeline seam (approval gate → loop guard →
   normalize → redact → shape → cap)
+- `lib/jido_claw/tools/run_command.ex` — propagation of Jido's absolute action
+  deadline and non-retryable host timeout envelopes
+- `lib/jido_claw/shell/session_manager.ex` — serialized pre-launch deadline fence,
+  inner timeout budgeting, and backend cancellation
 - `test/jido_claw/agent/loop_guard_test.exs` — thresholds, the Exec/Turn contract
   test, feed-boundary pins

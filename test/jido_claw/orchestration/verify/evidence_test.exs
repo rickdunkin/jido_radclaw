@@ -16,8 +16,18 @@ defmodule JidoClaw.Orchestration.Verify.EvidenceTest do
   # Builders
   # ---------------------------------------------------------------------------
 
-  defp obs(rows_or_skip, changed_or_skip \\ {:skip, :no_snapshot}, repo \\ nil) do
-    %{tool_rows: rows_or_skip, changed_paths: changed_or_skip, repo: repo}
+  defp obs(
+         rows_or_skip,
+         changed_or_skip \\ {:skip, :no_snapshot},
+         repo \\ nil,
+         fingerprint_changed \\ MapSet.new()
+       ) do
+    %{
+      tool_rows: rows_or_skip,
+      changed_paths: changed_or_skip,
+      fingerprint_changed_paths: fingerprint_changed,
+      repo: repo
+    }
   end
 
   defp row(command, exit_code), do: %{command: command, exit_code: exit_code}
@@ -210,6 +220,21 @@ defmodule JidoClaw.Orchestration.Verify.EvidenceTest do
       assert result.status == :unsupported
       assert result.detail =~ "existence alone"
       assert classification.verdict == :fabrication_suspected
+    end
+
+    test "an already-dirty path with a changed bounded fingerprint is supported" do
+      fingerprint_changed = MapSet.new(["lib/dirty.ex"])
+
+      {result, classification} =
+        classify_one(
+          :files_touched,
+          "lib/dirty.ex",
+          obs({:skip, :x}, {:ok, MapSet.new()}, nil, fingerprint_changed)
+        )
+
+      assert result.status == :supported
+      assert result.detail =~ "content fingerprint"
+      assert classification.verdict == :clean
     end
 
     test "./-prefixed claims normalize to the porcelain path" do
@@ -503,6 +528,49 @@ defmodule JidoClaw.Orchestration.Verify.EvidenceTest do
       snapshot = " M lib/a.ex\n?? b.ex\n"
       assert Evidence.changed_paths(snapshot, snapshot) == MapSet.new()
     end
+
+    test "snapshot_paths includes both rename sides and unquotes paths" do
+      snapshot = ~s(R  old.ex -> new.ex\n?? "path with spaces.ex"\n)
+
+      assert Evidence.snapshot_paths(snapshot) ==
+               MapSet.new(["old.ex", "new.ex", "path with spaces.ex"])
+    end
+
+    test "an ordinary quoted path containing the rename token stays exact" do
+      assert Evidence.snapshot_paths(~s(?? "foo -> bar"\n)) == MapSet.new(["foo -> bar"])
+    end
+
+    test "a rename separator is found outside quoted path contents" do
+      snapshot = ~s(R  "old -> name.ex" -> "new -> name.ex"\n)
+
+      assert Evidence.snapshot_paths(snapshot) ==
+               MapSet.new(["old -> name.ex", "new -> name.ex"])
+    end
+
+    test "C-quoted literal backslash-n and actual newline paths remain distinct" do
+      literal_backslash_n = "?? \"literal\\\\n.ex\"\n"
+      actual_newline = "?? \"actual\\nnewline.ex\"\n"
+
+      assert Evidence.snapshot_paths(literal_backslash_n) == MapSet.new(["literal\\n.ex"])
+      assert Evidence.snapshot_paths(actual_newline) == MapSet.new(["actual\nnewline.ex"])
+    end
+
+    test "C-quoted octal byte escapes decode like git" do
+      snapshot = "?? \"caf\\303\\251.ex\"\n"
+      assert Evidence.snapshot_paths(snapshot) == MapSet.new(["café.ex"])
+    end
+  end
+
+  describe "fingerprint_changed_paths/2" do
+    test "only paths with two present binary fingerprints that differ count" do
+      before_fps = %{"changed" => "a", "same" => "x", "removed" => "r", "bad" => nil}
+      after_fps = %{"changed" => "b", "same" => "x", "added" => "n", "bad" => "ok"}
+
+      assert Evidence.fingerprint_changed_paths(before_fps, after_fps) ==
+               MapSet.new(["changed"])
+
+      assert Evidence.fingerprint_changed_paths(nil, after_fps) == MapSet.new()
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -623,6 +691,39 @@ defmodule JidoClaw.Orchestration.Verify.EvidenceTest do
       assert observations.tool_rows == {:skip, :no_request_id}
       assert {:ok, changed} = observations.changed_paths
       assert MapSet.member?(changed, "lib/new.ex")
+      assert observations.fingerprint_changed_paths == MapSet.new()
+    end
+
+    test "gather derives content changes only from two unequal fingerprints" do
+      observations =
+        Evidence.gather(nil, %{
+          before_porcelain: " M lib/dirty.ex\n",
+          after_porcelain: " M lib/dirty.ex\n",
+          before_file_fingerprints: %{"lib/dirty.ex" => "before"},
+          after_file_fingerprints: %{"lib/dirty.ex" => "after"}
+        })
+
+      assert observations.changed_paths == {:ok, MapSet.new()}
+      assert observations.fingerprint_changed_paths == MapSet.new(["lib/dirty.ex"])
+    end
+
+    test "missing porcelain still skips files despite differing fingerprints" do
+      observations =
+        Evidence.gather(nil, %{
+          before_porcelain: nil,
+          after_porcelain: " M lib/dirty.ex\n",
+          before_file_fingerprints: %{"lib/dirty.ex" => "before"},
+          after_file_fingerprints: %{"lib/dirty.ex" => "after"}
+        })
+
+      assert observations.changed_paths == {:skip, :no_snapshot}
+      assert observations.fingerprint_changed_paths == MapSet.new(["lib/dirty.ex"])
+
+      {result, classification} =
+        classify_one(:files_touched, "lib/dirty.ex", observations)
+
+      assert result.status == :skipped
+      assert classification.verdict == :skipped
     end
 
     test "missing session skips tool rows" do

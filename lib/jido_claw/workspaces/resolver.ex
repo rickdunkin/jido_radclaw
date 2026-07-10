@@ -21,14 +21,14 @@ defmodule JidoClaw.Workspaces.Resolver do
   """
 
   alias JidoClaw.Authorization.Actor
-  alias JidoClaw.Tenants.Tenant
+  alias JidoClaw.Tenants.Access, as: TenantAccess
   alias JidoClaw.Workspaces.Workspace
 
   @spec ensure_workspace(String.t(), String.t(), keyword()) ::
           {:ok, Workspace.t()} | {:error, term()}
   def ensure_workspace(tenant_id, project_dir, opts \\ [])
       when is_binary(tenant_id) and is_binary(project_dir) and is_list(opts) do
-    with {:ok, _tenant} <- Tenant.ensure(tenant_id) do
+    with :ok <- TenantAccess.ensure_active(tenant_id) do
       do_register(tenant_id, project_dir, opts)
     end
   end

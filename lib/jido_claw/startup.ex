@@ -2,9 +2,10 @@ defmodule JidoClaw.Startup do
   @moduledoc """
   Project-local state + agent bootstrapping.
 
-  Called from every entry point (REPL, `JidoClaw.chat/3`, escript, mix task)
-  so all entry points converge on the same `.jido/` bootstrap and system-prompt
-  injection path.
+  Called from interactive/durable entry points (REPL, `JidoClaw.chat/3`,
+  escript, mix task) so they converge on the same `.jido/` bootstrap and
+  system-prompt injection path. The zero-tool stateless completion path skips
+  the write-capable bootstrap and uses the read-only prompt fallback below.
   """
 
   alias JidoClaw.Agent.Prompt
@@ -102,6 +103,37 @@ defmodule JidoClaw.Startup do
       when is_pid(pid) and is_binary(project_dir) do
     system_prompt = resolve_prompt(session, project_dir)
     do_inject(pid, system_prompt, project_dir, source_of(session), %{})
+  end
+
+  @doc """
+  Inject the project prompt plus the capability contract for a stateless
+  OpenAI-compatible completion.
+
+  The agent module has no tools, and this retained system block keeps its prose
+  honest about that structural boundary even when the project prompt describes
+  the full interactive coding agent.
+  """
+  @spec inject_stateless_completion_prompt(
+          pid(),
+          String.t(),
+          JidoClaw.Conversations.Session.t() | nil
+        ) :: :ok | {:error, term()}
+  def inject_stateless_completion_prompt(pid, project_dir, session)
+      when is_pid(pid) and is_binary(project_dir) do
+    system_prompt =
+      resolve_prompt(session, project_dir) <>
+        """
+
+
+        ## Stateless completion capability boundary
+
+        Answer the supplied ordered conversation directly. This request has no tools and cannot
+        launch background workflows. Never claim to have changed files, run commands, called a
+        tool, or started work. You may explain or propose code, but all output is prose returned
+        synchronously in this response.
+        """
+
+    do_inject(pid, system_prompt, project_dir, source_of(session), %{stateless_completion: true})
   end
 
   @doc """

@@ -1,6 +1,7 @@
 defmodule JidoClaw.Tools.SearchCodeTest do
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.SearchCode
   alias JidoClaw.VFS.Sandbox
   alias JidoClaw.VFS.Workspace
@@ -143,6 +144,219 @@ defmodule JidoClaw.Tools.SearchCodeTest do
                SearchCode.run(%{pattern: "hit", path: dir, max_results: 3}, context(dir))
 
       assert result.total_matches == 10
+    end
+
+    test "clamps caller-requested output retention to the hard maximum", %{dir: dir} do
+      content = Enum.map_join(1..1_100, "\n", &"bounded hit #{&1}")
+      write(dir, "bounded.txt", content)
+
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+
+      assert {:ok, result} =
+               SearchCode.search(
+                 %{pattern: "bounded hit", path: dir, max_results: 10_000},
+                 opts
+               )
+
+      assert result.total_matches == 1_100
+      assert result.matches =~ "100 more matches truncated"
+
+      retained =
+        result.matches
+        |> String.split("\n", trim: true)
+        |> Enum.reject(&String.contains?(&1, "more matches truncated"))
+
+      assert Enum.count(retained) == 1_000
+    end
+  end
+
+  describe "hard traversal budgets" do
+    test "rejects oversized regex and glob sources before compilation", %{dir: dir} do
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+
+      assert {:error, regex_reason} =
+               SearchCode.search(%{pattern: String.duplicate("a", 8 * 1024 + 1), path: dir}, opts)
+
+      assert regex_reason =~ "regular expression bytes"
+
+      assert {:error, glob_reason} =
+               SearchCode.search(
+                 %{pattern: "x", path: dir, glob: String.duplicate("a", 4 * 1024 + 1)},
+                 opts
+               )
+
+      assert glob_reason =~ "glob bytes"
+    end
+
+    test "checks the absolute deadline before compiling even an invalid expression", %{dir: dir} do
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+      expired = System.monotonic_time(:millisecond) - 1
+
+      assert {:error, "search limit exceeded: deadline"} =
+               SearchCode.search(
+                 %{pattern: "(", path: dir},
+                 Keyword.put(opts, :search_deadline_ms, expired)
+               )
+    end
+
+    test "uses a configurable local timeout while preserving a tighter Jido deadline" do
+      previous = Application.get_env(:jido_claw, :search_code)
+
+      on_exit(fn ->
+        if previous == nil,
+          do: Application.delete_env(:jido_claw, :search_code),
+          else: Application.put_env(:jido_claw, :search_code, previous)
+      end)
+
+      Application.put_env(:jido_claw, :search_code, timeout_ms: 60_000)
+
+      configured =
+        []
+        |> SearchCode.with_deadline(%{})
+        |> Keyword.fetch!(:search_deadline_ms)
+
+      assert configured > System.monotonic_time(:millisecond) + 50_000
+
+      jido_deadline = System.monotonic_time(:millisecond) + 250
+
+      assert []
+             |> SearchCode.with_deadline(%{__jido_deadline_ms__: jido_deadline})
+             |> Keyword.fetch!(:search_deadline_ms) == jido_deadline
+    end
+
+    test "kills and drains a compiler task that exceeds the absolute deadline", %{dir: dir} do
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+      test_pid = self()
+
+      compile_hook = fn
+        :regex, fun ->
+          fun.()
+
+        :glob, _fun ->
+          send(test_pid, {:glob_compile_blocked, self()})
+
+          receive do
+            :never -> :unreachable
+          end
+      end
+
+      deadline = System.monotonic_time(:millisecond) + 250
+
+      search =
+        Task.async(fn ->
+          SearchCode.search(
+            %{pattern: "x", path: dir, glob: "*.ex"},
+            opts
+            |> Keyword.put(:search_deadline_ms, deadline)
+            |> Keyword.put(:search_compile_hook, compile_hook)
+          )
+        end)
+
+      assert_receive {:glob_compile_blocked, compiler_pid}, 500
+      compiler_ref = Process.monitor(compiler_pid)
+
+      assert {:error, "search limit exceeded: deadline"} = Task.await(search, 1_000)
+      assert_receive {:DOWN, ^compiler_ref, :process, ^compiler_pid, _reason}, 500
+    end
+
+    test "skips an oversized file and preserves matches from searchable files", %{dir: dir} do
+      write(dir, "a_match.txt", "x from a searchable file\n")
+      write(dir, "huge.txt", String.duplicate("x", 5 * 1024 * 1024 + 1))
+
+      assert {:ok, result} =
+               SearchCode.run(%{pattern: "x", path: dir}, context(dir))
+
+      assert result.total_matches == 1
+      assert result.matches =~ "a_match.txt"
+      assert result.matches =~ "partial search: skipped 1 oversized file"
+      assert result.matches =~ "5242880-byte per-file cap"
+    end
+
+    test "returns examined matches with an explicit incomplete note at the deadline", %{dir: dir} do
+      write(dir, "a_first.txt", "deadline target one\n")
+      write(dir, "b_second.txt", "deadline target two\n")
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+      owner = self()
+
+      visit_hook = fn path ->
+        if Path.basename(path) == "b_second.txt" do
+          send(owner, {:second_file_reached, self()})
+
+          receive do
+            :continue_after_deadline -> :ok
+          end
+        end
+      end
+
+      deadline = System.monotonic_time(:millisecond) + 250
+
+      search =
+        Task.async(fn ->
+          SearchCode.search(
+            %{pattern: "deadline target", path: dir},
+            opts
+            |> Keyword.put(:search_deadline_ms, deadline)
+            |> Keyword.put(:search_visit_hook, visit_hook)
+          )
+        end)
+
+      assert_receive {:second_file_reached, search_pid}, 500
+      Process.sleep(300)
+      send(search_pid, :continue_after_deadline)
+
+      assert {:ok, result} = Task.await(search, 1_000)
+      assert result.total_matches == 1
+      assert result.matches =~ "a_first.txt"
+      refute result.matches =~ "b_second.txt"
+      assert result.matches =~ "incomplete search: deadline reached"
+      assert result.matches =~ "total_matches counts only examined content"
+    end
+
+    test "skips a local FIFO without discarding earlier matches or attempting a read", %{dir: dir} do
+      write(dir, "a_match.txt", "anything useful\n")
+      fifo = Path.join(dir, "blocking.pipe")
+
+      {_output, 0} =
+        System.cmd("mkfifo", [fifo], stderr_to_stdout: true, env: Env.scrubbed_cmd_env())
+
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+      deadline = System.monotonic_time(:millisecond) + 500
+
+      search =
+        Task.async(fn ->
+          SearchCode.search(
+            %{pattern: "anything", path: dir},
+            Keyword.put(opts, :search_deadline_ms, deadline)
+          )
+        end)
+
+      assert {:ok, result} = Task.await(search, 1_000)
+      assert result.total_matches == 1
+      assert result.matches =~ "a_match.txt"
+      assert result.matches =~ "partial search: skipped 1 non-regular filesystem entry"
+      assert result.matches =~ "potentially blocking reads"
+    end
+
+    test "fails loudly when a pathological regex exhausts its PCRE work budget", %{dir: dir} do
+      write(dir, "redos.txt", String.duplicate("a", 2_000) <> "!\n")
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+
+      assert {:error, reason} =
+               SearchCode.search(%{pattern: "(a+)+$", path: dir}, opts)
+
+      assert reason =~ "regular expression match_limit"
+    end
+
+    test "honors an already-expired absolute search deadline", %{dir: dir} do
+      write(dir, "deadline.txt", "match\n")
+      assert {:ok, opts} = Sandbox.resolver_opts(%{project_dir: dir})
+      expired = System.monotonic_time(:millisecond) - 1
+
+      assert {:error, "search limit exceeded: deadline"} =
+               SearchCode.search(
+                 %{pattern: "match", path: dir},
+                 Keyword.put(opts, :search_deadline_ms, expired)
+               )
     end
   end
 

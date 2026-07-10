@@ -4,9 +4,10 @@ defmodule JidoClaw.Orchestration.WorkflowLease.Middleware do
 
   `init/1` is the **only** callback (cleanup is monitor-driven by the
   `Sidecar`). The runner normalizes the middleware list to
-  `[WorkflowLease.Middleware, ReactorMiddleware | rest]`, so this `init/1` runs
-  **first** — the row is stamped at `:pending`, before `ReactorMiddleware`
-  appends `run_started`. A crash in the gap therefore leaves a clean
+  `[WorkflowLease.Middleware | rest] ++ [ReactorMiddleware]`, so this `init/1`
+  runs **first** and the durable recorder runs last. The row is stamped at
+  `:pending` before custom init hooks and `ReactorMiddleware` appends
+  `run_started` only after those hooks succeed. A crash in the gap leaves a clean
   `:pending` + claimed + expiry row (which `:claimable` selects), never an
   ambiguous `:running`-unclaimed crack.
 

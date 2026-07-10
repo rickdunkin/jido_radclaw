@@ -35,6 +35,7 @@ defmodule JidoClaw.Network.ProtocolTest do
       assert Map.has_key?(message, "type")
       assert Map.has_key?(message, "from")
       assert Map.has_key?(message, "payload")
+      assert message["signature_version"] == 2
       assert Map.has_key?(message, "signature")
       assert Map.has_key?(message, "timestamp")
     end
@@ -55,12 +56,14 @@ defmodule JidoClaw.Network.ProtocolTest do
       assert message["payload"] == payload
     end
 
-    test "should sign the payload with the identity's private key", %{identity: identity} do
+    test "should sign the canonical envelope with the identity's private key", %{
+      identity: identity
+    } do
       payload = %{"content" => "abc"}
       message = Protocol.encode(:share, payload, identity)
 
-      payload_json = Jason.encode!(payload)
-      assert Identity.verify(payload_json, message["signature"], identity.public_key)
+      assert {:ok, bytes} = Protocol.signing_bytes(message)
+      assert Identity.verify(bytes, message["signature"], identity.public_key)
     end
 
     test "should produce a UUID-formatted id", %{identity: identity} do
@@ -94,6 +97,18 @@ defmodule JidoClaw.Network.ProtocolTest do
       message = Protocol.encode("response", %{}, identity)
       assert message["type"] == "response"
     end
+
+    test "normalizes string types before signing and rejects unknown types", %{
+      identity: identity
+    } do
+      message = Protocol.encode("SHARE", %{"ok" => true}, identity)
+      assert message["type"] == "share"
+      assert Protocol.verify_message(message, identity.public_key)
+
+      assert_raise ArgumentError, ~r/invalid network message type/, fn ->
+        Protocol.encode(:unknown, %{}, identity)
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -117,6 +132,7 @@ defmodule JidoClaw.Network.ProtocolTest do
         type: encoded["type"],
         from: encoded["from"],
         payload: encoded["payload"],
+        signature_version: encoded["signature_version"],
         signature: encoded["signature"],
         timestamp: encoded["timestamp"]
       }
@@ -154,6 +170,16 @@ defmodule JidoClaw.Network.ProtocolTest do
       bad = Map.delete(encoded, "signature")
 
       assert {:error, _reason} = Protocol.decode(bad)
+    end
+
+    test "should reject absent or unsupported signature versions", %{identity: identity} do
+      encoded = Protocol.encode(:share, %{}, identity)
+
+      assert {:error, {:missing, "signature_version"}} =
+               Protocol.decode(Map.delete(encoded, "signature_version"))
+
+      assert {:error, :unsupported_signature_version} =
+               Protocol.decode(Map.put(encoded, "signature_version", 1))
     end
 
     test "should return error when 'timestamp' field is missing", %{identity: identity} do
@@ -319,6 +345,49 @@ defmodule JidoClaw.Network.ProtocolTest do
 
       assert {:error, :type_mismatch} =
                Protocol.verify_and_normalize(message, "response", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject a signed message relabelled to a different expected type", %{
+      identity: identity,
+      pub: pub
+    } do
+      message = Protocol.request_message("question", [], identity)
+      relabelled = %{message | "type" => "share"}
+
+      assert {:error, :bad_signature} =
+               Protocol.verify_and_normalize(relabelled, "share", fn _ -> {:ok, pub} end)
+    end
+
+    test "should reject mutations to signed id and timestamp fields", %{
+      identity: identity,
+      pub: pub
+    } do
+      message = Protocol.share_message(%{"a" => 1}, identity)
+
+      for tampered <- [
+            %{message | "id" => "other-id"},
+            %{message | "timestamp" => "2020-01-01T00:00:00Z"}
+          ] do
+        assert {:error, :bad_signature} =
+                 Protocol.verify_and_normalize(tampered, "share", fn _ -> {:ok, pub} end)
+      end
+    end
+
+    test "should reject a correctly signed stale envelope", %{
+      identity: identity,
+      pub: pub,
+      priv: priv
+    } do
+      unsigned_stale =
+        %{"a" => 1}
+        |> Protocol.share_message(identity)
+        |> Map.put("timestamp", "2020-01-01T00:00:00Z")
+
+      assert {:ok, bytes} = Protocol.signing_bytes(unsigned_stale)
+      stale = Map.put(unsigned_stale, "signature", Identity.sign(bytes, priv))
+
+      assert {:error, :stale_message} =
+               Protocol.verify_and_normalize(stale, "share", fn _ -> {:ok, pub} end)
     end
 
     test "should propagate the key fetcher's error without verifying", %{identity: identity} do

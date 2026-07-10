@@ -1,13 +1,10 @@
 defmodule JidoClaw.Conversations.RequestCorrelationTest do
   @moduledoc """
-  `RequestCorrelation` is `global? true` (see
-  `lib/jido_claw/conversations/resources/request_correlation.ex:79-83`):
-  the resource keeps `tenant_id` as a regular accepted attribute and
-  callers (`lib/jido_claw.ex:192`) supply it inside the attrs map.
-  These tests mirror that production-call shape rather than threading
-  `tenant:` opts through, since the `:attribute` strategy under
-  `global? true` does not auto-populate the attribute from the opt and
-  the action would fail with `field: :tenant_id ... required`.
+  `RequestCorrelation` is `global? true`: the resource keeps `tenant_id`
+  as a regular accepted attribute, while its public interface still requires
+  an active, matching tenant actor. These tests mirror that production-facing
+  shape. Internal signal plumbing deliberately opts out of authorization at
+  each callsite instead of making this resource a general no-actor hole.
   """
   use JidoClaw.TenantCase, async: false
 
@@ -16,14 +13,19 @@ defmodule JidoClaw.Conversations.RequestCorrelationTest do
   describe ":register accept list" do
     test "supplying :inserted_at is rejected (not in accept list)" do
       %{tenant_id: tenant, session: session} = seed()
+      actor = actor_for(tenant)
 
       result =
-        RequestCorrelation.register(%{
-          request_id: "req-#{System.unique_integer([:positive])}",
-          session_id: session.id,
-          tenant_id: tenant,
-          inserted_at: DateTime.add(DateTime.utc_now(), -3600, :second)
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: "req-#{System.unique_integer([:positive])}",
+            session_id: session.id,
+            tenant_id: tenant,
+            inserted_at: DateTime.add(DateTime.utc_now(), -3600, :second)
+          },
+          tenant: tenant,
+          actor: actor
+        )
 
       # Ash returns an Ash.Error.Invalid wrapping an
       # Ash.Error.Invalid.NoSuchInput (or similar) when an unaccepted
@@ -35,15 +37,20 @@ defmodule JidoClaw.Conversations.RequestCorrelationTest do
 
     test "registering without :inserted_at and :expires_at uses build-time defaults" do
       %{tenant_id: tenant, session: session} = seed()
+      actor = actor_for(tenant)
 
       request_id = "req-#{System.unique_integer([:positive])}"
 
       assert {:ok, row} =
-               RequestCorrelation.register(%{
-                 request_id: request_id,
-                 session_id: session.id,
-                 tenant_id: tenant
-               })
+               RequestCorrelation.register(
+                 %{
+                   request_id: request_id,
+                   session_id: session.id,
+                   tenant_id: tenant
+                 },
+                 tenant: tenant,
+                 actor: actor
+               )
 
       # agent_id omitted → resource default "main" (it is now NOT NULL, so an
       # omitted value must fall back to the main slice, never a NULL);

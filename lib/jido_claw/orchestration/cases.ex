@@ -14,15 +14,16 @@ defmodule JidoClaw.Orchestration.Cases do
   ## Approve
 
   One transaction: `AgentCase.approve` (pending-guarded) + an
-  `approval_resolved` event (→ `:running`) + the case's `:approved` timeline
-  event. After commit: the gate's `after_approved/1` hook is dispatched to an
+  `approval_resolved` event (→ `:running`) + a rotated live resume lease + the
+  case's `:approved` timeline event. After commit: the gate's `after_approved/1` hook is dispatched to an
   isolated, timed supervised task (best-effort, logged — Decision 8); the
   dispatch returns immediately, so a slow, hung, or crashing hook can never
   block or strand the synchronous `GateResume.resume/2` that follows and
   re-runs the reactor's durable downstream steps. Pass `resume: false` to
   commit the decision **without** resuming — the seam tests and the future
   plan-gate producer's approve-then-batch-resume flow use; the run stays
-  `:running` with its checkpoint intact until something resumes it.
+  `:running` with its checkpoint and an expiring, reclaimable resume claim until
+  something resumes it.
 
   ## Reject
 
@@ -128,6 +129,7 @@ defmodule JidoClaw.Orchestration.Cases do
   alias JidoClaw.Orchestration.GateResume
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -430,7 +432,8 @@ defmodule JidoClaw.Orchestration.Cases do
 
   defp dispatch(:approve, agent_case, run, attrs, tenant, actor, resume?) do
     with :ok <- refuse_orphaned_by_terminal_parent(run, tenant, actor),
-         {:ok, gate} <- commit_approve(agent_case, run, attrs, tenant, actor) do
+         {:ok, {gate, resume_token}} <-
+           commit_approve(agent_case, run, attrs, tenant, actor) do
       # `run` is the decision-time snapshot — fine for the best-effort hook and
       # the id-only broadcast; the authoritative post-resume run is returned by
       # GateResume (which reloads internally).
@@ -438,7 +441,7 @@ defmodule JidoClaw.Orchestration.Cases do
       broadcast_resolved(run, gate, :approve)
 
       if resume? do
-        finalize_approve(run, tenant, actor)
+        finalize_approve(run, resume_token, tenant, actor)
       else
         WorkflowRun.by_id(run.id, tenant: tenant, actor: actor)
       end
@@ -678,24 +681,35 @@ defmodule JidoClaw.Orchestration.Cases do
   # a commit that took the case-row UPDATE before the run lock would invert
   # that order and open a deadlock window.
   defp commit_approve(agent_case, run, attrs, tenant, actor) do
+    resume_token = Ash.UUID.generate()
+
     Ash.transact([AgentCase, AgentCaseEvent, WorkflowEvent], fn ->
-      with {:ok, _locked_run} <- lock_run(run.id, tenant, actor),
+      with {:ok, locked_run} <- lock_run(run.id, tenant, actor),
            {:ok, locked} <- lock_case(agent_case.id, tenant, actor),
            :ok <- ensure_case_pending(locked),
            {:ok, gate} <- AgentCase.approve(locked, attrs, tenant: tenant, actor: actor),
            {:ok, _event} <-
              WorkflowLog.append(
-               run,
+               locked_run,
                :approval_resolved,
                %{agent_case_id: gate.id, decision: :approve},
                tenant: tenant,
                actor: actor
              ),
+           :ok <- claim_approved_resume(locked_run, resume_token),
            {:ok, _case_event} <-
              WorkflowLog.case_event(gate, :approved, decision_data(gate), tenant, actor) do
-        gate
+        {gate, resume_token}
       end
     end)
+  end
+
+  defp claim_approved_resume(run, resume_token) do
+    case WorkflowLease.claim_resume(run.id, resume_token, run.claim_token) do
+      {:ok, :claimed} -> :ok
+      {:ok, :lost} -> {:error, :resume_claim_lost}
+      {:error, reason} -> {:error, {:resume_claim_failed, reason}}
+    end
   end
 
   defp commit_reject(agent_case, run, attrs, tenant, actor) do
@@ -811,8 +825,12 @@ defmodule JidoClaw.Orchestration.Cases do
     }
   end
 
-  defp finalize_approve(run, tenant, actor) do
-    case GateResume.resume(run, tenant: tenant, actor: actor) do
+  defp finalize_approve(run, resume_token, tenant, actor) do
+    case GateResume.resume(run,
+           tenant: tenant,
+           actor: actor,
+           claim_mode: {:reuse, resume_token}
+         ) do
       {:ok, _value, resumed_run} -> {:ok, resumed_run}
       {:error, reason, _run} -> {:error, reason}
     end

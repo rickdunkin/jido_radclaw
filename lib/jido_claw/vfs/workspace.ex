@@ -25,17 +25,10 @@ defmodule JidoClaw.VFS.Workspace do
   require Logger
 
   alias Jido.Shell.VFS
+  alias JidoClaw.Config
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Shell.SessionManager
-
-  @adapter_keys %{
-    "local" => :local,
-    "in_memory" => :in_memory,
-    "github" => :github,
-    "s3" => :s3,
-    "git" => :git
-  }
-  @valid_adapters Map.values(@adapter_keys)
+  alias JidoClaw.VFS.AdapterPolicy
 
   @registry JidoClaw.VFS.WorkspaceRegistry
   @supervisor JidoClaw.VFS.WorkspaceSupervisor
@@ -229,45 +222,36 @@ defmodule JidoClaw.VFS.Workspace do
   # -- Config-driven mounts ---------------------------------------------------
 
   defp mount_from_config(workspace_id, project_dir) do
-    config = JidoClaw.Config.load(project_dir)
+    project_dir
+    |> Config.load()
+    |> Config.vfs_mounts()
+    |> case do
+      {:ok, mounts} ->
+        Enum.each(mounts, &mount_config_entry(workspace_id, &1))
 
-    config
-    |> get_in(["vfs", "mounts"])
-    |> List.wrap()
-    |> Enum.each(fn entry ->
-      path = MapKeys.coalesce_field(entry, "path")
-      adapter = MapKeys.coalesce_field(entry, "adapter")
-
-      cond do
-        not is_binary(path) or path == "" ->
-          Logger.warning("[VFS.Workspace] Skipping mount with invalid path: #{inspect(entry)}")
-
-        adapter in [nil, ""] ->
-          Logger.warning("[VFS.Workspace] Skipping mount #{path}: missing :adapter key")
-
-        true ->
-          case parse_adapter_key(adapter) do
-            {:ok, adapter_key} ->
-              _ = do_mount(workspace_id, path, adapter_key, entry)
-
-            {:error, reason} ->
-              log_mount_warning(path, adapter, reason)
-          end
-      end
-    end)
-  end
-
-  defp parse_adapter_key(adapter) when is_atom(adapter) and adapter in @valid_adapters,
-    do: {:ok, adapter}
-
-  defp parse_adapter_key(adapter) when is_binary(adapter) do
-    case Map.fetch(@adapter_keys, adapter) do
-      {:ok, atom} -> {:ok, atom}
-      :error -> {:error, {:unknown_adapter, adapter}}
+      {:error, reason} ->
+        Logger.warning("[VFS.Workspace] Skipping invalid vfs.mounts config: #{inspect(reason)}")
     end
   end
 
-  defp parse_adapter_key(_), do: {:error, :invalid_adapter}
+  defp mount_config_entry(workspace_id, entry) do
+    path = MapKeys.coalesce_field(entry, "path")
+    adapter = MapKeys.coalesce_field(entry, "adapter")
+
+    cond do
+      not is_binary(path) or path == "" ->
+        Logger.warning("[VFS.Workspace] Skipping mount with invalid path: #{inspect(entry)}")
+
+      adapter in [nil, ""] ->
+        Logger.warning("[VFS.Workspace] Skipping mount #{path}: missing :adapter key")
+
+      true ->
+        case AdapterPolicy.parse_config_key(adapter) do
+          {:ok, adapter_key} -> _ = do_mount(workspace_id, path, adapter_key, entry)
+          {:error, reason} -> log_mount_warning(path, adapter, reason)
+        end
+    end
+  end
 
   # -- Adapter translation + mount --------------------------------------------
 

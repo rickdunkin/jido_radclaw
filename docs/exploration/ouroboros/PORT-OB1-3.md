@@ -31,6 +31,35 @@ Findings are **engine-synthesized** riding Hook R (trust-boundary law 2), v1
 classifies all three claim kinds, and the classifier lives at
 `JidoClaw.Orchestration.Verify.Evidence`.
 
+## Proposed audit amendment — content-aware `files_touched` proof
+
+**Status: explicitly signed off by the operator 2026-07-09 and implemented.**
+The post-implementation audit found one false-
+fabrication case in ratified decision 5: when a path is already dirty at wave
+dispatch, another real edit can leave its porcelain XY status unchanged (for
+example, `" M" -> " M"`). Status-only comparison then marks a truthful
+`files_touched` claim unsupported and can exhaust the evidence lens's fixer
+budget.
+
+The proposed correction preserves the signed invariant that bare existence is
+never proof and keeps the conservative can't-verify posture:
+
+1. Keep the untracked-inclusive before/after porcelain snapshots and their
+   existing status-transition/rename behavior.
+2. At dispatch, content-fingerprint only paths already present in the dirty or
+   untracked porcelain snapshot; at fold, fingerprint the union of before/after
+   snapshot paths. Fingerprinting is bounded and symlink-safe.
+3. A claimed path is supported when its status changed **or** both bounded
+   fingerprints exist and differ. A missing/unreadable fingerprint contributes
+   no proof; it never manufactures a discrepancy beyond the existing status
+   result.
+4. Missing before-snapshot still skips the entire files kind. Wave-union and
+   containment-Trace semantics remain unchanged.
+
+This is a deliberately-changed local correction to decision 5, not a new
+Ouroboros fidelity claim. It adopts the verify authority's existing lesson that
+porcelain cannot detect repeated content edits to an already-dirty path.
+
 ## What the source actually does
 
 Ouroboros's `fat_harness` mode replaces its trivial default AC success
@@ -112,7 +141,8 @@ evidence contract. In their terms:
     runs it always but **findings-only**.
 
 The camus rider (C1-6c, inventory sketch (c)): worker `files_changed` claims
-reconciled against the `git status --porcelain` delta at wave commit;
+reconciled against bounded before/after filesystem evidence at wave commit
+(status transitions, plus content fingerprints for already-dirty paths);
 divergence is a Trace warning first (observe), a held stage later (enforce —
 explicitly post-v1 here). The OpenHelm rider is a *shape*: count fabrication
 breaches durably and breach-visibly rather than only demoting the run, and
@@ -131,7 +161,7 @@ suppress log-count-based demotion on compacted transcripts.
 | Masked form = trailing filter pipeline + invocation extractable when plumbing allowed (`claims.py:227-254`) | `ShellCommand.exit_code_provenance/1` → `%Provenance{exit_code: :preserved \| :masked \| :unknown, test_runner: %{tool, skipped?} \| nil}`, derived from the INTERNAL `resolved` `{connector, %Command{}}` list (`shell_command.ex:544-547`) — never from public `%Analysis{}` (loses connector context). NOT a new effect kind, NOT an `%Analysis` field (`analyze/1`, `@effect_kinds`, the `:opaque` floor byte-untouched) | Same allowlist `{tail, head, cat, less, more}`, same pipefail rule (exactly `["set","-o","pipefail"]`, before the pipeline, across `&&`/`;`), same residual-pipe refusal. House extension (decision 6): explicit exit-swallow idioms `\|\| true` / `\|\| :` / `; true` / `; :` ⇒ `:masked`. General `;`-chain shadowing (`mix test ; echo done`) conservatively `:preserved` — miss, never false finding. Any sub-command `:unknown`/parse failure ⇒ `:unknown`. |
 | Trailing-redirect peel regex (`shell_parsing.py:316-318`) | **Not ported** — ShellCommand already parses redirects structurally (`strip/1` drops `{:redirect, _}` tokens) | Documented divergence: the regex exists because they work on raw strings. |
 | Test-runner table + Gradle/Maven skip flags (`:261-284`, `:192-237`) | Ported table + **house extension: `mix test`**; skip-flag detection per the port table surfaces as `test_runner.skipped?: true` | `mix precommit` deliberately NOT a test-runner (decision 6): it is the Verify authority's command — recognizing it here would double-cover one invocation with two authorities. |
-| files_touched: transcript path proof, existence insufficient (`claims.py:257-337`) | **Replaced**: claimed path supported iff its git status CHANGED during this wave — dispatch-time vs fold-time snapshots of a new untracked-inclusive `Verify.Git.porcelain_all/1` (`--untracked-files=all`; existing tracked-only `porcelain/1` byte-untouched — verify-integrity load-bearing). Status-map diff incl. appearing as `??`; rename `a -> b` rows parsed. Per-stage claims reconcile against the WAVE delta (union — a same-wave sibling's change counts; never over-flip). Missing before-snapshot ⇒ files kind skips this wave. Containment (changed∖claimed) Trace-warning-only | Decision 5. Same core invariant preserved: **bare existence is never support** (their "stale file must not prove this run" ⇒ our "pre-existing clean file can't be claimed"). Engine-side git replaces transcript path forensics — we have the working tree; they had foreign vendor transcripts. |
+| files_touched: transcript path proof, existence insufficient (`claims.py:257-337`) | **Replaced**: claimed path supported by a wave-scoped porcelain status transition or, under signed amendment 9, by two present bounded fingerprints whose path/type/mode/content identities differ while status stays stable. Both `Verify.Git.porcelain/1` and the named evidence seam `porcelain_all/1` are nonignored-untracked-inclusive. Status-map diff includes appearing `??` entries and both rename sides; exact C-quoted paths are decoded. Per-stage claims reconcile against the WAVE delta (union — a same-wave sibling's change counts; never over-flip). Missing before-snapshot ⇒ files kind skips this wave; missing/unreadable fingerprints add no proof. Containment (changed∖claimed) Trace-warning-only | Decisions 5 and 9. Same core invariant preserved: **bare existence is never support** (their "stale file must not prove this run" ⇒ our "pre-existing clean file can't be claimed"). Engine-side filesystem evidence replaces transcript path forensics — we have the working tree; they had foreign vendor transcripts. |
 | Verdict rule: form_mismatch only when ALL unsupported are masking; else FABRICATION_SUSPECTED (pin `:6182-6198`) | Per-claim `supported \| unsupported \| form_mismatch \| skipped`; verdict `fabrication_suspected` if any `unsupported`, else `form_mismatch` if any masked, else `clean`/`skipped` | Verbatim rule (their masked claims land in both lists; the len-equality check IS "no genuinely-absent claim" — our per-claim enum encodes the same partition). |
 | `EVIDENCE_MISSING` on empty transcript (pin `:6111-6116`) | No transcript ⇒ transcript kinds **skipped** (trust); files kind still reconciles (works on the vendor arm, where in-process tool rows don't exist) | Deliberately changed: their gate mode must fail claims it can't check; our findings-only posture trusts them (conservative rule). The OpenHelm compaction guard folds in here: our rows are compaction-immune (Recorder writes from `ai.tool.*` signals regardless of context compaction), so the guard translates to this absent-transcript skip. |
 | Failure classes → recovery policies (`failure_taxonomy.py:74-96`) | **Dropped** — findings ride Hook R (`build_feedback/4` by shape); the fixer loop + stall/cap machinery own routing | Their RETRY/REDISPATCH policies are executor-gate plumbing; #1202 is why we never re-grow it. |
@@ -170,7 +200,7 @@ suppress log-count-based demotion on compacted transcripts.
 | (A) Required evidence record, gate verdict → optional advisory block, findings-only | fat_harness contract | Upstream #1202 rollback is the lesson; the ratified posture. Absent block ⇒ posture unchanged; "missing required field ⇒ unsupported" dropped with it. |
 | (B) `EVIDENCE_MISSING` fail → transcript kinds skip (trust); files kind still reconciles | pin `:6111-6116` | Findings-only + conservative rule; also the vendor-arm reality (no in-process tool rows there). OpenHelm's compaction guard folds into the same skip; our rows are compaction-immune. |
 | (C) Text-scan test success → structured `exit_code == 0` + provenance | `test_detection.py:83-127` | We own the executor; exit codes are row data. Their text heuristics parse foreign transcripts — porting them would re-introduce prose trust we don't need. |
-| (D) files_touched transcript forensics → wave-scoped git before/after status diff (untracked-inclusive), union semantics, containment Trace-only | `claims.py:257-337` | camus C1-6c absorbed: engine-side git is the stronger witness. Same invariant (existence ≠ support); missing before-snapshot ⇒ skip, never a permissive fallback. |
+| (D) files_touched transcript forensics → wave-scoped before/after status transitions plus bounded fingerprints for status-stable dirty paths, union semantics, containment Trace-only | `claims.py:257-337` | camus C1-6c absorbed; signed amendment 9 supersedes decision 5's status-only proof. Engine-side filesystem evidence is the stronger witness. Same invariant (existence ≠ support); missing before-snapshot ⇒ skip and missing fingerprints add no proof, never a permissive fallback. |
 | (E) Masked ⇒ failed verdict → masked ⇒ context-only (`form_mismatch` status, no finding, no flip) | verdict semantics | v1 scope (decision 6): masking is a real-transcript shape, not a positive discrepancy. It still rides the classification ledger + evidence-report so reviewers see it. |
 | (F) Their masking scope → + explicit exit-swallow idioms (`\|\| true`/`\|\| :`/`; true`/`; :`); general `;`-shadowing stays `:preserved` | shell analyzer | House no-masked-gates rule codified; the general `;`-chain case is a documented miss (conservative: never a false finding). |
 | (G) Trailing-redirect peel regex → structural redirect handling | `shell_parsing.py:316-318` | ShellCommand already strips `{:redirect, _}` tokens at parse level. |
@@ -251,11 +281,12 @@ posture, conservative override rule.
    implementer wave lets the fixer run concurrently with first-pass
    reviewers. Accepted for v1 (the loop self-heals via Hook F + the
    deterministic re-check).
-5. **files reconcile is before/after wave-scoped**: supported iff the path's
-   git status CHANGED this wave (untracked-inclusive `porcelain_all/1`
-   snapshots at dispatch/fold; union across same-wave stages). Bare
-   existence is NOT support. Missing before-snapshot ⇒ the kind skips
-   (never the permissive fallback). Containment Trace-warning-only in v1.
+5. **files reconcile is before/after wave-scoped**: originally status-only;
+   superseded in its proof rule by signed amendment 9 below. Status changes
+   remain sufficient proof (untracked-inclusive `porcelain_all/1` snapshots
+   at dispatch/fold; union across same-wave stages). Bare existence is NOT
+   support. Missing before-snapshot ⇒ the kind skips (never the permissive
+   fallback). Containment Trace-warning-only in v1.
 6. **Masking scope v1**: trailing transforming pipe w/o pipefail + ONLY the
    explicit exit-swallow idioms (`|| true` / `|| :` / `; true` / `; :`);
    general `;`-chain shadowing conservatively `:preserved` (documented
@@ -266,8 +297,17 @@ posture, conservative override rule.
    the per-wave fold, restart-safe.
 8. **Slice-2 ReDoS belt-and-suspenders**: per-assertion scan under a bounded
    Task timeout, in v1 (cheap), atop the ported 200-char pattern cap.
+9. **Signed 2026-07-09 audit correction — content-aware files reconcile**:
+   retain status transitions as proof, and additionally accept a bounded
+   before/after content-fingerprint change for a path whose porcelain status
+   stayed identical. Missing/unreadable fingerprints never count as proof;
+   every other decision-5 behavior remains unchanged. A recovered open wave
+   has lost its process-local before snapshot, so rebind keeps that baseline
+   nil and the files kind skips; it must never capture post-edit state as a
+   fabricated before image. **Explicitly signed by the operator 2026-07-09.**
 
-Sign-off: **granted by the operator 2026-07-08** (explicit sign-off act on
-this map, separate from implementation-plan approval, ratifying decisions
-1–8 above). Code follows this map. After shipping,
+Sign-off: **granted by the operator 2026-07-08** for decisions 1–8 and
+**granted explicitly 2026-07-09** for decision 9 (each a sign-off act on this
+map, separate from implementation-plan approval). The shipped code follows
+all nine decisions. After shipping,
 `docs/system/evidence-floor.md` cites this map as port provenance.

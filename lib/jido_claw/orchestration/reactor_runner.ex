@@ -194,6 +194,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
   require Logger
 
+  alias JidoClaw.Authorization.Actor
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Deadline
   alias JidoClaw.Orchestration.DefinitionFingerprint
@@ -392,15 +393,17 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp build_runnable(_reactor), do: {:error, :not_a_reactor}
 
   @doc """
-  Normalize `base`'s middleware list to `[WorkflowLease.Middleware,
-  ReactorMiddleware | rest]`, idempotently (both are stripped first, so a
+  Normalize `base`'s middleware list to
+  `[WorkflowLease.Middleware | rest] ++ [ReactorMiddleware]`, idempotently (both are stripped first, so a
   reactor that already declares either runs with exactly one of each).
 
-  The order is load-bearing: `init/1` runs in list order, so `Lease.init`
-  stamps the claim at `:pending` **before** `ReactorMiddleware.init` appends
-  `run_started` — a crash in the gap leaves a `:pending` + claimed row, never an
-  ambiguous `:running`-unclaimed crack. `GateResume` reuses this so a checkpoint
-  written before WS1 still re-establishes the lease on resume. No-raise (a
+  The order is load-bearing in BOTH directions: `init/1` and `complete/2` run
+  in list order. `Lease.init` stamps the claim at `:pending` before anything
+  else. `ReactorMiddleware` runs last, so `run_started` follows every custom
+  init and the durable `run_completed` follows every custom completion hook.
+  A later hook can therefore never return an error after the run was already
+  committed completed. `GateResume` reuses this so a checkpoint written before
+  WS1 still re-establishes the lease on resume. No-raise (a
   `with`, not a `{:ok, _} = …` match): an `add_middleware/2` failure returns
   `{:error, reason}` → the runner's `{:error, reason, nil}` pre-run path.
   """
@@ -408,11 +411,13 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   def normalize_middleware(base) do
     rest = Enum.reject(base.middleware, &(&1 in [ReactorMiddleware, WorkflowLease.Middleware]))
 
-    # add_middleware prepends, so adding ReactorMiddleware then WorkflowLease.Middleware
-    # yields [WorkflowLease.Middleware, ReactorMiddleware | rest]. The inner add is the
-    # `with`'s result directly (its own {:ok, _}/{:error, _}) — no redundant rebind.
-    with {:ok, builder} <- Builder.add_middleware(%{base | middleware: rest}, ReactorMiddleware) do
-      Builder.add_middleware(builder, WorkflowLease.Middleware)
+    # Use Builder for both validation paths, then install the deliberate final
+    # order. Builder only prepends and cannot express "lease first, recorder
+    # last" directly.
+    with {:ok, with_recorder} <-
+           Builder.add_middleware(%{base | middleware: rest}, ReactorMiddleware),
+         {:ok, validated} <- Builder.add_middleware(with_recorder, WorkflowLease.Middleware) do
+      {:ok, %{validated | middleware: [WorkflowLease.Middleware | rest] ++ [ReactorMiddleware]}}
     end
   end
 
@@ -778,9 +783,10 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp handle_gate_pause(reactor, run, opts) do
     with {:ok, checkpoint} <- safe_encode_checkpoint(reactor, opts),
          {:ok, updated} <-
-           WorkflowRun.set_checkpoint(run, %{resume_checkpoint: checkpoint},
+           WorkflowLog.persist_gate_checkpoint(run, checkpoint,
              tenant: Keyword.get(opts, :tenant, run.tenant_id),
-             actor: Keyword.get(opts, :actor)
+             actor: Keyword.get(opts, :actor),
+             claim_fence_token: Keyword.get(opts, :claim_token)
            ),
          {:ok, case_id} <- pending_case_id(updated, opts) do
       RunPubSub.broadcast_gate_requested(updated.id, updated.tenant_id, case_id)
@@ -889,7 +895,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
 
     case WorkflowLog.append(run, :run_failed, %{error: formatted},
            tenant: Keyword.get(opts, :tenant, run.tenant_id),
-           actor: Keyword.get(opts, :actor),
+           actor: Actor.system(run.tenant_id),
            # WS1 fence B: assert our ownership at the DB level. We only reach the
            # backstop for runs we own (fence A short-circuits fenced runs first),
            # so this normally matches; if a fenced executor ever reached here, the
@@ -940,7 +946,7 @@ defmodule JidoClaw.Orchestration.ReactorRunner do
   defp reload(run, opts) do
     case WorkflowRun.by_id(run.id,
            tenant: Keyword.get(opts, :tenant),
-           actor: Keyword.get(opts, :actor)
+           actor: Actor.system(run.tenant_id)
          ) do
       {:ok, %WorkflowRun{} = reloaded} -> reloaded
       _ -> run

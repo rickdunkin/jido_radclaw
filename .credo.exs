@@ -15,11 +15,12 @@
       color: true,
       checks: %{
         enabled: [
-          # ex_dna — AI code-duplication detector. Ash `relationships` blocks
-          # are declarative config (the same belongs_to shape recurs across
-          # tenant-scoped resources by design, like Ecto `schema` bodies) —
-          # not copy-pasted logic — so their bodies are skipped.
-          {ExDNA.Credo, [excluded_macros: [:relationships]]},
+          # ex_dna — AI code-duplication detector. Ash `relationships` and
+          # `policies` blocks are declarative config, not copy-pasted logic.
+          # Several tenant resources intentionally repeat the same active-tenant
+          # policy shape while their actions/data layers prevent them from
+          # sharing the full `JidoClaw.Resource` macro.
+          {ExDNA.Credo, [excluded_macros: [:relationships, :policies]]},
           # ash_credo — Ash framework code-quality checks
           {AshCredo.Check.Warning.AuthorizeFalse, []},
           {AshCredo.Check.Warning.AuthorizerWithoutPolicies, []},

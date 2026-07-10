@@ -12,10 +12,12 @@ defmodule JidoClaw.Orchestration.GateDispositionTest do
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.Cancellation
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.GateDisposition
   alias JidoClaw.Orchestration.RunPubSub
   alias JidoClaw.Orchestration.WorkflowEvent
+  alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun
 
@@ -125,6 +127,70 @@ defmodule JidoClaw.Orchestration.GateDispositionTest do
 
       assert reload(run.id, ctx).status == :failed
       assert case_status(gate.id, ctx) == :cancelled
+    end
+  end
+
+  describe "checkpoint/disposition fencing" do
+    test "a terminal decision between gate-open and checkpoint write cannot restore ciphertext",
+         ctx do
+      {run, _gate} = dangling_pair(ctx)
+      checkpoint = :erlang.term_to_binary(:stale)
+
+      assert {:ok, %WorkflowRun{status: :abandoned}} = Cancellation.cancel(run, scope(ctx))
+
+      assert {:error, {:checkpoint_state_changed, :abandoned}} =
+               WorkflowLog.persist_gate_checkpoint(run, checkpoint, scope(ctx))
+
+      terminal = reload(run.id, ctx)
+      assert terminal.status == :abandoned
+      assert is_nil(terminal.encrypted_resume_checkpoint)
+    end
+
+    test "caseless recovery cancellation backs off after a committed approval", ctx do
+      {run, gate} = parked_pair(ctx)
+      assert {:ok, _} = AgentCase.approve(gate, %{}, scope(ctx))
+      assert {:ok, _} = WorkflowLog.append(run, :approval_resolved, %{}, scope(ctx))
+
+      assert {:error, {:decided, :running}} =
+               GateDisposition.cancel_caseless_parked_child(run.id, "stale scan", scope(ctx))
+
+      assert reload(run.id, ctx).status == :running
+      refute :run_cancelled in kinds(run.id, ctx)
+    end
+
+    test "a stale live-recovery token cannot dispose a successor owner's parked gate", ctx do
+      {:ok, run} =
+        WorkflowRun.create(%{name: "claimed-gate", workflow_type: "reactor"}, scope(ctx))
+
+      current_token = Ash.UUID.generate()
+      assert {:ok, :claimed} = WorkflowLease.stamp(run.id, current_token, nil)
+      assert {:ok, _} = WorkflowLog.append(reload(run.id, ctx), :run_started, %{}, scope(ctx))
+
+      {:ok, gate} =
+        WorkflowLog.gate_open(
+          reload(run.id, ctx),
+          %{
+            workflow_run_id: run.id,
+            step_name: "plan-gate",
+            kind: :plan,
+            gate_module: JidoClaw.Gates.PlanGate,
+            details: %{}
+          },
+          scope(ctx)
+        )
+
+      stale_token = Ash.UUID.generate()
+
+      assert {:error, :claim_fenced} =
+               GateDisposition.cancel_dangling_gate(
+                 run.id,
+                 "stale reclaimer",
+                 Keyword.put(scope(ctx), :claim_fence_token, stale_token)
+               )
+
+      assert reload(run.id, ctx).status == :awaiting_approval
+      assert case_status(gate.id, ctx) == :pending
+      refute :run_failed in kinds(run.id, ctx)
     end
   end
 

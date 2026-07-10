@@ -10,10 +10,12 @@ defmodule JidoClaw.MCP.Consumer do
 
   `init/1` returns immediately and `spawn_monitor`s a **separate** prep process
   so the GenServer mailbox stays free. Prep (best-effort, internally rescued —
-  it always sends `{:prepared, …}` unless hard-killed): read config → register
-  endpoints → await ready → discover tools → compile safe proxy modules. The
-  Consumer then publishes the per-server approval policy to `:persistent_term`,
-  caches the module list, and flips to `:ready`.
+  it always sends `{:prepared_staged, …}` unless hard-killed): read config →
+  register endpoints → await ready → discover tools → build inert proxy
+  descriptors. The Consumer allocates/publishes modules only after accepting
+  that complete correlated aggregate, then publishes approval policy, caches
+  the module list, and flips to `:ready`. A rejected or hard-killed prep cannot
+  mutate live proxy routing/schema or consume proxy-identity capacity.
 
   ## Crash-recovery re-prep (bounded backoff)
 
@@ -33,15 +35,16 @@ defmodule JidoClaw.MCP.Consumer do
   agent against its template reach-allowlist on **every** tick — registering
   added/changed tools and **unregistering** removed ones. Reconcile is
   query-based + idempotent (it compares each agent's *live* `mcp_*` modules to
-  the target set), so an in-sync pid costs one `list_tools` + skipped registers;
-  a tool whose schema/description changed (same `.name()`, new content-addressed
-  module atom) is caught by the live-atom-vs-target mismatch and
-  unregistered-then-registered. Reconciling every tick — not gating it on a
+  the target set), so an in-sync pid costs one `list_tools` + skipped registers.
+  A schema/description digest change keeps the stable module atom but queues its
+  name for a forced unregister/register on every affected pid until a correlated
+  task confirms success. Reconciling every tick — not gating it on a
   tool-set diff — is what lets a prior tick's failed reconcile and a stale tool
   a late attach task left both self-heal. Picks up new servers, tool-set
   changes, and a server unreachable at boot coming online (via endpoint
-  refresh). Changing an *existing* server's connection spec (URL/command/env) is
-  out of scope (config hot-reload — `unregister_endpoint` + re-register).
+  refresh). Changing an *existing* server's connection spec (URL/command/env)
+  under the same name is rejected by `EndpointConfig` as restart-required;
+  Jido.MCP cannot hot-replace an already-registered endpoint safely.
 
   ## Attach (two non-blocking paths)
 
@@ -74,10 +77,6 @@ defmodule JidoClaw.MCP.Consumer do
 
   ## Known limitations
 
-    * The per-pid reconcile keys on `module.name()`; a same-name redefinition is
-      handled by comparing the live module atom to the target
-      (unregister-then-register), but the orphaned old module atom lingers in the
-      code server (BEAM does not unload it) — harmless.
     * Reconcile is eventually-consistent: tasks run async and attached pids stay
       marked throughout, so a turn landing between a `{:rediscovered}` apply and
       its reconcile tasks finishing uses the prior tool set for that one turn (a
@@ -144,7 +143,14 @@ defmodule JidoClaw.MCP.Consumer do
        # The configured server list (nil ⇒ read from config). Retained so the
        # crash re-prep and re-discovery paths can re-run prep.
        servers: servers,
+       # Injectable only at process construction so reconciliation failures can
+       # be exercised without replacing the production Jido.AI module.
+       agent_api: Keyword.get(opts, :agent_api, Jido.AI),
        modules: [],
+       # Snapshot of runtime proxy definitions. Proxy module atoms are stable
+       # across description/schema changes, so this digest map is the change
+       # signal that forces cached ReqLLM tool metadata to be re-registered.
+       definition_digests: %{},
        # %{module() => :all | [template_name]} — the reach-allowlist per
        # generated proxy module, accumulated across servers at prep.
        module_templates: %{},
@@ -153,6 +159,14 @@ defmodule JidoClaw.MCP.Consumer do
        # %{pid => template} — confirmed-attached pids and the template each
        # attached under (re-discovery reconciles each pid against its template).
        attached: %{},
+       # Definition-name refreshes are retained per pid until a reconcile task
+       # confirms unregister+register succeeded. Stable proxy module atoms mean
+       # a failed unregister otherwise becomes invisible on the next no-op tick
+       # even though the agent still caches old ReqLLM metadata.
+       definition_refreshes: %{},
+       # %{pid => %{ref: reference(), names: MapSet.t(String.t())}} fences late
+       # task acknowledgements from clearing a newer retry's pending names.
+       reconcile_attempts: %{},
        monitors: %{},
        prep_ref: ref,
        prep_pid: pid,
@@ -173,7 +187,7 @@ defmodule JidoClaw.MCP.Consumer do
     case state.status do
       :ready ->
         modules = modules_for_template(state.modules, state.module_templates, template)
-        start_register_task(pid, modules, state.generation, template)
+        start_register_task(pid, modules, state.generation, template, state.agent_api)
         {:reply, :ok, state}
 
       :preparing ->
@@ -212,10 +226,9 @@ defmodule JidoClaw.MCP.Consumer do
   # `JidoClaw.TaskSupervisor`, which survives a Consumer crash) can finish and
   # cast `{:mark_attached, …}` *by registered name* into a **restarted** Consumer
   # — or, within one incarnation, after a re-discovery bumped `generation` past
-  # it. Either way the generation mismatch drops it, the pid stays unmarked, and
-  # a later `ensure_attached/3` idempotently re-registers + re-marks the *current*
-  # reach (self-healing). Within an unchanged incarnation the token always
-  # matches, so nothing legitimate is dropped.
+  # it. A stale-generation success immediately queues an exact reconcile against
+  # current reach; otherwise an old attach can re-add a removed tool after the
+  # rediscovery task's snapshot and strand it until the next periodic tick.
   def handle_cast(
         {:mark_attached, pid, generation, template},
         %{status: :ready, generation: generation} = state
@@ -223,53 +236,39 @@ defmodule JidoClaw.MCP.Consumer do
     {:noreply, %{state | attached: Map.put(state.attached, pid, template)}}
   end
 
+  def handle_cast({:mark_attached, pid, _stale_generation, template}, %{status: :ready} = state) do
+    modules = modules_for_template(state.modules, state.module_templates, template)
+    start_register_task(pid, modules, state.generation, template, state.agent_api)
+    {:noreply, ensure_monitored(state, pid)}
+  end
+
   def handle_cast({:mark_attached, _pid, _generation, _template}, state) do
     {:noreply, state}
   end
 
   @impl GenServer
-  def handle_info({:prepared, modules, policy, module_templates}, state) do
-    :persistent_term.put(JidoClaw.MCP.policy_key(), policy)
+  def handle_info({:prepared_staged, staged_servers}, state) do
+    {modules, policy, module_templates, definition_digests} =
+      finalize_staged(staged_servers)
 
-    replied =
-      Enum.reduce(state.waiters, state, fn {from, pid, template}, acc ->
-        filtered = modules_for_template(modules, module_templates, template)
-        GenServer.reply(from, {:ok, filtered, state.generation})
-        ensure_monitored(acc, pid)
-      end)
+    apply_prepared(modules, policy, module_templates, definition_digests, state)
+  end
 
-    ready = %{
-      replied
-      | status: :ready,
-        modules: modules,
-        module_templates: module_templates,
-        waiters: [],
-        prep_ref: nil,
-        prep_pid: nil,
-        # `:ready` ⇒ counter clear (keeps the invariant honest after a recovery).
-        reprep_attempts: 0
-    }
-
-    fanned =
-      ready
-      |> fan_out_to_pending()
-      |> fan_out_to_tracked()
-
-    # Entering `:ready` is the single arm point for the re-discovery timer; every
-    # later re-arm rides on an attempt finishing (never on launch).
-    {:noreply, arm_rediscovery(fanned)}
+  def handle_info(
+        {:prepared_snapshot, modules, policy, module_templates, definition_digests},
+        state
+      ) do
+    apply_prepared(modules, policy, module_templates, definition_digests, state)
   end
 
   # A hard, untrappable prep kill is the only way prep dies without sending
-  # `{:prepared}` (graceful failures are rescued into `{:prepared, [], %{}, %{}}`).
-  # Republish an empty (fail-closed: gated) policy so a restart can't retain
-  # stale trust decisions, flush current waiters with `:mcp_unavailable`, null
-  # the prep handles, then hand the fate (bounded retry vs terminal `:failed`)
-  # to `reschedule_or_fail/2`.
+  # a prepared message (graceful failures send an empty/fallback snapshot).
+  # Preserve the exact last-known-good policy: replacing it with `%{}` would let
+  # an explicitly gated stale proxy inherit a globally trusted posture. Flush
+  # current waiters with `:mcp_unavailable`, null the prep handles, then hand the
+  # fate (bounded retry vs terminal `:failed`) to `reschedule_or_fail/2`.
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{prep_ref: ref} = state) do
     Logger.warning("[MCP] prep process died before completing (#{inspect(reason)})")
-
-    :persistent_term.put(JidoClaw.MCP.policy_key(), %{})
 
     Enum.each(state.waiters, fn {from, _pid, _template} ->
       GenServer.reply(from, {:error, :mcp_unavailable})
@@ -293,6 +292,8 @@ defmodule JidoClaw.MCP.Consumer do
        state
        | pending: Map.delete(state.pending, pid),
          attached: Map.delete(state.attached, pid),
+         definition_refreshes: Map.delete(state.definition_refreshes, pid),
+         reconcile_attempts: Map.delete(state.reconcile_attempts, pid),
          monitors: Map.delete(state.monitors, pid)
      }}
   end
@@ -302,7 +303,14 @@ defmodule JidoClaw.MCP.Consumer do
   # arrives only while `:preparing` (the retry the DOWN handler scheduled).
   def handle_info(:reprep, %{status: :preparing} = state) do
     parent = self()
-    {pid, ref} = spawn_monitor(fn -> run_prep(parent, state.servers, true) end)
+
+    fallback_snapshot =
+      {state.modules, JidoClaw.MCP.approval_policy(), state.module_templates,
+       state.definition_digests}
+
+    {pid, ref} =
+      spawn_monitor(fn -> run_prep(parent, state.servers, true, fallback_snapshot) end)
+
     {:noreply, %{state | generation: make_ref(), prep_ref: ref, prep_pid: pid}}
   end
 
@@ -330,30 +338,35 @@ defmodule JidoClaw.MCP.Consumer do
   # tick's result carries a different pid and is dropped by the fallthrough).
   # `demonitor(_, [:flush])` drops the trailing normal-exit DOWN.
   def handle_info(
-        {:rediscovered, pid, new_modules, new_policy, new_templates},
+        {:rediscovered_staged, pid, staged_servers},
         %{rediscover_pid: pid} = state
       ) do
     Process.demonitor(state.rediscover_ref, [:flush])
 
+    {new_modules, new_policy, new_templates, new_digests} =
+      finalize_staged(staged_servers)
+
+    changed_names = changed_definition_names(state.definition_digests, new_digests)
+
     tools_changed? =
-      new_modules != state.modules or new_templates != state.module_templates
+      new_modules != state.modules or new_templates != state.module_templates or
+        changed_names != MapSet.new()
 
-    # Reconcile every attached pid on EVERY tick (query-based + idempotent): a
-    # prior tick's failed reconcile (`:skip`/`:partial`) and a stale tool a late
-    # attach task left both heal here — neither is visible to a `tools_changed?`
-    # gate once `modules` is committed. Cheap when in sync (one `list_tools` +
-    # skipped registers); only an out-of-sync pid is written. Empty `attached`
-    # ⇒ a no-op, so a tick with no agents stays free.
-    reconcile_attached(state.attached, new_modules, new_templates)
+    reconciled = bump_generation(state, tools_changed?)
+    :ok = publish_transition_policy(new_policy)
 
-    reconciled =
-      state
-      |> bump_generation(tools_changed?)
-      |> maybe_republish_policy(new_policy)
+    # Reconcile every attached pid on EVERY tick (query-based + idempotent).
+    # Changed-definition names are first made durable in Consumer state, then
+    # subtracted only by a correlated `:ok` task result. Thus a transient failed
+    # unregister cannot strand stale ReqLLM metadata after the digest diff has
+    # already been committed.
+    reconciling =
+      reconcile_attached(reconciled, new_modules, new_templates, changed_names)
 
     applied = %{
-      reconciled
+      reconciling
       | modules: new_modules,
+        definition_digests: new_digests,
         module_templates: new_templates,
         rediscover_ref: nil,
         rediscover_pid: nil
@@ -362,10 +375,66 @@ defmodule JidoClaw.MCP.Consumer do
     {:noreply, arm_rediscovery(applied)}
   end
 
-  def handle_info({:rediscovered, _pid, _modules, _policy, _templates}, state),
+  def handle_info({:rediscovery_failed, pid, failures}, %{rediscover_pid: pid} = state) do
+    Process.demonitor(state.rediscover_ref, [:flush])
+
+    Logger.warning(
+      "[MCP] re-discovery failed for #{inspect(failures)}; keeping last-known-good tools"
+    )
+
+    kept = %{state | rediscover_ref: nil, rediscover_pid: nil}
+    {:noreply, arm_rediscovery(kept)}
+  end
+
+  def handle_info({:reconciled, pid, ref, result}, state) do
+    {:noreply, apply_reconcile_result(state, pid, ref, result)}
+  end
+
+  def handle_info({:rediscovered_staged, _pid, _staged_servers}, state),
     do: {:noreply, state}
 
+  # Compatibility drop for a stale pre-staging message (and the regression test
+  # that proves an uncorrelated result cannot mutate state).
+  def handle_info({:rediscovered, _pid, _modules, _policy, _templates, _digests}, state),
+    do: {:noreply, state}
+
+  def handle_info({:rediscovery_failed, _pid, _failures}, state), do: {:noreply, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp apply_prepared(modules, policy, module_templates, definition_digests, state) do
+    publish_transition_policy(policy)
+
+    replied =
+      Enum.reduce(state.waiters, state, fn {from, pid, template}, acc ->
+        filtered = modules_for_template(modules, module_templates, template)
+        GenServer.reply(from, {:ok, filtered, state.generation})
+        ensure_monitored(acc, pid)
+      end)
+
+    ready = %{
+      replied
+      | status: :ready,
+        modules: modules,
+        definition_digests: definition_digests,
+        module_templates: module_templates,
+        waiters: [],
+        prep_ref: nil,
+        prep_pid: nil,
+        # `:ready` ⇒ counter clear (keeps the invariant honest after a recovery).
+        reprep_attempts: 0
+    }
+
+    fanned =
+      ready
+      |> fan_out_to_attached()
+      |> fan_out_to_pending()
+      |> fan_out_to_tracked()
+
+    # Entering `:ready` is the single arm point for the re-discovery timer; every
+    # later re-arm rides on an attempt finishing (never on launch).
+    {:noreply, arm_rediscovery(fanned)}
+  end
 
   # -- Crash re-prep fate (bounded backoff, then terminal) --
 
@@ -410,7 +479,10 @@ defmodule JidoClaw.MCP.Consumer do
         reprep_attempts: attempts,
         pending: %{},
         modules: [],
-        module_templates: %{}
+        definition_digests: %{},
+        module_templates: %{},
+        definition_refreshes: %{},
+        reconcile_attempts: %{}
     }
   end
 
@@ -423,10 +495,76 @@ defmodule JidoClaw.MCP.Consumer do
   # prior tick's `:skip`/`:partial` or by a late attach task converges here —
   # neither of which a `tools_changed?` diff can see once `modules` is committed.
   # An empty `attached` is a no-op, so a tick with no live agents stays free.
-  defp reconcile_attached(attached, new_modules, new_templates) do
-    Enum.each(attached, fn {pid, template} ->
+  defp reconcile_attached(state, new_modules, new_templates, changed_names) do
+    refreshes =
+      Enum.reduce(state.attached, state.definition_refreshes, fn {pid, _template}, acc ->
+        Map.update(acc, pid, changed_names, &MapSet.union(&1, changed_names))
+      end)
+
+    state = %{state | definition_refreshes: refreshes}
+    owner = self()
+
+    Enum.reduce(state.attached, state, fn {pid, template}, acc ->
       reach = modules_for_template(new_modules, new_templates, template)
-      start_reconcile_task(pid, reach)
+      force_names = Map.get(acc.definition_refreshes, pid, MapSet.new())
+      ref = make_ref()
+
+      case start_reconcile_task(owner, pid, reach, force_names, ref, acc.agent_api) do
+        {:ok, _task_pid} ->
+          attempt = %{ref: ref, names: force_names}
+          %{acc | reconcile_attempts: Map.put(acc.reconcile_attempts, pid, attempt)}
+
+        {:error, reason} ->
+          Logger.warning(
+            "[MCP] failed to start reconcile task for #{inspect(pid)}: #{inspect(reason)}"
+          )
+
+          acc
+      end
+    end)
+  end
+
+  defp apply_reconcile_result(state, pid, ref, result) do
+    case Map.get(state.reconcile_attempts, pid) do
+      %{ref: ^ref, names: attempted_names} ->
+        refreshes =
+          if result == :ok do
+            remaining =
+              state.definition_refreshes
+              |> Map.get(pid, MapSet.new())
+              |> MapSet.difference(attempted_names)
+
+            if MapSet.size(remaining) == 0,
+              do: Map.delete(state.definition_refreshes, pid),
+              else: Map.put(state.definition_refreshes, pid, remaining)
+          else
+            state.definition_refreshes
+          end
+
+        %{
+          state
+          | definition_refreshes: refreshes,
+            reconcile_attempts: Map.delete(state.reconcile_attempts, pid)
+        }
+
+      _stale_or_unknown ->
+        state
+    end
+  end
+
+  defp changed_definition_names(old_digests, new_digests) do
+    Enum.reduce(new_digests, MapSet.new(), fn {module, digest}, changed ->
+      case Map.fetch(old_digests, module) do
+        {:ok, old_digest} when old_digest != digest ->
+          Logger.warning(
+            "[MCP.Consumer] tool #{module.name()} re-discovered with a changed definition (description/schema); verify the server has not been tampered with"
+          )
+
+          MapSet.put(changed, module.name())
+
+        _new_or_unchanged ->
+          changed
+      end
     end)
   end
 
@@ -434,20 +572,39 @@ defmodule JidoClaw.MCP.Consumer do
   # `start_register_task` spawned just before this tick captured the OLD module
   # set and carries the CURRENT generation, so without a bump its later mark
   # would falsely confirm that pid against stale tools. Bumping makes the
-  # existing fence DROP that mark (the pid stays unmarked and self-heals its mark
-  # on the next `ensure_attached`; any stale tool it left is pruned by the
-  # every-tick `reconcile_attached`, no longer only at the next *changed* tick).
+  # existing fence redirects that mark into an immediate exact reconcile against
+  # current reach. Any stale tool the old task re-added is pruned without waiting
+  # for the next turn or periodic tick.
   defp bump_generation(state, true), do: %{state | generation: make_ref()}
   defp bump_generation(state, false), do: state
 
-  # A `:persistent_term.put` triggers a global GC, so only republish when the
-  # value actually changed (compared against the live published map).
-  defp maybe_republish_policy(state, new_policy) do
-    if policy_changed?(new_policy, JidoClaw.MCP.approval_policy()) do
-      :persistent_term.put(JidoClaw.MCP.policy_key(), new_policy)
+  # Publish the accepted target exactly for live names, while force-gating every
+  # previously-known name removed from that target. Reconciliation is async; a
+  # tombstone prevents a stale gated (or formerly trusted) proxy from inheriting
+  # `mcp_require_approval: false` before its unregister completes. Tombstones are
+  # retained until a future accepted target overwrites the same exact name.
+  # A `:persistent_term.put` triggers a global GC, so the final value comparison
+  # suppresses no-op publications.
+  defp publish_transition_policy(new_policy) do
+    current = JidoClaw.MCP.approval_policy()
+
+    tombstones =
+      current
+      |> Map.keys()
+      |> Enum.filter(fn name ->
+        is_binary(name) and String.starts_with?(name, "mcp_") and
+          not Map.has_key?(new_policy, name)
+      end)
+      |> Map.new(&{&1, true})
+
+    transitioned_with_tombstones = Map.merge(current, tombstones)
+    transitioned = Map.merge(transitioned_with_tombstones, new_policy)
+
+    if policy_changed?(transitioned, current) do
+      :persistent_term.put(JidoClaw.MCP.policy_key(), transitioned)
     end
 
-    state
+    :ok
   end
 
   @doc """
@@ -481,26 +638,50 @@ defmodule JidoClaw.MCP.Consumer do
   """
   @spec register_modules(pid(), [module()], timeout()) :: :ok | :partial
   def register_modules(pid, modules, timeout \\ @register_timeout) do
-    Enum.each(modules, &register_one(pid, &1, timeout))
-    if all_registered?(pid, modules), do: :ok, else: :partial
+    register_modules_with(Jido.AI, pid, modules, timeout)
   end
 
-  defp register_and_mark(pid, modules, generation, template) do
-    case register_modules(pid, modules) do
+  @doc """
+  Reconcile `pid`'s external MCP tools to exactly `modules`.
+
+  Unlike `register_modules/3`, this prunes stale `mcp_*` names and forcibly
+  refreshes target names so a Consumer restart cannot retain cached metadata.
+  """
+  @spec reconcile_modules(pid(), [module()]) :: :ok | :partial
+  def reconcile_modules(pid, modules) do
+    reconcile_modules_with(Jido.AI, pid, modules)
+  end
+
+  defp reconcile_modules_with(agent_api, pid, modules) do
+    force_names = MapSet.new(modules, & &1.name())
+
+    case reconcile_pid(agent_api, pid, modules, force_names) do
+      :ok -> :ok
+      _partial_or_skip -> :partial
+    end
+  end
+
+  defp register_modules_with(agent_api, pid, modules, timeout) do
+    Enum.each(modules, &register_one(agent_api, pid, &1, timeout))
+    if all_registered?(agent_api, pid, modules), do: :ok, else: :partial
+  end
+
+  defp register_and_mark(pid, modules, generation, template, agent_api) do
+    case reconcile_modules_with(agent_api, pid, modules) do
       :ok -> GenServer.cast(__MODULE__, {:mark_attached, pid, generation, template})
       :partial -> :ok
     end
   end
 
-  defp register_one(pid, module, timeout) do
-    case has_tool_safe(pid, module.name()) do
+  defp register_one(agent_api, pid, module, timeout) do
+    case has_tool_safe(agent_api, pid, module.name()) do
       {:ok, true} -> :ok
-      _absent_or_error -> safe_register(pid, module, timeout)
+      _absent_or_error -> safe_register(agent_api, pid, module, timeout)
     end
   end
 
-  defp safe_register(pid, module, timeout) do
-    case Jido.AI.register_tool(pid, module, timeout: timeout) do
+  defp safe_register(agent_api, pid, module, timeout) do
+    case agent_api.register_tool(pid, module, timeout: timeout) do
       {:ok, _agent} -> :ok
       {:error, reason} -> warn_register(module, reason)
     end
@@ -515,12 +696,14 @@ defmodule JidoClaw.MCP.Consumer do
     :error
   end
 
-  defp all_registered?(pid, modules) do
-    Enum.all?(modules, fn module -> match?({:ok, true}, has_tool_safe(pid, module.name())) end)
+  defp all_registered?(agent_api, pid, modules) do
+    Enum.all?(modules, fn module ->
+      match?({:ok, true}, has_tool_safe(agent_api, pid, module.name()))
+    end)
   end
 
-  defp has_tool_safe(pid, name) do
-    Jido.AI.has_tool?(pid, name)
+  defp has_tool_safe(agent_api, pid, name) do
+    agent_api.has_tool?(pid, name)
   rescue
     _exception -> {:error, :rescue}
   catch
@@ -539,18 +722,20 @@ defmodule JidoClaw.MCP.Consumer do
   # Failure semantics: a failed list ABORTS (`:skip`, retried next tick) — never
   # treat the current set as empty, which would falsely claim convergence and
   # skip pruning. A failed unregister/register yields `:partial` (retried next
-  # tick); safe because register-by-name skips an already-present tool, so a
-  # failed prune of an atom-swapped name just leaves the old module until the
-  # retry re-detects the swap (no duplication, no half-update). Reconcile runs
-  # every tick, so both `:skip` and `:partial` genuinely heal next interval.
-  @spec reconcile_pid(pid(), [module()]) :: :ok | :partial | :skip
-  defp reconcile_pid(pid, reach) do
-    case list_mcp_modules(pid) do
+  # tick). A forced changed-definition name remains in `definition_refreshes`
+  # until a correlated task reports `:ok`, so register-by-name cannot make a
+  # failed unregister falsely look healed after the digest diff is committed.
+  # Reconcile runs every tick, so both `:skip` and `:partial` genuinely heal next
+  # interval.
+  @spec reconcile_pid(module(), pid(), [module()], MapSet.t(String.t())) ::
+          :ok | :partial | :skip
+  defp reconcile_pid(agent_api, pid, reach, force_names) do
+    case list_mcp_modules(agent_api, pid) do
       {:ok, current} ->
         reach_by_name = Map.new(reach, &{&1.name(), &1})
-        to_unregister = stale_names(current, reach_by_name)
-        unregistered? = unregister_names(pid, to_unregister)
-        registered = register_modules(pid, reach)
+        to_unregister = MapSet.union(stale_names(current, reach_by_name), force_names)
+        unregistered? = unregister_names(agent_api, pid, to_unregister)
+        registered = register_modules_with(agent_api, pid, reach, @register_timeout)
         if unregistered? and registered == :ok, do: :ok, else: :partial
 
       :error ->
@@ -559,14 +744,12 @@ defmodule JidoClaw.MCP.Consumer do
   end
 
   # Live mcp_* modules to drop: a name absent from `reach` (removed / now out of
-  # the template's reach) OR present under a DIFFERENT module atom than the target
-  # (a same-name content-addressed redefinition — register-by-name alone would
-  # skip the new atom, so the stale one must be unregistered first). Query-based:
-  # compares the pid's LIVE modules to the target, so it converges regardless of
-  # how the pid got out of sync (no remembered diff needed for a retry).
+  # the template's reach) OR present under a different module atom than the
+  # target (for example, a stale module from an older implementation). Stable-atom
+  # schema/description refreshes are supplied separately through `force_names`.
+  # This query-based half compares the pid's LIVE modules to the target, so it
+  # converges regardless of how the pid got out of sync.
   defp stale_names(current_modules, reach_by_name) do
-    warn_changed_definitions(current_modules, reach_by_name)
-
     current_modules
     |> Enum.filter(fn module ->
       case Map.get(reach_by_name, module.name()) do
@@ -577,38 +760,15 @@ defmodule JidoClaw.MCP.Consumer do
     |> MapSet.new(fn module -> module.name() end)
   end
 
-  # S-L1: warn when a tool's NAME persists across re-discovery but its generated
-  # module atom changed — the remote re-advertised a changed description/schema
-  # (`ProxyGenerator.definition_hash/5` is baked into the module atom, so a
-  # different atom for the same name IS the changed-definition signal; there is no
-  # retained per-tool digest to diff). Tool names/descriptions are prompt-trusted
-  # before any call, so post-vetting drift is a (low) injection surface with no
-  # operator signal otherwise. `Logger.warning` only — `JidoClaw.Display` has no
-  # generic notice API (a visible banner would need a new Display surface, a
-  # follow-up out of scope for this hardening batch).
-  defp warn_changed_definitions(current_modules, reach_by_name) do
-    Enum.each(current_modules, fn module ->
-      case Map.get(reach_by_name, module.name()) do
-        target when not is_nil(target) and target != module ->
-          Logger.warning(
-            "[MCP.Consumer] tool #{module.name()} re-discovered with a changed definition " <>
-              "(description/schema); verify the server has not been tampered with"
-          )
-
-        _unchanged_or_removed ->
-          :ok
-      end
-    end)
-  end
-
-  defp start_reconcile_task(pid, reach) do
+  defp start_reconcile_task(owner, pid, reach, force_names, ref, agent_api) do
     Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
-      reconcile_pid(pid, reach)
+      result = reconcile_pid(agent_api, pid, reach, force_names)
+      send(owner, {:reconciled, pid, ref, result})
     end)
   end
 
-  defp list_mcp_modules(pid) do
-    case safe_list_tools(pid) do
+  defp list_mcp_modules(agent_api, pid) do
+    case safe_list_tools(agent_api, pid) do
       {:ok, modules} -> {:ok, Enum.filter(modules, &mcp_name?(&1.name()))}
       :error -> :error
     end
@@ -616,8 +776,8 @@ defmodule JidoClaw.MCP.Consumer do
 
   defp mcp_name?(name), do: String.starts_with?(name, "mcp_")
 
-  defp safe_list_tools(pid) do
-    case Jido.AI.list_tools(pid) do
+  defp safe_list_tools(agent_api, pid) do
+    case agent_api.list_tools(pid) do
       {:ok, modules} -> {:ok, modules}
       {:error, _reason} -> :error
     end
@@ -629,12 +789,14 @@ defmodule JidoClaw.MCP.Consumer do
 
   # Unregister every name in `names`; true only when every call confirmed. A
   # failure returns false (the pid is retried next tick) and is warn-logged.
-  defp unregister_names(pid, names) do
-    Enum.reduce(names, true, fn name, ok? -> safe_unregister(pid, name) and ok? end)
+  defp unregister_names(agent_api, pid, names) do
+    Enum.reduce(names, true, fn name, ok? ->
+      safe_unregister(agent_api, pid, name) and ok?
+    end)
   end
 
-  defp safe_unregister(pid, name) do
-    case Jido.AI.unregister_tool(pid, name, timeout: @register_timeout) do
+  defp safe_unregister(agent_api, pid, name) do
+    case agent_api.unregister_tool(pid, name, timeout: @register_timeout) do
       {:ok, _agent} -> true
       {:error, reason} -> warn_unregister(name, reason)
     end
@@ -678,13 +840,20 @@ defmodule JidoClaw.MCP.Consumer do
 
   # -- Fan-out --
 
+  defp fan_out_to_attached(state), do: fan_out_entries(state, state.attached)
+
   defp fan_out_to_pending(state) do
-    Enum.each(state.pending, fn {pid, template} ->
+    state = fan_out_entries(state, state.pending)
+    %{state | pending: %{}}
+  end
+
+  defp fan_out_entries(state, entries) do
+    Enum.each(entries, fn {pid, template} ->
       modules = modules_for_template(state.modules, state.module_templates, template)
-      start_register_task(pid, modules, state.generation, template)
+      start_register_task(pid, modules, state.generation, template, state.agent_api)
     end)
 
-    %{state | pending: %{}}
+    state
   end
 
   defp fan_out_to_tracked(state) do
@@ -694,7 +863,7 @@ defmodule JidoClaw.MCP.Consumer do
     |> Enum.reject(fn {pid, _template} -> Map.has_key?(state.attached, pid) end)
     |> Enum.reduce(state, fn {pid, template}, acc ->
       modules = modules_for_template(state.modules, state.module_templates, template)
-      start_register_task(pid, modules, state.generation, template)
+      start_register_task(pid, modules, state.generation, template, state.agent_api)
       ensure_monitored(acc, pid)
     end)
   end
@@ -723,9 +892,9 @@ defmodule JidoClaw.MCP.Consumer do
     :exit, _reason -> []
   end
 
-  defp start_register_task(pid, modules, generation, template) do
+  defp start_register_task(pid, modules, generation, template, agent_api) do
     Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
-      register_and_mark(pid, modules, generation, template)
+      register_and_mark(pid, modules, generation, template, agent_api)
     end)
   end
 
@@ -740,33 +909,53 @@ defmodule JidoClaw.MCP.Consumer do
 
   # -- Prep (off-process) --
 
-  defp run_prep(parent, servers, refresh?) do
-    {modules, policy, module_templates} = prepare(servers, refresh?)
-    send(parent, {:prepared, modules, policy, module_templates})
+  defp run_prep(parent, servers, refresh?, fallback_snapshot \\ nil) do
+    case prepare(servers, refresh?) do
+      {_staged_servers, [_ | _]} when not is_nil(fallback_snapshot) ->
+        send_prepared_snapshot(parent, fallback_snapshot)
+
+      {staged_servers, _failures} ->
+        send(parent, {:prepared_staged, staged_servers})
+    end
   rescue
     exception ->
       Logger.warning("[MCP] prep failed: #{inspect(exception)}")
-      send(parent, {:prepared, [], %{}, %{}})
+      send_prepared_snapshot(parent, fallback_snapshot || {[], %{}, %{}, %{}})
   catch
     kind, reason ->
       Logger.warning("[MCP] prep crashed: #{inspect({kind, reason})}")
-      send(parent, {:prepared, [], %{}, %{}})
+      send_prepared_snapshot(parent, fallback_snapshot || {[], %{}, %{}, %{}})
+  end
+
+  defp send_prepared_snapshot(
+         parent,
+         {modules, policy, module_templates, definition_digests}
+       ) do
+    send(
+      parent,
+      {:prepared_snapshot, modules, policy, module_templates, definition_digests}
+    )
   end
 
   # Off-process re-discovery prep. Tags its result with `self()` so a superseded
   # tick's late result is dropped by the apply handler. `refresh?: true` so a
   # server that came online since boot is picked up.
   defp run_rediscovery(parent, servers) do
-    {modules, policy, module_templates} = prepare(servers, true)
-    send(parent, {:rediscovered, self(), modules, policy, module_templates})
+    case prepare(servers, true) do
+      {_staged_servers, [_ | _] = failures} ->
+        send(parent, {:rediscovery_failed, self(), failures})
+
+      {staged_servers, []} ->
+        send(parent, {:rediscovered_staged, self(), staged_servers})
+    end
   rescue
     exception ->
       Logger.warning("[MCP] re-discovery prep failed: #{inspect(exception)}")
-      send(parent, {:rediscovered, self(), [], %{}, %{}})
+      send(parent, {:rediscovery_failed, self(), [{:exception, exception}]})
   catch
     kind, reason ->
       Logger.warning("[MCP] re-discovery prep crashed: #{inspect({kind, reason})}")
-      send(parent, {:rediscovered, self(), [], %{}, %{}})
+      send(parent, {:rediscovery_failed, self(), [{kind, reason}]})
   end
 
   # Config-shape warnings (parse + unknown-template) are logged once, on the
@@ -789,16 +978,47 @@ defmodule JidoClaw.MCP.Consumer do
       )
       |> Enum.map(fn
         {:ok, result} -> result
-        {:exit, _reason} -> {[], %{}, %{}}
+        {:exit, reason} -> {:error, {:prep_exit, reason}}
       end)
 
-    modules = Enum.flat_map(results, fn {mods, _policy, _module_templates} -> mods end)
-    policy = Enum.reduce(results, %{}, fn {_mods, pol, _mt}, acc -> Map.merge(acc, pol) end)
+    successes = for {:ok, result} <- results, do: result
+    discovery_failures = for {:error, reason} <- results, do: reason
+    config_failures = if refresh?, do: Enum.map(warnings, &{:config, &1}), else: []
+    failures = config_failures ++ discovery_failures
 
-    module_templates =
-      Enum.reduce(results, %{}, fn {_mods, _pol, mt}, acc -> Map.merge(acc, mt) end)
+    {successes, failures}
+  end
 
-    {modules, policy, module_templates}
+  # Acceptance boundary: this runs only in the Consumer after a correlated
+  # `:prepared_staged` / `:rediscovered_staged` message wins. `commit_stages/1`
+  # allocates identities and publishes every definition in one registry write;
+  # only then is it safe to call the stable modules' runtime metadata functions.
+  defp finalize_staged(staged_servers) do
+    module_lists =
+      staged_servers
+      |> Enum.map(fn {_spec, stage} -> stage end)
+      |> ProxyGenerator.commit_stages()
+
+    {module_groups, policy, module_templates} =
+      staged_servers
+      |> Enum.zip(module_lists)
+      |> Enum.reduce({[], %{}, %{}}, fn {{spec, _stage}, server_modules},
+                                        {all_modules, all_policy, all_templates} ->
+        server_policy =
+          Map.new(server_modules, fn module -> {module.name(), spec.require_approval} end)
+
+        allowed = template_allowance(spec.templates)
+        server_templates = Map.new(server_modules, fn module -> {module, allowed} end)
+
+        {
+          [server_modules | all_modules],
+          Map.merge(all_policy, server_policy),
+          Map.merge(all_templates, server_templates)
+        }
+      end)
+
+    modules = List.flatten(Enum.reverse(module_groups))
+    {modules, policy, module_templates, definition_digests(modules)}
   end
 
   # Operator hygiene: an allowlist naming a template that doesn't exist would
@@ -830,13 +1050,13 @@ defmodule JidoClaw.MCP.Consumer do
 
     case discover(client, spec) do
       {:ok, tools} ->
-        build_server_result(spec, tools)
+        {:ok, build_server_result(spec, tools)}
 
       {:error, _reason} when refresh? ->
         _ = client.refresh_endpoint(spec.endpoint.id)
 
         case discover(client, spec) do
-          {:ok, tools} -> build_server_result(spec, tools)
+          {:ok, tools} -> {:ok, build_server_result(spec, tools)}
           error -> discovery_failed(spec, error)
         end
 
@@ -854,17 +1074,16 @@ defmodule JidoClaw.MCP.Consumer do
     end
   end
 
-  defp build_server_result(spec, tools) do
-    modules = ProxyGenerator.build_modules(spec.name, spec.endpoint.id, tools)
-    policy = Map.new(modules, fn module -> {module.name(), spec.require_approval} end)
-    allowed = template_allowance(spec.templates)
-    module_templates = Map.new(modules, fn module -> {module, allowed} end)
-    {modules, policy, module_templates}
-  end
+  defp build_server_result(spec, tools),
+    do: {spec, ProxyGenerator.stage_modules(spec.name, spec.endpoint.id, tools)}
 
   defp discovery_failed(spec, error) do
     Logger.warning("[MCP] server #{spec.name}: discovery failed: #{inspect(error)}")
-    {[], %{}, %{}}
+    {:error, {spec.name, error}}
+  end
+
+  defp definition_digests(modules) do
+    Map.new(modules, fn module -> {module, ProxyGenerator.definition_digest(module)} end)
   end
 
   # `[]`/absent ⇒ `:all` (every template reaches these tools — back-compat);

@@ -218,10 +218,16 @@ defmodule JidoClaw.Agent.Templates do
     },
     "system_verifier" => %{
       module: JidoClaw.Agent.Workers.SystemVerifier,
-      description: "Verifies a system/environment change took on the real machine (read + run)",
+      description:
+        "Verifies a system/environment change took on the real machine (read + operator-approved run)",
       model: :fast,
       forward_context: :none,
-      composer_private: true
+      composer_private: true,
+      # The reverse-verifier's verdict is authoritative for system routes and it
+      # necessarily inspects the real host. Prompt-level "read-only" guidance is
+      # not a capability boundary, so every shell command must clear a durable,
+      # argument-bound operator approval before it can execute.
+      require_approval: ["run_command"]
     },
     # AR-9: the three plan-wave workers (the multi-plan judge panel). Like the
     # AR-8c system workers they carry the explicit `composer_private: true` flag

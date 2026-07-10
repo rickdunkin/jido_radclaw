@@ -18,6 +18,8 @@ defmodule JidoClaw.Config do
   # crashes boot or the setup wizard.
   # reach:disable-for-this-file bare_rescue
 
+  alias JidoClaw.Core.MapKeys
+
   @providers %{
     "ollama" => %{
       "base_url" => "http://localhost:11434",
@@ -73,6 +75,7 @@ defmodule JidoClaw.Config do
   }
 
   @cloud_base_url "https://ollama.com"
+  @missing_vfs_field {:jido_claw, :missing_vfs_field}
 
   # ---------------------------------------------------------------------------
   # Loading
@@ -165,6 +168,29 @@ defmodule JidoClaw.Config do
   def max_iterations(config), do: Map.get(config, "max_iterations", @defaults["max_iterations"])
   @spec timeout(map()) :: integer()
   def timeout(config), do: Map.get(config, "timeout", @defaults["timeout"])
+
+  @doc """
+  Returns the typed `vfs.mounts` collection shared by workspace bootstrap and
+  security-policy inspection.
+
+  An absent section is an empty mount list and a single mount map is normalized
+  to a one-element list. A present non-map `vfs` section or a `mounts` value
+  other than a map/list is rejected without inspecting or logging its contents.
+  """
+  @spec vfs_mounts(map()) ::
+          {:ok, list()} | {:error, :invalid_vfs_config | :invalid_vfs_mounts}
+  def vfs_mounts(config) when is_map(config) do
+    case MapKeys.field(config, "vfs", @missing_vfs_field) do
+      @missing_vfs_field -> {:ok, []}
+      vfs when is_map(vfs) -> normalize_vfs_mounts(MapKeys.field(vfs, "mounts", []))
+      _invalid -> {:error, :invalid_vfs_config}
+    end
+  end
+
+  defp normalize_vfs_mounts(nil), do: {:ok, []}
+  defp normalize_vfs_mounts(mounts) when is_list(mounts), do: {:ok, mounts}
+  defp normalize_vfs_mounts(mount) when is_map(mount), do: {:ok, [mount]}
+  defp normalize_vfs_mounts(_invalid), do: {:error, :invalid_vfs_mounts}
 
   @doc """
   Returns the raw `verify_cmd:` value from config (a scalar string or argv

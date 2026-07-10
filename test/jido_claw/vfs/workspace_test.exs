@@ -59,6 +59,23 @@ defmodule JidoClaw.VFS.WorkspaceTest do
                Workspace.ensure_started(ws, "")
     end
 
+    test "a scalar vfs config is contained fail-soft while /project still boots", %{
+      workspace_id: ws,
+      tmp: tmp
+    } do
+      File.mkdir_p!(Path.join(tmp, ".jido"))
+      File.write!(Path.join([tmp, ".jido", "config.yaml"]), "vfs: not-a-map\n")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, _pid} = Workspace.ensure_started(ws, tmp)
+        end)
+
+      assert log =~ "Skipping invalid vfs.mounts config"
+      assert [%{path: "/project"}] = Workspace.mounts(ws)
+      assert {:ok, "hi"} = VFS.read_file(ws, "/project/hello.txt")
+    end
+
     test "no drift: same project_dir returns the original pid", %{
       workspace_id: ws,
       tmp: tmp

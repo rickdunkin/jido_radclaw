@@ -63,7 +63,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
       tenant = seed_tenant("disable")
       {:ok, _} = Manager.ensure_tenant(tenant)
 
-      {:ok, _job} =
+      {:ok, job} =
         Job.upsert(
           %{
             job_id: "fail-test",
@@ -78,13 +78,7 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
           actor: actor_for(tenant)
         )
 
-      {:ok, "fail-test", _pid} =
-        Scheduler.schedule(tenant,
-          id: "fail-test",
-          mode: :system_job,
-          schedule: {:every, 60_000},
-          mfa: {JidoClaw.Cron.TestSupport, :always_fail, []}
-        )
+      assert :ok = Scheduler.schedule_persisted(tenant, job)
 
       on_exit(fn -> _ = Scheduler.unschedule(tenant, "fail-test") end)
 
@@ -92,6 +86,51 @@ defmodule JidoClaw.Cron.PersistentDisableTest do
 
       row = wait_until_disabled("fail-test", tenant)
       assert %DateTime{} = row.disabled_at
+      assert row.failure_count == 3
+    end
+
+    test "the consecutive failure streak survives worker restart and disables on failure 3" do
+      tenant = seed_tenant("disable-restart")
+      {:ok, _} = Manager.ensure_tenant(tenant)
+
+      {:ok, job} =
+        Job.upsert(
+          %{
+            job_id: "fail-restart",
+            schedule_kind: :every,
+            schedule_value: "60000",
+            mode: :system_job,
+            mfa_module: "JidoClaw.Cron.TestSupport",
+            mfa_function: "always_fail",
+            mfa_args: %{}
+          },
+          tenant: tenant,
+          actor: actor_for(tenant)
+        )
+
+      assert :ok = Scheduler.schedule_persisted(tenant, job)
+      on_exit(fn -> _ = Scheduler.unschedule(tenant, "fail-restart") end)
+
+      for _ <- 1..2, do: Cron.Worker.trigger(tenant, "fail-restart")
+
+      eventually(fn ->
+        match?(
+          {:ok, %{failure_count: 2, disabled_at: nil}},
+          Job.by_job_id("fail-restart", tenant: tenant, actor: actor_for(tenant))
+        )
+      end)
+
+      assert :ok = Scheduler.unschedule(tenant, "fail-restart")
+
+      {:ok, reloaded_job} =
+        Job.by_job_id("fail-restart", tenant: tenant, actor: actor_for(tenant))
+
+      assert :ok = Scheduler.schedule_persisted(tenant, reloaded_job)
+      assert Cron.Worker.get_state(tenant, "fail-restart").failure_count == 2
+
+      Cron.Worker.trigger(tenant, "fail-restart")
+      row = wait_until_disabled("fail-restart", tenant)
+      assert row.failure_count == 3
     end
   end
 

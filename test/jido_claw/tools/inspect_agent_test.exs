@@ -98,13 +98,16 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       request_id = Ecto.UUID.generate()
 
       {:ok, _} =
-        RequestCorrelation.register(%{
-          request_id: request_id,
-          session_id: session.id,
-          tenant_id: tid,
-          workspace_id: workspace.id,
-          user_id: nil
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: request_id,
+            session_id: session.id,
+            tenant_id: tid,
+            workspace_id: workspace.id,
+            user_id: nil
+          },
+          authorize?: false
+        )
 
       :telemetry.execute(
         [:jido, :ai, :request, :start],
@@ -156,13 +159,16 @@ defmodule JidoClaw.Tools.InspectAgentTest do
       request_id = Ecto.UUID.generate()
 
       {:ok, _} =
-        RequestCorrelation.register(%{
-          request_id: request_id,
-          session_id: session.id,
-          tenant_id: tid,
-          workspace_id: workspace.id,
-          user_id: nil
-        })
+        RequestCorrelation.register(
+          %{
+            request_id: request_id,
+            session_id: session.id,
+            tenant_id: tid,
+            workspace_id: workspace.id,
+            user_id: nil
+          },
+          authorize?: false
+        )
 
       :telemetry.execute(
         [:jido, :ai, :request, :start],

@@ -108,6 +108,99 @@ defmodule JidoClaw.Core.AshErrorsTest do
     end
   end
 
+  describe "connection_error?/1" do
+    test "recognizes the raw exception structs" do
+      assert AshErrors.connection_error?(%DBConnection.ConnectionError{message: "tcp closed"})
+      assert AshErrors.connection_error?(%Postgrex.Error{postgres: nil, message: "ssl down"})
+    end
+
+    test "a Postgrex error carrying a postgres map is a schema/programming error" do
+      refute AshErrors.connection_error?(%Postgrex.Error{
+               postgres: %{code: :undefined_column, message: ~s(column "nope" does not exist)}
+             })
+    end
+
+    test "recognizes the Ash-wrapped string leaf on the exact exception banner" do
+      # Splode's `Exception.format/2` path: the leaf's `.error` is a FORMATTED
+      # STRING, not the exception struct — the production boot-scan shape.
+      wrapped = %Ash.Error.Unknown{
+        errors: [
+          %Ash.Error.Unknown.UnknownError{
+            error: "** (DBConnection.ConnectionError) tcp recv (idle): closed"
+          }
+        ]
+      }
+
+      assert AshErrors.connection_error?(wrapped)
+    end
+
+    test "a formatted Postgrex banner string is NOT retryable" do
+      # A schema/programming Postgrex.Error stringifies through the same
+      # splode path; a bare marker match would misread it as transient.
+      wrapped = %Ash.Error.Unknown{
+        errors: [
+          %Ash.Error.Unknown.UnknownError{
+            error:
+              ~s{** (Postgrex.Error) ERROR 42703 (undefined_column) column "nope" does not exist}
+          }
+        ]
+      }
+
+      refute AshErrors.connection_error?(wrapped)
+    end
+
+    test "a loose mid-string mention away from the banner prefix is NOT recognized" do
+      wrapped = %Ash.Error.Unknown{
+        errors: [
+          %Ash.Error.Unknown.UnknownError{
+            error: "scan aborted; see DBConnection.ConnectionError in the logs"
+          }
+        ]
+      }
+
+      refute AshErrors.connection_error?(wrapped)
+    end
+
+    test "recognizes the struct-preserving splode leaf" do
+      wrapped = %Ash.Error.Unknown{
+        errors: [
+          %Ash.Error.Unknown.UnknownError{
+            error: %DBConnection.ConnectionError{message: "tcp recv: closed"}
+          }
+        ]
+      }
+
+      assert AshErrors.connection_error?(wrapped)
+    end
+
+    test "a non-connection exception in the leaf is NOT recognized" do
+      wrapped = %Ash.Error.Unknown{
+        errors: [%Ash.Error.Unknown.UnknownError{error: %ArgumentError{message: "defect"}}]
+      }
+
+      refute AshErrors.connection_error?(wrapped)
+    end
+
+    test "recurses through nested error classes" do
+      inner = %Ash.Error.Invalid{
+        errors: [
+          %Ash.Error.Unknown.UnknownError{
+            error: "** (DBConnection.ConnectionError) connection refused"
+          }
+        ]
+      }
+
+      assert AshErrors.connection_error?(%Ash.Error.Unknown{errors: [inner]})
+    end
+
+    test "returns false for arbitrary non-error input" do
+      refute AshErrors.connection_error?(:timeout)
+      refute AshErrors.connection_error?("DBConnection.ConnectionError")
+      refute AshErrors.connection_error?({:error, %DBConnection.ConnectionError{message: "x"}})
+      refute AshErrors.connection_error?(%{errors: :not_a_list})
+    end
+  end
+
   describe "db_errors/0" do
     test "returns the exact canonical rescue list" do
       # Pins the single source of truth for `rescue _ in @db_errors` sites

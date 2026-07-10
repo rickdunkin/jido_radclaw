@@ -218,10 +218,10 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     do: terminal_lifting_error(:failed, payload, occurred_at)
 
   def status_attrs(:run_cancelled, _payload, occurred_at),
-    do: %{status: :cancelled, completed_at: occurred_at, clear_checkpoint: true}
+    do: terminal_attrs(:cancelled, occurred_at)
 
   def status_attrs(:run_abandoned, _payload, occurred_at),
-    do: %{status: :abandoned, completed_at: occurred_at, clear_checkpoint: true}
+    do: terminal_attrs(:abandoned, occurred_at)
 
   def status_attrs(:approval_requested, _payload, _occurred_at),
     do: %{status: :awaiting_approval}
@@ -280,7 +280,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       status: status,
       completed_at: occurred_at,
       result: fetch(payload, :result),
-      clear_checkpoint: true
+      clear_checkpoint: true,
+      revoke_claim: true
     }
   end
 
@@ -289,7 +290,8 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       status: status,
       completed_at: occurred_at,
       error: fetch(payload, :error),
-      clear_checkpoint: true
+      clear_checkpoint: true,
+      revoke_claim: true
     }
   end
 
@@ -303,7 +305,17 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
       completed_at: occurred_at,
       error: fetch(payload, :error),
       result: fetch(payload, :result),
-      clear_checkpoint: true
+      clear_checkpoint: true,
+      revoke_claim: true
+    }
+  end
+
+  defp terminal_attrs(status, occurred_at) do
+    %{
+      status: status,
+      completed_at: occurred_at,
+      clear_checkpoint: true,
+      revoke_claim: true
     }
   end
 

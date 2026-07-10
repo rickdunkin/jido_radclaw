@@ -112,7 +112,7 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
     assert_receive {:dispatch_capture, pid, message, opts}, 5_000
 
     routed_pid = Jido.whereis(JidoClaw.Jido, "handoff:#{session.id}:reviewer")
-    main_pid = Jido.whereis(JidoClaw.Jido, rsid)
+    main_pid = Jido.whereis(JidoClaw.Jido, JidoClaw.runtime_agent_id(session.id))
 
     assert is_pid(routed_pid)
     assert pid == routed_pid
@@ -158,7 +158,7 @@ defmodule JidoClaw.Conversations.HandoffDispatcherIntegrationTest do
       )
 
     routed_pid = Jido.whereis(JidoClaw.Jido, "handoff:#{session.id}:reviewer")
-    main_pid = Jido.whereis(JidoClaw.Jido, rsid)
+    main_pid = Jido.whereis(JidoClaw.Jido, JidoClaw.runtime_agent_id(session.id))
 
     assert is_pid(routed_pid)
     refute routed_pid == main_pid

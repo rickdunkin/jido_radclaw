@@ -5,28 +5,12 @@ defmodule JidoClaw.Orchestration.WorkflowStep do
   `WorkflowEvent.Changes.Allocate`. The dashboard step view reads these rows;
   the append-only event log stays the source of truth.
 
-  Like `WorkflowEvent`, deliberately does **not** use the `JidoClaw.Resource`
-  macro — that macro always injects `bypass action(:by_id_global)`, which
-  fails to compile for a resource with no `:by_id_global` action. Steps are
-  only ever read run-scoped, so this is a plain `use Ash.Resource` plus the
-  two non-bypass tenant policies.
+  Steps are only ever read run-scoped, so the macro-injected
+  `bypass action(:by_id_global)` matches no action here and is inert — the
+  effective policy is the standard tenant pair.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Orchestration,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
-
-  policies do
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
+  use JidoClaw.Resource, domain: JidoClaw.Orchestration
 
   postgres do
     table("workflow_steps")

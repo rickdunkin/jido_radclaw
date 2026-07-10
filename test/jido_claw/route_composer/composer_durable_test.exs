@@ -603,11 +603,13 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
       assert {:ok, _pid} = RouteComposer.ensure_started(base_opts(ctx), parent)
       assert :completed = await_status(parent.id, ctx, :completed, 30_000)
 
-      # The degrade suspended the claim: NULL expiry (unreclaimable), token retained
-      # (the terminal fence still matched). The route converged unleased regardless.
+      # The degrade suspended the live claim and still converged unleased. The
+      # terminal fence matched the held token, then the terminal projection
+      # revoked token/expiry while retaining owner provenance.
       reloaded = reload_global(parent.id)
       assert is_nil(reloaded.claim_expires_at)
-      assert reloaded.claim_token == parent.claim_token
+      assert is_nil(reloaded.claim_token)
+      assert reloaded.claimed_by == parent.claimed_by
       assert :route_converged in kinds(parent.id, ctx)
     end
   end

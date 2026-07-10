@@ -12,6 +12,8 @@ defmodule JidoClaw.Cron.OwnerTest do
     * leader loads every non-disabled row; reconcile is idempotent (no churn);
     * follower drops every user worker, but a `:system_job` worker survives;
     * prune on remove/disable; restart on config change; keep on invalid config;
+    * `:enable` rotates the definition token, so reconcile REPLACES a
+      still-alive auto-disabled worker with a fresh armed generation;
     * inactive-tenant prune; read-failure leaves workers (unknown ≠ empty);
     * the boot-race recovery (periodic re-check without a `leader_changed` event)
       and the telemetry-driven reconcile;
@@ -106,6 +108,24 @@ defmodule JidoClaw.Cron.OwnerTest do
     end
   end
 
+  # Copied from JidoClaw.Cron.PersistentDisableTest — poll the durable row
+  # until the worker's auto-disable write lands, returning the disabled row.
+  defp wait_until_disabled(job_id, tenant, attempts \\ 50) do
+    result =
+      Enum.reduce_while(1..attempts, nil, fn _, _ ->
+        case Job.by_job_id(job_id, tenant: tenant, actor: actor_for(tenant)) do
+          {:ok, %{disabled_at: %DateTime{}} = row} ->
+            {:halt, row}
+
+          _ ->
+            Process.sleep(20)
+            {:cont, nil}
+        end
+      end)
+
+    result || flunk("disabled_at never set within #{attempts * 20}ms")
+  end
+
   describe "leader reconcile" do
     test "loads every non-disabled row; reconcile is idempotent (no churn)", %{tenant: tenant} do
       set_leader(true)
@@ -145,6 +165,49 @@ defmodule JidoClaw.Cron.OwnerTest do
       assert is_pid(pid2)
       assert pid2 != pid1
       assert Worker.get_state(tenant, "c").schedule == {:every, 60_000}
+    end
+
+    test "enable after auto-disable replaces the still-alive disabled worker", %{tenant: tenant} do
+      set_leader(true)
+
+      seed_job(tenant, "en",
+        target: :mfa,
+        mfa_module: "JidoClaw.Cron.TestSupport",
+        mfa_function: "always_fail"
+      )
+
+      start_owner()
+      :ok = Owner.reconcile()
+      on_exit(fn -> Scheduler.unschedule(tenant, "en") end)
+
+      pid1 = worker_pid(tenant, "en")
+      assert is_pid(pid1)
+
+      # Three consecutive manual-trigger failures auto-disable the row. No
+      # reconcile in between: pruning would drop the worker and mask the
+      # retained-worker window this test exists to pin.
+      for _ <- 1..3, do: Worker.trigger(tenant, "en")
+      row = wait_until_disabled("en", tenant)
+
+      # The bug window: the worker survives its own auto-disable in place,
+      # alive but inert.
+      assert worker_pid(tenant, "en") == pid1
+      assert Worker.get_state(tenant, "en").status == :disabled
+
+      {:ok, enabled} = Job.enable(row, %{}, tenant: tenant, actor: actor_for(tenant))
+      :ok = Owner.reconcile()
+
+      # Re-armed by REPLACEMENT, never resumed in-place: enable rotated the
+      # definition token, so `Scheduler.changed?/2` sees a new fingerprint and
+      # reconcile swaps in a fresh worker hydrated from the enabled generation.
+      pid2 = worker_pid(tenant, "en")
+      assert is_pid(pid2)
+      assert pid2 != pid1
+
+      state = Worker.get_state(tenant, "en")
+      assert state.status == :active
+      assert %DateTime{} = state.next_run
+      assert state.definition_token == enabled.definition_token
     end
 
     test "invalid-config keeps the running worker", %{tenant: tenant} do

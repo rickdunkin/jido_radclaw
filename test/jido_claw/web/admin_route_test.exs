@@ -13,14 +13,46 @@ defmodule JidoClaw.Web.AdminRouteTest do
 
   alias AshAuthentication.Plug.Helpers
   alias JidoClaw.Accounts.User
+  alias JidoClaw.Tenants.Access
+  alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Web.LiveUserAuth
+  alias JidoClaw.Web.SetupStatusCache
 
   @endpoint JidoClaw.Web.Endpoint
 
+  defmodule SetupWizardStub do
+    @moduledoc false
+
+    @spec run() :: map()
+    def run do
+      %{
+        prerequisites: %{},
+        credentials: %{},
+        database: %{ok?: true, status: "connected"},
+        ready?: true,
+        has_ai_provider?: true
+      }
+    end
+  end
+
   setup do
     start_supervised!(JidoClaw.Web.Endpoint)
-    on_exit(fn -> Application.delete_env(:jido_claw, :admin_emails) end)
+    previous_wizard = Application.fetch_env(:jido_claw, :setup_wizard_impl)
+
+    on_exit(fn ->
+      Application.delete_env(:jido_claw, :admin_emails)
+
+      case previous_wizard do
+        {:ok, value} -> Application.put_env(:jido_claw, :setup_wizard_impl, value)
+        :error -> Application.delete_env(:jido_claw, :setup_wizard_impl)
+      end
+
+      SetupStatusCache.reset()
+    end)
+
     Application.delete_env(:jido_claw, :admin_emails)
+    Application.put_env(:jido_claw, :setup_wizard_impl, SetupWizardStub)
+    :ok = SetupStatusCache.reset()
     :ok
   end
 
@@ -53,6 +85,34 @@ defmodule JidoClaw.Web.AdminRouteTest do
     assert html_response(conn, 200) =~ "phx-"
   end
 
+  test "unauthenticated GET /setup redirects to sign-in" do
+    conn = get(build_conn(), "/setup")
+    assert redirected_to(conn) == "/sign-in"
+  end
+
+  test "signed-in non-admin GET /setup gets a 404" do
+    user = register_user!()
+
+    conn =
+      user
+      |> signed_in_conn()
+      |> get("/setup")
+
+    assert response(conn, 404) == "Not Found"
+  end
+
+  test "allowlisted admin GET /setup renders the diagnostic wizard" do
+    user = register_user!()
+    Application.put_env(:jido_claw, :admin_emails, [to_string(user.email)])
+
+    conn =
+      user
+      |> signed_in_conn()
+      |> get("/setup")
+
+    assert html_response(conn, 200) =~ "JidoClaw Setup"
+  end
+
   test ":live_admin_required halts a signed-in non-admin with a redirect to /dashboard" do
     user = register_user!()
     session = session_for(user)
@@ -82,6 +142,27 @@ defmodule JidoClaw.Web.AdminRouteTest do
              )
 
     assert to_string(socket.assigns.current_user.email) == to_string(user.email)
+  end
+
+  test ":live_user_required halts a signed-in user whose tenant is suspended" do
+    user = register_user!()
+    tenant_id = to_string(user.id)
+    :ok = Access.ensure_active(tenant_id)
+    {:ok, tenant} = Tenant.by_id(tenant_id)
+    {:ok, _suspended} = Tenant.suspend(tenant)
+
+    assert {:halt, socket} =
+             LiveUserAuth.on_mount(
+               :live_user_required,
+               %{},
+               session_for(user),
+               %Phoenix.LiveView.Socket{}
+             )
+
+    # Forced sign-out landing, NOT /sign-in: on_mount cannot clear the Plug
+    # session, so a /sign-in redirect looped forever for suspended tenants.
+    assert {:redirect, %{to: "/auth/account-unavailable?reason=account_unavailable"}} =
+             socket.redirected
   end
 
   defp register_user! do

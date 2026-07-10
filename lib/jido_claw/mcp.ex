@@ -36,9 +36,10 @@ defmodule JidoClaw.MCP do
   @doc """
   The published `%{tool_name => true | false | nil}` approval posture map.
 
-  Defaults to `%{}` when prep never ran — `ToolApproval` reads that as
-  "fall back to the global default" for any `mcp_`-prefixed name, so a lost or
-  unset policy fails **closed** (gated), never open to native.
+  Defaults to `%{}` when prep never ran; unknown `mcp_` names then follow the
+  configured global MCP posture. Once published, the Consumer preserves exact
+  last-known-good entries across prep crashes and while stale tools are being
+  pruned, so an explicitly gated tool never degrades to a trusted global default.
   """
   @spec approval_policy() :: %{optional(String.t()) => boolean() | nil}
   def approval_policy, do: :persistent_term.get(@policy_key, %{})
@@ -108,7 +109,7 @@ defmodule JidoClaw.MCP do
         :already
 
       {:ok, modules, generation} ->
-        result = Consumer.register_modules(pid, modules)
+        result = Consumer.reconcile_modules(pid, modules)
 
         if result == :ok,
           do: GenServer.cast(Consumer, {:mark_attached, pid, generation, template})

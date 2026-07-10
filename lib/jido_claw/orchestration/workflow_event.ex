@@ -4,36 +4,18 @@ defmodule JidoClaw.Orchestration.WorkflowEvent do
   transition; `WorkflowRun.status` is a projection of this log, written
   only by the append path (`Changes.Allocate`).
 
-  Deliberately does **not** use the `JidoClaw.Resource` macro — that macro
-  always injects `bypass action(:by_id_global)`, which fails to compile for
-  a resource with no `:by_id_global` action. Events are only ever read
-  run-scoped (`:for_run`), never by global id, so this ships a plain
-  `use Ash.Resource` plus the two non-bypass tenant policies.
+  Events are only ever read run-scoped (`:for_run`), never by global id, so
+  the macro-injected `bypass action(:by_id_global)` matches no action here
+  and is inert — the effective policy is the standard tenant pair.
 
   `seq` is monotonic and gap-free **per run**, allocated solely by
   `Changes.Allocate` under a per-run `FOR UPDATE` lock; callers never supply
   it. The unique `(workflow_run_id, seq)` index is the backstop.
   """
 
-  use Ash.Resource,
-    otp_app: :jido_claw,
-    domain: JidoClaw.Orchestration,
-    data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+  use JidoClaw.Resource, domain: JidoClaw.Orchestration
 
   alias JidoClaw.Orchestration.WorkflowEvent.Changes.Allocate
-
-  # Only run-scoped reads + the append create — no `:by_id_global`, so omit
-  # the bypass and hand-write the two standard tenant policies.
-  policies do
-    policy action_type([:create, :update, :destroy]) do
-      authorize_if(JidoClaw.Authorization.Checks.ActorTenantMatches)
-    end
-
-    policy action_type(:read) do
-      authorize_if(expr(tenant_id == ^actor(:tenant_id)))
-    end
-  end
 
   postgres do
     table("workflow_events")

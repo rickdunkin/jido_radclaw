@@ -69,22 +69,28 @@ defmodule JidoClaw.Tenants.Tenant do
 
     update :suspend do
       description("Suspend a tenant, blocking further activity.")
+      require_atomic?(false)
       accept([])
       change(set_attribute(:status, :suspended))
+      change({__MODULE__.Changes.SyncRuntime, []})
     end
 
     update :resume do
       description("Return a suspended tenant to active status.")
       primary?(true)
+      require_atomic?(false)
       accept([])
       change(set_attribute(:status, :active))
+      change({__MODULE__.Changes.SyncRuntime, []})
     end
 
     update :archive do
       description("Soft-disable a tenant by marking it terminating and stamping archived_at.")
+      require_atomic?(false)
       accept([])
       change(set_attribute(:status, :terminating))
       change(set_attribute(:archived_at, &DateTime.utc_now/0))
+      change({__MODULE__.Changes.SyncRuntime, []})
     end
 
     read :by_id do
@@ -145,5 +151,25 @@ defmodule JidoClaw.Tenants.Tenant do
   @spec ensure(String.t()) :: {:ok, t()} | {:error, term()}
   def ensure(id) when is_binary(id) do
     register(%{id: id, name: id, status: :active})
+  end
+
+  defmodule Changes.SyncRuntime do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    alias Ash.Changeset
+    alias JidoClaw.Tenant.Manager
+
+    @impl Ash.Resource.Change
+    def change(changeset, _opts, _context) do
+      Changeset.after_transaction(changeset, fn
+        _changeset, {:ok, tenant} = result ->
+          :ok = Manager.sync_from_resource(tenant.id, tenant.status)
+          result
+
+        _changeset, result ->
+          result
+      end)
+    end
   end
 end

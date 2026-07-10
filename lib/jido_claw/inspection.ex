@@ -175,7 +175,9 @@ defmodule JidoClaw.Inspection do
   # and collapses `{:error, _}`/`nil` to a single `nil`, erasing the
   # found-but-wrong-tenant vs. genuinely-missing distinction we need above.
   defp lookup_correlation(request_id) do
-    case RequestCorrelation.lookup(request_id) do
+    # The lookup must discover the row tenant before it can compare tenant scope.
+    # credo:disable-for-next-line AshCredo.Check.Warning.AuthorizeFalse
+    case RequestCorrelation.lookup(request_id, authorize?: false) do
       {:ok, row} -> row
       _ -> nil
     end
