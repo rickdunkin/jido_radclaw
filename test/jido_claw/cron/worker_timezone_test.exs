@@ -4,6 +4,9 @@ defmodule JidoClaw.Cron.WorkerTimezoneTest do
   `next_run` is the correct UTC instant — the load-bearing tz fix end to end
   (worker carries `:timezone` and routes the `:cron` branch through `NextRun`).
   """
+  # async: false — setup writes through the `Tenant.Manager` singleton
+  # (`ensure_tenant/1`), an out-of-chain GenServer that needs the shared
+  # sandbox; under owner-mode it raises DBConnection.OwnershipError.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron

@@ -1,5 +1,5 @@
 defmodule JidoClaw.Solutions.NetworkFacadeStoreInboundTest do
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Solutions.NetworkFacade
 

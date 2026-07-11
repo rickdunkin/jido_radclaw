@@ -5,7 +5,7 @@ defmodule JidoClaw.Conversations.ContextRestoreTest do
   `ai.react.context.modify` delivery contract, captured via the shared
   `JidoClaw.Test.CapturingAgent`.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias Jido.AI.Context
   alias JidoClaw.Conversations.ContextRestore

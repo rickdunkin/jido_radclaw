@@ -7,10 +7,10 @@ defmodule JidoClaw.RouteComposer.Steps.WaveCollectTest do
   finding this test pins). `certification` never needed this: verify
   emissions are built by `Reactors.VerifyStage`, which bypasses WaveCollect.
 
-  Non-async (`TenantCase`): persists artifact rows through the real
-  `ComposerArtifact` store.
+  Persists artifact rows through the real `ComposerArtifact` store, all
+  from the test's own call chain (sandbox-owned).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.WorkflowRun
   alias JidoClaw.RouteComposer.StageEmission

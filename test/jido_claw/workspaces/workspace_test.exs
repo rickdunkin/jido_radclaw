@@ -1,5 +1,5 @@
 defmodule JidoClaw.Workspaces.WorkspaceTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Workspaces.Resolver
 

@@ -1,4 +1,8 @@
 defmodule JidoClaw.Tools.InspectAgentTest do
+  # async: false — emit→sync_collector→read-back through the process-global
+  # Trace.Collector singleton (bounded LRU ring, max_traces 100): concurrent
+  # async modules' [:jido, :ai, ...] events can evict this test's trace in
+  # the emit→read window. The whole trace-test cohort stays sync for this.
   use JidoClaw.TenantCase, async: false
 
   import JidoClaw.TraceTestHelpers, only: [sync_collector: 0]

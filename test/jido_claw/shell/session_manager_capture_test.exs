@@ -1,4 +1,8 @@
 defmodule JidoClaw.Shell.SessionManagerCaptureTest do
+  # async: false — SessionManager.run is a GenServer.call into the app-tree
+  # singleton, which executes the command INLINE in handle_call (blocking the
+  # one manager for the whole run); concurrent async modules would serialize
+  # on its mailbox and risk call timeouts under load.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Shell.SessionManager

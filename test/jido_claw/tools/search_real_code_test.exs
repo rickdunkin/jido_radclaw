@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.SearchRealCodeTest do
   # Mirrors search_code_test's "AR-8b sketch jail" block; the jail target is the
   # real base (two levels up from the `.prototypes/<uuid>/` sandbox). No size-cap
   # assertion — `search_real_code` reuses `search_code`'s bounded read core.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Tools.SearchRealCode
   alias JidoClaw.VFS.Sandbox

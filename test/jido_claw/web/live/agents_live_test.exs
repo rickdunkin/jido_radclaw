@@ -1,10 +1,26 @@
 defmodule JidoClaw.Web.AgentsLiveTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Session.Worker, as: SessionWorker
   alias JidoClaw.Web.AgentsLive
+
+  # mount/3 is called directly on a hand-built socket, so every asserted DB
+  # read runs in the test process. The session workers are per-test pids
+  # spawned by the app-tree DynamicSupervisor (outside $callers); allow them
+  # so their set_session_uuid hydration doesn't degrade to a rescued
+  # OwnershipError (not asserted, but keeps logs clean).
+  defp ensure_allowed_session(tenant_id, external_id) do
+    {:ok, pid} =
+      JidoClaw.Session.Supervisor.ensure_session(tenant_id, external_id,
+        actor: actor_for(tenant_id)
+      )
+
+    Sandbox.allow(JidoClaw.Repo, self(), pid)
+    {:ok, pid}
+  end
 
   defp build_socket(assigns) do
     assigns =
@@ -61,10 +77,7 @@ defmodule JidoClaw.Web.AgentsLiveTest do
     test "with an active session, surfaces the matching AgentView card" do
       %{tenant_id: tenant_id, session: session} = seed_full(tenant_label: "agents_live_full")
 
-      {:ok, _pid} =
-        JidoClaw.Session.Supervisor.ensure_session(tenant_id, session.external_id,
-          actor: actor_for(tenant_id)
-        )
+      {:ok, _pid} = ensure_allowed_session(tenant_id, session.external_id)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, session.external_id, session.id)
 
@@ -81,10 +94,7 @@ defmodule JidoClaw.Web.AgentsLiveTest do
       %{tenant_id: tenant_id, session: session} =
         seed_full(tenant_label: "agents_live_handoff")
 
-      {:ok, _pid} =
-        JidoClaw.Session.Supervisor.ensure_session(tenant_id, session.external_id,
-          actor: actor_for(tenant_id)
-        )
+      {:ok, _pid} = ensure_allowed_session(tenant_id, session.external_id)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, session.external_id, session.id)
 

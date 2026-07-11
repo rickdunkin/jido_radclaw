@@ -6,7 +6,7 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
   unlike `run_cancelled` which drops its payload), and the reloaded JSONB
   string-keyed payload path through the real append transaction.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.WorkflowEvent
   alias JidoClaw.Orchestration.WorkflowEvent.Projection

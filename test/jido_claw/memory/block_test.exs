@@ -1,5 +1,5 @@
 defmodule JidoClaw.Memory.BlockTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Memory.{Block, BlockRevision}
   alias JidoClaw.Workspaces.Resolver

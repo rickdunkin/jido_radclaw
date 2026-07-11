@@ -14,7 +14,7 @@ defmodule JidoClaw.Solutions.LexicalIndexExplainTest do
   `:slow`, so the test does not slow down the standard suite.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Repo
 

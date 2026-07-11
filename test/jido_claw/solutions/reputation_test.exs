@@ -24,7 +24,7 @@ defmodule JidoClaw.Solutions.ReputationTest do
   importer module.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Solutions.Reputation
   alias JidoClaw.Solutions.Solution

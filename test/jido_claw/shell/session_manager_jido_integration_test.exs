@@ -3,6 +3,9 @@ defmodule JidoClaw.Shell.SessionManagerJidoIntegrationTest do
   # + command module all cooperating through SessionManager.run/4.
   # A unit test can't catch a classifier regression that silently routes
   # `jido` to host.
+  # async: false — same blocker as session_manager_capture_test: every test
+  # runs commands through the app-tree SessionManager singleton, which
+  # executes them inline in handle_call.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Shell.SessionManager

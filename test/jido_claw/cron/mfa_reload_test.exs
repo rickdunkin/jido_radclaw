@@ -8,6 +8,9 @@ defmodule JidoClaw.Cron.MfaReloadTest do
   `{:ok, nil}` for such a row, so the worker booted with `mfa: nil` and
   every tick raised a rescued MatchError instead of running the MFA.
   """
+  # async: false — setup writes through the `Tenant.Manager` singleton
+  # (`ensure_tenant/1`), an out-of-chain GenServer that needs the shared
+  # sandbox; under owner-mode it raises DBConnection.OwnershipError.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron

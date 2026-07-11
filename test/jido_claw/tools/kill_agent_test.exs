@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.KillAgentTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Tools.KillAgent
 

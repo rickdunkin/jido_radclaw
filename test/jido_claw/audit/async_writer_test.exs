@@ -13,7 +13,7 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
     * Attrs without `tenant_id` are dropped with a logged warning;
       no row is written.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Audit.{AsyncWriter, Event}
 
@@ -89,10 +89,10 @@ defmodule JidoClaw.Audit.AsyncWriterTest do
 
       assert :ok = AsyncWriter.cast(attrs)
 
-      # Wait for the Task.Supervisor child to drain. The Ecto sandbox
-      # is in :shared mode (TenantCase default for non-async tests),
-      # so the spawned process sees the same connection and writes
-      # are visible immediately after the task exits.
+      # Wait for the Task.Supervisor child to drain. The child is spawned
+      # from this process (start_child), so $callers routes it to the
+      # test's sandbox connection and writes are visible immediately
+      # after the task exits.
       :ok =
         eventually(fn ->
           {:ok, rows} = Event.read(tenant: tenant_id, actor: actor_for(tenant_id))

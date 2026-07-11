@@ -11,10 +11,12 @@ defmodule JidoClaw.Orchestration.RunTerminatorTest do
   BEAM). Real cross-BEAM cast *delivery* to a genuinely remote node is proven
   by WS6's `:peer` multi-node `JidoClaw.Cluster.CrossNodeCancelTest` — out of
   scope here. The terminator touches no DB, so a plain `ExUnit.Case` with no
-  sandbox; unique run-id/tenant strings per test (the shared, global
-  `RunRegistry`).
+  sandbox; async-safe because run-id/tenant strings are unique per test, casts
+  route by that unique id (concurrent casts to the stateless singleton don't
+  interfere), and its `:sys.get_state == %{}` is a true invariant, not a
+  per-test emptiness claim.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 

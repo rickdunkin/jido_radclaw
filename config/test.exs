@@ -207,12 +207,25 @@ config :jido_claw, JidoClaw.Security.Vault,
 # data layers.
 config :ash, warn_on_transaction_hooks?: false
 
+# Concurrency budget for the async cohort: every async module holds one
+# sandbox owner connection for its duration, so the pool must cover
+# max-cases (schedulers * 2 by default) or owners queue-timeout. Partitioned
+# runs (scripts/test-partitioned.sh exports JIDOCLAW_TEST_PARTITIONS) divide
+# the budget across BEAMs — Postgres max_connections is commonly 100, and
+# N x (schedulers * 2 + 8) would blow past it. test_helper.exs caps
+# ExUnit's max_cases to this same budget.
+test_partitions = String.to_integer(System.get_env("JIDOCLAW_TEST_PARTITIONS", "1"))
+async_case_budget = max(div(System.schedulers_online() * 2, test_partitions), 1)
+
+config :jido_claw, :test_async_case_budget, async_case_budget
+
 config :jido_claw, JidoClaw.Repo,
   username: "rhl",
   password: "",
   hostname: "localhost",
   database: "jido_claw_test#{System.get_env("MIX_TEST_PARTITION")}",
-  pool: Ecto.Adapters.SQL.Sandbox
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: async_case_budget + 8
 
 # Cluster suite (JIDOCLAW_CLUSTER_TEST=1, via scripts/test-cluster.sh): swap
 # the SQL sandbox for the regular pool + a dedicated DB so a real :peer

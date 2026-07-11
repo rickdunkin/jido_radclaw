@@ -5,7 +5,7 @@ defmodule JidoClaw.Orchestration.PrototypeReferenceTest do
   self-verifies that the `config["premises"]["prototype_id"]` filter compiles to
   native JSONB extraction.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.PrototypeReference
   alias JidoClaw.Orchestration.WorkflowRun

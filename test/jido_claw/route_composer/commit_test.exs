@@ -7,7 +7,7 @@ defmodule JidoClaw.RouteComposer.CommitTest do
   leg failure rolls back **all**, and an already-terminal parent is refused
   (`{:error, :parent_terminal}`) before any write via the FOR UPDATE reload guard.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.WorkflowEvent

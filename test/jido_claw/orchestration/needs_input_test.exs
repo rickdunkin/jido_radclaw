@@ -5,7 +5,7 @@ defmodule JidoClaw.Orchestration.NeedsInputTest do
   floor (session → run → refuse), the identity-vs-FK split, and the
   kind-dispatched `Cases` decide/abandon branches (answer guard included).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   @moduletag :capture_log
 

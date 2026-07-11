@@ -7,7 +7,7 @@ defmodule JidoClaw.Audit.SessionStartIdempotencyTest do
   external_id)` tuple. The fallback path uses `:touch` (no audit hook),
   and the `:start` after-action only fires on insert success.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Audit.Event
   alias JidoClaw.Conversations.Resolver

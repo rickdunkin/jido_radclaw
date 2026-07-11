@@ -1,7 +1,7 @@
 defmodule JidoClaw.JidoTest do
   # Exercises the real, globally named JidoClaw.Jido.AgentSupervisor — must
   # not run concurrently with other tests poking the same supervisor.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Jido, as: Runtime
 

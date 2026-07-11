@@ -11,8 +11,9 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
   selection. The tool is invoked directly to install ownership.
   """
 
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Agent.Handoff.Router, as: HandoffRouter
   alias JidoClaw.Conversations.Message
@@ -27,7 +28,14 @@ defmodule JidoClaw.Conversations.HandoffRoutingIntegrationTest do
     runtime_session_id = session.external_id
     actor = actor_for(tenant_id)
 
-    {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+    {:ok, worker_pid} =
+      SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+
+    # The worker is spawned by the app-tree DynamicSupervisor (outside
+    # $callers); allow it so its DB work — hydration on set_session_uuid and
+    # the durable :system row HandoffTool.run writes via add_message — lands
+    # on the test's owner connection.
+    Sandbox.allow(JidoClaw.Repo, self(), worker_pid)
 
     :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
 

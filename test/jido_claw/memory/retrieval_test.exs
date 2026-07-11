@@ -1,5 +1,5 @@
 defmodule JidoClaw.Memory.RetrievalTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   require Ash.Query
 

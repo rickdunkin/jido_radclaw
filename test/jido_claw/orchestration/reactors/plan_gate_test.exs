@@ -6,7 +6,7 @@ defmodule JidoClaw.Orchestration.Reactors.PlanGateTest do
   `WaveCollect`-shaped emission envelope, and the `approved-plan` artifact holds
   the RAW plan value as an `:active`-promotable `:pending` row.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.Cases
   alias JidoClaw.Orchestration.ComposerArtifact

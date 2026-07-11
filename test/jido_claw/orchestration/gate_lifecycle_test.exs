@@ -3,7 +3,7 @@ defmodule JidoClaw.Orchestration.GateLifecycleTest do
   WS5/WS7: the `AgentCaseEvent` timeline (every case transition appends in
   the same transaction) and the AR-1 gate lifecycle — operator `abandon`.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase

@@ -4,7 +4,7 @@ defmodule JidoClaw.CLI.RunAwaitTest do
   detection by polling, gate detection through the run TREE (composer parents
   stay `:running` while a child wave parks on a gate), and the timeout path.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.CLI.RunAwait
   alias JidoClaw.Orchestration.AgentCase

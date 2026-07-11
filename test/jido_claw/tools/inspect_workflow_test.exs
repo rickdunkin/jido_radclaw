@@ -8,7 +8,7 @@ defmodule JidoClaw.Tools.InspectWorkflowTest do
   execution-path test so `output_schema` validation is exercised on both the
   composer-present and composer-absent shapes.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.WorkflowLease
   alias JidoClaw.Orchestration.WorkflowLog

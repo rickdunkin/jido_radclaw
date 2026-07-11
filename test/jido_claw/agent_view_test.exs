@@ -1,4 +1,9 @@
 defmodule JidoClaw.AgentViewTest do
+  # async: false — two blockers: the messages-cap tests write rows via
+  # SessionWorker.add_message from the worker process (outside $callers;
+  # the write itself is what's asserted), and the status/events tests
+  # round-trip through the process-global Trace.Collector ring like the rest
+  # of the sync trace cohort.
   use JidoClaw.TenantCase, async: false
 
   import JidoClaw.TraceTestHelpers, only: [sync_collector: 0]

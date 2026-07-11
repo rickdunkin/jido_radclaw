@@ -11,7 +11,7 @@ defmodule JidoClaw.Web.SessionUserTest do
   session-format compatibility; infrastructure branches use the resolver's
   injected dependency seam so PostgreSQL and the SQL sandbox stay undisturbed.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   import Phoenix.ConnTest, only: [build_conn: 0]
   import Plug.Test, only: [init_test_session: 2]

@@ -7,7 +7,7 @@ defmodule JidoClaw.Tools.WorkflowEventsTest do
   redaction pin, and the full `Jido.Exec.run` path so `output_schema` validation
   (and the undeclared `events` extra-key pass-through) is exercised.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun

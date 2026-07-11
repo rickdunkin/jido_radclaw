@@ -8,6 +8,9 @@ defmodule JidoClaw.Tools.ScheduleTaskTest do
   Scheduling uses a 1-day interval so the started worker never ticks during
   the test (its first tick is ~1 day out, independent of wall-clock time).
   """
+  # async: false — setup writes through the `Tenant.Manager` singleton
+  # (`ensure_tenant/1`), an out-of-chain GenServer that needs the shared
+  # sandbox; under owner-mode it raises DBConnection.OwnershipError.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron.Job

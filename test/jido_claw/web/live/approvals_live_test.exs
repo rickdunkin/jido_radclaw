@@ -4,6 +4,10 @@ defmodule JidoClaw.Web.ApprovalsLiveTest do
   inbox: an approve `handle_event` routes through `Cases.decide/4` and resumes
   the paused run to completion.
   """
+  # async: false — setup wipes the global :gate_test_markers named ETS table
+  # (TestIrreversibleWrite.reset/0) and the approve path's after_approved
+  # hook writes to and reads behavior() from that same shared table; the
+  # marker-asserting gate cohort stays sync.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Gates.TestIrreversibleWrite

@@ -4,7 +4,7 @@ defmodule JidoClaw.Orchestration.AgentCaseToolCallTest do
   create-validation split, single-use/deny-once consume fences, and the
   partial-unique pending-fingerprint index.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Core.AshErrors
   alias JidoClaw.Orchestration.AgentCase

@@ -10,10 +10,11 @@ defmodule JidoClaw.Orchestration.ComposerArtifactTest do
   sentinel keep a genesis seed artifact invisible to every real-wave read yet
   resolvable by ref.
 
-  Non-async (`TenantCase`): the index/encrypt-at-rest assertions read raw
-  Postgres rows, so it must not race other tenants' writes.
+  The index/encrypt-at-rest assertions read raw Postgres rows scoped to
+  this test's unique tenant; sandbox isolation keeps other tests' writes
+  invisible to them.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.ComposerArtifact
   alias JidoClaw.Orchestration.ComposerArtifact.Envelope

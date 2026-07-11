@@ -13,7 +13,7 @@ defmodule JidoClaw.Embeddings.PolicyResolverTest do
       sees off the SQL claim) round-trip through `resolve/1`.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Embeddings.PolicyResolver
 

@@ -3,7 +3,7 @@ defmodule JidoClaw.Tools.ListRealDirectoryTest do
   # Mirrors list_directory_test's "AR-8b sketch jail" block; the jail target is the
   # real base (two levels up from the `.prototypes/<uuid>/` sandbox). No size-cap
   # assertion — `list_real_directory` reuses `list_directory`'s core.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Tools.ListRealDirectory
   alias JidoClaw.VFS.Sandbox

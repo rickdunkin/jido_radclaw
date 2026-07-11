@@ -1,5 +1,5 @@
 defmodule JidoClaw.Memory.ScopeTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Memory.Scope
@@ -23,19 +23,23 @@ defmodule JidoClaw.Memory.ScopeTest do
     end
 
     test "derives :workspace from workspace_uuid" do
+      # Unique tenant: `Tenant.ensure/1` (inside ensure_workspace) upserts,
+      # row-locking a shared tenant row for the whole sandbox transaction.
+      tenant = "tenant-scope-#{System.unique_integer([:positive])}"
+
       {:ok, ws} =
         Resolver.ensure_workspace(
-          "default",
+          tenant,
           "/tmp/scope_ws_#{System.unique_integer([:positive])}",
           []
         )
 
-      tc = %{tenant_id: "default", workspace_uuid: ws.id}
+      tc = %{tenant_id: tenant, workspace_uuid: ws.id}
 
       assert {:ok, scope} = Scope.resolve(tc)
       assert scope.scope_kind == :workspace
       assert scope.workspace_id == ws.id
-      assert scope.tenant_id == "default"
+      assert scope.tenant_id == tenant
     end
   end
 

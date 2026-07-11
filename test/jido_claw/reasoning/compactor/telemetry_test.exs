@@ -1,24 +1,30 @@
 defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Reasoning.Compactor.Telemetry
 
   setup do
     test_pid = self()
     handler_id = "compactor-telemetry-test-#{System.unique_integer([:positive])}"
+    # Scope key threaded through every base_metadata below: the handler only
+    # forwards this test's own events, so concurrent async modules emitting
+    # [:jido_claw, :compaction, :event] can't pollute the exact-count drains.
+    scope = "compactor-tel-#{System.unique_integer([:positive])}"
 
     :ok =
       :telemetry.attach(
         handler_id,
         [:jido_claw, :compaction, :event],
         fn _event, measurements, metadata, _ ->
-          send(test_pid, {:compaction_event, measurements, metadata})
+          if metadata[:scope] == scope do
+            send(test_pid, {:compaction_event, measurements, metadata})
+          end
         end,
         nil
       )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
-    :ok
+    {:ok, scope: scope}
   end
 
   defp drain_events(acc \\ []) do
@@ -31,13 +37,13 @@ defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
   end
 
   describe "with_compaction/4 — :summarized" do
-    test "emits start then summarized" do
+    test "emits start then summarized", %{scope: scope} do
       fake_snapshot = %{id: "cpct_x"}
 
       result =
         Telemetry.with_compaction(
           "summary",
-          %{tenant_id: "t", session_uuid: "s"},
+          %{tenant_id: "t", session_uuid: "s", scope: scope},
           fn ->
             {:ok, :summarized, fake_snapshot, %{compaction_id: "cpct_x", summary_chars: 100}}
           end
@@ -58,11 +64,11 @@ defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
   end
 
   describe "with_compaction/4 — :skipped" do
-    test "emits start then skipped with reason in metadata" do
+    test "emits start then skipped with reason in metadata", %{scope: scope} do
       _ =
         Telemetry.with_compaction(
           "summary",
-          %{tenant_id: "t"},
+          %{tenant_id: "t", scope: scope},
           fn -> {:ok, :skipped, nil, %{reason: :below_threshold}} end
         )
 
@@ -74,11 +80,11 @@ defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
   end
 
   describe "with_compaction/4 — :error" do
-    test "emits start then error with reason as inspected string" do
+    test "emits start then error with reason as inspected string", %{scope: scope} do
       _ =
         Telemetry.with_compaction(
           "summary",
-          %{tenant_id: "t"},
+          %{tenant_id: "t", scope: scope},
           fn -> {:error, :boom} end
         )
 
@@ -91,11 +97,11 @@ defmodule JidoClaw.Reasoning.Compactor.TelemetryTest do
   end
 
   describe "with_compaction/4 — exit" do
-    test "catches an exit, emits :error, returns {:error, reason}" do
+    test "catches an exit, emits :error, returns {:error, reason}", %{scope: scope} do
       result =
         Telemetry.with_compaction(
           "summary",
-          %{},
+          %{scope: scope},
           fn -> exit(:bad) end
         )
 

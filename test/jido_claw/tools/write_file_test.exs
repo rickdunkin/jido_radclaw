@@ -1,7 +1,9 @@
 defmodule JidoClaw.Tools.WriteFileTest do
-  # Not async — writes to tmp filesystem (isolated per test via unique dirs, but
-  # keeping sync as a conservative default for file-mutating tests)
-  use ExUnit.Case, async: false
+  # async-safe: every write lands under a unique per-test tmp dir (removed
+  # on_exit), VFS mounts use unique workspace_ids (MountTable keys are
+  # disjoint), and the sketch-jail test asserts a REFUSED write (nothing
+  # touches the repo root). No DB, no shared singletons on the asserted path.
+  use ExUnit.Case, async: true
   @max_content_bytes 5 * 1024 * 1024
   import JidoClaw.ToolSchemaHelpers
 

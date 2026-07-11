@@ -1,4 +1,9 @@
 defmodule JidoClaw.Tenants.AccessTest do
+  # async: false — setup asserts {:ok, _} = Manager.ensure_tenant(...) (the
+  # singleton's own-process write errors under async owner mode), the
+  # suspend/resume tests drive the resource→Manager runtime sync, and one
+  # test deletes directly from the Manager's shared :jido_claw_tenants named
+  # ETS table.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Tenant.InstanceSupervisor

@@ -16,7 +16,7 @@ defmodule JidoClaw.Audit.ProducersTest do
     * Each producer flows through `AsyncWriter.sync/1` so the audit
       row is durably visible after the action returns.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Audit.Event
   alias JidoClaw.Authorization.Actor

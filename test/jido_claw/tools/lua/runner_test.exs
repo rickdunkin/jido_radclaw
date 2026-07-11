@@ -1,8 +1,9 @@
 defmodule JidoClaw.Tools.Lua.RunnerTest do
-  # async: false — the eval runs in an UNLINKED supervised task, and that
-  # task performs the DB reads, so the Ecto sandbox must be in shared mode
-  # (TenantCase's default for sync tests). Kill-path timing also makes
-  # concurrency unwelcome here.
+  # async: false — sandbox ownership is NOT the blocker ($callers reaches the
+  # caller-spawned unlinked eval task), the Lua kill budget is: CPU-starved
+  # evals blow the 1500ms deadline under concurrent load, turning
+  # :lua_runtime_error assertions into :lua_timeout (observed in 4-partition
+  # runs the moment this file went async).
   use JidoClaw.TenantCase, async: false
 
   alias Jido.AI.Error, as: ReactError

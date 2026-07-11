@@ -4,7 +4,7 @@ defmodule JidoClaw.Orchestration.CasesToolCallTest do
   the abandon refusal, the decide idempotency fence, and the full
   request → decide → request loop end-to-end.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.AgentCaseEvent

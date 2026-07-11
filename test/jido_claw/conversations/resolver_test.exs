@@ -1,5 +1,5 @@
 defmodule JidoClaw.Conversations.ResolverTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.Resolver, as: ConvResolver
@@ -12,7 +12,10 @@ defmodule JidoClaw.Conversations.ResolverTest do
 
   describe "ensure_session/5 — cross-workspace identity" do
     test "two workspaces in one tenant get distinct sessions for the same (kind, external_id)" do
-      tenant = "default"
+      # Unique tenants throughout: `Tenant.ensure/1` (inside ensure_workspace)
+      # upserts, row-locking a shared tenant row for the whole sandbox
+      # transaction.
+      tenant = "tenant-conv-resolver-#{System.unique_integer([:positive])}"
 
       {:ok, ws1} =
         WsResolver.ensure_workspace(
@@ -42,7 +45,7 @@ defmodule JidoClaw.Conversations.ResolverTest do
     end
 
     test "idempotent reuse within (tenant, workspace, kind, external_id) returns the same id" do
-      tenant = "default"
+      tenant = "tenant-conv-resolver-#{System.unique_integer([:positive])}"
 
       {:ok, ws} =
         WsResolver.ensure_workspace(
@@ -60,7 +63,7 @@ defmodule JidoClaw.Conversations.ResolverTest do
     end
 
     test "preserves started_at and metadata across idempotent calls (Decision 10)" do
-      tenant = "default"
+      tenant = "tenant-conv-resolver-#{System.unique_integer([:positive])}"
 
       {:ok, ws} =
         WsResolver.ensure_workspace(

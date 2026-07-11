@@ -15,7 +15,7 @@ defmodule JidoClaw.Cron.JobTest do
       `:for_tenant` excludes disabled rows.
     * All three `schedule_kind` values round-trip correctly.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Cron.Job
 

@@ -209,6 +209,12 @@ defmodule JidoClaw.Tenant.Manager do
     end
   rescue
     error -> {:error, error}
+  catch
+    # DBConnection failures can arrive as exits, not raises (e.g.
+    # Holder.checkout exiting `{:shutdown, "owner exited"}` when an Ecto
+    # sandbox owner dies mid-checkout). The never-crash contract covers
+    # those the same way: the write failed, the manager survives.
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp legacy_from_row(row) do

@@ -6,10 +6,10 @@ defmodule JidoClaw.Orchestration.GateDispositionTest do
   deadline/teardown paths and recovery's janitor branches never hand-roll
   reload/re-check logic and never bulldoze a fenced operator decision.
 
-  Non-async (`TenantCase`): drives real multi-resource transactions in the
-  shared sandbox.
+  Drives real multi-resource transactions from the test's own call chain
+  (sandbox-owned).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.Cancellation

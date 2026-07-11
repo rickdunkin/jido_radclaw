@@ -24,9 +24,12 @@ defmodule JidoClaw.Orchestration.RunExecutionTimeoutTest do
   false timeout) — the infinitesimal yield→kill gap is not deterministically
   forceable, so that arm is covered by this shared outcome + inspection.
 
-  `async: false` — the shared `RunRegistry` singleton.
+  async-safe: `RunRegistry` keys are unique per test (`Ecto.UUID.generate()`),
+  so entries never collide across concurrent modules; no DB, and the timeout
+  assertions are deterministic (an instant task under 5s, a never-returning
+  sleeper under 100ms) rather than load-sensitive elapsed bounds.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Orchestration.Reactors.BlockingTestReactor
   alias JidoClaw.Orchestration.RunExecution

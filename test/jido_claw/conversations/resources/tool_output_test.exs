@@ -1,5 +1,5 @@
 defmodule JidoClaw.Conversations.ToolOutputTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   import Ecto.Query
 

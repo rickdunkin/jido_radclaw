@@ -1,5 +1,5 @@
 defmodule JidoClaw.Reasoning.Compactor.StorageTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.Session, as: SessionResource
   alias JidoClaw.Reasoning.Compactor.{Snapshot, Storage}

@@ -12,6 +12,10 @@ defmodule JidoClaw.CLI.CommandsCronTest do
   fire during the test (1-day intervals, or a cron pinned ~2 days out) keep
   scheduled workers from ticking, and on_exit unschedules them.
   """
+  # async: false — two blockers: setup writes through the Tenant.Manager
+  # singleton (its own-process row write errors under async owner mode and
+  # propagates), and the CLI path hardcodes the shared "default" tenant
+  # (row-locked by api_key_auth_test, its sole async user).
   use JidoClaw.TenantCase, async: false
 
   import ExUnit.CaptureIO

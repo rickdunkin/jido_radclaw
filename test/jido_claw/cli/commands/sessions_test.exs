@@ -4,7 +4,7 @@ defmodule JidoClaw.CLI.Commands.SessionsTest do
   newest-first — matching `--continue`'s selection set — vs resume-by-UUID
   kinds), the resume hint footer, and graceful degraded-state output.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   import ExUnit.CaptureIO
 

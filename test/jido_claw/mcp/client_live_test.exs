@@ -5,7 +5,7 @@ defmodule JidoClaw.MCP.Client.LiveTest do
   to `:ok`, so a Consumer restart re-discovers and rebuilds proxies instead of
   hard-failing.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Jido.MCP.Endpoint
   alias JidoClaw.MCP.Client.Live

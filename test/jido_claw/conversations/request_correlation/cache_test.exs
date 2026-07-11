@@ -1,4 +1,8 @@
 defmodule JidoClaw.Conversations.RequestCorrelation.CacheTest do
+  # async: false — uses :sys.replace_state on the app-tree
+  # RequestCorrelation.Cache singleton (reject_puts_until fences ALL cache
+  # puts VM-wide for the test window); concurrent tests would corrupt each
+  # other's fence and assertions.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Conversations.RequestCorrelation.Cache

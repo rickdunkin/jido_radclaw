@@ -1,10 +1,20 @@
 defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry
   alias JidoClaw.Conversations.Session, as: ConversationsSession
   alias JidoClaw.Session.Supervisor, as: SessionSupervisor
   alias JidoClaw.Session.Worker, as: SessionWorker
+
+  # The worker is spawned by the app-tree DynamicSupervisor (outside
+  # $callers); the hydration under test does DB reads/writes from the worker
+  # process, so allow the per-test pid onto the test's owner connection.
+  defp start_allowed_worker(tenant_id, runtime_session_id, actor) do
+    {:ok, pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+    Sandbox.allow(JidoClaw.Repo, self(), pid)
+    {:ok, pid}
+  end
 
   describe "set_session_uuid/3 cold-start hydration" do
     test "seeds the handoff registry from session metadata when template is valid" do
@@ -22,7 +32,7 @@ defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
       assert HandoffRegistry.owner(tenant_id, runtime_session_id) == nil
 
       # Start the worker (no session_uuid yet) then push the uuid through.
-      {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+      {:ok, _pid} = start_allowed_worker(tenant_id, runtime_session_id, actor)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
 
@@ -45,7 +55,7 @@ defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
           actor: actor
         )
 
-      {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+      {:ok, _pid} = start_allowed_worker(tenant_id, runtime_session_id, actor)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
 
@@ -71,7 +81,7 @@ defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
           actor: actor
         )
 
-      {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+      {:ok, _pid} = start_allowed_worker(tenant_id, runtime_session_id, actor)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
 
@@ -86,7 +96,7 @@ defmodule JidoClaw.Platform.Session.WorkerHandoffHydrationTest do
       actor = actor_for(tenant_id)
       runtime_session_id = session.external_id
 
-      {:ok, _pid} = SessionSupervisor.ensure_session(tenant_id, runtime_session_id, actor: actor)
+      {:ok, _pid} = start_allowed_worker(tenant_id, runtime_session_id, actor)
 
       :ok = SessionWorker.set_session_uuid(tenant_id, runtime_session_id, session.id)
 

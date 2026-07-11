@@ -12,6 +12,11 @@ defmodule JidoClaw.Reasoning.TelemetryTest do
   full deprecation contract and `lib/jido_claw/reasoning/telemetry.ex`
   for the writer that no longer threads these fields.
   """
+  # async: false — subscribes to the shared SignalBus topic
+  # jido_claw.reasoning.classified and refute_receives on it (correctness
+  # depends on suite-wide quiet); other tests assert specific classified
+  # signals that concurrent emissions would interleave. Topic delivery is
+  # process-global with no test-scoped filter seam.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Core.MapKeys

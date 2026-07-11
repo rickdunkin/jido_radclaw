@@ -1,5 +1,5 @@
 defmodule JidoClaw.Reasoning.StatisticsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Reasoning.{Resources.Outcome, Statistics}

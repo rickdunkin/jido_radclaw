@@ -9,7 +9,7 @@ defmodule JidoClaw.Web.WorkflowsLiveTest do
   and the WS6 ownership columns (Owner / Lease expires, expiry blanked on
   terminal rows).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.WorkflowLog
   alias JidoClaw.Orchestration.WorkflowRun

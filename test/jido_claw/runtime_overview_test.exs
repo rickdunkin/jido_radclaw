@@ -1,5 +1,5 @@
 defmodule JidoClaw.RuntimeOverviewTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.ToolApprovals
   alias JidoClaw.RuntimeOverview

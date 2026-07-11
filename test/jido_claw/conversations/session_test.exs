@@ -1,5 +1,5 @@
 defmodule JidoClaw.Conversations.SessionTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.FrontDoor.Clarify.State
   alias JidoClaw.Triage.Verdict

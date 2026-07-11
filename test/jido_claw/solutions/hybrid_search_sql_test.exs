@@ -15,7 +15,7 @@ defmodule JidoClaw.Solutions.HybridSearchSqlTest do
       preservation; missing-pool defaults to 0.0 not a fixed rank.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias Ecto.UUID
   alias JidoClaw.Repo

@@ -5,7 +5,7 @@ defmodule JidoClaw.Forge.PersistenceCompleteTest do
   generic `:update_phase` (which does not). Tested at the Persistence layer
   directly — no Harness/Manager, so deterministic with a real DB row.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Forge.Persistence
 

@@ -15,7 +15,7 @@ defmodule JidoClaw.Solutions.MatcherTest do
       not returned to a query against workspace A.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Solutions.Matcher
 

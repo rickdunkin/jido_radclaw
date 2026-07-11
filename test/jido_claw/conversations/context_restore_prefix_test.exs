@@ -10,7 +10,7 @@ defmodule JidoClaw.Conversations.ContextRestorePrefixTest do
       resume (P2), and the restored context's `system_prompt` (C2) are
       byte-for-byte equal.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.ContextRestore
   alias JidoClaw.Conversations.Message

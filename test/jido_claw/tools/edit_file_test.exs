@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.EditFileTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   @max_content_bytes 5 * 1024 * 1024
   import JidoClaw.ToolSchemaHelpers
 
@@ -213,8 +213,14 @@ defmodule JidoClaw.Tools.EditFileTest do
 
   describe "AR-8b sketch jail fails closed (review P2)" do
     test "a sandbox context with no project_dir refuses to edit a real-tree file" do
+      # tmp-based sentinel: the refusal fires at Sandbox.resolver_opts (no
+      # project_dir → fail closed) before any path handling, so the assertion
+      # is identical without writing into the shared repo root.
       sentinel =
-        Path.join(File.cwd!(), "sketch_edit_sentinel_#{System.unique_integer([:positive])}.txt")
+        Path.join(
+          System.tmp_dir!(),
+          "sketch_edit_sentinel_#{System.unique_integer([:positive])}.txt"
+        )
 
       File.write!(sentinel, "original")
       on_exit(fn -> File.rm_rf!(sentinel) end)

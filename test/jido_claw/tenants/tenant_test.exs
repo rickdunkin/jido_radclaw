@@ -16,7 +16,7 @@ defmodule JidoClaw.Tenants.TenantTest do
     * No `:destroy` action is exposed — `Audit.Event` rows FK at
       tenants and a hard delete would orphan history.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Tenants.Tenant
 

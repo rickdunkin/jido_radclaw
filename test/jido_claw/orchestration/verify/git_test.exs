@@ -1,4 +1,9 @@
 defmodule JidoClaw.Orchestration.Verify.GitTest do
+  # async: false — asserts the VM-wide VerifyCaptureTaskSupervisor's child
+  # COUNT/capacity (2 slots) and drives its FIFO/refusal behavior; any
+  # concurrent async capture corrupts those counts. Also carries tight
+  # capture_timeout_ms (50/75ms) and an elapsed-time upper bound that CPU
+  # starvation under parallel load can blow.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Orchestration.Verify

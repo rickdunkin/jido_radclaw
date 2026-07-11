@@ -7,6 +7,11 @@ defmodule JidoClaw.Cron.TelemetryTest do
   defaults to `:agent` must still report `dispatch_target: :mfa` — and that the
   exception event carries `tenant_id` (the old `emit_cron_exception` dropped it).
   """
+  # async: false — two independent blockers: setup writes through the
+  # Tenant.Manager singleton (errors under async owner mode), and the
+  # telemetry collector forwards EVERY [:jido_claw, :cron, :job, :*] event
+  # unfiltered, so bare assert_receives would match other modules' cron
+  # events.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron

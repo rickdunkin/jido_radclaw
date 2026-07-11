@@ -15,7 +15,7 @@ defmodule JidoClaw.Conversations.SessionCompactionKeyingTest do
   cannot clobber concurrently-written sibling keys — cross-writer
   coherence across all three metadata writers.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.Session
@@ -23,7 +23,10 @@ defmodule JidoClaw.Conversations.SessionCompactionKeyingTest do
   alias JidoClaw.Workspaces.Workspace
 
   setup do
-    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: true)
+    # Owner (non-shared) mode: every DB path here runs in the test process or
+    # in `Task.async` children (which reach the owner via `$callers`), and the
+    # tenant id is unique per test — no global visibility needed.
+    pid = Sandbox.start_owner!(JidoClaw.Repo, shared: false)
     on_exit(fn -> Sandbox.stop_owner(pid) end)
     seed()
   end

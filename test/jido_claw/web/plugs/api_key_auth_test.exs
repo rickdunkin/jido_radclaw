@@ -6,7 +6,7 @@ defmodule JidoClaw.Web.Plugs.ApiKeyAuthTest do
   directly (no router) and asserts exactly one `:auth_event` audit row
   is appended per call under the `"default"` tenant.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Accounts.ApiKey
   alias JidoClaw.Accounts.User

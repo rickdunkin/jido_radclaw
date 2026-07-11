@@ -1,5 +1,5 @@
 defmodule JidoClaw.Web.DashboardLiveTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Web.DashboardLive
 

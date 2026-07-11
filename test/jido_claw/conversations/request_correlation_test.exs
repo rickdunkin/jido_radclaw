@@ -6,7 +6,7 @@ defmodule JidoClaw.Conversations.RequestCorrelationTest do
   shape. Internal signal plumbing deliberately opts out of authorization at
   each callsite instead of making this resource a general no-actor hole.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.RequestCorrelation
 

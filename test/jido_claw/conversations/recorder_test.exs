@@ -1,4 +1,8 @@
 defmodule JidoClaw.Conversations.RecorderTest do
+  # async: false — setup hardcodes start_owner!(shared: true) because the
+  # asserted rows are written by the app-tree Recorder singleton from its own
+  # process (driven via SignalBus publishes); a shared singleton can't be
+  # Sandbox.allow-ed per test, and shared mode + async is the dangerous combo.
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox

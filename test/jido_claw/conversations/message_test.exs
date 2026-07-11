@@ -1,5 +1,5 @@
 defmodule JidoClaw.Conversations.MessageTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.Message
 

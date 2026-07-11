@@ -1,5 +1,5 @@
 defmodule JidoClaw.Accounts.UserPasswordTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Accounts.User
 

@@ -6,7 +6,7 @@ defmodule JidoClaw.Cron.FireFencingTest do
   both the cadence cutoff and stored timestamp, so caller clock skew is inert.
   """
 
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Cron.Job
   alias JidoClaw.Repo

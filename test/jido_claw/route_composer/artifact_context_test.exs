@@ -6,9 +6,10 @@ defmodule JidoClaw.RouteComposer.ArtifactContextTest do
   decrypt/corrupt failure is a controlled wave failure (P1-2), never a crash
   or a silently-omitted artifact.
 
-  Non-async (`TenantCase`): persists + (for the corrupt case) raw-mutates rows.
+  Persists + (for the corrupt case) raw-mutates rows, all from the test's
+  own call chain (sandbox-owned).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   import Ecto.Query
 

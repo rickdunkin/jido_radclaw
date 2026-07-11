@@ -6,8 +6,9 @@ defmodule JidoClaw.Conversations.HistoryTest do
   out tool/reasoning rows so legacy callers (REPL view, web LiveView,
   channel adapters) keep their existing shape.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Session.Worker
 
@@ -20,8 +21,13 @@ defmodule JidoClaw.Conversations.HistoryTest do
       # set_session_uuid call is what triggers `load_messages/1` to
       # hydrate `state.messages` from Postgres — without it the in-memory
       # cache stays empty regardless of seeded rows.
-      {:ok, _pid} =
+      {:ok, worker_pid} =
         JidoClaw.Session.Supervisor.ensure_session(tenant, external_id, actor: actor_for(tenant))
+
+      # The worker is spawned by the app-tree DynamicSupervisor (outside
+      # $callers); allow it so load_messages/1 sees the rows seeded on the
+      # test's owner connection.
+      Sandbox.allow(JidoClaw.Repo, self(), worker_pid)
 
       :ok = Worker.set_session_uuid(tenant, external_id, session.id)
 

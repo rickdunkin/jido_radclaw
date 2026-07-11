@@ -16,7 +16,7 @@ defmodule JidoClaw.Audit.AshTracerTest do
       `actor_kind: :system`, not `:user`, even though the canonical
       shape carries a `:user_id` key.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   require Ash.Tracer
 

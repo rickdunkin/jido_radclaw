@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.ListDirectoryTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Tools.ListDirectory
   alias JidoClaw.VFS.Sandbox

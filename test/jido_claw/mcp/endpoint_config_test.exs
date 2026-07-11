@@ -5,6 +5,10 @@ defmodule JidoClaw.MCP.EndpointConfigTest do
   warnings while good siblings survive, and the stdio `command`/`args`/`env`
   shapes translate as documented.
   """
+  # async: false — the endpoint-id registry is a GLOBAL :persistent_term
+  # (endpoint_config.ex @endpoint_registry_key) that parse/1 mutates on
+  # every call; tests snapshot/wipe/restore it and assert stable id
+  # assignment across parses, impossible with concurrent parsers.
   use ExUnit.Case, async: false
 
   alias JidoClaw.MCP.EndpointConfig

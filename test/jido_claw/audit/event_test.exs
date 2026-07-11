@@ -13,7 +13,7 @@ defmodule JidoClaw.Audit.EventTest do
       visible from a `:read` under tenant B.
     * Each `event_kind` enum value accepts a representative payload.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Audit.Event
   alias JidoClaw.Conversations.Message, as: ConversationsMessage

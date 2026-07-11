@@ -9,7 +9,7 @@ defmodule JidoClaw.CLI.BrandingTest do
   guard against their section neighbors — the box is pre-existingly ragged,
   so a strict all-lines-equal invariant must wait for the full realignment.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureIO
 

@@ -13,7 +13,7 @@ defmodule JidoClaw.Solutions.NetworkFacadeTest do
     * Cross-tenant rows are always `:not_found`.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Solutions.NetworkFacade
 

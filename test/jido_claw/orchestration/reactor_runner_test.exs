@@ -41,7 +41,7 @@ defmodule JidoClaw.Orchestration.ReactorRunnerTest do
       malformed (non-keyword) opts are normalized to `{:error, _, nil}` by the
       body-level rescue rather than raising to the caller.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias Ash.Resource.Info
   alias JidoClaw.Orchestration.DefinitionFingerprint

@@ -12,7 +12,7 @@ defmodule JidoClaw.Orchestration.GateStepTest do
     * a reactor with NO `extra_details` argument at all (`GatedTestReactor`)
       also stays byte-identical (the arguments-absent clause).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Gates.TestIrreversibleWrite
   alias JidoClaw.Orchestration.AgentCase

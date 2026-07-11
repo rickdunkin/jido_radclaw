@@ -1,5 +1,5 @@
 defmodule JidoClaw.Workspaces.ResolverTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Workspaces.Resolver
@@ -25,20 +25,22 @@ defmodule JidoClaw.Workspaces.ResolverTest do
     end
 
     test "idempotent reuse within a tenant returns the same row id" do
+      tenant = unique_tenant()
       path = "/tmp/idempotent-#{System.unique_integer([:positive])}"
 
-      assert {:ok, first} = Resolver.ensure_workspace("default", path)
-      assert {:ok, second} = Resolver.ensure_workspace("default", path)
+      assert {:ok, first} = Resolver.ensure_workspace(tenant, path)
+      assert {:ok, second} = Resolver.ensure_workspace(tenant, path)
 
       assert first.id == second.id
     end
 
     test "path normalization — relative paths resolve to the same row as the absolute equivalent" do
+      tenant = unique_tenant()
       cwd = File.cwd!()
       relative = "."
 
-      assert {:ok, abs_ws} = Resolver.ensure_workspace("default", cwd)
-      assert {:ok, rel_ws} = Resolver.ensure_workspace("default", relative)
+      assert {:ok, abs_ws} = Resolver.ensure_workspace(tenant, cwd)
+      assert {:ok, rel_ws} = Resolver.ensure_workspace(tenant, relative)
 
       assert abs_ws.id == rel_ws.id
       assert abs_ws.path == cwd
@@ -48,14 +50,19 @@ defmodule JidoClaw.Workspaces.ResolverTest do
   describe "ensure_workspace/3 — name derivation" do
     test "derives :name from Path.basename when not supplied" do
       path = "/tmp/derived-name-#{System.unique_integer([:positive])}/foo"
-      assert {:ok, ws} = Resolver.ensure_workspace("default", path)
+      assert {:ok, ws} = Resolver.ensure_workspace(unique_tenant(), path)
       assert ws.name == "foo"
     end
 
     test "respects explicit :name over basename" do
       path = "/tmp/explicit-name-#{System.unique_integer([:positive])}/foo"
-      assert {:ok, ws} = Resolver.ensure_workspace("default", path, name: "Custom Name")
+      assert {:ok, ws} = Resolver.ensure_workspace(unique_tenant(), path, name: "Custom Name")
       assert ws.name == "Custom Name"
     end
   end
+
+  # Unique per test: `Tenant.ensure/1` is an upsert that row-locks an
+  # existing tenant row until the sandbox transaction ends, so a shared
+  # literal id would serialize concurrently-running async files.
+  defp unique_tenant, do: "tenant-ws-resolver-#{System.unique_integer([:positive])}"
 end

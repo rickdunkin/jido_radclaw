@@ -5,7 +5,7 @@ defmodule JidoClaw.Orchestration.AgentCasePendingForRunTreeTest do
   child wave run goes `:awaiting_approval` and carries the `AgentCase`), so
   the probe must see cases on the run itself AND on its direct children.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.WorkflowRun

@@ -1,7 +1,10 @@
 defmodule JidoClaw.Agent.Handoff.RegistryTest do
-  # Registry is a process-global singleton in the supervision tree, so all
-  # tests must be serialized.
-  use ExUnit.Case, async: false
+  # async-safe against the process-global Registry singleton: tests within
+  # this module run serially, and the {"acme"|"other", "s1"|"s2"} keys used
+  # here are private to this file (no other test file touches them — keep it
+  # that way), so concurrent modules can't observe or disturb them. on_exit
+  # clears exactly these keys, never the whole registry.
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Agent.Handoff
   alias JidoClaw.Agent.Handoff.Registry, as: HandoffRegistry

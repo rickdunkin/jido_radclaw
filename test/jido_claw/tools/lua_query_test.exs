@@ -1,6 +1,9 @@
 defmodule JidoClaw.Tools.LuaQueryTest do
-  # async: false — LuaQuery.run drives the FULL generated pipeline and the
-  # Runner's unlinked eval task does the DB reads (shared sandbox needed).
+  # async: false — sandbox ownership is NOT the blocker ($callers reaches the
+  # Runner's caller-spawned eval task), the Lua kill budget is: CPU-starved
+  # evals blow the 1500ms deadline under concurrent load, turning
+  # :lua_runtime_error assertions into :lua_timeout (observed in 4-partition
+  # runs the moment this file went async).
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.WorkflowRun

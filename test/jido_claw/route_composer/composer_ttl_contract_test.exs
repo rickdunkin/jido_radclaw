@@ -10,7 +10,7 @@ defmodule JidoClaw.RouteComposer.ComposerTtlContractTest do
     * C5: `register_correlation/6` threads a supplied `expires_at` + the marker
       into the durable row.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.RequestCorrelation
   alias JidoClaw.Orchestration.WorkflowRun

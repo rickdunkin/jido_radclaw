@@ -1,5 +1,5 @@
 defmodule JidoClaw.Core.AshErrorsTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias Ash.Error.Changes.InvalidAttribute
   alias Ash.Error.Changes.Required

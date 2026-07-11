@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.GitProjectDirTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Tools.GitDiff

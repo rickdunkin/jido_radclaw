@@ -6,7 +6,7 @@ defmodule JidoClaw.Cron.JobTargetTest do
   `record_failure` outcome writes, and the `:upsert` invariants that stop
   a bad row from silently always-failing at dispatch.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Cron.Job
 

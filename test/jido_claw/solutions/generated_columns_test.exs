@@ -9,7 +9,7 @@ defmodule JidoClaw.Solutions.GeneratedColumnsTest do
   and seeing that the tokens land in the right weighted slot.
   """
 
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.Solution

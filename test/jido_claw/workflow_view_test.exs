@@ -1,4 +1,8 @@
 defmodule JidoClaw.WorkflowViewTest do
+  # async: false — the event-read-failure test swaps the reader via
+  # ReplayFixtures.put_failing_event_reader!, an Application.put_env of the
+  # global :replay_event_reader seam (no per-call injection point), tainting
+  # any concurrent reader for the test window.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Orchestration.WorkflowLease

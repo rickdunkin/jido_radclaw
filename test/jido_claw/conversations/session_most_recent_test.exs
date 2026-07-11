@@ -5,7 +5,7 @@ defmodule JidoClaw.Conversations.SessionMostRecentTest do
   (`:repl` / `:cli_run`), never a web `:api` (or any other) kind, never a
   closed row, never another workspace's row.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   setup do
     tenant_id = seed_tenant("most-recent")

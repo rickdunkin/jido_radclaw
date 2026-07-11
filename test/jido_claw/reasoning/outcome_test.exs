@@ -11,7 +11,7 @@ defmodule JidoClaw.Reasoning.OutcomeTest do
   See the moduledoc on `lib/jido_claw/reasoning/resources/outcome.ex`
   for the deprecation contract.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Reasoning.Resources.Outcome
 

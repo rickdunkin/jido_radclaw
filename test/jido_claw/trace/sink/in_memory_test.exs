@@ -1,5 +1,9 @@
 defmodule JidoClaw.Trace.Sink.InMemoryTest do
   # Touches the supervised singleton sink — no concurrent access.
+  # async: false — drives the app-tree Trace.Sink.InMemory singleton by
+  # module name (reset/write/all against the shared ring) and pins its exact
+  # global contents/order and max_entries cap; a shared ring cannot be
+  # isolated per test.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Trace.Event

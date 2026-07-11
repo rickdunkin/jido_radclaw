@@ -11,6 +11,10 @@ defmodule JidoClaw.Web.RpcChannelTest do
   builds the socket directly with the assigns `UserSocket.connect/3`
   would set, bypassing session-cookie authentication.
   """
+  # async: false — start_supervised!(JidoClaw.Web.Endpoint) registers the
+  # fixed app-owned Endpoint name; four files start it (live_user_auth,
+  # rpc_channel, admin_route, require_auth) and any two running concurrently
+  # would collide on the name, so the endpoint-starter cohort stays sync.
   use JidoClaw.TenantCase, async: false
 
   import Phoenix.ChannelTest

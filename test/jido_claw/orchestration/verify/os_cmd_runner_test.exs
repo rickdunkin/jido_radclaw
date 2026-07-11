@@ -3,8 +3,14 @@ defmodule JidoClaw.Orchestration.Verify.OsCmdRunnerTest do
   Integration tests for the real check runner + git seam over scratch repos
   and tiny scripts — the ONLY verify file that spawns subprocesses (composer
   tests stay on the hermetic stub; nothing here runs `mix` recursively).
+
+  async-safe with a coupling constraint: this file funnels `diff_digest`
+  through the VM-wide 2-slot `VerifyCaptureTaskSupervisor` but never asserts
+  its capacity; it is the supervisor's ONLY async user, which holds only
+  while `verify/git_test.exs` and `route_composer/verify_stage_test.exs`
+  (which do assert capacity / mutate app env) stay `async: false`.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Orchestration.Verify
   alias JidoClaw.Orchestration.Verify.OsCmdRunner

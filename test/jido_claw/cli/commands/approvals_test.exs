@@ -4,6 +4,10 @@ defmodule JidoClaw.CLI.Commands.ApprovalsTest do
   approve decision through `Cases.decide/4` (under a tenant system actor, since
   the REPL is unauthenticated).
   """
+  # async: false — setup wipes the global :gate_test_markers named ETS table
+  # (TestIrreversibleWrite.reset/0) that the approve hook writes into; the
+  # marker-touching gate cohort stays sync (human_gates_test asserts the
+  # markers).
   use JidoClaw.TenantCase, async: false
 
   import ExUnit.CaptureIO

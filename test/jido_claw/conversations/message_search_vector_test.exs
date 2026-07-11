@@ -8,7 +8,7 @@ defmodule JidoClaw.Conversations.MessageSearchVectorTest do
   generated column + GIN index don't silently regress.
   """
 
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Repo

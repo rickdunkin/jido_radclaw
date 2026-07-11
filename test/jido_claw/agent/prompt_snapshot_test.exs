@@ -1,4 +1,8 @@
 defmodule JidoClaw.Agent.PromptSnapshotTest do
+  # async: false — setup flips the GLOBAL sandbox mode (Sandbox.mode :auto,
+  # restored to :manual on exit), which would destroy every concurrent async
+  # test's ownership isolation; also uses the shared "default" tenant literal
+  # (row-locked by api_key_auth_test, its sole async user).
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox

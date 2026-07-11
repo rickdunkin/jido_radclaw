@@ -4,7 +4,7 @@ defmodule JidoClaw.Orchestration.ToolApprovalsTest do
   approvals, deny-once rejections, fingerprint canonicalization, and the
   duplicate-pending / concurrent-claim paths.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.ToolApprovals

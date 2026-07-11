@@ -32,6 +32,11 @@ mkdir -p "$logdir"
 # on the build lock.
 MIX_ENV=test mix compile || exit 1
 
+# Lets config/test.exs + test_helper.exs divide the async concurrency and
+# DB-pool budget across the N BEAMs (Postgres max_connections is the shared
+# ceiling; see the Repo block in config/test.exs).
+export JIDOCLAW_TEST_PARTITIONS=$N
+
 start=$SECONDS
 pids=()
 for i in $(seq 1 "$N"); do

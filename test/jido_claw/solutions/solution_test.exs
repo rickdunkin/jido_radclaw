@@ -1,5 +1,5 @@
 defmodule JidoClaw.Solutions.SolutionTest do
-  use JidoClaw.SolutionsCase, async: false
+  use JidoClaw.SolutionsCase, async: true
 
   alias JidoClaw.Repo
   alias JidoClaw.Solutions.Solution

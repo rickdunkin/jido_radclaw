@@ -13,11 +13,13 @@ defmodule JidoClaw.Tools.UnscheduleTaskTest do
   `verify_certificate.ex` / `list_scheduled_tasks.ex`) and covered by the type
   contract.
 
-  `async: false` mirrors `schedule_task_test.exs` (it owns tenant-scoped cron
-  state). The `cluster_leader_module` stub is intentionally *not* installed: the
+  The `cluster_leader_module` stub is intentionally *not* installed: the
   Owner is disabled in test, so `notify_changed/1` no-ops to `:ok` exactly as it
   does for the passing `schedule_task` tool.
   """
+  # async: false — setup writes through the `Tenant.Manager` singleton
+  # (`ensure_tenant/1`), an out-of-chain GenServer that needs the shared
+  # sandbox; under owner-mode it raises DBConnection.OwnershipError.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron.Job

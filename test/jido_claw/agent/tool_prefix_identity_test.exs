@@ -12,7 +12,7 @@ defmodule JidoClaw.Agent.ToolPrefixIdentityTest do
   Mid-session external-MCP attach can still extend the tool map by design —
   pre-existing behavior, independent of resume.
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias Jido.AI.Reasoning.ReAct.Config, as: ReactConfig
   alias JidoClaw.Conversations.ContextRestore

@@ -5,6 +5,10 @@ defmodule JidoClaw.Agent.LoopGuard.StoreTest do
   tiny TTLs, facade fail-open against a nonexistent server, and the
   synchronous reset contract.
   """
+  # async: false — setup and on_exit call Store.reset() on the app-tree
+  # LoopGuard.Store singleton, wiping the ENTIRE shared table (not just this
+  # test's keys); the first describe block also asserts fixed keys against
+  # that same default singleton.
   use ExUnit.Case, async: false
 
   alias JidoClaw.Agent.LoopGuard

@@ -2,7 +2,7 @@ defmodule JidoClaw.Tools.ReadRealFileTest do
   # AR-8b-2 F3: read-only access to the REAL project tree from a sketch worker.
   # Mirrors read_file_test's "AR-8b sketch jail" block, but the jail target is the
   # real base (two levels up from the `.prototypes/<uuid>/` sandbox).
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Tools.ReadRealFile
   alias JidoClaw.VFS.Sandbox

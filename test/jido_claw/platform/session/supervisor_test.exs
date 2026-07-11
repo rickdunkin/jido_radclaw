@@ -1,5 +1,5 @@
 defmodule JidoClaw.Session.SupervisorTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias JidoClaw.Session.Supervisor, as: SessionSupervisor
   alias JidoClaw.Tenant.InstanceSupervisor

@@ -12,7 +12,12 @@ defmodule JidoClaw.Cron.SchedulerIdempotencyTest do
     * re-`upsert`ing a disabled `job_id` clears `disabled_at` (re-enable), so
       `for_tenant` surfaces it again.
 
-  `async: false`: owns live cron workers in the shared registry.
+  `async: false`: owns live cron workers in the shared registry, and setup
+  asserts `{:ok, _} = Manager.ensure_tenant(...)` — the Tenant.Manager
+  singleton writes the row (and boots the tenant runtime that
+  `Scheduler.schedule` needs) from its own process, which errors under async
+  owner mode and propagates to the match. Also touches the fixed shared
+  `"system"` tenant.
   `[[project_suite_flaky_tests]]`: verify in isolation, not under `--seed 0`.
   """
   use JidoClaw.TenantCase, async: false

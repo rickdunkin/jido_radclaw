@@ -5,6 +5,9 @@ defmodule JidoClaw.Tools.ListScheduledTasksTest do
   simulated here by never scheduling a worker). It surfaces a `| tz: <zone>`
   segment for non-UTC jobs only; UTC jobs omit it.
   """
+  # async: false — setup writes through the `Tenant.Manager` singleton
+  # (`ensure_tenant/1`), an out-of-chain GenServer that needs the shared
+  # sandbox; under owner-mode it raises DBConnection.OwnershipError.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Cron.Job

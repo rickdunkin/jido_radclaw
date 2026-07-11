@@ -10,6 +10,12 @@ defmodule JidoClaw.Orchestration.WorkflowRunParentLineageTest do
   Non-async (`TenantCase`): the recovery tests drive `WorkflowRecovery.reconcile_all/0`,
   a tenant-blind global scan, so they must not run concurrently with other runs.
   """
+  # async: false — the recoverable-composer test drives WorkflowRecovery →
+  # RouteComposer.ensure_started → DynamicSupervisor.start_child under the
+  # app-tree RouteComposer.Supervisor; DynamicSupervisor does NOT propagate
+  # $callers, so the recovered composer's DB work (dispatch → terminalize)
+  # can't see the test's sandbox under async and the awaited status never
+  # lands.
   use JidoClaw.TenantCase, async: false
 
   import ExUnit.CaptureLog

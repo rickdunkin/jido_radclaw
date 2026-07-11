@@ -1,5 +1,5 @@
 defmodule JidoClaw.Tools.RecallTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Ecto.Adapters.SQL.Sandbox
   alias JidoClaw.Tools.Recall
@@ -9,15 +9,19 @@ defmodule JidoClaw.Tools.RecallTest do
   setup do
     :ok = Sandbox.checkout(JidoClaw.Repo)
 
+    # Unique per test: `Tenant.ensure/1` (inside ensure_workspace) upserts,
+    # row-locking a shared tenant row for the whole sandbox transaction.
+    tenant = "tenant-recall-#{System.unique_integer([:positive])}"
+
     {:ok, ws} =
       Resolver.ensure_workspace(
-        "default",
+        tenant,
         "/tmp/recall_test_#{System.unique_integer([:positive])}",
         []
       )
 
     tool_context = %{
-      tenant_id: "default",
+      tenant_id: tenant,
       user_id: nil,
       workspace_uuid: ws.id,
       session_uuid: nil

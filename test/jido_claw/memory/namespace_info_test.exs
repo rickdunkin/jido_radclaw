@@ -1,5 +1,5 @@
 defmodule JidoClaw.Memory.NamespaceInfoTest do
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Memory
   alias JidoClaw.Memory.Block

@@ -12,6 +12,12 @@ defmodule JidoClaw.Audit.SignalListenerTest do
       expected scope and payload shape.
     * `safe_handle/1` swallows raises so the listener stays alive.
   """
+  # async: false — tests send signals to the app-tree SignalListener
+  # singleton, whose Event rows are written via AsyncWriter.cast from the
+  # shared Audit.TaskSupervisor ($callers = the singleton, never the test).
+  # Under async owner mode those writes can't see the test's sandbox and the
+  # awaited rows never land; a shared singleton can't be Sandbox.allow-ed
+  # per test.
   use JidoClaw.TenantCase, async: false
 
   alias JidoClaw.Audit.{AsyncWriter, Event, SignalListener}

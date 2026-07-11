@@ -17,7 +17,7 @@ defmodule JidoClaw.V064CrossTenantTest do
     * Negative test: dropping `:tenant_id` from the args raises
       `KeyError` (the fail-loud contract).
   """
-  use JidoClaw.TenantCase, async: false
+  use JidoClaw.TenantCase, async: true
 
   alias JidoClaw.Memory
   alias JidoClaw.Memory.HybridSearchSql, as: MemoryHybridSearchSql
