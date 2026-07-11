@@ -37,6 +37,7 @@ metadata:
 - [multitenancy](references/multitenancy.md)
 - [ash](references/ash.md)
 - [ash_authentication](references/ash_authentication.md)
+- [ash_credo](references/ash_credo.md)
 - [ash_json_api](references/ash_json_api.md)
 - [ash_phoenix](references/ash_phoenix.md)
 - [ash_postgres](references/ash_postgres.md)
