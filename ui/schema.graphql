@@ -1,0 +1,63 @@
+schema {
+  query: RootQueryType
+}
+
+enum WorkflowRunStatus {
+  ABANDONED
+  AWAITING_APPROVAL
+  CANCELLED
+  COMPLETED
+  FAILED
+  PENDING
+  RUNNING
+}
+
+type Project {
+  id: ID!
+  name: String!
+  githubFullName: String!
+  defaultBranch: String!
+  insertedAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type WorkflowRun {
+  id: ID!
+  name: String!
+  workflowType: String
+  status: WorkflowRunStatus!
+  startedAt: DateTime
+  completedAt: DateTime
+  insertedAt: DateTime!
+  updatedAt: DateTime!
+  project: Project
+  disposition: String
+  findingsDeferredCount: Int
+}
+
+type RootQueryType {
+  workflowRun(
+    "The id of the record"
+    id: ID!
+  ): WorkflowRun
+
+  "Most recent workflow runs for the GraphQL surface."
+  recentWorkflowRuns(limit: Int): [WorkflowRun!]!
+
+  "Read projects, optionally fetching by GitHub full name."
+  project(
+    "The id of the record"
+    id: ID!
+  ): Project
+
+  "List projects alphabetically for the GraphQL surface."
+  projects(limit: Int): [Project!]!
+}
+
+"""
+The `DateTime` scalar type represents a date and time in the UTC
+timezone. The DateTime appears in a JSON response as an ISO8601 formatted
+string, including UTC timezone ("Z"). The parsed date and time string will
+be converted to UTC if there is an offset.
+"""
+scalar DateTime

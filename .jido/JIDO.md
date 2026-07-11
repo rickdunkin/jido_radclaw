@@ -10,12 +10,13 @@ available tools, agent templates, skills, and conventions.
 - **Name**: JidoClaw
 - **Type**: Elixir/OTP
 - **Version**: 0.6.4
-- **Frameworks**: Phoenix 1.7+ (with LiveView), Bandit HTTP adapter, Jido AI Agent Framework
+- **Frameworks**: Phoenix (with LiveView), Ecto, Absinthe/GraphQL, Bandit HTTP adapter, Jido AI Agent Framework
 - **Entry points**:
   - `lib/jido_claw/application.ex` — OTP supervision tree
   - `lib/jido_claw/cli/main.ex` — Escript CLI entrypoint
   - `lib/jido_claw/cli/repl.ex` — Interactive REPL loop
   - `lib/jido_claw/web/router.ex` — Phoenix HTTP/WS routes
+  - `lib/jido_claw/web/graphql/schema.ex` — GraphQL read surface (/gql)
   - `config/config.exs` — Application configuration
 
 ---

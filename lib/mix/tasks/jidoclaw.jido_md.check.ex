@@ -61,7 +61,11 @@ defmodule Mix.Tasks.Jidoclaw.JidoMd.Check do
       tool_names: tool_names,
       template_names: Enum.sort(Templates.names()),
       spawnable_names: Templates.spawnable_names(),
-      skill_names: JidoClaw.Skills.default_skill_names()
+      skill_names: JidoClaw.Skills.default_skill_names(),
+      # Derived from the REAL mix.exs by the same detection the generator
+      # uses — the committed Frameworks line can no longer drift from what
+      # the project actually depends on.
+      framework_names: JidoClaw.JidoMd.framework_names(File.cwd!())
     ]
   end
 end

@@ -22,7 +22,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     domain: JidoClaw.Orchestration,
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer],
-    extensions: [AshCloak]
+    extensions: [AshCloak, AshGraphql.Resource]
 
   policies do
     bypass action([
@@ -76,6 +76,36 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     attributes([:resume_checkpoint, :replay_inputs])
   end
 
+  # Read-only GraphQL exposure (argus P1). Field exposure is a positive
+  # allowlist (`show_fields`): the AshCloak-encrypted columns
+  # (`resume_checkpoint`/`replay_inputs` and their decrypting calculations),
+  # the lease credentials (`claim_token`/`claimed_by`/`claim_expires_at`),
+  # and the raw `result`/`error`/`config` payloads are all absent by
+  # construction — a new field stays off the API until deliberately listed.
+  # `disposition`/`findings_deferred_count` ride along so the camus C1-4
+  # "never plain green" rule reaches GraphQL from day one. Derived
+  # filter/sort inputs are disabled (fixed-shape surface; `:recent` owns
+  # ordering).
+  graphql do
+    type(:workflow_run)
+    derive_filter?(false)
+    derive_sort?(false)
+
+    show_fields([
+      :id,
+      :name,
+      :workflow_type,
+      :status,
+      :disposition,
+      :findings_deferred_count,
+      :started_at,
+      :completed_at,
+      :inserted_at,
+      :updated_at,
+      :project
+    ])
+  end
+
   postgres do
     table("workflow_runs")
     repo(JidoClaw.Repo)
@@ -113,6 +143,7 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
     define(:claimable, args: [:pending_cutoff])
     define(:by_id, action: :read, get_by: [:id])
     define(:by_id_global, action: :by_id_global, args: [:id], get?: true)
+    define(:list_recent, action: :recent)
     define(:by_idempotency_key, args: [:idempotency_key], get?: true)
     define(:set_checkpoint, action: :set_checkpoint)
 
@@ -242,6 +273,23 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       filter(expr(project_id == ^arg(:project_id)))
     end
 
+    # GraphQL `recentWorkflowRuns` list action: newest first with an id
+    # tie-break for deterministic pages, bounded by a validated `limit`
+    # (over-cap is an honest validation error, never a silent clamp).
+    # Primary `:read` stays untouched; tenant scoping + the active-tenant
+    # EXISTS come from the standard read policy — `:recent` joins no bypass.
+    read :recent do
+      description("Most recent workflow runs for the GraphQL surface.")
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(50)
+        constraints(min: 1, max: 200)
+      end
+
+      prepare(build(limit: arg(:limit), sort: [inserted_at: :desc, id: :desc]))
+    end
+
     read :by_idempotency_key do
       description("Tenant-scoped lookup of the run owning a launch idempotency key.")
       get?(true)
@@ -333,22 +381,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       public?(true)
     end
 
-    attribute :status, :atom do
+    # Typed enum (argus P1): was `:atom` + `one_of` — ash_graphql maps plain
+    # atoms to GraphQL String, so the typed `WorkflowRunStatus` needs a real
+    # `Ash.Type.Enum`. Same text storage, same atom values in Elixir; the
+    # value set lives in `WorkflowRun.Status.values/0`.
+    attribute :status, __MODULE__.Status do
       allow_nil?(false)
       public?(true)
       default(:pending)
-
-      constraints(
-        one_of: [
-          :pending,
-          :running,
-          :awaiting_approval,
-          :completed,
-          :failed,
-          :cancelled,
-          :abandoned
-        ]
-      )
     end
 
     attribute :config, :map do
@@ -472,7 +512,30 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       public?(true)
     end
 
-    timestamps()
+    # Explicitly public: timestamps default `public?: false`, and the GraphQL
+    # `show_fields` allowlist can only expose fields that are public — a
+    # deliberate shared Ash public-interface change (argus P1).
+    timestamps(public?: true)
+  end
+
+  # Shared-derivation seam (argus P1): both calculations delegate to the
+  # `Visibility` functions `run_view/3` already uses, so the terminal
+  # disposition semantics cannot fork between the operator projection and
+  # GraphQL. Not filterable/sortable: they derive from the private `result`
+  # JSONB per-row in Elixir — there is nothing for the data layer to push
+  # down, and the GraphQL surface is fixed-shape anyway.
+  calculations do
+    calculate :disposition, :string, __MODULE__.Calculations.Disposition do
+      public?(true)
+      filterable?(false)
+      sortable?(false)
+    end
+
+    calculate :findings_deferred_count, :integer, __MODULE__.Calculations.FindingsDeferredCount do
+      public?(true)
+      filterable?(false)
+      sortable?(false)
+    end
   end
 
   relationships do
@@ -488,10 +551,14 @@ defmodule JidoClaw.Orchestration.WorkflowRun do
       allow_nil?: true
     )
 
+    # `public?: true` so the GraphQL type can traverse run → project (the
+    # `WorkflowStep.workflow_run` precedent); `project_id` itself stays off
+    # the allowlist — clients read the nested object, not the raw FK.
     belongs_to(:project, JidoClaw.Projects.Project,
       define_attribute?: false,
       attribute_writable?: true,
-      allow_nil?: true
+      allow_nil?: true,
+      public?: true
     )
 
     # Composer lineage (AR-2 Phase 2a): a parent `WorkflowRun` whose every wave is

@@ -320,6 +320,15 @@ defmodule JidoClaw.JidoMd do
   # Framework detection
   # ---------------------------------------------------------------------------
 
+  @doc """
+  Detected framework labels for the project at `dir` — the canonical source
+  of the `- **Frameworks**:` line. Public so the `jidoclaw.jido_md.check`
+  drift guard derives the expected set from the real project files with the
+  exact same detection the generator uses.
+  """
+  @spec framework_names(String.t()) :: [String.t()]
+  def framework_names(dir), do: framework_names(dir, detect_type(dir))
+
   defp detect_type(dir) do
     cond do
       File.exists?(Path.join(dir, "mix.exs")) -> "Elixir/OTP"
@@ -332,34 +341,41 @@ defmodule JidoClaw.JidoMd do
     end
   end
 
-  defp detect_framework_details(dir, "Elixir/OTP") do
+  defp framework_names(dir, "Elixir/OTP") do
     mix_content = safe_read(Path.join(dir, "mix.exs"))
 
     has_phoenix = dep_present?(mix_content, "phoenix")
     has_liveview = dep_present?(mix_content, "phoenix_live_view")
     has_ecto = dep_present?(mix_content, "ecto")
     has_oban = dep_present?(mix_content, "oban")
-    has_absinthe = dep_present?(mix_content, "absinthe")
+    # Either the direct absinthe dep or ash_graphql (which brings absinthe
+    # transitively) implies a GraphQL surface.
+    has_graphql =
+      dep_present?(mix_content, "absinthe") or dep_present?(mix_content, "ash_graphql")
+
+    has_bandit = dep_present?(mix_content, "bandit")
+    # The ":jido" substring also matches every jido_* dep — any of them
+    # implies the framework, so the loose match is deliberate.
+    has_jido = dep_present?(mix_content, "jido")
 
     umbrella = File.exists?(Path.join(dir, "apps"))
 
-    frameworks =
-      []
-      |> maybe_add(has_phoenix, "Phoenix #{if has_liveview, do: "(with LiveView)", else: ""}")
-      |> maybe_add(has_ecto, "Ecto")
-      |> maybe_add(has_oban, "Oban")
-      |> maybe_add(has_absinthe, "Absinthe/GraphQL")
-      |> maybe_add(umbrella, "Umbrella project (apps/ directory)")
-      |> Enum.reverse()
+    # Build the label whole — an interpolated empty suffix leaves a trailing
+    # space that the checker's trimmed comma-split parse can never match.
+    phoenix_label = if has_liveview, do: "Phoenix (with LiveView)", else: "Phoenix"
 
-    if frameworks == [] do
-      ""
-    else
-      "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
-    end
+    []
+    |> maybe_add(has_phoenix, phoenix_label)
+    |> maybe_add(has_ecto, "Ecto")
+    |> maybe_add(has_oban, "Oban")
+    |> maybe_add(has_graphql, "Absinthe/GraphQL")
+    |> maybe_add(has_bandit, "Bandit HTTP adapter")
+    |> maybe_add(has_jido, "Jido AI Agent Framework")
+    |> maybe_add(umbrella, "Umbrella project (apps/ directory)")
+    |> Enum.reverse()
   end
 
-  defp detect_framework_details(dir, "JavaScript/TypeScript") do
+  defp framework_names(dir, "JavaScript/TypeScript") do
     pkg_content = safe_read(Path.join(dir, "package.json"))
 
     has_next = pkg_dep_present?(pkg_content, "next")
@@ -373,25 +389,18 @@ defmodule JidoClaw.JidoMd do
 
     has_ts = File.exists?(Path.join(dir, "tsconfig.json"))
 
-    frameworks =
-      []
-      |> maybe_add(has_next, "Next.js")
-      |> maybe_add(has_react and not has_next, "React")
-      |> maybe_add(has_express, "Express")
-      |> maybe_add(has_fastify, "Fastify")
-      |> maybe_add(has_nest, "NestJS")
-      |> maybe_add(has_prisma, "Prisma")
-      |> maybe_add(has_ts, "TypeScript")
-      |> Enum.reverse()
-
-    if frameworks == [] do
-      ""
-    else
-      "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
-    end
+    []
+    |> maybe_add(has_next, "Next.js")
+    |> maybe_add(has_react and not has_next, "React")
+    |> maybe_add(has_express, "Express")
+    |> maybe_add(has_fastify, "Fastify")
+    |> maybe_add(has_nest, "NestJS")
+    |> maybe_add(has_prisma, "Prisma")
+    |> maybe_add(has_ts, "TypeScript")
+    |> Enum.reverse()
   end
 
-  defp detect_framework_details(dir, "Rust") do
+  defp framework_names(dir, "Rust") do
     cargo = safe_read(Path.join(dir, "Cargo.toml"))
 
     has_axum = String.contains?(cargo, "axum")
@@ -399,43 +408,29 @@ defmodule JidoClaw.JidoMd do
     has_tokio = String.contains?(cargo, "tokio")
     has_sqlx = String.contains?(cargo, "sqlx")
 
-    frameworks =
-      []
-      |> maybe_add(has_axum, "Axum")
-      |> maybe_add(has_actix, "Actix-web")
-      |> maybe_add(has_tokio, "Tokio async")
-      |> maybe_add(has_sqlx, "SQLx")
-      |> Enum.reverse()
-
-    if frameworks == [] do
-      ""
-    else
-      "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
-    end
+    []
+    |> maybe_add(has_axum, "Axum")
+    |> maybe_add(has_actix, "Actix-web")
+    |> maybe_add(has_tokio, "Tokio async")
+    |> maybe_add(has_sqlx, "SQLx")
+    |> Enum.reverse()
   end
 
-  defp detect_framework_details(dir, "Go") do
+  defp framework_names(dir, "Go") do
     mod = safe_read(Path.join(dir, "go.mod"))
 
     has_gin = String.contains?(mod, "gin-gonic/gin")
     has_echo = String.contains?(mod, "labstack/echo")
     has_fiber = String.contains?(mod, "gofiber/fiber")
 
-    frameworks =
-      []
-      |> maybe_add(has_gin, "Gin")
-      |> maybe_add(has_echo, "Echo")
-      |> maybe_add(has_fiber, "Fiber")
-      |> Enum.reverse()
-
-    if frameworks == [] do
-      ""
-    else
-      "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
-    end
+    []
+    |> maybe_add(has_gin, "Gin")
+    |> maybe_add(has_echo, "Echo")
+    |> maybe_add(has_fiber, "Fiber")
+    |> Enum.reverse()
   end
 
-  defp detect_framework_details(dir, "Python") do
+  defp framework_names(dir, "Python") do
     pyproject = safe_read(Path.join(dir, "pyproject.toml"))
     requirements = safe_read(Path.join(dir, "requirements.txt"))
     combined = pyproject <> requirements
@@ -445,22 +440,22 @@ defmodule JidoClaw.JidoMd do
     has_flask = String.contains?(combined, "flask")
     has_sqlalchemy = String.contains?(combined, "sqlalchemy")
 
-    frameworks =
-      []
-      |> maybe_add(has_django, "Django")
-      |> maybe_add(has_fastapi, "FastAPI")
-      |> maybe_add(has_flask, "Flask")
-      |> maybe_add(has_sqlalchemy, "SQLAlchemy")
-      |> Enum.reverse()
-
-    if frameworks == [] do
-      ""
-    else
-      "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
-    end
+    []
+    |> maybe_add(has_django, "Django")
+    |> maybe_add(has_fastapi, "FastAPI")
+    |> maybe_add(has_flask, "Flask")
+    |> maybe_add(has_sqlalchemy, "SQLAlchemy")
+    |> Enum.reverse()
   end
 
-  defp detect_framework_details(_dir, _type), do: ""
+  defp framework_names(_dir, _type), do: []
+
+  defp detect_framework_details(dir, type) do
+    case framework_names(dir, type) do
+      [] -> ""
+      frameworks -> "- **Frameworks**: #{Enum.join(frameworks, ", ")}\n"
+    end
+  end
 
   defp detect_entry_points(dir, "Elixir/OTP") do
     candidates = [
@@ -469,10 +464,13 @@ defmodule JidoClaw.JidoMd do
       {Path.join([dir, "mix.exs"]), "mix.exs"}
     ]
 
-    # Look for application.ex or main entry files
+    # Look for application.ex or main entry files. The graphql/schema.ex
+    # glob only matches when the file actually exists — never listed solely
+    # because a GraphQL dep is installed.
     patterns = [
       Path.join([dir, "lib", "**", "application.ex"]),
-      Path.join([dir, "lib", "**", "main.ex"])
+      Path.join([dir, "lib", "**", "main.ex"]),
+      Path.join([dir, "lib", "**", "graphql", "schema.ex"])
     ]
 
     app_files = Enum.flat_map(patterns, &wildcard_relative(dir, &1))

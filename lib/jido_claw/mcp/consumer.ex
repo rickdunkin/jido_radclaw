@@ -589,13 +589,11 @@ defmodule JidoClaw.MCP.Consumer do
     current = JidoClaw.MCP.approval_policy()
 
     tombstones =
-      current
-      |> Map.keys()
-      |> Enum.filter(fn name ->
-        is_binary(name) and String.starts_with?(name, "mcp_") and
-          not Map.has_key?(new_policy, name)
-      end)
-      |> Map.new(&{&1, true})
+      for {name, _gated} <- current,
+          is_binary(name) and String.starts_with?(name, "mcp_") and
+            not Map.has_key?(new_policy, name),
+          into: %{},
+          do: {name, true}
 
     transitioned_with_tombstones = Map.merge(current, tombstones)
     transitioned = Map.merge(transitioned_with_tombstones, new_policy)

@@ -12,6 +12,23 @@ defmodule JidoClaw.Web.Router do
     plug(JidoClaw.Web.Plugs.ApiKeyAuth)
   end
 
+  # /gql pipeline: the batch guard runs FIRST — the forward's complexity/
+  # token limits apply per batch ELEMENT, so a transport batch's aggregate
+  # cost is unbounded; reject it before the gate's DB activity check. Then
+  # the tenant-activity gate MUST run before AshGraphql.Plug — the gate 403s
+  # suspended tenants (Project is a global resource; its policy alone would
+  # let a suspended tenant's valid key read it) and sets the Ash tenant that
+  # AshGraphql.Plug then copies into the Absinthe context.
+  pipeline :graphql do
+    plug(JidoClaw.Web.Plugs.GraphqlBatchGuard)
+    plug(JidoClaw.Web.Plugs.GraphqlTenantGate)
+    plug(AshGraphql.Plug)
+  end
+
+  pipeline :graphiql_guard do
+    plug(JidoClaw.Web.Plugs.GraphiqlGuard)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -55,6 +72,48 @@ defmodule JidoClaw.Web.Router do
     pipe_through([:api, :api_auth])
 
     post("/v1/chat/completions", ChatController, :create)
+  end
+
+  # Read-only GraphQL surface (argus P1) behind the existing API-key auth +
+  # the tenant-activity gate. The pinned request-cost controls are the
+  # complexity/token limits below PLUS the pipeline's transport-batch
+  # rejection (the limits are per-element, so a batch's aggregate would be
+  # unbounded) — all proven live by route tests; a router refactor must not
+  # silently drop them. `Module.concat` avoids the Router→Schema
+  # compile-time dep (AshGraphql-recommended).
+  scope "/gql" do
+    pipe_through([:api, :api_auth, :graphql])
+
+    # Module.concat over a literal runs once at ROUTER COMPILE (forward opts
+    # are compile-time), so no runtime atom creation occurs; safe_concat
+    # would instead raise whenever the router compiles before the schema —
+    # exactly the compile-order dep this AshGraphql-recommended pattern breaks.
+    forward("/", Absinthe.Plug,
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      schema: Module.concat(["JidoClaw.Web.GraphQL.Schema"]),
+      analyze_complexity: true,
+      max_complexity: 200,
+      token_limit: 5_000
+    )
+  end
+
+  # GraphiQL playground — dev convenience, compiled in test ONLY so the
+  # wiring tests can prove the guard (prod never compiles this scope). A
+  # sibling path, not /gql/graphiql: a /gql forward swallows /gql/*. The
+  # guard halts everything except a bodyless, query-less HTML GET — GraphiQL
+  # executes documents itself on any other request shape (see GraphiqlGuard).
+  if Mix.env() in [:dev, :test] do
+    scope "/graphiql" do
+      pipe_through([:graphiql_guard])
+
+      # Same compile-time Module.concat rationale as the /gql forward above.
+      forward("/", Absinthe.Plug.GraphiQL,
+        # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+        schema: Module.concat(["JidoClaw.Web.GraphQL.Schema"]),
+        interface: :playground,
+        default_url: "/gql"
+      )
+    end
   end
 
   # GitHub webhooks (HMAC verified in controller)

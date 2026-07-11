@@ -10,6 +10,7 @@ defmodule JidoClaw.JidoMd.CheckTest do
       template_names: ["coder", "sketch_build"],
       spawnable_names: ["coder"],
       skill_names: ["full_review", "sfr_review"],
+      framework_names: ["Phoenix (with LiveView)", "Ecto"],
       path_exists?: fn _ -> true end
     ]
   end
@@ -23,6 +24,7 @@ defmodule JidoClaw.JidoMd.CheckTest do
     - **Name**: sample
     - **Type**: Elixir/OTP
     - **Version**: 1.2.3
+    - **Frameworks**: Phoenix (with LiveView), Ecto
     - **Entry points**:
       - `mix.exs`
       - `lib/`
@@ -115,6 +117,34 @@ defmodule JidoClaw.JidoMd.CheckTest do
       String.replace(clean_content(), "- `sfr_review` — certificate-backed review\n", "")
 
     assert Check.problems(content, clean_opts()) == ["Skills section: missing: sfr_review"]
+  end
+
+  test "a framework label drift is flagged (the Bandit/Jido regression)" do
+    opts =
+      Keyword.put(clean_opts(), :framework_names, [
+        "Phoenix (with LiveView)",
+        "Ecto",
+        "Bandit HTTP adapter"
+      ])
+
+    assert Check.problems(clean_content(), opts) ==
+             ["Frameworks line: missing: Bandit HTTP adapter"]
+  end
+
+  test "a Frameworks line on a framework-less project is flagged as unexpected" do
+    opts = Keyword.put(clean_opts(), :framework_names, [])
+
+    assert Check.problems(clean_content(), opts) ==
+             ["Frameworks line: unexpected: Ecto, Phoenix (with LiveView)"]
+  end
+
+  test "an absent Frameworks line with no expected frameworks is clean" do
+    content =
+      String.replace(clean_content(), "- **Frameworks**: Phoenix (with LiveView), Ecto\n", "")
+
+    opts = Keyword.put(clean_opts(), :framework_names, [])
+
+    assert Check.problems(content, opts) == []
   end
 
   test "a machine-absolute path is flagged" do

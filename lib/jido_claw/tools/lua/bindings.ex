@@ -32,7 +32,6 @@ defmodule JidoClaw.Tools.Lua.Bindings do
   pair-lists to maps and numeric-keyed tables to arrays.
   """
 
-  alias Ash.Resource.Info
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.AgentCase
@@ -441,11 +440,11 @@ defmodule JidoClaw.Tools.Lua.Bindings do
   defp validate_statuses(_other),
     do: {:error, "jido.runs: status must be a string or an array of strings"}
 
+  # The value set moved from an inline `one_of` constraint into the
+  # `WorkflowRun.Status` enum type (argus P1) — read it there, not from
+  # attribute constraints (enum types carry no `one_of`).
   defp run_status_map do
-    WorkflowRun
-    |> Info.attribute(:status)
-    |> then(& &1.constraints[:one_of])
-    |> Map.new(&{Atom.to_string(&1), &1})
+    Map.new(WorkflowRun.Status.values(), &{Atom.to_string(&1), &1})
   end
 
   # ── jido.run ────────────────────────────────────────────────────────────

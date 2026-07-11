@@ -4,11 +4,23 @@ defmodule JidoClaw.Projects.Project do
     otp_app: :jido_claw,
     domain: JidoClaw.Projects,
     data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+    authorizers: [Ash.Policy.Authorizer],
+    extensions: [AshGraphql.Resource]
 
   postgres do
     table("projects")
     repo(JidoClaw.Repo)
+  end
+
+  # Read-only GraphQL exposure (argus P1). Field exposure is a positive
+  # allowlist (`show_fields`) — a new attribute stays off the API until
+  # deliberately listed here. Derived filter/sort inputs are disabled so the
+  # surface stays fixed-shape (the `:alphabetical` action owns ordering).
+  graphql do
+    type(:project)
+    derive_filter?(false)
+    derive_sort?(false)
+    show_fields([:id, :name, :github_full_name, :default_branch, :inserted_at, :updated_at])
   end
 
   code_interface do
@@ -17,6 +29,7 @@ defmodule JidoClaw.Projects.Project do
     define(:destroy, action: :destroy)
     define(:get_by_github_full_name, action: :read, get_by: [:github_full_name])
     define(:update, action: :update)
+    define(:list_alphabetical, action: :alphabetical)
   end
 
   actions do
@@ -28,6 +41,22 @@ defmodule JidoClaw.Projects.Project do
     read :read do
       description("Read projects, optionally fetching by GitHub full name.")
       primary?(true)
+    end
+
+    # GraphQL `projects` list action: stable alphabetical order with an id
+    # tie-break, bounded by a validated `limit` (over-cap is an honest
+    # validation error, never a silent clamp). Primary `:read` stays untouched
+    # for every existing caller.
+    read :alphabetical do
+      description("List projects alphabetically for the GraphQL surface.")
+
+      argument :limit, :integer do
+        allow_nil?(false)
+        default(50)
+        constraints(min: 1, max: 200)
+      end
+
+      prepare(build(limit: arg(:limit), sort: [name: :asc, id: :asc]))
     end
 
     update :update do
@@ -97,8 +126,11 @@ defmodule JidoClaw.Projects.Project do
       default(%{})
     end
 
-    create_timestamp(:inserted_at)
-    update_timestamp(:updated_at)
+    # Explicitly public: timestamps default `public?: false`, and the GraphQL
+    # `show_fields` allowlist can only expose fields that are public — a
+    # deliberate shared Ash public-interface change (argus P1).
+    create_timestamp(:inserted_at, public?: true)
+    update_timestamp(:updated_at, public?: true)
   end
 
   identities do

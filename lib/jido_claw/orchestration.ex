@@ -11,10 +11,19 @@ defmodule JidoClaw.Orchestration do
 
   use Ash.Domain,
     otp_app: :jido_claw,
-    extensions: [AshAdmin.Domain]
+    extensions: [AshAdmin.Domain, AshGraphql.Domain]
 
   admin do
     show?(true)
+  end
+
+  # Read-only GraphQL queries (argus P1) — runs only; steps/events/cases
+  # arrive with slice 1 alongside their consumers. No mutations by design.
+  graphql do
+    queries do
+      get(JidoClaw.Orchestration.WorkflowRun, :workflow_run, :read)
+      list(JidoClaw.Orchestration.WorkflowRun, :recent_workflow_runs, :recent)
+    end
   end
 
   resources do

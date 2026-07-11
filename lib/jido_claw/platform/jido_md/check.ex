@@ -23,6 +23,8 @@ defmodule JidoClaw.JidoMd.Check do
     * `:template_names` — expected template detail-header set (all templates)
     * `:spawnable_names` — expected names on the `Available template names:` line(s)
     * `:skill_names` — expected built-in skill name set (the `## Skills` section)
+    * `:framework_names` — expected `- **Frameworks**:` label set (derive via
+      `JidoClaw.JidoMd.framework_names/1`; `[]` means the line must be absent)
     * `:path_exists?` — arity-1 predicate for Entry points paths
       (default `&File.exists?/1`; inject to bind paths to a tmp dir in tests)
   """
@@ -48,6 +50,11 @@ defmodule JidoClaw.JidoMd.Check do
       skill_names_in_section(content),
       Keyword.fetch!(opts, :skill_names),
       "Skills section"
+    )
+    |> check_name_set(
+      framework_names_in_doc(content),
+      Keyword.fetch!(opts, :framework_names),
+      "Frameworks line"
     )
     |> check_no_machine_path(content)
     |> check_entry_points(content, Keyword.get(opts, :path_exists?, &File.exists?/1))
@@ -110,6 +117,19 @@ defmodule JidoClaw.JidoMd.Check do
     content
     |> section_lines(&(&1 == "## Skills"))
     |> Enum.flat_map(&first_backticked_token/1)
+  end
+
+  @doc """
+  Framework labels on the `- **Frameworks**:` line, comma-split. `[]` when
+  the line is absent — set comparison then treats a non-empty expectation as
+  all-missing (and an empty one as clean).
+  """
+  @spec framework_names_in_doc(String.t()) :: [String.t()]
+  def framework_names_in_doc(content) do
+    case Regex.run(~r/^- \*\*Frameworks\*\*:\s*(.+)$/m, content, capture: :all_but_first) do
+      [labels] -> Enum.map(String.split(labels, ","), &String.trim/1)
+      nil -> []
+    end
   end
 
   @doc """

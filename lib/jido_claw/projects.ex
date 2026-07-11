@@ -7,10 +7,19 @@ defmodule JidoClaw.Projects do
   to view and manage projects through the web UI.
   """
 
-  use Ash.Domain, otp_app: :jido_claw, extensions: [AshAdmin.Domain]
+  use Ash.Domain, otp_app: :jido_claw, extensions: [AshAdmin.Domain, AshGraphql.Domain]
 
   admin do
     show?(true)
+  end
+
+  # Read-only GraphQL queries (argus P1) — no mutations by design; writes
+  # stay on the existing surfaces (REPL, MCP, LiveView, AshAdmin).
+  graphql do
+    queries do
+      get(JidoClaw.Projects.Project, :project, :read)
+      list(JidoClaw.Projects.Project, :projects, :alphabetical)
+    end
   end
 
   resources do

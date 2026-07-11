@@ -129,28 +129,43 @@ defmodule JidoClaw.Orchestration.Visibility do
     |> String.slice(0, @error_limit)
   end
 
-  # -- Internal --
+  @doc """
+  The run's terminal disposition marker (`result.disposition`), tolerant of
+  the raw-atom vs JSONB-string key split like every payload access here.
+  Nil for runs without one (most runs) — surfaces render nothing.
 
-  # The run's terminal disposition marker (`result.disposition`), tolerant of
-  # the raw-atom vs JSONB-string key split like every payload access here.
-  # Nil for runs without one (most runs) — surfaces render nothing.
-  defp result_disposition(%{} = result) do
+  Public because it is the single shared derivation for every disposition
+  surface: `run_view/3` here and the GraphQL `disposition` calculation
+  (`WorkflowRun.Calculations.Disposition`) both delegate to it, so the
+  camus C1-4 "never plain green" semantics cannot fork per surface.
+  """
+  @spec result_disposition(term()) :: String.t() | nil
+  def result_disposition(%{} = result) do
     case fetch_result(result, :disposition) do
       disposition when is_binary(disposition) -> disposition
       _other -> nil
     end
   end
 
-  defp result_disposition(_result), do: nil
+  def result_disposition(_result), do: nil
 
-  defp result_findings_deferred_count(%{} = result) do
+  @doc """
+  The run's deferred-findings count (`result.findings_deferred_count`),
+  tolerant of atom vs JSONB-string keys; nil when absent or malformed.
+  Shared by `run_view/3` and the GraphQL `findings_deferred_count`
+  calculation — see `result_disposition/1` for why it is public.
+  """
+  @spec result_findings_deferred_count(term()) :: non_neg_integer() | nil
+  def result_findings_deferred_count(%{} = result) do
     case fetch_result(result, :findings_deferred_count) do
       count when is_integer(count) and count >= 0 -> count
       _other -> nil
     end
   end
 
-  defp result_findings_deferred_count(_result), do: nil
+  def result_findings_deferred_count(_result), do: nil
+
+  # -- Internal --
 
   defp fetch_result(result, key),
     do: Map.get(result, key) || Map.get(result, Atom.to_string(key))

@@ -1,6 +1,6 @@
 # Argus — Decisions of Record
 
-**Snapshot, 2026-07-07.** One line per settled decision, grouped by the
+**Snapshot, 2026-07-11.** One line per settled decision, grouped by the
 FLOW §13 slice that builds it — no rationale, no evidence trails, no
 correction archaeology. This page is a read-model for build kickoff, **not
 a fourth decision surface**: [OVERVIEW.md](OVERVIEW.md) (architecture),
@@ -49,6 +49,29 @@ these slices.
   a placement policy over the existing lease machinery. [§3.4]
 - The LiveView dashboard stays; argus differentiates on decoupled
   lifecycle, phone form-factor, and cluster-wide aggregation. [§4.6]
+- Same repo, no restructure: the SPA lives at top-level `ui/`; the Elixir
+  app stays at the repo root; pnpm, single package (workspaces only if a
+  second JS package becomes real, and inside `ui/`).
+  [argus-ui-bootstrap]
+- Each node serves the built SPA from `priv/static/argus/` at `/argus` —
+  same-origin with `/gql` and `/ws`, no CORS surface.
+  [argus-ui-bootstrap]
+- Codegen starts basic: `typescript` + `typescript-operations` plugins,
+  types only; `typescript-react-apollo` and `client-preset` rejected.
+  [argus-ui-bootstrap, §6.3]
+- The SDL golden `ui/schema.graphql` is committed and precommit-enforced
+  (`mix jidoclaw.graphql.schema` / `.check`) — shipped with P1.
+  [argus-ui-bootstrap]
+- `mix precommit` stays node-free; the UI gate
+  (`pnpm --dir ui typecheck|test|build`) runs when `ui/` is touched.
+  [argus-ui-bootstrap]
+- The bootstrap GraphQL surface is zero-mutation (reads only, behind
+  ApiKeyAuth + a tenant-activity gate); the first mutation (`decideCase`)
+  arrives with slice 1. [argus-ui-bootstrap, §4.4]
+- The GraphQL runs surface shares Visibility's terminal-disposition
+  derivation (`disposition`/`findings_deferred_count` calculations
+  delegate to the `run_view/3` derivations — never a parallel read
+  model). [argus-ui-bootstrap]
 
 ## Product shape (FLOW §1–3)
 
@@ -97,11 +120,10 @@ these slices.
   fencing, misroute refusal) are invariants.
 - Event-feed catch-up acceptance criteria: no mount-pinned cursor, gap
   recovery actually wired (the t3code defects).
-- Open: push-subscription wiring; Apollo codegen choice; carry-events vs
-  minimal payloads per topic (lean: carry on run topics); per-run seq vs
-  global cursor (lean: per-run); busy-thread sends queue-vs-fold (lean:
-  both, operator-chosen); digest/mute/escalation seams; standing-grant UI
-  details.
+- Open: push-subscription wiring; carry-events vs minimal payloads per
+  topic (lean: carry on run topics); per-run seq vs global cursor (lean:
+  per-run); busy-thread sends queue-vs-fold (lean: both, operator-chosen);
+  digest/mute/escalation seams; standing-grant UI details.
 
 ## Slice 2 — worktrees
 
@@ -279,7 +301,9 @@ these slices.
   (named-tested-producer law; release semantics with `depends_on` or no
   edges at all).
 - Advertisement without mechanical enforcement rots — pin served surfaces
-  with goldens.
+  with goldens. Realized for GraphQL (P1, 2026-07-11): `ui/schema.graphql`
+  + `mix jidoclaw.graphql.schema.check` in precommit; the MCP surface
+  golden preceded it.
 - License discipline: patterns/rubrics/schemas only from AGPL (termic,
   Chorus, myrlin, herdr), GPL (cmux), BUSL (OpenHelm), and
   modified-Apache (multica) subjects; code only from MIT/Apache-clean

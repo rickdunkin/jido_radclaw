@@ -22,6 +22,9 @@ metadata:
 - [querying_data](references/querying_data.md)
 - [relationships](references/relationships.md)
 - [testing](references/testing.md)
+- [custom_types](references/custom_types.md)
+- [domain_configuration](references/domain_configuration.md)
+- [resource_configuration](references/resource_configuration.md)
 - [best_practices](references/best_practices.md)
 - [debugging_form_submissions](references/debugging_form_submissions.md)
 - [error_handling](references/error_handling.md)
@@ -38,6 +41,7 @@ metadata:
 - [ash](references/ash.md)
 - [ash_authentication](references/ash_authentication.md)
 - [ash_credo](references/ash_credo.md)
+- [ash_graphql](references/ash_graphql.md)
 - [ash_json_api](references/ash_json_api.md)
 - [ash_phoenix](references/ash_phoenix.md)
 - [ash_postgres](references/ash_postgres.md)
@@ -45,7 +49,7 @@ metadata:
 ## Searching Documentation
 
 ```sh
-mix usage_rules.search_docs "search term" -p ash -p ash_admin -p ash_archival -p ash_authentication -p ash_authentication_phoenix -p ash_cloak -p ash_credo -p ash_json_api -p ash_paper_trail -p ash_phoenix -p ash_postgres -p ash_state_machine
+mix usage_rules.search_docs "search term" -p ash -p ash_admin -p ash_archival -p ash_authentication -p ash_authentication_phoenix -p ash_cloak -p ash_credo -p ash_graphql -p ash_json_api -p ash_paper_trail -p ash_phoenix -p ash_postgres -p ash_state_machine
 ```
 
 ## Available Mix Tasks
@@ -84,6 +88,7 @@ mix usage_rules.search_docs "search term" -p ash -p ash_admin -p ash_archival -p
 - `mix ash_authentication_phoenix.install` - Installs AshAuthenticationPhoenix. Invoke with `mix igniter.install ash_authentication_phoenix`
 - `mix ash_authentication_phoenix.upgrade`
 - `mix ash_credo.install` - Installs AshCredo and configures .credo.exs
+- `mix ash_graphql.install` - Installs AshGraphql. Should be run with `mix igniter.install ash_graphql`
 - `mix ash_json_api.install` - Installs AshJsonApi. Should be run with `mix igniter.install ash_json_api`
 - `mix ash_json_api.routes` - Prints all routes by AshJsonApiRouter
 - `mix ash_phoenix.gen.html` - Generates a controller and HTML views for an existing Ash resource.

@@ -66,7 +66,9 @@ defmodule JidoClaw.MixProject do
         precommit: :test,
         "jidoclaw.system_prompt.check": :test,
         "jidoclaw.jido_md.check": :test,
-        "jidoclaw.system_docs.check": :test
+        "jidoclaw.system_docs.check": :test,
+        "jidoclaw.graphql.schema": :test,
+        "jidoclaw.graphql.schema.check": :test
       ]
     ]
   end
@@ -229,6 +231,7 @@ defmodule JidoClaw.MixProject do
       {:ash_phoenix, "~> 2.0"},
       {:ash_postgres, "~> 2.0"},
       {:ash_json_api, "~> 1.0"},
+      {:ash_graphql, "~> 1.9"},
       {:ash_authentication, "~> 4.0"},
       {:ash_authentication_phoenix, "~> 2.0"},
       {:ash_admin, "~> 1.0"},
@@ -266,6 +269,7 @@ defmodule JidoClaw.MixProject do
         "jidoclaw.system_prompt.check",
         "jidoclaw.jido_md.check",
         "jidoclaw.system_docs.check",
+        "jidoclaw.graphql.schema.check",
         "deps.unlock --unused",
         "format --check-formatted",
         "reach.check --arch --smells --strict",

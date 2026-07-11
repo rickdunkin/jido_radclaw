@@ -82,3 +82,4 @@ set-compares these against the directory (names, not counts).
 - [Structured Premises](structured-premises.md) — typed acceptance-criteria keys, the deterministic premises lint, criteria consumers, the cron outcome contract
 - [Evidence Floor](evidence-floor.md) — claims vs transcript: engine-verified worker self-reports, exit-code provenance, findings-only
 - [Gateway Runtime Security](gateway-runtime-security.md) — tenant-safe live sessions, bounded completions, lifecycle gates, and auth/setup hardening
+- [GraphQL Read Surface](graphql-surface.md) — read-only /gql, tenant-gated, allowlisted fields, SDL golden drift-guarded

@@ -6,6 +6,7 @@
     :ash_authentication,
     :ash_authentication_phoenix,
     :ash_cloak,
+    :ash_graphql,
     :ash_json_api,
     :ash_paper_trail,
     :ash_phoenix,
