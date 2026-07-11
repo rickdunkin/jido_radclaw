@@ -173,7 +173,7 @@ defmodule JidoClaw.MixProject do
       {:jido_messaging, "~> 1.0", override: true},
       {:jido_shell,
        github: "agentjido/jido_shell",
-       ref: "18d892d16e1366fe152048ba6f60e8cda1b1de4b",
+       ref: "6e47eca2adc04cb2cb803833c3448f5760a1378f",
        override: true},
       {:jido_vfs, "~> 1.0", override: true},
 
@@ -271,7 +271,10 @@ defmodule JidoClaw.MixProject do
         "reach.check --arch --smells --strict",
         "credo --strict",
         "dialyzer --format short",
-        "test"
+        # Partitioned suite (~65s wall vs ~157s serial); the script compiles,
+        # fans out N BEAMs against per-partition DBs, and propagates any
+        # partition failure as a non-zero exit (tails its log here).
+        "cmd scripts/test-partitioned.sh"
       ]
     ]
   end
