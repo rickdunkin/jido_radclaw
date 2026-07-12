@@ -3,7 +3,11 @@ import { MockedProvider } from "@apollo/client/testing/react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
-import { RecentWorkflowRunsDocument, WorkflowRunStatus } from "./gql/graphql.ts";
+import {
+  RecentWorkflowRunsDocument,
+  WorkflowRunStatus,
+  type RecentWorkflowRunsQuery,
+} from "./gql/graphql.ts";
 import { createAppRouter } from "./router.tsx";
 
 // The route talks to the socket only through the lib/socket.ts seam; the
@@ -101,7 +105,16 @@ const RUN_C = "33333333-3333-4333-8333-333333333333";
 
 type Mocks = NonNullable<ComponentProps<typeof MockedProvider>["mocks"]>;
 
-function runRow(id: string, name: string, status: WorkflowRunStatus) {
+type RunRowData = RecentWorkflowRunsQuery["recentWorkflowRuns"][number];
+
+// The widened return type keeps defaults like `disposition: null` from
+// inferring literal-null field types through ReturnType<typeof runRow>.
+function runRow(
+  id: string,
+  name: string,
+  status: WorkflowRunStatus,
+  overrides: Partial<RunRowData> = {},
+): RunRowData {
   return {
     __typename: "WorkflowRun" as const,
     id,
@@ -110,6 +123,9 @@ function runRow(id: string, name: string, status: WorkflowRunStatus) {
     status,
     insertedAt: "2026-07-01T00:00:00Z",
     completedAt: null,
+    disposition: null,
+    findingsDeferredCount: null,
+    ...overrides,
   };
 }
 
@@ -243,6 +259,36 @@ test("a run_event push refetches; a now-terminal run's channel is left", async (
   await flush();
   expect(channel.left).toBe(true);
   expect(fake.state.socket.channels).toHaveLength(1);
+});
+
+test("done_with_findings renders amber with deferred-findings labels, never plain green", async () => {
+  renderRuns([
+    runsMock([
+      runRow(RUN_A, "amber-plural", WorkflowRunStatus.Completed, {
+        disposition: "done_with_findings",
+        findingsDeferredCount: 3,
+      }),
+      runRow(RUN_B, "amber-singular", WorkflowRunStatus.Completed, {
+        disposition: "done_with_findings",
+        findingsDeferredCount: 1,
+      }),
+      runRow(RUN_C, "amber-countless", WorkflowRunStatus.Completed, {
+        disposition: "done_with_findings",
+        findingsDeferredCount: null,
+      }),
+    ]),
+  ]);
+
+  const plural = await screen.findByText("code · completed · 3 findings deferred");
+  const singular = screen.getByText("code · completed · 1 finding deferred");
+  const countless = screen.getByText("code · completed · findings deferred");
+
+  for (const label of [plural, singular, countless]) {
+    expect(label.className).toContain("text-status-waiting");
+    expect(label.className).not.toContain("text-muted-foreground");
+  }
+  // No row fell back to the plain completed treatment.
+  expect(screen.queryByText("code · completed")).toBeNull();
 });
 
 test("a not_found join error leaves the channel and refetches the row away", async () => {

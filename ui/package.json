@@ -6,6 +6,7 @@
   "scripts": {
     "codegen": "tsr generate && graphql-codegen --config codegen.ts",
     "dev": "vp dev",
+    "dev:mock": "VITE_MOCKS=1 vp dev",
     "build": "tsc -b && vp build",
     "check": "vp check",
     "test": "vp test",

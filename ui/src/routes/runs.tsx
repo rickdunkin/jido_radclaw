@@ -27,6 +27,22 @@ function normalizeWireStatus(wire: string): string {
   return wire.toUpperCase();
 }
 
+// done_with_findings is the completed-family disposition every surface marks
+// amber, never plain green (the platform terminal-statuses contract).
+function isDoneWithFindings(run: {
+  status: WorkflowRunStatus;
+  disposition: string | null;
+}): boolean {
+  return run.status === WorkflowRunStatus.Completed && run.disposition === "done_with_findings";
+}
+
+// findingsDeferredCount is nullable in the SDL — a null count keeps the
+// amber treatment with the countless label.
+function deferredFindingsLabel(count: number | null): string {
+  if (count === null) return "completed · findings deferred";
+  return `completed · ${count} ${count === 1 ? "finding" : "findings"} deferred`;
+}
+
 function RunsPage() {
   // cache-and-network: cached rows paint immediately, but every route entry
   // also fires the network leg — the client is an app-lifetime singleton
@@ -175,9 +191,15 @@ function RunsPage() {
           {runs.map((run) => (
             <li key={run.id} className="py-3">
               <div className="font-medium">{run.name}</div>
-              <div className="text-sm text-muted-foreground">
-                {run.workflowType ?? "—"} · {run.status.toLowerCase()}
-              </div>
+              {isDoneWithFindings(run) ? (
+                <div className="text-sm text-status-waiting">
+                  {run.workflowType ?? "—"} · {deferredFindingsLabel(run.findingsDeferredCount)}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  {run.workflowType ?? "—"} · {run.status.toLowerCase()}
+                </div>
+              )}
             </li>
           ))}
         </ul>

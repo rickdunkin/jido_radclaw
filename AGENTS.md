@@ -34,6 +34,7 @@ mix ecto.reset    # drop + create + migrate
 pnpm --dir ui install     # JS deps
 pnpm --dir ui codegen     # regenerate src/routeTree.gen.ts + src/gql/ from ui/schema.graphql
 pnpm --dir ui dev         # vite dev server at /argus/; proxies /gql + /argus/ws (ws) -> localhost:4000
+pnpm --dir ui dev:mock    # backendless dev via in-process fakes (SchemaLink over the SDL golden + fake channel socket; dev-server-only by construction); scenario via VITE_MOCK_SCENARIO or ?mock=
 pnpm --dir ui check       # oxfmt + type-aware oxlint + type check (vp check)
 pnpm --dir ui test        # vitest (happy-dom)
 pnpm --dir ui build       # tsc -b && vite build → priv/static/argus/ (stricter type arbiter than check)

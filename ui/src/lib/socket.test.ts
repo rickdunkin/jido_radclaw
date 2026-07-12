@@ -47,6 +47,10 @@ vi.mock("phoenix", () => ({ Socket: phoenix.MockSocket }));
 beforeEach(() => {
   vi.resetModules();
   phoenix.MockSocket.instances.length = 0;
+  // __ARGUS_MOCKS_ALLOWED__ is true under vitest (define → worker global),
+  // so an inherited shell VITE_MOCKS=1 would flip createSocket() into its
+  // mock branch and break the assertions below.
+  vi.stubEnv("VITE_MOCKS", "0");
 });
 
 afterEach(() => {

@@ -1,4 +1,6 @@
 import { Socket, type SocketConnectOption } from "phoenix";
+import { createMockPhoenixSocket } from "../mocks/socket.ts";
+import type { SocketLike } from "./socket-contract.ts";
 
 // The npm phoenix package is pinned EXACT to the hex phoenix version in
 // mix.lock (serializer wire compat) — a hex phoenix bump must bump
@@ -18,7 +20,7 @@ const MAX_CONSECUTIVE_FAILURES = 8;
 
 type StatusListener = (status: TransportStatus) => void;
 
-let socket: Socket | null = null;
+let socket: SocketLike | null = null;
 let status: TransportStatus = "connecting";
 // Consecutive onError since the most recent onOpen — reset on every open,
 // so it bounds the pre-first-open run AND every later reconnect run
@@ -46,7 +48,16 @@ export function subscribeTransportStatus(listener: StatusListener): () => void {
 // authToken rides the Sec-WebSocket-Protocol header (Phoenix auth_token
 // transport) — the key never appears in the URL. Mirrors apollo.ts: the
 // key comes from VITE_API_KEY (ui/.env.local, gitignored) at build time.
-export function createSocket(): Socket {
+export function createSocket(): SocketLike {
+  // Bare inline identifier, same gate as apollo.ts: __ARGUS_MOCKS_ALLOWED__
+  // is statically false in every `vite build` (command-derived — hostile
+  // NODE_ENV/VITE_* exports can't reopen it; see src/mocks-gate.d.ts), so
+  // the branch and the mocks graph fold out of every build. Branching
+  // here rather than in getSocket() keeps the real onOpen/onError/status
+  // wiring and retryConnect() driving the fake unchanged.
+  if (__ARGUS_MOCKS_ALLOWED__ && import.meta.env.VITE_MOCKS === "1") {
+    return createMockPhoenixSocket();
+  }
   const apiKey: string | undefined = import.meta.env.VITE_API_KEY;
   const opts: Partial<SocketConnectOption> = {
     reconnectAfterMs: (tries: number) => RECONNECT_SCHEDULE_MS[tries - 1] ?? RECONNECT_CAP_MS,
@@ -57,7 +68,7 @@ export function createSocket(): Socket {
 
 // Lazy singleton: routes that never render live data never open a socket,
 // and reconnect state survives route changes.
-export function getSocket(): Socket {
+export function getSocket(): SocketLike {
   if (socket) return socket;
   socket = createSocket();
   socket.onOpen(() => {
