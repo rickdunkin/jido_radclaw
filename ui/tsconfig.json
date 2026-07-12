@@ -1,4 +1,12 @@
 {
   "files": [],
-  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }],
+  // The shadcn CLI resolves the import alias from this root tsconfig; the
+  // compiling config is tsconfig.app.json (keep the two paths in sync).
+  // No baseUrl — TypeScript 7 removed it; paths resolve tsconfig-relative.
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
 }

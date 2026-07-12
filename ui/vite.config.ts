@@ -1,3 +1,4 @@
+import path from "node:path";
 import { defineConfig, lazyPlugins } from "vite-plus";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
@@ -10,6 +11,12 @@ export default defineConfig({
   // and the deployed artifact exercise identical routing; the router's
   // basepath follows via import.meta.env.BASE_URL (see src/router.tsx).
   base: "/argus/",
+  resolve: {
+    // Mirrors the tsconfig "@/*" paths (shadcn convention).
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+    },
+  },
   build: {
     // The Elixir app's static root, sibling to priv/static/assets/
     // (gitignored). outDir sits outside the Vite root, so emptying it
@@ -21,7 +28,8 @@ export default defineConfig({
     // Generated files keep their generators' bytes: schema.graphql is the golden
     // owned by `mix jidoclaw.graphql.schema` (oxfmt touching it breaks the Elixir
     // drift check); routeTree.gen.ts is owned by the TanStack Router generator.
-    ignorePatterns: ["schema.graphql", "src/routeTree.gen.ts", "src/gql/**"],
+    // _mocks/ is the Claude Design handoff bundle — reference material, not code.
+    ignorePatterns: ["schema.graphql", "src/routeTree.gen.ts", "src/gql/**", "_mocks/**"],
   },
   lint: {
     plugins: ["react", "typescript", "oxc"],
@@ -47,13 +55,15 @@ export default defineConfig({
     ],
     // TanStack file routes canonically export the Route const beside the
     // component; the router plugin owns their HMR, so fast-refresh purism
-    // doesn't apply in src/routes/.
+    // doesn't apply in src/routes/. shadcn ui files likewise export their
+    // cva variants beside the component (buttonVariants et al.).
     overrides: [
       {
-        files: ["src/routes/**"],
+        files: ["src/routes/**", "src/components/ui/**"],
         rules: { "react/only-export-components": "off" },
       },
     ],
+    ignorePatterns: ["_mocks/**"],
   },
   plugins: lazyPlugins(() => [
     tanstackRouter({ target: "react", autoCodeSplitting: true }),

@@ -152,26 +152,30 @@ function RunsPage() {
     <div className="mx-auto max-w-2xl px-6 py-12">
       <h1 className="text-2xl font-semibold tracking-tight">Runs</h1>
       {liveDegraded && (
-        <div className="mt-4 flex items-center justify-between rounded border border-amber-700 bg-amber-950 px-3 py-2 text-sm text-amber-300">
+        <div className="mt-4 flex items-center justify-between rounded-lg border border-status-waiting/20 bg-status-waiting/7 px-3 py-2 text-sm text-status-waiting">
           <span>Live updates unavailable.</span>
           <button
             type="button"
             onClick={handleRetry}
-            className="rounded border border-amber-700 px-2 py-0.5 hover:bg-amber-900"
+            className="rounded-md border border-status-waiting/20 px-2 py-0.5 hover:bg-status-waiting/10"
           >
             Retry
           </button>
         </div>
       )}
-      {loading && <p className="mt-4 text-sm text-zinc-400">Loading runs…</p>}
-      {error && <p className="mt-4 text-sm text-red-400">Failed to load runs: {error.message}</p>}
-      {data && runs.length === 0 && <p className="mt-4 text-sm text-zinc-400">No runs yet.</p>}
+      {loading && <p className="mt-4 text-sm text-muted-foreground">Loading runs…</p>}
+      {error && (
+        <p className="mt-4 text-sm text-destructive">Failed to load runs: {error.message}</p>
+      )}
+      {data && runs.length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">No runs yet.</p>
+      )}
       {data && runs.length > 0 && (
-        <ul className="mt-6 divide-y divide-zinc-800">
+        <ul className="mt-6 divide-y divide-border">
           {runs.map((run) => (
             <li key={run.id} className="py-3">
               <div className="font-medium">{run.name}</div>
-              <div className="text-sm text-zinc-400">
+              <div className="text-sm text-muted-foreground">
                 {run.workflowType ?? "—"} · {run.status.toLowerCase()}
               </div>
             </li>
