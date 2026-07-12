@@ -47,7 +47,12 @@ defmodule JidoClaw.Memory.Consolidator do
       via `Memory.Scope.resolve/1`.
 
   Options:
-    * `:await_ms` — overall await timeout (default 30 minutes).
+    * `:await_ms` — the caller's WAIT timeout only, never cancellation:
+      the run's cancellation authority is the RunServer's whole-run
+      deadline watchdog (`harness_options[:max_run_ms]`, default 660s)
+      alone. The default await is derived so it can never expire before
+      the watchdog replies: `max_run_ms + reconciliation allowance +
+      teardown cushion`.
     * `:override_min_input_count` — bypass the per-scope min-input
       pre-flight (used by `/memory consolidate`).
     * `:fake_proposals` — when `harness: :fake`, the list of
@@ -128,15 +133,23 @@ defmodule JidoClaw.Memory.Consolidator do
     end
   end
 
+  # Derived so the default caller can never time out before the RunServer
+  # replies: watchdog work (certificate reconciliation retries, teardown)
+  # BEGINS at the run deadline, so the await covers it end to end.
+  @teardown_reply_cushion_ms 5_000
+
   defp default_await_timeout do
     config = Application.get_env(:jido_claw, JidoClaw.Memory.Consolidator, [])
 
-    config
-    |> Keyword.get(:harness_options, [])
-    |> Keyword.get(:timeout_ms, 600_000)
-    # 60s buffer covers cluster + publish + cleanup phases beyond the
-    # harness timeout itself.
-    |> Kernel.+(60_000)
+    max_run_ms =
+      config
+      |> Keyword.get(:harness_options, [])
+      |> Keyword.get(:max_run_ms, 660_000)
+
+    reconciliation_allowance =
+      Application.get_env(:jido_claw, :consolidator_reconciliation_allowance_ms, 10_000)
+
+    max_run_ms + reconciliation_allowance + @teardown_reply_cushion_ms
   end
 
   @doc """

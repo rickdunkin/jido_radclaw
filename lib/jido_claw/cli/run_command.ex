@@ -3,13 +3,19 @@ defmodule JidoClaw.CLI.RunCommand do
   Headless one-shot entry point (osa OS1-5): `mix jidoclaw run "<prompt>"
   [dir] [flags]`, mirrored by the escript. Sends ONE message through
   `JidoClaw.chat/4` (with `composer_ack: :detailed`) and reports a
-  machine-readable exit code — the OQ-4 exit contract:
+  machine-readable exit code — the OQ-4 exit contract, extended 0–6 by
+  pre-argus Wave A #4 (multica MC3-4, adapted — new tiers get NEW codes;
+  their 2=network/3=auth collide with our taken meanings):
 
     * `0` — success (inline answer with no pending approval, or a launched
-      composer run that completed)
-    * `1` — error / failed run / await timeout
-    * `2` — usage or config error (bad flags, setup needed, unknown session,
-      session belonging to another workspace, boot failure)
+      composer run that completed; a `done_with_findings` completion stays
+      0 but is marked in the output)
+    * `1` — error / failed run / await timeout (launched-run failures stay
+      here deliberately — their provenance lives in run telemetry, not the
+      exit code)
+    * `2` — usage or config error (bad flags, malformed `--session` UUID,
+      setup needed, session belonging to another workspace — found but
+      invalid for the requested dir — boot failure)
     * `3` — human input needed: an approval gate pending — an inline
       tool-call case (probed via `AgentCase.pending_for_session/1` — the
       gate error is invisible in chat/4's return, the LLM just relays it as
@@ -18,6 +24,13 @@ defmodule JidoClaw.CLI.RunCommand do
       round (`outcome: :clarify_pending`, queue item 8): the ambiguous ask
       parked questions instead of composing — answer them on the same
       session (`--session <id>`) or re-run with "proceed with defaults".
+    * `4` — not found: a well-formed `--session` UUID with no row, or
+      `--continue` with no open CLI session in the workspace (a genuine
+      miss — infrastructure failures reading the row stay `1`)
+    * `5` — provider unreachable: the turn failed with a network-class
+      provider error (`RunFailure` `agent_provider_network`)
+    * `6` — provider auth: the turn failed with an auth/access-class
+      provider error (`RunFailure` `agent_provider_auth_or_access`)
 
   ## Flags
 
@@ -65,7 +78,7 @@ defmodule JidoClaw.CLI.RunCommand do
               error: nil
 
     @type t :: %__MODULE__{
-            exit_code: 0 | 1 | 2 | 3,
+            exit_code: 0 | 1 | 2 | 3 | 4 | 5 | 6,
             outcome: atom(),
             route: :inline | :composer | :clarify | nil,
             run_id: String.t() | nil,
@@ -88,8 +101,10 @@ defmodule JidoClaw.CLI.RunCommand do
   alias JidoClaw.Conversations.Resolver, as: ConversationsResolver
   alias JidoClaw.Conversations.Session
   alias JidoClaw.Conversations.SessionId
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Orchestration.AgentCase
+  alias JidoClaw.Orchestration.RunFailure
   alias JidoClaw.Orchestration.Visibility
   alias JidoClaw.Tenants.Tenant
   alias JidoClaw.Workspaces.Resolver, as: WorkspacesResolver
@@ -101,7 +116,7 @@ defmodule JidoClaw.CLI.RunCommand do
 
   @usage ~s(usage: mix jidoclaw run "<prompt>" [dir] [--session <uuid> | --continue] [--timeout <seconds>] [--format text|json])
 
-  @type exit_code :: 0 | 1 | 2 | 3
+  @type exit_code :: 0 | 1 | 2 | 3 | 4 | 5 | 6
 
   @doc """
   Parse `argv`, run the one-shot turn, and return `{exit_code, output}`.
@@ -270,6 +285,7 @@ defmodule JidoClaw.CLI.RunCommand do
       run_turn(request, actor, session, resumed?)
     else
       {:usage, message} -> usage_result(message)
+      {:not_found, message} -> not_found_result(message)
       {:error, reason} -> error_result(reason)
     end
   end
@@ -282,16 +298,14 @@ defmodule JidoClaw.CLI.RunCommand do
   # its own workspace. chat/4 resolves persistence from the DIRECTORY's
   # workspace, so a foreign UUID would mint/touch a different
   # `(workspace, kind, external_id)` row and run tools in the wrong cwd.
+  # Exit-tier split (MC3-4): malformed UUID = caller mistake (2); a
+  # well-formed UUID with no row = a genuine miss (4); an infrastructure
+  # failure READING the row keeps the generic error lane (1) — a flaky DB
+  # must never report "not found".
   defp resolve_session(%{session: uuid} = _request, workspace, actor) when is_binary(uuid) do
-    case Session.by_id(uuid, tenant: @tenant_id, actor: actor) do
-      {:ok, session} when session.workspace_id == workspace.id ->
-        {:ok, session, true}
-
-      {:ok, session} ->
-        {:usage, foreign_workspace_message(session, actor)}
-
-      {:error, _} ->
-        {:usage, "session #{uuid} not found"}
+    case Ecto.UUID.cast(uuid) do
+      {:ok, _canonical} -> resolve_session_by_id(uuid, workspace, actor)
+      :error -> {:usage, "#{uuid} is not a valid session UUID"}
     end
   end
 
@@ -300,8 +314,13 @@ defmodule JidoClaw.CLI.RunCommand do
       {:ok, session} ->
         {:ok, session, true}
 
-      {:error, _} ->
-        {:usage, "no open CLI session to continue in this workspace — run without --continue"}
+      {:error, reason} ->
+        if AshErrors.not_found?(reason) do
+          {:not_found,
+           "no open CLI session to continue in this workspace — run without --continue"}
+        else
+          {:error, reason}
+        end
     end
   end
 
@@ -314,6 +333,23 @@ defmodule JidoClaw.CLI.RunCommand do
          ) do
       {:ok, session} -> {:ok, session, false}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp resolve_session_by_id(uuid, workspace, actor) do
+    case Session.by_id(uuid, tenant: @tenant_id, actor: actor) do
+      {:ok, session} when session.workspace_id == workspace.id ->
+        {:ok, session, true}
+
+      {:ok, session} ->
+        {:usage, foreign_workspace_message(session, actor)}
+
+      {:error, reason} ->
+        if AshErrors.not_found?(reason) do
+          {:not_found, "session #{uuid} not found"}
+        else
+          {:error, reason}
+        end
     end
   end
 
@@ -421,8 +457,19 @@ defmodule JidoClaw.CLI.RunCommand do
     }
   end
 
+  # Provider tiers (MC3-4): auth/network-class provider failures on the turn
+  # get their own exit codes via the RunFailure taxonomy — classified here at
+  # the generic error arm only. Everything else keeps exit 1; the launched-run
+  # `{:done, :failed, _}` path deliberately stays 1 (run provenance lives in
+  # run telemetry, not the exit code).
   defp outcome_for({:error, reason}, env) do
-    %Result{session_id: env.session.id, error: reason}
+    base = %Result{session_id: env.session.id, error: reason}
+
+    case RunFailure.classify(reason) do
+      :agent_provider_auth_or_access -> %{base | exit_code: 6, outcome: :provider_auth}
+      :agent_provider_network -> %{base | exit_code: 5, outcome: :provider_unreachable}
+      _other -> base
+    end
   end
 
   defp pending_session_cases(env) do
@@ -482,6 +529,10 @@ defmodule JidoClaw.CLI.RunCommand do
 
   defp usage_result(message) do
     %Result{exit_code: 2, outcome: :usage, error: message}
+  end
+
+  defp not_found_result(message) do
+    %Result{exit_code: 4, outcome: :not_found, error: message}
   end
 
   defp error_result(reason) do

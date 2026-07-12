@@ -21,6 +21,7 @@ defmodule JidoClaw.Forge.Runner.HostShell do
   require Logger
 
   alias JidoClaw.Core.OsCmd
+  alias JidoClaw.Forge.ChildTracker
   alias JidoClaw.Forge.Sandbox
   alias JidoClaw.Security.Redaction.Env
 
@@ -139,11 +140,23 @@ defmodule JidoClaw.Forge.Runner.HostShell do
             {all, []} -> all
           end
 
-        run_with_timeout(executable, passthrough, sandbox.dir, env, timeout)
+        run_with_timeout(executable, passthrough, sandbox.dir, env, timeout, tracker_spec(opts))
     end
   end
 
-  defp run_with_timeout(executable, args, cwd, env, timeout) do
+  # The graceful-teardown registration seam (docs/system/forge-session-resume.md):
+  # ONLY the CLI-runner `run/4` path opts in (`teardown: :graceful` +
+  # `incarnation_key` threaded by the vendor runners); `exec/3` stays hard.
+  defp tracker_spec(opts) do
+    with :graceful <- Keyword.get(opts, :teardown),
+         {_sid, _tag} = key <- Keyword.get(opts, :incarnation_key) do
+      %{key: key, timeout_ms: Keyword.get(opts, :timeout, :infinity)}
+    else
+      _hard -> nil
+    end
+  end
+
+  defp run_with_timeout(executable, args, cwd, env, timeout, tracker \\ nil) do
     # OsCmd kills the whole OS process tree on timeout — a brutally
     # killed Task only reaped the BEAM side and orphaned the real
     # command (and any grandchildren it forked). It also caps output
@@ -151,14 +164,47 @@ defmodule JidoClaw.Forge.Runner.HostShell do
     # debuggability) and accepts `:infinity`, so the previous raw
     # System.cmd no-timeout clause is gone.
     {exec, exec_args} = cli_exec_argv(executable, args)
+    run_opts = [cd: cwd, env: env, timeout: timeout] ++ tracker_registration(tracker)
 
-    case OsCmd.run(exec, exec_args, cd: cwd, env: env, timeout: timeout) do
-      {_partial, :timeout} -> {"", :timeout}
-      {output, :output_limit} -> {output, Sandbox.output_limit_exit_status()}
-      {output, status} -> {output, status}
-    end
+    result =
+      case OsCmd.run(exec, exec_args, run_opts) do
+        {_partial, :timeout} -> {"", :timeout}
+        {output, :output_limit} -> {output, Sandbox.output_limit_exit_status()}
+        {output, status} -> {output, status}
+      end
+
+    tracker_deregister()
+    result
   rescue
-    e -> {Exception.message(e), 1}
+    e ->
+      tracker_deregister()
+      {Exception.message(e), 1}
+  end
+
+  # The `on_os_pid` callback runs synchronously in THIS process, so the
+  # registration ref rides a unique process-dictionary slot until the
+  # command returns (the transplant-selector precedent) — deleted on every
+  # exit path.
+  @tracker_ref_key :forge_child_tracker_registration
+
+  defp tracker_registration(nil), do: []
+
+  defp tracker_registration(%{key: key, timeout_ms: timeout_ms}) do
+    [
+      on_os_pid: fn os_pid ->
+        case ChildTracker.register_spawn(key, os_pid, timeout_ms: timeout_ms) do
+          {:ok, ref} -> Process.put(@tracker_ref_key, ref)
+          _closing_or_unavailable -> :ok
+        end
+      end
+    ]
+  end
+
+  defp tracker_deregister do
+    case Process.delete(@tracker_ref_key) do
+      ref when is_reference(ref) -> ChildTracker.unregister(ref)
+      _none -> :ok
+    end
   end
 
   # Resolve the POSIX shell used for `exec/3` command strings and the

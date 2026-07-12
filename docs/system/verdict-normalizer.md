@@ -6,8 +6,8 @@ sources:
   - lib/jido_claw/route_composer/emit/default_mapper.ex
   - lib/jido_claw/route_composer/stage_emission.ex
   - lib/jido_claw/skills/steps/iterative_step.ex
-verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified: 2026-07-11
+verified_sha: "6e252a40"
 ---
 
 # Verdict Normalizer (infra ≠ verdict ≠ inconclusive)
@@ -17,7 +17,10 @@ verified_sha: "a1fa5215"
 `JidoClaw.Orchestration.Verdict` is the single normalizer every probabilistic judge
 output passes through, separating "the judge decided" from "the machinery failed" from
 "nobody can know" — the conflation of those three was camus's "#1 cause of runaway
-loops". Port provenance: camus C1-3 @ `53da91b3` (MIT), next-ten #4.
+loops". Port provenance: camus C1-3 @ `53da91b3` (MIT), next-ten #4. Its sibling
+vocabulary for *run* failures (infra ≠ verdict ≠ **failure**) is
+[run-failure.md](run-failure.md) — `Orchestration.RunFailure`, the MC1-4 taxonomy
+whose retryable/resume-unsafe sets the resume stack consumes.
 
 ## Invariants & contracts
 

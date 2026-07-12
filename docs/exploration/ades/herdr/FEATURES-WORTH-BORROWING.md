@@ -395,6 +395,16 @@ multica. Keep multica's halves herdr lacks: the poisoned-session taxonomy and
 clear-id-then-retry-fresh (herdr's failure story is thinner — a failed resume spawn just
 skips the pane).
 
+**Status (2026-07-11)**: FOLDED IN — pre-argus Wave A #2 (MC1-1 build).
+The two vendors our Forge actually drives landed their argv-table rows
+(claude `--resume <id>` flag; codex `resume <id>` subcommand with exec opts
+BEFORE it — live-verified on 0.144.1, including the `--` separator for
+dash-leading guidance), and the `session_start_source` vocabulary shipped
+verbatim on `ResumeState` (`startup | resume | clear | new` produced;
+`fork | compact` accepted-never-produced, documented). The remaining 12
+vendors' rows stay reference material for future runner adapters. See
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md).
+
 ### HD2-3. Detection manifests as versioned, distributable data
 
 **Recommendation**: BORROW-PATTERN, parked. **Named trigger**: the CC1-1 soft-block

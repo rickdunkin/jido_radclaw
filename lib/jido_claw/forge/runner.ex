@@ -30,7 +30,25 @@ defmodule JidoClaw.Forge.Runner do
   @callback serialize_state(state()) :: map()
   @callback restore_state(state(), snapshot :: map()) :: {:ok, state()} | {:error, term()}
 
-  @optional_callbacks [handle_output: 3, terminate: 2, serialize_state: 1, restore_state: 2]
+  # Materialize the COMPLETE static runner config — every default the runner
+  # would apply at init/2 written explicitly, stamped with
+  # `JidoClaw.Forge.RecoveredSpec.codec_stamp/1` — so the persisted session
+  # row round-trips through jsonb back to the exact same posture at recovery
+  # (decoded by `RecoveredSpec.runner_config/1`, never re-defaulted).
+  # Required for the armed/recoverable vendor runners (claude_code, codex —
+  # enforced at session start); shell/workflow/custom/fake runners omit it
+  # and their config passes through unmaterialized. Attempt-scoped values
+  # (tokenized MCP URL, per-attempt config paths) must never appear in the
+  # materialized output — they ride `run_iteration` opts only.
+  @callback materialize_config(config()) :: config()
+
+  @optional_callbacks [
+    handle_output: 3,
+    terminate: 2,
+    serialize_state: 1,
+    restore_state: 2,
+    materialize_config: 1
+  ]
 
   @spec continue(term()) :: iteration_result()
   def continue(output),

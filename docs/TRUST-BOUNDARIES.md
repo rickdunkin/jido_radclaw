@@ -93,3 +93,26 @@ runs:
   down sessions/microVMs only after the terminal event durably committed; a
   failed append leaves the run recoverable, so teardown would strand the
   retry.
+
+## Retry ≠ resume (the run-failure corollary)
+
+Law 2's companion for *failure* handoffs (multica MC1-4, pre-argus Wave A #1):
+when an agent run fails, the engine classifies the failure itself —
+`JidoClaw.Orchestration.RunFailure.classify/1`, total over arbitrary input —
+and every policy decision derives from the classified kind's set membership,
+never from string-sniffing at the decision site.
+
+- **Two independent policies, never one severity scale**: `retryable?/1`
+  answers "may the WORK be re-attempted?"; `resume_unsafe?/1` answers "must
+  the CONVERSATION (native CLI session anchor) be abandoned?". Their overlap
+  (`agent_semantic_inactivity`, `agent_session_poisoned` — retry fresh, never
+  on the old anchor) is why they are two predicates.
+- **The envelope key is `:failure_kind`, never `:reason`** —
+  `RunFailure.error_details/2` strips `:reason` in both atom and string forms
+  and never reintroduces it (retry-hint diggers read `:reason`; the LoopGuard
+  `:trigger` precedent). Policy bits (`failure_kind`, `retry`) merge OVER
+  caller extras — a producer can never override them.
+- **Scope fence vs LoopGuard**: LoopGuard classifies *repetition signatures*
+  (is this call loop-shaped?); RunFailure classifies *failure class* (why did
+  this run die?). Neither consults the other; a change that makes one derive
+  from the other is a boundary violation.

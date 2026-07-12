@@ -95,6 +95,14 @@ defmodule JidoClaw.Memory.ConsolidationRun do
         :harness_model
       ])
 
+      # The optional named pk (the Checkpoint.create_recovery pattern —
+      # never a broad `accept :id`): the consolidator passes its run_id so
+      # the row written in the publish transaction IS the commit
+      # certificate, and terminal audit rows share the same deterministic
+      # id (reconciliation keys on `status == :succeeded`, never presence).
+      argument(:run_id, :uuid, allow_nil?: true)
+
+      change({__MODULE__.Changes.PinRunId, []})
       change(JidoClaw.Memory.Changes.ValidateScopeFk)
       change({__MODULE__.Changes.ValidateCrossTenant, []})
       change({JidoClaw.Audit.Producers.MemoryConsolidation, []})
@@ -278,6 +286,19 @@ defmodule JidoClaw.Memory.ConsolidationRun do
       define_attribute?(false)
       attribute_writable?(true)
       allow_nil?(false)
+    end
+  end
+
+  defmodule Changes.PinRunId do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    @impl Ash.Resource.Change
+    def change(changeset, _opts, _context) do
+      case Changeset.get_argument(changeset, :run_id) do
+        nil -> changeset
+        run_id -> Changeset.force_change_attribute(changeset, :id, run_id)
+      end
     end
   end
 

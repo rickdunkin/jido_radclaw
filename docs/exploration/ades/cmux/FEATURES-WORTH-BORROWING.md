@@ -519,6 +519,16 @@ model/config yes, trust bypasses never. That's a security-relevant contract (a r
 `--dangerously-skip-permissions` or a replayed prompt is a real footgun) and it slots
 directly into our MC1-1 item as acceptance criteria rather than a separate build.
 
+**Status (2026-07-11)**: FOLDED IN — pre-argus Wave A #2 (MC1-1 build).
+The restore-argv sanitizer landed AS CONTRACT TESTS on both vendor runners
+(the acceptance-criteria framing this entry asked for): a continuation argv
+never contains the original task; permission/trust flags derive ONLY from
+`state.access`, never anchor state; `--continue`/`--last` never appear;
+`--session-id` only on fresh-armed claude; resume selectors only on
+continuations and never combined; model/mcp/effort rebuilt fresh from config
+each turn. See
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md).
+
 ### CM2-4. Hook-pack install discipline: 17-agent catalog, opt-in diff-preview writes, per-invocation injection
 
 **Recommendation**: BORROW-REFERENCE (small) — rides herdr HD2-5 (managed vendor-config

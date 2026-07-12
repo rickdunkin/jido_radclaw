@@ -57,30 +57,231 @@ defmodule JidoClaw.Forge.RecoveredSpec do
   a string-keyed (jsonb-recovered) spec has its `sandbox`/`sandbox_spec`/`runner`
   keys + the `sandbox`/`runner` values + the nested `sandbox_spec` markers
   (`extra_mounts`, `network`, `isolate_global_config`, `workdir`) re-atomized.
+  A `config_codec`-stamped `runner_config` additionally decodes through the
+  versioned whitelist codec (`runner_config/1`) — typed out, refuse-on-missing
+  for the security-critical fields; an unstamped `runner_config` is left
+  untouched (the legacy/non-vendor lane).
 
   Both `sandbox` and `runner` map a known wire string, else fall back to an
   existing atom ONLY when it is validated as a real backend (resp. runner)
   module; an existing-but-wrong-kind atom (`:ok`, `Enum`) is rejected, not passed
   through. Returns `{:ok, spec}` or `{:error, reason}` (fail closed) on an
-  un-normalizable `sandbox`/`runner` value or an invalid `extra_mounts` entry.
+  un-normalizable `sandbox`/`runner` value, an invalid `extra_mounts` entry, or
+  an undecodable stamped `runner_config`.
   """
   @spec normalize(map()) :: {:ok, map()} | {:error, term()}
   def normalize(spec) when is_map(spec) do
     with {:ok, sandbox} <- normalize_sandbox(get(spec, :sandbox)),
          {:ok, sandbox_spec} <- normalize_sandbox_spec(get(spec, :sandbox_spec)),
-         {:ok, runner} <- normalize_runner(get(spec, :runner)) do
+         {:ok, runner} <- normalize_runner(get(spec, :runner)),
+         {:ok, runner_config} <- normalize_runner_config(get(spec, :runner_config)) do
       normalized =
         spec
         |> drop_keys(["sandbox", "sandbox_spec", "runner", :sandbox, :sandbox_spec, :runner])
         |> put_present(:sandbox, sandbox)
         |> put_present(:sandbox_spec, sandbox_spec)
         |> put_present(:runner, runner)
+        |> put_decoded_runner_config(runner_config)
 
       {:ok, normalized}
     end
   end
 
   def normalize(_other), do: {:error, :invalid_recovered_spec}
+
+  # ---------------------------------------------------------------------------
+  # Versioned runner-config codec (docs/system/forge-session-resume.md)
+  #
+  # The session-start path persists ONLY materialized static runner config
+  # (every default written explicitly by the runner's `materialize_config/1`),
+  # stamped with `codec_stamp/1`. This codec is the read side: string-keyed
+  # jsonb in, typed (atom keys, whitelisted atom values) out — so a recovered
+  # session re-inits with EXACTLY its persisted posture, never a re-applied
+  # default that may have drifted (the consolidator omits `access`; a
+  # defaulting decode would flip recovered sessions from :full to whatever
+  # the runner's default became).
+  # ---------------------------------------------------------------------------
+
+  @codec_version 1
+
+  # Per-runner v1 field whitelists: {field, kind}. Anything else — including
+  # attempt-scoped values like a tokenized MCP URL or a per-attempt config
+  # path — is dropped by construction.
+  @claude_code_fields [
+    access: :access,
+    config_sync: :config_sync,
+    strict_mcp: :boolean,
+    allowed_mcp_tools: :string_list,
+    add_dirs: :string_list,
+    prompt: :string,
+    model: :string,
+    session_name: :string,
+    thinking_effort: :string,
+    forge_home: :string,
+    max_turns: :pos_integer,
+    timeout_ms: :pos_integer,
+    resume: :resume
+  ]
+
+  @codex_fields [
+    access: :access,
+    config_sync: :config_sync,
+    prompt: :string,
+    model: :string,
+    session_name: :string,
+    forge_home: :string,
+    codex_home: :string,
+    mcp_server_name: :string,
+    cwd: :string,
+    max_turns: :pos_integer,
+    timeout_ms: :pos_integer,
+    resume: :resume
+  ]
+
+  # Security-critical fields: missing or invalid ⇒ REFUSE recovery loudly —
+  # never silently change a recovered session's behavior in either direction.
+  # (The fourth member of the security set, the sandbox class, lives at the
+  # spec level and is enforced by `normalize_sandbox/1`'s fail-closed path.)
+  # Non-critical fields fall to runner-init defaults when ABSENT, but an
+  # invalid present value always refuses.
+  @claude_code_required [:access, :config_sync, :strict_mcp, :allowed_mcp_tools]
+  @codex_required [:access, :config_sync]
+
+  @codecs %{
+    "claude_code" => {@claude_code_fields, @claude_code_required},
+    "codex" => {@codex_fields, @codex_required}
+  }
+
+  @doc """
+  The codec stamp `materialize_config/1` implementations embed in their
+  output — the marker that a persisted `runner_config` is a complete
+  materialized snapshot decodable by `runner_config/1`. Wire-stable
+  strings, never atoms.
+  """
+  @spec codec_stamp(:claude_code | :codex) :: map()
+  def codec_stamp(:claude_code), do: %{runner: "claude_code", v: @codec_version}
+  def codec_stamp(:codex), do: %{runner: "codex", v: @codec_version}
+
+  @doc """
+  Versioned per-runner whitelist decode of a persisted `runner_config`.
+
+  A `config_codec`-stamped map decodes string-keyed → typed (atom keys,
+  whitelisted atom values — `String.to_atom/1` never runs), REQUIRING the
+  security-critical fields and refusing loudly (`{:error, _}`) when one is
+  missing or invalid, when the stamp names an unknown runner, or when the
+  version is unsupported. The decoded output keeps the stamp, so a
+  recovered spec re-persisted by the recovery claim decodes again on the
+  next recovery. An UNSTAMPED map passes through unchanged — the
+  legacy/non-vendor lane (shell/workflow/custom/fake); vendor sessions are
+  guaranteed stamped at session start, where materialization is enforced.
+  """
+  @spec runner_config(map()) :: {:ok, map()} | {:error, term()}
+  def runner_config(config) when is_map(config) do
+    case codec_stamp_of(config) do
+      :absent -> {:ok, config}
+      {:ok, runner_key} -> decode_runner_config(runner_key, config)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def runner_config(other), do: {:error, {:invalid_runner_config, other}}
+
+  defp codec_stamp_of(config) do
+    case get(config, :config_codec) do
+      nil ->
+        :absent
+
+      %{} = stamp ->
+        validate_stamp(get(stamp, :runner), get(stamp, :v))
+
+      other ->
+        {:error, {:invalid_config_codec, other}}
+    end
+  end
+
+  defp validate_stamp(runner_key, @codec_version) when is_map_key(@codecs, runner_key),
+    do: {:ok, runner_key}
+
+  defp validate_stamp(runner_key, version),
+    do: {:error, {:unsupported_config_codec, runner_key, version}}
+
+  defp decode_runner_config(runner_key, config) do
+    {fields, required} = Map.fetch!(@codecs, runner_key)
+    stamp = %{runner: runner_key, v: @codec_version}
+
+    Enum.reduce_while(fields, {:ok, %{config_codec: stamp}}, fn {field, kind}, {:ok, acc} ->
+      case get(config, field) do
+        nil ->
+          if field in required do
+            {:halt, {:error, {:missing_runner_config_field, runner_key, field}}}
+          else
+            {:cont, {:ok, acc}}
+          end
+
+        value ->
+          case decode_value(kind, value) do
+            {:ok, typed} -> {:cont, {:ok, Map.put(acc, field, typed)}}
+            :error -> {:halt, {:error, {:invalid_runner_config_field, runner_key, field}}}
+          end
+      end
+    end)
+  end
+
+  # Value whitelists tolerate the already-typed atom form too (a decoded
+  # config re-persisted and re-read mid-recovery, or a live spec passed
+  # through normalize) — but never manufacture atoms from wire strings.
+  defp decode_value(:access, v), do: enum_value(v, %{"full" => :full, "read_only" => :read_only})
+
+  defp decode_value(:config_sync, v),
+    do: enum_value(v, %{"full" => :full, "auth_only" => :auth_only})
+
+  defp decode_value(:resume, v), do: enum_value(v, %{"off" => :off, "armed" => :armed})
+  defp decode_value(:boolean, v) when is_boolean(v), do: {:ok, v}
+  defp decode_value(:string, v) when is_binary(v), do: {:ok, v}
+  defp decode_value(:pos_integer, v) when is_integer(v) and v > 0, do: {:ok, v}
+
+  defp decode_value(:string_list, v) when is_list(v) do
+    if Enum.all?(v, &is_binary/1), do: {:ok, v}, else: :error
+  end
+
+  defp decode_value(_kind, _v), do: :error
+
+  defp enum_value(v, whitelist) when is_binary(v), do: Map.fetch(whitelist, v)
+
+  defp enum_value(v, whitelist) when is_atom(v) do
+    if v in Map.values(whitelist), do: {:ok, v}, else: :error
+  end
+
+  defp enum_value(_v, _whitelist), do: :error
+
+  defp normalize_runner_config(nil), do: {:ok, nil}
+
+  defp normalize_runner_config(config) when is_map(config) do
+    case codec_stamp_of(config) do
+      # Unstamped pass-through: leave the spec's key form untouched.
+      :absent ->
+        {:ok, :passthrough}
+
+      {:ok, runner_key} ->
+        with {:ok, typed} <- decode_runner_config(runner_key, config) do
+          {:ok, {:decoded, typed}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_runner_config(other), do: {:error, {:invalid_runner_config, other}}
+
+  defp put_decoded_runner_config(spec, nil), do: spec
+  defp put_decoded_runner_config(spec, :passthrough), do: spec
+
+  defp put_decoded_runner_config(spec, {:decoded, typed}) do
+    spec
+    |> drop_keys(["runner_config", :runner_config])
+    |> Map.put(:runner_config, typed)
+  end
 
   # Atom-or-string key read (the `Verdict.get/2` idiom): atom key wins, else
   # string key — tolerates both an already-atom-keyed launch spec and a

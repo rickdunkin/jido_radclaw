@@ -49,13 +49,18 @@ defmodule JidoClaw.Forge do
   def wake(session_id, opts \\ []) do
     with db_session when not is_nil(db_session) <- find_session_for_wake(session_id, opts),
          true <- db_session.phase not in [:completed, :cancelled],
-         checkpoint when not is_nil(checkpoint) <- Persistence.latest_checkpoint(session_id),
+         # The POINTED checkpoint (`forge_recovery.current_checkpoint_id`,
+         # ownership-checked) — never wall-clock latest, so a newer unpointed
+         # row can't hijack what the session restores from
+         # (docs/system/forge-session-resume.md).
+         checkpoint when not is_nil(checkpoint) <- Persistence.current_checkpoint(session_id),
          # AR-8b-2 F2 (1.4): a recovered spec round-trips through jsonb to string
          # keys/values; re-atomize its known fields (and fail closed on an
-         # un-normalizable docker spec / invalid mount) BEFORE handing it to the
-         # Manager, so a recovered `:docker_sandbox` session re-provisions the real
-         # Docker backend + no-egress + mount rather than silently falling to
-         # `:default` (HostShell, no isolation).
+         # un-normalizable docker spec / invalid mount / undecodable stamped
+         # runner_config) BEFORE handing it to the Manager, so a recovered
+         # `:docker_sandbox` session re-provisions the real Docker backend +
+         # no-egress + mount rather than silently falling to `:default`
+         # (HostShell, no isolation).
          {:ok, normalized} <- RecoveredSpec.normalize(db_session.spec) do
       spec =
         normalized
@@ -156,20 +161,45 @@ defmodule JidoClaw.Forge do
     do_run_loop(session_id, opts, 0, max)
   end
 
+  # Iteration-BOUND exhaustion carries the taxonomy shape
+  # (`RunFailure.classify({:iteration_limit, _}) == :iteration_limit`) —
+  # distinct from deadline exhaustion, which is stalled_wall_clock. No
+  # production callers yet (Wave F substrate), so the terminal reshapes
+  # freely.
   defp do_run_loop(_session_id, _opts, iteration, max) when iteration >= max do
-    {:ok, :max_iterations_reached}
+    {:error, {:iteration_limit, max}}
   end
 
   defp do_run_loop(session_id, opts, iteration, max) do
     case run_iteration(session_id, opts) do
-      {:ok, %{status: :done} = result} -> {:ok, result}
-      {:ok, %{status: :needs_input}} -> {:ok, :needs_input}
-      {:ok, %{status: :blocked}} -> {:ok, :blocked}
-      {:ok, %{status: :error} = result} -> {:error, result}
-      {:ok, %{status: :continue}} -> do_run_loop(session_id, opts, iteration + 1, max)
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: :done} = result} ->
+        {:ok, result}
+
+      {:ok, %{status: :needs_input}} ->
+        {:ok, :needs_input}
+
+      {:ok, %{status: :blocked}} ->
+        {:ok, :blocked}
+
+      {:ok, %{status: :error} = result} ->
+        {:error, result}
+
+      {:ok, %{status: :continue}} ->
+        do_run_loop(session_id, continuation_opts(opts), iteration + 1, max)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  # Continuation turns never restate the task (SY3-3): dropping the caller's
+  # :prompt lets an armed continuation fall to the runner's neutral nudge
+  # while a forced fresh-armed restart still rebuilds from the runner's own
+  # config prompt. `:guidance` drops too — run_loop invents no guidance of
+  # its own, so a caller-supplied `guidance:` on the initial call must not
+  # ride every continuation indefinitely. No auto-retry here — run_loop has
+  # no effect ledger.
+  defp continuation_opts(opts), do: Keyword.drop(opts, [:prompt, :guidance])
 
   defp shell_escape(arg) when is_binary(arg) do
     "'" <> String.replace(arg, "'", "'\\''") <> "'"

@@ -73,7 +73,23 @@ defmodule JidoClaw.Security.Redaction.Env do
 
   An override passed to `scrubbed_cmd_env/1` always wins and bypasses
   the allowlist entirely — a child that genuinely needs a secret must
-  be handed it explicitly.
+  be handed it explicitly. The one exception is the hard denylist below:
+  denylisted overrides are dropped, not honored.
+
+  ## Hard scrub denylist (`denylisted?/1`)
+
+  A small set of Claude Code host-session vars is denylisted outright:
+  `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
+  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_SSE_PORT`, plus any
+  `CLAUDECODE_*`-prefixed var. When this app itself runs inside a
+  Claude Code session these identify the *host* session; a spawned
+  `claude` CLI child inheriting them can bind to the wrong session or
+  SSE port. Unlike the ordinary scrub they can never be re-opened —
+  the operator extension surfaces cannot admit them, and overrides
+  carrying them are dropped. Deliberately NOT the whole
+  `CLAUDE_CODE_*` namespace: only the session-identity vars are
+  fenced; other `CLAUDE_CODE_*` names stay ordinary (scrubbed by
+  default, operator-reopenable).
 
   ## Documented false negatives
 
@@ -99,6 +115,14 @@ defmodule JidoClaw.Security.Redaction.Env do
   )
 
   @inherit_prefixes ~w(LC_ XDG_)
+
+  # Hard scrub denylist — see the moduledoc section. Exact names plus
+  # the CLAUDECODE_ prefix; deliberately NOT all of CLAUDE_CODE_*.
+  @scrub_denylist_exact ~w(
+    CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH
+    CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SSE_PORT
+  )
+  @scrub_denylist_prefix "CLAUDECODE_"
 
   # Inherited only when the value carries no credentials — see
   # proxy_value_has_creds?/1.
@@ -159,9 +183,11 @@ defmodule JidoClaw.Security.Redaction.Env do
   @spec scrubbed_cmd_env(Enumerable.t()) :: [{String.t(), String.t() | nil}]
   def scrubbed_cmd_env(overrides \\ []) do
     override_map =
-      Map.new(overrides, fn {k, v} ->
+      overrides
+      |> Map.new(fn {k, v} ->
         {to_string(k), if(is_nil(v), do: nil, else: to_string(v))}
       end)
+      |> Map.reject(fn {key, _} -> denylisted?(key) end)
 
     extra_exact = extra_allowed_vars()
     extra_prefixes = extra_allowed_prefixes()
@@ -198,8 +224,22 @@ defmodule JidoClaw.Security.Redaction.Env do
 
   def sensitive_key?(_), do: false
 
+  @doc """
+  Returns `true` when the key is on the hard scrub denylist — Claude
+  Code host-session vars that must never reach a spawned child, not
+  even via the operator extension surfaces or an explicit override.
+  See the moduledoc section.
+  """
+  @spec denylisted?(String.t() | term()) :: boolean()
+  def denylisted?(key) when is_binary(key) do
+    key in @scrub_denylist_exact or String.starts_with?(key, @scrub_denylist_prefix)
+  end
+
+  def denylisted?(_), do: false
+
   defp inheritable?(key, value, extra_exact, extra_prefixes) do
     cond do
+      denylisted?(key) -> false
       key in @inherit_exact -> true
       key in @proxy_vars -> not proxy_value_has_creds?(value)
       String.starts_with?(key, @inherit_prefixes) -> true

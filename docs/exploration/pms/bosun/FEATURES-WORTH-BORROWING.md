@@ -506,6 +506,28 @@ session-scoped errors → one fresh-session retry without touching executor heal
 poisoned-resume error list seeded from bosun + multica; health states can reuse SY1-4's
 `healthy|limited|exhausted|paused` vocabulary rather than a new enum.
 
+**Status (2026-07-11, taxonomy half)**: PARTIAL — the vocabulary landed with
+pre-argus Wave A #1: `RunFailure`'s `agent_session_poisoned` kind carries this
+entry's error-string inventory (`invalid_encrypted_content`, rollout path,
+`tool_call_id`, session/thread not-found/expired) as live string rules, retryable
+AND resume-unsafe — exactly the "one fresh retry, never on the wedged thread"
+split. The poisoned-list *consumer* (resume anchor clearing, driver-side
+fresh-retry gating) reconciles with Wave A #2's resume stack; the per-executor
+breaker/windowed-counter half stays open on its original next-ten #7 trigger.
+
+**Status (2026-07-11, poisoned-list half)**: LANDED — pre-argus Wave A #2
+closed the consumer this half was waiting on: the armed vendor runners
+classify failures in-runner (`Runners.ResumePolicy`), a `resume_unsafe?/1`
+kind POISONS the anchor (sticky — the id is never reused;
+`ResumeState.rearm_new_anchor/4` is the only exit), a poisoned continuation
+tags `resume_rejected: true`, and the consolidator driver grants exactly ONE
+ledger-gated fresh retry (zero effects + retryable kind + deadline floor +
+per-run latch) — the "one fresh-session retry without touching executor
+health" split, now enforced. Two of this entry's codex strings were
+live-probed to producer-exact forms (`"no rollout found"`, plus claude's
+`"no conversation found"`). The per-executor breaker/windowed-counter half
+stays open on its original next-ten #7 trigger.
+
 ### BO2-4. Claude mid-turn steering via SDK streaming input — the field's one shipped mid-turn lane
 
 **Recommendation**: BORROW-REFERENCE for the argus `:cli` engine (slice 6) — and a

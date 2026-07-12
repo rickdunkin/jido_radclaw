@@ -104,4 +104,8 @@ override-precedence.
   `stalled_wall_clock`), `user_cancelled` as a first-class non-failure kind, and
   the group-kill discipline (`setsid` + kill the process group + a shutdown
   ChildTracker). *(Back-reference recorded under MC-FIRST-WAVE item 1's
-  done-when.)*
+  done-when.)* **Status (2026-07-11)**: landed with Wave A #1 — both timeout
+  kinds + `user_cancelled` shipped (`stalled_no_output` producer-pending on the
+  Wave B #8 stall clock); group-kill diverges to `kill_tree/1` + a graceful
+  window + VM-shutdown ChildTracker (Wave A #2), never `setsid` — see OR3-2's
+  Status line.

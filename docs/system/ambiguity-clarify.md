@@ -14,7 +14,7 @@ sources:
   - lib/jido_claw.ex
   - lib/jido_claw/cli/run_command.ex
   - docs/exploration/ouroboros/PORT-OB1-1.md
-verified: 2026-07-10
+verified: 2026-07-11
 ---
 
 # Ambiguity Clarify Loop

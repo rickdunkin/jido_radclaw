@@ -154,6 +154,26 @@ defmodule JidoClaw.Forge.Sandbox.DockerTest do
       assert content =~ "count=42"
     end
 
+    test "denylisted host-session vars never render — incoming or already-on-disk",
+         %{client: client, dir: dir} do
+      File.write!(Path.join(dir, ".forge_env"), "CLAUDECODE=1\nKEEP=yes\n")
+
+      assert :ok =
+               Docker.inject_env(client, %{
+                 "CLAUDE_CODE_SSE_PORT" => "4141",
+                 "CLAUDECODE_EXTRA" => "x",
+                 "NEW" => "added"
+               })
+
+      content = File.read!(Path.join(dir, ".forge_env"))
+      lines = String.split(content, "\n", trim: true)
+
+      assert "KEEP=yes" in lines
+      assert "NEW=added" in lines
+      refute content =~ "CLAUDECODE"
+      refute content =~ "CLAUDE_CODE_SSE_PORT"
+    end
+
     test "creates the env file with mode 0600 and leaves no tmp file behind",
          %{client: client, dir: dir} do
       assert :ok = Docker.inject_env(client, %{"SECRET" => "value"})

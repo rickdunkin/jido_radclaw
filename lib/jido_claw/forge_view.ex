@@ -10,6 +10,7 @@ defmodule JidoClaw.ForgeView do
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Forge.Manager
   alias JidoClaw.Forge.Resources.Session
+  alias JidoClaw.Forge.ResumeState
 
   @active_phases [
     :created,
@@ -128,9 +129,31 @@ defmodule JidoClaw.ForgeView do
       started_at: session.started_at,
       completed_at: session.completed_at,
       last_error: session.last_error,
+      needs_input: needs_input_projection(session),
       live?: MapSet.member?(live, session.name)
     }
   end
+
+  # The re-park projection (docs/system/forge-session-resume.md): a session
+  # parked :needs_input by guidance recovery carries the durable
+  # `repark_reason` marker in metadata — project the static prompt so an
+  # operator arriving after the broadcast still sees actionable
+  # instructions. A runner-question :needs_input with no repark marker
+  # projects nil (its question travels via the executor AgentCase path).
+  defp needs_input_projection(%Session{phase: :needs_input} = session) do
+    case get_in(session.metadata || %{}, ["resume", "guidance", "repark_reason"]) do
+      nil ->
+        nil
+
+      raw ->
+        %{
+          reason: ResumeState.decode_repark_reason(raw),
+          prompt: ResumeState.repark_prompt()
+        }
+    end
+  end
+
+  defp needs_input_projection(_session), do: nil
 
   defp live_ids do
     MapSet.new(Manager.list_sessions())

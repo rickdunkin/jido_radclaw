@@ -78,7 +78,18 @@ defmodule JidoClaw.Orchestration.Verdict do
   def format_reason({tag, raw}) when is_atom(tag), do: "#{tag}: #{bounded_inspect(raw)}"
   def format_reason(other), do: bounded_inspect(other)
 
-  defp bounded_inspect(term) do
+  # ---------------------------------------------------------------------------
+  # Shared fail-closed primitives (used qualified by the kind modules — public
+  # here, never re-wrapped in local delegates)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Bounded rendering of an arbitrary term (inspect depth/printable caps +
+  the hard grapheme cap) — the one reason-string renderer, shared with
+  `RunFailure` (same conventions by construction, not by copy).
+  """
+  @spec bounded_inspect(term()) :: String.t()
+  def bounded_inspect(term) do
     rendered = inspect(term, @inspect_opts)
 
     if String.length(rendered) > @max_reason_graphemes do
@@ -87,11 +98,6 @@ defmodule JidoClaw.Orchestration.Verdict do
       rendered
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # Shared fail-closed primitives (used qualified by the kind modules — public
-  # here, never re-wrapped in local delegates)
-  # ---------------------------------------------------------------------------
 
   @doc "True for the empty-output shapes: `nil`, `\"\"`, whitespace-only."
   @spec blank?(term()) :: boolean()

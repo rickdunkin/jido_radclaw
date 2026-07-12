@@ -81,6 +81,11 @@ defmodule JidoClaw.Core.OsCmd do
       never leaks parent secrets into the child. Pass `:env` built via
       `Env.scrubbed_cmd_env(overrides)` to inject vars — an explicit
       `:env` is used as-is
+    * `:on_os_pid` — optional 1-arity fun invoked SYNCHRONOUSLY (in the
+      calling process) with the spawned OS pid as soon as it is known —
+      the registration seam for `JidoClaw.Forge.ChildTracker`. Never
+      invoked when the pid could not be read; any raise from the fun is
+      swallowed (bookkeeping must not kill a live command)
 
   stderr is merged into stdout, mirroring
   `System.cmd(..., stderr_to_stdout: true)`.
@@ -116,8 +121,21 @@ defmodule JidoClaw.Core.OsCmd do
         _ -> nil
       end
 
+    notify_os_pid(Keyword.get(opts, :on_os_pid), os_pid)
+
     collect(port, os_pid, [], 0, max_bytes, deadline(timeout))
   end
+
+  defp notify_os_pid(fun, os_pid) when is_function(fun, 1) and is_integer(os_pid) do
+    fun.(os_pid)
+    :ok
+  rescue
+    # Registration bookkeeping must never kill a live command.
+    # reach:disable-next-line bare_rescue
+    _ -> :ok
+  end
+
+  defp notify_os_pid(_fun, _os_pid), do: :ok
 
   # Normalize the `:os_cmd_max_output_bytes` app env: only a positive
   # integer is honored — `:infinity` deliberately included in the
@@ -159,6 +177,146 @@ defmodule JidoClaw.Core.OsCmd do
     stopped = stop_fixpoint(MapSet.new([root]), @stop_fixpoint_attempts)
 
     signal("-KILL", MapSet.to_list(stopped))
+  end
+
+  # Poll cadence inside terminate_tree's grace window; each round also
+  # re-discovers new descendants of still-alive members.
+  @grace_poll_ms 100
+
+  @doc """
+  Graceful tree teardown for host-tier runner CLIs
+  (docs/system/forge-session-resume.md): capture the full descendant set
+  (fixpoint walk, birth identities recorded per pid) → `SIGTERM` all →
+  a bounded grace window with continued re-discovery unioning new
+  descendants of still-alive members → a final `kill_tree/1`-style
+  SIGSTOP-fixpoint + SIGKILL over every captured survivor.
+
+  Every kill target is identity-verified against the birth identity
+  captured when the pid was first discovered — a pid that died and was
+  reused inside the window is dropped, never killed. `lstart`'s
+  one-second resolution is an accepted residual (a reuse within the same
+  wall-clock second inside one grace window). A child forked after a
+  snapshot and orphaned before the next rediscovery pass can still
+  escape a PID-tree walk — accepted (process-group/cgroup boundaries are
+  rejected above for macOS portability); the VM-shutdown sweep and boot
+  reaper bound the damage.
+
+  Always returns `:ok`.
+  """
+  @spec terminate_tree(pos_integer(), non_neg_integer()) :: :ok
+  def terminate_tree(os_pid, grace_ms) when is_integer(os_pid) and is_integer(grace_ms) do
+    root = Integer.to_string(os_pid)
+    identities = capture_identities(discover_tree(MapSet.new([root])))
+
+    signal("-TERM", Map.keys(identities))
+
+    deadline = System.monotonic_time(:millisecond) + grace_ms
+    survivors = grace_window(identities, deadline)
+
+    if map_size(survivors) > 0 do
+      # The hard phase: STOP-fixpoint over the verified survivors (so they
+      # cannot fork mid-kill), then one KILL of every identity-verified pid.
+      Enum.each(survivors, fn {pid, _birth} -> signal("-STOP", [pid]) end)
+      stopped = stop_fixpoint(MapSet.new(Map.keys(survivors)), @stop_fixpoint_attempts)
+      all_identities = capture_missing_identities(stopped, survivors)
+      signal("-KILL", verified_pids(all_identities))
+    end
+
+    :ok
+  end
+
+  @doc """
+  The birth identity of an OS process (`ps -o lstart=`) — the
+  ChildTracker's PID-reuse guard captures it at registration and
+  teardown verifies it before killing. `nil` when the pid is gone or
+  `ps` fails (an unavailable field is an accepted residual — the caller
+  treats it as unverifiable and skips the kill).
+  """
+  @spec process_identity(pos_integer() | String.t()) :: String.t() | nil
+  def process_identity(os_pid) do
+    case run_cmd("ps", ["-o", "lstart=", "-p", to_string(os_pid)]) do
+      {output, 0} ->
+        case String.trim(output) do
+          "" -> nil
+          lstart -> lstart
+        end
+
+      _dead_or_failed ->
+        nil
+    end
+  end
+
+  # -- terminate_tree/2 internals ----------------------------------------------
+
+  defp discover_tree(roots) do
+    case ps_children_by_ppid() do
+      {:ok, children_by_ppid} -> descendants(roots, children_by_ppid)
+      :error -> roots
+    end
+  end
+
+  defp capture_identities(pids) do
+    Map.new(pids, fn pid -> {pid, process_identity(pid)} end)
+  end
+
+  defp capture_missing_identities(pids, known) do
+    Enum.reduce(pids, known, fn pid, acc ->
+      Map.put_new_lazy(acc, pid, fn -> process_identity(pid) end)
+    end)
+  end
+
+  # A pid whose identity could never be captured (died before the first
+  # ps, or ps failed) is unverifiable — never killed blind. A pid whose
+  # CURRENT identity differs from its birth identity was reused — dropped.
+  defp verified_pids(identities) do
+    identities
+    |> Enum.filter(fn
+      {_pid, nil} -> false
+      {pid, birth} -> process_identity(pid) == birth
+    end)
+    |> Enum.map(fn {pid, _birth} -> pid end)
+  end
+
+  defp grace_window(identities, deadline) do
+    alive = alive_verified(identities)
+
+    cond do
+      map_size(alive) == 0 ->
+        %{}
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        alive
+
+      true ->
+        Process.sleep(@grace_poll_ms)
+
+        alive
+        |> rediscover_and_term()
+        |> grace_window(deadline)
+    end
+  end
+
+  # Union new descendants of the still-alive members into the tracked set
+  # (TERMing the newcomers) — a busy CLI can keep forking through its
+  # grace window.
+  defp rediscover_and_term(alive) do
+    alive_pids = MapSet.new(Map.keys(alive))
+
+    newcomers =
+      alive_pids
+      |> discover_tree()
+      |> MapSet.difference(alive_pids)
+      |> capture_identities()
+
+    signal("-TERM", Map.keys(newcomers))
+    Map.merge(alive, newcomers)
+  end
+
+  defp alive_verified(identities) do
+    Map.filter(identities, fn
+      {_pid, nil} -> false
+      {pid, birth} -> process_identity(pid) == birth
+    end)
   end
 
   # -- run/3 internals ---------------------------------------------------------

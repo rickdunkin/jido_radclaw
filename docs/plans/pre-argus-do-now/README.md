@@ -97,6 +97,11 @@ orca OR3-2 (the `stalled_no_output` vs `stalled_wall_clock` split,
 `user_cancelled` as a first-class non-failure, group-kill discipline) and bosun
 BO2-3 (the executor-boundary infra-vs-session split). Done-when lives there.
 
+**Status (2026-07-11)**: DONE — pre-argus Wave A build
+([plan](../pre-argus-wave-a/README.md)); 22 kinds, both riders folded
+(group-kill diverged to `kill_tree/1` + graceful window + ChildTracker, landing
+inside #2); deep truth `docs/system/run-failure.md`.
+
 ### 2. MC1-1 — Native CLI session resume for Forge runners (M)
 
 Stop re-sending accumulated prompts: capture `session_id` at first stream-json
@@ -120,6 +125,19 @@ item must not loosen that pin — resume targets multi-iteration
 single-conversation flows (the consolidator, #22's interactive sessions),
 never the review re-review waves. First beneficiary: the memory consolidator.
 
+**Status (2026-07-11)**: DONE — pre-argus Wave A build
+([plan](../pre-argus-wave-a/README.md), semantics map
+[PORT-MC1-1](../../exploration/pms/multica/PORT-MC1-1.md), signed off). The
+full cut landed: armed vendor runners (claude client-minted `--session-id`
+pre-spawn; codex provisional-until-clean-`:done`), the harness-level
+epoch/token incarnation fence + pointer-selected recovery, the consolidator
+converted to a true multi-iteration driver with attempt-bound capabilities,
+a reserve-then-execute effect ledger, the commit-marker + clean-exit publish
+certificate, ledger-gated fresh retry + crash replay, ChildTracker graceful
+tree teardown, and the env denylist. The PR-3 fresh-per-review pin holds
+structurally (`resume: :off` default; the executor never arms). Deep truth:
+[docs/system/forge-session-resume.md](../../system/forge-session-resume.md).
+
 ### 3. EM3-3 — Forge transcript resume-honesty (XS, rides #2)
 
 The recovered garnish
@@ -131,6 +149,14 @@ never emdash's silent fresh-session fallback. Same files and same session as
 #2; done-when: a resumed run's transcript slices carry the flag, and a failed
 resume produces a visible typed event before any fresh-session retry.
 
+**Status (2026-07-11)**: DONE with #2. `iteration.completed` Forge events and
+`SubagentTranscript` turn metadata both carry whitelist-decoded
+`source: live | replay` (the consolidator's authorized retry/replay turns are
+the first `:replay` producers; the transcript-side producer honestly awaits an
+agent-layer replay path), and resume failure is LOUD:
+`jido_claw.forge.resume.failed` on SignalBus + session PubSub + log BEFORE any
+driver retry decision — never a silent fresh-session fallback.
+
 ### 4. MC3-4 — Exit-code tiering for `mix jidoclaw run` (XS)
 
 **Stale-claim correction (2026-07-09):** the queue doc says the runner "exits
@@ -138,10 +164,17 @@ resume produces a visible typed event before any fresh-session retry.
 `0 | 1 | 2 | 3` (success / error / usage-config / gate-pending, with 3 also
 carrying `:clarify_pending`). So this item **extends the pinned contract**
 rather than adopting multica's 0–5 table verbatim (their 2=network / 3=auth
-collide with our taken meanings — new tiers get new codes, e.g. 4 not-found /
-5 validation, with network/auth folded where the envelope classes point).
-Consume #16's registry rather than re-sniffing envelopes; whichever lands
-second adds the cross-ref. Reconcile the MC3-4 entry's claim when this lands.
+collide with our taken meanings — new tiers get new codes).
+
+**Status (2026-07-11)**: DONE — pre-argus Wave A build
+([plan](../pre-argus-wave-a/README.md)). The decided table (operator
+interview) diverges from this section's original "e.g. 4 not-found /
+5 validation" sketch: **4 = not-found, 5 = provider-unreachable,
+6 = provider-auth** — validation stays in 2 with the rest of the caller
+mistakes. The #16-registry cross-consume did not happen (PD1-2 still
+pending): this build consumed Wave A #1's `RunFailure` taxonomy instead;
+the cross-ref lands if/when #16 builds. MC3-4 + MC-FIRST-WAVE item 3
+reconciled.
 
 ## Wave B — health & scheduling
 

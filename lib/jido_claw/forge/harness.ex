@@ -14,8 +14,21 @@ defmodule JidoClaw.Forge.Harness do
   require Logger
 
   alias JidoClaw.Core.MapKeys
-  alias JidoClaw.Forge.{Bootstrap, Persistence, PubSub, ResourceProvisioner, Sandbox}
+
+  alias JidoClaw.Forge.{
+    Bootstrap,
+    ChildTracker,
+    Persistence,
+    PubSub,
+    ResourceProvisioner,
+    ResumeSignal,
+    ResumeState,
+    Sandbox
+  }
+
   alias JidoClaw.Forge.Resources.Checkpoint
+  alias JidoClaw.Orchestration.RunFailure
+  alias JidoClaw.Telemetry
 
   @registry JidoClaw.Forge.SessionRegistry
 
@@ -42,8 +55,26 @@ defmodule JidoClaw.Forge.Harness do
     input_sandbox: nil,
     iteration_task_pid: nil,
     iteration_task_ref: nil,
-    iteration_from: nil
+    iteration_from: nil,
+    # EM3-3 transcript honesty: :replay marks a driver-authorized fresh
+    # re-send of the same logical turn (the effect-free retry / crash
+    # replay); everything else is :live. Whitelist-decoded from the
+    # driver's run_iteration opts, stamped on the iteration.completed event.
+    iteration_source: :live,
+    # The incarnation fence (docs/system/forge-session-resume.md): minted at
+    # claim time for every claimed session. The token authorizes this
+    # incarnation's fenced writes; epoch 0 + nil token is the local posture
+    # (claim: false / persistence disabled — no durable recovery). The
+    # tagged key names this incarnation in the ChildTracker — local
+    # incarnations get a per-boot uuid so a reused session id never
+    # collides across incarnations.
+    incarnation_epoch: 0,
+    incarnation_token: nil,
+    incarnation_key: nil
   ]
+
+  # The no-mint posture for claim: false runs and disabled persistence.
+  @local_incarnation %{epoch: 0, token: nil}
 
   @spec start_link({String.t(), map(), keyword()}) :: GenServer.on_start()
   def start_link({session_id, spec, _opts}) do
@@ -182,9 +213,30 @@ defmodule JidoClaw.Forge.Harness do
   defp claim_and_start(session_id, spec) do
     resume_checkpoint_id = Map.get(spec, :resume_checkpoint_id)
 
-    case maybe_claim_session(session_id, spec, resume_checkpoint_id) do
+    case maybe_claim_session(session_id, persistable_spec(spec), resume_checkpoint_id) do
       :ok -> start_claimed_session(session_id, spec, resume_checkpoint_id)
       {:error, reason} -> stop_unclaimed_session(session_id, reason)
+    end
+  end
+
+  # Materialize-then-persist (docs/system/forge-session-resume.md): the
+  # PERSISTED runner config is the runner's complete static posture — every
+  # init/2 default written explicitly and stamped for
+  # `RecoveredSpec.runner_config/1`, so a recovered session re-inits with
+  # exactly this posture, never a re-applied default. Only the persisted
+  # copy is materialized: the RUNTIME spec keeps the caller's config
+  # untouched, because attempt-scoped values (mcp_config_path/json) still
+  # ride runner_config into init today and materialization deliberately
+  # drops them from the durable row.
+  defp persistable_spec(spec) do
+    runner_module = resolve_runner(Map.get(spec, :runner, :shell))
+
+    if Code.ensure_loaded?(runner_module) and
+         function_exported?(runner_module, :materialize_config, 1) do
+      materialized = runner_module.materialize_config(Map.get(spec, :runner_config, %{}))
+      Map.put(spec, :runner_config, materialized)
+    else
+      spec
     end
   end
 
@@ -200,16 +252,238 @@ defmodule JidoClaw.Forge.Harness do
 
     persist(fn -> log_event(initial_state, "session.started") end)
 
-    state = kickoff_session(initial_state, spec, resume_checkpoint_id)
+    case mint_incarnation(session_id, spec, resume_checkpoint_id) do
+      {:ok, incarnation, effective_checkpoint_id} ->
+        state = %{
+          initial_state
+          | incarnation_epoch: incarnation.epoch,
+            incarnation_token: incarnation.token,
+            incarnation_key: incarnation_key(session_id, incarnation),
+            resume_checkpoint_id: effective_checkpoint_id
+        }
 
-    # Join :pg group for cluster-wide session discovery — but only for
-    # sessions that actually claimed ownership. Failed claims never reach
-    # here, and ephemeral no-claim runs (`claim: false`) must not advertise
-    # ownership they don't hold, so `maybe_pg_join/2` skips them.
-    maybe_pg_join(session_id, spec)
+        state = kickoff_session(state, spec, effective_checkpoint_id)
 
-    {:ok, state}
+        # Join :pg group for cluster-wide session discovery — but only for
+        # sessions that actually claimed ownership. Failed claims never reach
+        # here, and ephemeral no-claim runs (`claim: false`) must not advertise
+        # ownership they don't hold, so `maybe_pg_join/2` skips them.
+        maybe_pg_join(session_id, spec)
+
+        {:ok, state}
+
+      {:stop, reason} ->
+        Logger.error(
+          "[Forge.Harness] Incarnation mint failed for #{session_id}: #{inspect(reason)}"
+        )
+
+        persist(fn ->
+          log_event(initial_state, "incarnation.mint_failed", %{reason: inspect(reason)})
+        end)
+
+        {:stop, reason}
+    end
   end
+
+  # Durable incarnations key on their fence epoch; local ones (no mint)
+  # get a per-boot uuid so no-DB session-id reuse never collides in the
+  # ChildTracker.
+  defp incarnation_key(session_id, %{token: token, epoch: epoch}) when is_binary(token),
+    do: {session_id, {:durable, epoch}}
+
+  defp incarnation_key(session_id, _local),
+    do: {session_id, {:local, Ecto.UUID.generate()}}
+
+  # Mint exactly once per Harness incarnation, IMMEDIATELY after claiming and
+  # BEFORE any provisioning/resuming phase — terminal reuse must never expose
+  # the prior incarnation's checkpoint pointer during a recoverable phase.
+  # Fresh starts and terminal reuse CAS from the stored pair into a BLANK
+  # transplant (the previous native anchor is never carried); recovery
+  # transplants under the mint's lock (below). A failed mint is a loud stop:
+  # running un-fenced would let a crash resurface a stale incarnation's
+  # pointer, and the Manager's recovery sweep retries the whole boot.
+  defp mint_incarnation(_session_id, %{claim: false}, resume_checkpoint_id),
+    do: {:ok, @local_incarnation, resume_checkpoint_id}
+
+  defp mint_incarnation(session_id, _spec, nil = _fresh_start) do
+    if Persistence.enabled?() do
+      expected = persistence().stored_recovery_pair(session_id)
+
+      case persistence().mint_resume_epoch(session_id, expected, nil) do
+        {:ok, pair} -> {:ok, pair, nil}
+        {:error, :persistence_disabled} -> {:ok, @local_incarnation, nil}
+        {:error, reason} -> {:stop, {:mint_failed, reason}}
+      end
+    else
+      {:ok, @local_incarnation, nil}
+    end
+  end
+
+  defp mint_incarnation(session_id, _spec, resume_checkpoint_id) do
+    if Persistence.enabled?() do
+      mint_recovery_incarnation(session_id, resume_checkpoint_id)
+    else
+      {:ok, @local_incarnation, resume_checkpoint_id}
+    end
+  end
+
+  # Recovery sequencing: locked {select transplant + CAS-mint with it}, then
+  # IMMEDIATELY the checked transplant checkpoint under the new token. The
+  # selector runs INSIDE the mint's critical section (an outliving old task
+  # cannot move state between selection and install), but the mint returns
+  # only {epoch, token} — the pointed snapshot selected under the lock is
+  # also what the transplant checkpoint must be built from, so the selector
+  # stashes it in the process dictionary under a unique ref (the fun runs
+  # synchronously in this process) and it is deleted immediately after.
+  defp mint_recovery_incarnation(session_id, requested_checkpoint_id) do
+    expected = persistence().stored_recovery_pair(session_id)
+    stash = make_ref()
+
+    result = persistence().mint_resume_epoch(session_id, expected, transplant_selector(stash))
+    selection = Process.delete(stash) || %{selected: nil, pointed: nil}
+
+    case result do
+      {:ok, pair} ->
+        save_transplant_checkpoint(session_id, pair, selection, requested_checkpoint_id)
+
+      {:error, reason} ->
+        {:stop, {:recovery_failed, {:mint_failed, reason}}}
+    end
+  end
+
+  defp transplant_selector(stash) do
+    fn session ->
+      pointed = persistence().pointed_checkpoint(session)
+      snapshot = (pointed && pointed.runner_state_snapshot) || %{}
+
+      {md_guidance, md_corrupt?} =
+        decode_guidance_copy(get_in(session.metadata, ["resume", "guidance"]))
+
+      {cp_guidance, cp_corrupt?} =
+        decode_guidance_copy(get_in(snapshot, ["resume", "guidance"]))
+
+      selected =
+        ResumeState.select(
+          decode_state_copy(get_in(session.metadata, ["resume", "state"])),
+          md_guidance,
+          decode_state_copy(get_in(snapshot, ["resume", "state"])),
+          cp_guidance
+        )
+
+      selected = maybe_graft_lost_guidance(selected, md_corrupt? or cp_corrupt?)
+
+      Process.put(stash, %{selected: selected, pointed: pointed})
+      selected
+    end
+  end
+
+  # Corrupt-evidence preservation (F6): when a guidance copy decoded corrupt
+  # and the merged selection carries NO live guidance (e.g. the metadata
+  # marker is also malformed/absent), the operator's parked answer would be
+  # erased entirely — graft a conservative re-parkable marker instead, so
+  # the transplant encodes marker-only pending and recovery
+  # deterministically re-parks as :guidance_text_missing. Live merged
+  # guidance stands on its own (its own status already delivers or
+  # re-parks correctly).
+  defp maybe_graft_lost_guidance(selected, false), do: selected
+
+  defp maybe_graft_lost_guidance(%ResumeState{} = selected, true) do
+    if ResumeState.live_guidance?(selected),
+      do: selected,
+      else: ResumeState.mark_guidance_lost(selected)
+  end
+
+  # No armed state copies at all — nothing to park on. Loud log; the
+  # documented residual (armed sessions always carry state copies in
+  # practice).
+  defp maybe_graft_lost_guidance(nil, true) do
+    Logger.warning("[Forge.Harness] corrupt guidance with no armed state copies — evidence lost")
+
+    nil
+  end
+
+  defp decode_state_copy(encoded) do
+    case ResumeState.decode_state(encoded) do
+      {:ok, rs} -> rs
+      :error -> nil
+    end
+  end
+
+  # {copy_or_nil, corrupt?} — corruption is TRACKED, not collapsed: the
+  # selector's graft above is what keeps corrupt evidence re-parkable.
+  defp decode_guidance_copy(encoded) do
+    case ResumeState.decode_guidance(encoded) do
+      {:ok, copy} ->
+        {copy, false}
+
+      {:error, :corrupt_guidance} ->
+        Logger.warning("[Forge.Harness] corrupt guidance copy during transplant selection")
+        {nil, true}
+    end
+  end
+
+  # The transplant checkpoint re-establishes the pointer the mint just
+  # cleared. Without it, a crash between mint and recovery completion leaves
+  # the session honestly unrecoverable, and the runner restore would read a
+  # pre-select stale copy — possibly resurrecting an anchor the select
+  # rejected (a poisoned id). Failure is therefore a loud recovery stop,
+  # never a degraded continue.
+  defp save_transplant_checkpoint(session_id, pair, selection, requested_checkpoint_id) do
+    %{selected: selected, pointed: pointed} = selection
+    base_snapshot = (pointed && pointed.runner_state_snapshot) || %{}
+    sequence = (pointed && pointed.exec_session_sequence) || 0
+    metadata = (pointed && pointed.metadata) || %{}
+
+    if pointed == nil or pointed.id != requested_checkpoint_id do
+      Logger.warning(
+        "[Forge.Harness] recovery re-selected checkpoint under lock for #{session_id} " <>
+          "(requested #{inspect(requested_checkpoint_id)}, pointer #{inspect(pointed && pointed.id)})"
+      )
+    end
+
+    with {:ok, snapshot, marker} <- transplant_snapshot(selected, pair.epoch, base_snapshot),
+         {:ok, checkpoint} <-
+           persistence().save_recovery_checkpoint(
+             session_id,
+             sequence,
+             snapshot,
+             metadata,
+             marker,
+             pair.token
+           ) do
+      {:ok, pair, checkpoint.id}
+    else
+      {:error, reason} ->
+        {:stop, {:recovery_failed, {:transplant_not_persisted, reason}}}
+    end
+  end
+
+  # A nil selection (resume-off sessions, no decodable copies) transplants
+  # the old snapshot verbatim minus any garbled resume object — garbled
+  # decodes as absent, never as a guess.
+  defp transplant_snapshot(nil, _epoch, base_snapshot),
+    do: {:ok, Map.delete(base_snapshot, "resume"), nil}
+
+  defp transplant_snapshot(%ResumeState{} = selected, epoch, base_snapshot) do
+    stamped = ResumeState.stamp(selected, epoch, 0)
+
+    case ResumeState.encode_guidance(stamped) do
+      {:ok, guidance} ->
+        resume_object =
+          put_guidance_object(%{"state" => ResumeState.encode_state(stamped)}, guidance)
+
+        snapshot = Map.put(base_snapshot, "resume", resume_object)
+        {:ok, snapshot, ResumeState.encode_guidance_marker(stamped)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp put_guidance_object(resume_object, nil), do: resume_object
+
+  defp put_guidance_object(resume_object, guidance),
+    do: Map.put(resume_object, "guidance", guidance)
 
   defp stop_unclaimed_session(session_id, :already_claimed) do
     Logger.warning("[Forge.Harness] Session #{session_id} already claimed by another node")
@@ -253,8 +527,15 @@ defmodule JidoClaw.Forge.Harness do
     state
   end
 
+  # Deferred provisioning is still a ready moment: the mint just cleared the
+  # checkpoint pointer, so without the same checked initial checkpoint every
+  # sibling ready-path lands (fresh eager, recovery, lazy provision) a crash
+  # here would leave a claimed row that silently refuses recovery. The
+  # runner-less snapshot is an honest `%{}` (see build_resume_snapshot/1);
+  # token-less sessions no-op as everywhere else.
   defp kickoff_deferred(state) do
     persist(fn -> log_event(state, "provision.deferred") end)
+    ensure_initial_checkpoint(state)
     persist(fn -> update_phase(state, :ready) end)
     PubSub.broadcast(state.session_id, {:ready, state.session_id})
     %{state | state: :ready}
@@ -348,34 +629,10 @@ defmodule JidoClaw.Forge.Harness do
 
     case runner_module.init(default_client(state), runner_config) do
       :ok ->
-        new_state = %{
-          state
-          | runner: runner_module,
-            runner_state: runner_config,
-            state: :ready,
-            sandbox_status: :ready
-        }
-
-        init_preattached_sandboxes(new_state)
-        persist(fn -> log_event(new_state, "runner.ready") end)
-        persist(fn -> update_phase(new_state, :ready) end)
-        PubSub.broadcast(state.session_id, {:ready, state.session_id})
-        {:noreply, new_state}
+        {:noreply, finalize_runner_ready(state, runner_module, runner_config)}
 
       {:ok, runner_state} ->
-        new_state = %{
-          state
-          | runner: runner_module,
-            runner_state: runner_state,
-            state: :ready,
-            sandbox_status: :ready
-        }
-
-        init_preattached_sandboxes(new_state)
-        persist(fn -> log_event(new_state, "runner.ready") end)
-        persist(fn -> update_phase(new_state, :ready) end)
-        PubSub.broadcast(state.session_id, {:ready, state.session_id})
-        {:noreply, new_state}
+        {:noreply, finalize_runner_ready(state, runner_module, runner_state)}
 
       {:error, reason} ->
         persist(fn -> log_event(state, "runner.init_failed", %{reason: inspect(reason)}) end)
@@ -393,11 +650,20 @@ defmodule JidoClaw.Forge.Harness do
          {:ok, state} <- recover_bootstrap(state),
          {:ok, state} <- recover_runner(state, checkpoint),
          {:ok, state} <- recover_extra_sandboxes(state, checkpoint) do
-      state = %{state | sandbox_status: :ready}
+      state = stamp_runner_resume(%{state | sandbox_status: :ready})
+
+      # Guidance re-adoption BEFORE the checked initial checkpoint: the
+      # runner's restore_state restores only ["resume"]["state"], so the
+      # transplant's guidance copy is adopted here — and a re-park's durable
+      # `repark_reason` marker then persists fenced via the checkpoint's
+      # existing marker mirror (zero new writers).
+      {state, repark_reason} = readopt_guidance(state, checkpoint)
+
+      # Recovery completion's checked initial checkpoint — the counterpart of
+      # the fresh-provision one in finalize_runner_ready/3.
+      ensure_initial_checkpoint(state)
       persist(fn -> log_event(state, "recovery.completed") end)
-      persist(fn -> update_phase(state, :ready) end)
-      PubSub.broadcast(state.session_id, {:ready, state.session_id})
-      {:noreply, state}
+      {:noreply, finish_recovery(state, repark_reason)}
     else
       nil ->
         persist(fn -> log_event(state, "recovery.failed", %{reason: "checkpoint_not_found"}) end)
@@ -454,50 +720,16 @@ defmodule JidoClaw.Forge.Harness do
   def handle_call({:run_iteration, opts}, from, %{state: :ready} = state) do
     case ensure_target_sandbox(state, opts) do
       {:ok, state, client} ->
-        new_state = %{
-          state
-          | state: :running,
-            iteration: state.iteration + 1,
-            last_activity: DateTime.utc_now()
-        }
-
-        persist(fn ->
-          log_event(new_state, "iteration.started", %{iteration: new_state.iteration})
-        end)
-
-        persist(fn -> update_phase(new_state, :running) end)
-
-        target_sandbox = Keyword.get(opts, :sandbox, state.default_client)
-        iteration_started_at = DateTime.utc_now()
-        session_pid = self()
-
-        case Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
-               result = state.runner.run_iteration(client, state.runner_state, opts)
-
-               GenServer.cast(
-                 session_pid,
-                 {:iteration_complete, self(), result, from, new_state.iteration, target_sandbox,
-                  iteration_started_at}
-               )
-             end) do
-          {:ok, task_pid} ->
-            task_ref = Process.monitor(task_pid)
-
-            {:noreply,
-             %{
-               new_state
-               | iteration_task_pid: task_pid,
-                 iteration_task_ref: task_ref,
-                 iteration_from: from
-             }}
+        case advance_guidance_inflight(%{state | iteration: state.iteration + 1}) do
+          {:ok, prepared} ->
+            start_iteration_task(prepared, client, opts, from)
 
           {:error, reason} ->
-            persist(fn ->
-              log_event(new_state, "iteration.failed", %{reason: inspect(reason)})
-            end)
-
-            persist(fn -> update_phase(new_state, :ready) end)
-            {:reply, {:error, reason}, %{new_state | state: :ready}}
+            # The checked pending → inflight transition did not persist:
+            # NO spawn (a best-effort inflight would let a crash resend the
+            # same answer). The caller sees the error; the iteration count
+            # and phase are untouched.
+            {:reply, {:error, reason}, state}
         end
 
       {:error, reason} ->
@@ -541,29 +773,9 @@ defmodule JidoClaw.Forge.Harness do
         nil -> default_client(state)
       end
 
-    case state.runner.apply_input(client, input, state.runner_state) do
-      :ok ->
-        new_state = %{
-          state
-          | state: :ready,
-            input_sandbox: nil,
-            last_activity: DateTime.utc_now()
-        }
-
-        persist(fn -> update_phase(new_state, :ready) end)
-        {:reply, :ok, new_state}
-
-      {:ok, new_runner_state} ->
-        new_state = %{
-          state
-          | state: :ready,
-            input_sandbox: nil,
-            runner_state: new_runner_state,
-            last_activity: DateTime.utc_now()
-        }
-
-        persist(fn -> update_phase(new_state, :ready) end)
-        {:reply, :ok, new_state}
+    case park_pending_guidance(state, input) do
+      {:ok, state} ->
+        dispatch_apply_input(state, client, input)
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -659,6 +871,11 @@ defmodule JidoClaw.Forge.Harness do
     if state.iteration_task_pid == task_pid do
       state = clear_iteration_task(state)
 
+      # Classified ONCE per terminal error (MC1-4): the broadcast, the
+      # telemetry counter, and the event-log metadata all carry the same kind.
+      # Control flow is untouched — the taxonomy enriches, never redecides.
+      failure_kind = failure_kind_of(result)
+
       new_state =
         case result.status do
           :needs_input ->
@@ -682,7 +899,13 @@ defmodule JidoClaw.Forge.Harness do
             %{state | state: :ready, output_sequence: state.output_sequence + 1}
 
           :error ->
-            PubSub.broadcast(state.session_id, {:error, %{reason: result.error}})
+            Telemetry.emit_run_failure(failure_kind, RunFailure.provenance(failure_kind))
+
+            PubSub.broadcast(
+              state.session_id,
+              {:error, %{reason: result.error, kind: failure_kind}}
+            )
+
             %{state | state: :ready}
 
           _ ->
@@ -699,12 +922,20 @@ defmodule JidoClaw.Forge.Harness do
             new_state
         end
 
+      # Guidance consumed (best-effort) BEFORE the anchor mirror + checked
+      # save below, so the consumed marker rides this iteration's durable
+      # writes; then the fenced metadata mirror of the anchor state.
+      new_state =
+        new_state
+        |> consume_inflight_guidance(result.status)
+        |> mirror_anchor()
+
       persist(fn ->
-        log_event(new_state, "iteration.completed", %{
-          iteration: state.iteration,
-          status: result.status,
-          output_sequence: new_state.output_sequence
-        })
+        log_event(
+          new_state,
+          "iteration.completed",
+          iteration_completed_data(state, new_state, result, failure_kind)
+        )
       end)
 
       persist(fn ->
@@ -758,6 +989,393 @@ defmodule JidoClaw.Forge.Harness do
     }
   end
 
+  # `failure_kind` joins the event data only on `:error` terminals; every
+  # row carries `source: :live | :replay` (EM3-3 — the Forge event log is
+  # the live surface for replay honesty).
+  defp iteration_completed_data(state, new_state, result, failure_kind) do
+    data = %{
+      iteration: state.iteration,
+      status: result.status,
+      output_sequence: new_state.output_sequence,
+      source: state.iteration_source
+    }
+
+    if failure_kind, do: Map.put(data, :failure_kind, failure_kind), else: data
+  end
+
+  defp iteration_source(opts) do
+    case Keyword.get(opts, :source) do
+      :replay -> :replay
+      _live_or_arbitrary -> :live
+    end
+  end
+
+  # The armed vendor runners classify closest to the evidence and thread the
+  # kind through `metadata.error_details` — prefer it over re-classifying
+  # `result.error`, whose label-only terms would downgrade to :agent_unknown.
+  # Anything outside the closed 22-kind set falls back to classify/1.
+  defp failure_kind_of(%{status: :error} = result) do
+    with %{error_details: %{failure_kind: kind}} <- result.metadata,
+         true <- kind in RunFailure.all_kinds() do
+      kind
+    else
+      _ -> RunFailure.classify(result.error)
+    end
+  end
+
+  defp failure_kind_of(_result), do: nil
+
+  # The shared fresh-provision ready tail: stamp the armed runner state with
+  # this incarnation's epoch, then land the CHECKED initial checkpoint before
+  # anyone can observe :ready.
+  defp finalize_runner_ready(state, runner_module, runner_state) do
+    new_state =
+      stamp_runner_resume(%{
+        state
+        | runner: runner_module,
+          runner_state: runner_state,
+          state: :ready,
+          sandbox_status: :ready
+      })
+
+    init_preattached_sandboxes(new_state)
+    ensure_initial_checkpoint(new_state)
+    persist(fn -> log_event(new_state, "runner.ready") end)
+    persist(fn -> update_phase(new_state, :ready) end)
+    PubSub.broadcast(new_state.session_id, {:ready, new_state.session_id})
+    new_state
+  end
+
+  defp start_iteration_task(new_state, client, opts, from) do
+    new_state = %{
+      new_state
+      | state: :running,
+        last_activity: DateTime.utc_now(),
+        iteration_source: iteration_source(opts)
+    }
+
+    persist(fn ->
+      log_event(new_state, "iteration.started", %{iteration: new_state.iteration})
+    end)
+
+    persist(fn -> update_phase(new_state, :running) end)
+
+    target_sandbox = Keyword.get(opts, :sandbox, new_state.default_client)
+    iteration_started_at = DateTime.utc_now()
+    session_pid = self()
+    runner = new_state.runner
+    runner_state = new_state.runner_state
+    iteration_opts = enrich_iteration_opts(opts, new_state)
+
+    case Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
+           result = run_tracked_iteration(runner, client, runner_state, iteration_opts)
+
+           GenServer.cast(
+             session_pid,
+             {:iteration_complete, self(), result, from, new_state.iteration, target_sandbox,
+              iteration_started_at}
+           )
+         end) do
+      {:ok, task_pid} ->
+        task_ref = Process.monitor(task_pid)
+
+        {:noreply,
+         %{
+           new_state
+           | iteration_task_pid: task_pid,
+             iteration_task_ref: task_ref,
+             iteration_from: from
+         }}
+
+      {:error, reason} ->
+        persist(fn ->
+          log_event(new_state, "iteration.failed", %{reason: inspect(reason)})
+        end)
+
+        persist(fn -> update_phase(new_state, :ready) end)
+        {:reply, {:error, reason}, %{new_state | state: :ready}}
+    end
+  end
+
+  # Owner-keyed pre-registration (F4): the iteration task announces itself
+  # BEFORE dispatch, so pre-spawn work (the fenced anchor write, config
+  # writes) is covered by the teardown barrier — which awaits registered
+  # owners. Registers with the ENRICHED opts (they carry :incarnation_key;
+  # the raw caller opts would make this a permanent no-op). A closing
+  # incarnation/session refuses the iteration outright; an unavailable
+  # tracker never blocks work. No explicit owner unregister — owner DOWN
+  # (this task exiting) resolves the entry.
+  defp run_tracked_iteration(runner, client, runner_state, iteration_opts) do
+    case ChildTracker.register_owner(
+           Keyword.get(iteration_opts, :incarnation_key),
+           timeout_ms: Keyword.get(iteration_opts, :timeout, 300_000)
+         ) do
+      {:error, :closing} -> {:error, :session_closing}
+      _registered_or_unavailable -> runner.run_iteration(client, runner_state, iteration_opts)
+    end
+  end
+
+  # Ephemeral fence threading (never persisted): the runner authorizes its
+  # fenced writes with the token captured when ITS iteration began, so a
+  # rotated incarnation invalidates a stale runner's writes automatically;
+  # the epoch stamps a fresh runner's pre-spawn anchor copy with the true
+  # incarnation ordinal. The tagged incarnation key is what the vendor
+  # runners hand the ChildTracker for graceful CLI teardown.
+  defp enrich_iteration_opts(opts, state) do
+    opts
+    |> Keyword.put(:forge_session_id, state.session_id)
+    |> Keyword.put(:incarnation_epoch, state.incarnation_epoch)
+    |> Keyword.put(:incarnation_key, state.incarnation_key)
+    |> put_incarnation_token(state.incarnation_token)
+  end
+
+  defp put_incarnation_token(opts, nil), do: opts
+  defp put_incarnation_token(opts, token), do: Keyword.put(opts, :incarnation_token, token)
+
+  # pending → inflight is a CHECKED canonical transition that must persist
+  # BEFORE the CLI spawns; persist failure ⇒ no spawn (the parked answer
+  # stays :pending and is re-attempted on the next call). Sessions without
+  # live pending guidance — or without a token — pass through untouched.
+  defp advance_guidance_inflight(state) do
+    with %ResumeState{pending_guidance: %{status: :pending}} = rs <- runner_resume(state),
+         token when is_binary(token) <- state.incarnation_token do
+      {:ok, inflight} = ResumeState.guidance_inflight(rs)
+      prepared = put_runner_resume(state, inflight)
+
+      case save_checked_checkpoint(prepared) do
+        :ok -> {:ok, prepared}
+        {:error, reason} -> {:error, {:guidance_not_persisted, reason}}
+      end
+    else
+      _no_live_pending_or_no_token -> {:ok, state}
+    end
+  end
+
+  defp dispatch_apply_input(state, client, input) do
+    case state.runner.apply_input(client, input, state.runner_state) do
+      :ok ->
+        new_state = %{
+          state
+          | state: :ready,
+            input_sandbox: nil,
+            last_activity: DateTime.utc_now()
+        }
+
+        persist(fn -> update_phase(new_state, :ready) end)
+        {:reply, :ok, new_state}
+
+      {:ok, new_runner_state} ->
+        new_state = %{
+          state
+          | state: :ready,
+            input_sandbox: nil,
+            runner_state: new_runner_state,
+            last_activity: DateTime.utc_now()
+        }
+
+        persist(fn -> update_phase(new_state, :ready) end)
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  # The apply_input guidance lifecycle (reached by the vendor runners via
+  # the recovery re-park — `finish_recovery/2` parks :needs_input when a
+  # recovered answer could not be restored safely): the answer is parked
+  # :pending via the CHECKED save — encrypted text in the checkpoint
+  # snapshot, status marker in metadata (a fresh answer also self-clears the
+  # durable `repark_reason`) — BEFORE the runner sees it, and the ack is :ok
+  # only when that write landed (`{:error, :not_persisted}` otherwise).
+  # Non-binary input, resume-off runners, and token-less sessions bypass the
+  # lifecycle untouched.
+  defp park_pending_guidance(state, input) do
+    with true <- is_binary(input),
+         %ResumeState{} = rs <- runner_resume(state),
+         token when is_binary(token) <- state.incarnation_token do
+      case ResumeState.put_guidance(rs, input) do
+        {:ok, parked} ->
+          prepared = put_runner_resume(state, parked)
+
+          case save_checked_checkpoint(prepared) do
+            :ok -> {:ok, prepared}
+            {:error, _reason} -> {:error, :not_persisted}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      _bypass -> {:ok, state}
+    end
+  end
+
+  # Consumption is VENDOR-OWNED on delivery (`take_continuation_guidance/2`
+  # consumes at take; fresh-armed reverts inflight → pending) — this is the
+  # FALLBACK for runners that made no disposition (returned no armed state,
+  # e.g. the fake/scripted substrate). Both stay best-effort: the marker
+  # rides the next checked save; a crash before it re-parks an
+  # already-answered question — an unnecessary re-prompt, never a
+  # double-send. An :error iteration keeps the guidance :inflight
+  # (recovery re-parks; never resends).
+  defp consume_inflight_guidance(state, :error), do: state
+
+  defp consume_inflight_guidance(state, _status) do
+    case runner_resume(state) do
+      %ResumeState{pending_guidance: %{status: :inflight}} = rs ->
+        put_runner_resume(state, ResumeState.guidance_consumed(rs))
+
+      _no_inflight_guidance ->
+        state
+    end
+  end
+
+  # Best-effort FENCED mirror of the sanitized anchor state to session
+  # metadata after every iteration — the harness owns revision bumping. A
+  # stale fence is logged and DROPPED, never treated as success; the bumped
+  # in-memory revision is kept either way so later mirrors stay strictly
+  # monotonic relative to whatever last landed.
+  defp mirror_anchor(%{incarnation_token: token} = state) when is_binary(token) do
+    case runner_resume(state) do
+      %ResumeState{} = rs ->
+        stamped = ResumeState.stamp(rs, state.incarnation_epoch, rs.revision + 1)
+
+        case persistence().anchor_session(state.session_id, stamped, token) do
+          {:error, :stale_resume_write} ->
+            Logger.warning(
+              "[Forge.Harness] anchor mirror fenced out for #{state.session_id} " <>
+                "(stale incarnation) — dropped"
+            )
+
+          _ok_or_best_effort_nil ->
+            :ok
+        end
+
+        put_runner_resume(state, stamped)
+
+      nil ->
+        state
+    end
+  end
+
+  defp mirror_anchor(state), do: state
+
+  # Stamp the armed runner state with this incarnation's epoch (revision
+  # kept): a freshly-initialized ResumeState carries epoch 0, and the
+  # initial checkpoint's encoded copy must match `forge_recovery.epoch` or
+  # `Manager.recoverable?/1`'s epoch rule would refuse the session.
+  defp stamp_runner_resume(state) do
+    case runner_resume(state) do
+      %ResumeState{} = rs ->
+        put_runner_resume(state, ResumeState.stamp(rs, state.incarnation_epoch, rs.revision))
+
+      nil ->
+        state
+    end
+  end
+
+  defp runner_resume(%{runner_state: %{resume: %ResumeState{} = rs}}), do: rs
+  defp runner_resume(_state), do: nil
+
+  defp put_runner_resume(state, %ResumeState{} = rs),
+    do: %{state | runner_state: Map.put(state.runner_state, :resume, rs)}
+
+  # The checked initial checkpoint (fresh provision AND recovery completion),
+  # BEFORE the :ready broadcast. Failure does NOT brick the session: it
+  # marks recovery honestly degraded (token-fenced — a stale incarnation can
+  # never degrade a newer one) and emits the loud signal; the next
+  # successful checked save self-heals structurally
+  # (`save_recovery_checkpoint/6` clears the marker in its transaction).
+  defp ensure_initial_checkpoint(%{incarnation_token: token} = state)
+       when is_binary(token) do
+    case save_checked_checkpoint(state) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Forge.Harness] initial checkpoint failed for #{state.session_id}: " <>
+            "#{inspect(reason)} — recovery degraded"
+        )
+
+        persist(fn -> log_event(state, "recovery.degraded", %{reason: inspect(reason)}) end)
+        persistence().mark_recovery_degraded(state.session_id, token)
+        ResumeSignal.emit_recovery_degraded(%{session_id: state.session_id, reason: reason})
+        :ok
+    end
+  end
+
+  defp ensure_initial_checkpoint(_tokenless_state), do: :ok
+
+  # The CHECKED pointer-moving save for token-holding sessions: snapshot +
+  # guidance (encrypted text when live) + status marker, one transaction.
+  defp save_checked_checkpoint(%{incarnation_token: token} = state) do
+    case build_resume_snapshot(state) do
+      {:ok, snapshot, marker} ->
+        case persistence().save_recovery_checkpoint(
+               state.session_id,
+               state.iteration,
+               snapshot,
+               checkpoint_metadata(state),
+               marker,
+               token
+             ) do
+          {:ok, _checkpoint} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, {:guidance_encode_failed, reason}}
+    end
+  end
+
+  # Snapshot = the runner's serialized state, plus the encrypted guidance
+  # object when the armed state carries any — checkpoint copies are the ONLY
+  # store guidance text ever rides (`ResumeState.select/4` reads it back).
+  # Deferred sessions (runner nil) serialize to nil — coalesce to an explicit
+  # `%{}` so `resume_epochs_match?` semantics stay clean and restore falls
+  # back field-by-field on the missing keys.
+  defp build_resume_snapshot(state) do
+    snapshot = serialize_runner_state(state.runner, state.runner_state) || %{}
+
+    case runner_resume(state) do
+      %ResumeState{} = rs ->
+        case ResumeState.encode_guidance(rs) do
+          {:ok, nil} ->
+            {:ok, snapshot, ResumeState.encode_guidance_marker(rs)}
+
+          {:ok, guidance} ->
+            {:ok, put_in_resume(snapshot, "guidance", guidance),
+             ResumeState.encode_guidance_marker(rs)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      nil ->
+        {:ok, snapshot, nil}
+    end
+  end
+
+  defp put_in_resume(snapshot, key, value) when is_map(snapshot) do
+    Map.update(snapshot, "resume", %{key => value}, &Map.put(&1, key, value))
+  end
+
+  defp checkpoint_metadata(state) do
+    extra_sandboxes =
+      state.clients
+      |> Map.delete(state.default_client)
+      |> Map.new(fn {name, %{spec: spec}} -> {name, spec} end)
+
+    %{
+      resources: Map.get(state.spec, :resources, []),
+      bootstrap_steps: Map.get(state.spec, :bootstrap_steps, []),
+      output_sequence: state.output_sequence,
+      extra_sandboxes: extra_sandboxes
+    }
+  end
+
   defp reply_iteration_from(%{iteration_from: nil}, _reply), do: :ok
   defp reply_iteration_from(%{iteration_from: from}, reply), do: GenServer.reply(from, reply)
 
@@ -775,8 +1393,11 @@ defmodule JidoClaw.Forge.Harness do
       state.runner.terminate(default_client(state), reason)
     end
 
-    # Destroys run DETACHED under the app TaskSupervisor: a docker destroy is
-    # a real multi-second `sbx rm --force`, and running it inline here would
+    # Teardown runs DETACHED under the app TaskSupervisor as ONE SEQUENCED
+    # task: the graceful ChildTracker sweep of this incarnation's CLIs
+    # FIRST, sandbox destroys second — two independent tasks could delete
+    # the workdir under a live CLI. Detached because a docker destroy is a
+    # real multi-second `sbx rm --force`, and running it inline here would
     # hold the supervisor's shutdown budget AND block `Manager.stop_session`'s
     # synchronous `terminate_child` past its callers' 5s GenServer.call
     # deadlines (serialized through the singleton Manager for a whole wave).
@@ -784,8 +1405,11 @@ defmodule JidoClaw.Forge.Harness do
     # already dead (destroy tolerates it), and a failed/interrupted rm is the
     # boot reaper's job (`SandboxInit`).
     clients = state.clients
+    incarnation_key = state.incarnation_key
 
     Task.Supervisor.start_child(JidoClaw.TaskSupervisor, fn ->
+      if incarnation_key, do: ChildTracker.graceful_teardown(incarnation_key)
+
       Enum.each(clients, fn {_name, entry} ->
         try do
           Sandbox.destroy(entry.client, entry.sandbox_id)
@@ -877,6 +1501,57 @@ defmodule JidoClaw.Forge.Harness do
   rescue
     _ in @db_errors ->
       nil
+  end
+
+  # The recovery guidance disposition (F6): decode the transplant
+  # checkpoint's guidance copy and let `ResumeState.adopt_recovered_guidance/2`
+  # decide — restore/keep recover :ready; a re-park reason threads to
+  # `finish_recovery/2`. Resume-off runners (no armed state) pass through.
+  defp readopt_guidance(state, checkpoint) do
+    case runner_resume(state) do
+      %ResumeState{} = rs ->
+        decoded =
+          ResumeState.decode_guidance(
+            get_in(checkpoint.runner_state_snapshot, ["resume", "guidance"])
+          )
+
+        {disposition, adopted} = ResumeState.adopt_recovered_guidance(rs, decoded)
+        state = put_runner_resume(state, adopted)
+
+        case disposition do
+          {:repark, reason} -> {state, reason}
+          _none_restored_kept -> {state, nil}
+        end
+
+      nil ->
+        {state, nil}
+    end
+  end
+
+  # The recovery ready tail — or the re-park: a session whose parked answer
+  # could not be restored safely lands `:needs_input` (a recoverable,
+  # ForgeView-active phase) with the static re-entry prompt, and the loud
+  # signal fires so operators watching the buses see it immediately. The
+  # durable `repark_reason` marker already rode the initial checkpoint above,
+  # so an operator arriving after the broadcast still sees actionable
+  # instructions (ForgeView `needs_input` projection).
+  defp finish_recovery(state, nil) do
+    persist(fn -> update_phase(state, :ready) end)
+    PubSub.broadcast(state.session_id, {:ready, state.session_id})
+    state
+  end
+
+  defp finish_recovery(state, reason) do
+    persist(fn -> log_event(state, "guidance.reparked", %{reason: reason}) end)
+    ResumeSignal.emit_guidance_reparked(%{session_id: state.session_id, reason: reason})
+    persist(fn -> update_phase(state, :needs_input) end)
+
+    PubSub.broadcast(
+      state.session_id,
+      {:needs_input, %{prompt: ResumeState.repark_prompt(), reason: reason}}
+    )
+
+    %{state | state: :needs_input, input_sandbox: nil}
   end
 
   defp recover_provision(state) do
@@ -1149,7 +1824,11 @@ defmodule JidoClaw.Forge.Harness do
     with {:ok, state} <- bootstrap_sync(state),
          {:ok, state} <- init_runner_sync(state),
          {:ok, state} <- init_preattached_sandboxes(state) do
-      state = %{state | sandbox_status: :ready}
+      state = stamp_runner_resume(%{state | sandbox_status: :ready})
+
+      # Lazy provisioning is this session's fresh-provision ready moment —
+      # same checked initial checkpoint as the eager path.
+      ensure_initial_checkpoint(state)
       persist(fn -> log_event(state, "runner.ready") end)
       persist(fn -> update_phase(state, :ready) end)
       {:ok, state}
@@ -1277,21 +1956,38 @@ defmodule JidoClaw.Forge.Harness do
     Map.get(state.clients, name)
   end
 
+  # Post-iteration/topology persistence. With an incarnation token this is
+  # the CHECKED pointer-moving save — recovery restores what was last
+  # durably pointed, and a success self-heals `recovery_degraded` — while a
+  # failure only logs: the session continues and an older pointed checkpoint
+  # stays authoritative. Token-less sessions (claim: false, persistence
+  # disabled) keep the legacy best-effort unpointed row.
+  defp save_topology_checkpoint(%{incarnation_token: token} = state)
+       when is_binary(token) do
+    case save_checked_checkpoint(state) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Forge.Harness] checked checkpoint failed for #{state.session_id}: " <>
+            "#{inspect(reason)} — pointer unchanged"
+        )
+
+        :ok
+    end
+  end
+
   defp save_topology_checkpoint(state) do
     persist(fn ->
       snapshot = serialize_runner_state(state.runner, state.runner_state)
 
-      extra_sandboxes =
-        state.clients
-        |> Map.delete(state.default_client)
-        |> Map.new(fn {name, %{spec: spec}} -> {name, spec} end)
-
-      Persistence.save_checkpoint(state.session_id, state.iteration, snapshot, %{
-        resources: Map.get(state.spec, :resources, []),
-        bootstrap_steps: Map.get(state.spec, :bootstrap_steps, []),
-        output_sequence: state.output_sequence,
-        extra_sandboxes: extra_sandboxes
-      })
+      Persistence.save_checkpoint(
+        state.session_id,
+        state.iteration,
+        snapshot,
+        checkpoint_metadata(state)
+      )
     end)
   end
 
@@ -1317,11 +2013,14 @@ defmodule JidoClaw.Forge.Harness do
     :exit, reason -> Logger.warning("[Forge.Harness] Persistence exit: #{inspect(reason)}")
   end
 
-  # Named test seam for the `:complete` handler ONLY (the app-env-seam idiom, cf.
-  # `:forge_facade`/`:sbx_finder`): a test installs a stub whose
-  # `complete_session/1` returns `{:error, _}` to drive the stamp-failure →
-  # `:normal`-fallback path (1.3). The rest of the harness calls `Persistence`
-  # directly — `maybe_finalize_phase/2`'s fallback write must stay on the real
+  # Named test seam (the app-env-seam idiom, cf. `:forge_facade`/`:sbx_finder`)
+  # for the `:complete` handler AND the resume-fence writes
+  # (stored_recovery_pair / mint_resume_epoch / pointed_checkpoint /
+  # save_recovery_checkpoint / mark_recovery_degraded / anchor_session): a
+  # test installs a delegating stub that forces one call to fail — e.g. the
+  # checked initial checkpoint, to drive the `recovery_degraded` path. The
+  # rest of the harness calls `Persistence` directly —
+  # `maybe_finalize_phase/2`'s fallback write must stay on the real
   # `Persistence` so the row genuinely lands `:completed`.
   defp persistence do
     Application.get_env(:jido_claw, :forge_persistence, Persistence)

@@ -191,6 +191,17 @@ Applied with three safety rules (`worktree-service.ts:458-510`, `preserve-patter
 
 **Recommendation**: BORROW-RUBRIC (one flag + one anti-pattern). Replayed history is marked at the source — turns carry `source: 'live' | 'replay'` (`packages/core/src/acp/state.ts:51`) — and providers that *require* a stored native session id to resume correctly are an explicit list, not a hope (`resolve-agent-session-command.ts:3-10`). The anti-pattern to avoid: their `loadSession` failure **silently falls back to a fresh session**, losing history without telling the user (`acp-session-runtime.ts:176-218`) — a violation of the honest-status doctrine we took from camus. Target: the shipped Forge transcript persist-then-resume pair (agentos borrow) — stamp resumed slices as replayed, and make resume-failure loud. Gap: `SubagentTranscript` closes slices but no replayed-vs-live marking exists (verified 2026-07-03).
 
+**Status (2026-07-11)**: ADOPTED — pre-argus Wave A #3 (rides the MC1-1
+resume build). Both garnishes landed: `iteration.completed` Forge events and
+`SubagentTranscript` turn metadata carry whitelist-decoded
+`source: live | replay` (the consolidator's ledger-authorized retry/replay
+turns are the first `:replay` producers; arbitrary values coerce to `:live`),
+and resume failure is LOUD — `jido_claw.forge.resume.failed` on SignalBus +
+session PubSub + log BEFORE any driver retry decision, never this entry's
+silent fresh-session fallback. Interpretation note recorded: the
+transcript-side `:replay` producer awaits an agent-layer replay path — the
+field exists precisely so that path cannot ship indistinguishable-from-live.
+
 ### EM3-4. chat-ui transcript renderer
 
 **Recommendation**: TRACK. Trigger: the argus SPA's conversation view visibly struggles on long transcripts (their design point: 10k+ rows at 60fps). A SolidJS renderer with off-DOM measurement (pretext), a Fenwick-tree virtualizer, and a CodeMirror-style context/state/view split (`packages/chat-ui/ARCHITECTURE.md`) — embedded inside their React app, proving the embed path. Until then, the transport-agnostic `ChatItem` taxonomy (`model.ts:226-234` — message/tool_call/thinking/file-op/execute/diff/resource-link/plan, with `parentId` hierarchy and wholesale-replace semantics for plans/file-ops) is a rendering-model crib for projecting our `Conversations.Message` roles into a transcript UI.

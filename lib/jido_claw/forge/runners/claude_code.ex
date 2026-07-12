@@ -34,13 +34,30 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
     * `add_dirs` — repeated `--add-dir` entries (the executor's
       `workspace: :repo` grant; claude's cwd is the HostShell sandbox dir and
       is not ours to set).
+    * `resume: :off (default) | :armed` — native CLI session resume
+      (docs/system/forge-session-resume.md). `:off` is byte-identical to
+      today: fresh `-p` per iteration, no session flags (PR-3 pin; the
+      executor never arms). `:armed` mints a client-owned `--session-id`
+      pre-spawn on the first turn and continues a trusted anchor with
+      `--resume <id>` + a guidance-only prompt (never the original task,
+      never `--continue`). The anchor lifecycle lives in
+      `JidoClaw.Forge.ResumeState`; the pre-spawn anchor persist goes
+      through the injected `:forge_resume_writer` seam (default
+      `Persistence.anchor_session/3`) so a crash mid-attempt can still
+      resume.
   """
   @behaviour JidoClaw.Forge.Runner
-  alias JidoClaw.Forge.{Runner, Sandbox}
-  alias JidoClaw.Forge.Runners.FileSync
+  alias JidoClaw.Forge.{Persistence, RecoveredSpec, ResumeState, Runner, Sandbox}
+  alias JidoClaw.Forge.Runners.{FileSync, ResumePolicy}
   alias JidoClaw.Security.Redaction.Env
   alias JidoClaw.Security.Redaction.PromptRedaction
   require Logger
+
+  # Shared between `init/2` and `materialize_config/1` so the persisted
+  # materialized posture can never drift from what a fresh init applies.
+  @default_model "claude-sonnet-4-20250514"
+  @default_max_turns 200
+  @default_timeout_ms 300_000
 
   # Files/dirs from ~/.claude worth syncing into the sandbox.
   # Excludes logs, telemetry, and other ephemeral data.
@@ -61,17 +78,18 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
   @impl Runner
   def init(client, config) do
     prompt = Map.get(config, :prompt, "")
-    model = Map.get(config, :model, "claude-sonnet-4-20250514")
+    model = Map.get(config, :model, @default_model)
     session_name = Map.get(config, :session_name)
-    max_turns = Map.get(config, :max_turns, 200)
-    timeout_ms = Map.get(config, :timeout_ms, 300_000)
+    max_turns = Map.get(config, :max_turns, @default_max_turns)
+    timeout_ms = Map.get(config, :timeout_ms, @default_timeout_ms)
     mcp_config_path = Map.get(config, :mcp_config_path)
     thinking_effort = Map.get(config, :thinking_effort)
     forge_home = Map.get(config, :forge_home, default_forge_home())
     config_sync = Map.get(config, :config_sync, :full)
 
     with :ok <- sync_host_claude_config(client, forge_home, config_sync),
-         :ok <- write_mcp_config(client, config) do
+         :ok <- write_mcp_config(client, config),
+         {:ok, resume_state, resume_cwd} <- init_resume(client, Map.get(config, :resume, :off)) do
       if prompt != "" do
         redacted = PromptRedaction.redact(prompt)
         Sandbox.write_file(client, "#{forge_home}/session/context.md", redacted)
@@ -91,10 +109,32 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
          access: Map.get(config, :access, :full),
          allowed_mcp_tools: Map.get(config, :allowed_mcp_tools, []),
          add_dirs: Map.get(config, :add_dirs, []),
-         strict_mcp: Map.get(config, :strict_mcp, false)
+         strict_mcp: Map.get(config, :strict_mcp, false),
+         resume: resume_state,
+         resume_cwd: resume_cwd
        }}
     end
   end
+
+  # `pwd` workdir capture happens ONLY when armed — a default-off init makes
+  # no extra sandbox call and carries no resume machinery (PR-3 pin).
+  defp init_resume(_client, :off), do: {:ok, nil, nil}
+
+  defp init_resume(client, :armed) do
+    case Sandbox.exec(client, "pwd", []) do
+      {output, 0} ->
+        cwd = presence(String.trim(output))
+        {:ok, ResumeState.new(workdir: cwd), cwd}
+
+      {_output, _code} ->
+        # Unknown cwd: stay armed but the cwd-gate can never pass, so every
+        # turn resolves fresh-armed — resume-off behavior with anchors.
+        {:ok, ResumeState.new(), nil}
+    end
+  end
+
+  defp presence(""), do: nil
+  defp presence(value), do: value
 
   # Docker write build: a docker executor plan carries the deposit client
   # config as CONTENT (`mcp_config_json`) because the host-tmp file the local
@@ -107,43 +147,348 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
   defp write_mcp_config(_client, _config), do: :ok
 
+  # The complete static config, every init/2 default written explicitly and
+  # stamped for `RecoveredSpec.runner_config/1` — a recovered session
+  # re-inits with exactly this posture, never a re-applied default (the
+  # consolidator omits `access`; a defaulting decode would flip recovered
+  # sessions off `:full` and drop their MCP tools). Attempt-scoped values
+  # (`mcp_config_path`, `mcp_config_json` — per-attempt capability material)
+  # are deliberately absent: they ride `run_iteration` opts, never the
+  # persisted row. Nil optionals are omitted rather than persisted as null.
   @impl Runner
-  def run_iteration(client, state, opts) do
-    prompt = Keyword.get(opts, :prompt, state.prompt)
+  def materialize_config(config) do
+    materialized = %{
+      config_codec: RecoveredSpec.codec_stamp(:claude_code),
+      prompt: Map.get(config, :prompt, ""),
+      model: Map.get(config, :model, @default_model),
+      session_name: Map.get(config, :session_name),
+      max_turns: Map.get(config, :max_turns, @default_max_turns),
+      timeout_ms: Map.get(config, :timeout_ms, @default_timeout_ms),
+      thinking_effort: Map.get(config, :thinking_effort),
+      forge_home: Map.get(config, :forge_home, default_forge_home()),
+      config_sync: Map.get(config, :config_sync, :full),
+      access: Map.get(config, :access, :full),
+      allowed_mcp_tools: Map.get(config, :allowed_mcp_tools, []),
+      add_dirs: Map.get(config, :add_dirs, []),
+      strict_mcp: Map.get(config, :strict_mcp, false),
+      resume: Map.get(config, :resume, :off)
+    }
+
+    Map.reject(materialized, fn {_key, value} -> is_nil(value) end)
+  end
+
+  # The armed-vs-off dispatch is deliberately IDENTICAL in both vendor
+  # runners — it's the behaviour's shape, not copied logic (the divergent
+  # bodies live below; the shared policy lives in ResumePolicy).
+  # ex_dna:disable-for-lines:5
+  @impl Runner
+  def run_iteration(client, %{resume: %ResumeState{} = rs} = state, opts),
+    do: run_armed_iteration(client, attempt_state(state, opts), rs, opts)
+
+  def run_iteration(client, state, opts),
+    do: run_default_iteration(client, attempt_state(state, opts), opts)
+
+  # Attempt-scoped endpoint capability: a driver may mint a per-attempt
+  # MCP config file (tokenized URL) and pass its path per turn — it rides
+  # `run_iteration` opts only, never the persisted config, and the
+  # checkpoint codec never serializes it. Absent ⇒ the init-time value
+  # stands (byte-identical argv — the PR-3 pin holds).
+  defp attempt_state(state, opts) do
+    case Keyword.get(opts, :mcp_config_path) do
+      path when is_binary(path) and path != "" -> Map.put(state, :mcp_config_path, path)
+      _absent -> state
+    end
+  end
+
+  # Default-off: today's fresh `-p` invocation, byte-identical — no session
+  # flags, no resume bookkeeping, no metadata.state (PR-3 pin: the executor
+  # relies on fresh-session-per-round structurally).
+  defp run_default_iteration(client, state, opts) do
+    args = build_args(state, Keyword.get(opts, :prompt, state.prompt), [])
+
+    case dispatch(client, state, args, opts) do
+      {output, 0} -> parse_output(output)
+      {output, :timeout} -> {:ok, Runner.error("harness_timeout", output)}
+      {output, _code} -> {:ok, Runner.error("claude cli failed", output)}
+    end
+  end
+
+  # Armed: the per-turn mode gate. Only a trusted anchor in THIS
+  # incarnation's workdir continues; everything else (unanchored,
+  # poisoned, cwd mismatch, unknown cwd) starts fresh-armed. Every path
+  # below returns `metadata.state` — error and timeout terminals included —
+  # because the pre-spawn mint must reach harness state, and the harness
+  # merges runner state only via metadata.
+  defp run_armed_iteration(client, state, rs, opts) do
+    case ResumeState.resolve_mode(rs, Map.get(state, :resume_cwd)) do
+      :continuation ->
+        run_continuation(client, state, ResumeState.continuing(rs), opts)
+
+      {:fresh_armed, _reason} ->
+        run_fresh_armed(client, state, rs, opts)
+    end
+  end
+
+  # Fresh-armed: mint the session id CLIENT-side and persist the anchor
+  # BEFORE the CLI spawns (`--session-id` makes the id ours to choose;
+  # a crash mid-attempt can then still resume). PORT-MC1-1 sign-off Q1.
+  # The prompt source is `opts[:prompt]`-else-`state.prompt` — the caller's
+  # `:guidance` opt is structurally IGNORED here (it means "continuation
+  # guidance"), so a fresh conversation always carries the full task. An
+  # inflight parked answer reverts to :pending first (this turn provably
+  # never places it on an argv; it redelivers on the next continuation).
+  defp run_fresh_armed(client, state, rs, opts) do
+    rs = ResumeState.guidance_undelivered(rs)
+    minted_id = Ecto.UUID.generate()
+
+    case anchor_fresh(rs, minted_id, Map.get(state, :resume_cwd)) do
+      {:ok, anchored} ->
+        stamped = stamp_for_mirror(anchored, opts)
+        persist_anchor_pre_spawn(stamped, opts)
+
+        args =
+          build_args(
+            state,
+            Keyword.get(opts, :prompt, state.prompt),
+            session_flags(:fresh_armed, stamped)
+          )
+
+        case dispatch(client, state, args, opts) do
+          {output, 0} ->
+            finalize_fresh_armed(output, state, stamped, minted_id, opts)
+
+          {output, :timeout} ->
+            armed_failure({:known, "harness_timeout"}, output, state, stamped, :fresh_armed, opts)
+
+          {output, _code} ->
+            armed_failure(
+              {:classify, "claude cli failed"},
+              output,
+              state,
+              stamped,
+              :fresh_armed,
+              opts
+            )
+        end
+
+      {:error, reason} ->
+        # Effectively unreachable for a generated UUID — run the turn
+        # unarmed rather than failing real work on resume bookkeeping.
+        Logger.warning("[ClaudeCode] could not establish a fresh anchor: #{inspect(reason)}")
+        run_default_iteration(client, state, opts)
+    end
+  end
+
+  # Continuation: `--resume <anchor>` with a GUIDANCE-ONLY prompt — parked
+  # inflight text first, then the caller's `:guidance` opt, then the shared
+  # nudge (`ResumePolicy.take_continuation_guidance/2`). `opts[:prompt]` is
+  # never read: the original task already lives in the resumed conversation,
+  # so it never rides the argv again (CM2-3). Never `--continue`, never
+  # `--session-id`.
+  defp run_continuation(client, state, rs, opts) do
+    {guidance, rs} = ResumePolicy.take_continuation_guidance(rs, opts)
+    args = build_args(state, guidance, session_flags(:continuation, rs))
+
+    case dispatch(client, state, args, opts) do
+      {output, 0} ->
+        finalize_continuation(output, state, rs, opts)
+
+      {output, :timeout} ->
+        armed_failure({:known, "harness_timeout"}, output, state, rs, :continuation, opts)
+
+      {output, _code} ->
+        armed_failure({:classify, "claude cli failed"}, output, state, rs, :continuation, opts)
+    end
+  end
+
+  # Fresh anchors from every non-continuable posture: a poisoned id is never
+  # reused (`rearm_new_anchor/4` refuses it and resets the retry latch); an
+  # anchored-but-not-continuable state (cwd mismatch, no workdir) clears
+  # first — the old conversation is unreachable from this workdir.
+  defp anchor_fresh(%ResumeState{status: :poisoned} = rs, minted_id, cwd),
+    do: ResumeState.rearm_new_anchor(rs, minted_id, cwd, :client)
+
+  defp anchor_fresh(%ResumeState{status: :unanchored} = rs, minted_id, cwd),
+    do: ResumeState.mint_client(rs, minted_id, cwd)
+
+  defp anchor_fresh(%ResumeState{} = rs, minted_id, cwd) do
+    cleared = ResumeState.clear(rs, :new)
+    ResumeState.mint_client(cleared, minted_id, cwd)
+  end
+
+  # Session flags derive ONLY from the resolved mode + anchor id;
+  # permission/trust flags derive only from `state.access` in
+  # `permission_args/1` — the two never mix, and the selectors never
+  # combine (CM2-3).
+  defp session_flags(:continuation, %ResumeState{session_id: id}) when is_binary(id),
+    do: ["--resume", id]
+
+  defp session_flags(:fresh_armed, %ResumeState{session_id: id}) when is_binary(id),
+    do: ["--session-id", id]
+
+  defp session_flags(_mode, %ResumeState{}), do: []
+
+  # Stamp {incarnation epoch, next revision} before the pre-spawn persist;
+  # the harness's post-iteration mirror bumps onward from this returned copy.
+  defp stamp_for_mirror(rs, opts) do
+    epoch = Keyword.get(opts, :incarnation_epoch, rs.epoch)
+    ResumeState.stamp(rs, epoch, rs.revision + 1)
+  end
+
+  # Fresh-armed only: the anchor must be durable BEFORE the CLI exists.
+  # Fenced — a stale incarnation's write surfaces :stale_resume_write and is
+  # logged + dropped, never blocking the turn. Skips cleanly when the
+  # harness didn't thread a claimed session + token (claim: false runs,
+  # direct callers).
+  defp persist_anchor_pre_spawn(rs, opts) do
+    session_id = Keyword.get(opts, :forge_session_id)
+    token = Keyword.get(opts, :incarnation_token)
+
+    if is_binary(session_id) and is_binary(token) do
+      case resume_writer().(session_id, rs, token) do
+        {:error, :stale_resume_write} ->
+          Logger.warning(
+            "[ClaudeCode] pre-spawn anchor write fenced out (stale incarnation) — dropped"
+          )
+
+        _ok_or_best_effort_nil ->
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  # Injectable writer seam (the `:claude_keychain_reader` idiom) so runner
+  # unit tests observe the pre-spawn persist without a DB. Anything but a
+  # 3-arity fun falls back to the real fenced writer.
+  defp resume_writer do
+    case Application.get_env(:jido_claw, :forge_resume_writer) do
+      fun when is_function(fun, 3) -> fun
+      _absent_or_invalid -> &Persistence.anchor_session/3
+    end
+  end
+
+  # Fresh-armed id-verify: the CLI's "system" init event must echo the id we
+  # minted. A mismatch means the conversation is NOT under our anchor —
+  # drop it (loudly, via the shared mismatch emitter; runners never
+  # auto-retry). A missing echo (older CLI stream shape) trusts the
+  # client-owned mint.
+  defp finalize_fresh_armed(output, state, rs, minted_id, opts) do
+    {:ok, result} = parse_output(output)
+
+    final_rs =
+      case echoed_session_id(result) do
+        nil ->
+          rs
+
+        ^minted_id ->
+          rs
+
+        other ->
+          ResumePolicy.emit_anchor_mismatch(
+            :claude_code,
+            :fresh_armed,
+            minted_id,
+            "session-id verify mismatch: minted #{minted_id}, CLI reported #{inspect(other)} — anchor dropped",
+            opts
+          )
+
+          ResumeState.clear(rs, :new)
+      end
+
+    {:ok, ResumePolicy.attach_runner_state(result, state, final_rs)}
+  end
+
+  # Continuation echo-verify: a resumed conversation reports its own id — a
+  # different one means the CLI silently started elsewhere; the anchor no
+  # longer names the live conversation, so drop it loudly.
+  defp finalize_continuation(output, state, rs, opts) do
+    {:ok, result} = parse_output(output)
+
+    final_rs =
+      case echoed_session_id(result) do
+        nil ->
+          rs
+
+        sid when sid == rs.session_id ->
+          rs
+
+        other ->
+          ResumePolicy.emit_anchor_mismatch(
+            :claude_code,
+            :continuation,
+            rs.session_id,
+            "continuation echoed session #{inspect(other)} instead of anchor #{rs.session_id} — anchor dropped",
+            opts
+          )
+
+          ResumeState.clear(rs, :new)
+      end
+
+    {:ok, ResumePolicy.attach_runner_state(result, state, final_rs)}
+  end
+
+  # Armed terminal failures classify + poison + emit through the shared
+  # vendor policy (`ResumePolicy.armed_failure/7`) — one module so the two
+  # runners cannot drift.
+  defp armed_failure(labeling, output, state, rs, mode, opts),
+    do: ResumePolicy.armed_failure(:claude_code, labeling, output, state, rs, mode, opts)
+
+  defp echoed_session_id(result) do
+    result.metadata
+    |> Map.get(:tool_events, [])
+    |> Enum.find_value(fn
+      %{"type" => "system", "session_id" => sid} when is_binary(sid) -> sid
+      _ -> nil
+    end)
+  end
+
+  # `--verbose` is REQUIRED alongside `-p --output-format stream-json` on
+  # current claude CLIs (≥ ~2.1.19x refuse without it — write-build smoke;
+  # PR-2 shipped against an older CLI that tolerated its absence). The
+  # verbose stream adds event types `parse_output/1` already drops.
+  # `session_flags` land LAST — model/mcp/effort are rebuilt fresh from
+  # state every turn regardless of anchor (CM2-3).
+  defp build_args(state, prompt, session_flags) do
     redacted_prompt = PromptRedaction.redact(prompt)
-    model = state.model
-    max_turns = Map.get(state, :max_turns) || 200
+    max_turns = Map.get(state, :max_turns) || @default_max_turns
 
-    # `--verbose` is REQUIRED alongside `-p --output-format stream-json` on
-    # current claude CLIs (≥ ~2.1.19x refuse without it — write-build smoke;
-    # PR-2 shipped against an older CLI that tolerated its absence). The
-    # verbose stream adds event types `parse_output/1` already drops.
-    args =
-      (["-p", redacted_prompt, "--model", model] ++
-         permission_args(state) ++
-         [
-           "--output-format",
-           "stream-json",
-           "--verbose",
-           "--max-turns",
-           Integer.to_string(max_turns)
-         ])
-      |> append_add_dirs(state)
-      |> append_mcp_config(state)
-      |> append_thinking_effort(state)
+    (["-p", redacted_prompt, "--model", state.model] ++
+       permission_args(state) ++
+       [
+         "--output-format",
+         "stream-json",
+         "--verbose",
+         "--max-turns",
+         Integer.to_string(max_turns)
+       ])
+    |> append_add_dirs(state)
+    |> append_mcp_config(state)
+    |> append_thinking_effort(state)
+    |> Kernel.++(session_flags)
+  end
 
-    timeout_ms = Keyword.get(opts, :timeout, Map.get(state, :timeout_ms) || 300_000)
-    base_run_opts = [timeout: timeout_ms]
+  defp dispatch(client, state, args, opts) do
+    timeout_ms = Keyword.get(opts, :timeout, Map.get(state, :timeout_ms) || @default_timeout_ms)
+    base_run_opts = [timeout: timeout_ms] ++ teardown_opts(opts)
 
     run_opts =
       if state.session_name,
         do: [{:name, state.session_name} | base_run_opts],
         else: base_run_opts
 
-    case Sandbox.run(client, "claude", args, run_opts) do
-      {output, 0} -> parse_output(output)
-      {output, :timeout} -> {:ok, Runner.error("harness_timeout", output)}
-      {output, _code} -> {:ok, Runner.error("claude cli failed", output)}
+    Sandbox.run(client, "claude", args, run_opts)
+  end
+
+  # The CLI-runner path opts into GRACEFUL tree teardown (ChildTracker
+  # registration in HostShell) when the harness threaded an incarnation
+  # key; generic exec stays hard, and docker tiers keep
+  # teardown-by-destruction (their backend ignores these opts).
+  defp teardown_opts(opts) do
+    case Keyword.get(opts, :incarnation_key) do
+      nil -> []
+      key -> [teardown: :graceful, incarnation_key: key]
     end
   end
 
@@ -207,6 +552,16 @@ defmodule JidoClaw.Forge.Runners.ClaudeCode do
 
     :ok
   end
+
+  # The shared checkpoint codec (ResumePolicy): {iteration, sanitized
+  # resume state}; static config recovers through the materialized-config
+  # codec instead. The fresh init's pwd stays `resume_cwd` — the cwd-gate
+  # input a restored foreign-workdir anchor fails next turn.
+  @impl Runner
+  def serialize_state(state), do: ResumePolicy.serialize_state(state)
+
+  @impl Runner
+  def restore_state(state, snapshot), do: ResumePolicy.restore_state(state, snapshot)
 
   defp parse_output(output) do
     lines = String.split(output, "\n", trim: true)

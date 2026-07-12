@@ -683,6 +683,14 @@ accumulated context wholesale today (`forge/runners/claude_code.ex:61-88`).
 
 ---
 
+**Status (2026-07-11, SY3-3)**: ADOPTED (rider on MC1-1 — pre-argus Wave A
+#2). Continuation-turn discipline is contract now: turn 1 sends the full
+rendered prompt; every later turn sends GUIDANCE only (the consolidator's
+`Prompt.continuation/1`; the runners' continuation floor is a neutral
+`"Continue."` nudge, NEVER `state.prompt` — CM2-3-pinned in both vendor argv
+tables), and `Forge.run_loop/2` drops the caller's `:prompt` on iterations ≥ 2.
+See [docs/system/forge-session-resume.md](../../../system/forge-session-resume.md).
+
 ## Skip / Already Covered
 
 - **S-1. The daemon as a product / unattended posture** — SKIP. The inverse of

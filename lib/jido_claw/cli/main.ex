@@ -12,9 +12,11 @@ defmodule JidoClaw.CLI.Main do
              [--timeout <seconds>] [--format text|json]
 
   `run` exits 0 (success), 1 (error/failed run/timeout), 2 (usage/config
-  error), or 3 (approval gate pending). Invalid or conflicting REPL flags
-  (e.g. `--bogus`, a valueless or empty `--resume`, `--resume <uuid> --continue`)
-  also exit 2 instead of silently booting a fresh session.
+  error), 3 (approval gate or clarify questions pending), 4 (session not
+  found), 5 (provider unreachable), or 6 (provider auth failure). Invalid or
+  conflicting REPL flags (e.g. `--bogus`, a valueless or empty `--resume`,
+  `--resume <uuid> --continue`) also exit 2 instead of silently booting a
+  fresh session.
   """
 
   require Logger

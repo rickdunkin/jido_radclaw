@@ -70,12 +70,14 @@ set-compares these against the directory (names, not counts).
 - [Context Compaction](context-compaction.md) — live per-agent compaction + the per-stage tiering seam (AR-9)
 - [Tool Approval Gate](tool-approval.md) — per-tool-call human approval, single-use consumes, the shell floor
 - [Verdict Normalizer](verdict-normalizer.md) — infra ≠ verdict ≠ inconclusive; schema drift fails closed
+- [Run-Failure Taxonomy](run-failure.md) — 22 closed kinds, platform vs agent provenance, retryable ≠ resume-unsafe
 - [Verify Authority](verify-authority.md) — engine-run exit-code verdicts, integrity certificates, VERIFY_OATH
 - [Terminal Statuses](terminal-statuses.md) — finding identity, stall detection, review_stall park, done_with_findings
 - [MCP Consumption](mcp-consumption.md) — external MCP tools through the full safety pipeline, fail-closed approval
 - [Lua Code-Mode](lua-code-mode.md) — read-only server-side Lua queries, VM budgets, seven host bindings
 - [Eval Harness](eval-harness.md) — deterministic cases against production functions only
 - [Executor Seam](executor-seam.md) — template executor binding, vendor CLI hardwiring, cross-vendor review
+- [Forge Session Resume](forge-session-resume.md) — native CLI resume, epoch/token fencing, pointer-selected recovery, attempt capabilities, graceful tree teardown
 - [MCP Server Surface](mcp-server-surface.md) — the served tools/resources and the surface-version stability contract
 - [Clustering](clustering.md) — multi-node topologies, the DB-lease ownership model, and the cluster_enabled flip checklist
 - [Ambiguity Clarify Loop](ambiguity-clarify.md) — score → ask → fold → re-score before composing an ambiguous build; honest degraded labeling

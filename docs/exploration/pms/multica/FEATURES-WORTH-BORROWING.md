@@ -178,6 +178,14 @@ sandbox/HostShell spawn for the claude/codex families — lift their denylist an
 not-the-whole-namespace lesson. (f) Lift the deadlock discipline (writer goroutine ≠
 reader; bounded stderr tail appended to errors) into the runner's port handling.
 
+**Status (2026-07-11)**: ADOPTED — pre-argus Wave A #2 via the signed-off
+[PORT-MC1-1](PORT-MC1-1.md) semantics map; adoption detail + divergence table
+in [MC-FIRST-WAVE item 2](MC-FIRST-WAVE.md)'s Status line; deep truth
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md).
+The full resume stack is live on both vendor runners behind
+`resume: :armed` (default `:off`, byte-identical — the executor's
+fresh-per-review pin holds structurally).
+
 ### MC1-2. Task-layer schema reference — field shapes for FLOW §7, and the status-enum cautionary tale
 
 **Recommendation**: BORROW-REFERENCE (schema), plus the **divergence evidence** FLOW §7
@@ -341,6 +349,19 @@ the enum (drop daemon-specific members, keep the platform/agent prefix split), a
 and the two derived sets as functions — then consume it from Forge runner terminal
 results, the composer's Lane-B infra decisions, and (later) the argus attention feed.
 Pre-warm telemetry labels the way they do. Wire `resume_unsafe?/1` into MC1-1.
+
+**Status (2026-07-11)**: ADOPTED (pre-argus Wave A #1) —
+`JidoClaw.Orchestration.RunFailure`, 22 kinds. Their `agent_blocked` was dropped
+*because of* the honest wart recorded above (producer-less even at source); the
+three daemon members (`queued_expired`/`runtime_offline`/`runtime_recovery`) have
+no equivalent here; `timeout` renamed `stalled_wall_clock`; five additions from
+the riders (orca OR3-2's `stalled_no_output` + `user_cancelled`, bosun BO2-3's
+`agent_session_poisoned`, plus `agent_fallback_message` and
+`agent_semantic_inactivity` from their own poisoned.go vocabulary). Both derived
+sets ship verbatim-shaped and independent; first consumers are the Forge harness
+`:error` arm and the composer Lane-B trace. `resume_unsafe?/1` wiring into MC1-1
+lands with that build. Full table + producer status:
+`docs/system/run-failure.md`.
 
 ### MC1-5. LLM-context-shaped feed pagination — thread reads designed for agent prompts
 
@@ -695,9 +716,18 @@ CLI_AND_DAEMON.md §Error-Messages: one translation layer renders transport/HTTP
 failures as a single actionable sentence; **exit codes tiered by failure class** (0 ok,
 1 generic, 2 network, 3 auth, 4 not-found, 5 validation) so scripts branch without
 parsing; `--debug` reveals the full chain; server-supplied validation messages pass
-through verbatim. **Gap**: `mix jidoclaw run` (OS1-5, `cli/run_command.ex`) exits 0/1
-only — and it's explicitly built for scripting/agent callers. Adopt the tier table
-nearly verbatim; our MCP error codes already give the classes.
+through verbatim. **Gap** *(stale as written — corrected 2026-07-09/11: `mix
+jidoclaw run` shipped the pinned OQ-4 `0|1|2|3` contract, never "0/1 only")*:
+the tiers beyond that contract were missing — and it's explicitly built for
+scripting/agent callers.
+
+**Status (2026-07-11)**: ADOPTED, adapted (pre-argus Wave A #4) — the table
+could NOT land verbatim (their 2=network/3=auth collide with our taken
+usage-config/human-input meanings), so the pinned contract extended with new
+codes: **4 not-found · 5 provider-unreachable · 6 provider-auth**, classified
+through MC1-4's `RunFailure` taxonomy rather than envelope re-sniffing. The
+translation-sentence half already existed (`JidoClaw.format_error`); `--debug`
+not adopted (logs ride stderr). Details in MC-FIRST-WAVE item 3's Status line.
 
 ### MC3-5. IM channel engine — normalized envelope + router pipeline
 

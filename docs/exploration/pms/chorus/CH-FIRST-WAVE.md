@@ -116,3 +116,15 @@ work). Item 1 touches ForgeLive only additively; it is also the seed of the CC1-
 attention read-model — build it as a plain LiveView affordance now, and let the
 argus slice-1 attention feed absorb it later rather than blocking on it. Item 3
 must not run standalone — if MC1-1 is not in flight, it waits there.
+
+**Status (2026-07-11)**: LANDED inside pre-argus Wave A #2 (MC1-1 build;
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md)).
+`ResumeState.ownership :: :client | :backend` is a first-class axis: claude
+anchors mint CLIENT-side pre-spawn (`--session-id`), codex anchors capture
+`thread.started` as `:provisional` and promote only on a clean `:done` (the
+CH2-6 backend-trust rule), and every copy persists fenced on the Forge
+`Session` row — never a dotfile. Group-scoped teardown landed as
+`ChildTracker` tagged incarnations + `OsCmd.terminate_tree/2`
+(TERM → grace window with re-discovery → identity-verified STOP+KILL; CH3-2's
+two-stage shape, process-table walk instead of setsid for macOS portability).
+

@@ -73,6 +73,12 @@ defmodule JidoClaw.Telemetry do
       # carry the per-run timeline; this is the rollup.
       counter("jido_claw.composer.infra.total", tags: [:lane, :stage]),
 
+      # Run-failure taxonomy (multica MC1-4) — one count per classified
+      # terminal failure; `kind` is a `RunFailure.all_kinds/0` member (the
+      # label pre-warm export), `provenance` :platform/:agent. Producers:
+      # the Forge harness `:error` arm today; more join as they classify.
+      counter("jido_claw.run_failure.total", tags: [:kind, :provenance]),
+
       # Deterministic verify runs (next-ten item 5, camus C1-2) — one count
       # per engine verify; `result` is :green/:red/:inconclusive/:tampered.
       # The Trace `:composer` verify_result events carry the per-run detail.
@@ -301,6 +307,15 @@ defmodule JidoClaw.Telemetry do
       [:jido_claw, :composer, :infra],
       %{total: 1},
       %{lane: lane, stage: stage}
+    )
+  end
+
+  @spec emit_run_failure(atom(), atom()) :: :ok
+  def emit_run_failure(kind, provenance) do
+    :telemetry.execute(
+      [:jido_claw, :run_failure],
+      %{total: 1},
+      %{kind: kind, provenance: provenance}
     )
   end
 

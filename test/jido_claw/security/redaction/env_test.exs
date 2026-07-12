@@ -68,6 +68,29 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
     end
   end
 
+  describe "denylisted?/1" do
+    test "matches the Claude Code host-session vars exactly" do
+      for name <- ~w(CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH
+                     CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SSE_PORT) do
+        assert Env.denylisted?(name)
+      end
+    end
+
+    test "matches the CLAUDECODE_ prefix" do
+      assert Env.denylisted?("CLAUDECODE_ANYTHING")
+    end
+
+    test "deliberately NOT the whole CLAUDE_CODE_* namespace" do
+      refute Env.denylisted?("CLAUDE_CODE_OTHER")
+      refute Env.denylisted?("CLAUDE_CODE_SESSION")
+    end
+
+    test "non-binary input is not denylisted" do
+      refute Env.denylisted?(nil)
+      refute Env.denylisted?(:claudecode)
+    end
+  end
+
   describe "redact_value/2" do
     test "masks whole value when key name is sensitive" do
       assert Env.redact_value("AWS_SECRET_ACCESS_KEY", "AKIASMOKETEST1234567") == "[REDACTED]"
@@ -251,6 +274,41 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
     test "explicit nil override value is preserved as an unset" do
       assert {"FORCE_UNSET_VAR", nil} in Env.scrubbed_cmd_env(%{"FORCE_UNSET_VAR" => nil})
     end
+
+    test "denylisted vars are always unset — operator surfaces cannot re-open them" do
+      put_named_env("CLAUDECODE", "1")
+      put_named_env("CLAUDECODE_JIDO_TEST", "x")
+
+      Application.put_env(:jido_claw, :extra_allowed_env_vars, ["CLAUDECODE"])
+      Application.put_env(:jido_claw, :extra_allowed_env_prefixes, ["CLAUDE"])
+
+      on_exit(fn ->
+        Application.delete_env(:jido_claw, :extra_allowed_env_vars)
+        Application.delete_env(:jido_claw, :extra_allowed_env_prefixes)
+      end)
+
+      result = Env.scrubbed_cmd_env()
+
+      assert {"CLAUDECODE", nil} in result
+      assert {"CLAUDECODE_JIDO_TEST", nil} in result
+    end
+
+    test "a denylisted override is dropped — the parent var still lands unset" do
+      put_named_env("CLAUDE_CODE_SESSION_ID", "host-session")
+
+      result = Env.scrubbed_cmd_env(%{"CLAUDE_CODE_SESSION_ID" => "re-added"})
+
+      refute {"CLAUDE_CODE_SESSION_ID", "re-added"} in result
+      assert {"CLAUDE_CODE_SESSION_ID", nil} in result
+    end
+
+    test "a denylisted override for an absent parent var emits nothing" do
+      System.delete_env("CLAUDECODE_JIDO_TEST_ABSENT")
+
+      result = Env.scrubbed_cmd_env(%{"CLAUDECODE_JIDO_TEST_ABSENT" => "x"})
+
+      refute Enum.any?(result, fn {key, _} -> key == "CLAUDECODE_JIDO_TEST_ABSENT" end)
+    end
   end
 
   describe "scrubbed_port_env/1" do
@@ -272,6 +330,15 @@ defmodule JidoClaw.Security.Redaction.EnvTest do
 
     test "explicit nil override value becomes false (unset)" do
       assert {~c"FORCE_UNSET_VAR", false} in Env.scrubbed_port_env(%{"FORCE_UNSET_VAR" => nil})
+    end
+
+    test "denylist inherits automatically — unset for ports, overrides dropped" do
+      put_named_env("CLAUDECODE", "1")
+
+      result = Env.scrubbed_port_env(%{"CLAUDECODE" => "re-added"})
+
+      assert {~c"CLAUDECODE", false} in result
+      refute {~c"CLAUDECODE", ~c"re-added"} in result
     end
   end
 

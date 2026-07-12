@@ -16,6 +16,7 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
 
   code_interface do
     define(:create)
+    define(:create_recovery)
     define(:latest_for_session)
     define(:read, action: :read)
     define(:destroy, action: :destroy)
@@ -37,6 +38,28 @@ defmodule JidoClaw.Forge.Resources.Checkpoint do
         :session_id,
         :metadata
       ])
+    end
+
+    create :create_recovery do
+      description(
+        "Checked-save variant: creates the row under a caller-minted id so " <>
+          "the fenced Session pointer write can run FIRST in the same " <>
+          "transaction (a stale refusal then writes nothing at all). The " <>
+          "named argument sets the pk inside the action — never a broad " <>
+          "accept :id."
+      )
+
+      accept([
+        :name,
+        :sandbox_checkpoint_id,
+        :exec_session_sequence,
+        :runner_state_snapshot,
+        :session_id,
+        :metadata
+      ])
+
+      argument(:checkpoint_id, :uuid, allow_nil?: false)
+      change(set_attribute(:id, arg(:checkpoint_id)))
     end
 
     read :latest_for_session do

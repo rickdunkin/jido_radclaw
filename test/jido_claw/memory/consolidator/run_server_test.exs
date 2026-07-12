@@ -1,3 +1,26 @@
+defmodule JidoClaw.Memory.Consolidator.RunServerTest.ScriptedRunner do
+  @moduledoc false
+  # Per-turn scripted consolidator runner: the test injects a
+  # `(state, opts) -> {:ok, iteration_result}` fun via the
+  # `:consolidator_scripted_turn` app env (async: false suite). Unlike
+  # `Runners.Fake`, it can span multiple turns, speak MCP against the
+  # tokenized per-attempt URL from opts, and hang — the substrate for the
+  # multi-iteration loop, closed-token, and watchdog tests.
+  @behaviour JidoClaw.Forge.Runner
+
+  @impl JidoClaw.Forge.Runner
+  def init(_client, config), do: {:ok, %{prompt: Map.get(config, :prompt, "")}}
+
+  @impl JidoClaw.Forge.Runner
+  def run_iteration(_client, state, opts) do
+    fun = Application.get_env(:jido_claw, :consolidator_scripted_turn)
+    fun.(state, opts)
+  end
+
+  @impl JidoClaw.Forge.Runner
+  def apply_input(_client, _input, _state), do: :ok
+end
+
 defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   @moduledoc """
   End-to-end regression coverage for the per-run consolidator pipeline.
@@ -12,13 +35,19 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
   """
   use JidoClaw.TenantCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Ecto.Adapters.SQL
   alias JidoClaw.Conversations.Message
   alias JidoClaw.Forge.Manager, as: ForgeManager
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
+  alias JidoClaw.Forge.ResumeState
+  alias JidoClaw.Forge.Runner, as: ForgeRunner
+  alias JidoClaw.MCP.LoopbackClient
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link}
   alias JidoClaw.Memory.Consolidator
   alias JidoClaw.Memory.Consolidator.Clusterer
+  alias JidoClaw.Memory.Consolidator.RunServerTest.ScriptedRunner
   alias JidoClaw.Memory.Consolidator.TestSupport.PromptCapture
   alias JidoClaw.Workspaces.Resolver
 
@@ -343,6 +372,36 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
       assert captured =~ "commit_proposals"
     end
 
+    test "both vendor lanes arm native session resume (F1)", %{tenant_id: tenant_id} do
+      {:ok, _agent} = PromptCapture.start_link()
+
+      for harness <- [:claude_code, :codex] do
+        {_ws, scope} = workspace_scope(tenant_id)
+
+        Application.put_env(:jido_claw, @consolidator_key,
+          enabled: true,
+          min_input_count: 0,
+          write_skip_rows: true,
+          harness: harness,
+          harness_options: [sandbox_mode: :local, timeout_ms: 30_000, max_turns: 60]
+        )
+
+        # PromptCapture stands in for the CLI runner; the config under test
+        # is the HARNESS lane's (`base_runner_config/2`), which the spec
+        # carries regardless of the runner_module override.
+        _ =
+          Consolidator.run_now(scope,
+            runner_module: PromptCapture,
+            override_min_input_count: true,
+            await_ms: 30_000
+          )
+
+        config = PromptCapture.last_config()
+        assert config.resume == :armed, "the #{harness} lane must arm native resume"
+        assert is_binary(config.prompt) and config.prompt != ""
+      end
+    end
+
     test "harness_model column tracks the configured model across consecutive runs", %{
       tenant_id: tenant_id
     } do
@@ -630,6 +689,276 @@ defmodule JidoClaw.Memory.Consolidator.RunServerTest do
 
       # The workspace-less run never claimed, so no Forge session row was written.
       assert forge_session_count() == before
+    end
+  end
+
+  describe "attempt tokens, multi-turn loop, watchdog" do
+    defp script(fun) do
+      Application.put_env(:jido_claw, :consolidator_scripted_turn, fun)
+      on_exit(fn -> Application.delete_env(:jido_claw, :consolidator_scripted_turn) end)
+    end
+
+    defp call_tool_via(url, tool, args) do
+      case LoopbackClient.initialize(url) do
+        {:ok, mcp} -> LoopbackClient.call_tool(mcp, tool, args)
+        {:error, _} = err -> err
+      end
+    end
+
+    defp scripted_result(base, turns) do
+      %{base | metadata: Map.merge(base.metadata, %{turns: turns})}
+    end
+
+    test "continuation turns rotate the attempt capability; a closed token is refused through the real route; per-attempt configs are cleaned",
+         %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
+      test_pid = self()
+      {:ok, journal} = Agent.start_link(fn -> %{turn: 0, urls: [], paths: []} end)
+
+      script(fn _state, opts ->
+        turn = Agent.get_and_update(journal, fn s -> {s.turn + 1, %{s | turn: s.turn + 1}} end)
+        url = Keyword.fetch!(opts, :mcp_server_url)
+        path = Keyword.fetch!(opts, :mcp_config_path)
+        Agent.update(journal, fn s -> %{s | urls: [url | s.urls], paths: [path | s.paths]} end)
+
+        case turn do
+          1 ->
+            send(test_pid, {:turn, 1, Keyword.get(opts, :prompt), File.stat(path)})
+            {:ok, scripted_result(ForgeRunner.continue(""), 1)}
+
+          2 ->
+            [url1, url2] = Enum.reverse(Agent.get(journal, & &1.urls))
+            stale_reply = call_tool_via(url1, "propose_add", %{content: "late mutation"})
+            fresh_reply = call_tool_via(url2, "propose_add", %{content: "fresh fact"})
+            commit_reply = call_tool_via(url2, "commit_proposals", %{})
+
+            send(
+              test_pid,
+              {:turn, 2, {Keyword.get(opts, :prompt), Keyword.get(opts, :guidance)},
+               {stale_reply, fresh_reply, commit_reply}}
+            )
+
+            {:ok, scripted_result(ForgeRunner.done(""), 1)}
+        end
+      end)
+
+      assert {:ok, run} =
+               Consolidator.run_now(scope,
+                 runner_module: ScriptedRunner,
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run.status == :succeeded
+      # The late mutation against the CLOSED turn-1 capability never staged.
+      assert run.facts_added == 1
+
+      # Turn 1 carries no :prompt opt (the full prompt lives in runner
+      # config); its per-attempt config file exists mode 0600 during the
+      # attempt.
+      assert_receive {:turn, 1, nil, {:ok, stat}}, 10_000
+      assert Bitwise.band(stat.mode, 0o777) == 0o600
+
+      # Turn 2 gets GUIDANCE only — under the semantically-tagged :guidance
+      # opt with :prompt ABSENT (a fresh-armed turn reads :prompt as its
+      # WHOLE prompt, so continuation guidance must never ride it) — and the
+      # stale turn-1 token is refused through the real loopback route while
+      # the fresh token stages + commits.
+      assert_receive {:turn, 2, {nil, guidance}, {stale_reply, fresh_reply, commit_reply}},
+                     10_000
+
+      assert guidance =~ "turn 2"
+      refute guidance =~ "memory consolidator"
+      # The stale capability gets a TYPED tool error the CLI sees (`isError`
+      # on the JSON-RPC result — the transport itself succeeded).
+      assert {:ok, stale_rpc} = stale_reply
+      assert get_in(stale_rpc, ["result", "isError"]) == true
+      assert inspect(stale_rpc) =~ "attempt_closed"
+      assert {:ok, fresh_rpc} = fresh_reply
+      refute get_in(fresh_rpc, ["result", "isError"]) == true
+      assert {:ok, commit_rpc} = commit_reply
+      refute get_in(commit_rpc, ["result", "isError"]) == true
+
+      # No temp leak: every per-attempt config file is gone after the run.
+      for path <- Enum.reverse(Agent.get(journal, & &1.paths)) do
+        refute File.exists?(path), "expected per-attempt config #{path} to be cleaned"
+      end
+    end
+
+    test "prevention pin: a mid-run fresh restart still carries the full task — its commit is legitimate and warned",
+         %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
+      test_pid = self()
+      {:ok, journal} = Agent.start_link(fn -> %{turn: 0} end)
+
+      script(fn _state, opts ->
+        turn = Agent.get_and_update(journal, fn s -> {s.turn + 1, %{s | turn: s.turn + 1}} end)
+
+        send(
+          test_pid,
+          {:turn_opts, turn, Keyword.get(opts, :prompt), Keyword.get(opts, :guidance)}
+        )
+
+        case turn do
+          1 ->
+            {:ok, scripted_result(ForgeRunner.continue(""), 1)}
+
+          2 ->
+            # The anchor did not survive: this turn reports a FRESH
+            # conversation (source :startup). Under the :prompt/:guidance
+            # split it still received the full task via state.prompt — a
+            # task-free turn is structurally impossible — so its later
+            # commit is legitimate work, and the driver warns loudly.
+            base = ForgeRunner.continue("")
+
+            result = %{
+              base
+              | metadata:
+                  Map.put(base.metadata, :state, %{iteration: 2, resume: ResumeState.new()})
+            }
+
+            {:ok, scripted_result(result, 1)}
+
+          3 ->
+            url = Keyword.fetch!(opts, :mcp_server_url)
+            {:ok, _} = call_tool_via(url, "propose_add", %{content: "fresh fact"})
+            {:ok, _} = call_tool_via(url, "commit_proposals", %{})
+            {:ok, scripted_result(ForgeRunner.done(""), 1)}
+        end
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, run} =
+                   Consolidator.run_now(scope,
+                     runner_module: ScriptedRunner,
+                     override_min_input_count: true,
+                     await_ms: 30_000
+                   )
+
+          # The run publishes exactly once — the fresh turn's commit is real.
+          assert run.status == :succeeded
+          assert run.facts_added == 1
+        end)
+
+      assert log =~ "FRESH conversation"
+
+      # Turn 1 carries neither key; every turn ≥ 2 rides :guidance with
+      # :prompt ABSENT — the driver-side half of the prevention.
+      assert_receive {:turn_opts, 1, nil, nil}
+      assert_receive {:turn_opts, 2, nil, guidance2}
+      assert guidance2 =~ "turn 2"
+      assert_receive {:turn_opts, 3, nil, guidance3}
+      assert guidance3 =~ "turn 3"
+    end
+
+    test "commit-then-hang: the deadline watchdog publishes NOTHING (no :succeeded certificate)",
+         %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
+
+      config = Application.get_env(:jido_claw, @consolidator_key, [])
+
+      Application.put_env(
+        :jido_claw,
+        @consolidator_key,
+        Keyword.put(
+          config,
+          :harness_options,
+          sandbox_mode: :local,
+          timeout_ms: 20_000,
+          max_turns: 60,
+          max_run_ms: 700
+        )
+      )
+
+      script(fn _state, opts ->
+        url = Keyword.fetch!(opts, :mcp_server_url)
+        {:ok, _} = call_tool_via(url, "commit_proposals", %{})
+        # The commit marker is in — but the attempt never exits cleanly
+        # within the run budget. The marker alone must never publish.
+        Process.sleep(5_000)
+        {:ok, ForgeRunner.done("")}
+      end)
+
+      assert {:error, "run_deadline_exceeded"} =
+               Consolidator.run_now(scope,
+                 runner_module: ScriptedRunner,
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      # Nothing published: no :succeeded certificate exists for this scope —
+      # the terminal audit row is :failed with the deadline reason.
+      {:ok, rows} =
+        ConsolidationRun.history_for_scope(
+          %{scope_kind: :workspace, scope_fk_id: scope.workspace_id, limit: 20},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      refute Enum.any?(rows, &(&1.status == :succeeded))
+      assert Enum.any?(rows, &(&1.status == :failed and &1.error == "run_deadline_exceeded"))
+    end
+
+    test "a run that keeps continuing exhausts the iteration bound and publishes nothing",
+         %{tenant_id: tenant_id} do
+      {_ws, scope} = workspace_scope(tenant_id)
+
+      config = Application.get_env(:jido_claw, @consolidator_key, [])
+
+      Application.put_env(
+        :jido_claw,
+        @consolidator_key,
+        Keyword.put(
+          config,
+          :harness_options,
+          sandbox_mode: :local,
+          timeout_ms: 20_000,
+          max_turns: 60,
+          max_iterations: 2
+        )
+      )
+
+      script(fn _state, _opts ->
+        {:ok, ForgeRunner.continue("")}
+      end)
+
+      assert {:error, "iteration_limit_reached"} =
+               Consolidator.run_now(scope,
+                 runner_module: ScriptedRunner,
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      {:ok, rows} =
+        ConsolidationRun.history_for_scope(
+          %{scope_kind: :workspace, scope_fk_id: scope.workspace_id, limit: 20},
+          tenant: tenant_id,
+          actor: actor_for(tenant_id)
+        )
+
+      refute Enum.any?(rows, &(&1.status == :succeeded))
+      assert Enum.any?(rows, &(&1.error == "iteration_limit_reached"))
+    end
+
+    test "the publish certificate row carries the run's deterministic id", %{
+      tenant_id: tenant_id
+    } do
+      {_ws, scope} = workspace_scope(tenant_id)
+
+      assert {:ok, run} =
+               Consolidator.run_now(scope,
+                 fake_proposals: [{"propose_add", %{content: "certified fact"}}],
+                 override_min_input_count: true,
+                 await_ms: 30_000
+               )
+
+      assert run.status == :succeeded
+      # The row is readable by ITS OWN id — the reconciliation key.
+      assert {:ok, fetched} =
+               ConsolidationRun.by_id(run.id, tenant: tenant_id, actor: actor_for(tenant_id))
+
+      assert fetched.status == :succeeded
     end
   end
 

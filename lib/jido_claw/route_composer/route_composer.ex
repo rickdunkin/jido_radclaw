@@ -160,6 +160,7 @@ defmodule JidoClaw.RouteComposer do
   alias JidoClaw.Orchestration.ReactorRunner
   alias JidoClaw.Orchestration.Reason
   alias JidoClaw.Orchestration.ReviewIndependence
+  alias JidoClaw.Orchestration.RunFailure
   alias JidoClaw.Orchestration.RunPubSub
   # The camus C1-3 normalizer — NOT JidoClaw.Triage.Verdict (different
   # subsystem; never alias both in one module).
@@ -2277,7 +2278,17 @@ defmodule JidoClaw.RouteComposer do
     case Commit.append_markers(state.parent, markers, commit_opts(state)) do
       :ok ->
         reason_string = Verdict.format_reason({:wave_execution_failed, reason})
-        emit_infra_observability(Enum.map(dispatch, &{&1, reason_string}), :wave_error, state)
+        # MC1-4: the classified kind rides the non-durable Trace only —
+        # durable `stage_infra` markers and event shapes stay untouched
+        # (welded wave commits are law).
+        failure_kind = RunFailure.classify(reason)
+
+        emit_infra_observability(
+          Enum.map(dispatch, &{&1, reason_string}),
+          :wave_error,
+          state,
+          failure_kind
+        )
 
         next =
           state
@@ -3233,24 +3244,28 @@ defmodule JidoClaw.RouteComposer do
   # (post-review P2) because the `by_run` index has no public reader — the
   # tenant stamp is what makes the per-run timeline reachable
   # (`Trace.list({:tenant, …})`) and tenant-scopes the durable sink rows.
-  defp emit_infra_observability(stage_reasons, lane, state) do
+  defp emit_infra_observability(stage_reasons, lane, state, failure_kind \\ nil) do
     Enum.each(stage_reasons, fn {stage, reason} ->
       Telemetry.emit_composer_infra(lane, stage)
 
-      JidoClaw.Trace.emit(
-        :composer,
-        %{
-          event: :review_infra,
-          run_id: state.parent_run_id,
-          parent_run_id: state.parent_run_id,
-          stage: stage,
-          reason: reason,
-          wave_index: state.wave_index,
-          lane: lane,
-          tenant_id: state.tenant
-        },
-        %{count: 1}
-      )
+      trace_data = %{
+        event: :review_infra,
+        run_id: state.parent_run_id,
+        parent_run_id: state.parent_run_id,
+        stage: stage,
+        reason: reason,
+        wave_index: state.wave_index,
+        lane: lane,
+        tenant_id: state.tenant
+      }
+
+      # MC1-4 (Lane B only): the wave-error caller threads the classified
+      # kind; verdict-infra emissions pass none — their reason is already a
+      # normalizer verdict-failure, not a run failure.
+      trace_data =
+        if failure_kind, do: Map.put(trace_data, :failure_kind, failure_kind), else: trace_data
+
+      JidoClaw.Trace.emit(:composer, trace_data, %{count: 1})
     end)
   end
 

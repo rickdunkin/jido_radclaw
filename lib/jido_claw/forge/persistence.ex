@@ -10,10 +10,12 @@ defmodule JidoClaw.Forge.Persistence do
 
   alias Ash.Query
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Core.MapKeys
   alias JidoClaw.Forge.Resources.Checkpoint
   alias JidoClaw.Forge.Resources.Event
   alias JidoClaw.Forge.Resources.Session
+  alias JidoClaw.Forge.ResumeState
   alias JidoClaw.Security.Redaction.Patterns
 
   @spec enabled?() :: boolean()
@@ -384,6 +386,437 @@ defmodule JidoClaw.Forge.Persistence do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Resume/recovery fence (docs/system/forge-session-resume.md)
+  #
+  # The incarnation fence lives at metadata["forge_recovery"] = {epoch, token,
+  # current_checkpoint_id, recovery_degraded}. The token authorizes WRITES
+  # only (reads compare epoch stamps); it is minted here and never stored in
+  # any state copy.
+  # ---------------------------------------------------------------------------
+
+  @typedoc "The stored incarnation pair used as the mint's CAS expectation."
+  @type recovery_pair :: %{epoch: non_neg_integer(), token: String.t()}
+
+  @typedoc """
+  What the mint installs at `metadata["resume"]`: `nil`/blank for fresh
+  starts and terminal reuse, a `ResumeState` for a pre-selected transplant,
+  or a selector fun invoked on the LOCKED session row (recovery — selection
+  and mint must share one critical section).
+  """
+  @type transplant ::
+          ResumeState.t() | nil | (Session.t() -> ResumeState.t() | nil)
+
+  @doc """
+  Reads the stored `{epoch, token}` pair (the mint's CAS expectation).
+  `nil` when no pair has ever been minted — the only case where
+  `mint_resume_epoch/3` accepts `expected: nil`.
+  """
+  @spec stored_recovery_pair(String.t()) :: recovery_pair() | nil
+  def stored_recovery_pair(session_id) do
+    if enabled?() do
+      case find_session(session_id) do
+        nil -> nil
+        session -> recovery_pair_of(session)
+      end
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] stored_recovery_pair failed: #{inspect(e)}")
+      nil
+  end
+
+  @doc """
+  Mint a new incarnation: CAS from `expected` (the prior stored pair; `nil`
+  ONLY when no pair exists at all), increment the epoch, rotate the token,
+  install the transplant at `{new epoch, revision 0}`, and clear the
+  checkpoint pointer + degraded marker — one locked critical section
+  (Session row FOR UPDATE across read-select-mint, so an outliving old
+  task cannot move state between selection and install).
+
+  A stale holder gets `{:error, :stale_mint}` and can never rotate the
+  legitimate incarnation's token.
+  """
+  @spec mint_resume_epoch(String.t(), recovery_pair() | nil, transplant()) ::
+          {:ok, %{epoch: pos_integer(), token: String.t()}}
+          | {:error, :stale_mint | :no_session | :mint_failed | :persistence_disabled}
+  def mint_resume_epoch(session_id, expected, transplant) do
+    if enabled?() do
+      Session
+      |> Ash.transaction(fn -> locked_mint(session_id, expected, transplant) end)
+      |> normalize_mint_result()
+    else
+      {:error, :persistence_disabled}
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] mint_resume_epoch failed: #{inspect(e)}")
+      {:error, :mint_failed}
+  end
+
+  # Refusals are TAGGED SUCCESS values (nothing written yet) — an in-txn
+  # {:error, _} return would be wrapped opaque by Ash.transaction and the
+  # classification lost (the GateDisposition-documented behavior). Only a
+  # genuine write failure rolls back.
+  defp locked_mint(session_id, expected, transplant) do
+    case lock_session_row(session_id) do
+      nil ->
+        {:refused, :no_session}
+
+      session ->
+        if pair_matches?(recovery_pair_of(session), expected) do
+          install_mint(session, expected, transplant)
+        else
+          {:refused, :stale_mint}
+        end
+    end
+  end
+
+  # FOR-UPDATE via manual `Ash.Query.lock/2` composition on the interface's
+  # query builder: a DSL `prepare(build(lock: "FOR UPDATE"))` read action
+  # silently returns zero rows on this Ash version (probe-verified), while
+  # the composed lock emits the expected `SELECT ... FOR UPDATE`.
+  defp lock_session_row(session_id) do
+    session_id
+    |> Session.query_to_by_name_global()
+    |> Query.lock("FOR UPDATE")
+    |> Ash.read_one()
+    |> case do
+      {:ok, %Session{} = session} -> session
+      _ -> nil
+    end
+  end
+
+  defp recovery_pair_of(%Session{metadata: %{"forge_recovery" => %{} = recovery}}) do
+    case {recovery["epoch"], recovery["token"]} do
+      {epoch, token} when is_integer(epoch) and epoch > 0 and is_binary(token) ->
+        %{epoch: epoch, token: token}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp recovery_pair_of(%Session{}), do: nil
+
+  defp pair_matches?(nil, nil), do: true
+
+  defp pair_matches?(%{epoch: epoch, token: token}, %{epoch: epoch, token: token}), do: true
+
+  defp pair_matches?(_stored, _expected), do: false
+
+  defp install_mint(session, expected, transplant) do
+    new_epoch = ((expected && expected.epoch) || 0) + 1
+    token = Ecto.UUID.generate()
+
+    resume_object =
+      case resolve_transplant(transplant, session) do
+        nil ->
+          %{}
+
+        %ResumeState{} = rs ->
+          stamped = ResumeState.stamp(rs, new_epoch, 0)
+
+          put_present(
+            %{"state" => ResumeState.encode_state(stamped)},
+            "guidance",
+            ResumeState.encode_guidance_marker(stamped)
+          )
+      end
+
+    forge_recovery = %{
+      "epoch" => new_epoch,
+      "token" => token,
+      "current_checkpoint_id" => nil,
+      "recovery_degraded" => false
+    }
+
+    session
+    |> Ash.Changeset.for_update(:mint_forge_recovery, %{
+      forge_recovery: forge_recovery,
+      resume: resume_object
+    })
+    |> Ash.update(session_action_opts(session))
+    |> case do
+      {:ok, _} -> {:minted, %{epoch: new_epoch, token: token}}
+      {:error, e} -> Ash.DataLayer.rollback(Session, {:mint_write_failed, e})
+    end
+  end
+
+  defp resolve_transplant(fun, session) when is_function(fun, 1), do: fun.(session)
+  defp resolve_transplant(transplant, _session), do: transplant
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  defp normalize_mint_result({:ok, {:minted, pair}}), do: {:ok, pair}
+  defp normalize_mint_result({:ok, {:refused, reason}}), do: {:error, reason}
+
+  defp normalize_mint_result({:error, e}) do
+    Logger.warning("[Forge.Persistence] mint_resume_epoch rolled back: #{inspect(e)}")
+    {:error, :mint_failed}
+  end
+
+  @doc """
+  Best-effort FENCED mirror of the sanitized anchor state to
+  `metadata["resume"]["state"]` after an iteration. Infrastructure
+  failures log + `nil` (the mirror is best-effort); a fence miss is a
+  real `{:error, :stale_resume_write}` — the caller logs and DROPS the
+  write, never treats it as success.
+  """
+  @spec anchor_session(String.t(), ResumeState.t(), String.t()) ::
+          :ok | {:error, :stale_resume_write} | nil
+  def anchor_session(session_id, %ResumeState{} = resume, incarnation_token)
+      when is_binary(incarnation_token) do
+    if enabled?() do
+      case find_session(session_id) do
+        nil ->
+          nil
+
+        session ->
+          encoded = ResumeState.encode_state(resume)
+
+          case Session.anchor_resume(
+                 session,
+                 encoded,
+                 incarnation_token,
+                 session_action_opts(session)
+               ) do
+            {:ok, _} ->
+              :ok
+
+            {:error, e} ->
+              classify_fenced_write_error(e, "anchor_session")
+          end
+      end
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] anchor_session failed: #{inspect(e)}")
+      nil
+  end
+
+  @doc """
+  The CHECKED checkpoint save: fenced pointer move (sets
+  `current_checkpoint_id`, clears `recovery_degraded`, mirrors the
+  guidance marker) THEN the Checkpoint row under a pre-minted id — one
+  transaction, pointer-first so a stale refusal writes nothing. Unlike
+  `save_checkpoint/4` this is NOT best-effort: every failure is a real
+  error the caller must handle (`apply_input` ack, `recovery_degraded`).
+  """
+  @spec save_recovery_checkpoint(
+          String.t(),
+          non_neg_integer(),
+          map(),
+          map(),
+          map() | nil,
+          String.t()
+        ) ::
+          {:ok, Checkpoint.t()}
+          | {:error, :stale_resume_write | :no_session | :not_persisted | :persistence_disabled}
+  def save_recovery_checkpoint(
+        session_id,
+        sequence,
+        runner_state_snapshot,
+        metadata,
+        guidance_marker,
+        incarnation_token
+      )
+      when is_binary(incarnation_token) do
+    if enabled?() do
+      [Session, Checkpoint]
+      |> Ash.transaction(fn ->
+        checked_checkpoint_txn(
+          session_id,
+          sequence,
+          runner_state_snapshot,
+          metadata,
+          guidance_marker,
+          incarnation_token
+        )
+      end)
+      |> normalize_checked_save_result()
+    else
+      {:error, :persistence_disabled}
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] save_recovery_checkpoint failed: #{inspect(e)}")
+      {:error, :not_persisted}
+  end
+
+  defp checked_checkpoint_txn(
+         session_id,
+         sequence,
+         runner_state_snapshot,
+         metadata,
+         guidance_marker,
+         incarnation_token
+       ) do
+    case find_session(session_id) do
+      nil ->
+        {:refused, :no_session}
+
+      session ->
+        checkpoint_id = Ecto.UUID.generate()
+
+        case Session.point_recovery_checkpoint(
+               session,
+               checkpoint_id,
+               guidance_marker,
+               incarnation_token,
+               session_action_opts(session)
+             ) do
+          {:ok, _} ->
+            create_pointed_checkpoint(
+              session,
+              checkpoint_id,
+              sequence,
+              runner_state_snapshot,
+              metadata
+            )
+
+          {:error, e} ->
+            if AshErrors.stale_write?(e) or AshErrors.not_found?(e) do
+              {:refused, :stale_resume_write}
+            else
+              Ash.DataLayer.rollback(Session, {:pointer_write_failed, e})
+            end
+        end
+    end
+  end
+
+  defp create_pointed_checkpoint(session, checkpoint_id, sequence, snapshot, metadata) do
+    case Ash.create(
+           Checkpoint,
+           %{
+             checkpoint_id: checkpoint_id,
+             session_id: session.id,
+             exec_session_sequence: sequence,
+             runner_state_snapshot: snapshot,
+             metadata: metadata
+           },
+           action: :create_recovery
+         ) do
+      {:ok, checkpoint} -> {:saved, checkpoint}
+      {:error, e} -> Ash.DataLayer.rollback(Checkpoint, {:checkpoint_write_failed, e})
+    end
+  end
+
+  defp normalize_checked_save_result({:ok, {:saved, checkpoint}}), do: {:ok, checkpoint}
+  defp normalize_checked_save_result({:ok, {:refused, reason}}), do: {:error, reason}
+
+  defp normalize_checked_save_result({:error, e}) do
+    Logger.warning("[Forge.Persistence] save_recovery_checkpoint rolled back: #{inspect(e)}")
+    {:error, :not_persisted}
+  end
+
+  @doc """
+  Token-fenced `recovery_degraded: true` marker (a failed initial checked
+  checkpoint). A stale incarnation's attempt surfaces
+  `{:error, :stale_resume_write}` and can never degrade a newer one.
+  """
+  @spec mark_recovery_degraded(String.t(), String.t()) ::
+          :ok | {:error, :stale_resume_write} | nil
+  def mark_recovery_degraded(session_id, incarnation_token)
+      when is_binary(incarnation_token) do
+    if enabled?() do
+      case find_session(session_id) do
+        nil ->
+          nil
+
+        session ->
+          case Session.mark_recovery_degraded(
+                 session,
+                 incarnation_token,
+                 session_action_opts(session)
+               ) do
+            {:ok, _} -> :ok
+            {:error, e} -> classify_fenced_write_error(e, "mark_recovery_degraded")
+          end
+      end
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] mark_recovery_degraded failed: #{inspect(e)}")
+      nil
+  end
+
+  defp classify_fenced_write_error(e, label) do
+    if AshErrors.stale_write?(e) or AshErrors.not_found?(e) do
+      {:error, :stale_resume_write}
+    else
+      Logger.warning("[Forge.Persistence] #{label} failed: #{inspect(e)}")
+      nil
+    end
+  end
+
+  @doc """
+  The pointer-selected checkpoint — the ONLY checkpoint-selection authority
+  for recovery (`Manager.recoverable?/1`, `Forge.wake/2`,
+  `context_for_resume/1`): reads
+  `metadata["forge_recovery"]["current_checkpoint_id"]`, loads the row, and
+  REQUIRES `checkpoint.session_id == session.id` (a foreign or dangling
+  pointer is corruption — logged, and recovery refuses). Only the checked
+  `save_recovery_checkpoint/6` moves the pointer, so wall-clock
+  `latest_checkpoint/1` ordering never decides what a session resumes from.
+  """
+  @spec current_checkpoint(String.t()) :: Checkpoint.t() | nil
+  def current_checkpoint(session_id) do
+    if enabled?() do
+      case find_session(session_id) do
+        nil -> nil
+        session -> pointed_checkpoint(session)
+      end
+    end
+  rescue
+    e in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      Logger.warning("[Forge.Persistence] current_checkpoint failed: #{inspect(e)}")
+      nil
+  end
+
+  # Public (@doc false) for the Harness's recovery transplant selector, which
+  # runs inside the mint's locked critical section and must read the pointer
+  # from the LOCKED row it was handed — not through a second `find_session`
+  # read that could see a different row version.
+  @doc false
+  @spec pointed_checkpoint(Session.t()) :: Checkpoint.t() | nil
+  def pointed_checkpoint(%Session{} = session) do
+    case get_in(session.metadata, ["forge_recovery", "current_checkpoint_id"]) do
+      pointer when is_binary(pointer) -> load_pointed_checkpoint(session, pointer)
+      _absent -> nil
+    end
+  end
+
+  defp load_pointed_checkpoint(session, pointer) do
+    case Checkpoint.get_by_id(pointer) do
+      {:ok, %Checkpoint{session_id: owner_id} = checkpoint} when owner_id == session.id ->
+        checkpoint
+
+      {:ok, %Checkpoint{}} ->
+        Logger.warning(
+          "[Forge.Persistence] recovery pointer for #{session.name} names a foreign checkpoint — refusing"
+        )
+
+        nil
+
+      {:error, _not_found_or_invalid} ->
+        Logger.warning(
+          "[Forge.Persistence] recovery pointer for #{session.name} is dangling — refusing"
+        )
+
+        nil
+    end
+  end
+
+  # Wall-clock newest row — a query helper for inspection surfaces, NOT a
+  # recovery-selection authority (recovery selects via `current_checkpoint/1`).
   @spec latest_checkpoint(String.t()) :: Checkpoint.t() | nil
   def latest_checkpoint(session_id) do
     if enabled?() do
@@ -466,7 +899,9 @@ defmodule JidoClaw.Forge.Persistence do
         session = find_session(session_id)
 
         if session do
-          checkpoint = latest_checkpoint(session_id)
+          # Pointer-selected: "events since" keys off the checkpoint recovery
+          # would actually restore, not whatever row is wall-clock newest.
+          checkpoint = pointed_checkpoint(session)
 
           events_since =
             case checkpoint do

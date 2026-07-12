@@ -203,6 +203,12 @@ defmodule JidoClaw.Application do
   # -- Core: always started --
   defp core_children do
     infra_children = [
+      # FIRST in the core children so it terminates LAST on shutdown
+      # (supervisors stop children in reverse start order): its
+      # `terminate/2` is the VM-shutdown sweep over every still-registered
+      # runner CLI, and it must outlive the Forge tree whose sessions
+      # register with it (docs/system/forge-session-resume.md).
+      JidoClaw.Forge.ChildTracker,
       {Registry, keys: :unique, name: JidoClaw.SessionRegistry},
       {Registry, keys: :unique, name: JidoClaw.TenantRegistry},
       {Registry, keys: :unique, name: JidoClaw.Memory.Consolidator.RunRegistry},

@@ -2,16 +2,25 @@ defmodule JidoClaw.CLI.RunCommandTest do
   @moduledoc """
   Drives the pure one-shot core (`JidoClaw.CLI.RunCommand.main/2`, no-op
   boot) end-to-end through the real `JidoClaw.chat/4` with the front-door
-  seams stubbed, pinning the OQ-4 exit contract:
+  seams stubbed, pinning the OQ-4 exit contract as extended 0–6 by
+  pre-argus Wave A #4 (MC3-4):
 
     0 answered / composer completed · 1 error/failed/timeout ·
-    2 usage/config · 3 approval gate pending.
+    2 usage/config (malformed UUID, foreign workspace) · 3 approval gate or
+    clarify pending · 4 not found (session/continue miss) · 5 provider
+    unreachable · 6 provider auth.
+
+  The 4-vs-1 discrimination on infrastructure read failures is pinned at
+  the `AshErrors.not_found?/1` seam (`test/jido_claw/core/ash_errors_test.exs`)
+  — no DB-failure injection seam exists for a CLI-level row.
 
   The runner hardcodes tenant `"default"`, so seeded resume fixtures live
   under that tenant (sandboxed — rolled back per test).
   """
   use JidoClaw.TenantCase, async: false
 
+  alias Jido.AI.Error.API.Auth
+  alias Jido.AI.Error.API.Request, as: AIRequest
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.CLI.RunCommand
   alias JidoClaw.Conversations.Message
@@ -139,15 +148,9 @@ defmodule JidoClaw.CLI.RunCommandTest do
       assert output =~ "mutually exclusive"
     end
 
-    test "unknown session uuid", ctx do
-      uuid = Ecto.UUID.generate()
-      assert {2, output} = main(["hi", ctx.tmp, "--session", uuid])
-      assert output =~ "session #{uuid} not found"
-    end
-
-    test "--continue with no resumable session in the workspace", ctx do
-      assert {2, output} = main(["hi", ctx.tmp, "--continue"])
-      assert output =~ "no open CLI session to continue"
+    test "malformed session uuid stays a usage error", ctx do
+      assert {2, output} = main(["hi", ctx.tmp, "--session", "not-a-uuid"])
+      assert output =~ "not a valid session UUID"
     end
 
     test "unconfigured project dir points at --setup", ctx do
@@ -185,6 +188,74 @@ defmodule JidoClaw.CLI.RunCommandTest do
       assert decoded["exit_code"] == 2
       assert decoded["outcome"] == "usage"
       assert decoded["error"] =~ "missing prompt"
+    end
+  end
+
+  describe "not found (exit 4, MC3-4)" do
+    test "a well-formed unknown session uuid exits 4", ctx do
+      uuid = Ecto.UUID.generate()
+      assert {4, output} = main(["hi", ctx.tmp, "--session", uuid])
+      assert output =~ "session #{uuid} not found"
+      # Not a usage error — the usage banner must NOT print.
+      refute output =~ "usage:"
+    end
+
+    test "--continue with no resumable session in the workspace exits 4", ctx do
+      assert {4, output} = main(["hi", ctx.tmp, "--continue"])
+      assert output =~ "no open CLI session to continue"
+    end
+
+    test "not-found renders as a json envelope", ctx do
+      uuid = Ecto.UUID.generate()
+      assert {4, output} = main(["hi", ctx.tmp, "--session", uuid, "--format", "json"])
+
+      decoded = decode!(output)
+      assert decoded["ok"] == false
+      assert decoded["exit_code"] == 4
+      assert decoded["outcome"] == "not_found"
+      assert decoded["error"] =~ "not found"
+    end
+  end
+
+  describe "provider tiers (exit 5/6, MC3-4)" do
+    test "an auth-class provider failure exits 6", ctx do
+      Application.put_env(
+        :jido_claw,
+        :dispatch_capture_response,
+        {:error, Auth.exception(message: "invalid x-api-key")}
+      )
+
+      assert {6, output} = main(["hi", ctx.tmp, "--format", "json"])
+
+      decoded = decode!(output)
+      assert decoded["ok"] == false
+      assert decoded["exit_code"] == 6
+      assert decoded["outcome"] == "provider_auth"
+    end
+
+    test "a network-class provider failure exits 5", ctx do
+      Application.put_env(
+        :jido_claw,
+        :dispatch_capture_response,
+        {:error, AIRequest.exception(kind: :network, message: "connection refused")}
+      )
+
+      assert {5, output} = main(["hi", ctx.tmp, "--format", "json"])
+
+      decoded = decode!(output)
+      assert decoded["ok"] == false
+      assert decoded["exit_code"] == 5
+      assert decoded["outcome"] == "provider_unreachable"
+    end
+
+    test "an unclassifiable turn error keeps the generic exit 1", ctx do
+      Application.put_env(:jido_claw, :dispatch_capture_response, {:error, :boom})
+
+      assert {1, output} = main(["hi", ctx.tmp, "--format", "json"])
+
+      decoded = decode!(output)
+      assert decoded["exit_code"] == 1
+      assert decoded["outcome"] == "error"
     end
   end
 

@@ -66,18 +66,43 @@ defmodule JidoClaw.Core.AshErrors do
   def connection_error?(_other), do: false
 
   @doc """
-  True when `error` is a not-found — a bare `Ash.Error.Query.NotFound` or
-  an `Ash.Error.Invalid` wrapping one (a `get?` read surfaces either
-  shape). Both mean "gone"; anything else is a real read failure the
-  caller should surface separately (infra ≠ absence).
+  True when `error` is a pure not-found read result — an
+  `Ash.Error.Query.NotFound` leaf, or an Ash error class whose EVERY leaf is
+  one (the `get?: true` miss shape: `Ash.Error.Invalid` wrapping exactly
+  `[%Ash.Error.Query.NotFound{}]`). A container mixing not-found with any
+  other leaf (framework fault, connectivity) stays false, so infrastructure
+  failures keep their own lane instead of masquerading as a clean miss.
+  """
+  @spec not_found?(term()) :: boolean()
+  def not_found?(%Ash.Error.Query.NotFound{}), do: true
+
+  def not_found?(%{errors: [_ | _] = errors}) when is_list(errors),
+    do: Enum.all?(errors, &not_found?/1)
+
+  def not_found?(_other), do: false
+
+  @doc """
+  Compatibility name for `not_found?/1`, used by existing tool and web
+  callers. It has the same pure-error-tree semantics, so a mixed container
+  never turns an infrastructure failure into a clean miss.
   """
   @spec not_found_error?(term()) :: boolean()
-  def not_found_error?(%Ash.Error.Query.NotFound{}), do: true
+  def not_found_error?(error), do: not_found?(error)
 
-  def not_found_error?(%Ash.Error.Invalid{errors: errors}) when is_list(errors),
-    do: Enum.any?(errors, &not_found_error?/1)
+  @doc """
+  True when `error` is a stale-write result from a changeset-filtered
+  (fenced) update — an `Ash.Error.Changes.StaleRecord` leaf, or an Ash
+  error class whose EVERY leaf is one (the zero-rows-matched shape from
+  `Ash.Changeset.filter/2` fences). A container mixing stale with any
+  other leaf stays false, same posture as `not_found?/1`.
+  """
+  @spec stale_write?(term()) :: boolean()
+  def stale_write?(%Ash.Error.Changes.StaleRecord{}), do: true
 
-  def not_found_error?(_other), do: false
+  def stale_write?(%{errors: [_ | _] = errors}) when is_list(errors),
+    do: Enum.all?(errors, &stale_write?/1)
+
+  def stale_write?(_other), do: false
 
   @doc """
   True when `error` is an `Ash.Error.Invalid` carrying at least one

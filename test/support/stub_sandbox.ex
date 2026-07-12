@@ -47,6 +47,7 @@ defmodule JidoClaw.Test.StubSandbox do
         %{
           events: [],
           run_response: {"", 0},
+          run_queue: [],
           exec_response: exec_response,
           files: %{},
           env: %{},
@@ -76,6 +77,24 @@ defmodule JidoClaw.Test.StubSandbox do
   @spec program_run(%__MODULE__{}, term()) :: :ok
   def program_run(%__MODULE__{agent_pid: pid}, response),
     do: Agent.update(pid, fn s -> %{s | run_response: response} end)
+
+  @doc """
+  Program a QUEUE of `run/4` responses, consumed one per call in order —
+  multi-turn runner tests (armed resume) drive each iteration's CLI output
+  independently. When the queue drains, `run/4` falls back to the
+  `program_run/2` response.
+  """
+  @spec program_run_sequence(%__MODULE__{}, [term()]) :: :ok
+  def program_run_sequence(%__MODULE__{agent_pid: pid}, responses) when is_list(responses),
+    do: Agent.update(pid, fn s -> %{s | run_queue: responses} end)
+
+  @doc "All recorded `run/4` argvs, chronological."
+  @spec run_args_history(%__MODULE__{}) :: [list()]
+  def run_args_history(%__MODULE__{agent_pid: pid}) do
+    Agent.get(pid, fn s ->
+      for {:run, args} <- Enum.reverse(s.events), do: args
+    end)
+  end
 
   @doc """
   Program the next return value of `exec/3` (and subsequent calls).
@@ -178,8 +197,14 @@ defmodule JidoClaw.Test.StubSandbox do
 
   @impl JidoClaw.Forge.Sandbox.Behaviour
   def run(%__MODULE__{agent_pid: pid} = _client, agent_type, args, _opts) do
-    Agent.update(pid, fn s -> %{s | events: [{:run, [agent_type | args]} | s.events]} end)
-    Agent.get(pid, fn s -> s.run_response end)
+    Agent.get_and_update(pid, fn s ->
+      s = %{s | events: [{:run, [agent_type | args]} | s.events]}
+
+      case s.run_queue do
+        [next | rest] -> {next, %{s | run_queue: rest}}
+        [] -> {s.run_response, s}
+      end
+    end)
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour

@@ -66,6 +66,24 @@ whose cron-health first-wave slice classifies dispatch results with exactly this
 taxonomy split (retryable / rate-limited / infra / terminal) before counting
 breaker strikes. Reconcile both entries with MC1-4's.
 
+**Status (2026-07-11)**: ADOPTED — pre-argus Wave A #1.
+`JidoClaw.Orchestration.RunFailure` beside `Verdict` as specified: 22 closed
+kinds (multica's 21 minus the daemon members and their producer-less
+`agent_blocked`, plus this queue's riders), total `classify/1` with an
+order-invariant Splode-container precedence rank, `retryable?/1` /
+`resume_unsafe?/1` as independent sets, `all_kinds/0` pre-warm export,
+whitelist `decode/1`, `error_details/2` with reserved-key stripping.
+Consumers: the Forge harness `:error` arm (broadcast `kind` + telemetry +
+`failure_kind` event metadata), the composer Lane-B non-durable Trace, and
+`counter("jido_claw.run_failure.total")`. Done-when met: table-driven tests
+(producer table, Normalize-integration rows, totality over
+raisers/throwers/exiters, permutation invariance); no decision site
+string-sniffs retry behavior — the OR3-2 kinds ship as documented
+producer-pending slots (`stalled_no_output` awaits Wave B #8's stall clock;
+group-kill discipline lands with Wave A #2's ChildTracker). Deep truth:
+`docs/system/run-failure.md` + the `docs/TRUST-BOUNDARIES.md` "Retry ≠
+resume" section. OH1-1 reconciles when Wave B #5 builds on this split.
+
 ## 2. MC1-1 — Native CLI session resume for Forge runners (M)
 
 **What**: stop re-sending accumulated prompts. `Runners.ClaudeCode` /
@@ -150,12 +168,44 @@ resume/fork selectors are stripped before re-resume, and model/config flags are
 the explicit recovery allowlist. Both are riders, not second builds — reconcile
 with MC1-1's entry.
 
-**What**: `cli/run_command.ex` (osa OS1-5) exits 0/1 only, and it's explicitly
-built for scripting/agent callers. Adopt multica's tier table nearly verbatim
-(`server/internal/cli/errors.go` + CLI_AND_DAEMON.md §Error-Messages): 0 success ·
-1 generic · 2 network/provider-unreachable · 3 auth · 4 not-found (unknown
-session/workspace) · 5 validation (bad args). Map from our existing error
-envelope codes — the classes already exist; this is one mapping table.
+**Status (2026-07-11)**: ADOPTED — pre-argus Wave A #2 (semantics map
+[PORT-MC1-1](PORT-MC1-1.md), explicitly signed off; deep truth
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md)).
+One PREMISE CORRECTION: this entry's done-when assumed a multi-iteration
+consolidator run existed to observe — falsified at HEAD (the consolidator was
+single-shot, `run_server.ex:465`); the build CONVERTED it to a true
+multi-iteration driver (turn 1 full prompt, guidance-only continuations, bound
++ deadline), so the observable now exists. Deliberate divergences from the
+multica shapes, all recorded in the signed-off map: claude anchors are
+CLIENT-minted pre-spawn via `--session-id` (more eager than their first-event
+capture); codex anchors are provisional-until-clean-exit (CH2-6); their
+daemon-side "failed resume with no established session → retry once fresh"
+became a DRIVER-side retry gated on a server-authoritative effect ledger; an
+epoch/token incarnation fence (no multica equivalent) fences every durable
+write; crash-native resume is scoped to `:local` sandboxes (docker = in-run
+continuations + cwd-gated fresh after a crash); `kill_tree`+grace-window
+graceful teardown instead of setsid; runtime-pinning dropped. The edge-case
+list landed: eager anchoring (pre-spawn persist through the fenced writer),
+cwd-gate (structural via `resolve_mode/2`), clear-and-retry-once (the
+ledger-gated `retry_fresh` + the id-verify anchor drop), poisoned
+classification through `RunFailure.resume_unsafe?/1` (two producer-exact
+live-probed rejection strings added), the env denylist (operator allowlists
+can never re-open it), and deadlock discipline (held by construction — argv
+prompts, `</dev/null` stdin, merged stderr). The myrlin rider's dispositions:
+`--continue` is NEVER used (contract-pinned), probe-from-disk REJECTED —
+anchors live fenced on the Session row, not dotfiles. Riders CH2-6/CH3-2,
+SY3-3, BO2-3 (poisoned half), HD2-2, CM2-3, EM3-3 all landed — see each
+entry's own Status line.
+
+## 3. MC3-4 — Exit-code tiering for `mix jidoclaw run` (XS)
+
+**What**: `cli/run_command.ex` (osa OS1-5) — *stale-claim correction
+(2026-07-09/11): it never shipped "0/1 only"; HEAD carried the pinned OQ-4
+contract `0 | 1 | 2 | 3` before this item* — is explicitly built for
+scripting/agent callers. Adopt multica's tier table adapted, not verbatim
+(`server/internal/cli/errors.go` + CLI_AND_DAEMON.md §Error-Messages — their
+2=network/3=auth collide with our taken meanings, so new tiers get NEW codes).
+Map from our existing error classes — this is one mapping table.
 
 **Done when**: exit codes documented in the task's moduledoc + `--help`, covered
 by tests (the `if [ $? -eq 4 ]` script case), and MC3-4 gets its Status line.
@@ -165,6 +215,20 @@ consume [pad PD1-2](../pad/FEATURES-WORTH-BORROWING.md)'s boundary error-code
 registry (PD-FIRST-WAVE item 2) rather than re-sniffing envelopes — the pad
 first wave carries the same cross-queue note from its side; whichever build
 lands second adds the Status cross-ref.
+
+**Status (2026-07-11)**: ADOPTED (pre-argus Wave A #4, operator-decided
+table) — the pinned 0–3 contract extended with **4 = not-found** (well-formed
+`--session` UUID with no row; `--continue` with no open CLI session — both
+resolver branches discriminate a genuine `Ash.Error.Query.NotFound`-class
+miss from infrastructure failures via `AshErrors.not_found?/1`, which keep
+exit 1), **5 = provider-unreachable** and **6 = provider-auth** (classified
+at the generic turn-error arm via `RunFailure.classify/1` — item 1's
+taxonomy, consumed instead of PD1-2's registry, which remains pending; the
+cross-ref lands when PD1-2 builds). Malformed UUIDs and foreign-workspace
+sessions stay exit 2 (caller mistakes, not misses); launched-run failures
+stay exit 1 (provenance lives in run telemetry). No `--help` flag exists —
+the mix-task/escript moduledocs ARE the help and carry the table. The
+`$? -eq 4` script case is pinned in `run_command_test.exs`.
 
 ---
 

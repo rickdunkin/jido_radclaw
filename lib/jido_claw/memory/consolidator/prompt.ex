@@ -49,6 +49,21 @@ defmodule JidoClaw.Memory.Consolidator.Prompt do
     """
   end
 
+  @doc """
+  The continuation-turn guidance (SY3-3): a nudge ONLY — the task, scope,
+  and clusters already live in the resumed conversation (an armed runner
+  continues its anchored session), so restating them here would both bloat
+  the argv and desynchronize a paraphrased task from the original.
+  """
+  @spec continuation(pos_integer()) :: String.t()
+  def continuation(iteration) do
+    """
+    Continue the consolidation pass (turn #{iteration}). Finish inspecting
+    any remaining clusters, stage any remaining proposals, then call
+    commit_proposals exactly once.
+    """
+  end
+
   defp render_scope(%{scope_kind: kind} = scope) do
     "#{kind} (tenant=#{scope.tenant_id}, fk=#{Scope.primary_fk(scope)})"
   end

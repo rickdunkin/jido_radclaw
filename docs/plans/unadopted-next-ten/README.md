@@ -104,7 +104,9 @@ item** (and re-opens `overlap: :skip|:allow` — adopt them together).
 > workspace-ownership guard on `--session`) can never resume a web `:api`
 > thread. (c) Step 1's "exit code from the outcome envelope" needed a real
 > contract — OQ-4 pinned as `0/1/2/3` (success / error·failed·timeout /
-> usage·config / gate-pending), with `composer_ack: :detailed` added to
+> usage·config / gate-pending; extended 0–6 by pre-argus Wave A #4:
+> 4 not-found · 5 provider-unreachable · 6 provider-auth),
+> with `composer_ack: :detailed` added to
 > `chat/4` so the runner gets the parent run id structurally, awaits it by
 > polling (`RunAwait` — composer-parent terminals don't broadcast), and probes
 > gates via `pending_for_session` (inline gates are invisible in the return)

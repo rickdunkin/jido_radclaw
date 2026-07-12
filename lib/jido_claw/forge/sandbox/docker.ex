@@ -331,10 +331,18 @@ defmodule JidoClaw.Forge.Sandbox.Docker do
     incoming = Map.new(env, fn {k, v} -> {to_string(k), to_string(v)} end)
 
     with {:ok, existing} <- read_existing_env(env_file),
-         merged = Map.merge(existing, incoming),
+         merged = scrub_denylisted(Map.merge(existing, incoming)),
          :ok <- validate_env(merged) do
       secure_write(env_file, render_env(merged))
     end
+  end
+
+  # Claude Code host-session vars (`Env.denylisted?/1`) must never
+  # render into `.forge_env` — the in-VM wrapper would export them to
+  # every guest process. Filtered from the merged map so an entry
+  # already sitting in the file is scrubbed on the next write too.
+  defp scrub_denylisted(env) do
+    Map.reject(env, fn {key, _} -> Env.denylisted?(key) end)
   end
 
   @impl JidoClaw.Forge.Sandbox.Behaviour

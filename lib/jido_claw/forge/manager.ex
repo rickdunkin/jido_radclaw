@@ -244,17 +244,52 @@ defmodule JidoClaw.Forge.Manager do
     end
   end
 
-  defp recoverable?(session_id) do
+  # Recovery lifecycle matrix (docs/system/forge-session-resume.md): a
+  # claimed session recovers ONLY via the pointed checkpoint —
+  # `Persistence.current_checkpoint/1` reads the fenced
+  # `forge_recovery.current_checkpoint_id` pointer and ownership-checks the
+  # row, so wall-clock checkpoint ordering never decides recovery. Armed
+  # sessions additionally require every PRESENT resume-state copy's epoch
+  # stamp (session metadata + checkpoint snapshot) to match the current
+  # incarnation's `forge_recovery.epoch`; resume-off sessions carry no
+  # copies, so pointer + ownership alone decides (no ResumeState required).
+  # The incarnation token never participates — it authorizes writes only.
+  # No-row sessions (`claim: false` / persistence disabled) have no durable
+  # recovery (find_session is nil), and terminal rows are rejected by the
+  # phase list — a fresh reuse re-mints blank at claim instead.
+  #
+  # Public (@doc false) so the matrix is testable without booting a Harness;
+  # only this module's recovery sweep calls it in production.
+  @doc false
+  @spec recoverable?(String.t()) :: boolean()
+  def recoverable?(session_id) do
     db_session = Persistence.find_session(session_id)
-    checkpoint = Persistence.latest_checkpoint(session_id)
+    checkpoint = db_session && Persistence.current_checkpoint(session_id)
 
     db_session != nil &&
       checkpoint != nil &&
-      db_session.phase in [:running, :ready, :needs_input, :resuming, :failed]
+      db_session.phase in [:running, :ready, :needs_input, :resuming, :failed] &&
+      resume_epochs_match?(db_session, checkpoint)
   rescue
     _ in @db_errors ->
       # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
       false
+  end
+
+  # Reads compare epoch stamps only (never the token): each present copy —
+  # `metadata["resume"]["state"]` and the pointed checkpoint's
+  # `runner_state_snapshot["resume"]["state"]` — must have been written
+  # under the CURRENT incarnation. Fenced writes make a mismatch impossible
+  # in normal operation, so a mismatch is corruption and recovery refuses.
+  defp resume_epochs_match?(db_session, checkpoint) do
+    fence_epoch = get_in(db_session.metadata, ["forge_recovery", "epoch"])
+
+    [
+      get_in(db_session.metadata, ["resume", "state", "epoch"]),
+      get_in(checkpoint.runner_state_snapshot, ["resume", "state", "epoch"])
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.all?(&(&1 == fence_epoch))
   end
 
   defp cluster_session_exists?(session_id) do

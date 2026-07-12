@@ -645,6 +645,16 @@ wall-clock half; the silence-kind distinction and group-kill discipline join MC1
 enum when it lands. (Note their worktree-init deliberately *disables* the silence
 timeout — the two knobs must stay per-workload.)
 
+**Status (2026-07-11)**: FOLDED-IN (pre-argus Wave A #1) — the taxonomy shipped
+with both kinds: `stalled_wall_clock` live (harness_timeout, sandbox `{_,
+:timeout}`, exit 124), `stalled_no_output` a documented producer-pending slot
+(no silence watchdog exists; Wave B #8's `:stage_stalled` inactivity clock is
+its named producer), and `user_cancelled` first-class non-failure. The
+group-kill half diverges deliberately: `kill_tree/1` stays the house mechanism
+(no `setsid` — `os_cmd.ex` rejects process-group semantics for macOS
+portability) with a preserved-set graceful window + VM-shutdown `ChildTracker`
+arriving in Wave A #2's build (operator decision 2026-07-11).
+
 ### OR3-3. Review-surface UX pack — AC-driven review, opacity rendering, reviewed-tracking, degraded modes
 
 **Recommendation**: TRACK — trigger: the argus review/diff client build (slices 2–4,

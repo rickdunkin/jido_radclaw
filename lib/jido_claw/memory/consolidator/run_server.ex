@@ -31,14 +31,19 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Core.AshErrors
+  alias JidoClaw.Forge.ChildTracker
   alias JidoClaw.Forge.Harness
   alias JidoClaw.Forge.Manager, as: ForgeManager
+  alias JidoClaw.Forge.Persistence, as: ForgePersistence
   alias JidoClaw.Forge.PubSub, as: ForgePubSub
+  alias JidoClaw.Forge.ResumeState
   alias JidoClaw.Memory.{Block, ConsolidationRun, Fact, Link, Scope}
 
   alias JidoClaw.MCP.ScopedEndpoint
 
   alias JidoClaw.Memory.Consolidator.{
+    AttemptLedger,
     Clusterer,
     LockOwner,
     PolicyResolver,
@@ -52,13 +57,24 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   @link_relations ~w(related supports contradicts supersedes elaborates)
   @link_relations_atoms Enum.map(@link_relations, &String.to_atom/1)
 
+  # The whole-run budget default: today's facade posture (600s runner +
+  # up to 60s bootstrap) — a whole-run ceiling, not a per-turn one.
+  @default_max_run_ms 660_000
+  # Below this remaining budget the loop stops opening attempts and a
+  # retry/replay is never authorized.
+  @deadline_floor_ms 5_000
+  @default_max_iterations 8
+  # Waiting for Manager recovery after an effect-free harness crash is
+  # bounded by the remaining deadline AND this cap.
+  @recovery_await_cap_ms 60_000
+  @certificate_read_retry_ms 500
+
   defstruct [
     :run_id,
     :scope,
     :opts,
     :lock_owner_pid,
     :mcp_endpoint,
-    :temp_file_path,
     :forge_session_id,
     :harness_task_ref,
     :harness_task_pid,
@@ -69,8 +85,13 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     :effective_harness,
     :effective_harness_model,
     :run_forge_home,
+    :deadline_at,
+    :publish_task,
     awaiters: [],
     staging: nil,
+    ledger: nil,
+    attempt_config_paths: %{},
+    max_run_ms: @default_max_run_ms,
     status: :idle,
     started_at: nil,
     harness_turns: 0
@@ -94,6 +115,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
        scope: scope,
        opts: [],
        staging: Staging.new(),
+       ledger: AttemptLedger.new(),
        status: :idle,
        started_at: DateTime.utc_now()
      }}
@@ -114,11 +136,19 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         # `:thinking_effort`) live under `:claude_code` / `:codex` /
         # `:fake`. The cross-harness regression test uses
         # `Application.put_env` between runs to vary the nested model.
+        harness_options = Keyword.get(consolidator_config(), :harness_options, [])
+
         effective_harness_model =
-          consolidator_config()
-          |> Keyword.get(:harness_options, [])
+          harness_options
           |> harness_specific_options(harness)
           |> Keyword.get(:model)
+
+        # The whole-run budget: minted from MONOTONIC time here, enforced by
+        # the :run_deadline watchdog. Cancellation authority is the watchdog
+        # alone — a caller's await_ms is a wait timeout, never cancellation.
+        max_run_ms = Keyword.get(harness_options, :max_run_ms, @default_max_run_ms)
+        deadline_at = System.monotonic_time(:millisecond) + max_run_ms
+        Process.send_after(self(), :run_deadline, max_run_ms)
 
         {:noreply,
          %{
@@ -127,7 +157,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
              opts: opts,
              awaiters: [from],
              effective_harness: harness,
-             effective_harness_model: effective_harness_model
+             effective_harness_model: effective_harness_model,
+             max_run_ms: max_run_ms,
+             deadline_at: deadline_at
          }}
 
       {:error, reason} ->
@@ -147,54 +179,117 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     {:noreply, %{state | awaiters: [from | state.awaiters]}}
   end
 
-  # MCP-tool envelopes — best-effort staging buffer mutations. All
-  # `propose_*` tools land here; `commit_proposals` triggers publish.
+  # MCP-tool envelopes, wrapped by `Tools.Helpers.call_run_server/2` with the
+  # caller's attempt token from the tokenized endpoint path. Enforcement is
+  # centralized HERE for every tool — readers included — so a stale CLI
+  # holding a closed attempt's URL cannot even read retry state. Mutators
+  # reserve on the ledger BEFORE the staging mutation executes; the whole
+  # sequence is one GenServer message, so a close observes every
+  # reservation (reserve-then-execute, serialized).
+  def handle_call({:mcp_tool, attempt_token, msg}, _from, state) do
+    case AttemptLedger.validate(state.ledger, attempt_token) do
+      :ok ->
+        tool_call(msg, attempt_token, state)
 
-  def handle_call({:propose_add, args}, _from, state) do
-    {:ok, staging} = Staging.add(state.staging, :fact_add, args)
-    {:reply, :ok, %{state | staging: staging}}
-  end
-
-  def handle_call({:propose_update, args}, _from, state) do
-    {:ok, staging} = Staging.add(state.staging, :fact_update, args)
-    {:reply, :ok, %{state | staging: staging}}
-  end
-
-  def handle_call({:propose_delete, args}, _from, state) do
-    {:ok, staging} = Staging.add(state.staging, :fact_delete, args)
-    {:reply, :ok, %{state | staging: staging}}
-  end
-
-  def handle_call({:propose_block_update, args}, _from, state) do
-    case Staging.add_block_update(state.staging, args) do
-      {:ok, staging} ->
-        {:reply, :ok, %{state | staging: staging}}
-
-      {:char_limit_exceeded, _, _} = soft ->
-        {:reply, soft, state}
+      {:error, :attempt_closed} ->
+        {:reply, {:error, "attempt_closed"}, state}
     end
   end
 
-  def handle_call({:propose_link, args}, _from, state) do
-    {:ok, staging} = Staging.add(state.staging, :link_create, args)
-    {:reply, :ok, %{state | staging: staging}}
+  # The driver's per-turn capability mint: one open attempt at a time; the
+  # tokenized URL + per-attempt 0600 config file ride `run_iteration` opts
+  # only — never spec or checkpoint.
+  def handle_call(:open_attempt, _from, state) do
+    case AttemptLedger.open(state.ledger) do
+      {:ok, token, ledger} ->
+        case write_attempt_config(state, token) do
+          {:ok, config_path, url} ->
+            {:reply, {:ok, %{token: token, config_path: config_path, url: url}},
+             %{
+               state
+               | ledger: ledger,
+                 attempt_config_paths: Map.put(state.attempt_config_paths, token, config_path)
+             }}
+
+          {:error, reason} ->
+            {:reply, {:error, {:attempt_config_failed, reason}}, state}
+        end
+
+      {:error, :attempt_already_open} ->
+        {:reply, {:error, :attempt_already_open}, state}
+    end
   end
 
-  def handle_call({:defer_cluster, args}, _from, state) do
-    {:ok, staging} = Staging.add(state.staging, :cluster_defer, args)
-    {:reply, :ok, %{state | staging: staging}}
+  # Close-then-evaluate, serialized: the token is closed FIRST (later calls
+  # bearing it are refused with the typed error), THEN the ledger decides
+  # the directive. The attempt's config file is deleted here — its CLI has
+  # exited by the time the driver closes.
+  def handle_call({:close_attempt, token, outcome}, _from, state) do
+    ctx = %{
+      remaining_ms: remaining_ms(state),
+      floor_ms: @deadline_floor_ms,
+      recoverable?: recovery_possible?(state)
+    }
+
+    {directive, ledger} = AttemptLedger.close_and_evaluate(state.ledger, token, outcome, ctx)
+
+    state =
+      state
+      |> Map.put(:ledger, ledger)
+      |> delete_attempt_config(token)
+
+    {:reply, directive, state}
   end
 
-  def handle_call(:commit_proposals, _from, state) do
-    send(self(), :publish)
-    {:reply, :ok, state}
+  defp tool_call({:propose_add, args}, token, state),
+    do: stage_mutation(state, token, :fact_add, args)
+
+  defp tool_call({:propose_update, args}, token, state),
+    do: stage_mutation(state, token, :fact_update, args)
+
+  defp tool_call({:propose_delete, args}, token, state),
+    do: stage_mutation(state, token, :fact_delete, args)
+
+  defp tool_call({:propose_link, args}, token, state),
+    do: stage_mutation(state, token, :link_create, args)
+
+  defp tool_call({:defer_cluster, args}, token, state),
+    do: stage_mutation(state, token, :cluster_defer, args)
+
+  defp tool_call({:propose_block_update, args}, token, state) do
+    case AttemptLedger.reserve_mutation(state.ledger, token) do
+      {:ok, ledger} ->
+        case Staging.add_block_update(state.staging, args) do
+          {:ok, staging} ->
+            {:reply, :ok, %{state | ledger: ledger, staging: staging}}
+
+          {:char_limit_exceeded, _, _} = soft ->
+            # The reservation stands even though the proposal was soft-
+            # rejected — over-counting is the safe direction for retry and
+            # crash decisions.
+            {:reply, soft, %{state | ledger: ledger}}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, Atom.to_string(reason)}, state}
+    end
   end
 
-  def handle_call(:list_clusters, _from, state) do
+  # The commit marker: closes staging to further writes and records which
+  # attempt carried it. It NEVER publishes — only the driver does, and only
+  # after this attempt's clean exit (the publish gate).
+  defp tool_call(:commit_proposals, token, state) do
+    case AttemptLedger.record_commit(state.ledger, token) do
+      {:ok, ledger} -> {:reply, :ok, %{state | ledger: ledger}}
+      {:error, reason} -> {:reply, {:error, Atom.to_string(reason)}, state}
+    end
+  end
+
+  defp tool_call(:list_clusters, _token, state) do
     {:reply, {:ok, %{clusters: state.clusters || []}}, state}
   end
 
-  def handle_call({:get_cluster, %{cluster_id: id}}, _from, state) do
+  defp tool_call({:get_cluster, %{cluster_id: id}}, _token, state) do
     case Enum.find(state.clusters || [], &(&1.id == id)) do
       nil ->
         {:reply, {:error, "no_such_cluster"}, state}
@@ -207,7 +302,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     end
   end
 
-  def handle_call(:get_active_blocks, _from, state) do
+  defp tool_call(:get_active_blocks, _token, state) do
     blocks =
       try do
         JidoClaw.Memory.list_blocks_for_scope_chain(state.scope)
@@ -220,7 +315,7 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     {:reply, {:ok, %{blocks: Enum.map(blocks, &serialize_block/1)}}, state}
   end
 
-  def handle_call({:find_similar_facts, %{query: q} = args}, _from, state) do
+  defp tool_call({:find_similar_facts, %{query: q} = args}, _token, state) do
     limit = Map.get(args, :limit, 10)
 
     facts =
@@ -235,6 +330,21 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     {:reply, {:ok, %{facts: facts}}, state}
   end
 
+  defp tool_call(other, _token, state) do
+    {:reply, {:error, "unknown_tool_envelope: #{inspect(other)}"}, state}
+  end
+
+  defp stage_mutation(state, token, kind, args) do
+    case AttemptLedger.reserve_mutation(state.ledger, token) do
+      {:ok, ledger} ->
+        {:ok, staging} = Staging.add(state.staging, kind, args)
+        {:reply, :ok, %{state | ledger: ledger, staging: staging}}
+
+      {:error, reason} ->
+        {:reply, {:error, Atom.to_string(reason)}, state}
+    end
+  end
+
   # -- async work ---------------------------------------------------------------
 
   @impl GenServer
@@ -245,47 +355,68 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     end
   end
 
-  def handle_info(:publish, state) do
-    case do_publish(state) do
-      {:ok, run} ->
-        finalise_with_run(state, :succeeded, run)
-
-      {:error, reason} ->
-        finalise(state, :failed, to_string(reason))
-    end
-  end
-
+  # The harness driver task's terminal. `:committed` is the ONLY path to a
+  # publish, and the publish runs in a monitored task so this server stays
+  # responsive and the deadline watchdog can cancel + await + reconcile a
+  # blocked publish phase.
   def handle_info({ref, result}, %{harness_task_ref: ref} = state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
     state = %{state | harness_task_ref: nil, harness_task_pid: nil}
 
     case result do
-      {:ok, %{status: :error, error: err}} ->
-        finalise(state, :failed, error_string_for(err))
+      {:committed, %{turns: turns}} ->
+        {:noreply, start_publish_task(%{state | harness_turns: turns})}
 
-      {:ok, result_map} ->
-        # The harness ran. The model is expected to have called
-        # `commit_proposals` (which already triggered `:publish`).
-        # If it didn't, treat the run as failed with the canonical
-        # max-turns error.
-        turns = result_map[:metadata][:turns] || 0
-        state = %{state | harness_turns: turns}
+      {:iteration_limit, %{turns: turns}} ->
+        finalise(%{state | harness_turns: turns}, :failed, "iteration_limit_reached")
 
-        if Staging.total(state.staging) == 0 do
-          finalise(state, :failed, "max_turns_reached")
-        else
-          send(self(), :publish)
-          {:noreply, state}
-        end
+      {:deadline_exhausted, %{turns: turns}} ->
+        finalise(%{state | harness_turns: turns}, :failed, "run_deadline_exceeded")
 
-      {:error, reason} ->
-        finalise(state, :failed, error_string_for(reason))
+      {:failed, reason, %{turns: turns}} ->
+        finalise(%{state | harness_turns: turns}, :failed, error_string_for(reason))
+    end
+  end
+
+  # The publish task's result: the certificate row (`:run_id`-pinned,
+  # status :succeeded) was written in the SAME transaction as the mutations.
+  def handle_info({ref, result}, %{publish_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = %{state | publish_task: nil}
+
+    case result do
+      {:ok, run} -> finalise_with_run(state, :succeeded, run)
+      {:error, reason} -> finalise(state, :failed, to_string(reason))
     end
   end
 
   def handle_info({:DOWN, ref, :process, _, reason}, %{harness_task_ref: ref} = state) do
     finalise(state, :failed, "harness_error: #{inspect(reason)}")
   end
+
+  # The publish task DIED mid-transaction: whether the commit landed is
+  # unknown until the certificate says so — reconcile, never republish.
+  def handle_info({:DOWN, ref, :process, _, reason}, %{publish_task: %Task{ref: ref}} = state) do
+    Logger.warning("[Consolidator] publish task crashed: #{inspect(reason)}")
+    reconcile_publish(%{state | publish_task: nil}, "publish_task_crashed")
+  end
+
+  # The whole-run deadline watchdog — the ONLY cancellation authority
+  # (a caller's await_ms is a wait timeout, never cancellation). Close the
+  # active attempt, stop the harness session, cancel + await any publish
+  # task, then reconcile the certificate with three honest outcomes.
+  def handle_info(:run_deadline, %{status: :running} = state) do
+    if state.forge_session_id, do: maybe_stop_forge_session(state.forge_session_id)
+
+    watchdog_state =
+      state
+      |> close_open_attempt_for_deadline()
+      |> shutdown_publish_task()
+
+    reconcile_publish(watchdog_state, "run_deadline_exceeded")
+  end
+
+  def handle_info(:run_deadline, state), do: {:noreply, state}
 
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
@@ -374,13 +505,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
         path_prefix: "/run"
       )
 
-    {:ok, temp_path} =
-      ScopedEndpoint.write_client_config(
-        "consolidator",
-        endpoint.url,
-        "consolidator-#{state.run_id}.json"
-      )
-
     config = consolidator_config()
     harness_options = Keyword.get(config, :harness_options, [])
     timeout_ms = Keyword.get(harness_options, :timeout_ms, 600_000)
@@ -390,18 +514,23 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     run_forge_home = Path.join(base_forge, forge_session_id)
     codex_home = Path.join(run_forge_home, ".codex")
 
-    # Pre-create the per-run dir for `:local` mode so the cleanup in
-    # `drive_harness/4` has a stable target even when the runner skips
-    # its own mkdir step (e.g., `:fake`). Docker mode handles cleanup
-    # via container destruction, so we skip the host mkdir there.
+    # Pre-create the per-run dir for `:local` mode — mode 0700 explicitly:
+    # it retains credentials + session data for the run's WHOLE life now
+    # (crash-native resume keeps codex session files under CODEX_HOME
+    # across a harness recovery; deletion happens only at final teardown).
+    # Docker mode handles cleanup via container destruction, so we skip
+    # the host mkdir there.
     if sandbox_mode == :local do
       File.mkdir_p!(run_forge_home)
+      File.chmod!(run_forge_home, 0o700)
     end
 
+    # The MCP endpoint capability is ATTEMPT-scoped: the tokenized URL and
+    # per-attempt 0600 config file are minted by `:open_attempt` per CLI
+    # invocation and ride `run_iteration` opts only — never the spec (and
+    # therefore never the persisted session row or a checkpoint).
     runner_config =
       base_runner_config(harness, harness_options)
-      |> Map.put(:mcp_config_path, temp_path)
-      |> Map.put(:mcp_server_url, endpoint.url)
       |> Map.put(:forge_home, run_forge_home)
       |> Map.put(:codex_home, codex_home)
       |> Map.put(:prompt, Prompt.build(state))
@@ -430,11 +559,19 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
     parent = self()
 
+    budget = %{
+      deadline_at: state.deadline_at,
+      per_turn_ms: timeout_ms,
+      floor_ms: @deadline_floor_ms,
+      max_iterations: Keyword.get(harness_options, :max_iterations, @default_max_iterations),
+      recovery_await_cap_ms: @recovery_await_cap_ms
+    }
+
     task =
       Task.Supervisor.async_nolink(
         JidoClaw.Memory.Consolidator.TaskSupervisor,
         fn ->
-          drive_harness(parent, forge_session_id, spec, timeout_ms)
+          drive_harness(parent, forge_session_id, spec, budget)
         end
       )
 
@@ -442,7 +579,6 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
      %{
        state
        | mcp_endpoint: endpoint,
-         temp_file_path: temp_path,
          forge_session_id: forge_session_id,
          harness_task_ref: task.ref,
          harness_task_pid: task.pid,
@@ -451,48 +587,180 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
      }}
   end
 
-  defp drive_harness(_parent, forge_session_id, spec, timeout_ms) do
+  # The multi-iteration driver: turn 1 sends the full prompt (already in
+  # runner_config); continuation turns send GUIDANCE only (SY3-3 — never
+  # restate the task; an armed runner continues its anchored conversation,
+  # a resume-off runner just runs again). Per attempt: mint the capability
+  # (`:open_attempt`), run, close-then-evaluate (`:close_attempt`), act on
+  # the directive. Terminal resources (lock, endpoint, run_forge_home) are
+  # NOT touched here — they belong to the RunServer's final teardown, so a
+  # harness crash + Manager recovery finds them intact.
+  defp drive_harness(parent, forge_session_id, spec, budget) do
     # Subscribe before start_session so we can't miss the :ready broadcast
-    # if bootstrap completes inside the same scheduler quantum.
+    # if bootstrap completes inside the same scheduler quantum — the same
+    # subscription later carries the recovered session's :ready.
     :ok = ForgePubSub.subscribe(forge_session_id)
-    run_forge_home = Map.get(spec.runner_config, :forge_home)
 
-    try do
-      case ForgeManager.start_session(forge_session_id, spec) do
-        {:ok, %{pid: pid}} ->
-          try do
-            with :ok <- await_ready(forge_session_id, pid, bootstrap_timeout(timeout_ms)) do
-              Harness.run_iteration(forge_session_id, timeout: timeout_ms)
-            end
+    case ForgeManager.start_session(forge_session_id, spec) do
+      {:ok, %{pid: pid}} ->
+        try do
+          case await_ready(forge_session_id, pid, bootstrap_timeout(budget.per_turn_ms)) do
+            :ok ->
+              harness_loop(parent, forge_session_id, budget, 1, 0)
 
-            # Forge harness wrapper — every external runner failure path must
-            # normalize to {:error, _} so the per-run server can finalise.
-          rescue
-            # reach:disable-next-line bare_rescue
-            e -> {:error, Exception.message(e)}
-          catch
-            :exit, reason -> {:error, inspect(reason)}
-          after
-            # Ready, timed-out, harness died, run_iteration crashed — every
-            # exit path stops the Forge session. start_session succeeded so
-            # the corresponding stop must always run. Per-run forge dir
-            # cleanup is in the outer `after` so it runs AFTER the harness
-            # has been supervisor-terminated and the CLI process is no
-            # longer writing.
-            maybe_stop_forge_session(forge_session_id)
+            {:error, reason} ->
+              {:failed, reason, %{turns: 0}}
           end
 
-        {:error, reason} ->
-          {:error, reason}
-      end
-    after
-      # Outer cleanup also catches the start-session-failed path
-      # (`:at_capacity`, `:runner_at_capacity`, `:already_exists`), where
-      # `spawn_harness_task/2` already created the dir but no harness
-      # ever touched it. Best-effort: a missing dir is fine.
-      if run_forge_home, do: File.rm_rf(run_forge_home)
+          # Forge harness wrapper — every external runner failure path must
+          # normalize to a driver terminal so the per-run server can finalise.
+        rescue
+          # reach:disable-next-line bare_rescue
+          e -> {:failed, Exception.message(e), %{turns: 0}}
+        catch
+          :exit, reason -> {:failed, inspect(reason), %{turns: 0}}
+        after
+          # Ready, timed-out, harness died, loop crashed — every exit path
+          # stops the Forge session (idempotent; the watchdog also stops it
+          # on the deadline path).
+          maybe_stop_forge_session(forge_session_id)
+        end
+
+      {:error, reason} ->
+        {:failed, reason, %{turns: 0}}
     end
   end
+
+  defp harness_loop(parent, forge_session_id, budget, iteration, turns_acc, source \\ :live) do
+    remaining = budget.deadline_at - System.monotonic_time(:millisecond)
+
+    if remaining < budget.floor_ms do
+      {:deadline_exhausted, %{turns: turns_acc}}
+    else
+      case GenServer.call(parent, :open_attempt, 30_000) do
+        {:ok, %{token: token, config_path: config_path, url: url}} ->
+          opts =
+            [
+              timeout: min(budget.per_turn_ms, remaining),
+              mcp_config_path: config_path,
+              mcp_server_url: url,
+              source: source
+            ] ++ turn_prompt_opts(iteration)
+
+          outcome = run_one_attempt(forge_session_id, opts)
+          maybe_warn_fresh_start(outcome, iteration)
+          turns = turns_acc + turns_of(outcome)
+          directive = GenServer.call(parent, {:close_attempt, token, outcome}, 30_000)
+
+          act_on_directive(directive, parent, forge_session_id, budget, iteration, turns)
+
+        {:error, reason} ->
+          {:failed, "attempt_open_failed: #{inspect(reason)}", %{turns: turns_acc}}
+      end
+    end
+  end
+
+  defp act_on_directive(directive, parent, forge_session_id, budget, iteration, turns) do
+    case directive do
+      :publish ->
+        {:committed, %{turns: turns}}
+
+      :continue ->
+        if iteration >= budget.max_iterations do
+          {:iteration_limit, %{turns: turns}}
+        else
+          harness_loop(parent, forge_session_id, budget, iteration + 1, turns)
+        end
+
+      :retry_fresh ->
+        # The ONE authorized fresh retry: the anchor was poisoned by the
+        # rejected resume, so the runner starts a fresh conversation — the
+        # turn must carry the FULL prompt (state.prompt), never continuation
+        # guidance, hence iteration resets to 1 for prompt purposes while
+        # the turn budget keeps counting via the deadline. The re-send is
+        # marked `source: :replay` (EM3-3).
+        harness_loop(parent, forge_session_id, budget, 1, turns, :replay)
+
+      :await_recovery ->
+        await_recovery_then_replay(parent, forge_session_id, budget, iteration, turns)
+
+      {:halt, reason} ->
+        {:failed, reason, %{turns: turns}}
+    end
+  end
+
+  # Effect-free harness crash: Manager recovery restores process + state
+  # (never re-issues work) — the driver awaits the recovered session's
+  # :ready on the run-long subscription, then REPLAYS the interrupted
+  # logical turn exactly once (the ledger latched it; marked
+  # `source: :replay`, EM3-3).
+  defp await_recovery_then_replay(parent, forge_session_id, budget, iteration, turns) do
+    remaining = budget.deadline_at - System.monotonic_time(:millisecond)
+    await = min(max(remaining, 0), budget.recovery_await_cap_ms)
+
+    receive do
+      {:ready, ^forge_session_id} ->
+        harness_loop(parent, forge_session_id, budget, iteration, turns, :replay)
+    after
+      await ->
+        {:failed, "harness_recovery_timeout", %{turns: turns}}
+    end
+  end
+
+  # Turn 1 sends no prompt opts — the runner uses its full config prompt.
+  # Later turns send `:guidance` — the semantically-tagged opt only armed
+  # CONTINUATION turns read: an anchored continuation rides `--resume` with
+  # it, and a fresh-armed turn structurally ignores it in favor of
+  # `state.prompt` (the persisted full task), so a task-free turn cannot
+  # exist (CM2-3/SY3-3). Replay turns need no special-casing — a live-anchor
+  # replay continues with meaningful guidance; a dropped-anchor replay
+  # resolves fresh and gets the task. `source: :replay` stays for EM3-3
+  # event marking only.
+  defp turn_prompt_opts(1), do: []
+  defp turn_prompt_opts(iteration), do: [guidance: Prompt.continuation(iteration)]
+
+  # Observability only (F2's detection half): a fresh conversation on a
+  # turn ≥ 2 means the anchor didn't survive — mid-run context was lost and
+  # the turn redid the task from scratch (safely: a fresh-armed turn always
+  # carries the full prompt now). No directive change, no extra turn.
+  # Silent when the runner attached no armed state (resume :off, fake and
+  # scripted runners).
+  defp maybe_warn_fresh_start(
+         {:result, %{metadata: %{state: %{resume: %ResumeState{} = rs}}}},
+         iteration
+       )
+       when iteration > 1 do
+    if ResumeState.fresh_start?(rs) do
+      Logger.warning(
+        "[Consolidator] turn #{iteration} started a FRESH conversation — mid-run " <>
+          "context was lost; the turn redid the task with the full prompt"
+      )
+    end
+
+    :ok
+  end
+
+  defp maybe_warn_fresh_start(_outcome, _iteration), do: :ok
+
+  defp run_one_attempt(forge_session_id, opts) do
+    case Harness.run_iteration(forge_session_id, opts) do
+      {:ok, result} ->
+        {:result, result}
+
+      {:error, :not_found} ->
+        # The session process is GONE (crash), not an iteration error —
+        # the ledger's crash table decides replay vs terminal.
+        {:crashed, :session_not_found}
+
+      {:error, reason} ->
+        {:result, %{status: :error, error: reason, metadata: %{}}}
+    end
+  catch
+    :exit, reason -> {:crashed, reason}
+  end
+
+  defp turns_of({:result, %{metadata: %{turns: turns}}}) when is_integer(turns), do: turns
+  defp turns_of(_outcome), do: 0
 
   defp await_ready(session_id, pid, timeout) do
     ref = Process.monitor(pid)
@@ -530,6 +798,12 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
   defp base_runner_config(:fake, _opts), do: %{fake_proposals: []}
 
+  # Both vendor lanes arm native session resume (F1): without it every turn
+  # ≥ 2 is a FRESH conversation whose entire prompt is the task-free
+  # continuation nudge. Accepted side effects: armed claude adds one `pwd`
+  # exec at init; armed codex drops `--ephemeral`, so session files persist
+  # under CODEX_HOME (= run_forge_home, cleaned at final teardown). The
+  # :fake lane stays unarmed.
   defp base_runner_config(:claude_code, opts) do
     merged = harness_specific_options(opts, :claude_code)
 
@@ -537,7 +811,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
       model: Keyword.get(merged, :model, "claude-opus-4-7"),
       max_turns: Keyword.get(merged, :max_turns, 60),
       timeout_ms: Keyword.get(merged, :timeout_ms, 600_000),
-      thinking_effort: Keyword.get(merged, :thinking_effort, "xhigh")
+      thinking_effort: Keyword.get(merged, :thinking_effort, "xhigh"),
+      resume: :armed
     }
   end
 
@@ -547,7 +822,8 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     %{
       model: Keyword.get(merged, :model, "gpt-5-codex"),
       max_turns: Keyword.get(merged, :max_turns, 60),
-      timeout_ms: Keyword.get(merged, :timeout_ms, 600_000)
+      timeout_ms: Keyword.get(merged, :timeout_ms, 600_000),
+      resume: :armed
     }
   end
 
@@ -580,6 +856,131 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
   # Harness `:scope_required` path.
   defp maybe_run_without_claim(spec, nil), do: Map.put(spec, :claim, false)
   defp maybe_run_without_claim(spec, _workspace_id), do: spec
+
+  # Crash-native resume is only reachable for CLAIMED, persisted sessions —
+  # a `claim: false` run (user/project scope) or disabled persistence has no
+  # Manager recovery, so an effect-free crash is terminal, never awaited.
+  defp recovery_possible?(state) do
+    state.scope[:workspace_id] != nil and ForgePersistence.enabled?()
+  end
+
+  defp close_open_attempt_for_deadline(%{ledger: %AttemptLedger{open_token: token}} = state)
+       when is_binary(token) do
+    {_directive, ledger} =
+      AttemptLedger.close_and_evaluate(
+        state.ledger,
+        token,
+        {:crashed, :run_deadline},
+        %{remaining_ms: 0, floor_ms: @deadline_floor_ms, recoverable?: false}
+      )
+
+    %{state | ledger: ledger}
+  end
+
+  defp close_open_attempt_for_deadline(state), do: state
+
+  defp shutdown_publish_task(%{publish_task: %Task{} = task} = state) do
+    _ = Task.shutdown(task, :brutal_kill)
+    %{state | publish_task: nil}
+  end
+
+  defp shutdown_publish_task(state), do: state
+
+  defp remaining_ms(%{deadline_at: nil}), do: 0
+  defp remaining_ms(state), do: state.deadline_at - System.monotonic_time(:millisecond)
+
+  # Per-attempt endpoint capability: a UNIQUE immutable 0600 config file per
+  # CLI invocation (never rewriting a shared file — an old process must not
+  # be able to reload a new attempt's capability) naming the tokenized URL.
+  defp write_attempt_config(state, token) do
+    url = "#{state.mcp_endpoint.url}/a/#{token}"
+    path = Path.join(System.tmp_dir!(), "consolidator-#{state.run_id}-#{token}.json")
+
+    with :ok <- File.write(path, ScopedEndpoint.client_config_json("consolidator", url)),
+         :ok <- File.chmod(path, 0o600) do
+      {:ok, path, url}
+    end
+  end
+
+  defp delete_attempt_config(state, token) do
+    case Map.pop(state.attempt_config_paths, token) do
+      {nil, _paths} ->
+        state
+
+      {path, paths} ->
+        _ = File.rm(path)
+        %{state | attempt_config_paths: paths}
+    end
+  end
+
+  defp start_publish_task(state) do
+    task =
+      Task.Supervisor.async_nolink(
+        JidoClaw.Memory.Consolidator.TaskSupervisor,
+        fn -> do_publish(state) end
+      )
+
+    %{state | publish_task: task}
+  end
+
+  # Three-outcome publish reconciliation against the durable certificate
+  # (the `:run_id`-pinned ConsolidationRun row): (a) row + :succeeded ⇒ the
+  # commit won; (b) genuine not-found, or a present row with a non-success
+  # status (terminal audit rows share the deterministic id) ⇒ nothing
+  # published; (c) a DB/framework error reading the certificate — after
+  # bounded retries — ⇒ publish_outcome_unknown: never republish, never
+  # claim nothing-published.
+  defp reconcile_publish(state, base_reason) do
+    deadline = System.monotonic_time(:millisecond) + reconciliation_allowance_ms()
+
+    case read_certificate(state, deadline) do
+      {:ok, %{status: :succeeded} = run} ->
+        finalise_with_run(state, :succeeded, run)
+
+      {:ok, _non_success_row} ->
+        finalise(state, :failed, base_reason)
+
+      :not_found ->
+        finalise(state, :failed, base_reason)
+
+      :unknown ->
+        finalise(state, :failed, "publish_outcome_unknown")
+    end
+  end
+
+  defp read_certificate(state, retry_deadline) do
+    case ConsolidationRun.by_id(state.run_id,
+           tenant: state.scope.tenant_id,
+           actor: Actor.system(state.scope.tenant_id)
+         ) do
+      {:ok, run} ->
+        {:ok, run}
+
+      {:error, err} ->
+        if AshErrors.not_found?(err) do
+          :not_found
+        else
+          retry_certificate_read(state, retry_deadline)
+        end
+    end
+  rescue
+    _ in @db_errors ->
+      # credo:disable-for-previous-line ExSlop.Check.Warning.RescueWithoutReraise
+      retry_certificate_read(state, retry_deadline)
+  end
+
+  defp retry_certificate_read(state, retry_deadline) do
+    if System.monotonic_time(:millisecond) < retry_deadline do
+      Process.sleep(@certificate_read_retry_ms)
+      read_certificate(state, retry_deadline)
+    else
+      :unknown
+    end
+  end
+
+  defp reconciliation_allowance_ms do
+    Application.get_env(:jido_claw, :consolidator_reconciliation_allowance_ms, 10_000)
+  end
 
   defp load_inputs(state) do
     config = consolidator_config()
@@ -720,6 +1121,10 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
 
         run_attrs =
           %{
+            # The commit certificate: the row id IS the run id, written in
+            # the same transaction as the mutations, so reconciliation can
+            # decide "did the publish commit?" by one keyed read.
+            run_id: state.run_id,
             scope_kind: state.scope.scope_kind,
             user_id: state.scope[:user_id],
             workspace_id: state.scope[:workspace_id],
@@ -1145,6 +1550,9 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     finished_at = DateTime.utc_now()
 
     attrs = %{
+      # Terminal audit rows share the run's deterministic id, so publish
+      # reconciliation requires `status == :succeeded`, never row presence.
+      run_id: state.run_id,
       scope_kind: state.scope.scope_kind,
       user_id: state.scope[:user_id],
       workspace_id: state.scope[:workspace_id],
@@ -1173,10 +1581,28 @@ defmodule JidoClaw.Memory.Consolidator.RunServer do
     end
   end
 
+  # FINAL teardown only (clean terminal, watchdog, or recovery-wait
+  # exhaustion): the lock, endpoint, per-attempt config files, and the
+  # per-run forge home are retained across a harness crash so Manager
+  # recovery finds them intact — codex session files under
+  # CODEX_HOME=run_forge_home survive recovery. The cross-owner handshake:
+  # the Harness's own teardown runs DETACHED from its terminate/2, and a
+  # recovered run can have an OLD epoch's detached teardown still running
+  # while a newer epoch finishes — so the session-wide ChildTracker
+  # barrier (marks the session closing, sweeps every live epoch, joins
+  # in-flight epoch teardowns) runs synchronously BEFORE the home
+  # directory — the LAST filesystem resource — is removed. No CLI from
+  # any epoch can still be inside its graceful window when the rm runs.
   defp cleanup(state) do
+    if state.forge_session_id do
+      maybe_stop_forge_session(state.forge_session_id)
+      ChildTracker.graceful_teardown_session(state.forge_session_id)
+    end
+
     if state.lock_owner_pid, do: LockOwner.release(state.lock_owner_pid)
     if state.mcp_endpoint, do: ScopedEndpoint.stop(state.mcp_endpoint)
-    if state.temp_file_path, do: File.rm(state.temp_file_path)
+    Enum.each(state.attempt_config_paths, fn {_token, path} -> File.rm(path) end)
+    if state.run_forge_home, do: File.rm_rf(state.run_forge_home)
     :ok
   end
 

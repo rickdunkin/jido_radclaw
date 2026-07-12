@@ -59,8 +59,32 @@ defmodule JidoClaw.Conversations.SubagentTranscriptTest do
       assert terminal.agent_id == tag
       assert terminal.subagent == true
 
+      # EM3-3: every turn carries the source stamp; the default is :live.
+      assert task.metadata["source"] == "live"
+      assert terminal.metadata["source"] == "live"
+
       # Terminal sequence strictly greater than the task sequence.
       assert terminal.sequence > task.sequence
+    end
+
+    test "the source stamp whitelists :replay and coerces arbitrary values to :live", seeded do
+      tag = "coder_#{System.unique_integer([:positive])}"
+      rid = Ecto.UUID.generate()
+
+      replay_ctx = Map.put(child_ctx(seeded, tag), :source, :replay)
+      assert :ok = SubagentTranscript.record_task(replay_ctx, rid, "re-sent turn")
+
+      hostile_ctx = Map.put(child_ctx(seeded, tag), :source, :"free form atom")
+      assert :done = SubagentTranscript.record_result(hostile_ctx, rid, {:ok, "done"})
+
+      rows = read_all(seeded)
+      task = Enum.find(rows, &(&1.role == :user))
+      terminal = Enum.find(rows, &(&1.role == :assistant))
+
+      assert task.metadata["source"] == "replay"
+      # An arbitrary tool_context value never rides the transcript as-is —
+      # it coerces to :live.
+      assert terminal.metadata["source"] == "live"
     end
 
     test "a failed outcome writes a terminal :system row (no dangling :user turn)", seeded do

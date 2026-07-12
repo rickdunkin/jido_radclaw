@@ -122,8 +122,10 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
         output_sequence: 1
       })
 
-      # Save checkpoint — events after this should be in events_since_checkpoint
-      Persistence.save_checkpoint(sid, 1, %{step: 1}, %{})
+      # Save a POINTED checkpoint (context_for_resume keys off the recovery
+      # pointer, not wall-clock latest) — events after this should be in
+      # events_since_checkpoint
+      checked_checkpoint!(sid, 1, %{step: 1})
 
       # Small delay so timestamp is strictly after checkpoint
       Process.sleep(10)
@@ -212,7 +214,7 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
         output_sequence: 1
       })
 
-      Persistence.save_checkpoint(sid, 1, %{current_step: 1}, %{})
+      checked_checkpoint!(sid, 1, %{current_step: 1})
 
       assert {:ok, prompt} = ContextBuilder.build_resume_prompt(sid)
       assert prompt =~ "Last Checkpoint"
@@ -250,8 +252,9 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
 
       Persistence.record_session_started(sid, forge_spec(%{runner: :shell}))
 
-      # Create a checkpoint early so events after it populate "Activity Since Checkpoint"
-      Persistence.save_checkpoint(sid, 0, %{}, %{})
+      # Create a pointed checkpoint early so events after it populate
+      # "Activity Since Checkpoint"
+      checked_checkpoint!(sid, 0, %{})
       Process.sleep(10)
 
       for i <- 1..20 do
@@ -342,5 +345,17 @@ defmodule JidoClaw.Forge.ContextBuilderTest do
 
   defp forge_spec(attrs) do
     Map.merge(Process.get(:forge_context_scope), attrs)
+  end
+
+  # `context_for_resume/1` keys off the fenced recovery pointer, which only
+  # the CHECKED save moves — mint an incarnation and save through it.
+  defp checked_checkpoint!(sid, sequence, snapshot) do
+    {:ok, pair} =
+      Persistence.mint_resume_epoch(sid, Persistence.stored_recovery_pair(sid), nil)
+
+    {:ok, checkpoint} =
+      Persistence.save_recovery_checkpoint(sid, sequence, snapshot, %{}, nil, pair.token)
+
+    checkpoint
   end
 end

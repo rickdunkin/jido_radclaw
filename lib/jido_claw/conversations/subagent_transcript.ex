@@ -126,6 +126,14 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
     # intact; only this at-rest copy is scrubbed.)
     {content, metadata} = scrub_turn(tool_context, content)
 
+    # EM3-3 transcript honesty: every turn carries `source: :live | :replay`
+    # — `:replay` marks a driver-authorized fresh re-send of the same
+    # logical turn (the effect-free retry / crash replay). Whitelist-decoded:
+    # an arbitrary tool_context value coerces to :live, never a free-form
+    # atom. No agent-layer replay path produces :replay yet — the field
+    # exists so a future one cannot be silently indistinguishable from live.
+    metadata = Map.put(metadata, :source, turn_source(Map.get(tool_context, :source)))
+
     attrs =
       %{
         session_id: session_uuid,
@@ -158,6 +166,10 @@ defmodule JidoClaw.Conversations.SubagentTranscript do
       do: {SensitiveScrub.redacted_text(), SensitiveScrub.redacted_map()},
       else: {content, %{}}
   end
+
+  defp turn_source(:replay), do: :replay
+  defp turn_source("replay"), do: :replay
+  defp turn_source(_live_or_arbitrary), do: :live
 
   defp append_opts(tenant_id, actor) do
     [tenant: tenant_id, actor: actor || Actor.system(tenant_id)]

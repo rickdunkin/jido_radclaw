@@ -5,6 +5,7 @@ defmodule JidoClaw.Core.AshErrorsTest do
   alias Ash.Error.Changes.Required
   alias Ash.Error.Invalid
   alias JidoClaw.Conversations.Message
+  alias JidoClaw.Conversations.Session
   alias JidoClaw.Core.AshErrors
 
   describe "unique_violation?/2 against a real Postgres unique violation" do
@@ -201,18 +202,71 @@ defmodule JidoClaw.Core.AshErrorsTest do
     end
   end
 
+  describe "not_found?/1" do
+    test "classifies a REAL get?-miss from Session.by_id (the CLI exit-4 seam)" do
+      %{tenant_id: tenant_id} = seed_full(tenant_label: "not-found")
+
+      assert {:error, error} =
+               Session.by_id(Ecto.UUID.generate(),
+                 tenant: tenant_id,
+                 actor: actor_for(tenant_id)
+               )
+
+      assert AshErrors.not_found?(error)
+    end
+
+    test "recognizes the bare leaf and the pure wrapped shape" do
+      assert AshErrors.not_found?(%Ash.Error.Query.NotFound{})
+
+      assert AshErrors.not_found?(%Ash.Error.Invalid{
+               errors: [%Ash.Error.Query.NotFound{}]
+             })
+    end
+
+    test "an infrastructure failure is NEVER a not-found (the exit-1 lane)" do
+      # The `mix jidoclaw run` resolver branches 4-vs-1 on exactly this
+      # predicate: a flaky DB read must keep the generic error lane, never
+      # report a clean miss.
+      refute AshErrors.not_found?(%Ash.Error.Unknown{
+               errors: [
+                 %Ash.Error.Unknown.UnknownError{
+                   error: %DBConnection.ConnectionError{message: "tcp recv: closed"}
+                 }
+               ]
+             })
+
+      refute AshErrors.not_found?(%DBConnection.ConnectionError{message: "down"})
+      refute AshErrors.not_found?(%Postgrex.Error{postgres: nil, message: "ssl down"})
+    end
+
+    test "a container MIXING not-found with any other leaf stays false" do
+      refute AshErrors.not_found?(%Ash.Error.Invalid{
+               errors: [
+                 %Ash.Error.Query.NotFound{},
+                 %Ash.Error.Unknown.UnknownError{error: %ArgumentError{message: "defect"}}
+               ]
+             })
+    end
+
+    test "empty containers and arbitrary input are false" do
+      refute AshErrors.not_found?(%Ash.Error.Invalid{errors: []})
+      refute AshErrors.not_found?(:not_found)
+      refute AshErrors.not_found?("not found")
+      refute AshErrors.not_found?(nil)
+    end
+  end
+
   describe "not_found_error?/1" do
-    test "matches bare and Invalid-wrapped NotFound" do
+    test "is a compatibility alias for the strict not-found classifier" do
       bare = %Ash.Error.Query.NotFound{resource: Message}
 
       assert AshErrors.not_found_error?(bare)
       assert AshErrors.not_found_error?(invalid_error([bare]))
-    end
 
-    test "rejects everything else (infra is never absence)" do
+      refute AshErrors.not_found_error?(invalid_error([bare, Required.exception(field: :name)]))
+
       refute AshErrors.not_found_error?(%DBConnection.ConnectionError{})
       refute AshErrors.not_found_error?(:timeout)
-      refute AshErrors.not_found_error?(invalid_error([Required.exception(field: :name)]))
     end
   end
 

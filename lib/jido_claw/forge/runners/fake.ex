@@ -42,9 +42,13 @@ defmodule JidoClaw.Forge.Runners.Fake do
   end
 
   @impl JidoClaw.Forge.Runner
-  def run_iteration(_client, state, _opts) do
+  def run_iteration(_client, state, opts) do
+    # The attempt-scoped config path (tokenized per-attempt capability)
+    # rides opts; the init-time value is the legacy fallback.
+    config_path = Keyword.get(opts, :mcp_config_path, state.mcp_config_path)
+
     base =
-      with {:ok, server_url} <- read_server_url(state.mcp_config_path),
+      with {:ok, server_url} <- read_server_url(config_path),
            {:ok, mcp} <- LoopbackClient.initialize(server_url),
            :ok <- send_proposals(mcp, state.fake_proposals),
            {:ok, _} <- LoopbackClient.call_tool(mcp, "commit_proposals", %{}) do

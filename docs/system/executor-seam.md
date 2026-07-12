@@ -15,8 +15,8 @@ sources:
   - lib/jido_claw/tools/search_code.ex
   - lib/jido_claw/tools/search_real_code.ex
   - lib/jido_claw/tools/file_payload_limit.ex
-verified: 2026-07-10
-verified_sha: "b2cae5cd"
+verified: 2026-07-11
+verified_sha: "6e252a40"
 ---
 
 # Executor Seam (template `executor:` binding)
@@ -255,9 +255,11 @@ runners are its first emitters):
   and the harness `persist/1` guard catches EXITS too, not just raises — a
   DBConnection checkout fault inside `terminate/2` must not replace the
   session's real exit reason.
-- Fresh-session-per-re-review-round is pinned (two vendor sessions across a findings →
-  fix → approve loop; no-resume argv pins on both runners — camus C3-1's resume
-  machinery unported).
+- Fresh-session-per-re-review-round holds STRUCTURALLY: native CLI session resume now
+  exists ([forge-session-resume](forge-session-resume.md)) but is `resume: :off` by
+  default and the executor never arms it — every review round still gets a fresh
+  vendor session + forge_home, and the default-off argv pins on both runners keep
+  holding byte-identical (extended with `--session-id`/`--resume` refutes).
 
 ### The fake executor
 

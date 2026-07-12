@@ -58,7 +58,12 @@ citation), [../../argus/OVERVIEW.md](../../argus/OVERVIEW.md) §4.4/§5/§6.2 +
 [../../argus/FLOW.md](../../argus/FLOW.md) §4/§5/§7/§12 (the seam map),
 [../multica/FEATURES-WORTH-BORROWING.md](../multica/FEATURES-WORTH-BORROWING.md)
 (MC1-1 resume stack — MY adds the `--continue` shared-cwd hazard + probe-and-own
-mechanics; MC2-4 env scrub — myrlin independently scrubs `CLAUDECODE` by exact name),
+mechanics; shipped 2026-07-11 in pre-argus Wave A #2 with both myrlin hazards
+honored: `--continue` is contract-pinned never-used on both runners, and
+probe-from-disk was REJECTED — anchors persist fenced on the Forge Session
+row, never read back from CLI dotfiles; MC2-4 env scrub — myrlin independently
+scrubs `CLAUDECODE` by exact name, now a hard denylist operator config cannot
+re-open),
 [../symphony/FEATURES-WORTH-BORROWING.md](../symphony/FEATURES-WORTH-BORROWING.md)
 (SY1-4 multi-account rotation — MY1-1 is its file-mechanics half),
 [../chorus/FEATURES-WORTH-BORROWING.md](../chorus/FEATURES-WORTH-BORROWING.md) (CH2-3

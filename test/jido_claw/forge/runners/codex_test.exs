@@ -7,6 +7,8 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
   """
   use ExUnit.Case, async: false
 
+  alias JidoClaw.Forge.PubSub, as: ForgePubSub
+  alias JidoClaw.Forge.ResumeState
   alias JidoClaw.Forge.Runners.Codex
   alias JidoClaw.Test.StubSandbox
 
@@ -310,7 +312,7 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
       jsonl =
         Enum.map_join(
           [
-            %{"type" => "thread.started"},
+            %{"type" => "thread.started", "thread_id" => "0198a5a0-0000-7000-8000-000000000001"},
             %{"type" => "turn.started"},
             %{
               "type" => "item.started",
@@ -370,6 +372,11 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
 
       # usage was captured into metadata
       assert result.metadata.usage == %{"input_tokens" => 10, "output_tokens" => 5}
+
+      # The backend thread id is captured (armed resume reads it); the
+      # `{"type":"thread.started","thread_id":…}` key shape is verified live
+      # against codex 0.144.1.
+      assert result.metadata.thread_id == "0198a5a0-0000-7000-8000-000000000001"
     end
 
     test "turn.failed maps to :error with the embedded message",
@@ -526,6 +533,480 @@ defmodule JidoClaw.Forge.Runners.CodexTest do
              ]
 
       refute "--dangerously-bypass-approvals-and-sandbox" in args
+    end
+  end
+
+  # Native CLI session resume, codex side (MC1-1; PORT sign-off Q2:
+  # backend-issued anchor, provisional until a clean exit — CH2-6). The
+  # exec-opts-before-`resume` ordering and the `--` guidance separator are
+  # verified live against codex 0.144.1.
+  describe "armed modes (resume: :armed)" do
+    setup do
+      host = make_tmpdir!("codex_host_armed")
+      File.write!(Path.join(host, "auth.json"), ~s({"token":"sk-test"}\n))
+      File.write!(Path.join(host, "config.toml"), "# host config\n")
+      Application.put_env(:jido_claw, :codex_home_dir, host)
+
+      forge_home = make_tmpdir!("forge_home_codex_armed")
+
+      on_exit(fn ->
+        File.rm_rf(host)
+        File.rm_rf(forge_home)
+      end)
+
+      {:ok, client, _sid} = StubSandbox.create()
+
+      {:ok, state} =
+        Codex.init(client, %{
+          forge_home: forge_home,
+          codex_home: Path.join(forge_home, ".codex"),
+          mcp_server_url: "http://127.0.0.1:0/run/x",
+          prompt: "do work",
+          resume: :armed
+        })
+
+      {:ok, client: client, state: state, forge_home: forge_home}
+    end
+
+    defp thread_started_jsonl(thread_id, terminal) do
+      events =
+        [%{"type" => "thread.started", "thread_id" => thread_id}] ++
+          case terminal do
+            :done -> [%{"type" => "turn.completed", "usage" => %{}}]
+            {:failed, msg} -> [%{"type" => "turn.failed", "error" => %{"message" => msg}}]
+            :none -> []
+          end
+
+      Enum.map_join(events, "\n", &Jason.encode!/1)
+    end
+
+    test "armed init records the -C cwd as the anchor workdir", %{state: state} do
+      assert state.resume.workdir == state.cwd
+      assert state.resume.status == :unanchored
+    end
+
+    test "fresh-armed drops --ephemeral ONLY — argv otherwise byte-identical",
+         %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", 0})
+      assert {:ok, _} = Codex.run_iteration(client, state, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+
+      assert args == [
+               "exec",
+               "-c",
+               ~s(mcp_servers.consolidator=) <>
+                 ~s({url="http://127.0.0.1:0/run/x", default_tools_approval_mode="approve"}),
+               "-m",
+               "gpt-5-codex",
+               "--dangerously-bypass-approvals-and-sandbox",
+               "--json",
+               "--skip-git-repo-check",
+               "--ignore-rules",
+               "-C",
+               state.forge_home,
+               "do work"
+             ]
+
+      refute "--ephemeral" in args
+      refute "resume" in args
+      refute "--last" in args
+    end
+
+    test "a clean :done exit promotes the captured thread to a trusted anchor (CH2-6)",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-00000000aaaa"
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+
+      {:ok, result} = Codex.run_iteration(client, state, [])
+
+      assert result.status == :done
+      assert result.metadata.state.resume.status == :anchored
+      assert result.metadata.state.resume.session_id == tid
+      assert result.metadata.state.resume.ownership == :backend
+    end
+
+    test "a failed turn keeps the captured thread PROVISIONAL — and never continues on it",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-00000000bbbb"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, {:failed, "model_overloaded"}), 0},
+        {"", 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      assert first.status == :error
+      assert first.metadata.state.resume.status == :provisional
+      assert first.metadata.state.resume.session_id == tid
+
+      # The provisional anchor never continues: the next turn is fresh-armed.
+      {:ok, _second} = Codex.run_iteration(client, first.metadata.state, [])
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      refute "resume" in args2
+      refute "--ephemeral" in args2
+    end
+
+    test "no thread.started in the stream leaves the state unanchored",
+         %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", 0})
+
+      {:ok, result} = Codex.run_iteration(client, state, [])
+
+      assert result.metadata.state.resume.status == :unanchored
+      assert result.metadata.state.resume.session_id == nil
+    end
+
+    test "continuation: exec-level opts BEFORE `resume`, guidance behind `--` (codex 0.144.1)",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-00000000cccc"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :done), 0},
+        {thread_started_jsonl(tid, :done), 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      {:ok, second} =
+        Codex.run_iteration(client, first.metadata.state, guidance: "address the findings")
+
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      assert args2 == [
+               "exec",
+               "-c",
+               ~s(mcp_servers.consolidator=) <>
+                 ~s({url="http://127.0.0.1:0/run/x", default_tools_approval_mode="approve"}),
+               "-m",
+               "gpt-5-codex",
+               "--dangerously-bypass-approvals-and-sandbox",
+               "--json",
+               "--skip-git-repo-check",
+               "--ignore-rules",
+               "-C",
+               state.forge_home,
+               "resume",
+               tid,
+               "--",
+               "address the findings"
+             ]
+
+      refute "--ephemeral" in args2
+      refute "--last" in args2
+      # The original task never rides a continuation argv (CM2-3).
+      refute Enum.any?(args2, &(&1 =~ "do work"))
+
+      assert second.metadata.state.resume.status == :anchored
+      assert second.metadata.state.resume.session_start_source == :resume
+    end
+
+    test "a continuation with no guidance uses the neutral nudge, never the task",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-00000000dddd"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :done), 0},
+        {"", 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+      {:ok, _} = Codex.run_iteration(client, first.metadata.state, [])
+
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      assert ["resume", ^tid, "--", "Continue."] = Enum.take(args2, -4)
+      refute Enum.any?(args2, &(&1 =~ "do work"))
+    end
+
+    test "CM2-3 strengthened: continuation given BOTH prompt: and guidance: uses the guidance",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000001111"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :done), 0},
+        {"", 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      {:ok, _} =
+        Codex.run_iteration(client, first.metadata.state,
+          prompt: "do work",
+          guidance: "just the guidance"
+        )
+
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      assert ["resume", ^tid, "--", "just the guidance"] = Enum.take(args2, -4)
+      refute Enum.any?(args2, &(&1 =~ "do work"))
+    end
+
+    test "prevention pin: fresh-armed ignores guidance: and sends state.prompt",
+         %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", 0})
+
+      {:ok, _result} =
+        Codex.run_iteration(client, state, guidance: "Continue the consolidation pass")
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+
+      assert Enum.take(args, -1) == ["do work"]
+      refute "resume" in args
+      refute Enum.any?(args, &(&1 =~ "Continue the consolidation pass"))
+    end
+
+    test "continuation delivers parked inflight text — beats guidance:, consumed at take",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000002222"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :done), 0},
+        {"", 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      parked =
+        update_in(first.metadata.state, [:resume], fn rs ->
+          {:ok, rs} = ResumeState.put_guidance(rs, "the parked answer")
+          {:ok, rs} = ResumeState.guidance_inflight(rs)
+          rs
+        end)
+
+      {:ok, second} = Codex.run_iteration(client, parked, guidance: "ignored nudge")
+
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      assert ["resume", ^tid, "--", "the parked answer"] = Enum.take(args2, -4)
+      # Consumed at take: the answer rides exactly one argv, never resent.
+      assert second.metadata.state.resume.pending_guidance == %{status: :consumed, text: nil}
+    end
+
+    test "fresh-armed reverts inflight guidance to pending and sends the full task",
+         %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", 0})
+
+      parked =
+        update_in(state, [:resume], fn rs ->
+          {:ok, rs} = ResumeState.put_guidance(rs, "the parked answer")
+          {:ok, rs} = ResumeState.guidance_inflight(rs)
+          rs
+        end)
+
+      rev_before = parked.resume.guidance_rev
+
+      {:ok, result} = Codex.run_iteration(client, parked, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client)
+      assert Enum.take(args, -1) == ["do work"]
+      refute Enum.any?(args, &(&1 =~ "the parked answer"))
+
+      assert result.metadata.state.resume.pending_guidance ==
+               %{status: :pending, text: "the parked answer"}
+
+      assert result.metadata.state.resume.guidance_rev > rev_before
+    end
+
+    test "F8/CH2-6: a terminal-less exit-0 stream keeps the anchor PROVISIONAL",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000003333"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :none), 0},
+        {"", 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      # The nil-fallthrough result posture stays Runner.done (deliberate,
+      # pinned below) — but the truncated stream is not promotion evidence.
+      assert first.status == :done
+      assert first.metadata.state.resume.status == :provisional
+      assert first.metadata.state.resume.session_id == tid
+
+      # And a provisional anchor never continues: the next turn is fresh-armed.
+      {:ok, _second} = Codex.run_iteration(client, first.metadata.state, [])
+      [_, ["codex" | args2]] = StubSandbox.run_args_history(client)
+
+      refute "resume" in args2
+      refute "--ephemeral" in args2
+    end
+
+    test "a continuation echoing a DIFFERENT thread drops the anchor",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-00000000eeee"
+      other = "0198a5a0-0000-7000-8000-00000000ffff"
+
+      StubSandbox.program_run_sequence(client, [
+        {thread_started_jsonl(tid, :done), 0},
+        {thread_started_jsonl(other, :done), 0}
+      ])
+
+      {:ok, first} = Codex.run_iteration(client, state, [])
+      {:ok, second} = Codex.run_iteration(client, first.metadata.state, prompt: "go")
+
+      assert second.metadata.state.resume.status == :unanchored
+    end
+
+    test "timeout and CLI-failure terminals still return metadata.state",
+         %{client: client, state: state} do
+      StubSandbox.program_run(client, {"", :timeout})
+      {:ok, timed_out} = Codex.run_iteration(client, state, [])
+
+      assert timed_out.status == :error
+      assert timed_out.error == "harness_timeout"
+      assert timed_out.metadata.state.resume.status == :unanchored
+
+      assert timed_out.metadata.error_details == %{
+               failure_kind: :stalled_wall_clock,
+               retry: true
+             }
+
+      # Multi-line unrecognized output keeps the plain label; exit 127 keeps
+      # runner_unavailable and classifies missing-executable.
+      StubSandbox.program_run(client, {"boom\ncrash\ntrace", 1})
+      {:ok, failed} = Codex.run_iteration(client, state, [])
+
+      assert failed.error == "codex cli failed"
+      assert failed.metadata.error_details.failure_kind == :agent_unknown
+      assert %{resume: %ResumeState{}} = failed.metadata.state
+
+      StubSandbox.program_run(client, {"codex: command not found", 127})
+      {:ok, missing} = Codex.run_iteration(client, state, [])
+
+      assert missing.error == "runner_unavailable"
+
+      assert missing.metadata.error_details.failure_kind ==
+               :agent_runtime_missing_executable
+    end
+
+    test "a rejected continuation poisons the anchor, tags resume_rejected, emits loudly — no retry",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000004444"
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      forge_sid = "codex_reject_#{:erlang.unique_integer([:positive])}"
+      :ok = ForgePubSub.subscribe(forge_sid)
+
+      # The verified live rejection shape (codex 0.144.1, exit 1).
+      rejection =
+        "Error: thread/resume: thread/resume failed: no rollout found for thread id #{tid} (code -32600)"
+
+      StubSandbox.program_run(client, {rejection, 1})
+
+      {:ok, second} =
+        Codex.run_iteration(client, first.metadata.state,
+          prompt: "go on",
+          forge_session_id: forge_sid
+        )
+
+      assert second.metadata.error_details == %{
+               failure_kind: :agent_session_poisoned,
+               retry: true,
+               resume_rejected: true
+             }
+
+      assert second.error =~ "no rollout found"
+      assert second.metadata.state.resume.status == :poisoned
+
+      # Exactly two CLI invocations — the runner never auto-retried.
+      assert [_, _] = StubSandbox.run_args_history(client)
+
+      assert_receive {:resume_failed, payload}
+      assert payload.kind == :agent_session_poisoned
+      assert payload.resume_rejected == true
+      assert payload.runner == :codex
+    end
+
+    test "a short bare-line failure tags {:fallback_marker, _}",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000005555"
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      StubSandbox.program_run(client, {"Please try again later.", 1})
+      {:ok, second} = Codex.run_iteration(client, first.metadata.state, prompt: "go")
+
+      assert second.error == {:fallback_marker, "Please try again later."}
+
+      assert second.metadata.error_details == %{
+               failure_kind: :agent_fallback_message,
+               retry: false
+             }
+
+      # Resume-unsafe: the trusted anchor poisons.
+      assert second.metadata.state.resume.status == :poisoned
+    end
+
+    test "a poisoned thread id is never reused; a NEW backend id rearms",
+         %{client: client, state: state} do
+      tid = "0198a5a0-0000-7000-8000-000000001111"
+      fresh_tid = "0198a5a0-0000-7000-8000-000000002222"
+
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      poisoned_state = update_in(first.metadata.state, [:resume], &ResumeState.poison/1)
+
+      # Pathological echo of the poisoned id: the rearm refuses reuse.
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+      {:ok, second} = Codex.run_iteration(client, poisoned_state, [])
+      assert second.metadata.state.resume.status == :poisoned
+
+      # A NEW backend id rearms (provisional → trusted on the clean exit).
+      StubSandbox.program_run(client, {thread_started_jsonl(fresh_tid, :done), 0})
+      {:ok, third} = Codex.run_iteration(client, second.metadata.state, [])
+
+      assert third.metadata.state.resume.status == :anchored
+      assert third.metadata.state.resume.session_id == fresh_tid
+      refute third.metadata.state.resume.retry_used
+    end
+
+    test "serialize → jsonb → restore round-trips; a foreign workdir resolves fresh-armed",
+         %{client: client, state: state, forge_home: forge_home} do
+      tid = "0198a5a0-0000-7000-8000-000000003333"
+      StubSandbox.program_run(client, {thread_started_jsonl(tid, :done), 0})
+      {:ok, first} = Codex.run_iteration(client, state, [])
+
+      snapshot =
+        first.metadata.state
+        |> Codex.serialize_state()
+        |> Jason.encode!()
+        |> Jason.decode!()
+
+      assert snapshot["resume"]["state"]["status"] == "anchored"
+
+      # Recovered incarnation in a DIFFERENT cwd: the anchor restores but the
+      # cwd-gate resolves the next turn fresh-armed.
+      other_cwd = make_tmpdir!("codex_other_cwd")
+      on_exit(fn -> File.rm_rf(other_cwd) end)
+
+      {:ok, client2, _sid} = StubSandbox.create()
+
+      {:ok, fresh} =
+        Codex.init(client2, %{
+          forge_home: forge_home,
+          codex_home: Path.join(forge_home, ".codex"),
+          prompt: "do work",
+          resume: :armed,
+          cwd: other_cwd
+        })
+
+      {:ok, restored} = Codex.restore_state(fresh, snapshot)
+
+      assert restored.resume.session_id == tid
+      assert restored.resume.workdir == state.cwd
+
+      StubSandbox.program_run(client2, {"", 0})
+      {:ok, _} = Codex.run_iteration(client2, restored, [])
+
+      ["codex" | args] = StubSandbox.last_run_args(client2)
+      refute "resume" in args
+      refute "--ephemeral" in args
     end
   end
 

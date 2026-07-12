@@ -16,11 +16,12 @@ comment; `relationMode = "prisma"` — no DB-level FKs), 79 MCP tools over state
 streamable HTTP, a ~30-file plain-ESM daemon CLI, and three packages (openclaw-plugin —
 the daemon reimplemented inside the OpenClaw host; chorus-cdk — AWS ECS/Aurora/
 ElastiCache; landing). Maturity: 611 commits 2026-02→2026-07, near-solo (445 Yifei Chen
-+ 52 "AutoJunjie" agent commits), a disciplined release train (v0.9→v0.13 in five weeks,
-CHANGELOG + blog per release, coverage badge, bilingual docs), and an `openspec/`
-spec-driven change process (~57 ratified capability specs) that visibly produced the
-recent subsystems. Nothing was built or executed this review — all claims are code
-reads.
+
+- 52 "AutoJunjie" agent commits), a disciplined release train (v0.9→v0.13 in five weeks,
+  CHANGELOG + blog per release, coverage badge, bilingual docs), and an `openspec/`
+  spec-driven change process (~57 ratified capability specs) that visibly produced the
+  recent subsystems. Nothing was built or executed this review — all claims are code
+  reads.
 
 **License law for this doc — AGPL-3.0**: nothing here may be lifted as code, ever
 (the termic rule). Every verdict below is BORROW-PATTERN / BORROW-REFERENCE /
@@ -106,15 +107,15 @@ always derived read-time from heartbeat rows; generation fencing; conflict-refus
 registration) is the schema reference for the node-bearing Workspace/Worktree
 identities OVERVIEW §3.3 plans (CH1-4).
 
-| Part of Chorus | As a dependency | What to take |
-| --- | --- | --- |
-| AI-DLC pipeline (idea → elaboration → proposal → tasks) | No — AGPL, Node/Prisma, methodology-shaped | CH1-1: plan-gate promote-the-edit mechanics + the draft-accumulate-via-tools shape; their two missing fences as §5.4 acceptance criteria |
-| Daemon + reverse control channel | No | CH1-2: durable-turn/lossy-ping/boundary-serialization triangle; interrupt taxonomy (`user`/`crash`, sticky, resume-gating); two-stage group-kill spec (CH3-2) |
-| AgentInstance + presence + registration | No | CH1-4: identity/liveness split, sentinels, `connectedAt` generation fencing, conflict-refusal — schema reference for Workspace/Worktree `node` |
-| Notification/wake layer | No | CH1-3: the pinned-wake ladder; CH2-3: attention-feed-as-projection-over-activity + per-kind preference toggles; negative: flat model, no severity/caps/debounce/push |
-| Task model + verification | No | CH2-1: dual-column advisory-vs-gating acceptance criteria + reset-on-regress; the REST-bypass multi-surface-drift cautionary tale |
-| MCP surface + permission matrix | No | ALREADY-COVERED (S-2): registration-time tool withholding is our Consumer allowlist's shape; garnish: per-request recompute; cautionary: ungated write paths |
-| Transcript/prompt hygiene | No | CH2-4: structural synthetic-envelope drop + `<system-reminder>` strip at the sink; CH2-5: the HEADLESS_PREAMBLE rubric |
+| Part of Chorus                                          | As a dependency                            | What to take                                                                                                                                                         |
+| ------------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AI-DLC pipeline (idea → elaboration → proposal → tasks) | No — AGPL, Node/Prisma, methodology-shaped | CH1-1: plan-gate promote-the-edit mechanics + the draft-accumulate-via-tools shape; their two missing fences as §5.4 acceptance criteria                             |
+| Daemon + reverse control channel                        | No                                         | CH1-2: durable-turn/lossy-ping/boundary-serialization triangle; interrupt taxonomy (`user`/`crash`, sticky, resume-gating); two-stage group-kill spec (CH3-2)        |
+| AgentInstance + presence + registration                 | No                                         | CH1-4: identity/liveness split, sentinels, `connectedAt` generation fencing, conflict-refusal — schema reference for Workspace/Worktree `node`                       |
+| Notification/wake layer                                 | No                                         | CH1-3: the pinned-wake ladder; CH2-3: attention-feed-as-projection-over-activity + per-kind preference toggles; negative: flat model, no severity/caps/debounce/push |
+| Task model + verification                               | No                                         | CH2-1: dual-column advisory-vs-gating acceptance criteria + reset-on-regress; the REST-bypass multi-surface-drift cautionary tale                                    |
+| MCP surface + permission matrix                         | No                                         | ALREADY-COVERED (S-2): registration-time tool withholding is our Consumer allowlist's shape; garnish: per-request recompute; cautionary: ungated write paths         |
+| Transcript/prompt hygiene                               | No                                         | CH2-4: structural synthetic-envelope drop + `<system-reminder>` strip at the sink; CH2-5: the HEADLESS_PREAMBLE rubric                                               |
 
 ## Why not adopt as a dependency
 
@@ -156,7 +157,7 @@ entry: it **corrects pms observation 1(b)** and re-scopes the argus novelty clai
 
 **Where in Chorus**: `src/services/proposal.service.ts` — a Proposal is an
 incrementally-built container (`documentDrafts`/`taskDrafts` JSON columns), populated
-by discrete MCP tool calls (`chorus_pm_create_proposal` creates it *empty*,
+by discrete MCP tool calls (`chorus_pm_create_proposal` creates it _empty_,
 `chorus_pm_add_document_draft`/`add_task_draft` accumulate; acceptance criteria
 mandatory at add-time, `:1159`). Statuses actually written: `draft → pending →
 approved | closed`, reject = `pending → draft` (the schema's `rejected`/`revised`
@@ -170,13 +171,13 @@ JSON the AI wrote (`updateTaskDraft` → `prisma.proposal.update({data:{taskDraf
 `:1257`); `approveProposal` (`:755-895`) reads those columns from the fresh row and
 materializes them **verbatim** in one 15s-timeout transaction — documents, tasks
 (status `open`), AC rows, and DAG edges via a draftUuid→realUuid remap. The model is
-never re-invoked. Reject-with-note is the *other* lane: `reviewNote` (required
+never re-invoked. Reject-with-note is the _other_ lane: `reviewNote` (required
 non-empty) → `proposal_rejected` notification → daemon wake → the agent re-edits its
 own drafts. Revoke (`:915-999`) un-materializes: cascade-close tasks, delete
 documents, back to `draft`.
 
 **The two missing fences (their gaps, our criteria)**: (a) **no approve idempotency**
-— the "only pending" guard lives in the *callers*, not the service; the transaction
+— the "only pending" guard lives in the _callers_, not the service; the transaction
 updates `WHERE uuid = ?` with no status predicate, so a double-approve
 double-materializes (`:772-773`); (b) **no revision history** — approve/reject/
 revoke/close all overwrite the same three columns (`reviewedByUuid`/`reviewNote`/
@@ -197,7 +198,7 @@ events, head-promotion on resume, `expectedSeq`.
 **Why it matters**: the argus §5 claim needed this test. The field's closest editor
 **does** promote operator bytes — at a plan-materialization boundary. What remains
 genuinely novel in argus §5 is promotion at the **execution layer** (an operator edit
-of a *step output* that the next step of a running workflow consumes), plus everything
+of a _step output_ that the next step of a running workflow consumes), plus everything
 Chorus's gaps show is needed to do it safely: revision events instead of an
 overwritten note, optimistic concurrency (`expectedSeq`) instead of caller-side status
 guards, a FOR-UPDATE-fenced decide instead of double-materialize, server-side
@@ -249,12 +250,12 @@ orphaned `running` turn stays `running` forever (no reaper; the three unmerged
 branches are this fix).
 
 **Gap in jido_radclaw** (verified 2026-07-04, the seams pass's chief product):
-*boundary delivery already exists at the engine layer* — a message arriving mid-turn
+_boundary delivery already exists at the engine layer_ — a message arriving mid-turn
 enters the agent server's `signal_call_queue` and runs as a separate later turn
 (`deps/jido/lib/jido/agent_server.ex:1044-1057,1446-1490`); cron's `:main` mode
 already delivers turns to idle sessions (`platform/cron/dispatcher.ex:51-68`). One
 layer down, the dep ships **true mid-run steering unwired**: `Jido.AI.Agent.steer/3`/
-`inject/3` queue text into the *current* ReAct run (`deps/jido_ai/lib/jido_ai/
+`inject/3` queue text into the _current_ ReAct run (`deps/jido_ai/lib/jido_ai/
 agent.ex:851-876`) — zero callers in lib/ (and `cancel/2`, the graceful advisory
 interrupt, equally unwired). What's actually missing is the **product layer**: no
 operator surface sends to a busy session with queue visibility; the Forge
@@ -271,14 +272,14 @@ it), **wire the needs-input reply loop** (their 409-when-origin-offline and
 no-text-on-the-ping details are the spec; SY2-2's park-don't-retry taxonomy joins
 here), and **adopt the interrupt taxonomy for CLI threads** (composes with MC1-1:
 interrupt provenance decides whether the later `--resume` is offered) — while
-`steer/inject` stays a wired-when-proven TRACK, because turning it on would *exceed*
+`steer/inject` stays a wired-when-proven TRACK, because turning it on would _exceed_
 every scanned subject and nothing yet demands it.
 
 **Adoption sketch**: (a) slice 1 — surface Forge `:needs_input` as an attention item
 and wire the reply: subscribe an operator surface to the per-session topic (or
 re-broadcast onto a sessions-level topic), deliver the answer via the existing
-`Forge.apply_input/2`; adopt their rule that the ask may carry text but the *reply
-path* is authenticated non-model surface only (XA1-1). (b) slice 1 — "message a busy
+`Forge.apply_input/2`; adopt their rule that the ask may carry text but the _reply
+path_ is authenticated non-model surface only (XA1-1). (b) slice 1 — "message a busy
 thread": expose the already-queued `ask_sync` semantics as UX (send + "queued behind
 the running turn" indicator; our engine needs nothing). (c) slice 6 — the CLI adapter
 adopts the triangle verbatim: instructions/wakes are durable rows first, transport
@@ -319,7 +320,7 @@ labels a cold start (`repointSessionOriginAndSend`,
 creation, successor-threads not moves, node-offline as first-class UI state) but no
 **wake-resolution semantics** for the offline case; our only async wake is cron
 (`dispatcher.ex:35-68`), which has no placement ladder; nothing distinguishes a
-hard pin (operator said *this instance*) from a soft one (inherited default) anywhere
+hard pin (operator said _this instance_) from a soft one (inherited default) anywhere
 in the design.
 
 **Why it matters**: argus threads and worktrees are pinned to nodes; automations will
@@ -365,7 +366,7 @@ for the reconciliation (`schema.prisma:452-467`).
 
 **Gap in jido_radclaw** (verified 2026-07-04): `Workspace` has **no node column** at
 HEAD (`workspace.ex:169-223`; identity is tenant+[user]+path, `:245-251`) — OVERVIEW
-§3.3 plans adding `node` *into the identity keys*; nothing registers node/instance
+§3.3 plans adding `node` _into the identity keys_; nothing registers node/instance
 presence for threads or worktrees (our node identity exists only at the workflow-lease
 layer, `workflow_lease.ex:109`); agent/session registries are node-local
 (`SessionRegistry` keyed `{tenant_id, session_id}`, `application.ex:139`).
@@ -374,7 +375,7 @@ layer, `workflow_lease.ex:109`); agent/session registries are node-local
 is a `status`+`last_seen` on the durable row — Chorus's split is the better contract:
 durable rows carry identity, liveness is always derived from a heartbeat source, and
 staleness is a read-time predicate (no sweeper to operate; our `ReclaimPooler`
-precedent stays scoped to *runs*, where reclaim has work to do). The `connectedAt`
+precedent stays scoped to _runs_, where reclaim has work to do). The `connectedAt`
 generation fence is the same CAS-fencing family as our WS1 leases, applied to
 registration — argus node re-registration should have it from day one, plus
 conflict-refusal instead of silent takeover (two nodes claiming one worktree checkout
@@ -411,7 +412,7 @@ divergence, their side.
 
 **Gap in jido_radclaw** (verified 2026-07-04): no task resource yet (seams-confirmed);
 FLOW §7 defines review-kind statuses but no acceptance-criteria shape. Our equivalent
-*doctrine* is already stronger where it exists — decisions flow through one chokepoint
+_doctrine_ is already stronger where it exists — decisions flow through one chokepoint
 (`Cases.decide/4`) — which is exactly the discipline whose absence created their REST
 hole.
 
@@ -437,7 +438,7 @@ FLOW §7 evidence.
 **Where in Chorus**: the durable conversation (`DaemonSession`) is keyed
 `(agentUuid, sessionId)` where `sessionId` **is the root idea's uuid** (ad-hoc uuid
 otherwise) — the thread unit is the idea, not the task; the Claude `--session-id` is
-this uuid, so the CLI conversation *is* the idea's thread (`daemon-session.service.ts`;
+this uuid, so the CLI conversation _is_ the idea's thread (`daemon-session.service.ts`;
 `waker.mjs:311-320`). Lineage is **derived, never stored**: `resolveRootIdea` walks
 task → proposal (`inputType === "idea"`, `inputUuids[0]`) → idea → `parentUuid`… with
 a 50-hop bound, visited-set cycle guard, and an honest `ambiguous: true` +
@@ -450,11 +451,11 @@ derivation).
 
 **Gap in jido_radclaw** (verified 2026-07-04): no task layer; FLOW §7 decided
 task↔thread M:N with a one-task-per-thread default. Chorus's shipped practice is the
-*other* default — many tasks, one idea-rooted thread — and it works because the
+_other_ default — many tasks, one idea-rooted thread — and it works because the
 conversation anchor is the **durable root**, not the leaf.
 
 **Why it matters**: two FLOW reinforcements. (1) §7's M:N is validated from the other
-side: what must be stable is the *thread's anchor identity*, not the task↔thread
+side: what must be stable is the _thread's anchor identity_, not the task↔thread
 count. (2) §7's computed-blocked decision gets a sibling precedent: derive
 presentation states (their 8-state badge, our lanes/kinds) from minimal stored state
 rather than persisting them. The bounded, ambiguity-honest derived-lineage walk is the
@@ -521,12 +522,12 @@ transcripts by **structurally dropping synthetic envelopes** (`type:"user"` +
 defense-in-depth stripping of `<system-reminder>` spans (CHANGELOG #373).
 
 **Gap in jido_radclaw** (verified 2026-07-04): FLOW §4 commits to redaction at the
-durable sink for CLI threads but hasn't specified *injected-scaffolding* filtering —
+durable sink for CLI threads but hasn't specified _injected-scaffolding_ filtering —
 our own CLI adapter will pipe Claude Code streams that carry synthetic context
 (skills, system-reminders, MCP instructions) which is neither operator content nor
 secret, just noise that bloats and confuses the durable transcript.
 
-**Why it matters**: the lesson is the *mechanism* — filter by structural envelope
+**Why it matters**: the lesson is the _mechanism_ — filter by structural envelope
 markers, not content sniffing (their `isSynthetic` flag ≈ our stream-json event
 types), with a string-level strip only as belt-and-suspenders. That's the same
 root-then-residual layering our ANSI/redaction stack already uses.
@@ -560,8 +561,8 @@ chooses deny-or-bypass.
 the day a composer stage runs a headless CLI (the agent stalls waiting for an answer
 that can't come); the env marker is the cheap machine-readable half. And the
 unanimous unbridged field sharpens FLOW §4's differentiation: bridging is worth
-building precisely because it's what lets the posture default to *ask* instead of
-*bypass*.
+building precisely because it's what lets the posture default to _ask_ instead of
+_bypass_.
 
 **Adoption sketch**: add a headless-contract fragment to Forge runner prompt
 assembly (never block on interactive input; deposit questions via the platform;
@@ -598,28 +599,48 @@ flag-driven model is a third variant: server-persisted, no probe).
 shape; persist backend-owned anchors on our Forge `Session` row (not a dotfile), only
 from clean exits, per their rule.
 
+**Status (2026-07-11)**: ADOPTED (rider on MC1-1 — pre-argus Wave A #2).
+The anchor-ownership axis shipped verbatim in `JidoClaw.Forge.ResumeState`:
+`:client` (claude, minted pre-spawn) vs `:backend` (codex `thread.started`,
+`:provisional` until a clean `:done` promotes — this entry's trust rule),
+persisted fenced on the Session row. See
+[docs/system/forge-session-resume.md](../../../system/forge-session-resume.md).
+
 ---
 
 ## Tier 3 — garnish
 
 ### CH3-1. Control-lane/wake-lane structural fork
+
 One-line doctrine from `sse-listener.mjs:260-263`: control frames are forked before
-the wake router so a misparsed interrupt can never *spawn* work. Our channel-layer
+the wake router so a misparsed interrupt can never _spawn_ work. Our channel-layer
 equivalent (argus §4.2): keep decision/control topics disjoint from work-triggering
 topics by construction, not by payload inspection.
 
 ### CH3-2. Two-stage group-kill spec
+
 SIGINT to the detached process group (spawn as group leader), configurable grace
 window (default 10s, flag > env > config file), then SIGKILL the group; Windows path
 honestly marked unverified in-source (`process-killer.mjs:19-23,35-149`). The spec for
 the slice-6 CLI adapter's interrupt (and a garnish on our Forge session teardown).
 
+**Status (2026-07-11)**: ADOPTED in shape (rider on MC1-1 — pre-argus Wave
+A #2): two-stage group teardown landed as `OsCmd.terminate_tree/2` (capture
+the descendant set with birth identities → SIGTERM → bounded grace window
+with continued re-discovery → identity-verified STOP-fixpoint + SIGKILL)
+driven by `Forge.ChildTracker` (tagged incarnation keys, session-wide
+barrier, VM-shutdown sweep). Divergence: a live process-table walk instead of
+their process-group kill — setsid is deliberately rejected for macOS
+portability (`os_cmd.ex` module doc).
+
 ### CH3-3. draftUuid → realUuid materialization mapping
+
 `approveProposal` returns `materializedTasks/Documents` maps so clients correlate
 drafts with created rows (`proposal.service.ts:841-895`). Rider for §5.4: `decideCase`
 on a `:review` gate should return the promoted revision ref + created-entity ids.
 
 ### CH3-4. Copy-session-id human takeover
+
 A one-button "copy the bare `claude --resume` anchor" so a human can take a daemon
 conversation over locally (v0.11.1). FLOW §4's CLI threads should keep the same
 affordance — the sandboxed session's anchor is operator-visible, so escape-to-local
@@ -627,15 +648,18 @@ is one paste (composes with the Forge OAuth file-sync posture; memory:
 `project_forge_oauth_file_sync`).
 
 ### CH3-5. Secrets-delivery hygiene at spawn
+
 Bearer key in a 0600 tmpfile MCP config deleted after each wake; Codex key via env
 never argv; prompt via stdin never argv (`mcp-config.mjs:37-58`, `codex-spawner.mjs:
 217-221`, `claude-spawner.mjs:167`). Mostly ALREADY-COVERED by our `Env.scrubbed_port_env`
-+ MC2-4 sketch; the take-away garnish is the **cleanup-after-wake** habit for any
-per-invocation credential file the slice-6 adapter mints. Negative rider: Chorus does
-**no env scrubbing at spawn** (`{...process.env}` wholesale) — multica's exact-name
-denylist remains the reference (MC2-4/MC1-1e).
+
+- MC2-4 sketch; the take-away garnish is the **cleanup-after-wake** habit for any
+  per-invocation credential file the slice-6 adapter mints. Negative rider: Chorus does
+  **no env scrubbing at spawn** (`{...process.env}` wholesale) — multica's exact-name
+  denylist remains the reference (MC2-4/MC1-1e).
 
 ### CH3-6. Mention markup with instance-pin suffix + brand-new-mention dedup
+
 `@[Name](agent:uuid?cwd=…&host=…)` — the pin rides the mention text itself
 (`mention.service.ts:32-44`); description edits notify only mentions **not present in
 the prior content** (`task.service.ts:1027-1031`). For argus task/thread comments at
@@ -647,16 +671,16 @@ dedup is the transition-edge rule (EM) applied to text.
 ## Skip / Already Covered
 
 - **S-1. Chorus as the control plane / task board** — SKIP. AGPL aside, argus exists
-  to put the board *inside* the event log, gates, and tenancy; Chorus's board lives
+  to put the board _inside_ the event log, gates, and tenancy; Chorus's board lives
   beside its agents with neither.
 - **S-2. The MCP permission matrix (5×3, registration-time withholding)** —
   ALREADY-COVERED in mechanism: withheld-at-registration is exactly our per-template
   reach allowlist (`Consumer.modules_for_template/3`) and our approval overlay is the
-  *risk* axis theirs lacks (`Security.ToolApproval` require-list + patterns + MCP
+  _risk_ axis theirs lacks (`Security.ToolApproval` require-list + patterns + MCP
   default-closed). Garnishes worth noting: per-request recompute means permission
   edits apply next call with no reconnect (our persistent_term policy publish is
   close); their matrix is **capability-shaped (resource:action)** while ours is
-  risk-shaped — if argus ever wants agent-facing *capability* scoping (which tools a
+  risk-shaped — if argus ever wants agent-facing _capability_ scoping (which tools a
   template even sees per project), theirs is the vocabulary. Cautionaries recorded:
   two ungated write tools (`chorus_create_tasks` guard-free by their own docs'
   admission), all `*:read` bits gate nothing, `project:admin` is a dead bit, and the
@@ -666,7 +690,7 @@ dedup is the transition-edge rule (EM) applied to text.
   `--dangerously-skip-permissions` with a banner instead of the documented
   confirmation; the alternative mode auto-denies rather than asks. Our
   gate-and-bridge design is the deliberate opposite; XA1-1 is satisfied on their side
-  only because *nothing* grants at runtime.
+  only because _nothing_ grants at runtime.
 - **S-4. Realtime layer (SSE + Redis fan-out + full-refetch catch-up)** —
   ALREADY-COVERED, ours stronger where it counts: no event replay for browsers, no
   `Last-Event-ID`, reconnect = refetch; argus §4.2's durable `workflowEvents(afterSeq:)`
@@ -717,7 +741,7 @@ absent, with the entry or evidence that carries it.
    `deliver_turn` ping + per-thread FIFO), never mid-flight stdin; interrupt is
    UI-confirm + daemon double-check + two-stage group kill with `user`/`crash`
    provenance and sticky-`interrupted` resume gating. Assessment for FLOW (the brief's
-   ask): argus needs the *affordances*, not an engine — boundary delivery is already
+   ask): argus needs the _affordances_, not an engine — boundary delivery is already
    our mailbox semantics; the dep's true mid-run `steer/inject` sits unwired
    (TRACK, OQ-2); the do-now piece is the Forge needs-input reply loop (CC1-2).
 4. **AgentInstance `(agent, host, cwd)` + pinned wakes** — ANSWERED (CH1-3, CH1-4),
@@ -791,8 +815,8 @@ absent, with the entry or evidence that carries it.
   own affordance is boundary delivery). Wiring `steer` would exceed the field but
   adds a second input path into a running loop — new interruption semantics to
   reason about. Lean: TRACK; trigger = slice-1 busy-thread messaging shipping and
-  operators demonstrably wanting text to land *before* the current turn ends.
-  *(Connective note, 2026-07-04 pass: the later bosun dig added the field's one
+  operators demonstrably wanting text to land _before_ the current turn ends.
+  _(Connective note, 2026-07-04 pass: the later bosun dig added the field's one
   exception — mid-turn steering shipped exactly once, in bosun's Claude executor
   lane via the vendor agent-SDK streaming-input channel, its Codex/Copilot lanes
   still boundary-queued ([BO2-4](../bosun/FEATURES-WORTH-BORROWING.md), which
@@ -800,7 +824,7 @@ absent, with the entry or evidence that carries it.
   current-turn primitive is the `jido_ai` dep's `Jido.AI.Reasoning.ReAct.steer/inject`,
   distinct from base jido's next-turn deferred-signal queue). The lean stands — one
   SDK-mediated exception is not a pattern — but "no scanned subject ships mid-turn"
-  now carries that asterisk.)*
+  now carries that asterisk.)_
 - **OQ-3 — Per-kind notification preference toggles vs severity tiers at slice 1?**
   Chorus ships 12 booleans and no severity; CC1-2 designs severity-with-mutes.
   Lean: both are per-kind knobs — start with per-kind mute booleans (their shape,
@@ -838,7 +862,7 @@ for slices 3 and 6.
 **Collision notes**: nothing collides with the unadopted-next-ten queue (composer/
 judgment work). CH1-2 touches the same Forge runner surface as MC1-1 — sequence MC1-1
 first (resume is the substrate; interrupt provenance then gates it). CH2-3 must land
-*inside* the CC1-2 attention design, not beside it. The FLOW §13 hold-soft item
+_inside_ the CC1-2 attention design, not beside it. The FLOW §13 hold-soft item
 "review-editor UX (Chorus)" hardens with this doc.
 
 ## Bottom line
