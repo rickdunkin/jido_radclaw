@@ -185,6 +185,9 @@ test("renders mixed statuses and joins exactly the non-terminal topics", async (
     `workflows:run:${RUN_A}`,
     `workflows:run:${RUN_C}`,
   ]);
+  // Containment guard: /runs must render inside the app shell at both
+  // breakpoints (the rail is CSS-hidden below md, but always in the DOM).
+  expect(document.querySelector('[data-slot="sidebar"]')).not.toBeNull();
 });
 
 test("join reply disagreeing with the rendered status refetches (stale list)", async () => {
@@ -366,7 +369,7 @@ test("re-entering /runs refetches: runs created after the first visit appear", a
   await act(async () => {
     await router.navigate({ to: "/" });
   });
-  expect(await screen.findByText("View runs")).toBeDefined();
+  expect(await screen.findByRole("heading", { name: "Attention" })).toBeDefined();
 
   await act(async () => {
     await router.navigate({ to: "/runs" });

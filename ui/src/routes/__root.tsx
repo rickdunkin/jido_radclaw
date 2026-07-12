@@ -5,9 +5,11 @@ export const Route = createRootRoute({
 });
 
 function RootLayout() {
+  // A div, not main: the shell layout owns the main landmark. isolate roots
+  // a stacking context for the fixed tab bar and future portalled overlays.
   return (
-    <main className="min-h-screen bg-background text-foreground">
+    <div className="isolate min-h-svh bg-background text-foreground antialiased">
       <Outlet />
-    </main>
+    </div>
   );
 }

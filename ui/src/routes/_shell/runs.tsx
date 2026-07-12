@@ -1,15 +1,15 @@
 import { useQuery } from "@apollo/client/react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useReducer, useState, useSyncExternalStore } from "react";
-import { RecentWorkflowRunsDocument, WorkflowRunStatus } from "../gql/graphql.ts";
+import { RecentWorkflowRunsDocument, WorkflowRunStatus } from "../../gql/graphql.ts";
 import {
   getSocket,
   getTransportStatus,
   retryConnect,
   subscribeTransportStatus,
-} from "../lib/socket.ts";
+} from "../../lib/socket.ts";
 
-export const Route = createFileRoute("/runs")({
+export const Route = createFileRoute("/_shell/runs")({
   component: RunsPage,
 });
 

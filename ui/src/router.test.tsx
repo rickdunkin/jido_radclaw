@@ -3,12 +3,15 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { expect, test } from "vite-plus/test";
 import { createAppRouter } from "./router.tsx";
 
-test("renders the argus heading at /", async () => {
+test("renders the Attention stub at /", async () => {
   const router = createAppRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   render(<RouterProvider router={router} />);
-  expect(await screen.findByRole("heading", { name: "argus" })).toBeDefined();
+  expect(await screen.findByRole("heading", { name: "Attention" })).toBeDefined();
+  // Board has no phone tab by design: "/" must link to it so the route is
+  // phone-reachable from the moment it exists.
+  expect(screen.getByRole("link", { name: "View board" }).getAttribute("href")).toBe("/board");
 });
 
 test("resolves routes under the deployed /argus/ prefix", async () => {
@@ -20,5 +23,5 @@ test("resolves routes under the deployed /argus/ prefix", async () => {
     history: createMemoryHistory({ initialEntries: ["/argus/"] }),
   });
   render(<RouterProvider router={router} />);
-  expect(await screen.findByRole("heading", { name: "argus" })).toBeDefined();
+  expect(await screen.findByRole("heading", { name: "Attention" })).toBeDefined();
 });

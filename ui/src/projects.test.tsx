@@ -37,4 +37,7 @@ test("renders the projects list through router and mocked Apollo", async () => {
   );
   expect(await screen.findByText("curl-smoke")).toBeDefined();
   expect(await screen.findByText("curl/smoke-708 · main")).toBeDefined();
+  // Containment guard: /projects must render inside the app shell at both
+  // breakpoints (the rail is CSS-hidden below md, but always in the DOM).
+  expect(document.querySelector('[data-slot="sidebar"]')).not.toBeNull();
 });

@@ -96,8 +96,11 @@ test("/runs renders fixtures backendless, and a store transition reaches its row
 test("/projects renders the shared store alphabetically (runs store may have moved)", async () => {
   renderRoute("/projects");
 
-  expect(await screen.findByText("argus")).toBeDefined();
-  expect(screen.getAllByText("hermes")).toHaveLength(2);
-  expect(screen.getByText("jidoclaw/hermes-fork · trunk")).toBeDefined();
+  // Scoped to the main landmark: the shell rail also renders "argus" (the
+  // wordmark and a PROJECTS fixture row) outside the page content.
+  const main = within(await screen.findByRole("main"));
+  expect(await main.findByText("argus")).toBeDefined();
+  expect(main.getAllByText("hermes")).toHaveLength(2);
+  expect(main.getByText("jidoclaw/hermes-fork · trunk")).toBeDefined();
   expect(screen.queryByText(/Failed to load projects/)).toBeNull();
 });

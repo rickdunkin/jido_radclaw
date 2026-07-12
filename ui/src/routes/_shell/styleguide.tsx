@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/")({
-  component: Index,
+export const Route = createFileRoute("/_shell/styleguide")({
+  component: StyleguidePage,
 });
 
 // Literal class names so Tailwind's scanner sees every status utility.
@@ -18,9 +18,9 @@ const STATUSES = [
   { label: "offline", dot: "bg-status-offline", text: "text-status-offline" },
 ];
 
-function Index() {
+function StyleguidePage() {
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
+    <div className="flex items-center justify-center p-6">
       <div className="flex w-full max-w-lg flex-col items-center gap-8 text-center">
         <div>
           <h1 className="text-4xl font-semibold tracking-tight">argus</h1>

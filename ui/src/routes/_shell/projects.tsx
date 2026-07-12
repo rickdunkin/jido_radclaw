@@ -1,8 +1,8 @@
 import { useQuery } from "@apollo/client/react";
 import { createFileRoute } from "@tanstack/react-router";
-import { ProjectsDocument } from "../gql/graphql.ts";
+import { ProjectsDocument } from "../../gql/graphql.ts";
 
-export const Route = createFileRoute("/projects")({
+export const Route = createFileRoute("/_shell/projects")({
   component: ProjectsPage,
 });
 

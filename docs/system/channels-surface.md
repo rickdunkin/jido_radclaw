@@ -10,10 +10,10 @@ sources:
   - lib/jido_claw/route_composer/route_composer.ex
   - lib/jido_claw/platform/tenant/manager.ex
   - ui/src/lib/socket.ts
-  - ui/src/routes/runs.tsx
+  - ui/src/routes/_shell/runs.tsx
   - ui/vite.config.ts
   - config/dev.exs
-verified: 2026-07-11
+verified: 2026-07-12
 ---
 
 # Channels Surface (argus live updates)
@@ -149,7 +149,8 @@ contract.
   version (serializer wire compat) — a hex phoenix bump must bump
   `ui/package.json` in the same change. `@types/phoenix` provides
   `authToken` typings.
-- **Runs page** (`ui/src/routes/runs.tsx`): the list query runs under
+- **Runs page** (`ui/src/routes/_shell/runs.tsx`, inside the app-shell
+  pathless layout): the list query runs under
   `fetchPolicy: "cache-and-network"` — cached rows paint immediately and
   every route entry fires the network leg, so a singleton-client cache
   (main.tsx) can never pin a stale/empty list across navigation
@@ -240,7 +241,7 @@ contract.
 - `lib/jido_claw/core/ash_errors.ex` — shared not-found classification
 - `ui/src/lib/socket.ts` — wrapper: authToken, bounded reconnect,
   transport status
-- `ui/src/routes/runs.tsx` — runs list + join lifecycle
+- `ui/src/routes/_shell/runs.tsx` — runs list + join lifecycle
 - `ui/vite.config.ts`, `config/dev.exs` — dev ws proxy + check_origin
 - `test/jido_claw/web/argus_socket_test.exs`,
   `test/jido_claw/web/workflows_channel_test.exs`,

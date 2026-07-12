@@ -64,6 +64,8 @@
   --color-status-done: var(--status-done);
   --color-status-idle: var(--status-idle);
   --color-status-offline: var(--status-offline);
+  --color-status-waiting-solid: var(--status-waiting-solid);
+  --color-status-waiting-solid-foreground: var(--status-waiting-solid-foreground);
   /*
      * Additive radius scale (replacing the preset's multiplicative one) so
      * --radius: 0.75rem lands exactly on the mock anatomy:
@@ -117,6 +119,14 @@
   --status-done: oklch(0.5 0.13 160);
   --status-idle: oklch(0.545 0.012 285);
   --status-offline: oklch(0.65 0.008 285);
+  /*
+   * Solid-amber fill pair for badges/CTAs — distinct from --status-waiting,
+   * which is a text accent (its light value fails 4.5:1 under dark text as a
+   * bg). Foreground is the mock's #241a05 dark brown; verified >= 4.5:1
+   * against both theme fills (5.21:1 light, 9.52:1 dark).
+   */
+  --status-waiting-solid: oklch(0.65 0.15 78);
+  --status-waiting-solid-foreground: oklch(0.225 0.038 84);
 }
 
 .dark {
@@ -157,6 +167,8 @@
   --status-done: oklch(0.76 0.15 160);
   --status-idle: oklch(0.62 0.012 285);
   --status-offline: oklch(0.48 0.01 285);
+  --status-waiting-solid: oklch(0.82 0.165 75);
+  --status-waiting-solid-foreground: oklch(0.225 0.038 84);
 }
 
 @layer base {
